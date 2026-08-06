@@ -42,6 +42,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
     var monitor: PowerMonitor?
     var store: HistoryStore?
     let drain = DrainRateEstimator()
+    /// CPU, memory, GPU, network and sensors. Cheap enough to run even while
+    /// hidden — unlike the per-process sweep, these are a handful of syscalls.
+    let sysMetrics = SystemMetrics()
 
     var rows: [Row] = []
     var sortKey = "pctHr"
@@ -87,9 +90,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         // automatically available to every widget with no new widget code.
         widgets = MenuBarWidgetController(onClick: { [weak self] in self?.main.toggle() })
         if widgets.configs.isEmpty {
+            // First-run defaults: the two battery numbers you actually watch, plus
+            // the group so everything else is one click away without claiming
+            // menu bar width up front.
             widgets.setConfigs([
                 WidgetConfig(metricID: MetricID.batteryDrain.rawValue, style: .textWithLabel),
-                WidgetConfig(metricID: MetricID.batteryTimeLeft.rawValue, style: .text),
+                WidgetConfig(metricID: MetricID.cpuUsage.rawValue, style: .textWithLabel),
+                WidgetConfig(metricID: MetricID.memoryUsage.rawValue, style: .textWithLabel),
+                WidgetConfig(metricID: MetricID.groupPlaceholder.rawValue, style: .group),
             ])
         }
         PreferencesWindowController.metricProvider = {
@@ -125,6 +133,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
                 || Date().timeIntervalSince(self.lastFullTick) >= self.backgroundFullInterval
             guard let snap = m.tick(full: wantFull) else { return }
             if wantFull { self.lastFullTick = Date() }
+
+            // Sensor discovery walks thousands of SMC keys, so only pay for it when
+            // something is actually displaying a temperature or fan speed.
+            let sysSnap = self.sysMetrics.sample(includeSensors: visible || self.needsSensors)
+            MetricRegistry.shared.update(system: sysSnap)
 
             // Durable history and the observed-drain estimate both belong off the
             // main thread: one touches SQLite, the other only does arithmetic but
@@ -318,6 +331,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
     }
 
     @objc func openPrefs() { PreferencesWindowController.shared.show() }
+
+    /// True when a menu bar widget is bound to a sensor metric, so the sampler
+    /// knows whether the SMC read is worth doing while the window is closed.
+    var needsSensors: Bool {
+        let sensorIDs: Set<String> = [
+            MetricID.cpuTemperature.rawValue,
+            MetricID.gpuTemperature.rawValue,
+            MetricID.fanSpeed.rawValue,
+        ]
+        return widgets.configs.contains { $0.enabled && sensorIDs.contains($0.metricID) }
+    }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ s: NSApplication) -> Bool { false }
 

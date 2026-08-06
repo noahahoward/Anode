@@ -14,6 +14,9 @@ import PowerKit
 // draw time so both light and dark menu bars stay legible. Never a hardcoded grey.
 
 public enum WidgetStyle: String, Codable, CaseIterable {
+    /// One slot that expands to a panel of every metric. Keeps the bar to a
+    /// single item without losing anything.
+    case group
     case text, textWithLabel, bar, sparkline, dot
 
     /// Tolerant decode: a style written by a newer build (or hand-edited plist) falls
@@ -164,6 +167,18 @@ public final class MenuBarWidgetController: NSObject {
         button.toolTip = WidgetRenderer.toolTip(
             metricID: entry.config.metricID, descriptor: descriptor, value: value)
 
+        if entry.config.style == .group {
+            // A menu attached to the status item opens directly beneath it, which is
+            // the behaviour asked for. Assigning `menu` also makes AppKit own the
+            // click, so the widget's normal open-the-window action is bypassed here.
+            entry.item.menu = Self.buildGroupMenu()
+            button.attributedTitle = NSAttributedString()
+            button.imagePosition = .imageOnly
+            button.image = WidgetRenderer.textImage(label: nil, value: "\u{2304}")
+            return
+        }
+        entry.item.menu = nil
+
         switch entry.config.style {
         case .text, .textWithLabel:
             // Rendered as an image rather than an attributedTitle. AppKit centres a
@@ -178,6 +193,8 @@ public final class MenuBarWidgetController: NSObject {
                 label: entry.config.style == .textWithLabel
                     ? (value?.label ?? descriptor?.shortTitle ?? "?") : nil,
                 value: value.map { $0.text + ($0.isEstimate ? "*" : "") } ?? "\u{2014}")
+        case .group:
+            break   // handled above, before this switch
         case .bar, .sparkline, .dot:
             button.attributedTitle = NSAttributedString()
             button.imagePosition = .imageOnly
@@ -185,6 +202,50 @@ public final class MenuBarWidgetController: NSObject {
                 style: entry.config.style, descriptor: descriptor, value: value,
                 history: history[entry.config.metricID] ?? [])
         }
+    }
+
+    /// Every metric with its current reading, grouped by category. Rebuilt on each
+    /// refresh so the panel is current the moment it opens — a stale popover is
+    /// worse than none, and building ~15 rows is far cheaper than the sampling that
+    /// produced them.
+    static func buildGroupMenu() -> NSMenu {
+        let menu = NSMenu()
+        let registry = MetricRegistry.shared
+        var category = ""
+
+        for d in registry.descriptors() {
+            if d.category != category {
+                if !menu.items.isEmpty { menu.addItem(.separator()) }
+                category = d.category
+                let header = NSMenuItem(title: category.uppercased(), action: nil, keyEquivalent: "")
+                header.attributedTitle = NSAttributedString(string: category.uppercased(), attributes: [
+                    .font: NSFont.systemFont(ofSize: 10, weight: .semibold),
+                    .foregroundColor: NSColor.secondaryLabelColor])
+                header.isEnabled = false
+                menu.addItem(header)
+            }
+
+            let value = registry.value(for: d.id)
+            let shown = value.map { $0.text + ($0.isEstimate ? "*" : "") } ?? "\u{2014}"
+            let row = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+
+            // Name left, value right, in one attributed string with a right-aligned
+            // tab stop so the numbers form a column instead of ragging.
+            let para = NSMutableParagraphStyle()
+            para.tabStops = [NSTextTab(textAlignment: .right, location: 190)]
+            let line = NSMutableAttributedString(
+                string: d.title + "\t", attributes: [
+                    .font: NSFont.systemFont(ofSize: 12),
+                    .paragraphStyle: para])
+            line.append(NSAttributedString(string: shown, attributes: [
+                .font: NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .medium),
+                .foregroundColor: value == nil ? NSColor.tertiaryLabelColor : NSColor.labelColor,
+                .paragraphStyle: para]))
+            row.attributedTitle = line
+            row.isEnabled = false
+            menu.addItem(row)
+        }
+        return menu
     }
 
     /// Test seam: materialized buttons in config order. Internal on purpose.
@@ -304,7 +365,7 @@ enum WidgetRenderer {
         case .dot:       return dotImage(color: severityColor(descriptor, value))
         case .bar:       return barImage(descriptor: descriptor, value: value)
         case .sparkline: return sparklineImage(history: history)
-        case .text, .textWithLabel: return nil
+        case .text, .textWithLabel, .group: return nil
         }
     }
 
@@ -323,7 +384,10 @@ enum WidgetRenderer {
         case .minutes:        return clamp(v / 600)         // the "10 hr power" anchor: 10 h = full
         case .celsius:        return clamp((v - 30) / 70)   // 30 °C idle … 100 °C throttle
         case .rpm:            return clamp(v / 6000)
-        case .count, .bytes:  return nil
+        // No universal bound exists for these, so they stay neutral rather than
+        // implying a threshold we cannot justify. Throughput in particular depends
+        // entirely on the link — 12 MB/s is saturation on Wi-Fi and idle on Thunderbolt.
+        case .count, .bytes, .bytesPerSecond: return nil
         }
     }
 
