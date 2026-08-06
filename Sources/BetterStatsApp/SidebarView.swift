@@ -85,9 +85,11 @@ final class SidebarView: NSView {
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 1
-        // The window uses fullSizeContentView so the rail runs edge to edge, which
-        // means the traffic lights sit ON it — content has to start below them.
-        stack.edgeInsets = NSEdgeInsets(top: 46, left: 8, bottom: 12, right: 8)
+        // The system titlebar owns the space above, so no clearance is needed here.
+        // (This was 46 to dodge the traffic lights under fullSizeContentView, which
+        // the window no longer uses — leaving it made the rail start half an inch
+        // lower than the table header beside it.)
+        stack.edgeInsets = NSEdgeInsets(top: 10, left: 8, bottom: 12, right: 8)
         stack.translatesAutoresizingMaskIntoConstraints = false
         addSubview(stack)
         NSLayoutConstraint.activate([

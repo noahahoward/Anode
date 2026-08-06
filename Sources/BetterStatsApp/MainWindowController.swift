@@ -117,27 +117,29 @@ final class MainWindowController: NSObject {
             tableSplit.leadingAnchor.constraint(equalTo: sidebar.trailingAnchor),
             tableSplit.trailingAnchor.constraint(equalTo: content.trailingAnchor),
             tableSplit.topAnchor.constraint(equalTo: content.topAnchor),
+            tableSplit.heightAnchor.constraint(greaterThanOrEqualToConstant: 160),
 
             ledger.leadingAnchor.constraint(equalTo: sidebar.trailingAnchor, constant: 16),
             ledger.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -16),
             ledger.topAnchor.constraint(equalTo: tableSplit.bottomAnchor, constant: 11),
 
             // Fixed-height bottom row: only the table grows.
+            // The bottom row has a DEFINITE height. Without one the solver is free to
+            // satisfy the chain by growing this row instead of the table, which it
+            // did — the table and ledger were squeezed to nothing and the window
+            // became one giant card and graph.
             glance.leadingAnchor.constraint(equalTo: sidebar.trailingAnchor, constant: 16),
             glance.widthAnchor.constraint(equalToConstant: 236),
             glance.topAnchor.constraint(equalTo: ledger.bottomAnchor, constant: 14),
-            // Equal, not lessThanOrEqual: the graph and the card are one row, so
-            // their bottoms have to line up. With an inequality the card floated and
-            // the graph sat above the last line of its text.
+            glance.heightAnchor.constraint(equalToConstant: 128),
             glance.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -14),
 
+            // Same top and bottom as the card, so the two line up by construction
+            // rather than by matching numbers in two places.
             graphContainer.leadingAnchor.constraint(equalTo: glance.trailingAnchor, constant: 18),
             graphContainer.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -16),
-            graphContainer.topAnchor.constraint(equalTo: ledger.bottomAnchor, constant: 14),
-            // No fixed height: top and bottom already define it, and adding a third
-            // constraint over-constrained the row so AppKit silently broke one of them.
-            graphContainer.heightAnchor.constraint(greaterThanOrEqualToConstant: 118),
-            graphContainer.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -14),
+            graphContainer.topAnchor.constraint(equalTo: glance.topAnchor),
+            graphContainer.bottomAnchor.constraint(equalTo: glance.bottomAnchor),
         ])
 
         window.contentView = content
