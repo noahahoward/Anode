@@ -64,6 +64,44 @@ public final class PowerMonitor {
             guard smoothed_W > 0, let s = state, !s.onAC else { return nil }
             return Double(s.percent) * scale.joulesPerPercent / smoothed_W / 3600
         }
+
+        /// Energy left in the pack, in joules.
+        public var remainingEnergy_J: Double? {
+            state.map { Double($0.percent) * scale.joulesPerPercent }
+        }
+
+        /// "Quitting this would buy you N more minutes."
+        ///
+        /// This is a MARGINAL, counterfactual quantity, not a share — which is exactly
+        /// what makes it honest where a percentage-of-total is not. Runtime is E/P, so
+        /// removing a load of P_app changes runtime by:
+        ///
+        ///     seconds gained = E_remaining * (1/(P_sys - P_app) - 1/P_sys)
+        ///
+        /// Note this is a RECIPROCAL of a rate. The intuitive-looking subtractive form
+        /// (T - (f-1)T) is not merely imprecise, it is structurally wrong: it is linear
+        /// in the load fraction and goes negative once an app exceeds the whole battery.
+        ///
+        /// Deliberately gated, because the number is only meaningful in a narrow band:
+        ///  - on battery only (on AC there is no runtime to extend),
+        ///  - only above a share floor, since below it the answer is rounding noise,
+        ///  - and never when the app would account for essentially all draw, where the
+        ///    formula's denominator collapses and the answer tends to infinity.
+        public func runtimeCost_min(appWatts: Double, floorShare: Double = 0.05) -> Double? {
+            guard let s = state, !s.onAC,
+                  let energy = remainingEnergy_J,
+                  smoothed_W > 0.01,
+                  appWatts > 0
+            else { return nil }
+            _ = s
+            let share = appWatts / smoothed_W
+            guard share >= floorShare, share < 0.9 else { return nil }
+            let without = smoothed_W - appWatts
+            guard without > 0.01 else { return nil }
+            let seconds = energy * (1.0 / without - 1.0 / smoothed_W)
+            guard seconds.isFinite, seconds > 0 else { return nil }
+            return seconds / 60.0
+        }
     }
 
     public let scale: BatteryScale
