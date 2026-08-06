@@ -144,18 +144,30 @@ public final class MainWindowController: NSObject {
 
     /// Installs a view into the graph area. Kept generic so the window does not need
     /// to know the graph type at compile time.
+    ///
+    /// Pinned with constraints rather than an autoresizing mask. The containers are
+    /// themselves Auto Layout driven, so at install time their bounds are still zero;
+    /// seeding a subview's frame from a zero rect and then letting the autoresizing
+    /// mask scale it produces a garbage frame — which showed up as a clipped plot
+    /// with its y-axis labels off-screen.
     public func installGraph(_ view: NSView) {
-        graphContainer.subviews.forEach { $0.removeFromSuperview() }
-        view.frame = graphContainer.bounds
-        view.autoresizingMask = [.width, .height]
-        graphContainer.addSubview(view)
+        install(view, in: graphContainer)
     }
 
     public func installDetail(_ view: NSView) {
-        detailContainer.subviews.forEach { $0.removeFromSuperview() }
-        view.frame = detailContainer.bounds
-        view.autoresizingMask = [.width, .height]
-        detailContainer.addSubview(view)
+        install(view, in: detailContainer)
+    }
+
+    private func install(_ view: NSView, in container: NSView) {
+        container.subviews.forEach { $0.removeFromSuperview() }
+        view.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(view)
+        NSLayoutConstraint.activate([
+            view.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            view.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            view.topAnchor.constraint(equalTo: container.topAnchor),
+            view.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+        ])
     }
 
     /// Show/hide the detail pane. Animating the split rather than rebuilding it keeps

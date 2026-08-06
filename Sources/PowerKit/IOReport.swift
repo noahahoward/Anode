@@ -41,6 +41,8 @@ public final class IOReportSampler {
     // ── dlopen'd symbols ────────────────────────────────────────────────────
     private typealias FnCopyAll = @convention(c)
         (UInt64, UInt64) -> Unmanaged<CFMutableDictionary>?
+    private typealias FnCopyGroup = @convention(c)
+        (CFString?, CFString?, UInt64, UInt64, UInt64) -> Unmanaged<CFMutableDictionary>?
     private typealias FnSubscribe = @convention(c)
         (UnsafeRawPointer?, CFMutableDictionary,
          UnsafeMutablePointer<Unmanaged<CFMutableDictionary>?>?, UInt64, CFTypeRef?)
@@ -94,7 +96,18 @@ public final class IOReportSampler {
         copyAll = a; subscribe = b; samples = c; delta = d; intValue = e
         chanName = f; chanGroup = g; chanSub = i; chanUnit = j
 
-        guard let all = copyAll(0, 0)?.takeRetainedValue() else { return nil }
+        // COST: subscribing to every channel means building and differencing an
+        // 11,541-entry CFDictionary on EVERY tick. Measured consequence: the app
+        // sat at ~5% CPU, which for a power monitor is self-defeating — the
+        // instrument must not be a meaningful entry in its own ledger.
+        //
+        // Every energy-unit channel lives in "Energy Model" (314 channels here, of
+        // which exactly one is live on M5), so subscribe to that group alone and
+        // fall back to the full set only if the group is unavailable on this
+        // hardware. Same data, ~37x fewer channels to diff.
+        let group = sym("IOReportCopyChannelsInGroup", FnCopyGroup.self)
+        let scoped = group?("Energy Model" as CFString, nil, 0, 0, 0)?.takeRetainedValue()
+        guard let all = scoped ?? copyAll(0, 0)?.takeRetainedValue() else { return nil }
         var subbed: Unmanaged<CFMutableDictionary>?
         guard let sub = subscribe(nil, all, &subbed, 0, nil),
               let sc = subbed?.takeRetainedValue() else { return nil }
