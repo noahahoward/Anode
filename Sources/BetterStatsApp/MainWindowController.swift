@@ -20,7 +20,7 @@ import PowerKit
 final class MainWindowController: NSObject {
 
     let window: NSWindow
-    let table = NSTableView()
+    let table = HoverTableView()
     let sidebar = SidebarView()
     let ledger = LedgerBarView()
     let glance = GlanceCardView()
@@ -35,7 +35,10 @@ final class MainWindowController: NSObject {
     override init() {
         window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 940, height: 640),
-            styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
+            // A normal titlebar rather than fullSizeContentView: the design has a
+            // distinct top band with the traffic lights and title, and letting the
+            // system draw it means the buttons never collide with our own content.
+            styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered, defer: false)
         super.init()
 
@@ -45,7 +48,6 @@ final class MainWindowController: NSObject {
         // A menu bar app outlives its windows by design.
         window.isReleasedWhenClosed = false
         window.title = "BetterStats"
-        window.titlebarAppearsTransparent = true
         window.backgroundColor = Palette.background
         window.center()
         window.setFrameAutosaveName("BetterStatsMain")
@@ -108,7 +110,7 @@ final class MainWindowController: NSObject {
 
             tableSplit.leadingAnchor.constraint(equalTo: sidebar.trailingAnchor),
             tableSplit.trailingAnchor.constraint(equalTo: content.trailingAnchor),
-            tableSplit.topAnchor.constraint(equalTo: content.topAnchor, constant: 38),
+            tableSplit.topAnchor.constraint(equalTo: content.topAnchor),
 
             ledger.leadingAnchor.constraint(equalTo: sidebar.trailingAnchor, constant: 16),
             ledger.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -16),
@@ -193,19 +195,83 @@ final class MainWindowController: NSObject {
 /// separator's ENDS are inset by the same radius so the hairline stops exactly where
 /// the pill's straight edge begins — a full-width border overhangs the curve at both
 /// corners, which is visible the moment a row is selected.
+/// Table that knows which row the pointer is over.
+///
+/// Hover was originally tracked per row view, which is wrong because NSTableView
+/// RECYCLES row views: this table reloads every couple of seconds, so a reused view
+/// kept its `hovered` flag and painted the highlight on whichever row it became —
+/// appearing as a highlight offset from the pointer. The hovered row is an index on
+/// the table, and row views only ever ask whether they are it.
+final class HoverTableView: NSTableView {
+
+    private(set) var hoveredRow: Int = -1
+    private var tracking: NSTrackingArea?
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let t = tracking { removeTrackingArea(t) }
+        let t = NSTrackingArea(rect: .zero,
+                               options: [.mouseEnteredAndExited, .mouseMoved,
+                                         .activeInKeyWindow, .inVisibleRect],
+                               owner: self, userInfo: nil)
+        addTrackingArea(t)
+        tracking = t
+    }
+
+    override func mouseMoved(with event: NSEvent) {
+        setHovered(row(at: convert(event.locationInWindow, from: nil)))
+    }
+    override func mouseExited(with event: NSEvent) { setHovered(-1) }
+
+    /// Scrolling under a stationary pointer changes which row is beneath it, and
+    /// mouseMoved does not fire for that.
+    override func scrollWheel(with event: NSEvent) {
+        super.scrollWheel(with: event)
+        setHovered(row(at: convert(event.locationInWindow, from: nil)))
+    }
+
+    private func setHovered(_ newRow: Int) {
+        guard newRow != hoveredRow else { return }
+        let old = hoveredRow
+        hoveredRow = newRow
+        for r in [old, newRow] where r >= 0 {
+            rowView(atRow: r, makeIfNecessary: false)?.needsDisplay = true
+        }
+    }
+}
+
+/// Row background. The selection is one continuous pill across the row, and the
+/// separator's ENDS are inset by the same radius so the hairline stops exactly where
+/// the pill's straight edge begins — a full-width border overhangs the curve at both
+/// corners, which is visible the moment a row is selected.
 final class BetterStatsRowView: NSTableRowView {
+
+    /// Geometry shared by selection and hover so the two read as one control at
+    /// different strengths rather than two different shapes.
+    private var pill: NSBezierPath {
+        NSBezierPath(roundedRect: bounds.insetBy(dx: 6, dy: 1),
+                     xRadius: Palette.Radius.row,
+                     yRadius: Palette.Radius.row)
+    }
+
+    private var isHovered: Bool {
+        guard let table = superview as? HoverTableView else { return false }
+        let myRow = table.row(for: self)
+        return myRow >= 0 && myRow == table.hoveredRow
+    }
 
     override func drawSelection(in dirtyRect: NSRect) {
         guard selectionHighlightStyle != .none else { return }
-        let r = bounds.insetBy(dx: 6, dy: 1)
         Palette.selection.setFill()
-        NSBezierPath(roundedRect: r,
-                     xRadius: Palette.Radius.row,
-                     yRadius: Palette.Radius.row).fill()
+        pill.fill()
     }
 
     override func drawBackground(in dirtyRect: NSRect) {
         guard !isSelected else { return }   // no hairline under a rounded selection
+        if isHovered {
+            Palette.selection.withAlphaComponent(0.45).setFill()
+            pill.fill()
+        }
         Palette.lineSoft.setFill()
         NSRect(x: 6 + Palette.Radius.row, y: bounds.maxY - 1,
                width: bounds.width - 12 - Palette.Radius.row * 2, height: 1).fill()

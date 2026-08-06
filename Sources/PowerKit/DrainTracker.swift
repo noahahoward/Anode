@@ -46,6 +46,10 @@ public final class DrainTracker {
     private struct Sample {
         let time: Date
         let energy_nJ: UInt64
+        /// user + system, nanoseconds. Same rolling treatment as energy: CPU time
+        /// is also cumulative, and also updates irregularly.
+        let cpu_ns: UInt64
+        let diskBytes: UInt64
     }
 
     private var history: [ProcessKey: [Sample]] = [:]
@@ -72,7 +76,9 @@ public final class DrainTracker {
             // A decreasing counter means this is not the same process run: pid reuse
             // that slipped past the (pid, startAbsTime) key, or a counter reset.
             // Discard the history rather than emitting a negative or absurd rate.
-            if let last = samples.last, proc.energy_nJ < last.energy_nJ {
+            let cpu = proc.userTime_ns &+ proc.systemTime_ns
+            let disk = proc.diskRead &+ proc.diskWritten
+            if let last = samples.last, proc.energy_nJ < last.energy_nJ || cpu < last.cpu_ns {
                 samples.removeAll()
             }
 
@@ -80,8 +86,13 @@ public final class DrainTracker {
             // Storing unchanged repeats would push the real oldest sample out of the
             // ring and shrink the effective window back toward the sampling interval,
             // reintroducing the bug this class exists to fix.
-            if samples.isEmpty || samples[samples.count - 1].energy_nJ != proc.energy_nJ {
-                samples.append(Sample(time: now, energy_nJ: proc.energy_nJ))
+            // Record when ANY tracked counter moves — a process can burn CPU in a
+            // window where the energy counter has not been flushed yet, and dropping
+            // that sample would hide it from the CPU lens.
+            if samples.isEmpty || samples[samples.count - 1].energy_nJ != proc.energy_nJ
+                || samples[samples.count - 1].cpu_ns != cpu {
+                samples.append(Sample(time: now, energy_nJ: proc.energy_nJ,
+                                      cpu_ns: cpu, diskBytes: disk))
             }
 
             // Keep one sample older than the cutoff so the window is fully spanned
@@ -106,13 +117,21 @@ public final class DrainTracker {
             // daemons are held to a display floor.
             let joules = Double(newest.energy_nJ &- oldest.energy_nJ) / 1e9
             let watts = joules / dt
+            // Percent of ONE core-second per wall-second, matching Activity Monitor:
+            // a fully busy four-thread process reads 400%, not 100%.
+            let cpuPct = Double(newest.cpu_ns &- oldest.cpu_ns) / 1e9 / dt * 100
+            let diskRate = Double(newest.diskBytes &- oldest.diskBytes) / dt
+
             out.append(ProcessDrain(
                 name: proc.name,
                 pid: proc.pid,
                 path: proc.path,
                 joules: joules,
                 watts: watts,
-                percentPerHour: 3600 * watts / scale.joulesPerPercent))
+                percentPerHour: 3600 * watts / scale.joulesPerPercent,
+                cpuPercent: cpuPct,
+                memoryBytes: proc.footprint,
+                diskBytesPerSec: diskRate))
         }
 
         // Drop processes that have exited so the dictionaries cannot grow unbounded

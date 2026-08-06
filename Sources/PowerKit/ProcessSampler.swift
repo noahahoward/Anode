@@ -28,6 +28,17 @@ public struct ProcessEnergy {
     /// have to re-issue proc_pidpath for every process on every tick.
     public let path: String
 
+    // The rest of the rusage struct, which we were filling and throwing away. Four
+    // of the five lenses are built from these, at no extra sampling cost — the
+    // syscall already returns them.
+    /// Cumulative CPU time in nanoseconds.
+    public let userTime_ns: UInt64
+    public let systemTime_ns: UInt64
+    /// Instantaneous, not cumulative: what Activity Monitor calls Memory.
+    public let footprint: UInt64
+    public let diskRead: UInt64
+    public let diskWritten: UInt64
+
     public var key: ProcessKey { ProcessKey(pid: pid, startAbsTime: startAbsTime) }
 }
 
@@ -85,7 +96,12 @@ public enum ProcessSampler {
             cycles: info.ri_cycles,
             pCycles: info.ri_pcycles,
             startAbsTime: info.ri_proc_start_abstime,
-            path: p
+            path: p,
+            userTime_ns: info.ri_user_time,
+            systemTime_ns: info.ri_system_time,
+            footprint: info.ri_phys_footprint,
+            diskRead: info.ri_diskio_bytesread,
+            diskWritten: info.ri_diskio_byteswritten
         )
     }
 
@@ -120,6 +136,13 @@ public struct ProcessDrain {
     public let watts: Double
     /// The headline unit: percent of battery consumed per hour.
     public let percentPerHour: Double
+
+    /// Percent of ONE core-second per wall-second, the same convention Activity
+    /// Monitor uses — so a fully busy 4-thread process reads 400%, not 100%.
+    public let cpuPercent: Double
+    /// Physical footprint right now. Instantaneous, so it is not differenced.
+    public let memoryBytes: UInt64
+    public let diskBytesPerSec: Double
 }
 
 public enum DrainCalculator {
@@ -146,13 +169,18 @@ public enum DrainCalculator {
             guard joules > 0 else { continue }
 
             let watts = joules / dt
+            let cpuDelta = Double((now.userTime_ns &+ now.systemTime_ns)
+                                  &- (a.processes[key]!.userTime_ns &+ a.processes[key]!.systemTime_ns))
             out.append(ProcessDrain(
                 name: now.name,
                 pid: key.pid,
                 path: now.path,
                 joules: joules,
                 watts: watts,
-                percentPerHour: 3600.0 * watts / scale.joulesPerPercent
+                percentPerHour: 3600.0 * watts / scale.joulesPerPercent,
+                cpuPercent: cpuDelta / 1e9 / dt * 100,
+                memoryBytes: now.footprint,
+                diskBytesPerSec: 0
             ))
         }
         return out.sorted { $0.percentPerHour > $1.percentPerHour }

@@ -36,7 +36,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
 
     var main: MainWindowController!
     var graph: HistoryGraphView!
-    var detail: AppDetailView!
+    var inspector: InspectorView!
     var widgets: MenuBarWidgetController!
 
     var monitor: PowerMonitor?
@@ -57,6 +57,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
     let graphSpan: TimeInterval = 3600
 
     var lastSnapshot: PowerMonitor.Snapshot?
+    /// Active lens. Drives which columns the table shows and what each row reports.
+    var lens: SidebarView.Lens = .battery
     /// When the window is closed the app is menu-bar-only, and the expensive
     /// per-process sweep populates a table nobody is looking at. Full ticks then
     /// drop to this cadence purely so the 10 hr power history keeps accruing.
@@ -90,8 +92,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         graph.showsGrid = false
         main.installGraph(graph)
 
-        detail = AppDetailView(frame: .zero)
-        main.installDetail(detail)
+        inspector = InspectorView(frame: .zero)
+        inspector.onClose = { [weak self] in
+            self?.main.table.deselectAll(nil)
+            self?.main.setDetailVisible(false)
+        }
+        main.installDetail(inspector)
 
         // Menu bar widgets bind to metric IDs, so any metric the app ever gains is
         // automatically available to every widget with no new widget code.
@@ -211,7 +217,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         let floor = Settings.shared.minimumDisplayPercentPerHour
         rows = s.apps
             .filter { showDaemons || $0.isApp }
-            .filter { $0.percentPerHour >= floor || $0.isApp }
+            .filter { row in
+                if row.isApp { return true }
+                switch self.lens {
+                case .cpu:    return row.cpuPercent >= 0.05
+                case .memory: return row.memoryBytes > 0
+                case .disk:   return row.diskBytesPerSec >= 1
+                default:      return row.percentPerHour >= floor
+                }
+            }
             .map { app in
                 Row(app: app,
                     windowPct: windowPercents[app.name],
@@ -271,7 +285,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
             main.setDetailVisible(false)
             return
         }
-        detail.model = AppDetailView.Model(app: rows[sel].app, snapshot: snap)
+        inspector.model = InspectorView.model(app: rows[sel].app, snapshot: snap, lens: lens)
         main.setDetailVisible(true)
     }
 
@@ -287,6 +301,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
             case "name":   r = a.name.localizedCaseInsensitiveCompare(b.name) == .orderedAscending
             case "window": r = (a.windowPct ?? -1) < (b.windowPct ?? -1)
             case "cost":   r = (a.costMin ?? -1) < (b.costMin ?? -1)
+            case "cpu":    r = a.app.cpuPercent < b.app.cpuPercent
+            case "mem":    r = a.app.memoryBytes < b.app.memoryBytes
+            case "disk":   r = a.app.diskBytesPerSec < b.app.diskBytesPerSec
             case "procs":  r = a.procs < b.procs
             case "kind":   r = (a.isApp ? 1 : 0) < (b.isApp ? 1 : 0)
             default:       r = a.pctHr < b.pctHr
@@ -318,12 +335,51 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
     /// the current table rather than showing an empty one, and are wired as their
     /// data lands.
     func select(_ lens: SidebarView.Lens) {
-        guard lens == .battery else { return }
-        main.setColumns([
-            ("name", "Application", 240), ("pctHr", "%/hr", 82),
-            ("window", "10 hr power", 96), ("cost", "Runtime cost", 104), ("procs", "Procs", 62),
-        ])
+        // Whole-machine entries have no per-process data, so they keep the current
+        // table rather than showing an empty or invented one. Their panes land later.
+        guard lens.isPerProcess else { return }
+        self.lens = lens
+        main.setColumns(Self.columns(for: lens))
+        sortKey = Self.defaultSort(for: lens)
+        ascending = false
+        sortRows()
         main.table.reloadData()
+        updateDetail()
+    }
+
+    /// Every lens keeps the app column and swaps the measures. All four of these
+    /// come from the same `proc_pid_rusage` call already made once per process per
+    /// sweep, so switching costs nothing beyond a redraw.
+    static func columns(for lens: SidebarView.Lens) -> [(id: String, title: String, width: CGFloat)] {
+        switch lens {
+        case .battery:
+            return [("name", "Application", 240), ("pctHr", "%/hr", 82),
+                    ("window", "10 hr power", 96), ("cost", "Runtime cost", 104),
+                    ("procs", "Procs", 62)]
+        case .cpu:
+            return [("name", "Application", 240), ("cpu", "% CPU", 82),
+                    ("pctHr", "%/hr", 82), ("procs", "Procs", 62)]
+        case .memory:
+            return [("name", "Application", 240), ("mem", "Memory", 96),
+                    ("pctHr", "%/hr", 82), ("procs", "Procs", 62)]
+        case .disk:
+            return [("name", "Application", 240), ("disk", "Disk", 96),
+                    ("pctHr", "%/hr", 82), ("procs", "Procs", 62)]
+        case .gpu:
+            return [("name", "Application", 240), ("pctHr", "%/hr", 82),
+                    ("procs", "Procs", 62)]
+        default:
+            return Self.columns(for: .battery)
+        }
+    }
+
+    static func defaultSort(for lens: SidebarView.Lens) -> String {
+        switch lens {
+        case .cpu: return "cpu"
+        case .memory: return "mem"
+        case .disk: return "disk"
+        default: return "pctHr"
+        }
     }
 
     /// True when a menu bar widget is bound to a sensor metric, so the sampler
@@ -384,6 +440,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
                 ? String(format: "%dh %02dm", Int($0 / 60), Int($0) % 60)
                 : String(format: "%.0f min", $0) } ?? "—"
             dim = r.costMin == nil
+        case "cpu":
+            // Percent of one core, Activity Monitor's convention: a busy 4-thread
+            // process reads 400%.
+            text = r.app.cpuPercent < 0.05 ? "—" : String(format: "%.1f%%", r.app.cpuPercent)
+            dim = r.app.cpuPercent < 0.05
+        case "mem":
+            text = r.app.memoryBytes == 0 ? "—" : MetricUnit.bytes.format(Double(r.app.memoryBytes))
+            dim = r.app.memoryBytes == 0
+        case "disk":
+            text = r.app.diskBytesPerSec < 1
+                ? "—" : MetricUnit.bytesPerSecond.format(r.app.diskBytesPerSec)
+            dim = r.app.diskBytesPerSec < 1
         case "procs":
             text = r.procs > 1 ? "\(r.procs)" : "—"; dim = true
         default:

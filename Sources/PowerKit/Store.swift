@@ -520,8 +520,12 @@ public extension AppDrain {
     /// percentPerHour is deliberately 0 because no BatteryScale is in scope
     /// here — computing it would require inventing one.
     init(identity: AppIdentity, joules: Double, over interval: TimeInterval) {
+        // Historical rows carry energy only. CPU, memory and disk are live-sample
+        // quantities that were never persisted, so they are zero here rather than
+        // reconstructed — inventing them would be worse than admitting the gap.
         self.init(identity: identity, joules: joules,
                   watts: interval > 0 ? joules / interval : 0,
-                  percentPerHour: 0, processCount: 1, pids: [])
+                  percentPerHour: 0, processCount: 1, pids: [],
+                  cpuPercent: 0, memoryBytes: 0, diskBytesPerSec: 0)
     }
 }
