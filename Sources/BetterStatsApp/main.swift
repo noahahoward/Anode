@@ -1,156 +1,265 @@
 import AppKit
 import PowerKit
 
-// BetterStats — milestone 1, launchable.
-// Window + menu bar readout, both fed by the same PowerMonitor.
+// BetterStats — milestone 1.
+//
+// One sampling loop feeds everything: the table, the history graph, the ledger,
+// the metric registry (and through it the menu bar widgets), and the SQLite
+// history that backs the "10 hr power" column.
 
 final class Row: NSObject {
-    let name: String, procs: Int, pctHr: Double, joules: Double, isApp: Bool
-    init(name: String, procs: Int, pctHr: Double, joules: Double, isApp: Bool) {
-        self.name = name; self.procs = procs; self.pctHr = pctHr
-        self.joules = joules; self.isApp = isApp
+    let name: String
+    let procs: Int
+    let pctHr: Double
+    /// Percent of battery consumed over the trailing on-battery window. nil until
+    /// the history store has data for this app — shown as "—", never as 0, because
+    /// "no data yet" and "used nothing" are different claims.
+    let windowPct: Double?
+    /// Minutes of runtime quitting this would buy back. nil outside the band where
+    /// the counterfactual is meaningful.
+    let costMin: Double?
+    let isApp: Bool
+    let app: AppDrain
+
+    init(app: AppDrain, windowPct: Double?, costMin: Double?) {
+        self.name = app.name
+        self.procs = app.processCount
+        self.pctHr = app.percentPerHour
+        self.windowPct = windowPct
+        self.costMin = costMin
+        self.isApp = app.isApp
+        self.app = app
     }
 }
 
 final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource, NSTableViewDelegate {
 
-    var window: NSWindow!
-    var table: NSTableView!
-    var statusItem: NSStatusItem!
-    var ledger: NSTextField!
-    var header: NSTextField!
+    var main: MainWindowController!
+    var graph: HistoryGraphView!
+    var detail: AppDetailView!
+    var widgets: MenuBarWidgetController!
+
     var monitor: PowerMonitor?
+    var store: HistoryStore?
+    let drain = DrainRateEstimator()
+
     var rows: [Row] = []
     var sortKey = "pctHr"
     var ascending = false
-    let interval: TimeInterval = 2
+    var timer: Timer?
+
+    /// In-memory graph history. The store owns durable history; this is just the
+    /// last hour at tick resolution for drawing.
+    var totalSeries: [HistoryGraphView.Point] = []
+    var appsSeries: [HistoryGraphView.Point] = []
+    let graphSpan: TimeInterval = 3600
+
+    var lastSnapshot: PowerMonitor.Snapshot?
+    var windowPercents: [String: Double] = [:]
+    var lastWindowQuery = Date.distantPast
 
     func applicationDidFinishLaunching(_ note: Notification) {
         monitor = PowerMonitor()
+        store = HistoryStore()
 
-        // ── Menu bar ────────────────────────────────────────────────────────
-        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        statusItem.button?.title = "⚡ —"
-        statusItem.button?.target = self
-        statusItem.button?.action = #selector(toggleWindow)
+        buildMenu()
 
-        // ── Window ──────────────────────────────────────────────────────────
-        window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 720, height: 480),
-            styleMask: [.titled, .closable, .miniaturizable, .resizable],
-            backing: .buffered, defer: false)
-        window.title = "BetterStats — Battery"
-        window.center()
-        window.setFrameAutosaveName("BetterStatsMain")
+        main = MainWindowController()
+        main.table.dataSource = self
+        main.table.delegate = self
+        main.table.sortDescriptors = [NSSortDescriptor(key: "pctHr", ascending: false)]
+        main.table.target = self
+        main.table.action = #selector(tableClicked)
 
-        let content = NSView(frame: window.contentView!.bounds)
-        content.autoresizingMask = [.width, .height]
+        graph = HistoryGraphView(frame: .zero)
+        graph.yAxisLabel = "%/hr"
+        main.installGraph(graph)
 
-        header = NSTextField(labelWithString: "starting…")
-        header.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
-        header.textColor = .secondaryLabelColor
-        header.frame = NSRect(x: 12, y: 448, width: 696, height: 20)
-        header.autoresizingMask = [.width, .minYMargin]
-        content.addSubview(header)
+        detail = AppDetailView(frame: .zero)
+        main.installDetail(detail)
 
-        let scroll = NSScrollView(frame: NSRect(x: 0, y: 64, width: 720, height: 384))
-        scroll.autoresizingMask = [.width, .height]
-        scroll.hasVerticalScroller = true
-        scroll.borderType = .noBorder
-
-        table = NSTableView(frame: scroll.bounds)
-        table.usesAlternatingRowBackgroundColors = true
-        table.rowSizeStyle = .small
-        table.allowsColumnResizing = true
-
-        func column(_ id: String, _ title: String, _ width: CGFloat, _ align: NSTextAlignment) {
-            let c = NSTableColumn(identifier: .init(id))
-            c.title = title
-            c.width = width
-            c.sortDescriptorPrototype = NSSortDescriptor(key: id, ascending: false)
-            if align == .right { c.headerCell.alignment = .right }
-            table.addTableColumn(c)
+        // Menu bar widgets bind to metric IDs, so any metric the app ever gains is
+        // automatically available to every widget with no new widget code.
+        widgets = MenuBarWidgetController(onClick: { [weak self] in self?.main.toggle() })
+        if widgets.configs.isEmpty {
+            widgets.setConfigs([
+                WidgetConfig(metricID: MetricID.batteryDrain.rawValue, style: .textWithLabel),
+                WidgetConfig(metricID: MetricID.batteryTimeLeft.rawValue, style: .text),
+            ])
         }
-        column("name", "App", 290, .left)
-        column("pctHr", "%/hr", 90, .right)
-        column("joules", "Joules", 90, .right)
-        column("procs", "Procs", 70, .right)
-        column("kind", "Kind", 90, .left)
+        PreferencesWindowController.metricProvider = {
+            MetricRegistry.shared.descriptors().map { MetricChoice(id: $0.id.rawValue, label: $0.title) }
+        }
 
-        table.dataSource = self
-        table.delegate = self
-        table.sortDescriptors = [NSSortDescriptor(key: "pctHr", ascending: false)]
-        scroll.documentView = table
-        content.addSubview(scroll)
+        main.show()
 
-        ledger = NSTextField(labelWithString: "")
-        ledger.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
-        ledger.frame = NSRect(x: 12, y: 8, width: 696, height: 52)
-        ledger.autoresizingMask = [.width, .maxYMargin]
-        ledger.maximumNumberOfLines = 3
-        content.addSubview(ledger)
+        monitor?.tick()   // prime; the first tick has no interval to diff against
+        restartTimer()
 
-        window.contentView = content
-        window.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
+        // React to a changed sample interval without needing a relaunch.
+        _ = Settings.shared.observe(Settings.Key.sampleInterval) { [weak self] in
+            DispatchQueue.main.async { self?.restartTimer() }
+        }
+    }
 
-        // ── Sampling loop ───────────────────────────────────────────────────
-        monitor?.tick()  // prime; first tick has no window to diff
-        Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
+    func restartTimer() {
+        timer?.invalidate()
+        let interval = Settings.shared.sampleInterval
+        timer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
             self?.refresh()
         }
     }
 
     func refresh() {
         guard let m = monitor else { return }
-        DispatchQueue.global(qos: .utility).async {
-            guard let snap = m.tick() else { return }
-            DispatchQueue.main.async { self.apply(snap) }
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            guard let self, let snap = m.tick() else { return }
+
+            // Durable history and the observed-drain estimate both belong off the
+            // main thread: one touches SQLite, the other only does arithmetic but
+            // there is no reason to make the UI wait for either.
+            let onBattery = !(snap.state?.onAC ?? true)
+            self.store?.record(apps: snap.apps,
+                               measured_W: snap.measured_W,
+                               attributed_W: snap.attributed_W,
+                               residual_W: snap.residual_W,
+                               onBattery: onBattery,
+                               interval: snap.interval)
+            if let st = snap.state {
+                self.drain.record(state: st, scale: snap.scale,
+                                  powerBased_pctHr: snap.smoothed_pctHr)
+            }
+
+            // The window query walks history, so it is not worth doing every tick.
+            var pcts: [String: Double]? = nil
+            if Date().timeIntervalSince(self.lastWindowQuery) > 20, let store = self.store {
+                let hours = Settings.shared.powerWindowHours
+                let rowsW = store.windowPower(hours: hours,
+                                              joulesPerPercent: snap.scale.joulesPerPercent)
+                pcts = Dictionary(rowsW.map { ($0.name, $0.percentOfBattery) },
+                                  uniquingKeysWith: { a, b in a + b })
+            }
+
+            DispatchQueue.main.async {
+                if let p = pcts { self.windowPercents = p; self.lastWindowQuery = Date() }
+                self.apply(snap)
+            }
         }
     }
 
     func apply(_ s: PowerMonitor.Snapshot) {
-        rows = s.apps.map {
-            Row(name: $0.name, procs: $0.processCount, pctHr: $0.percentPerHour,
-                joules: $0.joules, isApp: $0.isApp)
-        }
+        lastSnapshot = s
+
+        // Feed the registry first so the widgets and any UI reading metrics see
+        // this tick's values rather than the previous one.
+        MetricRegistry.shared.update(with: s)
+        widgets.refresh()
+
+        let showDaemons = Settings.shared.showDaemons
+        let floor = Settings.shared.minimumDisplayPercentPerHour
+        rows = s.apps
+            .filter { showDaemons || $0.isApp }
+            .filter { $0.percentPerHour >= floor || $0.isApp }
+            .map { app in
+                Row(app: app,
+                    windowPct: windowPercents[app.name],
+                    costMin: s.runtimeCost_min(appWatts: app.watts))
+            }
         sortRows()
-        table.reloadData()
 
-        let st = s.state
-        let charge = st.map { "\($0.percent)%\($0.onAC ? " (AC)" : "")" } ?? "—"
-        header.stringValue = String(
-            format: "battery %@   ·   health %.0f%%   ·   1%% = %.0f J   ·   %d readable of %d (%.0f%%), %d denied   ·   %d active",
+        // Preserve selection across the reload — the table refreshes under the
+        // user every couple of seconds and losing their row would make the detail
+        // pane useless.
+        let selectedName = main.table.selectedRow >= 0 && main.table.selectedRow < rows.count
+            ? rows[main.table.selectedRow].name : nil
+        main.table.reloadData()
+        if let name = selectedName, let idx = rows.firstIndex(where: { $0.name == name }) {
+            main.table.selectRowIndexes(IndexSet(integer: idx), byExtendingSelection: false)
+            updateDetail()
+        }
+
+        updateHeader(s)
+        updateLedger(s)
+        updateGraph(s)
+    }
+
+    func updateHeader(_ s: PowerMonitor.Snapshot) {
+        let charge = s.state.map { "\($0.percent)%\($0.onAC ? " (AC)" : "")" } ?? "—"
+        let est = drain.estimate()
+        let obs = est.map { e in
+            String(format: "  ·  observed %.2f %%/hr (%@, %.0f%% conf)",
+                   e.percentPerHour, e.source.rawValue, e.confidence * 100)
+        } ?? ""
+        main.header.stringValue = String(
+            format: "battery %@  ·  health %.0f%%  ·  1%% = %.0f J  ·  %d of %d readable, %d denied%@",
             charge, s.scale.health * 100, s.scale.joulesPerPercent,
-            s.readable, s.attempted, s.coverage * 100, s.denied, s.active)
+            s.readable, s.attempted, s.denied, obs)
+    }
 
-        // Ledger: named buckets that sum to the measured total, with the residual
-        // printed rather than smeared across apps.
-        let gpuTxt = s.gpu_pctHr.map { String(format: "%5.2f", $0) } ?? "   —"
-        let resTxt = s.residual_pctHr.map { String(format: "%5.2f", $0) } ?? "   —"
-        let shareTxt = s.residualShare.map { String(format: "%.0f%%", $0 * 100) } ?? "—"
+    func updateLedger(_ s: PowerMonitor.Snapshot) {
+        let gpu = s.gpu_pctHr.map { String(format: "%5.2f", $0) } ?? "   —"
+        let res = s.residual_pctHr.map { String(format: "%5.2f", $0) } ?? "   —"
+        let share = s.residualShare.map { String(format: "%.0f%%", $0 * 100) } ?? "—"
         let src = s.smcTotal_W != nil
-            ? String(format: "SMC PSTR%@", s.smcGain.map { g in String(format: " ×%.2f", g) } ?? " (uncal)")
-            : (s.measured_W != nil ? "gas gauge (60s)" : "estimated")
+            ? "SMC PSTR" + (s.smcGain.map { String(format: " ×%.2f", $0) } ?? "")
+            : (s.measured_W != nil ? "gas gauge (60s)" : "estimating")
 
-        ledger.stringValue = [
+        // Time remaining prefers the observed-discharge estimate over the
+        // power-derived one: it is measured from actual charge leaving the pack,
+        // and it is slew-limited so it cannot swing 3h→9h between ticks.
+        let est = drain.estimate()
+        let left: String
+        if let t = est?.timeRemaining, t.isFinite, t > 0 {
+            left = String(format: "→ %dh %02dm left", Int(t / 3600), (Int(t) % 3600) / 60)
+        } else if let h = s.projectedRuntime_hr() {
+            left = String(format: "→ ~%dh %02dm left", Int(h), Int(h * 60) % 60)
+        } else {
+            left = "on AC"
+        }
+
+        var warn = ""
+        if s.hasAttributionOverflow {
+            // Physically impossible; means double counting. Surfaced rather than
+            // hidden by the max(0,…) clamp on the displayed residual.
+            warn = String(format: "   ⚠︎ attribution overflow %.2f W", -s.rawResidual_W)
+        }
+
+        main.ledger.stringValue = [
             String(format: "apps (CPU) %5.2f %%/hr    GPU %@ %%/hr    unmeasured %@ %%/hr (%@)",
-                   s.attributed_pctHr, gpuTxt, resTxt, shareTxt),
-            String(format: "TOTAL      %5.2f %%/hr    source: %@    %@",
-                   s.smoothed_pctHr, src,
-                   s.projectedRuntime_hr().map { h in
-                       String(format: "→ %dh %02dm left", Int(h), Int(h * 60) % 60)
-                   } ?? "on AC"),
+                   s.attributed_pctHr, gpu, res, share),
+            String(format: "TOTAL      %5.2f %%/hr    source: %@    %@%@",
+                   s.smoothed_pctHr, src, left, warn),
             "unmeasured = display, radios, SSD, kernel, and root-owned processes",
         ].joined(separator: "\n")
-
-        var title = String(format: "⚡ %.1f %%/hr", s.smoothed_pctHr)
-        if let hr = s.projectedRuntime_hr() {
-            title += String(format: "  %dh%02dm", Int(hr), Int(hr * 60) % 60)
-        }
-        if !s.isCalibrated { title += "*" }
-        statusItem.button?.title = title
     }
+
+    func updateGraph(_ s: PowerMonitor.Snapshot) {
+        let now = Date()
+        totalSeries.append(.init(time: now, value: s.smoothed_pctHr))
+        appsSeries.append(.init(time: now, value: s.attributed_pctHr))
+        let cutoff = now.addingTimeInterval(-graphSpan)
+        totalSeries.removeAll { $0.time < cutoff }
+        appsSeries.removeAll { $0.time < cutoff }
+
+        graph.series = [
+            .init(name: "total", color: .systemBlue, points: totalSeries, filled: true),
+            .init(name: "apps", color: .systemOrange, points: appsSeries, filled: false),
+        ]
+    }
+
+    func updateDetail() {
+        let sel = main.table.selectedRow
+        guard sel >= 0, sel < rows.count, let snap = lastSnapshot else {
+            main.setDetailVisible(false)
+            return
+        }
+        detail.model = AppDetailView.Model(app: rows[sel].app, snapshot: snap)
+        main.setDetailVisible(true)
+    }
+
+    @objc func tableClicked() { updateDetail() }
+
+    func tableViewSelectionDidChange(_ notification: Notification) { updateDetail() }
 
     func sortRows() {
         let asc = ascending
@@ -158,7 +267,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
             let r: Bool
             switch sortKey {
             case "name":   r = a.name.localizedCaseInsensitiveCompare(b.name) == .orderedAscending
-            case "joules": r = a.joules < b.joules
+            case "window": r = (a.windowPct ?? -1) < (b.windowPct ?? -1)
+            case "cost":   r = (a.costMin ?? -1) < (b.costMin ?? -1)
             case "procs":  r = a.procs < b.procs
             case "kind":   r = (a.isApp ? 1 : 0) < (b.isApp ? 1 : 0)
             default:       r = a.pctHr < b.pctHr
@@ -167,14 +277,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         }
     }
 
-    @objc func toggleWindow() {
-        if window.isVisible && NSApp.isActive {
-            window.orderOut(nil)
-        } else {
-            window.makeKeyAndOrderFront(nil)
-            NSApp.activate(ignoringOtherApps: true)
-        }
+    // ── Menu ────────────────────────────────────────────────────────────────
+    func buildMenu() {
+        let main = NSMenu()
+        let appItem = NSMenuItem()
+        let appMenu = NSMenu()
+        appMenu.addItem(withTitle: "About BetterStats", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
+        appMenu.addItem(.separator())
+        let prefs = NSMenuItem(title: "Settings…", action: #selector(openPrefs), keyEquivalent: ",")
+        prefs.target = self
+        appMenu.addItem(prefs)
+        appMenu.addItem(.separator())
+        appMenu.addItem(withTitle: "Quit BetterStats", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        appItem.submenu = appMenu
+        main.addItem(appItem)
+        NSApp.mainMenu = main
     }
+
+    @objc func openPrefs() { PreferencesWindowController.shared.show() }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ s: NSApplication) -> Bool { false }
 
@@ -193,22 +313,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         guard row < rows.count, let id = col?.identifier.rawValue else { return nil }
         let r = rows[row]
 
-        let text: String
+        var text: String
         var align = NSTextAlignment.right
+        var dim = false
         switch id {
-        case "name":   text = r.name; align = .left
-        case "pctHr":  text = r.pctHr < 0.01 ? "<0.01" : String(format: "%.2f", r.pctHr)
-        case "joules": text = String(format: "%.2f", r.joules)
-        case "procs":  text = r.procs > 1 ? "\(r.procs)" : "—"
-        default:       text = r.isApp ? "app" : "daemon"; align = .left
+        case "name":
+            text = r.name; align = .left
+        case "pctHr":
+            text = r.pctHr < 0.01 ? "<0.01" : String(format: "%.2f", r.pctHr)
+        case "window":
+            // "—" not "0.00": no recorded on-battery history is not zero usage.
+            text = r.windowPct.map { String(format: "%.2f%%", $0) } ?? "—"
+            dim = r.windowPct == nil
+        case "cost":
+            text = r.costMin.map { $0 >= 60
+                ? String(format: "%dh %02dm", Int($0 / 60), Int($0) % 60)
+                : String(format: "%.0f min", $0) } ?? "—"
+            dim = r.costMin == nil
+        case "procs":
+            text = r.procs > 1 ? "\(r.procs)" : "—"; dim = true
+        default:
+            text = r.isApp ? "app" : "daemon"; align = .left; dim = true
         }
 
         let cell = NSTextField(labelWithString: text)
-        cell.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
+        cell.font = .monospacedSystemFont(ofSize: 11, weight: id == "name" && r.isApp ? .semibold : .regular)
         cell.alignment = align
         cell.lineBreakMode = .byTruncatingTail
-        if id == "kind" || id == "procs" { cell.textColor = .secondaryLabelColor }
-        if id == "name" && r.isApp { cell.font = .monospacedSystemFont(ofSize: 11, weight: .semibold) }
+        if dim { cell.textColor = .secondaryLabelColor }
         return cell
     }
 }
