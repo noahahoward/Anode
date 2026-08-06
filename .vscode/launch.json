@@ -1,0 +1,64 @@
+{
+    "configurations": [
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:better stats app}",
+            "name": "Debug betterstats",
+            "target": "betterstats",
+            "configuration": "debug",
+            "preLaunchTask": "swift: Build Debug betterstats"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:better stats app}",
+            "name": "Release betterstats",
+            "target": "betterstats",
+            "configuration": "release",
+            "preLaunchTask": "swift: Build Release betterstats"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:better stats app}",
+            "name": "Debug BetterStatsApp",
+            "target": "BetterStatsApp",
+            "configuration": "debug",
+            "preLaunchTask": "swift: Build Debug BetterStatsApp"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:better stats app}",
+            "name": "Release BetterStatsApp",
+            "target": "BetterStatsApp",
+            "configuration": "release",
+            "preLaunchTask": "swift: Build Release BetterStatsApp"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:better stats app}",
+            "name": "Debug BetterStatsHelper",
+            "target": "BetterStatsHelper",
+            "configuration": "debug",
+            "preLaunchTask": "swift: Build Debug BetterStatsHelper"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:better stats app}",
+            "name": "Release BetterStatsHelper",
+            "target": "BetterStatsHelper",
+            "configuration": "release",
+            "preLaunchTask": "swift: Build Release BetterStatsHelper"
+        }
+    ]
+}

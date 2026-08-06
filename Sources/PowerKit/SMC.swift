@@ -1,0 +1,186 @@
+import Foundation
+import IOKit
+
+/// Apple System Management Controller reader.
+///
+/// Why this exists: IOReport's `Energy Model` group is almost entirely DEAD on M5
+/// (1 live channel of 314 — GPU only), so display, DRAM, ANE and radio power have
+/// no IOReport path on this hardware. The SMC exposes real power sensors in WATTS
+/// and needs no root — Stats reads them unprivileged, which is where its menu bar
+/// "Sensor 6W" figure comes from.
+///
+/// IMPLEMENTATION NOTE — the struct is built as an explicit 80-byte buffer rather
+/// than a Swift struct. Swift does not guarantee C-compatible layout for nested
+/// structs: the obvious translation of `SMCKeyData_t` lays out as 76 bytes here,
+/// and IOConnectCallStructMethod rejects it with kIOReturnBadArgument (0xe00002c2).
+/// Explicit offsets are both correct and self-documenting.
+///
+/// The layout is the long-standing community-reverse-engineered one. It is not API
+/// and can change; every read is failure-tolerant.
+public final class SMC {
+
+    // ── Wire format: 80 bytes, explicit offsets ─────────────────────────────
+    private enum Off {
+        static let key         = 0    // UInt32, FourCC in native order
+        static let versMajor   = 4
+        static let pLimitVer   = 12
+        static let dataSize    = 28   // keyInfo.dataSize   UInt32
+        static let dataType    = 32   // keyInfo.dataType   UInt32
+        static let dataAttrs   = 36   // UInt8
+        static let result      = 40
+        static let status      = 41
+        static let data8       = 42
+        static let data32      = 44   // UInt32
+        static let bytes       = 48   // 32 bytes
+        static let total       = 80
+    }
+
+    private enum Cmd: UInt8 { case readBytes = 5, readKeyInfo = 9, readIndex = 8 }
+
+    private var conn: io_connect_t = 0
+    public private(set) var lastError: kern_return_t = 0
+
+    public init?() {
+        let service = IOServiceGetMatchingService(kIOMainPortDefault,
+                                                  IOServiceMatching("AppleSMC"))
+        guard service != 0 else { return nil }
+        defer { IOObjectRelease(service) }
+        // Unprivileged: opening the SMC user client for READS needs no root.
+        guard IOServiceOpen(service, mach_task_self_, 0, &conn) == kIOReturnSuccess else { return nil }
+    }
+
+    deinit { if conn != 0 { IOServiceClose(conn) } }
+
+    // ── Buffer helpers (arm64 is little-endian; these are native-order fields) ──
+    private static func setU32(_ b: inout [UInt8], _ off: Int, _ v: UInt32) {
+        b[off]     = UInt8(v & 0xFF)
+        b[off + 1] = UInt8((v >> 8) & 0xFF)
+        b[off + 2] = UInt8((v >> 16) & 0xFF)
+        b[off + 3] = UInt8((v >> 24) & 0xFF)
+    }
+    private static func u32(_ b: [UInt8], _ off: Int) -> UInt32 {
+        UInt32(b[off]) | UInt32(b[off + 1]) << 8
+            | UInt32(b[off + 2]) << 16 | UInt32(b[off + 3]) << 24
+    }
+
+    private func call(_ input: [UInt8]) -> [UInt8]? {
+        var out = [UInt8](repeating: 0, count: Off.total)
+        var outSize = Off.total
+        let rc = input.withUnsafeBytes { inPtr -> kern_return_t in
+            out.withUnsafeMutableBytes { outPtr in
+                IOConnectCallStructMethod(conn, 2,
+                                          inPtr.baseAddress!, Off.total,
+                                          outPtr.baseAddress!, &outSize)
+            }
+        }
+        lastError = rc
+        return rc == kIOReturnSuccess ? out : nil
+    }
+
+    private static func code(_ s: String) -> UInt32 {
+        var v: UInt32 = 0
+        for ch in s.utf8.prefix(4) { v = (v << 8) | UInt32(ch) }
+        return v
+    }
+
+    private static func string(_ v: UInt32) -> String {
+        let b = [UInt8((v >> 24) & 0xFF), UInt8((v >> 16) & 0xFF),
+                 UInt8((v >> 8) & 0xFF), UInt8(v & 0xFF)]
+        return String(bytes: b, encoding: .ascii)?
+            .trimmingCharacters(in: CharacterSet(charactersIn: "\0 ")) ?? ""
+    }
+
+    public struct Sensor {
+        public let key: String
+        public let type: String
+        public let value: Double
+    }
+
+    public func keyCount() -> Int {
+        guard let (bytes, _) = readRaw(Self.code("#KEY")), bytes.count >= 4 else { return 0 }
+        return Int(UInt32(bytes[0]) << 24 | UInt32(bytes[1]) << 16
+                   | UInt32(bytes[2]) << 8 | UInt32(bytes[3]))
+    }
+
+    public func key(at index: Int) -> String? {
+        var i = [UInt8](repeating: 0, count: Off.total)
+        i[Off.data8] = Cmd.readIndex.rawValue
+        Self.setU32(&i, Off.data32, UInt32(index))
+        guard let o = call(i) else { return nil }
+        return Self.string(Self.u32(o, Off.key).bigEndian.byteSwapped)
+    }
+
+    private func readRaw(_ keyCode: UInt32) -> ([UInt8], String)? {
+        var i = [UInt8](repeating: 0, count: Off.total)
+        Self.setU32(&i, Off.key, keyCode)
+        i[Off.data8] = Cmd.readKeyInfo.rawValue
+        guard let info = call(i) else { return nil }
+
+        let size = Int(Self.u32(info, Off.dataSize))
+        let type = Self.string(Self.u32(info, Off.dataType))
+        guard size > 0, size <= 32 else { return nil }
+
+        var r = [UInt8](repeating: 0, count: Off.total)
+        Self.setU32(&r, Off.key, keyCode)
+        Self.setU32(&r, Off.dataSize, UInt32(size))
+        r[Off.data8] = Cmd.readBytes.rawValue
+        guard let out = call(r) else { return nil }
+
+        return (Array(out[Off.bytes..<(Off.bytes + size)]), type)
+    }
+
+    /// Decodes the SMC numeric types we care about. `flt` is the one that matters on
+    /// Apple Silicon — power sensors report IEEE-754 watts directly.
+    public func read(_ key: String) -> Sensor? {
+        guard let (bytes, type) = readRaw(Self.code(key)) else { return nil }
+
+        let value: Double
+        switch type {
+        case "flt":
+            guard bytes.count >= 4 else { return nil }
+            var v: UInt32 = 0
+            for (n, b) in bytes.prefix(4).enumerated() { v |= UInt32(b) << (8 * n) }
+            value = Double(Float(bitPattern: v))
+        case "ui8", "ui16", "ui32", "ui64":
+            var v: UInt64 = 0
+            for b in bytes { v = (v << 8) | UInt64(b) }   // big-endian
+            value = Double(v)
+        case "si8":
+            guard let b = bytes.first else { return nil }
+            value = Double(Int8(bitPattern: b))
+        case "si16":
+            guard bytes.count >= 2 else { return nil }
+            value = Double(Int16(bitPattern: UInt16(bytes[0]) << 8 | UInt16(bytes[1])))
+        case "sp78":            // signed fixed point, 7 integer bits / 8 fractional
+            guard bytes.count >= 2 else { return nil }
+            value = Double(Int16(bitPattern: UInt16(bytes[0]) << 8 | UInt16(bytes[1]))) / 256.0
+        case "fp88":
+            guard bytes.count >= 2 else { return nil }
+            value = Double(UInt16(bytes[0]) << 8 | UInt16(bytes[1])) / 256.0
+        default:
+            return nil
+        }
+        return Sensor(key: key, type: type, value: value)
+    }
+
+    /// Every key the SMC exposes, decoded. The key set is model-specific, so rails
+    /// are discovered rather than hardcoded.
+    public func scan() -> [Sensor] {
+        var out: [Sensor] = []
+        for idx in 0..<keyCount() {
+            guard let k = key(at: idx), !k.isEmpty else { continue }
+            if let s = read(k) { out.append(s) }
+        }
+        return out
+    }
+
+    public func diagnose() -> String {
+        var i = [UInt8](repeating: 0, count: Off.total)
+        Self.setU32(&i, Off.key, Self.code("#KEY"))
+        i[Off.data8] = Cmd.readKeyInfo.rawValue
+        let o = call(i)
+        return String(format: "buffer=%d bytes  conn=%u  #KEY ok=%@ rc=0x%08x",
+                      Off.total, conn, o != nil ? "yes" : "no",
+                      UInt32(bitPattern: lastError))
+    }
+}

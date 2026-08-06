@@ -1,0 +1,14 @@
+# Build products
+.build/
+*.app/
+DerivedData/
+*.xcuserdatad
+*.xcworkspace/xcuserdata/
+
+# macOS
+.DS_Store
+
+# Local history database
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
