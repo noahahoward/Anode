@@ -37,6 +37,12 @@ public final class PowerMonitor {
         public let baseline_W: Double?
         public let didJump: Bool
         public let residual_W: Double?
+        /// Unclamped residual. Negative means we attributed more than we measured —
+        /// impossible in physics, so it is a double-counting bug signal, not a value
+        /// to display. See the construction note at the assignment site.
+        public let rawResidual_W: Double
+        /// True when attribution exceeded measurement this tick.
+        public var hasAttributionOverflow: Bool { rawResidual_W < -0.05 }
         public let scale: BatteryScale
         public let state: Battery.State?
         public let coverage: Double
@@ -198,6 +204,15 @@ public final class PowerMonitor {
             baseline_W: calibrator.baseline,
             didJump: smoother.didJump,
             residual_W: max(0, smoothed - attributed - (gpu ?? 0)),
+            // UNCLAMPED. The clamped residual above makes the ledger identity
+            // attributed + gpu + residual == smoothed true BY CONSTRUCTION, so
+            // checking it proves nothing. This raw value is the only informative
+            // signal: if it goes NEGATIVE we have attributed more power than we
+            // measured, which is physically impossible and means double counting
+            // (most likely rusage CPU energy overlapping the IOReport GPU rail,
+            // or the PSTR gain drifting low). Surfaced so it can be alarmed on
+            // rather than silently absorbed by max(0, ...).
+            rawResidual_W: smoothed - attributed - (gpu ?? 0),
             scale: scale,
             state: Battery.state(),
             coverage: sweep.coverage,
