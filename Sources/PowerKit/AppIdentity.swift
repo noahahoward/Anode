@@ -108,6 +108,10 @@ public struct AppDrain {
     public let percentPerHour: Double
     public let processCount: Int
     public let pids: [pid_t]
+    /// Summed across the app's processes — the whole point of the rollup.
+    public let cpuPercent: Double
+    public let memoryBytes: UInt64
+    public let diskBytesPerSec: Double
 
     public var name: String { identity.name }
     public var isApp: Bool { identity.isApp }
@@ -116,14 +120,18 @@ public struct AppDrain {
 public extension DrainCalculator {
     /// Collapse per-process drain into per-application drain.
     static func group(_ drains: [ProcessDrain], scale: BatteryScale) -> [AppDrain] {
-        var byApp: [AppIdentity: (j: Double, w: Double, pids: [pid_t])] = [:]
+        var byApp: [AppIdentity: (j: Double, w: Double, cpu: Double,
+                                  mem: UInt64, disk: Double, pids: [pid_t])] = [:]
 
         for d in drains {
             // Path already captured during the sweep — no syscall here.
             let id = AppResolver.identity(forExecutablePath: d.path, fallbackPID: d.pid)
-            var e = byApp[id] ?? (0, 0, [])
+            var e = byApp[id] ?? (0, 0, 0, 0, 0, [])
             e.j += d.joules
             e.w += d.watts
+            e.cpu += d.cpuPercent
+            e.mem &+= d.memoryBytes
+            e.disk += d.diskBytesPerSec
             e.pids.append(d.pid)
             byApp[id] = e
         }
@@ -134,7 +142,10 @@ public extension DrainCalculator {
                      watts: e.w,
                      percentPerHour: 3600 * e.w / scale.joulesPerPercent,
                      processCount: e.pids.count,
-                     pids: e.pids.sorted())
+                     pids: e.pids.sorted(),
+                     cpuPercent: e.cpu,
+                     memoryBytes: e.mem,
+                     diskBytesPerSec: e.disk)
         }
         .sorted { $0.percentPerHour > $1.percentPerHour }
     }

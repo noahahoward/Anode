@@ -31,7 +31,11 @@ func makeProcess(pid: pid_t,
                  start: UInt64 = 1,
                  nJ: UInt64,
                  name: String? = nil,
-                 path: String = "") -> ProcessEnergy {
+                 path: String = "",
+                 cpu_ns: UInt64 = 0,
+                 footprint: UInt64 = 0,
+                 diskRead: UInt64 = 0,
+                 diskWritten: UInt64 = 0) -> ProcessEnergy {
     ProcessEnergy(pid: pid,
                   name: name ?? "proc\(pid)",
                   energy_nJ: nJ,
@@ -39,7 +43,12 @@ func makeProcess(pid: pid_t,
                   cycles: 0,
                   pCycles: 0,
                   startAbsTime: start,
-                  path: path)
+                  path: path,
+                  userTime_ns: cpu_ns,
+                  systemTime_ns: 0,
+                  footprint: footprint,
+                  diskRead: diskRead,
+                  diskWritten: diskWritten)
 }
 
 /// Sweep at a fixed synthetic timestamp (seconds since reference date), so `dt`
@@ -59,11 +68,17 @@ func makeDrain(pid: pid_t,
                path: String,
                joules: Double,
                watts: Double,
-               name: String = "p") -> ProcessDrain {
+               name: String = "p",
+               cpuPercent: Double = 0,
+               memoryBytes: UInt64 = 0,
+               diskBytesPerSec: Double = 0) -> ProcessDrain {
     ProcessDrain(name: name,
                  pid: pid,
                  path: path,
                  joules: joules,
                  watts: watts,
-                 percentPerHour: watts)
+                 percentPerHour: watts,
+                 cpuPercent: cpuPercent,
+                 memoryBytes: memoryBytes,
+                 diskBytesPerSec: diskBytesPerSec)
 }

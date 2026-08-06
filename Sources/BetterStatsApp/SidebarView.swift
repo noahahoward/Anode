@@ -185,9 +185,21 @@ final class SidebarView: NSView {
                 stack.topAnchor.constraint(equalTo: topAnchor, constant: 6),
                 stack.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -6),
             ])
+            // Without this the rail is invisible to VoiceOver and to any automation:
+            // a plain NSView with a mouseDown override is a button to a sighted user
+            // and nothing at all to anyone else.
+            setAccessibilityRole(.button)
+            setAccessibilityLabel(lens.title)
+            setAccessibilityElement(true)
+
             restyle()
         }
         required init?(coder: NSCoder) { fatalError() }
+
+        override func accessibilityPerformPress() -> Bool {
+            onClick(lens)
+            return true
+        }
 
         private func restyle() {
             title.textColor = isSelected ? Palette.text : Palette.dim
