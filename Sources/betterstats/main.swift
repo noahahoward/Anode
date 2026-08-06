@@ -24,6 +24,29 @@ guard let scale = Battery.scale(), let state = Battery.state() else {
     exit(1)
 }
 
+// ── Metric registry dump ────────────────────────────────────────────────────
+if args.contains("--metrics") {
+    guard let monitor = PowerMonitor(scale: scale) else { exit(1) }
+    let sys = SystemMetrics()
+    monitor.tick(); _ = sys.sample()          // prime: both need an interval
+    Thread.sleep(forTimeInterval: 2.0)
+    if let snap = monitor.tick() { MetricRegistry.shared.update(with: snap) }
+    MetricRegistry.shared.update(system: sys.sample())
+
+    rule("REGISTERED METRICS")
+    var cat = ""
+    for d in MetricRegistry.shared.descriptors() {
+        if d.category != cat { cat = d.category; print("\n  [\(cat)]") }
+        let v = MetricRegistry.shared.value(for: d.id)
+        let shown = v.map { $0.text + ($0.isEstimate ? " *" : "") } ?? "— (no data)"
+        let lbl = v?.label ?? d.shortTitle
+        print(String(format: "    %-26@ %-14@ %@", d.id.rawValue as NSString,
+                     lbl as NSString, shown as NSString))
+    }
+    print("")
+    exit(0)
+}
+
 // ── SMC discovery ───────────────────────────────────────────────────────────
 if args.contains("--smc") {
     guard let smc = SMC() else {

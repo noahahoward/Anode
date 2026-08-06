@@ -32,6 +32,22 @@ extension MetricID {
     public static let gpuDrain           = MetricID("battery.gpu.pctHr")
     public static let unattributedShare  = MetricID("battery.unattributed.share")
     public static let processCoverage    = MetricID("battery.coverage")
+
+    // System utilisation. Named for what they measure: "how busy", never "how much
+    // battery" — only the joule path answers that.
+    public static let cpuUsage           = MetricID("system.cpu.percent")
+    public static let memoryUsage        = MetricID("system.memory.percent")
+    public static let gpuUsage           = MetricID("system.gpu.percent")
+    public static let networkThroughput  = MetricID("system.network.bytesPerSec")
+    public static let networkDown        = MetricID("system.network.down")
+    public static let networkUp          = MetricID("system.network.up")
+    public static let cpuTemperature     = MetricID("sensors.cpu.celsius")
+    public static let gpuTemperature     = MetricID("sensors.gpu.celsius")
+    public static let fanSpeed           = MetricID("sensors.fan.rpm")
+
+    /// The collapsible group widget binds to no single metric — it shows them all.
+    /// It still needs an ID so widget configs stay uniformly addressable.
+    public static let groupPlaceholder   = MetricID("widget.group")
 }
 
 /// Display units. Formatting lives here so every surface (menu bar, table, tooltip)
@@ -39,7 +55,7 @@ extension MetricID {
 /// upstream signal is undocumented and can hand us NaN, and a menu bar that says
 /// "nan %/hr" is exactly the startup breakage this app exists to avoid.
 public enum MetricUnit: CaseIterable {
-    case percentPerHour, percent, minutes, celsius, rpm, count, ratio, bytes
+    case percentPerHour, percent, minutes, celsius, rpm, count, ratio, bytes, bytesPerSecond
 
     public func format(_ value: Double) -> String {
         guard value.isFinite else { return "—" }
@@ -68,6 +84,15 @@ public enum MetricUnit: CaseIterable {
             // Takes a 0–1 fraction and displays it as a percentage. Kept distinct from
             // .percent so providers never have to guess which scale a consumer wants.
             return String(format: "%.0f%%", value * 100)
+        case .bytesPerSecond:
+            // Menu bar width is scarce: no space before the unit, no decimal above
+            // 100 — "1.2MB/s", "340KB/s", "12MB/s".
+            var bps = abs(value)
+            if bps < 1024 { return String(format: "%.0fB/s", bps) }
+            let bpsUnits = ["KB", "MB", "GB", "TB"]
+            var bi = -1
+            repeat { bps /= 1024; bi += 1 } while bps >= 1024 && bi < bpsUnits.count - 1
+            return String(format: bps >= 100 ? "%.0f%@/s" : "%.1f%@/s", bps, bpsUnits[bi])
         case .bytes:
             let sign = value < 0 ? "-" : ""
             var v = abs(value)
@@ -140,6 +165,7 @@ public final class MetricRegistry {
     public static let shared: MetricRegistry = {
         let r = MetricRegistry()
         r.registerBatteryMetrics()
+        r.registerSystemMetrics()
         return r
     }()
 
@@ -149,6 +175,7 @@ public final class MetricRegistry {
     private var entries: [MetricID: (descriptor: MetricDescriptor,
                                      provider: () -> MetricValue?)] = [:]
     private var snapshot: PowerMonitor.Snapshot?
+    private var system: SystemMetrics.Snapshot?
 
     public init() {}
 
@@ -192,6 +219,21 @@ public final class MetricRegistry {
         lock.unlock()
     }
 
+    /// Push the latest utilisation readings. Kept separate from the power snapshot
+    /// because the two come from different samplers on different cadences — and
+    /// because utilisation is not power.
+    public func update(system: SystemMetrics.Snapshot) {
+        lock.lock()
+        self.system = system
+        lock.unlock()
+    }
+
+    public func latestSystem() -> SystemMetrics.Snapshot? {
+        lock.lock()
+        defer { lock.unlock() }
+        return system
+    }
+
     public func latestSnapshot() -> PowerMonitor.Snapshot? {
         lock.lock()
         defer { lock.unlock() }
@@ -203,6 +245,58 @@ public final class MetricRegistry {
     /// Everything the battery pipeline can honestly display today. All providers are
     /// nil until the first `update(with:)` — widgets show a placeholder for the first
     /// couple of seconds rather than a stale or invented number.
+    /// Utilisation and sensor metrics. Each is nil until its first reading, so a
+    /// widget bound to something this machine lacks (no fans, no discrete GPU)
+    /// renders a placeholder rather than a zero that looks like a measurement.
+    public func registerSystemMetrics() {
+        func pct(_ id: MetricID, _ title: String, _ short: String, _ cat: String,
+                 _ get: @escaping (SystemMetrics.Snapshot) -> Double?) {
+            register(MetricDescriptor(id: id, title: title, shortTitle: short,
+                                      unit: .percent, category: cat, higherIsWorse: true)) { [weak self] in
+                guard let s = self?.latestSystem(), let v = get(s) else { return nil }
+                return MetricValue(v, unit: .percent, isEstimate: false)
+            }
+        }
+        pct(.cpuUsage, "CPU usage", "CPU", "CPU") { $0.cpu?.total }
+        pct(.memoryUsage, "Memory used", "RAM", "Memory") { $0.memory?.usedPercent }
+        pct(.gpuUsage, "GPU usage", "GPU", "GPU") { $0.gpu?.utilization }
+
+        func net(_ id: MetricID, _ title: String, _ short: String,
+                 _ get: @escaping (NetworkThroughput.Sample) -> Double) {
+            register(MetricDescriptor(id: id, title: title, shortTitle: short,
+                                      unit: .bytesPerSecond, category: "Network",
+                                      higherIsWorse: false)) { [weak self] in
+                guard let n = self?.latestSystem()?.network else { return nil }
+                return MetricValue(get(n), unit: .bytesPerSecond, isEstimate: false)
+            }
+        }
+        net(.networkThroughput, "Network throughput", "Net") { $0.totalPerSec }
+        net(.networkDown, "Network down", "Down") { $0.bytesInPerSec }
+        net(.networkUp, "Network up", "Up") { $0.bytesOutPerSec }
+
+        func temp(_ id: MetricID, _ title: String, _ short: String,
+                  _ get: @escaping (SystemMetrics.Snapshot) -> Double?) {
+            register(MetricDescriptor(id: id, title: title, shortTitle: short,
+                                      unit: .celsius, category: "Sensors",
+                                      higherIsWorse: true)) { [weak self] in
+                guard let s = self?.latestSystem(), let v = get(s) else { return nil }
+                return MetricValue(v, unit: .celsius, isEstimate: false)
+            }
+        }
+        temp(.cpuTemperature, "CPU temperature", "Temp") { $0.cpuTemperature }
+        temp(.gpuTemperature, "GPU temperature", "GPU\u{00B0}") { $0.gpuTemperature }
+
+        register(MetricDescriptor(
+            id: .fanSpeed, title: "Fan speed", shortTitle: "Fan",
+            unit: .rpm, category: "Sensors", higherIsWorse: true
+        )) { [weak self] in
+            // Fastest fan, since that is the one you can hear. A fanless machine
+            // returns nil rather than 0 — absent and idle are different claims.
+            guard let fans = self?.latestSystem()?.fans, !fans.isEmpty else { return nil }
+            return MetricValue(fans.map(\.currentRPM).max() ?? 0, unit: .rpm, isEstimate: false)
+        }
+    }
+
     public func registerBatteryMetrics() {
         register(MetricDescriptor(
             id: .batteryDrain, title: "Battery rate", shortTitle: "Drain",
