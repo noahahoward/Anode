@@ -55,7 +55,12 @@ public final class Settings {
         static let showDaemons = true
         static let minimumDisplayPercentPerHour = 0.01
         /// Matches what the status item shows today: smoothed drain + runtime.
-        static let menuBarWidgets = ["drain.pctHr", "runtime.projected"]
+        // Must be real, currently-registered metric IDs. Stale ones are invisible
+        // in the picker and get preserved forever as "unknown" bindings.
+        static let menuBarWidgets = [MetricID.batteryDrain.rawValue,
+                                     MetricID.cpuUsage.rawValue,
+                                     MetricID.memoryUsage.rawValue,
+                                     MetricID.groupPlaceholder.rawValue]
     }
 
     // ── Storage ─────────────────────────────────────────────────────────────
