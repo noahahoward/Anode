@@ -201,7 +201,11 @@ public final class MenuBarWidgetController: NSObject {
             button.image = WidgetRenderer.textImage(
                 label: entry.config.style == .textWithLabel
                     ? (value?.label ?? descriptor?.shortTitle ?? "?") : nil,
-                value: value.map { $0.text + ($0.isEstimate ? "*" : "") } ?? "\u{2014}")
+                // No "*" here. It means "gain not yet calibrated against the gas
+                // gauge", a condition that clears within ~60 s — but a bare asterisk
+                // beside a number in the menu bar is uninterpretable and reads as an
+                // error. The tooltip carries it, where there is room to say so.
+                value: value?.text ?? "\u{2014}")
         case .group:
             break   // handled above, before this switch
         case .bar, .sparkline, .dot:

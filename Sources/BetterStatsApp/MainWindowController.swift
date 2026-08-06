@@ -68,14 +68,20 @@ final class MainWindowController: NSObject {
         table.rowHeight = 22
         table.gridStyleMask = []
         table.headerView = NSTableHeaderView()
-        table.allowsColumnResizing = true
+        // Not user-resizable: a draggable divider can be pulled clean off the
+        // window, and content-sized columns are already the width they should be.
+        table.allowsColumnResizing = false
+        table.allowsColumnReordering = false
         table.allowsEmptySelection = true
         table.selectionHighlightStyle = .none   // drawn by BetterStatsRowView
         table.intercellSpacing = NSSize(width: 0, height: 0)
         // Spare width goes to the app name, not spread across every column. Spreading
         // pushes the numbers to opposite ends of a wide window, so a row can no longer
         // be read as one line.
-        table.columnAutoresizingStyle = .firstColumnOnlyAutoresizingStyle
+        // Slack goes to a trailing spacer column, not to the app name. Growing the
+        // name column pushed the numeric columns to the window edge, outside the
+        // inset hover pill, so a row no longer read as one line.
+        table.columnAutoresizingStyle = .lastColumnOnlyAutoresizingStyle
 
         scroll.hasVerticalScroller = true
         scroll.borderType = .noBorder
@@ -120,12 +126,17 @@ final class MainWindowController: NSObject {
             glance.leadingAnchor.constraint(equalTo: sidebar.trailingAnchor, constant: 16),
             glance.widthAnchor.constraint(equalToConstant: 236),
             glance.topAnchor.constraint(equalTo: ledger.bottomAnchor, constant: 14),
-            glance.bottomAnchor.constraint(lessThanOrEqualTo: content.bottomAnchor, constant: -14),
+            // Equal, not lessThanOrEqual: the graph and the card are one row, so
+            // their bottoms have to line up. With an inequality the card floated and
+            // the graph sat above the last line of its text.
+            glance.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -14),
 
             graphContainer.leadingAnchor.constraint(equalTo: glance.trailingAnchor, constant: 18),
             graphContainer.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -16),
             graphContainer.topAnchor.constraint(equalTo: ledger.bottomAnchor, constant: 14),
-            graphContainer.heightAnchor.constraint(equalToConstant: 132),
+            // No fixed height: top and bottom already define it, and adding a third
+            // constraint over-constrained the row so AppKit silently broke one of them.
+            graphContainer.heightAnchor.constraint(greaterThanOrEqualToConstant: 118),
             graphContainer.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -14),
         ])
 
@@ -142,7 +153,8 @@ final class MainWindowController: NSObject {
             let c = NSTableColumn(identifier: .init(spec.id))
             c.title = spec.title
             c.width = spec.width
-            c.minWidth = 44
+            c.minWidth = 30
+            c.resizingMask = spec.id == "spacer" ? .autoresizingMask : []
             c.sortDescriptorPrototype = NSSortDescriptor(key: spec.id, ascending: false)
             if spec.id != "name" { c.headerCell.alignment = .right }
             table.addTableColumn(c)

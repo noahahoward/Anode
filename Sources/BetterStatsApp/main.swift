@@ -239,6 +239,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         let selectedName = main.table.selectedRow >= 0 && main.table.selectedRow < rows.count
             ? rows[main.table.selectedRow].name : nil
         main.table.reloadData()
+        autosizeColumns()
         if let name = selectedName, let idx = rows.firstIndex(where: { $0.name == name }) {
             main.table.selectRowIndexes(IndexSet(integer: idx), byExtendingSelection: false)
             updateDetail()
@@ -340,10 +341,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         guard lens.isPerProcess else { return }
         self.lens = lens
         main.setColumns(Self.columns(for: lens))
+        // Set the descriptor explicitly. setColumns restores the previous one when
+        // its column still exists, and %/hr exists in every lens — so switching to
+        // CPU kept sorting by battery drain, which is not what the CPU lens is for.
         sortKey = Self.defaultSort(for: lens)
         ascending = false
+        main.table.sortDescriptors = [NSSortDescriptor(key: sortKey, ascending: false)]
         sortRows()
         main.table.reloadData()
+        autosizeColumns()
         updateDetail()
     }
 
@@ -353,21 +359,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
     static func columns(for lens: SidebarView.Lens) -> [(id: String, title: String, width: CGFloat)] {
         switch lens {
         case .battery:
-            return [("name", "Application", 240), ("pctHr", "%/hr", 82),
-                    ("window", "10 hr power", 96), ("cost", "Runtime cost", 104),
-                    ("procs", "Procs", 62)]
+            return [("name", "Application", 300), ("pctHr", "%/hr", 84),
+                    ("window", "10 hr power", 100), ("cost", "Runtime cost", 108),
+                    ("procs", "Procs", 64), ("spacer", "", 20)]
         case .cpu:
-            return [("name", "Application", 240), ("cpu", "% CPU", 82),
-                    ("pctHr", "%/hr", 82), ("procs", "Procs", 62)]
+            return [("name", "Application", 300), ("cpu", "% CPU", 84),
+                    ("pctHr", "%/hr", 84), ("procs", "Procs", 64), ("spacer", "", 20)]
         case .memory:
-            return [("name", "Application", 240), ("mem", "Memory", 96),
-                    ("pctHr", "%/hr", 82), ("procs", "Procs", 62)]
+            return [("name", "Application", 300), ("mem", "Memory", 100),
+                    ("pctHr", "%/hr", 84), ("procs", "Procs", 64), ("spacer", "", 20)]
         case .disk:
-            return [("name", "Application", 240), ("disk", "Disk", 96),
-                    ("pctHr", "%/hr", 82), ("procs", "Procs", 62)]
+            return [("name", "Application", 300), ("disk", "Disk", 100),
+                    ("pctHr", "%/hr", 84), ("procs", "Procs", 64), ("spacer", "", 20)]
         case .gpu:
-            return [("name", "Application", 240), ("pctHr", "%/hr", 82),
-                    ("procs", "Procs", 62)]
+            return [("name", "Application", 300), ("pctHr", "%/hr", 84),
+                    ("procs", "Procs", 64), ("spacer", "", 20)]
         default:
             return Self.columns(for: .battery)
         }
@@ -419,50 +425,98 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         tv.reloadData()
     }
 
-    func tableView(_ tv: NSTableView, viewFor col: NSTableColumn?, row: Int) -> NSView? {
-        guard row < rows.count, let id = col?.identifier.rawValue else { return nil }
-        let r = rows[row]
-
-        var text: String
-        var align = NSTextAlignment.right
-        var dim = false
+    /// Single source of truth for what a cell says. The column sizer measures the
+    /// same strings the renderer draws — deriving them twice is how a column ends up
+    /// one character too narrow.
+    func cellText(_ r: Row, _ id: String) -> (text: String, dim: Bool) {
         switch id {
         case "name":
-            text = r.name; align = .left
+            return (r.name, false)
         case "pctHr":
-            text = r.pctHr < 0.01 ? "<0.01" : String(format: "%.2f", r.pctHr)
+            return (r.pctHr < 0.01 ? "<0.01" : String(format: "%.2f", r.pctHr), r.pctHr < 0.01)
         case "window":
             // "—" not "0.00": no recorded on-battery history is not zero usage.
-            text = r.windowPct.map { String(format: "%.2f%%", $0) } ?? "—"
-            dim = r.windowPct == nil
+            return (r.windowPct.map { String(format: "%.2f%%", $0) } ?? "—", r.windowPct == nil)
         case "cost":
-            text = r.costMin.map { $0 >= 60
+            return (r.costMin.map { $0 >= 60
                 ? String(format: "%dh %02dm", Int($0 / 60), Int($0) % 60)
-                : String(format: "%.0f min", $0) } ?? "—"
-            dim = r.costMin == nil
+                : String(format: "%.0f min", $0) } ?? "—", r.costMin == nil)
         case "cpu":
             // Percent of one core, Activity Monitor's convention: a busy 4-thread
             // process reads 400%.
-            text = r.app.cpuPercent < 0.05 ? "—" : String(format: "%.1f%%", r.app.cpuPercent)
-            dim = r.app.cpuPercent < 0.05
+            return (r.app.cpuPercent < 0.05 ? "—" : String(format: "%.1f%%", r.app.cpuPercent),
+                    r.app.cpuPercent < 0.05)
         case "mem":
-            text = r.app.memoryBytes == 0 ? "—" : MetricUnit.bytes.format(Double(r.app.memoryBytes))
-            dim = r.app.memoryBytes == 0
+            return (r.app.memoryBytes == 0 ? "—" : MetricUnit.bytes.format(Double(r.app.memoryBytes)),
+                    r.app.memoryBytes == 0)
         case "disk":
-            text = r.app.diskBytesPerSec < 1
-                ? "—" : MetricUnit.bytesPerSecond.format(r.app.diskBytesPerSec)
-            dim = r.app.diskBytesPerSec < 1
+            return (r.app.diskBytesPerSec < 1
+                        ? "—" : MetricUnit.bytesPerSecond.format(r.app.diskBytesPerSec),
+                    r.app.diskBytesPerSec < 1)
         case "procs":
-            text = r.procs > 1 ? "\(r.procs)" : "—"; dim = true
+            return (r.procs > 1 ? "\(r.procs)" : "—", true)
         default:
-            text = r.isApp ? "app" : "daemon"; align = .left; dim = true
+            return ("", true)
         }
+    }
 
-        let cell = NSTextField(labelWithString: text)
-        cell.font = .monospacedSystemFont(ofSize: 11, weight: id == "name" && r.isApp ? .semibold : .regular)
-        cell.alignment = align
-        cell.lineBreakMode = .byTruncatingTail
-        if dim { cell.textColor = .secondaryLabelColor }
+    private func font(for id: String, isApp: Bool) -> NSFont {
+        id == "name" ? Palette.Font.sans(11.5, isApp ? .semibold : .regular)
+                     : Palette.Font.mono(11)
+    }
+
+    /// Size every column to its widest cell. Columns are not user-resizable — a
+    /// draggable divider can be pulled clean off the window, and there is nothing to
+    /// gain from a hand-set width when the content dictates the right one.
+    ///
+    /// Widths only ever GROW within a lens. Shrinking them as values change would
+    /// make the whole table twitch sideways every two seconds while a number drops a
+    /// digit, which is far more distracting than a few points of slack.
+    func autosizeColumns() {
+        for column in main.table.tableColumns {
+            let id = column.identifier.rawValue
+            guard id != "spacer" else { continue }
+
+            let headerFont = NSFont.systemFont(ofSize: 11, weight: .medium)
+            var widest = (column.title as NSString)
+                .size(withAttributes: [.font: headerFont]).width
+
+            for r in rows {
+                let (text, _) = cellText(r, id)
+                let w = (text as NSString)
+                    .size(withAttributes: [.font: font(for: id, isApp: r.isApp)]).width
+                widest = max(widest, w)
+            }
+
+            let target = ceil(widest) + (id == "name" ? 26 : 20)
+            if target > column.width + 1 { column.width = target }
+        }
+    }
+
+    func tableView(_ tv: NSTableView, viewFor col: NSTableColumn?, row: Int) -> NSView? {
+        guard row < rows.count, let id = col?.identifier.rawValue else { return nil }
+        if id == "spacer" { return NSView() }
+        let r = rows[row]
+        let (text, dim) = cellText(r, id)
+
+        let label = NSTextField(labelWithString: text)
+        label.font = font(for: id, isApp: r.isApp)
+        label.alignment = id == "name" ? .left : .right
+        label.lineBreakMode = .byTruncatingTail
+        label.textColor = dim ? Palette.dim : Palette.text
+        label.translatesAutoresizingMaskIntoConstraints = false
+
+        // A bare NSTextField is pinned to the top of its cell, so every row read as
+        // sitting high against its own separator. Centring it is the fix.
+        let cell = NSTableCellView()
+        cell.addSubview(label)
+        cell.textField = label
+        NSLayoutConstraint.activate([
+            label.leadingAnchor.constraint(equalTo: cell.leadingAnchor,
+                                           constant: id == "name" ? 10 : 4),
+            label.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -4),
+            label.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
+        ])
         return cell
     }
 }
