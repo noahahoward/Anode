@@ -373,6 +373,14 @@ private final class BatteryPane: Pane {
 private final class MenuBarPane: Pane {
     private var choices: [MetricChoice] = []
     private var boxes: [NSButton] = []
+    /// Set while the pane is applying the user's click.
+    ///
+    /// The Pane base observes every Settings write and calls refresh(). Writing
+    /// the new selection therefore re-entered refresh() BEFORE the widget
+    /// controller had been updated, so refresh() read the old membership and
+    /// reset the checkbox the user had just toggled. It looked like clicks were
+    /// being ignored, and like unchecking one box re-checked others.
+    private var isApplying = false
 
     override func loadView() {
         choices = PreferencesWindowController.metricProvider?()
@@ -394,6 +402,9 @@ private final class MenuBarPane: Pane {
     }
 
     override func refresh() {
+        // Never fight the user mid-click: while applying, the boxes already show
+        // the intended state and the controller is only just catching up.
+        guard !isApplying else { return }
         let current = Set(PreferencesWindowController.currentWidgetIDs?()
                           ?? settings.menuBarWidgets)
         for (choice, box) in zip(choices, boxes) {
@@ -402,17 +413,24 @@ private final class MenuBarPane: Pane {
     }
 
     @objc private func toggled() {
+        isApplying = true
+        defer { isApplying = false }
+
         let selected = zip(choices, boxes).filter { $1.state == .on }.map { $0.0.id }
-        // Preserve bound IDs this pane doesn't know about (metric from a module
-        // that isn't loaded right now) — unchecking what we can't display would
-        // silently destroy the user's binding.
+
+        // Preserve bound IDs this pane cannot display (a metric from a module that
+        // is not loaded right now) so unchecking never silently destroys a binding.
+        // Sourced ONLY from the widget controller: reading Settings here let stale
+        // IDs from an older build accumulate on every toggle, because they are
+        // never in `choices` and so were re-appended as "unknown" each time.
         let known = Set(choices.map { $0.id })
-        let existing = PreferencesWindowController.currentWidgetIDs?() ?? settings.menuBarWidgets
-        let unknown = existing.filter { !known.contains($0) }
+        let unknown = (PreferencesWindowController.currentWidgetIDs?() ?? [])
+            .filter { !known.contains($0) }
+
         let final = selected + unknown
-        settings.menuBarWidgets = final
-        // Apply immediately: a preference that needs a relaunch to take effect
-        // reads as broken.
+        // Controller FIRST — it is the source of truth, and the Settings write
+        // below triggers refresh() which reads back from it.
         PreferencesWindowController.onWidgetsChanged?(final)
+        settings.menuBarWidgets = final
     }
 }
