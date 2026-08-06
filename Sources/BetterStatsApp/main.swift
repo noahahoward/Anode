@@ -89,19 +89,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         // Menu bar widgets bind to metric IDs, so any metric the app ever gains is
         // automatically available to every widget with no new widget code.
         widgets = MenuBarWidgetController(onClick: { [weak self] in self?.main.toggle() })
-        if widgets.configs.isEmpty {
-            // First-run defaults: the two battery numbers you actually watch, plus
-            // the group so everything else is one click away without claiming
-            // menu bar width up front.
-            widgets.setConfigs([
-                WidgetConfig(metricID: MetricID.batteryDrain.rawValue, style: .textWithLabel),
-                WidgetConfig(metricID: MetricID.cpuUsage.rawValue, style: .textWithLabel),
-                WidgetConfig(metricID: MetricID.memoryUsage.rawValue, style: .textWithLabel),
-                WidgetConfig(metricID: MetricID.groupPlaceholder.rawValue, style: .group),
-            ])
-        }
         PreferencesWindowController.metricProvider = {
-            MetricRegistry.shared.descriptors().map { MetricChoice(id: $0.id.rawValue, label: $0.title) }
+            var choices = MetricRegistry.shared.descriptors()
+                .map { MetricChoice(id: $0.id.rawValue, label: $0.title) }
+            // The group widget binds to no single metric, so it has no descriptor —
+            // it still has to be offerable in the picker.
+            choices.append(MetricChoice(id: MetricID.groupPlaceholder.rawValue,
+                                        label: "All metrics (expandable group)"))
+            return choices
+        }
+        PreferencesWindowController.currentWidgetIDs = { [weak self] in
+            self?.widgets.configs.filter(\.enabled).map(\.metricID) ?? []
+        }
+        PreferencesWindowController.onWidgetsChanged = { [weak self] ids in
+            guard let self else { return }
+            // Keep each metric's existing render style; only membership changes here.
+            let byID = Dictionary(self.widgets.configs.map { ($0.metricID, $0) },
+                                  uniquingKeysWith: { a, _ in a })
+            self.widgets.setConfigs(ids.map { id in
+                byID[id] ?? WidgetConfig(
+                    metricID: id,
+                    style: id == MetricID.groupPlaceholder.rawValue ? .group : .textWithLabel)
+            })
         }
 
         main.show()

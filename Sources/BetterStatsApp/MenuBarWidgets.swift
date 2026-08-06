@@ -52,10 +52,19 @@ public final class MenuBarWidgetController: NSObject {
 
     public static let defaultsKey = "com.betterstats.menubar.widgets.v1"
 
-    /// If persistence is empty or unreadable we still show *something* clickable, or
-    /// the main window becomes unreachable from the menu bar.
+    /// The out-of-the-box menu bar, used whenever persistence is empty or
+    /// unreadable. It must always contain at least one clickable item or the main
+    /// window becomes unreachable.
+    ///
+    /// This is THE default set — callers must not try to substitute their own by
+    /// testing `configs.isEmpty`, because this list means it is never empty. That
+    /// mistake silently left the app with a single widget.
     static let fallbackConfigs = [
-        WidgetConfig(metricID: MetricID.batteryDrain.rawValue, style: .textWithLabel)
+        WidgetConfig(metricID: MetricID.batteryDrain.rawValue, style: .textWithLabel),
+        WidgetConfig(metricID: MetricID.cpuUsage.rawValue, style: .textWithLabel),
+        WidgetConfig(metricID: MetricID.memoryUsage.rawValue, style: .textWithLabel),
+        // Everything else is one click away without claiming menu bar width up front.
+        WidgetConfig(metricID: MetricID.groupPlaceholder.rawValue, style: .group),
     ]
 
     static let historyCap = 60   // sparkline samples kept per metric

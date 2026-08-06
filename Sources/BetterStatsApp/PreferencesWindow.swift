@@ -32,6 +32,13 @@ public final class PreferencesWindowController: NSWindowController {
     /// pane works identically either way.
     public static var metricProvider: (() -> [MetricChoice])?
 
+    /// The Menu Bar pane used to read and write `Settings.menuBarWidgets`, which
+    /// NOTHING consumed — MenuBarWidgetController keeps its own persisted config.
+    /// Checking a box therefore appeared to work and changed nothing. These two
+    /// hooks make the controller the single source of truth.
+    public static var currentWidgetIDs: (() -> [String])?
+    public static var onWidgetsChanged: (([String]) -> Void)?
+
     /// Displayed units only — %/hr, trailing-window %, runtime. Never watts.
     public static let fallbackMetrics: [MetricChoice] = [
         MetricChoice(id: "drain.pctHr", label: "Battery drain (%/hr)"),
@@ -387,7 +394,8 @@ private final class MenuBarPane: Pane {
     }
 
     override func refresh() {
-        let current = Set(settings.menuBarWidgets)
+        let current = Set(PreferencesWindowController.currentWidgetIDs?()
+                          ?? settings.menuBarWidgets)
         for (choice, box) in zip(choices, boxes) {
             box.state = current.contains(choice.id) ? .on : .off
         }
@@ -399,7 +407,12 @@ private final class MenuBarPane: Pane {
         // that isn't loaded right now) — unchecking what we can't display would
         // silently destroy the user's binding.
         let known = Set(choices.map { $0.id })
-        let unknown = settings.menuBarWidgets.filter { !known.contains($0) }
-        settings.menuBarWidgets = selected + unknown
+        let existing = PreferencesWindowController.currentWidgetIDs?() ?? settings.menuBarWidgets
+        let unknown = existing.filter { !known.contains($0) }
+        let final = selected + unknown
+        settings.menuBarWidgets = final
+        // Apply immediately: a preference that needs a relaunch to take effect
+        // reads as broken.
+        PreferencesWindowController.onWidgetsChanged?(final)
     }
 }
