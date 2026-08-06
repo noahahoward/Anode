@@ -28,7 +28,7 @@ final class MainWindowController: NSObject {
     let detailContainer = NSView()
 
     private let scroll = NSScrollView()
-    private var detailWidth: CGFloat = 280
+    private var detailWidth: CGFloat = 330
     private var detailShown = false
     private let tableSplit = NSSplitView()
 
