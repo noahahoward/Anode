@@ -43,6 +43,16 @@ public final class MainWindowController: NSObject {
             backing: .buffered, defer: false)
         super.init()
 
+        // CRITICAL. NSWindow.isReleasedWhenClosed defaults to TRUE for windows
+        // created programmatically with initWithContentRect. Closing the window
+        // then deallocates it while our strong reference still points at the freed
+        // memory, and the next message to it — e.g. clicking the menu bar item to
+        // reopen — is EXC_BAD_ACCESS. This crashed the shipped build:
+        //   objc_msgSend / AppDelegate.toggleWindow() / -[NSStatusBarButtonCell _sendActionFrom:]
+        // It reads as a random crash because it needs close-then-reopen to trigger.
+        // A menu bar app outlives its windows by design, so this must be false.
+        window.isReleasedWhenClosed = false
+
         window.title = "BetterStats — Battery"
         window.center()
         window.setFrameAutosaveName("BetterStatsMain")

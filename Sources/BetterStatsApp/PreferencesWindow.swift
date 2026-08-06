@@ -1,0 +1,405 @@
+import AppKit
+import PowerKit
+
+// Programmatic preferences window — no xib, no storyboard, semantic colours
+// only, so light/dark both come for free from AppKit.
+//
+// Every control writes straight into Settings.shared and then re-reads the
+// stored truth: Settings clamps out-of-range input, so the UI snaps to what was
+// actually accepted rather than displaying a value that was silently rejected.
+// Live propagation to the rest of the app is Settings.observe() — nothing here
+// requires a relaunch.
+
+/// One bindable menu bar metric. Kept as a plain (id, label) pair so the prefs
+/// pane doesn't care whether the list came from a live MetricRegistry or the
+/// static fallback below.
+public struct MetricChoice {
+    public let id: String
+    public let label: String
+    public init(id: String, label: String) {
+        self.id = id
+        self.label = label
+    }
+}
+
+public final class PreferencesWindowController: NSWindowController {
+
+    public static let shared = PreferencesWindowController()
+
+    /// If a MetricRegistry exists, the integrator points this at
+    /// `MetricRegistry.descriptors()` before first show; otherwise the static
+    /// list below drives the Menu Bar pane. Widgets bind to metric IDs, so the
+    /// pane works identically either way.
+    public static var metricProvider: (() -> [MetricChoice])?
+
+    /// Displayed units only — %/hr, trailing-window %, runtime. Never watts.
+    public static let fallbackMetrics: [MetricChoice] = [
+        MetricChoice(id: "drain.pctHr", label: "Battery drain (%/hr)"),
+        MetricChoice(id: "battery.percent", label: "Battery charge (%)"),
+        MetricChoice(id: "runtime.projected", label: "Projected runtime (h:mm)"),
+        MetricChoice(id: "power.window", label: "Trailing-window power (\u{201C}10 hr power\u{201D})"),
+        MetricChoice(id: "drain.topApp", label: "Top-draining app"),
+    ]
+
+    private var keyObserver: NSObjectProtocol?
+
+    private init() {
+        let tabs = NSTabViewController()
+        tabs.tabStyle = .toolbar
+
+        func item(_ vc: NSViewController, _ label: String, _ symbol: String) -> NSTabViewItem {
+            let i = NSTabViewItem(viewController: vc)
+            i.label = label
+            // Symbol lookup can fail on older SDK/asset mismatches; a label-only
+            // tab beats a crash.
+            i.image = NSImage(systemSymbolName: symbol, accessibilityDescription: label)
+                ?? NSImage(named: NSImage.preferencesGeneralName)
+            return i
+        }
+        tabs.addTabViewItem(item(GeneralPane(), "General", "gearshape"))
+        tabs.addTabViewItem(item(BatteryPane(), "Battery", "battery.100"))
+        tabs.addTabViewItem(item(MenuBarPane(), "Menu Bar", "menubar.rectangle"))
+
+        let window = NSWindow(contentViewController: tabs)
+        window.title = "BetterStats Settings"
+        window.toolbarStyle = .preference
+        // Resizable stays on (grids stretch sanely); a floor stops the toolbar
+        // tabs from clipping.
+        window.contentMinSize = NSSize(width: 480, height: 200)
+        super.init(window: window)
+
+        // SMAppService has no change notification: the user can revoke the
+        // login item in System Settings behind our back. Re-poll every time the
+        // window comes forward so the checkbox reflects reality.
+        keyObserver = NotificationCenter.default.addObserver(
+            forName: NSWindow.didBecomeKeyNotification, object: window, queue: .main
+        ) { _ in Settings.shared.refreshLaunchAtLogin() }
+    }
+
+    /// Programmatic-only; nothing to decode. Fail soft, don't crash.
+    public required init?(coder: NSCoder) { return nil }
+
+    deinit {
+        if let o = keyObserver { NotificationCenter.default.removeObserver(o) }
+    }
+
+    public func show() {
+        guard let w = window else { return }
+        if !w.isVisible { w.center() }
+        NSApp.activate(ignoringOtherApps: true)
+        w.makeKeyAndOrderFront(nil)
+    }
+}
+
+// ── Shared pane machinery ───────────────────────────────────────────────────
+
+/// Base pane: builds a two-column grid ("label: control"), observes Settings
+/// with a wildcard token so ANY write — this window, another window, another
+/// Settings instance — refreshes the controls. Programmatic value changes do
+/// not re-fire NSControl actions, so refresh() cannot loop back into a write.
+private class Pane: NSViewController {
+    let settings = Settings.shared
+    private var tokens: [AnyObject] = []
+
+    /// Push current Settings values into the controls. Called on every change.
+    func refresh() {}
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        tokens.append(settings.observe(Settings.Key.any) { [weak self] in self?.refresh() })
+        refresh()
+    }
+
+    override func viewWillAppear() {
+        super.viewWillAppear()
+        refresh()
+    }
+
+    // Layout helpers -------------------------------------------------------
+
+    func rowLabel(_ text: String) -> NSTextField {
+        NSTextField(labelWithString: text)
+    }
+
+    func caption(_ text: String) -> NSTextField {
+        let l = NSTextField(wrappingLabelWithString: text)
+        l.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        l.textColor = .secondaryLabelColor   // semantic: adapts to dark mode
+        l.preferredMaxLayoutWidth = 380      // forces wrap so fittingSize has a height
+        l.isSelectable = false
+        return l
+    }
+
+    func install(rows: [[NSView]]) {
+        let grid = NSGridView(views: rows)
+        grid.rowSpacing = 8
+        grid.columnSpacing = 12
+        grid.rowAlignment = .firstBaseline
+        grid.column(at: 0).xPlacement = .trailing
+        grid.translatesAutoresizingMaskIntoConstraints = false
+
+        let root = NSView()
+        root.addSubview(grid)
+        NSLayoutConstraint.activate([
+            grid.topAnchor.constraint(equalTo: root.topAnchor, constant: 20),
+            grid.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 20),
+            grid.trailingAnchor.constraint(lessThanOrEqualTo: root.trailingAnchor, constant: -20),
+            grid.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -20),
+            root.widthAnchor.constraint(greaterThanOrEqualToConstant: 560),
+        ])
+        view = root
+        root.layoutSubtreeIfNeeded()
+        preferredContentSize = NSSize(width: 560, height: max(root.fittingSize.height, 120))
+    }
+
+    var spacer: NSView { NSGridCell.emptyContentView }
+
+    /// Editable number field + stepper pair that share one write closure.
+    /// The formatter deliberately has NO min/max: Settings owns validation, and
+    /// the refresh() round-trip shows the user the clamped truth.
+    func fieldAndStepper(range: ClosedRange<Double>, step: Double, fractionDigits: Int,
+                         unit: String, action: Selector) -> (NSTextField, NSStepper, NSStackView) {
+        let f = NumberFormatter()
+        f.numberStyle = .decimal
+        f.minimumFractionDigits = 0
+        f.maximumFractionDigits = fractionDigits
+
+        let field = NSTextField()
+        field.formatter = f
+        field.alignment = .right
+        field.target = self
+        field.action = action
+        (field.cell as? NSTextFieldCell)?.sendsActionOnEndEditing = true
+        field.translatesAutoresizingMaskIntoConstraints = false
+        field.widthAnchor.constraint(equalToConstant: 64).isActive = true
+
+        let stepper = NSStepper()
+        stepper.minValue = range.lowerBound
+        stepper.maxValue = range.upperBound
+        stepper.increment = step
+        stepper.valueWraps = false
+        stepper.target = self
+        stepper.action = action
+
+        let unitLabel = NSTextField(labelWithString: unit)
+        unitLabel.textColor = .secondaryLabelColor
+
+        let stack = NSStackView(views: [field, stepper, unitLabel])
+        stack.orientation = .horizontal
+        stack.spacing = 6
+        return (field, stepper, stack)
+    }
+}
+
+// ── General ─────────────────────────────────────────────────────────────────
+
+private final class GeneralPane: Pane {
+    private var intervalSlider: NSSlider!
+    private var intervalValue: NSTextField!
+    private var loginCheckbox: NSButton!
+    private var loginNote: NSTextField!
+    private var loginButton: NSButton!
+
+    override func loadView() {
+        let r = Settings.sampleIntervalRange
+        intervalSlider = NSSlider(value: settings.sampleInterval,
+                                  minValue: r.lowerBound, maxValue: r.upperBound,
+                                  target: self, action: #selector(intervalChanged))
+        // One tick per second and tick-only values: discrete, no float noise.
+        intervalSlider.numberOfTickMarks = Int(r.upperBound - r.lowerBound) + 1
+        intervalSlider.allowsTickMarkValuesOnly = true
+        intervalSlider.isContinuous = true
+        intervalSlider.translatesAutoresizingMaskIntoConstraints = false
+        intervalSlider.widthAnchor.constraint(equalToConstant: 260).isActive = true
+
+        intervalValue = NSTextField(labelWithString: "")
+        intervalValue.font = .monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
+
+        let intervalRow = NSStackView(views: [intervalSlider, intervalValue])
+        intervalRow.orientation = .horizontal
+        intervalRow.spacing = 10
+
+        loginCheckbox = NSButton(checkboxWithTitle: "Launch BetterStats at login",
+                                 target: self, action: #selector(loginToggled))
+        loginNote = caption("")
+        loginButton = NSButton(title: "Open Login Items Settings…",
+                               target: self, action: #selector(openLoginItems))
+        loginButton.controlSize = .small
+        loginButton.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+
+        install(rows: [
+            [rowLabel("Sample every:"), intervalRow],
+            [spacer, caption("How often per-process energy is read. Shorter is more responsive "
+                             + "but costs more of the battery being measured.")],
+            [rowLabel("Startup:"), loginCheckbox],
+            [spacer, loginNote],
+            [spacer, loginButton],
+        ])
+    }
+
+    override func refresh() {
+        intervalSlider.doubleValue = settings.sampleInterval
+        intervalValue.stringValue = String(format: "%.0f s", settings.sampleInterval)
+
+        // The checkbox shows OS truth, not our last request. requiresApproval
+        // is explicitly NOT "on": nothing will launch until the user approves.
+        let status = settings.launchAtLoginStatus
+        loginCheckbox.state = status == .enabled ? .on : .off
+        switch status {
+        case .enabled:
+            loginNote.isHidden = true
+            loginButton.isHidden = true
+        case .requiresApproval:
+            loginNote.stringValue = "Waiting for approval in System Settings → General → Login Items."
+            loginNote.isHidden = false
+            loginButton.isHidden = false
+        case .notFound:
+            // Unbundled dev builds report notFound, yet register() on the bare
+            // executable still succeeds (measured on this machine) — keep the
+            // checkbox usable and let the OS answer.
+            loginNote.stringValue = "Not registered. This build is not an .app bundle; registering may still work."
+            loginNote.isHidden = false
+            loginButton.isHidden = true
+        case .notRegistered, .unknown:
+            if let err = settings.lastLaunchAtLoginError {
+                loginNote.stringValue = "Could not change login item: \(err.localizedDescription)"
+                loginNote.isHidden = false
+            } else {
+                loginNote.isHidden = true
+            }
+            loginButton.isHidden = true
+        }
+    }
+
+    @objc private func intervalChanged() {
+        settings.sampleInterval = intervalSlider.doubleValue
+        // Continuous drag: label tracks even when the write was a no-op.
+        intervalValue.stringValue = String(format: "%.0f s", settings.sampleInterval)
+    }
+
+    @objc private func loginToggled() {
+        settings.launchAtLogin = loginCheckbox.state == .on
+        refresh()  // register may fail or land in requiresApproval — show truth now
+    }
+
+    @objc private func openLoginItems() {
+        settings.openLoginItemsSettings()
+    }
+}
+
+// ── Battery ─────────────────────────────────────────────────────────────────
+
+private final class BatteryPane: Pane {
+    private var windowField: NSTextField!
+    private var windowStepper: NSStepper!
+    private var retentionField: NSTextField!
+    private var retentionStepper: NSStepper!
+    private var thresholdField: NSTextField!
+    private var thresholdStepper: NSStepper!
+    private var daemonsCheckbox: NSButton!
+
+    override func loadView() {
+        let (wf, ws, wRow) = fieldAndStepper(range: Settings.powerWindowHoursRange, step: 1,
+                                             fractionDigits: 1, unit: "hours",
+                                             action: #selector(windowChanged))
+        (windowField, windowStepper) = (wf, ws)
+
+        let (rf, rs, rRow) = fieldAndStepper(range: Settings.historyRetentionDaysRange, step: 1,
+                                             fractionDigits: 1, unit: "days",
+                                             action: #selector(retentionChanged))
+        (retentionField, retentionStepper) = (rf, rs)
+
+        let (tf, ts, tRow) = fieldAndStepper(range: Settings.minimumDisplayRange, step: 0.01,
+                                             fractionDigits: 3, unit: "%/hr",
+                                             action: #selector(thresholdChanged))
+        (thresholdField, thresholdStepper) = (tf, ts)
+
+        daemonsCheckbox = NSButton(checkboxWithTitle: "Show daemons and helpers",
+                                   target: self, action: #selector(daemonsToggled))
+
+        install(rows: [
+            [rowLabel("Power window:"), wRow],
+            [spacer, caption("Trailing on-battery window behind the \u{201C}10 hr power\u{201D} figure. "
+                             + "Activity Monitor uses 12 hours; this stays configurable.")],
+            [rowLabel("Keep history:"), rRow],
+            [spacer, caption("Sampled history older than this is pruned.")],
+            [rowLabel("Hide drains below:"), tRow],
+            [spacer, caption("Rows under this floor display as \u{201C}<0.01\u{201D}.")],
+            [rowLabel("Processes:"), daemonsCheckbox],
+            [spacer, caption("When off, only apps are listed. Daemon drain still counts toward the "
+                             + "measured total — hiding rows never moves energy onto other rows.")],
+        ])
+    }
+
+    override func refresh() {
+        windowField.doubleValue = settings.powerWindowHours
+        windowStepper.doubleValue = settings.powerWindowHours
+        retentionField.doubleValue = settings.historyRetentionDays
+        retentionStepper.doubleValue = settings.historyRetentionDays
+        thresholdField.doubleValue = settings.minimumDisplayPercentPerHour
+        thresholdStepper.doubleValue = settings.minimumDisplayPercentPerHour
+        daemonsCheckbox.state = settings.showDaemons ? .on : .off
+    }
+
+    @objc private func windowChanged(_ sender: NSControl) {
+        settings.powerWindowHours = sender.doubleValue
+        refresh()  // snap field AND stepper to the clamped truth
+    }
+
+    @objc private func retentionChanged(_ sender: NSControl) {
+        settings.historyRetentionDays = sender.doubleValue
+        refresh()
+    }
+
+    @objc private func thresholdChanged(_ sender: NSControl) {
+        settings.minimumDisplayPercentPerHour = sender.doubleValue
+        refresh()
+    }
+
+    @objc private func daemonsToggled() {
+        settings.showDaemons = daemonsCheckbox.state == .on
+    }
+}
+
+// ── Menu Bar ────────────────────────────────────────────────────────────────
+
+private final class MenuBarPane: Pane {
+    private var choices: [MetricChoice] = []
+    private var boxes: [NSButton] = []
+
+    override func loadView() {
+        choices = PreferencesWindowController.metricProvider?()
+            ?? PreferencesWindowController.fallbackMetrics
+        boxes = choices.map {
+            NSButton(checkboxWithTitle: $0.label, target: self, action: #selector(toggled))
+        }
+
+        let list = NSStackView(views: boxes)
+        list.orientation = .vertical
+        list.alignment = .leading
+        list.spacing = 6
+
+        install(rows: [
+            [rowLabel("Show in menu bar:"), list],
+            [spacer, caption("Each checked metric becomes a menu bar widget. Widgets bind to any "
+                             + "metric; clicking one opens the main window.")],
+        ])
+    }
+
+    override func refresh() {
+        let current = Set(settings.menuBarWidgets)
+        for (choice, box) in zip(choices, boxes) {
+            box.state = current.contains(choice.id) ? .on : .off
+        }
+    }
+
+    @objc private func toggled() {
+        let selected = zip(choices, boxes).filter { $1.state == .on }.map { $0.0.id }
+        // Preserve bound IDs this pane doesn't know about (metric from a module
+        // that isn't loaded right now) — unchecking what we can't display would
+        // silently destroy the user's binding.
+        let known = Set(choices.map { $0.id })
+        let unknown = settings.menuBarWidgets.filter { !known.contains($0) }
+        settings.menuBarWidgets = selected + unknown
+    }
+}
