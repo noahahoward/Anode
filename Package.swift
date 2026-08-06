@@ -9,5 +9,6 @@ let package = Package(
         .executableTarget(name: "betterstats", dependencies: ["PowerKit"]),
         .executableTarget(name: "BetterStatsApp", dependencies: ["PowerKit"]),
         .executableTarget(name: "BetterStatsHelper", dependencies: ["PowerKit"]),
+        .testTarget(name: "PowerKitTests", dependencies: ["PowerKit"]),
     ]
 )
