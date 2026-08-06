@@ -35,6 +35,12 @@ final class InspectorView: NSView {
 
     var model: Model? { didSet { rebuild() } }
     var onClose: (() -> Void)?
+    /// Selected process, if any. Details and the quit controls act on this one.
+    private var selectedPID: pid_t?
+    private let detailsBox = NSStackView()
+    private let quitButton = NSButton()
+    private let forceButton = NSButton()
+    private let statusLabel = NSTextField(labelWithString: "")
 
     private let icon = NSImageView()
     private let title = NSTextField(labelWithString: "")
@@ -43,6 +49,7 @@ final class InspectorView: NSView {
     private let closeButton = NSButton()
     private let list = NSStackView()
     private let scroll = NSScrollView()
+    private var buttonRow: NSStackView!
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -94,7 +101,34 @@ final class InspectorView: NSView {
         scroll.drawsBackground = false
         scroll.documentView = list
 
-        for v in [icon, title, subtitle, shares, closeButton, scroll] as [NSView] {
+        detailsBox.orientation = .vertical
+        detailsBox.alignment = .leading
+        detailsBox.spacing = 3
+        detailsBox.isHidden = true
+
+        for b in [quitButton, forceButton] {
+            b.bezelStyle = .rounded
+            b.controlSize = .small
+            b.target = self
+            b.isHidden = true
+        }
+        quitButton.title = "Quit"
+        quitButton.action = #selector(quitSelected)
+        forceButton.title = "Force Quit"
+        forceButton.action = #selector(forceQuitSelected)
+
+        statusLabel.font = Palette.Font.sans(10)
+        statusLabel.textColor = Palette.dim
+        statusLabel.maximumNumberOfLines = 2
+
+        let buttons = NSStackView(views: [quitButton, forceButton, statusLabel])
+        buttons.orientation = .horizontal
+        buttons.spacing = 6
+        buttons.translatesAutoresizingMaskIntoConstraints = false
+        self.buttonRow = buttons
+
+        for v in [icon, title, subtitle, shares, closeButton, scroll,
+                  detailsBox, buttons] as [NSView] {
             v.translatesAutoresizingMaskIntoConstraints = false
             addSubview(v)
         }
@@ -125,7 +159,15 @@ final class InspectorView: NSView {
             scroll.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 14),
             scroll.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
             scroll.topAnchor.constraint(equalTo: shares.bottomAnchor, constant: 10),
-            scroll.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -10),
+            scroll.bottomAnchor.constraint(equalTo: detailsBox.topAnchor, constant: -10),
+
+            detailsBox.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 14),
+            detailsBox.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12),
+            detailsBox.bottomAnchor.constraint(equalTo: buttons.topAnchor, constant: -8),
+
+            buttons.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 14),
+            buttons.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -12),
+            buttons.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -12),
         ])
         restyle()
     }
@@ -175,6 +217,98 @@ final class InspectorView: NSView {
             list.addArrangedSubview(row)
             row.widthAnchor.constraint(equalTo: list.widthAnchor).isActive = true
         }
+        // Keep the selection across the two-second refresh if that process is still
+        // alive; drop it silently if it exited.
+        if let pid = selectedPID, !m.rows.contains(where: { $0.pid == pid }) {
+            selectedPID = nil
+        }
+        showDetails()
+    }
+
+    // ── Process details and quitting ────────────────────────────────────────
+
+    private func showDetails() {
+        detailsBox.arrangedSubviews.forEach {
+            detailsBox.removeArrangedSubview($0); $0.removeFromSuperview()
+        }
+        guard let pid = selectedPID, let d = ProcessInspector.details(for: pid) else {
+            detailsBox.isHidden = true
+            quitButton.isHidden = true
+            forceButton.isHidden = true
+            statusLabel.stringValue = ""
+            return
+        }
+        detailsBox.isHidden = false
+
+        func line(_ label: String, _ value: String) {
+            let l = NSTextField(labelWithString: label)
+            l.font = Palette.Font.sans(10)
+            l.textColor = Palette.faint
+            let v = NSTextField(labelWithString: value)
+            v.font = Palette.Font.mono(10)
+            v.textColor = Palette.dim
+            v.lineBreakMode = .byTruncatingMiddle
+            let row = NSStackView(views: [l, v])
+            row.orientation = .horizontal
+            row.distribution = .fill
+            l.setContentHuggingPriority(.defaultHigh, for: .horizontal)
+            v.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+            detailsBox.addArrangedSubview(row)
+            row.widthAnchor.constraint(equalTo: detailsBox.widthAnchor).isActive = true
+        }
+
+        line("PID", "\(d.pid)")
+        if let parent = d.parentName { line("Parent", "\(parent) (\(d.parentPID))") }
+        line("User", d.userName ?? "uid \(d.uid)")
+        line("Threads", "\(d.threadCount) (\(d.runningThreads) running)")
+        line("Memory", MetricUnit.bytes.format(Double(d.residentSize)))
+        line("Open files", "\(d.openFiles)")
+        line("Ctx switches", "\(d.contextSwitches)")
+
+        // Quitting is only offered where it can actually work. A button that is
+        // guaranteed to fail with EPERM is worse than no button — it implies the
+        // app could do it and chose not to.
+        let canSignal = d.isOwnedByCurrentUser && !ProcessControl.isSelf(pid)
+        quitButton.isHidden = false
+        forceButton.isHidden = false
+        quitButton.isEnabled = canSignal
+        forceButton.isEnabled = canSignal
+        if ProcessControl.isSelf(pid) {
+            statusLabel.stringValue = "This is BetterStats"
+        } else if !d.isOwnedByCurrentUser {
+            statusLabel.stringValue = "Owned by \(d.userName ?? "another user")"
+        } else {
+            statusLabel.stringValue = ""
+        }
+    }
+
+    @objc private func quitSelected() {
+        guard let pid = selectedPID else { return }
+        report(ProcessControl.quit(pid: pid))
+    }
+
+    @objc private func forceQuitSelected() {
+        guard let pid = selectedPID,
+              let d = ProcessInspector.details(for: pid) else { return }
+
+        // Force quit is SIGKILL: uncatchable, so unsaved work is simply gone. That
+        // warrants a confirmation in a way an ordinary quit does not.
+        let alert = NSAlert()
+        alert.messageText = "Force quit \(d.name)?"
+        alert.informativeText = "Force quitting sends SIGKILL, which the process "
+            + "cannot catch. Any unsaved work will be lost."
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Force Quit")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+
+        report(ProcessControl.forceQuit(pid: pid))
+    }
+
+    private func report(_ result: ProcessControl.Result) {
+        statusLabel.stringValue = result.message
+        statusLabel.textColor = result == .requested || result == .killed
+            ? Palette.dim : Palette.warn
     }
 
     private func makeRow(_ r: Row) -> NSView {
@@ -197,13 +331,51 @@ final class InspectorView: NSView {
         left.orientation = .horizontal
         left.spacing = 6
 
-        let row = NSStackView(views: [left, value])
-        row.orientation = .horizontal
-        row.distribution = .fill
+        let row = ProcessRowView(pid: r.pid) { [weak self] pid in
+            self?.selectedPID = (self?.selectedPID == pid) ? nil : pid
+            self?.rebuild()
+        }
+        row.isSelected = (r.pid == selectedPID)
+        let stack = NSStackView(views: [left, value])
+        stack.orientation = .horizontal
+        stack.distribution = .fill
         left.setContentHuggingPriority(.defaultLow, for: .horizontal)
         value.setContentHuggingPriority(.defaultHigh, for: .horizontal)
-        row.translatesAutoresizingMaskIntoConstraints = false
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        row.addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.leadingAnchor.constraint(equalTo: row.leadingAnchor, constant: 5),
+            stack.trailingAnchor.constraint(equalTo: row.trailingAnchor, constant: -5),
+            stack.topAnchor.constraint(equalTo: row.topAnchor, constant: 2),
+            stack.bottomAnchor.constraint(equalTo: row.bottomAnchor, constant: -2),
+        ])
         return row
+    }
+
+    /// A selectable process row. Same rounded-pill treatment as the main table so
+    /// selection reads consistently across the app.
+    private final class ProcessRowView: NSView {
+        private let pid: pid_t
+        private let onClick: (pid_t) -> Void
+        var isSelected = false { didSet { needsDisplay = true } }
+
+        init(pid: pid_t, onClick: @escaping (pid_t) -> Void) {
+            self.pid = pid
+            self.onClick = onClick
+            super.init(frame: .zero)
+            translatesAutoresizingMaskIntoConstraints = false
+            setAccessibilityRole(.button)
+        }
+        required init?(coder: NSCoder) { fatalError() }
+
+        override func draw(_ dirtyRect: NSRect) {
+            guard isSelected else { return }
+            Palette.selection.setFill()
+            NSBezierPath(roundedRect: bounds, xRadius: Palette.Radius.chip,
+                         yRadius: Palette.Radius.chip).fill()
+        }
+        override func mouseDown(with event: NSEvent) { onClick(pid) }
+        override func resetCursorRects() { addCursorRect(bounds, cursor: .pointingHand) }
     }
 
     // ── Model construction ──────────────────────────────────────────────────
