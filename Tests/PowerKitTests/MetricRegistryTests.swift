@@ -6,10 +6,10 @@ final class MetricRegistryTests: XCTestCase {
     // ── Unit formatting: negative, zero, huge, NaN for every unit ──────────────
 
     func testPercentPerHourFormatting() {
-        XCTAssertEqual(MetricUnit.percentPerHour.format(4.11), "4.1 %/hr")
-        XCTAssertEqual(MetricUnit.percentPerHour.format(-4.2), "-4.2 %/hr")
-        XCTAssertEqual(MetricUnit.percentPerHour.format(0), "0.0 %/hr")
-        XCTAssertEqual(MetricUnit.percentPerHour.format(98765.4), "98765 %/hr")
+        XCTAssertEqual(MetricUnit.percentPerHour.format(4.11), "4.1%/hr")
+        XCTAssertEqual(MetricUnit.percentPerHour.format(-4.2), "-4.2%/hr")
+        XCTAssertEqual(MetricUnit.percentPerHour.format(0), "0.0%/hr")
+        XCTAssertEqual(MetricUnit.percentPerHour.format(98765.4), "98765%/hr")
         XCTAssertEqual(MetricUnit.percentPerHour.format(.nan), "—")
         XCTAssertEqual(MetricUnit.percentPerHour.format(.infinity), "—")
     }

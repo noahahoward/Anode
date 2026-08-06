@@ -168,6 +168,9 @@ public final class MenuBarWidgetController: NSObject {
         case .text, .textWithLabel:
             button.image = nil
             button.imagePosition = .noImage
+            // Status item buttons default to a single clipped line.
+            (button.cell as? NSButtonCell)?.usesSingleLineMode = false
+            button.lineBreakMode = .byClipping
             button.attributedTitle = WidgetRenderer.attributedTitle(
                 style: entry.config.style, descriptor: descriptor, value: value)
         case .bar, .sparkline, .dot:
@@ -189,27 +192,52 @@ enum WidgetRenderer {
 
     static func attributedTitle(style: WidgetStyle, descriptor: MetricDescriptor?,
                                 value: MetricValue?) -> NSAttributedString {
-        let valueFont = NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .medium)
-        let labelFont = NSFont.systemFont(ofSize: 11, weight: .regular)
+        // Stacked label-over-value, matching the density convention menu bar
+        // monitors use. Two small lines occupy less horizontal space than one
+        // medium line plus a separator, and horizontal space is the scarce
+        // resource up there.
+        //
+        // Both lines use labelColor. secondaryLabelColor is a low-contrast grey
+        // that is legible against a plain desktop and effectively invisible against
+        // a busy or light wallpaper — every other menu bar element uses full-weight
+        // label colour for exactly this reason.
+        let valueFont = NSFont.monospacedDigitSystemFont(ofSize: 10, weight: .semibold)
+        let labelFont = NSFont.systemFont(ofSize: 8, weight: .medium)
+
+        let para = NSMutableParagraphStyle()
+        para.alignment = .center
+        // The menu bar is only ~22pt tall, so the two lines have to be pulled
+        // tight or the second one is clipped.
+        para.maximumLineHeight = 10
+        para.minimumLineHeight = 10
+        para.lineSpacing = 0
+
         let out = NSMutableAttributedString()
 
-        if style == .textWithLabel {
+        let stacked = (style == .textWithLabel)
+        if stacked {
             // "?" for an unknown metric: neutral, and the tooltip carries the detail.
-            let label = descriptor?.shortTitle ?? "?"
-            out.append(NSAttributedString(string: label + " ", attributes: [
-                .font: labelFont, .foregroundColor: NSColor.secondaryLabelColor]))
+            // A per-reading label wins over the descriptor's: see MetricValue.label.
+            let label = value?.label ?? descriptor?.shortTitle ?? "?"
+            out.append(NSAttributedString(string: label + "\n", attributes: [
+                .font: labelFont,
+                .foregroundColor: NSColor.labelColor,
+                .paragraphStyle: para]))
         }
+
+        let valueAttrs: [NSAttributedString.Key: Any] = [
+            .font: valueFont,
+            .foregroundColor: NSColor.labelColor,
+            .paragraphStyle: para,
+        ]
         if let v = value {
-            out.append(NSAttributedString(string: v.text, attributes: [
-                .font: valueFont, .foregroundColor: NSColor.labelColor]))
+            out.append(NSAttributedString(string: v.text, attributes: valueAttrs))
             if v.isEstimate {
                 // Same marker the app uses for an uncalibrated total. Never hidden.
-                out.append(NSAttributedString(string: "*", attributes: [
-                    .font: valueFont, .foregroundColor: NSColor.secondaryLabelColor]))
+                out.append(NSAttributedString(string: "*", attributes: valueAttrs))
             }
         } else {
-            out.append(NSAttributedString(string: "—", attributes: [
-                .font: valueFont, .foregroundColor: NSColor.secondaryLabelColor]))
+            out.append(NSAttributedString(string: "\u{2014}", attributes: valueAttrs))
         }
         return out
     }

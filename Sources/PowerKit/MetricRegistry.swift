@@ -45,9 +45,11 @@ public enum MetricUnit: CaseIterable {
         guard value.isFinite else { return "—" }
         switch self {
         case .percentPerHour:
-            // One decimal below 10 ("4.1 %/hr"), none above — menu bar space is scarce
+            // One decimal below 10 ("4.1%/hr"), none above — menu bar space is scarce
             // and a tenth of a %/hr is noise once the drain is in double digits.
-            return String(format: abs(value) >= 10 ? "%.0f %%/hr" : "%.1f %%/hr", value)
+            // No space before the unit: it reads as one quantity, not two tokens,
+            // and it buys back a pixel column in the menu bar.
+            return String(format: abs(value) >= 10 ? "%.0f%%/hr" : "%.1f%%/hr", value)
         case .percent:
             // Takes 0–100. (For 0–1 fractions use .ratio.)
             return String(format: "%.0f%%", value)
@@ -86,16 +88,22 @@ public struct MetricValue {
     public let value: Double
     public let text: String
     public let isEstimate: Bool
+    /// Overrides the descriptor's short title for this reading only. A metric whose
+    /// MEANING changes with state needs a label that changes with it: "Drain" is
+    /// wrong while the pack is charging or sitting on AC, and a stale label beside a
+    /// correct number is worse than no label.
+    public let label: String?
 
-    public init(value: Double, text: String, isEstimate: Bool) {
+    public init(value: Double, text: String, isEstimate: Bool, label: String? = nil) {
+        self.label = label
         self.value = value
         self.text = text
         self.isEstimate = isEstimate
     }
 
     /// Convenience: format `text` from the unit so value and text cannot disagree.
-    public init(_ value: Double, unit: MetricUnit, isEstimate: Bool) {
-        self.init(value: value, text: unit.format(value), isEstimate: isEstimate)
+    public init(_ value: Double, unit: MetricUnit, isEstimate: Bool, label: String? = nil) {
+        self.init(value: value, text: unit.format(value), isEstimate: isEstimate, label: label)
     }
 }
 
@@ -197,10 +205,22 @@ public final class MetricRegistry {
     /// couple of seconds rather than a stale or invented number.
     public func registerBatteryMetrics() {
         register(MetricDescriptor(
-            id: .batteryDrain, title: "Battery drain", shortTitle: "Drain",
+            id: .batteryDrain, title: "Battery rate", shortTitle: "Drain",
             unit: .percentPerHour, category: "Battery", higherIsWorse: true
         )) { [weak self] in
             guard let s = self?.latestSnapshot() else { return nil }
+            // Charging is not negative drain, it is gain, and the label changes with
+            // it. Reporting "drain" while the pack is filling is just wrong — and
+            // macOS itself often has no estimate here (verified: pmset reported
+            // "(no estimate)" at 73% while charging), so we compute it.
+            if s.direction == .charging, let rate = s.batteryRate_pctHr {
+                return MetricValue(value: rate,
+                                   text: "+" + MetricUnit.percentPerHour.format(rate),
+                                   isEstimate: false, label: "Charge")
+            }
+            if s.direction == .acIdle {
+                return MetricValue(value: 0, text: "AC", isEstimate: false, label: "Power")
+            }
             // Estimate until the SMC/gas-gauge gain has converged — same "*" rule the
             // app's own status item uses.
             return MetricValue(s.smoothed_pctHr, unit: .percentPerHour,
