@@ -127,6 +127,7 @@ public final class PowerMonitor {
     /// Fast samples accumulated since the last gas-gauge publish, so calibration
     /// compares like with like: a mean over the same period, not a single instant.
     private var fastSincePublish: [Double] = []
+    private var lastLightTick: Date?
 
     public var ioReportAvailable: Bool { ioreport != nil }
 
@@ -137,16 +138,43 @@ public final class PowerMonitor {
     }
 
     /// Returns nil on the very first tick — there is no window to diff against yet.
+    /// A full tick sweeps every process; a light tick does not.
+    ///
+    /// This distinction is the difference between a monitor you can leave running
+    /// and one you can't. The per-process sweep is ~800 `proc_pid_rusage` calls plus
+    /// the app rollup, and it exists purely to populate the table — which nobody is
+    /// looking at when the window is closed. The menu bar needs only two numbers,
+    /// total drain and time remaining, and both come from SMC PSTR plus the battery:
+    /// three cheap IOKit reads.
+    ///
+    /// Measured motivation: the full path spiked ~5% CPU every tick and drove ~20 KB/s
+    /// of SQLite WAL. On a laptop used for schoolwork that is not an acceptable idle
+    /// cost, and it buys nothing while hidden.
     @discardableResult
-    public func tick() -> Snapshot? {
-        let sweep = ProcessSampler.sweep()
-        let reading = ioreport?.sample()
-        defer { lastSweep = sweep }
+    public func tick(full: Bool = true) -> Snapshot? {
+        let sweep = full ? ProcessSampler.sweep() : nil
+        // Skipped on light ticks: the menu bar shows the whole-system total from
+        // PSTR and never the GPU rail, so differencing 314 channels would be work
+        // done for a number nobody reads.
+        let reading = full ? ioreport?.sample() : nil
+        defer { if let s = sweep { lastSweep = s } }
 
-        guard let prior = lastSweep else { return nil }
-
-        let drains = DrainCalculator.between(prior, sweep, scale: scale)
-        let attributed = drains.reduce(0) { $0 + $1.watts }
+        // In light mode the per-process numbers are simply absent rather than stale:
+        // callers get empty `drains`/`apps` and an attributed figure of zero, which
+        // the UI must not render as "apps used nothing". Nothing draws them while
+        // hidden, and the next full tick repopulates before the window is shown.
+        var drains: [ProcessDrain] = []
+        var attributed = 0.0
+        var interval: TimeInterval = 0
+        if let sweep {
+            guard let prior = lastSweep else { return nil }
+            drains = DrainCalculator.between(prior, sweep, scale: scale)
+            attributed = drains.reduce(0) { $0 + $1.watts }
+            interval = sweep.timestamp.timeIntervalSince(prior.timestamp)
+        } else {
+            interval = lastLightTick.map { Date().timeIntervalSince($0) } ?? 0
+        }
+        lastLightTick = Date()
         let gpu = reading?.gpu_W
         let fast = attributed + (gpu ?? 0)
         fastSincePublish.append(fast)
@@ -215,11 +243,14 @@ public final class PowerMonitor {
             rawResidual_W: smoothed - attributed - (gpu ?? 0),
             scale: scale,
             state: Battery.state(),
-            coverage: sweep.coverage,
-            denied: sweep.denied,
-            readable: sweep.processes.count,
-            attempted: sweep.attempted,
-            interval: sweep.timestamp.timeIntervalSince(prior.timestamp)
+            // Light ticks report zero coverage rather than carrying the last full
+            // sweep's figures forward, so the UI can tell "not measured this tick"
+            // apart from "measured and found nothing".
+            coverage: sweep?.coverage ?? 0,
+            denied: sweep?.denied ?? 0,
+            readable: sweep?.processes.count ?? 0,
+            attempted: sweep?.attempted ?? 0,
+            interval: interval
         )
     }
 }

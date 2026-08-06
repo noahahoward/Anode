@@ -55,6 +55,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
     let graphSpan: TimeInterval = 3600
 
     var lastSnapshot: PowerMonitor.Snapshot?
+    /// When the window is closed the app is menu-bar-only, and the expensive
+    /// per-process sweep populates a table nobody is looking at. Full ticks then
+    /// drop to this cadence purely so the 10 hr power history keeps accruing.
+    var lastFullTick = Date.distantPast
+    let backgroundFullInterval: TimeInterval = 60
     var windowPercents: [String: Double] = [:]
     var lastWindowQuery = Date.distantPast
 
@@ -112,19 +117,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
 
     func refresh() {
         guard let m = monitor else { return }
+        // Read visibility on the main thread; AppKit state is not thread-safe.
+        let visible = main.window.isVisible
         DispatchQueue.global(qos: .utility).async { [weak self] in
-            guard let self, let snap = m.tick() else { return }
+            guard let self else { return }
+            let wantFull = visible
+                || Date().timeIntervalSince(self.lastFullTick) >= self.backgroundFullInterval
+            guard let snap = m.tick(full: wantFull) else { return }
+            if wantFull { self.lastFullTick = Date() }
 
             // Durable history and the observed-drain estimate both belong off the
             // main thread: one touches SQLite, the other only does arithmetic but
             // there is no reason to make the UI wait for either.
             let onBattery = !(snap.state?.onAC ?? true)
-            self.store?.record(apps: snap.apps,
-                               measured_W: snap.measured_W,
-                               attributed_W: snap.attributed_W,
-                               residual_W: snap.residual_W,
-                               onBattery: onBattery,
-                               interval: snap.interval)
+            // Only full ticks carry per-app energy, and writing an interval row with
+            // no apps would add WAL churn for nothing. At 2 s with ~30 apps this was
+            // driving ~20 KB/s of write-ahead log.
+            if wantFull {
+                self.store?.record(apps: snap.apps,
+                                   measured_W: snap.measured_W,
+                                   attributed_W: snap.attributed_W,
+                                   residual_W: snap.residual_W,
+                                   onBattery: onBattery,
+                                   interval: snap.interval)
+            }
             if let st = snap.state {
                 self.drain.record(state: st, scale: snap.scale,
                                   powerBased_pctHr: snap.smoothed_pctHr)
@@ -132,7 +148,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
 
             // The window query walks history, so it is not worth doing every tick.
             var pcts: [String: Double]? = nil
-            if Date().timeIntervalSince(self.lastWindowQuery) > 20, let store = self.store {
+            if visible, Date().timeIntervalSince(self.lastWindowQuery) > 20, let store = self.store {
                 let hours = Settings.shared.powerWindowHours
                 let rowsW = store.windowPower(hours: hours,
                                               joulesPerPercent: snap.scale.joulesPerPercent)
@@ -142,7 +158,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
 
             DispatchQueue.main.async {
                 if let p = pcts { self.windowPercents = p; self.lastWindowQuery = Date() }
-                self.apply(snap)
+                // Hidden: refresh only the menu bar. Reloading a table, re-sorting
+                // rows and redrawing the graph for an off-screen window is pure cost.
+                if visible {
+                    self.apply(snap)
+                } else {
+                    MetricRegistry.shared.update(with: snap)
+                    self.widgets.refresh()
+                }
             }
         }
     }
@@ -297,6 +320,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
     @objc func openPrefs() { PreferencesWindowController.shared.show() }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ s: NSApplication) -> Bool { false }
+
+    /// Closing the window leaves the app alive in the menu bar, so activating it
+    /// again — Dock icon, Finder, ⌘-Tab — must bring the window back. Without this
+    /// the app appears to launch and do nothing, because AppKit does not reopen a
+    /// window it did not create from a nib.
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows: Bool) -> Bool {
+        if !hasVisibleWindows { main.show() }
+        return true
+    }
 
     // ── Table ───────────────────────────────────────────────────────────────
     func numberOfRows(in tableView: NSTableView) -> Int { rows.count }

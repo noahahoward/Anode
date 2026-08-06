@@ -34,8 +34,38 @@ public struct BatteryScale {
 }
 
 public enum Battery {
+    // A single tick reads these properties several times over — Battery.state(),
+    // PowerTelemetry.sample(), and the capacity scale each want a slice of the same
+    // dictionary. Each call is a full IORegistryEntryCreateCFProperties that builds
+    // the entire AppleSmartBattery tree including the nested BatteryData and
+    // PowerTelemetryData dicts, so doing it three times per tick was pure waste.
+    //
+    // A very short TTL collapses those into one read while staying far below the
+    // ~60 s republish cadence of the underlying counters, so no caller can observe
+    // staler data than it would have got anyway.
+    private static let cacheTTL: TimeInterval = 0.25
+    private static var cached: (props: [String: Any], at: Date)?
+    private static let cacheLock = NSLock()
+
     /// Raw property dictionary from the AppleSmartBattery IORegistry node.
+    /// Cached for `cacheTTL` and safe to call from any thread.
     public static func properties() -> [String: Any]? {
+        cacheLock.lock()
+        if let c = cached, Date().timeIntervalSince(c.at) < cacheTTL {
+            cacheLock.unlock()
+            return c.props
+        }
+        cacheLock.unlock()
+
+        guard let fresh = readProperties() else { return nil }
+
+        cacheLock.lock()
+        cached = (fresh, Date())
+        cacheLock.unlock()
+        return fresh
+    }
+
+    private static func readProperties() -> [String: Any]? {
         let match = IOServiceMatching("AppleSmartBattery")
         let service = IOServiceGetMatchingService(kIOMainPortDefault, match)
         guard service != 0 else { return nil }
