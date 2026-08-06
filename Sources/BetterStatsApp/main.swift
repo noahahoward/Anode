@@ -54,7 +54,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
     /// In-memory graph history. The store owns durable history; this is just the
     /// last hour at tick resolution for drawing.
     var totalSeries: [HistoryGraphView.Point] = []
-    var appsSeries: [HistoryGraphView.Point] = []
     let graphSpan: TimeInterval = 3600
 
     var lastSnapshot: PowerMonitor.Snapshot?
@@ -79,8 +78,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         main.table.target = self
         main.table.action = #selector(tableClicked)
 
+        main.setColumns([
+            ("name", "Application", 240), ("pctHr", "%/hr", 82),
+            ("window", "10 hr power", 96), ("cost", "Runtime cost", 104), ("procs", "Procs", 62),
+        ])
+        main.sidebar.onSelect = { [weak self] lens in self?.select(lens) }
+        main.table.rowHeight = 22
+
         graph = HistoryGraphView(frame: .zero)
         graph.yAxisLabel = "%/hr"
+        graph.showsGrid = false
         main.installGraph(graph)
 
         detail = AppDetailView(frame: .zero)
@@ -223,72 +230,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
             updateDetail()
         }
 
-        updateHeader(s)
         updateLedger(s)
         updateGraph(s)
     }
 
-    func updateHeader(_ s: PowerMonitor.Snapshot) {
-        let charge = s.state.map { "\($0.percent)%\($0.onAC ? " (AC)" : "")" } ?? "—"
-        let est = drain.estimate()
-        let obs = est.map { e in
-            String(format: "  ·  observed %.2f %%/hr (%@, %.0f%% conf)",
-                   e.percentPerHour, e.source.rawValue, e.confidence * 100)
-        } ?? ""
-        main.header.stringValue = String(
-            format: "battery %@  ·  health %.0f%%  ·  1%% = %.0f J  ·  %d of %d readable, %d denied%@",
-            charge, s.scale.health * 100, s.scale.joulesPerPercent,
-            s.readable, s.attempted, s.denied, obs)
-    }
-
     func updateLedger(_ s: PowerMonitor.Snapshot) {
-        let gpu = s.gpu_pctHr.map { String(format: "%5.2f", $0) } ?? "   —"
-        let res = s.residual_pctHr.map { String(format: "%5.2f", $0) } ?? "   —"
-        let share = s.residualShare.map { String(format: "%.0f%%", $0 * 100) } ?? "—"
-        let src = s.smcTotal_W != nil
-            ? "SMC PSTR" + (s.smcGain.map { String(format: " ×%.2f", $0) } ?? "")
-            : (s.measured_W != nil ? "gas gauge (60s)" : "estimating")
+        main.ledger.model = LedgerBarView.Model(
+            apps_pctHr: s.attributed_pctHr,
+            gpu_pctHr: s.gpu_pctHr ?? 0,
+            unattributed_pctHr: s.residual_pctHr ?? 0,
+            total_pctHr: s.smoothed_pctHr,
+            source: s.smcTotal_W != nil
+                ? "PSTR" + (s.smcGain.map { String(format: " ×%.2f", $0) } ?? "")
+                : (s.measured_W != nil ? "gas gauge" : "estimating"),
+            readable: s.readable,
+            attempted: s.attempted,
+            overflow: s.hasAttributionOverflow)
 
-        // Time remaining prefers the observed-discharge estimate over the
-        // power-derived one: it is measured from actual charge leaving the pack,
-        // and it is slew-limited so it cannot swing 3h→9h between ticks.
-        let est = drain.estimate()
-        let left: String
-        if let t = est?.timeRemaining, t.isFinite, t > 0 {
-            left = String(format: "→ %dh %02dm left", Int(t / 3600), (Int(t) % 3600) / 60)
-        } else if let h = s.projectedRuntime_hr() {
-            left = String(format: "→ ~%dh %02dm left", Int(h), Int(h * 60) % 60)
-        } else {
-            left = "on AC"
-        }
-
-        var warn = ""
-        if s.hasAttributionOverflow {
-            // Physically impossible; means double counting. Surfaced rather than
-            // hidden by the max(0,…) clamp on the displayed residual.
-            warn = String(format: "   ⚠︎ attribution overflow %.2f W", -s.rawResidual_W)
-        }
-
-        main.ledger.stringValue = [
-            String(format: "apps (CPU) %5.2f %%/hr    GPU %@ %%/hr    unmeasured %@ %%/hr (%@)",
-                   s.attributed_pctHr, gpu, res, share),
-            String(format: "TOTAL      %5.2f %%/hr    source: %@    %@%@",
-                   s.smoothed_pctHr, src, left, warn),
-            "unmeasured = display, radios, SSD, kernel, and root-owned processes",
-        ].joined(separator: "\n")
+        main.glance.model = GlanceCardView.model(from: s, drain: drain.estimate())
+        main.sidebar.refreshValues()
     }
 
     func updateGraph(_ s: PowerMonitor.Snapshot) {
         let now = Date()
         totalSeries.append(.init(time: now, value: s.smoothed_pctHr))
-        appsSeries.append(.init(time: now, value: s.attributed_pctHr))
         let cutoff = now.addingTimeInterval(-graphSpan)
         totalSeries.removeAll { $0.time < cutoff }
-        appsSeries.removeAll { $0.time < cutoff }
 
+        // One series: total drain. The attributed-versus-unaccounted split already
+        // has a home in the ledger bar directly above, and drawing it twice turned a
+        // glanceable trend into something you had to decode.
         graph.series = [
-            .init(name: "total", color: .systemBlue, points: totalSeries, filled: true),
-            .init(name: "apps", color: .systemOrange, points: appsSeries, filled: false),
+            .init(name: "total", color: Palette.accent, points: totalSeries, filled: true)
         ]
     }
 
@@ -341,6 +314,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
 
     @objc func openPrefs() { PreferencesWindowController.shared.show() }
 
+    /// Lens switch. Only Battery has its columns implemented so far; the rest keep
+    /// the current table rather than showing an empty one, and are wired as their
+    /// data lands.
+    func select(_ lens: SidebarView.Lens) {
+        guard lens == .battery else { return }
+        main.setColumns([
+            ("name", "Application", 240), ("pctHr", "%/hr", 82),
+            ("window", "10 hr power", 96), ("cost", "Runtime cost", 104), ("procs", "Procs", 62),
+        ])
+        main.table.reloadData()
+    }
+
     /// True when a menu bar widget is bound to a sensor metric, so the sampler
     /// knows whether the SMC read is worth doing while the window is closed.
     var needsSensors: Bool {
@@ -364,6 +349,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
     }
 
     // ── Table ───────────────────────────────────────────────────────────────
+    func tableView(_ tv: NSTableView, rowViewForRow row: Int) -> NSTableRowView? {
+        BetterStatsRowView()
+    }
+
     func numberOfRows(in tableView: NSTableView) -> Int { rows.count }
 
     func tableView(_ tv: NSTableView, sortDescriptorsDidChange old: [NSSortDescriptor]) {
