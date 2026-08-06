@@ -2,162 +2,161 @@ import AppKit
 import PowerKit
 
 /// The main window's layout, separated from AppDelegate so the delegate is only
-/// lifecycle and the layout is testable/replaceable on its own.
+/// lifecycle and the layout is testable and replaceable on its own.
 ///
-/// Structure — an Activity-Monitor-shaped window, which is the whole point of the
-/// project. Stats (the app being replaced) renders into menu-bar-sized NSViews and
-/// its "window" is a non-resizable dropdown, so none of its UI could be reused.
+///   ┌────────────┬───────────────────────────────────────────┐
+///   │ rail       │ process table (takes all vertical slack)  │
+///   │            ├───────────────────────────────────────────┤
+///   │  Battery   │ ledger bar + legend                       │
+///   │  CPU       ├──────────────┬────────────────────────────┤
+///   │  Memory    │ glance card  │ history graph              │
+///   └────────────┴──────────────┴────────────────────────────┘
 ///
-///   ┌──────────────────────────────────────────────┐
-///   │ header: battery, health, coverage            │
-///   ├───────────────────────────┬──────────────────┤
-///   │ app table (sortable)      │ detail pane      │  ← detail appears on selection
-///   ├───────────────────────────┴──────────────────┤
-///   │ history graph                                │
-///   ├──────────────────────────────────────────────┤
-///   │ ledger: buckets + measured total + residual  │
-///   └──────────────────────────────────────────────┘
-///
-/// The graph and detail areas are containers rather than concrete types so the
-/// window can be built and shipped before those views exist, and so either can be
-/// swapped without touching layout code.
-public final class MainWindowController: NSObject {
+/// Deliberately no header strip: charge, source and health describe the battery, so
+/// they live in the glance card, and process coverage lives with the ledger where it
+/// states how much of the draw could be attributed. Only the table grows with the
+/// window — a graph that expands at the table's expense is the wrong trade in a view
+/// you scan.
+final class MainWindowController: NSObject {
 
-    public let window: NSWindow
-    public let table = NSTableView()
-    public let header = NSTextField(labelWithString: "starting…")
-    public let ledger = NSTextField(labelWithString: "")
-    /// Host for HistoryGraphView. Empty until a graph is installed.
-    public let graphContainer = NSView()
-    /// Host for AppDetailView. Hidden until a row is selected.
-    public let detailContainer = NSView()
+    let window: NSWindow
+    let table = NSTableView()
+    let sidebar = SidebarView()
+    let ledger = LedgerBarView()
+    let glance = GlanceCardView()
+    let graphContainer = NSView()
+    let detailContainer = NSView()
 
-    private let splitH = NSSplitView()
-    private var detailWidth: CGFloat = 260
+    private let scroll = NSScrollView()
+    private var detailWidth: CGFloat = 280
     private var detailShown = false
+    private let tableSplit = NSSplitView()
 
-    public override init() {
+    override init() {
         window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 900, height: 620),
-            styleMask: [.titled, .closable, .miniaturizable, .resizable],
+            contentRect: NSRect(x: 0, y: 0, width: 940, height: 640),
+            styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
             backing: .buffered, defer: false)
         super.init()
 
-        // CRITICAL. NSWindow.isReleasedWhenClosed defaults to TRUE for windows
-        // created programmatically with initWithContentRect. Closing the window
-        // then deallocates it while our strong reference still points at the freed
-        // memory, and the next message to it — e.g. clicking the menu bar item to
-        // reopen — is EXC_BAD_ACCESS. This crashed the shipped build:
-        //   objc_msgSend / AppDelegate.toggleWindow() / -[NSStatusBarButtonCell _sendActionFrom:]
-        // It reads as a random crash because it needs close-then-reopen to trigger.
-        // A menu bar app outlives its windows by design, so this must be false.
+        // NSWindow.isReleasedWhenClosed defaults to TRUE for programmatically
+        // created windows, so closing one deallocates it while a strong reference
+        // still points at the freed memory — the next message is EXC_BAD_ACCESS.
+        // A menu bar app outlives its windows by design.
         window.isReleasedWhenClosed = false
-
-        window.title = "BetterStats — Battery"
+        window.title = "BetterStats"
+        window.titlebarAppearsTransparent = true
+        window.backgroundColor = Palette.background
         window.center()
         window.setFrameAutosaveName("BetterStatsMain")
-        window.minSize = NSSize(width: 640, height: 420)
+        window.minSize = NSSize(width: 760, height: 500)
 
         let content = NSView()
-        content.autoresizingMask = [.width, .height]
+        content.wantsLayer = true
 
-        // ── Header ───────────────────────────────────────────────────────────
-        header.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
-        header.textColor = .secondaryLabelColor
-        header.lineBreakMode = .byTruncatingTail
-        header.translatesAutoresizingMaskIntoConstraints = false
-        content.addSubview(header)
+        // ── Rail ────────────────────────────────────────────────────────────
+        sidebar.translatesAutoresizingMaskIntoConstraints = false
+        content.addSubview(sidebar)
 
-        // ── Table ────────────────────────────────────────────────────────────
-        table.usesAlternatingRowBackgroundColors = true
-        table.rowSizeStyle = .small
+        // ── Table ───────────────────────────────────────────────────────────
+        table.style = .plain
+        table.backgroundColor = .clear
+        table.usesAlternatingRowBackgroundColors = false
+        table.rowSizeStyle = .custom
+        table.rowHeight = 22
+        table.gridStyleMask = []
+        table.headerView = NSTableHeaderView()
         table.allowsColumnResizing = true
         table.allowsEmptySelection = true
-        table.style = .inset
+        table.selectionHighlightStyle = .none   // drawn by BetterStatsRowView
+        table.intercellSpacing = NSSize(width: 0, height: 0)
+        // Spare width goes to the app name, not spread across every column. Spreading
+        // pushes the numbers to opposite ends of a wide window, so a row can no longer
+        // be read as one line.
+        table.columnAutoresizingStyle = .firstColumnOnlyAutoresizingStyle
 
-        func column(_ id: String, _ title: String, _ width: CGFloat, rightAligned: Bool) {
-            let c = NSTableColumn(identifier: .init(id))
-            c.title = title
-            c.width = width
-            c.minWidth = 48
-            c.sortDescriptorPrototype = NSSortDescriptor(key: id, ascending: false)
-            if rightAligned { c.headerCell.alignment = .right }
-            table.addTableColumn(c)
-        }
-        column("name", "App", 240, rightAligned: false)
-        column("pctHr", "%/hr", 78, rightAligned: true)
-        // Populated once HistoryStore is wired; shows "—" until the window has data.
-        column("window", "10 hr power", 96, rightAligned: true)
-        column("cost", "Runtime cost", 104, rightAligned: true)
-        column("procs", "Procs", 60, rightAligned: true)
-        column("kind", "Kind", 70, rightAligned: false)
-
-        let scroll = NSScrollView()
         scroll.hasVerticalScroller = true
         scroll.borderType = .noBorder
-        scroll.documentView = table
+        scroll.drawsBackground = false
         scroll.autohidesScrollers = true
+        scroll.documentView = table
 
-        // ── Split: table | detail ────────────────────────────────────────────
-        splitH.isVertical = true
-        splitH.dividerStyle = .thin
-        splitH.translatesAutoresizingMaskIntoConstraints = false
-        splitH.addArrangedSubview(scroll)
         detailContainer.isHidden = true
-        splitH.addArrangedSubview(detailContainer)
-        content.addSubview(splitH)
+        tableSplit.isVertical = true
+        tableSplit.dividerStyle = .thin
+        tableSplit.translatesAutoresizingMaskIntoConstraints = false
+        tableSplit.addArrangedSubview(scroll)
+        tableSplit.addArrangedSubview(detailContainer)
+        content.addSubview(tableSplit)
 
-        // ── Graph ────────────────────────────────────────────────────────────
-        graphContainer.translatesAutoresizingMaskIntoConstraints = false
-        graphContainer.wantsLayer = true
-        content.addSubview(graphContainer)
-
-        // ── Ledger ───────────────────────────────────────────────────────────
-        ledger.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
-        ledger.maximumNumberOfLines = 3
-        ledger.lineBreakMode = .byTruncatingTail
+        // ── Ledger ──────────────────────────────────────────────────────────
         ledger.translatesAutoresizingMaskIntoConstraints = false
         content.addSubview(ledger)
 
+        // ── Bottom: glance | graph, one continuous surface ──────────────────
+        glance.translatesAutoresizingMaskIntoConstraints = false
+        graphContainer.translatesAutoresizingMaskIntoConstraints = false
+        content.addSubview(glance)
+        content.addSubview(graphContainer)
+
+        let railWidth: CGFloat = 168
         NSLayoutConstraint.activate([
-            header.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 14),
-            header.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -14),
-            header.topAnchor.constraint(equalTo: content.topAnchor, constant: 10),
+            sidebar.leadingAnchor.constraint(equalTo: content.leadingAnchor),
+            sidebar.topAnchor.constraint(equalTo: content.topAnchor),
+            sidebar.bottomAnchor.constraint(equalTo: content.bottomAnchor),
+            sidebar.widthAnchor.constraint(equalToConstant: railWidth),
 
-            splitH.leadingAnchor.constraint(equalTo: content.leadingAnchor),
-            splitH.trailingAnchor.constraint(equalTo: content.trailingAnchor),
-            splitH.topAnchor.constraint(equalTo: header.bottomAnchor, constant: 8),
+            tableSplit.leadingAnchor.constraint(equalTo: sidebar.trailingAnchor),
+            tableSplit.trailingAnchor.constraint(equalTo: content.trailingAnchor),
+            tableSplit.topAnchor.constraint(equalTo: content.topAnchor, constant: 38),
 
-            graphContainer.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 14),
-            graphContainer.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -14),
-            graphContainer.topAnchor.constraint(equalTo: splitH.bottomAnchor, constant: 8),
-            graphContainer.heightAnchor.constraint(equalToConstant: 96),
+            ledger.leadingAnchor.constraint(equalTo: sidebar.trailingAnchor, constant: 16),
+            ledger.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -16),
+            ledger.topAnchor.constraint(equalTo: tableSplit.bottomAnchor, constant: 11),
 
-            ledger.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 14),
-            ledger.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -14),
-            ledger.topAnchor.constraint(equalTo: graphContainer.bottomAnchor, constant: 8),
-            ledger.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -10),
+            // Fixed-height bottom row: only the table grows.
+            glance.leadingAnchor.constraint(equalTo: sidebar.trailingAnchor, constant: 16),
+            glance.widthAnchor.constraint(equalToConstant: 236),
+            glance.topAnchor.constraint(equalTo: ledger.bottomAnchor, constant: 14),
+            glance.bottomAnchor.constraint(lessThanOrEqualTo: content.bottomAnchor, constant: -14),
+
+            graphContainer.leadingAnchor.constraint(equalTo: glance.trailingAnchor, constant: 18),
+            graphContainer.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -16),
+            graphContainer.topAnchor.constraint(equalTo: ledger.bottomAnchor, constant: 14),
+            graphContainer.heightAnchor.constraint(equalToConstant: 132),
+            graphContainer.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -14),
         ])
 
         window.contentView = content
     }
 
-    /// Installs a view into the graph area. Kept generic so the window does not need
-    /// to know the graph type at compile time.
-    ///
-    /// Pinned with constraints rather than an autoresizing mask. The containers are
-    /// themselves Auto Layout driven, so at install time their bounds are still zero;
-    /// seeding a subview's frame from a zero rect and then letting the autoresizing
-    /// mask scale it produces a garbage frame — which showed up as a clipped plot
-    /// with its y-axis labels off-screen.
-    public func installGraph(_ view: NSView) {
-        install(view, in: graphContainer)
+    /// Column set for the active lens. Rebuilding rather than hiding keeps the
+    /// header honest — a hidden column still occupies sort state and confuses
+    /// keyboard navigation.
+    func setColumns(_ columns: [(id: String, title: String, width: CGFloat)]) {
+        let sort = table.sortDescriptors.first
+        while let c = table.tableColumns.last { table.removeTableColumn(c) }
+        for spec in columns {
+            let c = NSTableColumn(identifier: .init(spec.id))
+            c.title = spec.title
+            c.width = spec.width
+            c.minWidth = 44
+            c.sortDescriptorPrototype = NSSortDescriptor(key: spec.id, ascending: false)
+            if spec.id != "name" { c.headerCell.alignment = .right }
+            table.addTableColumn(c)
+        }
+        if let sort, columns.contains(where: { $0.id == sort.key }) {
+            table.sortDescriptors = [sort]
+        }
     }
 
-    public func installDetail(_ view: NSView) {
-        install(view, in: detailContainer)
-    }
+    func installGraph(_ view: NSView) { install(view, in: graphContainer) }
+    func installDetail(_ view: NSView) { install(view, in: detailContainer) }
 
+    /// Pinned with constraints rather than an autoresizing mask: the containers are
+    /// Auto Layout driven, so their bounds are still zero at install time and
+    /// seeding a frame from a zero rect then autoresizing it produces garbage —
+    /// which showed up as a clipped plot with its axis labels off-screen.
     private func install(_ view: NSView, in container: NSView) {
         container.subviews.forEach { $0.removeFromSuperview() }
         view.translatesAutoresizingMaskIntoConstraints = false
@@ -170,30 +169,50 @@ public final class MainWindowController: NSObject {
         ])
     }
 
-    /// Show/hide the detail pane. Animating the split rather than rebuilding it keeps
-    /// the table's scroll position and selection intact, which matters because the
-    /// table reloads every couple of seconds underneath the user.
-    public func setDetailVisible(_ visible: Bool) {
+    func setDetailVisible(_ visible: Bool) {
         guard visible != detailShown else { return }
         detailShown = visible
         detailContainer.isHidden = !visible
-        splitH.adjustSubviews()
+        tableSplit.adjustSubviews()
         if visible {
-            let total = splitH.bounds.width
-            splitH.setPosition(max(320, total - detailWidth), ofDividerAt: 0)
+            tableSplit.setPosition(max(360, tableSplit.bounds.width - detailWidth), ofDividerAt: 0)
         }
     }
 
-    public func show() {
+    func show() {
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
     }
 
-    public func toggle() {
-        if window.isVisible && NSApp.isActive {
-            window.orderOut(nil)
-        } else {
-            show()
-        }
+    func toggle() {
+        if window.isVisible && NSApp.isActive { window.orderOut(nil) } else { show() }
+    }
+}
+
+/// Row background. The selection is one continuous pill across the row, and the
+/// separator's ENDS are inset by the same radius so the hairline stops exactly where
+/// the pill's straight edge begins — a full-width border overhangs the curve at both
+/// corners, which is visible the moment a row is selected.
+final class BetterStatsRowView: NSTableRowView {
+
+    override func drawSelection(in dirtyRect: NSRect) {
+        guard selectionHighlightStyle != .none else { return }
+        let r = bounds.insetBy(dx: 6, dy: 1)
+        Palette.selection.setFill()
+        NSBezierPath(roundedRect: r,
+                     xRadius: Palette.Radius.row,
+                     yRadius: Palette.Radius.row).fill()
+    }
+
+    override func drawBackground(in dirtyRect: NSRect) {
+        guard !isSelected else { return }   // no hairline under a rounded selection
+        Palette.lineSoft.setFill()
+        NSRect(x: 6 + Palette.Radius.row, y: bounds.maxY - 1,
+               width: bounds.width - 12 - Palette.Radius.row * 2, height: 1).fill()
+    }
+
+    override var isEmphasized: Bool {
+        get { false }   // keep our own colours when the window loses focus
+        set {}
     }
 }
