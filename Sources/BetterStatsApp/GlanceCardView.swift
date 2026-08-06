@@ -68,6 +68,9 @@ final class GlanceCardView: NSView {
             root.leadingAnchor.constraint(equalTo: leadingAnchor),
             root.trailingAnchor.constraint(equalTo: trailingAnchor),
             root.topAnchor.constraint(equalTo: topAnchor),
+            // Bottom-pinned so the card reports a real height; the graph beside it
+            // matches that height, which is what makes their baselines agree.
+            root.bottomAnchor.constraint(lessThanOrEqualTo: bottomAnchor),
         ])
     }
 
