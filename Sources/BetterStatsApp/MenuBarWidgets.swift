@@ -166,13 +166,18 @@ public final class MenuBarWidgetController: NSObject {
 
         switch entry.config.style {
         case .text, .textWithLabel:
-            button.image = nil
-            button.imagePosition = .noImage
-            // Status item buttons default to a single clipped line.
-            (button.cell as? NSButtonCell)?.usesSingleLineMode = false
-            button.lineBreakMode = .byClipping
-            button.attributedTitle = WidgetRenderer.attributedTitle(
-                style: entry.config.style, descriptor: descriptor, value: value)
+            // Rendered as an image rather than an attributedTitle. AppKit centres a
+            // button title using its own line metrics, which for a two-line string
+            // put the label too high and left the value baseline above every
+            // neighbouring menu bar item. Drawing it ourselves makes the geometry
+            // exact. Template rendering also means macOS tints it like every other
+            // item, so it stays legible on any wallpaper in either appearance.
+            button.attributedTitle = NSAttributedString()
+            button.imagePosition = .imageOnly
+            button.image = WidgetRenderer.textImage(
+                label: entry.config.style == .textWithLabel
+                    ? (value?.label ?? descriptor?.shortTitle ?? "?") : nil,
+                value: value.map { $0.text + ($0.isEstimate ? "*" : "") } ?? "\u{2014}")
         case .bar, .sparkline, .dot:
             button.attributedTitle = NSAttributedString()
             button.imagePosition = .imageOnly
@@ -249,6 +254,48 @@ enum WidgetRenderer {
         }
         guard let v = value else { return "\(d.title): no data" }
         return "\(d.title): \(v.text)\(v.isEstimate ? " (estimate)" : "")"
+    }
+
+    /// Draws label-over-value at exact pixel positions, as a TEMPLATE image so the
+    /// system tints it to match the rest of the menu bar.
+    ///
+    /// Alignment rule: the value line is placed where a normal single-line menu bar
+    /// item's text would sit, and the label is stacked above it. Centring the pair
+    /// as a block instead pushes the value up and it no longer lines up with its
+    /// neighbours — which is exactly what the attributedTitle version did wrong.
+    static func textImage(label: String?, value: String) -> NSImage {
+        let h = NSStatusBar.system.thickness          // 22pt today, but ask, do not assume
+        let valueFont = NSFont.monospacedDigitSystemFont(ofSize: label == nil ? 12 : 10.5,
+                                                         weight: .semibold)
+        let labelFont = NSFont.systemFont(ofSize: 8, weight: .medium)
+
+        let vAttrs: [NSAttributedString.Key: Any] = [.font: valueFont, .foregroundColor: NSColor.black]
+        let lAttrs: [NSAttributedString.Key: Any] = [.font: labelFont, .foregroundColor: NSColor.black]
+
+        let vStr = NSAttributedString(string: value, attributes: vAttrs)
+        let lStr = label.map { NSAttributedString(string: $0, attributes: lAttrs) }
+
+        let vSize = vStr.size()
+        let lSize = lStr?.size() ?? .zero
+        let pad: CGFloat = 3
+        let w = max(vSize.width, lSize.width) + pad * 2
+
+        let img = NSImage(size: NSSize(width: ceil(w), height: h), flipped: false) { _ in
+            if let lStr {
+                // Two lines: sit the pair low enough that the VALUE keeps a normal
+                // single-line baseline, with the label riding above it. The 1pt
+                // overlap closes the natural leading gap between the two fonts.
+                let vy = (h - vSize.height) / 2 - lSize.height / 2 + 1
+                let ly = vy + vSize.height - 1
+                lStr.draw(at: NSPoint(x: (w - lSize.width) / 2, y: ly))
+                vStr.draw(at: NSPoint(x: (w - vSize.width) / 2, y: vy))
+            } else {
+                vStr.draw(at: NSPoint(x: pad, y: (h - vSize.height) / 2))
+            }
+            return true
+        }
+        img.isTemplate = true
+        return img
     }
 
     static func image(style: WidgetStyle, descriptor: MetricDescriptor?,
