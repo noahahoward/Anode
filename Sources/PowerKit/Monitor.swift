@@ -65,6 +65,45 @@ public final class PowerMonitor {
             return r / smoothed_W
         }
 
+        /// Which way charge is actually moving. Reporting "drain" while the battery
+        /// is filling is simply wrong, and macOS often reports no estimate at all
+        /// while charging (verified: `pmset` said "(no estimate)" at 73% charging),
+        /// so this is computed rather than read.
+        public enum Direction { case draining, charging, acIdle }
+
+        public var direction: Direction {
+            guard let s = state else { return .draining }
+            // Amperage is signed: positive while charging, negative while
+            // discharging. Verified at +3629 mA on this machine.
+            if s.isCharging && s.amperage_mA > 0 { return .charging }
+            if s.onAC { return .acIdle }
+            return .draining
+        }
+
+        /// SIGNED battery rate: positive means gaining charge, negative means losing.
+        /// The magnitude while charging comes from the actual charge current, not
+        /// from system power draw — those are different quantities, and the wall
+        /// adapter is supplying both at once.
+        public var batteryRate_pctHr: Double? {
+            guard let s = state, scale.fullChargeCapacity_mAh > 0 else { return nil }
+            switch direction {
+            case .charging:
+                return 100.0 * Double(s.amperage_mA) / scale.fullChargeCapacity_mAh
+            case .draining:
+                return -smoothed_pctHr
+            case .acIdle:
+                return 0
+            }
+        }
+
+        /// Hours until the pack is full, from measured charge current.
+        public var timeToFull_hr: Double? {
+            guard direction == .charging, let s = state, s.amperage_mA > 0 else { return nil }
+            let missing = scale.fullChargeCapacity_mAh - s.remainingCapacity_mAh
+            guard missing > 0 else { return nil }
+            return missing / Double(s.amperage_mA)
+        }
+
         /// Projected runtime at the smoothed draw — independent of macOS's estimate.
         public func projectedRuntime_hr() -> Double? {
             guard smoothed_W > 0, let s = state, !s.onAC else { return nil }
@@ -128,6 +167,10 @@ public final class PowerMonitor {
     /// compares like with like: a mean over the same period, not a single instant.
     private var fastSincePublish: [Double] = []
     private var lastLightTick: Date?
+    /// Rolling-window per-process rates. Replaces sweep-to-sweep differencing,
+    /// which dropped any process whose sparse energy counter did not happen to
+    /// move during that particular 2 s window. See DrainTracker.
+    private let tracker = DrainTracker(window: 10)
 
     public var ioReportAvailable: Bool { ioreport != nil }
 
@@ -168,7 +211,7 @@ public final class PowerMonitor {
         var interval: TimeInterval = 0
         if let sweep {
             guard let prior = lastSweep else { return nil }
-            drains = DrainCalculator.between(prior, sweep, scale: scale)
+            drains = tracker.update(with: sweep, scale: scale)
             attributed = drains.reduce(0) { $0 + $1.watts }
             interval = sweep.timestamp.timeIntervalSince(prior.timestamp)
         } else {
