@@ -59,6 +59,34 @@ if args.contains("--rails") {
     exit(0)
 }
 
+// ── Attribution overflow diagnostic ─────────────────────────────────────────
+// Is rusage-attributed CPU energy actually comparable to the PPMC rail? If
+// attributed routinely exceeds it, the "system processes" bucket is empty by
+// construction and the two are not measuring the same thing.
+if let i = args.firstIndex(of: "--overflow") {
+    let n = args.count > i + 1 ? Int(args[i + 1]) ?? 40 : 40
+    guard let monitor = PowerMonitor(scale: scale) else { exit(1) }
+    monitor.tick()
+    var ratios: [Double] = []
+    var over = 0
+    print("  attributed   cpuRail    pstr   ratio")
+    for _ in 0..<n {
+        Thread.sleep(forTimeInterval: 2)
+        guard let s = monitor.tick(), let cpu = s.cpuRail_W else { continue }
+        let ratio = cpu > 0 ? s.attributed_W / cpu : Double.nan
+        if ratio.isFinite { ratios.append(ratio); if ratio > 1 { over += 1 } }
+        print(String(format: "%12.3f %9.3f %7.2f %7.2f%@",
+                     s.attributed_W, cpu, s.smcTotal_W ?? 0, ratio,
+                     ratio > 1 ? "  OVERFLOW" : ""))
+    }
+    guard !ratios.isEmpty else { print("no samples"); exit(1) }
+    let sorted = ratios.sorted()
+    print(String(format: "\nn=%d  median ratio %.2f  min %.2f  max %.2f  overflowed %d/%d ticks",
+                 ratios.count, sorted[sorted.count/2], sorted.first!, sorted.last!,
+                 over, ratios.count))
+    exit(0)
+}
+
 // ── Live attribution check ──────────────────────────────────────────────────
 // Ticks the real monitor and prints the named shares of the two anonymous
 // buckets, so the end-to-end path can be verified without the GUI.

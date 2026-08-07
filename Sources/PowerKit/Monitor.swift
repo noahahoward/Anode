@@ -216,6 +216,13 @@ public final class PowerMonitor {
     private var pstrSincePublish: [Double] = []
     private let calibrator = BaselineCalibrator()
     private let smoother = AdaptiveSmoother()
+    /// PPMC is as spiky as PSTR — measured 0.47 to 3.24 W across consecutive
+    /// ticks on an idle machine — but only PSTR was ever smoothed. Since the
+    /// system-process bucket is `cpuRail - attributed`, an unsmoothed rail against
+    /// a smooth attributed figure made the bucket collapse to zero on ~10% of
+    /// ticks, which flickered the named rows in and out of the table. Smoothing
+    /// the rail the same way its sibling is smoothed removes the artifact.
+    private let cpuSmoother = AdaptiveSmoother()
     /// Fast samples accumulated since the last gas-gauge publish, so calibration
     /// compares like with like: a mean over the same period, not a single instant.
     private var fastSincePublish: [Double] = []
@@ -318,6 +325,10 @@ public final class PowerMonitor {
 
         let apps = DrainCalculator.group(drains, scale: scale)
 
+        // Smoothed on every tick, light or full, so the filter keeps tracking the
+        // rail rather than jumping when the window is reopened after a gap.
+        let smoothedCPURail = ppmcRaw.map { cpuSmoother.update(gain.corrected($0)) }
+
         // Put names to the anonymous buckets. Only on full ticks: nothing renders
         // a process table while the window is hidden, and this costs a subprocess.
         var systemApps: [SystemAttribution.Row] = []
@@ -329,8 +340,7 @@ public final class PowerMonitor {
             let known = SystemAttribution.Attributed(
                 bundleIDs: Set(apps.compactMap { $0.identity.bundleID }),
                 names: Set(apps.map { $0.name }))
-            let cpuRail = ppmcRaw.map { gain.corrected($0) }
-            if let cpu = cpuRail {
+            if let cpu = smoothedCPURail {
                 systemApps = systemAttribution.apportion(
                     watts: max(0, cpu - attributed), by: .cpuTime,
                     excluding: known, scale: scale)
@@ -362,7 +372,7 @@ public final class PowerMonitor {
             smcGain: gain.value,
             // Same gain as PSTR: they are the same measurement family, so correcting
             // one and not the other would make the buckets fail to sum.
-            cpuRail_W: ppmcRaw.map { gain.corrected($0) },
+            cpuRail_W: smoothedCPURail,
             baseline_W: calibrator.baseline,
             didJump: smoother.didJump,
             residual_W: max(0, smoothed - attributed - (gpu ?? 0)),
