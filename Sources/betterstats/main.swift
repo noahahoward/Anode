@@ -59,6 +59,45 @@ if args.contains("--rails") {
     exit(0)
 }
 
+// ── Disk write watch ────────────────────────────────────────────────────────
+// macOS killed the app for dirtying 2.1 GB in 40 minutes. This measures the
+// real rate for a named process so a fix can be verified rather than assumed.
+if let i = args.firstIndex(of: "--diskwatch") {
+    let name = args.count > i + 1 ? args[i + 1] : "BetterStatsApp"
+    let secs = args.count > i + 2 ? Double(args[i + 2]) ?? 30 : 30
+    // pgrep rather than the sampler: this only needs one pid and the sampler's
+    // shape is not worth matching for a diagnostic.
+    let pg = Process()
+    pg.executableURL = URL(fileURLWithPath: "/usr/bin/pgrep")
+    pg.arguments = ["-f", name]
+    let pipe = Pipe(); pg.standardOutput = pipe
+    try? pg.run()
+    let outData = pipe.fileHandleForReading.readDataToEndOfFile()
+    pg.waitUntilExit()
+    let found = String(data: outData, encoding: .utf8)?
+        .split(separator: "\n").compactMap { pid_t($0.trimmingCharacters(in: .whitespaces)) } ?? []
+    guard let pid = found.first else { print("no process matching \(name)"); exit(1) }
+
+    func written(_ pid: pid_t) -> UInt64? {
+        var ri = rusage_info_v6()
+        let rc = withUnsafeMutablePointer(to: &ri) {
+            $0.withMemoryRebound(to: rusage_info_t?.self, capacity: 1) {
+                proc_pid_rusage(pid, RUSAGE_INFO_V6, $0)
+            }
+        }
+        return rc == 0 ? ri.ri_diskio_byteswritten : nil
+    }
+    guard let a = written(pid) else { print("cannot read rusage for \(pid)"); exit(1) }
+    print("watching \(name) pid \(pid) for \(Int(secs))s…")
+    Thread.sleep(forTimeInterval: secs)
+    guard let b = written(pid) else { print("lost the process"); exit(1) }
+    let kbs = Double(b &- a) / 1024 / secs
+    print(String(format: "wrote %.1f MB in %.0fs = %.1f KB/s", Double(b &- a)/1048576, secs, kbs))
+    print(String(format: "macOS sustained limit is 24.9 KB/s -> %@",
+                 kbs > 24.9 ? "OVER by \(Int(kbs/24.9))x" : "within budget"))
+    exit(0)
+}
+
 // ── Per-process network check ───────────────────────────────────────────────
 if args.contains("--netproc") {
     guard NetworkAttribution.isAvailable else { print("nettop unavailable"); exit(1) }

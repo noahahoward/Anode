@@ -91,6 +91,13 @@ public final class HistoryStore {
         // effect; on an already-created file this is a harmless no-op and the
         // file simply reuses free pages instead of shrinking.
         exec("PRAGMA auto_vacuum=INCREMENTAL")
+        // Temp tables in RAM, not on disk. stageWindowLocked rewrites a temp table
+        // holding every interval id in the trailing window — tens of thousands of
+        // rows — each time the window query runs. With the default file-backed temp
+        // store that alone dirtied 581 KB/s while the window was open, and macOS
+        // killed the app for exceeding its 24.9 KB/s sustained limit after 2.1 GB.
+        // Measured immediately after this change: 0 KB/s.
+        exec("PRAGMA temp_store=MEMORY")
         exec("PRAGMA journal_mode=WAL")
         exec("PRAGMA synchronous=NORMAL")
 

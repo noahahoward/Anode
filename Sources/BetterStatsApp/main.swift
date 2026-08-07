@@ -232,7 +232,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
 
             // The window query walks history, so it is not worth doing every tick.
             var pcts: [String: Double]? = nil
-            if visible, Date().timeIntervalSince(self.lastWindowQuery) > 20, let store = self.store {
+            // 60 s, not 20. "10 hr power" is a ten-hour trailing total; refreshing
+            // it three times a minute cost a full re-scan of the window for a number
+            // that cannot visibly move in that time.
+            if visible, Date().timeIntervalSince(self.lastWindowQuery) > 60, let store = self.store {
                 let hours = Settings.shared.powerWindowHours
                 let rowsW = store.windowPower(hours: hours,
                                               joulesPerPercent: snap.scale.joulesPerPercent)
