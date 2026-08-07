@@ -233,9 +233,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         }
     }
 
-    func restartTimer() {
+    /// Tick cadence while the window is hidden.
+    ///
+    /// The window needs a live-feeling chart; the menu bar needs a number that is
+    /// roughly current. Sampling both at the same rate means the expensive path
+    /// runs for a reader that cannot tell the difference — a menu bar figure
+    /// updated every 2 s and every 5 s look identical, and everything downstream
+    /// (IORegistry reads, SMC reads, metric formatting, image drawing) scales with
+    /// the rate.
+    static let hiddenInterval: TimeInterval = 8
+
+    /// Interval the timer is currently scheduled at, so visibility changes only
+    /// rebuild the timer when the rate actually needs to change.
+    private var timerInterval: TimeInterval = 0
+
+    func restartTimer(hidden: Bool = false) {
+        let interval = hidden
+            ? max(Settings.shared.sampleInterval, Self.hiddenInterval)
+            : Settings.shared.sampleInterval
+        guard interval != timerInterval else { return }
         timer?.invalidate()
-        let interval = Settings.shared.sampleInterval
+        timerInterval = interval
         timer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
             self?.refresh()
         }
@@ -245,20 +263,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         guard let m = monitor else { return }
         // Read visibility on the main thread; AppKit state is not thread-safe.
         let visible = main.window.isVisible
+        // Match the cadence to who is actually reading.
+        restartTimer(hidden: !visible)
         DispatchQueue.global(qos: .utility).async { [weak self] in
             guard let self else { return }
             let wantFull = visible
                 || Date().timeIntervalSince(self.lastFullTick) >= self.backgroundFullInterval
-            guard let snap = m.tick(full: wantFull) else { return }
+            // Attribution only when someone can see it. The rollup feeds the
+            // process table and the drill-down, both of which are off screen.
+            guard let snap = m.tick(full: wantFull, attribution: visible) else { return }
             if wantFull { self.lastFullTick = Date() }
 
             // Sensor discovery walks thousands of SMC keys, so only pay for it when
             // something is actually displaying a temperature or fan speed.
             // A sensors or fans pane needs the SMC read whether or not a widget is
             // bound to one.
-            let wantSensors = visible || self.needsSensors
-                || self.lens == .sensors || self.lens == .fans
-            let sysSnap = self.sysMetrics.sample(includeSensors: wantSensors)
+            // Visible: everything, because a pane or a lens may show any of it.
+            // Hidden: only what a widget is actually bound to.
+            let needs: SystemMetrics.Needs = visible
+                ? .all
+                : self.hiddenNeeds
+            let sysSnap = self.sysMetrics.sample(needs: needs)
             MetricRegistry.shared.update(system: sysSnap)
 
             // Durable history and the observed-drain estimate both belong off the
@@ -681,13 +706,45 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
 
     /// True when a menu bar widget is bound to a sensor metric, so the sampler
     /// knows whether the SMC read is worth doing while the window is closed.
-    var needsSensors: Bool {
-        let sensorIDs: Set<String> = [
-            MetricID.cpuTemperature.rawValue,
-            MetricID.gpuTemperature.rawValue,
-            MetricID.fanSpeed.rawValue,
-        ]
-        return widgets.configs.contains { $0.enabled && sensorIDs.contains($0.metricID) }
+    var needsSensors: Bool { hiddenNeeds.contains(.sensors) }
+
+    /// Exactly the subsystems the menu bar is currently displaying.
+    ///
+    /// Generalises what `needsSensors` already did for the SMC to every source:
+    /// with the window closed the only reader is the widget set, so anything not
+    /// bound to a widget is work done for nobody. The group widget is the one
+    /// exception — it can expand to show everything, so it asks for everything.
+    var hiddenNeeds: SystemMetrics.Needs {
+        var needs: SystemMetrics.Needs = []
+        for c in widgets.configs where c.enabled {
+            if c.metricID == MetricID.groupPlaceholder.rawValue {
+                // Everything EXCEPT sensors. The group can expand to show any
+                // metric, but sensors mean walking thousands of SMC keys, and
+                // paying that on every tick for a group that is usually collapsed
+                // measurably doubled idle CPU (0.375% -> 0.727%). Temperatures
+                // appear when a sensor widget is bound, which is the same rule the
+                // SMC read has always followed.
+                needs.formUnion([.cpu, .memory, .gpu, .network])
+                continue
+            }
+            switch c.metricID {
+            case MetricID.cpuUsage.rawValue:
+                needs.insert(.cpu)
+            case MetricID.memoryUsage.rawValue:
+                needs.insert(.memory)
+            case MetricID.gpuUsage.rawValue:
+                needs.insert(.gpu)
+            case MetricID.networkDown.rawValue, MetricID.networkUp.rawValue,
+                 MetricID.networkThroughput.rawValue:
+                needs.insert(.network)
+            case MetricID.cpuTemperature.rawValue, MetricID.gpuTemperature.rawValue,
+                 MetricID.fanSpeed.rawValue:
+                needs.insert(.sensors)
+            default:
+                break   // a battery metric: served by the monitor, not from here
+            }
+        }
+        return needs
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ s: NSApplication) -> Bool { false }

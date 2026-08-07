@@ -315,6 +315,51 @@ public final class SystemMetrics {
 
     public init() {}
 
+    /// Which subsystems a caller actually needs this tick.
+    ///
+    /// Every one of these costs a syscall or an IOKit round trip, and while the
+    /// window is hidden the only reader is whatever the menu bar widgets are bound
+    /// to. Computing a GPU utilisation nobody displays is pure battery cost in an
+    /// app whose entire premise is not costing what it measures.
+    public struct Needs: OptionSet {
+        public let rawValue: Int
+        public init(rawValue: Int) { self.rawValue = rawValue }
+        public static let cpu     = Needs(rawValue: 1 << 0)
+        public static let memory  = Needs(rawValue: 1 << 1)
+        public static let gpu     = Needs(rawValue: 1 << 2)
+        public static let network = Needs(rawValue: 1 << 3)
+        public static let sensors = Needs(rawValue: 1 << 4)
+        public static let all: Needs = [.cpu, .memory, .gpu, .network, .sensors]
+    }
+
+    public func sample(needs: Needs) -> Snapshot {
+        var cpuTemp: Double?
+        var gpuTemp: Double?
+        var fans: [FanInfo] = []
+
+        if needs.contains(.sensors) {
+            if let last = lastSensors, Date().timeIntervalSince(last.at) < sensorInterval {
+                cpuTemp = last.cpu; gpuTemp = last.gpu; fans = last.fans
+            } else {
+                cpuTemp = Sensors.cpuTemperature()
+                gpuTemp = Sensors.gpuTemperature()
+                fans = Sensors.fans()
+                lastSensors = (cpuTemp, gpuTemp, fans, Date())
+            }
+        }
+
+        // A skipped subsystem yields its zero/empty value, NOT a stale one. The
+        // registry then reports "no data" rather than a number from a minute ago
+        // that looks live.
+        return Snapshot(cpu: needs.contains(.cpu) ? cpu.sample() : nil,
+                        memory: needs.contains(.memory) ? MemoryUsage.sample() : nil,
+                        gpu: needs.contains(.gpu) ? GPUUsage.sample() : nil,
+                        network: needs.contains(.network) ? net.sample() : nil,
+                        cpuTemperature: cpuTemp,
+                        gpuTemperature: gpuTemp,
+                        fans: fans)
+    }
+
     public func sample(includeSensors: Bool = true) -> Snapshot {
         var cpuTemp: Double?
         var gpuTemp: Double?

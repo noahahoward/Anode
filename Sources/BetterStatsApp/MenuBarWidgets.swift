@@ -48,7 +48,7 @@ public struct WidgetConfig: Codable, Equatable {
     }
 }
 
-public final class MenuBarWidgetController: NSObject {
+public final class MenuBarWidgetController: NSObject, NSMenuDelegate {
 
     public static let defaultsKey = "com.betterstats.menubar.widgets.v1"
 
@@ -129,6 +129,7 @@ public final class MenuBarWidgetController: NSObject {
     }
 
     private func rebuild() {
+        lastRendered.removeAll()
         for entry in items { NSStatusBar.system.removeStatusItem(entry.item) }
         items.removeAll()
 
@@ -182,6 +183,16 @@ public final class MenuBarWidgetController: NSObject {
 
     @objc private func openFromMenu() { onClick() }
 
+    /// What each widget last drew, so an unchanged value costs nothing.
+    ///
+    /// Menu bar figures are short strings that change slowly — "11%" stays "11%"
+    /// for several ticks — but the image behind one was being redrawn on every
+    /// tick regardless: an NSImage allocation, a text layout and a template
+    /// composite, on the main thread, for pixels identical to the ones already
+    /// there. Only the sparkline is exempt, because its history moves even when
+    /// the latest value does not.
+    private var lastRendered: [String: String] = [:]
+
     private func render(_ entry: (config: WidgetConfig, item: NSStatusItem)) {
         guard let button = entry.item.button else { return }
         let id = MetricID(rawValue: entry.config.metricID)
@@ -206,10 +217,24 @@ public final class MenuBarWidgetController: NSObject {
             // A menu attached to the status item opens directly beneath it, which is
             // the behaviour asked for. Assigning `menu` also makes AppKit own the
             // click, so the widget's normal open-the-window action is bypassed here.
-            entry.item.menu = Self.buildGroupMenu()
-            button.attributedTitle = NSAttributedString()
-            button.imagePosition = .imageOnly
-            button.image = WidgetRenderer.textImage(label: nil, value: "\u{2304}")
+            // Built LAZILY, when the menu is about to open. It was being rebuilt
+            // on every tick — an NSMenu plus an item per metric, constructed and
+            // thrown away for a menu nobody had opened. The delegate defers that
+            // to the moment it is actually needed, which is also the moment its
+            // values are guaranteed current.
+            if entry.item.menu == nil {
+                let menu = NSMenu()
+                menu.delegate = self
+                entry.item.menu = menu
+            }
+            // The chevron is constant, so it is drawn once. The MENU is rebuilt
+            // every tick because its contents are the live values.
+            if lastRendered[entry.config.metricID] == nil {
+                lastRendered[entry.config.metricID] = "group"
+                button.attributedTitle = NSAttributedString()
+                button.imagePosition = .imageOnly
+                button.image = WidgetRenderer.textImage(label: nil, value: "\u{2304}")
+            }
             return
         }
         entry.item.menu = nil
@@ -222,16 +247,22 @@ public final class MenuBarWidgetController: NSObject {
             // neighbouring menu bar item. Drawing it ourselves makes the geometry
             // exact. Template rendering also means macOS tints it like every other
             // item, so it stays legible on any wallpaper in either appearance.
+            let label = entry.config.style == .textWithLabel
+                ? (value?.label ?? descriptor?.shortTitle ?? "?") : nil
+            let text = value?.text ?? "\u{2014}"
+            let key = "\(label ?? "")\u{1}\(text)"
+            guard lastRendered[entry.config.metricID] != key else { return }
+            lastRendered[entry.config.metricID] = key
+
             button.attributedTitle = NSAttributedString()
             button.imagePosition = .imageOnly
             button.image = WidgetRenderer.textImage(
-                label: entry.config.style == .textWithLabel
-                    ? (value?.label ?? descriptor?.shortTitle ?? "?") : nil,
+                label: label,
                 // No "*" here. It means "gain not yet calibrated against the gas
                 // gauge", a condition that clears within ~60 s — but a bare asterisk
                 // beside a number in the menu bar is uninterpretable and reads as an
                 // error. The tooltip carries it, where there is room to say so.
-                value: value?.text ?? "\u{2014}")
+                value: text)
         case .group:
             break   // handled above, before this switch
         case .bar, .sparkline, .dot:
@@ -507,6 +538,21 @@ enum WidgetRenderer {
             path.lineJoinStyle = .round
             path.stroke()
             return true
+        }
+    }
+}
+
+extension MenuBarWidgetController {
+    /// Fill the group menu only when it is about to be shown.
+    public func menuNeedsUpdate(_ menu: NSMenu) {
+        menu.removeAllItems()
+        let fresh = Self.buildGroupMenu()
+        // Items belong to exactly one menu, so they are MOVED. Taking them from
+        // index 0 repeatedly empties `fresh` as it fills `menu`; adding an item
+        // that still has a supermenu throws.
+        while let item = fresh.items.first {
+            fresh.removeItem(item)
+            menu.addItem(item)
         }
     }
 }
