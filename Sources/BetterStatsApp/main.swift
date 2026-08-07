@@ -377,6 +377,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
             apps_pctHr: s.attributed_pctHr,
             systemProcesses_pctHr: s.systemProcesses_pctHr ?? 0,
             gpu_pctHr: s.gpu_pctHr ?? 0,
+            display_pctHr: s.display_pctHr ?? 0,
             // Platform when the CPU rail is readable; otherwise fall back to the old
             // single residual rather than showing a bucket we cannot justify.
             unattributed_pctHr: s.platform_pctHr ?? s.residual_pctHr ?? 0,
@@ -438,7 +439,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
             return s.systemApps.map { ($0.name, $0.watts) }
         case .gpu:
             return s.gpuApps.map { ($0.name, $0.watts) }
-        case .platform:
+        case .display, .platform:
+            // Neither drills down. The display is a single modeled quantity, and
+            // the platform bucket is by definition the part no process explains.
             return []
         }
     }

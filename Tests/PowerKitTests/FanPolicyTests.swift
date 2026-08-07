@@ -90,3 +90,54 @@ final class FanPolicyTests: XCTestCase {
         }
     }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// The display model is the only slice carved out of the platform bucket, so it
+/// has to behave itself at the ends of its range. Over-reporting at LOW
+/// brightness is the dangerous direction: that is where people actually sit, and
+/// a linear model would invent several watts there.
+final class DisplayPowerModelTests: XCTestCase {
+
+    private let m = DisplayPowerModel.measuredOnThisMac
+
+    func testMinimumBrightnessReportsNothing() {
+        XCTAssertEqual(m.watts(brightness: 0), 0)
+        XCTAssertEqual(m.watts(brightness: 0.02), 0)
+    }
+
+    func testFullBrightnessMatchesTheMeasuredSpan() {
+        XCTAssertEqual(m.watts(brightness: 1.0), 8.45, accuracy: 0.01)
+    }
+
+    /// The sweep barely moved between 2% and 25% and then climbed steeply. A
+    /// straight line would report ~2 W at 25%, which the measurement contradicts.
+    func testLowBrightnessIsNotLinear() {
+        let quarter = m.watts(brightness: 0.25)
+        XCTAssertLessThan(quarter, 8.45 * 0.25,
+                          "a linear model over-reports at the settings people use")
+        XCTAssertLessThan(quarter, 1.2)
+    }
+
+    func testMonotonicInBrightness() {
+        var last = -1.0
+        for i in 0...100 {
+            let w = m.watts(brightness: Double(i) / 100)
+            XCTAssertGreaterThanOrEqual(w, last, "backlight power must not fall as brightness rises")
+            last = w
+        }
+    }
+
+    func testOutOfRangeAndNaNAreHandled() {
+        XCTAssertEqual(m.watts(brightness: -5), 0)
+        XCTAssertEqual(m.watts(brightness: 42), 8.45, accuracy: 0.01)
+        XCTAssertEqual(m.watts(brightness: .nan), 0)
+    }
+
+    /// At the brightness this machine actually runs at, the display is a fraction
+    /// of a watt — which is the finding that mattered: the display was NOT the
+    /// hatch, so naming it could never have explained the 80%.
+    func testAtSixPercentTheDisplayIsNearlyNothing() {
+        XCTAssertLessThan(m.watts(brightness: 0.06), 0.2)
+    }
+}

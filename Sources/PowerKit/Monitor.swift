@@ -76,8 +76,17 @@ public final class PowerMonitor {
         /// of bare background at the right end.
         public var platform_W: Double? {
             guard cpuRail_W != nil else { return nil }
-            return max(0, smoothed_W - (cpuRail_W ?? 0) - (gpu_W ?? 0))
+            // Display is subtracted here so the segments still sum to the bar:
+            // it is a named slice OF this bucket, not an addition to the total.
+            return max(0, smoothed_W - (cpuRail_W ?? 0) - (gpu_W ?? 0) - (display_W ?? 0))
         }
+
+        /// Estimated display backlight watts, or nil when brightness is unreadable.
+        /// MODELED, not measured: a calibrated response curve for this panel. It
+        /// is carved OUT of the platform bucket rather than added to the total,
+        /// so the ledger still sums to what was measured.
+        public let display_W: Double?
+        public var display_pctHr: Double? { display_W.map(pctHr) }
 
         public var systemProcesses_pctHr: Double? { systemProcesses_W.map(pctHr) }
         public var platform_pctHr: Double? { platform_W.map(pctHr) }
@@ -264,6 +273,9 @@ public final class PowerMonitor {
     /// Names the CPU power rusage cannot attribute. Refreshed on its own queue —
     /// it shells out to `systemstats`, which must never happen on a tick path.
     private let systemAttribution = SystemAttribution()
+    /// Backlight response curve. One struct so a different panel means different
+    /// coefficients rather than edits scattered through the monitor.
+    private let displayModel = DisplayPowerModel.measuredOnThisMac
 
     public var ioReportAvailable: Bool { ioreport != nil }
 
@@ -409,6 +421,17 @@ public final class PowerMonitor {
             }
         }
 
+        // Modeled from brightness, and clamped so it can never exceed what is
+        // left after CPU and GPU. Without that clamp a bright screen on a busy
+        // machine could claim more than the measurement allows, and the platform
+        // bucket would hit its own zero floor while the bar overflowed.
+        let displayW: Double? = {
+            guard let b = DisplayBrightness.current() else { return nil }
+            let modeled = displayModel.watts(brightness: b)
+            let headroom = max(0, smoothed - (smoothedCPURail ?? 0) - (gpu ?? 0))
+            return min(modeled, headroom)
+        }()
+
         return Snapshot(
             drains: drains,
             apps: apps,
@@ -428,6 +451,7 @@ public final class PowerMonitor {
             // Same gain as PSTR: they are the same measurement family, so correcting
             // one and not the other would make the buckets fail to sum.
             cpuRail_W: smoothedCPURail,
+            display_W: displayW,
             baseline_W: calibrator.baseline,
             didJump: smoother.didJump,
             residual_W: max(0, smoothed - attributed - (gpu ?? 0)),

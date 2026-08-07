@@ -18,6 +18,8 @@ final class LedgerBarView: NSView {
         /// Real process energy, just anonymous — a different claim from "unknown".
         let systemProcesses_pctHr: Double
         let gpu_pctHr: Double
+        /// Modeled from screen brightness, carved out of the platform bucket.
+        let display_pctHr: Double
         /// Belongs to no process: display, radios, storage, kernel.
         let unattributed_pctHr: Double
         let total_pctHr: Double
@@ -33,14 +35,15 @@ final class LedgerBarView: NSView {
 
     /// Which bucket the user clicked, so the graph can drill into it.
     enum Segment: String, CaseIterable {
-        case apps, systemProcesses, gpu, platform
+        case apps, systemProcesses, gpu, display, platform
 
         var title: String {
             switch self {
             case .apps: return "apps"
             case .systemProcesses: return "system processes"
             case .gpu: return "GPU"
-            case .platform: return "display, radios, storage"
+            case .display: return "display"
+            case .platform: return "radios, storage, memory"
             }
         }
     }
@@ -82,6 +85,7 @@ final class LedgerBarView: NSView {
         case .apps: return m.apps_pctHr
         case .systemProcesses: return m.systemProcesses_pctHr
         case .gpu: return m.gpu_pctHr
+        case .display: return m.display_pctHr
         case .platform: return m.unattributed_pctHr
         }
     }
@@ -147,7 +151,8 @@ final class LedgerBarView: NSView {
         // Segments are laid out by share of the measured total, so the bar always
         // spans exactly the thing it claims to describe.
         let total = max(m.total_pctHr, 0.0001)
-        var widths = [m.apps_pctHr, m.systemProcesses_pctHr, m.gpu_pctHr, m.unattributed_pctHr]
+        var widths = [m.apps_pctHr, m.systemProcesses_pctHr, m.gpu_pctHr,
+                      m.display_pctHr, m.unattributed_pctHr]
             .map { CGFloat(max(0, $0) / total) * barRect.width }
 
         // The final segment takes whatever width is left rather than its own share.
@@ -155,8 +160,8 @@ final class LedgerBarView: NSView {
         // not sum to the total — and a bar that stops short of its own end reads as
         // a rendering fault rather than as data. Any rounding lands in the honest
         // bucket, which is the one already labelled as not precisely known.
-        let used = widths[0] + widths[1] + widths[2]
-        widths[3] = max(0, barRect.width - used)
+        let used = widths[0] + widths[1] + widths[2] + widths[3]
+        widths[4] = max(0, barRect.width - used)
 
         let clip = NSBezierPath(roundedRect: barRect,
                                 xRadius: Palette.Radius.chip, yRadius: Palette.Radius.chip)
@@ -165,7 +170,7 @@ final class LedgerBarView: NSView {
 
         var x: CGFloat = 0
         segmentRects.removeAll(keepingCapacity: true)
-        let order: [Segment] = [.apps, .systemProcesses, .gpu, .platform]
+        let order: [Segment] = [.apps, .systemProcesses, .gpu, .display, .platform]
         // Everything except the chosen segment fades back, so the bar shows what
         // the graph below is currently about.
         func alpha(_ seg: Segment) -> CGFloat {
@@ -203,13 +208,26 @@ final class LedgerBarView: NSView {
             segmentRects.append((.gpu, r2))
             x += widths[2]
         }
-        // 4. platform — hatched, never solid. This is the only genuinely
-        //    unattributable part, and it is display, radios and storage.
+        // 4. display — solid and named. Modeled from brightness rather than
+        //    measured on a rail, but a calibrated response curve is a far better
+        //    answer than leaving several watts in a bucket labelled "unknown".
         if widths[3] > 0 {
-            let r = NSRect(x: x, y: 0, width: widths[3], height: barHeight)
+            Palette.warn.withAlphaComponent(alpha(.display)).setFill()
+            let r3 = NSRect(x: x, y: 0, width: widths[3], height: barHeight)
+            r3.fill()
+            segmentRects.append((.display, r3))
+            drawLabel(String(format: "display %.1f", m.display_pctHr),
+                      in: r3, color: Palette.onAccent)
+            x += widths[3]
+        }
+
+        // 5. platform — hatched, never solid. This is the only genuinely
+        //    unattributable part, and it is display, radios and storage.
+        if widths[4] > 0 {
+            let r = NSRect(x: x, y: 0, width: widths[4], height: barHeight)
             segmentRects.append((.platform, r))
             drawHatch(in: r)
-            drawLabel(String(format: "display, radios, storage %.1f %%/hr", m.unattributed_pctHr),
+            drawLabel(String(format: "radios, storage, memory %.1f %%/hr", m.unattributed_pctHr),
                       in: r, color: Palette.dim)
         }
         NSGraphicsContext.restoreGraphicsState()
@@ -281,10 +299,14 @@ final class LedgerBarView: NSView {
             NSBezierPath(roundedRect: r, xRadius: 2, yRadius: 2).fill()
         }, "GPU")
         swatch({ r in
+            Palette.warn.setFill()
+            NSBezierPath(roundedRect: r, xRadius: 2, yRadius: 2).fill()
+        }, "display (est.)")
+        swatch({ r in
             drawHatch(in: r)
             Palette.line.setStroke()
             NSBezierPath(rect: r).stroke()
-        }, "display · radios · storage")
+        }, "radios · storage · memory")
 
         // Provenance, right-aligned: coverage belongs here rather than in a header
         // because it states how much of the draw we could attribute — which is what
