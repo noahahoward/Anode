@@ -48,6 +48,13 @@ enum Palette {
     // ── Accents ─────────────────────────────────────────────────────────────
     static var accent: NSColor { pick(hex(0x00E5A0), hex(0x00996B)) }
     static var blue:   NSColor { pick(hex(0x2E9BFF), hex(0x0A6FD6)) }
+    /// Measured process energy we cannot name. Same hue family as `accent` so it
+    /// reads as "the same kind of thing, less certain".
+    static var accentDim: NSColor { pick(hex(0x0A8F66), hex(0x63C4A6)) }
+    /// Battery charge line on the graph's right axis. Deep blue: distinct from the
+    /// GPU blue used in the ledger, and clearly a different KIND of quantity from
+    /// the green rate line rather than a variation of it.
+    static var chargeLine: NSColor { pick(hex(0x3D6FD6), hex(0x1E4FA8)) }
     static var warn:   NSColor { pick(hex(0xFFB020), hex(0xB37200)) }
     static var critical: NSColor { pick(hex(0xFF5252), hex(0xC62828)) }
 

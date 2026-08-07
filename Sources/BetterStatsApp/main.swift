@@ -60,6 +60,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
     /// In-memory graph history. The store owns durable history; this is just the
     /// last hour at tick resolution for drawing.
     var totalSeries: [HistoryGraphView.Point] = []
+    /// Battery charge over the same window, plotted on the right-hand 0-100 axis.
+    var chargeSeries: [HistoryGraphView.Point] = []
     let graphSpan: TimeInterval = 3600
 
     var lastSnapshot: PowerMonitor.Snapshot?
@@ -281,8 +283,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
     func updateLedger(_ s: PowerMonitor.Snapshot) {
         main.ledger.model = LedgerBarView.Model(
             apps_pctHr: s.attributed_pctHr,
+            systemProcesses_pctHr: s.systemProcesses_pctHr ?? 0,
             gpu_pctHr: s.gpu_pctHr ?? 0,
-            unattributed_pctHr: s.residual_pctHr ?? 0,
+            // Platform when the CPU rail is readable; otherwise fall back to the old
+            // single residual rather than showing a bucket we cannot justify.
+            unattributed_pctHr: s.platform_pctHr ?? s.residual_pctHr ?? 0,
             total_pctHr: s.smoothed_pctHr,
             source: s.smcTotal_W != nil
                 ? "PSTR" + (s.smcGain.map { String(format: " ×%.2f", $0) } ?? "")
@@ -298,8 +303,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
     func updateGraph(_ s: PowerMonitor.Snapshot) {
         let now = Date()
         totalSeries.append(.init(time: now, value: s.smoothed_pctHr))
+        if let pct = s.state?.percent {
+            chargeSeries.append(.init(time: now, value: Double(pct)))
+        }
         let cutoff = now.addingTimeInterval(-graphSpan)
         totalSeries.removeAll { $0.time < cutoff }
+        chargeSeries.removeAll { $0.time < cutoff }
 
         // One series: total drain. The attributed-versus-unaccounted split already
         // has a home in the ledger bar directly above, and drawing it twice turned a
@@ -307,6 +316,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         graph.series = [
             .init(name: "total", color: Palette.accent, points: totalSeries, filled: true)
         ]
+        // Charge on its own axis, sampled at the same cadence as the rate, so the
+        // fall can be read against the spike that caused it.
+        graph.rightSeries = chargeSeries.isEmpty ? nil
+            : .init(name: "charge", color: Palette.chargeLine,
+                    points: chargeSeries, filled: false)
     }
 
     func updateDetail() {

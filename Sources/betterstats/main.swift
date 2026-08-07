@@ -47,6 +47,18 @@ if args.contains("--metrics") {
     exit(0)
 }
 
+// ── Fast rail dump ──────────────────────────────────────────────────────────
+// --smc runs a 60-95 s gauge validation, so it cannot be used to sample rails
+// around a timed load; each "snapshot" spans minutes. This is the quick one.
+if args.contains("--rails") {
+    guard let smc = SMC() else { print("SMC unavailable"); exit(1) }
+    for s in smc.scan()
+        where s.key.hasPrefix("P") && s.type == "flt" && s.value.isFinite && abs(s.value) > 0.005 {
+        print(String(format: "%@ %.4f", s.key, s.value))
+    }
+    exit(0)
+}
+
 // ── SMC discovery ───────────────────────────────────────────────────────────
 if args.contains("--smc") {
     guard let smc = SMC() else {
