@@ -54,6 +54,7 @@ final class InspectorView: NSView {
     override init(frame: NSRect) {
         super.init(frame: frame)
         build()
+        widthAnchor.constraint(greaterThanOrEqualToConstant: 300).isActive = true
     }
     required init?(coder: NSCoder) { fatalError() }
 
@@ -100,6 +101,16 @@ final class InspectorView: NSView {
         scroll.borderType = .noBorder
         scroll.drawsBackground = false
         scroll.documentView = list
+        // A stack view used as a documentView has no width of its own, so without
+        // this it lays out at zero width and every row is invisible — the pane looked
+        // empty even though the rows were there.
+        list.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            list.leadingAnchor.constraint(equalTo: scroll.contentView.leadingAnchor),
+            list.trailingAnchor.constraint(equalTo: scroll.contentView.trailingAnchor),
+            list.topAnchor.constraint(equalTo: scroll.contentView.topAnchor),
+            list.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor),
+        ])
 
         detailsBox.orientation = .vertical
         detailsBox.alignment = .leading
@@ -216,6 +227,7 @@ final class InspectorView: NSView {
             let row = makeRow(r)
             list.addArrangedSubview(row)
             row.widthAnchor.constraint(equalTo: list.widthAnchor).isActive = true
+            row.heightAnchor.constraint(greaterThanOrEqualToConstant: 20).isActive = true
         }
         // Keep the selection across the two-second refresh if that process is still
         // alive; drop it silently if it exited.

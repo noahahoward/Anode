@@ -178,17 +178,25 @@ final class GlanceCardView: NSView {
                 ])
 
         case .draining:
-            // Prefer the observed-discharge estimate: it is measured from charge
-            // actually leaving the pack and is slew-limited, so it cannot swing
-            // between ticks the way a power-derived figure does.
-            let hrs = drain?.timeRemaining.map { $0 / 3600 } ?? s.projectedRuntime_hr()
+            // Prefer the observed-discharge rate: it is measured from charge actually
+            // leaving the pack rather than inferred from power draw.
+            let rate = drain?.percentPerHour ?? s.smoothed_pctHr
+
+            // Time remaining is derived from THAT SAME rate, not read from the
+            // estimator separately. The estimator's own timeRemaining is computed
+            // from a differently-weighted rate, so the two disagreed on screen —
+            // 80% at 11.2 %/hr was showing 3h46m when the arithmetic says 7h08m.
+            // A card whose own numbers contradict each other is worse than one that
+            // is slightly stale.
+            let hrs: Double? = rate > 0.01 ? Double(st.percent) / rate : nil
+
             return Model(
                 source: .battery,
                 headline: hrs.map(hm) ?? "—",
                 percent: st.percent,
                 sourceLabel: "on battery",
                 rows: [
-                    ("Drain", String(format: "%.1f %%/hr", drain?.percentPerHour ?? s.smoothed_pctHr), nil),
+                    ("Drain", String(format: "%.1f %%/hr", rate), nil),
                     ("Draw", String(format: "%.1f W", s.smoothed_W), nil),
                     ("Remaining", String(format: "%.1f Wh", remaining_Wh), hrs.flatMap { at($0) }),
                     ("Health", health(s), nil),

@@ -59,6 +59,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
     var lastSnapshot: PowerMonitor.Snapshot?
     /// Active lens. Drives which columns the table shows and what each row reports.
     var lens: SidebarView.Lens = .battery
+    /// The SELECTED APP, held by identity rather than by row index.
+    ///
+    /// Rows re-sort every couple of seconds because they are sorted on a live value,
+    /// so an index means nothing between refreshes — reading the selection back by
+    /// index made the inspector jump to whatever app had moved into that position.
+    var selectedAppName: String?
+    /// Set while restoring selection programmatically, so the restore is not mistaken
+    /// for the user picking a different row.
+    var isRestoringSelection = false
     /// When the window is closed the app is menu-bar-only, and the expensive
     /// per-process sweep populates a table nobody is looking at. Full ticks then
     /// drop to this cadence purely so the 10 hr power history keeps accruing.
@@ -94,6 +103,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
 
         inspector = InspectorView(frame: .zero)
         inspector.onClose = { [weak self] in
+            self?.selectedAppName = nil
             self?.main.table.deselectAll(nil)
             self?.main.setDetailVisible(false)
         }
@@ -233,17 +243,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
             }
         sortRows()
 
-        // Preserve selection across the reload — the table refreshes under the
-        // user every couple of seconds and losing their row would make the detail
-        // pane useless.
-        let selectedName = main.table.selectedRow >= 0 && main.table.selectedRow < rows.count
-            ? rows[main.table.selectedRow].name : nil
         main.table.reloadData()
         autosizeColumns()
-        if let name = selectedName, let idx = rows.firstIndex(where: { $0.name == name }) {
+
+        // Re-find the selected APP by name. If it is gone (quit, or fell below the
+        // display floor) the selection is dropped rather than silently transferred
+        // to whichever app inherited its row.
+        if let name = selectedAppName, let idx = rows.firstIndex(where: { $0.name == name }) {
+            isRestoringSelection = true
             main.table.selectRowIndexes(IndexSet(integer: idx), byExtendingSelection: false)
-            updateDetail()
+            isRestoringSelection = false
+        } else if selectedAppName != nil {
+            main.table.deselectAll(nil)
         }
+        updateDetail()
+
+        // Rows moved under a stationary pointer, so recompute what is hovered —
+        // mouseMoved does not fire for content shifting beneath the cursor.
+        main.table.refreshHover()
 
         updateLedger(s)
         updateGraph(s)
@@ -281,18 +298,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
     }
 
     func updateDetail() {
-        let sel = main.table.selectedRow
-        guard sel >= 0, sel < rows.count, let snap = lastSnapshot else {
+        // Resolve by NAME, never by the current row index.
+        guard let name = selectedAppName,
+              let row = rows.first(where: { $0.name == name }),
+              let snap = lastSnapshot else {
             main.setDetailVisible(false)
             return
         }
-        inspector.model = InspectorView.model(app: rows[sel].app, snapshot: snap, lens: lens)
+        inspector.model = InspectorView.model(app: row.app, snapshot: snap, lens: lens)
         main.setDetailVisible(true)
     }
 
-    @objc func tableClicked() { updateDetail() }
+    @objc func tableClicked() {}   // selection change does the work
 
-    func tableViewSelectionDidChange(_ notification: Notification) { updateDetail() }
+    func tableViewSelectionDidChange(_ notification: Notification) {
+        guard !isRestoringSelection else { return }
+        let sel = main.table.selectedRow
+        selectedAppName = (sel >= 0 && sel < rows.count) ? rows[sel].name : nil
+        updateDetail()
+    }
 
     func sortRows() {
         let asc = ascending
