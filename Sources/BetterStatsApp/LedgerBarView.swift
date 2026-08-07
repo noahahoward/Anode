@@ -49,8 +49,16 @@ final class LedgerBarView: NSView {
         // Segments are laid out by share of the measured total, so the bar always
         // spans exactly the thing it claims to describe.
         let total = max(m.total_pctHr, 0.0001)
-        let widths = [m.apps_pctHr, m.systemProcesses_pctHr, m.gpu_pctHr, m.unattributed_pctHr]
+        var widths = [m.apps_pctHr, m.systemProcesses_pctHr, m.gpu_pctHr, m.unattributed_pctHr]
             .map { CGFloat(max(0, $0) / total) * barRect.width }
+
+        // The final segment takes whatever width is left rather than its own share.
+        // Each bucket is clamped at zero independently, so in edge cases they need
+        // not sum to the total — and a bar that stops short of its own end reads as
+        // a rendering fault rather than as data. Any rounding lands in the honest
+        // bucket, which is the one already labelled as not precisely known.
+        let used = widths[0] + widths[1] + widths[2]
+        widths[3] = max(0, barRect.width - used)
 
         let clip = NSBezierPath(roundedRect: barRect,
                                 xRadius: Palette.Radius.chip, yRadius: Palette.Radius.chip)
