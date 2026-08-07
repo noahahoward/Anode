@@ -408,6 +408,8 @@ public final class ModelValidator {
                                   amperage_mA: -500, remainingCapacity_mAh: mAh,
                                   timeRemaining_min: nil)
         return PowerMonitor.Snapshot(drains: [], apps: [],
+                                     systemApps: [], gpuApps: [],
+                                     systemAttributionAge: nil,
                                      attributed_W: attributed, rails: [],
                                      gpu_W: gpu > 0 ? gpu : nil,
                                      fast_W: attributed + gpu,

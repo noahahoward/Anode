@@ -59,6 +59,90 @@ if args.contains("--rails") {
     exit(0)
 }
 
+// ── Live attribution check ──────────────────────────────────────────────────
+// Ticks the real monitor and prints the named shares of the two anonymous
+// buckets, so the end-to-end path can be verified without the GUI.
+if args.contains("--sysattr") {
+    guard let monitor = PowerMonitor(scale: scale) else { exit(1) }
+    // The first tick returns nil (no prior sweep to diff) BEFORE reaching the
+    // refresh call, so the rollup is only requested on the second tick and lands
+    // asynchronously after it. Three ticks is the shortest honest sequence.
+    monitor.tick()
+    Thread.sleep(forTimeInterval: 1)
+    monitor.tick()
+    Thread.sleep(forTimeInterval: 3)
+    guard let s = monitor.tick() else { print("no snapshot"); exit(1) }
+
+    print(String(format: "total %.2f W · cpu rail %@ · gpu %@ · attributed %.2f W",
+                 s.smoothed_W,
+                 s.cpuRail_W.map { String(format: "%.2f W", $0) } ?? "—",
+                 s.gpu_W.map { String(format: "%.2f W", $0) } ?? "—",
+                 s.attributed_W))
+    print(String(format: "rollup age: %@",
+                 s.systemAttributionAge.map { String(format: "%.1fs", $0) } ?? "never"))
+
+    print(String(format: "\nSYSTEM PROCESSES  bucket %@ (measured, CPU rail minus attributed)",
+                 s.systemProcesses_W.map { String(format: "%.3f W", $0) } ?? "—"))
+    for r in s.systemApps.prefix(12) {
+        print(String(format: "  %-30@ %7.3f W  %6.2f %%/hr  (cpu %llu ms)",
+                     r.name as NSString, r.watts, r.percentPerHour, r.cpu_ms))
+    }
+    let named = s.systemApps.reduce(0) { $0 + $1.watts }
+    print(String(format: "  -> %d rows, %.3f W named of %.3f W measured (%.0f%%)",
+                 s.systemApps.count, named, s.systemProcesses_W ?? 0,
+                 (s.systemProcesses_W ?? 0) > 0 ? 100 * named / (s.systemProcesses_W ?? 1) : 0))
+
+    print(String(format: "\nGPU  bucket %@ (measured rail, split by coalition GPU time)",
+                 s.gpu_W.map { String(format: "%.3f W", $0) } ?? "—"))
+    for r in s.gpuApps.prefix(8) {
+        print(String(format: "  %-30@ %7.3f W  %6.2f %%/hr  (gpu %llu ms)",
+                     r.name as NSString, r.watts, r.percentPerHour, r.gpu_ms))
+    }
+    exit(0)
+}
+
+// ── Coalition usage dump ────────────────────────────────────────────────────
+// Apple's own per-app rollup, including the root coalitions proc_pid_rusage
+// cannot see. --coalitions <minutes>
+if let i = args.firstIndex(of: "--coalitions") {
+    let mins = args.count > i + 1 ? Double(args[i + 1]) ?? 10 : 10
+    guard SystemStats.isAvailable else { print("systemstats unavailable"); exit(1) }
+    let since = Date().addingTimeInterval(-mins * 60)
+    let rows = SystemStats.usage(since: since)
+    if let st = SystemStats.lastRunStats {
+        print(String(format: "%d lines, %d records, spawn %.2fs, parse %.3fs%@",
+                     st.lines, st.records, st.spawn_s, st.parse_s,
+                     st.timedOut ? " (TIMED OUT)" : ""))
+    }
+    print(String(format: "\n%-40@ %9@ %9@ %8@  %@",
+                 "app" as NSString, "cpu ms" as NSString, "gpu ms" as NSString,
+                 "share" as NSString, "kind" as NSString))
+    for r in rows.prefix(30) {
+        print(String(format: "%-40@ %9llu %9llu %7.2f%%  %@",
+                     r.displayName as NSString, r.cpu_ms, r.gpu_ms,
+                     r.energyShare * 100, r.isSystem ? "system" : "user"))
+    }
+    print(String(format: "\n%d coalitions total", rows.count))
+    exit(0)
+}
+
+// ── Passive rail recorder ───────────────────────────────────────────────────
+// --raillog <seconds> <interval>  → CSV on stdout.
+if let i = args.firstIndex(of: "--raillog") {
+    let secs = args.count > i + 1 ? Double(args[i + 1]) ?? 3600 : 3600
+    let ivl  = args.count > i + 2 ? Double(args[i + 2]) ?? 5 : 5
+    RailLog.run(seconds: secs, interval: ivl)
+    exit(0)
+}
+
+// ── Display rail discovery ──────────────────────────────────────────────────
+// Modulates screen brightness and reports which rails follow it. See
+// DisplayExperiment for why brightness rather than a key-name guess.
+if args.contains("--displayexp") {
+    DisplayExperiment.run()
+    exit(0)
+}
+
 // ── SMC discovery ───────────────────────────────────────────────────────────
 if args.contains("--smc") {
     guard let smc = SMC() else {
