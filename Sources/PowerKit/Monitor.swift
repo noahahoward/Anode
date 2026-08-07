@@ -216,13 +216,43 @@ public final class PowerMonitor {
     private var pstrSincePublish: [Double] = []
     private let calibrator = BaselineCalibrator()
     private let smoother = AdaptiveSmoother()
-    /// PPMC is as spiky as PSTR — measured 0.47 to 3.24 W across consecutive
-    /// ticks on an idle machine — but only PSTR was ever smoothed. Since the
-    /// system-process bucket is `cpuRail - attributed`, an unsmoothed rail against
-    /// a smooth attributed figure made the bucket collapse to zero on ~10% of
-    /// ticks, which flickered the named rows in and out of the table. Smoothing
-    /// the rail the same way its sibling is smoothed removes the artifact.
-    private let cpuSmoother = AdaptiveSmoother()
+    /// The CPU's SHARE of system power, smoothed — not its absolute watts.
+    ///
+    /// Smoothing the two rails independently was not enough, and made a worse
+    /// problem visible: `system` is `cpuRail - attributed` and `platform` is
+    /// `total - cpuRail - gpu`, so BOTH buckets hang off cpuRail and move in
+    /// opposite directions when it wobbles. With two independent adaptive
+    /// smoothers whose jump detection fired at different moments, the split
+    /// thrashed — measured across 25 ticks, the hatched share ranged 13% to 83%
+    /// with a standard deviation of 22 points, while apps sat steady near 8%.
+    ///
+    /// PPMC/PSTR is bounded, physically meaningful, and genuinely slow-moving: it
+    /// is the fraction of the machine's power the CPU is drawing. Smoothing that
+    /// and multiplying by the displayed total makes the buckets consistent with
+    /// the bar BY CONSTRUCTION, and a spike in total no longer reshuffles the
+    /// split. The gain cancels in the ratio, so raw rails are used.
+    /// Rolling MEDIANS of the two raw rails, not an EWMA of either.
+    ///
+    /// A single SMC read of PPMC is not a power measurement. Consecutive reads on
+    /// a quiet machine went 10.66, 0.76, 0.52, 1.81, 0.26 W — a 20x swing — and
+    /// the same rail averaged over 14 s during the brightness sweep sat calmly at
+    /// 2.5-5 W. The instantaneous value is sampling something PWM-like; only its
+    /// central tendency means anything.
+    ///
+    /// A median is the right tool rather than an average or an EWMA: those both
+    /// carry the 10 W outliers into the result, and the adaptive smoother actively
+    /// chases them because a 20x jump is exactly what its jump detector exists to
+    /// follow. A median discards them.
+    private var ppmcWindow: [Double] = []
+    private var pstrWindow: [Double] = []
+    private let railWindow = 15
+
+    private static func median(_ xs: [Double]) -> Double? {
+        guard !xs.isEmpty else { return nil }
+        let s = xs.sorted()
+        return s.count % 2 == 1 ? s[s.count / 2]
+                                : (s[s.count / 2 - 1] + s[s.count / 2]) / 2
+    }
     /// Fast samples accumulated since the last gas-gauge publish, so calibration
     /// compares like with like: a mean over the same period, not a single instant.
     private var fastSincePublish: [Double] = []
@@ -291,6 +321,17 @@ public final class PowerMonitor {
         let ppmcRaw = smc?.read("PPMC")?.value
         if let p = pstrRaw, p.isFinite, p > 0 { pstrSincePublish.append(p) }
 
+        // Rail windows are fed before anything reads them, so the anchor and the
+        // bucket split are computed from the same samples on the same tick.
+        if let p = pstrRaw, p.isFinite, p > 0.05 {
+            pstrWindow.append(p)
+            if pstrWindow.count > railWindow { pstrWindow.removeFirst() }
+        }
+        if let c = ppmcRaw, c.isFinite, c >= 0 {
+            ppmcWindow.append(c)
+            if ppmcWindow.count > railWindow { ppmcWindow.removeFirst() }
+        }
+
         // Gas gauge: only recompute when a genuinely new batch has published.
         if let now = PowerTelemetry.sample() {
             if let prev = lastPublished, now.accumulatorCount != prev.accumulatorCount {
@@ -319,15 +360,29 @@ public final class PowerMonitor {
         //   2. baseline + fast           — inferred, when SMC is unavailable
         //   3. the gauge itself          — accurate but 60 s stale
         //   4. raw fast                  — partial, last resort
-        let smcTotal = pstrRaw.map { gain.corrected($0) }
+        // The MEDIAN raw rail, not this tick's read. PSTR is as spiky as PPMC —
+        // it swung 1.5 to 18 W on an idle-to-active machine within one minute —
+        // and feeding that to an adaptive smoother whose jump detector exists to
+        // chase step changes made the headline number chase noise instead. The
+        // median rejects the excursions; the smoother then only has to track what
+        // is left. Falls back to this tick's value until the window fills.
+        let smcTotal = (Self.median(pstrWindow) ?? pstrRaw).map { gain.corrected($0) }
+
         let target = smcTotal ?? calibrator.estimate(fast: fast) ?? currentMeasured_W ?? fast
         let smoothed = smoother.update(target)
 
         let apps = DrainCalculator.group(drains, scale: scale)
 
-        // Smoothed on every tick, light or full, so the filter keeps tracking the
-        // rail rather than jumping when the window is reopened after a gap.
-        let smoothedCPURail = ppmcRaw.map { cpuSmoother.update(gain.corrected($0)) }
+        // Updated on every tick, light or full, so the filter keeps tracking
+        // rather than jumping when the window is reopened after a gap.
+        // The share of the two medians, applied to the displayed total, so the
+        // buckets are consistent with the bar they are drawn in by construction.
+        // Clamped at 1: the CPU cannot draw more than the whole machine.
+        let smoothedCPURail: Double? = {
+            guard let mc = Self.median(ppmcWindow), let mp = Self.median(pstrWindow),
+                  mp > 0.05 else { return nil }
+            return min(1, mc / mp) * smoothed
+        }()
 
         // Put names to the anonymous buckets. Only on full ticks: nothing renders
         // a process table while the window is hidden, and this costs a subprocess.

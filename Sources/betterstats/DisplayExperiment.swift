@@ -72,51 +72,61 @@ enum DisplayExperiment {
         return sums.mapValues { $0 / Double(n) }
     }
 
-    static func run(settle: Double = 6, dwell: Double = 12) {
+    static func run(settle: Double = 8, dwell: Double = 14) {
         guard let smc = SMC() else { print("SMC unavailable"); exit(1) }
-        guard load() else {
-            print("DisplayServices unavailable — cannot modulate brightness on this system.")
-            exit(1)
-        }
-        guard let b0 = brightness() else {
-            print("Could not read current brightness; refusing to change it blind.")
-            exit(1)
-        }
+        guard load() else { print("DisplayServices unavailable."); exit(1) }
+        guard let b0 = brightness() else { print("Cannot read brightness."); exit(1) }
         original = b0
         atexit { DisplayExperiment.restore() }
         for sig in [SIGINT, SIGTERM, SIGHUP] {
             signal(sig) { _ in DisplayExperiment.restore(); _exit(1) }
         }
 
-        print(String(format: "display experiment · current brightness %.0f%%", b0 * 100))
-        print("  settle \(Int(settle))s, dwell \(Int(dwell))s per level, brightness restored on exit\n")
+        // Several levels, not two. A single hi/lo pair cannot tell a real
+        // backlight curve from a coincidence, and the previous run was ruined by
+        // exactly that: changing brightness wakes WindowServer, so PPMC moved
+        // +2.1 W alongside the display and got counted as display power.
+        //
+        // The fix is not to hold the CPU still — that is impossible — but to
+        // MEASURE it and subtract it. PPMC and the GPU rail are known, so at each
+        // level the display estimate is PSTR minus both.
+        let levels: [Float] = [0.02, 0.25, 0.50, 0.75, 1.00]
+        print(String(format: "display sweep · current brightness %.0f%% · %d levels, %.0fs each",
+                     b0 * 100, levels.count, settle + dwell))
+        print("brightness is restored on every exit path, including ctrl-C\n")
 
-        // Bright first, then dim: the panel's own thermal state drifts slowly, and
-        // going high→low means any residual warmth inflates the DIM reading, which
-        // makes the measured delta conservative rather than flattering.
-        setBrightness(1.0); Thread.sleep(forTimeInterval: settle)
-        let hi = sampleRails(smc, seconds: dwell)
-        setBrightness(0.02); Thread.sleep(forTimeInterval: settle)
-        let lo = sampleRails(smc, seconds: dwell)
+        var results: [(Float, Double, Double, Double, Double)] = []
+        for lv in levels {
+            setBrightness(lv)
+            Thread.sleep(forTimeInterval: settle)
+            let m = sampleRails(smc, seconds: dwell)
+            let pstr = m["PSTR"] ?? 0
+            let ppmc = m["PPMC"] ?? 0
+            let gpu  = (m["PR1b"] ?? 0) + (m["PR0b"] ?? 0)
+            let disp = max(0, pstr - ppmc - gpu)
+            results.append((lv, pstr, ppmc, gpu, disp))
+            print(String(format: "  %3.0f%%  PSTR %6.2f  PPMC %5.2f  GPU %5.2f  ->  rest %6.2f W",
+                         lv * 100, pstr, ppmc, gpu, disp))
+        }
         restore()
 
-        let keys = Set(hi.keys).intersection(lo.keys).sorted()
-        var rows: [(String, Double, Double, Double)] = []
-        for k in keys {
-            let h = hi[k] ?? 0, l = lo[k] ?? 0
-            rows.append((k, l, h, h - l))
-        }
-        print(String(format: "%-6@ %10@ %10@ %10@  %@",
-                     "rail" as NSString, "dim W" as NSString, "bright W" as NSString,
-                     "delta W" as NSString, "verdict" as NSString))
-        for r in rows.sorted(by: { abs($0.3) > abs($1.3) }) where abs(r.3) > 0.01 || r.2 > 0.05 {
-            // A display rail must move a lot in absolute terms AND be dominated by
-            // that movement — a big rail that wobbles 3% is just noise on a big rail.
-            let share = r.2 > 0.001 ? r.3 / r.2 : 0
-            let verdict = (r.3 > 0.15 && share > 0.35) ? "◄ DISPLAY"
-                        : (abs(r.3) > 0.15 ? "  (moves)" : "")
-            print(String(format: "%-6@ %10.4f %10.4f %+10.4f  %@",
-                         r.0 as NSString, r.1, r.2, r.3, verdict as NSString))
+        guard let lo = results.first, let hi = results.last else { return }
+        let span = hi.4 - lo.4
+        print(String(format: "\nrest-of-machine at 2%%: %.2f W   at 100%%: %.2f W   span %+.2f W",
+                     lo.4, hi.4, span))
+        print(String(format: "CPU rail moved %+.2f W across the sweep (this is the confound, now subtracted)",
+                     hi.2 - lo.2))
+
+        // Monotonic in brightness is the actual test. A backlight must rise with
+        // every step; a rail that wanders is responding to something else.
+        var monotonic = true
+        for i in 1..<results.count where results[i].4 < results[i-1].4 - 0.15 { monotonic = false }
+        print(monotonic
+              ? "\nMONOTONIC in brightness — consistent with a real backlight curve."
+              : "\nNOT monotonic — the residual is not tracking brightness cleanly; treat as contaminated.")
+        if span > 0.5 {
+            print(String(format: "display at your usual %.0f%%: roughly %.2f W",
+                         b0 * 100, lo.4 + Double(b0) * span))
         }
         print(String(format: "\nrestored brightness to %.0f%%", (brightness() ?? b0) * 100))
     }
