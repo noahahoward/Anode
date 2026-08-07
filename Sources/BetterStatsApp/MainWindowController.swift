@@ -28,7 +28,7 @@ final class MainWindowController: NSObject {
     let detailContainer = NSView()
 
     private let scroll = NSScrollView()
-    private var detailWidth: CGFloat = 330
+    private var detailWidth: CGFloat = 380
     private var detailShown = false
     private let tableSplit = NSSplitView()
 
@@ -189,10 +189,16 @@ final class MainWindowController: NSObject {
         guard visible != detailShown else { return }
         detailShown = visible
         detailContainer.isHidden = !visible
+        // Hold the inspector's width and let the table absorb the change, rather than
+        // relying on adjustSubviews to guess. Without the holding priority the pane
+        // could be given zero width and appear not to open at all.
+        tableSplit.setHoldingPriority(.defaultHigh, forSubviewAt: 1)
         tableSplit.adjustSubviews()
         if visible {
-            tableSplit.setPosition(max(360, tableSplit.bounds.width - detailWidth), ofDividerAt: 0)
+            let target = max(360, tableSplit.bounds.width - detailWidth)
+            tableSplit.setPosition(target, ofDividerAt: 0)
         }
+        tableSplit.layoutSubtreeIfNeeded()
     }
 
     func show() {
@@ -244,11 +250,27 @@ final class HoverTableView: NSTableView {
         setHovered(row(at: convert(event.locationInWindow, from: nil)))
     }
 
+    /// Recompute from the pointer's current position. Needed after a reload:
+    /// re-sorting moves rows under a stationary cursor, and no mouse event fires for
+    /// content shifting beneath it — so the highlight would stick to a stale row or
+    /// vanish entirely.
+    func refreshHover() {
+        guard let window, window.isKeyWindow else { return }
+        let inWindow = window.mouseLocationOutsideOfEventStream
+        let local = convert(inWindow, from: nil)
+        setHovered(bounds.contains(local) ? row(at: local) : -1)
+    }
+
     private func setHovered(_ newRow: Int) {
         guard newRow != hoveredRow else { return }
         let old = hoveredRow
         hoveredRow = newRow
-        for r in [old, newRow] where r >= 0 {
+        // Bounds-check against the CURRENT row count. refreshHover runs right after
+        // reloadData, so the previous hovered index can be past the end of the new
+        // data — and rowView(atRow:) raises rather than returning nil for an
+        // out-of-range row. That crashed the app on the first reload after a hover.
+        let count = numberOfRows
+        for r in [old, newRow] where r >= 0 && r < count {
             rowView(atRow: r, makeIfNecessary: false)?.needsDisplay = true
         }
     }
@@ -275,13 +297,24 @@ final class BetterStatsRowView: NSTableRowView {
     }
 
     override func drawSelection(in dirtyRect: NSRect) {
-        guard selectionHighlightStyle != .none else { return }
+        // NO style guard here. NSTableView propagates its own selectionHighlightStyle
+        // to its row views, and the table is set to .none precisely BECAUSE we draw
+        // the selection ourselves — so guarding on it made this method return early
+        // and the selection never appeared at all.
         Palette.selection.setFill()
         pill.fill()
     }
 
+    /// AppKit only calls drawSelection when it believes the row is selected AND the
+    /// style is not .none, so draw it from drawBackground as well.
+    private var shouldDrawSelection: Bool { isSelected }
+
     override func drawBackground(in dirtyRect: NSRect) {
-        guard !isSelected else { return }   // no hairline under a rounded selection
+        if shouldDrawSelection {
+            Palette.selection.setFill()
+            pill.fill()
+            return   // no hairline under a rounded selection
+        }
         if isHovered {
             Palette.selection.withAlphaComponent(0.45).setFill()
             pill.fill()
