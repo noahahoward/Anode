@@ -30,6 +30,10 @@ final class MainWindowController: NSObject {
     /// glance card and graph stay put, because they describe the battery and remain
     /// true whichever pane is showing.
     let paneContainer = NSView()
+    /// Range picker for the history graph. Lives on `content`, NOT inside
+    /// graphContainer: install() clears that container's subviews, so anything
+    /// parked there would vanish the moment the graph was installed.
+    let graphRanges = RangePicker()
 
     private let scroll = NSScrollView()
     private var detailWidth: CGFloat = 380
@@ -115,6 +119,8 @@ final class MainWindowController: NSObject {
         graphContainer.translatesAutoresizingMaskIntoConstraints = false
         content.addSubview(glance)
         content.addSubview(graphContainer)
+        graphRanges.translatesAutoresizingMaskIntoConstraints = false
+        content.addSubview(graphRanges)
 
         let railWidth: CGFloat = 168
         NSLayoutConstraint.activate([
@@ -154,6 +160,11 @@ final class MainWindowController: NSObject {
             graphContainer.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -16),
             graphContainer.topAnchor.constraint(equalTo: glance.topAnchor),
             graphContainer.bottomAnchor.constraint(equalTo: glance.bottomAnchor),
+
+            // Top-right of the plot, where it overlaps only empty headroom.
+            graphRanges.trailingAnchor.constraint(equalTo: graphContainer.trailingAnchor,
+                                                  constant: -44),
+            graphRanges.topAnchor.constraint(equalTo: graphContainer.topAnchor, constant: -3),
         ])
 
         window.contentView = content
@@ -387,5 +398,79 @@ final class BetterStatsRowView: NSTableRowView {
     override var isEmphasized: Bool {
         get { false }   // keep our own colours when the window loses focus
         set {}
+    }
+}
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Compact range selector for the history graph.
+///
+/// Plain buttons rather than NSSegmentedControl: the segmented control insists on
+/// its own vibrancy and control-size metrics, which read as a system widget
+/// dropped onto a black chart rather than part of it.
+final class RangePicker: NSView {
+
+    /// Seconds per option. 7 days matches the store's retention, so nothing here
+    /// can ask for history that has already been pruned.
+    private static let options: [(String, TimeInterval)] = [
+        ("1H", 3600), ("6H", 6 * 3600), ("24H", 86400), ("7D", 7 * 86400),
+    ]
+
+    var onSelect: ((TimeInterval) -> Void)?
+    private var buttons: [NSButton] = []
+    private var selectedIndex = 0
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        let stack = NSStackView()
+        stack.orientation = .horizontal
+        stack.spacing = 2
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.leadingAnchor.constraint(equalTo: leadingAnchor),
+            stack.trailingAnchor.constraint(equalTo: trailingAnchor),
+            stack.topAnchor.constraint(equalTo: topAnchor),
+            stack.bottomAnchor.constraint(equalTo: bottomAnchor),
+        ])
+        for (i, opt) in Self.options.enumerated() {
+            let b = NSButton(title: opt.0, target: self, action: #selector(pick(_:)))
+            b.tag = i
+            b.isBordered = false
+            b.font = Palette.Font.mono(9.5, .medium)
+            b.setButtonType(.momentaryChange)
+            buttons.append(b)
+            stack.addArrangedSubview(b)
+        }
+        restyle()
+    }
+    required init?(coder: NSCoder) { fatalError() }
+
+    override func viewDidChangeEffectiveAppearance() { restyle() }
+
+    @objc private func pick(_ sender: NSButton) {
+        selectedIndex = sender.tag
+        restyle()
+        onSelect?(Self.options[sender.tag].1)
+    }
+
+    /// Reflect a range that was set from elsewhere without re-firing onSelect.
+    func select(seconds: TimeInterval) {
+        if let i = Self.options.firstIndex(where: { $0.1 == seconds }) {
+            selectedIndex = i
+            restyle()
+        }
+    }
+
+    private func restyle() {
+        for (i, b) in buttons.enumerated() {
+            b.attributedTitle = NSAttributedString(
+                string: b.title,
+                attributes: [
+                    .font: Palette.Font.mono(9.5, i == selectedIndex ? .bold : .regular),
+                    .foregroundColor: i == selectedIndex ? Palette.accent : Palette.faint,
+                ])
+        }
     }
 }

@@ -96,6 +96,30 @@ public final class HistoryGraphView: NSView {
         didSet { needsDisplay = true }
     }
 
+    /// Explicit time axis. When nil the axis is derived from the data, which is
+    /// the right default for a live strip chart. Setting it is what makes zoom and
+    /// pan possible at all: without an independent domain there is nothing to zoom
+    /// — the axis would just snap back to whatever the data happened to span.
+    public var timeDomain: (start: Date, end: Date)? {
+        didSet { needsDisplay = true }
+    }
+
+    /// Called when the user zooms or pans, so the owner can re-query history at
+    /// the new range instead of scaling up whatever is already in memory.
+    public var onDomainChanged: ((Date, Date) -> Void)?
+
+    /// Oldest data that exists. Panning stops here rather than scrolling off into
+    /// an empty past the store could never fill.
+    public var earliestAvailable: Date?
+
+    /// Shortest and longest spans the axis may take.
+    private let minSpan: TimeInterval = 60
+    private let maxSpan: TimeInterval = 7 * 86400
+
+    private var hoverPoint: NSPoint?
+    private var trackingAreaRef: NSTrackingArea?
+    private var panAnchor: (mouse: NSPoint, start: Date, end: Date)?
+
     public var showsGrid: Bool = true {
         didSet { needsDisplay = true }
     }
@@ -299,6 +323,13 @@ public final class HistoryGraphView: NSView {
         var tMax = tMaxD
         var span = haveData ? tMaxD.timeIntervalSince(tMinD) : 60
         if !haveData { tMax = Date() }
+        // An explicit domain wins over the data's own extent, so an empty stretch
+        // of history stays empty on screen instead of silently rescaling the axis
+        // to whatever few points happen to exist.
+        if let d = timeDomain, d.end > d.start {
+            tMax = d.end
+            span = d.end.timeIntervalSince(d.start)
+        }
         if span < 1 { span = 60 }
         let tMin = tMax.addingTimeInterval(-span)
 
@@ -492,6 +523,8 @@ public final class HistoryGraphView: NSView {
             }
         }
 
+        // Last, so the crosshair and its readout sit above the lines they report.
+        drawHover(in: plot, xFor: xFor, yFor: yFor)
         drawHeader(plotTop: plot.maxY, tickAttrs: tickAttrs)
     }
 
@@ -635,5 +668,165 @@ public final class HistoryGraphView: NSView {
         }
         return i % 3600 == 0 ? "-\(i / 3600)h"
                              : String(format: "-%dh%02dm", i / 3600, (i % 3600) / 60)
+    }
+}
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// MARK: Zoom, pan, hover
+
+extension HistoryGraphView {
+
+    /// The domain the interaction acts on. Falls back to the last hour so the
+    /// first scroll has something concrete to scale rather than doing nothing.
+    private var effectiveDomain: (start: Date, end: Date) {
+        if let d = timeDomain, d.end > d.start { return d }
+        let end = Date()
+        return (end.addingTimeInterval(-3600), end)
+    }
+
+    /// Clamp a proposed domain to what actually exists: never shorter than a
+    /// minute, never longer than the retention horizon, never scrolled past the
+    /// oldest sample, and never into the future — panning into blank space on
+    /// either side reads as the graph being broken.
+    private func clamped(start: Date, end: Date) -> (start: Date, end: Date) {
+        var span = min(max(end.timeIntervalSince(start), minSpan), maxSpan)
+        let floorDate = earliestAvailable
+        let ceilDate = Date()
+        if let f = floorDate { span = min(span, max(minSpan, ceilDate.timeIntervalSince(f))) }
+
+        var e = min(end, ceilDate)
+        var st = e.addingTimeInterval(-span)
+        if let f = floorDate, st < f {
+            st = f
+            e = min(ceilDate, st.addingTimeInterval(span))
+        }
+        return (st, e)
+    }
+
+    private func apply(_ d: (start: Date, end: Date)) {
+        let c = clamped(start: d.start, end: d.end)
+        timeDomain = c
+        onDomainChanged?(c.start, c.end)
+    }
+
+    /// Time under a given x, in the CURRENT domain.
+    private func time(atX x: CGFloat) -> Date {
+        let d = effectiveDomain
+        let plotLeft: CGFloat = 34, plotRight = bounds.width - 42
+        let w = max(plotRight - plotLeft, 1)
+        let f = min(max((x - plotLeft) / w, 0), 1)
+        return d.start.addingTimeInterval(Double(f) * d.end.timeIntervalSince(d.start))
+    }
+
+    public override func scrollWheel(with event: NSEvent) {
+        // Zoom about the POINTER, not the centre or the right edge. Anchoring
+        // elsewhere makes the thing under the cursor slide away as you zoom, which
+        // is the single most disorienting thing a zoomable chart can do.
+        let d = effectiveDomain
+        let anchor = time(atX: convert(event.locationInWindow, from: nil).x)
+        let factor = event.deltaY > 0 ? 0.85 : 1.0 / 0.85
+        let span = d.end.timeIntervalSince(d.start) * factor
+        let leftShare = anchor.timeIntervalSince(d.start) / max(d.end.timeIntervalSince(d.start), 0.001)
+        let start = anchor.addingTimeInterval(-span * leftShare)
+        apply((start, start.addingTimeInterval(span)))
+    }
+
+    public override func mouseDown(with event: NSEvent) {
+        let d = effectiveDomain
+        panAnchor = (convert(event.locationInWindow, from: nil), d.start, d.end)
+    }
+
+    public override func mouseDragged(with event: NSEvent) {
+        guard let a = panAnchor else { return }
+        let d = effectiveDomain
+        let plotWidth = max(bounds.width - 76, 1)
+        let perPixel = d.end.timeIntervalSince(d.start) / Double(plotWidth)
+        let dx = convert(event.locationInWindow, from: nil).x - a.mouse.x
+        // Drag right moves the window BACK in time: the content follows the
+        // pointer, the axis does not.
+        let shift = -Double(dx) * perPixel
+        apply((a.start.addingTimeInterval(shift), a.end.addingTimeInterval(shift)))
+    }
+
+    public override func mouseUp(with event: NSEvent) { panAnchor = nil }
+
+    public override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let t = trackingAreaRef { removeTrackingArea(t) }
+        let t = NSTrackingArea(rect: bounds,
+                               options: [.mouseMoved, .mouseEnteredAndExited, .activeInKeyWindow],
+                               owner: self, userInfo: nil)
+        addTrackingArea(t)
+        trackingAreaRef = t
+    }
+
+    public override func mouseMoved(with event: NSEvent) {
+        hoverPoint = convert(event.locationInWindow, from: nil)
+        needsDisplay = true
+    }
+
+    public override func mouseExited(with event: NSEvent) {
+        hoverPoint = nil
+        needsDisplay = true
+    }
+
+    /// Crosshair plus a readout of every series at the hovered instant. Drawn
+    /// after the plot so it sits on top of the lines it is reading.
+    func drawHover(in plot: NSRect, xFor: (Date) -> CGFloat, yFor: (Double) -> CGFloat) {
+        guard let h = hoverPoint, plot.contains(h), panAnchor == nil else { return }
+        let t = time(atX: h.x)
+
+        NSColor.secondaryLabelColor.withAlphaComponent(0.55).setStroke()
+        let line = NSBezierPath()
+        line.lineWidth = 1
+        line.move(to: NSPoint(x: h.x, y: plot.minY))
+        line.line(to: NSPoint(x: h.x, y: plot.maxY))
+        line.stroke()
+
+        // Nearest sample per series, not interpolation: these are bucketed
+        // averages, and inventing a value between two buckets would report a
+        // number that was never measured.
+        var lines: [(String, NSColor, Double)] = []
+        for s in sanitized {
+            guard let near = s.points.min(by: {
+                abs($0.time.timeIntervalSince(t)) < abs($1.time.timeIntervalSince(t))
+            }) else { continue }
+            guard abs(near.time.timeIntervalSince(t)) < max(60, currentSpan / 40) else { continue }
+            lines.append((s.name, s.color, near.value))
+            let p = NSPoint(x: xFor(near.time), y: yFor(near.value))
+            s.color.setFill()
+            NSBezierPath(ovalIn: NSRect(x: p.x - 3, y: p.y - 3, width: 6, height: 6)).fill()
+        }
+        guard !lines.isEmpty else { return }
+
+        let df = DateFormatter()
+        df.dateFormat = currentSpan > 86400 ? "d MMM HH:mm" : "HH:mm:ss"
+        var text = df.string(from: t)
+        for l in lines { text += String(format: "\n%@  %.2f", l.0, l.2) }
+
+        let attrs: [NSAttributedString.Key: Any] = [
+            .font: NSFont.monospacedDigitSystemFont(ofSize: 10, weight: .regular),
+            .foregroundColor: NSColor.labelColor,
+        ]
+        let size = (text as NSString).size(withAttributes: attrs)
+        // Flip the box to the other side of the crosshair near the right edge so
+        // it never gets clipped by the plot bounds.
+        let boxW = size.width + 14, boxH = size.height + 10
+        let left = h.x + 12 + boxW > plot.maxX ? h.x - 12 - boxW : h.x + 12
+        let bottom = min(max(h.y - boxH / 2, plot.minY), plot.maxY - boxH)
+        let box = NSRect(x: left, y: bottom, width: boxW, height: boxH)
+
+        NSColor.controlBackgroundColor.withAlphaComponent(0.96).setFill()
+        let bp = NSBezierPath(roundedRect: box, xRadius: 6, yRadius: 6)
+        bp.fill()
+        NSColor.separatorColor.setStroke()
+        bp.stroke()
+        (text as NSString).draw(at: NSPoint(x: box.minX + 7, y: box.minY + 5), withAttributes: attrs)
+    }
+
+    private var currentSpan: TimeInterval {
+        let d = effectiveDomain
+        return d.end.timeIntervalSince(d.start)
     }
 }

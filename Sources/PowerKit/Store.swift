@@ -165,6 +165,13 @@ public final class HistoryStore {
     /// Watts are converted to joules (`W x interval`) at the door so everything
     /// downstream is additive. `nil` system figures stay NULL — an unmeasured
     /// window must not masquerade as "measured zero".
+    /// No laptop draws this. Anything above it is a wrapped counter, not a
+    /// measurement — verified in the wild: four stored buckets held measured_j
+    /// values around 1.8e16, one of them 9223372036854758, which is Int64.max
+    /// scaled. A single such row silently dominates every SUM it lands in, so
+    /// they are rejected on the way in AND filtered on the way out.
+    public static let maxPlausibleWatts = 200.0
+
     public func record(apps: [AppDrain], measured_W: Double?, attributed_W: Double?,
                        residual_W: Double?, onBattery: Bool, interval: TimeInterval,
                        at date: Date = Date()) {
@@ -217,7 +224,9 @@ public final class HistoryStore {
 
     private func bindOptionalJoules(_ stmt: OpaquePointer?, _ idx: Int32,
                                     _ watts: Double?, _ interval: TimeInterval) {
-        if let w = watts, w.isFinite {
+        // isFinite is not enough: a wrapped counter is a perfectly finite,
+        // perfectly enormous number, and that is exactly what reached the disk.
+        if let w = watts, w.isFinite, w >= 0, w <= Self.maxPlausibleWatts {
             sqlite3_bind_double(stmt, idx, w * interval)
         } else {
             sqlite3_bind_null(stmt, idx)
@@ -387,6 +396,79 @@ public final class HistoryStore {
     }
 
     // ── Maintenance ─────────────────────────────────────────────────────────
+
+    // ── Graph series ────────────────────────────────────────────────────────
+
+    public struct SeriesPoint {
+        public let time: Date
+        /// Whole-system watts over the bucket.
+        public let watts: Double
+        /// True when every interval in the bucket was on battery. Mixed buckets
+        /// read false, so a shaded "on battery" region never over-claims.
+        public let onBattery: Bool
+    }
+
+    /// Whole-system power over an arbitrary range, bucketed to at most
+    /// `maxPoints` rows.
+    ///
+    /// Bucketing happens in SQL rather than in Swift because the point of a 7-day
+    /// range is NOT to hand the graph 300,000 rows and let it throw them away: at
+    /// one row per two seconds a week is a quarter of a million intervals, and
+    /// materialising that to draw 900 pixels would cost more than every other
+    /// query in the app combined. The bucket width is derived from the requested
+    /// span, so the cost of a 7-day query and a 1-hour query is the same.
+    public func powerSeries(since: Date, until: Date = Date(),
+                            maxPoints: Int = 600) -> [SeriesPoint] {
+        let from = since.timeIntervalSince1970
+        let to = until.timeIntervalSince1970
+        guard to > from, maxPoints > 0 else { return [] }
+        let width = max((to - from) / Double(maxPoints), 1)
+
+        return queue.sync {
+            // Energy and duration are SUMMED per bucket and divided once, so the
+            // result is energy-weighted. Averaging per-interval watts would weight
+            // a 0.1 s tick the same as a 60 s bucket and skew every mixed range.
+            guard let st = prepare("""
+                SELECT CAST((ts - ?) / ? AS INTEGER) AS b,
+                       MIN(ts), SUM(measured_j), SUM(dur), MIN(on_battery)
+                  FROM interval
+                 WHERE ts >= ? AND ts <= ? AND measured_j IS NOT NULL
+                   AND dur > 0 AND measured_j >= 0
+                   AND measured_j / dur <= 200.0
+                 GROUP BY b
+                 ORDER BY b
+                """) else { return [] }
+            defer { sqlite3_finalize(st) }
+            sqlite3_bind_double(st, 1, from)
+            sqlite3_bind_double(st, 2, width)
+            sqlite3_bind_double(st, 3, from)
+            sqlite3_bind_double(st, 4, to)
+
+            var out: [SeriesPoint] = []
+            while sqlite3_step(st) == SQLITE_ROW {
+                let ts = sqlite3_column_double(st, 1)
+                let joules = sqlite3_column_double(st, 2)
+                let dur = sqlite3_column_double(st, 3)
+                guard dur > 0 else { continue }
+                out.append(SeriesPoint(time: Date(timeIntervalSince1970: ts),
+                                       watts: joules / dur,
+                                       onBattery: sqlite3_column_int(st, 4) == 1))
+            }
+            return out
+        }
+    }
+
+    /// Oldest retained sample, so the UI can offer only ranges that have data
+    /// rather than showing an empty 7-day plot on a first run.
+    public func earliestSample() -> Date? {
+        queue.sync { () -> Date? in
+            guard let st = prepare("SELECT MIN(ts) FROM interval") else { return nil }
+            defer { sqlite3_finalize(st) }
+            guard sqlite3_step(st) == SQLITE_ROW,
+                  sqlite3_column_type(st, 0) != SQLITE_NULL else { return nil }
+            return Date(timeIntervalSince1970: sqlite3_column_double(st, 0))
+        }
+    }
 
     /// Drop everything older than the horizon, then actually give the pages back
     /// (incremental_vacuum) and truncate the WAL so `sizeOnDisk` tells the truth.
