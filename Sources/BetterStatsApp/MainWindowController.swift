@@ -440,8 +440,8 @@ final class RangePicker: NSView {
     private var hoverIndex: Int?
     private var tracking: NSTrackingArea?
 
-    private let cellW: CGFloat = 34
-    private let height: CGFloat = 19
+    fileprivate let cellW: CGFloat = 34
+    fileprivate let height: CGFloat = 19
 
     override var intrinsicContentSize: NSSize {
         NSSize(width: cellW * CGFloat(Self.options.count), height: height)
@@ -483,6 +483,49 @@ final class RangePicker: NSView {
         if let i = Self.options.firstIndex(where: { $0.seconds == seconds }) {
             selectedIndex = i
             needsDisplay = true
+        }
+    }
+
+    // A hand-drawn control is invisible to VoiceOver and to any automation
+    // unless it says what it is. The rail already does this; drawing this picker
+    // by hand must not quietly cost what the buttons it replaced had for free.
+    override func isAccessibilityElement() -> Bool { true }
+    override func accessibilityRole() -> NSAccessibility.Role? { .radioGroup }
+    override func accessibilityLabel() -> String? { "Graph time range" }
+    override func accessibilityChildren() -> [Any]? { cells }
+    override func accessibilityValue() -> Any? { Self.options[selectedIndex].label }
+
+    /// One proxy element per cell, so each range is individually focusable and
+    /// pressable rather than the whole strip being one opaque blob.
+    private lazy var cells: [NSAccessibilityElement] = Self.options.enumerated().map { i, opt in
+        let e = RangeCell(picker: self, index: i)
+        e.setAccessibilityRole(.radioButton)
+        e.setAccessibilityLabel(opt.label)
+        e.setAccessibilityParent(self)
+        return e
+    }
+
+    final class RangeCell: NSAccessibilityElement {
+        weak var picker: RangePicker?
+        let index: Int
+        init(picker: RangePicker, index: Int) {
+            self.picker = picker
+            self.index = index
+            super.init()
+        }
+        override func accessibilityValue() -> Any? { picker?.selectedIndex == index }
+        override func accessibilityPerformPress() -> Bool {
+            guard let p = picker else { return false }
+            p.selectedIndex = index
+            p.needsDisplay = true
+            p.onSelect?(RangePicker.options[index].seconds)
+            return true
+        }
+        override func accessibilityFrame() -> NSRect {
+            guard let p = picker, let win = p.window else { return .zero }
+            let local = NSRect(x: CGFloat(index) * p.cellW, y: 0,
+                               width: p.cellW, height: p.height)
+            return win.convertToScreen(p.convert(local, to: nil))
         }
     }
 
