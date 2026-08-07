@@ -75,6 +75,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
     /// CPU, memory, GPU, network and sensors. Cheap enough to run even while
     /// hidden — unlike the per-process sweep, these are a handful of syscalls.
     let sysMetrics = SystemMetrics()
+    /// Per-process network, via nettop. Refreshed only while the Network pane is
+    /// on screen.
+    let netAttribution = NetworkAttribution()
 
     var rows: [Row] = []
     var sortKey = "pctHr"
@@ -430,7 +433,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
     func refreshPane() {
         guard !lens.isPerProcess, let sys = lastSystem else { return }
         switch lens {
-        case .network: networkPane.update(sys.network)
+        case .network:
+            // Only refreshed while the pane is actually visible: nettop blocks for
+            // ~5 s per sample, and spawning it forever for a pane nobody is looking
+            // at is precisely the idle cost this app exists to avoid.
+            netAttribution.refreshIfNeeded()
+            networkPane.update(sys.network,
+                               perProcess: netAttribution.latest,
+                               age: netAttribution.age)
         case .sensors: sensorsPane.update(cpu: sys.cpuTemperature, gpu: sys.gpuTemperature)
         case .fans:    fansPane.update(sys.fans)
         default: break

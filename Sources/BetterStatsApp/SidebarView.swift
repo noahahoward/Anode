@@ -76,7 +76,10 @@ final class SidebarView: NSView {
         Palette.line.setFill()
         NSRect(x: bounds.maxX - 1, y: 0, width: 1, height: bounds.height).fill()
     }
-    override func viewDidChangeEffectiveAppearance() {
+    override func viewDidChangeEffectiveAppearance() { redraw() }
+
+    /// Force the rail and every row to repaint.
+    func redraw() {
         needsDisplay = true
         rows.values.forEach { $0.needsDisplay = true }
     }
