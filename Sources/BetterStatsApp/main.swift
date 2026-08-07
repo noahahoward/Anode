@@ -19,7 +19,16 @@ final class Row: NSObject {
     /// the counterfactual is meaningful.
     let costMin: Double?
     let isApp: Bool
-    let app: AppDrain
+    /// nil for system rows: those come from Apple's coalition rollup, which
+    /// reports per-app totals and no pids at all, so there is no process to
+    /// inspect, no memory footprint to read and nothing to quit.
+    let app: AppDrain?
+    /// Set when this row is an apportioned share of a measured bucket rather than
+    /// a measured quantity in its own right. Everything user-facing keys off this:
+    /// a modeled row must never be presentable as a measured one.
+    let system: SystemAttribution.Row?
+
+    var isModeled: Bool { system != nil }
 
     init(app: AppDrain, windowPct: Double?, costMin: Double?) {
         self.name = app.name
@@ -29,6 +38,21 @@ final class Row: NSObject {
         self.costMin = costMin
         self.isApp = app.isApp
         self.app = app
+        self.system = nil
+    }
+
+    /// A named share of the CPU power `proc_pid_rusage` could not attribute.
+    /// `windowPct` and `costMin` stay nil: there is no per-app history for a
+    /// coalition, and the quit-this counterfactual needs a process to quit.
+    init(system: SystemAttribution.Row) {
+        self.name = system.name
+        self.procs = 0
+        self.pctHr = system.percentPerHour
+        self.windowPct = nil
+        self.costMin = nil
+        self.isApp = false
+        self.app = nil
+        self.system = system
     }
 }
 
@@ -254,6 +278,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
                     windowPct: windowPercents[app.name],
                     costMin: s.runtimeCost_min(appWatts: app.watts))
             }
+
+        // Named shares of the CPU power rusage cannot see — WindowServer and the
+        // root daemons. Battery lens only: these carry an apportioned wattage and
+        // nothing else, so in the CPU, memory or disk lenses every column but the
+        // name would be "—" and the rows would be pure clutter.
+        if lens == .battery, showDaemons {
+            rows += s.systemApps
+                .filter { $0.percentPerHour >= floor }
+                .map(Row.init(system:))
+        }
         sortRows()
 
         main.table.reloadData()
@@ -331,7 +365,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
             main.setDetailVisible(false)
             return
         }
-        inspector.model = InspectorView.model(app: row.app, snapshot: snap, lens: lens)
+        // A system row has no process behind it, so there is nothing for the
+        // inspector to show and nothing to quit. Closing the pane is honest;
+        // showing an empty one reads as a bug.
+        guard let app = row.app else {
+            main.setDetailVisible(false)
+            return
+        }
+        inspector.model = InspectorView.model(app: app, snapshot: snap, lens: lens)
         main.setDetailVisible(true)
     }
 
@@ -352,9 +393,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
             case "name":   r = a.name.localizedCaseInsensitiveCompare(b.name) == .orderedAscending
             case "window": r = (a.windowPct ?? -1) < (b.windowPct ?? -1)
             case "cost":   r = (a.costMin ?? -1) < (b.costMin ?? -1)
-            case "cpu":    r = a.app.cpuPercent < b.app.cpuPercent
-            case "mem":    r = a.app.memoryBytes < b.app.memoryBytes
-            case "disk":   r = a.app.diskBytesPerSec < b.app.diskBytesPerSec
+            // System rows sort as -1 rather than 0 on these: they have no reading
+            // at all, and a real zero should still outrank "not measurable".
+            case "cpu":    r = (a.app?.cpuPercent ?? -1) < (b.app?.cpuPercent ?? -1)
+            case "mem":    r = (a.app.map { Double($0.memoryBytes) } ?? -1)
+                             < (b.app.map { Double($0.memoryBytes) } ?? -1)
+            case "disk":   r = (a.app?.diskBytesPerSec ?? -1) < (b.app?.diskBytesPerSec ?? -1)
             case "procs":  r = a.procs < b.procs
             case "kind":   r = (a.isApp ? 1 : 0) < (b.isApp ? 1 : 0)
             default:       r = a.pctHr < b.pctHr
@@ -516,15 +560,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         case "cpu":
             // Percent of one core, Activity Monitor's convention: a busy 4-thread
             // process reads 400%.
-            return (r.app.cpuPercent < 0.05 ? "—" : String(format: "%.1f%%", r.app.cpuPercent),
-                    r.app.cpuPercent < 0.05)
+            guard let a = r.app else { return ("—", true) }
+            return (a.cpuPercent < 0.05 ? "—" : String(format: "%.1f%%", a.cpuPercent),
+                    a.cpuPercent < 0.05)
         case "mem":
-            return (r.app.memoryBytes == 0 ? "—" : MetricUnit.bytes.format(Double(r.app.memoryBytes)),
-                    r.app.memoryBytes == 0)
+            guard let a = r.app else { return ("—", true) }
+            return (a.memoryBytes == 0 ? "—" : MetricUnit.bytes.format(Double(a.memoryBytes)),
+                    a.memoryBytes == 0)
         case "disk":
-            return (r.app.diskBytesPerSec < 1
-                        ? "—" : MetricUnit.bytesPerSecond.format(r.app.diskBytesPerSec),
-                    r.app.diskBytesPerSec < 1)
+            guard let a = r.app else { return ("—", true) }
+            return (a.diskBytesPerSec < 1
+                        ? "—" : MetricUnit.bytesPerSecond.format(a.diskBytesPerSec),
+                    a.diskBytesPerSec < 1)
         case "procs":
             return (r.procs > 1 ? "\(r.procs)" : "—", true)
         default:
@@ -575,7 +622,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         label.font = font(for: id, isApp: r.isApp)
         label.alignment = id == "name" ? .left : .right
         label.lineBreakMode = .byTruncatingTail
-        label.textColor = dim ? Palette.dim : Palette.text
+        // System rows take the same colour the ledger bar gives its "system
+        // processes" segment, so the link is visual rather than something the
+        // user has to be told: these rows ARE that segment, itemised. It also
+        // keeps them from reading as ordinary measured rows, which they are not.
+        label.textColor = r.isModeled && id == "name" ? Palette.accentDim
+                                                      : (dim ? Palette.dim : Palette.text)
         label.translatesAutoresizingMaskIntoConstraints = false
 
         // A bare NSTextField is pinned to the top of its cell, so every row read as

@@ -18,6 +18,25 @@ public final class PowerMonitor {
         public let drains: [ProcessDrain]
         /// Per-application rows — processes collapsed onto the app that owns them.
         public let apps: [AppDrain]
+
+        /// Named shares of the CPU power rusage could not attribute — WindowServer
+        /// and the root daemons. These sum to `systemProcesses_W` rather than
+        /// adding to it: the bucket's TOTAL is measured, and these rows are a
+        /// partition of it, so the ledger stays conserving. Every row is modeled,
+        /// and the UI must keep saying so.
+        public let systemApps: [SystemAttribution.Row]
+
+        /// Named shares of the measured GPU rail. macOS exposes no per-process GPU
+        /// power at all, so this is the only per-app GPU figure available — and it
+        /// is apportioned by coalition GPU time, never measured directly.
+        public let gpuApps: [SystemAttribution.Row]
+
+        /// Seconds since the coalition rollup behind `systemApps`/`gpuApps` was
+        /// refreshed. Nil before the first one lands. Surfaced because these rows
+        /// lag the measured ones by up to a minute and a stale row that looks live
+        /// is worse than one labelled stale.
+        public let systemAttributionAge: TimeInterval?
+
         public let attributed_W: Double
         /// Live energy rails that actually moved. On M5 this is GPU only.
         public let rails: [IOReportSampler.Rail]
@@ -205,6 +224,9 @@ public final class PowerMonitor {
     /// which dropped any process whose sparse energy counter did not happen to
     /// move during that particular 2 s window. See DrainTracker.
     private let tracker = DrainTracker(window: 10)
+    /// Names the CPU power rusage cannot attribute. Refreshed on its own queue —
+    /// it shells out to `systemstats`, which must never happen on a tick path.
+    private let systemAttribution = SystemAttribution()
 
     public var ioReportAvailable: Bool { ioreport != nil }
 
@@ -294,9 +316,40 @@ public final class PowerMonitor {
         let target = smcTotal ?? calibrator.estimate(fast: fast) ?? currentMeasured_W ?? fast
         let smoothed = smoother.update(target)
 
+        let apps = DrainCalculator.group(drains, scale: scale)
+
+        // Put names to the anonymous buckets. Only on full ticks: nothing renders
+        // a process table while the window is hidden, and this costs a subprocess.
+        var systemApps: [SystemAttribution.Row] = []
+        var gpuApps: [SystemAttribution.Row] = []
+        if full {
+            systemAttribution.refreshIfNeeded()
+            // Names as well as bundle ids: daemons have no bundle, so matching on
+            // id alone lets exactly the overlapping population through twice.
+            let known = SystemAttribution.Attributed(
+                bundleIDs: Set(apps.compactMap { $0.identity.bundleID }),
+                names: Set(apps.map { $0.name }))
+            let cpuRail = ppmcRaw.map { gain.corrected($0) }
+            if let cpu = cpuRail {
+                systemApps = systemAttribution.apportion(
+                    watts: max(0, cpu - attributed), by: .cpuTime,
+                    excluding: known, scale: scale)
+            }
+            // GPU is apportioned across ALL coalitions, not just the ones rusage
+            // missed: rusage's energy counter is CPU-side, so no app has already
+            // been credited with GPU power and there is nothing to exclude.
+            if let g = gpu, g > 0 {
+                gpuApps = systemAttribution.apportion(
+                    watts: g, by: .gpuTime, excluding: .none, scale: scale)
+            }
+        }
+
         return Snapshot(
             drains: drains,
-            apps: DrainCalculator.group(drains, scale: scale),
+            apps: apps,
+            systemApps: systemApps,
+            gpuApps: gpuApps,
+            systemAttributionAge: systemAttribution.age,
             attributed_W: attributed,
             rails: reading?.rails ?? [],
             gpu_W: gpu,
