@@ -255,6 +255,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
                                    attributed_W: snap.attributed_W,
                                    residual_W: snap.residual_W,
                                    onBattery: onBattery,
+                                   socPercent: snap.state.map { Double($0.percent) },
                                    interval: snap.interval)
             }
             if let st = snap.state {
@@ -386,9 +387,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
                 let pctHr = scale.map { 3600 * p.watts / $0.joulesPerPercent } ?? p.watts
                 return .init(time: p.time, value: pctHr)
             }
+            // Battery level on the right axis for EVERY range, not just the live
+            // hour. An hour is far too short to see a charge curve, which is the
+            // whole reason to look at a week.
+            let charge = pts.compactMap { p -> HistoryGraphView.Point? in
+                guard let soc = p.socPercent else { return nil }
+                return .init(time: p.time, value: soc)
+            }
             DispatchQueue.main.async {
                 self.graph.series = [.init(name: "total", color: Palette.accent, points: series)]
-                self.graph.rightSeries = nil     // no stored SoC history yet
+                self.graph.rightSeries = charge.count >= 2
+                    ? .init(name: "battery", color: Palette.chargeLine, points: charge)
+                    : nil
+                self.graph.rightAxisLabel = charge.count >= 2 ? "battery" : ""
             }
         }
     }

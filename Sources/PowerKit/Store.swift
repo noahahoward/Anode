@@ -113,7 +113,8 @@ public final class HistoryStore {
             agg         INTEGER NOT NULL DEFAULT 0,
             measured_j  REAL,
             attributed_j REAL,
-            residual_j  REAL
+            residual_j  REAL,
+            soc         REAL
         );
         CREATE INDEX IF NOT EXISTS idx_interval_ts   ON interval(ts);
         CREATE INDEX IF NOT EXISTS idx_interval_batt ON interval(on_battery, ts);
@@ -132,9 +133,22 @@ public final class HistoryStore {
             return nil
         }
 
+        // Additive migration, run BEFORE any statement is prepared and NOT in a
+        // defer. CREATE TABLE IF NOT EXISTS does not add a column to a table that
+        // already exists, so on an existing store the `soc` column is missing and
+        // every INSERT naming it fails to prepare — init then returns nil and
+        // deinit finalises uninitialised pointers, which is a SIGSEGV inside
+        // sqlite3_finalize on launch. A defer was worse still: it ran after the
+        // failure path had already closed the handle.
+        //
+        // A duplicate-column error is the expected outcome on an up-to-date
+        // database and is ignored; anything else leaves the column absent, which
+        // the guard below then catches honestly.
+        sqlite3_exec(h, "ALTER TABLE interval ADD COLUMN soc REAL", nil, nil, nil)
+
         insInterval = prepare("""
-            INSERT INTO interval(ts, dur, on_battery, agg, measured_j, attributed_j, residual_j)
-            VALUES(?,?,?,0,?,?,?)
+            INSERT INTO interval(ts, dur, on_battery, agg, measured_j, attributed_j, residual_j, soc)
+            VALUES(?,?,?,0,?,?,?,?)
             """)
         insApp = prepare("""
             INSERT INTO app_energy(interval_id, app, name, joules) VALUES(?,?,?,?)
@@ -153,9 +167,14 @@ public final class HistoryStore {
     }
 
     deinit {
-        sqlite3_finalize(insInterval)
-        sqlite3_finalize(insApp)
-        sqlite3_close(db)
+        // Every one of these is nil-safe in C, but only if the property really is
+        // nil rather than uninitialised. A failed init used to reach here with
+        // garbage in insInterval and crash inside sqlite3_finalize; the
+        // properties are now optionals initialised to nil at declaration, so a
+        // half-built store tears down cleanly.
+        if let s = insInterval { sqlite3_finalize(s) }
+        if let s = insApp { sqlite3_finalize(s) }
+        if let d = db { sqlite3_close(d) }
     }
 
     // ── Recording ───────────────────────────────────────────────────────────
@@ -173,7 +192,8 @@ public final class HistoryStore {
     public static let maxPlausibleWatts = 200.0
 
     public func record(apps: [AppDrain], measured_W: Double?, attributed_W: Double?,
-                       residual_W: Double?, onBattery: Bool, interval: TimeInterval,
+                       residual_W: Double?, onBattery: Bool,
+                       socPercent: Double? = nil, interval: TimeInterval,
                        at date: Date = Date()) {
         guard interval > 0 else { return }
         queue.sync {
@@ -200,6 +220,14 @@ public final class HistoryStore {
             bindOptionalJoules(insI, 4, measured_W, interval)
             bindOptionalJoules(insI, 5, attributed_W, interval)
             bindOptionalJoules(insI, 6, residual_W, interval)
+            // State of charge is a LEVEL, not an energy, so it is stored as-is
+            // rather than multiplied by the interval. Without it the battery line
+            // could only ever be drawn for the live hour held in memory.
+            if let soc = socPercent, soc.isFinite, soc >= 0, soc <= 100 {
+                sqlite3_bind_double(insI, 7, soc)
+            } else {
+                sqlite3_bind_null(insI, 7)
+            }
             guard sqlite3_step(insI) == SQLITE_DONE else { exec("ROLLBACK"); return }
             let iid = sqlite3_last_insert_rowid(db)
 
@@ -406,6 +434,8 @@ public final class HistoryStore {
         /// True when every interval in the bucket was on battery. Mixed buckets
         /// read false, so a shaded "on battery" region never over-claims.
         public let onBattery: Bool
+        /// Mean state of charge over the bucket, when any interval recorded one.
+        public let socPercent: Double?
     }
 
     /// Whole-system power over an arbitrary range, bucketed to at most
@@ -430,7 +460,7 @@ public final class HistoryStore {
             // a 0.1 s tick the same as a 60 s bucket and skew every mixed range.
             guard let st = prepare("""
                 SELECT CAST((ts - ?) / ? AS INTEGER) AS b,
-                       MIN(ts), SUM(measured_j), SUM(dur), MIN(on_battery)
+                       MIN(ts), SUM(measured_j), SUM(dur), MIN(on_battery), AVG(soc)
                   FROM interval
                  WHERE ts >= ? AND ts <= ? AND measured_j IS NOT NULL
                    AND dur > 0 AND measured_j >= 0
@@ -450,9 +480,12 @@ public final class HistoryStore {
                 let joules = sqlite3_column_double(st, 2)
                 let dur = sqlite3_column_double(st, 3)
                 guard dur > 0 else { continue }
+                let soc: Double? = sqlite3_column_type(st, 5) == SQLITE_NULL
+                    ? nil : sqlite3_column_double(st, 5)
                 out.append(SeriesPoint(time: Date(timeIntervalSince1970: ts),
                                        watts: joules / dur,
-                                       onBattery: sqlite3_column_int(st, 4) == 1))
+                                       onBattery: sqlite3_column_int(st, 4) == 1,
+                                       socPercent: soc))
             }
             return out
         }
