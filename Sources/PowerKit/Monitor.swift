@@ -51,9 +51,13 @@ public final class PowerMonitor {
         /// SSD, DRAM, kernel, leakage. On a laptop with the screen on this is
         /// genuinely the largest share, and no amount of better process accounting
         /// will move it — it is not process energy.
+        /// Derived from `smoothed_W`, NOT from the raw SMC total. The ledger bar
+        /// spans the smoothed figure, so computing this bucket against a different
+        /// total made the segments sum to slightly less than the bar and left a gap
+        /// of bare background at the right end.
         public var platform_W: Double? {
-            guard let total = smcTotal_W, let cpu = cpuRail_W else { return nil }
-            return max(0, total - cpu - (gpu_W ?? 0))
+            guard cpuRail_W != nil else { return nil }
+            return max(0, smoothed_W - (cpuRail_W ?? 0) - (gpu_W ?? 0))
         }
 
         public var systemProcesses_pctHr: Double? { systemProcesses_W.map(pctHr) }
