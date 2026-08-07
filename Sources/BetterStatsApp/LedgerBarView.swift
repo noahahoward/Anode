@@ -31,6 +31,104 @@ final class LedgerBarView: NSView {
 
     var model: Model? { didSet { needsDisplay = true } }
 
+    /// Which bucket the user clicked, so the graph can drill into it.
+    enum Segment: String, CaseIterable {
+        case apps, systemProcesses, gpu, platform
+
+        var title: String {
+            switch self {
+            case .apps: return "apps"
+            case .systemProcesses: return "system processes"
+            case .gpu: return "GPU"
+            case .platform: return "display, radios, storage"
+            }
+        }
+    }
+
+    /// Nil means "show everything again". Clicking the active segment toggles it
+    /// off, so the bar is its own way back out — a drill-down you cannot leave by
+    /// the control you entered it with is a trap.
+    var onSelectSegment: ((Segment?) -> Void)?
+    var selectedSegment: Segment? { didSet { needsDisplay = true } }
+
+    /// Where each segment ended up on the last draw, so a click can be resolved
+    /// against what is actually on screen rather than against a recomputed guess
+    /// that could disagree with it.
+    private var segmentRects: [(Segment, NSRect)] = []
+
+    // A bar you can click is a control, and a control that says nothing about
+    // itself is invisible to VoiceOver and to every automation tool. Each segment
+    // is exposed as a button carrying its own share, so "apps, 12 percent per
+    // hour" is readable without seeing the colours at all.
+    override func isAccessibilityElement() -> Bool { true }
+    override func accessibilityRole() -> NSAccessibility.Role? { .group }
+    override func accessibilityLabel() -> String? { "Power ledger" }
+    override func accessibilityChildren() -> [Any]? { axCells }
+
+    private lazy var axCells: [NSAccessibilityElement] = Segment.allCases.map { seg in
+        let e = SegmentCell(bar: self, segment: seg)
+        e.setAccessibilityRole(.button)
+        e.setAccessibilityParent(self)
+        return e
+    }
+
+    fileprivate func rect(for segment: Segment) -> NSRect? {
+        segmentRects.first { $0.0 == segment }?.1
+    }
+
+    fileprivate func share(of segment: Segment) -> Double {
+        guard let m = model else { return 0 }
+        switch segment {
+        case .apps: return m.apps_pctHr
+        case .systemProcesses: return m.systemProcesses_pctHr
+        case .gpu: return m.gpu_pctHr
+        case .platform: return m.unattributed_pctHr
+        }
+    }
+
+    final class SegmentCell: NSAccessibilityElement {
+        weak var bar: LedgerBarView?
+        let segment: Segment
+        init(bar: LedgerBarView, segment: Segment) {
+            self.bar = bar
+            self.segment = segment
+            super.init()
+        }
+        override func accessibilityLabel() -> String? {
+            guard let bar else { return segment.title }
+            return String(format: "%@, %.2f percent per hour",
+                          segment.title, bar.share(of: segment))
+        }
+        override func accessibilityValue() -> Any? { bar?.selectedSegment == segment }
+        override func accessibilityPerformPress() -> Bool {
+            guard let bar else { return false }
+            bar.selectedSegment = (bar.selectedSegment == segment) ? nil : segment
+            bar.onSelectSegment?(bar.selectedSegment)
+            return true
+        }
+        override func accessibilityFrame() -> NSRect {
+            guard let bar, let win = bar.window, let r = bar.rect(for: segment) else { return .zero }
+            return win.convertToScreen(bar.convert(r, to: nil))
+        }
+    }
+
+    /// Act on the first click even when the window was not focused. A one-click
+    /// target that silently eats the click that focused the window reads as
+    /// broken, and this bar is now the entry point to the whole drill-down.
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+    override func mouseDown(with event: NSEvent) {
+        let p = convert(event.locationInWindow, from: nil)
+        guard let hit = segmentRects.first(where: { $0.1.contains(p) })?.0 else { return }
+        selectedSegment = (selectedSegment == hit) ? nil : hit
+        onSelectSegment?(selectedSegment)
+    }
+
+    override func resetCursorRects() {
+        // The bar does not look clickable, so say so with the pointer.
+        for (_, r) in segmentRects { addCursorRect(r, cursor: .pointingHand) }
+    }
+
     private let barHeight: CGFloat = 22
     private let legendHeight: CGFloat = 16
     private let gap: CGFloat = 7
@@ -66,10 +164,20 @@ final class LedgerBarView: NSView {
         clip.addClip()
 
         var x: CGFloat = 0
+        segmentRects.removeAll(keepingCapacity: true)
+        let order: [Segment] = [.apps, .systemProcesses, .gpu, .platform]
+        // Everything except the chosen segment fades back, so the bar shows what
+        // the graph below is currently about.
+        func alpha(_ seg: Segment) -> CGFloat {
+            guard let sel = selectedSegment else { return 1 }
+            return seg == sel ? 1 : 0.28
+        }
         // 1. apps
         if widths[0] > 0 {
-            Palette.accent.setFill()
-            NSRect(x: x, y: 0, width: widths[0], height: barHeight).fill()
+            Palette.accent.withAlphaComponent(alpha(.apps)).setFill()
+            let r0 = NSRect(x: x, y: 0, width: widths[0], height: barHeight)
+            r0.fill()
+            segmentRects.append((.apps, r0))
             drawLabel(String(format: "apps %.1f", m.apps_pctHr),
                       in: NSRect(x: x, y: 0, width: widths[0], height: barHeight),
                       color: Palette.onAccent)
@@ -78,8 +186,10 @@ final class LedgerBarView: NSView {
         // 2. system processes — solid but dimmer: measured process energy we simply
         //    cannot put a name to. Not hatched, because it is not unknown.
         if widths[1] > 0 {
-            Palette.accentDim.setFill()
-            NSRect(x: x, y: 0, width: widths[1], height: barHeight).fill()
+            Palette.accentDim.withAlphaComponent(alpha(.systemProcesses)).setFill()
+            let r1 = NSRect(x: x, y: 0, width: widths[1], height: barHeight)
+            r1.fill()
+            segmentRects.append((.systemProcesses, r1))
             drawLabel(String(format: "system %.1f", m.systemProcesses_pctHr),
                       in: NSRect(x: x, y: 0, width: widths[1], height: barHeight),
                       color: Palette.onAccent)
@@ -87,14 +197,17 @@ final class LedgerBarView: NSView {
         }
         // 3. GPU
         if widths[2] > 0 {
-            Palette.blue.setFill()
-            NSRect(x: x, y: 0, width: widths[2], height: barHeight).fill()
+            Palette.blue.withAlphaComponent(alpha(.gpu)).setFill()
+            let r2 = NSRect(x: x, y: 0, width: widths[2], height: barHeight)
+            r2.fill()
+            segmentRects.append((.gpu, r2))
             x += widths[2]
         }
         // 4. platform — hatched, never solid. This is the only genuinely
         //    unattributable part, and it is display, radios and storage.
         if widths[3] > 0 {
             let r = NSRect(x: x, y: 0, width: widths[3], height: barHeight)
+            segmentRects.append((.platform, r))
             drawHatch(in: r)
             drawLabel(String(format: "display, radios, storage %.1f %%/hr", m.unattributed_pctHr),
                       in: r, color: Palette.dim)

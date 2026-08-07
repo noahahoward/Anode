@@ -90,6 +90,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
     /// anything longer is served from the durable store, because the in-memory
     /// series is deliberately capped at an hour and cannot answer for yesterday.
     var graphRange: TimeInterval = 3600
+    /// Ledger bucket the graph is drilled into, or nil for the whole-system
+    /// total. Only meaningful in the live range: the store keeps per-app energy
+    /// but not a per-bucket breakdown, so a historical drill-down would have to
+    /// invent the split rather than read it.
+    var graphSegment: LedgerBarView.Segment?
+    /// Per-contributor history while drilled in, keyed by name. Capped to the
+    /// live window like the main series.
+    var segmentSeries: [String: [HistoryGraphView.Point]] = [:]
     /// Set once the user zooms or pans, and cleared by picking a range. While set
     /// the graph shows exactly what was asked for rather than following "now".
     var graphDomainOverride: (start: Date, end: Date)?
@@ -144,6 +152,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         graph.yAxisLabel = "%/hr"
         graph.showsGrid = false
         graph.earliestAvailable = store?.earliestSample()
+        // Keep the legend clear of the range picker overlaid on the header.
+        // The picker is 4 cells of 34 pt inset 44 from the trailing edge, so it
+        // occupies 180 pt; 190 leaves a little air rather than butting up to it.
+        graph.headerTrailingInset = 190
         // Zoom and pan set an explicit domain; re-query at the new range rather
         // than stretching whatever is already in memory, or a 7-day view would be
         // an hour of data smeared across the width.
@@ -153,6 +165,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
             self.loadHistorySeries(start: start, end: end)
         }
         main.installGraph(graph)
+
+        // Clicking a ledger segment turns the graph into that bucket's
+        // contributors. Clicking it again returns to the total.
+        main.ledger.onSelectSegment = { [weak self] seg in
+            self?.graphSegment = seg
+            self?.updateGraph(self?.lastSnapshot)
+        }
         main.graphRanges.onSelect = { [weak self] seconds in
             guard let self else { return }
             self.graphRange = seconds
@@ -404,6 +423,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         }
     }
 
+    /// Named contributors to one ledger bucket, in watts.
+    ///
+    /// Each case reads the bucket the ledger actually draws, so the lines always
+    /// sum to the segment they came from. The platform bucket has no contributors
+    /// by construction — it is precisely the part no process explains — so it
+    /// drills into nothing rather than into a fabricated breakdown.
+    func contributors(of segment: LedgerBarView.Segment,
+                      in s: PowerMonitor.Snapshot) -> [(String, Double)] {
+        switch segment {
+        case .apps:
+            return s.apps.map { ($0.name, $0.watts) }
+        case .systemProcesses:
+            return s.systemApps.map { ($0.name, $0.watts) }
+        case .gpu:
+            return s.gpuApps.map { ($0.name, $0.watts) }
+        case .platform:
+            return []
+        }
+    }
+
+    /// Distinct hues for multi-line mode. Deliberately not a gradient: adjacent
+    /// lines have to be told apart, not ranked by colour.
+    static func seriesColor(_ i: Int) -> NSColor {
+        let palette: [NSColor] = [Palette.accent, Palette.blue, Palette.warn,
+                                  Palette.chargeLine, Palette.critical,
+                                  Palette.accentDim,
+                                  NSColor.systemPurple, NSColor.systemTeal]
+        return palette[i % palette.count]
+    }
+
     func updateGraph(_ s: PowerMonitor.Snapshot?) {
         guard let s else { return }
         // A historical or zoomed view is not a live chart. Ticking new points into
@@ -419,12 +468,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         totalSeries.removeAll { $0.time < cutoff }
         chargeSeries.removeAll { $0.time < cutoff }
 
-        // One series: total drain. The attributed-versus-unaccounted split already
-        // has a home in the ledger bar directly above, and drawing it twice turned a
-        // glanceable trend into something you had to decode.
-        graph.series = [
-            .init(name: "total", color: Palette.accent, points: totalSeries, filled: true)
-        ]
+        // Accumulate per-contributor history whenever a bucket is drilled into.
+        if let seg = graphSegment {
+            for (name, watts) in contributors(of: seg, in: s) {
+                segmentSeries[name, default: []]
+                    .append(.init(time: now, value: 3600 * watts / s.scale.joulesPerPercent))
+            }
+            for k in segmentSeries.keys {
+                segmentSeries[k]?.removeAll { $0.time < cutoff }
+                if segmentSeries[k]?.isEmpty ?? true { segmentSeries.removeValue(forKey: k) }
+            }
+        } else if !segmentSeries.isEmpty {
+            segmentSeries.removeAll()
+        }
+
+        if let seg = graphSegment {
+            // Top contributors only. Every process that ever twitched would be a
+            // hairball, and the ones below the floor are individually invisible on
+            // the axis anyway.
+            let ranked = segmentSeries
+                .map { (name: $0.key, pts: $0.value, last: $0.value.last?.value ?? 0) }
+                .filter { $0.last >= Settings.shared.minimumDisplayPercentPerHour }
+                .sorted { $0.last > $1.last }
+                .prefix(8)
+            graph.series = ranked.enumerated().map { i, r in
+                .init(name: r.name, color: Self.seriesColor(i), points: r.pts, filled: false)
+            }
+            graph.yAxisLabel = "%/hr · \(seg.title)"
+        } else {
+            // One series: total drain. The attributed-versus-unaccounted split
+            // already has a home in the ledger bar directly above, and drawing it
+            // twice turned a glanceable trend into something you had to decode.
+            graph.series = [
+                .init(name: "total", color: Palette.accent, points: totalSeries, filled: true)
+            ]
+            graph.yAxisLabel = "%/hr"
+        }
         // Charge on its own axis, sampled at the same cadence as the rate, so the
         // fall can be read against the spike that caused it.
         graph.rightSeries = chargeSeries.isEmpty ? nil

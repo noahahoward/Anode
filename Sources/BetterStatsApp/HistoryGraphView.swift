@@ -120,6 +120,12 @@ public final class HistoryGraphView: NSView {
     private var trackingAreaRef: NSTrackingArea?
     private var panAnchor: (mouse: NSPoint, start: Date, end: Date)?
 
+    /// Horizontal space reserved at the top-right for a control drawn over the
+    /// graph by its owner. The legend stops short of it.
+    public var headerTrailingInset: CGFloat = 0 {
+        didSet { needsDisplay = true }
+    }
+
     public var showsGrid: Bool = true {
         didSet { needsDisplay = true }
     }
@@ -638,10 +644,25 @@ public final class HistoryGraphView: NSView {
         }
         // One series needs no legend (the axis label / context names it).
         guard sanitized.count >= 2 else { return }
-        var x = bounds.width - 8
+        // Start left of anything overlaid on the header. The range picker lives
+        // there, and with eight drilled-in series the legend ran straight under
+        // it and buried the control.
+        var x = bounds.width - 8 - headerTrailingInset
+        // Stop before the axis label rather than overrunning it. Names are
+        // dropped from the LEFT, so the biggest contributors — drawn last and
+        // therefore right-most — are the ones that survive.
+        let leftLimit = (yAxisLabel as NSString)
+            .size(withAttributes: tickAttrs).width + 14
         for s in sanitized.reversed() {
             let name = s.name as NSString
             let size = name.size(withAttributes: tickAttrs)
+            guard x - size.width - 21 > leftLimit else {
+                // Say that names were dropped instead of silently showing a
+                // partial legend that reads as the complete set.
+                ("…" as NSString).draw(at: NSPoint(x: max(x - 10, leftLimit), y: y),
+                                       withAttributes: tickAttrs)
+                break
+            }
             x -= size.width
             name.draw(at: NSPoint(x: x, y: y), withAttributes: tickAttrs)
             x -= 9
