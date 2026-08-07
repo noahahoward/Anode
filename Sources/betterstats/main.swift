@@ -88,8 +88,10 @@ if args.contains("--netproc") {
 if let i = args.firstIndex(of: "--overflow") {
     let n = args.count > i + 1 ? Int(args[i + 1]) ?? 40 : 40
     guard let monitor = PowerMonitor(scale: scale) else { exit(1) }
+    let dbgSMC = SMC()
     monitor.tick()
     var ratios: [Double] = []
+    var hatches: [Double] = []
     var over = 0
     print("  attributed   cpuRail    pstr   ratio")
     for _ in 0..<n {
@@ -97,15 +99,29 @@ if let i = args.firstIndex(of: "--overflow") {
         guard let s = monitor.tick(), let cpu = s.cpuRail_W else { continue }
         let ratio = cpu > 0 ? s.attributed_W / cpu : Double.nan
         if ratio.isFinite { ratios.append(ratio); if ratio > 1 { over += 1 } }
-        print(String(format: "%12.3f %9.3f %7.2f %7.2f%@",
-                     s.attributed_W, cpu, s.smcTotal_W ?? 0, ratio,
-                     ratio > 1 ? "  OVERFLOW" : ""))
+        let rawP = dbgSMC?.read("PSTR")?.value ?? 0
+        let rawC = dbgSMC?.read("PPMC")?.value ?? 0
+        let tot = max(s.smoothed_W, 0.001)
+        let sys = s.systemProcesses_W ?? 0
+        let plat = s.platform_W ?? 0
+        print(String(format: "attr %6.3f  cpuRail %6.3f  smoothed %6.2f | rawPSTR %6.2f rawPPMC %6.2f share %.2f | apps %3.0f%% sys %3.0f%% hatch %3.0f%%",
+                     s.attributed_W, cpu, s.smoothed_W, rawP, rawC,
+                     rawP > 0 ? rawC / rawP : 0,
+                     100 * s.attributed_W / tot, 100 * sys / tot, 100 * plat / tot))
+        hatches.append(100 * plat / tot)
     }
     guard !ratios.isEmpty else { print("no samples"); exit(1) }
     let sorted = ratios.sorted()
     print(String(format: "\nn=%d  median ratio %.2f  min %.2f  max %.2f  overflowed %d/%d ticks",
                  ratios.count, sorted[sorted.count/2], sorted.first!, sorted.last!,
                  over, ratios.count))
+    if !hatches.isEmpty {
+        let h = hatches.sorted()
+        let mean = hatches.reduce(0,+) / Double(hatches.count)
+        let sd = (hatches.map { ($0 - mean) * ($0 - mean) }.reduce(0,+) / Double(hatches.count)).squareRoot()
+        print(String(format: "hatch share: median %.0f%%  min %.0f%%  max %.0f%%  sd %.1f points  <-- the wobble",
+                     h[h.count/2], h.first!, h.last!, sd))
+    }
     exit(0)
 }
 
