@@ -14,7 +14,11 @@ final class LedgerBarView: NSView {
 
     struct Model {
         let apps_pctHr: Double
+        /// Measured CPU power belonging to processes we cannot read (root-owned).
+        /// Real process energy, just anonymous — a different claim from "unknown".
+        let systemProcesses_pctHr: Double
         let gpu_pctHr: Double
+        /// Belongs to no process: display, radios, storage, kernel.
         let unattributed_pctHr: Double
         let total_pctHr: Double
         let source: String            // e.g. "PSTR ×0.89"
@@ -45,7 +49,7 @@ final class LedgerBarView: NSView {
         // Segments are laid out by share of the measured total, so the bar always
         // spans exactly the thing it claims to describe.
         let total = max(m.total_pctHr, 0.0001)
-        let widths = [m.apps_pctHr, m.gpu_pctHr, m.unattributed_pctHr]
+        let widths = [m.apps_pctHr, m.systemProcesses_pctHr, m.gpu_pctHr, m.unattributed_pctHr]
             .map { CGFloat(max(0, $0) / total) * barRect.width }
 
         let clip = NSBezierPath(roundedRect: barRect,
@@ -63,17 +67,28 @@ final class LedgerBarView: NSView {
                       color: Palette.onAccent)
             x += widths[0]
         }
-        // 2. GPU
+        // 2. system processes — solid but dimmer: measured process energy we simply
+        //    cannot put a name to. Not hatched, because it is not unknown.
         if widths[1] > 0 {
-            Palette.blue.setFill()
+            Palette.accentDim.setFill()
             NSRect(x: x, y: 0, width: widths[1], height: barHeight).fill()
+            drawLabel(String(format: "system %.1f", m.systemProcesses_pctHr),
+                      in: NSRect(x: x, y: 0, width: widths[1], height: barHeight),
+                      color: Palette.onAccent)
             x += widths[1]
         }
-        // 3. unattributed — hatched, never solid
+        // 3. GPU
         if widths[2] > 0 {
-            let r = NSRect(x: x, y: 0, width: widths[2], height: barHeight)
+            Palette.blue.setFill()
+            NSRect(x: x, y: 0, width: widths[2], height: barHeight).fill()
+            x += widths[2]
+        }
+        // 4. platform — hatched, never solid. This is the only genuinely
+        //    unattributable part, and it is display, radios and storage.
+        if widths[3] > 0 {
+            let r = NSRect(x: x, y: 0, width: widths[3], height: barHeight)
             drawHatch(in: r)
-            drawLabel(String(format: "unattributed %.1f %%/hr", m.unattributed_pctHr),
+            drawLabel(String(format: "display, radios, storage %.1f %%/hr", m.unattributed_pctHr),
                       in: r, color: Palette.dim)
         }
         NSGraphicsContext.restoreGraphicsState()
@@ -135,16 +150,20 @@ final class LedgerBarView: NSView {
         swatch({ r in
             Palette.accent.setFill()
             NSBezierPath(roundedRect: r, xRadius: 2, yRadius: 2).fill()
-        }, "apps · measured joules")
+        }, "apps")
+        swatch({ r in
+            Palette.accentDim.setFill()
+            NSBezierPath(roundedRect: r, xRadius: 2, yRadius: 2).fill()
+        }, "system processes")
         swatch({ r in
             Palette.blue.setFill()
             NSBezierPath(roundedRect: r, xRadius: 2, yRadius: 2).fill()
-        }, "GPU rail")
+        }, "GPU")
         swatch({ r in
             drawHatch(in: r)
             Palette.line.setStroke()
             NSBezierPath(rect: r).stroke()
-        }, "measured, unattributable")
+        }, "display · radios · storage")
 
         // Provenance, right-aligned: coverage belongs here rather than in a header
         // because it states how much of the draw we could attribute — which is what

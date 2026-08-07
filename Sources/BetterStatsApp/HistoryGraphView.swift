@@ -79,6 +79,23 @@ public final class HistoryGraphView: NSView {
         didSet { needsDisplay = true }
     }
 
+    /// A second series plotted against its OWN axis on the right, fixed to 0-100%.
+    ///
+    /// Exists so charge level and drain rate can be read together: the whole point
+    /// is watching the battery fall faster when the rate spikes, and two series on
+    /// one axis cannot show that — %/hr and % of charge are not the same quantity
+    /// and sharing a scale would imply they are.
+    ///
+    /// The axis is pinned to 0-100 rather than autoscaled, so the line's HEIGHT
+    /// always means charge level. An autoscaled charge axis would turn a 3% drop
+    /// into a dramatic cliff.
+    public var rightSeries: Series? {
+        didSet { needsDisplay = true }
+    }
+    public var rightAxisLabel: String = "" {
+        didSet { needsDisplay = true }
+    }
+
     public var showsGrid: Bool = true {
         didSet { needsDisplay = true }
     }
@@ -266,7 +283,8 @@ public final class HistoryGraphView: NSView {
             if w > maxYLabelW { maxYLabelW = w }
         }
         let padLeft = max(maxYLabelW + 10, 24)
-        let padRight: CGFloat = 10
+        // Room for the right-hand 0-100 axis labels when a second series is present.
+        let padRight: CGFloat = rightSeries == nil ? 10 : 34
         let padTop: CGFloat = 18     // yAxisLabel + legend row
         let padBottom: CGFloat = 15  // time labels
         let plot = NSRect(x: padLeft, y: padBottom,
@@ -292,6 +310,11 @@ public final class HistoryGraphView: NSView {
         }
         // Half-point snapping keeps 1 pt hairlines crisp at 1x and clean at 2x.
         func snap(_ v: CGFloat) -> CGFloat { floor(v) + 0.5 }
+
+        /// Right axis is always 0-100, never autoscaled — see `rightSeries`.
+        func yForRight(_ v: Double) -> CGFloat {
+            plot.minY + CGFloat(min(max(v, 0), 100) / 100) * plot.height
+        }
 
         // ── Grid + y labels ─────────────────────────────────────────────────
         // Grid is recessive by construction: separatorColor is designed by the
@@ -354,7 +377,49 @@ public final class HistoryGraphView: NSView {
             let size = s.size(withAttributes: attrs)
             s.draw(at: NSPoint(x: plot.midX - size.width / 2, y: plot.midY - size.height / 2),
                    withAttributes: attrs)
-            drawHeader(plotTop: plot.maxY, tickAttrs: tickAttrs)
+            // ── Secondary series: battery charge on the right axis ──────────────
+        if let r = rightSeries {
+            let pts = r.points
+                .filter { $0.value.isFinite }
+                .sorted { $0.time < $1.time }
+            if pts.count >= 2 {
+                let path = NSBezierPath()
+                path.lineWidth = 1.6
+                path.lineJoinStyle = .round
+                var started = false
+                for p in pts {
+                    let pt = NSPoint(x: xFor(p.time), y: yForRight(p.value))
+                    if started { path.line(to: pt) } else { path.move(to: pt); started = true }
+                }
+                NSGraphicsContext.saveGraphicsState()
+                NSBezierPath(rect: plot).addClip()
+                r.color.setStroke()
+                path.stroke()
+                NSGraphicsContext.restoreGraphicsState()
+
+                // Endpoint dot: the current charge, which is the value people read.
+                if let last = pts.last {
+                    r.color.setFill()
+                    let c = NSPoint(x: xFor(last.time), y: yForRight(last.value))
+                    NSBezierPath(ovalIn: NSRect(x: c.x - 2.6, y: c.y - 2.6,
+                                                width: 5.2, height: 5.2)).fill()
+                }
+            }
+
+            // Right-hand tick labels, in the series colour so it is unambiguous
+            // which line the axis belongs to.
+            var rightAttrs = tickAttrs
+            rightAttrs[.foregroundColor] = r.color
+            for v in stride(from: 0.0, through: 100.0, by: 25.0) {
+                let label = "\(Int(v))%" as NSString
+                let sz = label.size(withAttributes: rightAttrs)
+                label.draw(at: NSPoint(x: plot.maxX + 5,
+                                       y: yForRight(v) - sz.height / 2),
+                           withAttributes: rightAttrs)
+            }
+        }
+
+        drawHeader(plotTop: plot.maxY, tickAttrs: tickAttrs)
             return
         }
 
@@ -384,6 +449,48 @@ public final class HistoryGraphView: NSView {
                        zeroY: yFor(min(max(0, bottom), top)))
         }
         ctx.restoreGState()
+
+        // ── Secondary series: battery charge on the right axis ──────────────
+        if let r = rightSeries {
+            let pts = r.points
+                .filter { $0.value.isFinite }
+                .sorted { $0.time < $1.time }
+            if pts.count >= 2 {
+                let path = NSBezierPath()
+                path.lineWidth = 1.6
+                path.lineJoinStyle = .round
+                var started = false
+                for p in pts {
+                    let pt = NSPoint(x: xFor(p.time), y: yForRight(p.value))
+                    if started { path.line(to: pt) } else { path.move(to: pt); started = true }
+                }
+                NSGraphicsContext.saveGraphicsState()
+                NSBezierPath(rect: plot).addClip()
+                r.color.setStroke()
+                path.stroke()
+                NSGraphicsContext.restoreGraphicsState()
+
+                // Endpoint dot: the current charge, which is the value people read.
+                if let last = pts.last {
+                    r.color.setFill()
+                    let c = NSPoint(x: xFor(last.time), y: yForRight(last.value))
+                    NSBezierPath(ovalIn: NSRect(x: c.x - 2.6, y: c.y - 2.6,
+                                                width: 5.2, height: 5.2)).fill()
+                }
+            }
+
+            // Right-hand tick labels, in the series colour so it is unambiguous
+            // which line the axis belongs to.
+            var rightAttrs = tickAttrs
+            rightAttrs[.foregroundColor] = r.color
+            for v in stride(from: 0.0, through: 100.0, by: 25.0) {
+                let label = "\(Int(v))%" as NSString
+                let sz = label.size(withAttributes: rightAttrs)
+                label.draw(at: NSPoint(x: plot.maxX + 5,
+                                       y: yForRight(v) - sz.height / 2),
+                           withAttributes: rightAttrs)
+            }
+        }
 
         drawHeader(plotTop: plot.maxY, tickAttrs: tickAttrs)
     }

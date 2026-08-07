@@ -33,6 +33,31 @@ public final class PowerMonitor {
         /// SMC whole-system watts, gain-corrected against the gauge.
         public let smcTotal_W: Double?
         public let smcGain: Double?
+        /// Measured CPU-package power. Identified empirically: under an all-core
+        /// load PPMC rose +13.3 W, under a pure Metal GPU load only +1.5 W — a 9x
+        /// discriminator. Not documented by Apple, so it is treated as best-effort.
+        public let cpuRail_W: Double?
+
+        /// CPU power we MEASURED but cannot attribute to a named process, because
+        /// proc_pid_rusage is same-uid only. This is WindowServer and the root
+        /// daemons — real process energy, just anonymous. Naming it separately is
+        /// the difference between "we do not know" and "we know, but not whose".
+        public var systemProcesses_W: Double? {
+            guard let cpu = cpuRail_W else { return nil }
+            return max(0, cpu - attributed_W)
+        }
+
+        /// Everything that belongs to no process at all: display backlight, radios,
+        /// SSD, DRAM, kernel, leakage. On a laptop with the screen on this is
+        /// genuinely the largest share, and no amount of better process accounting
+        /// will move it — it is not process energy.
+        public var platform_W: Double? {
+            guard let total = smcTotal_W, let cpu = cpuRail_W else { return nil }
+            return max(0, total - cpu - (gpu_W ?? 0))
+        }
+
+        public var systemProcesses_pctHr: Double? { systemProcesses_W.map(pctHr) }
+        public var platform_pctHr: Double? { platform_W.map(pctHr) }
         /// Watts belonging to no visible process: display, radios, SSD, kernel.
         public let baseline_W: Double?
         public let didJump: Bool
@@ -132,7 +157,12 @@ public final class PowerMonitor {
         ///  - only above a share floor, since below it the answer is rounding noise,
         ///  - and never when the app would account for essentially all draw, where the
         ///    formula's denominator collapses and the answer tends to infinity.
-        public func runtimeCost_min(appWatts: Double, floorShare: Double = 0.05) -> Double? {
+        /// The floor was 5%, which made this column empty for every row. Apps are
+        /// only ~20% of measured draw in total, so a top app is typically 2-4% of the
+        /// machine — 5% assumed apps explain most of the battery, which is the exact
+        /// assumption this project exists to reject. 0.5% is the point below which
+        /// the answer rounds to under a minute on a full charge.
+        public func runtimeCost_min(appWatts: Double, floorShare: Double = 0.005) -> Double? {
             guard let s = state, !s.onAC,
                   let energy = remainingEnergy_J,
                   smoothed_W > 0.01,
@@ -225,6 +255,7 @@ public final class PowerMonitor {
         // Live whole-system measurement. PSTR spikes (measured 4.24-17.90 W range
         // within one minute), so it is smoothed downstream like any other input.
         let pstrRaw = smc?.read("PSTR")?.value
+        let ppmcRaw = smc?.read("PPMC")?.value
         if let p = pstrRaw, p.isFinite, p > 0 { pstrSincePublish.append(p) }
 
         // Gas gauge: only recompute when a genuinely new batch has published.
@@ -272,6 +303,9 @@ public final class PowerMonitor {
             isCalibrated: gain.isCalibrated || calibrator.isCalibrated,
             smcTotal_W: smcTotal,
             smcGain: gain.value,
+            // Same gain as PSTR: they are the same measurement family, so correcting
+            // one and not the other would make the buckets fail to sum.
+            cpuRail_W: ppmcRaw.map { gain.corrected($0) },
             baseline_W: calibrator.baseline,
             didJump: smoother.didJump,
             residual_W: max(0, smoothed - attributed - (gpu ?? 0)),
