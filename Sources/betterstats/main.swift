@@ -59,6 +59,22 @@ if args.contains("--rails") {
     exit(0)
 }
 
+// ── Fan key probe ───────────────────────────────────────────────────────────
+if args.contains("--fankeys") {
+    guard let smc = SMC() else { print("SMC unavailable"); exit(1) }
+    print("FNum = \(smc.read("FNum").map { String($0.value) } ?? "absent")")
+    for i in 0..<4 {
+        for suffix in ["Ac", "Mn", "Mx", "Tg", "Md", "Sf"] {
+            let k = "F\(i)\(suffix)"
+            if let r = smc.read(k) {
+                print(String(format: "  %-5@ type=%-5@ %.2f", k as NSString,
+                             r.type as NSString, r.value))
+            }
+        }
+    }
+    exit(0)
+}
+
 // ── Disk write watch ────────────────────────────────────────────────────────
 // macOS killed the app for dirtying 2.1 GB in 40 minutes. This measures the
 // real rate for a named process so a fix can be verified rather than assumed.
