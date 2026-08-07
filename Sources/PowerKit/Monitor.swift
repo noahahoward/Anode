@@ -299,7 +299,14 @@ public final class PowerMonitor {
     /// of SQLite WAL. On a laptop used for schoolwork that is not an acceptable idle
     /// cost, and it buys nothing while hidden.
     @discardableResult
-    public func tick(full: Bool = true) -> Snapshot? {
+    /// - Parameter attribution: whether to refresh the coalition rollup that
+    ///   names system processes and per-app GPU. It costs a `systemstats`
+    ///   subprocess and the parse of a few thousand records, and it feeds ONLY the
+    ///   process table and the ledger drill-down. With the window closed nothing
+    ///   displays either, so doing it anyway was — measured — the single largest
+    ///   consumer of idle CPU in the whole app, by roughly forty to one over the
+    ///   next item.
+    public func tick(full: Bool = true, attribution: Bool = true) -> Snapshot? {
         let sweep = full ? ProcessSampler.sweep() : nil
         // Skipped on light ticks: the menu bar shows the whole-system total from
         // PSTR and never the GPU rail, so differencing 314 channels would be work
@@ -400,7 +407,7 @@ public final class PowerMonitor {
         // a process table while the window is hidden, and this costs a subprocess.
         var systemApps: [SystemAttribution.Row] = []
         var gpuApps: [SystemAttribution.Row] = []
-        if full {
+        if full && attribution {
             systemAttribution.refreshIfNeeded()
             // Names as well as bundle ids: daemons have no bundle, so matching on
             // id alone lets exactly the overlapping population through twice.

@@ -75,6 +75,50 @@ if args.contains("--fankeys") {
     exit(0)
 }
 
+// ── CPU watch ───────────────────────────────────────────────────────────────
+// Exact CPU time over a fixed window, from the process's own rusage counters.
+// `ps %cpu` is a decaying average and cannot A/B a 0.5 point change.
+if let i = args.firstIndex(of: "--cpuwatch") {
+    let name = args.count > i + 1 ? args[i + 1] : "BetterStatsApp"
+    let secs = args.count > i + 2 ? Double(args[i + 2]) ?? 30 : 30
+    let pg = Process()
+    pg.executableURL = URL(fileURLWithPath: "/usr/bin/pgrep")
+    pg.arguments = ["-f", name]
+    let pipe = Pipe(); pg.standardOutput = pipe
+    try? pg.run()
+    let outData = pipe.fileHandleForReading.readDataToEndOfFile()
+    pg.waitUntilExit()
+    guard let pid = (String(data: outData, encoding: .utf8) ?? "")
+        .split(separator: "\n").compactMap({ pid_t($0.trimmingCharacters(in: .whitespaces)) }).first
+    else { print("no process matching \(name)"); exit(1) }
+
+    // ri_user_time + ri_system_time are MACH ABSOLUTE TIME units, not nanoseconds.
+    // On Apple Silicon the timebase is 125/3, i.e. ~41.67 ns per unit, so treating
+    // them as nanoseconds under-reports CPU by 41.7x — measured: a process pegging
+    // one core read as 2.4%.
+    var tb = mach_timebase_info_data_t()
+    mach_timebase_info(&tb)
+    let nsPerUnit = Double(tb.numer) / Double(tb.denom)
+    func cpuNanos(_ pid: pid_t) -> UInt64? {
+        var ri = rusage_info_v6()
+        let rc = withUnsafeMutablePointer(to: &ri) {
+            $0.withMemoryRebound(to: rusage_info_t?.self, capacity: 1) {
+                proc_pid_rusage(pid, RUSAGE_INFO_V6, $0)
+            }
+        }
+        return rc == 0 ? ri.ri_user_time &+ ri.ri_system_time : nil
+    }
+    guard let a = cpuNanos(pid) else { print("cannot read rusage"); exit(1) }
+    let t0 = Date()
+    Thread.sleep(forTimeInterval: secs)
+    guard let b = cpuNanos(pid) else { print("process gone"); exit(1) }
+    let wall = Date().timeIntervalSince(t0)
+    let cpuSec = Double(b &- a) * nsPerUnit / 1e9
+    print(String(format: "%@ pid %d: %.3f CPU-seconds over %.1f s wall = %.3f%% of one core (timebase %u/%u)",
+                 name, pid, cpuSec, wall, 100 * cpuSec / wall, tb.numer, tb.denom))
+    exit(0)
+}
+
 // ── Disk write watch ────────────────────────────────────────────────────────
 // macOS killed the app for dirtying 2.1 GB in 40 minutes. This measures the
 // real rate for a named process so a fix can be verified rather than assumed.
