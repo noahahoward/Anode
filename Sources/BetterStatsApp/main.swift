@@ -37,6 +37,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
     var main: MainWindowController!
     var graph: HistoryGraphView!
     var inspector: InspectorView!
+    let networkPane = NetworkPane(frame: .zero)
+    let sensorsPane = SensorsPane(frame: .zero)
+    let fansPane = FansPane(frame: .zero)
+    /// Latest utilisation snapshot, so a pane can redraw without waiting for the
+    /// next sample.
+    var lastSystem: SystemMetrics.Snapshot?
     var widgets: MenuBarWidgetController!
 
     var monitor: PowerMonitor?
@@ -168,7 +174,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
 
             // Sensor discovery walks thousands of SMC keys, so only pay for it when
             // something is actually displaying a temperature or fan speed.
-            let sysSnap = self.sysMetrics.sample(includeSensors: visible || self.needsSensors)
+            // A sensors or fans pane needs the SMC read whether or not a widget is
+            // bound to one.
+            let wantSensors = visible || self.needsSensors
+                || self.lens == .sensors || self.lens == .fans
+            let sysSnap = self.sysMetrics.sample(includeSensors: wantSensors)
             MetricRegistry.shared.update(system: sysSnap)
 
             // Durable history and the observed-drain estimate both belong off the
@@ -202,6 +212,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
             }
 
             DispatchQueue.main.async {
+                self.lastSystem = sysSnap
                 if let p = pcts { self.windowPercents = p; self.lastWindowQuery = Date() }
                 // Hidden: refresh only the menu bar. Reloading a table, re-sorting
                 // rows and redrawing the graph for an off-screen window is pure cost.
@@ -264,6 +275,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
 
         updateLedger(s)
         updateGraph(s)
+        refreshPane()
     }
 
     func updateLedger(_ s: PowerMonitor.Snapshot) {
@@ -356,14 +368,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
 
     @objc func openPrefs() { PreferencesWindowController.shared.show() }
 
+    /// Push the latest readings into whichever whole-machine pane is showing.
+    func refreshPane() {
+        guard !lens.isPerProcess, let sys = lastSystem else { return }
+        switch lens {
+        case .network: networkPane.update(sys.network)
+        case .sensors: sensorsPane.update(cpu: sys.cpuTemperature, gpu: sys.gpuTemperature)
+        case .fans:    fansPane.update(sys.fans)
+        default: break
+        }
+    }
+
     /// Lens switch. Only Battery has its columns implemented so far; the rest keep
     /// the current table rather than showing an empty one, and are wired as their
     /// data lands.
     func select(_ lens: SidebarView.Lens) {
-        // Whole-machine entries have no per-process data, so they keep the current
-        // table rather than showing an empty or invented one. Their panes land later.
-        guard lens.isPerProcess else { return }
         self.lens = lens
+
+        // Whole-machine entries get their own pane; there is no honest per-process
+        // view of network traffic or fan speed.
+        guard lens.isPerProcess else {
+            switch lens {
+            case .network: main.showPane(networkPane)
+            case .sensors: main.showPane(sensorsPane)
+            case .fans:    main.showPane(fansPane)
+            default:       main.showPane(nil)
+            }
+            refreshPane()
+            return
+        }
+        main.showPane(nil)
         main.setColumns(Self.columns(for: lens))
         // Set the descriptor explicitly. setColumns restores the previous one when
         // its column still exists, and %/hr exists in every lens — so switching to

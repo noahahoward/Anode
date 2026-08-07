@@ -49,6 +49,13 @@ final class InspectorView: NSView {
     private let closeButton = NSButton()
     private let list = NSStackView()
     private let scroll = NSScrollView()
+
+    /// NSClipView is NOT flipped, so a top-anchored document view lays out from the
+    /// bottom up — the process list was rendering at the bottom of the pane with a
+    /// large empty gap above it.
+    private final class FlippedClipView: NSClipView {
+        override var isFlipped: Bool { true }
+    }
     private var buttonRow: NSStackView!
 
     override init(frame: NSRect) {
@@ -100,6 +107,7 @@ final class InspectorView: NSView {
         scroll.hasVerticalScroller = true
         scroll.borderType = .noBorder
         scroll.drawsBackground = false
+        scroll.contentView = FlippedClipView()
         scroll.documentView = list
         // A stack view used as a documentView has no width of its own, so without
         // this it lays out at zero width and every row is invisible — the pane looked
@@ -234,6 +242,14 @@ final class InspectorView: NSView {
         if let pid = selectedPID, !m.rows.contains(where: { $0.pid == pid }) {
             selectedPID = nil
         }
+        // Default to the busiest process. The pane exists to answer "what inside this
+        // app is doing the work", and requiring a second click before showing any
+        // detail — or any Quit button — hides the feature entirely.
+        if selectedPID == nil, let first = m.rows.first {
+            selectedPID = first.pid
+            for case let row as ProcessRowView in list.arrangedSubviews
+            where row.pid == first.pid { row.isSelected = true }
+        }
         showDetails()
     }
 
@@ -367,7 +383,7 @@ final class InspectorView: NSView {
     /// A selectable process row. Same rounded-pill treatment as the main table so
     /// selection reads consistently across the app.
     private final class ProcessRowView: NSView {
-        private let pid: pid_t
+        let pid: pid_t
         private let onClick: (pid_t) -> Void
         var isSelected = false { didSet { needsDisplay = true } }
 

@@ -190,17 +190,48 @@ public enum GPUUsage {
 /// leaves the machine, and counting it makes local IPC look like network activity.
 public final class NetworkThroughput {
 
+    public struct Interface {
+        public let name: String
+        public let inPerSec: Double
+        public let outPerSec: Double
+        public var totalPerSec: Double { inPerSec + outPerSec }
+    }
+
     public struct Sample {
         public let bytesInPerSec: Double
         public let bytesOutPerSec: Double
         public var totalPerSec: Double { bytesInPerSec + bytesOutPerSec }
+        /// Per-interface breakdown, busiest first. Which link the traffic is on
+        /// matters: 12 MB/s is saturation on Wi-Fi and idle on Thunderbolt.
+        public let interfaces: [Interface]
         public let interval: TimeInterval
     }
 
     private var previous: (inBytes: UInt64, outBytes: UInt64)?
+    private var previousPerIF: [String: (UInt64, UInt64)] = [:]
     private var previousAt: Date?
 
     public init() {}
+
+    private func readPerInterface() -> [String: (UInt64, UInt64)] {
+        var head: UnsafeMutablePointer<ifaddrs>?
+        guard getifaddrs(&head) == 0, let start = head else { return [:] }
+        defer { freeifaddrs(head) }
+
+        var out: [String: (UInt64, UInt64)] = [:]
+        var cur: UnsafeMutablePointer<ifaddrs>? = start
+        while let ptr = cur {
+            defer { cur = ptr.pointee.ifa_next }
+            guard let addr = ptr.pointee.ifa_addr,
+                  addr.pointee.sa_family == UInt8(AF_LINK),
+                  let raw = ptr.pointee.ifa_data else { continue }
+            let name = String(cString: ptr.pointee.ifa_name)
+            guard !name.hasPrefix("lo") else { continue }
+            let d = raw.assumingMemoryBound(to: if_data.self).pointee
+            out[name] = (UInt64(d.ifi_ibytes), UInt64(d.ifi_obytes))
+        }
+        return out
+    }
 
     private func read() -> (inBytes: UInt64, outBytes: UInt64)? {
         var head: UnsafeMutablePointer<ifaddrs>?
@@ -234,13 +265,27 @@ public final class NetworkThroughput {
         let at = Date()
         defer { previous = now; previousAt = at }
 
+        let perIF = readPerInterface()
+        defer { previousPerIF = perIF }
+
         guard let prev = previous, let prevAt = previousAt else { return nil }
         let dt = at.timeIntervalSince(prevAt)
         guard dt > 0.05, now.inBytes >= prev.inBytes, now.outBytes >= prev.outBytes
         else { return nil }
 
+        var ifaces: [Interface] = []
+        for (name, cur) in perIF {
+            guard let was = previousPerIF[name],
+                  cur.0 >= was.0, cur.1 >= was.1 else { continue }
+            let i = Double(cur.0 - was.0) / dt
+            let o = Double(cur.1 - was.1) / dt
+            if i + o > 0 { ifaces.append(Interface(name: name, inPerSec: i, outPerSec: o)) }
+        }
+        ifaces.sort { $0.totalPerSec > $1.totalPerSec }
+
         return Sample(bytesInPerSec: Double(now.inBytes - prev.inBytes) / dt,
                       bytesOutPerSec: Double(now.outBytes - prev.outBytes) / dt,
+                      interfaces: ifaces,
                       interval: dt)
     }
 }
