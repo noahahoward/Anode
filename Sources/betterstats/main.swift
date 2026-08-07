@@ -59,6 +59,28 @@ if args.contains("--rails") {
     exit(0)
 }
 
+// ── Per-process network check ───────────────────────────────────────────────
+if args.contains("--netproc") {
+    guard NetworkAttribution.isAvailable else { print("nettop unavailable"); exit(1) }
+    let na = NetworkAttribution(refreshInterval: 0)
+    print("sampling (nettop blocks ~5 s per sample, twice for a rate)…")
+    na.refreshIfNeeded()          // baseline
+    Thread.sleep(forTimeInterval: 9)
+    na.refreshIfNeeded()          // rate
+    Thread.sleep(forTimeInterval: 9)
+    let rows = na.latest
+    guard !rows.isEmpty else { print("no processes moved traffic in that window"); exit(0) }
+    print(String(format: "\n%-32@ %7@ %14@ %14@", "process" as NSString, "pid" as NSString,
+                 "down" as NSString, "up" as NSString))
+    for r in rows.prefix(20) {
+        print(String(format: "%-32@ %7d %14@ %14@", r.name as NSString, r.pid,
+                     MetricUnit.bytesPerSecond.format(r.bytesInPerSec) as NSString,
+                     MetricUnit.bytesPerSecond.format(r.bytesOutPerSec) as NSString))
+    }
+    print(String(format: "\n%d processes with traffic", rows.count))
+    exit(0)
+}
+
 // ── Attribution overflow diagnostic ─────────────────────────────────────────
 // Is rusage-attributed CPU energy actually comparable to the PPMC rail? If
 // attributed routinely exceeds it, the "system processes" bucket is empty by

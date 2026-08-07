@@ -184,8 +184,13 @@ final class MainWindowController: NSObject {
         if let view {
             if view.superview !== paneContainer { install(view, in: paneContainer) }
             paneContainer.isHidden = false
-            tableSplit.isHidden = true
+            // NOT hidden. Hiding a sibling here blanked the sidebar's rows even
+            // though they kept correct frames, non-zero alpha and isHidden=false —
+            // a compositing artifact, not a layout one. paneContainer is opaque and
+            // sits above the split in z-order, so covering it is enough.
+            tableSplit.isHidden = false
             setDetailVisible(false)
+            sidebar.redraw()
         } else {
             paneContainer.isHidden = true
             tableSplit.isHidden = false

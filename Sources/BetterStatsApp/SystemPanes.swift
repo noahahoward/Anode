@@ -31,8 +31,11 @@ class SystemPane: NSView {
 
     override var isFlipped: Bool { true }
     override func draw(_ dirtyRect: NSRect) {
+        // bounds, NOT dirtyRect. Filling the dirty rect painted over the sidebar:
+        // the rect AppKit hands you is not guaranteed to lie inside this view, and
+        // this pane is the only thing in the window that filled it directly.
         Palette.background.setFill()
-        dirtyRect.fill()
+        bounds.fill()
     }
     override func viewDidChangeEffectiveAppearance() { needsDisplay = true; restyle() }
 
@@ -161,8 +164,12 @@ class SystemPane: NSView {
 
 final class NetworkPane: SystemPane {
 
-    func update(_ s: NetworkThroughput.Sample?) {
+    func update(_ s: NetworkThroughput.Sample?,
+                perProcess: [NetworkAttribution.Row] = [],
+                age: TimeInterval? = nil) {
         titleLabel.stringValue = "Network"
+        self.perProcess = perProcess
+        self.perProcessAge = age
         guard let n = s else {
             captionLabel.stringValue = "Waiting for a second sample — throughput only exists between two reads."
             clearBody()
@@ -193,11 +200,31 @@ final class NetworkPane: SystemPane {
             }
         }
 
-        // Per-process network is genuinely unavailable, and saying so is better than
-        // an empty column the user assumes is a bug.
+        // This used to say per-process network was unavailable without elevated
+        // privileges. It isn't: nettop is not setuid and needs no entitlement.
         addHeading("Per process")
-        addRow("Not available without elevated privileges", "—", dim: true)
+        if perProcess.isEmpty {
+            // Two genuinely different states. "Still sampling" is not "nothing is
+            // using the network", and a rate needs two samples ~15 s apart.
+            addRow(perProcessAge == nil
+                       ? "Sampling — a rate needs two readings"
+                       : "No process moved traffic in the last window",
+                   "—", dim: true)
+        } else {
+            let peak = perProcess.first?.totalPerSec ?? 1
+            for p in perProcess.prefix(25) {
+                addRow("\(p.name)  ·  \(p.pid)",
+                       String(format: "%@ ↓  %@ ↑",
+                              MetricUnit.bytesPerSecond.format(p.bytesInPerSec),
+                              MetricUnit.bytesPerSecond.format(p.bytesOutPerSec)),
+                       fill: peak > 0 ? p.totalPerSec / peak : 0,
+                       color: Palette.blue)
+            }
+        }
     }
+
+    private var perProcess: [NetworkAttribution.Row] = []
+    private var perProcessAge: TimeInterval?
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
