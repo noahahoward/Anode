@@ -35,7 +35,7 @@ public final class SMC {
         static let total       = 80
     }
 
-    private enum Cmd: UInt8 { case readBytes = 5, readKeyInfo = 9, readIndex = 8 }
+    private enum Cmd: UInt8 { case readBytes = 5, writeBytes = 6, readKeyInfo = 9, readIndex = 8 }
 
     private var conn: io_connect_t = 0
     public private(set) var lastError: kern_return_t = 0
@@ -165,6 +165,46 @@ public final class SMC {
 
     /// Every key the SMC exposes, decoded. The key set is model-specific, so rails
     /// are discovered rather than hardcoded.
+    // ── Writes ──────────────────────────────────────────────────────────────
+
+    /// Write a float key. The ONLY write in this file, and it needs root.
+    ///
+    /// Kept deliberately narrow: it takes a key and a Double, refuses anything
+    /// whose declared type is not a 4-byte float, and does no policy of its own.
+    /// Deciding WHETHER a value is safe belongs to FanPolicy, and deciding
+    /// whether the user asked for it belongs above that again. This function's
+    /// only job is to be a correct write.
+    ///
+    /// Returns false rather than throwing on permission failure, because running
+    /// unprivileged is the normal case for the main app — only the helper ever
+    /// expects this to succeed.
+    @discardableResult
+    public func writeFloat(_ key: String, _ value: Double) -> Bool {
+        guard value.isFinite else { return false }
+
+        // Read the key's metadata first. Writing a 4-byte float into a key the
+        // SMC thinks is 2-byte, or that does not exist, is how you corrupt
+        // adjacent state rather than get a clean error.
+        var info = [UInt8](repeating: 0, count: Off.total)
+        Self.setU32(&info, Off.key, Self.code(key))
+        info[Off.data8] = Cmd.readKeyInfo.rawValue
+        guard let meta = call(info) else { return false }
+        let size = Self.u32(meta, Off.dataSize)
+        let type = Self.string(Self.u32(meta, Off.dataType))
+        guard size == 4, type == "flt" else { return false }
+
+        var buf = [UInt8](repeating: 0, count: Off.total)
+        Self.setU32(&buf, Off.key, Self.code(key))
+        Self.setU32(&buf, Off.dataSize, 4)
+        Self.setU32(&buf, Off.dataType, Self.code("flt"))
+        buf[Off.data8] = Cmd.writeBytes.rawValue
+        let f = Float(value)
+        withUnsafeBytes(of: f.bitPattern.littleEndian) { raw in
+            for i in 0..<4 { buf[Off.bytes + i] = raw[i] }
+        }
+        return call(buf) != nil
+    }
+
     public func scan() -> [Sensor] {
         var out: [Sensor] = []
         for idx in 0..<keyCount() {

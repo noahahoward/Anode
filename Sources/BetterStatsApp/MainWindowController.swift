@@ -59,8 +59,9 @@ final class MainWindowController: NSObject {
         window.title = "BetterStats"
         window.backgroundColor = Palette.background
         window.center()
-        window.setFrameAutosaveName("BetterStatsMain")
         window.minSize = NSSize(width: 760, height: 500)
+        window.setFrameAutosaveName("BetterStatsMain")
+
 
         let content = NSView()
         content.wantsLayer = true
@@ -245,6 +246,20 @@ final class MainWindowController: NSObject {
     }
 
     func show() {
+        // Enforce the minimum HERE rather than at construction. The autosaved
+        // frame is restored asynchronously, after init has returned, so clamping
+        // in init reads the placeholder frame and does nothing. Observed live: a
+        // saved frame of 260x332 survived relaunches with the layout crushed,
+        // because minSize is not applied to a restored frame.
+        let f = window.frame
+        if f.width < window.minSize.width || f.height < window.minSize.height {
+            window.setFrame(NSRect(x: f.minX, y: f.minY,
+                                   width: max(f.width, 940),
+                                   height: max(f.height, 640)),
+                            display: false)
+            window.center()
+        }
+
         // Back to a normal app before showing: an .accessory app cannot take key
         // focus properly and gets no application menu, so Cmd-Q would be dead.
         if NSApp.activationPolicy() != .regular {
@@ -406,71 +421,99 @@ final class BetterStatsRowView: NSTableRowView {
 
 /// Compact range selector for the history graph.
 ///
-/// Plain buttons rather than NSSegmentedControl: the segmented control insists on
-/// its own vibrancy and control-size metrics, which read as a system widget
-/// dropped onto a black chart rather than part of it.
+/// Drawn by hand rather than built from NSButtons or an NSSegmentedControl.
+/// Both of those bring their own vibrancy, corner radius and control-size
+/// metrics, which is why the first version read as a system widget dropped onto
+/// a black chart instead of part of it. This is one view that paints a pill,
+/// fills the selected cell with the app's own accent wash, and uses the same
+/// radius token as every other chip in the window.
 final class RangePicker: NSView {
 
     /// Seconds per option. 7 days matches the store's retention, so nothing here
     /// can ask for history that has already been pruned.
-    private static let options: [(String, TimeInterval)] = [
+    static let options: [(label: String, seconds: TimeInterval)] = [
         ("1H", 3600), ("6H", 6 * 3600), ("24H", 86400), ("7D", 7 * 86400),
     ]
 
     var onSelect: ((TimeInterval) -> Void)?
-    private var buttons: [NSButton] = []
-    private var selectedIndex = 0
+    private(set) var selectedIndex = 0
+    private var hoverIndex: Int?
+    private var tracking: NSTrackingArea?
 
-    override init(frame frameRect: NSRect) {
-        super.init(frame: frameRect)
-        let stack = NSStackView()
-        stack.orientation = .horizontal
-        stack.spacing = 2
-        stack.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(stack)
-        NSLayoutConstraint.activate([
-            stack.leadingAnchor.constraint(equalTo: leadingAnchor),
-            stack.trailingAnchor.constraint(equalTo: trailingAnchor),
-            stack.topAnchor.constraint(equalTo: topAnchor),
-            stack.bottomAnchor.constraint(equalTo: bottomAnchor),
-        ])
-        for (i, opt) in Self.options.enumerated() {
-            let b = NSButton(title: opt.0, target: self, action: #selector(pick(_:)))
-            b.tag = i
-            b.isBordered = false
-            b.font = Palette.Font.mono(9.5, .medium)
-            b.setButtonType(.momentaryChange)
-            buttons.append(b)
-            stack.addArrangedSubview(b)
-        }
-        restyle()
+    private let cellW: CGFloat = 34
+    private let height: CGFloat = 19
+
+    override var intrinsicContentSize: NSSize {
+        NSSize(width: cellW * CGFloat(Self.options.count), height: height)
     }
-    required init?(coder: NSCoder) { fatalError() }
+    override var isFlipped: Bool { true }
 
-    override func viewDidChangeEffectiveAppearance() { restyle() }
+    override func viewDidChangeEffectiveAppearance() { needsDisplay = true }
 
-    @objc private func pick(_ sender: NSButton) {
-        selectedIndex = sender.tag
-        restyle()
-        onSelect?(Self.options[sender.tag].1)
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let t = tracking { removeTrackingArea(t) }
+        let t = NSTrackingArea(rect: bounds,
+                               options: [.mouseMoved, .mouseEnteredAndExited, .activeInKeyWindow],
+                               owner: self, userInfo: nil)
+        addTrackingArea(t); tracking = t
     }
 
-    /// Reflect a range that was set from elsewhere without re-firing onSelect.
+    private func index(at p: NSPoint) -> Int? {
+        guard bounds.contains(p) else { return nil }
+        let i = Int(p.x / cellW)
+        return (i >= 0 && i < Self.options.count) ? i : nil
+    }
+
+    override func mouseMoved(with e: NSEvent) {
+        let i = index(at: convert(e.locationInWindow, from: nil))
+        if i != hoverIndex { hoverIndex = i; needsDisplay = true }
+    }
+    override func mouseExited(with e: NSEvent) { hoverIndex = nil; needsDisplay = true }
+
+    override func mouseDown(with e: NSEvent) {
+        guard let i = index(at: convert(e.locationInWindow, from: nil)) else { return }
+        selectedIndex = i
+        needsDisplay = true
+        onSelect?(Self.options[i].seconds)
+    }
+
+    /// Reflect a range set from elsewhere without re-firing onSelect.
     func select(seconds: TimeInterval) {
-        if let i = Self.options.firstIndex(where: { $0.1 == seconds }) {
+        if let i = Self.options.firstIndex(where: { $0.seconds == seconds }) {
             selectedIndex = i
-            restyle()
+            needsDisplay = true
         }
     }
 
-    private func restyle() {
-        for (i, b) in buttons.enumerated() {
-            b.attributedTitle = NSAttributedString(
-                string: b.title,
-                attributes: [
-                    .font: Palette.Font.mono(9.5, i == selectedIndex ? .bold : .regular),
-                    .foregroundColor: i == selectedIndex ? Palette.accent : Palette.faint,
-                ])
+    override func draw(_ dirtyRect: NSRect) {
+        let track = NSRect(x: 0, y: 0, width: cellW * CGFloat(Self.options.count), height: height)
+        let radius = Palette.Radius.chip
+
+        // A faint trough, so the control reads as one object rather than four
+        // loose words floating over the plot.
+        Palette.surfaceAlt.withAlphaComponent(0.55).setFill()
+        NSBezierPath(roundedRect: track, xRadius: radius, yRadius: radius).fill()
+
+        for (i, opt) in Self.options.enumerated() {
+            let cell = NSRect(x: CGFloat(i) * cellW, y: 0, width: cellW, height: height)
+            if i == selectedIndex {
+                Palette.accent.withAlphaComponent(0.18).setFill()
+                NSBezierPath(roundedRect: cell.insetBy(dx: 1.5, dy: 1.5),
+                             xRadius: radius - 1, yRadius: radius - 1).fill()
+            } else if i == hoverIndex {
+                Palette.text.withAlphaComponent(0.06).setFill()
+                NSBezierPath(roundedRect: cell.insetBy(dx: 1.5, dy: 1.5),
+                             xRadius: radius - 1, yRadius: radius - 1).fill()
+            }
+            let attrs: [NSAttributedString.Key: Any] = [
+                .font: Palette.Font.mono(9.5, i == selectedIndex ? .bold : .medium),
+                .foregroundColor: i == selectedIndex ? Palette.accent : Palette.faint,
+            ]
+            let str = opt.label as NSString
+            let sz = str.size(withAttributes: attrs)
+            str.draw(at: NSPoint(x: cell.midX - sz.width / 2,
+                                 y: cell.midY - sz.height / 2), withAttributes: attrs)
         }
     }
 }
