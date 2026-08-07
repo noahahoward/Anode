@@ -346,6 +346,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
                 .filter { $0.percentPerHour >= floor }
                 .map(Row.init(system:))
         }
+
+        // The GPU lens is a different table entirely. rusage's energy counter is
+        // CPU-side, so the app rows have nothing to say about the GPU; these come
+        // from the measured GPU rail split by coalition GPU time, and they were
+        // being computed every tick and shown nowhere.
+        if lens == .gpu {
+            rows = s.gpuApps.map(Row.init(system:))
+        }
         sortRows()
 
         main.table.reloadData()
@@ -556,6 +564,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
             case "mem":    r = (a.app.map { Double($0.memoryBytes) } ?? -1)
                              < (b.app.map { Double($0.memoryBytes) } ?? -1)
             case "disk":   r = (a.app?.diskBytesPerSec ?? -1) < (b.app?.diskBytesPerSec ?? -1)
+            case "gputime": r = (a.system?.gpu_ms ?? 0) < (b.system?.gpu_ms ?? 0)
             case "procs":  r = a.procs < b.procs
             case "kind":   r = (a.isApp ? 1 : 0) < (b.isApp ? 1 : 0)
             default:       r = a.pctHr < b.pctHr
@@ -652,8 +661,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
             return [("name", "Application", 300), ("disk", "Disk", 100),
                     ("pctHr", "%/hr", 84), ("procs", "Procs", 64), ("spacer", "", 20)]
         case .gpu:
-            return [("name", "Application", 300), ("pctHr", "%/hr", 84),
-                    ("procs", "Procs", 64), ("spacer", "", 20)]
+            // GPU power per app, which macOS exposes no API for at all. Both
+            // columns come from Apple's coalition rollup, so both are modeled.
+            return [("name", "Application", 300), ("pctHr", "%/hr (GPU)", 96),
+                    ("gputime", "GPU time", 100), ("spacer", "", 20)]
         default:
             return Self.columns(for: .battery)
         }
@@ -736,6 +747,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
             return (a.diskBytesPerSec < 1
                         ? "—" : MetricUnit.bytesPerSecond.format(a.diskBytesPerSec),
                     a.diskBytesPerSec < 1)
+        case "gputime":
+            guard let g = r.system?.gpu_ms, g > 0 else { return ("—", true) }
+            return (g >= 1000 ? String(format: "%.1f s", Double(g) / 1000)
+                              : "\(g) ms", false)
         case "procs":
             return (r.procs > 1 ? "\(r.procs)" : "—", true)
         default:
