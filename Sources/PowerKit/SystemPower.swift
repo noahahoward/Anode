@@ -44,6 +44,12 @@ public struct PowerTelemetry {
 }
 
 public struct SystemPowerWindow {
+    /// 200 W. Above this is a counter artefact, not a measurement.
+    public static let maxPlausible_mW = 200_000.0
+    /// The accumulator ticks at 1 Hz, so more than a day of them between two
+    /// samples means the counter restarted rather than that we slept for a week.
+    public static let maxPlausibleTicks: UInt64 = 86_400
+
     public let power_mW: Double
     public let ticks: UInt64
     public let span: TimeInterval
@@ -54,11 +60,30 @@ public struct SystemPowerWindow {
         // Counters wrap. `AdapterEfficiencyLoss` has been observed at 2^64-119 in a
         // live sample, so every monotonic counter uses wrapping arithmetic.
         let dCount = b.accumulatorCount &- a.accumulatorCount
-        guard dCount > 0 else { return nil }
+        guard dCount > 0, dCount < maxPlausibleTicks else { return nil }
+
         let dLoad = b.accumulatedSystemLoad &- a.accumulatedSystemLoad
 
+        // Plausibility, not sign, is what separates a wrap from a reset — and the
+        // distinction matters because `&-` renders them identically.
+        //
+        // A genuine 2^64 wrap leaves a SMALL delta: the counter passed the top and
+        // came back round, so the wrapped subtraction is the true energy and the
+        // mean is an ordinary number. A RESET to near zero leaves a delta of
+        // almost 2^64, which is ~3e14 W over 60 ticks.
+        //
+        // So the rule is not "reject a decrease" — that would throw away real
+        // wraps — but "reject an impossible answer". Whatever produced it.
+        //
+        // This is not hypothetical. Four rows reached the history store holding
+        // energies around 1.8e16 J, one of them 2^63 scaled, and a single such row
+        // dominates every SUM it lands in. The graph drew 1e+15 %/hr before anyone
+        // noticed, and the stored totals were wrong for as long as they sat there.
+        let mW = Double(dLoad) / Double(dCount)
+        guard mW.isFinite, mW >= 0, mW <= maxPlausible_mW else { return nil }
+
         return SystemPowerWindow(
-            power_mW: Double(dLoad) / Double(dCount),
+            power_mW: mW,
             ticks: dCount,
             span: b.timestamp.timeIntervalSince(a.timestamp)
         )
