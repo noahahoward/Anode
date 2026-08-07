@@ -26,6 +26,10 @@ final class MainWindowController: NSObject {
     let glance = GlanceCardView()
     let graphContainer = NSView()
     let detailContainer = NSView()
+    /// Holds a whole-machine pane. Swapped in over the table area; the ledger,
+    /// glance card and graph stay put, because they describe the battery and remain
+    /// true whichever pane is showing.
+    let paneContainer = NSView()
 
     private let scroll = NSScrollView()
     private var detailWidth: CGFloat = 380
@@ -97,6 +101,10 @@ final class MainWindowController: NSObject {
         tableSplit.addArrangedSubview(detailContainer)
         content.addSubview(tableSplit)
 
+        paneContainer.translatesAutoresizingMaskIntoConstraints = false
+        paneContainer.isHidden = true
+        content.addSubview(paneContainer)
+
         // ── Ledger ──────────────────────────────────────────────────────────
         ledger.translatesAutoresizingMaskIntoConstraints = false
         content.addSubview(ledger)
@@ -118,6 +126,11 @@ final class MainWindowController: NSObject {
             tableSplit.trailingAnchor.constraint(equalTo: content.trailingAnchor),
             tableSplit.topAnchor.constraint(equalTo: content.topAnchor),
             tableSplit.heightAnchor.constraint(greaterThanOrEqualToConstant: 160),
+
+            paneContainer.leadingAnchor.constraint(equalTo: sidebar.trailingAnchor),
+            paneContainer.trailingAnchor.constraint(equalTo: content.trailingAnchor),
+            paneContainer.topAnchor.constraint(equalTo: content.topAnchor),
+            paneContainer.bottomAnchor.constraint(equalTo: tableSplit.bottomAnchor),
 
             ledger.leadingAnchor.constraint(equalTo: sidebar.trailingAnchor, constant: 16),
             ledger.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -16),
@@ -163,6 +176,19 @@ final class MainWindowController: NSObject {
         }
         if let sort, columns.contains(where: { $0.id == sort.key }) {
             table.sortDescriptors = [sort]
+        }
+    }
+
+    /// Show a whole-machine pane instead of the process table, or nil for the table.
+    func showPane(_ view: NSView?) {
+        if let view {
+            if view.superview !== paneContainer { install(view, in: paneContainer) }
+            paneContainer.isHidden = false
+            tableSplit.isHidden = true
+            setDetailVisible(false)
+        } else {
+            paneContainer.isHidden = true
+            tableSplit.isHidden = false
         }
     }
 
