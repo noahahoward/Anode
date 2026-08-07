@@ -51,6 +51,7 @@ final class MainWindowController: NSObject {
         // still points at the freed memory — the next message is EXC_BAD_ACCESS.
         // A menu bar app outlives its windows by design.
         window.isReleasedWhenClosed = false
+        window.delegate = self
         window.title = "BetterStats"
         window.backgroundColor = Palette.background
         window.center()
@@ -233,12 +234,40 @@ final class MainWindowController: NSObject {
     }
 
     func show() {
+        // Back to a normal app before showing: an .accessory app cannot take key
+        // focus properly and gets no application menu, so Cmd-Q would be dead.
+        if NSApp.activationPolicy() != .regular {
+            NSApp.setActivationPolicy(.regular)
+        }
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
     }
 
     func toggle() {
-        if window.isVisible && NSApp.isActive { window.orderOut(nil) } else { show() }
+        if window.isVisible && NSApp.isActive { hide() } else { show() }
+    }
+
+    /// Put the app back in the menu bar and out of the Dock.
+    ///
+    /// Closing the window must not end the session: the widgets ARE the app for
+    /// most of its life, and they die with the process. But an app with no window
+    /// has no business holding a Dock tile and an application menu either, which
+    /// is what made closing the window feel like the app was still "open" while
+    /// quitting took the widgets with it. `.accessory` is the state that matches
+    /// what the app actually is at that moment — a menu bar tool.
+    func hide() {
+        window.orderOut(nil)
+        NSApp.setActivationPolicy(.accessory)
+    }
+}
+
+extension MainWindowController: NSWindowDelegate {
+    /// The red button is a hide, not a quit. Returning false and hiding by hand
+    /// keeps the window controller and its whole view tree alive, so reopening is
+    /// instant and the table keeps its selection.
+    func windowShouldClose(_ sender: NSWindow) -> Bool {
+        hide()
+        return false
     }
 }
 

@@ -147,6 +147,10 @@ public final class MenuBarWidgetController: NSObject {
             item.autosaveName = "BetterStatsWidget.\(index).\(config.metricID)"
             button.target = self
             button.action = #selector(widgetClicked)
+            // Right-click has to be requested explicitly. Without it the app is
+            // unquittable once it drops out of the Dock: no tile, no application
+            // menu, and a left-click only opens the window.
+            button.sendAction(on: [.leftMouseUp, .rightMouseUp])
             items.append((config, item))
         }
         items.reverse()   // back to config order for renders and test seams
@@ -154,7 +158,29 @@ public final class MenuBarWidgetController: NSObject {
     }
 
     /// Every widget opens the main window — the widgets ARE the app's front door.
-    @objc private func widgetClicked() { onClick() }
+    /// Right-click gets the menu instead, because with no Dock tile there is
+    /// nowhere else to quit from.
+    @objc private func widgetClicked(_ sender: NSStatusBarButton) {
+        if NSApp.currentEvent?.type == .rightMouseUp {
+            let menu = NSMenu()
+            menu.addItem(withTitle: "Open BetterStats",
+                         action: #selector(openFromMenu), keyEquivalent: "").target = self
+            menu.addItem(.separator())
+            menu.addItem(withTitle: "Quit BetterStats",
+                         action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+            // popUp(positioning:at:in:) — NOT assigning item.menu and calling
+            // performClick. That re-enters this very action handler from inside
+            // itself, which is a recursion waiting to happen and is the likely
+            // cause of the crash reported right after this menu was added.
+            menu.popUp(positioning: nil,
+                       at: NSPoint(x: 0, y: sender.bounds.height + 5),
+                       in: sender)
+            return
+        }
+        onClick()
+    }
+
+    @objc private func openFromMenu() { onClick() }
 
     private func render(_ entry: (config: WidgetConfig, item: NSStatusItem)) {
         guard let button = entry.item.button else { return }
