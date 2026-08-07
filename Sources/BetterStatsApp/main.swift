@@ -86,6 +86,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
 
     /// In-memory graph history. The store owns durable history; this is just the
     /// last hour at tick resolution for drawing.
+    /// Chosen range in seconds. Live mode (1 h) keeps the in-memory strip chart;
+    /// anything longer is served from the durable store, because the in-memory
+    /// series is deliberately capped at an hour and cannot answer for yesterday.
+    var graphRange: TimeInterval = 3600
+    /// Set once the user zooms or pans, and cleared by picking a range. While set
+    /// the graph shows exactly what was asked for rather than following "now".
+    var graphDomainOverride: (start: Date, end: Date)?
+    var lastHistoryQuery = Date.distantPast
+
     var totalSeries: [HistoryGraphView.Point] = []
     /// Battery charge over the same window, plotted on the right-hand 0-100 axis.
     var chargeSeries: [HistoryGraphView.Point] = []
@@ -134,7 +143,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         graph = HistoryGraphView(frame: .zero)
         graph.yAxisLabel = "%/hr"
         graph.showsGrid = false
+        graph.earliestAvailable = store?.earliestSample()
+        // Zoom and pan set an explicit domain; re-query at the new range rather
+        // than stretching whatever is already in memory, or a 7-day view would be
+        // an hour of data smeared across the width.
+        graph.onDomainChanged = { [weak self] start, end in
+            guard let self else { return }
+            self.graphDomainOverride = (start, end)
+            self.loadHistorySeries(start: start, end: end)
+        }
         main.installGraph(graph)
+        main.graphRanges.onSelect = { [weak self] seconds in
+            guard let self else { return }
+            self.graphRange = seconds
+            self.graphDomainOverride = nil          // back to following "now"
+            self.graph.earliestAvailable = self.store?.earliestSample()
+            if seconds <= 3600 {
+                self.graph.timeDomain = nil          // live strip chart
+                self.updateGraph(self.lastSnapshot)
+            } else {
+                let end = Date()
+                self.graph.timeDomain = (end.addingTimeInterval(-seconds), end)
+                self.loadHistorySeries(start: end.addingTimeInterval(-seconds), end: end)
+            }
+        }
 
         inspector = InspectorView(frame: .zero)
         inspector.onClose = { [weak self] in
@@ -340,7 +372,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         main.sidebar.refreshValues()
     }
 
-    func updateGraph(_ s: PowerMonitor.Snapshot) {
+    /// Pull a historical range out of the store and hand it to the graph.
+    ///
+    /// Bucketed SQL-side to at most ~700 points, so a 7-day query costs the same
+    /// as an hour and the view never receives more samples than it has pixels.
+    func loadHistorySeries(start: Date, end: Date) {
+        guard let store else { return }
+        let scale = lastSnapshot?.scale
+        DispatchQueue.global(qos: .userInitiated).async {
+            let pts = store.powerSeries(since: start, until: end, maxPoints: 700)
+            let series = pts.map { p -> HistoryGraphView.Point in
+                // Same unit as the live chart: %/hr, not watts.
+                let pctHr = scale.map { 3600 * p.watts / $0.joulesPerPercent } ?? p.watts
+                return .init(time: p.time, value: pctHr)
+            }
+            DispatchQueue.main.async {
+                self.graph.series = [.init(name: "total", color: Palette.accent, points: series)]
+                self.graph.rightSeries = nil     // no stored SoC history yet
+            }
+        }
+    }
+
+    func updateGraph(_ s: PowerMonitor.Snapshot?) {
+        guard let s else { return }
+        // A historical or zoomed view is not a live chart. Ticking new points into
+        // it would make the line creep rightward under a fixed axis and slowly
+        // overwrite what the user asked to look at.
+        guard graphRange <= 3600, graphDomainOverride == nil else { return }
         let now = Date()
         totalSeries.append(.init(time: now, value: s.smoothed_pctHr))
         if let pct = s.state?.percent {
