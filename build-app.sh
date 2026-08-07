@@ -58,6 +58,9 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>CFBundleVersion</key>           <string>1</string>
   <key>LSMinimumSystemVersion</key>    <string>13.0</string>
   <key>NSHighResolutionCapable</key>   <true/>
+  <!-- Every bundled AppKit app declares this; ours did not. It did NOT fix the
+       status-item problem (see WIDGET-BUG.md) but it is correct regardless. -->
+  <key>NSPrincipalClass</key>          <string>NSApplication</string>
 $( [ "$ICON_OK" = "1" ] && printf '  <key>CFBundleIconFile</key>          <string>AppIcon</string>\n  <key>CFBundleIconName</key>          <string>AppIcon</string>' )
   <!-- Deliberately NOT sandboxed: App Sandbox denies process-info-listpids,
        which is required to enumerate processes. This also means the app can
