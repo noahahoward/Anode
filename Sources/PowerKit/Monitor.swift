@@ -84,7 +84,7 @@ public final class PowerMonitor {
         public var platform_W: Double? {
             guard cpuRail_W != nil else { return nil }
             var remaining = smoothed_W
-            for claim in [cpuRail_W, gpu_W, memory_W, storage_W, display_W] {
+            for claim in [cpuRail_W, gpu_W, memory_W, storage_W, usb_W, display_W] {
                 remaining = max(0, remaining - max(0, claim ?? 0))
             }
             return remaining
@@ -101,6 +101,15 @@ public final class PowerMonitor {
         /// rather than a zero one.
         public let memory_W: Double?
         public let storage_W: Double?
+        /// Measured USB device draw. A phone charging from the port cost 11.55 W
+        /// when measured directly — power that belongs to no process and appears
+        /// in no per-app view anywhere.
+        public let usb_W: Double?
+        /// Devices attached whose cost was never observed (present at launch, so
+        /// there was no step to measure). The usb_W figure is a floor when true.
+        public let usbHasUnmeasured: Bool
+        public let usbDevices: [USBPowerTracker.Device]
+        public var usb_pctHr: Double? { usb_W.map(pctHr) }
         public var memory_pctHr: Double? { memory_W.map(pctHr) }
         public var storage_pctHr: Double? { storage_W.map(pctHr) }
         /// True when `display_W` came from the backlight rail rather than the
@@ -296,6 +305,9 @@ public final class PowerMonitor {
     /// Backlight response curve. One struct so a different panel means different
     /// coefficients rather than edits scattered through the monitor.
     private let displayModel = DisplayPowerModel.measuredOnThisMac
+    /// Attributes power to attached USB devices by measuring the step each one
+    /// causes. There is no USB rail; the step IS the measurement.
+    private let usbTracker = USBPowerTracker()
 
     public var ioReportAvailable: Bool { ioreport != nil }
 
@@ -433,20 +445,23 @@ public final class PowerMonitor {
             systemAttribution.refreshIfNeeded()
             // Names as well as bundle ids: daemons have no bundle, so matching on
             // id alone lets exactly the overlapping population through twice.
+            // Names of every process that currently exists, so a quit app cannot
+            // be handed present-tense power from an hour-old rollup.
+            let living = Set(ProcessSampler.runningNames().map { $0.lowercased() })
             let known = SystemAttribution.Attributed(
                 bundleIDs: Set(apps.compactMap { $0.identity.bundleID }),
                 names: Set(apps.map { $0.name }))
             if let cpu = smoothedCPURail {
                 systemApps = systemAttribution.apportion(
                     watts: max(0, cpu - attributed), by: .cpuTime,
-                    excluding: known, scale: scale)
+                    excluding: known, living: living, scale: scale)
             }
             // GPU is apportioned across ALL coalitions, not just the ones rusage
             // missed: rusage's energy counter is CPU-side, so no app has already
             // been credited with GPU power and there is nothing to exclude.
             if let g = gpu, g > 0 {
                 gpuApps = systemAttribution.apportion(
-                    watts: g, by: .gpuTime, excluding: .none, scale: scale)
+                    watts: g, by: .gpuTime, excluding: .none, living: living, scale: scale)
             }
         }
 
@@ -462,6 +477,12 @@ public final class PowerMonitor {
         //
         // The curve is the fallback for hardware whose rail cannot be read, and
         // stays labelled modeled there.
+        // Quiet enough to attribute a step: the CPU rail is the thing most likely
+        // to move by watts on its own, so a plug measured through a build is
+        // rejected rather than credited to the device.
+        let quiet = (ppmcRaw ?? 0) < 3.0
+        usbTracker.update(systemWatts: smoothed, systemQuiet: quiet)
+        let usbMeasured = usbTracker.measuredWatts
         let memoryW = SubsystemRails.watts(smc, keys: SubsystemRails.memoryKeys)
         let storageW = SubsystemRails.watts(smc, keys: SubsystemRails.storageKeys)
         let displayMeasured = DisplayRail.watts(smc)
@@ -501,6 +522,9 @@ public final class PowerMonitor {
             display_W: displayW,
             memory_W: memoryW,
             storage_W: storageW,
+            usb_W: usbMeasured > 0 ? usbMeasured : nil,
+            usbHasUnmeasured: usbTracker.hasUnmeasuredDevices,
+            usbDevices: usbTracker.attached,
             displayIsMeasured: displayMeasured != nil,
             baseline_W: calibrator.baseline,
             didJump: smoother.didJump,

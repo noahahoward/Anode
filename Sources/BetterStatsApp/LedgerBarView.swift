@@ -27,6 +27,14 @@ final class LedgerBarView: NSView {
         /// Own rails, measured. Zero when the rail is unreadable on this machine.
         let memory_pctHr: Double
         let storage_pctHr: Double
+        /// Measured from the step each device caused when it attached. Zero both
+        /// when nothing is attached and when everything attached predates the
+        /// app — so a zero here is NOT a claim that USB costs nothing, and the
+        /// segment is simply absent rather than drawn at 0.0.
+        let usb_pctHr: Double
+        /// Something is attached whose cost was never observed. The figure above
+        /// is then a floor, and the UI must not present it as a total.
+        let usbUnmeasured: Bool
         /// Belongs to no process: display, radios, storage, kernel.
         let unattributed_pctHr: Double
         let total_pctHr: Double
@@ -99,7 +107,7 @@ final class LedgerBarView: NSView {
 
     /// Which bucket the user clicked, so the graph can drill into it.
     enum Segment: String, CaseIterable {
-        case apps, systemProcesses, gpu, memory, storage, display, platform
+        case apps, systemProcesses, gpu, memory, storage, usb, display, platform
 
         var title: String {
             switch self {
@@ -108,6 +116,7 @@ final class LedgerBarView: NSView {
             case .gpu: return "GPU"
             case .memory: return "memory"
             case .storage: return "storage"
+            case .usb: return "USB devices"
             case .display: return "display"
             // Renamed on evidence. Two independent studies found radios are not
             // measurable here at all, and memory and storage are now their own
@@ -163,6 +172,7 @@ final class LedgerBarView: NSView {
         case .gpu: return m.gpu_pctHr
         case .memory: return m.memory_pctHr
         case .storage: return m.storage_pctHr
+        case .usb: return m.usb_pctHr
         case .display: return m.display_pctHr
         case .platform: return m.unattributed_pctHr
         }
@@ -230,7 +240,7 @@ final class LedgerBarView: NSView {
         // spans exactly the thing it claims to describe.
         let total = max(m.total_pctHr, 0.0001)
         var widths = [m.apps_pctHr, m.systemProcesses_pctHr, m.gpu_pctHr,
-                      m.memory_pctHr, m.storage_pctHr,
+                      m.memory_pctHr, m.storage_pctHr, m.usb_pctHr,
                       m.display_pctHr, m.unattributed_pctHr]
             .map { CGFloat(max(0, $0) / total) * barRect.width }
 
@@ -239,8 +249,8 @@ final class LedgerBarView: NSView {
         // not sum to the total — and a bar that stops short of its own end reads as
         // a rendering fault rather than as data. Any rounding lands in the honest
         // bucket, which is the one already labelled as not precisely known.
-        let used = widths[0] + widths[1] + widths[2] + widths[3] + widths[4] + widths[5]
-        widths[6] = max(0, barRect.width - used)
+        let used = widths[0] + widths[1] + widths[2] + widths[3] + widths[4] + widths[5] + widths[6]
+        widths[7] = max(0, barRect.width - used)
 
         let clip = NSBezierPath(roundedRect: barRect,
                                 xRadius: Palette.Radius.chip, yRadius: Palette.Radius.chip)
@@ -287,15 +297,16 @@ final class LedgerBarView: NSView {
             x += widths[2]
         }
         // 4. memory and storage — own rails, measured.
-        for (i, seg) in [(3, Segment.memory), (4, Segment.storage)] {
+        for (i, seg) in [(3, Segment.memory), (4, Segment.storage), (5, Segment.usb)] {
             guard widths[i] > 0 else { continue }
-            (seg == .memory ? Palette.blue : Palette.chargeLine)
+            (seg == .memory ? Palette.blue : seg == .storage ? Palette.chargeLine : Palette.critical)
                 .withAlphaComponent(alpha(seg)).setFill()
             let r = NSRect(x: x, y: 0, width: widths[i], height: barHeight)
             r.fill()
             segmentRects.append((seg, r))
             drawLabel(String(format: "%@ %.1f", seg.title,
-                             seg == .memory ? m.memory_pctHr : m.storage_pctHr),
+                             seg == .memory ? m.memory_pctHr
+                             : seg == .storage ? m.storage_pctHr : m.usb_pctHr),
                       in: r, color: Palette.onAccent)
             x += widths[i]
         }
@@ -303,21 +314,21 @@ final class LedgerBarView: NSView {
         // 5. display — solid and named. Modeled from brightness rather than
         //    measured on a rail, but a calibrated response curve is a far better
         //    answer than leaving several watts in a bucket labelled "unknown".
-        if widths[5] > 0 {
+        if widths[6] > 0 {
             Palette.warn.withAlphaComponent(alpha(.display)).setFill()
-            let r3 = NSRect(x: x, y: 0, width: widths[5], height: barHeight)
+            let r3 = NSRect(x: x, y: 0, width: widths[6], height: barHeight)
             r3.fill()
             segmentRects.append((.display, r3))
             drawLabel(String(format: m.displayIsMeasured ? "display %.1f" : "display ~%.1f",
                              m.display_pctHr),
                       in: r3, color: Palette.onAccent)
-            x += widths[5]
+            x += widths[6]
         }
 
         // 6. platform — hatched, never solid. This is the only genuinely
         //    unattributable part, and it is display, radios and storage.
-        if widths[6] > 0 {
-            let r = NSRect(x: x, y: 0, width: widths[6], height: barHeight)
+        if widths[7] > 0 {
+            let r = NSRect(x: x, y: 0, width: widths[7], height: barHeight)
             segmentRects.append((.platform, r))
             drawHatch(in: r)
             drawLabel(String(format: "always-on & unidentified %.1f %%/hr", m.unattributed_pctHr),
