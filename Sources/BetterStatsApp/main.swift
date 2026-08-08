@@ -7,6 +7,13 @@ import PowerKit
 // the metric registry (and through it the menu bar widgets), and the SQLite
 // history that backs the "10 hr power" column.
 
+private extension MetricID {
+    /// The namespace an ID lives in: everything before the first dot —
+    /// "battery", "system", "sensors", "widget". Lets a whole family be routed
+    /// without repeating the prefix as a literal.
+    var family: Substring { rawValue.prefix { $0 != "." } }
+}
+
 final class Row: NSObject {
     let name: String
     let procs: Int
@@ -196,8 +203,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         main.installDetail(inspector)
 
         // Menu bar widgets bind to metric IDs, so any metric the app ever gains is
-        // automatically available to every widget with no new widget code.
-        widgets = MenuBarWidgetController(onClick: { [weak self] in self?.main.toggle() })
+        // automatically available to every widget with no new widget code. The ID
+        // is also the widget's destination: clicking one opens the window on the
+        // lens that explains that number.
+        widgets = MenuBarWidgetController(onClick: { [weak self] metric in
+            self?.openFromWidget(metric)
+        })
         PreferencesWindowController.metricProvider = {
             var choices = MetricRegistry.shared.descriptors()
                 .map { MetricChoice(id: $0.id.rawValue, label: $0.title) }
@@ -643,6 +654,64 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         case .fans:    fansPane.update(sys.fans)
         default: break
         }
+    }
+
+    /// Where a menu bar widget takes you.
+    ///
+    /// Derived from the MetricID constants, never from their raw strings, so
+    /// retiring or renaming a metric is a compile error here rather than a widget
+    /// that quietly stops navigating. nil means "this widget names no
+    /// destination" — the group widget, or an ID written by another build — and
+    /// the caller must then leave the lens alone rather than invent one.
+    static func lens(forWidget metric: MetricID) -> SidebarView.Lens? {
+        switch metric {
+        case .cpuUsage:    return .cpu
+        case .memoryUsage: return .memory
+        case .gpuUsage:    return .gpu
+        case .networkDown, .networkUp, .networkThroughput: return .network
+        case .cpuTemperature, .gpuTemperature: return .sensors
+        // Fans, not Sensors. The Sensors pane shows temperatures and nothing
+        // else, so a fan-speed click sent there lands on a pane that does not
+        // contain the number just clicked. Fans has exactly that number.
+        case .fanSpeed: return .fans
+        // The group widget owns its click (AppKit opens its menu instead), so
+        // this is unreachable — stated anyway so the intent is not inferred from
+        // the absence of a case.
+        case .groupPlaceholder: return nil
+        default:
+            // The whole battery family — drain, charge, time left, GPU drain,
+            // unattributed share, coverage, and any added later — is answered by
+            // the Battery lens. Compared by family taken from a constant, so the
+            // prefix is not spelled out a second time here.
+            return metric.family == MetricID.batteryPercent.family ? .battery : nil
+        }
+    }
+
+    /// A menu bar widget was clicked. Ends with the window visible, frontmost and
+    /// showing what that widget measures.
+    ///
+    /// SHOW, not toggle, whenever the destination differs from what is on screen.
+    /// Clicking the CPU widget while the window sits on Memory is a request to
+    /// see CPU, and `toggle()` would answer that navigation by hiding the window.
+    /// Clicking the widget for the lens already showing keeps the toggle, which
+    /// is what lets a second click on the same widget put the window away again.
+    func openFromWidget(_ metric: MetricID?) {
+        guard let metric,
+              let lens = Self.lens(forWidget: metric),
+              lens != main.sidebar.selected else {
+            main.toggle()
+            return
+        }
+        // Through the rail rather than straight into select(): the rail owns
+        // `selected` and the highlight, so switching around it would leave the
+        // old row lit beside the new content. Its select() calls back into ours.
+        main.sidebar.select(lens)
+        // After the lens, so the window never appears on the outgoing one first.
+        main.show()
+        // The window was most likely hidden, where the sampler deliberately runs
+        // at `hiddenInterval`. Without this the lens just opened can sit on
+        // values several seconds stale — which reads as a click that did nothing.
+        restartTimer(hidden: false)
     }
 
     /// Lens switch. Only Battery has its columns implemented so far; the rest keep

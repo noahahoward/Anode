@@ -108,6 +108,8 @@ public final class PowerMonitor {
         /// Devices attached whose cost was never observed (present at launch, so
         /// there was no step to measure). The usb_W figure is a floor when true.
         public let usbHasUnmeasured: Bool
+        /// Any contributing figure is remembered from a previous step, not measured now.
+        public let usbHasRemembered: Bool
         public let usbDevices: [USBPowerTracker.Device]
         public var usb_pctHr: Double? { usb_W.map(pctHr) }
         public var memory_pctHr: Double? { memory_W.map(pctHr) }
@@ -307,7 +309,7 @@ public final class PowerMonitor {
     private let displayModel = DisplayPowerModel.measuredOnThisMac
     /// Attributes power to attached USB devices by measuring the step each one
     /// causes. There is no USB rail; the step IS the measurement.
-    private let usbTracker = USBPowerTracker()
+    private let usbTracker: USBPowerTracker = { let t = USBPowerTracker(); t.adoptExisting(); return t }()
 
     public var ioReportAvailable: Bool { ioreport != nil }
 
@@ -524,6 +526,7 @@ public final class PowerMonitor {
             storage_W: storageW,
             usb_W: usbMeasured > 0 ? usbMeasured : nil,
             usbHasUnmeasured: usbTracker.hasUnmeasuredDevices,
+            usbHasRemembered: usbTracker.hasRememberedDevices,
             usbDevices: usbTracker.attached,
             displayIsMeasured: displayMeasured != nil,
             baseline_W: calibrator.baseline,
