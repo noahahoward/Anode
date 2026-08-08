@@ -130,3 +130,74 @@ public enum DisplayBrightness {
         return Double(v)
     }
 }
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Subsystem rails identified by driving one subsystem at a time and measuring
+/// which rails respond, with the known confounders subtracted at each level.
+///
+/// This is the same discriminator that established the CPU rail (PPMC: +13.3 W
+/// under an all-core load, +1.5 W under a GPU load) and the GPU rail. Both
+/// entries below were found the same way and both carry a NEGATIVE control,
+/// which is what separates them from a coincidence.
+public enum SubsystemRails {
+
+    /// `P3F2 + PZD1`. Memory — DRAM, its controller, or the fabric serving them.
+    ///
+    /// Found by a CPU-MATCHED contrast rather than idle-vs-load: ten threads of
+    /// register-resident FP spin (no DRAM traffic) against ten threads streaming
+    /// 249 GB/s. Same cores saturated, so the only difference is memory traffic.
+    /// 19.6 W of CPU package power moves P3F2 by 0.12 W; DRAM traffic moves it by
+    /// 7.50 W — a 21x discriminator, and 112x for PZD1.
+    ///
+    /// The pair calibrates to ~1.0 W per watt of measured residual, which is why
+    /// it is used at face value. Six further rails show the same signature but
+    /// double-count this pair, so they are diagnostics, not addends.
+    public static let memoryKeys = ["P3F2", "PZD1"]
+
+    /// `PN00`. Storage — the SSD path.
+    ///
+    /// +4.5 W under real flash I/O while reading 0.51 W under 34 W of CPU and
+    /// 249 GB/s of DRAM traffic. The negative control is what makes it: a
+    /// workload of the same SHAPE that never reaches flash — 1.03M IOPS/s served
+    /// entirely from the buffer cache — did not move it at all, while the memory
+    /// rails did. So it tracks actual flash traffic, not syscall volume.
+    ///
+    /// PH0R and PHCR discriminate even harder (~1000x, with a visible NVMe
+    /// idle-timer decay after each burst) but sit at ~0.03 W at idle, so they
+    /// name almost nothing of the idle bucket. PN00 carries a ~0.52 W idle floor
+    /// that is either genuine controller idle draw or a sensor offset; it
+    /// quantises and moves, which argues for a live reading.
+    public static let storageKeys = ["PN00"]
+
+    /// A watt of PPMC costs this much at the battery.
+    ///
+    /// Measured across three load levels and pooled per-sample OLS (n=115,
+    /// slope 1.270, intercept 2.98 W; per-level 1.17-1.33, rising with load).
+    /// The ledger previously took PPMC at face value, so 17-25% of CPU power was
+    /// being filed as unattributed — under a 20 W load, 4-6 W of it.
+    ///
+    /// HONEST AMBIGUITY: this cannot currently distinguish "PPMC excludes some
+    /// CPU-adjacent domains" from "buck-converter loss on the battery-to-die path
+    /// that belongs to everything". If it is the latter the right name is
+    /// conversion loss, not CPU. The memory pair calibrating at ~1.0 rather than
+    /// ~1.27 argues mildly for the former. Revisit if a rail-derived quantity on
+    /// AC shows the same factor.
+    public static let cpuRailToBattery = 1.27
+
+    /// Sum of a rail set, or nil if none of them read — absent rails must produce
+    /// NO segment, never a zero one, because these keys are calibrated on one
+    /// machine and a different Mac may not have them.
+    public static func watts(_ smc: SMC?, keys: [String], max cap: Double = 60) -> Double? {
+        guard let smc else { return nil }
+        var total = 0.0
+        var any = false
+        for k in keys {
+            guard let v = smc.read(k)?.value, v.isFinite, v >= 0, v <= cap else { continue }
+            total += v
+            any = true
+        }
+        return any ? total : nil
+    }
+}
