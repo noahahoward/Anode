@@ -415,7 +415,7 @@ public final class ModelValidator {
                                      fast_W: attributed + gpu,
                                      measured_W: nil, measuredAge: nil,
                                      smoothed_W: smoothed, isCalibrated: true,
-                                     smcTotal_W: nil, smcGain: nil, cpuRail_W: nil, display_W: nil, displayIsMeasured: false, baseline_W: nil,
+                                     smcTotal_W: nil, smcGain: nil, cpuRail_W: nil, display_W: nil, memory_W: nil, storage_W: nil, displayIsMeasured: false, baseline_W: nil,
                                      didJump: false,
                                      residual_W: max(0, smoothed - attributed - gpu),
                                      rawResidual_W: smoothed - attributed - gpu,

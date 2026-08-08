@@ -74,11 +74,20 @@ public final class PowerMonitor {
         /// spans the smoothed figure, so computing this bucket against a different
         /// total made the segments sum to slightly less than the bar and left a gap
         /// of bare background at the right end.
+        /// What is left after every named claim. Still a partition of the
+        /// measured total, never an addition to it.
+        ///
+        /// Ordering matters and is deliberate: CPU, GPU, memory and storage are
+        /// MEASURED rails and are taken first; display is taken last because on
+        /// hardware without a backlight rail it is MODELLED, and a model must
+        /// never crowd out a measurement when the total is tight.
         public var platform_W: Double? {
             guard cpuRail_W != nil else { return nil }
-            // Display is subtracted here so the segments still sum to the bar:
-            // it is a named slice OF this bucket, not an addition to the total.
-            return max(0, smoothed_W - (cpuRail_W ?? 0) - (gpu_W ?? 0) - (display_W ?? 0))
+            var remaining = smoothed_W
+            for claim in [cpuRail_W, gpu_W, memory_W, storage_W, display_W] {
+                remaining = max(0, remaining - max(0, claim ?? 0))
+            }
+            return remaining
         }
 
         /// Estimated display backlight watts, or nil when brightness is unreadable.
@@ -86,6 +95,14 @@ public final class PowerMonitor {
         /// is carved OUT of the platform bucket rather than added to the total,
         /// so the ledger still sums to what was measured.
         public let display_W: Double?
+        /// Memory (DRAM/controller/fabric) and storage (SSD), from their own
+        /// rails. Measured, not modelled. Nil where the rail is unavailable —
+        /// which on other hardware is the normal case and must show no segment
+        /// rather than a zero one.
+        public let memory_W: Double?
+        public let storage_W: Double?
+        public var memory_pctHr: Double? { memory_W.map(pctHr) }
+        public var storage_pctHr: Double? { storage_W.map(pctHr) }
         /// True when `display_W` came from the backlight rail rather than the
         /// brightness curve. The UI must not call a modeled figure measured.
         public let displayIsMeasured: Bool
@@ -403,7 +420,9 @@ public final class PowerMonitor {
         let smoothedCPURail: Double? = {
             guard let mc = Self.median(ppmcWindow), let mp = Self.median(pstrWindow),
                   mp > 0.05 else { return nil }
-            return min(1, mc / mp) * smoothed
+            // Scaled by the measured cost of a PPMC watt at the battery. Taking
+            // PPMC at face value filed 17-25% of CPU power as unattributed.
+            return min(1, mc / mp) * smoothed * SubsystemRails.cpuRailToBattery
         }()
 
         // Put names to the anonymous buckets. Only on full ticks: nothing renders
@@ -443,6 +462,8 @@ public final class PowerMonitor {
         //
         // The curve is the fallback for hardware whose rail cannot be read, and
         // stays labelled modeled there.
+        let memoryW = SubsystemRails.watts(smc, keys: SubsystemRails.memoryKeys)
+        let storageW = SubsystemRails.watts(smc, keys: SubsystemRails.storageKeys)
         let displayMeasured = DisplayRail.watts(smc)
         let displayW: Double? = {
             let claim: Double?
@@ -478,6 +499,8 @@ public final class PowerMonitor {
             // one and not the other would make the buckets fail to sum.
             cpuRail_W: smoothedCPURail,
             display_W: displayW,
+            memory_W: memoryW,
+            storage_W: storageW,
             displayIsMeasured: displayMeasured != nil,
             baseline_W: calibrator.baseline,
             didJump: smoother.didJump,
