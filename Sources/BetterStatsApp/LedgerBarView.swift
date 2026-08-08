@@ -1,5 +1,6 @@
 import AppKit
 import PowerKit
+import os
 
 /// The honest ledger: a stacked bar whose segments sum to the MEASURED total, with
 /// the unattributable remainder drawn as diagonal hatching.
@@ -31,7 +32,64 @@ final class LedgerBarView: NSView {
         let overflow: Bool
     }
 
-    var model: Model? { didSet { needsDisplay = true } }
+    var model: Model? {
+        didSet {
+            needsDisplay = true
+            // The provenance line is the first thing the legend drops when the
+            // window is narrow, so give it a second home no layout can take away.
+            toolTip = model.map { Self.provenance(for: $0) }
+            noteOverflow(model)
+        }
+    }
+
+    /// How much of the draw we could attribute, and what measured it. Written once
+    /// so the legend and the tooltip cannot drift apart.
+    private static func coverage(for m: Model) -> String {
+        String(format: "%d of %d readable · total %.1f %%/hr · %@",
+               m.readable, m.attempted, m.total_pctHr, m.source)
+    }
+
+    /// The whole provenance sentence, badge included: what the tooltip carries when
+    /// the legend has had to drop part of it.
+    private static func provenance(for m: Model) -> String {
+        m.overflow ? "⚠︎ attribution overflow · " + coverage(for: m) : coverage(for: m)
+    }
+
+    // ── Overflow reporting ──────────────────────────────────────────────────
+    //
+    // Overflow means attributed power exceeded measured power: physically
+    // impossible, so somewhere a watt is being counted twice. The bar cannot show
+    // it — the platform bucket is clamped at zero upstream, so every row still
+    // looks plausible and the segments still sum to the total. A badge in the
+    // legend is therefore the only visible trace, and a badge is only observable
+    // by someone who happens to be looking at the window at the time. Log it too.
+    private static let log = Logger(subsystem: "dev.noah.betterstats", category: "ledger")
+
+    /// True while the current model is in overflow, so the log fires once per
+    /// ENTRY rather than once per sample. The model is replaced on every tick; an
+    /// unconditional line here would be a line a second, which is noise, not a
+    /// signal.
+    private var isOverflowing = false
+
+    private func noteOverflow(_ m: Model?) {
+        guard let m, m.overflow else { isOverflowing = false; return }
+        guard !isOverflowing else { return }
+        isOverflowing = true
+
+        // Everything an author needs to find the double count: each attributed
+        // bucket, their sum, the measurement they overran, and by how much. The
+        // platform figure is included precisely because it is the clamped one —
+        // seeing it at 0.0 alongside a positive excess is the signature.
+        let attributed = m.apps_pctHr + m.systemProcesses_pctHr + m.gpu_pctHr + m.display_pctHr
+        let detail = String(
+            format: "attributed %.3f %%/hr (apps %.3f + system %.3f + gpu %.3f + display %.3f) "
+                  + "exceeds measured total %.3f by %.3f; platform bucket shown as %.3f; "
+                  + "%d of %d processes readable; source %@",
+            attributed, m.apps_pctHr, m.systemProcesses_pctHr, m.gpu_pctHr, m.display_pctHr,
+            m.total_pctHr, attributed - m.total_pctHr, m.unattributed_pctHr,
+            m.readable, m.attempted, m.source)
+        Self.log.error("attribution overflow — \(detail, privacy: .public)")
+    }
 
     /// Which bucket the user clicked, so the graph can drill into it.
     enum Segment: String, CaseIterable {
@@ -65,7 +123,12 @@ final class LedgerBarView: NSView {
     // hour" is readable without seeing the colours at all.
     override func isAccessibilityElement() -> Bool { true }
     override func accessibilityRole() -> NSAccessibility.Role? { .group }
-    override func accessibilityLabel() -> String? { "Power ledger" }
+    override func accessibilityLabel() -> String? {
+        // A warning drawn as a glyph is invisible to VoiceOver, which is the one
+        // audience that never sees the legend at all.
+        guard model?.overflow == true else { return "Power ledger" }
+        return "Power ledger, attribution overflow: the parts add up to more than the measured total"
+    }
     override func accessibilityChildren() -> [Any]? { axCells }
 
     private lazy var axCells: [NSAccessibilityElement] = Segment.allCases.map { seg in
@@ -170,7 +233,6 @@ final class LedgerBarView: NSView {
 
         var x: CGFloat = 0
         segmentRects.removeAll(keepingCapacity: true)
-        let order: [Segment] = [.apps, .systemProcesses, .gpu, .display, .platform]
         // Everything except the chosen segment fades back, so the bar shows what
         // the graph below is currently about.
         func alpha(_ seg: Segment) -> CGFloat {
@@ -308,20 +370,45 @@ final class LedgerBarView: NSView {
             NSBezierPath(rect: r).stroke()
         }, "radios · storage · memory")
 
-        // Provenance, right-aligned: coverage belongs here rather than in a header
-        // because it states how much of the draw we could attribute — which is what
-        // this bar is about.
-        var right = String(format: "%d of %d readable · total %.1f %%/hr · %@",
-                           m.readable, m.attempted, m.total_pctHr, m.source)
-        if m.overflow { right = "⚠︎ attribution overflow · " + right }
+        // The overflow badge, right-aligned and drawn UNCONDITIONALLY. It used to be
+        // a prefix on the provenance string below, which made the warning the
+        // longest thing in the row and therefore the first thing dropped — the alarm
+        // vanished exactly as the window got tight enough to make it likely. It
+        // costs about ten points; there is no width at which it is not affordable.
+        var rightEdge = bounds.width
+        if m.overflow {
+            let badge = "⚠︎" as NSString
+            let badgeAttrs: [NSAttributedString.Key: Any] = [
+                .font: Palette.Font.mono(10, .bold),
+                .foregroundColor: Palette.warn,
+            ]
+            let badgeWidth = badge.size(withAttributes: badgeAttrs).width
+            badge.draw(at: NSPoint(x: rightEdge - badgeWidth, y: y), withAttributes: badgeAttrs)
+            rightEdge -= badgeWidth + 5
+        }
+
+        // Provenance, right-aligned in what is left: coverage belongs here rather
+        // than in a header because it states how much of the draw we could
+        // attribute — which is what this bar is about. This is the only part that
+        // may be dropped, and the view's tooltip carries it verbatim when it is, so
+        // narrowing the window hides nothing outright.
         let attrs: [NSAttributedString.Key: Any] = [
             .font: Palette.Font.mono(10),
             .foregroundColor: m.overflow ? Palette.warn : Palette.faint,
         ]
-        let size = (right as NSString).size(withAttributes: attrs)
-        if size.width < bounds.width - x - 8 {
-            (right as NSString).draw(at: NSPoint(x: bounds.width - size.width, y: y),
-                                     withAttributes: attrs)
+        // In overflow, the words get a short form so they survive one step further
+        // in than the coverage figures do.
+        let detail = Self.coverage(for: m)
+        let candidates = m.overflow
+            ? ["attribution overflow · " + detail, "attribution overflow"]
+            : [detail]
+        let room = rightEdge - x - 8
+        for candidate in candidates {
+            let text = candidate as NSString
+            let size = text.size(withAttributes: attrs)
+            guard size.width <= room else { continue }
+            text.draw(at: NSPoint(x: rightEdge - size.width, y: y), withAttributes: attrs)
+            break
         }
     }
 }
