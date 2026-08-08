@@ -55,22 +55,80 @@ public enum ProcessSampler {
     /// call. It exists so the coalition rollup cannot hand present-tense power to
     /// an app that has already quit — the rollup window is an hour, and without
     /// this a browser closed forty minutes ago keeps drawing battery on screen.
+    /// Names of every process on the machine, whatever user owns it.
+    ///
+    /// This is used to decide whether a coalition in the hour-old `systemstats`
+    /// rollup is still alive, so a name MISSING here is not a neutral gap — it
+    /// removes that coalition from the ledger and hands its share of measured
+    /// CPU watts to whoever remains.
+    ///
+    /// It used to call `proc_name`, which fails with EPERM for processes owned
+    /// by another user. Measured: 340 names for ~700 processes, and the ones it
+    /// could not see were `WindowServer`, `bluetoothd`, `coreaudiod` — exactly
+    /// the root-owned daemons the coalition rollup exists to reach, since they
+    /// are also the ones `proc_pid_rusage` cannot measure. WindowServer alone
+    /// had 6,295 ms of CPU in the hour it was dropped, 40x the largest row that
+    /// survived, and its watts were redistributed across trivial user daemons —
+    /// which is how a Batteries widget that used 17 ms in an hour reached the
+    /// top of the battery list.
+    ///
+    /// `sysctl KERN_PROC_ALL` returns `p_comm` for every process without any
+    /// privilege at all. The cost is that `p_comm` is truncated to
+    /// `MAXCOMLEN` (16) characters, which is why callers must compare with
+    /// `nameMatches` rather than by equality.
     public static func runningNames() -> [String] {
-        var count = proc_listpids(UInt32(PROC_ALL_PIDS), 0, nil, 0)
-        guard count > 0 else { return [] }
-        var pids = [pid_t](repeating: 0, count: Int(count) / MemoryLayout<pid_t>.size)
-        count = proc_listpids(UInt32(PROC_ALL_PIDS), 0, &pids,
-                              Int32(pids.count * MemoryLayout<pid_t>.size))
-        guard count > 0 else { return [] }
+        var mib: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_ALL, 0]
+        var size = 0
+        guard sysctl(&mib, UInt32(mib.count), nil, &size, nil, 0) == 0, size > 0
+        else { return [] }
 
+        // The table can grow between sizing and reading, so ask for headroom and
+        // trust the byte count that comes back rather than the one we asked for.
+        size += size / 8
+        var buf = [UInt8](repeating: 0, count: size)
+        var got = size
+        let rc = buf.withUnsafeMutableBytes {
+            sysctl(&mib, UInt32(mib.count), $0.baseAddress, &got, nil, 0)
+        }
+        guard rc == 0, got > 0 else { return [] }
+
+        let stride = MemoryLayout<kinfo_proc>.stride
         var names: [String] = []
-        names.reserveCapacity(pids.count)
-        var buf = [CChar](repeating: 0, count: Int(MAXPATHLEN))
-        for pid in pids where pid > 0 {
-            let n = proc_name(pid, &buf, UInt32(buf.count))
-            if n > 0 { names.append(String(cString: buf)) }
+        names.reserveCapacity(got / stride)
+        buf.withUnsafeBytes { raw in
+            guard let base = raw.baseAddress else { return }
+            for i in 0..<(got / stride) {
+                var kp = base.load(fromByteOffset: i * stride, as: kinfo_proc.self)
+                guard kp.kp_proc.p_pid > 0 else { continue }
+                let name = withUnsafeBytes(of: &kp.kp_proc.p_comm) { c -> String in
+                    let bytes = c.prefix { $0 != 0 }
+                    return String(decoding: bytes, as: UTF8.self)
+                }
+                if !name.isEmpty { names.append(name) }
+            }
         }
         return names
+    }
+
+    /// Does a rollup's display name refer to one of these running processes?
+    ///
+    /// Not equality, because `p_comm` is truncated at 16 characters while the
+    /// rollup's name comes from a bundle id and is not. `BatteriesAvocadoWidgetExtension`
+    /// arrives as `BatteriesAvocado`, and comparing those two for equality drops
+    /// every process with a long name — the same failure this replaced, in a new
+    /// place.
+    ///
+    /// Matching is deliberately generous: a false "alive" leaves a dead
+    /// coalition in the rollup for up to an hour, which understates other rows
+    /// slightly. A false "dead" deletes a live process's power and redistributes
+    /// it, which is what actually went wrong.
+    public static func nameMatches(_ displayName: String, in running: Set<String>) -> Bool {
+        let n = displayName.lowercased()
+        if running.contains(n) { return true }
+        // A truncated comm is a prefix of the full name. Only names long enough
+        // to have BEEN truncated are treated this way, so short names still
+        // require an exact match and `secd` cannot match `secdiagnosticd`.
+        return running.contains { $0.count >= 15 && n.hasPrefix($0) }
     }
 
     public static func allPIDs() -> [pid_t] {

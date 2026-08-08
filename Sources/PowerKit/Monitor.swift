@@ -37,6 +37,21 @@ public final class PowerMonitor {
         /// is worse than one labelled stale.
         public let systemAttributionAge: TimeInterval?
 
+        /// False on a light tick: no per-process sweep ran and no GPU rail was
+        /// read, so `drains`, `apps`, `attributed_W`, `gpu_W` and `coverage` are
+        /// ABSENT rather than zero.
+        ///
+        /// Everything derived from them has to say so. Without this flag
+        /// `residualShare` computed to exactly 1.0 and `coverage` to 0 on every
+        /// hidden tick, and both were rendered with `isEstimate: false` — the two
+        /// metrics whose entire job is stating how much of the measurement we can
+        /// explain, asserting a falsehood as measured fact.
+        ///
+        /// Defaulted, and therefore `var`, only so the in-module synthetic
+        /// snapshots (ModelValidator's self-test) keep describing a full sample
+        /// without restating it.
+        public var isFullSample: Bool = true
+
         public let attributed_W: Double
         /// Live energy rails that actually moved. On M5 this is GPU only.
         public let rails: [IOReportSampler.Rail]
@@ -61,8 +76,10 @@ public final class PowerMonitor {
         /// proc_pid_rusage is same-uid only. This is WindowServer and the root
         /// daemons — real process energy, just anonymous. Naming it separately is
         /// the difference between "we do not know" and "we know, but not whose".
+        /// Nil on a light tick: nothing was attributed, so `cpu - attributed`
+        /// would name the ENTIRE measured CPU rail as anonymous daemon power.
         public var systemProcesses_W: Double? {
-            guard let cpu = cpuRail_W else { return nil }
+            guard isFullSample, let cpu = cpuRail_W else { return nil }
             return max(0, cpu - attributed_W)
         }
 
@@ -81,8 +98,12 @@ public final class PowerMonitor {
         /// MEASURED rails and are taken first; display is taken last because on
         /// hardware without a backlight rail it is MODELLED, and a model must
         /// never crowd out a measurement when the total is tight.
+        ///
+        /// Nil on a light tick for the same reason the buckets it subtracts are:
+        /// the GPU rail is not read there, so the residue would quietly swallow
+        /// the GPU's watts and file them under "always-on & unidentified".
         public var platform_W: Double? {
-            guard cpuRail_W != nil else { return nil }
+            guard isFullSample, cpuRail_W != nil else { return nil }
             var remaining = smoothed_W
             for claim in [cpuRail_W, gpu_W, memory_W, storage_W, usb_W, display_W] {
                 remaining = max(0, remaining - max(0, claim ?? 0))
@@ -148,8 +169,14 @@ public final class PowerMonitor {
         public var residual_pctHr: Double? { residual_W.map(pctHr) }
         public var gpu_pctHr: Double? { gpu_W.map(pctHr) }
 
+        /// How much of the measurement no named claim explains. On a light tick
+        /// nothing was claimed, so this would be exactly 1.0 — "100% of your
+        /// battery is unexplained", stated by the very number that exists to say
+        /// how trustworthy the explanation is. `isFullSample` is checked as well
+        /// as `residual_W` so the answer stays nil even if a caller reconstructs
+        /// a residual of its own.
         public var residualShare: Double? {
-            guard let r = residual_W, smoothed_W > 0 else { return nil }
+            guard isFullSample, let r = residual_W, smoothed_W > 0 else { return nil }
             return r / smoothed_W
         }
 
@@ -438,7 +465,14 @@ public final class PowerMonitor {
         lastLightTickAwake = awakeNow
         let gpu = reading?.gpu_W
         let fast = attributed + (gpu ?? 0)
-        fastSincePublish.append(fast)
+        // Full ticks only. On a light tick `fast` is 0 because nothing was
+        // sampled, not because nothing was drawing power, and observing
+        // (fast: 0, slow: 5 W) teaches the calibrator that a machine using no
+        // attributable power still costs 5 W — fitting a line through a point
+        // that was never measured. Fewer observations, none of them invented; the
+        // `!fastSincePublish.isEmpty` guard below already handles a publish window
+        // that contained no full tick at all.
+        if full { fastSincePublish.append(fast) }
 
         // Live whole-system measurement. PSTR spikes (measured 4.24-17.90 W range
         // within one minute), so it is smoothed downstream like any other input.
@@ -580,6 +614,7 @@ public final class PowerMonitor {
             systemApps: systemApps,
             gpuApps: gpuApps,
             systemAttributionAge: systemAttribution.age,
+            isFullSample: full,
             attributed_W: attributed,
             rails: reading?.rails ?? [],
             gpu_W: gpu,
@@ -603,7 +638,11 @@ public final class PowerMonitor {
             displayIsMeasured: displayMeasured != nil,
             baseline_W: calibrator.baseline,
             didJump: smoother.didJump,
-            residual_W: max(0, smoothed - attributed - (gpu ?? 0)),
+            // Nil on a light tick. "Everything we measured minus everything we
+            // attributed" is not a residual when the attribution step never ran —
+            // it is the whole measurement wearing the residual's name, and it
+            // reached the UI as "100% unattributed".
+            residual_W: full ? max(0, smoothed - attributed - (gpu ?? 0)) : nil,
             // UNCLAMPED. The clamped residual above makes the ledger identity
             // attributed + gpu + residual == smoothed true BY CONSTRUCTION, so
             // checking it proves nothing. This raw value is the only informative
@@ -615,9 +654,12 @@ public final class PowerMonitor {
             rawResidual_W: smoothed - attributed - (gpu ?? 0),
             scale: scale,
             state: Battery.state(),
-            // Light ticks report zero coverage rather than carrying the last full
-            // sweep's figures forward, so the UI can tell "not measured this tick"
-            // apart from "measured and found nothing".
+            // Light ticks report zeroes rather than carrying the last full sweep's
+            // figures forward — a stale coverage figure would be worse. But a zero
+            // here means "no sweep was attempted", NOT "no process was readable",
+            // and nothing in the number itself says which. `isFullSample` is what
+            // tells them apart, and every consumer must consult it: rendered
+            // bare, this zero reads as "we can see 0% of your processes".
             coverage: sweep?.coverage ?? 0,
             denied: sweep?.denied ?? 0,
             readable: sweep?.processes.count ?? 0,
@@ -693,5 +735,76 @@ public final class PowerMonitor {
                      hasLastPublished: lastPublished != nil,
                      measured_W: currentMeasured_W,
                      hasMeasuredAt: measuredAt != nil)
+    }
+}
+
+/// One sample at a time, and a count of the ticks that were turned away.
+///
+/// The sampling loop dispatched onto the global CONCURRENT queue, so a tick that
+/// ran long simply overlapped the next one. Both then mutated the same state:
+/// `PowerMonitor`'s rolling rail windows, its paired wall/awake timestamps and
+/// `lastPublished`; `CPUUsage.previous` and `NetworkThroughput.previous`; the SMC
+/// wrapper, which takes no lock at all. Concurrent Swift Dictionary mutation is a
+/// crash, not a wrong number.
+///
+/// A serial queue alone only DEFERS the overlap: ticks would queue behind the slow
+/// one and then run back to back, each differencing an interval that no longer
+/// matches the cadence it is supposed to represent. So the late tick is dropped
+/// instead — which is honest, because it never happened — and the drop is counted.
+///
+/// Dropping is safe for the sleep-gap logic and does not need to tell it anything.
+/// A drop is a no-op on the monitor, so the next admitted tick measures the whole
+/// elapsed span and `straddlesGap` judges it on its merits: a short run of drops
+/// widens the interval within the plausible window and is recorded as the longer
+/// (still genuinely differenced) sample it is, while a stall past
+/// `maxPlausibleInterval` is treated as the gap in observation it also is. The one
+/// thing that would break it is holding the gate across the gap, which is why
+/// `submit` owns the release rather than trusting the call site to unwind.
+public final class SamplingGate {
+
+    private let lock = NSLock()
+    private var isSampling = false
+    private var droppedTicks = 0
+
+    public init() {}
+
+    /// Runs `sample` on `queue` unless a sample is still in flight, in which case
+    /// this tick is counted as dropped and `sample` never runs. Returns whether it
+    /// was admitted.
+    ///
+    /// Releasing the gate is deliberately not the caller's job: the sampling block
+    /// has several early returns (no snapshot, deallocated delegate), and one of
+    /// them forgetting to unwind would stop sampling permanently and silently — a
+    /// far worse failure than the overlap this exists to prevent.
+    @discardableResult
+    public func submit(on queue: DispatchQueue, _ sample: @escaping () -> Void) -> Bool {
+        lock.lock()
+        if isSampling {
+            droppedTicks += 1
+            lock.unlock()
+            return false
+        }
+        isSampling = true
+        lock.unlock()
+
+        queue.async { [self] in
+            defer {
+                lock.lock()
+                isSampling = false
+                lock.unlock()
+            }
+            sample()
+        }
+        return true
+    }
+
+    /// Ticks turned away since launch. Surfaced as `MetricID.samplerDrops` rather
+    /// than only counted: dropped ticks are gaps in the history, and a monitor
+    /// quietly sampling less often than it claims to is exactly the kind of thing
+    /// this app refuses to do to its own numbers.
+    public var dropped: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return droppedTicks
     }
 }

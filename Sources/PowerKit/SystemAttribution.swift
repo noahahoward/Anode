@@ -207,7 +207,10 @@ public final class SystemAttribution {
         let candidates = all.filter {
             guard !attributed.covers($0) else { return false }
             guard !living.isEmpty else { return true }
-            return living.contains($0.displayName.lowercased())
+            // Prefix-aware, because the names come from `p_comm`, truncated at
+            // 16 characters. Comparing for equality silently dropped every
+            // long-named process — see `ProcessSampler.nameMatches`.
+            return ProcessSampler.nameMatches($0.displayName, in: living)
         }
         func w(_ c: CoalitionUsage) -> Double {
             switch weight {

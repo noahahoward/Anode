@@ -45,6 +45,11 @@ extension MetricID {
     public static let gpuTemperature     = MetricID("sensors.gpu.celsius")
     public static let fanSpeed           = MetricID("sensors.fan.rpm")
 
+    /// Health of the sampling loop itself, not of the machine. A tick dropped
+    /// because the previous one was still running is time this app measured
+    /// nothing over, and that has to be visible somewhere.
+    public static let samplerDrops       = MetricID("sampler.dropped.count")
+
     /// The collapsible group widget binds to no single metric — it shows them all.
     /// It still needs an ID so widget configs stay uniformly addressable.
     public static let groupPlaceholder   = MetricID("widget.group")
@@ -166,6 +171,7 @@ public final class MetricRegistry {
         let r = MetricRegistry()
         r.registerBatteryMetrics()
         r.registerSystemMetrics()
+        r.registerSamplerMetrics()
         return r
     }()
 
@@ -387,7 +393,19 @@ public final class MetricRegistry {
         )) { [weak self] in
             // Ledger honesty surfaced as a metric: the residual is printed, never
             // redistributed. Derived from the smoothed total, so always an estimate.
-            guard let share = self?.latestSnapshot()?.residualShare else { return nil }
+            //
+            // Nil — "—" — on a light tick, where no attribution was attempted at
+            // all. This read exactly 1.0 on every tick the window spent hidden:
+            // "100% of your battery is unexplained", from the one number whose job
+            // is to say how much of it we can explain, and marked an estimate as
+            // though the 1.0 were a rounding of something measured. Calling it an
+            // estimate does not make an unasked question an answer.
+            //
+            // `residualShare` is already nil there; the guard is restated here so
+            // this provider cannot be re-pointed at some other residual without
+            // the question being asked again.
+            guard let s = self?.latestSnapshot(), s.isFullSample,
+                  let share = s.residualShare else { return nil }
             return MetricValue(share, unit: .ratio, isEstimate: true)
         }
 
@@ -397,8 +415,42 @@ public final class MetricRegistry {
         )) { [weak self] in
             // Fraction of pids whose rusage we could actually read (~63% unprivileged;
             // the rest are root-owned EPERM). Measured, not estimated.
-            guard let s = self?.latestSnapshot() else { return nil }
+            //
+            // A light tick sweeps no processes, so the snapshot carries 0 because
+            // nothing was ATTEMPTED — and rendered bare that says "we can see 0% of
+            // your processes", which is a claim about our own honesty that we never
+            // measured. Nil is the only true answer for a tick that did not look.
+            guard let s = self?.latestSnapshot(), s.isFullSample else { return nil }
             return MetricValue(s.coverage, unit: .ratio, isEstimate: false)
         }
+    }
+
+    /// How the sampler itself is doing.
+    ///
+    /// Not a reading of the machine, which is why it lives apart from the battery
+    /// and utilisation families — but it is the context every other number needs:
+    /// a tick that was dropped is a span of time this app measured nothing over,
+    /// and it must be countable rather than inferred from a gap in the graph.
+    public func registerSamplerMetrics() {
+        register(MetricDescriptor(
+            id: .samplerDrops, title: "Dropped samples", shortTitle: "Drops",
+            unit: .count, category: "Sampler", higherIsWorse: true
+        )) { [weak self] in
+            // Nil until the sampler has reported once, like every other metric —
+            // "not running yet" is not "running cleanly". After that a genuine 0
+            // is displayed as 0, because zero drops IS the measurement.
+            guard let n = self?.droppedSamples else { return nil }
+            return MetricValue(Double(n), unit: .count, isEstimate: false)
+        }
+    }
+
+    /// Ticks the sampling gate turned away because the previous one was still in
+    /// flight. Pushed by whoever owns the gate, on the same cadence as the samples
+    /// themselves, so the count a widget shows is never older than the last tick.
+    public private(set) var droppedSamples: Int?
+
+    public func update(droppedSamples: Int) {
+        lock.lock(); defer { lock.unlock() }
+        self.droppedSamples = droppedSamples
     }
 }
