@@ -55,6 +55,12 @@ enum Palette {
     /// GPU blue used in the ledger, and clearly a different KIND of quantity from
     /// the green rate line rather than a variation of it.
     static var chargeLine: NSColor { pick(hex(0x3D6FD6), hex(0x1E4FA8)) }
+    /// The same charge line across the spans where the pack was FILLING. Green
+    /// because "was it plugged in?" is the one thing people scan a charge history
+    /// for, and it has to answer without a legend. A pure green, not `accent`'s
+    /// mint: the drain line on the other axis wears that, and two greens on one
+    /// chart must still be tellable apart at a glance.
+    static var chargingLine: NSColor { pick(hex(0x36E85C), hex(0x0E8F35)) }
     static var warn:   NSColor { pick(hex(0xFFB020), hex(0xB37200)) }
     static var critical: NSColor { pick(hex(0xFF5252), hex(0xC62828)) }
 

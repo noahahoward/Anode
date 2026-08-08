@@ -192,6 +192,26 @@ public final class DrainRateEstimator {
         // still on battery and still displaying, and a discontinuity in the
         // shown time is precisely what this class exists to prevent.
         if let t = samples.last?.t, now < t { resetHistory(clearSlew: false) }  // clock went backwards
+        // A sample buffer that straddles a sleep fits a line through hours the
+        // machine was not awake for. The long case is already harmless — a nine
+        // hour gap puts every pre-sleep sample outside `prune`'s cutoff — but a
+        // sleep SHORTER than the slow window is not: the pre-sleep samples stay,
+        // and the fit is dragged toward the ~1%/hr the machine drew asleep,
+        // under-reporting drain exactly when the user has just opened the lid to
+        // look at it.
+        //
+        // Detected from the record cadence rather than a sleep notification, so
+        // it holds for the CLI (no AppKit) and for a suspended process, which
+        // sleeps no clock but breaks the series the same way. `record` is driven
+        // every couple of seconds, so a gap this long is never an ordinary tick.
+        //
+        // Slew state is deliberately KEPT: the machine was on battery before and
+        // is on battery now, so the displayed time should carry across rather
+        // than restart, which is the discontinuity this class exists to prevent.
+        if let t = samples.last?.t,
+           now.timeIntervalSince(t) > HistoryStore.maxPlausibleInterval {
+            resetHistory(clearSlew: false)
+        }
         // MEASURED on this machine: the gauge can revise RemainingCapacity
         // UP by ~11 mAh mid-discharge (voltage-relaxation recovery). Small
         // rises are gauge noise and belong in the fit — regression absorbs

@@ -144,3 +144,36 @@ final class DisplayPowerModelTests: XCTestCase {
         XCTAssertLessThan(m.watts(brightness: 0.06), 0.2)
     }
 }
+
+/// The curve above is a fit to ONE panel, and the gate that keeps it there.
+///
+/// This is not a portability nicety. The display claim is subtracted from the
+/// platform bucket, so an ungated curve on foreign hardware moves watts out of
+/// the residual — the one number in this app whose entire purpose is to admit
+/// what is unaccounted for. Silence is the correct output there.
+final class DisplayModelHardwareGateTests: XCTestCase {
+
+    func testHardwareModelIsReadable() {
+        // Empty would mean the sysctl failed, which would disable the model on
+        // the very machine it was measured on — a silent regression, since the
+        // only symptom is a display segment quietly disappearing.
+        XCTAssertFalse(Hardware.model.isEmpty)
+        XCTAssertTrue(Hardware.model.hasPrefix("Mac"), "got \(Hardware.model)")
+    }
+
+    /// The suite runs on the machine the sweep was performed on, so the gate
+    /// must be open here. If this ever fails on a different Mac, that is the
+    /// test doing its job: the curve genuinely does not apply.
+    func testModelIsOfferedOnTheMachineItWasFittedFor() throws {
+        guard Hardware.model == DisplayPowerModel.calibratedModel else {
+            throw XCTSkip("fitted on \(DisplayPowerModel.calibratedModel), running on \(Hardware.model)")
+        }
+        XCTAssertEqual(DisplayPowerModel.forThisMachine, DisplayPowerModel.measuredOnThisMac)
+    }
+
+    func testTheGateIsKeyedOnTheModelRatherThanAlwaysOpen() {
+        // Guards against the gate being written as `true`, which would compile,
+        // pass every other test, and gate nothing.
+        XCTAssertEqual(DisplayPowerModel.calibratedModel, "Mac17,9")
+    }
+}

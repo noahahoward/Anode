@@ -244,6 +244,10 @@ public final class PowerMonitor {
 
     public let scale: BatteryScale
     private var lastSweep: ProcessSampler.Sweep?
+    /// Awake-clock reading taken with `lastSweep`. Stored alongside it because a
+    /// wall-clock interval on its own cannot tell nine hours of work from nine
+    /// hours of sleep — see `straddlesGap`.
+    private var lastSweepAwake: TimeInterval?
     private var lastPublished: PowerTelemetry?
     private var currentMeasured_W: Double?
     private var measuredAt: Date?
@@ -297,6 +301,8 @@ public final class PowerMonitor {
     /// compares like with like: a mean over the same period, not a single instant.
     private var fastSincePublish: [Double] = []
     private var lastLightTick: Date?
+    /// The awake-clock twin of `lastLightTick`, for the same reason.
+    private var lastLightTickAwake: TimeInterval?
     /// Rolling-window per-process rates. Replaces sweep-to-sweep differencing,
     /// which dropped any process whose sparse energy counter did not happen to
     /// move during that particular 2 s window. See DrainTracker.
@@ -304,9 +310,11 @@ public final class PowerMonitor {
     /// Names the CPU power rusage cannot attribute. Refreshed on its own queue —
     /// it shells out to `systemstats`, which must never happen on a tick path.
     private let systemAttribution = SystemAttribution()
-    /// Backlight response curve. One struct so a different panel means different
-    /// coefficients rather than edits scattered through the monitor.
-    private let displayModel = DisplayPowerModel.measuredOnThisMac
+    /// Backlight response curve, or nil on hardware it was never fitted for.
+    /// One struct so a different panel means different coefficients rather than
+    /// edits scattered through the monitor — and nil rather than a plausible
+    /// wrong number, because this claim is subtracted from the honest bucket.
+    private let displayModel = DisplayPowerModel.forThisMachine
     /// Attributes power to attached USB devices by measuring the step each one
     /// causes. There is no USB rail; the step IS the measurement.
     private let usbTracker: USBPowerTracker = { let t = USBPowerTracker(); t.adoptExisting(); return t }()
@@ -317,6 +325,39 @@ public final class PowerMonitor {
         guard let s = scale ?? Battery.scale() else { return nil }
         self.scale = s
         self.lastPublished = PowerTelemetry.sample()
+    }
+
+    /// Awake seconds since boot.
+    ///
+    /// `CLOCK_UPTIME_RAW` is documented as the one Darwin monotonic clock that does
+    /// NOT increment while the system is asleep (it is `mach_absolute_time` in
+    /// seconds); `Date` runs straight through a sleep. So wall elapsed minus awake
+    /// elapsed IS the sleep, to the second — no notification to subscribe to, none
+    /// to miss, and no AppKit dependency in a library the CLI also links.
+    static func awakeSeconds() -> TimeInterval {
+        Double(clock_gettime_nsec_np(CLOCK_UPTIME_RAW)) / 1e9
+    }
+
+    /// The longest interval a legitimate sample can span. Ticks run at 1-30 s with
+    /// the window open and 8 s while hidden, with a full sweep forced at least
+    /// every 60 s, so ~68 s is the worst legitimate case and this is nearly double
+    /// it. The error costs are wildly asymmetric: a false positive discards one
+    /// 2 s row, a false negative lets one row own the whole 10 hr window.
+    static let maxPlausibleInterval: TimeInterval = 120
+
+    /// How far the two clocks may disagree without the machine having slept. They
+    /// are read a few milliseconds apart, and NTP can step the wall clock; five
+    /// seconds is longer than either and shorter than any sleep worth keeping a
+    /// sample across.
+    static let clockSkewTolerance: TimeInterval = 5
+
+    /// True when a sample spans time nothing was observing. Two ways that happens,
+    /// and the awake clock only catches the first:
+    ///   sleep      — the wall clock ran on while the awake clock stood still.
+    ///   suspension — both clocks ran, but far past any tick cadence, because the
+    ///                process itself was stopped.
+    static func straddlesGap(wall: TimeInterval, awake: TimeInterval) -> Bool {
+        wall > maxPlausibleInterval || wall - awake > clockSkewTolerance
     }
 
     /// Returns nil on the very first tick — there is no window to diff against yet.
@@ -346,7 +387,8 @@ public final class PowerMonitor {
         // PSTR and never the GPU rail, so differencing 314 channels would be work
         // done for a number nobody reads.
         let reading = full ? ioreport?.sample() : nil
-        defer { if let s = sweep { lastSweep = s } }
+        let awakeNow = Self.awakeSeconds()
+        defer { if let s = sweep { lastSweep = s; lastSweepAwake = awakeNow } }
 
         // In light mode the per-process numbers are simply absent rather than stale:
         // callers get empty `drains`/`apps` and an attributed figure of zero, which
@@ -355,15 +397,45 @@ public final class PowerMonitor {
         var drains: [ProcessDrain] = []
         var attributed = 0.0
         var interval: TimeInterval = 0
+        // Awake seconds spanned by that same interval. Identical to it on a running
+        // machine; the difference is time spent asleep.
+        var awake: TimeInterval = 0
         if let sweep {
             guard let prior = lastSweep else { return nil }
-            drains = tracker.update(with: sweep, scale: scale)
-            attributed = drains.reduce(0) { $0 + $1.watts }
             interval = sweep.timestamp.timeIntervalSince(prior.timestamp)
+            awake = lastSweepAwake.map { awakeNow - $0 } ?? interval
         } else {
             interval = lastLightTick.map { Date().timeIntervalSince($0) } ?? 0
+            awake = lastLightTickAwake.map { awakeNow - $0 } ?? interval
+        }
+
+        // A sample straddling a sleep is not a long sample, it is the absence of
+        // samples. A nine-hour sleep hands this one interval of ~32,400 s, and the
+        // store's window walk takes rows newest-first, so that single row fills the
+        // entire 10 hr window on its own and every displayed figure becomes a
+        // reading of the sleep.
+        //
+        // The interval is DROPPED, not clamped to something plausible. A clamp
+        // would write a row asserting the machine drew its pre-sleep watts for the
+        // clamped seconds it actually spent asleep — fabricated energy, in a store
+        // whose entire premise is that measured joules add exactly. `record`
+        // returns early on interval <= 0, so the gap is simply absent from history,
+        // which is what happened.
+        if Self.straddlesGap(wall: interval, awake: awake) {
+            resetAcrossGap()
+            interval = 0
+        }
+
+        // After the reset, never before: the tracker's pre-gap samples would
+        // otherwise be differenced against this sweep, and every process would
+        // report its mean rate across a nine-hour window nothing sampled as though
+        // it were the rate right now.
+        if let sweep {
+            drains = tracker.update(with: sweep, scale: scale)
+            attributed = drains.reduce(0) { $0 + $1.watts }
         }
         lastLightTick = Date()
+        lastLightTickAwake = awakeNow
         let gpu = reading?.gpu_W
         let fast = attributed + (gpu ?? 0)
         fastSincePublish.append(fast)
@@ -492,8 +564,8 @@ public final class PowerMonitor {
             let claim: Double?
             if let m = displayMeasured {
                 claim = m
-            } else if let b = DisplayBrightness.current() {
-                claim = displayModel.watts(brightness: b)
+            } else if let m = displayModel, let b = DisplayBrightness.current() {
+                claim = m.watts(brightness: b)
             } else {
                 claim = nil
             }
@@ -552,5 +624,74 @@ public final class PowerMonitor {
             attempted: sweep?.attempted ?? 0,
             interval: interval
         )
+    }
+
+    /// Throw away every quantity that accumulated ACROSS a gap in observation.
+    ///
+    /// Each of these fuses samples over time, so one pre-gap entry taints
+    /// everything computed after the wake: the rolling medians would still be
+    /// describing the rails as they were nine hours ago, the smoother would treat
+    /// the first real post-wake reading as an outlier to resist for two more ticks,
+    /// and `lastPublished` — the one that matters most — would make the next
+    /// gas-gauge window span the whole sleep and hand `record` a 32,400 s mean.
+    ///
+    /// The calibrators are deliberately NOT reset. A learned baseline and a PSTR
+    /// gain are properties of the machine, and it is the same machine when it
+    /// wakes; discarding them would cost a minute of uncorrected readings for no
+    /// gain in honesty.
+    func resetAcrossGap() {
+        tracker.reset()
+        smoother.reset()
+        pstrWindow.removeAll()
+        ppmcWindow.removeAll()
+        fastSincePublish.removeAll()
+        pstrSincePublish.removeAll()
+        lastSweep = nil
+        lastSweepAwake = nil
+        lastLightTick = nil
+        lastLightTickAwake = nil
+        lastPublished = nil
+        // The gauge figure is a 60 s mean from before the sleep, and `measuredAge`
+        // would report it as nine hours old rather than absent. Nil, not stale: an
+        // unmeasured window must not be reported as a measured one.
+        currentMeasured_W = nil
+        measuredAt = nil
+    }
+
+    /// Everything `resetAcrossGap` has to clear, in one comparable value.
+    ///
+    /// It exists so the regression test can assert on the WHOLE set at once rather
+    /// than a hand-picked few, and so an accumulator added later shows up here and
+    /// fails that test until the reset handles it. The first cut of this fix reset
+    /// the tracker and the smoother and left everything below them poisoning the
+    /// first post-wake minute.
+    struct Accumulators: Equatable {
+        var trackedProcesses = 0
+        var smoothed: Double?
+        var pstrSamples = 0
+        var ppmcSamples = 0
+        var fastSincePublish = 0
+        var pstrSincePublish = 0
+        var hasLastSweep = false
+        var hasLastLightTick = false
+        var hasLastPublished = false
+        var measured_W: Double?
+        var hasMeasuredAt = false
+    }
+
+    /// The paired timestamps are OR-ed rather than reported separately so that
+    /// clearing one and forgetting its twin still fails the test.
+    var accumulators: Accumulators {
+        Accumulators(trackedProcesses: tracker.trackedCount,
+                     smoothed: smoother.value,
+                     pstrSamples: pstrWindow.count,
+                     ppmcSamples: ppmcWindow.count,
+                     fastSincePublish: fastSincePublish.count,
+                     pstrSincePublish: pstrSincePublish.count,
+                     hasLastSweep: lastSweep != nil || lastSweepAwake != nil,
+                     hasLastLightTick: lastLightTick != nil || lastLightTickAwake != nil,
+                     hasLastPublished: lastPublished != nil,
+                     measured_W: currentMeasured_W,
+                     hasMeasuredAt: measuredAt != nil)
     }
 }
