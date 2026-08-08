@@ -161,10 +161,11 @@ public final class SystemAttribution {
     public func apportion(watts: Double,
                           by weight: Weight,
                           excluding attributed: Attributed,
+                          living: Set<String> = [],
                           scale: BatteryScale,
                           minimumShare: Double = 0.01) -> [Row] {
         Self.apportion(watts: watts, among: latest, by: weight,
-                       excluding: attributed, scale: scale,
+                       excluding: attributed, living: living, scale: scale,
                        minimumShare: minimumShare)
     }
 
@@ -187,11 +188,27 @@ public final class SystemAttribution {
                                  among all: [CoalitionUsage],
                                  by weight: Weight,
                                  excluding attributed: Attributed,
+                                 living: Set<String> = [],
                                  scale: BatteryScale,
                                  minimumShare: Double = 0.01) -> [Row] {
         guard watts > 0, all.count >= minimumCoalitions else { return [] }
 
-        let candidates = all.filter { !attributed.covers($0) }
+        // Only LIVING processes may take a share.
+        //
+        // The rollup window is an hour, because shorter ones had unusable
+        // coverage — but that window is HISTORICAL, and the watts being divided
+        // are CURRENT. Without this filter an app that quit forty minutes ago
+        // keeps receiving present-tense power for the rest of the hour. Observed
+        // live: Brave fully quit, zero processes, still holding 14% of the share
+        // on 15,581 ms of CPU it burned before it exited.
+        //
+        // An empty `living` set means the caller could not enumerate, and the
+        // filter is skipped rather than silently zeroing every row.
+        let candidates = all.filter {
+            guard !attributed.covers($0) else { return false }
+            guard !living.isEmpty else { return true }
+            return living.contains($0.displayName.lowercased())
+        }
         func w(_ c: CoalitionUsage) -> Double {
             switch weight {
             case .cpuTime: return Double(c.cpu_ms)

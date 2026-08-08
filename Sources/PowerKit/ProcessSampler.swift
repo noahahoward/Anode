@@ -48,6 +48,31 @@ public struct ProcessKey: Hashable {
 }
 
 public enum ProcessSampler {
+
+    /// Names of every process that currently exists.
+    ///
+    /// Cheap by design: one `proc_listpids` plus a name lookup each, no rusage
+    /// call. It exists so the coalition rollup cannot hand present-tense power to
+    /// an app that has already quit — the rollup window is an hour, and without
+    /// this a browser closed forty minutes ago keeps drawing battery on screen.
+    public static func runningNames() -> [String] {
+        var count = proc_listpids(UInt32(PROC_ALL_PIDS), 0, nil, 0)
+        guard count > 0 else { return [] }
+        var pids = [pid_t](repeating: 0, count: Int(count) / MemoryLayout<pid_t>.size)
+        count = proc_listpids(UInt32(PROC_ALL_PIDS), 0, &pids,
+                              Int32(pids.count * MemoryLayout<pid_t>.size))
+        guard count > 0 else { return [] }
+
+        var names: [String] = []
+        names.reserveCapacity(pids.count)
+        var buf = [CChar](repeating: 0, count: Int(MAXPATHLEN))
+        for pid in pids where pid > 0 {
+            let n = proc_name(pid, &buf, UInt32(buf.count))
+            if n > 0 { names.append(String(cString: buf)) }
+        }
+        return names
+    }
+
     public static func allPIDs() -> [pid_t] {
         let bytes = proc_listpids(UInt32(PROC_ALL_PIDS), 0, nil, 0)
         guard bytes > 0 else { return [] }
