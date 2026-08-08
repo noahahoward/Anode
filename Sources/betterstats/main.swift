@@ -266,6 +266,101 @@ if args.contains("--sysattr") {
     exit(0)
 }
 
+// ── Model validation against the gas gauge ──────────────────────────────────
+// --validate [minutes]   (default 20)
+//
+// Every other mode here checks that a number was READ correctly. This one checks
+// that the number is TRUE: it integrates the watts the app actually displays and
+// compares the total against the energy the pack really lost, which is the only
+// quantity in the system nothing in this codebase gets a vote on. After a macOS
+// update moves an SMC or IOReport key, the model keeps printing a plausible
+// figure — the gauge is what calls it wrong.
+//
+// ONLY MEANINGFUL ON BATTERY, with the gauge actually moving. On AC there is no
+// discharge to integrate against, so the harness aborts instead of producing a
+// ratio, and this mode says so rather than printing a confident number.
+if let i = args.firstIndex(of: "--validate") {
+    let mins = args.count > i + 1 ? Double(args[i + 1]) ?? 20 : 20
+    guard let monitor = PowerMonitor(scale: scale) else {
+        print("PowerMonitor unavailable"); exit(1)
+    }
+    let validator = ModelValidator(scale: scale)
+    let tickInterval = 5.0
+    // ValidationRun's own default. Below it the 1 mAh gauge quantisation is wider
+    // than the ±10% pass band, so a shorter window can only be provisional.
+    let gate: TimeInterval = 900
+    let runSeconds = max(mins, 1) * 60
+
+    rule("MODEL VALIDATION")
+    print(String(format: "  running %.0f min at %.0f s ticks; ∫ displayed W vs gas-gauge discharge",
+                 runSeconds / 60, tickInterval))
+    if state.onAC {
+        print("  ON AC RIGHT NOW — there is no discharge to measure, and every AC")
+        print("  sample aborts the run. Unplug: accumulation restarts on its own the")
+        print("  moment the machine is on battery. Left plugged in, this prints no ratio.")
+    }
+    if runSeconds < gate + 180 {
+        print(String(format: "  NOTE: a verdict needs a %.0f s GAUGE-ALIGNED window and the gauge only",
+                     gate))
+        print("  publishes about once a minute, so this run can reach a provisional ratio")
+        print("  at best. Use --validate 25 (or more) for a verdict.")
+    }
+    print("")
+
+    // ctrl-C ends the run and still prints what was learned. Throwing away twenty
+    // minutes of measurement because someone wanted to stop early is a bad trade.
+    final class StopFlag {
+        private let lock = NSLock()
+        private var flag = false
+        var isSet: Bool { lock.lock(); defer { lock.unlock() }; return flag }
+        func set() { lock.lock(); flag = true; lock.unlock() }
+    }
+    let stop = StopFlag()
+    signal(SIGINT, SIG_IGN)
+    let sigsrc = DispatchSource.makeSignalSource(signal: SIGINT, queue: .global())
+    sigsrc.setEventHandler { stop.set() }
+    sigsrc.resume()
+
+    // attribution: false — the coalition rollup only names rows in the process
+    // table, and the validator integrates totals. It costs a systemstats
+    // subprocess per tick and would itself distort what we are measuring.
+    monitor.tick(full: true, attribution: false)  // prime: no prior sweep to diff
+    let t0 = Date()
+    var lastReport = t0
+    while Date().timeIntervalSince(t0) < runSeconds, !stop.isSet {
+        Thread.sleep(forTimeInterval: tickInterval)
+        guard let s = monitor.tick(full: true, attribution: false) else { continue }
+        validator.record(s)
+        guard Date().timeIntervalSince(lastReport) >= 60 else { continue }
+        lastReport = Date()
+        let ledger = ModelValidator.ledgerError_W(of: s)
+            .map { String(format: "%+.4f W", $0) } ?? "—"
+        let prov = validator.runningRatio().map { String(format: "%.3f", $0) } ?? "—"
+        print(String(format: "  %5.0fs  displayed %6.2f W  attributed %6.2f W  gauge %.0f mAh  ledger %@  ratio-so-far %@",
+                     Date().timeIntervalSince(t0), s.smoothed_W, s.attributed_W,
+                     s.state?.remainingCapacity_mAh ?? 0, ledger as NSString, prov as NSString))
+        print("         \(validator.status)")
+    }
+    if stop.isSet { print("\n  interrupted — reporting on what was collected") }
+
+    print("")
+    if let run = validator.result(minimumSeconds: gate) {
+        print(run.verdict)
+        exit(run.passed ? 0 : 1)
+    }
+    // No verdict is a legitimate outcome and must not be dressed up as one.
+    print("NO VERDICT — the harness refuses to guess.")
+    print("  \(validator.status)")
+    if let r = validator.runningRatio() {
+        print(String(format: "  provisional ratio %.3f (model/actual), from a window shorter than the", r))
+        print(String(format: "  %.0f s the pass band assumes. Indicative only — NOT a verdict.", gate))
+    } else {
+        print("  No gauge-aligned window exists, so there is no ratio to report. On AC")
+        print("  that is expected and permanent; on battery, the gauge needs to move twice.")
+    }
+    exit(2)
+}
+
 // ── Coalition usage dump ────────────────────────────────────────────────────
 // Apple's own per-app rollup, including the root coalitions proc_pid_rusage
 // cannot see. --coalitions <minutes>

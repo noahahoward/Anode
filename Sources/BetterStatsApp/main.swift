@@ -352,6 +352,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         // Feed the registry first so the widgets and any UI reading metrics see
         // this tick's values rather than the previous one.
         MetricRegistry.shared.update(with: s)
+        MetricRegistry.shared.update(displayedRate: Self.reconciledRate(s, drain.estimate()))
         widgets.refresh()
 
         let showDaemons = Settings.shared.showDaemons
@@ -508,6 +509,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
                                   Palette.accentDim,
                                   NSColor.systemPurple, NSColor.systemTeal]
         return palette[i % palette.count]
+    }
+
+    /// The one drain figure the whole app shows, and the hours it implies.
+    ///
+    /// The menu bar used to compute this from instantaneous power while the
+    /// window computed it from observed discharge, and they disagreed on screen —
+    /// reported as a widget and a card three inches apart giving different
+    /// answers to one question, with the card noticeably steadier.
+    ///
+    /// The estimator wins normally: it is slew-limited and reflects real
+    /// discharge rather than instantaneous draw, which is why it looks calmer.
+    /// But it infers from gauge movement, and the gauge publishes about once a
+    /// minute, so just after unplugging it has almost nothing to fit and can
+    /// report near zero — which is how the card once claimed 200 hours. Measured
+    /// power is available every tick and cannot go stale that way, so it takes
+    /// over whenever the two disagree by more than a factor of two.
+    static func reconciledRate(_ s: PowerMonitor.Snapshot,
+                               _ est: DrainEstimate?) -> (pctHr: Double, timeRemaining_hr: Double?) {
+        let measured = s.smoothed_pctHr
+        let shown: Double = {
+            guard let inferred = est?.percentPerHour, inferred > 0 else { return measured }
+            guard measured > 0.05 else { return inferred }
+            let ratio = inferred / measured
+            return (ratio < 0.5 || ratio > 2.0) ? measured : inferred
+        }()
+        let hours: Double? = {
+            guard s.direction == .draining, shown > 0.01,
+                  let pct = s.state?.percent else { return nil }
+            return Double(pct) / shown
+        }()
+        return (shown, hours)
     }
 
     func updateGraph(_ s: PowerMonitor.Snapshot?) {

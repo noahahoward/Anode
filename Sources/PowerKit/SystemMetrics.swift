@@ -188,6 +188,25 @@ public enum GPUUsage {
 /// Like the CPU ticks these are cumulative since boot, so throughput only exists
 /// between two samples. Loopback is excluded — it is real traffic but it never
 /// leaves the machine, and counting it makes local IPC look like network activity.
+///
+/// The counter source matters more than it looks. `getifaddrs`' `ifa_data` is a
+/// `struct if_data`, whose `ifi_ibytes`/`ifi_obytes` are `u_int32_t` — 4 GiB of
+/// traffic and the counter is back at zero, which at 1 Gbit/s is every ~34 s. A
+/// difference taken across that wrap is negative, so the reading blanked out
+/// precisely during the large transfer you opened the app to watch. Verified on
+/// this machine: `getifaddrs` reported en0 out = 2,581,578,752 while the true
+/// count was 6,876,546,330 — low 32 bits only.
+///
+/// `sysctl(NET_RT_IFLIST2)` is the usual answer and is NOT one here: its
+/// `if_msghdr2.ifm_data` is declared `struct if_data64` (8-byte fields, checked),
+/// but this kernel fills only the low 32 bits of the byte counts. Measured by
+/// pushing 7 GB over lo0: that path read 3,392,594,944 where the true count was
+/// 7,687,562,848 — short by exactly 2^32, with the high word left zero.
+///
+/// `net.link.generic.ifdata` (`IFMIB_IFALLDATA`, what `netstat -ib` itself uses)
+/// returns the same `if_data64` with the counters at full width — it matched
+/// `netstat` byte for byte across the same experiment. That is the source below,
+/// so the wrap is removed rather than compensated for.
 public final class NetworkThroughput {
 
     public struct Interface {
@@ -207,86 +226,138 @@ public final class NetworkThroughput {
         public let interval: TimeInterval
     }
 
-    private var previous: (inBytes: UInt64, outBytes: UInt64)?
-    private var previousPerIF: [String: (UInt64, UInt64)] = [:]
+    /// One interface's cumulative counters, at the kernel's full 64-bit width.
+    struct Counters: Equatable {
+        var inBytes: UInt64
+        var outBytes: UInt64
+    }
+
+    /// 100 Gbit/s, above any link this machine can physically have — Thunderbolt 5
+    /// networking tops out at 80. Nothing plausible is ever rejected by this; it
+    /// exists so that a counter doing something unexplained becomes a missing row
+    /// rather than a headline number, the same bargain `Store.maxPlausibleWatts`
+    /// and `Sensors.plausible` make.
+    static let maxPlausibleBytesPerSec: Double = 12.5e9
+
+    private var previous: [String: Counters] = [:]
     private var previousAt: Date?
 
     public init() {}
 
-    private func readPerInterface() -> [String: (UInt64, UInt64)] {
-        var head: UnsafeMutablePointer<ifaddrs>?
-        guard getifaddrs(&head) == 0, let start = head else { return [:] }
-        defer { freeifaddrs(head) }
-
-        var out: [String: (UInt64, UInt64)] = [:]
-        var cur: UnsafeMutablePointer<ifaddrs>? = start
-        while let ptr = cur {
-            defer { cur = ptr.pointee.ifa_next }
-            guard let addr = ptr.pointee.ifa_addr,
-                  addr.pointee.sa_family == UInt8(AF_LINK),
-                  let raw = ptr.pointee.ifa_data else { continue }
-            let name = String(cString: ptr.pointee.ifa_name)
-            guard !name.hasPrefix("lo") else { continue }
-            let d = raw.assumingMemoryBound(to: if_data.self).pointee
-            out[name] = (UInt64(d.ifi_ibytes), UInt64(d.ifi_obytes))
-        }
-        return out
-    }
-
-    private func read() -> (inBytes: UInt64, outBytes: UInt64)? {
-        var head: UnsafeMutablePointer<ifaddrs>?
-        guard getifaddrs(&head) == 0, let start = head else { return nil }
-        defer { freeifaddrs(head) }
-
-        var inB: UInt64 = 0, outB: UInt64 = 0
-        var cur: UnsafeMutablePointer<ifaddrs>? = start
-        while let ptr = cur {
-            defer { cur = ptr.pointee.ifa_next }
-            // Only AF_LINK entries carry if_data; the AF_INET aliases would
-            // double-count the same interface.
-            guard let addr = ptr.pointee.ifa_addr,
-                  addr.pointee.sa_family == UInt8(AF_LINK),
-                  let raw = ptr.pointee.ifa_data else { continue }
-            let name = String(cString: ptr.pointee.ifa_name)
-            guard !name.hasPrefix("lo") else { continue }
-
-            let d = raw.assumingMemoryBound(to: if_data.self).pointee
-            inB &+= UInt64(d.ifi_ibytes)
-            outB &+= UInt64(d.ifi_obytes)
-        }
-        return (inB, outB)
-    }
-
-    /// nil on the first call, and whenever the counters go backwards — an
-    /// interface disappearing (VPN down, dock unplugged) reduces the total, and
-    /// reporting that as negative throughput would be nonsense.
+    /// nil on the first call — throughput only exists between two reads — and
+    /// whenever the counters cannot be read at all. It is NOT nil merely because
+    /// an interface went away or reset: the aggregate is the sum of the
+    /// per-interface deltas, so the surviving links still report.
     public func sample() -> Sample? {
-        guard let now = read() else { return nil }
-        let at = Date()
-        defer { previous = now; previousAt = at }
+        guard let now = Self.readCounters() else { return nil }
+        return sample(counters: now, at: Date())
+    }
 
-        let perIF = readPerInterface()
-        defer { previousPerIF = perIF }
+    /// The half of `sample()` that does not touch the kernel, so the wrap, reset
+    /// and disappearing-interface paths can be driven exactly in tests.
+    func sample(counters now: [String: Counters], at: Date) -> Sample? {
+        let was = previous
+        let wasAt = previousAt
+        // Replacing the map wholesale rather than merging into it is load-bearing.
+        // An interface that vanished this tick must not leave its counters behind
+        // as a baseline: utun3 going down and a new utun3 coming up minutes later
+        // would otherwise be differenced against a dead tunnel's totals.
+        previous = now
+        previousAt = at
 
-        guard let prev = previous, let prevAt = previousAt else { return nil }
-        let dt = at.timeIntervalSince(prevAt)
-        guard dt > 0.05, now.inBytes >= prev.inBytes, now.outBytes >= prev.outBytes
-        else { return nil }
+        guard let wasAt, !was.isEmpty else { return nil }
+        let dt = at.timeIntervalSince(wasAt)
+        guard dt > 0.05 else { return nil }
 
-        var ifaces: [Interface] = []
-        for (name, cur) in perIF {
-            guard let was = previousPerIF[name],
-                  cur.0 >= was.0, cur.1 >= was.1 else { continue }
-            let i = Double(cur.0 - was.0) / dt
-            let o = Double(cur.1 - was.1) / dt
-            if i + o > 0 { ifaces.append(Interface(name: name, inPerSec: i, outPerSec: o)) }
+        var inTotal = 0.0
+        var outTotal = 0.0
+        var rows: [Interface] = []
+        var contributing = 0
+
+        for (name, cur) in now {
+            // No baseline: first sight of this interface. It contributes nothing
+            // this tick and everything from the next one.
+            guard let old = was[name] else { continue }
+
+            // At 64 bits a byte counter does not wrap in any human timescale
+            // (2^64 bytes is centuries of 100 Gbit/s), so a decrease is a counter
+            // reset — the interface was torn down and recreated under the same
+            // name — never a wrap. Differencing across it with wrapping arithmetic
+            // would turn a 0.1 GiB → 0 reset into a ~4.2 GiB delta and print
+            // gigabytes per second, so the interface is simply dropped for this
+            // tick; `previous` already holds its fresh baseline.
+            guard cur.inBytes >= old.inBytes, cur.outBytes >= old.outBytes else { continue }
+
+            let inRate = Double(cur.inBytes - old.inBytes) / dt
+            let outRate = Double(cur.outBytes - old.outBytes) / dt
+            guard inRate <= Self.maxPlausibleBytesPerSec,
+                  outRate <= Self.maxPlausibleBytesPerSec else { continue }
+
+            contributing += 1
+            inTotal += inRate
+            outTotal += outRate
+            if inRate + outRate > 0 {
+                rows.append(Interface(name: name, inPerSec: inRate, outPerSec: outRate))
+            }
         }
-        ifaces.sort { $0.totalPerSec > $1.totalPerSec }
 
-        return Sample(bytesInPerSec: Double(now.inBytes - prev.inBytes) / dt,
-                      bytesOutPerSec: Double(now.outBytes - prev.outBytes) / dt,
-                      interfaces: ifaces,
+        // Every interface either new or dropped: there is no interval anything can
+        // be said about. Zero would be a claim of silence rather than of ignorance.
+        guard contributing > 0 else { return nil }
+
+        rows.sort { $0.totalPerSec > $1.totalPerSec }
+        return Sample(bytesInPerSec: inTotal,
+                      bytesOutPerSec: outTotal,
+                      interfaces: rows,
                       interval: dt)
+    }
+
+    /// Every non-loopback interface's cumulative byte counters, keyed by BSD name.
+    ///
+    /// One sysctl for the whole table — `IFMIB_IFALLDATA` returns a packed array
+    /// of `struct ifmibdata`, whose `ifmd_data` is the full-width `if_data64`.
+    /// Measured at ~20 µs for 22 interfaces, which is the point: this runs on
+    /// every tick of a monitor that must not cost what it measures.
+    static func readCounters() -> [String: Counters]? {
+        var mib: [Int32] = [CTL_NET, PF_LINK, NETLINK_GENERIC, IFMIB_IFALLDATA, 0, IFDATA_GENERAL]
+        let recordSize = MemoryLayout<ifmibdata>.size
+
+        var needed = 0
+        guard sysctl(&mib, u_int(mib.count), nil, &needed, nil, 0) == 0,
+              needed >= recordSize else { return nil }
+
+        // Slack for interfaces appearing between the sizing call and the read —
+        // a VPN coming up at that instant would otherwise cost ENOMEM and a tick.
+        var buffer = [UInt8](repeating: 0, count: needed + recordSize * 4)
+        var got = buffer.count
+        guard buffer.withUnsafeMutableBytes({ raw in
+            sysctl(&mib, u_int(mib.count), raw.baseAddress, &got, nil, 0)
+        }) == 0, got >= recordSize else { return nil }
+
+        // A length that is not a whole number of records means the struct the
+        // kernel is writing is not the one this was compiled against, and walking
+        // it at the wrong stride would read the wrong fields. Report nothing.
+        guard got % recordSize == 0 else { return nil }
+
+        var out: [String: Counters] = [:]
+        buffer.withUnsafeBytes { raw in
+            for index in 0..<(got / recordSize) {
+                let entry = raw.loadUnaligned(fromByteOffset: index * recordSize, as: ifmibdata.self)
+                let name = Self.name(of: entry)
+                guard !name.isEmpty, !name.hasPrefix("lo") else { continue }
+                out[name] = Counters(inBytes: entry.ifmd_data.ifi_ibytes,
+                                     outBytes: entry.ifmd_data.ifi_obytes)
+            }
+        }
+        return out.isEmpty ? nil : out
+    }
+
+    /// `ifmd_name` is a fixed 16-byte field, not a string — read it bounded and
+    /// stop at the NUL rather than trusting one to be there.
+    private static func name(of entry: ifmibdata) -> String {
+        withUnsafeBytes(of: entry.ifmd_name) { raw in
+            String(decoding: raw.prefix(while: { $0 != 0 }), as: UTF8.self)
+        }
     }
 }
 

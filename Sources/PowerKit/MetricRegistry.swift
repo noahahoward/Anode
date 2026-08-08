@@ -297,6 +297,22 @@ public final class MetricRegistry {
         }
     }
 
+    /// The displayed drain rate and time remaining, pushed in by whoever owns the
+    /// DrainRateEstimator.
+    ///
+    /// Without this the menu bar computed its own figures from instantaneous
+    /// power while the window computed different ones from observed discharge,
+    /// and the two disagreed on screen — reported by the user as a widget and a
+    /// card three inches apart showing different drain and different time left.
+    /// They are answers to the same question and there is only one right one, so
+    /// there is now one source.
+    public private(set) var displayedRate: (pctHr: Double, timeRemaining_hr: Double?)?
+
+    public func update(displayedRate: (pctHr: Double, timeRemaining_hr: Double?)?) {
+        lock.lock(); defer { lock.unlock() }
+        self.displayedRate = displayedRate
+    }
+
     public func registerBatteryMetrics() {
         register(MetricDescriptor(
             id: .batteryDrain, title: "Battery rate", shortTitle: "Drain",
@@ -315,9 +331,12 @@ public final class MetricRegistry {
             if s.direction == .acIdle {
                 return MetricValue(value: 0, text: "AC", isEstimate: false, label: "Power")
             }
-            // Estimate until the SMC/gas-gauge gain has converged — same "*" rule the
-            // app's own status item uses.
-            return MetricValue(s.smoothed_pctHr, unit: .percentPerHour,
+            // The SHARED figure when one has been published — the same number the
+            // window shows — falling back to instantaneous power only before the
+            // first one arrives. Estimate until the SMC/gas-gauge gain converges,
+            // same "*" rule the app's own status item uses.
+            let rate = self?.displayedRate?.pctHr ?? s.smoothed_pctHr
+            return MetricValue(rate, unit: .percentPerHour,
                                isEstimate: !s.isCalibrated)
         }
 
@@ -338,6 +357,11 @@ public final class MetricRegistry {
             // (which is nil on AC anyway — sentinel 65535 is already scrubbed by
             // Battery.state()). Both are projections, so both are estimates. On AC
             // there is no honest number: return nil and let the widget show "—".
+            // Shared first, so the widget and the card cannot disagree about how
+            // long the battery has left.
+            if let hr = self?.displayedRate?.timeRemaining_hr, hr.isFinite, hr > 0 {
+                return MetricValue(hr * 60, unit: .minutes, isEstimate: true)
+            }
             if let hr = s.projectedRuntime_hr() {
                 return MetricValue(hr * 60, unit: .minutes, isEstimate: true)
             }
