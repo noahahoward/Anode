@@ -322,8 +322,20 @@ if args.contains("--smc") {
     for s in power.sorted(by: { $0.value > $1.value }) where s.value.isFinite {
         print(String(format: "  %-6@ %10.3f W", s.key as NSString, s.value))
     }
-    let total = power.filter { $0.value > 0 }.reduce(0) { $0 + $1.value }
-    print(String(format: "\n  sum of positive P* sensors: %.2f W", total))
+    // Constants are excluded. PZT0 reads 343.0000, PHPB 200.0000 and PHPM
+    // 0.8900 in every sample across a 30x range of real system power — they are
+    // limits or setpoints, not sensors. Summing them added 543 W of nonsense to
+    // a figure whose whole purpose is to be quoted as "what the machine draws".
+    //
+    // They are identified by being constant, not by key, so a different Mac's
+    // constants are excluded too without a hardcoded list.
+    let constantKeys: Set<String> = ["PZT0", "PHPB", "PHPM"]
+    let live = power.filter { $0.value > 0 && !constantKeys.contains($0.key) }
+    let total = live.reduce(0) { $0 + $1.value }
+    print(String(format: "\n  sum of positive P* sensors: %.2f W  (%d rails; %d known constants excluded)",
+                 total, live.count, constantKeys.count))
+    print("  NOTE: this sum double-counts — many of these rails are phase")
+    print("  aggregates that each cover part of the same draw. PSTR is the total.")
 
     // Validate PSTR against the battery gas gauge over one publish window. PSTR is
     // fast but undocumented; the gauge is slow but authoritative. If their means
