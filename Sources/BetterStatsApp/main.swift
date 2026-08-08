@@ -416,6 +416,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
             systemProcesses_pctHr: s.systemProcesses_pctHr ?? 0,
             gpu_pctHr: s.gpu_pctHr ?? 0,
             display_pctHr: s.display_pctHr ?? 0,
+            displayIsMeasured: s.displayIsMeasured,
             // Platform when the CPU rail is readable; otherwise fall back to the old
             // single residual rather than showing a bucket we cannot justify.
             unattributed_pctHr: s.platform_pctHr ?? s.residual_pctHr ?? 0,

@@ -37,13 +37,27 @@ public struct DisplayPowerModel: Equatable {
     /// Brightness below which the backlight contributes nothing measurable.
     public let deadZone: Double
     /// Curve shape. Backlight power against the OS brightness slider is not
-    /// linear — the sweep barely moved between 2% and 25%, then climbed steeply —
-    /// so a straight line would badly over-report at the low settings people
-    /// actually use. An exponent above 1 reproduces that shape.
+    /// linear: measured, it is flat to ~20% and then climbs steeply, so a
+    /// straight line badly over-reports at the low settings people actually use.
+    /// An exponent above 1 reproduces that shape above the dead zone.
     public let exponent: Double
 
+    /// Re-derived after the original sweep was found to have subtracted CPU at
+    /// 1.0x PPMC, when a watt of PPMC actually costs ~1.27 W at the battery — so
+    /// it credited CPU power to the display.
+    ///
+    ///     span      8.45 -> 8.19 W    (small)
+    ///     deadZone  0.02 -> 0.20      (large, and the one that mattered)
+    ///     exponent  1.8  -> 1.75
+    ///
+    /// The dead zone is the real correction. Below ~20% the backlight draws
+    /// nothing measurable, and the old 0.02 had the model claiming watts across
+    /// that whole range: at 37.5% brightness it asserted 1.36 W where the
+    /// measurement says 0.56 W. Fitted R2 = 0.995 over 9 levels, monotone in
+    /// brightness, and stable across CPU coefficients 1.00-1.33 (span moves only
+    /// 8.12 -> 8.20), so the fit does not hinge on getting that coefficient exact.
     public static let measuredOnThisMac = DisplayPowerModel(
-        spanWatts: 8.45, deadZone: 0.02, exponent: 1.8)
+        spanWatts: 8.19, deadZone: 0.20, exponent: 1.75)
 
     public init(spanWatts: Double, deadZone: Double, exponent: Double) {
         self.spanWatts = spanWatts
@@ -58,6 +72,34 @@ public struct DisplayPowerModel: Equatable {
         guard b > deadZone else { return 0 }
         let t = (b - deadZone) / (1 - deadZone)
         return spanWatts * pow(t, exponent)
+    }
+}
+
+/// The display's own power rail — a MEASUREMENT, not a model.
+///
+/// `PDBR` tracked the brightness sweep from 0.204 W to 8.197 W, a 40x swing,
+/// and its full-scale value matches the independently fitted span (8.19 W) to
+/// within noise. That is the signature of the backlight rail itself.
+///
+/// It is preferred over the brightness curve wherever it is readable, for a
+/// reason that first looked like a disqualification: PDBR varies at FIXED
+/// brightness (0.388, 0.475, 0.492 W all at 0.375). An earlier investigation
+/// rejected it for that. But this is a mini-LED panel with local dimming, so
+/// backlight power genuinely depends on what is ON the screen, not only on the
+/// slider — which means the rail captures something no brightness curve can,
+/// and the variation is signal rather than noise.
+///
+/// The model remains the fallback for machines whose display rail cannot be
+/// read, and it is still labelled modeled there.
+public enum DisplayRail {
+    public static let key = "PDBR"
+
+    /// Watts, or nil when the rail is absent or implausible. A display cannot
+    /// draw more than this panel's measured full-scale draw plus margin, and a
+    /// reading above that is a misidentified key on different hardware.
+    public static func watts(_ smc: SMC?) -> Double? {
+        guard let v = smc?.read(key)?.value, v.isFinite, v >= 0, v <= 15 else { return nil }
+        return v
     }
 }
 
