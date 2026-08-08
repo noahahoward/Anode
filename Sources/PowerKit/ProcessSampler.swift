@@ -169,8 +169,10 @@ public enum DrainCalculator {
             guard joules > 0 else { continue }
 
             let watts = joules / dt
-            let cpuDelta = Double((now.userTime_ns &+ now.systemTime_ns)
-                                  &- (a.processes[key]!.userTime_ns &+ a.processes[key]!.systemTime_ns))
+            // Kept as UInt64 so the wrapping subtraction stays exact; MachTime
+            // does the unit conversion.
+            let cpuDeltaUnits = (now.userTime_ns &+ now.systemTime_ns)
+                &- (a.processes[key]!.userTime_ns &+ a.processes[key]!.systemTime_ns)
             out.append(ProcessDrain(
                 name: now.name,
                 pid: key.pid,
@@ -178,7 +180,8 @@ public enum DrainCalculator {
                 joules: joules,
                 watts: watts,
                 percentPerHour: 3600.0 * watts / scale.joulesPerPercent,
-                cpuPercent: cpuDelta / 1e9 / dt * 100,
+                // MachTime, not /1e9 — see MachTime for why this was 41.667x low.
+                cpuPercent: MachTime.corePercent(units: cpuDeltaUnits, over: dt),
                 memoryBytes: now.footprint,
                 diskBytesPerSec: 0
             ))
