@@ -460,7 +460,10 @@ public final class HistoryStore {
             // a 0.1 s tick the same as a 60 s bucket and skew every mixed range.
             guard let st = prepare("""
                 SELECT CAST((ts - ?) / ? AS INTEGER) AS b,
-                       MIN(ts), SUM(measured_j), SUM(dur), MIN(on_battery), AVG(soc)
+                       MIN(ts), SUM(measured_j), SUM(dur), MIN(on_battery),
+                       CASE WHEN SUM(CASE WHEN soc IS NULL THEN 0 ELSE dur END) > 0
+                            THEN SUM(COALESCE(soc,0)*dur) / SUM(CASE WHEN soc IS NULL THEN 0 ELSE dur END)
+                            ELSE NULL END
                   FROM interval
                  WHERE ts >= ? AND ts <= ? AND measured_j IS NOT NULL
                    AND dur > 0 AND measured_j >= 0
@@ -541,12 +544,25 @@ public final class HistoryStore {
         //    returns NULL when every input is NULL — exactly the "unmeasured
         //    stays unmeasured" semantics we want. The CASE in the upsert keeps it.
         let foldedIntervals = exec("""
-            INSERT INTO interval(ts, dur, on_battery, agg, measured_j, attributed_j, residual_j)
+            INSERT INTO interval(ts, dur, on_battery, agg, measured_j, attributed_j, residual_j, soc)
             SELECT CAST(ts/\(bw) AS INTEGER)*\(bw), SUM(dur), on_battery, 1,
-                   SUM(measured_j), SUM(attributed_j), SUM(residual_j)
+                   SUM(measured_j), SUM(attributed_j), SUM(residual_j),
+                   -- Duration-weighted, not AVG(soc): the rows folded into one
+                   -- bucket have different durations, so a plain mean would let a
+                   -- 0.8 s tick pull as hard as a 60 s one.
+                   CASE WHEN SUM(CASE WHEN soc IS NULL THEN 0 ELSE dur END) > 0
+                        THEN SUM(COALESCE(soc,0)*dur) / SUM(CASE WHEN soc IS NULL THEN 0 ELSE dur END)
+                        ELSE NULL END
             FROM interval WHERE agg=0 AND ts < \(aligned)
             GROUP BY CAST(ts/\(bw) AS INTEGER), on_battery
             ON CONFLICT(ts, on_battery) WHERE agg=1 DO UPDATE SET
+                -- soc BEFORE dur: the re-weighting below divides by the OLD dur,
+                -- so updating dur first would weight the existing value against a
+                -- total that already includes the incoming rows.
+                soc = CASE WHEN soc IS NULL AND excluded.soc IS NULL THEN NULL
+                      WHEN soc IS NULL THEN excluded.soc
+                      WHEN excluded.soc IS NULL THEN soc
+                      ELSE (soc*dur + excluded.soc*excluded.dur) / (dur + excluded.dur) END,
                 dur = dur + excluded.dur,
                 measured_j = CASE WHEN measured_j IS NULL AND excluded.measured_j IS NULL
                              THEN NULL ELSE COALESCE(measured_j,0)+COALESCE(excluded.measured_j,0) END,

@@ -116,3 +116,77 @@ final class StoreMigrationTests: XCTestCase {
                       "a wrapped counter must not reach the graph or any SUM")
     }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Compaction must not destroy state of charge.
+///
+/// It did. `downsampleLocked`'s INSERT named every column except `soc`, then
+/// deleted the raw rows it had folded — so every SoC sample older than
+/// `rawHorizon` became NULL, and the battery line could only ever exist for the
+/// trailing hour. That is precisely the range the multi-day graph was added to
+/// escape, and nothing failed: the column existed, the query succeeded, the
+/// numbers were simply gone.
+///
+/// The write path was verified when this shipped. Compaction was not.
+final class StoreCompactionTests: XCTestCase {
+
+    private var dir: URL!
+
+    override func setUpWithError() throws {
+        dir = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("bs-compact-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    }
+    override func tearDownWithError() throws { try? FileManager.default.removeItem(at: dir) }
+
+    private func store() -> HistoryStore? {
+        // Tiny rawHorizon so everything written is immediately compactable.
+        HistoryStore(path: dir.appendingPathComponent("h.sqlite"),
+                     rawHorizon: 1, bucketWidth: 60)
+    }
+
+    func testCompactionPreservesStateOfCharge() throws {
+        guard let s = store() else { return XCTFail("store") }
+        let t0 = Date().addingTimeInterval(-7200)
+        for i in 0..<20 {
+            s.record(apps: [], measured_W: 5, attributed_W: 1, residual_W: 1,
+                     onBattery: true, socPercent: Double(90 - i), interval: 2,
+                     at: t0.addingTimeInterval(Double(i) * 2))
+        }
+        s.downsample()
+
+        let pts = s.powerSeries(since: t0.addingTimeInterval(-60),
+                                until: t0.addingTimeInterval(3600), maxPoints: 200)
+        XCTAssertFalse(pts.isEmpty, "compacted rows must still be readable")
+        XCTAssertTrue(pts.contains { $0.socPercent != nil },
+                      "state of charge must survive compaction — it was being dropped entirely")
+        for p in pts {
+            if let soc = p.socPercent {
+                XCTAssertTrue((70...91).contains(soc),
+                              "compacted soc \(soc) is outside the range that was written")
+            }
+        }
+    }
+
+    /// The mean must be weighted by duration. Rows folded into one bucket have
+    /// different durations, so a plain average lets a 0.8 s tick pull as hard as
+    /// a 60 s one.
+    func testCompactedStateOfChargeIsDurationWeighted() throws {
+        guard let s = store() else { return XCTFail("store") }
+        let t0 = Date().addingTimeInterval(-7200)
+        // 1 s at 100%, then 99 s at 0% -> weighted mean 1%, plain mean 50%.
+        s.record(apps: [], measured_W: 5, attributed_W: nil, residual_W: nil,
+                 onBattery: true, socPercent: 100, interval: 1, at: t0)
+        s.record(apps: [], measured_W: 5, attributed_W: nil, residual_W: nil,
+                 onBattery: true, socPercent: 0, interval: 99, at: t0.addingTimeInterval(1))
+        s.downsample()
+
+        let pts = s.powerSeries(since: t0.addingTimeInterval(-60),
+                                until: t0.addingTimeInterval(3600), maxPoints: 10)
+        let soc = pts.compactMap(\.socPercent).first
+        XCTAssertNotNil(soc)
+        XCTAssertEqual(soc ?? -1, 1.0, accuracy: 0.5,
+                       "a plain average would report ~50 here")
+    }
+}
