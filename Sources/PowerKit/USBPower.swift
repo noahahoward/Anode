@@ -34,14 +34,26 @@ import IOKit.usb
 /// the phone.
 public final class USBPowerTracker {
 
+    /// Where a device's cost came from. This reaches the UI, because "measured a
+    /// moment ago" and "measured last Tuesday" are different claims.
+    public enum Provenance: String, Equatable {
+        /// Step observed on this attach, in this session.
+        case measured
+        /// Step observed on a PREVIOUS attach or detach and remembered. Charge
+        /// state changes, so this is a prior figure, not a current one.
+        case remembered
+        /// Attached before the app started and never seen before, so no step has
+        /// ever been observed for it.
+        case unknown
+    }
+
     public struct Device: Equatable {
         public let id: UInt64
         public let name: String
-        /// Watts this device drew, measured from the step it caused when it
-        /// attached. Nil when it was already present at launch — genuinely
-        /// unknown, and shown as such.
+        /// Watts. Nil only when provenance is `.unknown`.
         public let watts: Double?
-        public var isMeasured: Bool { watts != nil }
+        public let provenance: Provenance
+        public var isMeasured: Bool { provenance == .measured }
     }
 
     /// Seconds to let power settle either side of a transition. A charger
@@ -57,8 +69,38 @@ public final class USBPowerTracker {
     private var devices: [UInt64: Device] = [:]
     /// Power sampled just before a pending attach, awaiting its settled pair.
     private var pending: [UInt64: (name: String, before: Double, at: Date)] = [:]
+    /// A departure whose settled after-level is still being waited for.
+    private var departing: [(name: String, before: Double, at: Date)] = []
 
-    public init() {}
+    /// What each device cost last time a step was observed for it, by name.
+    ///
+    /// This is what makes the common case work at all. A device plugged in
+    /// before the app launched produces no attach step, so without memory its
+    /// cost is permanently unknowable — which is the state the user actually
+    /// finds themselves in, since phones tend to already be charging.
+    ///
+    /// Keyed by NAME, not registry id: the id is assigned per enumeration and
+    /// changes between plugs, so it cannot carry knowledge across them.
+    private var remembered: [String: Double] = [:]
+    private let defaults: UserDefaults
+    private static let storeKey = "com.betterstats.usb.deviceWatts.v1"
+
+    public init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+        if let d = defaults.dictionary(forKey: Self.storeKey) as? [String: Double] {
+            remembered = d
+        }
+    }
+
+    private func remember(_ name: String, _ watts: Double) {
+        // Averaged with what is already known rather than overwritten. A phone's
+        // draw tapers as it fills — 11.55 W measured at one charge level, 8.7 W an
+        // hour later on the same device — so any single observation is a snapshot
+        // of a moving quantity, and the running mean is a better prior than the
+        // most recent accident of timing.
+        remembered[name] = remembered[name].map { ($0 + watts) / 2 } ?? watts
+        defaults.set(remembered, forKey: Self.storeKey)
+    }
 
     /// Currently attached devices, newest first.
     public var attached: [Device] {
@@ -66,17 +108,23 @@ public final class USBPowerTracker {
         return Array(devices.values).sorted { ($0.watts ?? -1) > ($1.watts ?? -1) }
     }
 
-    /// Total measured USB draw. Devices whose cost is unknown contribute NOTHING
-    /// rather than an assumed value — the ledger may not carry a number nobody
-    /// measured.
+    /// Total attributable USB draw, including remembered figures.
+    ///
+    /// Devices with `.unknown` provenance contribute nothing — the ledger may
+    /// not carry a number nobody has ever measured.
     public var measuredWatts: Double {
         attached.compactMap(\.watts).reduce(0, +)
     }
 
-    /// True when something is attached whose cost was never observed, so the UI
-    /// can say the figure is a floor rather than a total.
+    /// True when something attached has never had a step observed, so the total
+    /// is a floor rather than a complete figure.
     public var hasUnmeasuredDevices: Bool {
-        attached.contains { !$0.isMeasured }
+        attached.contains { $0.provenance == .unknown }
+    }
+
+    /// True when any contributing figure is remembered rather than measured now.
+    public var hasRememberedDevices: Bool {
+        attached.contains { $0.provenance == .remembered }
     }
 
     // ── Enumeration ─────────────────────────────────────────────────────────
@@ -116,25 +164,66 @@ public final class USBPowerTracker {
 
         lock.lock(); defer { lock.unlock() }
 
-        // Close out any pending attach whose settle window has elapsed.
+        // ── close out attaches whose settle window has elapsed ──────────────
         for (id, p) in pending where now.timeIntervalSince(p.at) >= settle {
             pending.removeValue(forKey: id)
-            guard present[id] != nil else { continue }   // unplugged again mid-window
+            guard present[id] != nil else { continue }        // unplugged mid-window
             let step = systemWatts - p.before
-            let credible = systemQuiet && step >= minimumStep && step <= maximumStep
-            devices[id] = Device(id: id, name: p.name, watts: credible ? step : nil)
+            if systemQuiet, step >= minimumStep, step <= maximumStep {
+                remember(p.name, step)
+                devices[id] = Device(id: id, name: p.name, watts: step, provenance: .measured)
+            } else if let known = remembered[p.name] {
+                devices[id] = Device(id: id, name: p.name, watts: known, provenance: .remembered)
+            } else {
+                devices[id] = Device(id: id, name: p.name, watts: nil, provenance: .unknown)
+            }
         }
 
-        // New arrivals: record the pre-attach level and wait for it to settle.
+        // ── close out detaches: the step DOWN is what the device HAD cost ───
+        //
+        // This is what rescues the common case. A device already attached when
+        // the app launched produces no attach step, so its cost would otherwise
+        // be permanently unknowable — and a phone is usually already charging by
+        // the time anyone opens a battery monitor. Unplugging it finally supplies
+        // the step, and remembering that means the NEXT time it appears the app
+        // can say what it costs immediately.
+        var stillDeparting: [(name: String, before: Double, at: Date)] = []
+        for d in departing {
+            guard now.timeIntervalSince(d.at) >= settle else { stillDeparting.append(d); continue }
+            let drop = d.before - systemWatts        // power fell when it left
+            if systemQuiet, drop >= minimumStep, drop <= maximumStep {
+                remember(d.name, drop)
+            }
+        }
+        departing = stillDeparting
+
+        // ── new arrivals ───────────────────────────────────────────────────
         for (id, name) in present where devices[id] == nil && pending[id] == nil {
-            // `systemWatts` here is the level BEFORE this device ramps up, which
-            // is what makes the step meaningful. A device that appears in the same
-            // tick it draws power would bias the baseline upward and under-report.
             pending[id] = (name, systemWatts, now)
         }
 
-        // Departures.
-        for id in devices.keys where present[id] == nil { devices.removeValue(forKey: id) }
+        // ── departures ─────────────────────────────────────────────────────
+        for (id, dev) in devices where present[id] == nil {
+            devices.removeValue(forKey: id)
+            departing.append((dev.name, systemWatts, now))
+        }
         for id in pending.keys where present[id] == nil { pending.removeValue(forKey: id) }
+    }
+
+    /// Adopt devices that were already attached when the tracker started, using
+    /// whatever was remembered about them. Called once, before the first update.
+    ///
+    /// Without this the first session after a launch shows nothing for a phone
+    /// that is plainly charging, which reads as a broken feature rather than an
+    /// honest absence of evidence.
+    public func adoptExisting() {
+        lock.lock(); defer { lock.unlock() }
+        for (id, name) in Self.enumerate() where devices[id] == nil {
+            if let known = remembered[name] {
+                devices[id] = Device(id: id, name: name, watts: known, provenance: .remembered)
+            } else {
+                devices[id] = Device(id: id, name: name, watts: nil, provenance: .unknown)
+            }
+        }
     }
 }

@@ -69,7 +69,7 @@ public final class MenuBarWidgetController: NSObject, NSMenuDelegate {
 
     static let historyCap = 60   // sparkline samples kept per metric
 
-    private let onClick: () -> Void
+    private let onClick: (MetricID?) -> Void
     private let defaults: UserDefaults
     private var storedConfigs: [WidgetConfig] = []
     /// Only the widgets that materialized — an item whose button failed to appear is
@@ -79,9 +79,14 @@ public final class MenuBarWidgetController: NSObject, NSMenuDelegate {
 
     public var configs: [WidgetConfig] { storedConfigs }
 
-    /// `onClick` is the integrator's "open the main window". `defaults` is injectable
-    /// for tests; production uses .standard.
-    public init(onClick: @escaping () -> Void, defaults: UserDefaults = .standard) {
+    /// `onClick` is the integrator's "open the main window", told WHICH widget was
+    /// clicked so it can open on the matching destination. The argument is the
+    /// clicked widget's metric, or nil when the click carries no destination (an
+    /// item whose config could not be resolved) — nil means "just open", never
+    /// "open on some default lens". Mapping metric → destination is deliberately
+    /// the integrator's job: this controller knows metrics, not navigation.
+    /// `defaults` is injectable for tests; production uses .standard.
+    public init(onClick: @escaping (MetricID?) -> Void, defaults: UserDefaults = .standard) {
         self.onClick = onClick
         self.defaults = defaults
         super.init()
@@ -159,13 +164,20 @@ public final class MenuBarWidgetController: NSObject, NSMenuDelegate {
     }
 
     /// Every widget opens the main window — the widgets ARE the app's front door.
+    /// The clicked widget's metric goes with the call, so the door opens onto what
+    /// the user just pointed at rather than wherever the window was left.
     /// Right-click gets the menu instead, because with no Dock tile there is
     /// nowhere else to quit from.
     @objc private func widgetClicked(_ sender: NSStatusBarButton) {
+        let metric = metricID(of: sender)
         if NSApp.currentEvent?.type == .rightMouseUp {
             let menu = NSMenu()
-            menu.addItem(withTitle: "Open BetterStats",
-                         action: #selector(openFromMenu), keyEquivalent: "").target = self
+            let open = menu.addItem(withTitle: "Open BetterStats",
+                                    action: #selector(openFromMenu), keyEquivalent: "")
+            open.target = self
+            // The menu outlives this call, so the identity of the widget it was
+            // raised from has to travel with the item — by then `sender` is gone.
+            open.representedObject = metric
             menu.addItem(.separator())
             menu.addItem(withTitle: "Quit BetterStats",
                          action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
@@ -178,10 +190,20 @@ public final class MenuBarWidgetController: NSObject, NSMenuDelegate {
                        in: sender)
             return
         }
-        onClick()
+        onClick(metric)
     }
 
-    @objc private func openFromMenu() { onClick() }
+    /// Which widget a button belongs to. Matched by object identity, not by
+    /// metric: the same metric may legitimately be bound to two widgets (a value
+    /// and a sparkline, say), and both must resolve to their own entry.
+    private func metricID(of button: NSStatusBarButton) -> MetricID? {
+        items.first { $0.item.button === button }
+            .map { MetricID(rawValue: $0.config.metricID) }
+    }
+
+    @objc private func openFromMenu(_ sender: NSMenuItem) {
+        onClick(sender.representedObject as? MetricID)
+    }
 
     /// What each widget last drew, so an unchanged value costs nothing.
     ///
