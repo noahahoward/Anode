@@ -67,6 +67,26 @@ public enum Sensors {
         public let readings: [SensorReading]  // classified AND plausible
         public let fans: [FanInfo]
         public let rejected: [(key: String, value: Double)]  // classified but implausible
+
+        public var temperatures: [SensorReading] { readings.filter { $0.kind == .temperature } }
+
+        /// Average across CPU core sensors (`Tp*` performance + `Te*` efficiency
+        /// families only). nil when no CPU-family key exists or every reading
+        /// failed the sanity filter.
+        public var cpuTemperature: Double? { mean(prefixes: ["Tp", "Te"]) }
+
+        /// Average across the `Tg*` GPU cluster sensors.
+        public var gpuTemperature: Double? { mean(prefixes: ["Tg"]) }
+
+        public var hottest: SensorReading? { temperatures.max { $0.value < $1.value } }
+
+        private func mean(prefixes: [String]) -> Double? {
+            let vals = temperatures
+                .filter { r in prefixes.contains(where: { r.key.hasPrefix($0) }) }
+                .map(\.value)
+            guard !vals.isEmpty else { return nil }
+            return vals.reduce(0, +) / Double(vals.count)
+        }
     }
 
     // ── Public API ──────────────────────────────────────────────────────────
@@ -77,39 +97,33 @@ public enum Sensors {
     /// `SMC.scan()` remains the raw firehose for anyone who wants it.
     public static func all() -> [SensorReading] { store.snapshot().readings }
 
-    public static func temperatures() -> [SensorReading] {
-        store.snapshot().readings.filter { $0.kind == .temperature }
-    }
+    public static func temperatures() -> [SensorReading] { store.snapshot().temperatures }
 
     public static func fans() -> [FanInfo] { store.snapshot().fans }
 
-    public static func hottest() -> SensorReading? {
-        temperatures().max { $0.value < $1.value }
-    }
+    public static func hottest() -> SensorReading? { store.snapshot().hottest }
 
-    /// Average across CPU core sensors (`Tp*` performance + `Te*` efficiency
-    /// families only) — the number worth putting in a menu bar widget. nil when
-    /// no CPU-family key exists or every reading failed the sanity filter.
-    public static func cpuTemperature() -> Double? {
-        mean(prefixes: ["Tp", "Te"])
-    }
+    /// The number worth putting in a menu bar widget.
+    ///
+    /// EACH of these convenience accessors performs a FULL SMC SWEEP — there is
+    /// no cache under `snapshot()`, it re-reads every classified key and every
+    /// fan on every call. Measured on this machine: 88 ms wall / 9.1 ms CPU per
+    /// sweep, ~540 IOKit round trips.
+    ///
+    /// So asking for three of these is three sweeps: 264 ms / 28 ms CPU, which
+    /// is what `SystemMetrics` was doing every 5 s whenever a sensor widget was
+    /// bound — 0.56% of one core to read the same keys three times. Anything
+    /// wanting more than one figure must take `inventory()` ONCE and read the
+    /// properties off it; these exist for the single-value case only.
+    public static func cpuTemperature() -> Double? { store.snapshot().cpuTemperature }
 
-    /// Average across the `Tg*` GPU cluster sensors.
-    public static func gpuTemperature() -> Double? {
-        mean(prefixes: ["Tg"])
-    }
+    /// Average across the `Tg*` GPU cluster sensors. Same sweep cost as above.
+    public static func gpuTemperature() -> Double? { store.snapshot().gpuTemperature }
 
     /// Full snapshot with counts and rejects — what the CLI and any diagnostics
-    /// view should print.
+    /// view should print, and what any caller needing two or more figures should
+    /// use so it pays for one sweep instead of several.
     public static func inventory() -> Inventory { store.snapshot() }
-
-    private static func mean(prefixes: [String]) -> Double? {
-        let vals = temperatures()
-            .filter { r in prefixes.contains(where: { r.key.hasPrefix($0) }) }
-            .map(\.value)
-        guard !vals.isEmpty else { return nil }
-        return vals.reduce(0, +) / Double(vals.count)
-    }
 
     // ── Naming — labels only for families with real community consensus ─────
     //

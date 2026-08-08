@@ -179,4 +179,88 @@ final class SystemAttributionTests: XCTestCase {
         XCTAssertTrue(rows.allSatisfy { $0.isModeled },
                       "an apportioned row must never present as measured")
     }
+
+    // ── The living filter, and how it deleted the biggest consumer ──────────
+    //
+    // The filter exists so a quit app cannot draw present-tense power from an
+    // hour-old rollup. It was built on `proc_name`, which EPERMs for processes
+    // owned by another user, so it saw 340 of ~700 processes and judged every
+    // root daemon dead. Measured consequence: WindowServer, with 6,295 ms of CPU
+    // in the hour — 40x the largest surviving row — was struck from the ledger
+    // and its measured watts redistributed across trivial user daemons. That is
+    // how a Batteries widget which used 17 ms in an hour reached the top of the
+    // battery list.
+    //
+    // Names now come from `sysctl KERN_PROC_ALL`, which needs no privilege and
+    // returned 513 processes on the same machine. The catch is `p_comm`, which
+    // is truncated to 16 characters, so matching must be prefix-aware.
+
+    func testALongNamedCoalitionSurvivesATruncatedProcessName() {
+        // What the kernel actually reports for this process.
+        let running: Set<String> = ["batteriesavocado"]
+        XCTAssertTrue(ProcessSampler.nameMatches("BatteriesAvocadoWidgetExtension", in: running))
+    }
+
+    func testAShortNameStillRequiresAnExactMatch() {
+        // `secd` must not be matched alive by `secdiagnosticd` running: only
+        // names long enough to have BEEN truncated may match as a prefix.
+        XCTAssertFalse(ProcessSampler.nameMatches("secd", in: ["secdiagnosticd"]))
+        XCTAssertTrue(ProcessSampler.nameMatches("secd", in: ["secd"]))
+    }
+
+    func testMatchingIsCaseInsensitiveBothWays() {
+        XCTAssertTrue(ProcessSampler.nameMatches("WindowServer", in: ["windowserver"]))
+    }
+
+    /// The regression itself, at the level that matters: a live daemon with the
+    /// dominant CPU time must keep its share instead of donating it.
+    func testALiveDaemonIsNotStruckFromTheLedger() {
+        let all = padded([usage("com.apple.WindowServer", cpu: 6295),
+                          usage("com.apple.Batteries.BatteriesAvocadoWidgetExtension", cpu: 17)])
+        let living: Set<String> = ["windowserver", "batteriesavocado"]
+
+        let rows = SystemAttribution.apportion(
+            watts: 10, among: all, by: .cpuTime,
+            excluding: .none, living: living, scale: scale)
+
+        let ws = rows.first { $0.name == "WindowServer" }
+        XCTAssertNotNil(ws, "the largest consumer must not be filtered out")
+        XCTAssertEqual(ws?.watts ?? 0, 10 * 6295.0 / 6312.0, accuracy: 1e-6)
+        // And the trivial one keeps only what its 17 ms can justify.
+        let avo = rows.first { $0.name.hasPrefix("Batteries") }
+        XCTAssertLessThan(avo?.watts ?? 0, 0.05)
+    }
+
+    /// Without the daemon present, the trivial row inherits everything — this is
+    /// the exact shape of the bug, pinned so it cannot come back.
+    func testStrikingTheDaemonHandsItsPowerToTheTrivialRow() {
+        let all = padded([usage("com.apple.WindowServer", cpu: 6295),
+                          usage("com.apple.Batteries.BatteriesAvocadoWidgetExtension", cpu: 17)])
+        let rows = SystemAttribution.apportion(
+            watts: 10, among: all, by: .cpuTime,
+            excluding: .none, living: ["batteriesavocado"], scale: scale)
+
+        XCTAssertEqual(rows.count, 1)
+        XCTAssertEqual(rows[0].watts, 10, accuracy: 1e-9,
+                       "17 ms of CPU taking the entire measured bucket is the bug")
+    }
+
+    /// An empty set means the caller could not enumerate at all, and the filter
+    /// must be skipped rather than deleting every row.
+    func testAnEmptyLivingSetDisablesTheFilter() {
+        let all = padded([usage("com.apple.WindowServer", cpu: 6295)])
+        let rows = SystemAttribution.apportion(
+            watts: 10, among: all, by: .cpuTime,
+            excluding: .none, living: [], scale: scale)
+        XCTAssertEqual(rows.count, 1)
+    }
+
+    /// The enumeration itself, against the live machine. Root-owned daemons are
+    /// the whole population this had to reach.
+    func testEnumerationSeesProcessesThisUserDoesNotOwn() throws {
+        let running = Set(ProcessSampler.runningNames().map { $0.lowercased() })
+        try XCTSkipIf(running.isEmpty, "cannot enumerate processes here")
+        XCTAssertTrue(running.contains("windowserver"),
+                      "root-owned daemons must be visible; got \(running.count) names")
+    }
 }

@@ -91,6 +91,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
     var ascending = false
     var timer: Timer?
 
+    /// Every sample runs here and nowhere else.
+    ///
+    /// This used to be `DispatchQueue.global()`, which is CONCURRENT: a tick that
+    /// ran long overlapped the next one, and the two then mutated the same
+    /// unprotected state — the monitor's rail windows and paired sleep-gap
+    /// timestamps, `CPUUsage.previous`, `NetworkThroughput.previous`,
+    /// `lastFullTick`, and the SMC wrapper, which takes no lock at all. Concurrent
+    /// Dictionary mutation is a crash, not a wrong number.
+    ///
+    /// `.utility` is the same QoS the concurrent dispatch asked for, so the change
+    /// is to the ordering guarantee and not to the priority.
+    let sampling = DispatchQueue(label: "com.betterstats.sampling", qos: .utility)
+    /// Admits one tick at a time and counts the rest. The serial queue alone would
+    /// let a late tick queue up and run immediately behind the slow one; the gate
+    /// drops it instead, because a tick that could not run did not happen.
+    let sampleGate = SamplingGate()
+
     /// In-memory graph history. The store owns durable history; this is just the
     /// last hour at tick resolution for drawing.
     /// Chosen range in seconds. Live mode (1 h) keeps the in-memory strip chart;
@@ -268,6 +285,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         timer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
             self?.refresh()
         }
+        // Let the OS coalesce this wakeup with whatever else it was going to wake
+        // for. Idle cost here is dominated by waking the CPU at all rather than by
+        // the work done once awake — the whole tick measures 0.19% of one core —
+        // and a timer with no tolerance is one the kernel must honour to the
+        // millisecond, alone.
+        //
+        // 10%: at the 2 s visible cadence that is 200 ms of slack, which is
+        // invisible in a strip chart plotted against real timestamps, and the
+        // monitor differences actual elapsed time rather than assuming the nominal
+        // interval, so a late tick costs accuracy nothing. Much more than this and
+        // the hidden 8 s cadence starts to wander visibly in the menu bar.
+        timer?.tolerance = interval * 0.1
     }
 
     func refresh() {
@@ -276,7 +305,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         let visible = main.window.isVisible
         // Match the cadence to who is actually reading.
         restartTimer(hidden: !visible)
-        DispatchQueue.global(qos: .utility).async { [weak self] in
+
+        // One tick at a time, on one queue. A tick arriving while the previous one
+        // is still running is dropped, not queued and not run beside it.
+        sampleGate.submit(on: sampling) { [weak self] in
             guard let self else { return }
             let wantFull = visible
                 || Date().timeIntervalSince(self.lastFullTick) >= self.backgroundFullInterval
@@ -344,16 +376,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
                 }
             }
         }
+
+        // Published every tick, admitted or dropped, so what a widget shows is
+        // this tick's count. A dropped tick is a span of time the app measured
+        // nothing over; the one thing it must never be is silent.
+        MetricRegistry.shared.update(droppedSamples: sampleGate.dropped)
     }
 
     func apply(_ s: PowerMonitor.Snapshot) {
-        lastSnapshot = s
-
         // Feed the registry first so the widgets and any UI reading metrics see
-        // this tick's values rather than the previous one.
+        // this tick's values rather than the previous one. The whole-machine
+        // figures behind these — total, charge, time left — are measured on every
+        // tick, light or full.
         MetricRegistry.shared.update(with: s)
         MetricRegistry.shared.update(displayedRate: Self.reconciledRate(s, drain.estimate()))
         widgets.refresh()
+
+        // Everything below reads what only a full sweep produces: the app rows,
+        // the ledger's per-bucket split, the inspector. Handed a light sample the
+        // table would empty out — "no app is using any power" — and the ledger
+        // would draw one full-width unattributed bar. A visible tick is always a
+        // full one (see `refresh`), so this cannot fire today; it is here so that
+        // stops being a fact you have to reconstruct from two functions away.
+        guard s.isFullSample else { return }
+        lastSnapshot = s
 
         let showDaemons = Settings.shared.showDaemons
         let floor = Settings.shared.minimumDisplayPercentPerHour
@@ -714,6 +760,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         // this is unreachable — stated anyway so the intent is not inferred from
         // the absence of a case.
         case .groupPlaceholder: return nil
+        // Sampler health is not a reading of the machine, so no lens explains it
+        // and there is nowhere to send the click.
+        case .samplerDrops: return nil
         default:
             // The whole battery family — drain, charge, time left, GPU drain,
             // unattributed share, coverage, and any added later — is answered by
@@ -945,16 +994,39 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
     /// Widths only ever GROW within a lens. Shrinking them as values change would
     /// make the whole table twitch sideways every two seconds while a number drops a
     /// digit, which is far more distracting than a few points of slack.
+    /// Header font for measurement. Hoisted out of the loop it used to sit in,
+    /// where it was reconstructed once per column per tick.
+    private static let headerFont = NSFont.systemFont(ofSize: 11, weight: .medium)
+
+    /// Widen columns to fit, measuring only the rows actually on screen.
+    ///
+    /// This measured EVERY row for EVERY column on every tick — ~240 text
+    /// measurements a couple of times a second for a table where the off-screen
+    /// rows, by definition, nobody is looking at.
+    ///
+    /// Measuring only the visible rows is safe here precisely because widths
+    /// only ever GROW (the comparison below never shrinks a column). A wider row
+    /// scrolled into view widens its column at that point and it stays widened,
+    /// so the layout converges to the same place the exhaustive version reached
+    /// immediately — it just gets there by looking at what it was shown.
     func autosizeColumns() {
+        let visible = main.table.rows(in: main.table.visibleRect)
+        // An empty range means the table has not been laid out yet (zero-height
+        // visibleRect on first load). Fall back to the full set for that one
+        // pass, or the columns would size to their headers and stay there.
+        let range: Range<Int> = visible.length > 0
+            ? visible.lowerBound..<min(visible.upperBound, rows.count)
+            : 0..<rows.count
+
         for column in main.table.tableColumns {
             let id = column.identifier.rawValue
             guard id != "spacer" else { continue }
 
-            let headerFont = NSFont.systemFont(ofSize: 11, weight: .medium)
             var widest = (column.title as NSString)
-                .size(withAttributes: [.font: headerFont]).width
+                .size(withAttributes: [.font: Self.headerFont]).width
 
-            for r in rows {
+            for i in range where i < rows.count {
+                let r = rows[i]
                 let (text, _) = cellText(r, id)
                 let w = (text as NSString)
                     .size(withAttributes: [.font: font(for: id, isApp: r.isApp)]).width
@@ -966,35 +1038,69 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         }
     }
 
+    /// Cells are REUSED, not rebuilt.
+    ///
+    /// This used to allocate an NSTextField, an NSTableCellView and three
+    /// constraints for every cell it was asked for — and it is asked for every
+    /// visible cell after every reload, which is every couple of seconds while
+    /// the window is open. At ~40 rows across 6 columns that is ~240 views and
+    /// ~720 constraints built and thrown away per tick, plus the Auto Layout
+    /// solve for all of them. An app whose premise is not costing what it
+    /// measures cannot spend that on redrawing a table whose text is all that
+    /// changed.
+    ///
+    /// The reuse key is the COLUMN identifier, which is what makes this safe:
+    /// everything set at construction time (alignment, leading inset) depends
+    /// only on the column, so a recycled cell can never arrive carrying another
+    /// column's geometry. Everything that depends on the ROW — string, font,
+    /// colour — is reassigned on every pass below, including in the branch that
+    /// just created the cell, so there is exactly one place that decides how a
+    /// cell looks and no path that skips it.
     func tableView(_ tv: NSTableView, viewFor col: NSTableColumn?, row: Int) -> NSView? {
-        guard row < rows.count, let id = col?.identifier.rawValue else { return nil }
-        if id == "spacer" { return NSView() }
+        guard row < rows.count, let col else { return nil }
+        let id = col.identifier.rawValue
+        if id == "spacer" {
+            if let v = tv.makeView(withIdentifier: col.identifier, owner: self) { return v }
+            let v = NSView()
+            v.identifier = col.identifier
+            return v
+        }
         let r = rows[row]
         let (text, dim) = cellText(r, id)
 
-        let label = NSTextField(labelWithString: text)
+        let cell: NSTableCellView
+        if let reused = tv.makeView(withIdentifier: col.identifier, owner: self)
+            as? NSTableCellView {
+            cell = reused
+        } else {
+            cell = NSTableCellView()
+            cell.identifier = col.identifier
+            let label = NSTextField(labelWithString: "")
+            label.alignment = id == "name" ? .left : .right
+            label.lineBreakMode = .byTruncatingTail
+            label.translatesAutoresizingMaskIntoConstraints = false
+            cell.addSubview(label)
+            cell.textField = label
+            // A bare NSTextField is pinned to the top of its cell, so every row
+            // read as sitting high against its own separator. Centring it is the
+            // fix.
+            NSLayoutConstraint.activate([
+                label.leadingAnchor.constraint(equalTo: cell.leadingAnchor,
+                                               constant: id == "name" ? 10 : 4),
+                label.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -4),
+                label.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
+            ])
+        }
+
+        guard let label = cell.textField else { return cell }
+        label.stringValue = text
         label.font = font(for: id, isApp: r.isApp)
-        label.alignment = id == "name" ? .left : .right
-        label.lineBreakMode = .byTruncatingTail
         // System rows take the same colour the ledger bar gives its "system
         // processes" segment, so the link is visual rather than something the
         // user has to be told: these rows ARE that segment, itemised. It also
         // keeps them from reading as ordinary measured rows, which they are not.
         label.textColor = r.isModeled && id == "name" ? Palette.accentDim
                                                       : (dim ? Palette.dim : Palette.text)
-        label.translatesAutoresizingMaskIntoConstraints = false
-
-        // A bare NSTextField is pinned to the top of its cell, so every row read as
-        // sitting high against its own separator. Centring it is the fix.
-        let cell = NSTableCellView()
-        cell.addSubview(label)
-        cell.textField = label
-        NSLayoutConstraint.activate([
-            label.leadingAnchor.constraint(equalTo: cell.leadingAnchor,
-                                           constant: id == "name" ? 10 : 4),
-            label.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -4),
-            label.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
-        ])
         return cell
     }
 }

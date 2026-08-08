@@ -412,9 +412,17 @@ public final class SystemMetrics {
             if let last = lastSensors, Date().timeIntervalSince(last.at) < sensorInterval {
                 cpuTemp = last.cpu; gpuTemp = last.gpu; fans = last.fans
             } else {
-                cpuTemp = Sensors.cpuTemperature()
-                gpuTemp = Sensors.gpuTemperature()
-                fans = Sensors.fans()
+                // ONE sweep, three figures. These used to be three separate
+                // calls, and each one re-reads every classified SMC key and
+                // every fan — there is no cache beneath them. Measured: 88 ms
+                // wall / 9.1 ms CPU per sweep, so three cost 264 ms / 28 ms to
+                // read the same keys three times. At this 5 s cadence that was
+                // 0.56% of one core, larger than every other window-open cost
+                // in the app combined.
+                let inv = Sensors.inventory()
+                cpuTemp = inv.cpuTemperature
+                gpuTemp = inv.gpuTemperature
+                fans = inv.fans
                 lastSensors = (cpuTemp, gpuTemp, fans, Date())
             }
         }
@@ -440,9 +448,17 @@ public final class SystemMetrics {
             if let last = lastSensors, Date().timeIntervalSince(last.at) < sensorInterval {
                 cpuTemp = last.cpu; gpuTemp = last.gpu; fans = last.fans
             } else {
-                cpuTemp = Sensors.cpuTemperature()
-                gpuTemp = Sensors.gpuTemperature()
-                fans = Sensors.fans()
+                // ONE sweep, three figures. These used to be three separate
+                // calls, and each one re-reads every classified SMC key and
+                // every fan — there is no cache beneath them. Measured: 88 ms
+                // wall / 9.1 ms CPU per sweep, so three cost 264 ms / 28 ms to
+                // read the same keys three times. At this 5 s cadence that was
+                // 0.56% of one core, larger than every other window-open cost
+                // in the app combined.
+                let inv = Sensors.inventory()
+                cpuTemp = inv.cpuTemperature
+                gpuTemp = inv.gpuTemperature
+                fans = inv.fans
                 lastSensors = (cpuTemp, gpuTemp, fans, Date())
             }
         }
