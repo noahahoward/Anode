@@ -86,6 +86,9 @@ public final class PowerMonitor {
         /// is carved OUT of the platform bucket rather than added to the total,
         /// so the ledger still sums to what was measured.
         public let display_W: Double?
+        /// True when `display_W` came from the backlight rail rather than the
+        /// brightness curve. The UI must not call a modeled figure measured.
+        public let displayIsMeasured: Bool
         public var display_pctHr: Double? { display_W.map(pctHr) }
 
         public var systemProcesses_pctHr: Double? { systemProcesses_W.map(pctHr) }
@@ -432,11 +435,27 @@ public final class PowerMonitor {
         // left after CPU and GPU. Without that clamp a bright screen on a busy
         // machine could claim more than the measurement allows, and the platform
         // bucket would hit its own zero floor while the bar overflowed.
+        // MEASURED first. PDBR is the backlight's own rail: it tracked a
+        // brightness sweep 0.204 -> 8.197 W and its full scale matches the
+        // independently fitted span to within noise. Preferring it also captures
+        // local dimming — this panel's backlight power depends on what is on
+        // screen, which no brightness curve can know.
+        //
+        // The curve is the fallback for hardware whose rail cannot be read, and
+        // stays labelled modeled there.
+        let displayMeasured = DisplayRail.watts(smc)
         let displayW: Double? = {
-            guard let b = DisplayBrightness.current() else { return nil }
-            let modeled = displayModel.watts(brightness: b)
+            let claim: Double?
+            if let m = displayMeasured {
+                claim = m
+            } else if let b = DisplayBrightness.current() {
+                claim = displayModel.watts(brightness: b)
+            } else {
+                claim = nil
+            }
+            guard let c = claim else { return nil }
             let headroom = max(0, smoothed - (smoothedCPURail ?? 0) - (gpu ?? 0))
-            return min(modeled, headroom)
+            return min(c, headroom)
         }()
 
         return Snapshot(
@@ -459,6 +478,7 @@ public final class PowerMonitor {
             // one and not the other would make the buckets fail to sum.
             cpuRail_W: smoothedCPURail,
             display_W: displayW,
+            displayIsMeasured: displayMeasured != nil,
             baseline_W: calibrator.baseline,
             didJump: smoother.didJump,
             residual_W: max(0, smoothed - attributed - (gpu ?? 0)),

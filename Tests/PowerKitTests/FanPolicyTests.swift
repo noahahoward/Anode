@@ -104,17 +104,20 @@ final class DisplayPowerModelTests: XCTestCase {
     func testMinimumBrightnessReportsNothing() {
         XCTAssertEqual(m.watts(brightness: 0), 0)
         XCTAssertEqual(m.watts(brightness: 0.02), 0)
+        // The measured dead zone runs to 20%, not 2% — the correction that
+        // stopped the model inventing ~0.8 W at ordinary brightness.
+        XCTAssertEqual(m.watts(brightness: 0.19), 0)
     }
 
     func testFullBrightnessMatchesTheMeasuredSpan() {
-        XCTAssertEqual(m.watts(brightness: 1.0), 8.45, accuracy: 0.01)
+        XCTAssertEqual(m.watts(brightness: 1.0), 8.19, accuracy: 0.01)
     }
 
     /// The sweep barely moved between 2% and 25% and then climbed steeply. A
     /// straight line would report ~2 W at 25%, which the measurement contradicts.
     func testLowBrightnessIsNotLinear() {
         let quarter = m.watts(brightness: 0.25)
-        XCTAssertLessThan(quarter, 8.45 * 0.25,
+        XCTAssertLessThan(quarter, 8.19 * 0.25,
                           "a linear model over-reports at the settings people use")
         XCTAssertLessThan(quarter, 1.2)
     }
@@ -130,7 +133,7 @@ final class DisplayPowerModelTests: XCTestCase {
 
     func testOutOfRangeAndNaNAreHandled() {
         XCTAssertEqual(m.watts(brightness: -5), 0)
-        XCTAssertEqual(m.watts(brightness: 42), 8.45, accuracy: 0.01)
+        XCTAssertEqual(m.watts(brightness: 42), 8.19, accuracy: 0.01)
         XCTAssertEqual(m.watts(brightness: .nan), 0)
     }
 

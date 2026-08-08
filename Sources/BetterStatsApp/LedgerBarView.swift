@@ -19,8 +19,11 @@ final class LedgerBarView: NSView {
         /// Real process energy, just anonymous — a different claim from "unknown".
         let systemProcesses_pctHr: Double
         let gpu_pctHr: Double
-        /// Modeled from screen brightness, carved out of the platform bucket.
+        /// Carved out of the platform bucket. MEASURED when the backlight rail
+        /// is readable, modeled from brightness otherwise — and the label says
+        /// which, because this app does not call an estimate a measurement.
         let display_pctHr: Double
+        let displayIsMeasured: Bool
         /// Belongs to no process: display, radios, storage, kernel.
         let unattributed_pctHr: Double
         let total_pctHr: Double
@@ -278,7 +281,8 @@ final class LedgerBarView: NSView {
             let r3 = NSRect(x: x, y: 0, width: widths[3], height: barHeight)
             r3.fill()
             segmentRects.append((.display, r3))
-            drawLabel(String(format: "display %.1f", m.display_pctHr),
+            drawLabel(String(format: m.displayIsMeasured ? "display %.1f" : "display ~%.1f",
+                             m.display_pctHr),
                       in: r3, color: Palette.onAccent)
             x += widths[3]
         }
@@ -363,7 +367,7 @@ final class LedgerBarView: NSView {
         swatch({ r in
             Palette.warn.setFill()
             NSBezierPath(roundedRect: r, xRadius: 2, yRadius: 2).fill()
-        }, "display (est.)")
+        }, "display")
         swatch({ r in
             drawHatch(in: r)
             Palette.line.setStroke()
