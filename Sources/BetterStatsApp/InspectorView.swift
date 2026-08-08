@@ -218,6 +218,10 @@ final class InspectorView: NSView {
         var text = String(format: "%.0f%% of attributed", m.shareOfAttributed * 100)
         if let sm = m.shareOfMeasured {
             text += String(format: "   ·   %.1f%% of measured total", sm * 100)
+        } else {
+            // Say why the second figure is missing rather than dropping it. A lone
+            // "18% of attributed" reads as the whole story, which is the error above.
+            text += "   ·   measured total not available yet"
         }
         shares.stringValue = text
 
@@ -414,12 +418,31 @@ final class InspectorView: NSView {
         let procs = s.drains.filter { pids.contains($0.pid) }
             .sorted { $0.percentPerHour > $1.percentPerHour }
 
+        // Clamped: numerator and denominator are sampled from the same snapshot but
+        // are computed by different paths, and a race between them can put the ratio
+        // fractionally over 1. "104% of attributed" is not a finding, it is a rounding
+        // artefact printed as one.
+        let attributedShare = s.attributed_W > 0
+            ? min(1, max(0, app.watts / s.attributed_W))
+            : 0
+
+        // MEASURED has to mean measured: the battery gas gauge once a 60 s batch has
+        // published, else gain-corrected SMC PSTR. Never `smoothed_W` — that is the
+        // scaled, smoothed display ESTIMATE, and dividing by it under a label that
+        // says "of measured total" launders a model into a measurement. Nil when
+        // neither has landed yet, because "we have not measured the machine yet" is
+        // a different claim from any number we could print.
+        let measuredTotal_W = s.measured_W ?? s.smcTotal_W
+        let measuredShare = measuredTotal_W.flatMap { total -> Double? in
+            total > 0 ? min(1, max(0, app.watts / total)) : nil
+        }
+
         return Model(
             appName: app.name,
             bundlePath: app.identity.bundlePath,
             subtitle: app.identity.bundleID ?? "\(app.processCount) process\(app.processCount == 1 ? "" : "es")",
-            shareOfAttributed: s.attributed_W > 0 ? app.watts / s.attributed_W : 0,
-            shareOfMeasured: s.smoothed_W > 0 ? app.watts / s.smoothed_W : nil,
+            shareOfAttributed: attributedShare,
+            shareOfMeasured: measuredShare,
             rows: procs.map {
                 Row(name: $0.name, pid: $0.pid,
                     value: $0.percentPerHour < 0.01
