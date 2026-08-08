@@ -350,7 +350,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
             .filter { row in
                 if row.isApp { return true }
                 switch self.lens {
-                case .cpu:    return row.cpuPercent >= 0.05
+                // 2.0, not 0.05. The old floor sat on a value that was 41.667x
+                // too small, so it was really admitting anything above 2.08% of
+                // one core. Keeping 0.05 after the unit fix would admit every
+                // process that executed at all and the lens would stop filtering.
+                // This preserves the behaviour the floor actually had.
+                case .cpu:    return row.cpuPercent >= 2.0
                 case .memory: return row.memoryBytes > 0
                 case .disk:   return row.diskBytesPerSec >= 1
                 default:      return row.percentPerHour >= floor
@@ -793,8 +798,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
             // Percent of one core, Activity Monitor's convention: a busy 4-thread
             // process reads 400%.
             guard let a = r.app else { return ("—", true) }
-            return (a.cpuPercent < 0.05 ? "—" : String(format: "%.1f%%", a.cpuPercent),
-                    a.cpuPercent < 0.05)
+            // Once a row is shown its number is shown down to a tenth of a
+            // percent; the 2.0 gate above decides membership, this only decides
+            // whether a value is meaningful enough to print.
+            return (a.cpuPercent < 0.1 ? "—" : String(format: "%.1f%%", a.cpuPercent),
+                    a.cpuPercent < 0.1)
         case "mem":
             guard let a = r.app else { return ("—", true) }
             return (a.memoryBytes == 0 ? "—" : MetricUnit.bytes.format(Double(a.memoryBytes)),

@@ -48,6 +48,7 @@ public final class DrainTracker {
         let energy_nJ: UInt64
         /// user + system, nanoseconds. Same rolling treatment as energy: CPU time
         /// is also cumulative, and also updates irregularly.
+        /// Mach absolute time units, NOT nanoseconds. See MachTime.
         let cpu_ns: UInt64
         let diskBytes: UInt64
     }
@@ -119,7 +120,9 @@ public final class DrainTracker {
             let watts = joules / dt
             // Percent of ONE core-second per wall-second, matching Activity Monitor:
             // a fully busy four-thread process reads 400%, not 100%.
-            let cpuPct = Double(newest.cpu_ns &- oldest.cpu_ns) / 1e9 / dt * 100
+            // MachTime, not /1e9: these are mach absolute time units, not
+            // nanoseconds, and the difference is a factor of 41.667.
+            let cpuPct = MachTime.corePercent(units: newest.cpu_ns &- oldest.cpu_ns, over: dt)
             let diskRate = Double(newest.diskBytes &- oldest.diskBytes) / dt
 
             out.append(ProcessDrain(

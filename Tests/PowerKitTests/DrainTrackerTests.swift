@@ -8,11 +8,20 @@ final class DrainTrackerTests: XCTestCase {
         fullChargeCapacity_mAh: 6197, designCapacity_mAh: 6249,
         nominalVoltage_V: 11.58, isCalibrated: false)
 
+    /// `cpu` is given in NANOSECONDS for readability and converted to the mach
+    /// absolute time units the real field carries.
+    ///
+    /// These fixtures previously passed nanoseconds straight into a field that
+    /// holds mach units, which made the suite assert the very 41.667x error it
+    /// should have caught: a "100%" expectation was really encoding 2.4%. The
+    /// conversion belongs here so the tests state what they mean and still
+    /// exercise the real unit.
     private func proc(_ pid: pid_t, energy: UInt64, cpu: UInt64,
                       footprint: UInt64 = 0, disk: UInt64 = 0) -> ProcessEnergy {
-        ProcessEnergy(pid: pid, name: "p\(pid)", energy_nJ: energy, pEnergy_nJ: 0,
+        let units = UInt64((Double(cpu) / MachTime.nanosPerUnit).rounded())
+        return ProcessEnergy(pid: pid, name: "p\(pid)", energy_nJ: energy, pEnergy_nJ: 0,
                       cycles: 0, pCycles: 0, startAbsTime: 1, path: "/usr/bin/p\(pid)",
-                      userTime_ns: cpu, systemTime_ns: 0,
+                      userTime_ns: units, systemTime_ns: 0,
                       footprint: footprint, diskRead: disk, diskWritten: 0)
     }
 
