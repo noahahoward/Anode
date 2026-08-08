@@ -180,7 +180,28 @@ final class GlanceCardView: NSView {
         case .draining:
             // Prefer the observed-discharge rate: it is measured from charge actually
             // leaving the pack rather than inferred from power draw.
-            let rate = drain?.percentPerHour ?? s.smoothed_pctHr
+            // Cross-checked against measured power, not trusted blindly.
+            //
+            // The estimator infers drain from GAUGE MOVEMENT, and the gauge only
+            // publishes about once a minute. Unplugging wipes its history (rightly
+            // — charge going up is not drain), so for the first minute or two back
+            // on battery it has almost nothing to fit and can report a rate near
+            // zero. Observed live: the card said 0.4 %/hr and 200 hours while the
+            // menu bar, reading measured power, said 8 %/hr and 10 hours. Both
+            // were internally consistent; one was nonsense.
+            //
+            // Measured power is available every tick and cannot go stale that way,
+            // so it wins whenever the two disagree by more than a factor of two.
+            // The estimator is still preferred normally — it is slew-limited and
+            // reflects real discharge rather than instantaneous draw — but it does
+            // not get to outvote a measurement it contradicts.
+            let measuredRate = s.smoothed_pctHr
+            let rate: Double = {
+                guard let inferred = drain?.percentPerHour, inferred > 0 else { return measuredRate }
+                guard measuredRate > 0.05 else { return inferred }
+                let ratio = inferred / measuredRate
+                return (ratio < 0.5 || ratio > 2.0) ? measuredRate : inferred
+            }()
 
             // Time remaining is derived from THAT SAME rate, not read from the
             // estimator separately. The estimator's own timeRemaining is computed

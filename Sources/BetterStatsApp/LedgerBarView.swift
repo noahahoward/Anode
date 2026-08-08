@@ -164,7 +164,7 @@ final class LedgerBarView: NSView {
         segmentRects.first { $0.0 == segment }?.1
     }
 
-    fileprivate func share(of segment: Segment) -> Double {
+    func share(of segment: Segment) -> Double {
         guard let m = model else { return 0 }
         switch segment {
         case .apps: return m.apps_pctHr
@@ -299,8 +299,7 @@ final class LedgerBarView: NSView {
         // 4. memory and storage — own rails, measured.
         for (i, seg) in [(3, Segment.memory), (4, Segment.storage), (5, Segment.usb)] {
             guard widths[i] > 0 else { continue }
-            (seg == .memory ? Palette.blue : seg == .storage ? Palette.chargeLine : Palette.critical)
-                .withAlphaComponent(alpha(seg)).setFill()
+            Self.color(for: seg).withAlphaComponent(alpha(seg)).setFill()
             let r = NSRect(x: x, y: 0, width: widths[i], height: barHeight)
             r.fill()
             segmentRects.append((seg, r))
@@ -376,7 +375,34 @@ final class LedgerBarView: NSView {
             withAttributes: attrs)
     }
 
+    /// One place both the bar and its key read from, so a segment can never be
+    /// drawn in one colour and described in another.
+    static func color(for seg: Segment) -> NSColor {
+        switch seg {
+        case .apps:           return Palette.accent
+        case .systemProcesses: return Palette.accentDim
+        case .gpu:            return Palette.blue
+        case .memory:         return .systemPurple
+        case .storage:        return .systemTeal
+        case .usb:            return Palette.critical
+        case .display:        return Palette.warn
+        case .platform:       return Palette.line
+        }
+    }
+
     private func drawLegend(_ m: Model, y: CGFloat) {
+        func modelShare(_ seg: Segment) -> Double {
+            switch seg {
+            case .apps: return m.apps_pctHr
+            case .systemProcesses: return m.systemProcesses_pctHr
+            case .gpu: return m.gpu_pctHr
+            case .memory: return m.memory_pctHr
+            case .storage: return m.storage_pctHr
+            case .usb: return m.usb_pctHr
+            case .display: return m.display_pctHr
+            case .platform: return m.unattributed_pctHr
+            }
+        }
         var x: CGFloat = 0
         func swatch(_ draw: (NSRect) -> Void, _ label: String) {
             let box = NSRect(x: x, y: y + 4, width: 8, height: 8)
@@ -390,22 +416,17 @@ final class LedgerBarView: NSView {
             x += (label as NSString).size(withAttributes: attrs).width + 14
         }
 
-        swatch({ r in
-            Palette.accent.setFill()
-            NSBezierPath(roundedRect: r, xRadius: 2, yRadius: 2).fill()
-        }, "apps")
-        swatch({ r in
-            Palette.accentDim.setFill()
-            NSBezierPath(roundedRect: r, xRadius: 2, yRadius: 2).fill()
-        }, "system processes")
-        swatch({ r in
-            Palette.blue.setFill()
-            NSBezierPath(roundedRect: r, xRadius: 2, yRadius: 2).fill()
-        }, "GPU")
-        swatch({ r in
-            Palette.warn.setFill()
-            NSBezierPath(roundedRect: r, xRadius: 2, yRadius: 2).fill()
-        }, "display")
+        // Every solid segment gets a key. Segments the bar is not drawing are
+        // skipped rather than listed at zero — a key for a colour that is not on
+        // screen is as confusing as a colour with no key, which is the bug this
+        // replaced: memory, storage and USB were drawn and never explained.
+        for seg in [Segment.apps, .systemProcesses, .gpu, .memory, .storage, .usb, .display]
+        where modelShare(seg) > 0 {
+            swatch({ r in
+                Self.color(for: seg).setFill()
+                NSBezierPath(roundedRect: r, xRadius: 2, yRadius: 2).fill()
+            }, seg.title)
+        }
         swatch({ r in
             drawHatch(in: r)
             Palette.line.setStroke()
