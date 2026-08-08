@@ -58,6 +58,10 @@ swift build
 ./.build/debug/betterstats --smc          # SMC power sensor discovery
 ```
 
+Handing it to someone else to test: see [TESTING.md](TESTING.md). Short version —
+send the repo, not a `.app`, and expect a larger unattributed share on hardware
+this was not calibrated on.
+
 ## Requirements
 
 macOS 13+ (Apple Silicon), Xcode 26. The app is **not sandboxed** — App Sandbox denies

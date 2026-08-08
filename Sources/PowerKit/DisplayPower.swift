@@ -187,6 +187,26 @@ public enum DisplayBrightness {
 /// which is what separates them from a coincidence.
 public enum SubsystemRails {
 
+    /// Were these rails identified on the machine now running?
+    ///
+    /// Everything in this enum came from load experiments on one Mac: drive one
+    /// subsystem, watch which rails move, confirm with a negative control. That
+    /// is a strong method and it produces a result about ONE SoC's power tree.
+    ///
+    /// SMC keys are not a namespace anyone standardised. `P3F2` existing on
+    /// another Mac is not evidence it means memory there, and a key that exists
+    /// but means something else passes every plausibility check in `watts` —
+    /// finite, non-negative, under the cap — while putting watts under a
+    /// confidently wrong name. The failure is invisible, which is what makes it
+    /// worth gating rather than risking.
+    ///
+    /// Off this machine the subsystem segments are simply not produced, and that
+    /// power stays in the unattributed bucket where it is honestly labelled. A
+    /// smaller ledger that is true beats a fuller one that is decorated.
+    public static var isCalibratedHardware: Bool {
+        Hardware.model == DisplayPowerModel.calibratedModel
+    }
+
     /// `P3F2 + PZD1`. Memory — DRAM, its controller, or the fabric serving them.
     ///
     /// Found by a CPU-MATCHED contrast rather than idle-vs-load: ten threads of
@@ -198,7 +218,7 @@ public enum SubsystemRails {
     /// The pair calibrates to ~1.0 W per watt of measured residual, which is why
     /// it is used at face value. Six further rails show the same signature but
     /// double-count this pair, so they are diagnostics, not addends.
-    public static let memoryKeys = ["P3F2", "PZD1"]
+    public static var memoryKeys: [String] { isCalibratedHardware ? ["P3F2", "PZD1"] : [] }
 
     /// `PN00`. Storage — the SSD path.
     ///
@@ -213,7 +233,7 @@ public enum SubsystemRails {
     /// name almost nothing of the idle bucket. PN00 carries a ~0.52 W idle floor
     /// that is either genuine controller idle draw or a sensor offset; it
     /// quantises and moves, which argues for a live reading.
-    public static let storageKeys = ["PN00"]
+    public static var storageKeys: [String] { isCalibratedHardware ? ["PN00"] : [] }
 
     /// A watt of PPMC costs this much at the battery.
     ///
@@ -228,7 +248,15 @@ public enum SubsystemRails {
     /// conversion loss, not CPU. The memory pair calibrating at ~1.0 rather than
     /// ~1.27 argues mildly for the former. Revisit if a rail-derived quantity on
     /// AC shows the same factor.
-    public static let cpuRailToBattery = 1.27
+    ///
+    /// 1.0 off this machine — which is NOT a claim that the factor is 1.0 there,
+    /// it is the absence of a correction. Applying 1.27 to a different SoC's
+    /// package rail would inflate the CPU claim by 27% on no evidence, and since
+    /// the claim is subtracted from the platform bucket in the waterfall, the
+    /// error lands squarely in the unattributed figure this app exists to report
+    /// honestly. Under-claiming leaves watts in that bucket, correctly labelled
+    /// as not-yet-explained; over-claiming invents an explanation.
+    public static var cpuRailToBattery: Double { isCalibratedHardware ? 1.27 : 1.0 }
 
     /// Sum of a rail set, or nil if none of them read — absent rails must produce
     /// NO segment, never a zero one, because these keys are calibrated on one

@@ -176,4 +176,30 @@ final class DisplayModelHardwareGateTests: XCTestCase {
         // pass every other test, and gate nothing.
         XCTAssertEqual(DisplayPowerModel.calibratedModel, "Mac17,9")
     }
+
+    /// The subsystem rails were identified by load experiments on one SoC, and
+    /// an SMC key existing elsewhere is not evidence it means the same thing.
+    /// They follow the same gate as the display curve.
+    func testSubsystemRailsShareTheGate() {
+        XCTAssertEqual(SubsystemRails.isCalibratedHardware,
+                       Hardware.model == DisplayPowerModel.calibratedModel)
+        if SubsystemRails.isCalibratedHardware {
+            XCTAssertEqual(SubsystemRails.memoryKeys, ["P3F2", "PZD1"])
+            XCTAssertEqual(SubsystemRails.storageKeys, ["PN00"])
+            XCTAssertEqual(SubsystemRails.cpuRailToBattery, 1.27, accuracy: 1e-9)
+        } else {
+            XCTAssertTrue(SubsystemRails.memoryKeys.isEmpty)
+            XCTAssertTrue(SubsystemRails.storageKeys.isEmpty)
+            // 1.0 is the ABSENCE of a correction, not a measurement of one.
+            XCTAssertEqual(SubsystemRails.cpuRailToBattery, 1.0, accuracy: 1e-9)
+        }
+    }
+
+    /// An empty key set must yield nil, not 0 W. A zero segment is a claim that
+    /// the subsystem draws nothing; nil is the truth, which is that nobody
+    /// measured it on this hardware.
+    func testAnEmptyRailSetProducesNoSegment() {
+        XCTAssertNil(SubsystemRails.watts(nil, keys: []))
+        XCTAssertNil(SubsystemRails.watts(SMC(), keys: []))
+    }
 }
