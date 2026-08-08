@@ -59,6 +59,26 @@
             "target": "BetterStatsHelper",
             "configuration": "release",
             "preLaunchTask": "swift: Build Release BetterStatsHelper"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:better stats app}",
+            "name": "Debug probeapp",
+            "target": "probeapp",
+            "configuration": "debug",
+            "preLaunchTask": "swift: Build Debug probeapp"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:better stats app}",
+            "name": "Release probeapp",
+            "target": "probeapp",
+            "configuration": "release",
+            "preLaunchTask": "swift: Build Release probeapp"
         }
     ]
 }

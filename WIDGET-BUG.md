@@ -1,76 +1,66 @@
-# Menu bar widgets never appear — investigation notes
+# Menu bar widgets never appeared — RESOLVED
 
-## Symptom
+## Cause
 
-Status items are created and look healthy by every available check:
+**Accumulated LaunchServices registrations for the build directory path.**
 
-- `NSStatusBar.system.statusItem(...)` returns an item
-- `item.button` is non-nil, `button.frame` is correctly sized `(0,0,47,22)`
-- `button.image` is a valid template image of the right size
-- `item.isVisible == true`, `item.length == -1` (variableLength)
-- Accessibility reports the right number of menu bar items
+Rebuilding an ad-hoc-signed bundle repeatedly at one path piles up
+registrations for that path — 29 of them for `dev.noah.betterstats` by the time
+this was found. Past some point macOS stops laying out that app's
+`NSStatusItem`s. They are still created, still hold correctly sized buttons and
+valid template images, and still report `isVisible == true`; their status
+windows simply sit at `(0, 0, w, 0)` — zero height, never positioned — forever.
 
-**But the status item's WINDOW is `(0, 0, w, 0)` — zero height, never
-positioned.** A healthy item gets a real frame such as `(1397, 1130, 71, 39)`.
-So AppKit never lays the items out, and the menu bar shows nothing while
-every health check passes. That combination is what made this expensive to
-find: `count menu bar items` returning 6 says nothing at all.
+Nothing in the app is wrong. Nothing reports an error.
 
-## The one diagnostic that matters
+## Proof
 
-Do not trust counts, `isVisible`, or accessibility. Log this:
+Byte-identical bundles (`diff -r` clean), same signature, same binary, same
+minute:
+
+    /tmp/verify.app                      first item at (1399, 7)     renders
+    <build dir>/BetterStats.app          first item at (-1, 1157)    invisible
+
+`~/Applications/BetterStats.app` also renders. So does every fresh path tried.
+Only paths the build had churned were affected.
+
+## Fix
+
+`build-app.sh` now installs to `~/Applications` and prints which copy to
+launch. That path is stable because the build does not rewrite a bundle there
+on every run, which is also what a real user's install looks like.
+
+`lsregister -kill -r` would clear the database, but Apple removed `-kill`;
+`lsregister -u <path>` does not undo it either.
+
+## The diagnostic that matters
+
+Do not trust item counts, `isVisible`, image sizes, or accessibility — all of
+them reported healthy throughout. Log this:
 
     button.window?.frame
 
-Zero height means the item was never placed.
+Zero height means the item was never placed. That single line would have found
+this in minutes.
 
-## Excluded by controlled experiment
+## Ruled out along the way
 
-Each of these was tested and is NOT the cause:
+Each excluded by controlled experiment, not reasoning: activation policy
+(`.regular` vs `.accessory`), rebuilding items after a policy change,
+`autosaveName`, `isVisible`, launch method (`open` vs direct), menu bar
+overflow (a single widget failed too), `killall SystemUIServer`, any code
+regression (reproduced at the last known-good commit), the template image path,
+`NSPrincipalClass`, `LSUIElement`, `MenuBarWidgetController` itself (a plain
+`button.title` item created directly in `AppDelegate` failed identically),
+repeated rebuilds (instrumented: exactly one, on the main thread),
+`buildMenu()`, eagerly constructed pane views, construction timing within
+`applicationDidFinishLaunching`, SwiftPM vs `swiftc`, linking PowerKit,
+deployment target (tested at minos 13, 14, 26, 27, 28), spaces in the path, the
+Downloads folder, `com.apple.provenance`, and `/Applications` as an install
+location.
 
-- Activation policy (`.regular` vs `.accessory`) — fails with either, and a
-  minimal app using `.regular` **plus a real main window** works fine
-- Rebuilding items after a policy change
-- `autosaveName` position persistence — removing it changes nothing
-- `item.isVisible` — already true; forcing it changes nothing
-- Launch method — `open` and running the binary directly both fail
-- Menu bar overflow — a SINGLE widget is hidden too, and there is ~450 pt free
-- `killall SystemUIServer`
-- A code regression — reproduced at the last known-good commit
-- The template image path — a minimal app drawing the same kind of template
-  image renders it fine
-- The `.app` bundle and its ad-hoc signature — **the minimal probe binary
-  running INSIDE the real BetterStats.app bundle works**, which rules the
-  bundle out entirely
-- `NSPrincipalClass` missing from Info.plist (added anyway; correct regardless)
-- `LSUIElement`
-- `MenuBarWidgetController` itself — a plain-title control item created
-  directly in `AppDelegate` fails identically
-- Repeated rebuilds — instrumented, exactly one rebuild on the main thread
-- `buildMenu()` / a custom `NSApp.mainMenu`
-- Eagerly constructed `NetworkPane`/`SensorsPane`/`FansPane` views (made lazy,
-  no change)
-- Timing within `applicationDidFinishLaunching` — the control item fails even
-  as the very FIRST statement of it
-
-## Where the cause must be
-
-Since it fails as the first statement of `applicationDidFinishLaunching`, the
-damage is done BEFORE that runs. That leaves:
-
-1. `AppDelegate`'s remaining eager stored properties: `sysMetrics`
-   (`SystemMetrics()`), `netAttribution` (`NetworkAttribution()`),
-   `drain` (`DrainRateEstimator()`)
-2. Top-level code in `Sources/BetterStatsApp/main.swift` before `app.run()`
-3. Static/global initialisation inside PowerKit reached from those
-
-## Next step
-
-Bisect (1). Comment out those stored properties one at a time and watch
-`button.window?.frame`. The reference that WORKS, for comparison, is
-`/tmp/sbtest/reg.swift` — a `.regular` app with a window and one status item.
-
-The probe technique is the useful part: copy `BetterStats.app`, replace
-`Contents/MacOS/BetterStatsApp` with a test binary, re-sign ad-hoc, and run it
-directly from inside the bundle. `open` fails with `-10825` on a swapped
-binary; launching the executable path directly works.
+Two of those deserve a note because they nearly misled the investigation. A
+`swiftc` probe defaults to a minos ABOVE the running OS, so it launches only
+when executed directly — `open` refuses it with `-10825`. And the profiler's
+`sample` counts where threads *are*, not where CPU is spent, so a thread
+blocked in `waitpid` looked like the dominant cost when it consumed nothing.

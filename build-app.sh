@@ -75,4 +75,33 @@ codesign --force --sign - "$APP" 2>/dev/null || echo "  (ad-hoc signing skipped)
 # Nudge Finder/Dock to drop any cached icon for this bundle id.
 touch "$APP"
 
-echo "› done: $(pwd)/$APP"
+# Install to ~/Applications and run from THERE, not from the build directory.
+#
+# This is not tidiness, it is a workaround for a real failure. Rebuilding an
+# ad-hoc-signed bundle repeatedly at one path accumulates LaunchServices
+# registrations for that path — 29 of them here — and once that happens macOS
+# stops laying out the app's NSStatusItems: they are created, hold correctly
+# sized buttons and images, report isVisible, and their status windows sit at
+# (0, 0, w, 0), zero height, forever. The menu bar shows nothing while every
+# check says healthy.
+#
+# Proven by copying the byte-identical bundle elsewhere: /tmp/verify.app placed
+# its first item at (1399, 7) while the build directory's copy reported
+# (-1, 1157) in the same minute. Same bytes, same signature, same binary.
+#
+# `lsregister -kill` would clear it but Apple removed that option, and
+# unregistering by path does not undo it. Installing to a stable location the
+# build does not churn keeps the registration stable, which is what a real user
+# has anyway.
+INSTALL_DIR="$HOME/Applications"
+mkdir -p "$INSTALL_DIR"
+if [ -d "$INSTALL_DIR/BetterStats.app" ]; then
+  # Quit a running copy first so the bundle is not swapped under it.
+  osascript -e 'tell application "BetterStats" to quit' >/dev/null 2>&1 || true
+  sleep 1
+  rm -rf "$INSTALL_DIR/BetterStats.app"
+fi
+cp -R "$APP" "$INSTALL_DIR/"
+
+echo "› built:     $(pwd)/$APP"
+echo "› installed: $INSTALL_DIR/BetterStats.app   <- launch THIS one"
