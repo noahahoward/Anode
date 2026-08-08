@@ -166,6 +166,18 @@ public final class HistoryGraphView: NSView {
     private var sanitized: [CleanSeries] = []
     private var band: BandData?
 
+    /// The plot rect the last `draw(_:)` actually used, in view coordinates.
+    ///
+    /// Interaction has to invert exactly the mapping the drawing used. The left
+    /// gutter is measured per frame from the widest y tick label, so it cannot be
+    /// restated as a constant on the interaction side without drifting from it —
+    /// and it did: hover reported a time from a rect ~10 pt narrower on each
+    /// edge, which on a 7-day range is about two hours of lie in the tooltip, and
+    /// scroll-zoom anchored on that wrong time slid the point out from under the
+    /// cursor. So the rect is RECORDED, never recomputed. `.zero` until the first
+    /// draw; `interactionPlot` supplies a nominal rect for that one frame.
+    private var lastPlot: NSRect = .zero
+
     // Axis hysteresis. `stableTop`/`stableBottom` are the currently displayed
     // axis limits. We grow immediately (data must never be silently clipped in
     // autoscale mode) but shrink only when the data has fallen below 45% of the
@@ -321,6 +333,11 @@ public final class HistoryGraphView: NSView {
                           width: bounds.width - padLeft - padRight,
                           height: bounds.height - padTop - padBottom)
         guard plot.width > 20, plot.height > 20 else { return }  // too small to be honest
+        // Publish the geometry the rest of this frame draws with, so hover, the
+        // sample dot and the zoom anchor all read the same rect the lines do.
+        // Set after the size guard: a degenerate rect must never become the
+        // interaction mapping.
+        lastPlot = plot
 
         // Horizontal scale. Right edge = newest sample ("now" from the data's
         // point of view — this view has no clock of its own). A single point or
@@ -731,22 +748,38 @@ extension HistoryGraphView {
         onDomainChanged?(c.start, c.end)
     }
 
+    /// Horizontal extent the interaction maps time across: whatever the last
+    /// draw used, or a nominal rect matching the old constants before there has
+    /// been a draw to record one (a scroll can only arrive that early if the view
+    /// is in a window but has never been displayed — one frame, then it is real).
+    private var interactionPlot: (left: CGFloat, width: CGFloat) {
+        if lastPlot.width > 0 { return (lastPlot.minX, lastPlot.width) }
+        return (34, max(bounds.width - 76, 1))
+    }
+
     /// Time under a given x, in the CURRENT domain.
     private func time(atX x: CGFloat) -> Date {
         let d = effectiveDomain
-        let plotLeft: CGFloat = 34, plotRight = bounds.width - 42
-        let w = max(plotRight - plotLeft, 1)
-        let f = min(max((x - plotLeft) / w, 0), 1)
+        let p = interactionPlot
+        let w = max(p.width, 1)
+        let f = min(max((x - p.left) / w, 0), 1)
         return d.start.addingTimeInterval(Double(f) * d.end.timeIntervalSince(d.start))
     }
 
     public override func scrollWheel(with event: NSEvent) {
+        // A two-finger swipe LEFT or RIGHT is a pan gesture, not a zoom gesture.
+        // Testing `deltaY > 0 ? in : out` made every horizontal swipe fall into
+        // the else branch and zoom in, so brushing sideways across the chart
+        // rewrote the axis. Require a real vertical component, and require it to
+        // dominate, so a diagonal still zooms but a sideways flick does nothing.
+        let dy = event.scrollingDeltaY
+        guard abs(dy) > 0, abs(dy) >= abs(event.scrollingDeltaX) else { return }
         // Zoom about the POINTER, not the centre or the right edge. Anchoring
         // elsewhere makes the thing under the cursor slide away as you zoom, which
         // is the single most disorienting thing a zoomable chart can do.
         let d = effectiveDomain
         let anchor = time(atX: convert(event.locationInWindow, from: nil).x)
-        let factor = event.deltaY > 0 ? 0.85 : 1.0 / 0.85
+        let factor = dy > 0 ? 0.85 : 1.0 / 0.85
         let span = d.end.timeIntervalSince(d.start) * factor
         let leftShare = anchor.timeIntervalSince(d.start) / max(d.end.timeIntervalSince(d.start), 0.001)
         let start = anchor.addingTimeInterval(-span * leftShare)
@@ -761,7 +794,9 @@ extension HistoryGraphView {
     public override func mouseDragged(with event: NSEvent) {
         guard let a = panAnchor else { return }
         let d = effectiveDomain
-        let plotWidth = max(bounds.width - 76, 1)
+        // Same recorded rect the drawing used: a pan of one plot width must move
+        // the axis by exactly one domain, or content lags or leads the pointer.
+        let plotWidth = max(interactionPlot.width, 1)
         let perPixel = d.end.timeIntervalSince(d.start) / Double(plotWidth)
         let dx = convert(event.locationInWindow, from: nil).x - a.mouse.x
         // Drag right moves the window BACK in time: the content follows the
