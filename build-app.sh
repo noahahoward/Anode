@@ -103,5 +103,18 @@ if [ -d "$INSTALL_DIR/BetterStats.app" ]; then
 fi
 cp -R "$APP" "$INSTALL_DIR/"
 
-echo "› built:     $(pwd)/$APP"
-echo "› installed: $INSTALL_DIR/BetterStats.app   <- launch THIS one"
+# Remove the build-directory copy once it is installed.
+#
+# Leaving it there leaves a LAUNCHABLE bundle at the one path whose
+# LaunchServices registrations are poisoned, and launching that copy produces an
+# app whose menu bar widgets are silently placed off-screen at (-1, 1157) while
+# every health check reports them present. That has now happened twice, both
+# times because something ran `open BetterStats.app` from the repo out of habit.
+#
+# The install is the artifact. Deleting the intermediate makes the failure
+# unreachable rather than merely documented.
+rm -rf "$APP"
+
+echo "› installed: $INSTALL_DIR/BetterStats.app"
+echo "› (the build-directory copy is removed on purpose — that path's"
+echo "›  LaunchServices state hides the menu bar widgets. See WIDGET-BUG.md.)"
