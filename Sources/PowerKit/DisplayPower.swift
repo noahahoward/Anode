@@ -1,6 +1,27 @@
 import Foundation
 import CoreGraphics
 
+/// Which Mac this is.
+///
+/// Several quantities in PowerKit are calibrated against one machine — the
+/// backlight curve, the SMC rail key sets, the CPU-rail-to-battery factor — and
+/// each needs to know whether it is running on the machine it was fitted for.
+/// The SMC-derived ones are self-checking, because a key that does not exist
+/// reads nil and produces no segment. A fitted curve has no such safeguard: it
+/// returns a plausible number on any hardware. This is how it finds out.
+public enum Hardware {
+
+    /// `hw.model`, e.g. `Mac17,9`. Read once — it cannot change while running,
+    /// and this is consulted on the tick path.
+    public static let model: String = {
+        var size = 0
+        guard sysctlbyname("hw.model", nil, &size, nil, 0) == 0, size > 0 else { return "" }
+        var buf = [CChar](repeating: 0, count: size)
+        guard sysctlbyname("hw.model", &buf, &size, nil, 0) == 0 else { return "" }
+        return String(cString: buf)
+    }()
+}
+
 /// Estimates display backlight power from screen brightness.
 ///
 /// This is the one part of the platform bucket that can be split off honestly,
@@ -58,6 +79,29 @@ public struct DisplayPowerModel: Equatable {
     /// 8.12 -> 8.20), so the fit does not hinge on getting that coefficient exact.
     public static let measuredOnThisMac = DisplayPowerModel(
         spanWatts: 8.19, deadZone: 0.20, exponent: 1.75)
+
+    /// The machine the sweep above was actually run on. A curve fitted to one
+    /// panel is a statement about that panel and nothing else.
+    public static let calibratedModel = "Mac17,9"
+
+    /// The model to use here, or nil on hardware it was never fitted for.
+    ///
+    /// The gate matters more than it looks, because the display claim is not
+    /// merely displayed — it is SUBTRACTED from the platform bucket before the
+    /// remainder is reported as unattributed. So on a different panel the curve
+    /// does not just print a wrong display number; it silently moves watts out
+    /// of the one bucket in this app whose entire job is to be honest about what
+    /// is unaccounted for. A machine with a dimmer panel would have watts
+    /// invented and taken from the residual; a brighter one would have them left
+    /// there under the wrong name.
+    ///
+    /// Returning nil produces no display segment at all, which is the correct
+    /// output for a quantity nobody has measured on this hardware. The rail
+    /// (`DisplayRail`) is unaffected and remains preferred wherever it reads —
+    /// it is a sensor, not a fit, so it needs no such gate.
+    public static var forThisMachine: DisplayPowerModel? {
+        Hardware.model == calibratedModel ? measuredOnThisMac : nil
+    }
 
     public init(spanWatts: Double, deadZone: Double, exponent: Double) {
         self.spanWatts = spanWatts

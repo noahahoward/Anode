@@ -191,11 +191,23 @@ public final class HistoryStore {
     /// they are rejected on the way in AND filtered on the way out.
     public static let maxPlausibleWatts = 200.0
 
+    /// No sample this app takes spans this long. Ticks run at 1-30 s and a full
+    /// sweep is forced at least once a minute, so a row claiming minutes did not
+    /// measure minutes: it straddles a sleep or a stopped process, and the sampler
+    /// is meant to have dropped it already. This is the second line, because such
+    /// a row is not merely wrong — the window walk takes rows newest-first, so one
+    /// 32,400 s row IS the entire 10 hr window.
+    ///
+    /// Enforced on the way in AND filtered on the way out, exactly like
+    /// `maxPlausibleWatts`: stores already on disk hold rows written before the
+    /// sampler learned to drop them, and those users must see the fix too.
+    public static let maxPlausibleInterval: TimeInterval = 300
+
     public func record(apps: [AppDrain], measured_W: Double?, attributed_W: Double?,
                        residual_W: Double?, onBattery: Bool,
                        socPercent: Double? = nil, interval: TimeInterval,
                        at date: Date = Date()) {
-        guard interval > 0 else { return }
+        guard interval > 0, interval <= Self.maxPlausibleInterval else { return }
         queue.sync {
             guard let db = db, let insI = insInterval, let insA = insApp else { return }
 
@@ -278,8 +290,12 @@ public final class HistoryStore {
 
     private func selectWindowLocked(_ windowSec: TimeInterval) -> Selection {
         var sel = Selection()
+        // The dur filter is what makes an already-poisoned store recover. A row
+        // written across a sleep sits at the newest end, so the walk would hand it
+        // the whole window before reaching a single real sample.
         guard let stmt = prepare("""
-            SELECT id, dur FROM interval WHERE on_battery=1 ORDER BY ts DESC, id DESC
+            SELECT id, dur FROM interval WHERE on_battery=1 AND dur <= \(Self.maxPlausibleInterval)
+             ORDER BY ts DESC, id DESC
             """) else { return sel }
         defer { sqlite3_finalize(stmt) }
 
@@ -466,7 +482,8 @@ public final class HistoryStore {
                             ELSE NULL END
                   FROM interval
                  WHERE ts >= ? AND ts <= ? AND measured_j IS NOT NULL
-                   AND dur > 0 AND measured_j >= 0
+                   AND dur > 0 AND dur <= \(Self.maxPlausibleInterval)
+                   AND measured_j >= 0
                    AND measured_j / dur <= 200.0
                  GROUP BY b
                  ORDER BY b
@@ -554,6 +571,11 @@ public final class HistoryStore {
                         THEN SUM(COALESCE(soc,0)*dur) / SUM(CASE WHEN soc IS NULL THEN 0 ELSE dur END)
                         ELSE NULL END
             FROM interval WHERE agg=0 AND ts < \(aligned)
+              -- Poisoned rows are excluded from the fold and then deleted with the
+              -- rest below, rather than being summed into a bucket: one 32,400 s
+              -- row would push its bucket past the read filter and take that
+              -- minute's genuine samples out of the window with it.
+              AND dur <= \(Self.maxPlausibleInterval)
             GROUP BY CAST(ts/\(bw) AS INTEGER), on_battery
             ON CONFLICT(ts, on_battery) WHERE agg=1 DO UPDATE SET
                 -- soc BEFORE dur: the re-weighting below divides by the OLD dur,
@@ -580,7 +602,7 @@ public final class HistoryStore {
             JOIN interval o ON o.id = a.interval_id
             JOIN interval n ON n.agg=1 AND n.on_battery = o.on_battery
                            AND n.ts = CAST(o.ts/\(bw) AS INTEGER)*\(bw)
-            WHERE o.agg=0 AND o.ts < \(aligned)
+            WHERE o.agg=0 AND o.ts < \(aligned) AND o.dur <= \(Self.maxPlausibleInterval)
             GROUP BY n.id, a.app
             ON CONFLICT(interval_id, app) DO UPDATE SET
                 joules = joules + excluded.joules, name = excluded.name

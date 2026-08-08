@@ -12,7 +12,11 @@ import AppKit
 //    the wiring. That keeps it testable offscreen and reusable in any window.
 //  - Semantic NSColors ONLY for chrome (background, grid, text) so light/dark
 //    mode is automatic. Series colors are the caller's choice — color follows
-//    the entity, and the entity is named by the caller, not by us.
+//    the entity, and the entity is named by the caller, not by us. One
+//    exception: the charging spans of `rightSeries` (see `drawRightSeries`).
+//    That is a STATE of the caller's entity rather than a second entity, and
+//    only this view knows where in the line the state changes, so the colour
+//    comes from Palette here and is resolved at draw time like the rest of it.
 //  - The y-axis autoscales to a *nice* 1/2/5×10ⁿ maximum WITH hysteresis. A
 //    graph whose axis rescales every frame is exactly as jittery as the number
 //    it replaced, which would defeat the whole point.
@@ -34,9 +38,18 @@ public final class HistoryGraphView: NSView {
     public struct Point {
         public let time: Date
         public let value: Double
-        public init(time: Date, value: Double) {
+        /// Was the machine on the wall adapter at this instant? Carried on the
+        /// POINT rather than as a parallel mask because `drawRightSeries`
+        /// filters and re-sorts before drawing, and a parallel array silently
+        /// desyncs from the points the moment one is dropped.
+        ///
+        /// nil means the caller does not know, which draws in the ordinary
+        /// colour — an unknown must never render as a claim either way.
+        public let onPower: Bool?
+        public init(time: Date, value: Double, onPower: Bool? = nil) {
             self.time = time
             self.value = value
+            self.onPower = onPower
         }
     }
 
@@ -431,49 +444,14 @@ public final class HistoryGraphView: NSView {
             let size = s.size(withAttributes: attrs)
             s.draw(at: NSPoint(x: plot.midX - size.width / 2, y: plot.midY - size.height / 2),
                    withAttributes: attrs)
-            // ── Secondary series: battery charge on the right axis ──────────────
-        if let r = rightSeries {
-            let pts = r.points
-                .filter { $0.value.isFinite }
-                .sorted { $0.time < $1.time }
-            if pts.count >= 2 {
-                let path = NSBezierPath()
-                path.lineWidth = 1.6
-                path.lineJoinStyle = .round
-                var started = false
-                for p in pts {
-                    let pt = NSPoint(x: xFor(p.time), y: yForRight(p.value))
-                    if started { path.line(to: pt) } else { path.move(to: pt); started = true }
-                }
-                NSGraphicsContext.saveGraphicsState()
-                NSBezierPath(rect: plot).addClip()
-                r.color.setStroke()
-                path.stroke()
-                NSGraphicsContext.restoreGraphicsState()
-
-                // Endpoint dot: the current charge, which is the value people read.
-                if let last = pts.last {
-                    r.color.setFill()
-                    let c = NSPoint(x: xFor(last.time), y: yForRight(last.value))
-                    NSBezierPath(ovalIn: NSRect(x: c.x - 2.6, y: c.y - 2.6,
-                                                width: 5.2, height: 5.2)).fill()
-                }
+            // `haveData` is folded from the left series and band only, so a
+            // charge line with no rate line behind it still belongs on screen —
+            // it is the one thing this view can show when the rate is missing.
+            if let r = rightSeries {
+                drawRightSeries(r, plot: plot, xFor: xFor, yForRight: yForRight,
+                                tickAttrs: tickAttrs)
             }
-
-            // Right-hand tick labels, in the series colour so it is unambiguous
-            // which line the axis belongs to.
-            var rightAttrs = tickAttrs
-            rightAttrs[.foregroundColor] = r.color
-            for v in stride(from: 0.0, through: 100.0, by: 25.0) {
-                let label = "\(Int(v))%" as NSString
-                let sz = label.size(withAttributes: rightAttrs)
-                label.draw(at: NSPoint(x: plot.maxX + 5,
-                                       y: yForRight(v) - sz.height / 2),
-                           withAttributes: rightAttrs)
-            }
-        }
-
-        drawHeader(plotTop: plot.maxY, tickAttrs: tickAttrs)
+            drawHeader(plotTop: plot.maxY, tickAttrs: tickAttrs)
             return
         }
 
@@ -506,44 +484,8 @@ public final class HistoryGraphView: NSView {
 
         // ── Secondary series: battery charge on the right axis ──────────────
         if let r = rightSeries {
-            let pts = r.points
-                .filter { $0.value.isFinite }
-                .sorted { $0.time < $1.time }
-            if pts.count >= 2 {
-                let path = NSBezierPath()
-                path.lineWidth = 1.6
-                path.lineJoinStyle = .round
-                var started = false
-                for p in pts {
-                    let pt = NSPoint(x: xFor(p.time), y: yForRight(p.value))
-                    if started { path.line(to: pt) } else { path.move(to: pt); started = true }
-                }
-                NSGraphicsContext.saveGraphicsState()
-                NSBezierPath(rect: plot).addClip()
-                r.color.setStroke()
-                path.stroke()
-                NSGraphicsContext.restoreGraphicsState()
-
-                // Endpoint dot: the current charge, which is the value people read.
-                if let last = pts.last {
-                    r.color.setFill()
-                    let c = NSPoint(x: xFor(last.time), y: yForRight(last.value))
-                    NSBezierPath(ovalIn: NSRect(x: c.x - 2.6, y: c.y - 2.6,
-                                                width: 5.2, height: 5.2)).fill()
-                }
-            }
-
-            // Right-hand tick labels, in the series colour so it is unambiguous
-            // which line the axis belongs to.
-            var rightAttrs = tickAttrs
-            rightAttrs[.foregroundColor] = r.color
-            for v in stride(from: 0.0, through: 100.0, by: 25.0) {
-                let label = "\(Int(v))%" as NSString
-                let sz = label.size(withAttributes: rightAttrs)
-                label.draw(at: NSPoint(x: plot.maxX + 5,
-                                       y: yForRight(v) - sz.height / 2),
-                           withAttributes: rightAttrs)
-            }
+            drawRightSeries(r, plot: plot, xFor: xFor, yForRight: yForRight,
+                            tickAttrs: tickAttrs)
         }
 
         // Last, so the crosshair and its readout sit above the lines they report.
@@ -650,6 +592,93 @@ public final class HistoryGraphView: NSView {
 
         s.color.setStroke()
         line.stroke()
+    }
+
+    /// The right-axis series (battery charge), plus its 0-100 tick labels.
+    ///
+    /// Drawn in two colours: `Palette.chargingLine` across the spans where the
+    /// pack was gaining charge, the caller's colour everywhere else. The point is
+    /// that a glance answers "when was it plugged in?" — on a week of history
+    /// that is the shape of the whole chart, and it used to take reading the
+    /// slope of a thin blue line to find it.
+    ///
+    /// The spans are MEASURED, not inferred. `Point.onPower` comes from the
+    /// store's `on_battery` column, which is `!onAC` recorded per interval and
+    /// therefore already knows the answer exactly.
+    ///
+    /// An earlier version inferred the spans from the shape of the charge curve,
+    /// with hysteresis to survive the gauge's whole-percent quantisation. It was
+    /// careful and it was unnecessary, and it was also wrong in the most common
+    /// case a laptop is in: parked on the adapter at 100%, where the line is
+    /// dead flat and a rise-detector sees nothing to detect. A machine plugged in
+    /// all night rendered as if it had been on battery all night. Inference
+    /// cannot beat a recorded fact.
+    ///
+    /// A point whose `onPower` is nil draws in the ordinary colour rather than
+    /// guessing — an unknown is not a claim of "on battery".
+    ///
+    /// Unlike `drawSeries` this does not decimate: charge is a slow signal with
+    /// no excursions to lose, and the series is small either way — 700 points
+    /// bucketed by the store, or one per 2 s tick across the live hour.
+    private func drawRightSeries(_ r: Series, plot: NSRect,
+                                 xFor: (Date) -> CGFloat, yForRight: (Double) -> CGFloat,
+                                 tickAttrs: [NSAttributedString.Key: Any]) {
+        let pts = r.points
+            .filter { $0.value.isFinite }
+            .sorted { $0.time < $1.time }
+        if pts.count >= 2 {
+            let charging = pts.map { $0.onPower == true }
+            // One path per RUN of like-coloured segments, not per segment: a
+            // stroke per segment would round-join nothing and show a seam at
+            // every sample. Runs meet on a shared vertex, so the colour changes
+            // exactly where the state does with no gap.
+            var runs: [(charging: Bool, path: NSBezierPath)] = []
+            for i in 0..<(pts.count - 1) {
+                // A segment is charging only when BOTH its ends are, so the two
+                // samples straddling a plug event resolve to the state the
+                // machine was actually in for most of that segment.
+                let isCharging = charging[i] && charging[i + 1]
+                if runs.last?.charging != isCharging {
+                    let path = NSBezierPath()
+                    path.lineWidth = 1.6
+                    path.lineJoinStyle = .round
+                    path.move(to: NSPoint(x: xFor(pts[i].time), y: yForRight(pts[i].value)))
+                    runs.append((isCharging, path))
+                }
+                runs[runs.count - 1].path.line(
+                    to: NSPoint(x: xFor(pts[i + 1].time), y: yForRight(pts[i + 1].value)))
+            }
+            NSGraphicsContext.saveGraphicsState()
+            NSBezierPath(rect: plot).addClip()
+            for run in runs {
+                (run.charging ? Palette.chargingLine : r.color).setStroke()
+                run.path.stroke()
+            }
+            NSGraphicsContext.restoreGraphicsState()
+
+            // Endpoint dot: the current charge, which is the value people read.
+            // Wears the last segment's colour so the head of the line can never
+            // disagree with the line about whether it is still filling.
+            if let last = pts.last {
+                (runs.last?.charging == true ? Palette.chargingLine : r.color).setFill()
+                let c = NSPoint(x: xFor(last.time), y: yForRight(last.value))
+                NSBezierPath(ovalIn: NSRect(x: c.x - 2.6, y: c.y - 2.6,
+                                            width: 5.2, height: 5.2)).fill()
+            }
+        }
+
+        // Right-hand tick labels, in the series colour so it is unambiguous
+        // which line the axis belongs to. The series colour, not the charging
+        // one: the axis belongs to the line, not to what it was doing.
+        var rightAttrs = tickAttrs
+        rightAttrs[.foregroundColor] = r.color
+        for v in stride(from: 0.0, through: 100.0, by: 25.0) {
+            let label = "\(Int(v))%" as NSString
+            let sz = label.size(withAttributes: rightAttrs)
+            label.draw(at: NSPoint(x: plot.maxX + 5,
+                                   y: yForRight(v) - sz.height / 2),
+                       withAttributes: rightAttrs)
+        }
     }
 
     /// Top row: y-axis label on the left, legend on the right. Text wears text

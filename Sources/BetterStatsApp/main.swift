@@ -465,9 +465,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
             // Battery level on the right axis for EVERY range, not just the live
             // hour. An hour is far too short to see a charge curve, which is the
             // whole reason to look at a week.
+            // `onPower` is what paints the charging spans green, and it is the
+            // stored fact rather than a reading of the curve's slope: a machine
+            // left on the adapter at 100% draws a flat line, which no rise
+            // detector can distinguish from idling unplugged.
             let charge = pts.compactMap { p -> HistoryGraphView.Point? in
                 guard let soc = p.socPercent else { return nil }
-                return .init(time: p.time, value: soc)
+                return .init(time: p.time, value: soc, onPower: !p.onBattery)
             }
             DispatchQueue.main.async {
                 self.graph.series = [.init(name: "total", color: Palette.accent, points: series)]
