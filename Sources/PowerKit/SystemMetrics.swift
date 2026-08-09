@@ -375,6 +375,20 @@ public final class SystemMetrics {
         public let cpuTemperature: Double?
         public let gpuTemperature: Double?
         public let fans: [FanInfo]
+
+        /// Did this sample actually read the SMC?
+        ///
+        /// The sweep is skipped while the window is hidden, and a skipped
+        /// subsystem yields its EMPTY value rather than a stale one — which is
+        /// right, except that an empty fan list then reads identically to a
+        /// fanless Mac. Observed live: closing the window and reopening it on
+        /// the Fans pane printed "This machine reports no fans" on a machine
+        /// with two, until the next visible tick corrected it.
+        ///
+        /// "Not measured" and "measured, and there are none" are different
+        /// claims, and every other unknown in this codebase is kept
+        /// distinguishable from zero. This is that distinction for sensors.
+        public var sensorsSampled: Bool = true
     }
 
     private let cpu = CPUUsage()
@@ -436,7 +450,8 @@ public final class SystemMetrics {
                         network: needs.contains(.network) ? net.sample() : nil,
                         cpuTemperature: cpuTemp,
                         gpuTemperature: gpuTemp,
-                        fans: fans)
+                        fans: fans,
+                        sensorsSampled: needs.contains(.sensors))
     }
 
     public func sample(includeSensors: Bool = true) -> Snapshot {

@@ -61,6 +61,31 @@ final class SensorInventoryTests: XCTestCase {
     /// Fans are appended to `readings` so a widget can bind one, and folding a
     /// 2000 rpm fan into a temperature mean would be a spectacular way to report
     /// a boiling CPU.
+    /// "Not measured" must stay distinguishable from "measured, and there are
+    /// none". The SMC sweep is skipped while the window is hidden, so a hidden
+    /// snapshot carries an empty fan list BY DESIGN — and the Fans pane rendered
+    /// that as "this machine reports no fans" on a machine with two, until the
+    /// next visible tick corrected it.
+    func testASkippedSweepIsNotReportedAsNoSensors() {
+        let m = SystemMetrics()
+        let skipped = m.sample(needs: [.cpu])
+        XCTAssertFalse(skipped.sensorsSampled,
+                       "a sample that never read the SMC must say so")
+        XCTAssertTrue(skipped.fans.isEmpty, "and it must not invent readings either")
+
+        let full = m.sample(needs: .all)
+        XCTAssertTrue(full.sensorsSampled)
+    }
+
+    /// The flag has to follow the REQUEST, not whether anything came back — a
+    /// fanless Mac genuinely reports zero fans from a sweep that did happen, and
+    /// that must remain sayable.
+    func testTheFlagTracksTheRequestNotTheResult() {
+        let m = SystemMetrics()
+        XCTAssertTrue(m.sample(needs: .sensors).sensorsSampled)
+        XCTAssertFalse(m.sample(needs: []).sensorsSampled)
+    }
+
     func testFanReadingsAreNotFoldedIntoTemperatures() throws {
         let inv = try requireSensors()
         XCTAssertFalse(inv.temperatures.contains { $0.kind == .fan })

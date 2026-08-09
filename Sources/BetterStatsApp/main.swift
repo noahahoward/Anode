@@ -772,8 +772,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
             networkPane.update(sys.network,
                                perProcess: netAttribution.latest,
                                age: netAttribution.age)
+        // `sensorsSampled` distinguishes "the SMC was not read on this tick"
+        // from "the SMC reported nothing". A hidden tick skips the sweep, so
+        // without it a reopened window shows a two-fan machine as fanless.
+        // SensorsPane drives its own SMC sweep through SensorCache and renders a
+        // missing temperature as "—", so it needs no such flag.
         case .sensors: sensorsPane.update(cpu: sys.cpuTemperature, gpu: sys.gpuTemperature)
-        case .fans:    fansPane.update(sys.fans)
+        case .fans:    fansPane.update(sys.fans, sampled: sys.sensorsSampled)
         default: break
         }
     }
