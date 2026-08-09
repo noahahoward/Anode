@@ -43,19 +43,31 @@ final class DiskActivityTests: XCTestCase {
         }
     }
 
-    /// The sidebar shows one string for both directions. Both halves must come from
-    /// `MetricUnit.bytesPerSecond` so the row can never spell a rate differently
-    /// from the menu bar widget showing the same number.
-    func testDiskActivityTextIsReadSlashWriteFromTheSharedFormatter() {
+    /// The sidebar shows one string for both directions, and it contains EXACTLY
+    /// ONE slash — the divider.
+    ///
+    /// Spelled with the unit on both halves this read "1.5MB/s/340KB/s": three
+    /// slashes, two belonging to a unit and one dividing the pair, with nothing
+    /// to tell them apart at a glance. Reported as confusing, and it is. The row
+    /// is labelled "Disk" and sits directly beneath Network, which is also a
+    /// rate, so per-second is already the reader's assumption.
+    ///
+    /// The magnitudes must still come from `MetricUnit.bytesPerSecond` so the row
+    /// cannot spell a rate differently from a menu bar widget showing the same
+    /// number — only the suffix is dropped.
+    func testDiskActivityTextIsReadSlashWriteWithOneDivider() {
         let r = MetricRegistry()
         r.registerSystemMetrics()
         r.update(system: snapshot(read: 1_572_864, written: 348_160))   // 1.5 MB/s, 340 KB/s
 
         let v = try! XCTUnwrap(r.value(for: .diskActivity))
-        XCTAssertEqual(v.text, "1.5MB/s/340KB/s")
-        XCTAssertEqual(v.text,
-                       MetricUnit.bytesPerSecond.format(1_572_864) + "/"
-                       + MetricUnit.bytesPerSecond.format(348_160))
+        XCTAssertEqual(v.text, "1.5MB/340KB")
+        XCTAssertEqual(v.text.filter { $0 == "/" }.count, 1,
+                       "one slash, and it is the divider")
+        // Same magnitudes as the shared formatter, suffix aside.
+        let shared = MetricUnit.bytesPerSecond.format(1_572_864)
+            + "/" + MetricUnit.bytesPerSecond.format(348_160)
+        XCTAssertEqual(v.text, shared.replacingOccurrences(of: "/s", with: ""))
         XCTAssertEqual(v.value, 1_572_864 + 348_160, accuracy: 0.001)
         XCTAssertFalse(v.isEstimate, "these are counter deltas, not a model")
     }
