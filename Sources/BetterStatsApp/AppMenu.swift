@@ -22,6 +22,7 @@ extension AppDelegate {
         bar.addItem(appMenuItem())
         bar.addItem(editMenuItem())
         bar.addItem(viewMenuItem())
+        bar.addItem(settingsMenuItem())
         let windows = windowMenuItem()
         bar.addItem(windows)
         let help = helpMenuItem()
@@ -47,12 +48,18 @@ extension AppDelegate {
             m.addItem(about)
             m.addItem(.separator())
 
-            let prefs = NSMenuItem(title: "Settings…",
-                                   action: #selector(openPrefs), keyEquivalent: ",")
-            prefs.target = self
-            m.addItem(prefs)
-            m.addItem(.separator())
-
+            // Settings is NOT here.
+            //
+            // macOS convention puts it in the app menu, and this deliberately
+            // departs from that at the user's request: it lives in its own
+            // top-level "Settings" menu beside View and Window, where it is
+            // visible without opening anything. ⌘, still works, because the
+            // shortcut moved with the item rather than being left behind.
+            //
+            // If this ever reverts to the convention, move the ⌘, item back —
+            // do not leave one in both places. Two Settings entries is worse
+            // than either position, because the user then has to learn which
+            // one is real.
             m.addItem(withTitle: "Hide BetterStats",
                       action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
             let hideOthers = NSMenuItem(title: "Hide Others",
@@ -66,6 +73,28 @@ extension AppDelegate {
 
             m.addItem(withTitle: "Quit BetterStats",
                       action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        }
+    }
+
+    // ── Settings ────────────────────────────────────────────────────────────
+
+    /// Settings as a TOP-LEVEL menu, beside View and Window.
+    ///
+    /// A departure from the macOS convention of burying it in the app menu, made
+    /// deliberately: this app's settings are not incidental — which widgets are
+    /// bound, what the sample interval is, how long history is kept — and a user
+    /// looking for them should see the word without opening a menu first.
+    ///
+    /// It carries a submenu rather than acting as a bare clickable title because
+    /// AppKit does not route clicks to a top-level item that has no submenu: such
+    /// an item renders but cannot be invoked. So "Settings ▸ Open Settings… ⌘,"
+    /// is the shape that actually works, and ⌘, is still the shortcut.
+    private func settingsMenuItem() -> NSMenuItem {
+        submenu("Settings") { m in
+            let open = NSMenuItem(title: "Open Settings…",
+                                  action: #selector(openPrefs), keyEquivalent: ",")
+            open.target = self
+            m.addItem(open)
         }
     }
 
