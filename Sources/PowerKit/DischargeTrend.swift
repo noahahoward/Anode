@@ -250,7 +250,29 @@ public final class BatteryDischargeTrend {
     private var outOfBandSign = 0
     private var runStart: Date?
 
-    public init(window: TimeInterval = 1800, minTicks: UInt64 = 120,
+    /// 300 ticks — five minutes of measured discharge before ANY figure is
+    /// published, up from 120.
+    ///
+    /// Two minutes was chosen when the window's early behaviour had only been
+    /// tested under a steady synthetic load, where a short window really does
+    /// agree with a long one. Reported from a real cold boot on battery:
+    ///
+    ///     ETD read 25 h, then 5 h one second later, then held for a minute
+    ///     drain read near zero, then jumped to 15.7 %/hr and held
+    ///
+    /// Both readings were defensible in isolation — measured at that instant the
+    /// pack was drawing 712 mA at 12.81 V (9.1 W, 11.5 %/hr) and the load average
+    /// was collapsing from 8.78 to 3.35 as login items settled. The fault is that
+    /// a 120-tick window is a third of one publish, so a single new batch moves
+    /// the answer by hours, and the app said "25 hours" out loud on the strength
+    /// of it.
+    ///
+    /// Five minutes is five publishes: enough that one batch cannot dominate, and
+    /// short enough that a user who unplugs is not left staring at "estimating…".
+    /// It does not make the early estimate accurate — a machine still settling
+    /// after boot has no stable answer to give — it stops the app from asserting
+    /// one it cannot support.
+    public init(window: TimeInterval = 1800, minTicks: UInt64 = 300,
                 changeBand: Double = 0.50, confirmTicks: UInt64 = 300) {
         self.window = max(60, window)
         self.minTicks = max(1, minTicks)
