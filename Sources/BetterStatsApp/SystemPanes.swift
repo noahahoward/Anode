@@ -427,8 +427,21 @@ final class SensorsPane: SystemPane {
 
 final class FansPane: SystemPane {
 
-    func update(_ fans: [FanInfo]) {
+    func update(_ fans: [FanInfo], sampled: Bool = true) {
         titleLabel.stringValue = "Fans"
+
+        // NOT MEASURED is not the same as NONE. The SMC sweep is skipped while
+        // the window is hidden, so a snapshot taken then carries an empty fan
+        // list by design. Rendering that as "this machine reports no fans" told
+        // a two-fan machine it had none — observed live after closing the window
+        // and reopening it on this pane, and it corrected itself a tick later,
+        // which is worse than being wrong consistently: it looks like a flaky
+        // sensor rather than a stale frame.
+        guard sampled else {
+            captionLabel.stringValue = "Reading the fan sensors…"
+            setBody([.row("Waiting for the first SMC sweep", "—", dim: true)])
+            return
+        }
 
         guard !fans.isEmpty else {
             captionLabel.stringValue = "No fans reported by the SMC."
