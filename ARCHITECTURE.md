@@ -210,8 +210,34 @@ runtime cost  = 60 × E_remaining × (1/(P_sys − P_app) − 1/P_sys)
 ```
 
 The battery scale is seeded from `FullChargeCapacity` (not `DesignCapacity`, so an
-aged pack reports honestly) and then self-calibrates: `J_per_% ← EWMA(E_sys / ΔSoC%)`,
-which removes the assumed nominal voltage entirely and tracks aging.
+aged pack reports honestly) times an **assumed nominal voltage of 11.58 V**
+(`BatteryScale.seedNominalVoltage_V`).
+
+> **NOT IMPLEMENTED, and this doc previously claimed otherwise.** The design calls
+> for the scale to self-calibrate — `J_per_% ← EWMA(E_sys / ΔSoC%)` — which would
+> remove the assumed voltage entirely and track pack ageing. It does not exist.
+> Every `BatteryScale` in the code is constructed with `isCalibrated: false`, and
+> that flag is currently the only trace of the idea.
+>
+> This matters more than a missing feature usually would, because the seed sits
+> underneath **every displayed number**: %/hr, 10 hr power, runtime cost, and time
+> to empty all divide by it. A pack whose true nominal voltage differs from 11.58 V
+> is wrong by that ratio, uniformly and invisibly — nothing on screen would look
+> odd. It is a systematic scale error, not noise, so it does not average out.
+>
+> On this machine the seed is close to right (the gauge's own time-to-empty agrees
+> with the mAh basis to a few percent). On a different pack — a tester's machine,
+> an older battery — nobody has checked. Until this lands, treat cross-machine
+> comparisons of absolute %/hr with suspicion; comparisons WITHIN one machine are
+> unaffected, since the same constant divides everything.
+>
+> **Two different flags are both called `isCalibrated`, and they mean unrelated
+> things.** `BatteryScale.isCalibrated` is the one above and is always false.
+> `PowerMonitor.Snapshot.isCalibrated` — the one the CLI prints and the one the
+> "*" in the menu bar reflects — is the SMOOTHER's baseline calibration
+> (`Smoother.baselineW != nil`), which says whether the fast signal has been
+> anchored to the gas gauge yet. That one does work. Do not read a "calibrated:
+> yes" anywhere as evidence that the pack voltage has been measured.
 
 This machine: 6197 mAh full charge → **1% ≈ 2,588 J**, **1 W ≈ 1.39 %/hr**.
 
