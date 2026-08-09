@@ -425,14 +425,30 @@ public final class MetricRegistry {
             // first, so the widget and the card cannot disagree about how long the
             // battery has left.
             //
-            // Every line below is a projection, but they are not equally well
-            // founded: the first is charge measured out of the pack over the last
-            // half hour, the rest are inferences from present draw. The "*" marks
-            // that boundary, which is the only way a user can tell them apart.
+            // EVERY line below is a projection, and all of them are marked as one.
+            //
+            // The first branch used to drop the "*" when the rate came from the
+            // discharge accumulator, on the grounds that such a rate is measured
+            // end to end. The rate is. The TIME is not: it extrapolates that rate
+            // across a future nobody has measured, and the future is where all the
+            // error lives — the same 30-minute window that makes this figure
+            // stable is exactly what makes it lag a real change by minutes.
+            //
+            // So an unmarked time-to-empty asserted, in the one place this app has
+            // to say it, that a prediction was a measurement. Nobody reads a
+            // missing asterisk as "the rate behind this was measured"; they read
+            // it as "this is a fact". Under this project's own rule — unmeasured
+            // must never be presented as measured — that was the sharpest defect
+            // on screen.
+            //
+            // The provenance distinction is NOT lost. It moves to where there is
+            // room to state it in words rather than punctuation: the glance card
+            // prints "measured drain" / "estimated from draw" / "no estimate yet"
+            // beneath the headline. `battery.drain` still drops the marker when
+            // its rate is measured, because a rate genuinely is.
             if let shared = self?.displayedRate, let hr = shared.timeRemaining_hr,
                hr.isFinite, hr > 0 {
-                return MetricValue(hr * 60, unit: .minutes,
-                                   isEstimate: shared.source != .discharge)
+                return MetricValue(hr * 60, unit: .minutes, isEstimate: true)
             }
             if let hr = s.projectedRuntime_hr() {
                 return MetricValue(hr * 60, unit: .minutes, isEstimate: true)

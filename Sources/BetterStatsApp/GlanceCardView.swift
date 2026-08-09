@@ -233,10 +233,22 @@ final class GlanceCardView: NSView {
         }
     }
 
+    /// The headline duration, formatted by the SAME code the menu bar uses.
+    ///
+    /// This used to format independently as `"%dh %02dm"`, which meant the two
+    /// surfaces disagreed below an hour: the card said "0h 45m" and the widget
+    /// said "45m", for one number that is deliberately published once so they
+    /// cannot disagree. Cosmetic at 45 minutes, but it is the same duplicated
+    /// arithmetic that produced the drain/time-left mismatch this app already
+    /// got a bug report about — two formatters is two places to change and one
+    /// place to forget.
+    ///
+    /// The range guard stays here rather than moving into the unit: 240 hours is
+    /// a statement about what a battery projection may plausibly claim, not
+    /// about how minutes are written.
     private static func hm(_ hours: Double) -> String {
         guard hours.isFinite, hours >= 0, hours < 240 else { return "—" }
-        let total = Int((hours * 60).rounded())
-        return String(format: "%dh %02dm", total / 60, total % 60)
+        return MetricUnit.minutes.format((hours * 60).rounded())
     }
 
     private static func at(_ hours: Double) -> String? {

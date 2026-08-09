@@ -53,10 +53,16 @@ machine. That is not a bug report — it is the gate working.
 
 Ranked by how much they would tell us:
 
-1. **Numbers that contradict each other on screen.** The time remaining, the
-   drain rate and the charge percentage must multiply out: `percent / (%/hr)` =
-   hours. If the headline and the rate row disagree, that is a real bug and the
-   most valuable thing to catch.
+1. **The menu bar and the window disagreeing** about the same quantity. They
+   read one published value, so any difference between them is a bug.
+
+   **Known exception, do not report:** the charge percentage and the time
+   remaining do NOT divide into each other, and are not meant to. The percentage
+   shown is the gauge's own integer `CurrentCapacity`, so that it matches what
+   macOS shows; the time is computed from `RemainingCapacity/FullChargeCapacity`,
+   which reads about 4% lower and which the gauge's own time-to-empty agrees
+   with. Observed: 53% at 15 %/hr showing 3h 23m, where 53/15 would be 3h 32m.
+   The time is the accurate one. Reporting a gap larger than ~6% IS worth doing.
 2. **The menu bar and the window disagreeing** about drain or time left. They
    read one published value, so any difference is a bug.
 3. **A ledger that does not conserve.** The bar prints an overflow warning if the

@@ -198,16 +198,33 @@ final class DrainEstimateSourceTests: XCTestCase {
     /// from half an hour of measured discharge does not carry it; one projected
     /// from this instant's draw does. Without this the two are indistinguishable on
     /// screen, and the research found `source` reached nothing at all.
-    func testMeasuredAndModelledTimesAreDistinguishableInTheMenuBar() {
+    /// A RATE can be measured. A TIME REMAINING cannot.
+    ///
+    /// This test previously asserted the opposite for time: that the "*" dropped
+    /// when the rate came from the discharge accumulator. The rate is measured
+    /// end to end — but the time extrapolates it across a future nobody has
+    /// measured, and the future is where the error lives. An unmarked
+    /// time-to-empty asserted that a prediction was a fact, in the one place this
+    /// app must not: nobody reads a missing asterisk as "the rate behind this was
+    /// measured", they read it as "this is known".
+    ///
+    /// The distinction is not lost, it moves to where words fit: the glance card
+    /// prints "measured drain" / "estimated from draw" / "no estimate yet". The
+    /// menu bar keeps the marker on `batteryDrain`, which is a rate, and that is
+    /// what still makes the two tiers distinguishable there.
+    func testTimeRemainingIsAlwaysAnEstimateButTheRateNeedNotBe() {
         let measured = registry((8.16, 7.25, .discharge))
         XCTAssertEqual(measured.value(for: .batteryTimeLeft)?.text, "7h 15m")
-        XCTAssertFalse(measured.value(for: .batteryTimeLeft)?.isEstimate ?? true)
-        XCTAssertFalse(measured.value(for: .batteryDrain)?.isEstimate ?? true)
+        XCTAssertTrue(measured.value(for: .batteryTimeLeft)?.isEstimate ?? false,
+                      "a time remaining is a projection however well measured its rate")
+        XCTAssertFalse(measured.value(for: .batteryDrain)?.isEstimate ?? true,
+                       "the RATE is measured end to end, and still says so")
 
         let modelled = registry((8.16, 7.25, .power))
         XCTAssertEqual(modelled.value(for: .batteryTimeLeft)?.text, "7h 15m")
-        XCTAssertTrue(modelled.value(for: .batteryTimeLeft)?.isEstimate ?? false,
-                      "a projection from instantaneous draw is an estimate and must say so")
+        XCTAssertTrue(modelled.value(for: .batteryTimeLeft)?.isEstimate ?? false)
+        XCTAssertTrue(modelled.value(for: .batteryDrain)?.isEstimate ?? false,
+                      "a rate inferred from instantaneous draw is an estimate")
     }
 
     /// Nothing published yet, and nothing else to fall back on: the widget shows
