@@ -63,15 +63,13 @@ Ranked by how much they would tell us:
    which reads about 4% lower and which the gauge's own time-to-empty agrees
    with. Observed: 53% at 15 %/hr showing 3h 23m, where 53/15 would be 3h 32m.
    The time is the accurate one. Reporting a gap larger than ~6% IS worth doing.
-2. **The menu bar and the window disagreeing** about drain or time left. They
-   read one published value, so any difference is a bug.
-3. **A ledger that does not conserve.** The bar prints an overflow warning if the
+2. **A ledger that does not conserve.** The bar prints an overflow warning if the
    rows exceed the measured total. If that warning ever appears, say so.
-4. **Anything after sleep.** Close the lid, leave it, open it. Drain, time
+3. **Anything after sleep.** Close the lid, leave it, open it. Drain, time
    remaining and the graph must not show a reading of the sleep.
-5. **Cost of the app itself.** Idle should sit near 0.2% of one core with the
+4. **Cost of the app itself.** Idle should sit near 0.2% of one core with the
    window closed. If it is materially higher, that matters more than any feature.
-6. **A crash.** `~/Library/Logs/DiagnosticReports/BetterStats*`.
+5. **A crash.** `~/Library/Logs/DiagnosticReports/BetterStats*`.
 
 Less useful: absolute agreement with Activity Monitor. Rank correlation is
 expected, value agreement is not — Energy Impact is unitless and this is joules.
