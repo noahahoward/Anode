@@ -12,3 +12,8 @@ DerivedData/
 *.sqlite
 *.sqlite-wal
 *.sqlite-shm
+
+# Release bundles: ~10 MB each and unremovable from history once committed.
+# The .txt manifests ARE tracked. See releases/README.md.
+releases/*.app/
+releases/*.zip

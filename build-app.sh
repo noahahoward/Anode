@@ -9,6 +9,18 @@ APP="BetterStats.app"
 BIN="BetterStatsApp"
 ICON="Resources/AppIcon.icon"
 
+# ── Version ─────────────────────────────────────────────────────────────────
+# The marketing version is edited by hand; the build number is the commit count,
+# so two bundles claiming the same version cannot contain different code. A
+# tester reporting a bug can be asked "what does About say" and the answer maps
+# to an exact commit — which matters more than usual here, because there is no
+# update mechanism and a tester may be running something weeks old.
+VERSION="0.2.0"
+BUILD="$(git rev-list --count HEAD 2>/dev/null || echo 1)"
+COMMIT="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
+DIRTY=""
+if ! git diff --quiet HEAD 2>/dev/null; then DIRTY="+"; fi
+
 echo "› building ($CONFIG)…"
 swift build -c "$CONFIG" --product "$BIN"
 BUILT="$(swift build -c "$CONFIG" --show-bin-path)/$BIN"
@@ -54,8 +66,12 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>CFBundleIdentifier</key>        <string>dev.noah.betterstats</string>
   <key>CFBundleExecutable</key>        <string>BetterStatsApp</string>
   <key>CFBundlePackageType</key>       <string>APPL</string>
-  <key>CFBundleShortVersionString</key><string>0.1.0</string>
-  <key>CFBundleVersion</key>           <string>1</string>
+  <key>CFBundleShortVersionString</key><string>${VERSION}</string>
+  <key>CFBundleVersion</key>           <string>${BUILD}</string>
+  <!-- The exact source this bundle was built from. There is no update
+       mechanism, so a tester may be running anything; this makes "which build
+       is that" answerable rather than guessed. -->
+  <key>BSSourceCommit</key>            <string>${COMMIT}${DIRTY}</string>
   <key>LSMinimumSystemVersion</key>    <string>13.0</string>
   <key>NSHighResolutionCapable</key>   <true/>
   <!-- Every bundled AppKit app declares this; ours did not. It did NOT fix the
