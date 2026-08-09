@@ -86,8 +86,16 @@ Worth being able to answer honestly, since it is unsandboxed:
   files under `/var/db/systemstats`.
 - Attached USB device names, to attribute charging draw.
 
-It writes one SQLite file, `~/Library/Application Support/BetterStats/history.sqlite`,
-and sends nothing anywhere. There is no network client in the app.
+It writes one SQLite file, `~/Library/Application Support/BetterStats/history.sqlite`.
+
+**Network egress: exactly one thing, and only when you ask for it.** The speed
+test contacts `speed.cloudflare.com` and both downloads and uploads real data
+(up to 25 MB down, 10 MB up). It runs on explicit request only — never on a
+timer, never at launch, never as a side effect of opening a pane. Nothing else
+in the app or the CLI sends anything anywhere: there is no telemetry, no crash
+reporting, no update check, and no analytics.
+
+If you never run the speed test, the app makes no network connections at all.
 
 ## Fan control is not in this build
 
