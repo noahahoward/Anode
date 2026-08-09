@@ -281,9 +281,15 @@ final class MainWindowController: NSObject {
     /// is what made closing the window feel like the app was still "open" while
     /// quitting took the widgets with it. `.accessory` is the state that matches
     /// what the app actually is at that moment — a menu bar tool.
+    ///
+    /// Unless there is no menu bar to be a tool in: with widgets switched off
+    /// `AppPresence` keeps the Dock tile, because it is then the only way back to
+    /// the window that still exists.
     func hide() {
         window.orderOut(nil)
-        NSApp.setActivationPolicy(.accessory)
+        NSApp.setActivationPolicy(
+            AppPresence.policyWithWindowHidden(
+                widgetsEnabled: Settings.shared.menuBarWidgetsEnabled))
     }
 }
 

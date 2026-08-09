@@ -31,7 +31,10 @@ final class DiskActivityTests: XCTestCase {
     func testDiskMetricsAreThroughputAndNeverAPercentage() {
         let r = MetricRegistry()
         r.registerSystemMetrics()
-        let disk = r.descriptors().filter { $0.category == "Disk" }
+        // allDescriptors, not descriptors: the combined row is deliberately not
+        // bindable as a widget, and the claim being tested is about EVERY disk
+        // metric the app registers, not just the ones offered in the menu bar.
+        let disk = r.allDescriptors().filter { $0.category == "Disk" }
 
         XCTAssertEqual(Set(disk.map(\.id.rawValue)),
                        [MetricID.diskActivity.rawValue,
@@ -327,5 +330,34 @@ final class DiskActivityTests: XCTestCase {
         return SystemMetrics.Snapshot(cpu: nil, memory: nil, gpu: nil, network: nil,
                                       disk: disk, cpuTemperature: nil, gpuTemperature: nil,
                                       fans: [])
+    }
+
+    /// The combined read/write metric is a SIDEBAR row, not a widget.
+    ///
+    /// Offered in the menu bar it sat beside the separate Read and Write widgets
+    /// — three ways to say two numbers, and the combined one read worst of the
+    /// three. Withdrawn from the picker, still served to the window.
+    func testDiskActivityIsNotOfferedAsAWidget() {
+        let r = MetricRegistry()
+        r.registerSystemMetrics()
+
+        XCTAssertFalse(r.descriptors().contains { $0.id == .diskActivity },
+                       "the combined row must not be bindable in the menu bar")
+        XCTAssertTrue(r.descriptors().contains { $0.id == .diskRead })
+        XCTAssertTrue(r.descriptors().contains { $0.id == .diskWrite })
+
+        // Still registered, still readable — the sidebar depends on it.
+        XCTAssertTrue(r.allDescriptors().contains { $0.id == .diskActivity })
+        r.update(system: snapshot(read: 1_572_864, written: 348_160))
+        XCTAssertEqual(r.value(for: .diskActivity)?.text, "1.5MB/340KB")
+    }
+
+    /// Withdrawing one metric must not withdraw others: the filter is per
+    /// descriptor, not a category-wide switch.
+    func testOnlyTheCombinedMetricIsWithheld() {
+        let r = MetricRegistry()
+        r.registerSystemMetrics()
+        let hidden = r.allDescriptors().filter { !$0.bindable }.map(\.id)
+        XCTAssertEqual(hidden, [.diskActivity])
     }
 }

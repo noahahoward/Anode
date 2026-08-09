@@ -217,6 +217,8 @@ private final class GeneralPane: Pane {
     private var loginCheckbox: NSButton!
     private var loginNote: NSTextField!
     private var loginButton: NSButton!
+    private var menuBarOnlyCheckbox: NSButton!
+    private var menuBarOnlyNote: NSTextField!
 
     override func loadView() {
         let r = Settings.sampleIntervalRange
@@ -245,6 +247,10 @@ private final class GeneralPane: Pane {
         loginButton.controlSize = .small
         loginButton.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
 
+        menuBarOnlyCheckbox = NSButton(checkboxWithTitle: "Start in the menu bar only (no window)",
+                                       target: self, action: #selector(menuBarOnlyToggled))
+        menuBarOnlyNote = caption("")
+
         install(rows: [
             [rowLabel("Sample every:"), intervalRow],
             [spacer, caption("How often per-process energy is read. Shorter is more responsive "
@@ -252,6 +258,8 @@ private final class GeneralPane: Pane {
             [rowLabel("Startup:"), loginCheckbox],
             [spacer, loginNote],
             [spacer, loginButton],
+            [spacer, menuBarOnlyCheckbox],
+            [spacer, menuBarOnlyNote],
         ])
     }
 
@@ -287,6 +295,21 @@ private final class GeneralPane: Pane {
             }
             loginButton.isHidden = true
         }
+
+        menuBarOnlyCheckbox.state = settings.startInMenuBarOnly ? .on : .off
+        // The checkbox keeps showing the STORED preference even when it cannot be
+        // honoured — flipping it to "off" behind the user's back would lose a
+        // setting they will get back the moment widgets return. The note carries
+        // the override, because an override nobody can see is a control that
+        // silently does nothing.
+        let widgetsOn = settings.menuBarWidgetsEnabled
+        menuBarOnlyCheckbox.isEnabled = widgetsOn
+        menuBarOnlyNote.stringValue = widgetsOn
+            ? "Applies to every launch, including opening BetterStats by hand — macOS gives an "
+              + "app no way to tell a login launch from a double-click, so this is one switch and "
+              + "not two. Click any menu bar widget, or open the app again, to get the window."
+            : "Ignored while menu bar widgets are off (Menu Bar tab): starting with no window and "
+              + "no widgets would leave nothing to click."
     }
 
     @objc private func intervalChanged() {
@@ -303,6 +326,10 @@ private final class GeneralPane: Pane {
     @objc private func openLoginItems() {
         settings.openLoginItemsSettings()
     }
+
+    @objc private func menuBarOnlyToggled() {
+        settings.startInMenuBarOnly = menuBarOnlyCheckbox.state == .on
+    }
 }
 
 // ── Battery ─────────────────────────────────────────────────────────────────
@@ -315,6 +342,7 @@ private final class BatteryPane: Pane {
     private var thresholdField: NSTextField!
     private var thresholdStepper: NSStepper!
     private var daemonsCheckbox: NSButton!
+    private var loggingCheckbox: NSButton!
 
     override func loadView() {
         let (wf, ws, wRow) = fieldAndStepper(range: Settings.powerWindowHoursRange, step: 1,
@@ -335,7 +363,17 @@ private final class BatteryPane: Pane {
         daemonsCheckbox = NSButton(checkboxWithTitle: "Show daemons and helpers",
                                    target: self, action: #selector(daemonsToggled))
 
+        loggingCheckbox = NSButton(checkboxWithTitle: "Record battery history",
+                                   target: self, action: #selector(loggingToggled))
+
         install(rows: [
+            [rowLabel("History:"), loggingCheckbox],
+            [spacer, caption("When off, no new samples are written. The \u{201C}10 hr power\u{201D} "
+                             + "column stops advancing and reads \u{201C}\u{2014}\u{201D} for what "
+                             + "was never recorded, and graph ranges longer than the live hour "
+                             + "stop filling in. History already on disk is kept. While the window "
+                             + "is closed the sampler also stops the periodic full sweep, which "
+                             + "exists only to feed this.")],
             [rowLabel("Power window:"), wRow],
             [spacer, caption("Trailing on-battery window behind the \u{201C}10 hr power\u{201D} figure. "
                              + "Activity Monitor uses 12 hours; this stays configurable.")],
@@ -357,6 +395,7 @@ private final class BatteryPane: Pane {
         thresholdField.doubleValue = settings.minimumDisplayPercentPerHour
         thresholdStepper.doubleValue = settings.minimumDisplayPercentPerHour
         daemonsCheckbox.state = settings.showDaemons ? .on : .off
+        loggingCheckbox.state = settings.batteryLogging ? .on : .off
     }
 
     @objc private func windowChanged(_ sender: NSControl) {
@@ -377,6 +416,10 @@ private final class BatteryPane: Pane {
     @objc private func daemonsToggled() {
         settings.showDaemons = daemonsCheckbox.state == .on
     }
+
+    @objc private func loggingToggled() {
+        settings.batteryLogging = loggingCheckbox.state == .on
+    }
 }
 
 // ── Menu Bar ────────────────────────────────────────────────────────────────
@@ -392,6 +435,7 @@ private final class MenuBarPane: Pane {
     /// reset the checkbox the user had just toggled. It looked like clicks were
     /// being ignored, and like unchecking one box re-checked others.
     private var isApplying = false
+    private var masterCheckbox: NSButton!
 
     override func loadView() {
         choices = PreferencesWindowController.metricProvider?()
@@ -405,7 +449,14 @@ private final class MenuBarPane: Pane {
         list.alignment = .leading
         list.spacing = 6
 
+        masterCheckbox = NSButton(checkboxWithTitle: "Show widgets in the menu bar",
+                                  target: self, action: #selector(masterToggled))
+
         install(rows: [
+            [rowLabel("Menu bar:"), masterCheckbox],
+            [spacer, caption("When off, BetterStats keeps its Dock icon so the window is still one "
+                             + "click away, and the sampler stops reading anything only a widget "
+                             + "was showing. Which widgets are checked below is remembered.")],
             [rowLabel("Show in menu bar:"), list],
             [spacer, caption("Each checked metric becomes a menu bar widget. Widgets bind to any "
                              + "metric; clicking one opens the main window.")],
@@ -413,6 +464,15 @@ private final class MenuBarPane: Pane {
     }
 
     override func refresh() {
+        // Outside the isApplying guard: that guard exists for the per-widget
+        // boxes, which a click writes and this method would then overwrite. The
+        // master switch is never the control mid-click, and it also arrives from
+        // outside this pane (another Settings instance, `defaults write`), so it
+        // must be re-read on every notification without exception.
+        let on = settings.menuBarWidgetsEnabled
+        masterCheckbox.state = on ? .on : .off
+        for box in boxes { box.isEnabled = on }
+
         // Never fight the user mid-click: while applying, the boxes already show
         // the intended state and the controller is only just catching up.
         guard !isApplying else { return }
@@ -421,6 +481,10 @@ private final class MenuBarPane: Pane {
         for (choice, box) in zip(choices, boxes) {
             box.state = current.contains(choice.id) ? .on : .off
         }
+    }
+
+    @objc private func masterToggled() {
+        settings.menuBarWidgetsEnabled = masterCheckbox.state == .on
     }
 
     @objc private func toggled() {

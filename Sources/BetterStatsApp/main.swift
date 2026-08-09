@@ -231,7 +231,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         // lens that explains that number.
         widgets = MenuBarWidgetController(onClick: { [weak self] metric in
             self?.openFromWidget(metric)
-        })
+        }, enabled: Settings.shared.menuBarWidgetsEnabled)
         PreferencesWindowController.metricProvider = {
             var choices = MetricRegistry.shared.descriptors()
                 .map { MetricChoice(id: $0.id.rawValue, label: $0.title) }
@@ -256,15 +256,55 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
             })
         }
 
-        main.show()
+        // The one place launch decides whether it is an app or a menu bar tool.
+        // The activation policy was already set from the same rule before run()
+        // (see the bottom of this file), so nothing flashes a Dock tile here.
+        if AppPresence.showsWindowAtLaunch(
+            startInMenuBarOnly: Settings.shared.startInMenuBarOnly,
+            widgetsEnabled: Settings.shared.menuBarWidgetsEnabled) {
+            main.show()
+        }
 
         monitor?.tick()   // prime; the first tick has no interval to diff against
         restartTimer()
 
         // React to a changed sample interval without needing a relaunch.
-        _ = Settings.shared.observe(Settings.Key.sampleInterval) { [weak self] in
-            DispatchQueue.main.async { self?.restartTimer() }
-        }
+        //
+        // Retained, not `_ =`'d. A discarded token unobserves in its own deinit,
+        // so this handler had never once run; the slider kept working only
+        // because `refresh()` re-reads the interval on every tick anyway. Held
+        // here so the two paths agree, and `hidden:` is passed rather than
+        // defaulted — waking the sampler to the visible cadence because a value
+        // changed in a settings window is not what the setting asked for.
+        settingsTokens.append(
+            Settings.shared.observe(Settings.Key.sampleInterval) { [weak self] in
+                DispatchQueue.main.async {
+                    guard let self else { return }
+                    self.restartTimer(hidden: !self.main.window.isVisible)
+                }
+            })
+        settingsTokens.append(
+            Settings.shared.observe(Settings.Key.menuBarWidgetsEnabled) { [weak self] in
+                self?.applyMenuBarSwitch()
+            })
+    }
+
+    /// Observation tokens are only alive while retained — a discarded token
+    /// unobserves in its deinit, which is why these are held rather than `_ =`'d.
+    private var settingsTokens: [AnyObject] = []
+
+    /// The menu bar master switch was flipped. Takes effect now; no relaunch.
+    ///
+    /// The activation policy has to move with it, and only while the window is
+    /// hidden. Switching the widgets off is the moment an `.accessory` app loses
+    /// its last clickable surface, so the Dock tile comes back at exactly that
+    /// point; switching them on again while the window is closed hands the tile
+    /// back and returns the app to what it is — a menu bar tool.
+    private func applyMenuBarSwitch() {
+        let on = Settings.shared.menuBarWidgetsEnabled
+        widgets.setEnabled(on)
+        guard !main.window.isVisible else { return }
+        NSApp.setActivationPolicy(AppPresence.policyWithWindowHidden(widgetsEnabled: on))
     }
 
     /// Tick cadence while the window is hidden.
@@ -309,6 +349,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         guard let m = monitor else { return }
         // Read visibility on the main thread; AppKit state is not thread-safe.
         let visible = main.window.isVisible
+        // Read beside it, for the same reason the interval is: one value used by
+        // the whole tick, so logging cannot be on for the sweep and off for the
+        // write within a single sample.
+        let logging = Settings.shared.batteryLogging
         // Match the cadence to who is actually reading.
         restartTimer(hidden: !visible)
 
@@ -316,8 +360,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         // is still running is dropped, not queued and not run beside it.
         sampleGate.submit(on: sampling) { [weak self] in
             guard let self else { return }
+            // The background full tick exists for ONE reason — keeping the trailing
+            // power window accruing while the window is closed. With logging off
+            // there is nothing to accrue into, so the per-process sweep, the
+            // IOReport channel diff and the rollup behind it are not paid for. The
+            // whole-machine figures the menu bar shows come from every tick, light
+            // or full, so the widgets do not go quiet.
             let wantFull = visible
-                || Date().timeIntervalSince(self.lastFullTick) >= self.backgroundFullInterval
+                || (logging
+                    && Date().timeIntervalSince(self.lastFullTick) >= self.backgroundFullInterval)
             // Attribution only when someone can see it. The rollup feeds the
             // process table and the drill-down, both of which are off screen.
             guard let snap = m.tick(full: wantFull, attribution: visible) else { return }
@@ -342,7 +393,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
             // Only full ticks carry per-app energy, and writing an interval row with
             // no apps would add WAL churn for nothing. At 2 s with ~30 apps this was
             // driving ~20 KB/s of write-ahead log.
-            if wantFull {
+            // `logging` gates the write itself as well as the sweep above, because a
+            // VISIBLE tick is full whether or not anyone is recording.
+            if wantFull, logging {
                 self.store?.record(apps: snap.apps,
                                    measured_W: snap.measured_W,
                                    attributed_W: snap.attributed_W,
@@ -908,6 +961,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
     /// bound to a widget is work done for nobody. The group widget is the one
     /// exception — it can expand to show everything, so it asks for everything.
     var hiddenNeeds: SystemMetrics.Needs {
+        // Master switch off and the window closed: nothing displays a utilisation
+        // figure, so nothing is sampled for one. Read from Settings rather than
+        // from the controller because this runs on the sampling queue and the
+        // controller's flag is main-thread state.
+        guard Settings.shared.menuBarWidgetsEnabled else { return [] }
         var needs: SystemMetrics.Needs = []
         for c in widgets.configs where c.enabled {
             if c.metricID == MetricID.groupPlaceholder.rawValue {
@@ -949,6 +1007,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
     /// again — Dock icon, Finder, ⌘-Tab — must bring the window back. Without this
     /// the app appears to launch and do nothing, because AppKit does not reopen a
     /// window it did not create from a nib.
+    ///
+    /// This is also the second way back that "Start in the menu bar only" relies
+    /// on and its caption promises: opening an already-running BetterStats from
+    /// Finder does not start a second copy, it arrives here — so a user who
+    /// launched headless and expected a window gets one by doing the obvious
+    /// thing again. LaunchServices sends the reopen event whatever the activation
+    /// policy is, so this works while the app is `.accessory` and invisible.
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows: Bool) -> Bool {
         if !hasVisibleWindows { main.show() }
         return true
@@ -1140,5 +1205,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
 let app = NSApplication.shared
 let delegate = AppDelegate()
 app.delegate = delegate
-app.setActivationPolicy(.regular)
+// Before run(), not inside applicationDidFinishLaunching: the policy set here is
+// the one the first frame is drawn under, so a menu-bar-only start never shows a
+// Dock tile at all rather than showing one and taking it away.
+app.setActivationPolicy(
+    AppPresence.launchActivationPolicy(
+        startInMenuBarOnly: Settings.shared.startInMenuBarOnly,
+        widgetsEnabled: Settings.shared.menuBarWidgetsEnabled))
 app.run()
