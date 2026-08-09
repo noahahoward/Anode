@@ -270,7 +270,7 @@ private final class GeneralPane: Pane {
         // The checkbox shows OS truth, not our last request. requiresApproval
         // is explicitly NOT "on": nothing will launch until the user approves.
         let status = settings.launchAtLoginStatus
-        loginCheckbox.state = status == .enabled ? .on : .off
+        loginCheckbox.state = (status == .enabled || status == .enabledViaAgent) ? .on : .off
         switch status {
         case .enabled:
             // Say so, rather than showing nothing. An empty row after ticking a
@@ -283,6 +283,21 @@ private final class GeneralPane: Pane {
             loginButton.isHidden = false
         case .requiresApproval:
             loginNote.stringValue = "Waiting for approval in System Settings → General → Login Items."
+            loginNote.isHidden = false
+            loginButton.isHidden = false
+        case .enabledViaAgent:
+            // It WILL launch at login — via a launchd agent rather than the
+            // modern registration, because this build is ad-hoc signed. Say
+            // which mechanism is in force rather than claiming the other one:
+            // the user will find it under "Allow in the Background", not under
+            // Login Items, and being sent to the wrong pane is worse than being
+            // told the truth about an unglamorous implementation.
+            loginNote.stringValue = (settings.startInMenuBarOnly
+                ? "Opens at login, in the menu bar only."
+                : "Opens at login, with its window.")
+                + " Using a launch agent, because this build is not signed with a "
+                + "Developer ID. It appears in System Settings under Login Items → "
+                + "Allow in the Background."
             loginNote.isHidden = false
             loginButton.isHidden = false
         case .notFound:
@@ -352,7 +367,7 @@ private final class GeneralPane: Pane {
     private func explainLoginResult(_ status: Settings.LoginItemStatus) {
         let a = NSAlert()
         switch status {
-        case .enabled:
+        case .enabled, .enabledViaAgent:
             a.messageText = "BetterStats will open at login"
             a.informativeText = settings.startInMenuBarOnly
                 ? "It will start in the menu bar with no window, as configured below.\n\n"

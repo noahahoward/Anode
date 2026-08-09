@@ -225,6 +225,11 @@ public final class Settings {
         /// bare executable still succeeds and flips status to `.enabled`, so
         /// don't treat this state as terminally broken.
         case notFound
+        /// Running from a `~/Library/LaunchAgents` plist because SMAppService
+        /// would not hold a registration on this ad-hoc signed build. It WILL
+        /// launch at login; it is simply a different mechanism, and the UI says
+        /// so rather than claiming the modern one is in use. See `LoginAgent`.
+        case enabledViaAgent
         case unknown
     }
 
@@ -233,22 +238,47 @@ public final class Settings {
     /// user can revoke in System Settings behind our back, and a checkbox that
     /// lies is worse than no checkbox.
     public var launchAtLogin: Bool {
-        get { SMAppService.mainApp.status == .enabled }
+        get { launchAtLoginStatus == .enabled }
         set {
             do {
                 if newValue {
                     try SMAppService.mainApp.register()
-                } else if SMAppService.mainApp.status == .enabled
-                       || SMAppService.mainApp.status == .requiresApproval {
-                    // Unregistering something that isn't registered throws;
-                    // don't turn a no-op into an error banner.
-                    try SMAppService.mainApp.unregister()
+                    // SMAppService accepted it — but on an ad-hoc signed build it
+                    // will be dropped at boot (see LoginAgent for the measurement).
+                    // If it did not actually reach `.enabled`, install the agent
+                    // that does not depend on a code identity.
+                    if SMAppService.mainApp.status != .enabled,
+                       SMAppService.mainApp.status != .requiresApproval {
+                        try LoginAgent.install()
+                    }
+                } else {
+                    if SMAppService.mainApp.status == .enabled
+                        || SMAppService.mainApp.status == .requiresApproval {
+                        // Unregistering something that isn't registered throws;
+                        // don't turn a no-op into an error banner.
+                        try SMAppService.mainApp.unregister()
+                    }
+                    // Always remove the fallback, whichever path installed it.
+                    // Leaving it behind is how an app the user switched off comes
+                    // back at the next login.
+                    LoginAgent.uninstall()
                 }
                 lastLaunchAtLoginError = nil
             } catch {
-                // Unbundled binaries and denied approvals land here. Keep the
-                // error for the UI; the getter still reports the OS truth.
-                lastLaunchAtLoginError = error
+                // SMAppService refused. That is expected for an ad-hoc build, so
+                // it is not the end of the attempt: try the agent, and only
+                // report failure if that fails too.
+                if newValue {
+                    do {
+                        try LoginAgent.install()
+                        lastLaunchAtLoginError = nil
+                    } catch let agentError {
+                        lastLaunchAtLoginError = agentError
+                    }
+                } else {
+                    LoginAgent.uninstall()
+                    lastLaunchAtLoginError = error
+                }
             }
             notify(Key.launchAtLogin)
         }
@@ -261,9 +291,17 @@ public final class Settings {
         switch SMAppService.mainApp.status {
         case .enabled: return .enabled
         case .requiresApproval: return .requiresApproval
-        case .notRegistered: return .notRegistered
-        case .notFound: return .notFound
-        @unknown default: return .unknown
+        // SMAppService has nothing. Before reporting that, ask whether the
+        // fallback agent is installed and pointing at THIS executable — on an
+        // ad-hoc build that is the mechanism actually in force, and reporting
+        // "not registered" while a launchd job exists would be a lie in the
+        // direction that matters (the user would tick the box again).
+        case .notRegistered:
+            return LoginAgent.isInstalled ? .enabledViaAgent : .notRegistered
+        case .notFound:
+            return LoginAgent.isInstalled ? .enabledViaAgent : .notFound
+        @unknown default:
+            return LoginAgent.isInstalled ? .enabledViaAgent : .unknown
         }
     }
 
