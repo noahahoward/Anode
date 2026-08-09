@@ -83,6 +83,13 @@ public enum MetricUnit: CaseIterable {
             // Takes 0–100. (For 0–1 fractions use .ratio.)
             return String(format: "%.0f%%", value)
         case .minutes:
+            // Deliberately NOT quantised. A coarser display (15 min buckets past
+            // 4 h) was tried and reverted: it does nothing for the failure that
+            // actually reached a user — a 25 h reading replaced by 5 h one second
+            // later — because that is the ESTIMATE moving, not the rendering. And
+            // it costs the property that has caught several real bugs here, that
+            // charge / rate and the displayed time can be checked against each
+            // other by hand. Fix the estimate, not the digits.
             let sign = value < 0 ? "-" : ""
             let m = Int(abs(value).rounded())
             return m >= 60 ? String(format: "%@%dh %02dm", sign, m / 60, m % 60)

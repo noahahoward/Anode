@@ -99,15 +99,23 @@ final class DrainEstimateSourceTests: XCTestCase {
         XCTAssertNotNil(est.estimate(), "the fallback must still answer")
     }
 
-    /// Two minutes in, the accumulator has a window and takes over. Before that the
-    /// answer is the power-based one, marked as such — never a fabricated number
-    /// and never a blank where a real measurement exists.
+    /// Five minutes in, the accumulator has a window and takes over. Before that
+    /// the answer is the power-based one, marked as such — never a fabricated
+    /// number and never a blank where a real measurement exists.
+    ///
+    /// The floor moved from two minutes to five after a cold boot published 25 h
+    /// and then 5 h a second later: a two-minute window is a third of one gauge
+    /// publish, so one batch swung the answer by twenty hours. The tier ORDER is
+    /// unchanged — measured discharge still outranks the power estimate — only
+    /// the point at which the measured path is allowed to speak.
     func testTheMeasuredPathTakesOverOnceItHasAWindow() {
         let est = DrainRateEstimator()
-        drive(est, minutes: 1, watts: 6.0, mAhPerMinute: 12)
-        XCTAssertNotEqual(est.estimate()?.source, .discharge, "one window is not a trend")
+        drive(est, minutes: 4, watts: 6.0, mAhPerMinute: 12)
+        XCTAssertNotEqual(est.estimate()?.source, .discharge,
+                          "four windows is still short of the floor")
+        XCTAssertNotNil(est.estimate(), "and the power-based answer covers the gap")
         let est2 = DrainRateEstimator()
-        drive(est2, minutes: 3, watts: 6.0, mAhPerMinute: 12)
+        drive(est2, minutes: 6, watts: 6.0, mAhPerMinute: 12)
         XCTAssertEqual(est2.estimate()?.source, .discharge)
     }
 

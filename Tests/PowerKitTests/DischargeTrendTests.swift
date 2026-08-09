@@ -238,7 +238,9 @@ final class DischargeTrendTests: XCTestCase {
         trend.record(sample(acc: acc, count: count, at: at, awake: awake), onBattery: true)
         XCTAssertNil(trend.trend, "a reset counter must leave no trend, not a wrong one")
 
-        run(trend, minutes: 3, watts: { _ in 6.0 }, from: 41,
+        // Six minutes, because the floor is five publishes — the point is that it
+        // REBUILDS, not how fast.
+        run(trend, minutes: 6, watts: { _ in 6.0 }, from: 41,
             acc: &acc, count: &count, at: &at, awake: &awake)
         XCTAssertEqual(trend.trend?.power_mW ?? 0, 6000, accuracy: 1,
                        "the window must rebuild from the post-reset counter")
@@ -259,10 +261,10 @@ final class DischargeTrendTests: XCTestCase {
         run(trend, minutes: 1, watts: { _ in 6.0 }, from: 40,
             acc: &acc, count: &count, at: &at, awake: &awake,
             sleepBefore: 40, sleepSeconds: 2400)
-        // One post-wake minute cannot clear the two-window floor: nothing is claimed.
+        // One post-wake minute cannot clear the five-window floor: nothing is claimed.
         XCTAssertNil(trend.trend, "the window must restart, not average across the sleep")
 
-        run(trend, minutes: 3, watts: { _ in 6.0 }, from: 41,
+        run(trend, minutes: 6, watts: { _ in 6.0 }, from: 41,
             acc: &acc, count: &count, at: &at, awake: &awake)
         let after = minutes(trend)!
         XCTAssertEqual(after, before, accuracy: before * 0.05,
@@ -320,18 +322,26 @@ final class DischargeTrendTests: XCTestCase {
 
     // ── Honest nils ─────────────────────────────────────────────────────────
 
-    /// Before two published windows there is no trend, and nil is the answer. The
-    /// caller shows the power-based figure and labels it; it does not guess.
+    /// Before FIVE published windows there is no trend, and nil is the answer.
+    /// The caller shows the power-based figure and labels it; it does not guess.
+    ///
+    /// The floor was two windows until a cold boot on battery produced a headline
+    /// of 25 h replaced by 5 h one second later. Two minutes is a third of one
+    /// publish, so a single batch moved the answer by twenty hours — and the app
+    /// stated it. Five publishes is the point at which one batch can no longer
+    /// dominate. It does not make the early estimate ACCURATE (a machine still
+    /// settling after login has no stable answer to give); it stops the app
+    /// asserting one it cannot support.
     func testTooLittleHistoryReportsNothing() {
         let trend = BatteryDischargeTrend()
         var acc: Int64 = -1_000_000, count: UInt64 = 500_000
         var at = t0, awake = 10_000.0
-        run(trend, minutes: 1, watts: { _ in 6.0 },
+        run(trend, minutes: 4, watts: { _ in 6.0 },
             acc: &acc, count: &count, at: &at, awake: &awake)
-        XCTAssertNil(trend.trend, "one 60 s window is not a trend")
-        run(trend, minutes: 1, watts: { _ in 6.0 }, from: 1,
+        XCTAssertNil(trend.trend, "four 60 s windows is still not enough to speak")
+        run(trend, minutes: 1, watts: { _ in 6.0 }, from: 4,
             acc: &acc, count: &count, at: &at, awake: &awake)
-        XCTAssertNotNil(trend.trend, "two windows is an exact two-minute measurement")
+        XCTAssertNotNil(trend.trend, "five windows is an exact five-minute measurement")
         XCTAssertFalse(trend.trend!.isFull, "…and it must say it is not the full window")
     }
 
@@ -341,11 +351,58 @@ final class DischargeTrendTests: XCTestCase {
         let trend = BatteryDischargeTrend()
         var acc: Int64 = -1_000_000, count: UInt64 = 500_000
         var at = t0, awake = 10_000.0
-        run(trend, minutes: 2, watts: { _ in 6.0 },
+        run(trend, minutes: 5, watts: { _ in 6.0 },
             acc: &acc, count: &count, at: &at, awake: &awake)
         let early = minutes(trend)!
-        run(trend, minutes: 38, watts: { _ in 6.0 }, from: 2,
+        run(trend, minutes: 35, watts: { _ in 6.0 }, from: 5,
             acc: &acc, count: &count, at: &at, awake: &awake)
         XCTAssertEqual(early, minutes(trend)!, accuracy: 1.0)
+    }
+
+    /// A cold boot on battery must not publish an ETD from a two-minute window.
+    ///
+    /// Reported live after a restart: the headline read 25 h, then 5 h one second
+    /// later, then held for a minute. Both were defensible in isolation — the
+    /// pack was drawing 712 mA at 12.81 V (11.5 %/hr) and the load average was
+    /// collapsing from 8.78 to 3.35 as login items settled — but a 120-tick
+    /// window is a third of a single publish, so one new batch moved the answer
+    /// by twenty hours, and the app asserted "25 hours" on the strength of it.
+    func testAShortWindowPublishesNothingRatherThanAWildNumber() {
+        let t = BatteryDischargeTrend()
+        let start = Date(timeIntervalSince1970: 1_700_000_000)
+
+        // Four publishes: 240 ticks, comfortably past the OLD 120-tick floor.
+        for i in 0...4 {
+            _ = t.record(sample(acc: Int64(-9_000 * i * 60), count: UInt64(i * 60),
+                                at: start.addingTimeInterval(Double(i) * 60),
+                                awake: Double(i) * 60),
+                         onBattery: true)
+        }
+        XCTAssertNil(t.trend,
+                     "240 ticks is four minutes; one batch still dominates it")
+
+        // A fifth publish crosses five minutes and it may speak.
+        _ = t.record(sample(acc: Int64(-9_000 * 300), count: 300,
+                            at: start.addingTimeInterval(300), awake: 300),
+                     onBattery: true)
+        XCTAssertNotNil(t.trend, "five publishes is enough to answer")
+        XCTAssertEqual(t.trend?.ticks, 300)
+    }
+
+    /// The floor is a MINIMUM, not the window. Crossing it must not be mistaken
+    /// for the window being full — `isFull` still gates on the 30-minute span,
+    /// and a caller that conflated them would stop reporting maturity.
+    func testCrossingTheFloorIsNotTheSameAsAFullWindow() {
+        let t = BatteryDischargeTrend()
+        let start = Date(timeIntervalSince1970: 1_700_000_000)
+        for i in 0...5 {
+            _ = t.record(sample(acc: Int64(-9_000 * i * 60), count: UInt64(i * 60),
+                                at: start.addingTimeInterval(Double(i) * 60),
+                                awake: Double(i) * 60),
+                         onBattery: true)
+        }
+        XCTAssertNotNil(t.trend)
+        XCTAssertFalse(t.trend?.isFull ?? true,
+                       "five minutes of a thirty minute window is not full")
     }
 }
