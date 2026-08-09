@@ -303,8 +303,8 @@ public final class MetricRegistry {
         }
     }
 
-    /// The displayed drain rate and time remaining, pushed in by whoever owns the
-    /// DrainRateEstimator.
+    /// The displayed drain rate, the time remaining, and where they came from,
+    /// pushed in by whoever owns the DrainRateEstimator.
     ///
     /// Without this the menu bar computed its own figures from instantaneous
     /// power while the window computed different ones from observed discharge,
@@ -312,9 +312,15 @@ public final class MetricRegistry {
     /// card three inches apart showing different drain and different time left.
     /// They are answers to the same question and there is only one right one, so
     /// there is now one source.
-    public private(set) var displayedRate: (pctHr: Double, timeRemaining_hr: Double?)?
+    ///
+    /// `source` rides along because a figure measured from the pack's own discharge
+    /// integral and a figure inferred from this instant's power draw are not the
+    /// same claim, and the renderer is where that difference has to become visible.
+    public private(set) var displayedRate: (pctHr: Double, timeRemaining_hr: Double?,
+                                            source: DrainEstimate.Source)?
 
-    public func update(displayedRate: (pctHr: Double, timeRemaining_hr: Double?)?) {
+    public func update(displayedRate: (pctHr: Double, timeRemaining_hr: Double?,
+                                       source: DrainEstimate.Source)?) {
         lock.lock(); defer { lock.unlock() }
         self.displayedRate = displayedRate
     }
@@ -339,11 +345,17 @@ public final class MetricRegistry {
             }
             // The SHARED figure when one has been published — the same number the
             // window shows — falling back to instantaneous power only before the
-            // first one arrives. Estimate until the SMC/gas-gauge gain converges,
-            // same "*" rule the app's own status item uses.
-            let rate = self?.displayedRate?.pctHr ?? s.smoothed_pctHr
+            // first one arrives.
+            let shared = self?.displayedRate
+            let rate = shared?.pctHr ?? s.smoothed_pctHr
+            // The "*" means "this is inferred, not measured". A rate that came from
+            // the battery's own discharge accumulator is measured end to end, and
+            // no SMC gain enters it, so the marker drops. Everything else here is
+            // modelled from power draw and keeps it — including a calibrated SMC
+            // total, which is a well-calibrated MODEL of what the pack is losing
+            // and not a reading of it.
             return MetricValue(rate, unit: .percentPerHour,
-                               isEstimate: !s.isCalibrated)
+                               isEstimate: shared?.source != .discharge)
         }
 
         register(MetricDescriptor(
@@ -359,14 +371,20 @@ public final class MetricRegistry {
             unit: .minutes, category: "Battery", higherIsWorse: false
         )) { [weak self] in
             guard let s = self?.latestSnapshot() else { return nil }
-            // Our projection at the current smoothed draw beats macOS's SBS figure
-            // (which is nil on AC anyway — sentinel 65535 is already scrubbed by
-            // Battery.state()). Both are projections, so both are estimates. On AC
-            // there is no honest number: return nil and let the widget show "—".
-            // Shared first, so the widget and the card cannot disagree about how
-            // long the battery has left.
-            if let hr = self?.displayedRate?.timeRemaining_hr, hr.isFinite, hr > 0 {
-                return MetricValue(hr * 60, unit: .minutes, isEstimate: true)
+            // Our projection beats macOS's SBS figure (which is nil on AC anyway —
+            // sentinel 65535 is already scrubbed by Battery.state()). On AC there is
+            // no honest number: return nil and let the widget show "—". Shared
+            // first, so the widget and the card cannot disagree about how long the
+            // battery has left.
+            //
+            // Every line below is a projection, but they are not equally well
+            // founded: the first is charge measured out of the pack over the last
+            // half hour, the rest are inferences from present draw. The "*" marks
+            // that boundary, which is the only way a user can tell them apart.
+            if let shared = self?.displayedRate, let hr = shared.timeRemaining_hr,
+               hr.isFinite, hr > 0 {
+                return MetricValue(hr * 60, unit: .minutes,
+                                   isEstimate: shared.source != .discharge)
             }
             if let hr = s.projectedRuntime_hr() {
                 return MetricValue(hr * 60, unit: .minutes, isEstimate: true)

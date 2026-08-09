@@ -147,7 +147,11 @@ final class GlanceCardView: NSView {
                       drain: DrainEstimate?) -> Model? {
         guard let st = s.state else { return nil }
         let full_Wh = s.scale.energyFull_Wh
-        let remaining_Wh = full_Wh * Double(st.percent) / 100
+        // mAh basis, like every other projection in the app — see
+        // `BatteryScale.chargePercent`. The integer percent shown beside this reads
+        // 1-2 points higher and is the gauge's own rounding, not a second opinion
+        // worth propagating into an energy figure.
+        let remaining_Wh = full_Wh * s.scale.chargePercent(st) / 100
 
         switch s.direction {
         case .charging:
@@ -178,30 +182,54 @@ final class GlanceCardView: NSView {
                 ])
 
         case .draining:
-            // Prefer the observed-discharge rate: it is measured from charge actually
-            // leaving the pack rather than inferred from power draw.
-            // Same figure the menu bar shows — see AppDelegate.reconciledRate.
-            let rate = AppDelegate.reconciledRate(s, drain).pctHr
-
-            // Time remaining is derived from THAT SAME rate, not read from the
-            // estimator separately. The estimator's own timeRemaining is computed
-            // from a differently-weighted rate, so the two disagreed on screen —
-            // 80% at 11.2 %/hr was showing 3h46m when the arithmetic says 7h08m.
-            // A card whose own numbers contradict each other is worse than one that
-            // is slightly stale.
-            let hrs: Double? = rate > 0.01 ? Double(st.percent) / rate : nil
+            // Rate AND time come from the one published pair — the same two numbers
+            // the menu bar shows, neither of them recomputed here. They used to be
+            // computed twice and disagreed on screen: 80% at 11.2 %/hr was showing
+            // 3h46m when the arithmetic says 7h08m.
+            //
+            // They still multiply out, but against the mAh charge rather than the
+            // integer percent printed below them: `reconciledRate` divides
+            // `BatteryScale.chargePercent`, which on this machine reads 59.2 % where
+            // `CurrentCapacity` says 61 %. That gap is the deliberate basis change —
+            // the integer field is optimistic by ~5 % and the pack's own
+            // `TimeRemaining` agrees with the mAh figure — so "61 % ÷ 5.6 %/hr"
+            // no longer lands exactly on the headline. It is off by the same 1-2
+            // points the gauge is off by, and rounding the projection to agree with
+            // the rounder of the two inputs would be the wrong repair.
+            let shared = AppDelegate.reconciledRate(s, drain)
+            let hrs = shared.timeRemaining_hr
 
             return Model(
                 source: .battery,
-                headline: hrs.map(hm) ?? "—",
+                // "estimating…" while nothing is known yet, never a placeholder
+                // number. "—" is for a figure that is unknowABLE rather than
+                // not-yet-known.
+                headline: hrs.map(hm) ?? (shared.source == .insufficient ? "estimating…" : "—"),
                 percent: st.percent,
-                sourceLabel: "on battery",
+                sourceLabel: "on battery · " + provenance(shared.source),
                 rows: [
-                    ("Drain", String(format: "%.1f %%/hr", rate), nil),
+                    ("Drain", String(format: "%.1f %%/hr", shared.pctHr), nil),
                     ("Draw", String(format: "%.1f W", s.smoothed_W), nil),
                     ("Remaining", String(format: "%.1f Wh", remaining_Wh), hrs.flatMap { at($0) }),
                     ("Health", health(s), nil),
                 ])
+        }
+    }
+
+    /// Where the headline came from, in the user's words rather than the enum's.
+    ///
+    /// The distinction is not decoration: "measured drain" is charge integrated out
+    /// of the pack by the battery itself over the last half hour, while the others
+    /// are inferred from what the machine is drawing at this instant and will move
+    /// with it. A user deciding whether to trust "3h 40m" needs to know which they
+    /// are looking at.
+    private static func provenance(_ source: DrainEstimate.Source) -> String {
+        switch source {
+        case .discharge:    return "measured drain"
+        case .observed:     return "observed drain"
+        case .blended:      return "estimated drain"
+        case .power:        return "estimated from draw"
+        case .insufficient: return "no estimate yet"
         }
     }
 

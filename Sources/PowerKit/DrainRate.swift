@@ -45,8 +45,21 @@ import Foundation
 ///   (`source == .power`); once the window has span and signal, observation
 ///   dominates completely (`source == .observed`). `source` is exposed so the
 ///   UI can label the figure honestly.
+///
+/// ## What now sits ABOVE all of that: `BatteryDischargeTrend`
+/// Everything above infers drain from `RemainingCapacity`, which is the gauge's
+/// ESTIMATE of state of charge and moves the wrong way on four publishes in ten
+/// (see `DischargeTrend.swift` for the measurement). The battery also publishes an
+/// INTEGRAL of measured discharge power, which cannot, and a half-hour mean of it
+/// is 7.4x steadier. When that trend has a window it is used outright and the
+/// regression below becomes the cross-check and the fallback — for the first
+/// couple of minutes on battery, and for any machine where the accumulator is
+/// absent or implausible. `source` says which one is speaking, and the UI shows it.
 public struct DrainEstimate {
     public enum Source: String, Sendable {
+        /// Mean of the battery's own discharge accumulator over the trend window —
+        /// measured charge that has already left the pack, not an inference.
+        case discharge
         /// Regression over observed history; confidence is high enough that
         /// the power-based figure is ignored entirely.
         case observed
@@ -60,21 +73,42 @@ public struct DrainEstimate {
         case insufficient
     }
 
-    /// Blended drain rate in %/hr, always >= 0. Check `source` for provenance.
+    /// Drain rate in %/hr, always >= 0. Check `source` for provenance.
     public let percentPerHour: Double
-    /// Slew-limited time to empty — THE value to display. nil when unknowable
-    /// (on AC, rate ≈ 0, or no data): show "—", never a substitute number.
+    /// Time to empty — THE value to display. nil when unknowable (on AC, rate ≈ 0,
+    /// or no data): show "—" or "estimating…", never a substitute number.
     public let timeRemaining: TimeInterval?
-    /// Pre-slew time to empty, for diagnostics only. Never display directly —
-    /// it jumps exactly the way the slew limit exists to prevent.
-    public let rawTimeRemaining: TimeInterval?
-    /// 0…1: the weight observed history carried in the blend.
+    /// 0…1: how much of `percentPerHour` is measured rather than inferred. 1 for
+    /// `.discharge`, which is measurement end to end.
     public let confidence: Double
     public let source: Source
     /// Span of the history window behind the estimate (0 when none).
     public let windowSpan: TimeInterval
     /// Samples inside that window.
     public let sampleCount: Int
+
+    /// The ONE definition of time-to-empty, on the mAh basis.
+    ///
+    /// A function rather than two divisions in two files, because the last time
+    /// this arithmetic existed twice the menu bar and the glance card printed
+    /// different answers to the same question three inches apart. Whatever rate is
+    /// DISPLAYED goes in here, so charge ÷ rate = the time shown beside it, always.
+    ///
+    /// `chargePercent` is `RemainingCapacity / FullChargeCapacity`, NOT the integer
+    /// `CurrentCapacity`: measured on this machine those disagree by 1–2 points
+    /// (61 % vs 59.2 %, 42 % vs 40.0 %), and the integer field is the optimistic one
+    /// — it overstates runtime by ~5 %, about 12 minutes at 4 hours. See
+    /// `BatteryScale.chargePercent`.
+    public static func timeToEmpty(chargePercent: Double, ratePctHr: Double) -> TimeInterval? {
+        // Below this the division blows up toward the cap below; treat as "not
+        // meaningfully draining" and answer nothing.
+        guard ratePctHr >= 0.1, ratePctHr.isFinite, chargePercent > 0 else { return nil }
+        let t = chargePercent / ratePctHr * 3600
+        // A displayed time above this is a fit through noise, not a runtime a laptop
+        // has. nil (the UI shows "—") rather than "412 hr".
+        guard t.isFinite, t > 0, t <= 99 * 3600 else { return nil }
+        return t
+    }
 }
 
 public final class DrainRateEstimator {
@@ -120,22 +154,10 @@ public final class DrainRateEstimator {
     private var divergeStreak = 0
     private var preferFast = false
 
-    // ── Slew limiter for the DISPLAYED time (kills "3 hrs then 9 hrs") ─────
-    /// Max relative change of the displayed time per update.
-    private let slewRel = 0.12
-    /// Absolute floor on the allowed change so small values can still move.
-    /// Kept modest (2 min): at very low charge the absolute time is small and
-    /// the user explicitly wants it steady there.
-    private let slewFloor: TimeInterval = 120
-    private var displayedTime: TimeInterval?
-    private var lastSlewKey: Date?
-
-    /// A displayed time above this is a fit through noise, not a runtime a
-    /// laptop has. Return nil (UI shows "—") rather than "412 hr".
-    private let maxDisplayableTime: TimeInterval = 99 * 3600
-    /// Below this rate the division blows up toward the cap above; treat as
-    /// "not meaningfully draining" and return nil.
-    private let minRate_pctHr = 0.1
+    /// The primary signal. Owned here rather than beside it so the app drives ONE
+    /// object and reads ONE estimate: two published drain figures is exactly the
+    /// bug this class was last changed to fix.
+    private let dischargeTrend: BatteryDischargeTrend
 
     private var samples: [Sample] = []
     private let maxSamples = 8192
@@ -148,9 +170,11 @@ public final class DrainRateEstimator {
     private var lastPower: (pctHr: Double, at: Date)?
     private let powerMaxAge: TimeInterval = 300
 
-    public init(fastWindow: TimeInterval = 600, slowWindow: TimeInterval = 3600) {
+    public init(fastWindow: TimeInterval = 600, slowWindow: TimeInterval = 3600,
+                trend: BatteryDischargeTrend = BatteryDischargeTrend()) {
         self.fastWindow = max(60, fastWindow)
         self.slowWindow = max(self.fastWindow, slowWindow)
+        self.dischargeTrend = trend
     }
 
     // ── Recording ───────────────────────────────────────────────────────────
@@ -158,40 +182,49 @@ public final class DrainRateEstimator {
     /// Convenience wrapper over the raw-value `record`. Call once per monitor
     /// tick (~5 s); the estimator itself notices which ticks carry a new gauge
     /// publish.
+    ///
+    /// Reads the discharge accumulator here rather than making every caller do it:
+    /// it comes out of the same `Battery.properties()` dictionary as `state`, which
+    /// is cached for 0.25 s, so on a tick that already read the battery this costs
+    /// no extra IORegistry traversal.
     public func record(state: Battery.State, scale: BatteryScale,
                        powerBased_pctHr: Double?, at: Date = Date()) {
         record(remainingCapacity_mAh: state.remainingCapacity_mAh,
                onAC: state.onAC, isCharging: state.isCharging,
-               scale: scale, powerBased_pctHr: powerBased_pctHr, at: at)
+               scale: scale, powerBased_pctHr: powerBased_pctHr,
+               discharge: BatteryDischargeTrend.Sample.sample(at: at), at: at)
     }
 
     /// Raw-value entry point. Public so harnesses/tests can drive the
     /// estimator with synthetic history (`Battery.State` has no public init).
+    ///
+    /// `discharge` nil means the accumulator was unreadable this tick; the trend
+    /// simply does not advance and the regression below carries the estimate.
     public func record(remainingCapacity_mAh: Double, onAC: Bool, isCharging: Bool,
-                       scale: BatteryScale, powerBased_pctHr: Double?, at now: Date = Date()) {
+                       scale: BatteryScale, powerBased_pctHr: Double?,
+                       discharge: BatteryDischargeTrend.Sample? = nil,
+                       at now: Date = Date()) {
         if scale.fullChargeCapacity_mAh > 0 { fullCharge_mAh = scale.fullChargeCapacity_mAh }
         if let p = powerBased_pctHr, p.isFinite, p >= 0 { lastPower = (p, now) }
 
         let onBattery = !onAC && !isCharging
+        // Fed before the AC guard below: `onBattery: false` is how the trend learns
+        // to throw its window away, and it has to hear about the transition.
+        if let d = discharge { dischargeTrend.record(d, onBattery: onBattery) }
         guard onBattery else {
             // AC transition: charge going UP is not drain, and mixing the two
             // poisons the fit. Drop everything; the power figure carries the
-            // display until battery history rebuilds. Slew state goes too —
-            // the charge level may move arbitrarily while plugged in, so the
-            // next displayed time legitimately starts fresh.
-            if wasOnBattery || !samples.isEmpty { resetHistory(clearSlew: true) }
+            // display until battery history rebuilds.
+            if wasOnBattery || !samples.isEmpty { resetHistory() }
             wasOnBattery = false
             return
         }
-        if !wasOnBattery { resetHistory(clearSlew: true) }  // fresh discharge segment
+        if !wasOnBattery { resetHistory() }  // fresh discharge segment
         wasOnBattery = true
 
         let mAh = remainingCapacity_mAh
         guard mAh.isFinite, mAh > 0 else { return }         // gauge glitch: skip, never poison
-        // Anomalies below reset the HISTORY but keep the slew state: we are
-        // still on battery and still displaying, and a discontinuity in the
-        // shown time is precisely what this class exists to prevent.
-        if let t = samples.last?.t, now < t { resetHistory(clearSlew: false) }  // clock went backwards
+        if let t = samples.last?.t, now < t { resetHistory() }  // clock went backwards
         // A sample buffer that straddles a sleep fits a line through hours the
         // machine was not awake for. The long case is already harmless — a nine
         // hour gap puts every pre-sleep sample outside `prune`'s cutoff — but a
@@ -205,12 +238,12 @@ public final class DrainRateEstimator {
         // sleeps no clock but breaks the series the same way. `record` is driven
         // every couple of seconds, so a gap this long is never an ordinary tick.
         //
-        // Slew state is deliberately KEPT: the machine was on battery before and
-        // is on battery now, so the displayed time should carry across rather
-        // than restart, which is the discontinuity this class exists to prevent.
+        // The discharge trend has its OWN, tighter gap rule (see
+        // `BatteryDischargeTrend.record`): it compares the wall clock against
+        // CLOCK_UPTIME_RAW and so also catches a sleep shorter than this.
         if let t = samples.last?.t,
            now.timeIntervalSince(t) > HistoryStore.maxPlausibleInterval {
-            resetHistory(clearSlew: false)
+            resetHistory()
         }
         // MEASURED on this machine: the gauge can revise RemainingCapacity
         // UP by ~11 mAh mid-discharge (voltage-relaxation recovery). Small
@@ -218,7 +251,7 @@ public final class DrainRateEstimator {
         // them. Only a rise too big to be noise (~0.5% of pack) means the
         // AC/charging flags lied and the history is genuinely poisoned.
         if let lm = lastMAh, mAh > lm + max(8, 0.005 * (fullCharge_mAh ?? 6000)) {
-            resetHistory(clearSlew: false)
+            resetHistory()
         }
 
         let isNewPublish = (mAh != lastMAh)
@@ -229,21 +262,18 @@ public final class DrainRateEstimator {
     }
 
     public func reset() {
-        resetHistory(clearSlew: true)
+        resetHistory()
+        dischargeTrend.reset()
         wasOnBattery = false
         lastPower = nil
         fullCharge_mAh = nil
     }
 
-    private func resetHistory(clearSlew: Bool) {
+    private func resetHistory() {
         samples.removeAll(keepingCapacity: true)
         lastMAh = nil
         divergeStreak = 0
         preferFast = false
-        if clearSlew {
-            displayedTime = nil
-            lastSlewKey = nil
-        }
     }
 
     private func prune(now: Date) {
@@ -320,12 +350,35 @@ public final class DrainRateEstimator {
     /// nothing has been recorded. Otherwise always returns something, with
     /// `source` saying how much of it is measured.
     ///
-    /// Call after each `record()`. Extra calls between records return the same
-    /// displayed value — the slew limiter only advances on new data, so a UI
-    /// re-render cannot creep the number.
+    /// Call after each `record()`. It is a pure read of accumulated state: extra
+    /// calls between records return the same answer, so a UI re-render cannot
+    /// creep the number.
     public func estimate() -> DrainEstimate? {
         guard wasOnBattery, let last = samples.last,
               let full = fullCharge_mAh, full > 0 else { return nil }
+
+        // Charge left on the mAh basis, NOT the integer `CurrentCapacity` — at
+        // 6193 mAh one integer percent is ~62 mAh of invisible movement, and the
+        // integer field reads 1-2 points high (see `BatteryScale.chargePercent`).
+        let remainingPct = last.mAh / full * 100
+
+        // The discharge accumulator outranks everything below it whenever it has a
+        // window: it is charge that has already left the pack, measured, where the
+        // regression is an inference from a state-of-charge estimate that moves the
+        // wrong way on four publishes in ten. No blend and no slew limit on this
+        // path — the half-hour window IS the stabiliser, and a filter on top could
+        // only hide a change the measurement had genuinely seen.
+        if let t = dischargeTrend.trend, t.current_mA > 0 {
+            let rate = t.current_mA / full * 100          // mA / mAh -> %/hr
+            return DrainEstimate(
+                percentPerHour: rate,
+                timeRemaining: DrainEstimate.timeToEmpty(chargePercent: remainingPct,
+                                                         ratePctHr: rate),
+                confidence: 1,
+                source: .discharge,
+                windowSpan: t.span,
+                sampleCount: t.publishes)
+        }
 
         let slowFit = fit(window: slowWindow)
         let chosen = preferFast ? (fit(window: fastWindow) ?? slowFit) : slowFit
@@ -367,45 +420,25 @@ public final class DrainRateEstimator {
             count = samples.count
         } else {
             // History too short/flat AND no power figure: claim nothing.
-            return DrainEstimate(percentPerHour: 0, timeRemaining: nil,
-                                 rawTimeRemaining: nil, confidence: 0,
+            return DrainEstimate(percentPerHour: 0, timeRemaining: nil, confidence: 0,
                                  source: .insufficient,
                                  windowSpan: slowFit?.span ?? 0,
                                  sampleCount: samples.count)
         }
 
-        // Time remaining from the mAh-derived FRACTIONAL percent, not the
-        // coarse integer `percent` — at 6197 mAh, 1 integer % is ~62 mAh of
-        // invisible movement.
-        let remainingPct = last.mAh / full * 100
-        var raw: TimeInterval? = nil
-        if rate >= minRate_pctHr, rate.isFinite {
-            let t = remainingPct / rate * 3600
-            if t.isFinite, t > 0, t <= maxDisplayableTime { raw = t }
-        }
-        let displayed = slew(target: raw, key: last.t)
-
+        // Same arithmetic as the measured path above, from the same shared
+        // definition: whatever rate is published, the time beside it is the charge
+        // divided by it. The slew limiter that used to sit here is gone — it was
+        // 12% per record() call, and record() runs every 2 s, which is ~6%/s and
+        // lets the display cross its whole range in twenty seconds. It limited
+        // nothing, and stability now comes from the window rather than from a
+        // filter over a number computed the wrong way.
         return DrainEstimate(percentPerHour: max(0, rate),
-                             timeRemaining: displayed,
-                             rawTimeRemaining: raw,
+                             timeRemaining: DrainEstimate.timeToEmpty(
+                                 chargePercent: remainingPct, ratePctHr: max(0, rate)),
                              confidence: confidence,
                              source: source,
                              windowSpan: span,
                              sampleCount: count)
-    }
-
-    /// Cap how far the displayed time may move per NEW sample:
-    /// max(12% of current, 2 min). This is the direct fix for "3 hrs then
-    /// 9 hrs": a wild new target drags the display a bounded step, and only a
-    /// target that persists walks it the whole way. Keyed on the sample
-    /// timestamp so repeated estimate() calls on the same data are idempotent.
-    private func slew(target: TimeInterval?, key: Date) -> TimeInterval? {
-        if lastSlewKey == key { return displayedTime }
-        lastSlewKey = key
-        guard let target else { displayedTime = nil; return nil }
-        guard let current = displayedTime else { displayedTime = target; return target }
-        let maxStep = max(slewRel * current, slewFloor)
-        displayedTime = current + min(max(target - current, -maxStep), maxStep)
-        return displayedTime
     }
 }

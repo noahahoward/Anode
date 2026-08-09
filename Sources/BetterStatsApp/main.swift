@@ -79,6 +79,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
     var monitor: PowerMonitor?
     var store: HistoryStore?
     let drain = DrainRateEstimator()
+    /// The most recent estimate, computed on the sampling queue beside the
+    /// `record` that produced it and then handed to the main thread as a value.
+    /// `DrainRateEstimator` is not thread-safe and `record` does not run on main,
+    /// so calling `estimate()` from a UI path was reading a buffer while the
+    /// sampler mutated it.
+    var lastDrain: DrainEstimate?
     /// CPU, memory, GPU, network and sensors. Cheap enough to run even while
     /// hidden — unlike the per-process sweep, these are a handful of syscalls.
     let sysMetrics = SystemMetrics()
@@ -345,9 +351,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
                                    socPercent: snap.state.map { Double($0.percent) },
                                    interval: snap.interval)
             }
+            var est: DrainEstimate?
             if let st = snap.state {
                 self.drain.record(state: st, scale: snap.scale,
                                   powerBased_pctHr: snap.smoothed_pctHr)
+                est = self.drain.estimate()
             }
 
             // The window query walks history, so it is not worth doing every tick.
@@ -365,6 +373,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
 
             DispatchQueue.main.async {
                 self.lastSystem = sysSnap
+                self.lastDrain = est
                 if let p = pcts { self.windowPercents = p; self.lastWindowQuery = Date() }
                 // Hidden: refresh only the menu bar. Reloading a table, re-sorting
                 // rows and redrawing the graph for an off-screen window is pure cost.
@@ -372,6 +381,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
                     self.apply(snap)
                 } else {
                     MetricRegistry.shared.update(with: snap)
+                    // Published on hidden ticks too. Without this the menu bar kept
+                    // whatever pair was current when the window was last closed and
+                    // showed it for as long as the app stayed in the background —
+                    // which is most of its life.
+                    MetricRegistry.shared.update(displayedRate: Self.reconciledRate(snap, est))
                     self.widgets.refresh()
                 }
             }
@@ -389,7 +403,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         // figures behind these — total, charge, time left — are measured on every
         // tick, light or full.
         MetricRegistry.shared.update(with: s)
-        MetricRegistry.shared.update(displayedRate: Self.reconciledRate(s, drain.estimate()))
+        MetricRegistry.shared.update(displayedRate: Self.reconciledRate(s, lastDrain))
         widgets.refresh()
 
         // Everything below reads what only a full sweep produces: the app rows,
@@ -490,7 +504,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
             attempted: s.attempted,
             overflow: s.hasAttributionOverflow)
 
-        main.glance.model = GlanceCardView.model(from: s, drain: drain.estimate())
+        main.glance.model = GlanceCardView.model(from: s, drain: lastDrain)
         main.sidebar.refreshValues()
     }
 
@@ -561,35 +575,61 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         return palette[i % palette.count]
     }
 
-    /// The one drain figure the whole app shows, and the hours it implies.
+    /// The one drain figure the whole app shows, the hours it implies, and where
+    /// both came from.
     ///
     /// The menu bar used to compute this from instantaneous power while the
     /// window computed it from observed discharge, and they disagreed on screen —
     /// reported as a widget and a card three inches apart giving different
-    /// answers to one question, with the card noticeably steadier.
+    /// answers to one question, with the card noticeably steadier. Every surface
+    /// reads this pair; nothing recomputes either half of it.
     ///
-    /// The estimator wins normally: it is slew-limited and reflects real
-    /// discharge rather than instantaneous draw, which is why it looks calmer.
-    /// But it infers from gauge movement, and the gauge publishes about once a
-    /// minute, so just after unplugging it has almost nothing to fit and can
-    /// report near zero — which is how the card once claimed 200 hours. Measured
-    /// power is available every tick and cannot go stale that way, so it takes
-    /// over whenever the two disagree by more than a factor of two.
-    static func reconciledRate(_ s: PowerMonitor.Snapshot,
-                               _ est: DrainEstimate?) -> (pctHr: Double, timeRemaining_hr: Double?) {
+    /// Three tiers, best first:
+    ///
+    /// 1. `.discharge` — the half-hour mean of the battery's own discharge
+    ///    accumulator. Charge that has already left the pack, integrated by the
+    ///    hardware. It wins outright: nothing here can improve on a measurement,
+    ///    and the 2x guard below exists to catch an estimator with too little
+    ///    history, which this one reports as nil instead.
+    /// 2. the gauge regression, guarded — it infers from `RemainingCapacity`
+    ///    movement, and the gauge publishes about once a minute, so just after
+    ///    unplugging it has almost nothing to fit and can report near zero, which
+    ///    is how the card once claimed 200 hours. Measured power is available every
+    ///    tick and cannot go stale that way, so it takes over whenever the two
+    ///    disagree by more than a factor of two.
+    /// 3. instantaneous power, when there is no history at all.
+    ///
+    /// TIME comes from `DrainEstimate.timeToEmpty` in every branch, against the
+    /// charge on the mAh basis — so the rate published here and the hours published
+    /// here always multiply back to the charge, whichever tier answered.
+    static func reconciledRate(_ s: PowerMonitor.Snapshot, _ est: DrainEstimate?)
+        -> (pctHr: Double, timeRemaining_hr: Double?, source: DrainEstimate.Source) {
+        let draining = s.direction == .draining
+        if let e = est, e.source == .discharge, draining {
+            return (e.percentPerHour, e.timeRemaining.map { $0 / 3600 }, .discharge)
+        }
         let measured = s.smoothed_pctHr
-        let shown: Double = {
-            guard let inferred = est?.percentPerHour, inferred > 0 else { return measured }
-            guard measured > 0.05 else { return inferred }
+        let inferred = est?.percentPerHour
+        let trustInferred: Bool = {
+            guard let inferred, inferred > 0 else { return false }
+            guard measured > 0.05 else { return true }
             let ratio = inferred / measured
-            return (ratio < 0.5 || ratio > 2.0) ? measured : inferred
+            return ratio >= 0.5 && ratio <= 2.0
         }()
+        let shown = trustInferred ? (inferred ?? measured) : measured
         let hours: Double? = {
-            guard s.direction == .draining, shown > 0.01,
-                  let pct = s.state?.percent else { return nil }
-            return Double(pct) / shown
+            guard draining, let st = s.state else { return nil }
+            return DrainEstimate.timeToEmpty(chargePercent: s.scale.chargePercent(st),
+                                             ratePctHr: shown).map { $0 / 3600 }
         }()
-        return (shown, hours)
+        // The label follows the number that was actually taken: overriding the
+        // estimator with the power figure and still reporting the estimator's
+        // provenance would be the same lie in a different place. `.insufficient`
+        // means nothing is known yet — the UI shows "estimating…", not a number.
+        let source: DrainEstimate.Source = shown > 0.01
+            ? (trustInferred ? (est?.source ?? .power) : .power)
+            : .insufficient
+        return (shown, hours, source)
     }
 
     func updateGraph(_ s: PowerMonitor.Snapshot?) {

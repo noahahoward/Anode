@@ -39,6 +39,61 @@ import SQLite3
 /// recorded battery time as a "10 hr" figure is the same lie as normalizing to 100%.
 public final class HistoryStore {
 
+    /// Where the retention horizon comes from, and whether this store trims
+    /// itself at all.
+    ///
+    /// The store maintains ITSELF rather than exposing a prune the app is
+    /// expected to remember to call, because that is exactly what shipped:
+    /// `prune` existed, `historyRetentionDays` existed, the Preferences caption
+    /// promised it worked, and no call site was ever written. A store that
+    /// schedules its own retention has no call site left to forget.
+    public enum Retention {
+        /// Follow `Settings.historyRetentionDays` live, re-scheduling when the
+        /// user changes it. The app's path.
+        case follow(Settings)
+        /// A fixed horizon with no observation.
+        case fixed(days: Double)
+        /// Never prune on a timer; `prune()` still works when called.
+        case manual
+    }
+
+    // Maintenance tuning. Internal rather than private so tests can compress the
+    // schedule and shrink the chunk without waiting an hour or writing 100k rows.
+    //
+    /// Interval rows per delete transaction. MEASURED on this machine against a
+    /// store shaped like a real one (1 min buckets, 20 app rows each): 400 rows
+    /// plus their ~8,000 app rows commits in 12 ms, and the worst record() stall
+    /// observed while a pass ran was 14 ms — under 1% of a 2 s tick, so a tick
+    /// that lands mid-chunk is late, not dropped. 2,000-row chunks measured
+    /// 58 ms, which is the same work at 5x the blast radius for no gain.
+    var chunkRows = 400
+    /// Idle between chunks. record() blocks on the store's serial queue every
+    /// tick and the sampler now DROPS a tick it cannot start, so a stalled queue
+    /// is a lost measurement rather than a late one. This gap is what makes the
+    /// prune interruptible: at 12 ms of work per 250 ms it occupies under 5% of
+    /// the queue while a backlog clears.
+    var chunkGap: TimeInterval = 0.25
+    /// Chunks per pass. A backlog larger than this (a store that ran for months
+    /// unpruned, or 365 -> 7) clears over the following passes instead of in one
+    /// 20-minute burst of disk writes — the failure mode that got this app killed
+    /// by macOS once already.
+    var maxChunksPerPass = 200
+    /// Free pages handed back per chunk. Unbounded `incremental_vacuum` after a
+    /// large delete moves every free page in the file in a single call, holding
+    /// the queue record() lands on for as long as that takes.
+    var vacuumPagesPerChunk = 64
+    /// Between passes. Retention is measured in days, so an hour of slack past
+    /// the horizon costs nothing and 24 wakeups a day is cheap.
+    var passInterval: TimeInterval = 3600
+    /// Before the first pass. Launch is the busiest the app ever is — window
+    /// building, first sweep, first telemetry batch — and a backlog prune there
+    /// competes for the same serial queue as the first samples.
+    var firstPassDelay: TimeInterval = 300
+    /// After a retention change. Long enough that dragging the stepper from 365
+    /// to 7 (one write per step, every one of them on the main thread) coalesces
+    /// into a single pass once the drag stops.
+    var retentionChangeDelay: TimeInterval = 60
+
     private var db: OpaquePointer?
     /// All SQLite access is serialized here. record() arrives from the sampler's
     /// background queue; windowPower() from wherever the UI asks. One connection,
@@ -55,11 +110,27 @@ public final class HistoryStore {
     private var insInterval: OpaquePointer?
     private var insApp: OpaquePointer?
 
+    /// Retention horizon, and whether this store trims itself at all.
+    private let retention: Retention
+    private var retentionObserver: AnyObject?
+    /// Maintenance runs HERE, never on `queue` directly and never on main.
+    /// Chunks hop onto `queue` one at a time and let go in between; the gap is
+    /// what keeps record() off the back of a long delete.
+    private let maintenanceQueue = DispatchQueue(label: "BetterStats.HistoryStore.maintenance",
+                                                 qos: .utility)
+    /// Timer and generation are touched ONLY from `maintenanceQueue`.
+    private var maintenanceTimer: DispatchSourceTimer?
+    private var passGeneration = 0
+    private let scheduleLock = NSLock()
+    private var scheduledPrune: Date?
+
     private static let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
 
     public init?(path: URL? = nil,
                  rawHorizon: TimeInterval = 3600,
-                 bucketWidth: TimeInterval = 60) {
+                 bucketWidth: TimeInterval = 60,
+                 retention: Retention = .follow(.shared)) {
+        self.retention = retention
         let url: URL
         if let p = path {
             url = p
@@ -164,9 +235,14 @@ public final class HistoryStore {
 
         // Fold anything a previous run left un-bucketed (e.g. the app quit).
         queue.sync { downsampleLocked() }
+        startMaintenance()
     }
 
     deinit {
+        // An active dispatch source is only torn down by cancel(); dropping the
+        // last reference leaks a timer that goes on waking the CPU forever, which
+        // in a battery-measuring app is its own small lie.
+        maintenanceTimer?.cancel()
         // Every one of these is nil-safe in C, but only if the property really is
         // nil rather than uninitialised. A failed init used to reach here with
         // garbage in insInterval and crash inside sqlite3_finalize; the
@@ -523,19 +599,154 @@ public final class HistoryStore {
         }
     }
 
+    // ── Retention ───────────────────────────────────────────────────────────
+
+    /// When the next maintenance pass is due, or nil for a store that does not
+    /// maintain itself. Exists so "a retention change SCHEDULES a prune" is an
+    /// assertable claim rather than a comment.
+    public var nextScheduledPrune: Date? {
+        scheduleLock.lock(); defer { scheduleLock.unlock() }
+        return scheduledPrune
+    }
+
+    private func startMaintenance() {
+        if case .manual = retention { return }
+        if case .follow(let settings) = retention {
+            // A retention DECREASE must SCHEDULE, never perform. Dragging the
+            // stepper 365 -> 7 writes once per step, on the main thread, and
+            // pruning here would run a several-hundred-thousand-row delete inside
+            // the drag. Re-arming also debounces: the pass lands once, after the
+            // user has stopped.
+            retentionObserver = settings.observe(Settings.Key.historyRetentionDays) { [weak self] in
+                guard let self else { return }
+                self.schedulePass(after: self.retentionChangeDelay)
+            }
+        }
+        schedulePass(after: firstPassDelay)
+    }
+
+    /// (Re)arm the maintenance timer. A later call supersedes an earlier one —
+    /// including one made from inside a running pass, which is how a settings
+    /// change coalesces instead of stacking passes on top of each other.
+    private func schedulePass(after delay: TimeInterval) {
+        maintenanceQueue.async { [weak self] in
+            guard let self else { return }
+            self.passGeneration &+= 1
+            let generation = self.passGeneration
+            self.maintenanceTimer?.cancel()
+            let t = DispatchSource.makeTimerSource(queue: self.maintenanceQueue)
+            // Leeway is deliberately a tenth of the delay. Nothing here is
+            // time-critical to the second, and a wakeup the system can coalesce
+            // with one it was taking anyway is a wakeup this app does not spend.
+            t.schedule(deadline: .now() + delay, leeway: .milliseconds(Int(delay * 100)))
+            t.setEventHandler { [weak self] in self?.beginPass(generation) }
+            self.maintenanceTimer = t
+            self.scheduleLock.lock()
+            self.scheduledPrune = Date().addingTimeInterval(delay)
+            self.scheduleLock.unlock()
+            t.resume()
+        }
+    }
+
+    private func beginPass(_ generation: Int) {
+        let days: Double
+        switch retention {
+        case .follow(let settings): days = settings.historyRetentionDays
+        case .fixed(let d): days = d
+        case .manual: return
+        }
+        guard days > 0 else { schedulePass(after: passInterval); return }
+        // ONE cutoff for the whole pass. Recomputing it per chunk moves the target
+        // while the loop walks toward it, which is how a chunked delete loses its
+        // proof of termination.
+        step(generation: generation,
+             cutoff: Date().timeIntervalSince1970 - days * 86400,
+             chunksLeft: maxChunksPerPass, removedSoFar: 0)
+    }
+
+    private func step(generation: Int, cutoff: Double, chunksLeft: Int, removedSoFar: Int) {
+        guard generation == passGeneration else { return }   // superseded mid-pass
+        let removed = queue.sync { pruneChunkLocked(cutoff: cutoff) }
+        let total = removedSoFar + removed
+        // Short of the LIMIT means the SELECT was exhausted, so there is nothing
+        // left inside this pass's cutoff and a confirming empty chunk would only
+        // be another transaction.
+        if removed >= chunkRows, chunksLeft > 1 {
+            maintenanceQueue.asyncAfter(deadline: .now() + chunkGap) { [weak self] in
+                self?.step(generation: generation, cutoff: cutoff,
+                           chunksLeft: chunksLeft - 1, removedSoFar: total)
+            }
+            return
+        }
+        if total > 0 {
+            // Once per pass, not per chunk: TRUNCATE rewrites and shortens the
+            // WAL, and it is the single largest write the prune makes.
+            queue.sync { exec("PRAGMA wal_checkpoint(TRUNCATE)") }
+        }
+        schedulePass(after: passInterval)
+    }
+
+    /// One chunk in isolation, for tests: the maintenance loop's unit of work.
+    @discardableResult
+    func pruneChunk(olderThan days: Double) -> Int {
+        guard days > 0 else { return 0 }
+        let cutoff = Date().timeIntervalSince1970 - days * 86400
+        return queue.sync { pruneChunkLocked(cutoff: cutoff) }
+    }
+
+    /// Delete at most `chunkRows` intervals older than the cutoff, with their app
+    /// rows. Returns how many interval rows went, so the caller can tell "more to
+    /// do" from "done" without a second query.
+    private func pruneChunkLocked(cutoff: Double) -> Int {
+        // A bucket's ts is its START and it covers bucketWidth of wall clock, so
+        // a bucket straddling the cutoff still holds time INSIDE retention.
+        // Deleting on ts alone would take that time with it — a quieter bug than
+        // "history grows forever", and just as wrong.
+        let bucketCutoff = cutoff - bucketWidth
+        exec("CREATE TEMP TABLE IF NOT EXISTS doomed(id INTEGER PRIMARY KEY)")
+        exec("DELETE FROM doomed")
+        exec("BEGIN IMMEDIATE")
+        // Oldest first, and ordered by (ts, id) so the chunk is a prefix of
+        // history rather than a scatter through it: an interrupted prune then
+        // leaves a store that is short at the old end, which is what retention
+        // means anyway.
+        guard exec("""
+            INSERT INTO doomed(id) SELECT id FROM interval
+             WHERE ts < \(cutoff) AND (agg = 0 OR ts <= \(bucketCutoff))
+             ORDER BY ts, id LIMIT \(chunkRows)
+            """),
+            // App rows go FIRST and in the SAME transaction as their intervals.
+            // Split across two transactions, a crash in between leaves app_energy
+            // rows whose interval_id matches nothing: unreachable by every query
+            // in this file, never selected by a later prune, permanent.
+            exec("DELETE FROM app_energy WHERE interval_id IN (SELECT id FROM doomed)"),
+            exec("DELETE FROM interval WHERE id IN (SELECT id FROM doomed)")
+        else {
+            exec("ROLLBACK")
+            return 0
+        }
+        let removed = Int(sqlite3_changes(db))
+        exec("COMMIT")
+        if removed > 0 { exec("PRAGMA incremental_vacuum(\(vacuumPagesPerChunk))") }
+        return removed
+    }
+
     /// Drop everything older than the horizon, then actually give the pages back
-    /// (incremental_vacuum) and truncate the WAL so `sizeOnDisk` tells the truth.
+    /// (incremental_vacuum, inside each chunk) and truncate the WAL so
+    /// `sizeOnDisk` tells the truth.
+    ///
+    /// BLOCKING: it holds the store queue for chunk after chunk with no gap, so
+    /// the timer path deliberately does not use it. This is the explicit
+    /// "prune now" form, and what tests drive.
     public func prune(olderThan days: Double = 7) {
         guard days > 0 else { return }
-        queue.sync {
-            let cutoff = Date().timeIntervalSince1970 - days * 86400
-            exec("BEGIN IMMEDIATE")
-            exec("DELETE FROM app_energy WHERE interval_id IN (SELECT id FROM interval WHERE ts < \(cutoff))")
-            exec("DELETE FROM interval WHERE ts < \(cutoff)")
-            exec("COMMIT")
-            exec("PRAGMA incremental_vacuum")
-            exec("PRAGMA wal_checkpoint(TRUNCATE)")
-        }
+        // Termination: the cutoff is fixed before the first chunk, so the set of
+        // matching rows is fixed too, and every full chunk removes `chunkRows` of
+        // it. A chunk that comes back short hit the end of that set — or failed
+        // and rolled back, which must also end the loop rather than retry forever.
+        let cutoff = Date().timeIntervalSince1970 - days * 86400
+        while queue.sync(execute: { pruneChunkLocked(cutoff: cutoff) }) >= chunkRows {}
+        queue.sync { exec("PRAGMA wal_checkpoint(TRUNCATE)") }
     }
 
     /// Merge raw ticks older than `rawHorizon` into `bucketWidth` buckets,
