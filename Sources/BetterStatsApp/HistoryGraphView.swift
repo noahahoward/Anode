@@ -559,7 +559,19 @@ public final class HistoryGraphView: NSView {
             var n = 0
         }
 
-        var lineNodes: [(x: CGFloat, y: CGFloat)] = []
+        // Nodes are grouped into RUNS separated by gaps in the data.
+        //
+        // A straight line between two samples an hour apart asserts a trend that
+        // was never measured. Reported on a 6 h view after the machine had been
+        // off: a clean rising line from 10 to 24 %/hr across four hours in which
+        // nothing was sampled at all. The store is already honest here — the
+        // sleep-gap work makes it DROP those intervals rather than fabricate
+        // them — and then this view drew the fabrication anyway by connecting
+        // the survivors.
+        //
+        // A gap is therefore a break in the path, not a segment. Nothing is
+        // drawn where nothing is known.
+        var runs: [[(x: CGFloat, y: CGFloat)]] = [[]]
         var whiskers: [(x: CGFloat, y0: CGFloat, y1: CGFloat)] = []
 
         if pts.count > bucketCount + bucketCount / 2 {
@@ -574,10 +586,18 @@ public final class HistoryGraphView: NSView {
                 buckets[i].sum += p.value
                 buckets[i].n += 1
             }
+            // An EMPTY bucket between two full ones is a real hole: this branch
+            // only runs when the samples outnumber the buckets by 1.5x, so a
+            // bucket with nothing in it means the data is missing, not sparse.
+            var lastFilled = -1
             for (i, b) in buckets.enumerated() where b.n > 0 {
                 let bx = xFor(t0.addingTimeInterval((Double(i) + 0.5) / Double(bucketCount) * spanS))
                 let mean = b.sum / Double(b.n)
-                lineNodes.append((bx, yFor(mean)))
+                if lastFilled >= 0, i - lastFilled > 1, !runs[runs.count - 1].isEmpty {
+                    runs.append([])
+                }
+                lastFilled = i
+                runs[runs.count - 1].append((bx, yFor(mean)))
                 // Whisker only when the bucket's true range visibly exceeds the
                 // stroke itself (> ~2.5 pt) — below that the line already
                 // covers it and extra ink is just noise.
@@ -587,8 +607,31 @@ public final class HistoryGraphView: NSView {
             }
         } else {
             // Sparser than the pixels: draw the actual samples, no decimation.
-            for p in pts { lineNodes.append((xFor(p.time), yFor(p.value))) }
+            //
+            // The gap threshold is derived from the data's OWN median spacing
+            // rather than a constant, because this view is handed anything from
+            // 2 s live ticks to 1 min stored buckets and a fixed number would be
+            // either blind on one and trigger-happy on the other. Four times the
+            // median tolerates ordinary jitter and a dropped tick; the 90 s floor
+            // stops a dense live series breaking on a single slow frame.
+            var deltas: [TimeInterval] = []
+            deltas.reserveCapacity(pts.count)
+            for i in 1..<pts.count { deltas.append(pts[i].time.timeIntervalSince(pts[i - 1].time)) }
+            deltas.sort()
+            let median = deltas.isEmpty ? 0 : deltas[deltas.count / 2]
+            let gapLimit = max(median * 4, 90)
+            var previous: Date?
+            for p in pts {
+                if let prev = previous, p.time.timeIntervalSince(prev) > gapLimit,
+                   !runs[runs.count - 1].isEmpty {
+                    runs.append([])
+                }
+                previous = p.time
+                runs[runs.count - 1].append((xFor(p.time), yFor(p.value)))
+            }
         }
+        runs = runs.filter { !$0.isEmpty }
+        let lineNodes = runs.flatMap { $0 }
         guard lineNodes.count >= 2 else {
             if let n = lineNodes.first {
                 let dot = NSBezierPath(ovalIn: NSRect(x: n.x - 2.5, y: n.y - 2.5, width: 5, height: 5))
@@ -598,22 +641,40 @@ public final class HistoryGraphView: NSView {
             return
         }
 
+        // One path PER RUN. A single path with a `move` between runs would stroke
+        // identically, but the fill below must close each run against the zero
+        // line separately — closing across a gap would shade the empty hours as
+        // though they held data.
         let line = NSBezierPath()
         line.lineWidth = 1.5
         line.lineJoinStyle = .round
         line.lineCapStyle = .round
-        line.move(to: NSPoint(x: lineNodes[0].x, y: lineNodes[0].y))
-        for n in lineNodes.dropFirst() { line.line(to: NSPoint(x: n.x, y: n.y)) }
+        for run in runs {
+            guard let head = run.first else { continue }
+            line.move(to: NSPoint(x: head.x, y: head.y))
+            for n in run.dropFirst() { line.line(to: NSPoint(x: n.x, y: n.y)) }
+            // A run of one sample would stroke nothing; give it a visible dot so
+            // an isolated measurement between two gaps is not silently dropped.
+            if run.count == 1 {
+                s.color.setFill()
+                NSBezierPath(ovalIn: NSRect(x: head.x - 2, y: head.y - 2,
+                                            width: 4, height: 4)).fill()
+            }
+        }
 
         if s.filled {
             // Fill down to the zero line (or the plot floor if 0 is offscreen),
             // translucent so the grid and band remain visible through it.
-            let fill = line.copy() as! NSBezierPath
-            fill.line(to: NSPoint(x: lineNodes[lineNodes.count - 1].x, y: zeroY))
-            fill.line(to: NSPoint(x: lineNodes[0].x, y: zeroY))
-            fill.close()
             s.color.withAlphaComponent(0.13).setFill()
-            fill.fill()
+            for run in runs where run.count >= 2 {
+                let fill = NSBezierPath()
+                fill.move(to: NSPoint(x: run[0].x, y: run[0].y))
+                for n in run.dropFirst() { fill.line(to: NSPoint(x: n.x, y: n.y)) }
+                fill.line(to: NSPoint(x: run[run.count - 1].x, y: zeroY))
+                fill.line(to: NSPoint(x: run[0].x, y: zeroY))
+                fill.close()
+                fill.fill()
+            }
         }
 
         if !whiskers.isEmpty {
@@ -669,13 +730,28 @@ public final class HistoryGraphView: NSView {
             // stroke per segment would round-join nothing and show a seam at
             // every sample. Runs meet on a shared vertex, so the colour changes
             // exactly where the state does with no gap.
+            // Same gap rule as the left-hand series: a charge line drawn across
+            // hours the machine was off asserts a discharge that was never
+            // observed. The threshold is derived from this series' own median
+            // spacing for the same reason.
+            var deltas: [TimeInterval] = []
+            for i in 1..<pts.count { deltas.append(pts[i].time.timeIntervalSince(pts[i - 1].time)) }
+            deltas.sort()
+            let gapLimit = max((deltas.isEmpty ? 0 : deltas[deltas.count / 2]) * 4, 90)
+
             var runs: [(charging: Bool, path: NSBezierPath)] = []
             for i in 0..<(pts.count - 1) {
+                // Skip the segment entirely across a gap, and force the next
+                // segment to start a fresh path rather than continuing this one.
+                if pts[i + 1].time.timeIntervalSince(pts[i].time) > gapLimit {
+                    runs.append((false, NSBezierPath()))   // sentinel: empty, never stroked
+                    continue
+                }
                 // A segment is charging only when BOTH its ends are, so the two
                 // samples straddling a plug event resolve to the state the
                 // machine was actually in for most of that segment.
                 let isCharging = charging[i] && charging[i + 1]
-                if runs.last?.charging != isCharging {
+                if runs.last?.charging != isCharging || runs.last?.path.isEmpty == true {
                     let path = NSBezierPath()
                     path.lineWidth = 1.6
                     path.lineJoinStyle = .round
@@ -687,7 +763,7 @@ public final class HistoryGraphView: NSView {
             }
             NSGraphicsContext.saveGraphicsState()
             NSBezierPath(rect: plot).addClip()
-            for run in runs {
+            for run in runs where !run.path.isEmpty {
                 (run.charging ? Palette.chargingLine : r.color).setStroke()
                 run.path.stroke()
             }
