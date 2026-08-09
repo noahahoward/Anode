@@ -41,6 +41,14 @@ extension MetricID {
     public static let networkThroughput  = MetricID("system.network.bytesPerSec")
     public static let networkDown        = MetricID("system.network.down")
     public static let networkUp          = MetricID("system.network.up")
+    /// Disk is bytes per second, not a percentage, and the IDs say so. There is no
+    /// honest read%/write% on this hardware — the full measurement is in the
+    /// `DiskActivity` doc comment, and the short version is that the only
+    /// read/write-split timer IOKit offers sums concurrent requests and was
+    /// measured at 1394% on a 16-deep queue.
+    public static let diskActivity       = MetricID("system.disk.bytesPerSec")
+    public static let diskRead           = MetricID("system.disk.read")
+    public static let diskWrite          = MetricID("system.disk.write")
     public static let cpuTemperature     = MetricID("sensors.cpu.celsius")
     public static let gpuTemperature     = MetricID("sensors.gpu.celsius")
     public static let fanSpeed           = MetricID("sensors.fan.rpm")
@@ -279,6 +287,36 @@ public final class MetricRegistry {
         net(.networkThroughput, "Network throughput", "Net") { $0.totalPerSec }
         net(.networkDown, "Network down", "Down") { $0.bytesInPerSec }
         net(.networkUp, "Network up", "Up") { $0.bytesOutPerSec }
+
+        func disk(_ id: MetricID, _ title: String, _ short: String,
+                  _ get: @escaping (DiskActivity.Sample) -> Double) {
+            register(MetricDescriptor(id: id, title: title, shortTitle: short,
+                                      unit: .bytesPerSecond, category: "Disk",
+                                      higherIsWorse: false)) { [weak self] in
+                guard let d = self?.latestSystem()?.disk else { return nil }
+                return MetricValue(get(d), unit: .bytesPerSecond, isEstimate: false)
+            }
+        }
+        disk(.diskRead, "Disk read", "Read") { $0.bytesReadPerSec }
+        disk(.diskWrite, "Disk write", "Write") { $0.bytesWrittenPerSec }
+
+        register(MetricDescriptor(
+            id: .diskActivity, title: "Disk activity", shortTitle: "Disk",
+            unit: .bytesPerSecond, category: "Disk", higherIsWorse: false
+        )) { [weak self] in
+            guard let d = self?.latestSystem()?.disk else { return nil }
+            // Read and write in one string, because which direction the traffic is
+            // going is most of what you want to know from a disk row — a machine
+            // reading 500 MB/s and a machine writing it are doing different things.
+            // Both halves go through `MetricUnit.bytesPerSecond` rather than a
+            // second formatter, so this can never disagree with the `.diskRead` and
+            // `.diskWrite` widgets about how a given rate is spelled.
+            let unit = MetricUnit.bytesPerSecond
+            return MetricValue(value: d.totalPerSec,
+                               text: unit.format(d.bytesReadPerSec) + "/"
+                                   + unit.format(d.bytesWrittenPerSec),
+                               isEstimate: false)
+        }
 
         func temp(_ id: MetricID, _ title: String, _ short: String,
                   _ get: @escaping (SystemMetrics.Snapshot) -> Double?) {

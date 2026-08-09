@@ -933,7 +933,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
                 // measurably doubled idle CPU (0.375% -> 0.727%). Temperatures
                 // appear when a sensor widget is bound, which is the same rule the
                 // SMC read has always followed.
-                needs.formUnion([.cpu, .memory, .gpu, .network])
+                needs.formUnion([.cpu, .memory, .gpu, .network, .disk])
                 continue
             }
             switch c.metricID {
@@ -946,6 +946,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
             case MetricID.networkDown.rawValue, MetricID.networkUp.rawValue,
                  MetricID.networkThroughput.rawValue:
                 needs.insert(.network)
+            case MetricID.diskRead.rawValue, MetricID.diskWrite.rawValue,
+                 MetricID.diskActivity.rawValue:
+                needs.insert(.disk)
             case MetricID.cpuTemperature.rawValue, MetricID.gpuTemperature.rawValue,
                  MetricID.fanSpeed.rawValue:
                 needs.insert(.sensors)

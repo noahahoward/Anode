@@ -362,6 +362,216 @@ public final class NetworkThroughput {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// MARK: Disk
+
+/// Whole-machine disk traffic from `IOBlockStorageDriver`'s cumulative
+/// `Statistics` counters.
+///
+/// WHY THIS IS BYTES PER SECOND AND NOT A PERCENTAGE.
+///
+/// The obvious thing to put beside "Disk" is a utilisation, matching the CPU and
+/// GPU rows. IOKit looks like it offers one: every `IOBlockStorageDriver` here
+/// publishes `Total Time (Read)` and `Total Time (Write)` next to the byte and
+/// operation counts, and busy-time ÷ elapsed is exactly how `iostat %util` is
+/// computed. Those counters are real, they are in NANOSECONDS, and they advance —
+/// all three verified on this machine (Mac17,9, APPLE SSD AP1024Z). Measured
+/// mean service time at idle was 37.7 µs per write, which is right for NVMe and
+/// is what pins the unit; at 24 MHz mach ticks the same figure would be 1.5 ms
+/// and the counter would claim the disk had been 79% busy since boot.
+///
+/// They are still not a utilisation, because `Total Time` is the SUM of every
+/// request's residency and an NVMe queue holds many at once. Measured here by
+/// reading one file with the page cache off (`F_NOCACHE`) at rising queue depth:
+///
+///     threads   busy-time ÷ elapsed   actual throughput
+///        1              74%                 868 MB/s
+///        4             330%                2778 MB/s
+///       16            1394%                5355 MB/s
+///
+/// A "percentage" that reaches 1394% has no 100% in it. Worse, it is backwards
+/// where it matters: the single-threaded run printed 74% — nearly saturated —
+/// while moving one sixth of the bytes the same device delivered at depth 16. By
+/// Little's Law the quantity is mean queue depth (13.9 requests in flight at the
+/// bottom row), which is a real measurement but is not a percent and does not
+/// belong in a slot next to "CPU 14%".
+///
+/// The rest of the machine was searched before settling for bytes. IOReport does
+/// carry genuine residencies with a true 100% — `NVMe/NVMe Power States` and
+/// `ANS2/IOP State`, both pinned at ACTIVE 100% whether idle or loaded, so they
+/// measure "powered", not "busy"; `ANS2/Power/Power state` (22.8% idle → 96.6%
+/// loaded) and `ANS2/PCIE0/Link 0 states` L0 residency (0.6% idle → 88.5%
+/// loaded) do track load honestly. None of them can be split into read and
+/// write, which is the one thing that was asked for, and they are link and
+/// power-gating residencies rather than media occupancy. Share-of-throughput
+/// (read ÷ total) was rejected for a different reason: it always sums to 100%,
+/// so a disk doing 5 KB/s would read "80%/20%" and look busy.
+///
+/// So there is no honest read%/write% on this hardware, and bytes per second is
+/// what is left that is true. It is also the unit the Network row in the same
+/// sidebar already uses, so the slot is not claiming to be a utilisation.
+public final class DiskActivity {
+
+    public struct Sample {
+        public let bytesReadPerSec: Double
+        public let bytesWrittenPerSec: Double
+        public var totalPerSec: Double { bytesReadPerSec + bytesWrittenPerSec }
+        public let interval: TimeInterval
+    }
+
+    /// One device's cumulative counters. `IOBlockStorageDriver` publishes these as
+    /// 64-bit quantities — the read total on this machine was already 1.3 TB, well
+    /// past what 32 bits could hold, so nothing here is a narrowed field.
+    struct Counters: Equatable {
+        var bytesRead: UInt64
+        var bytesWritten: UInt64
+    }
+
+    /// 64 GB/s, above anything this machine can physically do — a PCIe 5.0 x4 link
+    /// tops out near 16 GB/s and the internal SSD measured 5.4 GB/s flat out, so
+    /// this sits ~12x above the fastest thing ever observed. Like
+    /// `NetworkThroughput.maxPlausibleBytesPerSec` it exists so that a counter
+    /// doing something unexplained becomes a missing row rather than a headline
+    /// number.
+    static let maxPlausibleBytesPerSec: Double = 64e9
+
+    private var previous: [UInt64: Counters] = [:]
+    private var previousAt: Date?
+
+    /// Registry entry ID → is this real hardware rather than a disk image.
+    ///
+    /// Cached because the classification needs a parent-node property read, and
+    /// because it can never go stale: IOKit registry entry IDs are unique for the
+    /// life of the boot and are not reused, so an ID that named a disk image can
+    /// never later name an SSD.
+    private var physical: [UInt64: Bool] = [:]
+
+    public init() {}
+
+    /// nil on the first call — throughput only exists between two reads — and
+    /// whenever no block storage device can be read at all.
+    public func sample() -> Sample? {
+        guard let now = readCounters() else { return nil }
+        return sample(counters: now, at: Date())
+    }
+
+    /// The half of `sample()` that does not touch IOKit, so the reset, wrap and
+    /// device-disappearing paths can be driven exactly in tests.
+    func sample(counters now: [UInt64: Counters], at: Date) -> Sample? {
+        let was = previous
+        let wasAt = previousAt
+        // Replaced wholesale rather than merged, for the same reason the network
+        // map is: a device that went away this tick must not leave its totals
+        // behind as a baseline for some future device.
+        previous = now
+        previousAt = at
+
+        guard let wasAt, !was.isEmpty else { return nil }
+        let dt = at.timeIntervalSince(wasAt)
+        guard dt > 0.05 else { return nil }
+
+        var readTotal = 0.0
+        var writeTotal = 0.0
+        var contributing = 0
+
+        for (id, cur) in now {
+            // No baseline: first sight of this device. It contributes nothing this
+            // tick and everything from the next one.
+            guard let old = was[id] else { continue }
+
+            // At 64 bits these do not wrap in any human timescale — 2^64 bytes is
+            // millennia at 5 GB/s — so a decrease is a counter reset, never a wrap.
+            // Differencing across it with wrapping arithmetic would turn a reset
+            // into an ~18 exabyte delta; the device is dropped for this tick
+            // instead, and `previous` already holds its fresh baseline.
+            guard cur.bytesRead >= old.bytesRead,
+                  cur.bytesWritten >= old.bytesWritten else { continue }
+
+            let readRate = Double(cur.bytesRead - old.bytesRead) / dt
+            let writeRate = Double(cur.bytesWritten - old.bytesWritten) / dt
+            guard readRate <= Self.maxPlausibleBytesPerSec,
+                  writeRate <= Self.maxPlausibleBytesPerSec else { continue }
+
+            contributing += 1
+            readTotal += readRate
+            writeTotal += writeRate
+        }
+
+        // Every device either new or dropped: there is no interval anything can be
+        // said about. Zero would be a claim of silence rather than of ignorance.
+        guard contributing > 0 else { return nil }
+
+        return Sample(bytesReadPerSec: readTotal,
+                      bytesWrittenPerSec: writeTotal,
+                      interval: dt)
+    }
+
+    /// Cumulative byte counters for every real storage device, keyed by registry
+    /// entry ID.
+    ///
+    /// Disk images are excluded. Four `AppleDiskImageDevice` nodes are mounted here
+    /// (the OS cryptexes), and every byte they serve is also a byte the SSD beneath
+    /// them served — counting both double-counts the same I/O. They are told apart
+    /// by the provider's `Protocol Characteristics`, where an image reports
+    /// `Physical Interconnect = "Virtual Interface"` and the SSD reports
+    /// `"Apple Fabric"`. Real external disks (USB, Thunderbolt) are NOT excluded by
+    /// that test, which is right: they are hardware doing hardware I/O.
+    func readCounters() -> [UInt64: Counters]? {
+        guard let match = IOServiceMatching("IOBlockStorageDriver") else { return nil }
+        var iterator: io_iterator_t = 0
+        guard IOServiceGetMatchingServices(kIOMainPortDefault, match, &iterator) == KERN_SUCCESS
+        else { return nil }
+        defer { IOObjectRelease(iterator) }
+
+        var out: [UInt64: Counters] = [:]
+        while case let service = IOIteratorNext(iterator), service != 0 {
+            defer { IOObjectRelease(service) }
+
+            var id: UInt64 = 0
+            guard IORegistryEntryGetRegistryEntryID(service, &id) == KERN_SUCCESS,
+                  isPhysical(service, id) else { continue }
+
+            // One named property rather than the whole dictionary: the node also
+            // carries bundle identifiers and matching dictionaries that cost time
+            // to serialise and that nothing here reads.
+            guard let raw = IORegistryEntryCreateCFProperty(
+                    service, "Statistics" as CFString, kCFAllocatorDefault, 0),
+                  let stats = raw.takeRetainedValue() as? [String: Any]
+            else { continue }
+
+            // A device missing either key is skipped rather than counted as zero.
+            // "This device reports no byte counter" and "this device moved no
+            // bytes" are different claims.
+            guard let r = (stats["Bytes (Read)"] as? NSNumber)?.uint64Value,
+                  let w = (stats["Bytes (Write)"] as? NSNumber)?.uint64Value
+            else { continue }
+
+            out[id] = Counters(bytesRead: r, bytesWritten: w)
+        }
+        return out.isEmpty ? nil : out
+    }
+
+    private func isPhysical(_ service: io_object_t, _ id: UInt64) -> Bool {
+        if let known = physical[id] { return known }
+
+        var device: io_object_t = 0
+        guard IORegistryEntryGetParentEntry(service, kIOServicePlane, &device) == KERN_SUCCESS
+        else { return false }
+        defer { IOObjectRelease(device) }
+
+        let raw = IORegistryEntryCreateCFProperty(
+            device, "Protocol Characteristics" as CFString, kCFAllocatorDefault, 0)
+        let chars = raw?.takeRetainedValue() as? [String: Any]
+        let interconnect = chars?["Physical Interconnect"] as? String
+        // Unknown interconnect counts as physical: a device we cannot classify is
+        // more likely a real disk on an unfamiliar bus than a disk image, and
+        // dropping it would silently under-report.
+        let real = interconnect != "Virtual Interface"
+        physical[id] = real
+        return real
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // MARK: Aggregate
 
 /// One place the app can pull every non-power reading, so the sampling loop does
@@ -372,6 +582,7 @@ public final class SystemMetrics {
         public let memory: MemoryUsage.Sample?
         public let gpu: GPUUsage.Sample?
         public let network: NetworkThroughput.Sample?
+        public let disk: DiskActivity.Sample?
         public let cpuTemperature: Double?
         public let gpuTemperature: Double?
         public let fans: [FanInfo]
@@ -393,6 +604,7 @@ public final class SystemMetrics {
 
     private let cpu = CPUUsage()
     private let net = NetworkThroughput()
+    private let disk = DiskActivity()
     /// Sensor discovery walks 3,588 SMC keys on first use, so it is not something
     /// to do on every tick of a monitor that must stay near zero cost.
     private var lastSensors: (cpu: Double?, gpu: Double?, fans: [FanInfo], at: Date)?
@@ -414,7 +626,8 @@ public final class SystemMetrics {
         public static let gpu     = Needs(rawValue: 1 << 2)
         public static let network = Needs(rawValue: 1 << 3)
         public static let sensors = Needs(rawValue: 1 << 4)
-        public static let all: Needs = [.cpu, .memory, .gpu, .network, .sensors]
+        public static let disk    = Needs(rawValue: 1 << 5)
+        public static let all: Needs = [.cpu, .memory, .gpu, .network, .sensors, .disk]
     }
 
     public func sample(needs: Needs) -> Snapshot {
@@ -448,6 +661,7 @@ public final class SystemMetrics {
                         memory: needs.contains(.memory) ? MemoryUsage.sample() : nil,
                         gpu: needs.contains(.gpu) ? GPUUsage.sample() : nil,
                         network: needs.contains(.network) ? net.sample() : nil,
+                        disk: needs.contains(.disk) ? disk.sample() : nil,
                         cpuTemperature: cpuTemp,
                         gpuTemperature: gpuTemp,
                         fans: fans,
@@ -482,6 +696,7 @@ public final class SystemMetrics {
                         memory: MemoryUsage.sample(),
                         gpu: GPUUsage.sample(),
                         network: net.sample(),
+                        disk: disk.sample(),
                         cpuTemperature: cpuTemp,
                         gpuTemperature: gpuTemp,
                         fans: fans)
