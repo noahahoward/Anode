@@ -72,6 +72,11 @@ public final class MenuBarWidgetController: NSObject, NSMenuDelegate {
     private let onClick: (MetricID?) -> Void
     private let defaults: UserDefaults
     private var storedConfigs: [WidgetConfig] = []
+    /// Master switch. Deliberately separate from `storedConfigs` and NOT persisted
+    /// here: which widgets are bound is the user's arrangement, and switching the
+    /// menu bar off and on again must give it back rather than reset to defaults.
+    /// Settings owns the durable flag; this is the controller's view of it.
+    private var isEnabled: Bool
     /// Only the widgets that materialized — an item whose button failed to appear is
     /// dropped here but its config is kept, so it can come back next rebuild.
     private var items: [(config: WidgetConfig, item: NSStatusItem)] = []
@@ -86,9 +91,13 @@ public final class MenuBarWidgetController: NSObject, NSMenuDelegate {
     /// "open on some default lens". Mapping metric → destination is deliberately
     /// the integrator's job: this controller knows metrics, not navigation.
     /// `defaults` is injectable for tests; production uses .standard.
-    public init(onClick: @escaping (MetricID?) -> Void, defaults: UserDefaults = .standard) {
+    /// `enabled: false` constructs the controller with its configs intact and
+    /// nothing in the menu bar, which is what the master switch means.
+    public init(onClick: @escaping (MetricID?) -> Void, defaults: UserDefaults = .standard,
+                enabled: Bool = true) {
         self.onClick = onClick
         self.defaults = defaults
+        self.isEnabled = enabled
         super.init()
         storedConfigs = Self.load(from: defaults) ?? Self.fallbackConfigs
         onMain { self.rebuild() }
@@ -101,6 +110,15 @@ public final class MenuBarWidgetController: NSObject, NSMenuDelegate {
             self.rebuild()
             self.refresh()
         }
+    }
+
+    /// Turn the whole menu bar on or off. `rebuild()` already tears down every
+    /// status item before it decides what to create, so off is just "stop after
+    /// the teardown" and the configs survive untouched.
+    public func setEnabled(_ on: Bool) {
+        guard on != isEnabled else { return }
+        isEnabled = on
+        onMain { self.rebuild() }
     }
 
     /// Pull current values from MetricRegistry and redraw every widget. Call after
@@ -137,6 +155,10 @@ public final class MenuBarWidgetController: NSObject, NSMenuDelegate {
         lastRendered.removeAll()
         for entry in items { NSStatusBar.system.removeStatusItem(entry.item) }
         items.removeAll()
+        // Master switch off: the teardown above IS the whole job. Everything below
+        // creates status items, and `items` staying empty means render() and
+        // refresh() have nothing to walk, so no cost is paid anywhere downstream.
+        guard isEnabled else { return }
 
         // New status items are inserted to the LEFT of existing ones, so create in
         // reverse for configs[0] to land leftmost. autosaveName additionally lets

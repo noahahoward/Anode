@@ -154,14 +154,26 @@ public struct MetricDescriptor {
     /// Higher is worse (drain) vs higher is better (time remaining) — drives colour.
     public let higherIsWorse: Bool
 
+    /// May a menu bar widget bind to this?
+    ///
+    /// Almost everything can, and that generality is the point of the registry:
+    /// every metric the app gains is automatically available to every widget.
+    /// The exception is a metric that exists to fill a spot in the WINDOW and
+    /// would only duplicate other widgets in the menu bar — `system.disk.bytesPerSec`
+    /// packs read and write into one string for the sidebar row, and offering it
+    /// beside the separate Read and Write widgets gave three ways to say two
+    /// numbers, the combined one being the worst formatted of them.
+    public let bindable: Bool
+
     public init(id: MetricID, title: String, shortTitle: String, unit: MetricUnit,
-                category: String, higherIsWorse: Bool) {
+                category: String, higherIsWorse: Bool, bindable: Bool = true) {
         self.id = id
         self.title = title
         self.shortTitle = shortTitle
         self.unit = unit
         self.category = category
         self.higherIsWorse = higherIsWorse
+        self.bindable = bindable
     }
 }
 
@@ -202,7 +214,19 @@ public final class MetricRegistry {
         entries[d.id] = (d, provider)
     }
 
+    /// Everything a menu bar widget may bind to, in registration order.
+    ///
+    /// This is the widget picker's list, and it deliberately EXCLUDES metrics
+    /// marked `bindable: false` — see `MetricDescriptor.bindable`. `value(for:)`
+    /// still serves them, so a window surface that wants one is unaffected;
+    /// only the offer to put it in the menu bar is withdrawn.
     public func descriptors() -> [MetricDescriptor] {
+        allDescriptors().filter(\.bindable)
+    }
+
+    /// Every registered metric, bindable or not. For diagnostics that need to
+    /// enumerate the whole registry rather than the menu of choices.
+    public func allDescriptors() -> [MetricDescriptor] {
         lock.lock()
         defer { lock.unlock() }
         return order.compactMap { entries[$0]?.descriptor }
@@ -302,7 +326,10 @@ public final class MetricRegistry {
 
         register(MetricDescriptor(
             id: .diskActivity, title: "Disk activity", shortTitle: "Disk",
-            unit: .bytesPerSecond, category: "Disk", higherIsWorse: false
+            unit: .bytesPerSecond, category: "Disk", higherIsWorse: false,
+            // Sidebar row only. As a widget it duplicated the Read and Write
+            // widgets and read worse than either.
+            bindable: false
         )) { [weak self] in
             guard let d = self?.latestSystem()?.disk else { return nil }
             // Read and write in one string, because which direction the traffic is

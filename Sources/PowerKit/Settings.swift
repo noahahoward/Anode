@@ -34,6 +34,9 @@ public final class Settings {
         public static let minimumDisplayPercentPerHour = "minimumDisplayPercentPerHour"
         public static let launchAtLogin = "launchAtLogin"
         public static let menuBarWidgets = "menuBarWidgets"
+        public static let startInMenuBarOnly = "startInMenuBarOnly"
+        public static let batteryLogging = "batteryLogging"
+        public static let menuBarWidgetsEnabled = "menuBarWidgetsEnabled"
         /// Wildcard — an observer registered on this key fires for every change.
         public static let any = "*"
     }
@@ -54,6 +57,18 @@ public final class Settings {
         static let historyRetentionDays = 7.0
         static let showDaemons = true
         static let minimumDisplayPercentPerHour = 0.01
+        /// OFF. macOS gives an app no way to tell a login launch from a
+        /// double-click (see `AppPresence`), so this one switch governs both — and
+        /// a user who opens an app from Finder and gets no window concludes it
+        /// failed to launch. Opt in, never on by default.
+        static let startInMenuBarOnly = false
+        /// ON. The trailing-window column, the history graph and every range
+        /// beyond the live hour are read out of this history; defaulting it off
+        /// would silently empty features that already exist.
+        static let batteryLogging = true
+        /// ON. Matches what every build so far has done, and the widgets are the
+        /// app's front door once the window is closed.
+        static let menuBarWidgetsEnabled = true
         /// Matches what the status item shows today: smoothed drain + runtime.
         // Must be real, currently-registered metric IDs. Stale ones are invisible
         // in the picker and get preserved forever as "unknown" bindings.
@@ -76,7 +91,7 @@ public final class Settings {
     private struct Values: Equatable {
         var sampleInterval, powerWindowHours, historyRetentionDays,
             minimumDisplayPercentPerHour: Double
-        var showDaemons: Bool
+        var showDaemons, startInMenuBarOnly, batteryLogging, menuBarWidgetsEnabled: Bool
         var menuBarWidgets: [String]
     }
     private var snapshot: Values
@@ -131,13 +146,45 @@ public final class Settings {
     /// into other rows or the ledger stops being honest.
     public var showDaemons: Bool {
         get { Settings.readBool(defaults, Key.showDaemons, Default.showDaemons) }
-        set {
-            let old = showDaemons
-            guard old != newValue || defaults.object(forKey: Settings.storageKey(Key.showDaemons)) == nil else { return }
-            lock.lock(); snapshot.showDaemons = newValue; lock.unlock()
-            defaults.set(newValue, forKey: Settings.storageKey(Key.showDaemons))
-            if old != newValue { notify(Key.showDaemons) }
-        }
+        set { writeBool(Key.showDaemons, \.showDaemons, newValue, Default.showDaemons) }
+    }
+
+    /// Launch with no window and no Dock tile — a menu bar tool, nothing else.
+    ///
+    /// Applies to EVERY launch, deliberately. The tempting design is "headless at
+    /// login, windowed when opened by hand", and it is not implementable: an
+    /// `SMAppService.mainApp` login launch is argv- and environment-identical to a
+    /// Finder launch (measured — see `AppPresence`). Offering it as two behaviours
+    /// would mean guessing which one happened, and guessing wrong looks exactly
+    /// like the app failing to start.
+    ///
+    /// `AppPresence` overrides this to false when widgets are off, because the
+    /// combination leaves nothing on screen to click.
+    public var startInMenuBarOnly: Bool {
+        get { Settings.readBool(defaults, Key.startInMenuBarOnly, Default.startInMenuBarOnly) }
+        set { writeBool(Key.startInMenuBarOnly, \.startInMenuBarOnly, newValue,
+                        Default.startInMenuBarOnly) }
+    }
+
+    /// Whether sampled history is written to the durable store at all.
+    ///
+    /// Off is a real saving, not just a suppressed write: with the window closed
+    /// the app's only reason to run the expensive per-process sweep is to keep
+    /// this history accruing, so the sweep stops too. What was already recorded is
+    /// kept — this stops the pen, it does not tear out the pages.
+    public var batteryLogging: Bool {
+        get { Settings.readBool(defaults, Key.batteryLogging, Default.batteryLogging) }
+        set { writeBool(Key.batteryLogging, \.batteryLogging, newValue, Default.batteryLogging) }
+    }
+
+    /// Master switch for the menu bar. `menuBarWidgets` still records WHICH
+    /// widgets are bound, so turning this off and on again restores the same set
+    /// rather than resetting to the defaults.
+    public var menuBarWidgetsEnabled: Bool {
+        get { Settings.readBool(defaults, Key.menuBarWidgetsEnabled,
+                                Default.menuBarWidgetsEnabled) }
+        set { writeBool(Key.menuBarWidgetsEnabled, \.menuBarWidgetsEnabled, newValue,
+                        Default.menuBarWidgetsEnabled) }
     }
 
     /// Floor below which rows display as "<0.01" instead of a meaningless digit.
@@ -285,6 +332,11 @@ public final class Settings {
             notify(Key.minimumDisplayPercentPerHour)
         }
         if old.showDaemons != now.showDaemons { notify(Key.showDaemons) }
+        if old.startInMenuBarOnly != now.startInMenuBarOnly { notify(Key.startInMenuBarOnly) }
+        if old.batteryLogging != now.batteryLogging { notify(Key.batteryLogging) }
+        if old.menuBarWidgetsEnabled != now.menuBarWidgetsEnabled {
+            notify(Key.menuBarWidgetsEnabled)
+        }
         if old.menuBarWidgets != now.menuBarWidgets { notify(Key.menuBarWidgets) }
     }
 
@@ -304,6 +356,20 @@ public final class Settings {
         lock.lock(); snapshot[keyPath: path] = clamped; lock.unlock()
         defaults.set(clamped, forKey: Settings.storageKey(key))
         if clamped != old { notify(key) }
+    }
+
+    /// Bool counterpart of `writeDouble`, sharing its two guards: a value that is
+    /// already stored and unchanged writes nothing and notifies nobody, and a
+    /// value equal to the DEFAULT is still written the first time so "never set"
+    /// and "explicitly set to the default" stop being the same state on disk.
+    private func writeBool(_ key: String, _ path: WritableKeyPath<Values, Bool>,
+                           _ value: Bool, _ def: Bool) {
+        let old = Settings.readBool(defaults, key, def)
+        let neverStored = defaults.object(forKey: Settings.storageKey(key)) == nil
+        guard value != old || neverStored else { return }
+        lock.lock(); snapshot[keyPath: path] = value; lock.unlock()
+        defaults.set(value, forKey: Settings.storageKey(key))
+        if value != old { notify(key) }
     }
 
     private static func readDouble(_ d: UserDefaults, _ key: String,
@@ -346,6 +412,11 @@ public final class Settings {
                minimumDisplayPercentPerHour: readDouble(d, Key.minimumDisplayPercentPerHour,
                                                         Default.minimumDisplayPercentPerHour, minimumDisplayRange),
                showDaemons: readBool(d, Key.showDaemons, Default.showDaemons),
+               startInMenuBarOnly: readBool(d, Key.startInMenuBarOnly,
+                                            Default.startInMenuBarOnly),
+               batteryLogging: readBool(d, Key.batteryLogging, Default.batteryLogging),
+               menuBarWidgetsEnabled: readBool(d, Key.menuBarWidgetsEnabled,
+                                               Default.menuBarWidgetsEnabled),
                menuBarWidgets: readWidgets(d, Default.menuBarWidgets))
     }
 }
