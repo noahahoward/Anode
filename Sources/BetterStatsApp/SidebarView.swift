@@ -52,7 +52,29 @@ final class SidebarView: NSView {
             case .network: return .networkThroughput
             case .sensors: return .cpuTemperature
             case .fans:    return .fanSpeed
-            case .disk:    return nil      // no aggregate disk metric registered yet
+            case .disk:    return .diskActivity
+            }
+        }
+
+        /// What the number beside the label actually means, for rows where that is
+        /// not obvious from the unit.
+        ///
+        /// Disk is the row that needs it. It sits between CPU and GPU, both of
+        /// which show a utilisation, and it deliberately does not — there is no
+        /// honest disk utilisation to show on this hardware (see `DiskActivity`),
+        /// so the row says bytes per second and this says why.
+        var valueTooltip: String? {
+            switch self {
+            case .disk:
+                return """
+                       Read/write throughput, whole machine.
+
+                       Not a utilisation: the only read/write timer macOS exposes \
+                       adds up requests that overlap in the queue, so on this SSD \
+                       it reaches 1394% under load and cannot be a percentage.
+                       """
+            default:
+                return nil
             }
         }
     }
@@ -196,6 +218,9 @@ final class SidebarView: NSView {
             setAccessibilityRole(.button)
             setAccessibilityLabel(lens.title)
             setAccessibilityElement(true)
+            // A unit that differs from the rows above and below it has to explain
+            // itself somewhere the user can actually reach.
+            toolTip = lens.valueTooltip
 
             restyle()
         }
