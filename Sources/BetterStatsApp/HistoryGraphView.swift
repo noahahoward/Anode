@@ -190,6 +190,19 @@ public final class HistoryGraphView: NSView {
     /// cursor. So the rect is RECORDED, never recomputed. `.zero` until the first
     /// draw; `interactionPlot` supplies a nominal rect for that one frame.
     private var lastPlot: NSRect = .zero
+    /// The time range the last `draw` mapped across `lastPlot`.
+    ///
+    /// Hover used to invert its own guess instead: `effectiveDomain` returned the
+    /// explicit `timeDomain` when one was set, and otherwise assumed a flat
+    /// "one hour ending now". But `draw` derives its range from the DATA's own
+    /// extent when no domain is set, and those two are only equal by accident.
+    /// When they differed, the x under the cursor was translated through the
+    /// wrong range, so the sample dot landed nowhere near the crosshair — pinned
+    /// to one end of the series while the cursor was at the other.
+    ///
+    /// Nil until the first draw, which is the only honest answer before there is
+    /// a mapping to invert.
+    private var lastDomain: (start: Date, end: Date)?
 
     // Axis hysteresis. `stableTop`/`stableBottom` are the currently displayed
     // axis limits. We grow immediately (data must never be silently clipped in
@@ -374,6 +387,10 @@ public final class HistoryGraphView: NSView {
         let liveEdge = abs(tMax.timeIntervalSinceNow) <= max(5, span * 0.02)
         if span < 1 { span = 60 }
         let tMin = tMax.addingTimeInterval(-span)
+        // Publish the domain this frame actually drew, for the same reason
+        // `lastPlot` is published: hover has to invert the EXACT mapping the
+        // lines used. See `drawnDomain`.
+        lastDomain = (tMin, tMax)
 
         func xFor(_ t: Date) -> CGFloat {
             plot.minX + CGFloat(t.timeIntervalSince(tMin) / span) * plot.width
@@ -830,9 +847,9 @@ extension HistoryGraphView {
         return (34, max(bounds.width - 76, 1))
     }
 
-    /// Time under a given x, in the CURRENT domain.
+    /// Time under a given x, inverting the mapping the last draw actually used.
     private func time(atX x: CGFloat) -> Date {
-        let d = effectiveDomain
+        let d = lastDomain ?? effectiveDomain
         let p = interactionPlot
         let w = max(p.width, 1)
         let f = min(max((x - p.left) / w, 0), 1)
