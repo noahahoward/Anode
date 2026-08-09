@@ -327,7 +327,17 @@ public final class MetricRegistry {
                 return MetricValue(v, unit: .celsius, isEstimate: false)
             }
         }
-        temp(.cpuTemperature, "CPU temperature", "Temp") { $0.cpuTemperature }
+        // "CPU°", not "Temp". The pair has to be read side by side in a menu bar,
+        // and a tester's screenshot showed exactly why the asymmetry fails:
+        //
+        //     CPU 14%   RAM 54%   GPU 25%   Temp 49°C   GPU° 44°C
+        //
+        // "Temp" next to "GPU°" does not read as the CPU's temperature — it reads
+        // as some other, unlabelled temperature, and the obvious conclusion is
+        // that CPU temperature is missing. It was never missing; it was the one
+        // widget whose label did not say whose reading it was. Every other short
+        // title in this registry names its subject, and this was the exception.
+        temp(.cpuTemperature, "CPU temperature", "CPU\u{00B0}") { $0.cpuTemperature }
         temp(.gpuTemperature, "GPU temperature", "GPU\u{00B0}") { $0.gpuTemperature }
 
         register(MetricDescriptor(
