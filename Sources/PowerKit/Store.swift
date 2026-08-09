@@ -126,6 +126,95 @@ public final class HistoryStore {
 
     private static let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
 
+    // ── The interval row's measured columns ─────────────────────────────────
+
+    /// How compaction carries one column from raw ticks into a bucket.
+    enum Fold {
+        /// Energies. They are quantities the interval ACCUMULATED, so they add
+        /// exactly and SUM is not an approximation of anything.
+        case additive
+        /// Levels and rates — state of charge, utilisation, throughput. A mean
+        /// weighted by the duration of the rows that actually measured the
+        /// column, so a 0.8 s tick cannot pull as hard as a 60 s one and a row
+        /// that never measured it cannot dilute the rows that did.
+        case durationWeighted
+    }
+
+    /// Every measured column on `interval`, in the order the write path binds
+    /// them and the fold reads them.
+    ///
+    /// WHY THIS IS A LIST RATHER THAN SQL SPELLED OUT THREE TIMES: `soc` was
+    /// added to the schema and to the write path and NOT to `downsampleLocked`'s
+    /// INSERT, so every state-of-charge sample older than the raw horizon was
+    /// folded to NULL — for weeks, silently, with every query still succeeding.
+    /// One column made that a coin flip; eleven make it a near certainty. The
+    /// INSERT, the fold and the upsert are all generated from this enum, so a
+    /// column can only be half-handled by being missing from `allCases`, and
+    /// `StoreCompactionTests.testEveryMeasuredColumnSurvivesCompaction` reads the
+    /// column list back out of the SCHEMA rather than from here, so leaving one
+    /// out fails a test instead of losing data quietly.
+    enum Column: String, CaseIterable {
+        case measured_j, attributed_j, residual_j
+        case soc
+        case cpu_pct, mem_pct, gpu_pct
+        case net_in_bps, net_out_bps
+        case disk_read_bps, disk_write_bps
+
+        var fold: Fold {
+            switch self {
+            case .measured_j, .attributed_j, .residual_j: return .additive
+            default: return .durationWeighted
+            }
+        }
+
+        /// Columns the original schema shipped with. Everything else is added by
+        /// an ALTER TABLE at open time, because CREATE TABLE IF NOT EXISTS does
+        /// nothing to a table that already exists.
+        static let original: Set<Column> = [.measured_j, .attributed_j, .residual_j]
+    }
+
+    /// A duration-weighted mean of `col` over only the rows that measured it.
+    /// Used by the fold and by every read that buckets rows, so the value the
+    /// graph draws is computed the same way whether it came from raw ticks or
+    /// from a bucket that folded them.
+    static func weightedMean(_ col: String) -> String {
+        """
+        CASE WHEN SUM(CASE WHEN \(col) IS NULL THEN 0 ELSE dur END) > 0
+             THEN SUM(COALESCE(\(col),0)*dur) / SUM(CASE WHEN \(col) IS NULL THEN 0 ELSE dur END)
+             ELSE NULL END
+        """
+    }
+
+    /// One column's value when a group of raw rows becomes a bucket.
+    private static func foldSelect(_ c: Column) -> String {
+        switch c.fold {
+        // SUM() skips NULLs and returns NULL only when every input is NULL —
+        // exactly the "unmeasured stays unmeasured" semantics we want.
+        case .additive: return "SUM(\(c.rawValue))"
+        case .durationWeighted: return weightedMean(c.rawValue)
+        }
+    }
+
+    /// One column's value when the fold lands in a bucket that already exists
+    /// (late rows after a sleep, or a re-run of compaction).
+    private static func foldUpsert(_ c: Column) -> String {
+        let n = c.rawValue
+        switch c.fold {
+        case .additive:
+            return """
+            \(n) = CASE WHEN \(n) IS NULL AND excluded.\(n) IS NULL
+                        THEN NULL ELSE COALESCE(\(n),0)+COALESCE(excluded.\(n),0) END
+            """
+        case .durationWeighted:
+            return """
+            \(n) = CASE WHEN \(n) IS NULL AND excluded.\(n) IS NULL THEN NULL
+                        WHEN \(n) IS NULL THEN excluded.\(n)
+                        WHEN excluded.\(n) IS NULL THEN \(n)
+                        ELSE (\(n)*dur + excluded.\(n)*excluded.dur) / (dur + excluded.dur) END
+            """
+        }
+    }
+
     public init?(path: URL? = nil,
                  rawHorizon: TimeInterval = 3600,
                  bucketWidth: TimeInterval = 60,
@@ -185,7 +274,23 @@ public final class HistoryStore {
             measured_j  REAL,
             attributed_j REAL,
             residual_j  REAL,
-            soc         REAL
+            soc         REAL,
+            -- Whole-machine utilisation, one column per lens that draws a line.
+            -- Levels and rates rather than accumulated quantities, so they fold
+            -- duration-weighted (see Column.fold). NULL is load-bearing: the app
+            -- skips subsystems nobody is displaying, and a night with the window
+            -- shut is a night nobody read the GPU — not a night it was idle.
+            --
+            -- Per-machine, never per-process. Per-process history was measured
+            -- once: it drove 2.1 GB of writes in 40 minutes and macOS killed the
+            -- app for exceeding its sustained rate.
+            cpu_pct     REAL,
+            mem_pct     REAL,
+            gpu_pct     REAL,
+            net_in_bps  REAL,
+            net_out_bps REAL,
+            disk_read_bps  REAL,
+            disk_write_bps REAL
         );
         CREATE INDEX IF NOT EXISTS idx_interval_ts   ON interval(ts);
         CREATE INDEX IF NOT EXISTS idx_interval_batt ON interval(on_battery, ts);
@@ -215,11 +320,19 @@ public final class HistoryStore {
         // A duplicate-column error is the expected outcome on an up-to-date
         // database and is ignored; anything else leaves the column absent, which
         // the guard below then catches honestly.
-        sqlite3_exec(h, "ALTER TABLE interval ADD COLUMN soc REAL", nil, nil, nil)
+        //
+        // Driven off `Column.allCases` for the same reason the fold is: the next
+        // column added to the enum migrates an existing store without anybody
+        // remembering to write a line here. Existing rows get NULL, which is the
+        // truth about them — nothing measured a CPU percentage in March.
+        for c in Column.allCases where !Column.original.contains(c) {
+            sqlite3_exec(h, "ALTER TABLE interval ADD COLUMN \(c.rawValue) REAL", nil, nil, nil)
+        }
 
+        let cols = Column.allCases
         insInterval = prepare("""
-            INSERT INTO interval(ts, dur, on_battery, agg, measured_j, attributed_j, residual_j, soc)
-            VALUES(?,?,?,0,?,?,?,?)
+            INSERT INTO interval(ts, dur, on_battery, agg, \(cols.map(\.rawValue).joined(separator: ", ")))
+            VALUES(?,?,?,0,\(cols.map { _ in "?" }.joined(separator: ",")))
             """)
         insApp = prepare("""
             INSERT INTO app_energy(interval_id, app, name, joules) VALUES(?,?,?,?)
@@ -279,9 +392,66 @@ public final class HistoryStore {
     /// sampler learned to drop them, and those users must see the fix too.
     public static let maxPlausibleInterval: TimeInterval = 300
 
+    /// The non-power readings recorded beside the ledger: how BUSY the machine
+    /// was, never how much battery that cost — the two are kept apart everywhere
+    /// (see `SystemMetrics`), and joining them here would be the first place they
+    /// blurred.
+    ///
+    /// Every field is optional and nil means NOT MEASURED. It is stored as NULL,
+    /// folded as NULL, read back as nil and drawn as a break in the line. The app
+    /// deliberately skips subsystems nobody is displaying (`SystemMetrics.Needs`),
+    /// so a night with the window closed is a night nobody read the GPU — and a
+    /// GPU line at 0% across it would be the same lie as telling a two-fan
+    /// machine it has no fans.
+    public struct Utilization {
+        /// 0…100 across all cores combined, as `CPUUsage.Sample.total`.
+        public var cpuPercent: Double?
+        /// 0…100 of physical memory, Activity Monitor's "Memory Used" basis.
+        public var memoryPercent: Double?
+        /// 0…100 device utilisation. Utilisation, NOT power.
+        public var gpuPercent: Double?
+        public var networkInBytesPerSec: Double?
+        public var networkOutBytesPerSec: Double?
+        /// Bytes per second, not a percentage — there is no honest disk
+        /// utilisation on this hardware (see `DiskActivity`).
+        public var diskReadBytesPerSec: Double?
+        public var diskWriteBytesPerSec: Double?
+
+        public init(cpuPercent: Double? = nil, memoryPercent: Double? = nil,
+                    gpuPercent: Double? = nil,
+                    networkInBytesPerSec: Double? = nil, networkOutBytesPerSec: Double? = nil,
+                    diskReadBytesPerSec: Double? = nil, diskWriteBytesPerSec: Double? = nil) {
+            self.cpuPercent = cpuPercent
+            self.memoryPercent = memoryPercent
+            self.gpuPercent = gpuPercent
+            self.networkInBytesPerSec = networkInBytesPerSec
+            self.networkOutBytesPerSec = networkOutBytesPerSec
+            self.diskReadBytesPerSec = diskReadBytesPerSec
+            self.diskWriteBytesPerSec = diskWriteBytesPerSec
+        }
+
+        /// Nothing measured — the default, so a caller recording only energy
+        /// stores seven honest NULLs instead of seven zeros.
+        public static let none = Utilization()
+
+        /// What one sample of `SystemMetrics` has to say. A subsystem the sweep
+        /// skipped arrives here as nil and stays nil; nothing is defaulted.
+        public init(_ s: SystemMetrics.Snapshot) {
+            self.init(cpuPercent: s.cpu?.total,
+                      memoryPercent: s.memory.map(\.usedPercent),
+                      gpuPercent: s.gpu?.utilization,
+                      networkInBytesPerSec: s.network?.bytesInPerSec,
+                      networkOutBytesPerSec: s.network?.bytesOutPerSec,
+                      diskReadBytesPerSec: s.disk?.bytesReadPerSec,
+                      diskWriteBytesPerSec: s.disk?.bytesWrittenPerSec)
+        }
+    }
+
     public func record(apps: [AppDrain], measured_W: Double?, attributed_W: Double?,
                        residual_W: Double?, onBattery: Bool,
-                       socPercent: Double? = nil, interval: TimeInterval,
+                       socPercent: Double? = nil,
+                       utilization: Utilization = .none,
+                       interval: TimeInterval,
                        at date: Date = Date()) {
         guard interval > 0, interval <= Self.maxPlausibleInterval else { return }
         queue.sync {
@@ -305,16 +475,21 @@ public final class HistoryStore {
             sqlite3_bind_double(insI, 1, date.timeIntervalSince1970)
             sqlite3_bind_double(insI, 2, interval)
             sqlite3_bind_int(insI, 3, onBattery ? 1 : 0)
-            bindOptionalJoules(insI, 4, measured_W, interval)
-            bindOptionalJoules(insI, 5, attributed_W, interval)
-            bindOptionalJoules(insI, 6, residual_W, interval)
-            // State of charge is a LEVEL, not an energy, so it is stored as-is
-            // rather than multiplied by the interval. Without it the battery line
-            // could only ever be drawn for the live hour held in memory.
-            if let soc = socPercent, soc.isFinite, soc >= 0, soc <= 100 {
-                sqlite3_bind_double(insI, 7, soc)
-            } else {
-                sqlite3_bind_null(insI, 7)
+            // Bound in `Column.allCases` order, which is the order the statement
+            // was prepared in — one list, so a new column cannot reach the
+            // schema and miss the write path.
+            for (i, c) in Column.allCases.enumerated() {
+                let idx = Int32(4 + i)
+                if let v = Self.storedValue(c, measured_W: measured_W,
+                                            attributed_W: attributed_W,
+                                            residual_W: residual_W,
+                                            socPercent: socPercent,
+                                            utilization: utilization,
+                                            interval: interval) {
+                    sqlite3_bind_double(insI, idx, v)
+                } else {
+                    sqlite3_bind_null(insI, idx)
+                }
             }
             guard sqlite3_step(insI) == SQLITE_DONE else { exec("ROLLBACK"); return }
             let iid = sqlite3_last_insert_rowid(db)
@@ -338,14 +513,54 @@ public final class HistoryStore {
         }
     }
 
-    private func bindOptionalJoules(_ stmt: OpaquePointer?, _ idx: Int32,
-                                    _ watts: Double?, _ interval: TimeInterval) {
+    /// What goes in one column for this interval, or nil for NULL.
+    ///
+    /// One exhaustive switch, so adding a case to `Column` is a compile error
+    /// until the value it stores has been named. Every branch validates: a
+    /// reading that cannot be true is stored as NULL rather than as itself,
+    /// because a single implausible row silently dominates every SUM and every
+    /// axis it lands in — four stored buckets once held measured_j around 1.8e16.
+    private static func storedValue(_ c: Column,
+                                    measured_W: Double?, attributed_W: Double?,
+                                    residual_W: Double?, socPercent: Double?,
+                                    utilization: Utilization,
+                                    interval: TimeInterval) -> Double? {
         // isFinite is not enough: a wrapped counter is a perfectly finite,
         // perfectly enormous number, and that is exactly what reached the disk.
-        if let w = watts, w.isFinite, w >= 0, w <= Self.maxPlausibleWatts {
-            sqlite3_bind_double(stmt, idx, w * interval)
-        } else {
-            sqlite3_bind_null(stmt, idx)
+        func joules(_ watts: Double?) -> Double? {
+            guard let w = watts, w.isFinite, w >= 0, w <= maxPlausibleWatts else { return nil }
+            return w * interval
+        }
+        // Levels are stored AS THEY ARE, never multiplied by the interval: a
+        // percentage is not a quantity the interval accumulated. `dur` is what
+        // weights them when a bucket averages several rows.
+        func percent(_ v: Double?) -> Double? {
+            guard let v, v.isFinite, v >= 0, v <= 100 else { return nil }
+            return v
+        }
+        func rate(_ v: Double?, _ ceiling: Double) -> Double? {
+            guard let v, v.isFinite, v >= 0, v <= ceiling else { return nil }
+            return v
+        }
+        switch c {
+        case .measured_j:   return joules(measured_W)
+        case .attributed_j: return joules(attributed_W)
+        case .residual_j:   return joules(residual_W)
+        case .soc:          return percent(socPercent)
+        case .cpu_pct:      return percent(utilization.cpuPercent)
+        case .mem_pct:      return percent(utilization.memoryPercent)
+        case .gpu_pct:      return percent(utilization.gpuPercent)
+        // The same ceilings the live samplers already reject against, so a
+        // counter doing something unexplained becomes a missing point rather
+        // than a headline number — on the graph as well as in the sidebar.
+        case .net_in_bps:   return rate(utilization.networkInBytesPerSec,
+                                        NetworkThroughput.maxPlausibleBytesPerSec)
+        case .net_out_bps:  return rate(utilization.networkOutBytesPerSec,
+                                        NetworkThroughput.maxPlausibleBytesPerSec)
+        case .disk_read_bps:  return rate(utilization.diskReadBytesPerSec,
+                                          DiskActivity.maxPlausibleBytesPerSec)
+        case .disk_write_bps: return rate(utilization.diskWriteBytesPerSec,
+                                          DiskActivity.maxPlausibleBytesPerSec)
         }
     }
 
@@ -553,9 +768,10 @@ public final class HistoryStore {
             guard let st = prepare("""
                 SELECT CAST((ts - ?) / ? AS INTEGER) AS b,
                        MIN(ts), SUM(measured_j), SUM(dur), MIN(on_battery),
-                       CASE WHEN SUM(CASE WHEN soc IS NULL THEN 0 ELSE dur END) > 0
-                            THEN SUM(COALESCE(soc,0)*dur) / SUM(CASE WHEN soc IS NULL THEN 0 ELSE dur END)
-                            ELSE NULL END
+                       -- The same weighting the fold uses, so a bucket built by
+                       -- compaction and a bucket built here from raw ticks give
+                       -- the same number for the same seconds.
+                       \(Self.weightedMean("soc"))
                   FROM interval
                  WHERE ts >= ? AND ts <= ? AND measured_j IS NOT NULL
                    AND dur > 0 AND dur <= \(Self.maxPlausibleInterval)
@@ -582,6 +798,79 @@ public final class HistoryStore {
                                        watts: joules / dur,
                                        onBattery: sqlite3_column_int(st, 4) == 1,
                                        socPercent: soc))
+            }
+            return out
+        }
+    }
+
+    /// One bucket of whole-machine utilisation. Every field is independently
+    /// optional: the app samples only what something is displaying, so a bucket
+    /// can hold a CPU percentage and no GPU percentage, and the two must not be
+    /// forced to share a fate.
+    public struct UtilizationPoint {
+        public let time: Date
+        public let cpuPercent: Double?
+        public let memoryPercent: Double?
+        public let gpuPercent: Double?
+        public let networkInBytesPerSec: Double?
+        public let networkOutBytesPerSec: Double?
+        public let diskReadBytesPerSec: Double?
+        public let diskWriteBytesPerSec: Double?
+    }
+
+    /// Whole-machine utilisation over an arbitrary range, bucketed to at most
+    /// `maxPoints` rows — the CPU/memory/GPU/network/disk equivalent of
+    /// `powerSeries`, and bucketed in SQL for the same reason: a week is a
+    /// quarter of a million rows and the graph has ~900 pixels.
+    ///
+    /// A bucket where nothing measured ANY of these is not returned at all. That
+    /// absence is the point: it is how "the window was shut and nobody was
+    /// looking" reaches the screen as a break in the line instead of a run of
+    /// zeros. Per-field NULLs survive for the same reason one step down.
+    public func utilizationSeries(since: Date, until: Date = Date(),
+                                  maxPoints: Int = 600) -> [UtilizationPoint] {
+        let from = since.timeIntervalSince1970
+        let to = until.timeIntervalSince1970
+        guard to > from, maxPoints > 0 else { return [] }
+        let width = max((to - from) / Double(maxPoints), 1)
+
+        // The utilisation columns only, in a fixed order this function then reads
+        // back by index.
+        let cols: [Column] = [.cpu_pct, .mem_pct, .gpu_pct,
+                              .net_in_bps, .net_out_bps, .disk_read_bps, .disk_write_bps]
+
+        return queue.sync {
+            guard let st = prepare("""
+                SELECT CAST((ts - ?) / ? AS INTEGER) AS b, MIN(ts),
+                       \(cols.map { Self.weightedMean($0.rawValue) }.joined(separator: ",\n                       "))
+                  FROM interval
+                 WHERE ts >= ? AND ts <= ?
+                   -- The same duration filter the power graph carries. A row
+                   -- written across a nine-hour sleep is not a nine-hour
+                   -- measurement, and a store on disk may already hold one from
+                   -- before the sampler learned to drop them.
+                   AND dur > 0 AND dur <= \(Self.maxPlausibleInterval)
+                 GROUP BY b
+                 ORDER BY b
+                """) else { return [] }
+            defer { sqlite3_finalize(st) }
+            sqlite3_bind_double(st, 1, from)
+            sqlite3_bind_double(st, 2, width)
+            sqlite3_bind_double(st, 3, from)
+            sqlite3_bind_double(st, 4, to)
+
+            var out: [UtilizationPoint] = []
+            while sqlite3_step(st) == SQLITE_ROW {
+                let v = (0..<cols.count).map { columnOptionalDouble(st, Int32(2 + $0)) }
+                // Nothing measured in this bucket: emit no point rather than a
+                // point made of seven nils, which every caller would have to
+                // filter anyway and one of them would forget to.
+                guard v.contains(where: { $0 != nil }) else { continue }
+                out.append(UtilizationPoint(
+                    time: Date(timeIntervalSince1970: sqlite3_column_double(st, 1)),
+                    cpuPercent: v[0], memoryPercent: v[1], gpuPercent: v[2],
+                    networkInBytesPerSec: v[3], networkOutBytesPerSec: v[4],
+                    diskReadBytesPerSec: v[5], diskWriteBytesPerSec: v[6]))
             }
             return out
         }
@@ -767,20 +1056,27 @@ public final class HistoryStore {
             .rounded(.down)
         let aligned = (cutoff / bw).rounded(.down) * bw
 
+        // EVERY measured column, generated from one list. Energies SUM (they add
+        // exactly); levels and rates take a mean weighted by the duration of the
+        // rows that measured them, not AVG(), because the rows folded into one
+        // bucket have different durations and a plain mean would let a 0.8 s tick
+        // pull as hard as a 60 s one. A column no row measured stays NULL —
+        // "unmeasured stays unmeasured" — and the CASEs in the upsert keep it
+        // that way when a later fold lands in the same bucket.
+        let cols = Column.allCases
+        let names = cols.map(\.rawValue).joined(separator: ", ")
+        let folds = cols.map(Self.foldSelect).joined(separator: ",\n                   ")
+        // The weighted columns come BEFORE dur: the re-weighting divides by the
+        // OLD dur, so updating dur first would weight each existing value against
+        // a total that already includes the incoming rows.
+        let upserts = cols.map(Self.foldUpsert).joined(separator: ",\n                ")
+
         exec("BEGIN IMMEDIATE")
-        // 1. Fold raw system rows into bucket rows. SUM() skips NULLs and only
-        //    returns NULL when every input is NULL — exactly the "unmeasured
-        //    stays unmeasured" semantics we want. The CASE in the upsert keeps it.
+        // 1. Fold raw system rows into bucket rows.
         let foldedIntervals = exec("""
-            INSERT INTO interval(ts, dur, on_battery, agg, measured_j, attributed_j, residual_j, soc)
+            INSERT INTO interval(ts, dur, on_battery, agg, \(names))
             SELECT CAST(ts/\(bw) AS INTEGER)*\(bw), SUM(dur), on_battery, 1,
-                   SUM(measured_j), SUM(attributed_j), SUM(residual_j),
-                   -- Duration-weighted, not AVG(soc): the rows folded into one
-                   -- bucket have different durations, so a plain mean would let a
-                   -- 0.8 s tick pull as hard as a 60 s one.
-                   CASE WHEN SUM(CASE WHEN soc IS NULL THEN 0 ELSE dur END) > 0
-                        THEN SUM(COALESCE(soc,0)*dur) / SUM(CASE WHEN soc IS NULL THEN 0 ELSE dur END)
-                        ELSE NULL END
+                   \(folds)
             FROM interval WHERE agg=0 AND ts < \(aligned)
               -- Poisoned rows are excluded from the fold and then deleted with the
               -- rest below, rather than being summed into a bucket: one 32,400 s
@@ -789,20 +1085,8 @@ public final class HistoryStore {
               AND dur <= \(Self.maxPlausibleInterval)
             GROUP BY CAST(ts/\(bw) AS INTEGER), on_battery
             ON CONFLICT(ts, on_battery) WHERE agg=1 DO UPDATE SET
-                -- soc BEFORE dur: the re-weighting below divides by the OLD dur,
-                -- so updating dur first would weight the existing value against a
-                -- total that already includes the incoming rows.
-                soc = CASE WHEN soc IS NULL AND excluded.soc IS NULL THEN NULL
-                      WHEN soc IS NULL THEN excluded.soc
-                      WHEN excluded.soc IS NULL THEN soc
-                      ELSE (soc*dur + excluded.soc*excluded.dur) / (dur + excluded.dur) END,
-                dur = dur + excluded.dur,
-                measured_j = CASE WHEN measured_j IS NULL AND excluded.measured_j IS NULL
-                             THEN NULL ELSE COALESCE(measured_j,0)+COALESCE(excluded.measured_j,0) END,
-                attributed_j = CASE WHEN attributed_j IS NULL AND excluded.attributed_j IS NULL
-                             THEN NULL ELSE COALESCE(attributed_j,0)+COALESCE(excluded.attributed_j,0) END,
-                residual_j = CASE WHEN residual_j IS NULL AND excluded.residual_j IS NULL
-                             THEN NULL ELSE COALESCE(residual_j,0)+COALESCE(excluded.residual_j,0) END
+                \(upserts),
+                dur = dur + excluded.dur
             """)
         // 2. Re-point app rows at their bucket, summing per app. The unique
         //    bucket index guarantees the join matches exactly one target row.
