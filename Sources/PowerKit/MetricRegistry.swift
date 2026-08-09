@@ -311,10 +311,20 @@ public final class MetricRegistry {
             // Both halves go through `MetricUnit.bytesPerSecond` rather than a
             // second formatter, so this can never disagree with the `.diskRead` and
             // `.diskWrite` widgets about how a given rate is spelled.
+            // The per-second suffix is dropped from BOTH halves and the slash is
+            // the only one in the string. Spelled in full this read
+            // "1.5MB/s/340KB/s" — three slashes, two of which are part of a unit
+            // and one of which is the divider, and nothing tells them apart at a
+            // glance. The row is labelled "Disk" and sits beside Network, which is
+            // also a rate; per-second is the assumption a reader already has, and
+            // spending three separators to restate it costs more than it says.
             let unit = MetricUnit.bytesPerSecond
+            func rate(_ v: Double) -> String {
+                let s = unit.format(v)
+                return s.hasSuffix("/s") ? String(s.dropLast(2)) : s
+            }
             return MetricValue(value: d.totalPerSec,
-                               text: unit.format(d.bytesReadPerSec) + "/"
-                                   + unit.format(d.bytesWrittenPerSec),
+                               text: rate(d.bytesReadPerSec) + "/" + rate(d.bytesWrittenPerSec),
                                isEstimate: false)
         }
 
