@@ -366,6 +366,12 @@ public final class HistoryGraphView: NSView {
             tMax = d.end
             span = d.end.timeIntervalSince(d.start)
         }
+        // Is the right edge still "now"? Tolerance scales with the span, because
+        // a live 7-day chart whose newest sample is four minutes old is still
+        // live, while four minutes off the edge of a 60 s chart plainly is not.
+        // Floored at 5 s so a 1 h view does not flip labels on ordinary tick
+        // jitter.
+        let liveEdge = abs(tMax.timeIntervalSinceNow) <= max(5, span * 0.02)
         if span < 1 { span = 60 }
         let tMin = tMax.addingTimeInterval(-span)
 
@@ -423,7 +429,21 @@ public final class HistoryGraphView: NSView {
                 p.line(to: NSPoint(x: snap(x), y: plot.maxY))
                 p.stroke()
             }
-            let s = Self.timeLabel(back) as NSString
+            // Relative ("-20s") only while the right edge really is now.
+            //
+            // Counting back from `tMax` is right for a live chart and WRONG the
+            // moment the view is panned: the right edge moves with the pan, so
+            // every label keeps reading "now, -20s, -40s" no matter where in
+            // history you are. The data slides underneath and the axis says the
+            // same thing — reported as "the bottom doesn't move with it", and
+            // that is exactly what it does.
+            //
+            // Once the edge is not now, the labels become absolute clock times,
+            // which move with the data because they name instants rather than
+            // offsets from a moving origin.
+            let s = (liveEdge ? Self.timeLabel(back)
+                              : Self.clockLabel(tMax.addingTimeInterval(-back),
+                                                span: span)) as NSString
             let size = s.size(withAttributes: tickAttrs)
             // "now" hugs the right edge; earlier ticks are centered.
             var lx = back == 0 ? x - size.width : x - size.width / 2
@@ -724,6 +744,30 @@ public final class HistoryGraphView: NSView {
     private static func yLabel(_ v: Double) -> String {
         // %g trims trailing zeros: 2.5 → "2.5", 10 → "10".
         String(format: "%g", v)
+    }
+
+    /// An absolute time for a panned axis, at a resolution the span can support.
+    ///
+    /// Formatters are cached because `draw` runs on every tick while the window
+    /// is open, and building a DateFormatter is famously expensive — the whole
+    /// point of this view is to not cost what it measures.
+    private static let hhmm: DateFormatter = {
+        let f = DateFormatter(); f.dateFormat = "HH:mm"; return f
+    }()
+    private static let hhmmss: DateFormatter = {
+        let f = DateFormatter(); f.dateFormat = "HH:mm:ss"; return f
+    }()
+    private static let dayHour: DateFormatter = {
+        let f = DateFormatter(); f.dateFormat = "d MMM HH:mm"; return f
+    }()
+
+    private static func clockLabel(_ t: Date, span: Double) -> String {
+        // Seconds only matter when the whole view is minutes wide; days only
+        // matter when the view crosses one. In between, HH:mm is what a person
+        // reads a chart with.
+        if span <= 300 { return hhmmss.string(from: t) }
+        if span <= 86_400 { return hhmm.string(from: t) }
+        return dayHour.string(from: t)
     }
 
     private static func timeLabel(_ secondsBack: Double) -> String {
