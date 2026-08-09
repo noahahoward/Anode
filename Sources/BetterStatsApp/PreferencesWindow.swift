@@ -273,8 +273,14 @@ private final class GeneralPane: Pane {
         loginCheckbox.state = status == .enabled ? .on : .off
         switch status {
         case .enabled:
-            loginNote.isHidden = true
-            loginButton.isHidden = true
+            // Say so, rather than showing nothing. An empty row after ticking a
+            // box reads as "did that work?", and the answer is only visible after
+            // a reboot — which is far too late to find out it did not.
+            loginNote.stringValue = settings.startInMenuBarOnly
+                ? "Opens at login, in the menu bar only."
+                : "Opens at login, with its window."
+            loginNote.isHidden = false
+            loginButton.isHidden = false
         case .requiresApproval:
             loginNote.stringValue = "Waiting for approval in System Settings → General → Login Items."
             loginNote.isHidden = false
@@ -319,8 +325,74 @@ private final class GeneralPane: Pane {
     }
 
     @objc private func loginToggled() {
-        settings.launchAtLogin = loginCheckbox.state == .on
+        let wanted = loginCheckbox.state == .on
+        settings.launchAtLogin = wanted
         refresh()  // register may fail or land in requiresApproval — show truth now
+        guard wanted else { return }   // turning it OFF needs no explanation
+        explainLoginResult(settings.launchAtLoginStatus)
+    }
+
+    /// Say something. Anything.
+    ///
+    /// Reported by the user: "I just never saw one" — they ticked the box and
+    /// nothing happened, so they had no idea whether it had worked or what to do
+    /// next. That was accurate. On the success path `refresh()` hides both the
+    /// note and the button, leaving a checkmark as the entire feedback, and
+    /// macOS's own "added to Login Items" banner is a transient notification that
+    /// Focus or Do Not Disturb swallows without trace.
+    ///
+    /// A registration that needs the user to go somewhere else and flip a second
+    /// switch cannot be communicated by a checkbox changing state. So this is a
+    /// deliberate modal: it is the one moment in the app where the next step is
+    /// outside the app, and the user cannot be expected to guess it.
+    ///
+    /// It fires only on ENABLE, and only from the click — never from `refresh()`,
+    /// which runs on every settings change from anywhere and would otherwise pop
+    /// an alert while the user was doing something unrelated.
+    private func explainLoginResult(_ status: Settings.LoginItemStatus) {
+        let a = NSAlert()
+        switch status {
+        case .enabled:
+            a.messageText = "BetterStats will open at login"
+            a.informativeText = settings.startInMenuBarOnly
+                ? "It will start in the menu bar with no window, as configured below.\n\n"
+                  + "If macOS asks you to approve it, that switch lives in "
+                  + "System Settings → General → Login Items."
+                : "It will start with its window open.\n\n"
+                  + "If macOS asks you to approve it, that switch lives in "
+                  + "System Settings → General → Login Items."
+            a.addButton(withTitle: "OK")
+            a.addButton(withTitle: "Open Login Items…")
+        case .requiresApproval:
+            // The important case, and the one with no in-app remedy.
+            a.alertStyle = .informational
+            a.messageText = "One more step in System Settings"
+            a.informativeText = "macOS needs you to approve BetterStats before it "
+                + "can open at login.\n\nOpen System Settings → General → Login Items "
+                + "and switch BetterStats on. Until you do, nothing will start "
+                + "automatically — the checkbox here stays off on purpose, because "
+                + "it reports what the system will actually do."
+            a.addButton(withTitle: "Open Login Items…")
+            a.addButton(withTitle: "Later")
+        default:
+            a.alertStyle = .warning
+            a.messageText = "Could not set BetterStats to open at login"
+            a.informativeText = settings.lastLaunchAtLoginError?.localizedDescription
+                ?? "The system did not accept the request, and gave no reason."
+            a.addButton(withTitle: "OK")
+            a.addButton(withTitle: "Open Login Items…")
+        }
+        guard let w = view.window else { return }
+        a.beginSheetModal(for: w) { [weak self] response in
+            // "Open Login Items…" is the SECOND button except in the approval
+            // case, where it is the first — keyed off the title rather than the
+            // index so reordering a button cannot silently open the wrong thing.
+            let idx = response.rawValue - NSApplication.ModalResponse.alertFirstButtonReturn.rawValue
+            if idx >= 0, idx < a.buttons.count,
+               a.buttons[idx].title.hasPrefix("Open Login Items") {
+                self?.settings.openLoginItemsSettings()
+            }
+        }
     }
 
     @objc private func openLoginItems() {
