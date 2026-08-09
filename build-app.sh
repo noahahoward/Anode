@@ -55,6 +55,16 @@ else
   echo "  ! $ICON not found — skipping icon"
 fi
 
+# ── Documentation ───────────────────────────────────────────────────────────
+# The Help menu opens these. It looks in Contents/Resources first and falls back
+# to walking up to the source checkout, so a `swift build` binary finds them
+# either way — but an INSTALLED bundle has no checkout above it, and without
+# these two lines the shipped app would have no Help menu at all. That is the
+# build every tester actually runs.
+for doc in README.md TESTING.md; do
+  [ -f "$doc" ] && cp "$doc" "$APP/Contents/Resources/$doc"
+done
+
 # ── Info.plist ──────────────────────────────────────────────────────────────
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>

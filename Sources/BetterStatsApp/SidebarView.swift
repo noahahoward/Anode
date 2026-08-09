@@ -42,6 +42,16 @@ final class SidebarView: NSView {
             }
         }
 
+        /// The rail top to bottom: the per-process lenses, then the whole-machine
+        /// ones — the same two groups `build()` draws, split by the same predicate.
+        ///
+        /// `build()` and the View menu both read this, so a lens added to
+        /// `allCases` reaches the rail and ⌘1…⌘8 together or not at all. The menu
+        /// used to be the kind of thing that silently desynced from the sidebar;
+        /// there is now no second list to forget.
+        static let displayOrder: [Lens] =
+            allCases.filter(\.isPerProcess) + allCases.filter { !$0.isPerProcess }
+
         /// The metric whose current value is shown beside the label.
         var metric: MetricID? {
             switch self {
@@ -124,9 +134,9 @@ final class SidebarView: NSView {
         ])
 
         stack.addArrangedSubview(header("Per process"))
-        for l in Lens.allCases where l.isPerProcess { add(l) }
+        for l in Lens.displayOrder where l.isPerProcess { add(l) }
         stack.addArrangedSubview(header("Whole machine"))
-        for l in Lens.allCases where !l.isPerProcess { add(l) }
+        for l in Lens.displayOrder where !l.isPerProcess { add(l) }
 
         rows[selected]?.isSelected = true
     }
