@@ -55,6 +55,17 @@ public final class PreferencesWindowController: NSWindowController {
         tabs.tabStyle = .toolbar
 
         func item(_ vc: NSViewController, _ label: String, _ symbol: String) -> NSTabViewItem {
+            // The view controller's `title`, not just the tab's `label`.
+            //
+            // An NSTabViewController in `.toolbar` style drives the window title
+            // from the SELECTED PANE, overwriting whatever the window was given.
+            // With no title on the pane it substitutes a placeholder, and the
+            // Settings window read "Untitled" on screen despite line 71 setting
+            // "BetterStats Settings" — the assignment happens first and is then
+            // replaced. Titling the panes is what actually reaches the titlebar,
+            // and it gives the macOS-standard behaviour of the title naming the
+            // pane you are looking at.
+            vc.title = label
             let i = NSTabViewItem(viewController: vc)
             i.label = label
             // Symbol lookup can fail on older SDK/asset mismatches; a label-only

@@ -741,24 +741,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         }
     }
 
-    // ── Menu ────────────────────────────────────────────────────────────────
-    func buildMenu() {
-        let main = NSMenu()
-        let appItem = NSMenuItem()
-        let appMenu = NSMenu()
-        appMenu.addItem(withTitle: "About BetterStats", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
-        appMenu.addItem(.separator())
-        let prefs = NSMenuItem(title: "Settings…", action: #selector(openPrefs), keyEquivalent: ",")
-        prefs.target = self
-        appMenu.addItem(prefs)
-        appMenu.addItem(.separator())
-        appMenu.addItem(withTitle: "Quit BetterStats", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
-        appItem.submenu = appMenu
-        main.addItem(appItem)
-        NSApp.mainMenu = main
-    }
-
-    @objc func openPrefs() { PreferencesWindowController.shared.show() }
+    // The main menu lives in AppMenu.swift: it grew from one submenu to five, and
+    // the Edit menu it now carries is what makes ⌘C/⌘V work at all.
 
     /// Push the latest readings into whichever whole-machine pane is showing.
     func refreshPane() {
