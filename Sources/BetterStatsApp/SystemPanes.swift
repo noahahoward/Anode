@@ -17,7 +17,14 @@ import PowerKit
 /// the whole list lets it update the views already on screen instead of tearing
 /// the stack down, which is where the cost was. See `SystemPane.setBody`.
 struct BodyItem {
-    enum Kind { case heading, row }
+    /// `.figure` is a label above a LARGE value rather than a label-value pair.
+    ///
+    /// It exists because the Resources detail separates the numbers that move from
+    /// the facts that do not — the live readings are set big and grouped together,
+    /// the hardware specs stay small label/value pairs beside them. That separation
+    /// is most of what makes the layout readable, and it maps onto the distinction
+    /// this project already cares most about: measured now, versus known all along.
+    enum Kind { case heading, row, figure }
     let kind: Kind
     let label: String
     let value: String
@@ -33,13 +40,84 @@ struct BodyItem {
                     color: NSColor? = nil, dim: Bool = false) -> BodyItem {
         BodyItem(kind: .row, label: label, value: value, fill: fill, color: color, dim: dim)
     }
+
+    static func figure(_ label: String, _ value: String, color: NSColor? = nil) -> BodyItem {
+        BodyItem(kind: .figure, label: label, value: value, fill: nil, color: color, dim: false)
+    }
 }
 
 /// A body view that can take a new `BodyItem` without being replaced, and can be
 /// told the appearance changed under it.
-private protocol PaneBodyView: AnyObject {
+protocol PaneBodyView: AnyObject {
     func apply(_ item: BodyItem)
     func restyle()
+}
+
+/// A vertical list of `BodyItem`s that updates in place.
+///
+/// Split out of `SystemPane` so the Resources detail can have THREE of these — the
+/// live figures, the hardware specs, and the per-instance rows — without any of
+/// them re-implementing the reconcile. The reconcile is the whole point: see
+/// `setItems` for the 36 ms → 0.12 ms measurement that produced it.
+final class BodyStack: NSStackView {
+
+    init() {
+        super.init(frame: .zero)
+        orientation = .vertical
+        alignment = .leading
+        spacing = 6
+        translatesAutoresizingMaskIntoConstraints = false
+    }
+    required init?(coder: NSCoder) { fatalError() }
+
+    /// Install `items`, reusing the views already there when the shape has not
+    /// changed.
+    ///
+    /// Every pane is re-rendered on every tick and the Sensors pane is ~260 rows.
+    /// MEASURED (M5 Pro, 258 rows, offscreen harness): clearing the stack and
+    /// rebuilding it costs 36 ms of CPU per tick — 8 ms creating views, the rest
+    /// Auto Layout re-solving a stack whose arranged subviews all changed identity.
+    /// Re-texting the same views costs 0.12 ms, because nothing touches a
+    /// constraint. Rows whose content is unchanged are not even repainted.
+    func setItems(_ items: [BodyItem]) {
+        let existing = arrangedSubviews
+        // Reuse only when the shapes line up exactly. A different count, or a
+        // heading where a row was, means the constraint set has to change anyway.
+        let reusable = existing.count == items.count
+            && zip(existing, items).allSatisfy { view, item in
+                switch item.kind {
+                case .row:     return view is SystemPane.BarRow
+                case .heading: return view is SystemPane.HeadingView
+                case .figure:  return view is SystemPane.FigureView
+                }
+            }
+        guard reusable else { return rebuild(items) }
+        for (view, item) in zip(existing, items) {
+            (view as? PaneBodyView)?.apply(item)
+        }
+    }
+
+    func restyleRows() {
+        arrangedSubviews.forEach { ($0 as? PaneBodyView)?.restyle() }
+    }
+
+    private func rebuild(_ items: [BodyItem]) {
+        arrangedSubviews.forEach { removeArrangedSubview($0); $0.removeFromSuperview() }
+        for item in items {
+            let view: NSView
+            var height: CGFloat?
+            switch item.kind {
+            case .row:     view = SystemPane.BarRow(item);      height = 22
+            case .figure:  view = SystemPane.FigureView(item);  height = 42
+            case .heading: view = SystemPane.HeadingView(item); height = nil
+            }
+            addArrangedSubview(view)
+            view.widthAnchor.constraint(equalTo: widthAnchor).isActive = true
+            if let height {
+                view.heightAnchor.constraint(equalToConstant: height).isActive = true
+            }
+        }
+    }
 }
 
 /// Shared chrome: a title, an optional caption, and a vertical list of rows. Keeps
@@ -48,7 +126,7 @@ class SystemPane: NSView {
 
     let titleLabel = NSTextField(labelWithString: "")
     let captionLabel = NSTextField(labelWithString: "")
-    let body = NSStackView()
+    let body = BodyStack()
     private let scroll = NSScrollView()
     /// Held so an accessory can be spliced in between the caption and the list
     /// without rebuilding the chrome. See `setAccessory`.
@@ -78,18 +156,14 @@ class SystemPane: NSView {
         // The body's rows resolve `Palette` at draw time, and a reused row is only
         // repainted when its own content changes — so a theme flip has to say so
         // explicitly or the list keeps the old appearance's ink until a value moves.
-        body.arrangedSubviews.forEach { ($0 as? PaneBodyView)?.restyle() }
+        body.restyleRows()
+        customContent?.restyleForAppearanceChange()
     }
 
     private func buildChrome() {
         titleLabel.font = Palette.Font.sans(15, .semibold)
         captionLabel.font = Palette.Font.mono(10.5)
         captionLabel.maximumNumberOfLines = 2
-
-        body.orientation = .vertical
-        body.alignment = .leading
-        body.spacing = 6
-        body.translatesAutoresizingMaskIntoConstraints = false
 
         scroll.hasVerticalScroller = true
         scroll.borderType = .noBorder
@@ -154,55 +228,36 @@ class SystemPane: NSView {
         accessoryHeight.constant = height
     }
 
+    /// A pane whose content is not a list of rows.
+    ///
+    /// The Resources tab is two columns — a rail of live cards and a detail column
+    /// for the selected one — which no arrangement of `BodyItem`s can express. It
+    /// keeps the shared title and caption so it still reads as one of this family,
+    /// and takes the whole area beneath them for itself. Removing the scroll view
+    /// takes its constraints with it, which is why `scrollTop` needs no unwinding.
+    func setContent(_ view: NSView & PaneContentView) {
+        scroll.removeFromSuperview()
+        customContent = view
+        view.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(view)
+        NSLayoutConstraint.activate([
+            view.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 18),
+            view.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12),
+            view.topAnchor.constraint(equalTo: captionLabel.bottomAnchor, constant: 12),
+            view.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -12),
+        ])
+    }
+
+    private weak var customContent: (NSView & PaneContentView)?
+
     func restyle() {
         titleLabel.textColor = Palette.text
         captionLabel.textColor = Palette.dim
     }
 
-    /// Install `items` as the body, reusing the views already there when the shape
-    /// has not changed.
-    ///
-    /// Every pane is re-rendered on every tick and the Sensors pane is ~260 rows.
-    /// MEASURED (M5 Pro, 258 rows, offscreen harness): clearing the stack and
-    /// rebuilding it costs 36 ms of CPU per tick — 8 ms creating views, the rest
-    /// Auto Layout re-solving a stack whose arranged subviews all changed identity.
-    /// Re-texting the same views costs 0.12 ms, because nothing touches a
-    /// constraint. Rows whose content is unchanged are not even repainted.
-    func setBody(_ items: [BodyItem]) {
-        let existing = body.arrangedSubviews
-        // Reuse only when the shapes line up exactly. A different count, or a
-        // heading where a row was, means the constraint set has to change anyway.
-        let reusable = existing.count == items.count
-            && zip(existing, items).allSatisfy { view, item in
-                switch item.kind {
-                case .row:     return view is BarRow
-                case .heading: return view is HeadingView
-                }
-            }
-        guard reusable else { rebuildBody(items); return }
-        for (view, item) in zip(existing, items) {
-            (view as? PaneBodyView)?.apply(item)
-        }
-    }
-
-    private func rebuildBody(_ items: [BodyItem]) {
-        body.arrangedSubviews.forEach {
-            body.removeArrangedSubview($0); $0.removeFromSuperview()
-        }
-        for item in items {
-            switch item.kind {
-            case .row:
-                let row = BarRow(item)
-                body.addArrangedSubview(row)
-                row.widthAnchor.constraint(equalTo: body.widthAnchor).isActive = true
-                row.heightAnchor.constraint(equalToConstant: 22).isActive = true
-            case .heading:
-                let head = HeadingView(item)
-                body.addArrangedSubview(head)
-                head.widthAnchor.constraint(equalTo: body.widthAnchor).isActive = true
-            }
-        }
-    }
+    /// Install `items` as the body. See `BodyStack.setItems`, which owns the
+    /// reconcile and the measurement behind it.
+    func setBody(_ items: [BodyItem]) { body.setItems(items) }
 
     /// One row, optionally with a proportional fill behind it. The bar is drawn
     /// rather than composed from views so it can sit *behind* the text without a
@@ -291,6 +346,55 @@ class SystemPane: NSView {
 
         func restyle() { label.textColor = Palette.faint }
     }
+
+    /// A LIVE reading: its name small and quiet above it, the number itself set
+    /// large. The counterpart to `BarRow`, which is what a fact that does not move
+    /// looks like.
+    ///
+    /// Drawn rather than composed from two text fields, for the same reason `BarRow`
+    /// is: these are re-texted on every tick, and an NSTextField invalidates its
+    /// intrinsic size on every assignment.
+    final class FigureView: NSView, PaneBodyView {
+        private var label: String, value: String
+        private var color: NSColor?
+
+        init(_ item: BodyItem) {
+            label = item.label; value = item.value; color = item.color
+            super.init(frame: .zero)
+            translatesAutoresizingMaskIntoConstraints = false
+        }
+        required init?(coder: NSCoder) { fatalError() }
+        override var isFlipped: Bool { true }
+
+        func apply(_ item: BodyItem) {
+            guard label != item.label || value != item.value || color != item.color
+            else { return }
+            label = item.label; value = item.value; color = item.color
+            needsDisplay = true
+        }
+
+        func restyle() { needsDisplay = true }
+
+        override func draw(_ dirtyRect: NSRect) {
+            let nameAttrs = Palette.labelAttributes(Palette.faint, size: 9)
+            let valueAttrs: [NSAttributedString.Key: Any] = [
+                .font: Palette.Font.mono(19, .regular),
+                .foregroundColor: color ?? Palette.text,
+            ]
+            (label.uppercased() as NSString).draw(at: NSPoint(x: 0, y: 2),
+                                                  withAttributes: nameAttrs)
+            (value as NSString).draw(at: NSPoint(x: 0, y: 15), withAttributes: valueAttrs)
+        }
+    }
+}
+
+/// The content view of a pane that has replaced the row list with its own layout.
+///
+/// One method, and it is the one thing the chrome cannot do for it: `Palette`
+/// resolves at draw time and is not observed, so a theme flip has to be passed
+/// down or the content keeps the outgoing appearance's ink until something moves.
+protocol PaneContentView: AnyObject {
+    func restyleForAppearanceChange()
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

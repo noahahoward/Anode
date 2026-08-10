@@ -324,7 +324,11 @@ final class DiskActivityTests: XCTestCase {
     private func snapshot(read: Double?, written: Double?) -> SystemMetrics.Snapshot {
         let disk = read.flatMap { r in
             written.map {
-                DiskActivity.Sample(bytesReadPerSec: r, bytesWrittenPerSec: $0, interval: 1)
+                // No per-device rows: these tests are about the combined
+                // read/write figure, which is complete with or without the
+                // breakdown that names the hardware behind it.
+                DiskActivity.Sample(bytesReadPerSec: r, bytesWrittenPerSec: $0,
+                                    devices: [], interval: 1)
             }
         }
         return SystemMetrics.Snapshot(cpu: nil, memory: nil, gpu: nil, network: nil,

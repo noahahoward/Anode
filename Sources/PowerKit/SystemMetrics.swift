@@ -222,8 +222,32 @@ public final class NetworkThroughput {
         public var totalPerSec: Double { bytesInPerSec + bytesOutPerSec }
         /// Per-interface breakdown, busiest first. Which link the traffic is on
         /// matters: 12 MB/s is saturation on Wi-Fi and idle on Thunderbolt.
+        ///
+        /// Only links that MOVED bytes appear here — an idle interface is not a row.
         public let interfaces: [Interface]
+        /// Every interface that had a usable baseline this tick, whether or not it
+        /// moved anything.
+        ///
+        /// `interfaces` cannot answer "was this link measured?", because a link
+        /// missing from it might have moved nothing or might have had no baseline
+        /// (first sight, or a counter reset). A view that names one specific
+        /// adapter — the Resources tab titles itself after the primary one — has to
+        /// tell "measured, and it was zero" from "not measured", and this is that
+        /// distinction. It is not a display list; nothing should iterate it to draw
+        /// twenty idle rows.
+        public let measured: Set<String>
         public let interval: TimeInterval
+
+        /// This interface's throughput, or nil when nothing can be said about it.
+        ///
+        /// Zero is only returned for a link that really was differenced across this
+        /// interval — the whole reason `measured` exists.
+        public func rate(for name: String) -> (inPerSec: Double, outPerSec: Double)? {
+            if let row = interfaces.first(where: { $0.name == name }) {
+                return (row.inPerSec, row.outPerSec)
+            }
+            return measured.contains(name) ? (0, 0) : nil
+        }
     }
 
     /// One interface's cumulative counters, at the kernel's full 64-bit width.
@@ -272,7 +296,7 @@ public final class NetworkThroughput {
         var inTotal = 0.0
         var outTotal = 0.0
         var rows: [Interface] = []
-        var contributing = 0
+        var measured: Set<String> = []
 
         for (name, cur) in now {
             // No baseline: first sight of this interface. It contributes nothing
@@ -293,7 +317,7 @@ public final class NetworkThroughput {
             guard inRate <= Self.maxPlausibleBytesPerSec,
                   outRate <= Self.maxPlausibleBytesPerSec else { continue }
 
-            contributing += 1
+            measured.insert(name)
             inTotal += inRate
             outTotal += outRate
             if inRate + outRate > 0 {
@@ -303,12 +327,13 @@ public final class NetworkThroughput {
 
         // Every interface either new or dropped: there is no interval anything can
         // be said about. Zero would be a claim of silence rather than of ignorance.
-        guard contributing > 0 else { return nil }
+        guard !measured.isEmpty else { return nil }
 
         rows.sort { $0.totalPerSec > $1.totalPerSec }
         return Sample(bytesInPerSec: inTotal,
                       bytesOutPerSec: outTotal,
                       interfaces: rows,
+                      measured: measured,
                       interval: dt)
     }
 
@@ -411,10 +436,35 @@ public final class NetworkThroughput {
 /// sidebar already uses, so the slot is not claiming to be a utilisation.
 public final class DiskActivity {
 
+    /// What a block device says it is. Read once per registry entry ID — see
+    /// `identity` for why that can be cached for the life of the boot.
+    public struct Identity: Equatable {
+        /// `Device Characteristics` → `Product Name`, e.g. "APPLE SSD AP1024Z".
+        public let product: String
+        /// `Protocol Characteristics` → `Physical Interconnect`: "Apple Fabric",
+        /// "USB", "Secure Digital". nil when the node does not publish one.
+        public let interconnect: String?
+        public let isInternal: Bool
+    }
+
+    public struct Device {
+        public let identity: Identity
+        public let bytesReadPerSec: Double
+        public let bytesWrittenPerSec: Double
+        public var totalPerSec: Double { bytesReadPerSec + bytesWrittenPerSec }
+    }
+
     public struct Sample {
         public let bytesReadPerSec: Double
         public let bytesWrittenPerSec: Double
         public var totalPerSec: Double { bytesReadPerSec + bytesWrittenPerSec }
+        /// The same traffic, split by physical device, busiest first.
+        ///
+        /// A device that contributed to the totals but would not say what it is
+        /// gets NO row rather than a row called "Disk". The totals above are the
+        /// complete figure either way, so an unnameable device is never dropped
+        /// from the measurement — only from the list that names things.
+        public let devices: [Device]
         public let interval: TimeInterval
     }
 
@@ -445,6 +495,14 @@ public final class DiskActivity {
     /// never later name an SSD.
     private var physical: [UInt64: Bool] = [:]
 
+    /// Registry entry ID → what that device calls itself. Cached for the same
+    /// reason `physical` is: entry IDs are unique for the life of the boot and are
+    /// not reused, so a cached name can never end up on a different device. Reading
+    /// `Device Characteristics` is two CFDictionary materialisations, and doing it
+    /// per tick for a name that cannot change is exactly the kind of cost this app
+    /// exists not to pay.
+    private var identity: [UInt64: Identity] = [:]
+
     public init() {}
 
     /// nil on the first call — throughput only exists between two reads — and
@@ -472,6 +530,7 @@ public final class DiskActivity {
         var readTotal = 0.0
         var writeTotal = 0.0
         var contributing = 0
+        var rows: [Device] = []
 
         for (id, cur) in now {
             // No baseline: first sight of this device. It contributes nothing this
@@ -494,14 +553,21 @@ public final class DiskActivity {
             contributing += 1
             readTotal += readRate
             writeTotal += writeRate
+            if let who = identity[id] {
+                rows.append(Device(identity: who,
+                                   bytesReadPerSec: readRate,
+                                   bytesWrittenPerSec: writeRate))
+            }
         }
 
         // Every device either new or dropped: there is no interval anything can be
         // said about. Zero would be a claim of silence rather than of ignorance.
         guard contributing > 0 else { return nil }
 
+        rows.sort { $0.totalPerSec > $1.totalPerSec }
         return Sample(bytesReadPerSec: readTotal,
                       bytesWrittenPerSec: writeTotal,
+                      devices: rows,
                       interval: dt)
     }
 
@@ -550,6 +616,9 @@ public final class DiskActivity {
         return out.isEmpty ? nil : out
     }
 
+    /// Is this real hardware, and what does it call itself? Both answers come from
+    /// the same parent node, so they are read in one pass and cached together —
+    /// see `physical` and `identity` for why caching is safe.
     private func isPhysical(_ service: io_object_t, _ id: UInt64) -> Bool {
         if let known = physical[id] { return known }
 
@@ -558,15 +627,29 @@ public final class DiskActivity {
         else { return false }
         defer { IOObjectRelease(device) }
 
-        let raw = IORegistryEntryCreateCFProperty(
-            device, "Protocol Characteristics" as CFString, kCFAllocatorDefault, 0)
-        let chars = raw?.takeRetainedValue() as? [String: Any]
-        let interconnect = chars?["Physical Interconnect"] as? String
+        func dict(_ key: String) -> [String: Any]? {
+            IORegistryEntryCreateCFProperty(device, key as CFString, kCFAllocatorDefault, 0)?
+                .takeRetainedValue() as? [String: Any]
+        }
+        let proto = dict("Protocol Characteristics")
+        let interconnect = proto?["Physical Interconnect"] as? String
         // Unknown interconnect counts as physical: a device we cannot classify is
         // more likely a real disk on an unfamiliar bus than a disk image, and
         // dropping it would silently under-report.
         let real = interconnect != "Virtual Interface"
         physical[id] = real
+
+        // A device with no product name gets no identity rather than a placeholder
+        // one. It still contributes to the totals; it just does not get named.
+        if real,
+           let product = (dict("Device Characteristics")?["Product Name"] as? String)?
+               .trimmingCharacters(in: .whitespaces),
+           !product.isEmpty {
+            identity[id] = Identity(
+                product: product,
+                interconnect: interconnect,
+                isInternal: (proto?["Physical Interconnect Location"] as? String) == "Internal")
+        }
         return real
     }
 }
