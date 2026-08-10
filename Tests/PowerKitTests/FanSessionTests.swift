@@ -303,6 +303,52 @@ final class FanSessionTests: XCTestCase {
 /// indistinguishable from a broken pane.
 final class FanGaugeTests: XCTestCase {
 
+    // ── One slider for every fan ────────────────────────────────────────────
+
+    /// The intersection. A single knob carries one number and that number has to
+    /// be legal for every fan it commands.
+    func testASyncedSliderSpansOnlyWhatEveryFanAccepts() {
+        let shared = FanGauge.sharedLimits([.init(minRPM: 2317, maxRPM: 7826),
+                                            .init(minRPM: 2500, maxRPM: 6000)])
+        XCTAssertEqual(shared?.minRPM, 2500, "offered a speed the second fan refuses")
+        XCTAssertEqual(shared?.maxRPM, 6000, "offered a speed the second fan refuses")
+    }
+
+    func testIdenticalFansGiveTheirOwnRange() {
+        let both = FanPolicy.Limits(minRPM: 2317, maxRPM: 7826)
+        XCTAssertEqual(FanGauge.sharedLimits([both, both])?.minRPM, 2317)
+        XCTAssertEqual(FanGauge.sharedLimits([both, both])?.maxRPM, 7826)
+    }
+
+    /// Fans with nothing in common cannot share a knob, and saying so is better
+    /// than inventing a range that half of them would refuse.
+    func testFansWithNoOverlapCannotBeSynced() {
+        XCTAssertNil(FanGauge.sharedLimits([.init(minRPM: 2000, maxRPM: 2400),
+                                            .init(minRPM: 4000, maxRPM: 7000)]))
+        // Touching at a single point is not a range either.
+        XCTAssertNil(FanGauge.sharedLimits([.init(minRPM: 2000, maxRPM: 3000),
+                                            .init(minRPM: 3000, maxRPM: 7000)]))
+        XCTAssertNil(FanGauge.sharedLimits([]))
+    }
+
+    /// Every fan's speed, not an average. Two fans given one target do not run at
+    /// one speed — 2317 written to both produced 2320 and 2502 on real hardware —
+    /// and an average would hide precisely that.
+    func testASyncedReadoutShowsEveryFanRatherThanAnAverage() {
+        XCTAssertEqual(FanGauge.syncedReadout(currents: [2320, 2502], asked: nil),
+                       "2320 · 2502 rpm")
+        XCTAssertEqual(FanGauge.syncedReadout(currents: [2320, 2502], asked: 4000),
+                       "2320 · 2502 → 4000 rpm")
+    }
+
+    func testASyncedReadoutSurvivesAFanThatIsNotReading() {
+        XCTAssertEqual(FanGauge.syncedReadout(currents: [2320, .nan], asked: nil),
+                       "2320 · — rpm")
+        XCTAssertEqual(FanGauge.syncedReadout(currents: [], asked: nil), "— rpm")
+    }
+
+    // ── The knob ────────────────────────────────────────────────────────────
+
     /// Automatic mode. The knob has to follow the hardware, or the control reads
     /// as dead — which this pane has already been mistaken for once.
     func testTheKnobIsALiveGaugeWhenNothingHasBeenAskedFor() {

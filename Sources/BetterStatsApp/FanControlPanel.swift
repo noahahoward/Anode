@@ -134,6 +134,8 @@ final class FanControlPanel: NSView {
     private let hintField = NSTextField(labelWithString: "")
     private let fanRows = NSStackView()
     private let buttonRow = NSStackView()
+    /// Shown only on a machine where one knob could drive every fan.
+    private let syncToggle = NSButton()
     private var sliders: [Int: NSSlider] = [:]
     private var valueLabels: [Int: NSTextField] = [:]
     private var boostButtons: [Int: NSButton] = [:]
@@ -268,8 +270,19 @@ final class FanControlPanel: NSView {
         gesture(.fullSpeed(index: sender.tag, limits: limits))
     }
 
+    /// ✕ — hand the fans back AND switch fan control off.
+    ///
+    /// It used to release and leave the feature on, which put the strip in the
+    /// state a user called out by name: fans on automatic, "macOS is deciding"
+    /// written across the top, and fan control still switched on underneath. That
+    /// is a distinction the strip could explain but nobody asked for. There are
+    /// two states worth having — this app is driving, or macOS is — and ✕ is how
+    /// you get to the second one.
+    ///
+    /// `disableTapped` is the same button under a label; ✕ is its shortcut, sat
+    /// next to the fan it undoes.
     @objc private func releaseTapped() {
-        gesture(.release)
+        disableTapped()
     }
 
     private func gesture(_ g: FanSession.Gesture) {
@@ -280,11 +293,23 @@ final class FanControlPanel: NSView {
         // the live reading rather than leaving it where the drag ended.
         if !Settings.shared.fanControlEnabled {
             if case .release = g { return render() }
-            guard confirmTurnOn() else { return render() }
-            Settings.shared.fanControlEnabled = true
-            session.enabled = true
+            guard ensureFanControlIsOn() else { return render() }
         }
         perform(session.apply(g))
+    }
+
+    /// Switch fan control on if it is not already, having asked. Returns false if
+    /// the user said no.
+    ///
+    /// Factored out because a synced drag is many gestures and this must happen
+    /// exactly once for the lot: per-gesture, a two-fan machine would put up two
+    /// sheets, and cancelling the first would be answered by the second.
+    private func ensureFanControlIsOn() -> Bool {
+        guard !Settings.shared.fanControlEnabled else { return true }
+        guard confirmTurnOn() else { return false }
+        Settings.shared.fanControlEnabled = true
+        session.enabled = true
+        return true
     }
 
     private func perform(_ effect: FanSession.Effect) {
@@ -550,6 +575,16 @@ final class FanControlPanel: NSView {
     // ── Rendering ───────────────────────────────────────────────────────────
 
     private func render() {
+        // Only where the choice exists. One fan has nothing to sync, and fans
+        // with no speed in common cannot share a knob — offering the switch there
+        // would be a control that does nothing when you press it.
+        let usable = fans.filter { $0.maxRPM > $0.minRPM && $0.minRPM > 0 }
+        syncToggle.isHidden = usable.count < 2 || FanGauge.sharedLimits(usable.map {
+            FanPolicy.Limits(minRPM: $0.minRPM, maxRPM: $0.maxRPM)
+        }) == nil
+        syncToggle.state = Settings.shared.fanSyncEnabled ? .on : .off
+        syncToggle.contentTintColor = Palette.dim
+
         rebuildFanRows(fans)
 
         switch session.mode {
@@ -596,9 +631,10 @@ final class FanControlPanel: NSView {
                                     + "Read the command, authenticate, and this connects on its own."
             hintField.stringValue = Self.startCommand()
             // An authorisation is already on screen; a second one to install
-            // would be two password boxes for one intention.
-            setButtons([("Cancel", #selector(releaseTapped)),
-                        ("Turn Off", #selector(disableTapped))], offeringInstall: false)
+            // would be two password boxes for one intention. And one button, not
+            // two: ✕ now switches fan control off, so "Cancel" and "Turn Off"
+            // became the same button under two labels.
+            setButtons([("Cancel", #selector(releaseTapped))], offeringInstall: false)
 
         case .manual(let count):
             statusLabel.stringValue = count == 1
@@ -607,8 +643,11 @@ final class FanControlPanel: NSView {
             hintField.stringValue = ""
             // Fans are held right now. Handing them back comes first; changing
             // what runs as root while they are pinned does not belong here.
-            setButtons([("Return to Automatic", #selector(releaseTapped)),
-                        ("Turn Off", #selector(disableTapped))], offeringInstall: false)
+            //
+            // "Return to Automatic" is gone: it did what ✕ does, and what "Turn
+            // Off" does, and the difference between the three was the confusing
+            // middle state rather than a capability anyone wanted.
+            setButtons([("Turn Off", #selector(disableTapped))], offeringInstall: false)
 
         case .blocked(let why):
             statusLabel.stringValue = "The fan helper refused this app: \(why)"
@@ -635,14 +674,40 @@ final class FanControlPanel: NSView {
         }
     }
 
-    private func rebuildFanRows(_ fans: [FanInfo]) {
-        // A fan whose reported range is nonsense gets no row at all. The helper
-        // would refuse the write anyway (FanPolicy.limitsImplausible), and a
-        // control that is always refused is worse than none.
+    /// The row index of the one slider that drives every fan. Negative because no
+    /// real fan can collide with it, and the strip's maps are keyed by fan index.
+    private static let syncedRow = -1
+
+    /// Fans that can actually be driven, and whether one knob can drive them all.
+    ///
+    /// A fan whose reported range is nonsense gets no row at all. The helper would
+    /// refuse the write anyway (`FanPolicy.limitsImplausible`), and a control that
+    /// is always refused is worse than none.
+    private func drivable(_ fans: [FanInfo]) -> (fans: [FanInfo], shared: FanPolicy.Limits?) {
         let usable = fans.filter { $0.maxRPM > $0.minRPM && $0.minRPM > 0 }
-        guard usable.map(\.index) != fanRows.arrangedSubviews.compactMap({ ($0 as? FanRow)?.index })
+        guard Settings.shared.fanSyncEnabled, usable.count > 1 else { return (usable, nil) }
+        // Not "sync is on" — sync is on AND these fans have a speed in common. A
+        // machine whose fans do not overlap splits the strip back apart on its
+        // own rather than offering a knob half of them would refuse.
+        return (usable, FanGauge.sharedLimits(usable.map {
+            FanPolicy.Limits(minRPM: $0.minRPM, maxRPM: $0.maxRPM)
+        }))
+    }
+
+    private func rebuildFanRows(_ fans: [FanInfo]) {
+        let (usable, shared) = drivable(fans)
+        // What the strip should be showing: one row per fan, or the single synced
+        // row. Compared against what it IS showing, so toggling sync rebuilds and
+        // an unchanged tick does not.
+        let wanted = shared == nil ? usable.map(\.index) : [Self.syncedRow]
+        guard wanted != fanRows.arrangedSubviews.compactMap({ ($0 as? FanRow)?.index })
         else {
-            for f in usable { applyReading(f) }
+            if let shared { applySyncedReading(usable, shared: shared) }
+            else { for f in usable { applyReading(f) } }
+            return
+        }
+        if let shared {
+            buildSyncedRow(usable, shared: shared)
             return
         }
         fanRows.arrangedSubviews.forEach {
@@ -700,6 +765,124 @@ final class FanControlPanel: NSView {
             releaseButtons[f.index] = stop
             applyReading(f)
         }
+    }
+
+    /// One row, one knob, every fan.
+    ///
+    /// Deliberately the same five controls in the same places as a fan's own row,
+    /// so toggling sync changes how many rows there are and nothing else about
+    /// how the strip works.
+    private func buildSyncedRow(_ usable: [FanInfo], shared: FanPolicy.Limits) {
+        fanRows.arrangedSubviews.forEach {
+            fanRows.removeArrangedSubview($0); $0.removeFromSuperview()
+        }
+        sliders.removeAll(); valueLabels.removeAll()
+        boostButtons.removeAll(); releaseButtons.removeAll()
+
+        let row = FanRow(index: Self.syncedRow)
+        let slider = GaugeSlider()
+        slider.minValue = shared.minRPM
+        slider.maxValue = shared.maxRPM
+        slider.target = self
+        slider.action = #selector(syncSliderChanged(_:))
+        slider.isContinuous = false
+        slider.controlSize = .small
+
+        let name = NSTextField(labelWithString: "All fans")
+        name.font = Palette.Font.sans(11.5)
+        name.textColor = Palette.dim
+        let value = NSTextField(labelWithString: "")
+        value.font = Palette.Font.mono(11)
+        value.textColor = Palette.text
+        value.alignment = .right
+
+        let boost = symbolButton("snowflake", fallback: "❄︎",
+                                 action: #selector(syncBoostTapped))
+        boost.contentTintColor = Palette.blue
+        // Each fan's OWN maximum, not the shared one. "Flat out" means flat out,
+        // and a fan that can do 7826 should not be held to a slower fan's ceiling
+        // just because the strip is showing one knob.
+        boost.toolTip = "Run every fan flat out, each at its own reported maximum"
+        boost.setAccessibilityLabel("Set every fan to full speed")
+
+        let stop = symbolButton("xmark", fallback: "✕", action: #selector(releaseTapped))
+        stop.contentTintColor = Palette.critical
+        stop.toolTip = "Turn fan control off and hand every fan back to macOS"
+        stop.setAccessibilityLabel("Turn fan control off")
+
+        row.install(name: name, slider: slider, value: value, boost: boost, stop: stop)
+        fanRows.addArrangedSubview(row)
+        row.widthAnchor.constraint(equalTo: fanRows.widthAnchor).isActive = true
+        sliders[Self.syncedRow] = slider
+        valueLabels[Self.syncedRow] = value
+        boostButtons[Self.syncedRow] = boost
+        releaseButtons[Self.syncedRow] = stop
+        applySyncedReading(usable, shared: shared)
+    }
+
+    private func applySyncedReading(_ usable: [FanInfo], shared: FanPolicy.Limits) {
+        guard let slider = sliders[Self.syncedRow],
+              let label = valueLabels[Self.syncedRow] else { return }
+        // What every fan was asked for, when they agree. They can disagree — a
+        // drag under sync sets them all, but a fan can be refused on its own — and
+        // a knob showing one of two different numbers would be a claim the strip
+        // cannot back up.
+        let asked = usable.map { session.asked($0.index) }
+        let agreed: Double? = {
+            guard let first = asked.first ?? nil, asked.allSatisfy({ $0 == first }) else { return nil }
+            return first
+        }()
+        if !((slider as? GaugeSlider)?.isTracking ?? false) {
+            slider.minValue = shared.minRPM
+            slider.maxValue = shared.maxRPM
+            // The fastest fan, when nothing has been asked for. A knob parked at
+            // the slowest would read as "everything is idle" on a machine where
+            // one fan is working.
+            let current = usable.map(\.currentRPM).filter(\.isFinite).max() ?? 0
+            slider.doubleValue = FanGauge.knobRPM(current: current, asked: agreed, limits: shared)
+        }
+        label.stringValue = FanGauge.syncedReadout(currents: usable.map(\.currentRPM),
+                                                   asked: agreed)
+
+        let driving = usable.contains { session.asked($0.index) != nil }
+        let held = usable.contains { session.held[$0.index] != nil }
+        slider.alphaValue = !driving ? 0.45 : (held ? 1 : 0.7)
+        label.textColor = driving ? Palette.text : Palette.dim
+
+        let canRelease = session.isDriving || session.mode == .starting
+        if let stop = releaseButtons[Self.syncedRow] {
+            stop.alphaValue = canRelease ? 1 : 0.25
+            stop.isEnabled = canRelease
+        }
+    }
+
+    @objc private func syncToggled() {
+        // A view preference. It releases nothing and asks the helper for nothing:
+        // the fans stay exactly where they are and the strip redraws around them.
+        Settings.shared.fanSyncEnabled = syncToggle.state == .on
+        render()
+    }
+
+    /// One drag, every fan. The enable check runs ONCE for the whole gesture —
+    /// per-fan it would put a confirmation sheet on screen for each fan the
+    /// machine has, and a cancel would then be asked again for the next one.
+    @objc private func syncSliderChanged(_ sender: NSSlider) {
+        applyToEveryFan { FanSession.Gesture.setSpeed(index: $0.index, rpm: sender.doubleValue,
+                                                      limits: .init(minRPM: $0.minRPM,
+                                                                    maxRPM: $0.maxRPM)) }
+    }
+
+    @objc private func syncBoostTapped() {
+        applyToEveryFan { FanSession.Gesture.fullSpeed(index: $0.index,
+                                                       limits: .init(minRPM: $0.minRPM,
+                                                                     maxRPM: $0.maxRPM)) }
+    }
+
+    private func applyToEveryFan(_ make: (FanInfo) -> FanSession.Gesture) {
+        let usable = drivable(fans).fans
+        guard !usable.isEmpty else { return }
+        guard ensureFanControlIsOn() else { return render() }
+        for f in usable { perform(session.apply(make(f))) }
     }
 
     private func applyReading(_ f: FanInfo) {
@@ -786,6 +969,14 @@ final class FanControlPanel: NSView {
         // Selectable, so the command can be copied by hand as well as by button.
         hintField.isSelectable = true
 
+        syncToggle.setButtonType(.switch)
+        syncToggle.title = "Sync fans"
+        syncToggle.font = Palette.Font.sans(11)
+        syncToggle.target = self
+        syncToggle.action = #selector(syncToggled)
+        syncToggle.toolTip = "Drive every fan from one slider. "
+                           + "Off gives each fan its own."
+
         fanRows.orientation = .vertical
         fanRows.alignment = .leading
         fanRows.spacing = 4
@@ -796,7 +987,7 @@ final class FanControlPanel: NSView {
         stack.alignment = .leading
         stack.spacing = 6
         stack.translatesAutoresizingMaskIntoConstraints = false
-        for v in [statusLabel, hintField, fanRows, buttonRow] as [NSView] {
+        for v in [statusLabel, hintField, syncToggle, fanRows, buttonRow] as [NSView] {
             stack.addArrangedSubview(v)
         }
         addSubview(stack)

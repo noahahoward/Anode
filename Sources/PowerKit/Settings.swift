@@ -38,6 +38,7 @@ public final class Settings {
         public static let batteryLogging = "batteryLogging"
         public static let menuBarWidgetsEnabled = "menuBarWidgetsEnabled"
         public static let fanControlEnabled = "fanControlEnabled"
+        public static let fanSyncEnabled = "fanSyncEnabled"
         /// Wildcard — an observer registered on this key fires for every change.
         public static let any = "*"
     }
@@ -78,6 +79,15 @@ public final class Settings {
         /// someone who never read it, and `FanMode.native`'s contract is that a
         /// user who has not opted in is on a machine this code has never touched.
         static let fanControlEnabled = false
+        /// One slider for every fan, on by default.
+        ///
+        /// Two fans in one chassis cool one shared thermal mass, and a machine
+        /// where they are set differently is one where the quiet fan is doing
+        /// nothing about the heat the loud one is chasing. Independent control is
+        /// there for the person who has a reason; matching them is the sane
+        /// default, and it also halves the number of privileged writes a drag
+        /// makes on the common case.
+        static let fanSyncEnabled = true
         /// Matches what the status item shows today: smoothed drain + runtime.
         // Must be real, currently-registered metric IDs. Stale ones are invisible
         // in the picker and get preserved forever as "unknown" bindings.
@@ -101,7 +111,7 @@ public final class Settings {
         var sampleInterval, powerWindowHours, historyRetentionDays,
             minimumDisplayPercentPerHour: Double
         var showDaemons, startInMenuBarOnly, batteryLogging, menuBarWidgetsEnabled,
-            fanControlEnabled: Bool
+            fanControlEnabled, fanSyncEnabled: Bool
         var menuBarWidgets: [String]
     }
     private var snapshot: Values
@@ -207,6 +217,16 @@ public final class Settings {
         get { Settings.readBool(defaults, Key.fanControlEnabled, Default.fanControlEnabled) }
         set { writeBool(Key.fanControlEnabled, \.fanControlEnabled, newValue,
                         Default.fanControlEnabled) }
+    }
+
+    /// Drive every fan from one slider.
+    ///
+    /// A view preference, not a hardware one: turning it off does not release
+    /// anything, it splits the strip back into a row per fan and leaves each
+    /// where it is.
+    public var fanSyncEnabled: Bool {
+        get { Settings.readBool(defaults, Key.fanSyncEnabled, Default.fanSyncEnabled) }
+        set { writeBool(Key.fanSyncEnabled, \.fanSyncEnabled, newValue, Default.fanSyncEnabled) }
     }
 
     /// Floor below which rows display as "<0.01" instead of a meaningless digit.
@@ -398,6 +418,7 @@ public final class Settings {
             notify(Key.menuBarWidgetsEnabled)
         }
         if old.fanControlEnabled != now.fanControlEnabled { notify(Key.fanControlEnabled) }
+        if old.fanSyncEnabled != now.fanSyncEnabled { notify(Key.fanSyncEnabled) }
         if old.menuBarWidgets != now.menuBarWidgets { notify(Key.menuBarWidgets) }
     }
 
@@ -480,6 +501,7 @@ public final class Settings {
                                                Default.menuBarWidgetsEnabled),
                fanControlEnabled: readBool(d, Key.fanControlEnabled,
                                            Default.fanControlEnabled),
+               fanSyncEnabled: readBool(d, Key.fanSyncEnabled, Default.fanSyncEnabled),
                menuBarWidgets: readWidgets(d, Default.menuBarWidgets))
     }
 }
