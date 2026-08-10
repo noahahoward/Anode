@@ -11,25 +11,34 @@ import PowerKit
 // that is the point — a root daemon you cannot read in full is a root daemon you
 // cannot trust.
 //
-// IT IS NOT A DAEMON, AND NOTHING INSTALLS IT. There is no LaunchDaemon, no
-// plist, no pinned-identity file, and no root process on this machine when you
-// are not using fan control. The user starts this program by hand, under sudo,
-// and stops it with ⌃C. That is the whole install.
+// IT RUNS TWO WAYS, and the default installs nothing.
 //
-// The reasoning behind that — and the trust model it buys — is written out in
-// full at the top of `FanLink.swift`. The short version: this project has no
-// Apple Developer ID, so nothing can verify a helper binary before it runs as
-// root; the previous design pinned the client's cdhash in a root-owned file at
-// install time, and an ad-hoc cdhash changes on every rebuild, so the pin went
-// stale after every `./build-app.sh` and the repair was another admin prompt.
-// Training a user to type their password on demand is a worse outcome than the
-// bug the pin closed. Here the pin is computed at startup from the app bundle
-// this helper shipped inside, so it cannot go stale: it lives and dies with the
-// process.
+//   sudo BetterStatsHelper            a SESSION helper. Nothing is installed, no
+//                                     plist, no root process on this machine
+//                                     when you are not using fan control. Started
+//                                     by hand, stopped with ⌃C. It pins ONE BUILD
+//                                     by cdhash, computed at startup from the app
+//                                     bundle it shipped inside, so the pin cannot
+//                                     go stale: it lives and dies with the
+//                                     process. This is the development path and
+//                                     the stronger of the two.
 //
-// `--uninstall` releases the fans and removes everything any version of this
+//   --install                         copy this helper somewhere only root can
+//                                     write, and write a LaunchDaemon plist
+//                                     naming it. One authorisation, then fan
+//                                     control works across rebuilds and reboots
+//                                     without ever prompting again. The daemon it
+//                                     installs runs with --serve and pins the
+//                                     SIGNING IDENTIFIER instead of a hash,
+//                                     because a hash cannot survive a rebuild.
+//
+// The reasoning behind both — and the trust model each buys, including what the
+// installed one gives up — is written out in full at the top of `FanLink.swift`
+// and `FanDaemon.swift`. Read them before changing anything here.
+//
+// `--uninstall` hands the fans back and removes everything any version of this
 // project has ever asked root to leave on the disk, including the retired
-// LaunchDaemon.
+// LaunchDaemon from the first draft.
 
 let arguments = Array(CommandLine.arguments.dropFirst())
 
@@ -38,9 +47,13 @@ func printErr(_ s: String) {
 }
 
 let usage = """
-BetterStatsHelper — fan control for BetterStats. Runs as root, only while you run it.
+BetterStatsHelper — fan control for BetterStats. Runs as root.
 
-  sudo BetterStatsHelper                start fan control for this session
+  sudo BetterStatsHelper                start fan control for this session only.
+                                        Nothing is installed. ⌃C stops it.
+  sudo BetterStatsHelper --install      install it as a LaunchDaemon: one
+                                        authorisation, then it works across
+                                        rebuilds and reboots with no more prompts
   sudo BetterStatsHelper --uninstall    hand the fans back and remove everything
                                         this project has ever installed as root
        BetterStatsHelper --help
@@ -50,11 +63,22 @@ Options
                     bundle this helper is inside, which is what you want.
   --uid <n>         the user allowed to connect. Defaults to $SUDO_UID, i.e.
                     whoever typed sudo.
+  --serve           run as the installed daemon. launchd passes this; you should
+                    not.
 
-While it runs, one program can drive your fans: the exact BetterStats build this
-helper shipped beside, running as you. Nothing else is heard — not another user,
-not another program of yours, not a rebuilt BetterStats. Stop it with ⌃C and the
-fans go back to automatic control.
+SESSION (the default) is the stronger of the two. While it runs, one program can
+drive your fans: the exact BetterStats build this helper shipped beside, running
+as you. Not another user, not another program of yours, not a rebuilt
+BetterStats. Stop it with ⌃C and the fans go back to automatic.
+
+INSTALLED is the convenient one, and it is weaker in one specific way you should
+know before you type a password: the daemon outlives your rebuilds, so it cannot
+pin a hash that changes on every rebuild. It pins the signing identifier instead,
+and anyone who can run `codesign -s - -i dev.noah.betterstats` on their own binary
+satisfies that. So after installing, ANYTHING RUNNING AS YOU can set your fan
+speeds, within the range the fan itself reports, until you uninstall. Nothing
+else can: other users are refused by the kernel, and the daemon's whole
+vocabulary is "set fan N to R rpm" and "release".
 """
 
 func value(after flag: String) -> String? {
@@ -79,18 +103,20 @@ guard geteuid() == 0 else {
 
 if arguments.contains("--uninstall") {
     print("Handing the fans back to macOS…")
-    // Unconditional, unlike the running helper's release. This is the path for
-    // "an app that pinned my fans has been deleted", so there is no session
-    // whose history could say whether a write is needed — and leaving a fan
-    // held by software that is gone is the failure this command exists for.
-    let result = FanRelease.all(hardware: SMCFanHardware())
+    // `toAutomatic`, not the session release. This process holds no history, so
+    // there is no "original" to restore; it writes the measured no-forced-target
+    // value and says so. This is the path for "an app that pinned my fans has
+    // been deleted", and leaving them pinned is the failure it exists for.
+    let result = FanRelease.toAutomatic(hardware: SMCFanHardware())
     print("  \(result.message)")
 
     // launchctl first: removing a plist does not unload a job that is already
-    // running, and a bootout after the file is gone has nothing to name.
-    let label = FanHelperInstall.retiredDaemonLabel
-    let plist = "/Library/LaunchDaemons/\(label).plist"
-    if FileManager.default.fileExists(atPath: plist) {
+    // running, and a bootout after the file is gone has nothing to name. Both
+    // labels — the retired draft's and the current one — because a machine may
+    // have either.
+    for label in FanHelperInstall.daemonLabels {
+        let plist = "/Library/LaunchDaemons/\(label).plist"
+        guard FileManager.default.fileExists(atPath: plist) else { continue }
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/bin/launchctl")
         p.arguments = ["bootout", "system/\(label)"]
@@ -98,7 +124,7 @@ if arguments.contains("--uninstall") {
         p.standardError = FileHandle.nullDevice
         try? p.run()
         p.waitUntilExit()
-        print("  unloaded the retired launch daemon")
+        print("  unloaded \(label)")
     }
 
     for removal in FanHelperInstall.removeArtifacts() {
@@ -110,6 +136,81 @@ if arguments.contains("--uninstall") {
         }
     }
     print("Done. Nothing of this project runs as root any more.")
+    exit(0)
+}
+
+// ── Install ─────────────────────────────────────────────────────────────────
+
+/// This executable, resolved. What gets copied to /Library, and the one thing
+/// this program can name with certainty.
+let selfPath = URL(fileURLWithPath: CommandLine.arguments[0])
+    .resolvingSymlinksInPath().path
+
+if arguments.contains(FanDaemon.installArgument) {
+    /// The user the daemon will serve.
+    ///
+    /// `--uid` first, and the app's Install button always passes it: that route
+    /// goes through `do shell script … with administrator privileges`, which does
+    /// NOT go through sudo and does NOT set $SUDO_UID. The fallback is for a
+    /// person typing `sudo … --install` in a terminal, where it is set and is
+    /// exactly who asked.
+    let installFor: uid_t? = {
+        if let raw = value(after: "--uid"), let n = UInt32(raw) { return uid_t(n) }
+        if let raw = ProcessInfo.processInfo.environment["SUDO_UID"], let n = UInt32(raw) {
+            return uid_t(n)
+        }
+        return nil
+    }()
+    guard let installFor else {
+        printErr("Cannot tell which user to install for. Run this with `sudo` "
+               + "(which sets SUDO_UID), or pass --uid <n>.")
+        exit(1)
+    }
+
+    // The bundle around this helper, and the identifier it signs as. Checked
+    // BEFORE anything is written: a daemon installed from a bundle that signs as
+    // something else would install perfectly and then refuse every connection,
+    // which is the worst kind of working.
+    let bundle = URL(fileURLWithPath: selfPath)
+        .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+    let identifier = FanIdentity.identity(atPath: bundle.path)?.identifier
+
+    let plan: FanDaemonInstall.Plan
+    switch FanDaemonInstall.plan(sourceHelper: selfPath, ownerUID: installFor,
+                                 clientIdentifier: identifier) {
+    case .failure(let refusal):
+        printErr(refusal.localizedDescription)
+        exit(1)
+    case .success(let p):
+        plan = p
+    }
+
+    print("""
+    Installing the BetterStats fan helper as a launch daemon.
+
+      helper   \(FanDaemon.helperPath)   (root:wheel 0755, copied from this build)
+      plist    \(FanDaemon.plistPath)    (root:wheel 0644)
+      serves   uid \(installFor)
+      accepts  any build signing as \(FanDaemon.clientSigningIdentifier)
+
+    From now on a root process is running at all times that will set a fan target
+    on request from uid \(installFor), within the range the fan itself reports.
+    Anything running as that user can ask — this build has no Apple Developer ID,
+    so nothing can tell your BetterStats from another program that signs itself
+    with the same identifier. Undo it all with --uninstall.
+    """)
+
+    let report = FanDaemonInstall.perform(plan, ops: FanDaemonInstall.SystemOperations())
+    for outcome in report.outcomes {
+        print("  \(outcome.ok ? "ok    " : "FAILED") \(outcome.path) — \(outcome.detail)")
+    }
+    guard report.ok else {
+        printErr("The install did not finish. Nothing is loaded; run --uninstall "
+               + "to clear anything that did land.")
+        exit(1)
+    }
+    print("Done. Fan control now works with no further prompts, including after "
+        + "you rebuild the app and after a reboot.")
     exit(0)
 }
 
@@ -130,26 +231,62 @@ func defaultClientBundle() -> String? {
     return bundle.pathExtension == "app" ? bundle.path : nil
 }
 
-guard let clientPath = value(after: "--client") ?? defaultClientBundle() else {
+/// Which of the two this is. launchd passes `--serve`; a person does not.
+let isInstalledDaemon = arguments.contains(FanDaemon.serveArgument)
+
+// One socket, one owner. A session helper started while the daemon is installed
+// would unlink the daemon's socket and bind its own — the daemon would stay
+// running, listening on a path nothing can reach, and the fans would answer to
+// whichever process won a race. Refused, with the way out.
+if !isInstalledDaemon, FanDaemon.isInstalled() {
     printErr("""
-    This helper is not inside a BetterStats.app, so it cannot tell which app to \
-    trust. Run the copy inside the bundle:
+    The fan helper is already INSTALLED as a launch daemon, so it is already \
+    running and already holds \(FanSocket.path). Starting a second one by hand \
+    would take that socket away from it.
 
-      sudo ~/Applications/BetterStats.app/Contents/MacOS/BetterStatsHelper
+    Fan control should already work — just use the Fans tab. To go back to the \
+    session helper instead:
 
-    or name the bundle explicitly with --client <path to BetterStats.app>.
+      sudo \(CommandLine.arguments[0]) --uninstall
     """)
     exit(1)
 }
 
-// Fail closed, loudly, at startup. An unpinned helper would accept any program
-// of yours; refusing to start at all is the only honest response to "I cannot
-// tell who I am supposed to be talking to".
-guard let pinned = FanIdentity.cdhash(atPath: clientPath) else {
-    printErr("Could not read a code signature for \(clientPath). "
-           + "Fan control needs one to tell your BetterStats from anything else, "
-           + "so this helper will not start.")
-    exit(1)
+/// Which client this helper answers.
+///
+/// The session helper pins ONE BUILD, by a cdhash read from the bundle it lives
+/// in at startup. The installed daemon cannot: it outlives every rebuild, so it
+/// pins the signing identifier, and `FanClientPin` states exactly what that is
+/// worth. This is the only difference between the two.
+let pin: FanClientPin
+let clientDescription: String
+
+if isInstalledDaemon {
+    pin = .signingIdentifier(FanDaemon.clientSigningIdentifier)
+    clientDescription = "any build signing as \(FanDaemon.clientSigningIdentifier)"
+} else {
+    guard let clientPath = value(after: "--client") ?? defaultClientBundle() else {
+        printErr("""
+        This helper is not inside a BetterStats.app, so it cannot tell which app to \
+        trust. Run the copy inside the bundle:
+
+          sudo ~/Applications/BetterStats.app/Contents/MacOS/BetterStatsHelper
+
+        or name the bundle explicitly with --client <path to BetterStats.app>.
+        """)
+        exit(1)
+    }
+    // Fail closed, loudly, at startup. An unpinned helper would accept any
+    // program of yours; refusing to start at all is the only honest response to
+    // "I cannot tell who I am supposed to be talking to".
+    guard let pinned = FanIdentity.cdhash(atPath: clientPath) else {
+        printErr("Could not read a code signature for \(clientPath). "
+               + "Fan control needs one to tell your BetterStats from anything else, "
+               + "so this helper will not start.")
+        exit(1)
+    }
+    pin = .exactBuild(cdhash: pinned)
+    clientDescription = "\(clientPath)\n           cdhash \(pinned.prefix(16))…"
 }
 
 /// The user allowed to connect: whoever typed `sudo`.
@@ -171,7 +308,7 @@ let ownerUID: uid_t = {
 
 let server = FanHelperServer(
     hardware: SMCFanHardware(),
-    configuration: .init(ownerUID: ownerUID, pinnedCDHash: pinned),
+    configuration: .init(ownerUID: ownerUID, pin: pin),
     // Both sinks, deliberately. stderr is what the user reads live in the
     // Terminal window they started this in — but that window closes, and then a
     // failure has left no trace. The unified log survives it, which is the only
@@ -193,21 +330,32 @@ do {
 // Said out loud at the moment the user authorises it, because this is the only
 // point where a person is looking at the decision. A trust model buried in a
 // source file is not disclosure to the person typing the password.
-print("""
-BetterStats fan control is running as root.
+//
+// The daemon prints the same facts to the unified log rather than to a terminal
+// nobody is watching — its disclosure happened at install time, in the sheet and
+// in the authorisation prompt.
+if isInstalledDaemon {
+    fanLog.info("""
+    installed daemon serving uid \(ownerUID, privacy: .public) on \
+    \(FanSocket.path, privacy: .public), accepting \
+    \(clientDescription, privacy: .public)
+    """)
+} else {
+    print("""
+    BetterStats fan control is running as root.
 
-  client   \(clientPath)
-           cdhash \(pinned.prefix(16))…
-  user     uid \(ownerUID)
-  socket   \(FanSocket.path)
+      client   \(clientDescription)
+      user     uid \(ownerUID)
+      socket   \(FanSocket.path)
 
-Only that exact build, run by that user, can set a fan speed — and only within
-the min/max the fan itself reports. Rebuild BetterStats and this helper will stop
-recognising it; stop and start it again if you still want fan control.
+    Only that exact build, run by that user, can set a fan speed — and only within
+    the min/max the fan itself reports. Rebuild BetterStats and this helper will stop
+    recognising it; stop and start it again if you still want fan control.
 
-Press ⌃C to stop. The fans return to automatic control when you do, and also if
-BetterStats quits or crashes.
-""")
+    Press ⌃C to stop. The fans return to automatic control when you do, and also if
+    BetterStats quits or crashes.
+    """)
+}
 
 // DispatchSource rather than a signal(3) handler: the handler would run on the
 // interrupted thread with only async-signal-safe calls available, and `stop()`
