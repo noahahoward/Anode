@@ -33,13 +33,28 @@ final class InspectorView: NSView {
         let rows: [Row]
     }
 
-    var model: Model? { didSet { rebuild() } }
+    var model: Model? {
+        didSet {
+            // A different app is a different subject: a pid selected inside the old
+            // one means nothing here, and a status line reporting what was just done
+            // to it would be reporting it against the wrong name.
+            if model?.appName != oldValue?.appName {
+                selectedPID = nil
+                isShowingResult = false
+            }
+            rebuild()
+        }
+    }
     var onClose: (() -> Void)?
-    /// Selected process, if any. Details and the quit controls act on this one.
+    /// Selected process, if any. The details box and the per-process kill act on
+    /// this one; the two app-level buttons act on every pid in the model.
     private var selectedPID: pid_t?
     private let detailsBox = NSStackView()
-    private let quitButton = NSButton()
-    private let forceButton = NSButton()
+    /// App-wide: ask politely, and the uncatchable version.
+    private let quitAppButton = NSButton()
+    private let forceQuitAppButton = NSButton()
+    /// Just the selected sub-process, leaving the rest of the app running.
+    private let killProcessButton = NSButton()
     private let statusLabel = NSTextField(labelWithString: "")
 
     private let icon = NSImageView()
@@ -129,24 +144,43 @@ final class InspectorView: NSView {
         detailsBox.spacing = 3
         detailsBox.isHidden = true
 
-        for b in [quitButton, forceButton] {
+        for b in [quitAppButton, forceQuitAppButton, killProcessButton] {
             b.bezelStyle = .rounded
             b.controlSize = .small
             b.target = self
             b.isHidden = true
         }
-        quitButton.title = "Quit"
-        quitButton.action = #selector(quitSelected)
-        forceButton.title = "Force Quit"
-        forceButton.action = #selector(forceQuitSelected)
+        quitAppButton.title = "Quit App"
+        quitAppButton.action = #selector(quitApp)
+        quitAppButton.toolTip = "Ask every process of this app to quit. A GUI app can "
+                              + "still prompt about unsaved work."
+        forceQuitAppButton.title = "Force Quit App"
+        forceQuitAppButton.action = #selector(forceQuitApp)
+        forceQuitAppButton.toolTip = "SIGKILL every process of this app. Uncatchable — "
+                                   + "unsaved work is lost."
+        killProcessButton.title = "Force Quit Process"
+        killProcessButton.action = #selector(forceQuitProcess)
+        killProcessButton.toolTip = "SIGKILL only the selected sub-process, leaving the "
+                                  + "rest of the app running."
 
         statusLabel.font = Palette.Font.sans(10)
         statusLabel.textColor = Palette.dim
-        statusLabel.maximumNumberOfLines = 2
+        statusLabel.maximumNumberOfLines = 3
 
-        let buttons = NSStackView(views: [quitButton, forceButton, statusLabel])
-        buttons.orientation = .horizontal
-        buttons.spacing = 6
+        // Two rows, not one: three buttons and a status line do not fit across a
+        // 380 pt inspector, and wrapping them into an unreadable strip is how the
+        // destructive one ends up under the pointer by accident.
+        let appButtons = NSStackView(views: [quitAppButton, forceQuitAppButton])
+        appButtons.orientation = .horizontal
+        appButtons.spacing = 6
+        let processButtons = NSStackView(views: [killProcessButton])
+        processButtons.orientation = .horizontal
+        processButtons.spacing = 6
+
+        let buttons = NSStackView(views: [appButtons, processButtons, statusLabel])
+        buttons.orientation = .vertical
+        buttons.alignment = .leading
+        buttons.spacing = 5
         buttons.translatesAutoresizingMaskIntoConstraints = false
         self.buttonRow = buttons
 
@@ -231,6 +265,10 @@ final class InspectorView: NSView {
 
         guard !m.rows.isEmpty else {
             emptyList()
+            // Still here, because this branch returns: with no rows there are no
+            // pids, so the quit controls have nothing to act on and must go away
+            // rather than keep the previous app's plan.
+            updateActionButtons()
             let empty = NSTextField(labelWithString: "No measurable activity this interval")
             empty.font = Palette.Font.sans(11)
             empty.textColor = Palette.faint
@@ -262,6 +300,7 @@ final class InspectorView: NSView {
             for _ in m.rows {
                 let row = ProcessRowView { [weak self] pid in
                     self?.selectedPID = (self?.selectedPID == pid) ? nil : pid
+                    self?.isShowingResult = false   // a new subject, not the last result
                     self?.rebuild()
                 }
                 list.addArrangedSubview(row)
@@ -290,12 +329,10 @@ final class InspectorView: NSView {
     // ── Process details and quitting ────────────────────────────────────────
 
     private func showDetails() {
+        updateActionButtons()
         guard let pid = selectedPID, let d = ProcessInspector.details(for: pid) else {
             emptyDetails()
             detailsBox.isHidden = true
-            quitButton.isHidden = true
-            forceButton.isHidden = true
-            statusLabel.stringValue = ""
             return
         }
         detailsBox.isHidden = false
@@ -323,50 +360,79 @@ final class InspectorView: NSView {
             (view as? DetailLine)?.apply(label: line.0, value: line.1)
         }
 
-        // Quitting is only offered where it can actually work. A button that is
-        // guaranteed to fail with EPERM is worse than no button — it implies the
-        // app could do it and chose not to.
-        let canSignal = d.isOwnedByCurrentUser && !ProcessControl.isSelf(pid)
-        quitButton.isHidden = false
-        forceButton.isHidden = false
-        quitButton.isEnabled = canSignal
-        forceButton.isEnabled = canSignal
-        if ProcessControl.isSelf(pid) {
-            statusLabel.stringValue = "This is BetterStats"
-        } else if !d.isOwnedByCurrentUser {
-            statusLabel.stringValue = "Owned by \(d.userName ?? "another user")"
-        } else {
+    }
+
+    /// Decide what the three buttons can do, before the user can click one.
+    ///
+    /// Quitting is only OFFERED where it can actually work. A button guaranteed to
+    /// fail with EPERM is worse than no button — it implies the app could do it and
+    /// chose not to — so a root-owned process disables the control and the status
+    /// line says who owns it instead of waiting for the click to fail.
+    private func updateActionButtons() {
+        guard let m = model, !m.rows.isEmpty else {
+            for b in [quitAppButton, forceQuitAppButton, killProcessButton] { b.isHidden = true }
             statusLabel.stringValue = ""
+            return
         }
+        let appPlan = ProcessActions.plan(for: ProcessActions.candidates(pids: m.rows.map(\.pid)))
+        quitAppButton.isHidden = false
+        forceQuitAppButton.isHidden = false
+        quitAppButton.isEnabled = appPlan.canAct
+        forceQuitAppButton.isEnabled = appPlan.canAct
+
+        let processPlan = selectedPID.map {
+            ProcessActions.plan(for: ProcessActions.candidates(pids: [$0]))
+        }
+        // Only worth offering when there is more than one process — with one, it is
+        // the same button as Force Quit App wearing a different name.
+        killProcessButton.isHidden = m.rows.count < 2 || processPlan == nil
+        killProcessButton.isEnabled = processPlan?.canAct ?? false
+        // The pid rides in the tooltip rather than in the title: the title is
+        // re-read on every two-second refresh, and assigning a new one each time
+        // re-solves the whole button row for a string that says the same thing.
+        killProcessButton.toolTip = selectedPID.map {
+            "SIGKILL pid \($0) only, leaving the rest of the app running."
+        }
+
+        // Never overwrite the outcome of a click the user just made. `report` sets
+        // this and clears the flag on the next selection change.
+        guard !isShowingResult else { return }
+        statusLabel.stringValue = appPlan.explanation
+        statusLabel.textColor = Palette.dim
     }
 
-    @objc private func quitSelected() {
-        guard let pid = selectedPID else { return }
-        report(ProcessControl.quit(pid: pid))
+    /// Set while the status line is showing what a button just did, so the next
+    /// two-second refresh does not wipe it before it has been read.
+    private var isShowingResult = false
+
+    @objc private func quitApp() {
+        guard let m = model else { return }
+        let plan = ProcessActions.plan(for: ProcessActions.candidates(pids: m.rows.map(\.pid)))
+        report(ProcessActions.perform(plan, force: false), ok: plan.canAct)
     }
 
-    @objc private func forceQuitSelected() {
-        guard let pid = selectedPID,
-              let d = ProcessInspector.details(for: pid) else { return }
-
-        // Force quit is SIGKILL: uncatchable, so unsaved work is simply gone. That
-        // warrants a confirmation in a way an ordinary quit does not.
-        let alert = NSAlert()
-        alert.messageText = "Force quit \(d.name)?"
-        alert.informativeText = "Force quitting sends SIGKILL, which the process "
-            + "cannot catch. Any unsaved work will be lost."
-        alert.alertStyle = .warning
-        alert.addButton(withTitle: "Force Quit")
-        alert.addButton(withTitle: "Cancel")
-        guard alert.runModal() == .alertFirstButtonReturn else { return }
-
-        report(ProcessControl.forceQuit(pid: pid))
+    @objc private func forceQuitApp() {
+        guard let m = model else { return }
+        let plan = ProcessActions.plan(for: ProcessActions.candidates(pids: m.rows.map(\.pid)))
+        guard plan.canAct,
+              ProcessActions.confirmForceQuit(subject: m.appName,
+                                              processCount: plan.signalable.count) else { return }
+        report(ProcessActions.perform(plan, force: true), ok: true)
     }
 
-    private func report(_ result: ProcessControl.Result) {
-        statusLabel.stringValue = result.message
-        statusLabel.textColor = result == .requested || result == .killed
-            ? Palette.dim : Palette.warn
+    @objc private func forceQuitProcess() {
+        guard let pid = selectedPID, let d = ProcessInspector.details(for: pid) else { return }
+        let plan = ProcessActions.plan(for: ProcessActions.candidates(pids: [pid]))
+        guard plan.canAct,
+              ProcessActions.confirmForceQuit(subject: "\(d.name) (\(pid))",
+                                              processCount: 1) else { return }
+        report(ProcessActions.perform(plan, force: true), ok: true)
+    }
+
+    private func report(_ message: String, ok: Bool) {
+        isShowingResult = true
+        statusLabel.stringValue = message
+        statusLabel.textColor = ok ? Palette.dim : Palette.warn
     }
 
     /// A selectable process row. Same rounded-pill treatment as the main table so
@@ -473,8 +539,7 @@ final class InspectorView: NSView {
 
     // ── Model construction ──────────────────────────────────────────────────
 
-    static func model(app: AppDrain, snapshot s: PowerMonitor.Snapshot,
-                      lens: SidebarView.Lens) -> Model {
+    static func model(app: AppDrain, snapshot s: PowerMonitor.Snapshot) -> Model {
         let pids = Set(app.pids)
         let procs = s.drains.filter { pids.contains($0.pid) }
             .sorted { $0.percentPerHour > $1.percentPerHour }

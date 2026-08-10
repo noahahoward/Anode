@@ -31,7 +31,12 @@ import AppKit
 //    points are sorted, empty/one-point/flat series draw something sensible.
 //    Every upstream source here is undocumented; the graph must never be the
 //    thing that crashes.
-public final class HistoryGraphView: NSView {
+//  - Zoom and pan are OVERRIDABLE, not final, so a caller that has nothing to
+//    zoom into can switch them off without a second graph existing. The Resources
+//    strip does exactly that: its cards hold fifteen minutes of in-memory points
+//    and no store behind them, so a scroll that rewrote the axis would pin the
+//    card to a stale window with nothing to put it back.
+public class HistoryGraphView: NSView {
 
     // MARK: - Public data types
 

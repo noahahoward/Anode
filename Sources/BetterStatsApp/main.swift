@@ -14,54 +14,9 @@ private extension MetricID {
     var family: Substring { rawValue.prefix { $0 != "." } }
 }
 
-final class Row: NSObject {
-    let name: String
-    let procs: Int
-    let pctHr: Double
-    /// Percent of battery consumed over the trailing on-battery window. nil until
-    /// the history store has data for this app — shown as "—", never as 0, because
-    /// "no data yet" and "used nothing" are different claims.
-    let windowPct: Double?
-    /// Minutes of runtime quitting this would buy back. nil outside the band where
-    /// the counterfactual is meaningful.
-    let costMin: Double?
-    let isApp: Bool
-    /// nil for system rows: those come from Apple's coalition rollup, which
-    /// reports per-app totals and no pids at all, so there is no process to
-    /// inspect, no memory footprint to read and nothing to quit.
-    let app: AppDrain?
-    /// Set when this row is an apportioned share of a measured bucket rather than
-    /// a measured quantity in its own right. Everything user-facing keys off this:
-    /// a modeled row must never be presentable as a measured one.
-    let system: SystemAttribution.Row?
-
-    var isModeled: Bool { system != nil }
-
-    init(app: AppDrain, windowPct: Double?, costMin: Double?) {
-        self.name = app.name
-        self.procs = app.processCount
-        self.pctHr = app.percentPerHour
-        self.windowPct = windowPct
-        self.costMin = costMin
-        self.isApp = app.isApp
-        self.app = app
-        self.system = nil
-    }
-
-    /// A named share of the CPU power `proc_pid_rusage` could not attribute.
-    /// `windowPct` and `costMin` stay nil: there is no per-app history for a
-    /// coalition, and the quit-this counterfactual needs a process to quit.
-    init(system: SystemAttribution.Row) {
-        self.name = system.name
-        self.procs = 0
-        self.pctHr = system.percentPerHour
-        self.windowPct = nil
-        self.costMin = nil
-        self.isApp = false
-        self.app = nil
-        self.system = system
-    }
-}
+// `Row`, the column definitions and the runtime-cost counterfactual live in
+// ProcessTable.swift — one file that owns what the table IS, so this one is left
+// owning the sampling loop and the wiring.
 
 final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource, NSTableViewDelegate {
 
@@ -71,6 +26,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
     let networkPane = NetworkPane(frame: .zero)
     let sensorsPane = SensorsPane(frame: .zero)
     let fansPane = FansPane(frame: .zero)
+    let resourcesPane = ResourcesPane(frame: .zero)
     /// Latest utilisation snapshot, so a pane can redraw without waiting for the
     /// next sample.
     var lastSystem: SystemMetrics.Snapshot?
@@ -93,9 +49,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
     let netAttribution = NetworkAttribution()
 
     var rows: [Row] = []
-    var sortKey = "pctHr"
+    var sortKey = ProcessColumns.defaultSortKey
     var ascending = false
     var timer: Timer?
+
+    /// The active column set, keyed by identifier. Rebuilt only when the trailing
+    /// power window changes, because that is the only thing a column definition
+    /// depends on — and looked up rather than re-derived, because the renderer, the
+    /// sizer and the sorter must all be reading the same closure.
+    var columns: [ProcessColumn] = ProcessColumns.all(
+        powerWindowHours: Settings.shared.powerWindowHours)
+    var columnsByID: [String: ProcessColumn] = ProcessColumns.byID(
+        Settings.shared.powerWindowHours)
+    /// The window the current column set was built for, so a changed setting
+    /// re-titles the column instead of leaving a header claiming ten hours over a
+    /// two-hour figure.
+    private var columnsBuiltForHours = Settings.shared.powerWindowHours
+
+    /// Installed RAM, for the "% Mem" column. Constant for the life of the process.
+    let totalMemoryBytes = MemoryUsage.totalBytes
 
     /// Every sample runs here and nowhere else.
     ///
@@ -139,8 +111,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
     let graphSpan: TimeInterval = 3600
 
     var lastSnapshot: PowerMonitor.Snapshot?
-    /// Active lens. Drives which columns the table shows and what each row reports.
-    var lens: SidebarView.Lens = .battery
+    /// Active tab. Drives which pane is on screen and — through
+    /// `SidebarView.Lens.needs` — which subsystems are sampled at all.
+    var lens: SidebarView.Lens = .processes
     /// The SELECTED APP, held by identity rather than by row index.
     ///
     /// Rows re-sort every couple of seconds because they are sorted on a live value,
@@ -167,16 +140,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         main = MainWindowController()
         main.table.dataSource = self
         main.table.delegate = self
-        main.table.sortDescriptors = [NSSortDescriptor(key: "pctHr", ascending: false)]
+        main.table.sortDescriptors =
+            [NSSortDescriptor(key: ProcessColumns.defaultSortKey, ascending: false)]
         main.table.target = self
         main.table.action = #selector(tableClicked)
 
-        main.setColumns([
-            ("name", "Application", 240), ("pctHr", "%/hr", 82),
-            ("window", "10 hr power", 96), ("cost", "Runtime cost", 104), ("procs", "Procs", 62),
-        ])
+        main.setColumns(columns)
         main.sidebar.onSelect = { [weak self] lens in self?.select(lens) }
-        main.table.rowHeight = 22
+        // 20, not 22. Twelve columns is a table you scan down as much as across, and
+        // two points a row is three more rows on screen at this window height.
+        main.table.rowHeight = 20
 
         graph = HistoryGraphView(frame: .zero)
         graph.yAxisLabel = "%/hr"
@@ -287,6 +260,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
             Settings.shared.observe(Settings.Key.menuBarWidgetsEnabled) { [weak self] in
                 self?.applyMenuBarSwitch()
             })
+        // The trailing-window column is TITLED from this setting, so a change has to
+        // reach the header. Without it the column would keep saying "10 HR POWER"
+        // over a two-hour figure.
+        settingsTokens.append(
+            Settings.shared.observe(Settings.Key.powerWindowHours) { [weak self] in
+                DispatchQueue.main.async { self?.rebuildColumnsIfNeeded() }
+            })
+    }
+
+    /// Re-derive the column set when the setting its titles depend on has moved.
+    func rebuildColumnsIfNeeded() {
+        let hours = Settings.shared.powerWindowHours
+        guard hours != columnsBuiltForHours else { return }
+        columnsBuiltForHours = hours
+        columns = ProcessColumns.all(powerWindowHours: hours)
+        columnsByID = ProcessColumns.byID(hours)
+        guard lens.isPerProcess else { return }
+        main.setColumns(columns)
+        main.table.reloadData()
+        autosizeColumns()
     }
 
     /// Observation tokens are only alive while retained — a discarded token
@@ -353,6 +346,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         // the whole tick, so logging cannot be on for the sweep and off for the
         // write within a single sample.
         let logging = Settings.shared.batteryLogging
+        // The tab on screen, read on main because that is where it is written. It
+        // decides which subsystems this tick pays for — see `visibleNeeds`.
+        let needs = visible ? visibleNeeds : hiddenNeeds
         // Match the cadence to who is actually reading.
         restartTimer(hidden: !visible)
 
@@ -374,15 +370,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
             guard let snap = m.tick(full: wantFull, attribution: visible) else { return }
             if wantFull { self.lastFullTick = Date() }
 
-            // Sensor discovery walks thousands of SMC keys, so only pay for it when
-            // something is actually displaying a temperature or fan speed.
-            // A sensors or fans pane needs the SMC read whether or not a widget is
-            // bound to one.
-            // Visible: everything, because a pane or a lens may show any of it.
-            // Hidden: only what a widget is actually bound to.
-            let needs: SystemMetrics.Needs = visible
-                ? .all
-                : self.hiddenNeeds
+            // Computed on the main thread above, because the tab it depends on is
+            // main-thread state. Hidden: only what a widget is bound to. Visible:
+            // that, plus what the tab on screen is actually displaying.
             let sysSnap = self.sysMetrics.sample(needs: needs)
             MetricRegistry.shared.update(system: sysSnap)
 
@@ -470,45 +460,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
 
         let showDaemons = Settings.shared.showDaemons
         let floor = Settings.shared.minimumDisplayPercentPerHour
-        rows = s.apps
+        // One table now, so the three row sources are JOINED rather than switched
+        // between. An app that is both burning CPU and holding the GPU used to be
+        // two rows in two tabs that nothing connected.
+        rows = ProcessRowBuilder.rows(
+            apps: showDaemons ? s.apps : s.apps.filter(\.isApp),
+            systemApps: showDaemons ? s.systemApps : [],
+            gpuApps: s.gpuApps,
+            windowPercents: windowPercents,
+            runtimeCost: { RuntimeCost.minutes(appWatts: $0, snapshot: s) },
+            totalMemoryBytes: totalMemoryBytes)
+            // The GPU rollup is fed in whatever the setting says, so an APP always
+            // finds its GPU share; this is what drops the coalitions that matched
+            // no app — WindowServer and friends — when daemons are switched off.
             .filter { showDaemons || $0.isApp }
-            .filter { row in
-                if row.isApp { return true }
-                switch self.lens {
-                // 2.0, not 0.05. The old floor sat on a value that was 41.667x
-                // too small, so it was really admitting anything above 2.08% of
-                // one core. Keeping 0.05 after the unit fix would admit every
-                // process that executed at all and the lens would stop filtering.
-                // This preserves the behaviour the floor actually had.
-                case .cpu:    return row.cpuPercent >= 2.0
-                case .memory: return row.memoryBytes > 0
-                case .disk:   return row.diskBytesPerSec >= 1
-                default:      return row.percentPerHour >= floor
-                }
-            }
-            .map { app in
-                Row(app: app,
-                    windowPct: windowPercents[app.name],
-                    costMin: s.runtimeCost_min(appWatts: app.watts))
-            }
-
-        // Named shares of the CPU power rusage cannot see — WindowServer and the
-        // root daemons. Battery lens only: these carry an apportioned wattage and
-        // nothing else, so in the CPU, memory or disk lenses every column but the
-        // name would be "—" and the rows would be pure clutter.
-        if lens == .battery, showDaemons {
-            rows += s.systemApps
-                .filter { $0.percentPerHour >= floor }
-                .map(Row.init(system:))
-        }
-
-        // The GPU lens is a different table entirely. rusage's energy counter is
-        // CPU-side, so the app rows have nothing to say about the GPU; these come
-        // from the measured GPU rail split by coalition GPU time, and they were
-        // being computed every tick and shown nowhere.
-        if lens == .gpu {
-            rows = s.gpuApps.map(Row.init(system:))
-        }
+            .filter { ProcessRowBuilder.isNotable($0, floor_pctHr: floor) }
         sortRows()
 
         main.table.reloadData()
@@ -758,7 +724,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
             main.setDetailVisible(false)
             return
         }
-        inspector.model = InspectorView.model(app: app, snapshot: snap, lens: lens)
+        inspector.model = InspectorView.model(app: app, snapshot: snap)
         main.setDetailVisible(true)
     }
 
@@ -771,26 +737,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         updateDetail()
     }
 
+    /// Sort by whatever the clicked column says it sorts by.
+    ///
+    /// Read from the SAME `ProcessColumn` the cell was drawn from, so a column can
+    /// never display one quantity and order by another. A nil `value` — no reading
+    /// for this row — ranks below every real number in both directions, because a
+    /// genuine zero is a measurement and "not measurable here" is not.
     func sortRows() {
         let asc = ascending
-        rows.sort { a, b in
-            let r: Bool
-            switch sortKey {
-            case "name":   r = a.name.localizedCaseInsensitiveCompare(b.name) == .orderedAscending
-            case "window": r = (a.windowPct ?? -1) < (b.windowPct ?? -1)
-            case "cost":   r = (a.costMin ?? -1) < (b.costMin ?? -1)
-            // System rows sort as -1 rather than 0 on these: they have no reading
-            // at all, and a real zero should still outrank "not measurable".
-            case "cpu":    r = (a.app?.cpuPercent ?? -1) < (b.app?.cpuPercent ?? -1)
-            case "mem":    r = (a.app.map { Double($0.memoryBytes) } ?? -1)
-                             < (b.app.map { Double($0.memoryBytes) } ?? -1)
-            case "disk":   r = (a.app?.diskBytesPerSec ?? -1) < (b.app?.diskBytesPerSec ?? -1)
-            case "gputime": r = (a.system?.gpu_ms ?? 0) < (b.system?.gpu_ms ?? 0)
-            case "procs":  r = a.procs < b.procs
-            case "kind":   r = (a.isApp ? 1 : 0) < (b.isApp ? 1 : 0)
-            default:       r = a.pctHr < b.pctHr
+        let column = columnsByID[sortKey] ?? columnsByID[ProcessColumns.defaultSortKey]
+        // Name sorts alphabetically; nothing else does.
+        if let string = column?.stringValue {
+            rows.sort { a, b in
+                let r = string(a).localizedCaseInsensitiveCompare(string(b)) == .orderedAscending
+                return asc ? r : !r
             }
-            return asc ? r : !r
+            return
+        }
+        guard let value = column?.value else { return }
+        rows.sort { a, b in
+            switch (value(a), value(b)) {
+            case let (x?, y?): return asc ? x < y : x > y
+            // A missing reading always sinks, whichever way the arrow points.
+            case (nil, _?):    return false
+            case (_?, nil):    return true
+            case (nil, nil):   return a.name.localizedCaseInsensitiveCompare(b.name)
+                                    == .orderedAscending
+            }
         }
     }
 
@@ -801,6 +774,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
     func refreshPane() {
         guard !lens.isPerProcess, let sys = lastSystem else { return }
         switch lens {
+        case .resources:
+            resourcesPane.update(sys, power: lastSnapshot)
         case .network:
             // Only refreshed while the pane is actually visible: nettop blocks for
             // ~5 s per sample, and spawning it forever for a pane nobody is looking
@@ -829,9 +804,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
     /// the caller must then leave the lens alone rather than invent one.
     static func lens(forWidget metric: MetricID) -> SidebarView.Lens? {
         switch metric {
-        case .cpuUsage:    return .cpu
-        case .memoryUsage: return .memory
-        case .gpuUsage:    return .gpu
+        // Every whole-machine utilisation is now one tab. The old rail sent each of
+        // these to its own lens, and each of those lenses was the process table with
+        // a different column — so a CPU widget click landed on a list of processes
+        // rather than on the CPU. Resources is where that number actually lives.
+        case .cpuUsage, .memoryUsage, .gpuUsage,
+             .diskRead, .diskWrite, .diskActivity: return .resources
         case .networkDown, .networkUp, .networkThroughput: return .network
         case .cpuTemperature, .gpuTemperature: return .sensors
         // Fans, not Sensors. The Sensors pane shows temperatures and nothing
@@ -848,9 +826,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         default:
             // The whole battery family — drain, charge, time left, GPU drain,
             // unattributed share, coverage, and any added later — is answered by
-            // the Battery lens. Compared by family taken from a constant, so the
-            // prefix is not spelled out a second time here.
-            return metric.family == MetricID.batteryPercent.family ? .battery : nil
+            // the process table: "what is draining it" is a per-app question, and
+            // the ledger, glance card and history graph that answer the rest of it
+            // are on screen under every tab. Compared by family taken from a
+            // constant, so the prefix is not spelled out a second time here.
+            return metric.family == MetricID.batteryPercent.family ? .processes : nil
         }
     }
 
@@ -881,73 +861,55 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         restartTimer(hidden: false)
     }
 
-    /// Lens switch. Only Battery has its columns implemented so far; the rest keep
-    /// the current table rather than showing an empty one, and are wired as their
-    /// data lands.
+    /// Tab switch.
+    ///
+    /// Switching now changes which SUBSYSTEMS are sampled, not just what is drawn:
+    /// the next tick reads `visibleNeeds`, which is derived from this. A tab is
+    /// therefore also a statement about what the app is allowed to cost while it is
+    /// open — see `visibleNeeds`.
     func select(_ lens: SidebarView.Lens) {
         self.lens = lens
 
-        // Whole-machine entries get their own pane; there is no honest per-process
+        // Whole-machine tabs get their own pane; there is no honest per-process
         // view of network traffic or fan speed.
         guard lens.isPerProcess else {
             switch lens {
-            case .network: main.showPane(networkPane)
-            case .sensors: main.showPane(sensorsPane)
-            case .fans:    main.showPane(fansPane)
-            default:       main.showPane(nil)
+            case .resources: main.showPane(resourcesPane)
+            case .network:   main.showPane(networkPane)
+            case .sensors:   main.showPane(sensorsPane)
+            case .fans:      main.showPane(fansPane)
+            case .processes: main.showPane(nil)
             }
             refreshPane()
             return
         }
         main.showPane(nil)
-        main.setColumns(Self.columns(for: lens))
-        // Set the descriptor explicitly. setColumns restores the previous one when
-        // its column still exists, and %/hr exists in every lens — so switching to
-        // CPU kept sorting by battery drain, which is not what the CPU lens is for.
-        sortKey = Self.defaultSort(for: lens)
-        ascending = false
-        main.table.sortDescriptors = [NSSortDescriptor(key: sortKey, ascending: false)]
-        sortRows()
         main.table.reloadData()
         autosizeColumns()
         updateDetail()
     }
 
-    /// Every lens keeps the app column and swaps the measures. All four of these
-    /// come from the same `proc_pid_rusage` call already made once per process per
-    /// sweep, so switching costs nothing beyond a redraw.
-    static func columns(for lens: SidebarView.Lens) -> [(id: String, title: String, width: CGFloat)] {
-        switch lens {
-        case .battery:
-            return [("name", "Application", 300), ("pctHr", "%/hr", 84),
-                    ("window", "10 hr power", 100), ("cost", "Runtime cost", 108),
-                    ("procs", "Procs", 64), ("spacer", "", 20)]
-        case .cpu:
-            return [("name", "Application", 300), ("cpu", "% CPU", 84),
-                    ("pctHr", "%/hr", 84), ("procs", "Procs", 64), ("spacer", "", 20)]
-        case .memory:
-            return [("name", "Application", 300), ("mem", "Memory", 100),
-                    ("pctHr", "%/hr", 84), ("procs", "Procs", 64), ("spacer", "", 20)]
-        case .disk:
-            return [("name", "Application", 300), ("disk", "Disk", 100),
-                    ("pctHr", "%/hr", 84), ("procs", "Procs", 64), ("spacer", "", 20)]
-        case .gpu:
-            // GPU power per app, which macOS exposes no API for at all. Both
-            // columns come from Apple's coalition rollup, so both are modeled.
-            return [("name", "Application", 300), ("pctHr", "%/hr (GPU)", 96),
-                    ("gputime", "GPU time", 100), ("spacer", "", 20)]
-        default:
-            return Self.columns(for: .battery)
-        }
-    }
-
-    static func defaultSort(for lens: SidebarView.Lens) -> String {
-        switch lens {
-        case .cpu: return "cpu"
-        case .memory: return "mem"
-        case .disk: return "disk"
-        default: return "pctHr"
-        }
+    /// Exactly the subsystems something on screen is reading.
+    ///
+    /// This used to be `.all` for every visible tick, whatever the window was
+    /// showing. That was affordable when the tabs were five re-columnings of one
+    /// table; it is not the rule to keep now that one tab genuinely wants
+    /// everything, because "Resources needs it" would otherwise become "every tab
+    /// pays for it".
+    ///
+    /// The cheap readings are taken regardless: CPU ticks, VM statistics, the
+    /// interface table and the block-storage counters are one syscall or one
+    /// IOKit read each, and taking them keeps the rail's tooltips live and the
+    /// graphs continuous across a tab switch. The SMC sweep is the one that is
+    /// gated, because it is the one that was MEASURED to matter — walking the key
+    /// set doubled idle CPU (0.375% → 0.727%) on its own.
+    var visibleNeeds: SystemMetrics.Needs {
+        var needs: SystemMetrics.Needs = [.cpu, .memory, .gpu, .network, .disk]
+        needs.formUnion(lens.needs)
+        // A widget bound to a temperature still has to be fed while the window is
+        // open on a tab that does not show one.
+        needs.formUnion(hiddenNeeds)
+        return needs
     }
 
     /// True when a menu bar widget is bound to a sensor metric, so the sampler
@@ -1034,52 +996,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         tv.reloadData()
     }
 
-    /// Single source of truth for what a cell says. The column sizer measures the
-    /// same strings the renderer draws — deriving them twice is how a column ends up
-    /// one character too narrow.
+    /// What a cell says, from the column's own definition.
+    ///
+    /// One lookup, not a second switch: the sizer measures exactly what the renderer
+    /// draws, because both call this and this calls the closure the column was built
+    /// with. The spacer has no definition and says nothing.
     func cellText(_ r: Row, _ id: String) -> (text: String, dim: Bool) {
-        switch id {
-        case "name":
-            return (r.name, false)
-        case "pctHr":
-            return (r.pctHr < 0.01 ? "<0.01" : String(format: "%.2f", r.pctHr), r.pctHr < 0.01)
-        case "window":
-            // "—" not "0.00": no recorded on-battery history is not zero usage.
-            return (r.windowPct.map { String(format: "%.2f%%", $0) } ?? "—", r.windowPct == nil)
-        case "cost":
-            return (r.costMin.map { $0 >= 60
-                ? String(format: "%dh %02dm", Int($0 / 60), Int($0) % 60)
-                : String(format: "%.0f min", $0) } ?? "—", r.costMin == nil)
-        case "cpu":
-            // Percent of one core, Activity Monitor's convention: a busy 4-thread
-            // process reads 400%.
-            guard let a = r.app else { return ("—", true) }
-            // Once a row is shown its number is shown down to a tenth of a
-            // percent; the 2.0 gate above decides membership, this only decides
-            // whether a value is meaningful enough to print.
-            return (a.cpuPercent < 0.1 ? "—" : String(format: "%.1f%%", a.cpuPercent),
-                    a.cpuPercent < 0.1)
-        case "mem":
-            guard let a = r.app else { return ("—", true) }
-            return (a.memoryBytes == 0 ? "—" : MetricUnit.bytes.format(Double(a.memoryBytes)),
-                    a.memoryBytes == 0)
-        case "disk":
-            guard let a = r.app else { return ("—", true) }
-            return (a.diskBytesPerSec < 1
-                        ? "—" : MetricUnit.bytesPerSecond.format(a.diskBytesPerSec),
-                    a.diskBytesPerSec < 1)
-        case "gputime":
-            guard let g = r.system?.gpu_ms, g > 0 else { return ("—", true) }
-            return (g >= 1000 ? String(format: "%.1f s", Double(g) / 1000)
-                              : "\(g) ms", false)
-        case "procs":
-            return (r.procs > 1 ? "\(r.procs)" : "—", true)
-        default:
-            return ("", true)
-        }
+        guard let column = columnsByID[id] else { return ("", true) }
+        return column.text(r)
     }
 
     private func font(for id: String, isApp: Bool) -> NSFont {
+        // Monospaced DIGITS for every numeric column so figures line up down the
+        // table; the name is proportional because it is prose, and bold when the
+        // row is an application rather than a daemon.
         id == "name" ? Palette.Font.sans(11.5, isApp ? .semibold : .regular)
                      : Palette.Font.mono(11)
     }
@@ -1091,9 +1021,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
     /// Widths only ever GROW within a lens. Shrinking them as values change would
     /// make the whole table twitch sideways every two seconds while a number drops a
     /// digit, which is far more distracting than a few points of slack.
-    /// Header font for measurement. Hoisted out of the loop it used to sit in,
-    /// where it was reconstructed once per column per tick.
-    private static let headerFont = NSFont.systemFont(ofSize: 11, weight: .medium)
+    /// Header attributes for measurement — the same font, case and kerning
+    /// `BetterStatsHeaderCell` draws with, so a column is never sized to a string
+    /// nobody renders.
+    private static let headerAttributes: [NSAttributedString.Key: Any] = [
+        .font: BetterStatsHeaderCell.font, .kern: 0.4,
+    ]
 
     /// Widen columns to fit, measuring only the rows actually on screen.
     ///
@@ -1117,10 +1050,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
 
         for column in main.table.tableColumns {
             let id = column.identifier.rawValue
-            guard id != "spacer" else { continue }
+            guard id != ProcessColumns.spacerID else { continue }
 
-            var widest = (column.title as NSString)
-                .size(withAttributes: [.font: Self.headerFont]).width
+            var widest = (column.title.uppercased() as NSString)
+                .size(withAttributes: Self.headerAttributes).width
+            // The sort indicator AppKit draws sits inside the header cell, so a
+            // column sized exactly to its title truncates the moment it is sorted.
+            widest += 12
 
             for i in range where i < rows.count {
                 let r = rows[i]
@@ -1130,7 +1066,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
                 widest = max(widest, w)
             }
 
-            let target = ceil(widest) + (id == "name" ? 26 : 20)
+            let target = ceil(widest) + (id == "name" ? 22 : 16)
             if target > column.width + 1 { column.width = target }
         }
     }
@@ -1156,7 +1092,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
     func tableView(_ tv: NSTableView, viewFor col: NSTableColumn?, row: Int) -> NSView? {
         guard row < rows.count, let col else { return nil }
         let id = col.identifier.rawValue
-        if id == "spacer" {
+        if id == ProcessColumns.spacerID {
             if let v = tv.makeView(withIdentifier: col.identifier, owner: self) { return v }
             let v = NSView()
             v.identifier = col.identifier
@@ -1198,6 +1134,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         // keeps them from reading as ordinary measured rows, which they are not.
         label.textColor = r.isModeled && id == "name" ? Palette.accentDim
                                                       : (dim ? Palette.dim : Palette.text)
+        // The row's own tooltip carries what a truncated name cannot: the full
+        // name, and — for a row that has no measured process behind it — the fact
+        // that its battery figure is a share of a bucket rather than a reading.
+        if id == "name" {
+            let tip = r.isModeled
+                ? "\(r.name)\nApportioned from Apple's coalition rollup — this row has no "
+                + "process this app can read, so its battery figure is a modeled share."
+                : r.name
+            if label.toolTip != tip { label.toolTip = tip }
+        }
         return cell
     }
 }

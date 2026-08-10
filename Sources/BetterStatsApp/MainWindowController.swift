@@ -42,7 +42,10 @@ final class MainWindowController: NSObject {
 
     override init() {
         window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 940, height: 640),
+            // Wider than the old 940. The Processes tab carries twelve columns
+            // where the widest lens used to carry five, and the rail gave back 116
+            // pt of the difference by becoming icons.
+            contentRect: NSRect(x: 0, y: 0, width: 1180, height: 660),
             // A normal titlebar rather than fullSizeContentView: the design has a
             // distinct top band with the traffic lights and title, and letting the
             // system draw it means the buttons never collide with our own content.
@@ -94,6 +97,11 @@ final class MainWindowController: NSObject {
         table.columnAutoresizingStyle = .lastColumnOnlyAutoresizingStyle
 
         scroll.hasVerticalScroller = true
+        // Twelve columns do not fit a narrow window, and the alternative to
+        // scrolling them is squeezing every number until it truncates. The trailing
+        // spacer absorbs slack when there IS slack; this is what happens when there
+        // is not.
+        scroll.hasHorizontalScroller = true
         scroll.borderType = .noBorder
         scroll.drawsBackground = false
         scroll.autohidesScrollers = true
@@ -123,7 +131,7 @@ final class MainWindowController: NSObject {
         graphRanges.translatesAutoresizingMaskIntoConstraints = false
         content.addSubview(graphRanges)
 
-        let railWidth: CGFloat = 168
+        let railWidth = SidebarView.width
         NSLayoutConstraint.activate([
             sidebar.leadingAnchor.constraint(equalTo: content.leadingAnchor),
             sidebar.topAnchor.constraint(equalTo: content.topAnchor),
@@ -171,22 +179,39 @@ final class MainWindowController: NSObject {
         window.contentView = content
     }
 
-    /// Column set for the active lens. Rebuilding rather than hiding keeps the
-    /// header honest — a hidden column still occupies sort state and confuses
-    /// keyboard navigation.
-    func setColumns(_ columns: [(id: String, title: String, width: CGFloat)]) {
+    /// Install the process table's columns.
+    ///
+    /// Rebuilding rather than hiding keeps the header honest — a hidden column
+    /// still occupies sort state and confuses keyboard navigation.
+    ///
+    /// Everything a column knows comes from its `ProcessColumn`: the title, the
+    /// starting width, and the tooltip. A header this narrow cannot explain what
+    /// "%/hr" divides by, and `headerToolTip` is the only place that answer fits.
+    func setColumns(_ columns: [ProcessColumn]) {
         let sort = table.sortDescriptors.first
         while let c = table.tableColumns.last { table.removeTableColumn(c) }
         for spec in columns {
             let c = NSTableColumn(identifier: .init(spec.id))
+            c.headerCell = BetterStatsHeaderCell(textCell: spec.title)
             c.title = spec.title
+            c.headerToolTip = spec.tooltip
             c.width = spec.width
-            c.minWidth = 30
-            c.resizingMask = spec.id == "spacer" ? .autoresizingMask : []
+            c.minWidth = 34
+            c.resizingMask = []
             c.sortDescriptorPrototype = NSSortDescriptor(key: spec.id, ascending: false)
             if spec.id != "name" { c.headerCell.alignment = .right }
             table.addTableColumn(c)
         }
+        // Trailing slack absorber, always last. Not part of the column list because
+        // it holds no data and must never be sortable.
+        let spacer = NSTableColumn(identifier: .init(ProcessColumns.spacerID))
+        spacer.headerCell = BetterStatsHeaderCell(textCell: "")
+        spacer.title = ""
+        spacer.width = 16
+        spacer.minWidth = 0
+        spacer.resizingMask = .autoresizingMask
+        table.addTableColumn(spacer)
+
         if let sort, columns.contains(where: { $0.id == sort.key }) {
             table.sortDescriptors = [sort]
         }
@@ -254,8 +279,8 @@ final class MainWindowController: NSObject {
         let f = window.frame
         if f.width < window.minSize.width || f.height < window.minSize.height {
             window.setFrame(NSRect(x: f.minX, y: f.minY,
-                                   width: max(f.width, 940),
-                                   height: max(f.height, 640)),
+                                   width: max(f.width, 1180),
+                                   height: max(f.height, 660)),
                             display: false)
             window.center()
         }
@@ -365,6 +390,60 @@ final class HoverTableView: NSTableView {
         for r in [old, newRow] where r >= 0 && r < count {
             rowView(atRow: r, makeIfNecessary: false)?.needsDisplay = true
         }
+    }
+}
+
+/// Table header, on the app's own ground rather than the system's.
+///
+/// A default NSTableHeaderCell paints the system's control grey, which against a
+/// true black window reads as a control someone dropped onto the design rather than
+/// part of it — and against twelve columns it is a wide band of the wrong colour.
+///
+/// Only the GROUND is taken over. The title layout, the truncation and the sort
+/// indicator stay with AppKit (`super.drawInterior`, and no override of
+/// `drawSortIndicator`), because those are the parts that have to keep working with
+/// right-aligned titles, a sorted column and keyboard navigation — and replacing
+/// them buys a hairline's worth of styling for a class of bug that only shows up on
+/// screen.
+final class BetterStatsHeaderCell: NSTableHeaderCell {
+
+    /// Uppercase, small, and monospaced so twelve headers read as a row of labels
+    /// rather than twelve differently-shaped words.
+    static let font = Palette.Font.mono(9.5, .semibold)
+
+    override func draw(withFrame cellFrame: NSRect, in controlView: NSView) {
+        Palette.surfaceAlt.setFill()
+        cellFrame.fill()
+
+        // The header view is flipped, so maxY is the bottom edge on screen: this is
+        // the rule between the header and the first row.
+        Palette.line.setFill()
+        NSRect(x: cellFrame.minX, y: cellFrame.maxY - 1,
+               width: cellFrame.width, height: 1).fill()
+        // A short tick between columns. Full height would draw a grid; twelve
+        // full-height rules is exactly the busyness this table is trying to lose.
+        Palette.line.withAlphaComponent(0.6).setFill()
+        NSRect(x: cellFrame.maxX - 1, y: cellFrame.minY + 5,
+               width: 1, height: max(0, cellFrame.height - 11)).fill()
+
+        drawInterior(withFrame: cellFrame.insetBy(dx: 6, dy: 0), in: controlView)
+    }
+
+    override func drawInterior(withFrame cellFrame: NSRect, in controlView: NSView) {
+        let text = stringValue
+        guard !text.isEmpty else { return }
+        let attrs: [NSAttributedString.Key: Any] = [
+            .font: Self.font,
+            .foregroundColor: Palette.faint,
+            .kern: 0.4,
+        ]
+        let string = text.uppercased() as NSString
+        let size = string.size(withAttributes: attrs)
+        let x = alignment == .right
+            ? cellFrame.maxX - size.width
+            : cellFrame.minX
+        string.draw(at: NSPoint(x: x, y: cellFrame.midY - size.height / 2),
+                    withAttributes: attrs)
     }
 }
 

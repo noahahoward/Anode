@@ -4,11 +4,19 @@ import Foundation
 ///
 /// Why discovery instead of a key list: the SMC key set is model-specific and
 /// Apple renames keys between chip generations (Intel `TC0P`/`sp78` vs Apple
-/// Silicon `Tp00`/`flt`; this M5 Pro has no `Te*` efficiency-core keys at all,
-/// which every published M1/M2 list says it should). So we enumerate all keys
-/// once, classify by prefix + decoded type, and only *label* the families we
-/// can actually vouch for. Anything else keeps its raw four-char key as its
-/// name — an honest unknown beats a confident wrong label.
+/// Silicon `Tp00`/`flt`). So we enumerate all keys once, classify by prefix +
+/// decoded type, and only *label* the families we can actually vouch for.
+/// Anything else gets a hedged placeholder marked `.unidentified` — an honest
+/// unknown beats a confident wrong label. `SensorNaming` holds the tables and
+/// the evidence for every entry.
+///
+/// THE MISSING `Te*`: this machine has ZERO efficiency-core keys under that
+/// prefix, and that turns out not to be a gap. `Te*` appears only in the M3 and
+/// M4 community tables; on M1, M2 and M5 the efficiency cores live INSIDE the
+/// `Tp*` family (M1 maps `Tp09`/`Tp0T` to E-cores and the rest to P-cores). So
+/// the prefix is generation-specific, and its absence here means the E-core
+/// diodes are among the 23 `Tp*` keys rather than missing. That is also why the
+/// `Tp*` label no longer says "performance" — see `SensorNaming`.
 ///
 /// MEASURED on this machine (MacBook Pro, M5 Pro, macOS 27): 3,588 keys, 2,921
 /// decode, 268 `T*`+`flt` temperature candidates, `FNum` = 2 real fans (both
@@ -17,9 +25,11 @@ import Foundation
 ///
 /// ESTIMATE-vs-MEASUREMENT boundary: every VALUE here is a measurement read
 /// straight from the SMC. Every NAME is an estimate — community-reverse-
-/// engineered, never documented by Apple. `cpuTemperature()` therefore averages
-/// only the `Tp*`/`Te*` families (the two with solid community consensus) and
-/// deliberately ignores plausible-but-unverified families like `Tm*`.
+/// engineered, never documented by Apple, and each one carries a `confidence`
+/// saying whether it is a claim at all. `cpuTemperature()` averages only the
+/// `Tp*`/`Te*` families: `Tm*` is named ("Memory sensor N") but naming it does
+/// not make it CPU, and a memory diode folded into a CPU mean would move the
+/// number the menu bar shows.
 ///
 /// NO WRITES, EVER. Fan control would go through the same user client with a
 /// write-bytes command against `F0Md`/`F0Tg` — and it is deliberately absent.
@@ -38,6 +48,25 @@ public struct SensorReading {
     public let kind: SensorKind
     public let value: Double
     public let unit: String           // "°C", "rpm", "V", "A", "W"
+
+    /// Whether `name` claims to know what this sensor measures.
+    ///
+    /// `.unidentified` means the label is a placeholder ("Thermal sensor 12") and
+    /// `key` is the sensor's only real identity. A UI showing these should say so
+    /// — render the key alongside, or group them apart from the named ones —
+    /// rather than presenting a placeholder as a fact. See `SensorNaming` for
+    /// what evidence a name needs before it counts as identified.
+    public let confidence: SensorNaming.Confidence
+
+    public init(key: String, name: String, kind: SensorKind, value: Double,
+                unit: String, confidence: SensorNaming.Confidence = .identified) {
+        self.key = key
+        self.name = name
+        self.kind = kind
+        self.value = value
+        self.unit = unit
+        self.confidence = confidence
+    }
 }
 
 public struct FanInfo {
@@ -125,31 +154,12 @@ public enum Sensors {
     /// use so it pays for one sweep instead of several.
     public static func inventory() -> Inventory { store.snapshot() }
 
-    // ── Naming — labels only for families with real community consensus ─────
+    // ── Naming ──────────────────────────────────────────────────────────────
     //
-    // Sources: exelban/Stats, iStat, smcFanControl key lists, cross-checked
-    // against what this machine actually reports (e.g. TB0T reads 30.9 °C — a
-    // battery temperature, not a CPU one). Prefix matching is CASE-SENSITIVE
-    // on purpose: `Tp00` (perf core, 53 °C) and `TPD0` (unknown, 43 °C) are
-    // different families, as are `Ts0P` (palm rest, 30 °C) and `TS0P` (40 °C).
-
-    fileprivate static let exactNames: [String: String] = [
-        "TB0T": "Battery 1", "TB1T": "Battery 2",
-        "TB2T": "Battery 3", "TB3T": "Battery 4",
-        "TaLP": "Airflow left", "TaRF": "Airflow right",
-        "TW0P": "WiFi proximity",
-        "TH0a": "NAND flash 1", "TH0b": "NAND flash 2", "TH0x": "NAND flash",
-        "Ts0P": "Palm rest 1", "Ts1P": "Palm rest 2",
-    ]
-
-    /// Families whose members get an ordinal ("CPU performance sensor 3").
-    /// Sensor count exceeds core count on Apple Silicon (21 Tp keys here, more
-    /// thermal diodes than P-cores), so labels say "sensor", not "core N".
-    fileprivate static let ordinalFamilies: [(prefix: String, label: String)] = [
-        ("Tp", "CPU performance sensor"),
-        ("Te", "CPU efficiency sensor"),
-        ("Tg", "GPU sensor"),
-    ]
+    // The tables, and the evidence for every entry in them, live in
+    // `SensorNaming`. Matching is CASE-SENSITIVE on purpose: `Tp00` (a CPU core
+    // diode) and `TPD0` (unidentified) are different families, as are `Ts0P`
+    // (palm rest, 26.9 °C) and `TS0P` (33.6 °C).
 
     // ── Plausibility — the estimate boundary for VALUES ─────────────────────
     // A "temperature" of ≤5 or >150 °C is decode garbage, not a reading: a
@@ -190,10 +200,11 @@ public enum Sensors {
         private struct Discovery {
             var keysTotal = 0
             var keysDecoded = 0
-            /// Names are fixed here, at discovery, so "CPU performance sensor 3"
-            /// stays the same physical diode across snapshots even if some other
-            /// reading transiently fails the sanity filter.
-            var classified: [(key: String, name: String, kind: SensorKind)] = []
+            /// Names are fixed here, at discovery, so "GPU sensor 3" stays the
+            /// same physical diode across snapshots even if some other reading
+            /// transiently fails the sanity filter.
+            var classified: [(key: String, name: String, kind: SensorKind,
+                              confidence: SensorNaming.Confidence)] = []
             var fanIndices: [Int] = []
         }
 
@@ -208,18 +219,32 @@ public enum Sensors {
 
             var readings: [SensorReading] = []
             var rejected: [(String, Double)] = []
-            for (key, name, kind) in d.classified {
+            for (key, name, kind, confidence) in d.classified {
                 guard let s = smc.read(key) else { continue }  // key can vanish
                 guard Sensors.plausible(kind, s.value) else {
                     rejected.append((key, s.value)); continue
                 }
                 readings.append(SensorReading(key: key, name: name, kind: kind,
-                                              value: s.value, unit: Self.unit(kind)))
+                                              value: s.value, unit: Self.unit(kind),
+                                              confidence: confidence))
             }
 
             let fans = d.fanIndices.compactMap { readFan(smc, index: $0) }
             // Fans appear in `all()` too, so a widget bound to "any metric"
             // can pick a fan without a second code path.
+            //
+            // Numbered, not named, and that is a finding rather than a shrug.
+            // "Intake 1"/"Exhaust 1" in other monitors are not thermistor labels
+            // — they are the fan's OWN name, a string the firmware publishes at
+            // `F<n>ID` (type `{fds`). This machine does not publish it: `F0ID`,
+            // `F1ID` and `F2ID` all return size 0 with no type, i.e. the keys do
+            // not exist. So there is no intake/exhaust vocabulary to read here,
+            // and inventing one would be asserting airflow direction from
+            // nothing. Even upstream falls back to "Left fan"/"Right fan" when
+            // `F<n>ID` is missing, which is itself a guess about which side fan
+            // 0 sits on. If a future model does publish `F<n>ID`, reading it is
+            // the right fix — that name comes from the hardware.
+
             readings.append(contentsOf: fans.map {
                 SensorReading(key: "F\($0.index)Ac", name: "Fan \($0.index + 1)",
                               kind: .fan, value: $0.currentRPM, unit: "rpm")
@@ -243,23 +268,31 @@ public enum Sensors {
             // scan() yields only keys our decoder understands; classification
             // is prefix + type. Type matters: `VBUS` decodes as ui32 (a flag,
             // not volts) and Intel temps are sp78 where Apple Silicon uses flt.
-            var byKind: [(key: String, kind: SensorKind)] = []
+            // The decoded TYPE is carried through to naming, not just used to
+            // classify: `flt` vs `sp78` is how Apple Silicon and Intel are told
+            // apart, and some prefixes mean different things on each.
+            var byKind: [(key: String, kind: SensorKind, type: String)] = []
             for s in smc.scan() {
                 d.keysDecoded += 1
                 switch (s.key.first, s.type) {
-                case ("T", "flt"), ("T", "sp78"): byKind.append((s.key, .temperature))
-                case ("V", "flt"):                byKind.append((s.key, .voltage))
-                case ("I", "flt"):                byKind.append((s.key, .current))
-                case ("P", "flt"):                byKind.append((s.key, .power))
+                case ("T", "flt"), ("T", "sp78"): byKind.append((s.key, .temperature, s.type))
+                case ("V", "flt"):                byKind.append((s.key, .voltage, s.type))
+                case ("I", "flt"):                byKind.append((s.key, .current, s.type))
+                case ("P", "flt"):                byKind.append((s.key, .power, s.type))
                 default:                          break  // fans handled below
                 }
             }
 
             // Ordinals follow key sort order within each family — the SMC's own
-            // enumeration order is not contractual.
+            // enumeration order is not contractual. One `ordinals` dictionary is
+            // threaded through the whole pass so numbering is assigned exactly
+            // once, here.
+            let rails = SubsystemRails.isCalibratedHardware
             var ordinals: [String: Int] = [:]
-            for (key, kind) in byKind.sorted(by: { $0.key < $1.key }) {
-                d.classified.append((key, Self.name(for: key, ordinals: &ordinals), kind))
+            for (key, kind, type) in byKind.sorted(by: { $0.key < $1.key }) {
+                let label = SensorNaming.label(for: key, kind: kind, type: type,
+                                               calibratedRails: rails, ordinals: &ordinals)
+                d.classified.append((key, label.text, kind, label.confidence))
             }
 
             // Fan discovery: FNum is authoritative when present. When absent
@@ -286,16 +319,6 @@ public enum Sensors {
             let tg = smc.read("F\(i)Tg")?.value
             return FanInfo(index: i, currentRPM: ac.value, minRPM: mn,
                            maxRPM: mx, targetRPM: tg)
-        }
-
-        private static func name(for key: String, ordinals: inout [String: Int]) -> String {
-            if let n = Sensors.exactNames[key] { return n }
-            for fam in Sensors.ordinalFamilies where key.hasPrefix(fam.prefix) {
-                let n = (ordinals[fam.prefix] ?? 0) + 1
-                ordinals[fam.prefix] = n
-                return "\(fam.label) \(n)"
-            }
-            return key  // unverified family — the raw key IS the honest name
         }
 
         private static func unit(_ kind: SensorKind) -> String {

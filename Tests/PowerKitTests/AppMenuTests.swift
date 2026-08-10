@@ -39,7 +39,15 @@ final class ViewMenuOrderTests: XCTestCase {
     func testLensItemsNumberTheRailFromOne() {
         let items = ViewMenu.lensItems
         XCTAssertEqual(items.map(\.lens), SidebarView.Lens.displayOrder)
-        XCTAssertEqual(items.map(\.key), ["1", "2", "3", "4", "5", "6", "7", "8"])
+        XCTAssertEqual(items.map(\.key), ["1", "2", "3", "4", "5"])
+    }
+
+    /// The rail is the five tabs asked for and nothing else. Written out rather
+    /// than derived: this list is the specification, and a test that recomputed it
+    /// from `allCases` would agree with any tab added or removed by accident.
+    func testTheRailIsTheFiveTabs() {
+        XCTAssertEqual(SidebarView.Lens.displayOrder.map(\.rawValue),
+                       ["processes", "resources", "network", "sensors", "fans"])
     }
 
     /// Past ⌘9 there is no digit to use, so the tenth item must get no shortcut

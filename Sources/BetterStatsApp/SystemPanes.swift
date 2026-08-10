@@ -50,6 +50,9 @@ class SystemPane: NSView {
     let captionLabel = NSTextField(labelWithString: "")
     let body = NSStackView()
     private let scroll = NSScrollView()
+    /// Held so an accessory can be spliced in between the caption and the list
+    /// without rebuilding the chrome. See `setAccessory`.
+    private var scrollTop: NSLayoutConstraint!
 
     private final class FlippedClipView: NSClipView {
         override var isFlipped: Bool { true }
@@ -98,6 +101,7 @@ class SystemPane: NSView {
             v.translatesAutoresizingMaskIntoConstraints = false
             addSubview(v)
         }
+        scrollTop = scroll.topAnchor.constraint(equalTo: captionLabel.bottomAnchor, constant: 12)
         NSLayoutConstraint.activate([
             titleLabel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 18),
             titleLabel.topAnchor.constraint(equalTo: topAnchor, constant: 14),
@@ -107,7 +111,7 @@ class SystemPane: NSView {
 
             scroll.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 18),
             scroll.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12),
-            scroll.topAnchor.constraint(equalTo: captionLabel.bottomAnchor, constant: 12),
+            scrollTop,
             scroll.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -12),
 
             body.leadingAnchor.constraint(equalTo: scroll.contentView.leadingAnchor),
@@ -115,6 +119,25 @@ class SystemPane: NSView {
             body.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor),
         ])
         restyle()
+    }
+
+    /// Park a fixed-height view between the caption and the scrolling list.
+    ///
+    /// Exists for the Resources tab's graph strip, which has to sit ABOVE the
+    /// readings rather than scroll with them — a graph you have to scroll back to
+    /// is not a glance. Called once at construction; the accessory is then updated
+    /// in place like everything else in these panes.
+    func setAccessory(_ view: NSView, height: CGFloat) {
+        view.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(view)
+        scrollTop.isActive = false
+        NSLayoutConstraint.activate([
+            view.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 18),
+            view.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -18),
+            view.topAnchor.constraint(equalTo: captionLabel.bottomAnchor, constant: 12),
+            view.heightAnchor.constraint(equalToConstant: height),
+            scroll.topAnchor.constraint(equalTo: view.bottomAnchor, constant: 14),
+        ])
     }
 
     func restyle() {

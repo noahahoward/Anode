@@ -211,12 +211,64 @@ public final class PowerMonitor {
             }
         }
 
-        /// Hours until the pack is full, from measured charge current.
-        public var timeToFull_hr: Double? {
-            guard direction == .charging, let s = state, s.amperage_mA > 0 else { return nil }
-            let missing = scale.fullChargeCapacity_mAh - s.remainingCapacity_mAh
-            guard missing > 0 else { return nil }
-            return missing / Double(s.amperage_mA)
+        /// Where charging is heading — the learned limit when there is one, the
+        /// pack's own 100% when there is not. Nil before the first tick has fed
+        /// the learner. See `ChargeTarget` for why this is inferred and not read.
+        ///
+        /// Defaulted, and therefore `var`, for the same reason `isFullSample` is:
+        /// the synthetic fixtures describe a battery without having an opinion
+        /// about a charge limit.
+        public var chargeTarget: ChargeTarget.Level?
+
+        /// Hours until charging STOPS, and what it will stop at.
+        ///
+        /// Two things were wrong with the constant-current projection to
+        /// `fullChargeCapacity_mAh` this replaces, and they compound:
+        ///
+        ///  1. It counted to 100%. With this machine's 80% limit that is a target
+        ///     the charger will never reach, so the figure overstated the wait by
+        ///     15, 16 and 28 minutes on the three recorded sessions and then went
+        ///     to nil the instant the machine stopped — a countdown that never
+        ///     read zero, which is exactly how "the last 1% takes the longest"
+        ///     feels from the outside.
+        ///  2. It assumed constant current right to the target. The current is in
+        ///     fact flat on this pack (measured, see `ChargeCurve`) up until the
+        ///     final approach, where it collapses; the last step into the limit
+        ///     cost +0.92 and +0.66 min beyond what the rate accounted for.
+        ///
+        /// Nil, never a substitute number, when the pack is at or past its target:
+        /// there is no wait left to report.
+        public var chargeEstimate: ChargeTarget.Estimate? {
+            guard direction == .charging, let s = state, s.amperage_mA > 0,
+                  let target = chargeTarget, scale.fullChargeCapacity_mAh > 0
+            else { return nil }
+            // Rate and headroom on the same mAh basis the target was learned on,
+            // so the subtraction is between two comparable percentages rather than
+            // the gauge's integer percent against a capacity ratio.
+            let rate = 100.0 * Double(s.amperage_mA) / scale.fullChargeCapacity_mAh
+            let headroom = target.percent - scale.chargePercent(s)
+            guard let hr = ChargeCurve.hours(headroom_pct: headroom,
+                                             rate_pctHr: rate,
+                                             tapers: target.isLearnedLimit)
+            else { return nil }
+            return ChargeTarget.Estimate(hours: hr, target: target)
+        }
+
+        /// Hours until charging stops. ALWAYS an estimate — see `ChargeCurve`.
+        public var timeToFull_hr: Double? { chargeEstimate?.hours }
+
+        /// True when the machine is sitting on AC at the limit it was learned to
+        /// hold at, rather than merely idle on AC. "Not charging" and "held at 80%"
+        /// are different facts and the second one is the one the user chose.
+        ///
+        /// A BAND around the limit, not merely at-or-above it. A session that
+        /// overrode the limit and stopped at 92% is on AC and not charging, but it
+        /// is not sitting at its 80% limit and must not claim to be.
+        public var isHeldAtChargeLimit: Bool {
+            guard direction == .acIdle, let s = state, s.onAC, !s.fullyCharged,
+                  s.notChargingReason != 0, let t = chargeTarget, t.isLearnedLimit
+            else { return false }
+            return abs(scale.chargePercent(s) - t.percent) <= 1
         }
 
         /// Projected runtime at the smoothed draw — independent of macOS's estimate.
@@ -345,6 +397,16 @@ public final class PowerMonitor {
     /// Attributes power to attached USB devices by measuring the step each one
     /// causes. There is no USB rail; the step IS the measurement.
     private let usbTracker: USBPowerTracker = { let t = USBPowerTracker(); t.adoptExisting(); return t }()
+    /// Learns the level this machine stops charging at. Nothing in IOKit states
+    /// it, so it is inferred from the machine refusing to charge on AC and
+    /// remembered across launches — see `ChargeTarget`.
+    ///
+    /// Deliberately NOT cleared by `resetAcrossGap`, for the same reason the
+    /// calibrators are not: a charge limit is a property of the machine, and it is
+    /// the same machine when it wakes. A sleep is in fact the most likely time to
+    /// LEARN one, since the overnight session that sat at 80% for seven hours is
+    /// precisely the evidence this is looking for.
+    private let chargeLimits = ChargeLimitLearner()
 
     public var ioReportAvailable: Bool { ioreport != nil }
 
@@ -590,6 +652,13 @@ public final class PowerMonitor {
         // rejected rather than credited to the device.
         let quiet = (ppmcRaw ?? 0) < 3.0
         usbTracker.update(systemWatts: smoothed, systemQuiet: quiet)
+
+        // One battery read, fed to the limit learner and then handed to the
+        // snapshot. Read twice it could straddle the cache TTL and teach the
+        // learner about a charge level the snapshot does not report.
+        let battery = Battery.state()
+        if let b = battery { chargeLimits.observe(b, percent: scale.chargePercent(b)) }
+
         let usbMeasured = usbTracker.measuredWatts
         let memoryW = SubsystemRails.watts(smc, keys: SubsystemRails.memoryKeys)
         let storageW = SubsystemRails.watts(smc, keys: SubsystemRails.storageKeys)
@@ -653,7 +722,7 @@ public final class PowerMonitor {
             // rather than silently absorbed by max(0, ...).
             rawResidual_W: smoothed - attributed - (gpu ?? 0),
             scale: scale,
-            state: Battery.state(),
+            state: battery,
             // Light ticks report zeroes rather than carrying the last full sweep's
             // figures forward — a stale coverage figure would be worse. But a zero
             // here means "no sweep was attempted", NOT "no process was readable",
@@ -664,7 +733,11 @@ public final class PowerMonitor {
             denied: sweep?.denied ?? 0,
             readable: sweep?.processes.count ?? 0,
             attempted: sweep?.attempted ?? 0,
-            interval: interval
+            interval: interval,
+            chargeTarget: battery.map {
+                chargeLimits.target(atPercent: scale.chargePercent($0),
+                                    isCharging: $0.isCharging && $0.amperage_mA > 0)
+            }
         )
     }
 
