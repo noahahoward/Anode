@@ -360,17 +360,8 @@ final class FanControlPanel: NSView {
 
     // ── The on/off decision ─────────────────────────────────────────────────
 
-    @objc private func enableTapped() {
-        guard confirmTurnOn() else { return }
-        Settings.shared.fanControlEnabled = true
-        session.enabled = true
-        lastConnectAttempt = .distantPast
-        upkeep()
-        render()
-    }
-
-    /// The disclosure, shown before the feature is switched on for the first time
-    /// and before any grab that would switch it on.
+    /// The disclosure, shown before the feature is switched on for the first
+    /// time — which now only ever happens by grabbing a slider or pressing ❄︎.
     private func confirmTurnOn() -> Bool {
         let alert = NSAlert()
         alert.messageText = "Turn on fan control?"
@@ -548,12 +539,17 @@ final class FanControlPanel: NSView {
             statusLabel.stringValue = "Fan control is off — macOS is deciding. "
                                     + "The sliders are live readings; take one to turn it on."
             hintField.stringValue = ""
-            // withInstall, like every other state. Installing is SETUP — "make
-            // this work from now on" — so the state where fan control has never
-            // been turned on is the first place it should be offered, not the
-            // one place it is hidden. It was missing here, which put the button
-            // behind the very flow it exists to replace.
-            setButtons([("Turn On Fan Control…", #selector(enableTapped))])
+            // NO "Turn On Fan Control" button. It did exactly what grabbing a
+            // slider does — same sheet, same setting, and `gesture()` then
+            // applies the grab you actually made — so it was a second path to
+            // one toggle, and the caption above already names the first one.
+            // Worse, it read like it did something to the fans when all it does
+            // is make the controls live.
+            //
+            // What is left here is the install button, from `withInstall`, which
+            // is the one thing this state should be offering: it is SETUP, and
+            // this is the state a machine that has never used fan control is in.
+            setButtons([])
 
         case .automatic:
             if case .connected(let count) = session.helper {
