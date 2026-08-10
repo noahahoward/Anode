@@ -282,43 +282,21 @@ public final class PowerMonitor {
             state.map { Double($0.percent) * scale.joulesPerPercent }
         }
 
-        /// "Quitting this would buy you N more minutes."
-        ///
-        /// This is a MARGINAL, counterfactual quantity, not a share — which is exactly
-        /// what makes it honest where a percentage-of-total is not. Runtime is E/P, so
-        /// removing a load of P_app changes runtime by:
-        ///
-        ///     seconds gained = E_remaining * (1/(P_sys - P_app) - 1/P_sys)
-        ///
-        /// Note this is a RECIPROCAL of a rate. The intuitive-looking subtractive form
-        /// (T - (f-1)T) is not merely imprecise, it is structurally wrong: it is linear
-        /// in the load fraction and goes negative once an app exceeds the whole battery.
-        ///
-        /// Deliberately gated, because the number is only meaningful in a narrow band:
-        ///  - on battery only (on AC there is no runtime to extend),
-        ///  - only above a share floor, since below it the answer is rounding noise,
-        ///  - and never when the app would account for essentially all draw, where the
-        ///    formula's denominator collapses and the answer tends to infinity.
-        /// The floor was 5%, which made this column empty for every row. Apps are
-        /// only ~20% of measured draw in total, so a top app is typically 2-4% of the
-        /// machine — 5% assumed apps explain most of the battery, which is the exact
-        /// assumption this project exists to reject. 0.5% is the point below which
-        /// the answer rounds to under a minute on a full charge.
-        public func runtimeCost_min(appWatts: Double, floorShare: Double = 0.005) -> Double? {
-            guard let s = state, !s.onAC,
-                  let energy = remainingEnergy_J,
-                  smoothed_W > 0.01,
-                  appWatts > 0
-            else { return nil }
-            _ = s
-            let share = appWatts / smoothed_W
-            guard share >= floorShare, share < 0.9 else { return nil }
-            let without = smoothed_W - appWatts
-            guard without > 0.01 else { return nil }
-            let seconds = energy * (1.0 / without - 1.0 / smoothed_W)
-            guard seconds.isFinite, seconds > 0 else { return nil }
-            return seconds / 60.0
-        }
+        // `runtimeCost_min` lived here and was DELETED, not moved.
+        //
+        // It had two gates that between them blanked the column it fed on every
+        // row: a 0.5% share floor justified by the assumption that "a top app is
+        // typically 2-4% of the machine" (measured here: 1.0% of an idle machine,
+        // 0.19% of a busy one — an order of magnitude out), and an on-AC gate,
+        // though every other battery figure in the window is reported on AC and
+        // both inputs are measured there.
+        //
+        // The fixed version is `RuntimeCost` in the app target, which carries the
+        // measurement table behind both corrections. This one had no callers left
+        // and keeping a broken second implementation of the same formula is how
+        // the wrong one gets picked up again. If the CLI ever needs it, move
+        // `RuntimeCost` down here rather than reviving this.
+
     }
 
     public let scale: BatteryScale
