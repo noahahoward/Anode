@@ -5,7 +5,11 @@ let package = Package(
     name: "BetterStats",
     platforms: [.macOS(.v13)],
     targets: [
-        .target(name: "PowerKit"),
+        // Three lines of C so Swift can see `launch_activate_socket`, which is
+        // public SDK API that Darwin's module map happens not to export. See the
+        // header for why it is a wrapper rather than a re-export.
+        .target(name: "CLaunchActivate"),
+        .target(name: "PowerKit", dependencies: ["CLaunchActivate"]),
         .executableTarget(name: "betterstats", dependencies: ["PowerKit"]),
         .executableTarget(name: "BetterStatsApp", dependencies: ["PowerKit"]),
         .executableTarget(name: "BetterStatsHelper", dependencies: ["PowerKit"]),

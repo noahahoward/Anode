@@ -1,3 +1,4 @@
+import CLaunchActivate
 import Foundation
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -104,13 +105,20 @@ import Foundation
 // Before installing: nothing of this project runs as root, ever, unless the user
 // starts the session helper by hand.
 //
-// After installing: a root process is running at all times whose entire ability
-// is to set a fan target within the range the fan itself reports, on request from
-// the uid that installed it. Anything running as that user can ask. An attacker
-// who takes it can make the machine loud, or hold a fan where the firmware would
-// also hold it — the SMC arbitrates and has been observed clamping a written
-// target upward. It cannot read anything, cannot write any other SMC key, cannot
-// run anything, and has no path or key name in its input.
+// After installing: STILL NOTHING RUNS until fan control is used. launchd holds
+// the socket and starts the helper on a connection; it leaves again once it has
+// been idle and is holding no fan. Not at boot, not while the app is closed, not
+// while fan control is off. The first draft of this made the daemon resident with
+// RunAtLoad + KeepAlive, which was a permanent root process bought to save a
+// process launch — see `plistDictionary`.
+//
+// While it is up, its entire ability is to set a fan target within the range the
+// fan itself reports, on request from the uid that installed it. Anything running
+// as that user can ask. An attacker who takes it can make the machine loud, or
+// hold a fan where the firmware would also hold it — the SMC arbitrates and has
+// been observed clamping a written target upward. It cannot read anything, cannot
+// write any other SMC key, cannot run anything, and has no path or key name in
+// its input.
 //
 // The undo is one button and removes every trace, including handing the fans
 // back. `FanHelperInstall.artifacts` is the list, and it is asserted complete.
@@ -151,9 +159,87 @@ public enum FanDaemon {
     public static let protocolVersion = 1
 
     /// The argument that tells the helper it is the installed daemon rather than
-    /// a session helper. The difference is the pin and nothing else.
+    /// a session helper. The difference is the pin, and where the socket comes
+    /// from: a session helper makes its own, the daemon is handed one by launchd.
     public static let serveArgument = "--serve"
     public static let installArgument = "--install"
+
+    /// The key under `Sockets` in the plist, and the name passed to
+    /// `launch_activate_socket`. The two must agree or the daemon starts with no
+    /// socket to serve; there is a test that reads it out of the generated plist
+    /// rather than restating it.
+    public static let socketActivationName = "FanControl"
+
+    /// How long the on-demand daemon waits, with no client and no fan held,
+    /// before exiting and letting launchd hold the socket again.
+    ///
+    /// It exists so the helper is not resident, and it is 90 seconds rather than
+    /// something eager because leaving is not free: launchd has to start a new
+    /// process on the next connection. The app pings every 5 s while its Fans
+    /// tab is open and holds the connection between pings, so in practice this
+    /// fires once, after the app has gone.
+    ///
+    /// A HELPER HOLDING A FAN NEVER IDLE-EXITS, whatever this says. Exiting runs
+    /// the dead-man's switch and hands the fans back, which is right when the
+    /// app has crashed and wrong when it simply has nothing to say. `run()`
+    /// enforces that, not this constant.
+    public static let idleExit: TimeInterval = 90
+
+    // ── The socket launchd is holding ───────────────────────────────────────
+
+    /// Why the daemon could not get its socket from launchd. Separated from a
+    /// bare errno because two of these mean "you ran this wrong" and should say
+    /// so to a person, rather than printing a number.
+    public enum ActivationFailure: Error, Equatable {
+        /// ESRCH. Nothing launched this with a socket — almost always someone
+        /// running `--serve` by hand, which is not how the daemon starts.
+        case notLaunchedByLaunchd
+        /// ENOENT. launchd started it, but the job has no socket by that name:
+        /// the installed plist is older than this binary, or was edited.
+        case noSocketNamed(String)
+        /// The plist and this code disagree about the job's shape.
+        case unexpectedSocketCount
+        case failed(code: Int32)
+
+        public var message: String {
+            switch self {
+            case .notLaunchedByLaunchd:
+                return "\(FanDaemon.serveArgument) is how launchd starts the installed "
+                     + "daemon; it is not a way to run the helper by hand. Run it with "
+                     + "no arguments for a session helper, or install it first."
+            case .noSocketNamed(let name):
+                return "launchd has no socket named \(name) for this job — the installed "
+                     + "plist does not match this helper. Uninstall and install again."
+            case .unexpectedSocketCount:
+                return "launchd offered a number of sockets other than one, which this "
+                     + "job never asks for. Uninstall and install again."
+            case .failed(let code):
+                return "could not adopt the launchd socket: \(String(cString: strerror(code)))"
+            }
+        }
+    }
+
+    /// The listening socket launchd created for this job, ready to `accept` on.
+    ///
+    /// This is what makes the daemon on-demand. launchd binds the socket at
+    /// install time and holds it while nothing is running; the first connection
+    /// starts this process, which asks for the descriptor here and serves it.
+    /// Nothing is bound, `chmod`ed or `chown`ed by us on this path — launchd did
+    /// it from the plist, and doing it again would be a second opinion about
+    /// permissions with no way to tell which one won.
+    public static func activatedSocket(
+        named name: String = FanDaemon.socketActivationName
+    ) throws -> Int32 {
+        var fd: Int32 = -1
+        let rc = bs_launch_activate_one(name, &fd)
+        switch rc {
+        case 0:       return fd
+        case ESRCH:   throw ActivationFailure.notLaunchedByLaunchd
+        case ENOENT:  throw ActivationFailure.noSocketNamed(name)
+        case EINVAL:  throw ActivationFailure.unexpectedSocketCount
+        default:      throw ActivationFailure.failed(code: rc)
+        }
+    }
 
     // ── What the app can see without any privilege ──────────────────────────
 
@@ -365,18 +451,46 @@ public enum FanDaemonInstall {
     /// pointing launchd at ~/Applications would have root execute a file the user
     /// can rewrite, which is the hole this whole design avoids.
     ///
-    /// `RunAtLoad` + `KeepAlive` is what "never prompts again" means: launchd
-    /// starts it at every boot and restarts it if it dies. There is no
-    /// `StandardOutPath`; the helper logs to the unified log, so the install
-    /// leaves no file that needs rotating or cleaning up.
+    /// IT IS LAUNCHED ON DEMAND, AND NOTHING RUNS UNTIL SOMETHING CONNECTS.
+    ///
+    /// The first cut of this used `RunAtLoad` + `KeepAlive`, which is the easy
+    /// way to make "never prompts again" true and costs a root process resident
+    /// from boot to shutdown, whether or not fan control is ever used. That is a
+    /// bad trade for a feature most users touch rarely, and it is not necessary:
+    /// `Sockets` makes launchd hold the listening socket itself and start this
+    /// program only when a connection arrives.
+    ///
+    /// So: no process at boot. No process while BetterStats is closed. No
+    /// process while fan control is off. The helper appears when the app asks a
+    /// fan for something and leaves again when it is done (`FanDaemon.idleExit`).
+    ///
+    /// THE ACCESS CONTROL IS UNCHANGED, which is the reason this was safe to do.
+    /// The helper used to create the socket, `chmod` it 0600 and `chown` it to
+    /// the user it serves. `SockPathOwner` + `SockPathMode` ask launchd for
+    /// exactly that, so the socket has the same owner and the same mode as
+    /// before — it is simply created by launchd instead. `getpeereid` still does
+    /// the real enforcement on every connection; the file mode is defence in
+    /// depth in both designs.
+    ///
+    /// `SockPathMode` is decimal on purpose. Property lists have no octal, which
+    /// launchd.plist(5) calls out as a known bug; `0o600` is a Swift integer
+    /// literal and serialises as 384, which is what launchd wants to read.
+    ///
+    /// There is no `StandardOutPath`; the helper logs to the unified log, so the
+    /// install leaves no file that needs rotating or cleaning up.
     public static func plistDictionary(ownerUID: uid_t) -> [String: Any] {
         [
             "Label": FanDaemon.label,
             "ProgramArguments": [FanDaemon.helperPath,
                                  FanDaemon.serveArgument,
                                  "--uid", String(ownerUID)],
-            "RunAtLoad": true,
-            "KeepAlive": true,
+            "Sockets": [
+                FanDaemon.socketActivationName: [
+                    "SockPathName": FanSocket.path,
+                    "SockPathOwner": Int(ownerUID),
+                    "SockPathMode": 0o600,
+                ],
+            ],
             // Not Interactive: it draws nothing and should be throttled like any
             // other daemon.
             "ProcessType": "Background",

@@ -287,6 +287,20 @@ public final class FanHelperServer {
     private var clientBuffer = Data()
     private var wakePipe: [Int32] = [-1, -1]
 
+    /// Did this process create the socket file, and may it therefore delete it?
+    ///
+    /// A session helper binds its own socket and unlinks it on the way out, so a
+    /// stale path never outlives the process. An ON-DEMAND DAEMON MUST NOT: the
+    /// socket belongs to launchd, which is still holding it and will use it to
+    /// start the next helper. Unlinking it would make this the LAST helper that
+    /// ever started — every later connection would find nothing at that path.
+    private var ownsSocketPath = true
+
+    /// How long to wait, with nothing connected and no fan held, before this
+    /// helper stops. nil for a session helper, which is stopped by the person who
+    /// started it and by nothing else.
+    public var idleExit: TimeInterval?
+
     /// Written by whoever calls `stop()` — a signal source on another queue — and
     /// read by the accept loop. Behind a lock rather than a bare `Bool`: the
     /// compiler cannot see the cross-thread write, so a plain property read is a
@@ -374,15 +388,109 @@ public final class FanHelperServer {
         log("listening on \(config.socketPath) for uid \(config.ownerUID)")
     }
 
-    /// Serve until `stop()`. Blocking; one client at a time.
+    /// Serve a socket someone else created, bound and set listening — in
+    /// practice, always launchd's.
+    ///
+    /// Nothing here binds, `chmod`s or `chown`s. The plist asked launchd for a
+    /// socket owned by the serving user with mode 0600, which is exactly what
+    /// `start()` sets by hand, and re-applying it from this side would be a
+    /// second opinion about permissions with no way to tell which one won. What
+    /// this does instead is CHECK, because adopting a descriptor that is not what
+    /// we think it is would mean a root process serving something unexamined.
+    public func start(adopting fd: Int32) throws {
+        guard fd >= 0 else { throw Failure.socketFailed("launchd offered no descriptor") }
+
+        // It must be a stream socket, and it must be bound to the path this
+        // helper was configured to serve.
+        //
+        // NOT "and it must be listening": macOS has no way to ask that about a
+        // unix socket. `SO_ACCEPTCONN` fails with ENOPROTOOPT on AF_UNIX both
+        // before and after `listen()` — measured, not assumed, and an earlier
+        // draft of this check used it and rejected every socket launchd offered.
+        // Whether it is listening is launchd's side of the contract; what is
+        // checkable here is that it is the right KIND of socket at the right
+        // PATH, which is the part that would silently serve the wrong thing.
+        var type: Int32 = 0
+        var length = socklen_t(MemoryLayout<Int32>.size)
+        guard getsockopt(fd, SOL_SOCKET, SO_TYPE, &type, &length) == 0 else {
+            throw Failure.socketFailed("launchd's descriptor is not a socket: "
+                                     + String(cString: strerror(errno)))
+        }
+        guard type == SOCK_STREAM else {
+            throw Failure.socketFailed("launchd's socket is not a stream socket")
+        }
+
+        var bound = sockaddr_un()
+        var boundLength = socklen_t(MemoryLayout<sockaddr_un>.size)
+        let boundPath: String? = withUnsafeMutablePointer(to: &bound) { raw in
+            raw.withMemoryRebound(to: sockaddr.self, capacity: 1) { sa in
+                guard getsockname(fd, sa, &boundLength) == 0 else { return nil }
+                guard sa.pointee.sa_family == sa_family_t(AF_UNIX) else { return nil }
+                return withUnsafePointer(to: &raw.pointee.sun_path) { tuple in
+                    tuple.withMemoryRebound(to: CChar.self,
+                                            capacity: MemoryLayout.size(ofValue: tuple.pointee)) {
+                        String(cString: $0)
+                    }
+                }
+            }
+        }
+        guard let boundPath else {
+            throw Failure.socketFailed("launchd's socket is not a unix socket")
+        }
+        guard boundPath == config.socketPath else {
+            throw Failure.socketFailed("launchd's socket is bound to \(boundPath), "
+                                     + "but this helper serves \(config.socketPath)")
+        }
+
+        var pipeFDs: [Int32] = [-1, -1]
+        guard pipe(&pipeFDs) == 0 else {
+            // The socket is launchd's; it is not ours to close or unlink on the
+            // way out of a failure.
+            throw Failure.socketFailed(String(cString: strerror(errno)))
+        }
+        wakePipe = pipeFDs
+        listenFD = fd
+        ownsSocketPath = false
+        log("serving launchd's socket at \(config.socketPath) for uid \(config.ownerUID)")
+    }
+
+    /// Serve until `stop()`, or — for the on-demand daemon — until there has been
+    /// nothing to do for `idleExit`. Blocking; one client at a time.
+    ///
+    /// THE POLL BLOCKS FOREVER WHENEVER THERE IS ANYTHING TO WAIT FOR. A timeout
+    /// is passed only when this helper is idle AND holding no fan, so a helper
+    /// that is doing its job is never periodically woken: it costs no CPU and no
+    /// wakeups at all between requests, which is the property that makes a root
+    /// process defensible in the first place.
+    ///
+    /// A HELPER HOLDING A FAN NEVER TIMES OUT. Leaving runs the dead-man's
+    /// switch, and handing the fans back is right when the app has died and
+    /// wrong when it merely has nothing to say for ninety seconds.
     public func run() {
+        var idleSince: Date? = Date()
         while !stopping {
             var fds = [pollfd(fd: listenFD, events: Int16(POLLIN), revents: 0),
                        pollfd(fd: wakePipe[0], events: Int16(POLLIN), revents: 0)]
             if clientFD >= 0 {
                 fds.append(pollfd(fd: clientFD, events: Int16(POLLIN), revents: 0))
             }
-            guard poll(&fds, nfds_t(fds.count), -1) >= 0 || errno == EINTR else { break }
+
+            let idling = clientFD < 0 && holdings.isEmpty
+            if !idling { idleSince = nil }
+            else if idleSince == nil { idleSince = Date() }
+
+            var timeout: Int32 = -1
+            if let idleExit, let idleSince, idling {
+                let left = idleExit - Date().timeIntervalSince(idleSince)
+                if left <= 0 {
+                    log("idle for \(Int(idleExit))s with no fan held — stopping. "
+                      + "launchd starts a new helper when the app next connects.")
+                    break
+                }
+                timeout = Int32((left * 1000).rounded(.up))
+            }
+
+            guard poll(&fds, nfds_t(fds.count), timeout) >= 0 || errno == EINTR else { break }
             if stopping { break }
 
             if fds[1].revents & Int16(POLLIN) != 0 {
@@ -486,7 +594,10 @@ public final class FanHelperServer {
         if clientFD >= 0 { dropClient(reason: "the helper is stopping") }
         else { log(release().message) }
         if listenFD >= 0 { close(listenFD); listenFD = -1 }
-        unlink(config.socketPath)
+        // Only if we made it. launchd's socket outlives this process on purpose:
+        // it is what the next connection arrives on, and removing it would make
+        // this the last helper that ever started.
+        if ownsSocketPath { unlink(config.socketPath) }
         for fd in wakePipe where fd >= 0 { close(fd) }
         wakePipe = [-1, -1]
         log("stopped")

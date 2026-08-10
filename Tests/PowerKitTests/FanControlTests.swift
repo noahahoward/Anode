@@ -755,6 +755,275 @@ final class FanHelperServerTests: XCTestCase {
     }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// MARK: On-demand daemon
+
+/// The installed daemon is started BY a connection and leaves again when it has
+/// nothing to do, so that nothing of this project runs as root until fan control
+/// is actually used. Two rules make that safe, and both are exercised here
+/// against a real socket and a real run loop rather than reasoned about:
+///
+///   * a socket this process did not create is never unlinked, because launchd
+///     is still holding it and it is how the NEXT helper gets started;
+///   * a helper holding a fan never idle-exits, because leaving runs the
+///     dead-man's switch and hands the fans back.
+///
+/// The second is the one with teeth. Getting it wrong means fans silently
+/// dropping back to automatic ninety seconds after the user set them.
+final class FanOnDemandTests: XCTestCase {
+
+    private var server: FanHelperServer!
+    private var thread: Thread!
+    private var link: FanControlLink!
+    private var socketPath: String!
+
+    override func tearDown() {
+        link?.disconnect()
+        server?.stop()
+        spin(until: { self.thread == nil || self.thread.isFinished }, timeout: 2,
+             failOnTimeout: false)
+        if let socketPath { unlink(socketPath) }
+        super.tearDown()
+    }
+
+    // ── Adopting a socket ───────────────────────────────────────────────────
+
+    /// A socket bound somewhere else is the dangerous one: it would work, and it
+    /// would serve fan control on a path the app is not talking to — or, worse,
+    /// on one something else is.
+    ///
+    /// There is deliberately no "refuses a socket that is not listening" test.
+    /// macOS cannot answer that question about a unix socket: `SO_ACCEPTCONN`
+    /// fails with ENOPROTOOPT on AF_UNIX both before and after `listen()`. An
+    /// earlier draft checked it anyway and refused every socket launchd offered,
+    /// which would have made fan control impossible for anyone who installed.
+    func testASocketBoundToAnotherPathIsRefused() throws {
+        let (server, _) = try makeServer()
+        let elsewhere = NSTemporaryDirectory() + "bs-other-\(UUID().uuidString.prefix(8)).sock"
+        let fd = try XCTUnwrap(makeListeningSocket(at: elsewhere))
+        defer { close(fd); unlink(elsewhere) }
+        XCTAssertThrowsError(try server.start(adopting: fd),
+                             "adopted a socket bound to a path this helper does not serve")
+    }
+
+    func testADatagramSocketIsRefused() throws {
+        let (server, _) = try makeServer()
+        let fd = socket(AF_UNIX, SOCK_DGRAM, 0)
+        defer { close(fd) }
+        XCTAssertThrowsError(try server.start(adopting: fd),
+                             "a datagram socket was adopted as a stream listener")
+    }
+
+    func testAClosedDescriptorIsRefused() throws {
+        let (server, _) = try makeServer()
+        XCTAssertThrowsError(try server.start(adopting: -1))
+    }
+
+    /// The session helper unlinks its socket on the way out. The daemon MUST NOT:
+    /// launchd created that path, is still listening on it, and uses it to start
+    /// the next helper. Unlinking it would make this the last one that ever ran.
+    func testStoppingDoesNotRemoveASocketLaunchdOwns() throws {
+        let (server, path) = try makeServer()
+        let listener = try XCTUnwrap(makeListeningSocket(at: path))
+        try server.start(adopting: listener)
+        let thread = Thread { server.run() }
+        thread.start()
+        self.server = server
+        self.thread = thread
+
+        server.stop()
+        spin(until: { thread.isFinished }, timeout: 2)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: path),
+                      "the daemon deleted launchd's socket — no later helper could start")
+    }
+
+    /// And the session helper still does clean up after itself, so the two
+    /// behaviours are pinned against each other rather than one being asserted
+    /// alone.
+    func testTheSessionHelperStillRemovesItsOwnSocket() throws {
+        let (server, path) = try makeServer()
+        try server.start()
+        let thread = Thread { server.run() }
+        thread.start()
+        self.server = server
+        self.thread = thread
+
+        server.stop()
+        spin(until: { thread.isFinished }, timeout: 2)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: path),
+                       "a session helper left its socket behind")
+    }
+
+    // ── Idle exit ───────────────────────────────────────────────────────────
+
+    /// With nothing connected and no fan held, the daemon leaves so launchd can
+    /// hold the socket again.
+    func testAnIdleDaemonStopsOnItsOwn() throws {
+        let (server, path) = try makeServer()
+        server.idleExit = 0.3
+        let listener = try XCTUnwrap(makeListeningSocket(at: path))
+        try server.start(adopting: listener)
+        let thread = Thread { server.run() }
+        thread.start()
+        self.server = server
+        self.thread = thread
+
+        spin(until: { thread.isFinished }, timeout: 3)
+        XCTAssertTrue(thread.isFinished, "an idle daemon stayed resident")
+    }
+
+    /// The happy path, stated so the pair reads honestly: when the client goes
+    /// away the dead-man's switch hands the fans back, and a helper holding
+    /// nothing is free to leave. This is the ordinary end of a session.
+    func testADaemonIdlesOutOnceTheDeadMansSwitchHasReleased() throws {
+        let hardware = FakeFans([0: .init(minRPM: 2317, maxRPM: 7826)])
+        guard let mine = ownCDHash() else {
+            throw XCTSkip("no code identity available in this test environment")
+        }
+        let (server, path) = try makeServer(hardware: hardware, pin: .exactBuild(cdhash: mine))
+        server.idleExit = 0.3
+        let listener = try XCTUnwrap(makeListeningSocket(at: path))
+        try server.start(adopting: listener)
+        let thread = Thread { server.run() }
+        thread.start()
+        self.server = server
+        self.thread = thread
+
+        link = FanControlLink(socketPath: path)
+        var status: FanControlLink.Status?
+        link.connect { status = $0 }
+        spin(until: { status != nil })
+        guard case .connected = status else { return XCTFail("did not connect: \(status as Any)") }
+        var reply: FanReply?
+        link.send(.setTarget(FanTarget(index: 0, rpm: 4000))) { reply = $0 }
+        spin(until: { reply != nil })
+        XCTAssertEqual(reply?.ok, true)
+        link.disconnect()
+
+        spin(until: { thread.isFinished }, timeout: 3)
+        XCTAssertFalse(server.hasWrittenATarget, "the fans were not handed back")
+    }
+
+    /// THE ONE THAT MATTERS. A release that FAILED leaves the helper still
+    /// holding fans it could not hand back — and that helper must not idle out.
+    /// Leaving would drop the only record of where those fans belong, stranding
+    /// them at a speed this app chose with nothing left that knows how to undo
+    /// it. It stays, so the next release attempt still has the memory.
+    func testADaemonThatCouldNotReleaseNeverIdlesOut() throws {
+        let hardware = FakeFans([0: .init(minRPM: 2317, maxRPM: 7826)])
+        guard let mine = ownCDHash() else {
+            throw XCTSkip("no code identity available in this test environment")
+        }
+        let (server, path) = try makeServer(hardware: hardware, pin: .exactBuild(cdhash: mine))
+        server.idleExit = 0.3
+        let listener = try XCTUnwrap(makeListeningSocket(at: path))
+        try server.start(adopting: listener)
+        let thread = Thread { server.run() }
+        thread.start()
+        self.server = server
+        self.thread = thread
+
+        // Take a fan, then go away — exactly what happens when the app is quit
+        // with a fan still held.
+        link = FanControlLink(socketPath: path)
+        var status: FanControlLink.Status?
+        link.connect { status = $0 }
+        spin(until: { status != nil })
+        guard case .connected = status else {
+            throw XCTSkip("no code identity available in this test environment")
+        }
+        var reply: FanReply?
+        link.send(.setTarget(FanTarget(index: 0, rpm: 4000))) { reply = $0 }
+        spin(until: { reply != nil })
+        XCTAssertEqual(reply?.ok, true)
+        XCTAssertTrue(server.hasWrittenATarget)
+
+        // The SMC stops accepting writes, so the release on disconnect fails and
+        // the holdings survive it.
+        hardware.refuseWrites = true
+        link.disconnect()
+        spin(until: { !server.hasWrittenATarget }, timeout: 0.5, failOnTimeout: false)
+        XCTAssertTrue(server.hasWrittenATarget,
+                      "the premise failed: the release succeeded, so nothing is held")
+
+        // Well past the timeout. It must still be there, still holding.
+        spin(until: { thread.isFinished }, timeout: 1.5, failOnTimeout: false)
+        XCTAssertFalse(thread.isFinished,
+                       "the daemon idled out still holding fans it could not release — "
+                     + "the record of where those fans belong went with it")
+        XCTAssertTrue(server.hasWrittenATarget)
+    }
+
+    /// A session helper has no idle timeout at all: it is stopped by the person
+    /// who started it and by nothing else.
+    func testASessionHelperNeverIdlesOut() throws {
+        let (server, path) = try makeServer()
+        XCTAssertNil(server.idleExit)
+        try server.start()
+        let thread = Thread { server.run() }
+        thread.start()
+        self.server = server
+        self.thread = thread
+        _ = path
+
+        spin(until: { thread.isFinished }, timeout: 0.8, failOnTimeout: false)
+        XCTAssertFalse(thread.isFinished, "a session helper stopped by itself")
+    }
+
+    // ── Harness ─────────────────────────────────────────────────────────────
+
+    private func makeServer(hardware: FakeFans = FakeFans([:]),
+                            pin: FanClientPin? = nil)
+    throws -> (FanHelperServer, String) {
+        let path = NSTemporaryDirectory() + "bs-ond-\(UUID().uuidString.prefix(8)).sock"
+        socketPath = path
+        let server = FanHelperServer(
+            hardware: hardware,
+            configuration: .init(socketPath: path,
+                                 ownerUID: getuid(),
+                                 pin: pin ?? .signingIdentifier(FanDaemon.clientSigningIdentifier)))
+        return (server, path)
+    }
+
+    /// The hash the server will compute for a connection from this process,
+    /// obtained the same way it obtains it. Lets a test actually connect, rather
+    /// than skipping — `xctest` has no `dev.noah.betterstats` signing identifier,
+    /// so the daemon's own pin would refuse it.
+    private func ownCDHash() -> String? {
+        var pair: [Int32] = [0, 0]
+        guard socketpair(AF_UNIX, SOCK_STREAM, 0, &pair) == 0 else { return nil }
+        defer { close(pair[0]); close(pair[1]) }
+        return FanPeer.of(socket: pair[0])?.cdhash
+    }
+
+    /// A socket bound and listening at `path`, standing in for the one launchd
+    /// creates from the plist.
+    private func makeListeningSocket(at path: String) -> Int32? {
+        guard var addr = FanSocketIO.address(path) else { return nil }
+        unlink(path)
+        let fd = socket(AF_UNIX, SOCK_STREAM, 0)
+        guard fd >= 0 else { return nil }
+        // Darwin.bind, explicitly: XCTestCase has an instance method of the same
+        // name and it wins the overload otherwise.
+        guard FanSocketIO.withAddress(&addr, { p, len in Darwin.bind(fd, p, len) }) == 0,
+              listen(fd, 4) == 0 else { close(fd); return nil }
+        return fd
+    }
+
+    private func spin(until done: () -> Bool, timeout: TimeInterval = 3,
+                      failOnTimeout: Bool = true,
+                      file: StaticString = #filePath, line: UInt = #line) {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if done() { return }
+            RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.01))
+        }
+        if failOnTimeout && !done() {
+            XCTFail("timed out after \(timeout)s", file: file, line: line)
+        }
+    }
+}
+
 /// Fan hardware that records instead of writing.
 ///
 /// Locked because the server touches it from its own thread while the test

@@ -143,13 +143,50 @@ final class FanDaemonPlanTests: XCTestCase {
         XCTAssertNotEqual(other.steps, try steps())
     }
 
-    /// RunAtLoad and KeepAlive are what "never prompts again" actually means:
-    /// launchd starts it at every boot and restarts it if it dies.
-    func testTheJobStartsAtBootAndStaysUp() throws {
+    /// THE JOB IS ON DEMAND. launchd holds the socket; nothing runs until the app
+    /// connects. RunAtLoad and KeepAlive would each undo that on their own —
+    /// RunAtLoad starts it at boot, KeepAlive restarts it the moment it idles out
+    /// — so their ABSENCE is the feature and is asserted, not just the presence
+    /// of `Sockets`.
+    func testTheJobIsLaunchedOnDemandAndNotResident() throws {
         let plist = try decodedPlist()
         XCTAssertEqual(plist["Label"] as? String, FanDaemon.label)
-        XCTAssertEqual(plist["RunAtLoad"] as? Bool, true)
-        XCTAssertEqual(plist["KeepAlive"] as? Bool, true)
+        XCTAssertNil(plist["RunAtLoad"], "the daemon would start at boot and stay resident")
+        XCTAssertNil(plist["KeepAlive"], "launchd would restart it every time it idled out")
+
+        let sockets = try XCTUnwrap(plist["Sockets"] as? [String: Any],
+                                    "no Sockets: launchd has nothing to listen on, so the "
+                                  + "daemon can never be started by a connection")
+        XCTAssertEqual(Array(sockets.keys), [FanDaemon.socketActivationName])
+    }
+
+    /// The socket launchd creates has to have the same owner and mode the helper
+    /// used to set for itself. This is the whole reason on-demand was safe to
+    /// adopt: it moves WHO creates the socket, not who may talk to it.
+    func testLaunchdIsAskedForTheSameSocketTheHelperUsedToMake() throws {
+        let plist = try decodedPlist()
+        let sockets = try XCTUnwrap(plist["Sockets"] as? [String: Any])
+        let entry = try XCTUnwrap(sockets[FanDaemon.socketActivationName] as? [String: Any])
+
+        XCTAssertEqual(entry["SockPathName"] as? String, FanSocket.path)
+        XCTAssertEqual(entry["SockPathOwner"] as? Int, 501,
+                       "the socket must belong to the user being served, not to root")
+        // 384 == 0o600. launchd.plist(5): "Property lists don't support octal,
+        // so please convert the value to decimal." Asserted in decimal so a
+        // change to octal-looking-but-wrong is caught.
+        XCTAssertEqual(entry["SockPathMode"] as? Int, 384,
+                       "the socket must be owner-only, as the session helper chmods it")
+    }
+
+    /// The plist and the code must agree on the socket's name, or the daemon
+    /// starts and finds nothing to serve. Read out of the generated plist rather
+    /// than restated, so there is one source of truth.
+    func testTheActivationNameMatchesWhatTheHelperWillAskFor() throws {
+        let plist = try decodedPlist()
+        let sockets = try XCTUnwrap(plist["Sockets"] as? [String: Any])
+        XCTAssertNotNil(sockets[FanDaemon.socketActivationName],
+                        "FanDaemon.activatedSocket() asks launchd for "
+                      + "\(FanDaemon.socketActivationName), which this plist does not offer")
     }
 
     /// No log files. A daemon that writes to StandardOutPath leaves a file the

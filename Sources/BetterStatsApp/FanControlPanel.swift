@@ -507,12 +507,17 @@ final class FanControlPanel: NSView {
           \(FanDaemon.helperPath)
           \(FanDaemon.plistPath)
 
-        What you are giving up, plainly: from then on a root process is running \
-        at all times that will set a fan speed on request from your user account, \
-        within the minimum and maximum the fan itself reports. BetterStats has no \
-        Apple Developer ID, so it cannot prove to that process which program is \
-        asking — anything running as you can. Another user on this Mac cannot, \
-        and neither can anything at all before you install this.
+        Nothing runs until you use fan control. launchd holds the socket and \
+        starts the helper when BetterStats asks for a fan; it stops again a \
+        minute or so after you are done. Not at boot, not while BetterStats is \
+        closed, not while fan control is off.
+
+        What you are giving up, plainly: while that helper is up it will set a \
+        fan speed on request from your user account, within the minimum and \
+        maximum the fan itself reports. BetterStats has no Apple Developer ID, \
+        so it cannot prove to that process which program is asking — anything \
+        running as you can. Another user on this Mac cannot, and neither can \
+        anything at all before you install this.
 
         The safer alternative is already on this strip: run the helper by hand \
         when you want it, and stop it with ⌃C. It costs one command each session \
