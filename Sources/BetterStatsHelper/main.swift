@@ -172,7 +172,16 @@ let ownerUID: uid_t = {
 let server = FanHelperServer(
     hardware: SMCFanHardware(),
     configuration: .init(ownerUID: ownerUID, pinnedCDHash: pinned),
-    log: { printErr("betterstats-helper: \($0)") })
+    // Both sinks, deliberately. stderr is what the user reads live in the
+    // Terminal window they started this in — but that window closes, and then a
+    // failure has left no trace. The unified log survives it, which is the only
+    // way to diagnose a path that cannot be exercised without root:
+    //
+    //     log show --predicate 'subsystem == "dev.noah.betterstats"' --last 10m
+    log: {
+        printErr("betterstats-helper: \($0)")
+        fanLog.info("helper: \($0, privacy: .public)")
+    })
 
 do {
     try server.start()
