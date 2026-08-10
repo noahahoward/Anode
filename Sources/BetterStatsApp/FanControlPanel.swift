@@ -306,12 +306,17 @@ final class FanControlPanel: NSView {
     /// Start the privileged half, in front of the user. See the note at the top
     /// of this file for why it is a Terminal window and not a password box.
     private func startHelper() {
-        // An installed daemon is already running and already owns the socket, so
-        // a second helper is not what is wrong here — something else is, and
-        // opening a Terminal window would only make a mess of a working install.
+        // With the daemon installed there is nothing to start by hand: launchd
+        // holds the socket and starts the helper when we connect to it. So
+        // connect, right now, rather than opening a Terminal window that would
+        // make a mess of a working install — and rather than waiting for the
+        // five-second reconnect tick, which is a long time to hold a slider and
+        // watch a fan not move.
         if installed {
             session.helperBecame(.absent)
-            return say(FanDaemon.summary(daemonState))
+            say(FanDaemon.summary(daemonState))
+            lastConnectAttempt = .distantPast
+            return attemptConnect()
         }
         let command = Self.startCommand()
         switch FanHelperLaunch.start(command: command) {
@@ -429,8 +434,19 @@ final class FanControlPanel: NSView {
         elevate(command: FanElevation.installCommand(helper: helper, ownerUID: getuid()),
                 prompt: FanElevation.installPrompt,
                 waiting: "Waiting for authorisation…",
-                done: "Fan control is installed. It will keep working after you "
-                    + "rebuild and after a reboot, with no more prompts.")
+                done: "Fan control is installed and ON. Drag a slider or press ❄︎ to "
+                    + "take a fan. It keeps working after you rebuild and after a "
+                    + "reboot, with no more prompts.",
+                onSuccess: { panel in
+                    // Installing IS the request for fan control. Nobody authorises a
+                    // root helper for a feature they then want left off, and leaving
+                    // it off here was a dead end: the strip said "Fan control is
+                    // installed", the setting stayed false, so `upkeep` never
+                    // connected, launchd was never contacted, the helper never
+                    // started, and the fans sat at 0 with nothing to say why.
+                    Settings.shared.fanControlEnabled = true
+                    panel.session.enabled = true
+                })
     }
 
     @objc private func uninstallTapped() {
@@ -453,7 +469,8 @@ final class FanControlPanel: NSView {
     /// frozen window. The link is dropped first: an uninstall stops the daemon
     /// under our open socket, and reconnecting from a stale fd would look to a
     /// surviving helper like a second client.
-    private func elevate(command: String, prompt: String, waiting: String, done: String) {
+    private func elevate(command: String, prompt: String, waiting: String, done: String,
+                         onSuccess: ((FanControlPanel) -> Void)? = nil) {
         elevating = true
         say(waiting)
         render()
@@ -468,6 +485,7 @@ final class FanControlPanel: NSView {
                 self.daemonVersion = nil
                 switch result {
                 case .done:
+                    onSuccess?(self)
                     self.say(done)
                 case .cancelled:
                     // A refused authorisation is an answer, not a failure. Nothing

@@ -258,9 +258,18 @@ public enum FanDaemon {
         case notInstalled
         /// Installed and answering.
         case running
-        /// The plist is there and nothing answered. launchd should have started
-        /// it, so this is a fault rather than a normal state.
-        case installedButSilent
+        /// Installed, with nothing running. THE ORDINARY RESTING STATE, not a
+        /// fault: the job is launched on demand, so launchd holds the socket and
+        /// starts nothing until the app takes a fan. This used to mean "launchd
+        /// should have started it and did not", which was true of the resident
+        /// daemon and is exactly backwards for this one — as a message telling
+        /// the user to reinstall a perfectly healthy install, it would have
+        /// fired every time the Fans tab was opened.
+        ///
+        /// A connection that is genuinely refused or fails is reported by the
+        /// link itself, verbatim, so nothing is lost by this no longer being an
+        /// alarm.
+        case installedAndIdle
         /// Answering, but built before this app was — the frozen-copy problem.
         case installedButOlder(daemonVersion: Int)
     }
@@ -273,7 +282,7 @@ public enum FanDaemon {
                              helloVersion: Int?,
                              appVersion: Int = protocolVersion) -> State {
         guard installed else { return .notInstalled }
-        guard answered else { return .installedButSilent }
+        guard answered else { return .installedAndIdle }
         let daemon = helloVersion ?? 1
         return daemon < appVersion ? .installedButOlder(daemonVersion: daemon) : .running
     }
@@ -303,9 +312,9 @@ public enum FanDaemon {
             return "The fan helper is not installed. Nothing of BetterStats runs as root."
         case .running:
             return "The fan helper is installed and running."
-        case .installedButSilent:
-            return "The fan helper is installed but is not answering. "
-                 + "Uninstalling and installing again replaces it."
+        case .installedAndIdle:
+            return "The fan helper is installed. Nothing runs until you take a fan — "
+                 + "launchd starts it on demand and it stops again when you are done."
         case .installedButOlder(let v):
             return "The installed fan helper is older than this build "
                  + "(version \(v), this app speaks \(protocolVersion)). "
