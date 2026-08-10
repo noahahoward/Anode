@@ -275,8 +275,74 @@ final class FanReleaseTests: XCTestCase {
 
     private func holdings(_ pairs: [(Int, Double?)]) -> FanHoldings {
         var h = FanHoldings()
-        for (i, previous) in pairs { h.took(i, previousTarget: previous) }
+        for (i, previous) in pairs {
+            h.took(i, previousTarget: previous, previousMode: SMCFanMode.automatic)
+        }
         return h
+    }
+
+    // ── The mode ────────────────────────────────────────────────────────────
+    //
+    // `F<n>md` is why fan control appeared to work and did nothing: a target
+    // written while the fan is on automatic is ignored, and `F<n>Tg` reads back
+    // as whatever the firmware wanted. On the machine that found this, both fans
+    // had just been asked for 7826 rpm and reported success, and read:
+    //
+    //     F0Tg = 2317 (its own minimum)   F1Tg = 2502   F0md = 0   F1md = 0
+
+    /// Release hands the fan itself back, not just its speed. A restored target
+    /// under a still-forced mode is this app holding the fan at the number the
+    /// firmware happened to want — which looks exactly like a release and is not
+    /// one, and would leave the fan ours until reboot.
+    func testReleaseHandsBackTheModeAndNotJustTheTarget() {
+        let hw = FakeFans([0: .init(minRPM: 2317, maxRPM: 7826)])
+        FanRelease.all(hardware: hw, holdings: holdings([(0, 0)]))
+        XCTAssertEqual(hw.modeWrites, [FakeFans.Write(index: 0, mode: SMCFanMode.automatic)])
+        XCTAssertEqual(hw.readMode(index: 0), SMCFanMode.automatic)
+    }
+
+    /// Target first, then mode. The other order puts the fan on automatic for an
+    /// instant while it is still carrying a speed this app chose.
+    func testReleaseRestoresTheTargetBeforeGivingTheFanBack() {
+        let hw = FakeFans([0: .init(minRPM: 2317, maxRPM: 7826)])
+        FanRelease.all(hardware: hw, holdings: holdings([(0, 1800)]))
+        XCTAssertEqual(hw.writes, [FakeFans.Write(index: 0, rpm: 1800),
+                                   FakeFans.Write(index: 0, mode: SMCFanMode.automatic)])
+    }
+
+    /// A fan whose original mode was never read still gets handed back. Leaving
+    /// it forced is the one outcome that is certainly wrong, so the fallback is
+    /// automatic rather than "do nothing".
+    func testAFanWithNoReadableOriginalModeStillGoesBackToAutomatic() {
+        let hw = FakeFans([0: .init(minRPM: 2317, maxRPM: 7826)])
+        var h = FanHoldings()
+        h.took(0, previousTarget: 0, previousMode: nil)
+        FanRelease.all(hardware: hw, holdings: h)
+        XCTAssertEqual(hw.modeWrites, [FakeFans.Write(index: 0, mode: SMCFanMode.automatic)])
+    }
+
+    /// A mode write that fails means the fan was NOT handed back, whatever the
+    /// target write did. Reporting success there would let the dead-man's switch
+    /// report a clean release while the fan stayed ours.
+    func testAFanWhoseModeWriteFailsCountsAsNotReleased() {
+        let hw = FakeFans([0: .init(minRPM: 2317, maxRPM: 7826)])
+        hw.refuseModeWrites = true
+        let result = FanRelease.all(hardware: hw, holdings: holdings([(0, 0)]))
+        XCTAssertFalse(result.ok)
+        XCTAssertEqual(result.refused, 1)
+        XCTAssertEqual(result.released, 0)
+    }
+
+    /// `--uninstall` has no session history, so it writes automatic to every
+    /// controllable fan — the mode as well as the target, because "an app that
+    /// pinned my fans has been deleted" is exactly the case where a fan left
+    /// forced has nothing coming to rescue it.
+    func testUninstallAlsoPutsEveryFanBackOnAutomaticMode() {
+        let hw = FakeFans([0: .init(minRPM: 2317, maxRPM: 7826),
+                           1: .init(minRPM: 2317, maxRPM: 7826)])
+        FanRelease.toAutomatic(hardware: hw, maxFanIndex: 4)
+        XCTAssertEqual(hw.modeWrites, [FakeFans.Write(index: 0, mode: SMCFanMode.automatic),
+                                       FakeFans.Write(index: 1, mode: SMCFanMode.automatic)])
     }
 
     /// Release puts back the target the fan had, and on this hardware that is
@@ -296,7 +362,7 @@ final class FanReleaseTests: XCTestCase {
         let result = FanRelease.all(hardware: hw, holdings: holdings([(0, 0), (1, 1800)]))
         XCTAssertTrue(result.ok)
         XCTAssertEqual(result.released, 2)
-        XCTAssertEqual(hw.writes, [FakeFans.Write(index: 0, rpm: 0),
+        XCTAssertEqual(hw.targetWrites, [FakeFans.Write(index: 0, rpm: 0),
                                    FakeFans.Write(index: 1, rpm: 1800)])
     }
 
@@ -306,7 +372,7 @@ final class FanReleaseTests: XCTestCase {
         let hw = FakeFans([0: .init(minRPM: 2317, maxRPM: 7826),
                            1: .init(minRPM: 2400, maxRPM: 7900)])
         let result = FanRelease.all(hardware: hw, holdings: holdings([(1, 1800)]))
-        XCTAssertEqual(hw.writes, [FakeFans.Write(index: 1, rpm: 1800)])
+        XCTAssertEqual(hw.targetWrites, [FakeFans.Write(index: 1, rpm: 1800)])
         XCTAssertEqual(result.released, 1)
     }
 
@@ -326,7 +392,7 @@ final class FanReleaseTests: XCTestCase {
     func testAHeldFanWithNoReadableOriginalGoesToTheAutomaticValue() {
         let hw = FakeFans([0: .init(minRPM: 2317, maxRPM: 7826)])
         let result = FanRelease.all(hardware: hw, holdings: holdings([(0, nil)]))
-        XCTAssertEqual(hw.writes, [FakeFans.Write(index: 0, rpm: FanRelease.noForcedTarget)])
+        XCTAssertEqual(hw.targetWrites, [FakeFans.Write(index: 0, rpm: FanRelease.noForcedTarget)])
         XCTAssertEqual(result.released, 1)
     }
 
@@ -336,7 +402,7 @@ final class FanReleaseTests: XCTestCase {
     func testAHeldFanIsReleasedEvenIfItsLimitsHaveStoppedReading() {
         let hw = FakeFans([:])   // no limits for any index
         let result = FanRelease.all(hardware: hw, holdings: holdings([(3, 1200)]))
-        XCTAssertEqual(hw.writes, [FakeFans.Write(index: 3, rpm: 1200)])
+        XCTAssertEqual(hw.targetWrites, [FakeFans.Write(index: 3, rpm: 1200)])
         XCTAssertEqual(result.released, 1)
     }
 
@@ -360,7 +426,7 @@ final class FanReleaseTests: XCTestCase {
                            1: .init(minRPM: 2400, maxRPM: 7900)])
         let result = FanRelease.toAutomatic(hardware: hw)
         XCTAssertTrue(result.ok)
-        XCTAssertEqual(hw.writes, [FakeFans.Write(index: 0, rpm: 0),
+        XCTAssertEqual(hw.targetWrites, [FakeFans.Write(index: 0, rpm: 0),
                                    FakeFans.Write(index: 1, rpm: 0)])
         XCTAssertTrue(result.message.contains("automatic"), result.message)
     }
@@ -368,7 +434,7 @@ final class FanReleaseTests: XCTestCase {
     func testUninstallSkipsFansWithNoReadableLimits() {
         let hw = FakeFans([3: .init(minRPM: 1000, maxRPM: 5000)])
         XCTAssertEqual(FanRelease.toAutomatic(hardware: hw).released, 1)
-        XCTAssertEqual(hw.writes, [FakeFans.Write(index: 3, rpm: 0)])
+        XCTAssertEqual(hw.targetWrites, [FakeFans.Write(index: 3, rpm: 0)])
     }
 }
 
@@ -530,6 +596,91 @@ final class FanHelperServerTests: XCTestCase {
         XCTAssertEqual(status, .notRunning)
     }
 
+    // ── Taking the fan ──────────────────────────────────────────────────────
+
+    /// THE ORDER. Mode first, then target — the other way round writes a speed
+    /// into a fan the firmware is still driving, which is precisely the bug that
+    /// made this feature report "fan set to 7826 rpm" while both fans sat at
+    /// their own minimum.
+    func testTakingAFanWritesTheModeBeforeTheTarget() throws {
+        let hw = twoFans()
+        hw.seedMode(0, SMCFanMode.automatic)
+        try start(hw)
+        connect()
+        XCTAssertTrue(send(.setTarget(FanTarget(index: 0, rpm: 4000))).ok)
+
+        XCTAssertEqual(hw.writes, [FakeFans.Write(index: 0, mode: SMCFanMode.forced),
+                                   FakeFans.Write(index: 0, rpm: 4000)])
+    }
+
+    /// Only on the first write per fan. Dragging a slider is many requests, and
+    /// re-asserting the mode on each one gives the firmware more chances to
+    /// disagree mid-gesture for no gain.
+    func testTheModeIsTakenOnceNotOnEveryDrag() throws {
+        let hw = twoFans()
+        hw.seedMode(0, SMCFanMode.automatic)
+        try start(hw)
+        connect()
+        XCTAssertTrue(send(.setTarget(FanTarget(index: 0, rpm: 3000))).ok)
+        XCTAssertTrue(send(.setTarget(FanTarget(index: 0, rpm: 4000))).ok)
+        XCTAssertTrue(send(.setTarget(FanTarget(index: 0, rpm: 5000))).ok)
+
+        XCTAssertEqual(hw.modeWrites, [FakeFans.Write(index: 0, mode: SMCFanMode.forced)],
+                       "the mode was re-taken on a later drag")
+        XCTAssertEqual(hw.targetWrites.count, 3)
+    }
+
+    /// A fan whose mode cannot be read is left alone rather than guessed at.
+    /// Unreadable is not automatic, and forcing a fan whose mode this code does
+    /// not understand is how you end up unable to hand it back.
+    func testAFanWithAnUnreadableModeIsNotForced() throws {
+        let hw = twoFans()            // no seedMode: readMode returns nil
+        try start(hw)
+        connect()
+        XCTAssertTrue(send(.setTarget(FanTarget(index: 0, rpm: 4000))).ok)
+        XCTAssertTrue(hw.modeWrites.isEmpty, "forced a fan whose mode could not be read")
+    }
+
+    /// If the SMC will not hand the fan over, say so — and write no target. A
+    /// target under automatic is ignored, so reporting success there is the exact
+    /// lie this whole change exists to stop telling.
+    func testAFanTheSMCWillNotHandOverIsReportedAndNotWritten() throws {
+        let hw = twoFans()
+        hw.seedMode(0, SMCFanMode.automatic)
+        hw.refuseModeWrites = true
+        try start(hw)
+        connect()
+        let reply = send(.setTarget(FanTarget(index: 0, rpm: 4000)))
+        XCTAssertFalse(reply.ok)
+        XCTAssertTrue(reply.message.contains("automatic"), reply.message)
+        XCTAssertTrue(hw.targetWrites.isEmpty, "wrote a target the firmware would ignore")
+    }
+
+    /// A fan already in some other mode is left in it. The helper takes control
+    /// of fans the firmware is driving; a fan something else has already taken is
+    /// not ours to reinterpret.
+    func testAFanAlreadyOutOfAutomaticIsNotForcedAgain() throws {
+        let hw = twoFans()
+        hw.seedMode(0, 2)             // a mode this code has never seen
+        try start(hw)
+        connect()
+        XCTAssertTrue(send(.setTarget(FanTarget(index: 0, rpm: 4000))).ok)
+        XCTAssertTrue(hw.modeWrites.isEmpty)
+        XCTAssertEqual(hw.readMode(index: 0), 2, "someone else's mode was overwritten")
+    }
+
+    /// And its mode goes back to what it was, not to automatic.
+    func testAFanIsPutBackIntoTheModeItWasFoundIn() throws {
+        let hw = twoFans()
+        hw.seedMode(0, 2)
+        try start(hw)
+        connect()
+        XCTAssertTrue(send(.setTarget(FanTarget(index: 0, rpm: 4000))).ok)
+        hw.clear()
+        XCTAssertTrue(send(.releaseAll).ok)
+        XCTAssertEqual(hw.modeWrites, [FakeFans.Write(index: 0, mode: 2)])
+    }
+
     // ── Is it still there? ──────────────────────────────────────────────────
 
     /// The liveness check has to be free of consequences, because it runs on a
@@ -645,7 +796,7 @@ final class FanHelperServerTests: XCTestCase {
         hardware.clear()
 
         XCTAssertTrue(send(.releaseAll).ok)
-        XCTAssertEqual(hardware.writes, [FakeFans.Write(index: 0, rpm: 0)],
+        XCTAssertEqual(hardware.targetWrites, [FakeFans.Write(index: 0, rpm: 0)],
                        "fan 1 was never taken and must not be written to")
     }
 
@@ -663,7 +814,7 @@ final class FanHelperServerTests: XCTestCase {
         link.disconnect()   // exactly what quitting and crashing both do
 
         spin(until: { !self.hardware.writes.isEmpty })
-        XCTAssertEqual(hardware.writes, [FakeFans.Write(index: 0, rpm: 0)])
+        XCTAssertEqual(hardware.targetWrites, [FakeFans.Write(index: 0, rpm: 0)])
         XCTAssertFalse(server.hasWrittenATarget)
     }
 
@@ -678,7 +829,7 @@ final class FanHelperServerTests: XCTestCase {
 
         server.stop()
         spin(until: { !self.hardware.writes.isEmpty })
-        XCTAssertEqual(hardware.writes, [FakeFans.Write(index: 1, rpm: 1750)],
+        XCTAssertEqual(hardware.targetWrites, [FakeFans.Write(index: 1, rpm: 1750)],
                        "the fan goes back to what it was doing, not to a number "
                      + "this code chose")
     }
@@ -698,7 +849,7 @@ final class FanHelperServerTests: XCTestCase {
         hardware.clear()
 
         XCTAssertTrue(send(.releaseAll).ok)
-        XCTAssertEqual(hardware.writes, [FakeFans.Write(index: 0, rpm: 0),
+        XCTAssertEqual(hardware.targetWrites, [FakeFans.Write(index: 0, rpm: 0),
                                          FakeFans.Write(index: 1, rpm: 1750)])
     }
 
@@ -718,7 +869,7 @@ final class FanHelperServerTests: XCTestCase {
         hardware.refuseWrites = false
         hardware.clear()
         XCTAssertTrue(send(.releaseAll).ok)
-        XCTAssertEqual(hardware.writes, [FakeFans.Write(index: 0, rpm: 0)])
+        XCTAssertEqual(hardware.targetWrites, [FakeFans.Write(index: 0, rpm: 0)])
         XCTAssertFalse(server.hasWrittenATarget)
     }
 
@@ -1030,24 +1181,54 @@ final class FanOnDemandTests: XCTestCase {
 /// inspects it from the main one.
 final class FakeFans: FanHardware {
 
+    /// One write, of either kind. `rpm` is a target write and `mode` is a mode
+    /// write; exactly one is set. Both live in one ordered list so a test can
+    /// assert the ORDER between them, which is the property the firmware cares
+    /// about.
     struct Write: Equatable {
         let index: Int
-        let rpm: Double
+        var rpm: Double?
+        var mode: Double?
+
+        init(index: Int, rpm: Double) { self.index = index; self.rpm = rpm }
+        init(index: Int, mode: Double) { self.index = index; self.mode = mode }
     }
 
     private let lock = NSLock()
     private var limitsByIndex: [Int: FanPolicy.Limits]
     private var recorded: [Write] = []
     private var refusing = false
+    private var refusingMode = false
     /// Each fan's current target. A fan nobody has seeded reads nil, which is the
     /// "its original could not be read" case rather than "it is at zero".
     private var current: [Int: Double] = [:]
+    /// Each fan's control mode. nil is "unreadable", which the helper must treat
+    /// as "leave this fan alone" rather than as automatic.
+    private var modes: [Int: Double] = [:]
 
     init(_ limits: [Int: FanPolicy.Limits]) { limitsByIndex = limits }
 
+    /// Every write in order, targets and modes together. Use this to assert
+    /// ORDER; use `targetWrites` to assert which fan was set to what.
     var writes: [Write] {
         lock.lock(); defer { lock.unlock() }
         return recorded
+    }
+
+    /// Target writes only.
+    ///
+    /// Most tests here are about which fan was set to which rpm, and taking the
+    /// mode is a separate fact with its own tests. Without this split, adding the
+    /// mode write turned eleven passing assertions red without a single one of
+    /// them being about the thing that changed.
+    var targetWrites: [Write] {
+        lock.lock(); defer { lock.unlock() }
+        return recorded.filter { $0.rpm != nil }
+    }
+
+    var modeWrites: [Write] {
+        lock.lock(); defer { lock.unlock() }
+        return recorded.filter { $0.mode != nil }
     }
 
     var refuseWrites: Bool {
@@ -1087,6 +1268,36 @@ final class FakeFans: FanHardware {
 
     func seedTarget(_ index: Int, _ rpm: Double) {
         lock.lock(); current[index] = rpm; lock.unlock()
+    }
+
+    // ── Mode ────────────────────────────────────────────────────────────────
+    //
+    // Recorded in the SAME list as the targets, not a second one, because the
+    // property that matters is ORDER: the mode has to be taken before the target
+    // or the firmware ignores the target, and handed back after it or the fan is
+    // briefly on automatic carrying our speed. Two separate lists cannot state
+    // that, and it is the thing worth asserting.
+
+    func readMode(index: Int) -> Double? {
+        lock.lock(); defer { lock.unlock() }
+        return modes[index]
+    }
+
+    func writeMode(index: Int, value: Double) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        guard !refusingMode else { return false }
+        recorded.append(Write(index: index, mode: value))
+        modes[index] = value
+        return true
+    }
+
+    func seedMode(_ index: Int, _ value: Double) {
+        lock.lock(); modes[index] = value; lock.unlock()
+    }
+
+    var refuseModeWrites: Bool {
+        get { lock.lock(); defer { lock.unlock() }; return refusingMode }
+        set { lock.lock(); refusingMode = newValue; lock.unlock() }
     }
 }
 
