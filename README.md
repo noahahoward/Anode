@@ -39,8 +39,25 @@ window), and **minutes of runtime cost**. Watts are measured internally and neve
 ```
 
 Rows sum to a **measured** total and the residual is **printed, never redistributed**.
-On an idle machine the unattributable share is large — often 85–95% — because display
-backlight, radios and root-owned processes dominate. Showing that honestly is the point.
+Showing that honestly is the point.
+
+The unidentified remainder started at 85–95% and is now, measured across 494
+windows on the development machine, **1.94 W median (2.7 %/hr)** — about a third
+of an idle machine. Naming display, memory, storage, USB and the root-owned
+processes is what moved it.
+
+**It is a floor, not a share, and that is the thing worth understanding.** Under
+an all-core load the whole-system total rose 10.7 W while the remainder rose
+0.4 W; at the busiest moments it reaches zero. So it is roughly constant power —
+~38% of an idle machine and ~0% of a busy one — and it looks dominant at idle
+precisely because everything else has been driven down around it.
+
+What is left has been attacked and holds: the display rail is complete to 3%
+(of 39 rails, only `PDBR` tracks brightness); the remainder *falls* as CPU rises
+(r = −0.33), so it is not unmeasured CPU; ~0.3 W is converter loss, which is
+inside the measured total but in no load-side rail and therefore irreducible by
+construction. Two independent estimates of the floor agree: 2.34 W by regression
+across load, 2.25 W from the brightness-sweep intercept.
 
 ## Build
 
