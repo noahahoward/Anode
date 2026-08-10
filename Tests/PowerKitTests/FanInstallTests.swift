@@ -507,12 +507,21 @@ final class FanDaemonStateTests: XCTestCase {
                        .running)
     }
 
-    /// launchd should have started it. Silence is a fault, not a state to wait
-    /// in, and the strip says what to do about it.
-    func testAnInstalledDaemonThatSaysNothingIsAFault() {
+    /// Installed and silent is the ORDINARY resting state of an on-demand job,
+    /// not a fault: launchd holds the socket and starts nothing until the app
+    /// takes a fan. The message must not send the user off to reinstall a
+    /// healthy install — it would have said that every time the Fans tab opened.
+    func testAnInstalledDaemonThatSaysNothingIsIdleAndNotAFault() {
         XCTAssertEqual(FanDaemon.state(installed: true, answered: false, helloVersion: nil),
-                       .installedButSilent)
-        XCTAssertTrue(FanDaemon.summary(.installedButSilent).contains("not answering"))
+                       .installedAndIdle)
+        let summary = FanDaemon.summary(.installedAndIdle)
+        XCTAssertTrue(summary.contains("on demand"), summary)
+        XCTAssertFalse(summary.localizedCaseInsensitiveContains("not answering"), summary)
+        // The one thing it must never do is send someone to repair a healthy
+        // install. Both phrasings the old message used are named, rather than a
+        // bare "install", which matches the word "installed" the sentence needs.
+        XCTAssertFalse(summary.localizedCaseInsensitiveContains("reinstall"), summary)
+        XCTAssertFalse(summary.localizedCaseInsensitiveContains("installing again"), summary)
     }
 
     /// The frozen-copy problem, which this design creates and therefore has to
