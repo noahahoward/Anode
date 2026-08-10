@@ -166,7 +166,7 @@ final class GlanceCardView: NSView {
                 // like it was heading somewhere it was never going to arrive.
                 // Marked estimated for the same reason time-to-empty is: the charge
                 // current is measured, the time it will still be flowing is not.
-                sourceLabel: chargingLabel(est),
+                sourceLabel: chargingLabel(est, gaugeRatio: Self.gaugeRatio(s, st)),
                 rows: [
                     ("Charge", String(format: "+%.1f %%/hr", s.batteryRate_pctHr ?? 0), nil),
                     ("Input", String(format: "%.1f W", chargeWatts(s)), nil),
@@ -179,7 +179,16 @@ final class GlanceCardView: NSView {
             // "Held at 80%" is a different fact from "not charging": the machine
             // has finished, at the level it was asked to finish at. Saying only
             // "not charging" at 80% reads as a fault.
-            let held = s.isHeldAtChargeLimit ? s.chargeTarget?.percent : nil
+            // The GAUGE percent, not the target's.
+            //
+            // `ChargeTarget.Level.percent` is on the mAh basis, which is right for
+            // the arithmetic and wrong for this sentence: at an 80% limit it reads
+            // 76, and the card prints "76% limit" three inches under a charge
+            // reading of "80%". Two bases in one card is the defect this project
+            // keeps finding, and here it needs no conversion to fix — HELD means
+            // the machine has stopped AT the limit, so the level being shown right
+            // now IS the limit, in whatever basis it is being shown in.
+            let held = s.isHeldAtChargeLimit ? Double(st.percent) : nil
             return Model(
                 source: .ac,
                 headline: "On AC",
@@ -239,11 +248,30 @@ final class GlanceCardView: NSView {
     /// the final taper from two recorded charge sessions; a fit rendered without a
     /// word saying so is a prediction wearing a measurement's clothes, which is
     /// the defect the time-to-empty marker exists to prevent.
-    static func chargingLabel(_ e: ChargeTarget.Estimate?) -> String {
+    /// `gaugeRatio` converts the target from the mAh basis it is learned on to the
+    /// basis the percentage BESIDE it is printed in.
+    ///
+    /// Both are "charge over capacity" and differ only in which capacity fields
+    /// they read, so the conversion is a single ratio taken at the current level:
+    /// measured here, an 80% limit is 76% on the mAh basis, and printing the raw
+    /// 76 put two bases in one card — "charging to 76%" directly under "80%".
+    ///
+    /// Applied to the LABEL only. Every projection underneath still runs on the
+    /// mAh basis, which is the accurate one and the reason it is used at all.
+    static func chargingLabel(_ e: ChargeTarget.Estimate?, gaugeRatio: Double) -> String {
         guard let e else { return "charging" }
-        return e.target.isLearnedLimit
-            ? String(format: "charging to %.0f%% · estimated", e.target.percent)
-            : "charging to full · estimated"
+        guard e.target.isLearnedLimit else { return "charging to full · estimated" }
+        let shown = (e.target.percent * gaugeRatio).rounded()
+        return String(format: "charging to %.0f%% · estimated", shown)
+    }
+
+    /// Gauge percent over mAh percent at this instant. 1.0 when either is
+    /// unavailable — an unconverted number is better than a number multiplied by
+    /// something meaningless.
+    static func gaugeRatio(_ s: PowerMonitor.Snapshot, _ st: Battery.State) -> Double {
+        let mAh = s.scale.chargePercent(st)
+        guard mAh > 1, st.percent > 0 else { return 1 }
+        return Double(st.percent) / mAh
     }
 
     /// Where the headline came from, in the user's words rather than the enum's.
