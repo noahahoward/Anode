@@ -108,8 +108,10 @@ There are two ways to run the privileged half. The session helper below is the
 default and the stronger of the two. The install is described further down,
 together with what it costs.
 
-To use the session helper, open the Fans tab, click **Turn On Fan Control…**, and
-run the command it shows you in Terminal:
+To use the session helper, open the Fans tab and drag a fan's slider (or press
+❄︎). The sliders are live readings until you take one, and taking one is how you
+say you want control — it asks you to confirm, then shows you a command to run in
+Terminal:
 
 ```sh
 sudo ~/Applications/BetterStats.app/Contents/MacOS/BetterStatsHelper
