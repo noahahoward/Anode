@@ -174,10 +174,25 @@ signal whether that was deliberate. It is deliberate here:
   enumerates every process. Better minimum: **do not distribute a binary** — ship
   source and `build-app.sh`, since a locally built bundle is never quarantined.
 - **38** — no update mechanism, so any bug shipped to a friend is permanent.
-- **39** — the root helper accepts any process whose path ends in the right
-  suffix; `/tmp/BetterStats.app/Contents/MacOS/BetterStatsApp` satisfies it
-  *(2 of 2)*. Latent only because nothing installs or connects to the helper yet.
-  **Gates fan control**: it must land before the first commit that ships either.
-  And note it is not fully fixable while ad-hoc signed — a designated-requirement
-  check is satisfied by anyone who re-signs ad-hoc with the same identifier, so
-  this genuinely depends on 37.
+- **39** — ~~the root helper accepts any process whose path ends in the right
+  suffix~~ **CLOSED**, and not the way this entry expected. The path check is
+  gone, but so is the daemon: nothing is installed, nothing runs as root unless
+  the user starts it, and the helper is a program they run with `sudo` and stop
+  with ⌃C. Connections are checked on the caller's euid (`getpeereid`) and on a
+  cdhash taken from the peer's audit token, pinned **at helper startup** from the
+  app bundle on disk.
+
+  The earlier plan — pin the cdhash in a root-owned file at install time — was
+  abandoned for an operational reason rather than a cryptographic one. The app is
+  distributed as source, so an ad-hoc cdhash changes on every `./build-app.sh`;
+  the pin would go stale every rebuild and the repair would be another admin
+  prompt, which trains reflexive `sudo` and is a worse hole than the one the pin
+  closes. A pin that lives and dies with the helper process cannot go stale.
+
+  This also **removes the dependency on 37** that this entry claimed. A
+  designated-requirement check is indeed satisfiable by anyone who re-signs
+  ad-hoc under the same identifier — but a cdhash is a hash of the code, so a
+  different binary produces a different hash whatever it calls itself. The
+  remaining honest limit is that nothing verifies the *helper* before it runs as
+  root; the user does, by reading the path they type. See the trust model at the
+  top of `Sources/PowerKit/FanLink.swift`.

@@ -845,6 +845,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
     func openFromWidget(_ metric: MetricID?) {
         guard let metric,
               let lens = Self.lens(forWidget: metric),
+              // A fan-speed widget on a machine whose Fans tab is hidden names a
+              // destination that is not there. Opening the window is what a
+              // widget with no destination already does, and it beats navigating
+              // to a tab the rail cannot show the user how to leave.
+              SidebarView.Lens.displayOrder.contains(lens),
               lens != main.sidebar.selected else {
             main.toggle()
             return
@@ -964,6 +969,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ s: NSApplication) -> Bool { false }
+
+    /// Hand the fans back on the way out.
+    ///
+    /// This closes the socket rather than sending a goodbye, which means quitting
+    /// and crashing take the identical path: the helper releases the fans when
+    /// its client disappears either way. The disaster path is then the one
+    /// exercised every time the app is closed normally, instead of the one nobody
+    /// runs until it matters. AppKit does not call this for a crash or a SIGKILL,
+    /// which is exactly why the release cannot live only here.
+    func applicationWillTerminate(_ note: Notification) {
+        fansPane.teardown()
+    }
 
     /// Closing the window leaves the app alive in the menu bar, so activating it
     /// again — Dock icon, Finder, ⌘-Tab — must bring the window back. Without this

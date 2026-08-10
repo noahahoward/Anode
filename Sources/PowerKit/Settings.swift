@@ -37,6 +37,7 @@ public final class Settings {
         public static let startInMenuBarOnly = "startInMenuBarOnly"
         public static let batteryLogging = "batteryLogging"
         public static let menuBarWidgetsEnabled = "menuBarWidgetsEnabled"
+        public static let fanControlEnabled = "fanControlEnabled"
         /// Wildcard — an observer registered on this key fires for every change.
         public static let any = "*"
     }
@@ -69,6 +70,14 @@ public final class Settings {
         /// ON. Matches what every build so far has done, and the widgets are the
         /// app's front door once the window is closed.
         static let menuBarWidgetsEnabled = true
+        /// OFF, and it is the one setting in this file that must stay that way.
+        ///
+        /// Turning it on is a decision to let a root process on this machine
+        /// write to the fans while you run it — see the trust model at the top of
+        /// `FanLink.swift`. A default of true would make that decision for
+        /// someone who never read it, and `FanMode.native`'s contract is that a
+        /// user who has not opted in is on a machine this code has never touched.
+        static let fanControlEnabled = false
         /// Matches what the status item shows today: smoothed drain + runtime.
         // Must be real, currently-registered metric IDs. Stale ones are invisible
         // in the picker and get preserved forever as "unknown" bindings.
@@ -91,7 +100,8 @@ public final class Settings {
     private struct Values: Equatable {
         var sampleInterval, powerWindowHours, historyRetentionDays,
             minimumDisplayPercentPerHour: Double
-        var showDaemons, startInMenuBarOnly, batteryLogging, menuBarWidgetsEnabled: Bool
+        var showDaemons, startInMenuBarOnly, batteryLogging, menuBarWidgetsEnabled,
+            fanControlEnabled: Bool
         var menuBarWidgets: [String]
     }
     private var snapshot: Values
@@ -185,6 +195,18 @@ public final class Settings {
                                 Default.menuBarWidgetsEnabled) }
         set { writeBool(Key.menuBarWidgetsEnabled, \.menuBarWidgetsEnabled, newValue,
                         Default.menuBarWidgetsEnabled) }
+    }
+
+    /// Whether the app will talk to a fan helper at all.
+    ///
+    /// Off means the app never opens the helper's socket and never asks for a
+    /// write — not "asks and is refused". A user who leaves this alone is on a
+    /// machine BetterStats has never written to, which is `FanMode.native`'s
+    /// whole contract.
+    public var fanControlEnabled: Bool {
+        get { Settings.readBool(defaults, Key.fanControlEnabled, Default.fanControlEnabled) }
+        set { writeBool(Key.fanControlEnabled, \.fanControlEnabled, newValue,
+                        Default.fanControlEnabled) }
     }
 
     /// Floor below which rows display as "<0.01" instead of a meaningless digit.
@@ -375,6 +397,7 @@ public final class Settings {
         if old.menuBarWidgetsEnabled != now.menuBarWidgetsEnabled {
             notify(Key.menuBarWidgetsEnabled)
         }
+        if old.fanControlEnabled != now.fanControlEnabled { notify(Key.fanControlEnabled) }
         if old.menuBarWidgets != now.menuBarWidgets { notify(Key.menuBarWidgets) }
     }
 
@@ -455,6 +478,8 @@ public final class Settings {
                batteryLogging: readBool(d, Key.batteryLogging, Default.batteryLogging),
                menuBarWidgetsEnabled: readBool(d, Key.menuBarWidgetsEnabled,
                                                Default.menuBarWidgetsEnabled),
+               fanControlEnabled: readBool(d, Key.fanControlEnabled,
+                                           Default.fanControlEnabled),
                menuBarWidgets: readWidgets(d, Default.menuBarWidgets))
     }
 }

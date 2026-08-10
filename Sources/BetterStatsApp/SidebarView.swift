@@ -59,15 +59,42 @@ final class SidebarView: NSView {
             }
         }
 
+        /// Whether this machine has anything to put in this tab.
+        ///
+        /// Only Fans can answer no, and only on a machine the SMC says has no
+        /// fans — a MacBook Air, or a fanless desktop. `FanPresence` is where the
+        /// evidence rule lives: a machine whose SMC could not be read is
+        /// `.unknown` and keeps the tab, because "not measured" has never been
+        /// allowed to mean "none" anywhere else in this app either.
+        ///
+        /// Exhaustive rather than defaulted, so a lens added later has to say
+        /// whether it is conditional instead of inheriting an answer.
+        func isOffered(whenFans fans: FanPresence.State) -> Bool {
+            switch self {
+            case .processes, .resources, .network, .sensors: return true
+            case .fans: return FanPresence.showsFanTab(fans)
+            }
+        }
+
         /// The rail top to bottom: the per-process tab, then the whole-machine
         /// ones — the same two groups `build()` draws, split by the same predicate.
         ///
+        /// Takes the machine as an argument so both answers can be tested on one
+        /// Mac; `displayOrder` below is this applied to the Mac we are on.
+        static func order(whenFans fans: FanPresence.State) -> [Lens] {
+            let offered = allCases.filter { $0.isOffered(whenFans: fans) }
+            return offered.filter(\.isPerProcess) + offered.filter { !$0.isPerProcess }
+        }
+
         /// `build()` and the View menu both read this, so a lens added to
-        /// `allCases` reaches the rail and ⌘1…⌘5 together or not at all. The menu
-        /// used to be the kind of thing that silently desynced from the sidebar;
-        /// there is now no second list to forget.
-        static let displayOrder: [Lens] =
-            allCases.filter(\.isPerProcess) + allCases.filter { !$0.isPerProcess }
+        /// `allCases` reaches the rail and ⌘1…⌘5 together or not at all, and a
+        /// lens this machine cannot show is missing from both. The menu used to be
+        /// the kind of thing that silently desynced from the sidebar; there is
+        /// still no second list to forget.
+        ///
+        /// Resolved once, at first use: `FanPresence.onThisMac` reads the SMC and
+        /// a Mac does not grow a fan while it is running.
+        static let displayOrder: [Lens] = order(whenFans: FanPresence.onThisMac)
 
         /// The metric whose current value is appended to the tooltip.
         ///
@@ -128,12 +155,32 @@ final class SidebarView: NSView {
 
     private let stack = NSStackView()
     private var rows: [Lens: RowView] = [:]
+    /// The tabs this rail draws. Normally `Lens.displayOrder`, which is what this
+    /// machine offers.
+    private let lenses: [Lens]
 
     override init(frame: NSRect) {
+        lenses = Lens.displayOrder
         super.init(frame: frame)
         build()
     }
-    required init?(coder: NSCoder) { super.init(coder: coder); build() }
+
+    /// A rail for a named set of tabs.
+    ///
+    /// Exists so the fanless rail can be built and inspected on a machine that
+    /// has fans — otherwise the only way to test that hiding a tab actually works
+    /// is to own a MacBook Air.
+    init(frame: NSRect, lenses: [Lens]) {
+        self.lenses = lenses
+        super.init(frame: frame)
+        build()
+    }
+
+    required init?(coder: NSCoder) {
+        lenses = Lens.displayOrder
+        super.init(coder: coder)
+        build()
+    }
 
     override var isFlipped: Bool { true }
     override func draw(_ dirtyRect: NSRect) {
@@ -168,7 +215,7 @@ final class SidebarView: NSView {
         // than by a caption — "PER PROCESS" does not fit beside a 52 pt icon well,
         // and the split is still worth showing.
         var previousWasPerProcess = true
-        for (index, lens) in Lens.displayOrder.enumerated() {
+        for (index, lens) in lenses.enumerated() {
             if index > 0, lens.isPerProcess != previousWasPerProcess {
                 stack.addArrangedSubview(divider())
                 previousWasPerProcess = lens.isPerProcess
@@ -211,7 +258,12 @@ final class SidebarView: NSView {
     }
 
     func select(_ lens: Lens) {
-        guard lens != selected else { return }
+        // A lens this machine does not offer has no row, so selecting it would
+        // light nothing while the content changed underneath — the rail and the
+        // pane would disagree with no way to see which was right. The callers
+        // that could reach one (a menu bar widget bound to a fan speed on a
+        // fanless Mac) handle the refusal themselves; see `openFromWidget`.
+        guard lens != selected, rows[lens] != nil else { return }
         rows[selected]?.isSelected = false
         selected = lens
         rows[lens]?.isSelected = true
