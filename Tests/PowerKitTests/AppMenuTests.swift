@@ -1,6 +1,7 @@
 import AppKit
 import XCTest
 @testable import BetterStatsApp
+@testable import PowerKit
 
 // The View menu numbers the sidebar. Nothing at runtime notices if the two lists
 // disagree — the menu would simply send ⌘3 to the wrong lens — so the agreement
@@ -20,10 +21,27 @@ private let appKitForTests: NSApplication = {
 
 final class ViewMenuOrderTests: XCTestCase {
 
-    func testDisplayOrderContainsEveryLensExactlyOnce() {
+    /// No duplicates, nothing invented, and nothing dropped that this machine can
+    /// show. It is no longer "every lens": Fans is conditional on the machine
+    /// having any, so the invariant is a subset relation plus an exact count.
+    func testDisplayOrderListsEachOfferedLensExactlyOnce() {
         let order = SidebarView.Lens.displayOrder
-        XCTAssertEqual(order.count, SidebarView.Lens.allCases.count)
-        XCTAssertEqual(Set(order), Set(SidebarView.Lens.allCases))
+        XCTAssertEqual(Set(order).count, order.count, "a lens appears twice in the rail")
+        XCTAssertTrue(Set(order).isSubset(of: Set(SidebarView.Lens.allCases)))
+        XCTAssertEqual(order.count,
+                       SidebarView.Lens.allCases
+                           .filter { $0.isOffered(whenFans: FanPresence.onThisMac) }.count)
+    }
+
+    /// Every tab except Fans is unconditional, on every machine. A tab that
+    /// quietly became conditional would be a feature disappearing with no
+    /// evidence behind it.
+    func testOnlyTheFansTabIsEverHidden() {
+        for state: FanPresence.State in [.fanless, .unknown, .fans(1), .fans(2)] {
+            let offered = Set(SidebarView.Lens.order(whenFans: state))
+            XCTAssertTrue(offered.isSuperset(of: [.processes, .resources, .network, .sensors]),
+                          "a tab other than Fans went missing on \(state)")
+        }
     }
 
     /// Per-process lenses first, whole-machine after, with no interleaving: the
@@ -39,15 +57,86 @@ final class ViewMenuOrderTests: XCTestCase {
     func testLensItemsNumberTheRailFromOne() {
         let items = ViewMenu.lensItems
         XCTAssertEqual(items.map(\.lens), SidebarView.Lens.displayOrder)
-        XCTAssertEqual(items.map(\.key), ["1", "2", "3", "4", "5"])
+        // Numbered 1..n with no gaps, for whatever this machine offers — a hidden
+        // tab must close the numbering up rather than leave a hole where ⌘5 was.
+        XCTAssertEqual(items.map(\.key),
+                       (1...items.count).map(String.init))
     }
 
     /// The rail is the five tabs asked for and nothing else. Written out rather
     /// than derived: this list is the specification, and a test that recomputed it
     /// from `allCases` would agree with any tab added or removed by accident.
-    func testTheRailIsTheFiveTabs() {
-        XCTAssertEqual(SidebarView.Lens.displayOrder.map(\.rawValue),
+    func testTheRailIsTheFiveTabsOnAMachineWithFans() {
+        XCTAssertEqual(SidebarView.Lens.order(whenFans: .fans(2)).map(\.rawValue),
                        ["processes", "resources", "network", "sensors", "fans"])
+    }
+
+    /// A MacBook Air has nothing to put in the Fans tab, so it does not get one.
+    func testAFanlessMacHasNoFansTab() {
+        XCTAssertEqual(SidebarView.Lens.order(whenFans: .fanless).map(\.rawValue),
+                       ["processes", "resources", "network", "sensors"])
+    }
+
+    /// "The SMC would not answer" is not "this machine has no fans". Hiding the
+    /// tab on that evidence would silently remove a reading from a machine that
+    /// has one, and leave nothing on screen to suggest it ever existed.
+    func testAnUnreadableSMCKeepsTheFansTab() {
+        XCTAssertEqual(SidebarView.Lens.order(whenFans: .unknown).map(\.rawValue),
+                       ["processes", "resources", "network", "sensors", "fans"])
+    }
+
+    /// Whatever this machine is, the live rail is what its fan presence says it
+    /// should be. This is the assertion that would fail if `displayOrder` were
+    /// ever wired to something other than the detector.
+    func testTheLiveRailFollowsThisMachinesFanPresence() {
+        XCTAssertEqual(SidebarView.Lens.displayOrder,
+                       SidebarView.Lens.order(whenFans: FanPresence.onThisMac))
+        XCTAssertEqual(SidebarView.Lens.displayOrder.contains(.fans),
+                       FanPresence.showsFanTab(FanPresence.onThisMac))
+    }
+
+    /// THE ONE THAT MATTERS FOR A HIDDEN TAB: the View menu is derived from the
+    /// rail's own order, so removing a tab in one place removes it from both and
+    /// renumbers ⌘1…⌘n behind it. Asserted against a fanless order rather than
+    /// this machine's, because this machine has fans and would never exercise it.
+    func testTheViewMenuFollowsTheRailWhenATabIsHidden() {
+        let items = ViewMenu.lensItems(for: SidebarView.Lens.order(whenFans: .fanless))
+        XCTAssertEqual(items.map(\.lens.title),
+                       ["Processes", "Resources", "Network", "Sensors"])
+        XCTAssertEqual(items.map(\.key), ["1", "2", "3", "4"])
+        XCTAssertFalse(items.contains { $0.lens == .fans },
+                       "⌘5 would open a tab the rail does not draw")
+    }
+
+    /// And the rail itself, built for real. `rowTitles` reads what the rail
+    /// exposes to a user — accessibility buttons — so this is the drawn rail,
+    /// not a list kept for the test's benefit.
+    func testAFanlessRailDrawsFourRowsAndNoFanRow() {
+        _ = appKitForTests
+        let rail = SidebarView(frame: NSRect(x: 0, y: 0, width: 200, height: 600),
+                               lenses: SidebarView.Lens.order(whenFans: .fanless))
+        XCTAssertEqual(rowTitles(in: rail),
+                       ["Processes", "Resources", "Network", "Sensors"])
+    }
+
+    /// Selecting a tab this machine does not draw must change nothing. A menu bar
+    /// widget bound to a fan speed on a fanless Mac is the way to reach it, and
+    /// the alternative is a rail with nothing lit beside a pane the user cannot
+    /// see how to leave.
+    func testSelectingAHiddenTabIsIgnoredRatherThanDesyncingTheRail() {
+        _ = appKitForTests
+        let rail = SidebarView(frame: NSRect(x: 0, y: 0, width: 200, height: 600),
+                               lenses: SidebarView.Lens.order(whenFans: .fanless))
+        var announced: [SidebarView.Lens] = []
+        rail.onSelect = { announced.append($0) }
+
+        rail.select(.fans)
+        XCTAssertEqual(rail.selected, .processes)
+        XCTAssertTrue(announced.isEmpty)
+
+        rail.select(.sensors)
+        XCTAssertEqual(rail.selected, .sensors)
+        XCTAssertEqual(announced, [.sensors])
     }
 
     /// Past ⌘9 there is no digit to use, so the tenth item must get no shortcut
@@ -73,7 +162,7 @@ final class ViewMenuOrderTests: XCTestCase {
                        SidebarView.Lens.displayOrder.map(\.title))
     }
 
-    private func rowTitles(in view: NSView) -> [String] {
+    fileprivate func rowTitles(in view: NSView) -> [String] {
         view.subviews.flatMap { sub -> [String] in
             if sub.accessibilityRole() == .button, let label = sub.accessibilityLabel() {
                 return [label]
@@ -253,5 +342,47 @@ final class AboutPanelTests: XCTestCase {
 
     func testOptionsAreEmptyWhenThereIsNothingToAdd() {
         XCTAssertTrue(AboutPanel.options(info: [:]).isEmpty)
+    }
+}
+
+// ── Fan control strip ───────────────────────────────────────────────────────
+
+/// The Fans tab's control strip. What is worth asserting without a helper to
+/// talk to is the part a user copies into a terminal — and the fact that the
+/// strip renders at all in each state, since a view that traps on construction
+/// takes the whole tab with it.
+final class FanControlPanelTests: XCTestCase {
+
+    /// THIS repository's own path contains a space. An unquoted command would be
+    /// two arguments, so the instruction printed to the person most likely to
+    /// read it would be wrong.
+    func testAPathWithASpaceIsQuoted() {
+        let q = FanControlPanel.quoted("/Users/me/Downloads/better stats app/x")
+        XCTAssertEqual(q, "'/Users/me/Downloads/better stats app/x'")
+    }
+
+    /// A single quote inside a path would otherwise close the quoting and turn
+    /// the rest of the path into shell words.
+    func testAQuoteInsideAPathIsEscaped() {
+        XCTAssertEqual(FanControlPanel.quoted("/Users/o'brien/app"),
+                       "'/Users/o'\\''brien/app'")
+    }
+
+    /// The command has to name a real helper binary and start with sudo, or the
+    /// user copies something that cannot work.
+    func testTheStartCommandNamesTheHelperAndAsksForRoot() {
+        let command = FanControlPanel.startCommand()
+        XCTAssertTrue(command.hasPrefix("sudo '"), command)
+        XCTAssertTrue(command.contains("BetterStatsHelper"), command)
+    }
+
+    /// The strip renders in the state a fresh install is in — control off — and
+    /// asks for a sane height. It must never connect to anything to do that.
+    func testItRendersWithFanControlOffAndWithoutTouchingASocket() {
+        _ = appKitForTests
+        let panel = FanControlPanel(frame: NSRect(x: 0, y: 0, width: 500, height: 80))
+        panel.update(fans: [FanInfo(index: 0, currentRPM: 0, minRPM: 2317,
+                                    maxRPM: 7826, targetRPM: 2317)])
+        XCTAssertGreaterThan(panel.preferredHeight, 0)
     }
 }

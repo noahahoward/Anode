@@ -309,7 +309,18 @@ enum ViewMenu {
     /// ⌘1…⌘9 top to bottom. There is no ⌘10, so a tenth lens gets an item with no
     /// shortcut rather than one that collides with something else.
     static var lensItems: [(lens: SidebarView.Lens, key: String)] {
-        SidebarView.Lens.displayOrder.enumerated().map { index, lens in
+        lensItems(for: SidebarView.Lens.displayOrder)
+    }
+
+    /// The menu for a named set of tabs.
+    ///
+    /// Parameterised for the same reason `SidebarView.init(frame:lenses:)` is:
+    /// the property worth testing is that a tab hidden from the rail is also
+    /// missing from the menu AND that the numbering closes up behind it, and on a
+    /// machine with fans there is otherwise no hidden tab to test with.
+    static func lensItems(for order: [SidebarView.Lens])
+        -> [(lens: SidebarView.Lens, key: String)] {
+        order.enumerated().map { index, lens in
             (lens, index < 9 ? String(index + 1) : "")
         }
     }

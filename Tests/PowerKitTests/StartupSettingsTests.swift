@@ -40,6 +40,25 @@ final class StartupSettingsTests: XCTestCase {
                       "widgets are the app's front door once the window is closed")
     }
 
+    /// Fan control is the one setting that must be off until somebody decides
+    /// otherwise: turning it on is a decision to let a root process write to the
+    /// hardware. A default of true would make that decision for a user who never
+    /// read what it means, and it would break `FanMode.native`'s contract that
+    /// someone who has not opted in is on a machine this code has never touched.
+    func testFanControlIsOffUntilSomeoneOptsIn() {
+        XCTAssertFalse(Settings(defaults: defaults).fanControlEnabled)
+    }
+
+    /// And it survives being turned on and off again, rather than an explicit
+    /// "off" reading back as "never set, so use the default".
+    func testFanControlRemembersBothAnswers() {
+        let s = Settings(defaults: defaults)
+        s.fanControlEnabled = true
+        XCTAssertTrue(Settings(defaults: defaults).fanControlEnabled)
+        s.fanControlEnabled = false
+        XCTAssertFalse(Settings(defaults: defaults).fanControlEnabled)
+    }
+
     /// The true-by-default pair is the pair that `bool(forKey:)` gets wrong.
     /// Storing false must actually read back as false rather than being taken for
     /// "absent, so use the default".

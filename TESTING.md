@@ -97,9 +97,53 @@ reporting, no update check, and no analytics.
 
 If you never run the speed test, the app makes no network connections at all.
 
-## Fan control is not in this build
+## Fan control: off by default, and nothing is installed
 
-The root helper exists in the source tree but nothing installs it and nothing
-connects to it. It stays that way until it can be installed under a Developer ID,
-because without one there is no signature check at install time. Do not install
-it by hand.
+Fan control is off until you turn it on, and turning it on does not install
+anything. There is no launch daemon, no plist, and no root process on your
+machine unless you have deliberately started one and left it running.
+
+To use it, open the Fans tab, click **Turn On Fan Control…**, and run the command
+it shows you in Terminal:
+
+```sh
+sudo ~/Applications/BetterStats.app/Contents/MacOS/BetterStatsHelper
+```
+
+It prints what it will accept and then waits. The app picks it up within a few
+seconds and the sliders come alive. Press ⌃C to stop it; the fans go back to
+automatic control when you do, and also if BetterStats quits or crashes — the
+helper hands them back the moment its client disappears.
+
+While it runs, exactly one program can set a fan speed: that build of
+BetterStats, run by you, within the minimum and maximum the fan itself reports.
+Another user cannot reach it (the socket is 0600 in a root-owned directory) and
+another program of yours cannot either (its cdhash will not match).
+
+**Rebuilding invalidates it, by design.** The helper pins the app's code hash
+when it starts, and an ad-hoc signature changes on every build, so a helper left
+running from before a rebuild will refuse the new app and say so. Stop it and
+start it again if you still want fan control. This is not a repair — it is the
+privileged session ending, and declining to start another one leaves you with
+exactly the monitor you had before.
+
+There is one gap and it is worth knowing: if the helper is killed with `kill -9`
+nothing runs, so a fan left at a manual speed stays there. The way out is:
+
+```sh
+sudo ~/Applications/BetterStats.app/Contents/MacOS/BetterStatsHelper --uninstall
+```
+
+which hands every fan back unconditionally and removes everything this project
+has ever asked root to leave on the disk — including the launch daemon, helper
+binary and pinned-hash file that an earlier draft of this feature installed.
+
+The full trust model, including what it does *not* protect against, is at the top
+of `Sources/PowerKit/FanLink.swift`.
+
+## The Fans tab is missing on some Macs
+
+That is deliberate: a machine whose SMC reports zero fans (a MacBook Air, a
+fanless desktop) does not get the tab, and ⌘1…⌘4 renumber behind it. A machine
+whose SMC could not be read *keeps* the tab — "not measured" is not "none", and
+the pane says which of the two it is looking at.

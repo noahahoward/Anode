@@ -131,13 +131,27 @@ class SystemPane: NSView {
         view.translatesAutoresizingMaskIntoConstraints = false
         addSubview(view)
         scrollTop.isActive = false
+        accessoryHeight = view.heightAnchor.constraint(equalToConstant: height)
         NSLayoutConstraint.activate([
             view.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 18),
             view.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -18),
             view.topAnchor.constraint(equalTo: captionLabel.bottomAnchor, constant: 12),
-            view.heightAnchor.constraint(equalToConstant: height),
+            accessoryHeight!,
             scroll.topAnchor.constraint(equalTo: view.bottomAnchor, constant: 14),
         ])
+    }
+
+    /// Held so an accessory whose content changes shape can grow and shrink.
+    ///
+    /// The Fans tab's control strip is one row per fan plus a status line, and it
+    /// does not know how many fans exist until the first SMC sweep lands — a
+    /// height fixed at construction would either clip the second fan or leave a
+    /// band of empty pane above the readings on a machine with one.
+    private var accessoryHeight: NSLayoutConstraint?
+
+    func setAccessoryHeight(_ height: CGFloat) {
+        guard let accessoryHeight, accessoryHeight.constant != height else { return }
+        accessoryHeight.constant = height
     }
 
     func restyle() {
@@ -450,8 +464,31 @@ final class SensorsPane: SystemPane {
 
 final class FansPane: SystemPane {
 
+    /// The control strip, above the readings.
+    ///
+    /// Owned by the pane rather than wired through the app delegate, for the same
+    /// reason `SensorsPane` owns its `SensorCache`: it is the only thing that uses
+    /// it, and threading four closures through a view to reach a socket would put
+    /// the feature in three files instead of one.
+    let control = FanControlPanel(frame: .zero)
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        setAccessory(control, height: control.preferredHeight)
+        control.onLayoutChanged = { [weak self] in
+            guard let self else { return }
+            self.setAccessoryHeight(self.control.preferredHeight)
+        }
+    }
+    required init?(coder: NSCoder) { fatalError() }
+
+    /// The app is quitting. See `FanControlPanel.teardown` — closing the socket
+    /// is what hands the fans back.
+    func teardown() { control.teardown() }
+
     func update(_ fans: [FanInfo], sampled: Bool = true) {
         titleLabel.stringValue = "Fans"
+        control.update(fans: sampled ? fans : [])
 
         // NOT MEASURED is not the same as NONE. The SMC sweep is skipped while
         // the window is hidden, so a snapshot taken then carries an empty fan
@@ -495,8 +532,13 @@ final class FansPane: SystemPane {
             items.append(.row("Load", String(format: "%.0f%% of range", f.load * 100), dim: true))
         }
 
+        // The live state of fan control is in the strip above; these are the two
+        // rules that hold whatever state it is in, and they are worth stating
+        // where someone deciding whether to turn it on will read them.
         items.append(.heading("Control"))
-        items.append(.row("Read-only — fan control is not enabled", "—", dim: true))
+        items.append(.row("Safety floor", "each fan's own reported minimum", dim: true))
+        items.append(.row("If BetterStats quits or crashes",
+                          "fans return to automatic", dim: true))
         setBody(items)
     }
 }

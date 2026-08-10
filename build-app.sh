@@ -7,6 +7,7 @@ cd "$(dirname "$0")"
 CONFIG="${1:-release}"
 APP="BetterStats.app"
 BIN="BetterStatsApp"
+HELPER="BetterStatsHelper"
 ICON="Resources/AppIcon.icon"
 
 # ── Version ─────────────────────────────────────────────────────────────────
@@ -23,12 +24,20 @@ if ! git diff --quiet HEAD 2>/dev/null; then DIRTY="+"; fi
 
 echo "› building ($CONFIG)…"
 swift build -c "$CONFIG" --product "$BIN"
+# The fan helper ships beside the app but is NEVER started by it: it runs as root
+# and the user starts it themselves with sudo when they want fan control. It is
+# in the bundle so there is one obvious path to type, and so it and the app it
+# will only ever talk to are rebuilt together — the helper pins the app's cdhash
+# at startup, and an app rebuilt without its helper would simply be refused.
+swift build -c "$CONFIG" --product "$HELPER"
 BUILT="$(swift build -c "$CONFIG" --show-bin-path)/$BIN"
+BUILT_HELPER="$(swift build -c "$CONFIG" --show-bin-path)/$HELPER"
 
 echo "› assembling ${APP}…"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BUILT" "$APP/Contents/MacOS/$BIN"
+cp "$BUILT_HELPER" "$APP/Contents/MacOS/$HELPER"
 
 # ── Icon ────────────────────────────────────────────────────────────────────
 # Icon Composer (.icon) source, compiled with actool. This emits BOTH:
@@ -96,6 +105,15 @@ $( [ "$ICON_OK" = "1" ] && printf '  <key>CFBundleIconFile</key>          <strin
 PLIST
 
 # Ad-hoc sign so Gatekeeper lets a locally built bundle launch.
+#
+# INSIDE OUT, and the order is load-bearing. Signing the app seals everything in
+# the bundle, so signing the nested helper afterwards would break that seal and
+# the app's own cdhash would no longer describe what is on disk. Fan control
+# depends on that hash being right: the helper pins it from the bundle at startup
+# and compares it to the caller's, so a broken seal is a fan control that refuses
+# every connection with an identity mismatch nobody can explain.
+codesign --force --sign - "$APP/Contents/MacOS/$HELPER" 2>/dev/null \
+  || echo "  (ad-hoc signing of the fan helper skipped)"
 codesign --force --sign - "$APP" 2>/dev/null || echo "  (ad-hoc signing skipped)"
 
 # Nudge Finder/Dock to drop any cached icon for this bundle id.
@@ -142,5 +160,14 @@ cp -R "$APP" "$INSTALL_DIR/"
 rm -rf "$APP"
 
 echo "› installed: $INSTALL_DIR/BetterStats.app"
+# Printed every build because the pin is per-build: this helper only recognises
+# the app it was just built beside, and a helper left running from before this
+# build will refuse the new one until it is restarted. Nothing is installed and
+# nothing runs as root unless the user runs this line themselves.
+echo "›"
+echo "› fan control (optional, nothing is installed):"
+echo "›   sudo '$INSTALL_DIR/BetterStats.app/Contents/MacOS/BetterStatsHelper'"
+echo "› to undo everything this project has ever done as root:"
+echo "›   sudo '$INSTALL_DIR/BetterStats.app/Contents/MacOS/BetterStatsHelper' --uninstall"
 echo "› (the build-directory copy is removed on purpose — that path's"
 echo "›  LaunchServices state hides the menu bar widgets. See WIDGET-BUG.md.)"
