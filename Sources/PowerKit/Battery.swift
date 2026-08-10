@@ -148,6 +148,26 @@ public enum Battery {
         /// `65535` is the SBS "unknown" sentinel, returned whenever on AC and for
         /// minutes after unplugging. Never treat it as a real time estimate.
         public let timeRemaining_min: Int?
+
+        /// Why the charger is idle, from the nested `ChargerData` dict. Zero means
+        /// "no reason" — either charging normally or nothing is plugged in.
+        ///
+        /// This and `fullyCharged` are the only evidence this machine gives that a
+        /// charge LIMIT exists (see `ChargeLimitLearner`): nothing in IOKit states
+        /// the limit, but a machine on AC that is deliberately not charging while
+        /// not full has stopped somewhere on purpose.
+        ///
+        /// TRAP, verified live: this keeps its last value after the adapter is
+        /// unplugged — read 128 at 83% on battery. It is only meaningful with
+        /// `onAC`, and every caller must pair them.
+        ///
+        /// Defaulted so the existing synthetic fixtures keep describing a battery
+        /// without restating a field they have no opinion about.
+        public var notChargingReason: Int = 0
+        /// The gauge's own "this pack is full", distinct from `percent >= 99` and
+        /// from any limit. False while holding at 80%, which is what makes the
+        /// two distinguishable at all.
+        public var fullyCharged: Bool = false
     }
 
     public static func state() -> State? {
@@ -160,6 +180,7 @@ public enum Battery {
 
         let raw = int("TimeRemaining")
         let sane = (raw > 0 && raw != 65535) ? raw : nil
+        let charger = props["ChargerData"] as? [String: Any] ?? [:]
 
         return State(
             percent: int("CurrentCapacity"),
@@ -169,7 +190,9 @@ public enum Battery {
             voltage_mV: int("Voltage"),
             amperage_mA: int("InstantAmperage") != 0 ? int("InstantAmperage") : int("Amperage"),
             remainingCapacity_mAh: (data["RemainingCapacity"] as? NSNumber)?.doubleValue ?? 0,
-            timeRemaining_min: sane
+            timeRemaining_min: sane,
+            notChargingReason: int("NotChargingReason", charger),
+            fullyCharged: props["FullyCharged"] as? Bool ?? false
         )
     }
 }

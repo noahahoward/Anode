@@ -3,94 +3,128 @@ import PowerKit
 
 /// Category rail.
 ///
-/// Two kinds of destination, and the grouping says which is which:
+/// Five destinations, and the grouping says what kind each is:
 ///
-///   PER PROCESS   — lenses. The same table stays; columns and sort change to that
-///                   resource. Battery, CPU, Memory, Disk and GPU all come from the
-///                   single `proc_pid_rusage` call already made once per process per
-///                   sweep, so four of them cost no extra sampling at all.
+///   PER PROCESS   — the process table. One tab, not five: the old rail spent a row
+///                   each on Battery, CPU, Memory, Disk and GPU, and every one of
+///                   them drew the SAME table with two columns swapped. They are
+///                   columns, so they are columns now, and the tab is sortable by
+///                   any of them.
 ///   WHOLE MACHINE — their own panes. There is no unprivileged per-process network
 ///                   attribution on macOS, and a fan does not belong to a process.
 ///                   Pretending otherwise would be the same dishonesty as
 ///                   normalising a ledger to 100%.
 ///
-/// Live values sit in the rail itself so a glance answers most questions without
-/// switching at all.
+/// ICONS, not words. The rail was 168 pt wide to hold "Whole machine" and a live
+/// value beside every label; that is 18% of a 940 pt window spent on navigation for
+/// a window whose job is fitting a wide table on screen. Each row is now a glyph
+/// with the title — and the live value where one is being sampled — in its tooltip.
 final class SidebarView: NSView {
 
     enum Lens: String, CaseIterable {
-        case battery, cpu, memory, disk, gpu, network, sensors, fans
+        case processes, resources, network, sensors, fans
 
         var title: String {
             switch self {
-            case .battery: return "Battery"
-            case .cpu:     return "CPU"
-            case .memory:  return "Memory"
-            case .disk:    return "Disk"
-            case .gpu:     return "GPU"
-            case .network: return "Network"
-            case .sensors: return "Sensors"
-            case .fans:    return "Fans"
+            case .processes: return "Processes"
+            case .resources: return "Resources"
+            case .network:   return "Network"
+            case .sensors:   return "Sensors"
+            case .fans:      return "Fans"
             }
         }
 
-        /// True when this re-columns the process table rather than replacing it.
+        /// True when this shows the process table rather than replacing it.
         var isPerProcess: Bool {
             switch self {
-            case .battery, .cpu, .memory, .disk, .gpu: return true
-            case .network, .sensors, .fans: return false
+            case .processes: return true
+            case .resources, .network, .sensors, .fans: return false
             }
         }
 
-        /// The rail top to bottom: the per-process lenses, then the whole-machine
+        /// SF Symbol drawn in the rail.
+        ///
+        /// Every one of these shipped in SF Symbols 1 or 2 (macOS 11), below this
+        /// app's macOS 13 floor, so none of them can resolve to nil on a supported
+        /// system — asserted in `SidebarIconTests` rather than assumed, because a
+        /// missing symbol is a rail row that renders as nothing at all and the rail
+        /// is now the only way to navigate.
+        var symbolName: String {
+            switch self {
+            case .processes: return "list.bullet"
+            case .resources: return "speedometer"
+            case .network:   return "network"
+            case .sensors:   return "thermometer"
+            case .fans:      return "wind"
+            }
+        }
+
+        /// The rail top to bottom: the per-process tab, then the whole-machine
         /// ones — the same two groups `build()` draws, split by the same predicate.
         ///
         /// `build()` and the View menu both read this, so a lens added to
-        /// `allCases` reaches the rail and ⌘1…⌘8 together or not at all. The menu
+        /// `allCases` reaches the rail and ⌘1…⌘5 together or not at all. The menu
         /// used to be the kind of thing that silently desynced from the sidebar;
         /// there is now no second list to forget.
         static let displayOrder: [Lens] =
             allCases.filter(\.isPerProcess) + allCases.filter { !$0.isPerProcess }
 
-        /// The metric whose current value is shown beside the label.
+        /// The metric whose current value is appended to the tooltip.
+        ///
+        /// nil for Processes: the table is a hundred numbers, and no single one of
+        /// them summarises it.
         var metric: MetricID? {
             switch self {
-            case .battery: return .batteryDrain
-            case .cpu:     return .cpuUsage
-            case .memory:  return .memoryUsage
-            case .gpu:     return .gpuUsage
-            case .network: return .networkThroughput
-            case .sensors: return .cpuTemperature
-            case .fans:    return .fanSpeed
-            case .disk:    return .diskActivity
+            case .processes: return nil
+            case .resources: return .cpuUsage
+            case .network:   return .networkThroughput
+            case .sensors:   return .cpuTemperature
+            case .fans:      return .fanSpeed
             }
         }
 
-        /// What the number beside the label actually means, for rows where that is
-        /// not obvious from the unit.
-        ///
-        /// Disk is the row that needs it. It sits between CPU and GPU, both of
-        /// which show a utilisation, and it deliberately does not — there is no
-        /// honest disk utilisation to show on this hardware (see `DiskActivity`),
-        /// so the row says bytes per second and this says why.
-        var valueTooltip: String? {
+        /// One line saying what the tab contains, shown under the title on hover.
+        /// A glyph alone is a guess; this is what makes an icon rail navigable by
+        /// someone who has not learned it yet.
+        var summary: String {
             switch self {
-            case .disk:
-                return """
-                       Read/write throughput, whole machine.
+            case .processes:
+                return "Every process, by battery, CPU, memory, disk and GPU."
+            case .resources:
+                return "Whole-machine graphs and readings: CPU, GPU, memory, "
+                     + "network, disk, storage and temperatures."
+            case .network:
+                return "Throughput by interface and by process."
+            case .sensors:
+                return "Every temperature the SMC will report."
+            case .fans:
+                return "Fan speeds and their range."
+            }
+        }
 
-                       Not a utilisation: the only read/write timer macOS exposes \
-                       adds up requests that overlap in the queue, so on this SSD \
-                       it reaches 1394% under load and cannot be a percentage.
-                       """
-            default:
-                return nil
+        /// Which subsystems this tab is actually reading.
+        ///
+        /// The sampler asks for exactly this while the tab is on screen and nothing
+        /// more — see `AppDelegate.visibleNeeds`. Resources is the tab that wants
+        /// everything, which is precisely why the others must not.
+        var needs: SystemMetrics.Needs {
+            switch self {
+            // The table comes from the per-process sweep, not from SystemMetrics.
+            case .processes: return []
+            case .resources: return .all
+            case .network:   return .network
+            // Both read temperatures or fan speeds, which is one SMC sweep.
+            case .sensors, .fans: return .sensors
             }
         }
     }
 
     var onSelect: ((Lens) -> Void)?
-    private(set) var selected: Lens = .battery
+    private(set) var selected: Lens = .processes
+
+    /// Wide enough for a 30 pt icon well plus the 8 pt gutters, and no wider. The
+    /// rail was 168.
+    static let width: CGFloat = 52
 
     private let stack = NSStackView()
     private var rows: [Lens: RowView] = [:]
@@ -118,13 +152,10 @@ final class SidebarView: NSView {
 
     private func build() {
         stack.orientation = .vertical
-        stack.alignment = .leading
-        stack.spacing = 1
+        stack.alignment = .centerX
+        stack.spacing = 4
         // The system titlebar owns the space above, so no clearance is needed here.
-        // (This was 46 to dodge the traffic lights under fullSizeContentView, which
-        // the window no longer uses — leaving it made the rail start half an inch
-        // lower than the table header beside it.)
-        stack.edgeInsets = NSEdgeInsets(top: 10, left: 8, bottom: 12, right: 8)
+        stack.edgeInsets = NSEdgeInsets(top: 12, left: 6, bottom: 12, right: 6)
         stack.translatesAutoresizingMaskIntoConstraints = false
         addSubview(stack)
         NSLayoutConstraint.activate([
@@ -133,36 +164,50 @@ final class SidebarView: NSView {
             stack.topAnchor.constraint(equalTo: topAnchor),
         ])
 
-        stack.addArrangedSubview(header("Per process"))
-        for l in Lens.displayOrder where l.isPerProcess { add(l) }
-        stack.addArrangedSubview(header("Whole machine"))
-        for l in Lens.displayOrder where !l.isPerProcess { add(l) }
+        // The two groups the rail has always drawn, now separated by a rule rather
+        // than by a caption — "PER PROCESS" does not fit beside a 52 pt icon well,
+        // and the split is still worth showing.
+        var previousWasPerProcess = true
+        for (index, lens) in Lens.displayOrder.enumerated() {
+            if index > 0, lens.isPerProcess != previousWasPerProcess {
+                stack.addArrangedSubview(divider())
+                previousWasPerProcess = lens.isPerProcess
+            }
+            add(lens)
+        }
 
         rows[selected]?.isSelected = true
     }
 
-    private func header(_ text: String) -> NSView {
-        let l = NSTextField(labelWithString: text.uppercased())
-        l.font = Palette.Font.mono(9, .medium)
-        l.textColor = Palette.faint
-        let box = NSView()
-        box.translatesAutoresizingMaskIntoConstraints = false
-        l.translatesAutoresizingMaskIntoConstraints = false
-        box.addSubview(l)
+    private func divider() -> NSView {
+        let rule = RuleView()
+        rule.translatesAutoresizingMaskIntoConstraints = false
         NSLayoutConstraint.activate([
-            l.leadingAnchor.constraint(equalTo: box.leadingAnchor, constant: 10),
-            l.topAnchor.constraint(equalTo: box.topAnchor, constant: 10),
-            l.bottomAnchor.constraint(equalTo: box.bottomAnchor, constant: -5),
-            l.trailingAnchor.constraint(lessThanOrEqualTo: box.trailingAnchor),
+            rule.heightAnchor.constraint(equalToConstant: 9),
+            rule.widthAnchor.constraint(equalToConstant: 22),
         ])
-        return box
+        return rule
+    }
+
+    /// A hairline that resolves `Palette` at draw time, so it follows a theme
+    /// switch like everything else rather than freezing the colour it was built
+    /// with.
+    private final class RuleView: NSView {
+        override func draw(_ dirtyRect: NSRect) {
+            Palette.line.setFill()
+            NSRect(x: 0, y: bounds.midY, width: bounds.width, height: 1).fill()
+        }
+        override func viewDidChangeEffectiveAppearance() { needsDisplay = true }
     }
 
     private func add(_ lens: Lens) {
         let row = RowView(lens: lens) { [weak self] l in self?.select(l) }
         rows[lens] = row
         stack.addArrangedSubview(row)
-        row.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -16).isActive = true
+        NSLayoutConstraint.activate([
+            row.widthAnchor.constraint(equalToConstant: 38),
+            row.heightAnchor.constraint(equalToConstant: 34),
+        ])
     }
 
     func select(_ lens: Lens) {
@@ -173,11 +218,15 @@ final class SidebarView: NSView {
         onSelect?(lens)
     }
 
-    /// Refresh the live value beside each label from the registry.
+    /// Refresh the tooltip's live value from the registry.
+    ///
+    /// The value used to sit beside the label in the rail. With icons there is
+    /// nowhere to put it, so it rides in the tooltip — and it is APPENDED rather
+    /// than substituted, so a subsystem this tab is not sampling shows the title
+    /// and summary with no number instead of a stale one.
     func refreshValues() {
         for (lens, row) in rows {
-            guard let id = lens.metric else { row.value = nil; continue }
-            row.value = MetricRegistry.shared.value(for: id)?.text
+            row.value = lens.metric.flatMap { MetricRegistry.shared.value(for: $0)?.text }
         }
     }
 
@@ -186,14 +235,13 @@ final class SidebarView: NSView {
     private final class RowView: NSView {
         private let lens: Lens
         private let onClick: (Lens) -> Void
-        private let title = NSTextField(labelWithString: "")
-        private let valueLabel = NSTextField(labelWithString: "")
+        private let icon = NSImageView()
 
         var isSelected = false { didSet { restyle(); needsDisplay = true } }
         var value: String? {
             didSet {
-                valueLabel.stringValue = value ?? ""
-                restyle()
+                guard value != oldValue else { return }   // toolTip assignment is not free
+                updateTooltip()
             }
         }
 
@@ -203,35 +251,29 @@ final class SidebarView: NSView {
             super.init(frame: .zero)
             translatesAutoresizingMaskIntoConstraints = false
 
-            title.stringValue = lens.title
-            title.font = Palette.Font.sans(12.5)
-            valueLabel.font = Palette.Font.mono(10.5)
-            valueLabel.alignment = .right
-
-            let stack = NSStackView(views: [title, valueLabel])
-            stack.orientation = .horizontal
-            stack.distribution = .fill
-            title.setContentHuggingPriority(.defaultLow, for: .horizontal)
-            valueLabel.setContentHuggingPriority(.defaultHigh, for: .horizontal)
-            valueLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-            stack.translatesAutoresizingMaskIntoConstraints = false
-            addSubview(stack)
+            // A symbol configuration rather than a resized image: SF Symbols are
+            // vector glyphs with their own optical weights, and scaling a rendered
+            // one blurs the strokes at 17 pt.
+            icon.image = NSImage(systemSymbolName: lens.symbolName,
+                                 accessibilityDescription: lens.title)?
+                .withSymbolConfiguration(.init(pointSize: 15, weight: .medium))
+            icon.imageScaling = .scaleNone
+            icon.translatesAutoresizingMaskIntoConstraints = false
+            addSubview(icon)
             NSLayoutConstraint.activate([
-                stack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 10),
-                stack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -10),
-                stack.topAnchor.constraint(equalTo: topAnchor, constant: 6),
-                stack.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -6),
+                icon.centerXAnchor.constraint(equalTo: centerXAnchor),
+                icon.centerYAnchor.constraint(equalTo: centerYAnchor),
             ])
+
             // Without this the rail is invisible to VoiceOver and to any automation:
             // a plain NSView with a mouseDown override is a button to a sighted user
-            // and nothing at all to anyone else.
+            // and nothing at all to anyone else. The label is the lens TITLE, which
+            // is also what the menu-consistency test reads back — an icon rail must
+            // not cost the name of the thing it navigates to.
             setAccessibilityRole(.button)
             setAccessibilityLabel(lens.title)
             setAccessibilityElement(true)
-            // A unit that differs from the rows above and below it has to explain
-            // itself somewhere the user can actually reach.
-            toolTip = lens.valueTooltip
-
+            updateTooltip()
             restyle()
         }
         required init?(coder: NSCoder) { fatalError() }
@@ -241,18 +283,25 @@ final class SidebarView: NSView {
             return true
         }
 
+        /// Title, what the tab holds, and the current reading if one is being
+        /// sampled. This is the entire label for an icon rail, so it carries what
+        /// the removed text row carried.
+        private func updateTooltip() {
+            var text = lens.title
+            if let value { text += " — \(value)" }
+            toolTip = text + "\n" + lens.summary
+        }
+
         private func restyle() {
-            title.textColor = isSelected ? Palette.text : Palette.dim
-            title.font = Palette.Font.sans(12.5, isSelected ? .semibold : .regular)
-            valueLabel.textColor = isSelected ? Palette.accent : Palette.faint
+            icon.contentTintColor = isSelected ? Palette.accent : Palette.dim
         }
 
         override func draw(_ dirtyRect: NSRect) {
             guard isSelected else { return }
             Palette.selection.setFill()
             NSBezierPath(roundedRect: bounds,
-                         xRadius: Palette.Radius.chip,
-                         yRadius: Palette.Radius.chip).fill()
+                         xRadius: Palette.Radius.inner,
+                         yRadius: Palette.Radius.inner).fill()
         }
 
         override func mouseDown(with event: NSEvent) { onClick(lens) }

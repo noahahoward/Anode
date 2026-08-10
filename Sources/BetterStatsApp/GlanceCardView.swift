@@ -155,12 +155,18 @@ final class GlanceCardView: NSView {
 
         switch s.direction {
         case .charging:
-            let hrs = s.timeToFull_hr
+            let est = s.chargeEstimate
+            let hrs = est?.hours
             return Model(
                 source: .charging,
                 headline: hrs.map(hm) ?? "Charging",
                 percent: st.percent,
-                sourceLabel: "charging",
+                // Says what it is counting DOWN TO, because on this machine that is
+                // 80% and not full, and a bare "charging" left the countdown looking
+                // like it was heading somewhere it was never going to arrive.
+                // Marked estimated for the same reason time-to-empty is: the charge
+                // current is measured, the time it will still be flowing is not.
+                sourceLabel: chargingLabel(est),
                 rows: [
                     ("Charge", String(format: "+%.1f %%/hr", s.batteryRate_pctHr ?? 0), nil),
                     ("Input", String(format: "%.1f W", chargeWatts(s)), nil),
@@ -170,11 +176,16 @@ final class GlanceCardView: NSView {
                 ])
 
         case .acIdle:
+            // "Held at 80%" is a different fact from "not charging": the machine
+            // has finished, at the level it was asked to finish at. Saying only
+            // "not charging" at 80% reads as a fault.
+            let held = s.isHeldAtChargeLimit ? s.chargeTarget?.percent : nil
             return Model(
                 source: .ac,
                 headline: "On AC",
                 percent: st.percent,
-                sourceLabel: st.percent >= 99 ? "fully charged" : "not charging",
+                sourceLabel: held.map { String(format: "held at %.0f%% limit", $0) }
+                    ?? (st.percent >= 99 ? "fully charged" : "not charging"),
                 rows: [
                     ("Draw", String(format: "%.1f W", s.smoothed_W), nil),
                     ("Capacity", String(format: "%.1f Wh", full_Wh), nil),
@@ -214,6 +225,25 @@ final class GlanceCardView: NSView {
                     ("Health", health(s), nil),
                 ])
         }
+    }
+
+    /// What the countdown above is counting down TO, and how much to trust it.
+    ///
+    /// The target is the honest half: this machine stops at 80%, so "charging to
+    /// 80%" is a claim that can come true and "charging" — beside a figure that
+    /// was silently projecting to 100% — was one that could not. When no limit has
+    /// been learned yet the target is the pack's own full charge and it says so
+    /// rather than naming a percentage nobody has observed.
+    ///
+    /// "estimated" is the other half, and it is not optional. `ChargeCurve` fits
+    /// the final taper from two recorded charge sessions; a fit rendered without a
+    /// word saying so is a prediction wearing a measurement's clothes, which is
+    /// the defect the time-to-empty marker exists to prevent.
+    static func chargingLabel(_ e: ChargeTarget.Estimate?) -> String {
+        guard let e else { return "charging" }
+        return e.target.isLearnedLimit
+            ? String(format: "charging to %.0f%% · estimated", e.target.percent)
+            : "charging to full · estimated"
     }
 
     /// Where the headline came from, in the user's words rather than the enum's.
