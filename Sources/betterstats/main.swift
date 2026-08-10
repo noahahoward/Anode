@@ -72,6 +72,25 @@ if args.contains("--fankeys") {
             }
         }
     }
+
+    // Every F* key this machine actually has, not only the ones we thought to
+    // guess. The named probes above answer "is F0Md there"; this answers the
+    // question behind it — "is there ANY key that would take manual control" —
+    // which no amount of guessing at four-character names can close.
+    let total = smc.keyCount()
+    print("\nevery F* key on this machine (\(total) keys total):")
+    var found = 0
+    for i in 0..<total {
+        guard let k = smc.key(at: i), k.hasPrefix("F") else { continue }
+        found += 1
+        if let r = smc.read(k) {
+            print(String(format: "  %-5@ type=%-5@ %.2f", k as NSString,
+                         r.type as NSString, r.value))
+        } else {
+            print(String(format: "  %-5@ (unreadable)", k as NSString))
+        }
+    }
+    if found == 0 { print("  none") }
     exit(0)
 }
 

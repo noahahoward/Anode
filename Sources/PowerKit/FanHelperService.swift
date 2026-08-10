@@ -26,6 +26,52 @@ public protocol FanHardware: AnyObject {
     /// Release puts that value back — see `FanRelease` for why restoring an
     /// observed number beats asserting what "released" means.
     func readTarget(index: Int) -> Double?
+
+    /// The fan's control MODE, and the reason fan control did nothing at all for
+    /// the first several attempts at this feature.
+    ///
+    /// A target written while the fan is on automatic is simply ignored: the
+    /// firmware keeps deciding, and `F<n>Tg` reads back as whatever the firmware
+    /// wants rather than what was written. Measured, on a machine that had just
+    /// been asked for 7826 rpm on both fans and reported success:
+    ///
+    ///     F0Tg = 2317 (its own minimum)   F1Tg = 2502   F0md = 0   F1md = 0
+    ///
+    /// The key is `F<n>md` — LOWERCASE. An earlier probe looked for `F<n>Md`,
+    /// the Intel spelling, found nothing, and concluded this machine had no mode
+    /// key. It has one; the probe was guessing at four-character names instead of
+    /// enumerating them, which is why `--fankeys` now lists every F* key the
+    /// machine actually has rather than the six someone thought of.
+    ///
+    /// nil when the mode cannot be read, which is not the same as "automatic" and
+    /// must not be treated as it: a machine whose mode is unreadable is one this
+    /// helper should leave alone rather than guess at.
+    func readMode(index: Int) -> Double?
+
+    /// Take or hand back the firmware's control of one fan. The value is written
+    /// verbatim rather than as a bool, because release restores WHAT WAS THERE —
+    /// the same rule the target follows, for the same reason: this project ships
+    /// to hardware nobody here has run on, and 0/1 is an assumption about what
+    /// the numbers mean, not an observation.
+    func writeMode(index: Int, value: Double) -> Bool
+}
+
+/// The two values `F<n>md` is known to take on this hardware.
+///
+/// OBSERVED, and only two of them. Every Mac this project has run on reports 0
+/// while the firmware is deciding, and the fan obeys a written target only after
+/// 1 is written. That is the whole basis for these names — there is no
+/// documentation, and a third value would mean something nobody here has seen.
+///
+/// `forced` is the ONLY value this project ever writes that it did not first
+/// read from the machine. Everything else in the release path restores an
+/// observed number; taking control cannot, because "the value that means take
+/// control" is not a value the machine will show you until you have taken it.
+/// `automatic` is here to be compared against, never written — a release puts
+/// back the mode it found, which is usually this and does not have to be.
+public enum SMCFanMode {
+    public static let automatic: Double = 0
+    public static let forced: Double = 1
 }
 
 /// What a helper remembers about the fans it has taken: THAT it took them, and
@@ -42,6 +88,10 @@ public struct FanHoldings: Equatable {
     private var taken: Set<Int> = []
     /// Where a taken fan was before we took it, when it could be read.
     private var previous: [Int: Double] = [:]
+    /// The control mode a taken fan was in before we took it, when it could be
+    /// read. Kept for the same reason and released the same way: restoring an
+    /// observed value assumes nothing about what the numbers mean.
+    private var previousMode: [Int: Double] = [:]
 
     public init() {}
 
@@ -52,18 +102,23 @@ public struct FanHoldings: Equatable {
 
     public func wasTaken(_ index: Int) -> Bool { taken.contains(index) }
     public func previousTarget(of index: Int) -> Double? { previous[index] }
+    public func previousMode(of index: Int) -> Double? { previousMode[index] }
 
     /// Record a first write. Ignored for a fan already taken: our own earlier
     /// target must never overwrite the memory of what automatic looked like.
-    public mutating func took(_ index: Int, previousTarget: Double?) {
+    public mutating func took(_ index: Int,
+                              previousTarget: Double?,
+                              previousMode mode: Double? = nil) {
         guard !taken.contains(index) else { return }
         taken.insert(index)
         if let previousTarget, previousTarget.isFinite { previous[index] = previousTarget }
+        if let mode, mode.isFinite { previousMode[index] = mode }
     }
 
     public mutating func forgetAll() {
         taken.removeAll()
         previous.removeAll()
+        previousMode.removeAll()
     }
 }
 
@@ -169,7 +224,21 @@ public enum FanRelease {
             // took has to go back to something, and "minimum" is the number that
             // caused this bug; leaving it where we put it is worse still.
             let restore = holdings.previousTarget(of: i) ?? noForcedTarget
-            if hardware.writeTarget(index: i, rpm: restore) { released += 1 } else { refused += 1 }
+            let target = hardware.writeTarget(index: i, rpm: restore)
+
+            // Then hand the fan itself back, which is what actually ends our
+            // control — a restored target under a still-forced mode is this app
+            // holding the fan at the number the firmware happened to want, which
+            // looks like a release and is not one.
+            //
+            // Ordered target-then-mode so the fan is never briefly on automatic
+            // while still carrying our speed. The fallback is `automatic`: a fan
+            // we forced and whose original mode we never read has to go back to
+            // something, and leaving it forced is the one outcome that is
+            // certainly wrong.
+            let mode = hardware.writeMode(index: i,
+                                          value: holdings.previousMode(of: i) ?? SMCFanMode.automatic)
+            if target && mode { released += 1 } else { refused += 1 }
         }
         return Result(released: released, refused: refused, kind: .restored)
     }
@@ -188,8 +257,12 @@ public enum FanRelease {
         var released = 0, refused = 0
         for i in 0..<maxFanIndex {
             guard hardware.limits(index: i) != nil else { continue }
-            if hardware.writeTarget(index: i, rpm: noForcedTarget) { released += 1 }
-            else { refused += 1 }
+            let target = hardware.writeTarget(index: i, rpm: noForcedTarget)
+            // And the mode, for the same reason as above: a fan left forced is
+            // still this project's fan, which is exactly what "an app that pinned
+            // my fans has been deleted" needs undone.
+            let mode = hardware.writeMode(index: i, value: SMCFanMode.automatic)
+            if target && mode { released += 1 } else { refused += 1 }
         }
         return Result(released: released, refused: refused, kind: .automatic)
     }
@@ -225,6 +298,22 @@ public final class SMCFanHardware: FanHardware {
     /// release rather than a different kind of hold.
     public func readTarget(index: Int) -> Double? {
         smc?.read("F\(index)Tg")?.value
+    }
+
+    /// LOWERCASE `md`. `F0Md` does not exist on this machine and `F0md` does —
+    /// see `FanHardware.readMode` for how that cost this feature several rounds
+    /// of "the write succeeds and nothing happens".
+    public func readMode(index: Int) -> Double? {
+        smc?.read("F\(index)md")?.value
+    }
+
+    public func writeMode(index: Int, value: Double) -> Bool {
+        // ui8, unlike every other fan key. Out-of-range is refused here rather
+        // than truncated: a mode this code has never seen is not one to coerce
+        // into a byte and hope.
+        guard value.isFinite, value >= 0, value <= 255,
+              value == value.rounded() else { return false }
+        return smc?.writeUInt8("F\(index)md", UInt8(value)) ?? false
     }
 }
 
@@ -635,16 +724,39 @@ public final class FanHelperServer {
             // Where the fan is RIGHT NOW, read before the write that takes it and
             // only for a fan we have not taken already. This is the number the
             // release puts back, and there is exactly one moment it can be read.
-            let before = holdings.wasTaken(target.index)
-                ? nil : hardware.readTarget(index: target.index)
+            let alreadyHeld = holdings.wasTaken(target.index)
+            let before = alreadyHeld ? nil : hardware.readTarget(index: target.index)
+            let beforeMode = alreadyHeld ? nil : hardware.readMode(index: target.index)
+
+            // TAKE THE MODE FIRST, or the target is ignored. This is the step
+            // whose absence made fan control appear to work and do nothing: the
+            // write is accepted, the reply says "set to 7826 rpm", and the
+            // firmware goes on running its own number because the fan is still
+            // on automatic. See `FanHardware.readMode`.
+            //
+            // Only on the first write per fan. Re-asserting it on every drag
+            // would overwrite nothing useful and give the firmware more chances
+            // to disagree mid-gesture.
+            if !alreadyHeld, let beforeMode, beforeMode == SMCFanMode.automatic {
+                guard hardware.writeMode(index: target.index, value: SMCFanMode.forced) else {
+                    return FanReply(ok: false,
+                                    message: "the SMC would not hand over fan "
+                                           + "\(target.index + 1) — it stays on automatic")
+                }
+            }
             guard hardware.writeTarget(index: target.index, rpm: safe) else {
+                // The mode was taken and the target was not, so put the mode back
+                // rather than leave a fan forced to a speed nobody chose.
+                if !alreadyHeld, let beforeMode {
+                    _ = hardware.writeMode(index: target.index, value: beforeMode)
+                }
                 return FanReply(ok: false, message: "the SMC refused the write")
             }
             // Recorded only once the write actually landed. A refused write took
             // nothing, and a helper that believes it holds a fan it never touched
             // would write to that fan on its way out.
-            holdings.took(target.index, previousTarget: before)
-            log("set F\(target.index)Tg = \(safe)")
+            holdings.took(target.index, previousTarget: before, previousMode: beforeMode)
+            log("set F\(target.index)md = \(SMCFanMode.forced), F\(target.index)Tg = \(safe)")
             return FanReply(ok: true,
                             message: "fan \(target.index + 1) set to \(Int(safe)) rpm")
         }

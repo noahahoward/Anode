@@ -205,6 +205,39 @@ public final class SMC {
         return call(buf) != nil
     }
 
+    /// Write a one-byte key, with the same discipline as `writeFloat`: verify the
+    /// SMC's own declared type and size first, refuse anything else, and do no
+    /// policy.
+    ///
+    /// This exists for the fan MODE key, `F<n>md`, which is `ui8` where every
+    /// other fan key is `flt`. Writing a target while the mode says automatic is
+    /// ignored by the firmware, so without this fan control silently does
+    /// nothing — see `FanHardware.readMode`.
+    ///
+    /// Separate from `writeFloat` rather than a widened version of it, because
+    /// the size/type guard is the entire safety of both: a function that accepts
+    /// "4-byte float or 1-byte int" has to pick the encoding at runtime, and
+    /// picking wrong is how you write a float's bit pattern into a byte and take
+    /// three neighbouring keys with it.
+    @discardableResult
+    public func writeUInt8(_ key: String, _ value: UInt8) -> Bool {
+        var info = [UInt8](repeating: 0, count: Off.total)
+        Self.setU32(&info, Off.key, Self.code(key))
+        info[Off.data8] = Cmd.readKeyInfo.rawValue
+        guard let meta = call(info) else { return false }
+        let size = Self.u32(meta, Off.dataSize)
+        let type = Self.string(Self.u32(meta, Off.dataType))
+        guard size == 1, type == "ui8" else { return false }
+
+        var buf = [UInt8](repeating: 0, count: Off.total)
+        Self.setU32(&buf, Off.key, Self.code(key))
+        Self.setU32(&buf, Off.dataSize, 1)
+        Self.setU32(&buf, Off.dataType, Self.code("ui8"))
+        buf[Off.data8] = Cmd.writeBytes.rawValue
+        buf[Off.bytes] = value
+        return call(buf) != nil
+    }
+
     public func scan() -> [Sensor] {
         var out: [Sensor] = []
         for idx in 0..<keyCount() {
