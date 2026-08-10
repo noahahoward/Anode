@@ -6,7 +6,7 @@ import Foundation
 
 // ── The hardware, behind a protocol ─────────────────────────────────────────
 
-/// The three things the helper is allowed to do to a fan.
+/// The four things the helper is allowed to do to a fan.
 ///
 /// A protocol rather than a direct `SMC` call so the server's whole control flow
 /// — clamping, the release-on-disconnect, the refusals — can be exercised in the
@@ -20,49 +20,178 @@ public protocol FanHardware: AnyObject {
     func controllableFanCount() -> Int
     func limits(index: Int) -> FanPolicy.Limits?
     func writeTarget(index: Int, rpm: Double) -> Bool
+    /// The fan's CURRENT target, or nil if it cannot be read.
+    ///
+    /// Read once per fan, immediately before this helper takes it, and kept.
+    /// Release puts that value back — see `FanRelease` for why restoring an
+    /// observed number beats asserting what "released" means.
+    func readTarget(index: Int) -> Double?
 }
 
-/// Hand every fan back to macOS.
+/// What a helper remembers about the fans it has taken: THAT it took them, and
+/// where each one was beforehand.
+///
+/// Both facts are needed and they are not the same fact. A fan whose original
+/// target could not be read has still been taken, and must still be handed back
+/// — dropping it from the record because there was no number to store is how a
+/// held fan gets left pinned by the very function that exists to unpin it.
+public struct FanHoldings: Equatable {
+
+    /// Fans this helper has successfully written to. Membership, not the stored
+    /// rpm, is what makes a fan eligible for release.
+    private var taken: Set<Int> = []
+    /// Where a taken fan was before we took it, when it could be read.
+    private var previous: [Int: Double] = [:]
+
+    public init() {}
+
+    public var isEmpty: Bool { taken.isEmpty }
+    /// Ascending, so a release writes fans in a fixed order and a test can say
+    /// what it expects.
+    public var indices: [Int] { taken.sorted() }
+
+    public func wasTaken(_ index: Int) -> Bool { taken.contains(index) }
+    public func previousTarget(of index: Int) -> Double? { previous[index] }
+
+    /// Record a first write. Ignored for a fan already taken: our own earlier
+    /// target must never overwrite the memory of what automatic looked like.
+    public mutating func took(_ index: Int, previousTarget: Double?) {
+        guard !taken.contains(index) else { return }
+        taken.insert(index)
+        if let previousTarget, previousTarget.isFinite { previous[index] = previousTarget }
+    }
+
+    public mutating func forgetAll() {
+        taken.removeAll()
+        previous.removeAll()
+    }
+}
+
+/// Handing the fans back.
 ///
 /// ONE implementation, called by the server's dead man's switch, by the explicit
 /// "Return to automatic" request, and by `--uninstall`. Three copies of a write
 /// this consequential is three chances for one of them to drift.
+///
+/// ─────────────────────────────────────────────────────────────────────────────
+/// MEASURED. The previous version of this was WRONG ON REAL HARDWARE, and it was
+/// wrong in the loud direction. It wrote each fan's reported MINIMUM, reasoning
+/// that zero is a request to STOP a fan and must never be sent. That reasoning
+/// assumed a meaning these keys do not have on Apple silicon:
+///
+///     before anything was written   F0Tg = 0      F0Ac = 0 rpm    (cool, silent)
+///     after "release" wrote 2317    F0Tg = 2317   F0Ac = 2320 rpm (audible)
+///     after writing 0               F0Tg = 0      F0Ac = 0 rpm    (silent again)
+///
+/// So on this Mac 0 is "no forced target", i.e. AUTOMATIC. The old release did
+/// not hand the fans back at all: it pinned them at minimum and made a silent
+/// machine loud, for several minutes, on the user's own desk.
+///
+/// Two further things were measured at the same time and both argue for reading
+/// rather than reasoning. The SMC ARBITRATES: writing 2317 to both fans left
+/// `F0Tg = 2317` but `F1Tg = 2502`, because fan 1's firmware clamped it upward.
+/// And there is no `F<n>Md` mode key and no Intel-style `FS!` bitmask on this
+/// machine — only `FNum`, `F<n>Ac`, `F<n>Mn`, `F<n>Mx`, `F<n>Tg`. `F<n>Mn` is
+/// therefore advice, not truth, and no semantics can be inferred from it.
+/// ─────────────────────────────────────────────────────────────────────────────
 public enum FanRelease {
 
+    /// The value this hardware uses for "no forced target".
+    ///
+    /// Measured, not assumed — see above. It is written in exactly two places:
+    /// by `toAutomatic`, which has no session history to restore; and as the
+    /// fallback for a fan that WAS taken but whose original could not be read.
+    /// Every other release puts back a number this code watched the machine
+    /// report.
+    public static let noForcedTarget: Double = 0
+
     public struct Result: Equatable {
+        /// Which question the numbers answer, for wording only.
+        public enum Kind: Equatable {
+            /// Fans were put back where they were found.
+            case restored
+            /// Fans were set to `noForcedTarget` because there was nothing to
+            /// restore from.
+            case automatic
+        }
+
         /// Fans that took the write.
         public let released: Int
-        /// Fans that had readable limits and refused it. Non-zero means the
-        /// machine is NOT fully handed back.
+        /// Fans that refused it. Non-zero means the machine is NOT fully handed
+        /// back.
         public let refused: Int
+        public let kind: Kind
         public var ok: Bool { refused == 0 }
 
+        public init(released: Int, refused: Int, kind: Kind = .restored) {
+            self.released = released
+            self.refused = refused
+            self.kind = kind
+        }
+
         public var message: String {
-            switch (released, refused) {
-            case (_, let r) where r > 0:
-                return "\(r) fan(s) did not accept the release — they may still be held"
-            case (0, _):
-                return "no controllable fan found to release"
-            case (1, _):
-                return "1 fan returned to automatic control"
-            default:
-                return "\(released) fans returned to automatic control"
+            if refused > 0 {
+                return "\(refused) fan(s) did not accept the release — they may still be held"
+            }
+            switch (kind, released) {
+            case (.restored, 0): return "no fan was held — nothing to hand back"
+            case (.restored, 1): return "1 fan put back the way it was found"
+            case (.restored, let n): return "\(n) fans put back the way they were found"
+            case (.automatic, 0): return "no controllable fan found to release"
+            case (.automatic, 1): return "1 fan returned to automatic control"
+            case (.automatic, let n): return "\(n) fans returned to automatic control"
             }
         }
     }
 
-    /// Writes each fan's own MINIMUM target, deliberately not zero. Zero is a
-    /// request to STOP the fan, and a firmware that honoured it literally on a
-    /// warm machine would be the worst possible outcome of a function whose
-    /// entire job is "stop meddling".
+    /// Put back the target each held fan had BEFORE this helper first wrote to
+    /// it, and touch nothing else.
+    ///
+    /// Restoring an observed value assumes nothing about what any number means.
+    /// Whatever the machine was doing before this helper touched it — 0 here, a
+    /// real rpm on some other Mac, something nobody has seen — is what it goes
+    /// back to. That is the only definition of "release" that cannot be wrong on
+    /// hardware this project has never run on, and this project ships to
+    /// hardware nobody here has run on.
+    ///
+    /// A FAN THAT WAS NEVER TAKEN IS LEFT ALONE. Writing to a fan in order to
+    /// "release" one we never held is precisely how the old bug happened, and it
+    /// is why this walks the holdings rather than the fan indices.
+    ///
+    /// It also does not re-read `limits`. A fan we successfully wrote to is by
+    /// definition controllable, and a limits read that has started failing must
+    /// never be the reason a held fan is skipped.
     @discardableResult
-    public static func all(hardware: FanHardware, maxFanIndex: Int = 8) -> Result {
+    public static func all(hardware: FanHardware, holdings: FanHoldings) -> Result {
+        var released = 0, refused = 0
+        for i in holdings.indices {
+            // The fallback is the automatic value, not the minimum. A fan we
+            // took has to go back to something, and "minimum" is the number that
+            // caused this bug; leaving it where we put it is worse still.
+            let restore = holdings.previousTarget(of: i) ?? noForcedTarget
+            if hardware.writeTarget(index: i, rpm: restore) { released += 1 } else { refused += 1 }
+        }
+        return Result(released: released, refused: refused, kind: .restored)
+    }
+
+    /// Set every fan this helper can see to `noForcedTarget`, for `--uninstall`.
+    ///
+    /// That command runs in a process holding no session history, so there is no
+    /// "original" to restore and this writes the measured no-forced-target value
+    /// instead. That IS an assumption, unlike the path above, and it is made
+    /// only here: this command exists for "an app that pinned my fans has been
+    /// deleted", and leaving them pinned is the exact failure it is there to
+    /// fix. It reports what it did so the assumption is visible rather than
+    /// silent.
+    @discardableResult
+    public static func toAutomatic(hardware: FanHardware, maxFanIndex: Int = 8) -> Result {
         var released = 0, refused = 0
         for i in 0..<maxFanIndex {
-            guard let l = hardware.limits(index: i) else { continue }
-            if hardware.writeTarget(index: i, rpm: l.minRPM) { released += 1 } else { refused += 1 }
+            guard hardware.limits(index: i) != nil else { continue }
+            if hardware.writeTarget(index: i, rpm: noForcedTarget) { released += 1 }
+            else { refused += 1 }
         }
-        return Result(released: released, refused: refused)
+        return Result(released: released, refused: refused, kind: .automatic)
     }
 }
 
@@ -90,6 +219,13 @@ public final class SMCFanHardware: FanHardware {
     public func writeTarget(index: Int, rpm: Double) -> Bool {
         smc?.writeFloat("F\(index)Tg", rpm) ?? false
     }
+
+    /// The forced target the fan is under right now. On this hardware a machine
+    /// nobody has touched reads 0 here, which is what makes restoring it a
+    /// release rather than a different kind of hold.
+    public func readTarget(index: Int) -> Double? {
+        smc?.read("F\(index)Tg")?.value
+    }
 }
 
 // ── The server ──────────────────────────────────────────────────────────────
@@ -106,22 +242,26 @@ public final class FanHelperServer {
         /// The user this helper serves — the one who started it. Every other uid
         /// is refused.
         public var ownerUID: uid_t
-        /// The client's cdhash, computed at STARTUP from the app bundle on disk.
-        /// Never read from a file: a persisted pin goes stale on the next
-        /// rebuild, and repairing it is an admin prompt.
-        public var pinnedCDHash: String
-        /// Fan indices scanned by a release. Eight rather than the reported fan
-        /// count, so a machine whose `FNum` under-reports still has every fan
+        /// Which client this helper will listen to.
+        ///
+        /// A session helper pins ONE BUILD, by a cdhash computed at startup from
+        /// the app bundle on disk — never read from a file, because a persisted
+        /// pin goes stale on the next rebuild and repairing it is an admin
+        /// prompt. An installed daemon cannot do that, and pins the signing
+        /// identifier instead. `FanClientPin` says exactly what each one buys.
+        public var pin: FanClientPin
+        /// Fan indices scanned by `toAutomatic`. Eight rather than the reported
+        /// fan count, so a machine whose `FNum` under-reports still has every fan
         /// handed back.
         public var maxFanIndex: Int
 
         public init(socketPath: String = FanSocket.path,
                     ownerUID: uid_t,
-                    pinnedCDHash: String,
+                    pin: FanClientPin,
                     maxFanIndex: Int = 8) {
             self.socketPath = socketPath
             self.ownerUID = ownerUID
-            self.pinnedCDHash = pinnedCDHash
+            self.pin = pin
             self.maxFanIndex = maxFanIndex
         }
     }
@@ -159,13 +299,20 @@ public final class FanHelperServer {
         set { stateLock.lock(); stoppingFlag = newValue; stateLock.unlock() }
     }
 
+    /// The fans this helper has taken, and where each was before it did.
+    ///
+    /// This is the whole memory a release works from. Emptied only by a CLEAN
+    /// release: a partial failure keeps it, so the next attempt still knows
+    /// where the fans belong.
+    private var holdings = FanHoldings()
+
     /// Has this helper written a fan target at all?
     ///
     /// The default mode writes NOTHING — not even a "set it back to automatic"
     /// write — so a user who starts the helper and then changes their mind must
     /// end up on a machine this process never touched. Release is therefore a
     /// no-op until something has actually been set.
-    public private(set) var hasWrittenATarget = false
+    public var hasWrittenATarget: Bool { !holdings.isEmpty }
 
     public init(hardware: FanHardware,
                 configuration: Configuration,
@@ -271,7 +418,7 @@ public final class FanHelperServer {
         }
         switch FanAccess.decide(peer: peer,
                                 ownerUID: config.ownerUID,
-                                pinnedCDHash: config.pinnedCDHash) {
+                                pin: config.pin) {
         case .refuse(let why):
             log("refused a connection: \(why)")
             refuse(fd, why)
@@ -351,7 +498,8 @@ public final class FanHelperServer {
         switch request {
         case .hello:
             return FanReply(ok: true, message: "fan helper ready",
-                            fanCount: hardware.controllableFanCount())
+                            fanCount: hardware.controllableFanCount(),
+                            version: FanDaemon.protocolVersion)
         case .command(.setTarget(let target)):
             return set(target)
         case .command(.releaseAll):
@@ -373,10 +521,18 @@ public final class FanHelperServer {
         case .failure(let why):
             return FanReply(ok: false, message: "refused: \(why)")
         case .success(let safe):
+            // Where the fan is RIGHT NOW, read before the write that takes it and
+            // only for a fan we have not taken already. This is the number the
+            // release puts back, and there is exactly one moment it can be read.
+            let before = holdings.wasTaken(target.index)
+                ? nil : hardware.readTarget(index: target.index)
             guard hardware.writeTarget(index: target.index, rpm: safe) else {
                 return FanReply(ok: false, message: "the SMC refused the write")
             }
-            hasWrittenATarget = true
+            // Recorded only once the write actually landed. A refused write took
+            // nothing, and a helper that believes it holds a fan it never touched
+            // would write to that fan on its way out.
+            holdings.took(target.index, previousTarget: before)
             log("set F\(target.index)Tg = \(safe)")
             return FanReply(ok: true,
                             message: "fan \(target.index + 1) set to \(Int(safe)) rpm")
@@ -389,14 +545,14 @@ public final class FanHelperServer {
         // used must leave a machine it has not touched — including on the way
         // out. Releasing unconditionally here would write a target to a fan
         // under perfectly good automatic control.
-        guard hasWrittenATarget else {
+        guard !holdings.isEmpty else {
             return FanReply(ok: true,
                             message: "nothing to release — this helper has written no fan target")
         }
-        let result = FanRelease.all(hardware: hardware, maxFanIndex: config.maxFanIndex)
-        // Left set on a partial failure so a later release tries again rather
-        // than reporting a machine as handed back when one fan was not.
-        if result.ok { hasWrittenATarget = false }
+        let result = FanRelease.all(hardware: hardware, holdings: holdings)
+        // Kept on a partial failure so a later release tries again rather than
+        // reporting a machine as handed back when one fan was not.
+        if result.ok { holdings.forgetAll() }
         return FanReply(ok: result.ok, message: result.message)
     }
 }
@@ -406,17 +562,26 @@ public final class FanHelperServer {
 /// Everything this project has ever asked root to leave on a disk, and how to
 /// take it all back off again.
 ///
-/// The list is longer than the current design creates ON PURPOSE. An earlier
-/// draft of fan control installed a LaunchDaemon, a privileged helper binary and
-/// a pinned-cdhash file; anyone who ran that draft still has them, and an
-/// uninstall that only cleaned up after the design that replaced it would leave a
-/// root daemon behind while reporting success. Nothing here is created by the
-/// shipped code except the socket.
+/// The list is longer than any single design creates ON PURPOSE. Three versions
+/// of this feature have existed: a first draft that installed a LaunchDaemon and
+/// a pinned-cdhash file; the session helper, which installs NOTHING and leaves
+/// only a socket; and the current optional daemon (`FanDaemon`). Anyone may be
+/// running any of them, and an uninstall that only cleaned up after the newest
+/// would leave a root daemon behind while reporting success.
+///
+/// This enum is the REMOVE side. `FanDaemonInstall` is the add side, and every
+/// path it creates has to appear here or the uninstall is a lie.
 public enum FanHelperInstall {
 
     /// The label the retired LaunchDaemon was loaded under. Kept so `--uninstall`
     /// can boot it out of launchd, which removing the plist alone does not do.
     public static let retiredDaemonLabel = "dev.noah.betterstats.helper"
+
+    /// Every launchd label this project has ever loaded, oldest first. Booted out
+    /// before their plists are removed: removing a plist does not unload a job
+    /// that is already running, and a bootout after the file is gone has nothing
+    /// to name.
+    public static var daemonLabels: [String] { [retiredDaemonLabel, FanDaemon.label] }
 
     public struct Artifacts {
         /// Removed if present, in this order — the pin before the directory that
@@ -439,8 +604,11 @@ public enum FanHelperInstall {
                 root.appendingPathComponent("Library/LaunchDaemons/\(retiredDaemonLabel).plist"),
                 root.appendingPathComponent("Library/PrivilegedHelperTools/\(retiredDaemonLabel)"),
                 root.appendingPathComponent("Library/Application Support/BetterStats/client.cdhash"),
-                // The only artifact the shipped design creates, and only while
-                // the helper is actually running.
+                // The current optional install: a plist and a root-owned copy of
+                // the helper. Absent unless the user pressed Install Fan Helper.
+                root.appendingPathComponent(String(FanDaemon.plistPath.dropFirst())),
+                root.appendingPathComponent(String(FanDaemon.helperPath.dropFirst())),
+                // Created by whichever helper is running, and only while it runs.
                 root.appendingPathComponent(String(FanSocket.path.dropFirst())),
             ],
             directoriesIfEmpty: [

@@ -97,14 +97,19 @@ reporting, no update check, and no analytics.
 
 If you never run the speed test, the app makes no network connections at all.
 
-## Fan control: off by default, and nothing is installed
+## Fan control: off by default, and nothing is installed unless you ask
 
 Fan control is off until you turn it on, and turning it on does not install
 anything. There is no launch daemon, no plist, and no root process on your
-machine unless you have deliberately started one and left it running.
+machine unless you have deliberately started one — or pressed **Install Fan
+Helper…**, which is the one thing in this app that leaves something behind.
 
-To use it, open the Fans tab, click **Turn On Fan Control…**, and run the command
-it shows you in Terminal:
+There are two ways to run the privileged half. The session helper below is the
+default and the stronger of the two. The install is described further down,
+together with what it costs.
+
+To use the session helper, open the Fans tab, click **Turn On Fan Control…**, and
+run the command it shows you in Terminal:
 
 ```sh
 sudo ~/Applications/BetterStats.app/Contents/MacOS/BetterStatsHelper
@@ -137,6 +142,60 @@ sudo ~/Applications/BetterStats.app/Contents/MacOS/BetterStatsHelper --uninstall
 which hands every fan back unconditionally and removes everything this project
 has ever asked root to leave on the disk — including the launch daemon, helper
 binary and pinned-hash file that an earlier draft of this feature installed.
+
+### Installing it instead, and what that costs
+
+Typing a `sudo` line every session is fine while you are working on BetterStats
+and tiresome otherwise, so there is an **Install Fan Helper…** button. It asks
+for your password once and then fan control works with no prompt of any kind —
+after a rebuild, after a reboot, forever, until you uninstall.
+
+It installs exactly two files, both owned by root and neither of them writable by
+you:
+
+```
+/Library/PrivilegedHelperTools/dev.noah.betterstats.fanhelper
+/Library/LaunchDaemons/dev.noah.betterstats.fanhelper.plist
+```
+
+The equivalent by hand, if you would rather read it than click it, is the same
+command the button runs:
+
+```sh
+sudo ~/Applications/BetterStats.app/Contents/MacOS/BetterStatsHelper --install
+```
+
+It works without an Apple Developer ID because launchd does not check signatures
+for plists placed in `/Library/LaunchDaemons` — Apple's own SMAppService header
+says so, and says the filesystem permission on `/Library` is the check. The
+modern API (`SMAppService.daemon`) is closed to us: the same header says apps
+containing LaunchDaemons must be notarised.
+
+**What you give up, plainly.** The session helper trusts exactly one build,
+because it pins the app's code hash when it starts. The installed daemon cannot
+do that — it outlives your rebuilds, and a hash pinned at install time would be
+stale after the next `./build-app.sh`, which would turn the button into
+"reinstall after every build". So it pins the *signing identifier* instead, and
+anybody can claim that identifier with one command:
+
+```sh
+codesign --force --sign - -i dev.noah.betterstats some-other-binary
+```
+
+So after you install, **anything running as your user can set your fan speeds**,
+within the range the fan itself reports, until you uninstall. Another user on the
+Mac still cannot — that check is the kernel's and does not weaken — and nothing
+at all can before you install. There is no version of this that is airtight
+without a Developer ID, because an ad-hoc signature has no key an attacker cannot
+also use.
+
+What is left is a real but small boundary: the daemon's entire vocabulary is "set
+fan N to R rpm" and "release", every speed is re-clamped against limits read
+fresh from the fan, and there is no path or key name anywhere in its input.
+
+**Uninstall** removes both files, unloads the daemon, deletes the socket and
+hands the fans back to automatic. It is the **Uninstall Fan Helper…** button, or
+the same `--uninstall` command above.
 
 The full trust model, including what it does *not* protect against, is at the top
 of `Sources/PowerKit/FanLink.swift`.

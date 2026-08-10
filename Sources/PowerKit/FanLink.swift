@@ -34,7 +34,9 @@ public let fanLog = Logger(subsystem: "dev.noah.betterstats", category: "fan")
 // user to type their password whenever an app asks — which is a worse hole than
 // the one the pin closed, and it is not fixable by writing more code around it.
 //
-// So the daemon is gone. What replaces it:
+// So THAT daemon is gone. What replaced it is the default to this day — it is
+// what you get if you never press Install, and the second half of this note says
+// what pressing Install changes:
 //
 //   * NOTHING IS INSTALLED. There is no LaunchDaemon, no plist, no pin file and
 //     no root process running when you are not using fan control. The helper is
@@ -72,6 +74,53 @@ public let fanLog = Logger(subsystem: "dev.noah.betterstats", category: "fan")
 // choosing the path they typed after `sudo`. That is a real check by a person
 // rather than a cryptographic one by launchd, and calling it anything stronger
 // would be the overstatement this file exists to avoid.
+//
+// ─────────────────────────────────────────────────────────────────────────────
+// AND THEN: THE SECOND WAY, because typing a sudo command every session is not
+// something to ask of anyone who is not developing this.
+//
+// Everything above still stands and is still the default. What was added is an
+// INSTALL — one authorisation, once, after which fan control works across
+// rebuilds and reboots and never asks again. `FanDaemon.swift` holds it, and the
+// reasoning for the route is written out there. The two are alternatives, and the
+// helper refuses to run as a session helper while the daemon is installed, so
+// there is never a question of which one owns the socket.
+//
+// The one thing that has to be understood HERE, because it is a change to this
+// file's own security argument, is the pin. The session helper pins ONE BUILD by
+// cdhash — see `FanClientPin.exactBuild` — and that is the strongest check
+// available to an unsigned project. An installed daemon cannot use it: it outlives
+// every rebuild, and a hash pinned at install time is stale the next time
+// `./build-app.sh` runs. So the daemon pins the SIGNING IDENTIFIER instead, and
+// that is genuinely weaker:
+//
+//   * still enforced, and still by the kernel: the connection must come from the
+//     uid that installed it. Another user on this machine is refused.
+//   * still enforced: the caller must have a signature that VERIFIES. A tampered
+//     or unsigned program produces no identity and is refused.
+//   * NOT enforced any more: that the caller is the BetterStats you built. Anyone
+//     who can run `codesign -s - -i dev.noah.betterstats` on their own binary
+//     satisfies it. That is one command, and anything running as you can run it.
+//
+// So, in plain words, WHAT INSTALLING GIVES UP: from the moment you install,
+// anything running as your user can set your fan speeds, at any time, until you
+// uninstall. Not another user, and nothing at all before you install — but the
+// "it must be exactly this app" claim is gone, and no amount of code brings it
+// back without a Developer ID, because an ad-hoc signature has no key an attacker
+// cannot also use.
+//
+// WHAT IS LEFT AS THE ACTUAL BOUNDARY, and it is not nothing: the vocabulary is
+// two commands — set one fan to one speed, and release. Every speed is re-clamped
+// against limits read fresh from the fan itself, so the reachable range is the
+// range the hardware already permits its own controller. There is no key-name
+// input, no path input, and nothing to read back. An attacker who takes it gets
+// to make your machine loud, or to hold a fan at a speed the firmware would also
+// hold it at; the SMC arbitrates and has been observed clamping a written target
+// UPWARD. It is a nuisance, not a foothold.
+//
+// If that trade is not worth it — and for a developer rebuilding all day it is
+// not — do not install. `sudo BetterStatsHelper` still works exactly as it always
+// did, still pins one build, and still stops with ⌃C.
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Where the helper listens, and where the app looks for it.
@@ -101,11 +150,21 @@ public struct FanReply: Codable, Equatable {
     /// Fans the helper can see. Set only on the reply to `hello`; nil elsewhere
     /// means "not answered here", not "no fans".
     public let fanCount: Int?
+    /// The protocol the answering helper speaks, on the reply to `hello`.
+    ///
+    /// Only the INSTALLED daemon needs this. It is a frozen copy taken at install
+    /// time and it does not change when the app is rebuilt — which is the whole
+    /// point of copying it, and also the one way this design can rot silently. An
+    /// app that speaks a newer protocol than the daemon answering it can say so
+    /// and offer to reinstall, instead of failing in some way nobody can read.
+    /// nil is an older helper, which by definition speaks version 1.
+    public let version: Int?
 
-    public init(ok: Bool, message: String, fanCount: Int? = nil) {
+    public init(ok: Bool, message: String, fanCount: Int? = nil, version: Int? = nil) {
         self.ok = ok
         self.message = message
         self.fanCount = fanCount
+        self.version = version
     }
 }
 
@@ -149,10 +208,21 @@ public struct FanPeer: Equatable {
     /// The caller's cdhash, or nil when it has no valid signature. nil is a
     /// refusal, never a pass — see `FanAccess`.
     public let cdhash: String?
+    /// The caller's signing identifier — `dev.noah.betterstats` for this app,
+    /// taken from `CFBundleIdentifier` when the bundle was signed.
+    ///
+    /// It is here because it is the one part of an ad-hoc code identity that
+    /// SURVIVES A REBUILD, and the installed daemon has to. It is also, unlike
+    /// the cdhash, a string anyone can choose: `codesign -s - -i
+    /// dev.noah.betterstats` on any binary at all produces a valid signature
+    /// claiming this identifier. `FanAccess` says what that does and does not
+    /// buy.
+    public let signingIdentifier: String?
 
-    public init(euid: uid_t, cdhash: String?) {
+    public init(euid: uid_t, cdhash: String?, signingIdentifier: String? = nil) {
         self.euid = euid
         self.cdhash = cdhash
+        self.signingIdentifier = signingIdentifier
     }
 
     /// Inspect a connected socket.
@@ -179,7 +249,26 @@ public struct FanPeer: Equatable {
         guard rc == 0, len == socklen_t(MemoryLayout<audit_token_t>.size) else {
             return FanPeer(euid: uid, cdhash: nil)
         }
-        return FanPeer(euid: uid, cdhash: FanIdentity.cdhash(auditToken: token))
+        let identity = FanIdentity.identity(auditToken: token)
+        return FanPeer(euid: uid, cdhash: identity?.cdhash,
+                       signingIdentifier: identity?.identifier)
+    }
+}
+
+/// A code identity: who the binary says it is, and what it actually contains.
+///
+/// The two travel together because neither is usable alone. The cdhash is a hash
+/// of the code and cannot be claimed falsely, but it changes on every rebuild.
+/// The identifier survives rebuilds and can be claimed by anybody. Which of them
+/// a given helper pins is `FanClientPin`, and the difference is the difference
+/// between the two ways of running this feature.
+public struct FanCodeIdentity: Equatable {
+    public let cdhash: String
+    public let identifier: String?
+
+    public init(cdhash: String, identifier: String?) {
+        self.cdhash = cdhash
+        self.identifier = identifier
     }
 }
 
@@ -191,8 +280,8 @@ public struct FanPeer: Equatable {
 /// `FanIdentityTests`.
 public enum FanIdentity {
 
-    /// The cdhash of a running process, or nil if it has no valid signature.
-    public static func cdhash(auditToken token: audit_token_t) -> String? {
+    /// The identity of a running process, or nil if it has no valid signature.
+    public static func identity(auditToken token: audit_token_t) -> FanCodeIdentity? {
         var t = token
         let data = withUnsafeBytes(of: &t) { Data($0) }
         var code: SecCode?
@@ -201,30 +290,87 @@ public enum FanIdentity {
                                              [], &code) == errSecSuccess,
               let code else { return nil }
         // Validity first: a tampered caller must fail to produce an identity at
-        // all rather than merely fail to match one.
+        // all rather than merely fail to match one. This is also what makes the
+        // signing identifier worth reading — an identifier from a signature that
+        // does not verify is just a string in a file.
         guard SecCodeCheckValidity(code, [], nil) == errSecSuccess else { return nil }
         var staticCode: SecStaticCode?
         guard SecCodeCopyStaticCode(code, [], &staticCode) == errSecSuccess,
               let staticCode else { return nil }
-        return hash(of: staticCode)
+        return identity(of: staticCode)
     }
 
-    /// The cdhash of a bundle or bare executable on disk.
-    public static func cdhash(atPath path: String) -> String? {
+    /// The identity of a bundle or bare executable on disk.
+    public static func identity(atPath path: String) -> FanCodeIdentity? {
         var staticCode: SecStaticCode?
         guard SecStaticCodeCreateWithPath(URL(fileURLWithPath: path) as CFURL,
                                           [], &staticCode) == errSecSuccess,
               let staticCode else { return nil }
-        return hash(of: staticCode)
+        return identity(of: staticCode)
     }
 
-    private static func hash(of code: SecStaticCode) -> String? {
+    /// The cdhash of a running process, or nil if it has no valid signature.
+    public static func cdhash(auditToken token: audit_token_t) -> String? {
+        identity(auditToken: token)?.cdhash
+    }
+
+    /// The cdhash of a bundle or bare executable on disk.
+    public static func cdhash(atPath path: String) -> String? {
+        identity(atPath: path)?.cdhash
+    }
+
+    private static func identity(of code: SecStaticCode) -> FanCodeIdentity? {
         var infoCF: CFDictionary?
         guard SecCodeCopySigningInformation(code, [], &infoCF) == errSecSuccess,
               let info = infoCF as? [String: Any],
               let cdhash = info[kSecCodeInfoUnique as String] as? Data else { return nil }
-        return cdhash.map { String(format: "%02x", $0) }.joined()
+        return FanCodeIdentity(cdhash: cdhash.map { String(format: "%02x", $0) }.joined(),
+                               identifier: info[kSecCodeInfoIdentifier as String] as? String)
     }
+}
+
+/// Which client a helper will listen to.
+///
+/// There are two, they are not interchangeable, and the difference is the whole
+/// reason both ways of running this feature exist.
+public enum FanClientPin: Equatable {
+
+    /// ONE EXACT BUILD, by content hash.
+    ///
+    /// The session helper's pin. It is computed at startup from the app bundle
+    /// the helper shipped inside, never persisted, and it dies with the process —
+    /// so it cannot go stale, and a rebuild is handled by restarting the helper
+    /// you were going to have to restart anyway. Nothing else can satisfy it: a
+    /// cdhash is a hash of the code, so a different program produces a different
+    /// hash whatever it calls itself.
+    case exactBuild(cdhash: String)
+
+    /// ANY BUILD CARRYING THIS SIGNING IDENTIFIER.
+    ///
+    /// The installed daemon's pin, and the honest cost of installing anything at
+    /// all without a Developer ID. The daemon outlives every rebuild, so it
+    /// cannot pin a hash that changes on every rebuild without turning the
+    /// install button into "reinstall after every build" — which is the treadmill
+    /// this project already rejected once, because it trains a user to type their
+    /// password whenever an app asks.
+    ///
+    /// WHAT IT STOPS: another user on this machine (that check is the kernel's,
+    /// and it runs first); any program with no valid signature; any program
+    /// signed under a different identifier; a tampered copy of BetterStats,
+    /// whose signature no longer verifies at all.
+    ///
+    /// WHAT IT DOES NOT STOP, said plainly: a program already running as you that
+    /// signs itself ad-hoc under our identifier. Measured, not guessed —
+    ///
+    ///     cc -o notmine t.c && codesign -s - -i dev.noah.betterstats notmine
+    ///     Identifier=dev.noah.betterstats   Signature=adhoc   valid on disk
+    ///
+    /// An ad-hoc signature has no key an attacker cannot also use, so there is no
+    /// version of this check that a same-user attacker cannot satisfy. Naming a
+    /// certificate in a requirement would fix it and costs a Developer ID. Until
+    /// then this is a guard against accidents, other users and other programs —
+    /// not against code that is already you.
+    case signingIdentifier(String)
 }
 
 /// Whether a connection may drive the fans.
@@ -239,23 +385,37 @@ public enum FanAccess {
         case refuse(String)
     }
 
-    public static func decide(peer: FanPeer, ownerUID: uid_t, pinnedCDHash: String) -> Decision {
+    public static func decide(peer: FanPeer, ownerUID: uid_t, pin: FanClientPin) -> Decision {
         // The kernel's answer first, because it is the one an attacker cannot
         // influence at all. The helper serves the single user who started it;
         // root is not that user unless the user is root.
         guard peer.euid == ownerUID else {
             return .refuse("connection from uid \(peer.euid); this helper serves uid \(ownerUID)")
         }
+        // No valid signature is a refusal under EITHER pin, and it is checked
+        // before either. Under `.signingIdentifier` this is the load-bearing
+        // half: an identifier read out of a signature that does not verify is
+        // just a string in a file.
         guard let hash = peer.cdhash else {
             return .refuse("caller has no readable code signature")
         }
-        guard hash == pinnedCDHash else {
-            // The ordinary cause is a rebuild: the running helper was started
-            // for the previous binary. Said in those words because a user who
-            // reads "identity mismatch" reaches for sudo, and the actual repair
-            // is to stop the helper and start it again — or not to.
-            return .refuse("caller is not the build this helper was started for "
-                         + "(\(hash.prefix(12))… vs \(pinnedCDHash.prefix(12))…)")
+        switch pin {
+        case .exactBuild(let pinned):
+            guard hash == pinned else {
+                // The ordinary cause is a rebuild: the running helper was started
+                // for the previous binary. Said in those words because a user who
+                // reads "identity mismatch" reaches for sudo, and the actual
+                // repair is to stop the helper and start it again — or not to.
+                return .refuse("caller is not the build this helper was started for "
+                             + "(\(hash.prefix(12))… vs \(pinned.prefix(12))…)")
+            }
+        case .signingIdentifier(let wanted):
+            guard let claimed = peer.signingIdentifier else {
+                return .refuse("caller's signature carries no identifier")
+            }
+            guard claimed == wanted else {
+                return .refuse("caller signs as \(claimed); this helper serves \(wanted)")
+            }
         }
         return .accept
     }
@@ -366,7 +526,12 @@ public final class FanControlLink {
         /// The helper is there and would not have us. Carries its reason
         /// verbatim, because the reason is the whole value of the message.
         case refused(String)
-        case connected(fanCount: Int)
+        /// `version` is what the answering helper speaks. An INSTALLED daemon is
+        /// a frozen copy and can be older than the app talking to it; carrying
+        /// its version here is what lets the app notice instead of failing in
+        /// some way nobody can read. nil is a helper from before the field
+        /// existed, i.e. version 1.
+        case connected(fanCount: Int, version: Int?)
     }
 
     private let socketPath: String
@@ -406,8 +571,9 @@ public final class FanControlLink {
             if fd < 0 {
                 status = .notRunning
             } else if let reply = exchange(.hello) {
-                status = reply.ok ? .connected(fanCount: reply.fanCount ?? 0)
-                                  : .refused(reply.message)
+                status = reply.ok
+                    ? .connected(fanCount: reply.fanCount ?? 0, version: reply.version)
+                    : .refused(reply.message)
             } else {
                 status = .notRunning
             }
@@ -477,7 +643,7 @@ public final class FanControlLink {
             return .refused(reply.message)
         }
         fanLog.info("connected — helper reports \(reply.fanCount ?? 0) fan(s)")
-        return .connected(fanCount: reply.fanCount ?? 0)
+        return .connected(fanCount: reply.fanCount ?? 0, version: reply.version)
     }
 
     private func exchange(_ request: FanRequest) -> FanReply? {

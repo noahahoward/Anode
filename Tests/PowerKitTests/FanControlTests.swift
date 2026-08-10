@@ -119,13 +119,13 @@ final class FanAccessTests: XCTestCase {
 
     func testTheRightUserRunningTheRightBuildIsAccepted() {
         XCTAssertEqual(FanAccess.decide(peer: FanPeer(euid: 501, cdhash: pinned),
-                                        ownerUID: 501, pinnedCDHash: pinned),
+                                        ownerUID: 501, pin: .exactBuild(cdhash: pinned)),
                        .accept)
     }
 
     func testAnotherUserIsRefused() {
         guard case .refuse(let why) = FanAccess.decide(
-            peer: FanPeer(euid: 502, cdhash: pinned), ownerUID: 501, pinnedCDHash: pinned) else {
+            peer: FanPeer(euid: 502, cdhash: pinned), ownerUID: 501, pin: .exactBuild(cdhash: pinned)) else {
             return XCTFail("another user was accepted")
         }
         XCTAssertTrue(why.contains("502"), why)
@@ -136,10 +136,10 @@ final class FanAccessTests: XCTestCase {
     /// a whole category of confusion to lose.
     func testRootIsNotAutomaticallyTheOwner() {
         XCTAssertNotEqual(FanAccess.decide(peer: FanPeer(euid: 0, cdhash: pinned),
-                                           ownerUID: 501, pinnedCDHash: pinned),
+                                           ownerUID: 501, pin: .exactBuild(cdhash: pinned)),
                           .accept)
         XCTAssertEqual(FanAccess.decide(peer: FanPeer(euid: 0, cdhash: pinned),
-                                        ownerUID: 0, pinnedCDHash: pinned),
+                                        ownerUID: 0, pin: .exactBuild(cdhash: pinned)),
                        .accept)
     }
 
@@ -148,7 +148,7 @@ final class FanAccessTests: XCTestCase {
     /// layer decorative.
     func testACallerWithNoSignatureIsRefused() {
         guard case .refuse(let why) = FanAccess.decide(
-            peer: FanPeer(euid: 501, cdhash: nil), ownerUID: 501, pinnedCDHash: pinned) else {
+            peer: FanPeer(euid: 501, cdhash: nil), ownerUID: 501, pin: .exactBuild(cdhash: pinned)) else {
             return XCTFail("an unsigned caller was accepted")
         }
         XCTAssertTrue(why.contains("signature"), why)
@@ -159,7 +159,7 @@ final class FanAccessTests: XCTestCase {
     /// something that sounds like a break-in.
     func testADifferentBuildIsRefusedAndSaysSo() {
         guard case .refuse(let why) = FanAccess.decide(
-            peer: FanPeer(euid: 501, cdhash: "0000"), ownerUID: 501, pinnedCDHash: pinned) else {
+            peer: FanPeer(euid: 501, cdhash: "0000"), ownerUID: 501, pin: .exactBuild(cdhash: pinned)) else {
             return XCTFail("a different build was accepted")
         }
         XCTAssertTrue(why.contains("not the build this helper was started for"), why)
@@ -169,7 +169,7 @@ final class FanAccessTests: XCTestCase {
     /// answer before any code-signing machinery is asked about them.
     func testTheUserCheckOutranksTheIdentityCheck() {
         guard case .refuse(let why) = FanAccess.decide(
-            peer: FanPeer(euid: 502, cdhash: nil), ownerUID: 501, pinnedCDHash: pinned) else {
+            peer: FanPeer(euid: 502, cdhash: nil), ownerUID: 501, pin: .exactBuild(cdhash: pinned)) else {
             return XCTFail("accepted")
         }
         XCTAssertTrue(why.contains("uid"), why)
@@ -273,24 +273,71 @@ final class FanWireTests: XCTestCase {
 
 final class FanReleaseTests: XCTestCase {
 
-    /// Release writes each fan's own MINIMUM, never zero. Zero is a request to
-    /// STOP the fan, and a firmware honouring it literally on a warm machine is
-    /// the worst possible outcome of a function whose job is "stop meddling".
-    func testReleaseWritesEachFansMinimumAndNeverZero() {
-        let hw = FakeFans([0: .init(minRPM: 2317, maxRPM: 7826),
-                           1: .init(minRPM: 2400, maxRPM: 7900)])
-        let result = FanRelease.all(hardware: hw)
-        XCTAssertTrue(result.ok)
-        XCTAssertEqual(result.released, 2)
-        XCTAssertEqual(hw.writes, [FakeFans.Write(index: 0, rpm: 2317),
-                                   FakeFans.Write(index: 1, rpm: 2400)])
-        XCTAssertFalse(hw.writes.contains { $0.rpm == 0 })
+    private func holdings(_ pairs: [(Int, Double?)]) -> FanHoldings {
+        var h = FanHoldings()
+        for (i, previous) in pairs { h.took(i, previousTarget: previous) }
+        return h
     }
 
-    func testFansWithNoReadableLimitsAreSkippedNotGuessedAt() {
-        let hw = FakeFans([3: .init(minRPM: 1000, maxRPM: 5000)])
-        XCTAssertEqual(FanRelease.all(hardware: hw).released, 1)
-        XCTAssertEqual(hw.writes, [FakeFans.Write(index: 3, rpm: 1000)])
+    /// Release puts back the target the fan had, and on this hardware that is
+    /// ZERO.
+    ///
+    /// MEASURED, and the old rule was wrong in the loud direction. Before
+    /// anything was written F0Tg read 0 with the fans genuinely stopped on a cool
+    /// M5 Pro. The old release wrote each fan's reported MINIMUM instead, on the
+    /// theory that zero means "stop the fan" — and it spun a silent machine up to
+    /// ~2320 rpm. Release made the machine LOUDER, which is the opposite of its
+    /// job.
+    func testReleasePutsBackTheTargetTheFanHadBefore() {
+        let hw = FakeFans([0: .init(minRPM: 2317, maxRPM: 7826),
+                           1: .init(minRPM: 2400, maxRPM: 7900)])
+        // 0 is what automatic looks like here; 1800 stands for a machine where it
+        // looks like something else. Neither is assumed — both are put back.
+        let result = FanRelease.all(hardware: hw, holdings: holdings([(0, 0), (1, 1800)]))
+        XCTAssertTrue(result.ok)
+        XCTAssertEqual(result.released, 2)
+        XCTAssertEqual(hw.writes, [FakeFans.Write(index: 0, rpm: 0),
+                                   FakeFans.Write(index: 1, rpm: 1800)])
+    }
+
+    /// A fan this helper never took is LEFT ALONE. Writing to it in order to
+    /// "release" it is exactly how the bug above happened.
+    func testAFanThatWasNeverHeldIsNotWrittenToAtAll() {
+        let hw = FakeFans([0: .init(minRPM: 2317, maxRPM: 7826),
+                           1: .init(minRPM: 2400, maxRPM: 7900)])
+        let result = FanRelease.all(hardware: hw, holdings: holdings([(1, 1800)]))
+        XCTAssertEqual(hw.writes, [FakeFans.Write(index: 1, rpm: 1800)])
+        XCTAssertEqual(result.released, 1)
+    }
+
+    func testReleasingNothingWritesNothingAndSaysSo() {
+        let hw = FakeFans([0: .init(minRPM: 2317, maxRPM: 7826)])
+        let result = FanRelease.all(hardware: hw, holdings: FanHoldings())
+        XCTAssertTrue(result.ok)
+        XCTAssertTrue(hw.writes.isEmpty)
+        XCTAssertTrue(result.message.contains("no fan was held"), result.message)
+    }
+
+    /// A fan we TOOK but whose original could not be read still has to be handed
+    /// back. Dropping it because there was no number to store would leave it
+    /// pinned by the very function that exists to unpin it — and the fallback is
+    /// the automatic value, not the minimum, because the minimum is the number
+    /// that caused this bug.
+    func testAHeldFanWithNoReadableOriginalGoesToTheAutomaticValue() {
+        let hw = FakeFans([0: .init(minRPM: 2317, maxRPM: 7826)])
+        let result = FanRelease.all(hardware: hw, holdings: holdings([(0, nil)]))
+        XCTAssertEqual(hw.writes, [FakeFans.Write(index: 0, rpm: FanRelease.noForcedTarget)])
+        XCTAssertEqual(result.released, 1)
+    }
+
+    /// Limits are not re-read on the way out. A fan we successfully wrote to is
+    /// controllable by definition, and a limits read that has started failing
+    /// must never be the reason a held fan is skipped.
+    func testAHeldFanIsReleasedEvenIfItsLimitsHaveStoppedReading() {
+        let hw = FakeFans([:])   // no limits for any index
+        let result = FanRelease.all(hardware: hw, holdings: holdings([(3, 1200)]))
+        XCTAssertEqual(hw.writes, [FakeFans.Write(index: 3, rpm: 1200)])
+        XCTAssertEqual(result.released, 1)
     }
 
     /// A refused write means the machine is NOT fully handed back, and the result
@@ -298,10 +345,67 @@ final class FanReleaseTests: XCTestCase {
     func testARefusedWriteIsReportedAsAFailure() {
         let hw = FakeFans([0: .init(minRPM: 2317, maxRPM: 7826)])
         hw.refuseWrites = true
-        let result = FanRelease.all(hardware: hw)
+        let result = FanRelease.all(hardware: hw, holdings: holdings([(0, 0)]))
         XCTAssertFalse(result.ok)
         XCTAssertEqual(result.refused, 1)
         XCTAssertTrue(result.message.contains("still be held"), result.message)
+    }
+
+    /// `--uninstall` runs in a process with no session history, so it has nothing
+    /// to restore and writes the measured no-forced-target value to everything it
+    /// can see. That IS an assumption — the only one — and it is made where the
+    /// alternative is leaving fans pinned by an app that has been deleted.
+    func testUninstallWritesTheAutomaticValueToEveryControllableFan() {
+        let hw = FakeFans([0: .init(minRPM: 2317, maxRPM: 7826),
+                           1: .init(minRPM: 2400, maxRPM: 7900)])
+        let result = FanRelease.toAutomatic(hardware: hw)
+        XCTAssertTrue(result.ok)
+        XCTAssertEqual(hw.writes, [FakeFans.Write(index: 0, rpm: 0),
+                                   FakeFans.Write(index: 1, rpm: 0)])
+        XCTAssertTrue(result.message.contains("automatic"), result.message)
+    }
+
+    func testUninstallSkipsFansWithNoReadableLimits() {
+        let hw = FakeFans([3: .init(minRPM: 1000, maxRPM: 5000)])
+        XCTAssertEqual(FanRelease.toAutomatic(hardware: hw).released, 1)
+        XCTAssertEqual(hw.writes, [FakeFans.Write(index: 3, rpm: 0)])
+    }
+}
+
+/// The memory a release works from. Two facts, and they are not the same fact:
+/// THAT a fan was taken, and where it was beforehand.
+final class FanHoldingsTests: XCTestCase {
+
+    func testAFanIsTakenEvenWhenItsOriginalCouldNotBeRead() {
+        var h = FanHoldings()
+        h.took(0, previousTarget: nil)
+        XCTAssertTrue(h.wasTaken(0), "a fan we wrote to must be released later")
+        XCTAssertNil(h.previousTarget(of: 0))
+        XCTAssertFalse(h.isEmpty)
+    }
+
+    /// Our own earlier target must never overwrite the memory of what automatic
+    /// looked like — otherwise the second drag of a slider makes the first drag's
+    /// value the thing we "restore".
+    func testASecondWriteDoesNotOverwriteTheOriginal() {
+        var h = FanHoldings()
+        h.took(0, previousTarget: 0)
+        h.took(0, previousTarget: 5000)
+        XCTAssertEqual(h.previousTarget(of: 0), 0)
+    }
+
+    func testANonFiniteReadingIsNotStoredButTheFanIsStillTaken() {
+        var h = FanHoldings()
+        h.took(1, previousTarget: .nan)
+        XCTAssertTrue(h.wasTaken(1))
+        XCTAssertNil(h.previousTarget(of: 1), "NaN is not a target to write back")
+    }
+
+    func testIndicesAreAscendingSoAReleaseIsInAFixedOrder() {
+        var h = FanHoldings()
+        h.took(3, previousTarget: 1)
+        h.took(0, previousTarget: 2)
+        XCTAssertEqual(h.indices, [0, 3])
     }
 }
 
@@ -336,7 +440,7 @@ final class FanHelperServerTests: XCTestCase {
         server = FanHelperServer(hardware: hw,
                                  configuration: .init(socketPath: socketPath,
                                                       ownerUID: getuid(),
-                                                      pinnedCDHash: pin ?? mine))
+                                                      pin: .exactBuild(cdhash: pin ?? mine)))
         try server.start()
         thread = Thread { [server] in server?.run() }
         thread.start()
@@ -385,7 +489,7 @@ final class FanHelperServerTests: XCTestCase {
 
     func testHelloReportsTheControllableFanCountAndWritesNothing() throws {
         try start(twoFans())
-        XCTAssertEqual(connect(), .connected(fanCount: 2))
+        XCTAssertEqual(connect(), .connected(fanCount: 2, version: FanDaemon.protocolVersion))
         XCTAssertTrue(hardware.writes.isEmpty,
                       "connecting is not consent to write to a fan")
     }
@@ -405,7 +509,7 @@ final class FanHelperServerTests: XCTestCase {
     /// Two programs taking turns at one fan is a fight the user cannot see.
     func testASecondClientIsTurnedAwayWithAnExplanation() throws {
         try start(twoFans())
-        XCTAssertEqual(connect(), .connected(fanCount: 2))
+        XCTAssertEqual(connect(), .connected(fanCount: 2, version: FanDaemon.protocolVersion))
 
         let second = FanControlLink(socketPath: socketPath)
         var status: FanControlLink.Status?
@@ -436,7 +540,7 @@ final class FanHelperServerTests: XCTestCase {
         send(.setTarget(FanTarget(index: 0, rpm: 4000)))
         hardware.clear()
 
-        XCTAssertEqual(ping(), .connected(fanCount: 2))
+        XCTAssertEqual(ping(), .connected(fanCount: 2, version: FanDaemon.protocolVersion))
         XCTAssertTrue(hardware.writes.isEmpty, "a liveness check must not touch a fan")
     }
 
@@ -447,7 +551,7 @@ final class FanHelperServerTests: XCTestCase {
     func testAPingNoticesAHelperThatHasGone() throws {
         try start(twoFans())
         connect()
-        XCTAssertEqual(ping(), .connected(fanCount: 2))
+        XCTAssertEqual(ping(), .connected(fanCount: 2, version: FanDaemon.protocolVersion))
 
         server.stop()
         spin(until: { self.thread.isFinished })
@@ -525,44 +629,77 @@ final class FanHelperServerTests: XCTestCase {
                       "released a machine nothing had touched")
     }
 
-    func testAnExplicitReleaseHandsEveryFanBack() throws {
-        try start(twoFans())
+    /// An explicit release puts every HELD fan back where it was found, and
+    /// touches nothing else.
+    ///
+    /// Rewritten from `testAnExplicitReleaseHandsEveryFanBack`, which asserted
+    /// the old rule — every fan on the machine written to its minimum. On this
+    /// hardware that pinned two silent fans at ~2320 rpm and called it a release.
+    func testAnExplicitReleasePutsHeldFansBackAndLeavesTheRestAlone() throws {
+        let hw = twoFans()
+        hw.seedTarget(0, 0)      // what automatic looks like here
+        hw.seedTarget(1, 0)
+        try start(hw)
         connect()
         send(.setTarget(FanTarget(index: 0, rpm: 5000)))
         hardware.clear()
+
         XCTAssertTrue(send(.releaseAll).ok)
-        XCTAssertEqual(hardware.writes, [FakeFans.Write(index: 0, rpm: 2317),
-                                         FakeFans.Write(index: 1, rpm: 2317)])
+        XCTAssertEqual(hardware.writes, [FakeFans.Write(index: 0, rpm: 0)],
+                       "fan 1 was never taken and must not be written to")
     }
 
     /// THE DEAD MAN'S SWITCH. The client vanishing — quit, crash or kill — hands
     /// the fans back with nothing running in the app to arrange it. Fans left
     /// pinned by software that is gone is the worst failure this feature has.
     func testTheFansAreReleasedWhenTheClientDisappears() throws {
-        try start(twoFans())
+        let hw = twoFans()
+        hw.seedTarget(0, 0)
+        try start(hw)
         connect()
         send(.setTarget(FanTarget(index: 0, rpm: 6000)))
         hardware.clear()
 
         link.disconnect()   // exactly what quitting and crashing both do
 
-        spin(until: { self.hardware.writes.count >= 2 })
-        XCTAssertEqual(hardware.writes, [FakeFans.Write(index: 0, rpm: 2317),
-                                         FakeFans.Write(index: 1, rpm: 2317)])
+        spin(until: { !self.hardware.writes.isEmpty })
+        XCTAssertEqual(hardware.writes, [FakeFans.Write(index: 0, rpm: 0)])
         XCTAssertFalse(server.hasWrittenATarget)
     }
 
     /// Stopping the helper itself (⌃C) is the other way out, and it releases too.
     func testStoppingTheHelperReleasesTheFans() throws {
-        try start(twoFans())
+        let hw = twoFans()
+        hw.seedTarget(1, 1750)   // a machine whose idle target is not zero
+        try start(hw)
         connect()
         send(.setTarget(FanTarget(index: 1, rpm: 6000)))
         hardware.clear()
 
         server.stop()
-        spin(until: { self.hardware.writes.count >= 2 })
-        XCTAssertEqual(Set(hardware.writes.map(\.index)), [0, 1])
-        XCTAssertTrue(hardware.writes.allSatisfy { $0.rpm == 2317 })
+        spin(until: { !self.hardware.writes.isEmpty })
+        XCTAssertEqual(hardware.writes, [FakeFans.Write(index: 1, rpm: 1750)],
+                       "the fan goes back to what it was doing, not to a number "
+                     + "this code chose")
+    }
+
+    /// Both fans taken, both put back — each to its OWN original, not to one
+    /// value the release picked.
+    func testEveryHeldFanGoesBackToItsOwnOriginal() throws {
+        let hw = twoFans()
+        hw.seedTarget(0, 0)
+        hw.seedTarget(1, 1750)
+        try start(hw)
+        connect()
+        send(.setTarget(FanTarget(index: 0, rpm: 5000)))
+        send(.setTarget(FanTarget(index: 1, rpm: 6000)))
+        // A second write to a fan we already hold must not become its "original".
+        send(.setTarget(FanTarget(index: 0, rpm: 7000)))
+        hardware.clear()
+
+        XCTAssertTrue(send(.releaseAll).ok)
+        XCTAssertEqual(hardware.writes, [FakeFans.Write(index: 0, rpm: 0),
+                                         FakeFans.Write(index: 1, rpm: 1750)])
     }
 
     /// A partial release must not be recorded as a success, or the next attempt
@@ -575,6 +712,30 @@ final class FanHelperServerTests: XCTestCase {
         XCTAssertFalse(send(.releaseAll).ok)
         XCTAssertTrue(server.hasWrittenATarget,
                       "a helper that failed to release must keep trying")
+
+        // And when the writes start working again, the fan still goes back to
+        // where it was found rather than to wherever the failed attempt left it.
+        hardware.refuseWrites = false
+        hardware.clear()
+        XCTAssertTrue(send(.releaseAll).ok)
+        XCTAssertEqual(hardware.writes, [FakeFans.Write(index: 0, rpm: 0)])
+        XCTAssertFalse(server.hasWrittenATarget)
+    }
+
+    /// A write the SMC refuses takes nothing, so it must not make the helper
+    /// believe it holds that fan — a helper that thinks it holds a fan it never
+    /// touched will write to it on the way out.
+    func testARefusedSetDoesNotMakeTheHelperThinkItHoldsTheFan() throws {
+        try start(twoFans())
+        connect()
+        hardware.refuseWrites = true
+        XCTAssertFalse(send(.setTarget(FanTarget(index: 0, rpm: 5000))).ok)
+        XCTAssertFalse(server.hasWrittenATarget)
+
+        hardware.refuseWrites = false
+        hardware.clear()
+        XCTAssertTrue(send(.releaseAll).ok)
+        XCTAssertTrue(hardware.writes.isEmpty)
     }
 
     // ── Test plumbing ───────────────────────────────────────────────────────
@@ -609,6 +770,9 @@ final class FakeFans: FanHardware {
     private var limitsByIndex: [Int: FanPolicy.Limits]
     private var recorded: [Write] = []
     private var refusing = false
+    /// Each fan's current target. A fan nobody has seeded reads nil, which is the
+    /// "its original could not be read" case rather than "it is at zero".
+    private var current: [Int: Double] = [:]
 
     init(_ limits: [Int: FanPolicy.Limits]) { limitsByIndex = limits }
 
@@ -640,7 +804,20 @@ final class FakeFans: FanHardware {
         lock.lock(); defer { lock.unlock() }
         guard !refusing else { return false }
         recorded.append(Write(index: index, rpm: rpm))
+        current[index] = rpm
         return true
+    }
+
+    /// The fan's current target — what a release restores. Seeded per fan so a
+    /// test can say what automatic looked like before anything was written, which
+    /// is the whole quantity the fixed release puts back.
+    func readTarget(index: Int) -> Double? {
+        lock.lock(); defer { lock.unlock() }
+        return current[index]
+    }
+
+    func seedTarget(_ index: Int, _ rpm: Double) {
+        lock.lock(); current[index] = rpm; lock.unlock()
     }
 }
 

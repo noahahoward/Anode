@@ -19,9 +19,10 @@ import PowerKit
 /// ─────────────────────────────────────────────────────────────────────────────
 /// HOW THE HELPER GETS STARTED, AND WHY IT IS THIS WAY.
 ///
-/// The app cannot become root, and it must not pretend to. Two routes were
-/// available and only one of them survives contact with this project's own trust
-/// model:
+/// The app cannot become root, and it must not pretend to. For STARTING A
+/// SESSION HELPER — the subject of this section; the install button below is a
+/// different decision and reaches a different answer — two routes were available
+/// and only one of them survives contact with this project's own trust model:
 ///
 ///   * `osascript`'s `do shell script … with administrator privileges` puts up
 ///     the system authentication dialog. It is one click and a password — and it
@@ -53,6 +54,27 @@ import PowerKit
 ///
 /// Nothing here elevates when a helper is already running. In that case a grab is
 /// just a socket write, with no prompt of any kind.
+///
+/// ─────────────────────────────────────────────────────────────────────────────
+/// AND THE OTHER BUTTON: INSTALL FAN HELPER.
+///
+/// Everything above is the SESSION path and it has not changed. What was added is
+/// an explicit, one-time install — the button, not the slider — that puts the
+/// helper somewhere only root can write and hands launchd a plist naming it.
+/// After that, fan control works with no prompt of any kind, across rebuilds and
+/// across reboots. `FanDaemon.swift` has the route, the evidence for it, and what
+/// it costs; `FanElevation` has the one authorisation.
+///
+/// The objection above — that a password box naming no path replaces a check by a
+/// person with a reflex — is answered rather than ignored. The sheet below names
+/// both files, the exact command and what is being given up, and the system
+/// dialog raised afterwards carries `FanElevation.installPrompt`, which names the
+/// two paths again. It is also a thing the user went looking for, once, rather
+/// than something that happens because they touched a slider.
+///
+/// A DEVELOPER SHOULD PROBABLY NOT PRESS IT. A rebuild does not break the install
+/// — that is the whole point — but the session helper is the stronger of the two
+/// and costs one command. The strip says so.
 /// ─────────────────────────────────────────────────────────────────────────────
 final class FanControlPanel: NSView {
 
@@ -89,6 +111,24 @@ final class FanControlPanel: NSView {
     private var startDeadline: Date?
     private var pollTimer: Timer?
 
+    /// Is the daemon installed, and what did it last say it speaks?
+    ///
+    /// `installed` is a file check and costs nothing, but it is a syscall on
+    /// every render, so it is cached and refreshed on the ticks that could have
+    /// changed it. `daemonVersion` comes from the helper's answer to `hello`.
+    private var installed = FanDaemon.isInstalled()
+    private var daemonVersion: Int?
+    /// True while a system authorisation dialog is up, so a second press cannot
+    /// stack two of them.
+    private var elevating = false
+
+    private var daemonState: FanDaemon.State {
+        FanDaemon.state(installed: installed,
+                        answered: { if case .connected = session.helper { return true }
+                                    return false }(),
+                        helloVersion: daemonVersion)
+    }
+
     private let stack = NSStackView()
     private let statusLabel = NSTextField(labelWithString: "")
     private let hintField = NSTextField(labelWithString: "")
@@ -122,6 +162,11 @@ final class FanControlPanel: NSView {
         self.fans = fans
         session.enabled = Settings.shared.fanControlEnabled
         if note != nil, Date().timeIntervalSince(noteAt) > Self.noteLifetime { note = nil }
+        // Re-read rather than cached forever: an uninstall can also be run from a
+        // terminal, and a strip still offering "Uninstall" for a daemon that is
+        // gone would be the one place a user could not see it. Skipped while a
+        // dialog is up, where the answer is about to arrive anyway.
+        if !elevating { installed = FanDaemon.isInstalled() }
         upkeep()
         render()
     }
@@ -181,6 +226,7 @@ final class FanControlPanel: NSView {
         // request the user queued.
         if case .starting = session.mode, case .notRunning = status { return }
 
+        if case .connected(_, let version) = status { daemonVersion = version }
         if case .connected = status {
             endPolling()
             lastPing = Date()
@@ -195,7 +241,7 @@ final class FanControlPanel: NSView {
 
     private static func helper(from status: FanControlLink.Status) -> FanSession.Helper {
         switch status {
-        case .connected(let n):           return .connected(fanCount: n)
+        case .connected(let n, _):        return .connected(fanCount: n)
         case .refused(let why):           return .refused(why)
         case .notRunning, .disconnected:  return .absent
         }
@@ -260,6 +306,13 @@ final class FanControlPanel: NSView {
     /// Start the privileged half, in front of the user. See the note at the top
     /// of this file for why it is a Terminal window and not a password box.
     private func startHelper() {
+        // An installed daemon is already running and already owns the socket, so
+        // a second helper is not what is wrong here — something else is, and
+        // opening a Terminal window would only make a mess of a working install.
+        if installed {
+            session.helperBecame(.absent)
+            return say(FanDaemon.summary(daemonState))
+        }
         let command = Self.startCommand()
         switch FanHelperLaunch.start(command: command) {
         case .openedTerminal:
@@ -362,6 +415,124 @@ final class FanControlPanel: NSView {
         NSPasteboard.general.setString(Self.startCommand(), forType: .string)
     }
 
+    // ── Installing ──────────────────────────────────────────────────────────
+
+    /// The helper inside this bundle — what would be copied to /Library.
+    ///
+    /// nil for a bare `swift build` binary, which has no bundle and signs under
+    /// an identifier the daemon would not accept. The install refuses those too,
+    /// with a message; this just keeps the button off the strip.
+    private static func bundledHelper() -> String? {
+        let bundle = Bundle.main.bundleURL
+        guard bundle.pathExtension == "app" else { return nil }
+        return bundle.appendingPathComponent("Contents/MacOS/BetterStatsHelper").path
+    }
+
+    @objc private func installTapped() {
+        guard !elevating else { return say("Finish the authorisation already on screen.") }
+        guard let helper = Self.bundledHelper() else {
+            return say("Only a bundled build can be installed. Run ./build-app.sh "
+                     + "and open ~/Applications/BetterStats.app.")
+        }
+        guard confirmInstall(helper: helper) else { return }
+        elevate(command: FanElevation.installCommand(helper: helper, ownerUID: getuid()),
+                prompt: FanElevation.installPrompt,
+                waiting: "Waiting for authorisation…",
+                done: "Fan control is installed. It will keep working after you "
+                    + "rebuild and after a reboot, with no more prompts.")
+    }
+
+    @objc private func uninstallTapped() {
+        guard !elevating else { return say("Finish the authorisation already on screen.") }
+        guard let helper = Self.bundledHelper() else {
+            return say("Only a bundled build can uninstall. Run "
+                     + "`sudo <BetterStats.app>/Contents/MacOS/BetterStatsHelper --uninstall`.")
+        }
+        elevate(command: FanElevation.uninstallCommand(helper: helper),
+                prompt: FanElevation.uninstallPrompt,
+                waiting: "Waiting for authorisation…",
+                done: "Removed. The fans are back on automatic and nothing of "
+                    + "BetterStats runs as root.")
+    }
+
+    /// One authorisation dialog, off the main thread.
+    ///
+    /// Off the main thread because the dialog is modal to the process that raised
+    /// it and the user may take a minute over it — on the main thread that is a
+    /// frozen window. The link is dropped first: an uninstall stops the daemon
+    /// under our open socket, and reconnecting from a stale fd would look to a
+    /// surviving helper like a second client.
+    private func elevate(command: String, prompt: String, waiting: String, done: String) {
+        elevating = true
+        say(waiting)
+        render()
+        link.disconnect()
+        session.helperBecame(.absent)
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let result = FanElevation.run(command: command, prompt: prompt)
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.elevating = false
+                self.installed = FanDaemon.isInstalled()
+                self.daemonVersion = nil
+                switch result {
+                case .done:
+                    self.say(done)
+                case .cancelled:
+                    // A refused authorisation is an answer, not a failure. Nothing
+                    // was written and nothing needs undoing.
+                    self.say("Cancelled — nothing was changed.")
+                case .failed(let why):
+                    self.say(why)
+                }
+                // The daemon launchd just started needs a moment to bind; the
+                // ordinary reconnect poll picks it up on the next tick.
+                self.lastConnectAttempt = .distantPast
+                self.render()
+            }
+        }
+    }
+
+    /// The disclosure, shown before the system's own dialog. See the note at the
+    /// top of this file: the objection to a password box is that it names
+    /// nothing, so this names everything.
+    private func confirmInstall(helper: String) -> Bool {
+        let alert = NSAlert()
+        alert.messageText = "Install the fan helper?"
+        alert.informativeText = """
+        This asks for your password ONCE and then never again — fan control keeps \
+        working after you rebuild BetterStats and after you restart the Mac.
+
+        It installs two files, both owned by root:
+          \(FanDaemon.helperPath)
+          \(FanDaemon.plistPath)
+
+        What you are giving up, plainly: from then on a root process is running \
+        at all times that will set a fan speed on request from your user account, \
+        within the minimum and maximum the fan itself reports. BetterStats has no \
+        Apple Developer ID, so it cannot prove to that process which program is \
+        asking — anything running as you can. Another user on this Mac cannot, \
+        and neither can anything at all before you install this.
+
+        The safer alternative is already on this strip: run the helper by hand \
+        when you want it, and stop it with ⌃C. It costs one command each session \
+        and it only ever trusts the exact build you started it beside.
+
+        "Uninstall Fan Helper" removes both files, unloads the daemon and hands \
+        the fans back.
+        """
+        let command = NSTextField(
+            labelWithString: FanElevation.installCommand(helper: helper, ownerUID: getuid()))
+        command.font = Palette.Font.mono(11)
+        command.isSelectable = true
+        command.lineBreakMode = .byTruncatingMiddle
+        command.frame = NSRect(x: 0, y: 0, width: 460, height: 18)
+        alert.accessoryView = command
+        alert.addButton(withTitle: "Install")
+        alert.addButton(withTitle: "Cancel")
+        return alert.runModal() == .alertFirstButtonReturn
+    }
+
     // ── Rendering ───────────────────────────────────────────────────────────
 
     private func render() {
@@ -380,14 +551,20 @@ final class FanControlPanel: NSView {
                     ? "Fan helper connected, but it found no fan it can control."
                     : "Fan helper connected. No fan is held — macOS is still deciding. "
                     + "Take a slider or press ❄︎ to change that."
+                hintField.stringValue = installed ? FanDaemon.summary(daemonState) : ""
+                setButtons(withInstall([("Turn Off", #selector(disableTapped))]))
+            } else if installed {
+                // The plist is there and nothing answered. launchd should have
+                // started it, so this is a fault and not a state to wait in.
+                statusLabel.stringValue = FanDaemon.summary(daemonState)
                 hintField.stringValue = ""
-                setButtons([("Turn Off", #selector(disableTapped))])
+                setButtons(withInstall([("Turn Off", #selector(disableTapped))]))
             } else {
                 statusLabel.stringValue = "Fan control is on and macOS is deciding. "
                                         + "Take a slider or press ❄︎ and you will be asked to start the helper."
                 hintField.stringValue = Self.startCommand()
-                setButtons([("Copy Start Command", #selector(copyCommandTapped)),
-                            ("Turn Off", #selector(disableTapped))])
+                setButtons(withInstall([("Copy Start Command", #selector(copyCommandTapped)),
+                                        ("Turn Off", #selector(disableTapped))]))
             }
 
         case .starting:
@@ -408,8 +585,8 @@ final class FanControlPanel: NSView {
         case .blocked(let why):
             statusLabel.stringValue = "The fan helper refused this app: \(why)"
             hintField.stringValue = Self.startCommand()
-            setButtons([("Copy Start Command", #selector(copyCommandTapped)),
-                        ("Turn Off", #selector(disableTapped))])
+            setButtons(withInstall([("Copy Start Command", #selector(copyCommandTapped)),
+                                    ("Turn Off", #selector(disableTapped))]))
         }
 
         if let note, !note.isEmpty { hintField.stringValue = note }
@@ -417,6 +594,17 @@ final class FanControlPanel: NSView {
         hintField.textColor = Palette.dim
         hintField.isHidden = hintField.stringValue.isEmpty
         onLayoutChanged?()
+    }
+
+    /// Put the install (or uninstall) button first, when there is one to offer.
+    /// First because it is the one that changes what runs as root, and burying
+    /// that at the end of a row would be a strange choice.
+    private func withInstall(_ items: [(String, Selector)]) -> [(String, Selector)] {
+        switch FanDaemon.button(installed: installed, bundled: Self.bundledHelper() != nil) {
+        case .install:   return [("Install Fan Helper…", #selector(installTapped))] + items
+        case .uninstall: return [("Uninstall Fan Helper…", #selector(uninstallTapped))] + items
+        case .none:      return items
+        }
     }
 
     private func rebuildFanRows(_ fans: [FanInfo]) {
