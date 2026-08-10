@@ -134,6 +134,43 @@ public enum FanGauge {
         return min(max(v, limits.minRPM), limits.maxRPM)
     }
 
+    /// The range one slider can drive every fan over: no lower than the highest
+    /// minimum, no higher than the lowest maximum.
+    ///
+    /// The INTERSECTION, not the union or an average. A single knob has one
+    /// number on it, and that number has to be legal for every fan it commands —
+    /// offering a speed one fan would refuse means a drag that half works, with
+    /// the refusal arriving as an error message about a fan the user was not
+    /// thinking about.
+    ///
+    /// nil when the fans have no speed in common, which is the honest answer for
+    /// a machine whose fans do not overlap: there, one slider cannot exist and
+    /// the strip stays split. Also nil for no fans at all.
+    public static func sharedLimits(_ limits: [FanPolicy.Limits]) -> FanPolicy.Limits? {
+        guard let first = limits.first else { return nil }
+        var low = first.minRPM, high = first.maxRPM
+        for l in limits.dropFirst() {
+            low = max(low, l.minRPM)
+            high = min(high, l.maxRPM)
+        }
+        guard high > low else { return nil }
+        return FanPolicy.Limits(minRPM: low, maxRPM: high)
+    }
+
+    /// The reading beside a synced slider: what every fan is doing, then the one
+    /// thing they were all told.
+    ///
+    /// Every fan's current speed is shown rather than an average, because two
+    /// fans given the same target do not run at the same rpm — the SMC arbitrates
+    /// per fan, and on this hardware 2317 written to both produced 2320 and 2502.
+    /// An average would hide exactly the disagreement worth seeing.
+    public static func syncedReadout(currents: [Double], asked: Double?) -> String {
+        let shown = currents.map { $0.isFinite ? String(format: "%.0f", $0) : "—" }
+        let now = shown.isEmpty ? "—" : shown.joined(separator: " · ")
+        guard let asked, asked.isFinite else { return "\(now) rpm" }
+        return String(format: "%@ → %.0f rpm", now, asked)
+    }
+
     /// The reading beside the knob.
     ///
     /// Two numbers only when there are two facts: what the fan is doing, and what
