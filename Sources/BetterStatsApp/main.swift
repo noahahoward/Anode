@@ -667,7 +667,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         let now = Date()
         totalSeries.append(.init(time: now, value: s.smoothed_pctHr))
         if let pct = s.state?.percent {
-            chargeSeries.append(.init(time: now, value: Double(pct)))
+            // `onPower` is what paints the charging spans green, and the LIVE
+            // series forgot it while the store-backed one (loadHistorySeries)
+            // has always set it. That is why 1H drew a charging span in the
+            // ordinary colour while 6H/24H/7D drew the same span green: the
+            // 1H view is this in-memory buffer, the rest come from SQLite.
+            //
+            // Same definition as the store's `on_battery` column, negated, so
+            // the two paths cannot disagree about what "charging" means.
+            chargeSeries.append(.init(time: now, value: Double(pct),
+                                      onPower: !(s.state?.onAC ?? true)))
         }
         let cutoff = now.addingTimeInterval(-graphSpan)
         totalSeries.removeAll { $0.time < cutoff }
