@@ -543,6 +543,11 @@ final class FanControlPanel: NSView {
             statusLabel.stringValue = "Fan control is off — macOS is deciding. "
                                     + "The sliders are live readings; take one to turn it on."
             hintField.stringValue = ""
+            // withInstall, like every other state. Installing is SETUP — "make
+            // this work from now on" — so the state where fan control has never
+            // been turned on is the first place it should be offered, not the
+            // one place it is hidden. It was missing here, which put the button
+            // behind the very flow it exists to replace.
             setButtons([("Turn On Fan Control…", #selector(enableTapped))])
 
         case .automatic:
@@ -552,41 +557,45 @@ final class FanControlPanel: NSView {
                     : "Fan helper connected. No fan is held — macOS is still deciding. "
                     + "Take a slider or press ❄︎ to change that."
                 hintField.stringValue = installed ? FanDaemon.summary(daemonState) : ""
-                setButtons(withInstall([("Turn Off", #selector(disableTapped))]))
+                setButtons([("Turn Off", #selector(disableTapped))])
             } else if installed {
                 // The plist is there and nothing answered. launchd should have
                 // started it, so this is a fault and not a state to wait in.
                 statusLabel.stringValue = FanDaemon.summary(daemonState)
                 hintField.stringValue = ""
-                setButtons(withInstall([("Turn Off", #selector(disableTapped))]))
+                setButtons([("Turn Off", #selector(disableTapped))])
             } else {
                 statusLabel.stringValue = "Fan control is on and macOS is deciding. "
                                         + "Take a slider or press ❄︎ and you will be asked to start the helper."
                 hintField.stringValue = Self.startCommand()
-                setButtons(withInstall([("Copy Start Command", #selector(copyCommandTapped)),
-                                        ("Turn Off", #selector(disableTapped))]))
+                setButtons([("Copy Start Command", #selector(copyCommandTapped)),
+                            ("Turn Off", #selector(disableTapped))])
             }
 
         case .starting:
             statusLabel.stringValue = "Waiting for the fan helper — a Terminal window is open. "
                                     + "Read the command, authenticate, and this connects on its own."
             hintField.stringValue = Self.startCommand()
+            // An authorisation is already on screen; a second one to install
+            // would be two password boxes for one intention.
             setButtons([("Cancel", #selector(releaseTapped)),
-                        ("Turn Off", #selector(disableTapped))])
+                        ("Turn Off", #selector(disableTapped))], offeringInstall: false)
 
         case .manual(let count):
             statusLabel.stringValue = count == 1
                 ? "1 fan under manual control. ✕ hands them all back."
                 : "\(count) fans under manual control. ✕ hands them all back."
             hintField.stringValue = ""
+            // Fans are held right now. Handing them back comes first; changing
+            // what runs as root while they are pinned does not belong here.
             setButtons([("Return to Automatic", #selector(releaseTapped)),
-                        ("Turn Off", #selector(disableTapped))])
+                        ("Turn Off", #selector(disableTapped))], offeringInstall: false)
 
         case .blocked(let why):
             statusLabel.stringValue = "The fan helper refused this app: \(why)"
             hintField.stringValue = Self.startCommand()
-            setButtons(withInstall([("Copy Start Command", #selector(copyCommandTapped)),
-                                    ("Turn Off", #selector(disableTapped))]))
+            setButtons([("Copy Start Command", #selector(copyCommandTapped)),
+                        ("Turn Off", #selector(disableTapped))])
         }
 
         if let note, !note.isEmpty { hintField.stringValue = note }
@@ -719,7 +728,17 @@ final class FanControlPanel: NSView {
         return button
     }
 
-    private func setButtons(_ items: [(String, Selector)]) {
+    /// Set the button row, offering the install/uninstall button unless a state
+    /// explicitly says not to.
+    ///
+    /// Opt-OUT, not opt-in. This was opt-in, and the one state that forgot to opt
+    /// in was `.off` — the state a fresh install starts in, and the only one the
+    /// button really matters in. A default that has to be remembered in every
+    /// branch is a default that will be missed in one of them, and the miss is
+    /// invisible: the code reads fine and the button is simply not there.
+    private func setButtons(_ items: [(String, Selector)],
+                            offeringInstall: Bool = true) {
+        let items = offeringInstall ? withInstall(items) : items
         let titles = items.map(\.0)
         guard titles != buttonRow.arrangedSubviews.compactMap({ ($0 as? NSButton)?.title }) else {
             return
