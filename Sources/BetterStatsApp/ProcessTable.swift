@@ -45,8 +45,10 @@ final class Row: NSObject {
     let system: SystemAttribution.Row?
     /// This app's share of the measured GPU rail. Always apportioned.
     let gpu: SystemAttribution.Row?
-    /// Fraction of all attributed GPU time this row accounts for, 0…1. Apportioned
-    /// like everything else GPU-side.
+    /// Fraction of the CURRENT attributed GPU rate this row accounts for, 0…1 —
+    /// the same quantity `gpu.watts` was divided on, so the two columns cannot
+    /// disagree. Not a fraction of the hour's accumulated GPU time, which is a
+    /// different question and is answered by the GPU time column.
     let gpuTimeShare: Double?
     /// Percent of battery consumed over the trailing on-battery window. nil until
     /// the history store has data for this app — shown as "—", never as 0, because
@@ -262,17 +264,26 @@ enum ProcessColumns {
             ProcessColumn(
                 id: "procs", title: "Procs", width: 54,
                 tooltip: "How many processes this app is running. Blank for one.",
-                text: { r in (r.procs > 1 ? "\(r.procs)" : "—", true) },
+                // A real count is drawn at full strength. It used to be dimmed
+                // unconditionally, so "37" — an app with thirty-seven helpers, which
+                // is the whole reason this column exists — wore the same grey as the
+                // "—" beside it and read as another absence.
+                text: { r in r.procs > 1 ? ("\(r.procs)", false) : ("—", true) },
                 value: { $0.app.map { Double($0.processCount) } }),
 
             ProcessColumn(
                 id: "cpu", title: "% CPU", width: 66,
                 tooltip: "Percent of ONE core, Activity Monitor's convention: a busy "
                        + "four-thread process reads 400%.",
+                // An idle app is MEASURED at nothing; a coalition row has no CPU
+                // reading at all. Both used to print "—", which is the one thing
+                // this table's own rule says that glyph may not mean. A process we
+                // sampled and found asleep now says so.
                 text: { r in
                     guard let a = r.app else { return ("—", true) }
-                    return (a.cpuPercent < 0.1 ? "—" : String(format: "%.1f", a.cpuPercent),
-                            a.cpuPercent < 0.1)
+                    if a.cpuPercent <= 0 { return ("0", true) }
+                    return a.cpuPercent < 0.1 ? ("<0.1", true)
+                                              : (String(format: "%.1f", a.cpuPercent), false)
                 },
                 value: { $0.app?.cpuPercent }),
 
@@ -303,19 +314,31 @@ enum ProcessColumns {
                 // two invented ones.
                 tooltip: "Bytes per second read AND written, combined. The per-process "
                        + "sampler sums the two counters, so this app cannot split them.",
+                // Same rule as % CPU: a sampled process that moved no bytes is a
+                // measured zero, not a missing reading. "0" rather than "0 B/s"
+                // because a zero rate has no unit worth the width in a table this
+                // wide — the header already says what the column measures.
                 text: { r in
-                    guard let a = r.app, a.diskBytesPerSec >= 1 else { return ("—", true) }
+                    guard let a = r.app else { return ("—", true) }
+                    guard a.diskBytesPerSec >= 1 else { return ("0", true) }
                     return (MetricUnit.bytesPerSecond.format(a.diskBytesPerSec), false)
                 },
                 value: { $0.app?.diskBytesPerSec }),
 
             ProcessColumn(
                 id: "gpuPct", title: "GPU %", width: 62, isModeled: true,
-                tooltip: "Share of all GPU time in the rollup window. Apportioned from "
-                       + "Apple's coalition rollup, never measured per process — macOS "
-                       + "exposes no per-process GPU utilisation.",
+                tooltip: "Share of the GPU work happening NOW, on the same rate the GPU "
+                       + "%/hr column beside it was divided on — not a share of the "
+                       + "hour's accumulated GPU time. Apportioned from Apple's coalition "
+                       + "rollup, never measured per process: macOS exposes no "
+                       + "per-process GPU utilisation.",
+                // A coalition that appears in the rollup with no GPU time did no
+                // GPU work; a row the rollup never named has no GPU reading. The
+                // three GPU columns below draw that distinction the same way the
+                // measured columns above do.
                 text: { r in
-                    guard let s = r.gpuTimeShare, s > 0 else { return ("—", true) }
+                    guard let s = r.gpuTimeShare else { return ("—", true) }
+                    guard s > 0 else { return ("0", true) }
                     let pct = s * 100
                     return (pct < 0.1 ? "<0.1" : String(format: "%.1f", pct), false)
                 },
@@ -327,7 +350,8 @@ enum ProcessColumns {
                        + "window. Apple's own counter, at coalition granularity rather "
                        + "than per process, and lagging by up to a minute.",
                 text: { r in
-                    guard let ms = r.gpu?.gpu_ms, ms > 0 else { return ("—", true) }
+                    guard let ms = r.gpu?.gpu_ms else { return ("—", true) }
+                    guard ms > 0 else { return ("0", true) }
                     return (ms >= 1000 ? String(format: "%.1f s", Double(ms) / 1000)
                                        : "\(ms) ms", false)
                 },
@@ -338,7 +362,8 @@ enum ProcessColumns {
                 tooltip: "The measured GPU rail's percent-per-hour, split by coalition "
                        + "GPU time. The rail is measured; this row's share of it is not.",
                 text: { r in
-                    guard let v = r.gpu?.percentPerHour, v > 0 else { return ("—", true) }
+                    guard let v = r.gpu?.percentPerHour else { return ("—", true) }
+                    guard v > 0 else { return ("0", true) }
                     return (v < 0.01 ? "<0.01" : String(format: "%.2f", v), v < 0.01)
                 },
                 value: { $0.gpu?.percentPerHour }),
@@ -396,11 +421,23 @@ enum ProcessRowBuilder {
             // bundle id can still find its GPU share.
             gpuByKey[g.name.lowercased()] = g
         }
-        let totalGPUms = gpuApps.reduce(0.0) { $0 + Double($1.gpu_ms) }
+        // Divided on the RATE, not on the hour totals.
+        //
+        // `Row.watts` is apportioned by `gpuRate_msPerS` — the coalition's most
+        // recent measurable GPU rate — because weighting present-tense watts by an
+        // hour of history put 52% of the bucket on the wrong process. A share
+        // recomputed from `gpu_ms` therefore describes a different quantity from
+        // the watts it sits beside: the GPU % column and the GPU %/hr column would
+        // disagree, sometimes by an order of magnitude, three inches apart on one
+        // row. The hour totals are still shown, in the column that says it is
+        // showing them.
+        let totalGPURate = gpuApps.reduce(0.0) { $0 + $1.gpuRate_msPerS }
 
         func share(_ g: SystemAttribution.Row?) -> Double? {
-            guard let g, totalGPUms > 0 else { return nil }
-            return Double(g.gpu_ms) / totalGPUms
+            // No current GPU activity anywhere means "this row's share of it" has
+            // no answer, which is a "—" and not a zero.
+            guard let g, totalGPURate > 0 else { return nil }
+            return g.gpuRate_msPerS / totalGPURate
         }
 
         var claimedGPU = Set<String>()

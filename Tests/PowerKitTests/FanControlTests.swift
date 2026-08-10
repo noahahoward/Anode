@@ -361,6 +361,14 @@ final class FanHelperServerTests: XCTestCase {
     }
 
     @discardableResult
+    private func ping() -> FanControlLink.Status {
+        var result: FanControlLink.Status?
+        link.ping { result = $0 }
+        spin(until: { result != nil })
+        return result ?? .disconnected
+    }
+
+    @discardableResult
     private func send(_ command: FanCommand) -> FanReply {
         var result: FanReply?
         link.send(command) { result = $0 }
@@ -414,6 +422,43 @@ final class FanHelperServerTests: XCTestCase {
         let orphan = FanControlLink(socketPath: NSTemporaryDirectory() + "bs-fan-absent.sock")
         var status: FanControlLink.Status?
         orphan.connect { status = $0 }
+        spin(until: { status != nil })
+        XCTAssertEqual(status, .notRunning)
+    }
+
+    // ── Is it still there? ──────────────────────────────────────────────────
+
+    /// The liveness check has to be free of consequences, because it runs on a
+    /// timer for as long as the tab is open. `hello` writes nothing.
+    func testAPingConfirmsTheHelperAndWritesNothing() throws {
+        try start(twoFans())
+        connect()
+        send(.setTarget(FanTarget(index: 0, rpm: 4000)))
+        hardware.clear()
+
+        XCTAssertEqual(ping(), .connected(fanCount: 2))
+        XCTAssertTrue(hardware.writes.isEmpty, "a liveness check must not touch a fan")
+    }
+
+    /// A helper stopped with ⌃C while nothing is being dragged is otherwise
+    /// invisible to the app: our end of the socket stays open until something
+    /// tries to use it, and until then the strip would go on claiming manual
+    /// control of fans that were handed back seconds ago.
+    func testAPingNoticesAHelperThatHasGone() throws {
+        try start(twoFans())
+        connect()
+        XCTAssertEqual(ping(), .connected(fanCount: 2))
+
+        server.stop()
+        spin(until: { self.thread.isFinished })
+        XCTAssertEqual(ping(), .notRunning)
+    }
+
+    /// Pinging a link that was never connected is a question, not an error.
+    func testAPingWithNoConnectionSaysSoRatherThanOpeningOne() {
+        let orphan = FanControlLink(socketPath: NSTemporaryDirectory() + "bs-fan-absent.sock")
+        var status: FanControlLink.Status?
+        orphan.ping { status = $0 }
         spin(until: { status != nil })
         XCTAssertEqual(status, .notRunning)
     }

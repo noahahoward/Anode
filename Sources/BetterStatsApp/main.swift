@@ -516,6 +516,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
             // single residual rather than showing a bucket we cannot justify.
             unattributed_pctHr: s.platform_pctHr ?? s.residual_pctHr ?? 0,
             total_pctHr: s.smoothed_pctHr,
+            // The bar is laid out across the SPAN, printed as the TOTAL. They are
+            // the same number except in the seconds after a load spike, when
+            // instantaneous attributed energy can exceed a total still anchored to
+            // the gauge's 60 s mean — and then the bar would otherwise render
+            // "apps = 100% of the machine". Nothing is clamped and the overflow
+            // alarm still fires; only the denominator gives way.
+            span_pctHr: s.ledgerSpan_pctHr,
             source: s.smcTotal_W != nil
                 ? "PSTR" + (s.smcGain.map { String(format: " ×%.2f", $0) } ?? "")
                 : (s.measured_W != nil ? "gas gauge" : "estimating"),

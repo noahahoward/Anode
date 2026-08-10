@@ -34,12 +34,17 @@ private func makeApp(name: String,
              diskBytesPerSec: disk)
 }
 
+/// `gpuRate` defaults to the hour total spread evenly, which is the only case in
+/// which the two bases agree — tests that care about the difference state it.
 private func makeAttributed(name: String, bundleID: String = "",
                             pctHr: Double = 0.5,
                             gpu_ms: UInt64 = 0,
+                            gpuRate: Double? = nil,
                             isSystem: Bool = true) -> SystemAttribution.Row {
     SystemAttribution.Row(bundleID: bundleID, name: name, watts: 0.3,
                           percentPerHour: pctHr, cpu_ms: 100, gpu_ms: gpu_ms,
+                          cpuRate_msPerS: 1,
+                          gpuRate_msPerS: gpuRate ?? Double(gpu_ms) / 3600,
                           isSystem: isSystem)
 }
 
@@ -164,6 +169,44 @@ final class ProcessCellHonestyTests: XCTestCase {
         let row = makeRow(app: makeApp(name: "Idle", pctHr: 0, cpu: 0.4, disk: 0))
         XCTAssertEqual(column("pctHr").text(row).text, "<0.01")
         XCTAssertEqual(column("cpu").text(row).text, "0.4")
+    }
+
+    /// The other end of the same rule, and the end this table got wrong in five
+    /// of its twelve columns. A process we SAMPLED and found doing nothing is a
+    /// measured zero; only a row we could not sample at all is a "—". % CPU, Disk
+    /// I/O and all three GPU columns printed the dash for both, which made an
+    /// idle app indistinguishable from a coalition with no reading behind it.
+    func testASampledButIdleReadingIsAZeroAndNotADash() {
+        let idle = makeRow(app: makeApp(name: "Idle", cpu: 0, disk: 0),
+                           gpu: makeAttributed(name: "Idle", pctHr: 0, gpu_ms: 0),
+                           gpuTimeShare: 0)
+        for id in ["cpu", "disk", "gpuPct", "gputime", "gpuPctHr"] {
+            let (text, dim) = column(id).text(idle)
+            XCTAssertEqual(text, "0", "\(id) drew a measured zero as an absence")
+            XCTAssertTrue(dim, "\(id) drew a zero at full strength")
+        }
+    }
+
+    /// Below the column's resolution but still measured says so, in the same form
+    /// %/hr and % Mem already use. Not "—", which would claim it was never read,
+    /// and not a rounded "0.0", which would claim a precision it does not have.
+    func testAReadingBelowTheColumnsResolutionSaysSoRatherThanVanishing() {
+        let (text, dim) = column("cpu").text(makeRow(app: makeApp(name: "Quiet", cpu: 0.05)))
+        XCTAssertEqual(text, "<0.1")
+        XCTAssertTrue(dim)
+    }
+
+    /// A count of one is not drawn — the tooltip says as much, and a column of
+    /// "1" down forty rows is width spent on nothing. A real count IS drawn, at
+    /// full strength: it used to be dimmed unconditionally, so an app running
+    /// thirty-seven helpers wore the same grey as the "—" beside it.
+    func testARealProcessCountIsNotDimmedLikeAnAbsence() {
+        let many = column("procs").text(makeRow(app: makeApp(name: "A", procs: 37)))
+        XCTAssertEqual(many.text, "37")
+        XCTAssertFalse(many.dim, "a real process count was drawn as an absence")
+        let one = column("procs").text(makeRow(app: makeApp(name: "B", procs: 1)))
+        XCTAssertEqual(one.text, "—")
+        XCTAssertTrue(one.dim)
     }
 
     func testMemoryPercentIsOfInstalledRAM() {
@@ -323,6 +366,37 @@ final class ProcessRowBuilderTests: XCTestCase {
         let byName = Dictionary(uniqueKeysWithValues: rows.map { ($0.name, $0) })
         XCTAssertEqual(byName["A"]?.gpuTimeShare ?? 0, 0.75, accuracy: 1e-9)
         XCTAssertEqual(byName["B"]?.gpuTimeShare ?? 0, 0.25, accuracy: 1e-9)
+    }
+
+    /// The share is divided on the SAME quantity the watts were: the current GPU
+    /// rate, not the hour's accumulated GPU time.
+    ///
+    /// The two disagree exactly when it matters — a coalition that hammered the
+    /// GPU an hour ago and stopped still owns most of `gpu_ms` while owning none
+    /// of the rail right now. Taking the share from the hour totals put GPU % and
+    /// GPU %/hr side by side in one row describing the same thing and disagreeing
+    /// by an order of magnitude.
+    func testGPUShareFollowsTheRateTheWattsWereDividedOn() {
+        // A did the work an hour ago (900 of the 1000 ms) and has stopped; B is
+        // the one on the GPU now.
+        let rows = build(gpu: [makeAttributed(name: "A", gpu_ms: 900, gpuRate: 1),
+                               makeAttributed(name: "B", gpu_ms: 100, gpuRate: 9)])
+        let byName = Dictionary(uniqueKeysWithValues: rows.map { ($0.name, $0) })
+        XCTAssertEqual(byName["B"]?.gpuTimeShare ?? 0, 0.9, accuracy: 1e-9,
+                       "the share came from the hour total, not the rate")
+        XCTAssertEqual(byName["A"]?.gpuTimeShare ?? 0, 0.1, accuracy: 1e-9)
+    }
+
+    /// Nothing is using the GPU right now, so "this row's share of it" has no
+    /// answer. That is a "—", and it must not become a zero — nor a share taken
+    /// from an hour of history the watts were not divided on.
+    func testNoCurrentGPUActivityLeavesTheShareUnanswered() {
+        let rows = build(gpu: [makeAttributed(name: "A", gpu_ms: 900, gpuRate: 0),
+                               makeAttributed(name: "B", gpu_ms: 100, gpuRate: 0)])
+        for r in rows {
+            XCTAssertNil(r.gpuTimeShare, "\(r.name) invented a share of no activity")
+            XCTAssertEqual(column("gpuPct").text(r).text, "—")
+        }
     }
 
     // ── Which rows earn a place ─────────────────────────────────────────────

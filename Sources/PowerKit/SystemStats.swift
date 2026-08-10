@@ -60,12 +60,57 @@ public struct CoalitionUsage {
     /// id, otherwise the last reverse-DNS component ("com.apple.WindowServer"
     /// -> "WindowServer").
     public let displayName: String
+    /// Totals over the WHOLE window — an hour of history. Correct for "what has
+    /// this coalition done today"; wrong for "what is it doing now", which is what
+    /// apportionment divides. See the rates below.
     public let cpu_ms: UInt64
     public let gpu_ms: UInt64
+    /// CPU-milliseconds burned per second of wall clock, over the coalition's TWO
+    /// MOST RECENT observations of its cumulative counter.
+    ///
+    /// This, not `cpu_ms`, is the apportionment weight. The watts being divided are
+    /// current; an hour of history is not. Measured against the processes rusage
+    /// CAN read, share-normalised so any level bias cancels (n = 28): dividing by
+    /// the hour totals put 52.0 % of the bucket on the wrong process, agreed with
+    /// truth within 2x only half the time, spread 217-fold, and got the TOP ROW
+    /// wrong — the real leader (53.8 % of the bucket) was handed 14.4 %, a 0.27x,
+    /// while a coalition genuinely using 1.4 % was crowned at 14.1x. Coalitions
+    /// busy an hour ago were overstated 10-17x and coalitions busy now understated
+    /// 3-12x.
+    ///
+    /// The WINDOW stays an hour, because membership collapses below it (2
+    /// coalitions at 5 minutes, 383 at 30, 440 at 60 — see `SystemAttribution`).
+    /// Only the weight changes. Measured on this machine's store: 70 % of 966
+    /// coalitions have two or more records to difference, the median gap between
+    /// the last two is 96 s, and 65 % have a record less than 5 minutes old. So
+    /// this is ~96 s of resolution in place of 3600 s, out of records already
+    /// parsed and at no additional cost.
+    ///
+    /// Zero when the coalition has no rate — see `SystemStats.usage` for what that
+    /// means and why zero (i.e. no share) is the honest answer there.
+    public let cpuRate_msPerS: Double
+    public let gpuRate_msPerS: Double
     /// 0…1: this coalition's fraction of the total energy-score delta across
     /// the window. Weight, not a measurement of absolute energy.
     public let energyShare: Double
     public let isSystem: Bool
+
+    /// Spelled out rather than left to the memberwise default so that adding a
+    /// counter later cannot silently leave a construction site handing out a zero
+    /// weight — the rates are the apportionment, and a silent zero deletes a row.
+    public init(bundleID: String, displayName: String,
+                cpu_ms: UInt64, gpu_ms: UInt64,
+                cpuRate_msPerS: Double, gpuRate_msPerS: Double,
+                energyShare: Double, isSystem: Bool) {
+        self.bundleID = bundleID
+        self.displayName = displayName
+        self.cpu_ms = cpu_ms
+        self.gpu_ms = gpu_ms
+        self.cpuRate_msPerS = cpuRate_msPerS
+        self.gpuRate_msPerS = gpuRate_msPerS
+        self.energyShare = energyShare
+        self.isSystem = isSystem
+    }
 }
 
 public enum SystemStats {
@@ -114,8 +159,14 @@ public enum SystemStats {
     /// Differences per-cid, rolls up per-app, sorted by energyShare descending.
     public static func usage(since: Date, until: Date? = nil,
                              timeout: TimeInterval = 30) -> [CoalitionUsage] {
-        let raws = rawEvents(since: since, until: until, timeout: timeout)
+        rollup(rawEvents(since: since, until: until, timeout: timeout), since: since)
+    }
 
+    /// The rollup as a pure function of the parsed records, split out from the
+    /// subprocess so the differencing — and above all the RATE the apportionment
+    /// divides by — can be tested against known records instead of against
+    /// whatever this machine's sysmond store happens to contain today.
+    static func rollup(_ raws: [Raw], since: Date) -> [CoalitionUsage] {
         // Per-cid deltas. Records arrive chronologically, but sort defensively:
         // an out-of-order pair would masquerade as a counter reset and inflate
         // the delta.
@@ -182,6 +233,55 @@ public enum SystemStats {
                 }
                 prev = r
             }
+
+            // ── The apportionment weight: a RATE, from the most recent pair ──
+            //
+            // Everything above accumulates an HOUR. What divides the measured watts
+            // is this: the last two OBSERVATIONS of the cumulative counter, which
+            // on this machine are a median of 96 s apart. See
+            // `CoalitionUsage.cpuRate_msPerS` for the measurement that forced it.
+            //
+            // A BIRTH is an observation — of the counter at zero — so a coalition
+            // born inside the window has a rate from its first record alone, and a
+            // freshly spawned process burning CPU right now is not invisible for
+            // want of a second record.
+            //
+            // A coalition with ONE record that predates the window gets NO rate and
+            // therefore no share, deliberately. Its single cumulative reading is a
+            // LEVEL, not a rate: there is no earlier observation to difference it
+            // against, and the quantity being divided is a rate. The alternatives
+            // are both worse: dividing that level by the window length invents a
+            // sixty-minute average nobody measured, and dividing it by nothing at
+            // all is what the defect did.
+            //
+            // The coalition that HAS a window total but no recent activity is the
+            // one this is really about, and it keeps its total — the hour is real
+            // history and is still reported — while its weight goes to zero and it
+            // stays in the list for the coverage gate to count. Taking nothing
+            // costs the other rows nothing: shares are normalised over the
+            // candidates' total weight, and a zero adds zero.
+            let newest = g[g.count - 1]
+            var dt = 0.0
+            var dcpu: UInt64 = 0, dgpu: UInt64 = 0
+            if newest.runtime_s > 0,
+               g.count == 1 || born(of: newest) > g[g.count - 2].sample.timestamp.addingTimeInterval(5) {
+                // Born (or reborn) since the previous observation: the cumulative
+                // values ARE the delta, over the coalition's whole life so far.
+                if born(of: newest) >= since.addingTimeInterval(-5) {
+                    dt = Double(newest.runtime_s)
+                    dcpu = newest.sample.cpu_ms
+                    dgpu = newest.sample.gpu_ms
+                }
+            } else if g.count >= 2 {
+                let prior = g[g.count - 2]
+                dt = newest.sample.timestamp.timeIntervalSince(prior.sample.timestamp)
+                dcpu = delta(prior.sample.cpu_ms, newest.sample.cpu_ms)
+                dgpu = delta(prior.sample.gpu_ms, newest.sample.gpu_ms)
+            }
+            if dt > 0 {
+                creditRate(&byApp, appKey(newest.sample.bundleID),
+                           Double(dcpu) / dt, Double(dgpu) / dt)
+            }
         }
 
         let totalEnergy = byApp.values.reduce(0) { $0 + $1.energy }
@@ -193,6 +293,8 @@ public enum SystemStats {
                 displayName: displayName(forBundleID: key),
                 cpu_ms: acc.cpu,
                 gpu_ms: acc.gpu,
+                cpuRate_msPerS: acc.cpuRate,
+                gpuRate_msPerS: acc.gpuRate,
                 energyShare: totalEnergy > 0 ? acc.energy / totalEnergy : 0,
                 isSystem: key == unknownKey || key.hasPrefix("com.apple."))
         }
@@ -203,12 +305,15 @@ public enum SystemStats {
 
     /// The events we hand out plus the one field the public struct doesn't
     /// carry: cumulative coalition runtime, needed for birth-time detection.
-    private struct Raw {
+    struct Raw {
         let sample: CoalitionSample
         let runtime_s: UInt64
     }
 
-    private struct Acc { var cpu: UInt64 = 0; var gpu: UInt64 = 0; var energy: Double = 0 }
+    private struct Acc {
+        var cpu: UInt64 = 0; var gpu: UInt64 = 0; var energy: Double = 0
+        var cpuRate = 0.0; var gpuRate = 0.0
+    }
 
     private static func credit(_ byApp: inout [String: Acc], _ key: String,
                                _ cpu: UInt64, _ gpu: UInt64, _ energy: Double) {
@@ -216,6 +321,17 @@ public enum SystemStats {
         acc.cpu += cpu
         acc.gpu += gpu
         acc.energy += energy
+        byApp[key] = acc
+    }
+
+    /// Rates SUM across the cids that roll up to one bundle id, for the same reason
+    /// the totals do: an app whose helpers each burn a core is using both cores,
+    /// and the two coalitions are two independent measurements of the same app.
+    private static func creditRate(_ byApp: inout [String: Acc], _ key: String,
+                                   _ cpu: Double, _ gpu: Double) {
+        var acc = byApp[key] ?? Acc()
+        acc.cpuRate += cpu
+        acc.gpuRate += gpu
         byApp[key] = acc
     }
 

@@ -408,8 +408,10 @@ final class HoverTableView: NSTableView {
 final class BetterStatsHeaderCell: NSTableHeaderCell {
 
     /// Uppercase, small, and monospaced so twelve headers read as a row of labels
-    /// rather than twelve differently-shaped words.
-    static let font = Palette.Font.mono(9.5, .semibold)
+    /// rather than twelve differently-shaped words. Now the shared small-label
+    /// voice, which the graph's axis name and the Resources card titles also
+    /// wear — three surfaces doing the same job in one typeface.
+    static let font = Palette.Font.label()
 
     override func draw(withFrame cellFrame: NSRect, in controlView: NSView) {
         Palette.surfaceAlt.setFill()
@@ -432,18 +434,32 @@ final class BetterStatsHeaderCell: NSTableHeaderCell {
     override func drawInterior(withFrame cellFrame: NSRect, in controlView: NSView) {
         let text = stringValue
         guard !text.isEmpty else { return }
-        let attrs: [NSAttributedString.Key: Any] = [
-            .font: Self.font,
-            .foregroundColor: Palette.faint,
-            .kern: 0.4,
-        ]
-        let string = text.uppercased() as NSString
-        let size = string.size(withAttributes: attrs)
+        let attrs = Palette.labelAttributes(Palette.faint)
+
+        // The estimate mark gets its own run, in the brighter ink.
+        //
+        // It is the most load-bearing character in the header — it is the whole
+        // difference between a measured column and an apportioned one — and set
+        // in the same grey as the word beside it at 9.5 pt it was the least
+        // visible thing in the row. Brighter, not coloured: a colour would make a
+        // claim about what KIND of estimate it is, and the tooltip is where that
+        // is said properly.
+        let marked = text.hasSuffix("*")
+        let base = (marked ? String(text.dropLast()) : text).uppercased() as NSString
+        let mark = "*" as NSString
+        var markAttrs = attrs
+        markAttrs[.foregroundColor] = Palette.dim
+
+        let baseSize = base.size(withAttributes: attrs)
+        let markSize: NSSize = marked ? mark.size(withAttributes: markAttrs) : .zero
         let x = alignment == .right
-            ? cellFrame.maxX - size.width
+            ? cellFrame.maxX - baseSize.width - markSize.width
             : cellFrame.minX
-        string.draw(at: NSPoint(x: x, y: cellFrame.midY - size.height / 2),
-                    withAttributes: attrs)
+        let y = cellFrame.midY - baseSize.height / 2
+        base.draw(at: NSPoint(x: x, y: y), withAttributes: attrs)
+        if marked {
+            mark.draw(at: NSPoint(x: x + baseSize.width, y: y), withAttributes: markAttrs)
+        }
     }
 }
 
@@ -467,13 +483,31 @@ final class BetterStatsRowView: NSTableRowView {
         return myRow >= 0 && myRow == table.hoveredRow
     }
 
+    /// The selected row: the wash, plus a hard accent edge down its leading side.
+    ///
+    /// Selection and hover were the same shape in the same colour at two
+    /// strengths — a difference you can only judge with both on screen at once,
+    /// and they never are, because the pointer is on the hovered row. The edge is
+    /// a second, categorical signal rather than a louder version of the first:
+    /// hover washes, selection is MARKED. Clipped to the pill so it follows the
+    /// same curve instead of squaring off two of its corners.
+    private func fillSelection() {
+        Palette.selection.setFill()
+        let shape = pill
+        shape.fill()
+        NSGraphicsContext.saveGraphicsState()
+        shape.addClip()
+        Palette.accent.setFill()
+        NSRect(x: 6, y: bounds.minY, width: 2.5, height: bounds.height).fill()
+        NSGraphicsContext.restoreGraphicsState()
+    }
+
     override func drawSelection(in dirtyRect: NSRect) {
         // NO style guard here. NSTableView propagates its own selectionHighlightStyle
         // to its row views, and the table is set to .none precisely BECAUSE we draw
         // the selection ourselves — so guarding on it made this method return early
         // and the selection never appeared at all.
-        Palette.selection.setFill()
-        pill.fill()
+        fillSelection()
     }
 
     /// AppKit only calls drawSelection when it believes the row is selected AND the
@@ -482,8 +516,7 @@ final class BetterStatsRowView: NSTableRowView {
 
     override func drawBackground(in dirtyRect: NSRect) {
         if shouldDrawSelection {
-            Palette.selection.setFill()
-            pill.fill()
+            fillSelection()
             return   // no hairline under a rounded selection
         }
         if isHovered {

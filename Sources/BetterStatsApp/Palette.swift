@@ -43,7 +43,14 @@ enum Palette {
     static var faint: NSColor { pick(hex(0x6E838F), hex(0x6E838F)) }
     static var line:  NSColor { pick(hex(0x2A3A45), hex(0xC2D0D8)) }
     /// Row separators sit lighter than structural rules.
-    static var lineSoft: NSColor { line.withAlphaComponent(0.55) }
+    ///
+    /// 0.40, not the 0.55 this started at. The table went from five columns at a
+    /// 22 pt pitch to twelve at 20 pt, and a rule under every row is then a rule
+    /// every 20 pt down a very wide surface — thirty of them on screen at once.
+    /// The hairline still has to be there (twelve columns is a lot of horizontal
+    /// distance for the eye to hold one row across), it just has no business
+    /// being the loudest thing in the table.
+    static var lineSoft: NSColor { line.withAlphaComponent(0.40) }
 
     // ── Accents ─────────────────────────────────────────────────────────────
     static var accent: NSColor { pick(hex(0x00E5A0), hex(0x00996B)) }
@@ -92,6 +99,27 @@ enum Palette {
         static func sans(_ size: CGFloat, _ weight: NSFont.Weight = .regular) -> NSFont {
             .systemFont(ofSize: size, weight: weight)
         }
+        /// The small-label voice: uppercase, kerned, monospaced. It names a table
+        /// column, a graph axis and a Resources card, and those three are the same
+        /// kind of thing — a word that labels a measurement rather than being one.
+        /// Defined once so they cannot drift into three near-identical fonts,
+        /// which is exactly how a header row and a chart axis stop looking related.
+        static func label(_ size: CGFloat = 9.5, _ weight: NSFont.Weight = .semibold) -> NSFont {
+            .monospacedDigitSystemFont(ofSize: size, weight: weight)
+        }
+        /// Tracking for `label`. Uppercase at 9 pt sets too tight without it.
+        static let labelKern: CGFloat = 0.4
+    }
+
+    /// Draw attributes for a small uppercase label — `Font.label` plus its
+    /// tracking. Callers uppercase the string themselves, because only the caller
+    /// knows whether the string is a label or a name (a process name must not be
+    /// shouted).
+    static func labelAttributes(_ color: NSColor,
+                                size: CGFloat = 9.5,
+                                weight: NSFont.Weight = .semibold)
+        -> [NSAttributedString.Key: Any] {
+        [.font: Font.label(size, weight), .foregroundColor: color, .kern: Font.labelKern]
     }
 }
 

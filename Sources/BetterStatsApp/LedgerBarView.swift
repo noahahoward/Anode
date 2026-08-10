@@ -38,6 +38,23 @@ final class LedgerBarView: NSView {
         /// Belongs to no process: display, radios, storage, kernel.
         let unattributed_pctHr: Double
         let total_pctHr: Double
+        /// The width the segments are laid out ACROSS, which is not always the
+        /// number printed beside them.
+        ///
+        /// `attributed_W` is instantaneous rusage energy; `smoothed_W` is anchored
+        /// to the gauge's 60 s mean. Under a sudden load the first can genuinely
+        /// exceed the second for a few seconds, and dividing by the headline then
+        /// drew "apps = 100% of the machine" — a claim about the layout, not about
+        /// the measurement. `Snapshot.ledgerSpan_W` is `max(smoothed_W, claimed_W)`
+        /// and is bit-for-bit `smoothed_W` on any non-overflow tick, so nothing
+        /// moves at idle.
+        ///
+        /// nil means the caller has not stated one, and the headline is used —
+        /// which is exactly what this view did before the field existed. Nothing
+        /// is clamped, the remainder is still drawn, and the overflow ALARM is
+        /// untouched: the bar not lying about its own width is not the same thing
+        /// as the discrepancy being hidden.
+        var span_pctHr: Double? = nil
         let source: String            // e.g. "PSTR ×0.89"
         let readable: Int
         let attempted: Int
@@ -236,13 +253,14 @@ final class LedgerBarView: NSView {
         guard let m = model else { return }
         let barRect = NSRect(x: 0, y: 0, width: bounds.width, height: barHeight)
 
-        // Segments are laid out by share of the measured total, so the bar always
-        // spans exactly the thing it claims to describe.
-        let total = max(m.total_pctHr, 0.0001)
+        // Segments are laid out by share of the ledger SPAN, so the bar always
+        // spans exactly the thing it claims to describe — see `Model.span_pctHr`
+        // for why that is not always the headline figure printed in the legend.
+        let span = max(m.span_pctHr ?? m.total_pctHr, 0.0001)
         var widths = [m.apps_pctHr, m.systemProcesses_pctHr, m.gpu_pctHr,
                       m.memory_pctHr, m.storage_pctHr, m.usb_pctHr,
                       m.display_pctHr, m.unattributed_pctHr]
-            .map { CGFloat(max(0, $0) / total) * barRect.width }
+            .map { CGFloat(max(0, $0) / span) * barRect.width }
 
         // The final segment takes whatever width is left rather than its own share.
         // Each bucket is clamped at zero independently, so in edge cases they need

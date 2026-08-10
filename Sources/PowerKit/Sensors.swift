@@ -67,6 +67,99 @@ public struct SensorReading {
         self.unit = unit
         self.confidence = confidence
     }
+
+    public var isIdentified: Bool { confidence == .identified }
+
+    /// The ONLY label safe to print without also printing `key`.
+    ///
+    /// `name` alone is a trap for the 140 hedged temperatures on this machine:
+    /// "Thermal sensor 37" looks exactly like "GPU sensor 37" on screen while
+    /// carrying none of the evidence, and the ordinal is an artefact of key sort
+    /// order rather than anything physical. For those, the key IS the identity —
+    /// `TVDc` is a fact, "Thermal sensor 37" is a bucket number — so it is
+    /// appended rather than left for the caller to remember.
+    ///
+    /// Identified readings return `name` unchanged: `TB0T` is already "Battery
+    /// sensor 1" on the strength of a cross-check against IOKit, and repeating
+    /// the key would just be noise.
+    ///
+    /// Non-temperature unidentified keys already have the key AS their name (see
+    /// `SensorNaming.label`), so they are returned as-is rather than as "PZC0
+    /// (PZC0)".
+    public var qualifiedName: String {
+        guard !isIdentified, name != key else { return name }
+        return "\(name) (\(key))"
+    }
+
+    /// Sorts the way a person reads: "Thermal sensor 2" before "Thermal sensor 10".
+    ///
+    /// Lexicographic order puts 10 before 2, which scatters a family across the
+    /// list and makes a run of consecutive sensors look like unrelated entries.
+    public static func precedesByName(_ a: SensorReading, _ b: SensorReading) -> Bool {
+        switch NaturalOrder.compare(a.name, b.name) {
+        case .orderedAscending:  return true
+        case .orderedDescending: return false
+        // Two readings can share a display name only when both are raw keys that
+        // differ in case (`Ts0P` vs `TS0P`), so the key breaks the tie and the
+        // order stays total.
+        case .orderedSame:       return a.key < b.key
+        }
+    }
+}
+
+public extension Array where Element == SensorReading {
+    /// Natural order by display name — see `SensorReading.precedesByName`.
+    func sortedByName() -> [SensorReading] { sorted(by: SensorReading.precedesByName) }
+}
+
+/// Digit runs compared as numbers, everything else as text.
+///
+/// Split out from `SensorReading` because it is not about sensors: any list this
+/// app numbers ("Fan 2", "CPU core sensor 10") has the same problem, and the rule
+/// is easier to test as a total order on plain strings.
+public enum NaturalOrder {
+
+    public static func precedes(_ a: String, _ b: String) -> Bool {
+        compare(a, b) == .orderedAscending
+    }
+
+    /// A TOTAL order: equal-comparing chunks fall through to a plain string
+    /// compare at the end, so `sorted(by:)` cannot see two different strings as
+    /// interchangeable and reorder them differently between runs.
+    public static func compare(_ a: String, _ b: String) -> ComparisonResult {
+        var i = a.startIndex, j = b.startIndex
+        while i < a.endIndex, j < b.endIndex {
+            if a[i].isNumber, b[j].isNumber {
+                let (na, ia) = digits(a, from: i)
+                let (nb, jb) = digits(b, from: j)
+                // Compared by length first, then lexicographically, with leading
+                // zeros stripped — so this is exact for numbers of any size
+                // rather than overflowing on a key that happens to be 30 digits.
+                if na.count != nb.count { return na.count < nb.count ? .orderedAscending : .orderedDescending }
+                if na != nb { return na < nb ? .orderedAscending : .orderedDescending }
+                i = ia; j = jb
+                continue
+            }
+            let ca = String(a[i]).lowercased(), cb = String(b[j]).lowercased()
+            if ca != cb { return ca < cb ? .orderedAscending : .orderedDescending }
+            i = a.index(after: i); j = b.index(after: j)
+        }
+        if i < a.endIndex { return .orderedDescending }   // a is longer
+        if j < b.endIndex { return .orderedAscending }
+        // Same shape, same digits, same letters ignoring case: "Tp0A" vs "Tp0a".
+        // Only now does case decide, so the order is stable and total.
+        if a == b { return .orderedSame }
+        return a < b ? .orderedAscending : .orderedDescending
+    }
+
+    /// The digit run starting at `i`, leading zeros removed, and the index after it.
+    private static func digits(_ s: String, from i: String.Index) -> (String, String.Index) {
+        var k = i
+        while k < s.endIndex, s[k].isNumber { k = s.index(after: k) }
+        var run = Substring(s[i..<k])
+        while run.count > 1, run.first == "0" { run = run.dropFirst() }
+        return (String(run), k)
+    }
 }
 
 public struct FanInfo {
@@ -107,7 +200,32 @@ public enum Sensors {
         /// Average across the `Tg*` GPU cluster sensors.
         public var gpuTemperature: Double? { mean(prefixes: ["Tg"]) }
 
+        /// The highest temperature on the machine, whatever it turns out to be.
+        ///
+        /// MEASURED here, and it is why `qualifiedName` exists: on this Mac the
+        /// hottest sensor is `TVDc`/`TCMb` at ~47-63 °C, and BOTH are
+        /// `.unidentified`. A caption reading "hottest 63°C (Thermal sensor 37)"
+        /// is therefore a placeholder ordinal presented as if it named a part —
+        /// the user cannot tell it apart from "hottest 63°C (GPU sensor 37)",
+        /// which would be a real claim. Anything printing this MUST print
+        /// `qualifiedName`, not `name`, and should check `isIdentified` before
+        /// implying the reading points at a component.
         public var hottest: SensorReading? { temperatures.max { $0.value < $1.value } }
+
+        /// The hottest temperature we can actually name.
+        ///
+        /// Deliberately separate from `hottest` rather than a filter applied to
+        /// it: these are different questions ("what is the peak on this machine"
+        /// vs "what is the hottest thing we can attribute"), they have different
+        /// answers here, and collapsing them would hide the peak whenever it
+        /// lands on an unnamed sensor — which on this machine is always.
+        public var hottestIdentified: SensorReading? {
+            temperatures.filter(\.isIdentified).max { $0.value < $1.value }
+        }
+
+        /// The two halves of the naming contract, for a UI that groups them.
+        public var identified: [SensorReading] { readings.filter(\.isIdentified) }
+        public var unidentified: [SensorReading] { readings.filter { !$0.isIdentified } }
 
         private func mean(prefixes: [String]) -> Double? {
             let vals = temperatures

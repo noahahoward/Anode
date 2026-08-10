@@ -17,6 +17,10 @@ import AppKit
 //    That is a STATE of the caller's entity rather than a second entity, and
 //    only this view knows where in the line the state changes, so the colour
 //    comes from Palette here and is resolved at draw time like the rest of it.
+//    TYPE and RADIUS do come from Palette, everywhere: a chart whose axis is
+//    named in a different typeface from every other label in the window reads as
+//    a chart someone dropped in. That is not a colour, and the rule above is
+//    about colour.
 //  - The y-axis autoscales to a *nice* 1/2/5×10ⁿ maximum WITH hysteresis. A
 //    graph whose axis rescales every frame is exactly as jittery as the number
 //    it replaced, which would defeat the whole point.
@@ -194,7 +198,9 @@ public class HistoryGraphView: NSView {
     /// scroll-zoom anchored on that wrong time slid the point out from under the
     /// cursor. So the rect is RECORDED, never recomputed. `.zero` until the first
     /// draw; `interactionPlot` supplies a nominal rect for that one frame.
-    private var lastPlot: NSRect = .zero
+    /// Readable (not writable) outside the class so an offscreen test can assert
+    /// the geometry a real frame produced, rather than a second copy of the sums.
+    private(set) var lastPlot: NSRect = .zero
     /// The time range the last `draw` mapped across `lastPlot`.
     ///
     /// Hover used to invert its own guess instead: `effectiveDomain` returned the
@@ -273,6 +279,21 @@ public class HistoryGraphView: NSView {
         return nice * base
     }
 
+    /// How many steps the value ladder is allowed, for a plot this tall.
+    ///
+    /// Was a flat 5, which is a reasonable number for a chart that fills a window
+    /// and a bad one for a chart 55 pt high: six 11 pt labels down a 55 pt axis
+    /// touch each other, and a ladder whose rungs touch reads as a smear rather
+    /// than as a scale. Even the battery graph's 95 pt axis was setting labels
+    /// 16 pt apart. ~30 pt of air per rung is where a ladder reads as a ladder.
+    ///
+    /// The floor of 2 matters: one tick is not a scale, and zero ticks would take
+    /// the left gutter to its 24 pt minimum with nothing in it.
+    static func yTickTarget(forPlotHeight h: CGFloat) -> Int {
+        guard h.isFinite, h > 0 else { return 2 }
+        return max(2, min(5, Int(h / 30)))
+    }
+
     // MARK: - Drawing
 
     public override func draw(_ dirtyRect: NSRect) {
@@ -288,6 +309,11 @@ public class HistoryGraphView: NSView {
             .font: tickFont,
             .foregroundColor: NSColor.secondaryLabelColor,
         ]
+        // The axis NAME is a label, not a reading, so it wears the app's
+        // small-label voice — the same uppercase kerned mono the table header and
+        // the Resources cards use. Only the TYPE comes from Palette; the ink stays
+        // semantic like the rest of this view's chrome.
+        let axisNameAttrs = Palette.labelAttributes(NSColor.secondaryLabelColor)
 
         // ── Scales ──────────────────────────────────────────────────────────
         var dataMin = Double.infinity
@@ -340,10 +366,23 @@ public class HistoryGraphView: NSView {
         if !(top > bottom) { top = bottom + 1 }  // never a zero-height range
 
         // ── Layout ──────────────────────────────────────────────────────────
+        // Vertical padding is settled FIRST, because how densely the value ladder
+        // can be ruled depends on how much height there is to spend on it.
+        //
+        // A view with nothing in its header band should not reserve one. A
+        // Resources card has no axis name (its own title carries the unit) and one
+        // series (so no legend), and 18 pt of reserved air out of an 88 pt card is
+        // a fifth of the plot. The battery graph names its axis and keeps the band.
+        let headerIsEmpty = yAxisLabel.isEmpty && sanitized.count < 2 && headerTrailingInset == 0
+        let padTop: CGFloat = headerIsEmpty ? 8 : 18   // yAxisLabel + legend row
+        let padBottom: CGFloat = 15                    // time labels
+        let plotHeight = bounds.height - padTop - padBottom
+
         // Left gutter sized to the widest y tick label so labels never collide
         // with the plot; recomputed per frame because the labels change with
         // the scale (cheap: ≤ 6 strings).
-        let yTickStep = Self.niceCeil((top - bottom) / 5.0)
+        let yTickStep = Self.niceCeil(
+            (top - bottom) / Double(Self.yTickTarget(forPlotHeight: plotHeight)))
         var yTicks: [Double] = []
         var yTick = (bottom / yTickStep).rounded(.up) * yTickStep
         while yTick <= top + yTickStep * 0.001 {
@@ -358,11 +397,9 @@ public class HistoryGraphView: NSView {
         let padLeft = max(maxYLabelW + 10, 24)
         // Room for the right-hand 0-100 axis labels when a second series is present.
         let padRight: CGFloat = rightSeries == nil ? 10 : 34
-        let padTop: CGFloat = 18     // yAxisLabel + legend row
-        let padBottom: CGFloat = 15  // time labels
         let plot = NSRect(x: padLeft, y: padBottom,
                           width: bounds.width - padLeft - padRight,
-                          height: bounds.height - padTop - padBottom)
+                          height: plotHeight)
         guard plot.width > 20, plot.height > 20 else { return }  // too small to be honest
         // Publish the geometry the rest of this frame draws with, so hover, the
         // sample dot and the zoom anchor all read the same rect the lines do.
@@ -411,20 +448,42 @@ public class HistoryGraphView: NSView {
             plot.minY + CGFloat(min(max(v, 0), 100) / 100) * plot.height
         }
 
-        // ── Grid + y labels ─────────────────────────────────────────────────
+        // ── Grid, baseline, y labels ────────────────────────────────────────
         // Grid is recessive by construction: separatorColor is designed by the
         // system to sit just above the background in both appearances.
+        //
+        // `zeroY` is where the value axis reads zero, or the plot floor when the
+        // axis never gets there. It is hoisted because three things need the same
+        // line: the baseline below, the area fills, and the grid — which skips it
+        // so the two rules do not stack into one double-weight hairline.
+        let zeroY = snap(yFor(min(max(0, bottom), top)))
         if showsGrid {
             NSColor.separatorColor.setStroke()
             let gridPath = NSBezierPath()
             gridPath.lineWidth = 1
             for v in yTicks {
                 let y = snap(yFor(v))
+                guard abs(y - zeroY) > 0.5 else { continue }
                 gridPath.move(to: NSPoint(x: plot.minX, y: y))
                 gridPath.line(to: NSPoint(x: plot.maxX, y: y))
             }
             gridPath.stroke()
         }
+        // The one horizontal rule that is not decoration, and so the only one
+        // drawn whether or not the grid is on — which matters, because every
+        // caller in this app currently has the grid off.
+        //
+        // On the battery graph the axis goes NEGATIVE while the pack is filling,
+        // and without this there is nothing on screen saying which side of zero
+        // the machine is on: the line just wanders across an unmarked field. When
+        // the axis does not reach zero this is the plot floor instead, which is
+        // the same statement — it is where the measurement bottoms out.
+        NSColor.separatorColor.setStroke()
+        let baseline = NSBezierPath()
+        baseline.lineWidth = 1
+        baseline.move(to: NSPoint(x: plot.minX, y: zeroY))
+        baseline.line(to: NSPoint(x: plot.maxX, y: zeroY))
+        baseline.stroke()
         for v in yTicks {
             let s = Self.yLabel(v) as NSString
             let size = s.size(withAttributes: tickAttrs)
@@ -439,17 +498,18 @@ public class HistoryGraphView: NSView {
         let ladder: [Double] = [5, 10, 15, 30, 60, 120, 300, 600, 900, 1800,
                                 3600, 7200, 14400, 21600, 43200, 86400]
         let tStep = ladder.first { span / $0 <= 6 } ?? (86400 * (span / (6 * 86400)).rounded(.up))
+        // One path for the whole time grid, stroked once. Per-tick strokes were
+        // up to seven state changes a frame for seven hairlines, and the colour
+        // was being re-set on every one of them.
+        let timeGrid = NSBezierPath()
+        timeGrid.lineWidth = 1
         var back: Double = 0
         while true {
             let x = xFor(tMax.addingTimeInterval(-back))
             if x < plot.minX - 0.5 { break }
             if showsGrid {
-                NSColor.separatorColor.setStroke()
-                let p = NSBezierPath()
-                p.lineWidth = 1
-                p.move(to: NSPoint(x: snap(x), y: plot.minY))
-                p.line(to: NSPoint(x: snap(x), y: plot.maxY))
-                p.stroke()
+                timeGrid.move(to: NSPoint(x: snap(x), y: plot.minY))
+                timeGrid.line(to: NSPoint(x: snap(x), y: plot.maxY))
             }
             // Relative ("-20s") only while the right edge really is now.
             //
@@ -473,6 +533,13 @@ public class HistoryGraphView: NSView {
             s.draw(at: NSPoint(x: lx, y: 1), withAttributes: tickAttrs)
             back += tStep
         }
+        // Lighter than the value ladder. Time is the axis you read ALONG; the
+        // value ladder is the one you read AGAINST, so ruling both at the same
+        // weight makes a cross-hatch out of what should be a background.
+        if !timeGrid.isEmpty {
+            NSColor.separatorColor.withAlphaComponent(0.55).setStroke()
+            timeGrid.stroke()
+        }
 
         guard haveData else {
             // Empty state: axes and a quiet message, never a blank rectangle —
@@ -493,7 +560,7 @@ public class HistoryGraphView: NSView {
                 drawRightSeries(r, plot: plot, xFor: xFor, yForRight: yForRight,
                                 tickAttrs: tickAttrs)
             }
-            drawHeader(plotTop: plot.maxY, tickAttrs: tickAttrs)
+            drawHeader(nameAttrs: axisNameAttrs, legendAttrs: tickAttrs)
             return
         }
 
@@ -519,8 +586,8 @@ public class HistoryGraphView: NSView {
         ctx.saveGState()
         plot.clip()  // pinned yMax may put data above the top; clip, don't rescale
         for s in sanitized {
-            drawSeries(s, plot: plot, xFor: xFor, yFor: yFor,
-                       zeroY: yFor(min(max(0, bottom), top)))
+            drawSeries(s, plot: plot, xFor: xFor, yFor: yFor, zeroY: zeroY,
+                       isOnlySeries: sanitized.count == 1)
         }
         ctx.restoreGState()
 
@@ -532,14 +599,14 @@ public class HistoryGraphView: NSView {
 
         // Last, so the crosshair and its readout sit above the lines they report.
         drawHover(in: plot, xFor: xFor, yFor: yFor)
-        drawHeader(plotTop: plot.maxY, tickAttrs: tickAttrs)
+        drawHeader(nameAttrs: axisNameAttrs, legendAttrs: tickAttrs)
     }
 
     /// One series: decimate → mean line + min/max whiskers (see header comment
     /// for why this is the only smoothing that is honest).
     private func drawSeries(_ s: CleanSeries, plot: NSRect,
                             xFor: (Date) -> CGFloat, yFor: (Double) -> CGFloat,
-                            zeroY: CGFloat) {
+                            zeroY: CGFloat, isOnlySeries: Bool) {
         let pts = s.points
         guard !pts.isEmpty else { return }
 
@@ -694,7 +761,15 @@ public class HistoryGraphView: NSView {
         if s.filled {
             // Fill down to the zero line (or the plot floor if 0 is offscreen),
             // translucent so the grid and band remain visible through it.
-            s.color.withAlphaComponent(0.13).setFill()
+            //
+            // A GRADIENT rather than the flat 13% wash this used to be. The two
+            // carry identical information and average out to the same ink, but a
+            // flat block of colour under the line reads as a second, paler series
+            // with its own bottom edge, while a fade reads as depth belonging to
+            // the line above it. Densest at the line, effectively gone by the
+            // baseline, so it never competes with the band drawn behind it.
+            let gradient = NSGradient(starting: s.color.withAlphaComponent(0.24),
+                                      ending: s.color.withAlphaComponent(0.02))
             for run in runs where run.count >= 2 {
                 let fill = NSBezierPath()
                 fill.move(to: NSPoint(x: run[0].x, y: run[0].y))
@@ -702,7 +777,20 @@ public class HistoryGraphView: NSView {
                 fill.line(to: NSPoint(x: run[run.count - 1].x, y: zeroY))
                 fill.line(to: NSPoint(x: run[0].x, y: zeroY))
                 fill.close()
-                fill.fill()
+                guard let gradient else {
+                    // Fail soft: a series colour that will not convert to a
+                    // gradient's colour space still gets its area, flat.
+                    s.color.withAlphaComponent(0.13).setFill()
+                    fill.fill()
+                    continue
+                }
+                // Which way the fade runs depends on which side of zero the run
+                // is. A charging span hangs BELOW the baseline, and a gradient
+                // that always ran dark-at-the-top would put its dense end on the
+                // baseline there and its faint end on the line.
+                let box = fill.bounds
+                let above = (box.maxY - zeroY) >= (zeroY - box.minY)
+                gradient.draw(in: fill, angle: above ? 270 : 90)
             }
         }
 
@@ -719,6 +807,32 @@ public class HistoryGraphView: NSView {
 
         s.color.setStroke()
         line.stroke()
+
+        // The head of the line — the reading this view is reporting right now,
+        // which on a live strip is the one number the user came for. Drawn only
+        // when this is the SOLE series: with eight drilled-in lines it would be
+        // eight dots in the same 20 pt of edge, and there the legend is what
+        // tells the lines apart anyway.
+        if isOnlySeries, let head = runs.last?.last {
+            drawEndpointMarker(at: NSPoint(x: head.x, y: head.y), in: plot, color: s.color)
+        }
+    }
+
+    /// The "latest reading" marker: a filled dot inside a disc of the graph's own
+    /// ground, so it separates from the line it caps and from the area fill under
+    /// it instead of dissolving into either.
+    ///
+    /// `x` is nudged to keep the whole marker inside the plot. The newest sample
+    /// sits at the right edge by definition, and a marker sliced in half by the
+    /// clip reads as a rendering fault rather than as a value. The nudge is at
+    /// most 3 pt and moves only the MARKER — the line, and the marker's HEIGHT
+    /// (which is the value it is reporting), still sit exactly where the data is.
+    private func drawEndpointMarker(at p: NSPoint, in plot: NSRect, color: NSColor) {
+        let x = min(max(p.x, plot.minX + 3.5), plot.maxX - 3.5)
+        NSColor.controlBackgroundColor.setFill()
+        NSBezierPath(ovalIn: NSRect(x: x - 3.5, y: p.y - 3.5, width: 7, height: 7)).fill()
+        color.setFill()
+        NSBezierPath(ovalIn: NSRect(x: x - 2.25, y: p.y - 2.25, width: 4.5, height: 4.5)).fill()
     }
 
     /// The right-axis series (battery charge), plus its 0-100 tick labels.
@@ -819,11 +933,14 @@ public class HistoryGraphView: NSView {
             // Endpoint dot: the current charge, which is the value people read.
             // Wears the last segment's colour so the head of the line can never
             // disagree with the line about whether it is still filling.
+            //
+            // Same marker the left-hand series' head uses, so "this is the latest
+            // reading" is one shape on this chart rather than two.
             if let last = pts.last {
-                (runs.last?.charging == true ? Palette.chargingLine : r.color).setFill()
-                let c = NSPoint(x: xFor(last.time), y: yForRight(last.value))
-                NSBezierPath(ovalIn: NSRect(x: c.x - 2.6, y: c.y - 2.6,
-                                            width: 5.2, height: 5.2)).fill()
+                drawEndpointMarker(
+                    at: NSPoint(x: xFor(last.time), y: yForRight(last.value)),
+                    in: plot,
+                    color: runs.last?.charging == true ? Palette.chargingLine : r.color)
             }
         }
 
@@ -841,12 +958,19 @@ public class HistoryGraphView: NSView {
         }
     }
 
-    /// Top row: y-axis label on the left, legend on the right. Text wears text
-    /// colors — the colored dot alone carries series identity.
-    private func drawHeader(plotTop: CGFloat, tickAttrs: [NSAttributedString.Key: Any]) {
+    /// Top row: y-axis name on the left, legend on the right. Text wears text
+    /// colors — the colored swatch alone carries series identity.
+    ///
+    /// The axis name is UPPERCASED here rather than by the caller: callers set it
+    /// as prose ("%/hr · Safari") and this is the one place that knows it is being
+    /// drawn as a label. Series names are not shouted — those are the names of
+    /// real things, and a process is not a column heading.
+    private func drawHeader(nameAttrs: [NSAttributedString.Key: Any],
+                            legendAttrs: [NSAttributedString.Key: Any]) {
         let y = bounds.height - 13.0
+        let axisName = yAxisLabel.uppercased() as NSString
         if !yAxisLabel.isEmpty {
-            (yAxisLabel as NSString).draw(at: NSPoint(x: 6, y: y), withAttributes: tickAttrs)
+            axisName.draw(at: NSPoint(x: 6, y: y), withAttributes: nameAttrs)
         }
         // One series needs no legend (the axis label / context names it).
         guard sanitized.count >= 2 else { return }
@@ -857,25 +981,29 @@ public class HistoryGraphView: NSView {
         // Stop before the axis label rather than overrunning it. Names are
         // dropped from the LEFT, so the biggest contributors — drawn last and
         // therefore right-most — are the ones that survive.
-        let leftLimit = (yAxisLabel as NSString)
-            .size(withAttributes: tickAttrs).width + 14
+        let leftLimit = axisName.size(withAttributes: nameAttrs).width + 14
+        // A LINE swatch rather than a dot. This legend names lines; a dot is the
+        // mark for a scatter, and at 6 pt across it also carried more colour than
+        // eight of them should on a 13 pt header band.
+        let swatchW: CGFloat = 9, swatchGap: CGFloat = 6, entryGap: CGFloat = 12
         for s in sanitized.reversed() {
             let name = s.name as NSString
-            let size = name.size(withAttributes: tickAttrs)
-            guard x - size.width - 21 > leftLimit else {
+            let size = name.size(withAttributes: legendAttrs)
+            guard x - size.width - swatchW - swatchGap - entryGap > leftLimit else {
                 // Say that names were dropped instead of silently showing a
                 // partial legend that reads as the complete set.
                 ("…" as NSString).draw(at: NSPoint(x: max(x - 10, leftLimit), y: y),
-                                       withAttributes: tickAttrs)
+                                       withAttributes: legendAttrs)
                 break
             }
             x -= size.width
-            name.draw(at: NSPoint(x: x, y: y), withAttributes: tickAttrs)
-            x -= 9
-            let dot = NSBezierPath(ovalIn: NSRect(x: x, y: y + size.height / 2 - 2.5, width: 6, height: 6))
+            name.draw(at: NSPoint(x: x, y: y), withAttributes: legendAttrs)
+            x -= swatchGap + swatchW
             s.color.setFill()
-            dot.fill()
-            x -= 12
+            NSBezierPath(roundedRect: NSRect(x: x, y: y + size.height / 2 - 1.25,
+                                             width: swatchW, height: 2.5),
+                         xRadius: 1.25, yRadius: 1.25).fill()
+            x -= entryGap
         }
     }
 
@@ -1069,29 +1197,80 @@ extension HistoryGraphView {
         }
         guard !lines.isEmpty else { return }
 
-        let df = DateFormatter()
-        df.dateFormat = currentSpan > 86400 ? "d MMM HH:mm" : "HH:mm:ss"
-        var text = df.string(from: t)
-        for l in lines { text += String(format: "\n%@  %.2f", l.0, l.2) }
+        // The cached formatters, not a fresh DateFormatter per frame. This runs on
+        // every mouseMoved — up to the display's refresh rate while the pointer is
+        // travelling — and building a DateFormatter is the one allocation this
+        // file already documents as expensive enough to hoist.
+        let stamp = (currentSpan > 86400 ? Self.dayHour.string(from: t)
+                                         : Self.hhmmss.string(from: t)) as NSString
 
-        let attrs: [NSAttributedString.Key: Any] = [
+        // Three inks, because the box holds three different things. The instant is
+        // context, the series name is a label, the value is the answer — flattened
+        // into one string at one weight, as it was, the answer was the hardest of
+        // the three to find. And with up to eight lines under the crosshair the
+        // readout carried NO colour at all, so nothing tied a row to its line.
+        let stampAttrs: [NSAttributedString.Key: Any] = [
+            .font: NSFont.monospacedDigitSystemFont(ofSize: 9.5, weight: .regular),
+            .foregroundColor: NSColor.secondaryLabelColor,
+        ]
+        let nameAttrs: [NSAttributedString.Key: Any] = [
             .font: NSFont.monospacedDigitSystemFont(ofSize: 10, weight: .regular),
+            .foregroundColor: NSColor.secondaryLabelColor,
+        ]
+        let valueAttrs: [NSAttributedString.Key: Any] = [
+            .font: NSFont.monospacedDigitSystemFont(ofSize: 10, weight: .medium),
             .foregroundColor: NSColor.labelColor,
         ]
-        let size = (text as NSString).size(withAttributes: attrs)
+
+        let entries = lines.map { (name: $0.0 as NSString, color: $0.1,
+                                  value: String(format: "%.2f", $0.2) as NSString) }
+        let swatchW: CGFloat = 9, swatchGap: CGFloat = 6, colGap: CGFloat = 14
+        let padX: CGFloat = 8, padY: CGFloat = 6, stampGap: CGFloat = 4
+        var nameW: CGFloat = 0, valueW: CGFloat = 0, rowH: CGFloat = 0
+        for e in entries {
+            let n = e.name.size(withAttributes: nameAttrs)
+            let v = e.value.size(withAttributes: valueAttrs)
+            nameW = max(nameW, n.width)
+            valueW = max(valueW, v.width)
+            rowH = max(rowH, ceil(max(n.height, v.height)))
+        }
+        let stampSize = stamp.size(withAttributes: stampAttrs)
+        let boxW = max(stampSize.width, swatchW + swatchGap + nameW + colGap + valueW) + padX * 2
+        let boxH = padY * 2 + ceil(stampSize.height) + stampGap + rowH * CGFloat(entries.count)
+
         // Flip the box to the other side of the crosshair near the right edge so
         // it never gets clipped by the plot bounds.
-        let boxW = size.width + 14, boxH = size.height + 10
         let left = h.x + 12 + boxW > plot.maxX ? h.x - 12 - boxW : h.x + 12
         let bottom = min(max(h.y - boxH / 2, plot.minY), plot.maxY - boxH)
         let box = NSRect(x: left, y: bottom, width: boxW, height: boxH)
 
         NSColor.controlBackgroundColor.withAlphaComponent(0.96).setFill()
-        let bp = NSBezierPath(roundedRect: box, xRadius: 6, yRadius: 6)
+        let bp = NSBezierPath(roundedRect: box,
+                              xRadius: Palette.Radius.chip, yRadius: Palette.Radius.chip)
         bp.fill()
         NSColor.separatorColor.setStroke()
         bp.stroke()
-        (text as NSString).draw(at: NSPoint(x: box.minX + 7, y: box.minY + 5), withAttributes: attrs)
+
+        var y = box.maxY - padY - ceil(stampSize.height)
+        stamp.draw(at: NSPoint(x: box.minX + padX, y: y), withAttributes: stampAttrs)
+        y -= stampGap
+        for e in entries {
+            y -= rowH
+            e.color.setFill()
+            NSBezierPath(roundedRect: NSRect(x: box.minX + padX, y: y + rowH / 2 - 1.25,
+                                             width: swatchW, height: 2.5),
+                         xRadius: 1.25, yRadius: 1.25).fill()
+            let n = e.name.size(withAttributes: nameAttrs)
+            e.name.draw(at: NSPoint(x: box.minX + padX + swatchW + swatchGap,
+                                    y: y + (rowH - n.height) / 2),
+                        withAttributes: nameAttrs)
+            // Values right-aligned to a common edge: this is a column of numbers,
+            // and a ragged one cannot be compared down its own length.
+            let v = e.value.size(withAttributes: valueAttrs)
+            e.value.draw(at: NSPoint(x: box.maxX - padX - v.width,
+                                     y: y + (rowH - v.height) / 2),
+                         withAttributes: valueAttrs)
+        }
     }
 
     private var currentSpan: TimeInterval {

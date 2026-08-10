@@ -102,3 +102,264 @@ public enum FanPolicy {
         return limits.minRPM + f * (limits.maxRPM - limits.minRPM)
     }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Where a fan slider's knob sits, and what the number beside it says.
+///
+/// Pulled out of the view because the interesting case is the one that looks like
+/// nothing: in automatic mode the slider is a LIVE GAUGE of the fan's actual
+/// speed. A control that looks disabled AND reads zero is indistinguishable from
+/// a broken pane — and this pane has been mistaken for one before, when a skipped
+/// SMC sweep made a two-fan machine print "this machine reports no fans".
+public enum FanGauge {
+
+    /// The knob's position, in rpm.
+    ///
+    /// `asked` is what THIS app has requested for the fan, and nil means it has
+    /// requested nothing — so the knob follows the hardware instead. Once
+    /// something has been asked for the knob holds it: yanking it back to the
+    /// current reading mid-spin-up reads as the control fighting the user, and a
+    /// fan takes seconds to arrive.
+    ///
+    /// The result is never below the fan's own minimum, whatever it is handed. A
+    /// parked fan reads 0 rpm, which is below its minimum and simply not on this
+    /// slider's scale, so the knob sits at the bottom of its travel rather than
+    /// off the end of it.
+    public static func knobRPM(current: Double, asked: Double?,
+                               limits: FanPolicy.Limits) -> Double {
+        guard limits.maxRPM > limits.minRPM else { return limits.minRPM }
+        let v = asked ?? current
+        guard v.isFinite else { return limits.minRPM }
+        return min(max(v, limits.minRPM), limits.maxRPM)
+    }
+
+    /// The reading beside the knob.
+    ///
+    /// Two numbers only when there are two facts: what the fan is doing, and what
+    /// it was told to do. In automatic mode there is no target of ours to show,
+    /// and printing the knob's position as one would claim this app had asked for
+    /// a speed it never asked for.
+    public static func readout(current: Double, asked: Double?) -> String {
+        let now = current.isFinite ? String(format: "%.0f", current) : "—"
+        guard let asked, asked.isFinite else { return "\(now) rpm" }
+        return String(format: "%@ → %.0f rpm", now, asked)
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// The Fans tab's state machine: what a gesture on the control strip means, and
+/// what the strip is entitled to claim afterwards.
+///
+/// Lifted out of the view and away from the socket ON PURPOSE. Every branch below
+/// decides one of the only two consequential things this app can do — start a
+/// root process, or write a fan target — and both have to be provable without
+/// root, without a running helper, and without spinning a fan to find out.
+///
+/// THE STATES, and every way between them:
+///
+///   off ────────── the feature is switched off. No gesture does anything and no
+///                  socket is opened. The shipped default.
+///   automatic ──── macOS is deciding. EITHER no helper is running, OR one is and
+///                  this app is holding no fan: the handshake writes nothing, so
+///                  a connected helper with nothing held is still automatic.
+///   starting ───── the user grabbed a knob and there was no helper to hear it.
+///                  Nothing has been written; the request is remembered and sent
+///                  if and when a helper answers, and dropped if none does.
+///   manual(n) ──── n fans are held at a target this app asked for.
+///   blocked(why) ─ a helper is running and refuses this build (the ordinary
+///                  cause is a rebuild). Gestures repeat its reason rather than
+///                  pretending to drive anything.
+///
+///   automatic ──grab/❄︎──▶ starting ──helper answers──▶ manual
+///        ▲                    │                            │
+///        └──✕, or no helper────┘                           │
+///        └──────────────✕, or the helper goes away─────────┘
+///
+/// Every edge OUT of `manual` empties what is held, including the ones nobody
+/// chose. A helper that goes away has ALREADY handed the fans back — it releases
+/// when its client disappears and again on its own way out — so a knob still
+/// claiming a target would be the only thing on screen that had not noticed.
+public struct FanSession: Equatable {
+
+    /// As much of the privileged half as the app can see.
+    public enum Helper: Equatable {
+        /// Nothing is listening. The ordinary state, because the helper only runs
+        /// while the user is running it.
+        case absent
+        /// A helper has been asked for and is not up yet. Set by this session
+        /// when a gesture needs one, never by the link.
+        case starting
+        case connected(fanCount: Int)
+        /// A helper is there and would not have us; its reason, verbatim.
+        case refused(String)
+    }
+
+    public enum Mode: Equatable {
+        case off
+        case automatic
+        case starting
+        case manual(fans: Int)
+        case blocked(String)
+    }
+
+    /// What a user did to the strip. Limits travel with the gesture because the
+    /// clamp is the hardware's opinion and the session has no other way to know
+    /// it.
+    public enum Gesture: Equatable {
+        /// The knob was dragged and let go.
+        case setSpeed(index: Int, rpm: Double, limits: FanPolicy.Limits)
+        /// ❄︎ — the same privileged step as a grab, and then this fan's own
+        /// maximum. "100%" is the top of the fan's reported range, not a number
+        /// this app chose.
+        case fullSpeed(index: Int, limits: FanPolicy.Limits)
+        /// ✕ — the undo for the only destructive thing this app can do.
+        case release
+    }
+
+    public enum Effect: Equatable {
+        /// Nothing to do, and the sentence that says why.
+        case nothing(String)
+        /// A helper has to be started, visibly, before anything can be sent. What
+        /// to send afterwards is remembered here rather than by the caller.
+        case startHelper
+        case send(FanCommand)
+        /// Stop waiting for a helper that is not coming. Nothing was ever
+        /// written, so there is nothing to undo.
+        case abandonStart
+    }
+
+    /// Mirrors `Settings.fanControlEnabled`.
+    public var enabled: Bool
+    public private(set) var helper: Helper
+    /// Fans held at a target this app asked for, and the rpm asked. EMPTY IS
+    /// AUTOMATIC, even while connected.
+    public private(set) var held: [Int: Double] = [:]
+    /// Asked for while there was no helper to ask. Sent the moment one answers.
+    public private(set) var pending: [Int: Double] = [:]
+
+    public init(enabled: Bool, helper: Helper = .absent) {
+        self.enabled = enabled
+        self.helper = helper
+    }
+
+    public var mode: Mode {
+        guard enabled else { return .off }
+        switch helper {
+        case .refused(let why):  return .blocked(why)
+        case .starting:          return .starting
+        case .absent:            return .automatic
+        case .connected:         return held.isEmpty ? .automatic : .manual(fans: held.count)
+        }
+    }
+
+    /// The rpm this app has asked of fan `index`, or nil to read the fan itself.
+    /// A pending request counts: the user has moved that knob and it should stay
+    /// where they left it while the helper starts.
+    public func asked(_ index: Int) -> Double? { held[index] ?? pending[index] }
+
+    /// Is there anything for ✕ to undo?
+    public var isDriving: Bool { !held.isEmpty || !pending.isEmpty }
+
+    // ── Gestures ────────────────────────────────────────────────────────────
+
+    public mutating func apply(_ gesture: Gesture) -> Effect {
+        guard enabled else { return .nothing("Fan control is off — macOS is deciding.") }
+        switch gesture {
+        case .setSpeed(let i, let rpm, let limits):
+            return want(index: i, rpm: rpm, limits: limits)
+        case .fullSpeed(let i, let limits):
+            return want(index: i, rpm: limits.maxRPM, limits: limits)
+        case .release:
+            return releaseEverything()
+        }
+    }
+
+    private mutating func want(index: Int, rpm: Double, limits: FanPolicy.Limits) -> Effect {
+        // Clamped HERE, before a privileged process is even STARTED. The helper
+        // clamps again against limits it reads itself, and that is the boundary
+        // that counts — but a request the hardware's own numbers refuse should
+        // never get as far as asking a user to authenticate for it.
+        guard case .success(let safe) = FanPolicy.resolve(rpm: rpm, limits: limits) else {
+            return .nothing("Fan \(index + 1) does not report a usable speed range, "
+                          + "so it is left on automatic.")
+        }
+        switch helper {
+        case .connected:
+            held[index] = safe
+            return .send(.setTarget(FanTarget(index: index, rpm: safe)))
+        case .absent:
+            pending[index] = safe
+            helper = .starting
+            return .startHelper
+        case .starting:
+            // Kept per fan rather than replaced. On a two-fan machine a user can
+            // easily set both while the password prompt is still up, and dropping
+            // the first one would leave a knob sitting at a speed nothing was
+            // ever told about.
+            pending[index] = safe
+            return .nothing("Waiting for the fan helper — finish the prompt in Terminal.")
+        case .refused(let why):
+            return .nothing(why)
+        }
+    }
+
+    private mutating func releaseEverything() -> Effect {
+        switch helper {
+        case .starting:
+            // Nothing was written, so this is a cancel rather than a release: drop
+            // the request, stop waiting, and be back on automatic with no trace.
+            pending.removeAll()
+            held.removeAll()
+            helper = .absent
+            return .abandonStart
+        case .connected where isDriving:
+            // What is held stays held until the helper says it took the release.
+            // A release that half-failed leaves fans pinned, and a strip that had
+            // already gone quiet would be the one place a user could not see it.
+            pending.removeAll()
+            return .send(.releaseAll)
+        case .connected, .absent, .refused:
+            pending.removeAll()
+            held.removeAll()
+            return .nothing("The fans are already on automatic.")
+        }
+    }
+
+    // ── What the world did back ─────────────────────────────────────────────
+
+    /// The link's latest answer. Returns whatever was waiting on a helper, in fan
+    /// order, for the caller to send.
+    @discardableResult
+    public mutating func helperBecame(_ h: Helper) -> [FanCommand] {
+        helper = h
+        guard case .connected = h else {
+            // Not connected is not driving. See the note at the top: a helper
+            // that has gone has already handed the fans back.
+            held.removeAll()
+            // `.starting` is this session's own state and keeps what was asked
+            // for; anything else means the start did not happen.
+            if case .starting = h { return [] }
+            pending.removeAll()
+            return []
+        }
+        guard !pending.isEmpty else { return [] }
+        let queued = pending.sorted { $0.key < $1.key }
+        pending.removeAll()
+        for (index, rpm) in queued { held[index] = rpm }
+        return queued.map { .setTarget(FanTarget(index: $0.key, rpm: $0.value)) }
+    }
+
+    /// The helper's answer to one command.
+    public mutating func completed(_ command: FanCommand, ok: Bool) {
+        switch command {
+        case .setTarget(let t):
+            // A refusal means the helper is gone or said no; either way the strip
+            // has to stop claiming the fan is where the knob is.
+            if !ok { held[t.index] = nil }
+        case .releaseAll:
+            if ok { held.removeAll() }
+        }
+    }
+}
