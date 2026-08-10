@@ -24,12 +24,20 @@ final class SystemAttributionTests: XCTestCase {
     /// Mirrors how the real rollup names a coalition: the last reverse-DNS
     /// component of the bundle id. Using the raw id as the display name here
     /// would make the name-exclusion tests pass without exercising the match.
+    ///
+    /// `cpu`/`gpu` are the window totals AND, by default, the rate — a coalition
+    /// whose recent rate is proportional to its hour, i.e. one that has been doing
+    /// the same thing all along. `cpuRate`/`gpuRate` drive the two apart, which is
+    /// the case the apportionment is actually about.
     private func usage(_ id: String, cpu: UInt64, gpu: UInt64 = 0,
+                       cpuRate: Double? = nil, gpuRate: Double? = nil,
                        system: Bool = true) -> CoalitionUsage {
         CoalitionUsage(bundleID: id,
                        displayName: id.contains(".")
                            ? String(id.split(separator: ".").last!) : id,
                        cpu_ms: cpu, gpu_ms: gpu,
+                       cpuRate_msPerS: cpuRate ?? Double(cpu),
+                       gpuRate_msPerS: gpuRate ?? Double(gpu),
                        energyShare: 0, isSystem: system)
     }
 
@@ -178,6 +186,68 @@ final class SystemAttributionTests: XCTestCase {
         XCTAssertEqual(rows.count, 2)
         XCTAssertTrue(rows.allSatisfy { $0.isModeled },
                       "an apportioned row must never present as measured")
+    }
+
+    // ── The weight is a RATE, not the window's total ────────────────────────
+    //
+    // Scored against the processes rusage CAN read, share-normalised so any level
+    // bias cancels (n = 28), the hour-total weight put 52.0 % of the bucket on the
+    // wrong process, landed within 2x of truth only half the time, spread 217-fold,
+    // and named the wrong top row. The two tests below are that failure and its
+    // control.
+
+    /// The reported shape, with the reported numbers. The real leader was using
+    /// 53.8 % of the bucket and was handed 14.4 % (0.27x) because most of its work
+    /// was recent; the row crowned instead was genuinely using 1.4 % and got 14.1x
+    /// because most of ITS work was an hour old.
+    func testTheTopRowFollowsCurrentRateNotAnHourOfHistory() {
+        let all = padded([
+            // Busy now, quiet for most of the hour.
+            usage("agent", cpu: 30_000, cpuRate: 538),
+            // Busy an hour ago, idle since.
+            usage("wasBusy", cpu: 900_000, cpuRate: 14),
+        ])
+        let rows = SystemAttribution.apportion(watts: 10, among: all, by: .cpuTime,
+                                               excluding: .none, scale: scale)
+
+        XCTAssertEqual(rows.first?.bundleID, "agent",
+                       "the hour totals rank these the other way round: 900 s to 30 s")
+        XCTAssertEqual(rows.first?.watts ?? 0, 10 * 538 / 552, accuracy: 1e-6)
+    }
+
+    /// A coalition with history but no current activity takes NOTHING, and its
+    /// share is not redistributed by any mechanism other than the normalisation
+    /// that was always there: the surviving rows still sum to the bucket.
+    func testAnIdleCoalitionWithAFullHourOfHistoryTakesNoShare() {
+        let all = padded([usage("live", cpu: 1_000, cpuRate: 100),
+                          usage("idleSinceMidnight", cpu: 3_000_000, cpuRate: 0)])
+        let rows = SystemAttribution.apportion(watts: 10, among: all, by: .cpuTime,
+                                               excluding: .none, scale: scale)
+        XCTAssertEqual(rows.count, 1)
+        XCTAssertEqual(rows[0].bundleID, "live")
+        XCTAssertEqual(rows[0].watts, 10, accuracy: 1e-9)
+    }
+
+    /// Nobody is doing anything right now: there is no rate to divide by, so no
+    /// row may claim the bucket even though every coalition has hours of history.
+    func testNoCurrentActivityYieldsNoRowsHoweverLongTheHistory() {
+        let all = padded([usage("a", cpu: 500_000, cpuRate: 0),
+                          usage("b", cpu: 400_000, cpuRate: 0)])
+        XCTAssertTrue(SystemAttribution.apportion(watts: 10, among: all, by: .cpuTime,
+                                                  excluding: .none, scale: scale).isEmpty)
+    }
+
+    /// The row still reports the hour, because that is real history — but it also
+    /// carries the rate its watts were actually divided on, so a caller computing
+    /// a share cannot silently use the wrong basis.
+    func testARowCarriesBothTheHourAndTheRateItWasDividedOn() {
+        let rows = SystemAttribution.apportion(
+            watts: 10, among: padded([usage("x", cpu: 900_000, gpu: 7, cpuRate: 12, gpuRate: 3)]),
+            by: .cpuTime, excluding: .none, scale: scale)
+        XCTAssertEqual(rows.count, 1)
+        XCTAssertEqual(rows[0].cpu_ms, 900_000)
+        XCTAssertEqual(rows[0].cpuRate_msPerS, 12)
+        XCTAssertEqual(rows[0].gpuRate_msPerS, 3)
     }
 
     // ── The living filter, and how it deleted the biggest consumer ──────────

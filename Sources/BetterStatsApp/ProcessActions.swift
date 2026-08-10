@@ -79,9 +79,19 @@ enum ProcessActions {
         var refused: [(pid: pid_t, owner: String)] = []
         var includesSelf = false
         for c in candidates {
+            // Our own pid is skipped rather than refused: it is not an EPERM case
+            // and saying "not permitted" about ourselves would be a lie.
             if c.pid == selfPID { includesSelf = true; continue }
-            if c.uid == currentUID { signalable.append(c.pid) }
-            else { refused.append((c.pid, c.owner)) }
+            // The uid test lives in PowerKit so that the "safe to quit?" sentence
+            // in the inspector and the enabled state of these buttons are decided
+            // by ONE predicate. Two copies could drift, and a sentence that
+            // disagrees with the button beside it is worse than either alone.
+            if ProcessSignalability.canSignal(pid: c.pid, uid: c.uid,
+                                              currentUID: currentUID, selfPID: selfPID) {
+                signalable.append(c.pid)
+            } else {
+                refused.append((c.pid, c.owner))
+            }
         }
         return Plan(signalable: signalable, refused: refused, includesSelf: includesSelf)
     }

@@ -169,6 +169,45 @@ public final class DrainRateEstimator {
     /// current rate).
     private var lastPower: (pctHr: Double, at: Date)?
     private let powerMaxAge: TimeInterval = 300
+    /// Every power-based figure recorded, for the cross-check below. Pruned to the
+    /// same horizon as `samples`, which is always longer than the trend window the
+    /// check averages over.
+    private var powerHistory: [(t: Date, pctHr: Double)] = []
+
+    /// How far the discharge accumulator and the whole-system power measurement may
+    /// disagree ABOUT THE SAME INTERVAL before the accumulator is disbelieved.
+    ///
+    /// The failure this exists for: on a cold boot the trend published a 25-hour
+    /// time-to-empty, implying 1.7 W, while the pack was independently measured at
+    /// 9.1 W the same instant — a 5.35x disagreement with a figure the app already
+    /// held. Raising the trend's floor from 120 to 300 ticks dilutes such an error
+    /// across more windows; it does not notice it.
+    ///
+    /// The comparison must be WINDOW-MATCHED, and that is the whole of the design.
+    /// Comparing the trend against the live figure at this instant does not
+    /// separate the failure from ordinary life: driven through the four load
+    /// profiles this file and `DischargeTrend` are scored on, the instantaneous
+    /// disagreement reaches
+    ///
+    ///     load                              instantaneous   matched to the window
+    ///     4-9 W random walk                     1.69x              1.01x
+    ///     4 min at 20 W every 20 min            3.39x              1.05x
+    ///     1 min at 54 W every 10 min            5.94x              1.68x
+    ///     4 min at 54 W every 30 min           10.72x              1.68x
+    ///     sustained 6 -> 18 W step              2.82x              1.04x
+    ///     sustained 18 -> 6 W step              2.93x              1.12x
+    ///
+    /// — i.e. a legitimate `swift build` burst disagrees with a half-hour mean by
+    /// TWICE what the boot bug did, because that disagreement is the trend doing
+    /// its job. Averaged over the trend's own span the two instruments measure the
+    /// same joules over the same seconds and must agree: the worst legitimate
+    /// disagreement measured anywhere above is 1.68x, and over a full window 1.06x.
+    ///
+    /// 3.0 is the geometric midpoint of 1.68x (worst legitimate) and 5.35x (the
+    /// reported failure): 1.8x of headroom over any load profile measured here, and
+    /// 1.8x of margin under the fault it has to catch. Chosen in log space because
+    /// the quantity is a ratio and the two errors are symmetric in it.
+    private static let crossCheckFactor = 3.0
 
     public init(fastWindow: TimeInterval = 600, slowWindow: TimeInterval = 3600,
                 trend: BatteryDischargeTrend = BatteryDischargeTrend()) {
@@ -205,7 +244,18 @@ public final class DrainRateEstimator {
                        discharge: BatteryDischargeTrend.Sample? = nil,
                        at now: Date = Date()) {
         if scale.fullChargeCapacity_mAh > 0 { fullCharge_mAh = scale.fullChargeCapacity_mAh }
-        if let p = powerBased_pctHr, p.isFinite, p >= 0 { lastPower = (p, now) }
+        if let p = powerBased_pctHr, p.isFinite, p >= 0 {
+            lastPower = (p, now)
+            // Recorded before the AC guard below and never on a clock that went
+            // backwards, so the buffer is always in order and always covers the
+            // trend's window whenever the trend has one.
+            if let lastT = powerHistory.last?.t, now < lastT { powerHistory.removeAll() }
+            powerHistory.append((now, p))
+            let cutoff = now.addingTimeInterval(-slowWindow * 1.05)
+            var drop = 0
+            while drop < powerHistory.count && powerHistory[drop].t < cutoff { drop += 1 }
+            if drop > 0 { powerHistory.removeFirst(drop) }
+        }
 
         let onBattery = !onAC && !isCharging
         // Fed before the AC guard below: `onBattery: false` is how the trend learns
@@ -217,9 +267,13 @@ public final class DrainRateEstimator {
             // display until battery history rebuilds.
             if wasOnBattery || !samples.isEmpty { resetHistory() }
             wasOnBattery = false
+            // The trend threw its window away at the transition, so the buffer that
+            // cross-checks it must go too: an on-AC wattage averaged into the check
+            // would compare the adapter's load against the pack's discharge.
+            powerHistory.removeAll()
             return
         }
-        if !wasOnBattery { resetHistory() }  // fresh discharge segment
+        if !wasOnBattery { resetHistory(); powerHistory.removeAll() }  // fresh segment
         wasOnBattery = true
 
         let mAh = remainingCapacity_mAh
@@ -244,6 +298,9 @@ public final class DrainRateEstimator {
         if let t = samples.last?.t,
            now.timeIntervalSince(t) > HistoryStore.maxPlausibleInterval {
             resetHistory()
+            // Same argument as the AC branch: a mean of power figures straddling a
+            // sleep is not a measurement of the window the trend now covers.
+            powerHistory.removeAll()
         }
         // MEASURED on this machine: the gauge can revise RemainingCapacity
         // UP by ~11 mAh mid-discharge (voltage-relaxation recovery). Small
@@ -266,6 +323,7 @@ public final class DrainRateEstimator {
         dischargeTrend.reset()
         wasOnBattery = false
         lastPower = nil
+        powerHistory.removeAll()
         fullCharge_mAh = nil
     }
 
@@ -343,6 +401,44 @@ public final class DrainRateEstimator {
         }
     }
 
+    // ── Cross-check ─────────────────────────────────────────────────────────
+
+    /// Does the discharge accumulator's rate agree with the whole-system power
+    /// measurement OVER THE SAME SECONDS?
+    ///
+    /// True when they agree, and true when the question cannot be asked — a check
+    /// that could not run must not demote a measurement that is otherwise sound.
+    /// The two ways it cannot run are both honest nils rather than failures: no
+    /// power figures were recorded, or the buffer does not reach back far enough to
+    /// be a mean over the trend's span, which is the case for the first few seconds
+    /// after an AC transition or a wake.
+    ///
+    /// A plain mean over the buffer, not a time-weighted one: `record` is driven on
+    /// a fixed ~2 s cadence, so the samples are evenly spaced and the two are the
+    /// same number. Coverage is required to be 80 % of the span so that a buffer
+    /// still refilling cannot pass itself off as the mean of a window it only
+    /// partly saw.
+    private func agreesWithMeasuredPower(_ rate_pctHr: Double,
+                                         over span: TimeInterval,
+                                         at now: Date) -> Bool {
+        guard span > 0, rate_pctHr > 0 else { return true }
+        let cutoff = now.addingTimeInterval(-span)
+        var lo = powerHistory.count
+        while lo > 0 && powerHistory[lo - 1].t >= cutoff { lo -= 1 }
+        let n = powerHistory.count - lo
+        guard n >= 2 else { return true }
+        guard now.timeIntervalSince(powerHistory[lo].t) >= 0.8 * span else { return true }
+
+        var sum = 0.0
+        for i in lo..<powerHistory.count { sum += powerHistory[i].pctHr }
+        let mean = sum / Double(n)
+        // Below this the ratio is dominated by the resolution of the power figure
+        // itself, not by any disagreement — a machine drawing a tenth of a percent
+        // an hour has nothing to cross-check.
+        guard mean > 0.1 else { return true }
+        return max(rate_pctHr / mean, mean / rate_pctHr) <= Self.crossCheckFactor
+    }
+
     // ── Estimation ──────────────────────────────────────────────────────────
 
     /// nil while on AC (time-to-empty is meaningless while plugged in — the
@@ -362,6 +458,15 @@ public final class DrainRateEstimator {
         // integer field reads 1-2 points high (see `BatteryScale.chargePercent`).
         let remainingPct = last.mAh / full * 100
 
+        // Computed before the measured tier rather than after it, because the power
+        // figure is now that tier's cross-check as well as its fallback.
+        let slowFit = fit(window: slowWindow)
+        let chosen = preferFast ? (fit(window: fastWindow) ?? slowFit) : slowFit
+        let power: Double? = {
+            guard let p = lastPower, last.t.timeIntervalSince(p.at) <= powerMaxAge else { return nil }
+            return p.pctHr
+        }()
+
         // The discharge accumulator outranks everything below it whenever it has a
         // window: it is charge that has already left the pack, measured, where the
         // regression is an inference from a state-of-charge estimate that moves the
@@ -369,23 +474,39 @@ public final class DrainRateEstimator {
         // path — the half-hour window IS the stabiliser, and a filter on top could
         // only hide a change the measurement had genuinely seen.
         if let t = dischargeTrend.trend, t.current_mA > 0 {
-            let rate = t.current_mA / full * 100          // mA / mAh -> %/hr
+            let trendRate = t.current_mA / full * 100     // mA / mAh -> %/hr
+            // The one thing that can invalidate a measured integral: a counter that
+            // was not integrating what we think it was. Two instruments, the same
+            // seconds, the same joules — they must agree. See `crossCheckFactor`
+            // for the loads this was sized against and why the comparison is over
+            // the trend's own span rather than against this instant's draw.
+            //
+            // Failing the check does not merely demote the trend, it publishes the
+            // figure the check believed: the power-based rate is the corroborated
+            // one, and falling through to the mAh regression would answer with a
+            // third number that nothing had checked.
+            if let p = power, !agreesWithMeasuredPower(trendRate, over: t.span, at: last.t) {
+                return DrainEstimate(
+                    percentPerHour: p,
+                    timeRemaining: DrainEstimate.timeToEmpty(chargePercent: remainingPct,
+                                                             ratePctHr: p),
+                    confidence: 0,
+                    source: .power,
+                    // The same pair the ordinary power tier reports: how much
+                    // history has ACCUMULATED, not the span of a window this
+                    // figure did not come from.
+                    windowSpan: slowFit?.span ?? 0,
+                    sampleCount: samples.count)
+            }
             return DrainEstimate(
-                percentPerHour: rate,
+                percentPerHour: trendRate,
                 timeRemaining: DrainEstimate.timeToEmpty(chargePercent: remainingPct,
-                                                         ratePctHr: rate),
+                                                         ratePctHr: trendRate),
                 confidence: 1,
                 source: .discharge,
                 windowSpan: t.span,
                 sampleCount: t.publishes)
         }
-
-        let slowFit = fit(window: slowWindow)
-        let chosen = preferFast ? (fit(window: fastWindow) ?? slowFit) : slowFit
-        let power: Double? = {
-            guard let p = lastPower, last.t.timeIntervalSince(p.at) <= powerMaxAge else { return nil }
-            return p.pctHr
-        }()
 
         let rate: Double
         var confidence = 0.0

@@ -375,6 +375,33 @@ public final class FanControlLink {
         }
     }
 
+    /// Is the helper still there?
+    ///
+    /// A `hello` round trip and nothing else — it writes no fan target, which is
+    /// what makes it safe to run on a timer. The app needs this because a helper
+    /// that dies while nothing is being dragged is otherwise invisible: the
+    /// socket sits open on our side until something tries to use it, and until
+    /// then the strip would go on saying fans are under manual control that were
+    /// handed back seconds ago.
+    ///
+    /// Never reconnects. Re-opening the socket would look to the helper like the
+    /// client disappearing and RELEASE THE FANS, which is the exact opposite of
+    /// what a liveness check is for.
+    public func ping(_ done: @escaping (Status) -> Void) {
+        queue.async { [self] in
+            let status: Status
+            if fd < 0 {
+                status = .notRunning
+            } else if let reply = exchange(.hello) {
+                status = reply.ok ? .connected(fanCount: reply.fanCount ?? 0)
+                                  : .refused(reply.message)
+            } else {
+                status = .notRunning
+            }
+            DispatchQueue.main.async { done(status) }
+        }
+    }
+
     public func send(_ command: FanCommand, _ done: @escaping (FanReply) -> Void) {
         queue.async { [self] in
             let reply = exchange(.command(command))

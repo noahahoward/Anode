@@ -28,8 +28,16 @@ public final class SystemAttribution {
         public let name: String
         public let watts: Double
         public let percentPerHour: Double
+        /// Totals over the whole rollup window — an hour. Reportable history, NOT
+        /// the basis `watts` was divided on: any share recomputed from these will
+        /// disagree with the watts beside it, sometimes by an order of magnitude.
         public let cpu_ms: UInt64
         public let gpu_ms: UInt64
+        /// The rate this row's `watts` are actually proportional to. Carried so a
+        /// caller that needs a share can take it from the same quantity the
+        /// apportionment used rather than from the hour totals above.
+        public let cpuRate_msPerS: Double
+        public let gpuRate_msPerS: Double
         public let isSystem: Bool
         public let isModeled: Bool = true
     }
@@ -62,10 +70,12 @@ public final class SystemAttribution {
     /// WindowServer vanished while Plexamp, which happened to emit twice, was
     /// handed 52% of the whole system-process bucket.
     ///
-    /// The cost is that shares reflect the trailing hour rather than this instant,
-    /// so a daemon that spikes now takes a while to show. That is the right trade:
-    /// a lagging number that is roughly right beats a live one that is confidently
-    /// wrong about which process is draining the battery.
+    /// The hour buys MEMBERSHIP only. It used to buy the weight as well, and that
+    /// was the defect: shares reflected the trailing hour while the watts being
+    /// divided were current, so a coalition busy an hour ago was overstated 10-17x
+    /// and one busy right now understated 3-12x. The weight is now each coalition's
+    /// most recent measurable RATE (see `CoalitionUsage.cpuRate_msPerS`), which
+    /// costs nothing extra — it comes out of records this window already parsed.
     ///
     /// 120 s refresh, not 60: a 60 minute rollup costs ~0.2 s to spawn and ~0.2 s
     /// to parse, and 0.4 s per minute is 0.65% of a core spent by a tool whose
@@ -212,10 +222,23 @@ public final class SystemAttribution {
             // long-named process — see `ProcessSampler.nameMatches`.
             return ProcessSampler.nameMatches($0.displayName, in: living)
         }
+        // The weight is a RATE, not the window's total.
+        //
+        // The window is an hour because membership collapses below it (see the
+        // note on `init`), but the watts being divided are CURRENT and an hour of
+        // history is not a claim about now. Scored against the processes rusage can
+        // read, share-normalised so any level bias cancels (n = 28), dividing by
+        // the hour totals put 52.0 % of the bucket on the wrong process, was within
+        // 2x of truth only half the time, spread 217-fold, and named the wrong top
+        // row: the real leader took 53.8 % of the bucket and was handed 14.4 %,
+        // while a coalition using 1.4 % was crowned at 14.1x. The rate comes from
+        // each coalition's two most recent records — median 96 s apart on this
+        // machine — out of the same parse, so the resolution goes from 3600 s to
+        // ~96 s at no cost. See `CoalitionUsage.cpuRate_msPerS`.
         func w(_ c: CoalitionUsage) -> Double {
             switch weight {
-            case .cpuTime: return Double(c.cpu_ms)
-            case .gpuTime: return Double(c.gpu_ms)
+            case .cpuTime: return c.cpuRate_msPerS
+            case .gpuTime: return c.gpuRate_msPerS
             }
         }
         let total = candidates.reduce(0.0) { $0 + w($1) }
@@ -236,6 +259,8 @@ public final class SystemAttribution {
                        percentPerHour: 3600 * watt / scale.joulesPerPercent,
                        cpu_ms: c.cpu_ms,
                        gpu_ms: c.gpu_ms,
+                       cpuRate_msPerS: c.cpuRate_msPerS,
+                       gpuRate_msPerS: c.gpuRate_msPerS,
                        isSystem: c.isSystem)
         }
         .sorted { $0.watts > $1.watts }

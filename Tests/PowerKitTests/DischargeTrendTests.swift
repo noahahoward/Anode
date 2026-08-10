@@ -175,6 +175,68 @@ final class DischargeTrendTests: XCTestCase {
         XCTAssertLessThan(abs(minutes(trend)! - before) / before, 0.08)
     }
 
+    // ── Warm-up: the detector may not fire against its own reflection ───────
+    //
+    // `detectRegimeChange` compares a new window against `trend`, and `trend`
+    // CONTAINS that window. While the window is short the two are nearly the same
+    // data — at five minutes one publish is a fifth of its own reference — so the
+    // comparison is a hypothesis tested against itself. Measured over 6 h traces,
+    // it collapsed the window inside the first fifteen minutes on 0.53 bursty runs
+    // and 0.45 build-like ones.
+
+    /// Five quiet minutes, then six minutes at four times the load. That is well
+    /// past the 50 % band and well past the 300-tick confirmation, so before this
+    /// gate the window collapsed onto the burst and the trend became a reading of
+    /// the last six minutes. It must not: the reference was never a full window.
+    func testTheDetectorDoesNotFireWhileItsReferenceIsShortOfAFullWindow() {
+        let trend = BatteryDischargeTrend()
+        var acc: Int64 = -1_000_000, count: UInt64 = 500_000
+        var at = t0, awake = 10_000.0
+        run(trend, minutes: 5, watts: { _ in 6.0 },
+            acc: &acc, count: &count, at: &at, awake: &awake)
+        run(trend, minutes: 6, watts: { _ in 24.0 }, from: 5,
+            acc: &acc, count: &count, at: &at, awake: &awake)
+
+        XCTAssertEqual(trend.trend?.ticks ?? 0, 660,
+                       "the window kept all eleven minutes: nothing was thrown away")
+        // And the answer is the mean of what actually happened, not of the burst:
+        // (5 x 6 + 6 x 24) / 11 = 15.8 W.
+        XCTAssertEqual(trend.trend?.power_mW ?? 0, 15_818, accuracy: 100)
+    }
+
+    /// The same excursion after the window is full DOES collapse it — the gate
+    /// removes warm-up firings and nothing else. Without this the test above would
+    /// pass for a class that had simply deleted the detector.
+    func testTheSameExcursionStillFiresOnceTheWindowIsFull() {
+        let (trend, a, c, d, w) = steady(6.0, minutes: 35)
+        var acc = a, count = c, at = d, awake = w
+        XCTAssertTrue(trend.trend?.isFull ?? false, "the fixture must start full")
+        run(trend, minutes: 6, watts: { _ in 24.0 }, from: 35,
+            acc: &acc, count: &count, at: &at, awake: &awake)
+        XCTAssertLessThanOrEqual(trend.trend?.ticks ?? .max, 420,
+                                 "a confirmed regime change must still collapse the window")
+    }
+
+    /// A run built up out of warm-up noise must not be banked and cashed in the
+    /// instant the window matures — that is the same bug arriving half an hour
+    /// later. The load here is out of band for the five minutes either side of the
+    /// 30-minute mark, and the window must survive the boundary.
+    func testAWarmUpRunIsNotBankedUntilTheWindowMatures() {
+        let trend = BatteryDischargeTrend()
+        var acc: Int64 = -1_000_000, count: UInt64 = 500_000
+        var at = t0, awake = 10_000.0
+        run(trend, minutes: 26, watts: { _ in 6.0 },
+            acc: &acc, count: &count, at: &at, awake: &awake)
+        // Six minutes out of band, starting while the window is still immature and
+        // running past the point where it fills. Counted from the first out-of-band
+        // publish that is more than the 300-tick confirmation, so a detector that
+        // banked the warm-up ticks would have collapsed the window by now.
+        run(trend, minutes: 6, watts: { _ in 24.0 }, from: 26,
+            acc: &acc, count: &count, at: &at, awake: &awake)
+        XCTAssertGreaterThan(trend.trend?.ticks ?? 0, 1500,
+                             "the pre-maturity run was cashed the moment the window filled")
+    }
+
     // ── Counters: wrap, reset, direction ────────────────────────────────────
 
     /// The accumulator is signed and counts DOWN. A wrap past the bottom of the

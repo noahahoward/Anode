@@ -324,6 +324,7 @@ final class InspectorView: NSView {
         detailsBox.arrangedSubviews.forEach {
             detailsBox.removeArrangedSubview($0); $0.removeFromSuperview()
         }
+        detailShape = []
     }
 
     // ── Process details and quitting ────────────────────────────────────────
@@ -337,30 +338,86 @@ final class InspectorView: NSView {
         }
         detailsBox.isHidden = false
 
-        var lines: [(String, String)] = [("PID", "\(d.pid)")]
-        if let parent = d.parentName { lines.append(("Parent", "\(parent) (\(d.parentPID))")) }
-        lines.append(("User", d.userName ?? "uid \(d.uid)"))
-        lines.append(("Threads", "\(d.threadCount) (\(d.runningThreads) running)"))
-        lines.append(("Memory", MetricUnit.bytes.format(Double(d.residentSize))))
-        lines.append(("Open files", "\(d.openFiles)"))
-        lines.append(("Ctx switches", "\(d.contextSwitches)"))
+        // "What is this process?" first, counters after. Someone who has just
+        // clicked `tgondeviceinferenceproviderservice` wants to know what it is
+        // before they want to know its context-switch count, and the counters were
+        // already here.
+        //
+        // A structural row whose fact is missing is DROPPED — a bundle identifier
+        // row on a daemon that has no bundle is a blank that trains the eye to
+        // skip the block. "Purpose" is the exception and is always drawn, as "—"
+        // when nothing on this machine describes the binary: that emptiness is the
+        // answer, and silently omitting the row would let the reader assume it was
+        // never asked.
+        let x = ProcessExplainer.explain(d)
+        // Sentences get a wrapping row; short facts get a `label  value` row.
+        // Truncating "Owned by root. An unprivileged process cannot signal it…"
+        // in the middle would remove the half that answers the question.
+        var lines: [DetailItem] = [.note("What this is", x.headline)]
+        // nil renders as "—" and never as a guess. On this machine 64 running
+        // executables have nothing on disk that says what they do.
+        if let purpose = x.purpose {
+            lines.append(.note("Purpose", purpose))
+        } else {
+            lines.append(.line("Purpose", "—"))
+        }
+        if let id = x.bundle.identifier { lines.append(.line("Bundle ID", id)) }
+        if let container = x.containerName { lines.append(.line("Part of", container)) }
+        if let point = x.bundle.extensionPoint { lines.append(.line("Extension point", point)) }
+        if let job = x.job {
+            lines.append(.line(job.isAgent ? "launchd agent" : "launchd job", job.label))
+            // Apple's own words for what the daemon serves, and often the only
+            // readable thing about one — `dasd` publishes com.apple.duetactivityscheduler.
+            if let first = job.machServices.first {
+                lines.append(.line("Publishes", job.machServices.count == 1
+                    ? first : "\(first) +\(job.machServices.count - 1) more"))
+            }
+        }
+        if let copyright = x.bundle.copyright { lines.append(.line("Copyright", copyright)) }
+        lines.append(.note("Safe to quit?", "\(x.safety.answer). \(x.safety.detail)"))
 
-        // Same reuse as the process list: seven two-label rows rebuilt every 2 s is
-        // 2.5 ms of CPU a tick for text that mostly does not move.
-        if detailsBox.arrangedSubviews.count != lines.count
-            || !detailsBox.arrangedSubviews.allSatisfy({ $0 is DetailLine }) {
+        lines.append(.line("PID", "\(d.pid)"))
+        if let parent = d.parentName { lines.append(.line("Parent", "\(parent) (\(d.parentPID))")) }
+        lines.append(.line("User", d.userName ?? "uid \(d.uid)"))
+        lines.append(.line("Threads", "\(d.threadCount) (\(d.runningThreads) running)"))
+        lines.append(.line("Memory", MetricUnit.bytes.format(Double(d.residentSize))))
+        lines.append(.line("Open files", "\(d.openFiles)"))
+        lines.append(.line("Ctx switches", "\(d.contextSwitches)"))
+
+        // Same reuse as the process list: rebuilding these rows every 2 s is
+        // 2.5 ms of CPU a tick for text that mostly does not move. The SHAPE has
+        // to match too, not just the count — which rows are notes depends on what
+        // the selected process turned out to be, so a same-length list of a
+        // different shape must not be re-textured into mismatched views.
+        let shape = lines.map(\.isNote)
+        if shape != detailShape {
             emptyDetails()
-            for _ in lines {
-                let row = DetailLine()
+            for item in lines {
+                let row: NSView = item.isNote ? DetailNote() : DetailLine()
                 detailsBox.addArrangedSubview(row)
                 row.widthAnchor.constraint(equalTo: detailsBox.widthAnchor).isActive = true
             }
+            detailShape = shape
         }
-        for (view, line) in zip(detailsBox.arrangedSubviews, lines) {
-            (view as? DetailLine)?.apply(label: line.0, value: line.1)
+        for (view, item) in zip(detailsBox.arrangedSubviews, lines) {
+            switch item {
+            case .line(let l, let v): (view as? DetailLine)?.apply(label: l, value: v)
+            case .note(let l, let v): (view as? DetailNote)?.apply(caption: l, text: v)
+            }
         }
-
     }
+
+    /// One row of the details box. Two shapes, because the explainer produces both
+    /// four-character facts and whole sentences.
+    private enum DetailItem {
+        case line(String, String)
+        case note(String, String)
+        var isNote: Bool { if case .note = self { return true }; return false }
+    }
+
+    /// The row kinds currently built, so `showDetails` can tell a re-text from a
+    /// rebuild. Cleared by `emptyDetails` so a theme flip cannot leave it stale.
+    private var detailShape: [Bool] = []
 
     /// Decide what the three buttons can do, before the user can click one.
     ///
@@ -534,6 +591,58 @@ final class InspectorView: NSView {
         func apply(label l: String, value v: String) {
             if label.stringValue != l { label.stringValue = l }
             if value.stringValue != v { value.stringValue = v }
+        }
+    }
+
+    /// A caption with a wrapping sentence under it.
+    ///
+    /// The explainer's three most important outputs are sentences, not values —
+    /// "Owned by root. An unprivileged process cannot signal it, so BetterStats
+    /// does not offer a button that could only fail." A `DetailLine` would
+    /// truncate that in the middle and throw away the reason, which is the whole
+    /// point of showing it.
+    private final class DetailNote: NSView {
+        private let caption = NSTextField(labelWithString: "")
+        private let body = NSTextField(wrappingLabelWithString: "")
+
+        init() {
+            super.init(frame: .zero)
+            caption.font = Palette.Font.sans(10)
+            caption.textColor = Palette.faint
+
+            body.font = Palette.Font.sans(10.5)
+            body.textColor = Palette.dim
+            body.lineBreakMode = .byWordWrapping
+            // Capped rather than unbounded: a long man-page sentence must not be
+            // able to push the process list out of the pane. Five lines fits every
+            // string this view produces at the inspector's minimum 300 pt width.
+            body.maximumNumberOfLines = 5
+            // Wrapping labels default to selectable, and here that is wanted —
+            // a bundle identifier or a launchd label is something people copy.
+            body.isSelectable = true
+
+            for v in [caption, body] {
+                v.translatesAutoresizingMaskIntoConstraints = false
+                addSubview(v)
+            }
+            NSLayoutConstraint.activate([
+                caption.leadingAnchor.constraint(equalTo: leadingAnchor),
+                caption.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor),
+                caption.topAnchor.constraint(equalTo: topAnchor),
+
+                body.leadingAnchor.constraint(equalTo: leadingAnchor),
+                // Pinned on BOTH sides: without a trailing constraint the label has
+                // no width to wrap against and lays out as one very long line.
+                body.trailingAnchor.constraint(equalTo: trailingAnchor),
+                body.topAnchor.constraint(equalTo: caption.bottomAnchor, constant: 1),
+                body.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -3),
+            ])
+        }
+        required init?(coder: NSCoder) { fatalError() }
+
+        func apply(caption c: String, text t: String) {
+            if caption.stringValue != c { caption.stringValue = c }
+            if body.stringValue != t { body.stringValue = t }
         }
     }
 

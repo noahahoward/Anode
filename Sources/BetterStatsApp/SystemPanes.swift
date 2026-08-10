@@ -425,7 +425,12 @@ final class SensorsPane: SystemPane {
             all.count,
             cpuTemp.map { String(format: "%.0f°C", $0) } ?? "—",
             gpuTemp.map { String(format: "%.0f°C", $0) } ?? "—",
-            hottest.map { String(format: "%.0f°C (%@)", $0.value, $0.name) } ?? "—")
+            // qualifiedName, not name. The hottest sensor on this machine is
+            // `TVDc`/`TCMb`, both UNIDENTIFIED — so `name` reads "Thermal sensor 37",
+            // a bucket ordinal rendered in exactly the same voice as a real claim
+            // like "GPU sensor 37". qualifiedName appends the raw key for anything
+            // hedged, which is the only identity those 140 sensors actually have.
+            hottest.map { String(format: "%.0f°C (%@)", $0.value, $0.qualifiedName) } ?? "—")
 
         guard !all.isEmpty else {
             setBody([.row("No readable temperature sensors", "—", dim: true)])
@@ -444,8 +449,13 @@ final class SensorsPane: SystemPane {
         for t in all.sorted(by: { $0.value > $1.value }) {
             // Named families first-class; everything else keeps its raw SMC key,
             // because a guessed label is worse than an honest four-character code.
-            let named = t.name != t.key
-            items.append(.row(named ? t.name : t.key,
+            // `name != key` is NOT the test for "we know what this is". All 140
+            // hedged temperatures have a name ("Thermal sensor 37") that differs
+            // from their key, so this dimmed the wrong rows: it rendered every
+            // guess as a confident name and dimmed only the raw-key ones.
+            // `isIdentified` is the flag the naming layer actually publishes.
+            let named = t.isIdentified
+            items.append(.row(t.qualifiedName,
                               String(format: "%.1f °C", t.value),
                               fill: bar(t.value), color: tint(t.value), dim: !named))
         }
@@ -536,6 +546,9 @@ final class FansPane: SystemPane {
         // rules that hold whatever state it is in, and they are worth stating
         // where someone deciding whether to turn it on will read them.
         items.append(.heading("Control"))
+        items.append(.row("Slider", "drag to hold a fan; faded means macOS is deciding", dim: true))
+        items.append(.row("❄︎", "that fan flat out, at its own reported maximum", dim: true))
+        items.append(.row("✕", "every fan back to automatic control", dim: true))
         items.append(.row("Safety floor", "each fan's own reported minimum", dim: true))
         items.append(.row("If BetterStats quits or crashes",
                           "fans return to automatic", dim: true))

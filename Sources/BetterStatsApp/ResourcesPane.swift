@@ -300,12 +300,19 @@ final class MiniGraph: NSView {
 
     private let titleLabel = NSTextField(labelWithString: "")
     private let valueLabel = NSTextField(labelWithString: "")
+    /// The card's line, restated at the top-left. Five cards on one strip is five
+    /// differently-coloured lines, and a card whose only colour is inside the plot
+    /// makes you look down at the graph to find out which one it is. Same shape as
+    /// the graph's own legend swatch, so it reads as the same statement.
+    private let swatch = NSView()
     private let graph = StripGraphView(frame: .zero)
+    private let title: String
     private let unit: String
     private let color: NSColor
     private var points: [HistoryGraphView.Point] = []
 
     init(title: String, unit: String, color: NSColor) {
+        self.title = title
         self.unit = unit
         self.color = color
         super.init(frame: .zero)
@@ -314,20 +321,30 @@ final class MiniGraph: NSView {
         layer?.cornerRadius = Palette.Radius.inner
         layer?.masksToBounds = true
 
-        titleLabel.stringValue = title
-        titleLabel.font = Palette.Font.mono(9, .medium)
         valueLabel.font = Palette.Font.mono(12, .semibold)
         valueLabel.alignment = .right
         graph.showsGrid = false
         // The card's own header already names the series, so the graph's built-in
-        // label would say it twice in a 200 pt box.
+        // label would say it twice in a 200 pt box. Leaving it empty is also what
+        // tells the graph its header band is unused, which buys the plot back the
+        // 10 pt that band would have reserved — a fifth of the height in a card
+        // this short.
         graph.yAxisLabel = ""
 
-        let header = NSStackView(views: [titleLabel, valueLabel])
+        swatch.wantsLayer = true
+        swatch.translatesAutoresizingMaskIntoConstraints = false
+        swatch.layer?.cornerRadius = 1.25
+
+        let header = NSStackView(views: [swatch, titleLabel, valueLabel])
         header.orientation = .horizontal
         header.distribution = .fill
+        header.spacing = 6
         titleLabel.setContentHuggingPriority(.defaultLow, for: .horizontal)
         valueLabel.setContentHuggingPriority(.defaultHigh, for: .horizontal)
+        NSLayoutConstraint.activate([
+            swatch.widthAnchor.constraint(equalToConstant: 9),
+            swatch.heightAnchor.constraint(equalToConstant: 2.5),
+        ])
 
         for v in [header, graph] as [NSView] {
             v.translatesAutoresizingMaskIntoConstraints = false
@@ -359,8 +376,14 @@ final class MiniGraph: NSView {
         // still the outgoing theme.
         effectiveAppearance.performAsCurrentDrawingAppearance {
             layer?.backgroundColor = NSColor.controlBackgroundColor.cgColor
+            swatch.layer?.backgroundColor = color.cgColor
         }
-        titleLabel.textColor = Palette.faint
+        // The same small-label voice the table header and the graph's axis name
+        // wear. Five cards, twelve column headings and one axis all label a
+        // measurement, and they now do it in one typeface instead of three.
+        titleLabel.attributedStringValue = NSAttributedString(
+            string: title.uppercased(),
+            attributes: Palette.labelAttributes(Palette.faint))
         valueLabel.textColor = Palette.text
     }
     override func viewDidChangeEffectiveAppearance() { restyle() }

@@ -388,8 +388,38 @@ public final class BatteryDischargeTrend {
     /// A run that changes direction starts over, so a load oscillating either side
     /// of the trend never confirms — it is noise about a mean, which is what the
     /// mean is for.
+    ///
+    /// ## Why it may not fire until the window is FULL
+    /// The detector asks "does this window disagree with the trend?", and the trend
+    /// it asks about is `trend`, which CONTAINS the window being tested. While the
+    /// window is short the two are nearly the same data: at five minutes of history
+    /// one 60 s publish is a fifth of its own reference, so a single burst drags the
+    /// reference toward itself and the comparison is a hypothesis tested against
+    /// itself. Measured on a 6 h trace, the detector collapsed the window inside the
+    /// first fifteen minutes on 0.53 bursty runs and 0.45 build-like runs — a
+    /// "regime change" detected out of warm-up, not out of the load.
+    ///
+    /// Requiring a full reference removes 100 % of those firings and costs nothing
+    /// elsewhere, because an immature window does not NEED the detector: the whole
+    /// purpose of collapsing the window is to stop a 30-minute mean crawling to a
+    /// new load, and a five-minute mean is already there. The one real cost is a run
+    /// that begins just before the window matures — `endRun` discards it, so
+    /// confirmation restarts at the 30-minute mark and a change straddling that
+    /// boundary is followed up to five minutes later than it otherwise would be.
+    /// Carrying the run across instead would let a run accumulated entirely out of
+    /// warm-up noise confirm the instant the window matured, which is the same bug
+    /// arriving half an hour later.
+    ///
+    /// ## What is deliberately NOT fixed here
+    /// The nominal 50 % band behaves as 62.5 %, because `running` already contains
+    /// `published` and so drifts toward it. Removing that drift — comparing against
+    /// the window with the candidate excluded — was tried and WITHDRAWN: it fires
+    /// MORE often, and bursty MAE went 30.0 -> 109.0 death-time minutes. The drift
+    /// is acting as accidental hysteresis and the measured behaviour of the pair is
+    /// what the sizing table above was scored on. Known, measured, and left alone.
     private func detectRegimeChange(_ published: Window, from left: Sample) {
         guard let running = trend, running.power_mW > 0 else { endRun(); return }
+        guard running.isFull else { endRun(); return }
         let delta = published.power_mW - running.power_mW
         guard abs(delta) > changeBand * running.power_mW else { endRun(); return }
 

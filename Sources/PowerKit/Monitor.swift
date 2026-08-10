@@ -94,21 +94,20 @@ public final class PowerMonitor {
         /// What is left after every named claim. Still a partition of the
         /// measured total, never an addition to it.
         ///
-        /// Ordering matters and is deliberate: CPU, GPU, memory and storage are
-        /// MEASURED rails and are taken first; display is taken last because on
-        /// hardware without a backlight rail it is MODELLED, and a model must
-        /// never crowd out a measurement when the total is tight.
-        ///
         /// Nil on a light tick for the same reason the buckets it subtracts are:
         /// the GPU rail is not read there, so the residue would quietly swallow
         /// the GPU's watts and file them under "always-on & unidentified".
+        ///
+        /// Taken against `ledgerSpan_W` and against `claimed_W`, so this is exactly
+        /// the width the bar has left over after drawing every other segment. It
+        /// used to be `smoothed_W` minus `cpuRail_W` and friends, which parted
+        /// company with the drawn bar in the one case that matters: when
+        /// `attributed_W` exceeds the CPU rail, the apps segment is wider than the
+        /// rail this subtracted, and the printed remainder was watts the bar had
+        /// already spent.
         public var platform_W: Double? {
-            guard isFullSample, cpuRail_W != nil else { return nil }
-            var remaining = smoothed_W
-            for claim in [cpuRail_W, gpu_W, memory_W, storage_W, usb_W, display_W] {
-                remaining = max(0, remaining - max(0, claim ?? 0))
-            }
-            return remaining
+            guard isFullSample, cpuRail_W != nil, let claimed = claimed_W else { return nil }
+            return max(0, ledgerSpan_W - claimed)
         }
 
         /// Estimated display backlight watts, or nil when brightness is unreadable.
@@ -152,6 +151,56 @@ public final class PowerMonitor {
         public let rawResidual_W: Double
         /// True when attribution exceeded measurement this tick.
         public var hasAttributionOverflow: Bool { rawResidual_W < -0.05 }
+
+        /// Every named claim the ledger draws, added up.
+        ///
+        /// Nil on a light tick, where the claims themselves are absent rather than
+        /// zero. `systemProcesses_W` is included via `cpuRail_W`, not separately:
+        /// system processes are `cpuRail - attributed`, so the CPU rail already
+        /// covers both and adding them would count `attributed` twice. `platform_W`
+        /// is excluded because it is by definition what is LEFT of the total.
+        /// `max(cpuRail, attributed)` rather than their sum, because the bar draws
+        /// apps as `attributed` and system processes as `cpuRail - attributed`
+        /// clamped at zero — those two segments together occupy exactly the larger
+        /// of the pair, whichever way round they are.
+        public var claimed_W: Double? {
+            guard isFullSample else { return nil }
+            return max(cpuRail_W ?? 0, attributed_W)
+                + max(0, gpu_W ?? 0) + max(0, memory_W ?? 0)
+                + max(0, storage_W ?? 0) + max(0, usb_W ?? 0) + max(0, display_W ?? 0)
+        }
+
+        /// The total the ledger bar must be LAID OUT against — never smaller than
+        /// the claims it has to draw.
+        ///
+        /// Not the same question as `smoothed_W`, which is the number to PRINT, and
+        /// the two come apart for a few seconds after a load step. `attributed_W`
+        /// is rusage joules over the tick that just elapsed; `smoothed_W` is a
+        /// median of fifteen PSTR reads, EWMA-smoothed and gain-corrected against
+        /// the gauge's 60 s mean. Under a sudden load the parts arrive first, and
+        /// the bar — which sizes every segment as `claim / total_pctHr` and clips
+        /// to its own width — rendered apps at 100 % with the unattributed segment
+        /// gone entirely.
+        ///
+        /// Of the two, `attributed_W` is the one to trust on that tick: it is a
+        /// direct measurement of the interval that just ended, with no filter on
+        /// it, while `smoothed_W` is explicitly not a measurement of this instant.
+        /// So the DENOMINATOR gives way, not the parts. Nothing is clamped and
+        /// nothing is redistributed: the rows are unchanged, they still sum to the
+        /// span, and the remainder is still drawn rather than shared out.
+        ///
+        /// Load-triggered and only load-triggered: 88 passive ticks at idle
+        /// produced no overflow at all, worst raw residual 0.000, and on any such
+        /// tick this is exactly `smoothed_W`.
+        ///
+        /// The alarm is untouched. `hasAttributionOverflow` still reads
+        /// `rawResidual_W`, which is still measured against `smoothed_W`, so the
+        /// physically impossible state is still reported — this stops the bar
+        /// asserting a falsehood WHILE it is reported, rather than instead of it.
+        public var ledgerSpan_W: Double {
+            max(smoothed_W, claimed_W ?? 0)
+        }
+        public var ledgerSpan_pctHr: Double { pctHr(ledgerSpan_W) }
         public let scale: BatteryScale
         public let state: Battery.State?
         public let coverage: Double
