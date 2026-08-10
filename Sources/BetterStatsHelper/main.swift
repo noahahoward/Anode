@@ -71,14 +71,19 @@ drive your fans: the exact BetterStats build this helper shipped beside, running
 as you. Not another user, not another program of yours, not a rebuilt
 BetterStats. Stop it with ⌃C and the fans go back to automatic.
 
-INSTALLED is the convenient one, and it is weaker in one specific way you should
-know before you type a password: the daemon outlives your rebuilds, so it cannot
-pin a hash that changes on every rebuild. It pins the signing identifier instead,
-and anyone who can run `codesign -s - -i dev.noah.betterstats` on their own binary
-satisfies that. So after installing, ANYTHING RUNNING AS YOU can set your fan
-speeds, within the range the fan itself reports, until you uninstall. Nothing
-else can: other users are refused by the kernel, and the daemon's whole
-vocabulary is "set fan N to R rpm" and "release".
+INSTALLED is the convenient one. It is started ON DEMAND — launchd holds the
+socket and runs it when the app connects, and it exits again once it has been
+idle and holds no fan — so installing it does not put a root process on your
+machine at boot or while BetterStats is closed.
+
+It is weaker than the session helper in one specific way you should know before
+you type a password: the daemon outlives your rebuilds, so it cannot pin a hash
+that changes on every rebuild. It pins the signing identifier instead, and anyone
+who can run `codesign -s - -i dev.noah.betterstats` on their own binary satisfies
+that. So while it is up, ANYTHING RUNNING AS YOU can set your fan speeds, within
+the range the fan itself reports. Nothing else can: other users are refused by
+the kernel, and the daemon's whole vocabulary is "set fan N to R rpm" and
+"release".
 """
 
 func value(after flag: String) -> String? {
@@ -193,11 +198,15 @@ if arguments.contains(FanDaemon.installArgument) {
       serves   uid \(installFor)
       accepts  any build signing as \(FanDaemon.clientSigningIdentifier)
 
-    From now on a root process is running at all times that will set a fan target
-    on request from uid \(installFor), within the range the fan itself reports.
-    Anything running as that user can ask — this build has no Apple Developer ID,
-    so nothing can tell your BetterStats from another program that signs itself
-    with the same identifier. Undo it all with --uninstall.
+    It is started ON DEMAND. launchd holds the socket and runs the helper when
+    something connects; it exits again after \(Int(FanDaemon.idleExit))s with no client and no
+    fan held. Nothing of this runs at boot, or while BetterStats is closed.
+
+    While it is up it will set a fan target on request from uid \(installFor), within
+    the range the fan itself reports. Anything running as that user can ask —
+    this build has no Apple Developer ID, so nothing can tell your BetterStats
+    from another program that signs itself with the same identifier. Undo it all
+    with --uninstall.
     """)
 
     let report = FanDaemonInstall.perform(plan, ops: FanDaemonInstall.SystemOperations())
@@ -240,9 +249,10 @@ let isInstalledDaemon = arguments.contains(FanDaemon.serveArgument)
 // whichever process won a race. Refused, with the way out.
 if !isInstalledDaemon, FanDaemon.isInstalled() {
     printErr("""
-    The fan helper is already INSTALLED as a launch daemon, so it is already \
-    running and already holds \(FanSocket.path). Starting a second one by hand \
-    would take that socket away from it.
+    The fan helper is already INSTALLED as a launch daemon. launchd is holding \
+    \(FanSocket.path) and starts the helper when the app connects. Starting a \
+    second one by hand would unlink that socket and bind its own, and launchd \
+    would never start another helper — the path it is waiting on would be gone.
 
     Fan control should already work — just use the Fans tab. To go back to the \
     session helper instead:
@@ -321,7 +331,21 @@ let server = FanHelperServer(
     })
 
 do {
-    try server.start()
+    if isInstalledDaemon {
+        // The installed daemon is started BY a connection, not before one. It
+        // does not create the socket — launchd made it at install time, has been
+        // holding it ever since, and hands it over here. That is what keeps this
+        // off the machine entirely until fan control is used.
+        server.idleExit = FanDaemon.idleExit
+        try server.start(adopting: FanDaemon.activatedSocket())
+    } else {
+        try server.start()
+    }
+} catch let failure as FanDaemon.ActivationFailure {
+    // These are worth more than an errno: two of the four mean someone ran
+    // `--serve` by hand, and the sentence says so instead of printing a number.
+    printErr("betterstats-helper: \(failure.message)")
+    exit(1)
 } catch {
     printErr("betterstats-helper: \(error.localizedDescription)")
     exit(1)

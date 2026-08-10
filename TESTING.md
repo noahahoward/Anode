@@ -171,6 +171,29 @@ says so, and says the filesystem permission on `/Library` is the check. The
 modern API (`SMAppService.daemon`) is closed to us: the same header says apps
 containing LaunchDaemons must be notarised.
 
+**Nothing is resident.** Installing does not put a root process on your machine.
+The job has no `RunAtLoad` and no `KeepAlive`; it declares a `Sockets` entry, so
+launchd holds `/var/run/betterstats-fan.sock` itself and starts the helper only
+when something connects. The helper exits again after 90 seconds with no client
+and no fan held. So: nothing at boot, nothing while BetterStats is closed,
+nothing while fan control is off.
+
+The socket launchd creates has the same owner and mode the session helper sets
+for itself — `SockPathOwner` is the installing uid and `SockPathMode` is 384,
+which is 0600 in the decimal that property lists force. On-demand launching moved
+*who creates the socket*, not who is allowed to talk to it; `getpeereid` still
+does the real enforcement on every connection.
+
+Two rules keep that safe, and both are tested against a real socket rather than
+argued for. A helper never unlinks a socket it did not create, because launchd is
+still holding that path and it is how the *next* helper gets started. And a
+helper still holding fans it could not release never idle-exits, because leaving
+would drop the only record of where those fans belong.
+
+An idle helper costs nothing measurable either way: it blocks in `poll()` with no
+timeout, no threads and no timers, so it is not scheduled at all between
+requests.
+
 **What you give up, plainly.** The session helper trusts exactly one build,
 because it pins the app's code hash when it starts. The installed daemon cannot
 do that — it outlives your rebuilds, and a hash pinned at install time would be
