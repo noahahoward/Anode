@@ -641,6 +641,30 @@ public final class HistoryGraphView: NSView {
             return
         }
 
+        // BRIDGE the gaps, greyed and dashed.
+        //
+        // A solid line across hours nobody sampled asserts a trend that was never
+        // measured, which is why the runs below are drawn separately. But a bare
+        // hole reads as a rendering fault rather than as "the machine was off",
+        // and the user asked to see something there. So the gap is bridged in
+        // grey, dashed, and thin — deliberately not the series colour, because
+        // the one thing it must never look like is data.
+        //
+        // Drawn FIRST so the real line strokes over it, and clipped to the plot
+        // like everything else.
+        if runs.count > 1 {
+            let bridge = NSBezierPath()
+            bridge.lineWidth = 1
+            bridge.setLineDash([3, 3], count: 2, phase: 0)
+            for i in 1..<runs.count {
+                guard let from = runs[i - 1].last, let to = runs[i].first else { continue }
+                bridge.move(to: NSPoint(x: from.x, y: from.y))
+                bridge.line(to: NSPoint(x: to.x, y: to.y))
+            }
+            NSColor.tertiaryLabelColor.setStroke()
+            bridge.stroke()
+        }
+
         // One path PER RUN. A single path with a `move` between runs would stroke
         // identically, but the fill below must close each run against the zero
         // line separately — closing across a gap would shade the empty hours as
@@ -740,10 +764,14 @@ public final class HistoryGraphView: NSView {
             let gapLimit = max((deltas.isEmpty ? 0 : deltas[deltas.count / 2]) * 4, 90)
 
             var runs: [(charging: Bool, path: NSBezierPath)] = []
+            var gapBridges: [(from: NSPoint, to: NSPoint)] = []
             for i in 0..<(pts.count - 1) {
                 // Skip the segment entirely across a gap, and force the next
                 // segment to start a fresh path rather than continuing this one.
                 if pts[i + 1].time.timeIntervalSince(pts[i].time) > gapLimit {
+                    gapBridges.append((
+                        NSPoint(x: xFor(pts[i].time), y: yForRight(pts[i].value)),
+                        NSPoint(x: xFor(pts[i + 1].time), y: yForRight(pts[i + 1].value))))
                     runs.append((false, NSBezierPath()))   // sentinel: empty, never stroked
                     continue
                 }
@@ -763,6 +791,20 @@ public final class HistoryGraphView: NSView {
             }
             NSGraphicsContext.saveGraphicsState()
             NSBezierPath(rect: plot).addClip()
+            // Grey dashed bridge across the gaps, for the same reason as the
+            // left-hand series: a hole reads as breakage, a grey dash reads as
+            // "nothing was measured here". Never the series colour.
+            if !gapBridges.isEmpty {
+                let bridge = NSBezierPath()
+                bridge.lineWidth = 1
+                bridge.setLineDash([3, 3], count: 2, phase: 0)
+                for g in gapBridges {
+                    bridge.move(to: g.from)
+                    bridge.line(to: g.to)
+                }
+                NSColor.tertiaryLabelColor.setStroke()
+                bridge.stroke()
+            }
             for run in runs where !run.path.isEmpty {
                 (run.charging ? Palette.chargingLine : r.color).setStroke()
                 run.path.stroke()
