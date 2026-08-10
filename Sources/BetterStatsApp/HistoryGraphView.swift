@@ -152,6 +152,41 @@ public class HistoryGraphView: NSView {
         didSet { needsDisplay = true }
     }
 
+    /// Draw a grey dashed line across a gap in the data.
+    ///
+    /// TRUE for the battery history, which is the caller this was built for. That
+    /// series comes out of a persisted store, so a gap means THE MACHINE WAS OFF —
+    /// hours that exist and were not measured. A bare hole there reads as a
+    /// rendering fault, so the gap is stated explicitly, in grey, dashed, never in
+    /// the series colour.
+    ///
+    /// FALSE for the Resources graphs, and the difference is the point. Those are
+    /// session-scoped live buffers: no store behind them, nothing persisted,
+    /// nothing to reconcile across a sleep. A gap there is a tick this process did
+    /// not take — a dropped sample, a tab that was not on screen — and there is no
+    /// span of absent history to account for, because the buffer only ever held
+    /// this session. Marking it would be annotating the absence of an event rather
+    /// than the presence of one. So the line simply stops and picks up again where
+    /// sampling resumed.
+    ///
+    /// What does NOT change with this flag is the run splitting itself. Neither
+    /// mode draws a straight line across unmeasured time; the only question here is
+    /// whether the hole gets a label.
+    public var bridgesGaps: Bool = true {
+        didSet { needsDisplay = true }
+    }
+
+    /// Draw the axes — value ladder, time labels, gutters, header band.
+    ///
+    /// FALSE makes the view a sparkline: the same decimation, the same min/max
+    /// whiskers, the same run splitting, drawn edge to edge with no room spent on
+    /// chrome. It is not a second, simpler graph class — that is exactly what this
+    /// file's header rules out — it is this graph in a box too small to name its
+    /// own scale, which is why the caller must print the reading beside it.
+    public var showsAxes: Bool = true {
+        didSet { needsDisplay = true }
+    }
+
     /// Optional band drawn behind the lines — e.g. the unattributed residual,
     /// shown as context rather than smeared into any series (rows must sum to a
     /// measured total; the residual is *printed*, and here it is *shown*).
@@ -374,8 +409,9 @@ public class HistoryGraphView: NSView {
         // series (so no legend), and 18 pt of reserved air out of an 88 pt card is
         // a fifth of the plot. The battery graph names its axis and keeps the band.
         let headerIsEmpty = yAxisLabel.isEmpty && sanitized.count < 2 && headerTrailingInset == 0
-        let padTop: CGFloat = headerIsEmpty ? 8 : 18   // yAxisLabel + legend row
-        let padBottom: CGFloat = 15                    // time labels
+        // A sparkline spends nothing on chrome: no header band, no time labels.
+        let padTop: CGFloat = !showsAxes ? 2 : (headerIsEmpty ? 8 : 18)  // yAxisLabel + legend row
+        let padBottom: CGFloat = showsAxes ? 15 : 2                      // time labels
         let plotHeight = bounds.height - padTop - padBottom
 
         // Left gutter sized to the widest y tick label so labels never collide
@@ -394,13 +430,17 @@ public class HistoryGraphView: NSView {
             let w = (Self.yLabel(v) as NSString).size(withAttributes: tickAttrs).width
             if w > maxYLabelW { maxYLabelW = w }
         }
-        let padLeft = max(maxYLabelW + 10, 24)
+        let padLeft: CGFloat = showsAxes ? max(maxYLabelW + 10, 24) : 2
         // Room for the right-hand 0-100 axis labels when a second series is present.
-        let padRight: CGFloat = rightSeries == nil ? 10 : 34
+        let padRight: CGFloat = !showsAxes ? 2 : (rightSeries == nil ? 10 : 34)
         let plot = NSRect(x: padLeft, y: padBottom,
                           width: bounds.width - padLeft - padRight,
                           height: plotHeight)
-        guard plot.width > 20, plot.height > 20 else { return }  // too small to be honest
+        // Too small to be honest — an axis nobody can read is worse than no chart.
+        // A sparkline has no axis to read, so the floor is only "is there room for a
+        // line at all"; the number it accompanies is printed beside it in full.
+        let minPlot: CGFloat = showsAxes ? 20 : 8
+        guard plot.width > minPlot, plot.height > minPlot else { return }
         // Publish the geometry the rest of this frame draws with, so hover, the
         // sample dot and the zoom anchor all read the same rect the lines do.
         // Set after the size guard: a degenerate rect must never become the
@@ -478,18 +518,20 @@ public class HistoryGraphView: NSView {
         // the machine is on: the line just wanders across an unmarked field. When
         // the axis does not reach zero this is the plot floor instead, which is
         // the same statement — it is where the measurement bottoms out.
-        NSColor.separatorColor.setStroke()
-        let baseline = NSBezierPath()
-        baseline.lineWidth = 1
-        baseline.move(to: NSPoint(x: plot.minX, y: zeroY))
-        baseline.line(to: NSPoint(x: plot.maxX, y: zeroY))
-        baseline.stroke()
-        for v in yTicks {
-            let s = Self.yLabel(v) as NSString
-            let size = s.size(withAttributes: tickAttrs)
-            var y = yFor(v) - size.height / 2
-            y = min(max(y, 0), bounds.height - size.height)
-            s.draw(at: NSPoint(x: padLeft - 6 - size.width, y: y), withAttributes: tickAttrs)
+        if showsAxes {
+            NSColor.separatorColor.setStroke()
+            let baseline = NSBezierPath()
+            baseline.lineWidth = 1
+            baseline.move(to: NSPoint(x: plot.minX, y: zeroY))
+            baseline.line(to: NSPoint(x: plot.maxX, y: zeroY))
+            baseline.stroke()
+            for v in yTicks {
+                let s = Self.yLabel(v) as NSString
+                let size = s.size(withAttributes: tickAttrs)
+                var y = yFor(v) - size.height / 2
+                y = min(max(y, 0), bounds.height - size.height)
+                s.draw(at: NSPoint(x: padLeft - 6 - size.width, y: y), withAttributes: tickAttrs)
+            }
         }
 
         // ── Time ticks ──────────────────────────────────────────────────────
@@ -504,7 +546,7 @@ public class HistoryGraphView: NSView {
         let timeGrid = NSBezierPath()
         timeGrid.lineWidth = 1
         var back: Double = 0
-        while true {
+        while showsAxes {
             let x = xFor(tMax.addingTimeInterval(-back))
             if x < plot.minX - 0.5 { break }
             if showsGrid {
@@ -545,14 +587,20 @@ public class HistoryGraphView: NSView {
             // Empty state: axes and a quiet message, never a blank rectangle —
             // a blank rectangle looks like a bug, an empty chart looks like
             // "not enough history yet", which is the truth.
-            let s = "no history yet" as NSString
-            let attrs: [NSAttributedString.Key: Any] = [
-                .font: NSFont.systemFont(ofSize: 11),
-                .foregroundColor: NSColor.tertiaryLabelColor,
-            ]
-            let size = s.size(withAttributes: attrs)
-            s.draw(at: NSPoint(x: plot.midX - size.width / 2, y: plot.midY - size.height / 2),
-                   withAttributes: attrs)
+            //
+            // A sparkline is the one place that sentence is skipped: an 11 pt
+            // string clipped by a 36 pt box says nothing legible, and the card that
+            // owns the sparkline is already printing "—" as its reading.
+            if showsAxes {
+                let s = "no history yet" as NSString
+                let attrs: [NSAttributedString.Key: Any] = [
+                    .font: NSFont.systemFont(ofSize: 11),
+                    .foregroundColor: NSColor.tertiaryLabelColor,
+                ]
+                let size = s.size(withAttributes: attrs)
+                s.draw(at: NSPoint(x: plot.midX - size.width / 2, y: plot.midY - size.height / 2),
+                       withAttributes: attrs)
+            }
             // `haveData` is folded from the left series and band only, so a
             // charge line with no rate line behind it still belongs on screen —
             // it is the one thing this view can show when the rate is missing.
@@ -560,7 +608,7 @@ public class HistoryGraphView: NSView {
                 drawRightSeries(r, plot: plot, xFor: xFor, yForRight: yForRight,
                                 tickAttrs: tickAttrs)
             }
-            drawHeader(nameAttrs: axisNameAttrs, legendAttrs: tickAttrs)
+            if showsAxes { drawHeader(nameAttrs: axisNameAttrs, legendAttrs: tickAttrs) }
             return
         }
 
@@ -599,7 +647,7 @@ public class HistoryGraphView: NSView {
 
         // Last, so the crosshair and its readout sit above the lines they report.
         drawHover(in: plot, xFor: xFor, yFor: yFor)
-        drawHeader(nameAttrs: axisNameAttrs, legendAttrs: tickAttrs)
+        if showsAxes { drawHeader(nameAttrs: axisNameAttrs, legendAttrs: tickAttrs) }
     }
 
     /// One series: decimate → mean line + min/max whiskers (see header comment
@@ -724,7 +772,10 @@ public class HistoryGraphView: NSView {
         //
         // Drawn FIRST so the real line strokes over it, and clipped to the plot
         // like everything else.
-        if runs.count > 1 {
+        //
+        // Off for a session-scoped live buffer; see `bridgesGaps` for why the two
+        // kinds of gap are not the same fact.
+        if bridgesGaps, runs.count > 1 {
             let bridge = NSBezierPath()
             bridge.lineWidth = 1
             bridge.setLineDash([3, 3], count: 2, phase: 0)
@@ -913,7 +964,7 @@ public class HistoryGraphView: NSView {
             // Grey dashed bridge across the gaps, for the same reason as the
             // left-hand series: a hole reads as breakage, a grey dash reads as
             // "nothing was measured here". Never the series colour.
-            if !gapBridges.isEmpty {
+            if bridgesGaps, !gapBridges.isEmpty {
                 let bridge = NSBezierPath()
                 bridge.lineWidth = 1
                 bridge.setLineDash([3, 3], count: 2, phase: 0)

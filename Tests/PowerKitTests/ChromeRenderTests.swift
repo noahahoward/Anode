@@ -452,50 +452,72 @@ final class ResourcesCardRenderTests: XCTestCase {
     override func setUp() { _ = appKitForTests }
 
 
-    /// The strip is five cards of five different colours, and a card whose only
-    /// colour is inside its plot makes you look down at the graph to find out
-    /// which one you are reading. The line's colour is restated in the header.
-    func testACardStatesItsLineColourInItsHeader() {
-        let card = MiniGraph(title: "CPU", unit: "%", color: Palette.accent)
-        card.push(42, at: Date(), before: Date().addingTimeInterval(-900), text: "42%")
-        render(card, size: NSSize(width: 210, height: 108))
-
-        let swatches = card.subviews
-            .flatMap { $0.subviews }
-            .compactMap { $0.layer?.backgroundColor }
-            .compactMap { NSColor(cgColor: $0)?.usingColorSpace(.sRGB) }
-        guard let want = Palette.accent.usingColorSpace(.sRGB) else {
-            return XCTFail("accent did not resolve")
+    /// The rail is one card per resource and the colour is what tells them apart
+    /// at a glance — in the sparkline, in the selected card's edge, and in the
+    /// detail column's line. Two resources sharing an ink would make the rail and
+    /// the detail agree about the wrong thing, silently.
+    func testEveryResourceHasItsOwnColour() {
+        let inks = Resource.allCases.compactMap {
+            ($0, $0.color.usingColorSpace(.sRGB))
         }
-        XCTAssertTrue(swatches.contains { s in
-            abs(s.redComponent - want.redComponent) < 0.02
-                && abs(s.greenComponent - want.greenComponent) < 0.02
-                && abs(s.blueComponent - want.blueComponent) < 0.02
-        }, "the card header does not carry the line's colour")
+        XCTAssertEqual(inks.count, Resource.allCases.count, "a resource colour did not resolve")
+        for (a, i) in inks.enumerated() {
+            for j in inks[(a + 1)...] {
+                guard let x = i.1, let y = j.1 else { continue }
+                let d = max(abs(x.redComponent - y.redComponent),
+                            max(abs(x.greenComponent - y.greenComponent),
+                                abs(x.blueComponent - y.blueComponent)))
+                XCTAssertGreaterThan(d, 0.05, "\(i.0) and \(j.0) are the same colour")
+            }
+        }
     }
 
-    /// The card is 108 pt tall and most of that has to end up being plot. This is
-    /// the geometry the header-band rule was for; asserted on the real card so a
-    /// change to its header layout is caught here rather than on a screen.
-    func testACardsPlotGetsMostOfTheCard() {
-        let card = MiniGraph(title: "Memory", unit: "%", color: Palette.warn)
-        let now = Date()
-        for i in 0..<40 {
-            card.push(Double(i), at: now.addingTimeInterval(-900 + Double(i) * 20),
-                      before: now.addingTimeInterval(-900), text: "\(i)%")
-        }
-        render(card, size: NSSize(width: 210, height: 108))
+    /// Selection on a card is the same two-part mark the process table's rows
+    /// wear: a wash across the card, plus an opaque edge down its leading side in
+    /// the resource's own colour. The wash alone is a difference you can only
+    /// judge with an unselected card beside it.
+    func testASelectedCardIsMarkedAndNotJustWashed() {
+        inTheme(.darkAqua) {
+            let card = ResourceCard(resource: .cpu, onClick: { _ in })
+            card.isSelected = true
+            let size = NSSize(width: 210, height: 58)
+            let frame = render(card, size: size)
 
-        let graphs = card.subviews.compactMap { $0 as? HistoryGraphView }
-        guard let plot = graphs.first?.lastPlot else {
-            return XCTFail("the card has no graph in it")
+            let edge = frame.maxAlpha(in: NSRect(x: 0, y: 6, width: 2, height: 46))
+            let wash = frame.maxAlpha(in: NSRect(x: 120, y: 6, width: 60, height: 46))
+            XCTAssertGreaterThan(wash, 0.05, "the selection wash disappeared")
+            XCTAssertGreaterThan(edge, wash + 0.3,
+                                 "the selected card has no edge mark, only a wash")
         }
-        // More than half the card has to be plot. Title row, axis labels, time
-        // labels and reserved bands are all chrome, and a card that spends most
-        // of its height on chrome is a label with a smear under it.
-        XCTAssertGreaterThan(plot.height, card.bounds.height * 0.5,
-                             "the card spends more height on chrome than on the plot")
-        XCTAssertGreaterThan(plot.width, 140)
+    }
+
+    /// An unselected card is not marked. The edge has to mean selection, or it
+    /// means nothing.
+    func testAnUnselectedCardHasNoEdgeMark() {
+        inTheme(.darkAqua) {
+            let card = ResourceCard(resource: .cpu, onClick: { _ in })
+            let size = NSSize(width: 210, height: 58)
+            let frame = render(card, size: size)
+            XCTAssertLessThan(frame.maxAlpha(in: NSRect(x: 0, y: 6, width: 2, height: 46)),
+                              0.6, "an unselected card drew a selection mark")
+        }
+    }
+
+    /// The rail's card is a thumbnail by design — the plot is a fixed 74×36 next
+    /// to the reading, not the card. The chart you actually read is the detail
+    /// column's, and that one has to get a real share of the height: the graph is
+    /// pinned to 42% of the column, so a layout change that starves it is caught
+    /// here rather than on a screen.
+    func testTheDetailGraphGetsALargeShareOfTheColumn() {
+        let detail = ResourceDetailView(frame: .zero)
+        let height: CGFloat = 640
+        render(detail, size: NSSize(width: 620, height: height))
+
+        XCTAssertGreaterThan(detail.graph.bounds.height, height * 0.30,
+                             "the detail column spends too little of itself on the chart")
+        XCTAssertLessThan(detail.graph.bounds.height, height * 0.55,
+                          "the chart crowded out the properties block")
+        XCTAssertGreaterThan(detail.graph.bounds.width, 400)
     }
 }
 

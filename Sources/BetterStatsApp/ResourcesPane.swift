@@ -3,404 +3,1017 @@ import PowerKit
 
 /// The Resources tab: everything the app measures about the MACHINE, in one place.
 ///
-/// The old rail answered "how busy is the CPU" and "how hot is it" from two
-/// different tabs, and neither showed a trend — the only graph in the window plots
-/// battery drain. This tab is the whole-machine view: a strip of live graphs across
-/// the top, and every current reading beneath, including the temperature summary
-/// merged in from the old Sensors lens.
+/// SHAPE. A rail of small live graphs down the left, one per resource, and the
+/// selected one opened out on the right as a large graph over a dense block of
+/// figures. Borrowed from Windows' Task Manager Performance tab, which solves a
+/// problem this tab had: a strip of five cards over one long scrolling list made
+/// every resource compete for the same column of rows, so nothing got the room to
+/// say anything. Here the rail answers "how is the machine" at a glance and the
+/// detail answers "what about this one" without leaving the tab.
+///
+/// The rail's sparkline and the big graph are THE SAME SERIES. Selecting a card
+/// makes that line big; it never shows you a different measurement than the one
+/// you clicked.
+///
+/// The two halves of the detail are split on purpose. Numbers that MOVE are set
+/// large and grouped together; facts that do not are small label/value pairs
+/// beside them. That is the layout's main idea, and it happens to be the
+/// distinction this project already cares most about — measured just now, versus
+/// known since boot.
 ///
 /// COST. This is the only tab that needs every subsystem at once, and it gets them
 /// only while it is on screen: `SidebarView.Lens.needs` declares `.all` for this
 /// case and `AppDelegate.visibleNeeds` unions that with whatever the menu bar is
-/// bound to. Leaving the window open on Processes no longer costs a GPU property
-/// dump or an SMC sweep, which it did before this tab existed.
+/// bound to. That is unchanged by the rail — all six sparklines are on screen
+/// together, so all six subsystems have to be live, and the tab costs exactly what
+/// it did before. What IS gated is the detail's own extra reads: the per-process
+/// thread sweep, the volume list and the interface addresses are paid for only by
+/// the resource currently selected.
 final class ResourcesPane: SystemPane {
 
-    /// How much history the strip keeps. Fifteen minutes at the 2 s cadence is 450
-    /// points per card across a ~200 pt plot, which the graph's own decimation
+    /// How much history the graphs keep. Fifteen minutes at the 2 s cadence is 450
+    /// points per series across a ~700 pt plot, which the graph's own decimation
     /// reduces to one bucket per pixel — so a longer window would cost memory and
     /// draw exactly the same picture.
+    ///
+    /// IN MEMORY ONLY. There is no store behind these and nothing is written
+    /// anywhere: close the app and the history is gone, which is what a live
+    /// utilisation graph should do. It is also why these graphs do not mark their
+    /// gaps — see `HistoryGraphView.bridgesGaps`.
     private let historySpan: TimeInterval = 15 * 60
 
-    private let strip = NSStackView()
-    private let cpuCard: MiniGraph
-    private let gpuCard: MiniGraph
-    private let memoryCard: MiniGraph
-    private let networkCard: MiniGraph
-    private let diskCard: MiniGraph
+    private let layout = ResourcesContent()
 
     override init(frame: NSRect) {
-        cpuCard = MiniGraph(title: "CPU", unit: "%", color: Palette.accent)
-        gpuCard = MiniGraph(title: "GPU", unit: "%", color: Palette.blue)
-        memoryCard = MiniGraph(title: "Memory", unit: "%", color: Palette.warn)
-        networkCard = MiniGraph(title: "Network", unit: "MB/s", color: Palette.chargeLine)
-        diskCard = MiniGraph(title: "Disk", unit: "MB/s", color: Palette.accentDim)
         super.init(frame: frame)
-
-        strip.orientation = .horizontal
-        strip.distribution = .fillEqually
-        strip.spacing = 10
-        for card in cards {
-            strip.addArrangedSubview(card)
-            // A horizontal NSStackView centres its arranged views vertically and
-            // these have no intrinsic height — a graph is whatever size it is given
-            // — so without this the cards lay out at zero height and the strip is
-            // empty.
-            card.heightAnchor.constraint(equalTo: strip.heightAnchor).isActive = true
-        }
-        setAccessory(strip, height: 108)
+        setContent(layout)
         titleLabel.stringValue = "Resources"
     }
     required init?(coder: NSCoder) { fatalError() }
-
-    private var cards: [MiniGraph] {
-        [cpuCard, gpuCard, memoryCard, networkCard, diskCard]
-    }
-
-    override func viewDidChangeEffectiveAppearance() {
-        super.viewDidChangeEffectiveAppearance()
-        cards.forEach { $0.restyle() }
-    }
 
     /// One tick's worth of everything.
     ///
     /// `sys` is nil before the first sample lands. `power` carries the battery-side
     /// figures, which are the only numbers here that are not a utilisation.
     func update(_ sys: SystemMetrics.Snapshot?, power: PowerMonitor.Snapshot?) {
-        let now = Date()
+        captionLabel.stringValue = summaryLine()
         guard let sys else {
-            captionLabel.stringValue = "Waiting for the first sample."
-            setBody([.row("Sampling", "—", dim: true)])
+            layout.waitForFirstSample()
             return
         }
-
-        push(now, sys)
-        captionLabel.stringValue = summaryLine()
-        setBody(bodyItems(sys, power: power))
-    }
-
-    /// Append this tick to every series and drop what has aged out.
-    ///
-    /// A missing reading appends NOTHING rather than a zero. The graph bridges gaps
-    /// with a grey dashed line of its own, so an unsampled stretch reads as
-    /// unsampled instead of as a subsystem that went quiet.
-    private func push(_ now: Date, _ sys: SystemMetrics.Snapshot) {
-        let cutoff = now.addingTimeInterval(-historySpan)
-        cpuCard.push(sys.cpu?.total, at: now, before: cutoff,
-                     text: sys.cpu.map { String(format: "%.0f%%", $0.total) })
-        gpuCard.push(sys.gpu?.utilization, at: now, before: cutoff,
-                     text: sys.gpu.map { String(format: "%.0f%%", $0.utilization) })
-        memoryCard.push(sys.memory?.usedPercent, at: now, before: cutoff,
-                        text: sys.memory.map { String(format: "%.0f%%", $0.usedPercent) })
-        // Megabytes per second, not bytes: the graph labels its axis with "%g", so a
-        // raw byte rate would print "5e+07" up the side of a 200 pt card.
-        networkCard.push(sys.network.map { $0.totalPerSec / 1e6 }, at: now, before: cutoff,
-                         text: sys.network.map { MetricUnit.bytesPerSecond.format($0.totalPerSec) })
-        diskCard.push(sys.disk.map { $0.totalPerSec / 1e6 }, at: now, before: cutoff,
-                      text: sys.disk.map { MetricUnit.bytesPerSecond.format($0.totalPerSec) })
+        layout.update(sys, power: power, span: historySpan)
     }
 
     private func summaryLine() -> String {
         let f = MachineInfo.facts
-        var parts = [f.model, f.chip]
-        if let p = f.performanceCores, let e = f.efficiencyCores {
-            parts.append("\(p)P + \(e)E cores")
-        } else {
-            parts.append("\(f.logicalCores) cores")
-        }
+        var parts = [f.model, f.chip, "\(f.coreSummary) cores"]
         parts.append(MetricUnit.bytes.format(Double(f.memoryBytes)))
         if let up = MachineInfo.uptime { parts.append("up \(MachineInfo.formatDuration(up))") }
         return parts.joined(separator: " · ")
     }
+}
 
-    // ── Body ────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// MARK: Resources
 
-    private func bodyItems(_ sys: SystemMetrics.Snapshot,
-                           power: PowerMonitor.Snapshot?) -> [BodyItem] {
-        var items: [BodyItem] = []
+/// The things the rail can show. Order is the rail's order, top to bottom.
+enum Resource: CaseIterable {
+    case cpu, memory, gpu, network, disk, sensors
 
-        items.append(.heading("CPU"))
+    /// The colour of this resource's line, everywhere it appears — the sparkline,
+    /// the card's swatch, the big graph, and the accent on its live figures. One
+    /// resource, one colour, so a glance at the rail and a glance at the detail
+    /// agree about what is being looked at.
+    var color: NSColor {
+        switch self {
+        case .cpu:     return Palette.accent
+        case .memory:  return Palette.warn
+        case .gpu:     return Palette.blue
+        case .network: return Palette.chargeLine
+        case .disk:    return Palette.accentDim
+        case .sensors: return Palette.critical
+        }
+    }
+
+    /// The y-axis NAME on the big graph. Named, never assumed: "%" and "MB/s" and
+    /// "°C" are not interchangeable and a chart that does not say which it is
+    /// invites the reader to supply the wrong one.
+    var axisLabel: String {
+        switch self {
+        case .cpu:     return "% utilisation"
+        case .memory:  return "GB in use"
+        case .gpu:     return "% utilisation"
+        case .network: return "MB/s"
+        case .disk:    return "MB/s"
+        case .sensors: return "°C"
+        }
+    }
+
+    /// Pinned axis top, or nil to autoscale. A percentage means nothing unless 100
+    /// is where 100 is, and a memory graph that rescaled itself would turn a
+    /// hundred megabytes into a cliff.
+    var axisMax: Double? {
+        switch self {
+        case .cpu, .gpu: return 100
+        case .memory:    return Double(MachineInfo.facts.memoryBytes) / 1_073_741_824
+        case .network, .disk, .sensors: return nil
+        }
+    }
+}
+
+/// One resource's live buffer and the strings describing it right now.
+final class ResourceTrack {
+    let resource: Resource
+    /// Renamed at run time for the network, which titles itself after whatever link
+    /// macOS is actually routing through — "Ethernet" with a cable in, "Wi-Fi"
+    /// without. Everything else keeps a fixed name.
+    var title: String
+    /// The line under the title on the card: this resource in one phrase.
+    var summary: String = "—"
+    /// The hardware behind it, shown right-aligned beside the detail's heading.
+    var hardware: String = ""
+    var points: [HistoryGraphView.Point] = []
+
+    init(_ resource: Resource, title: String) {
+        self.resource = resource
+        self.title = title
+    }
+
+    /// Record one reading.
+    ///
+    /// A missing value appends NOTHING rather than a zero — a subsystem that was
+    /// not sampled did not report zero. The graph draws the resulting hole as a
+    /// break in the line and, unlike the battery history, does not mark it.
+    func push(_ value: Double?, at now: Date, before cutoff: Date) {
+        if let value, value.isFinite {
+            points.append(.init(time: now, value: value))
+        }
+        if let first = points.first, first.time < cutoff {
+            points.removeAll { $0.time < cutoff }
+        }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// MARK: Content — rail + detail
+
+private final class ResourcesContent: NSView, PaneContentView {
+
+    /// Wide enough for a 78 pt sparkline, the gutters, and a two-line label that
+    /// can hold "Peer-to-peer Wi-Fi" without truncating.
+    private static let railWidth: CGFloat = 214
+
+    private var tracks: [Resource: ResourceTrack] = [:]
+    private var cards: [Resource: ResourceCard] = [:]
+    private var selected: Resource = .cpu
+
+    private let railStack = NSStackView()
+    private let railScroll = NSScrollView()
+    private let detail = ResourceDetailView()
+
+    /// Held so the CPU detail's census is only paid for while the CPU detail is
+    /// what is on screen. See the cost note on `ResourcesPane`.
+    private var census: MachineInfo.Census?
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        translatesAutoresizingMaskIntoConstraints = false
+
+        for resource in Resource.allCases {
+            tracks[resource] = ResourceTrack(resource, title: Self.defaultTitle(resource))
+        }
+
+        railStack.orientation = .vertical
+        railStack.alignment = .leading
+        railStack.spacing = 6
+        railStack.translatesAutoresizingMaskIntoConstraints = false
+        for resource in Resource.allCases {
+            let card = ResourceCard(resource: resource) { [weak self] in self?.select($0) }
+            cards[resource] = card
+            railStack.addArrangedSubview(card)
+            card.widthAnchor.constraint(equalTo: railStack.widthAnchor).isActive = true
+        }
+        cards[selected]?.isSelected = true
+
+        // A scroller rather than a fixed column: six cards need ~390 pt and a short
+        // window has less. Clipping the last card would hide a whole resource with
+        // nothing saying it was there.
+        railScroll.hasVerticalScroller = true
+        railScroll.borderType = .noBorder
+        railScroll.drawsBackground = false
+        railScroll.contentView = FlippedClipView()
+        railScroll.documentView = railStack
+        railScroll.translatesAutoresizingMaskIntoConstraints = false
+
+        for v in [railScroll, detail] as [NSView] { addSubview(v) }
+        NSLayoutConstraint.activate([
+            railScroll.leadingAnchor.constraint(equalTo: leadingAnchor),
+            railScroll.topAnchor.constraint(equalTo: topAnchor),
+            railScroll.bottomAnchor.constraint(equalTo: bottomAnchor),
+            railScroll.widthAnchor.constraint(equalToConstant: Self.railWidth),
+
+            railStack.leadingAnchor.constraint(equalTo: railScroll.contentView.leadingAnchor),
+            railStack.topAnchor.constraint(equalTo: railScroll.contentView.topAnchor),
+            railStack.widthAnchor.constraint(equalTo: railScroll.contentView.widthAnchor),
+
+            detail.leadingAnchor.constraint(equalTo: railScroll.trailingAnchor, constant: 18),
+            detail.trailingAnchor.constraint(equalTo: trailingAnchor),
+            detail.topAnchor.constraint(equalTo: topAnchor),
+            detail.bottomAnchor.constraint(equalTo: bottomAnchor),
+        ])
+    }
+    required init?(coder: NSCoder) { fatalError() }
+
+    private final class FlippedClipView: NSClipView {
+        override var isFlipped: Bool { true }
+    }
+
+    override var isFlipped: Bool { true }
+
+    func restyleForAppearanceChange() {
+        cards.values.forEach { $0.restyle() }
+        detail.restyle()
+    }
+
+    private static func defaultTitle(_ r: Resource) -> String {
+        switch r {
+        case .cpu:     return "CPU"
+        case .memory:  return "Memory"
+        case .gpu:     return "GPU"
+        case .network: return "Network"
+        case .disk:    return "Disk"
+        case .sensors: return "Temperature"
+        }
+    }
+
+    private func select(_ resource: Resource) {
+        guard resource != selected else { return }
+        cards[selected]?.isSelected = false
+        selected = resource
+        cards[resource]?.isSelected = true
+        // The detail is rebuilt from the NEXT tick's data, but its graph and
+        // heading can change now — waiting two seconds to redraw after a click
+        // reads as a click that did nothing.
+        renderDetail(nil, power: nil)
+    }
+
+    func waitForFirstSample() {
+        detail.showPlaceholder("Waiting for the first sample.")
+    }
+
+    // ── Tick ────────────────────────────────────────────────────────────────
+
+    func update(_ sys: SystemMetrics.Snapshot, power: PowerMonitor.Snapshot?,
+                span: TimeInterval) {
+        let now = Date()
+        let cutoff = now.addingTimeInterval(-span)
+        let net = NetworkInventory.snapshot(now: now)
+
+        push(sys, network: net, now: now, cutoff: cutoff)
+
+        // Only the selected resource pays for its own extra reads. The census is
+        // 0.48 ms of CPU across ~900 processes, which is affordable once a tick and
+        // not worth paying on the five ticks where nothing displays it.
+        census = selected == .cpu ? MachineInfo.census() : nil
+
+        for (resource, track) in tracks {
+            cards[resource]?.apply(track)
+        }
+        renderDetail(sys, power: power, network: net, now: now, span: span)
+    }
+
+    private func push(_ sys: SystemMetrics.Snapshot, network net: NetworkInventory.Snapshot,
+                      now: Date, cutoff: Date) {
+        func track(_ r: Resource) -> ResourceTrack { tracks[r]! }
+
+        let cpu = track(.cpu)
+        cpu.push(sys.cpu?.total, at: now, before: cutoff)
+        cpu.summary = [sys.cpu.map { String(format: "%.0f%%", $0.total) },
+                       sys.cpuTemperature.map { String(format: "%.0f °C", $0) }]
+            .compactMap { $0 }.joined(separator: " · ")
+        cpu.hardware = MachineInfo.facts.chip
+        if cpu.summary.isEmpty { cpu.summary = "—" }
+
+        let memory = track(.memory)
+        // GIGABYTES, not a percentage. The axis is pinned to the machine's own RAM,
+        // so the line's height is how much memory is in use rather than a fraction
+        // whose denominator is off screen.
+        memory.push(sys.memory.map { Double($0.used) / 1_073_741_824 }, at: now, before: cutoff)
+        memory.summary = sys.memory.map {
+            String(format: "%@ / %@ (%.0f%%)",
+                   MetricUnit.bytes.format(Double($0.used)),
+                   MetricUnit.bytes.format(Double($0.total)), $0.usedPercent)
+        } ?? "—"
+        memory.hardware = MetricUnit.bytes.format(Double(MachineInfo.facts.memoryBytes))
+
+        let gpu = track(.gpu)
+        gpu.push(sys.gpu?.utilization, at: now, before: cutoff)
+        gpu.summary = [sys.gpu.map { String(format: "%.0f%%", $0.utilization) },
+                       sys.gpuTemperature.map { String(format: "%.0f °C", $0) }]
+            .compactMap { $0 }.joined(separator: " · ")
+        if gpu.summary.isEmpty { gpu.summary = "—" }
+        gpu.hardware = GPUInfo.facts.model ?? ""
+
+        // THE RENAME. Titled after the link macOS is actually routing through, the
+        // way Task Manager's row says "Ethernet" with a cable in and "Wi-Fi"
+        // without. Falls back to the generic name when nothing is primary, which is
+        // what an offline machine honestly is.
+        let network = track(.network)
+        let primary = net.primary
+        network.title = primary.map { $0.kind.title } ?? Self.defaultTitle(.network)
+        network.hardware = primary?.displayName ?? primary?.bsdName ?? ""
+        // The PRIMARY link's own throughput, not the machine's total, so the graph
+        // and the title are about the same thing. `rate(for:)` returns nil rather
+        // than zero for a link that had no baseline this tick — see
+        // `NetworkThroughput.Sample.measured`.
+        let primaryRate = primary.flatMap { iface in sys.network?.rate(for: iface.bsdName) }
+        network.push(primaryRate.map { ($0.inPerSec + $0.outPerSec) / 1e6 },
+                     at: now, before: cutoff)
+        network.summary = primaryRate.map {
+            String(format: "↓ %@  ↑ %@",
+                   MetricUnit.bytesPerSecond.format($0.inPerSec),
+                   MetricUnit.bytesPerSecond.format($0.outPerSec))
+        } ?? "—"
+
+        let disk = track(.disk)
+        // Megabytes per second, not bytes: the graph labels its axis with "%g", so a
+        // raw byte rate would print "5e+07" up the side of the plot.
+        disk.push(sys.disk.map { $0.totalPerSec / 1e6 }, at: now, before: cutoff)
+        disk.summary = sys.disk.map {
+            String(format: "R %@  W %@",
+                   MetricUnit.bytesPerSecond.format($0.bytesReadPerSec),
+                   MetricUnit.bytesPerSecond.format($0.bytesWrittenPerSec))
+        } ?? "—"
+        disk.hardware = sys.disk?.devices.first(where: { $0.identity.isInternal })?
+            .identity.product ?? ""
+
+        let sensors = track(.sensors)
+        sensors.push(sys.cpuTemperature, at: now, before: cutoff)
+        sensors.summary = sys.sensorsSampled
+            ? [sys.cpuTemperature.map { String(format: "CPU %.0f °C", $0) },
+               sys.gpuTemperature.map { String(format: "GPU %.0f °C", $0) }]
+                .compactMap { $0 }.joined(separator: " · ")
+            : "reading…"
+        if sensors.summary.isEmpty { sensors.summary = "—" }
+        sensors.hardware = sys.fans.isEmpty ? "" : "\(sys.fans.count) fans"
+    }
+
+    // ── Detail ──────────────────────────────────────────────────────────────
+
+    private func renderDetail(_ sys: SystemMetrics.Snapshot?,
+                              power: PowerMonitor.Snapshot?,
+                              network: NetworkInventory.Snapshot? = nil,
+                              now: Date = Date(),
+                              span: TimeInterval = 15 * 60) {
+        guard let track = tracks[selected] else { return }
+        detail.show(track: track, now: now, span: span)
+        guard let sys else { return }
+        let net = network ?? NetworkInventory.snapshot(now: now)
+        let (live, specs) = build(selected, sys: sys, power: power, network: net)
+        detail.setColumns(live: live, specs: specs)
+    }
+
+    /// The two columns for one resource: what is moving, and what is fixed.
+    private func build(_ resource: Resource, sys: SystemMetrics.Snapshot,
+                       power: PowerMonitor.Snapshot?,
+                       network net: NetworkInventory.Snapshot)
+        -> (live: [BodyItem], specs: [BodyItem]) {
+        switch resource {
+        case .cpu:     return cpuDetail(sys)
+        case .memory:  return memoryDetail(sys)
+        case .gpu:     return gpuDetail(sys, power: power)
+        case .network: return networkDetail(sys, net: net)
+        case .disk:    return diskDetail(sys)
+        case .sensors: return sensorsDetail(sys)
+        }
+    }
+
+    private func cpuDetail(_ sys: SystemMetrics.Snapshot)
+        -> (live: [BodyItem], specs: [BodyItem]) {
+        var live: [BodyItem] = [.heading("Now")]
         if let c = sys.cpu {
-            items.append(.row("Utilisation", String(format: "%.1f%%", c.total),
-                              fill: c.total / 100, color: tint(c.total)))
-            items.append(.row("User", String(format: "%.1f%%", c.user), dim: true))
-            items.append(.row("System", String(format: "%.1f%%", c.system), dim: true))
-            items.append(.row("Idle", String(format: "%.1f%%", c.idle), dim: true))
+            live.append(.figure("Utilisation", String(format: "%.1f%%", c.total),
+                                color: Resource.cpu.color))
         } else {
-            items.append(.row("Not sampled this tick", "—", dim: true))
+            live.append(.figure("Utilisation", "—"))
+        }
+        if let census {
+            live.append(.figure("Processes", Self.grouped(census.processes)))
+            live.append(.figure("Threads", Self.grouped(census.threads)))
+            if !census.isComplete {
+                // The shortfall is stated, not hidden. See `MachineInfo.census`:
+                // an unprivileged process is refused the thread count of anything
+                // it does not own, and this machine can read ~560 of ~900.
+                live.append(.row("counted in",
+                                 "\(census.processesRead) of \(census.processes) processes",
+                                 dim: true))
+            }
+        }
+        if let up = MachineInfo.uptime {
+            live.append(.figure("Up time", MachineInfo.formatDuration(up)))
         }
         if let t = sys.cpuTemperature {
-            items.append(.row("Temperature", String(format: "%.1f °C", t),
-                              fill: heatBar(t), color: heatTint(t)))
+            live.append(.figure("Temperature", String(format: "%.0f °C", t),
+                                color: Self.heatTint(t)))
+        }
+        if let c = sys.cpu {
+            live.append(.heading("This interval"))
+            live.append(.row("User", String(format: "%.1f%%", c.user), dim: true))
+            live.append(.row("System", String(format: "%.1f%%", c.system), dim: true))
+            live.append(.row("Idle", String(format: "%.1f%%", c.idle), dim: true))
         }
 
-        items.append(.heading("GPU"))
+        let f = MachineInfo.facts
+        var specs: [BodyItem] = [.heading("Processor")]
+        specs.append(.row("Chip", f.chip, dim: true))
+        specs.append(.row("Model identifier", f.model, dim: true))
+        specs.append(.row("Cores", "\(f.physicalCores) physical · \(f.logicalCores) logical",
+                          dim: true))
+        // The kernel's OWN names for the clusters — this machine calls them "Super"
+        // and "Performance", not "performance" and "efficiency". See
+        // `MachineInfo.CoreLevel`.
+        for level in f.coreLevels {
+            var parts = ["\(level.physical) cores"]
+            if let l1 = level.l1dCacheBytes {
+                parts.append("L1d \(MetricUnit.bytes.format(Double(l1)))")
+            }
+            if let l2 = level.l2CacheBytes {
+                parts.append("L2 \(MetricUnit.bytes.format(Double(l2)))")
+            }
+            specs.append(.row(level.name, parts.joined(separator: " · "), dim: true))
+        }
+        specs.append(.heading("System"))
+        specs.append(.row("Memory", MetricUnit.bytes.format(Double(f.memoryBytes)), dim: true))
+        specs.append(.row("macOS", f.osVersion, dim: true))
+        return (live, specs)
+    }
+
+    private func memoryDetail(_ sys: SystemMetrics.Snapshot)
+        -> (live: [BodyItem], specs: [BodyItem]) {
+        var live: [BodyItem] = [.heading("Now")]
+        if let m = sys.memory {
+            live.append(.figure("In use",
+                                String(format: "%@  (%.0f%%)",
+                                       MetricUnit.bytes.format(Double(m.used)), m.usedPercent),
+                                color: Resource.memory.color))
+            live.append(.figure("Free", MetricUnit.bytes.format(Double(m.free))))
+            live.append(.heading("Breakdown"))
+            // The same split the app already computes, and the same one Activity
+            // Monitor shows — app + wired + compressed IS "used", so these three
+            // add up to the figure above rather than being a second opinion on it.
+            live.append(.row("App", MetricUnit.bytes.format(Double(m.app)), dim: true))
+            live.append(.row("Wired", MetricUnit.bytes.format(Double(m.wired)), dim: true))
+            live.append(.row("Compressed", MetricUnit.bytes.format(Double(m.compressed)),
+                             dim: true))
+        } else {
+            live.append(.figure("In use", "—"))
+        }
+        if let swap = MachineInfo.swap() {
+            live.append(.heading("Swap"))
+            live.append(.row("Used", MetricUnit.bytes.format(Double(swap.usedBytes)), dim: true))
+            live.append(.row("Backing store",
+                             MetricUnit.bytes.format(Double(swap.totalBytes)), dim: true))
+            live.append(.row("Encrypted", swap.isEncrypted ? "yes" : "no", dim: true))
+        }
+
+        let f = MachineInfo.facts
+        var specs: [BodyItem] = [.heading("Memory")]
+        specs.append(.row("Installed", MetricUnit.bytes.format(Double(f.memoryBytes)), dim: true))
+        if let usable = f.usableMemoryBytes, usable < f.memoryBytes {
+            // What the kernel will hand out, against what is physically fitted. The
+            // difference is firmware and carve-outs, and it is ~0.9 GB here.
+            specs.append(.row("Available to macOS", MetricUnit.bytes.format(Double(usable)),
+                              dim: true))
+        }
+        if let page = f.pageSizeBytes {
+            specs.append(.row("Page size", MetricUnit.bytes.format(Double(page)), dim: true))
+        }
+        // NO SPEED, SLOT OR FORM-FACTOR ROW. There is no DIMM and no SPD to read
+        // one from; see `MachineInfo.memoryModuleSpeed` for what was searched.
+        specs.append(.heading("Chip"))
+        specs.append(.row("Unified with", f.chip, dim: true))
+        specs.append(.row("Shared with the GPU", "yes — one pool, no VRAM of its own",
+                          dim: true))
+        return (live, specs)
+    }
+
+    private func gpuDetail(_ sys: SystemMetrics.Snapshot, power: PowerMonitor.Snapshot?)
+        -> (live: [BodyItem], specs: [BodyItem]) {
+        var live: [BodyItem] = [.heading("Now")]
         if let g = sys.gpu {
-            items.append(.row("Utilisation", String(format: "%.1f%%", g.utilization),
-                              fill: g.utilization / 100, color: Palette.blue))
+            live.append(.figure("Utilisation", String(format: "%.1f%%", g.utilization),
+                                color: Resource.gpu.color))
             if let r = g.rendererUtilization {
-                items.append(.row("Renderer", String(format: "%.1f%%", r), dim: true))
+                live.append(.figure("Renderer", String(format: "%.1f%%", r)))
             }
             if let m = g.inUseMemory {
-                items.append(.row("Memory in use", MetricUnit.bytes.format(Double(m)), dim: true))
+                live.append(.figure("Memory in use", MetricUnit.bytes.format(Double(m))))
+            }
+            if let a = g.allocatedMemory {
+                live.append(.row("Allocated", MetricUnit.bytes.format(Double(a)), dim: true))
             }
         } else {
-            items.append(.row("No accelerator reported statistics", "—", dim: true))
+            live.append(.figure("Utilisation", "—"))
+            live.append(.row("No accelerator reported statistics", "—", dim: true))
         }
         if let t = sys.gpuTemperature {
-            items.append(.row("Temperature", String(format: "%.1f °C", t),
-                              fill: heatBar(t), color: heatTint(t)))
+            live.append(.figure("Temperature", String(format: "%.0f °C", t),
+                                color: Self.heatTint(t)))
         }
         // The one per-app GPU figure that exists, and it is apportioned — said here
         // rather than left for the user to infer from the Processes tab's "*".
-        if let p = power, let gpuW = p.gpu_W {
-            items.append(.row("Rail power", String(format: "%.2f W", gpuW), dim: true))
+        if let gpuW = power?.gpu_W {
+            live.append(.row("Rail power", String(format: "%.2f W", gpuW), dim: true))
         }
 
-        items.append(.heading("Memory"))
-        if let m = sys.memory {
-            items.append(.row("Used", String(format: "%@ of %@  (%.0f%%)",
-                                             MetricUnit.bytes.format(Double(m.used)),
-                                             MetricUnit.bytes.format(Double(m.total)),
-                                             m.usedPercent),
-                              fill: m.usedPercent / 100, color: tint(m.usedPercent)))
-            items.append(.row("App", MetricUnit.bytes.format(Double(m.app)), dim: true))
-            items.append(.row("Wired", MetricUnit.bytes.format(Double(m.wired)), dim: true))
-            items.append(.row("Compressed", MetricUnit.bytes.format(Double(m.compressed)), dim: true))
-            items.append(.row("Free", MetricUnit.bytes.format(Double(m.free)), dim: true))
-        } else {
-            items.append(.row("Not sampled this tick", "—", dim: true))
+        var specs: [BodyItem] = [.heading("Graphics")]
+        if let model = GPUInfo.facts.model { specs.append(.row("Chip", model, dim: true)) }
+        if let cores = GPUInfo.facts.coreCount {
+            specs.append(.row("GPU cores", "\(cores)", dim: true))
         }
+        specs.append(.row("Memory", "unified — shares the machine's "
+                          + MetricUnit.bytes.format(Double(MachineInfo.facts.memoryBytes)),
+                          dim: true))
+        specs.append(.heading("Note"))
+        specs.append(.row("Utilisation is not power",
+                          "a GPU at 100% and at 20% can draw similar watts", dim: true))
+        return (live, specs)
+    }
 
-        items.append(.heading("Network"))
-        if let n = sys.network {
-            items.append(.row("Download", MetricUnit.bytesPerSecond.format(n.bytesInPerSec)))
-            items.append(.row("Upload", MetricUnit.bytesPerSecond.format(n.bytesOutPerSec)))
-            let peak = n.interfaces.first?.totalPerSec ?? 0
-            for i in n.interfaces.prefix(4) {
-                items.append(.row(i.name,
-                                  String(format: "%@ ↓  %@ ↑",
-                                         MetricUnit.bytesPerSecond.format(i.inPerSec),
-                                         MetricUnit.bytesPerSecond.format(i.outPerSec)),
-                                  fill: peak > 0 ? i.totalPerSec / peak : 0,
-                                  color: Palette.chargeLine, dim: true))
-            }
+    private func networkDetail(_ sys: SystemMetrics.Snapshot, net: NetworkInventory.Snapshot)
+        -> (live: [BodyItem], specs: [BodyItem]) {
+        var live: [BodyItem] = [.heading("Now")]
+        let primary = net.primary
+        let rate = primary.flatMap { sys.network?.rate(for: $0.bsdName) }
+        if let rate {
+            live.append(.figure("Receive", MetricUnit.bytesPerSecond.format(rate.inPerSec),
+                                color: Resource.network.color))
+            live.append(.figure("Send", MetricUnit.bytesPerSecond.format(rate.outPerSec)))
         } else {
             // Throughput only exists between two reads, and this pane may have just
             // been opened. "0 B/s" would be a claim of silence.
-            items.append(.row("Waiting for a second reading", "—", dim: true))
+            live.append(.figure("Receive", "—"))
+            live.append(.figure("Send", "—"))
+        }
+        if let n = sys.network {
+            live.append(.heading("Whole machine"))
+            live.append(.row("Download", MetricUnit.bytesPerSecond.format(n.bytesInPerSec),
+                             dim: true))
+            live.append(.row("Upload", MetricUnit.bytesPerSecond.format(n.bytesOutPerSec),
+                             dim: true))
+            // Every OTHER link carrying traffic. The primary one is the two figures
+            // above; repeating it here would double-count it to the eye.
+            let others = n.interfaces.filter { $0.name != primary?.bsdName }
+            if !others.isEmpty {
+                live.append(.heading("Other links"))
+                let peak = others.first?.totalPerSec ?? 0
+                for i in others.prefix(6) {
+                    live.append(.row(Self.label(for: i.name, in: net),
+                                     String(format: "%@ ↓  %@ ↑",
+                                            MetricUnit.bytesPerSecond.format(i.inPerSec),
+                                            MetricUnit.bytesPerSecond.format(i.outPerSec)),
+                                     fill: peak > 0 ? i.totalPerSec / peak : 0,
+                                     color: Resource.network.color, dim: true))
+                }
+            }
         }
 
-        items.append(.heading("Disk activity"))
+        var specs: [BodyItem] = [.heading("Adapter")]
+        guard let primary else {
+            specs.append(.row("No primary interface",
+                              "macOS is not routing through any link", dim: true))
+            return (live, specs)
+        }
+        if let name = primary.displayName { specs.append(.row("Name", name, dim: true)) }
+        specs.append(.row("Connection type", primary.kind.title, dim: true))
+        specs.append(.row("Interface", primary.bsdName, dim: true))
+        if let speed = primary.linkSpeedBitsPerSec {
+            specs.append(.row("Link speed", Self.bitRate(speed), dim: true))
+        }
+        if let mtu = primary.mtu { specs.append(.row("MTU", "\(mtu) bytes", dim: true)) }
+        if let mac = primary.macAddress {
+            specs.append(.row("Hardware address", mac, dim: true))
+        }
+        specs.append(.heading("Addresses"))
+        if primary.ipv4.isEmpty && primary.ipv6.isEmpty {
+            specs.append(.row("None assigned", "—", dim: true))
+        }
+        for address in primary.ipv4 { specs.append(.row("IPv4", address, dim: true)) }
+        for address in primary.ipv6 { specs.append(.row("IPv6", address, dim: true)) }
+        if !net.dnsServers.isEmpty || !net.searchDomains.isEmpty {
+            specs.append(.heading("Resolver"))
+            for server in net.dnsServers { specs.append(.row("DNS server", server, dim: true)) }
+            for domain in net.searchDomains {
+                specs.append(.row("Search domain", domain, dim: true))
+            }
+        }
+        return (live, specs)
+    }
+
+    private func diskDetail(_ sys: SystemMetrics.Snapshot)
+        -> (live: [BodyItem], specs: [BodyItem]) {
+        var live: [BodyItem] = [.heading("Now")]
         if let d = sys.disk {
-            items.append(.row("Read", MetricUnit.bytesPerSecond.format(d.bytesReadPerSec)))
-            items.append(.row("Write", MetricUnit.bytesPerSecond.format(d.bytesWrittenPerSec)))
+            live.append(.figure("Read", MetricUnit.bytesPerSecond.format(d.bytesReadPerSec),
+                                color: Resource.disk.color))
+            live.append(.figure("Write", MetricUnit.bytesPerSecond.format(d.bytesWrittenPerSec)))
+            if !d.devices.isEmpty {
+                live.append(.heading("By device"))
+                let peak = d.devices.first?.totalPerSec ?? 0
+                for device in d.devices {
+                    live.append(.row(device.identity.product,
+                                     String(format: "%@ read  %@ write",
+                                            MetricUnit.bytesPerSecond.format(device.bytesReadPerSec),
+                                            MetricUnit.bytesPerSecond.format(device.bytesWrittenPerSec)),
+                                     fill: peak > 0 ? device.totalPerSec / peak : 0,
+                                     color: Resource.disk.color, dim: true))
+                }
+            }
         } else {
-            items.append(.row("Waiting for a second reading", "—", dim: true))
+            live.append(.figure("Read", "—"))
+            live.append(.figure("Write", "—"))
+            live.append(.row("Waiting for a second reading", "—", dim: true))
         }
 
-        items.append(.heading("Storage"))
+        var specs: [BodyItem] = [.heading("Volumes")]
         let volumes = StorageInfo.volumes()
         if volumes.isEmpty {
-            items.append(.row("No browsable volume reported a capacity", "—", dim: true))
-        } else {
-            for v in volumes {
-                guard let used = v.usedBytes, let fraction = v.usedFraction else {
-                    // A volume that will not report free space still gets its size
-                    // stated; inventing a "used" figure for it would not.
-                    items.append(.row(v.name,
-                                      MetricUnit.bytes.format(Double(v.totalBytes)), dim: true))
-                    continue
-                }
-                items.append(.row(v.name,
-                                  String(format: "%@ of %@",
-                                         MetricUnit.bytes.format(Double(used)),
-                                         MetricUnit.bytes.format(Double(v.totalBytes))),
-                                  fill: fraction,
-                                  color: fraction >= 0.9 ? Palette.critical
-                                       : (fraction >= 0.75 ? Palette.warn : Palette.accent)))
+            specs.append(.row("No browsable volume reported a capacity", "—", dim: true))
+        }
+        for v in volumes {
+            guard let used = v.usedBytes, let fraction = v.usedFraction else {
+                // A volume that will not report free space still gets its size
+                // stated; inventing a "used" figure for it would not.
+                specs.append(.row(v.name, MetricUnit.bytes.format(Double(v.totalBytes)),
+                                  dim: true))
+                continue
+            }
+            specs.append(.row(v.name,
+                              String(format: "%@ of %@",
+                                     MetricUnit.bytes.format(Double(used)),
+                                     MetricUnit.bytes.format(Double(v.totalBytes))),
+                              fill: fraction,
+                              color: fraction >= 0.9 ? Palette.critical
+                                   : (fraction >= 0.75 ? Palette.warn : Palette.accent)))
+        }
+        if let devices = sys.disk?.devices, !devices.isEmpty {
+            specs.append(.heading("Devices"))
+            for device in devices {
+                var parts: [String] = []
+                if let bus = device.identity.interconnect { parts.append(bus) }
+                parts.append(device.identity.isInternal ? "internal" : "external")
+                specs.append(.row(device.identity.product, parts.joined(separator: " · "),
+                                  dim: true))
             }
         }
+        specs.append(.heading("Note"))
+        // The long-form evidence is on `DiskActivity`; this is the one-line version,
+        // said where someone looking for a percentage will look for it.
+        specs.append(.row("Why bytes and not a percentage",
+                          "queue depth, not occupancy — it reaches 1394%", dim: true))
+        return (live, specs)
+    }
 
-        items.append(.heading("Sensors"))
-        if !sys.sensorsSampled {
+    private func sensorsDetail(_ sys: SystemMetrics.Snapshot)
+        -> (live: [BodyItem], specs: [BodyItem]) {
+        var live: [BodyItem] = [.heading("Now")]
+        guard sys.sensorsSampled else {
             // NOT MEASURED is not the same as NONE — the same distinction the Fans
-            // pane makes, for the same reason: this tab can be opened on a tick that
-            // skipped the SMC.
-            items.append(.row("Reading the sensors…", "—", dim: true))
+            // pane makes, for the same reason: this tab can be opened on a tick
+            // that skipped the SMC.
+            live.append(.figure("CPU", "—"))
+            live.append(.row("Reading the sensors…", "—", dim: true))
+            return (live, [.heading("Sensors"), .row("Waiting for the first SMC sweep", "—",
+                                                     dim: true)])
+        }
+        live.append(.figure("CPU", sys.cpuTemperature.map { String(format: "%.0f °C", $0) } ?? "—",
+                            color: sys.cpuTemperature.map(Self.heatTint)))
+        live.append(.figure("GPU", sys.gpuTemperature.map { String(format: "%.0f °C", $0) } ?? "—",
+                            color: sys.gpuTemperature.map(Self.heatTint)))
+        if sys.fans.isEmpty {
+            live.append(.row("Fans", "none reported", dim: true))
         } else {
-            items.append(.row("CPU", sys.cpuTemperature.map { String(format: "%.1f °C", $0) } ?? "—",
-                              dim: sys.cpuTemperature == nil))
-            items.append(.row("GPU", sys.gpuTemperature.map { String(format: "%.1f °C", $0) } ?? "—",
-                              dim: sys.gpuTemperature == nil))
-            if sys.fans.isEmpty {
-                items.append(.row("Fans", "none reported", dim: true))
-            } else {
-                for f in sys.fans {
-                    items.append(.row("Fan \(f.index + 1)",
-                                      String(format: "%.0f rpm", f.currentRPM),
-                                      fill: f.load,
-                                      color: f.load > 0.75 ? Palette.warn : Palette.accent,
-                                      dim: true))
-                }
+            live.append(.heading("Fans"))
+            for f in sys.fans {
+                live.append(.row("Fan \(f.index + 1)", String(format: "%.0f rpm", f.currentRPM),
+                                 fill: f.load,
+                                 color: f.load > 0.75 ? Palette.warn : Palette.accent,
+                                 dim: true))
             }
-            items.append(.row("Every sensor on this machine", "Sensors tab", dim: true))
         }
 
-        items.append(.heading("Machine"))
-        let f = MachineInfo.facts
-        items.append(.row("Model", f.model, dim: true))
-        items.append(.row("Chip", f.chip, dim: true))
-        items.append(.row("Cores", f.performanceCores.flatMap { p in
-            f.efficiencyCores.map { e in "\(p) performance · \(e) efficiency" }
-        } ?? "\(f.logicalCores)", dim: true))
-        items.append(.row("Memory", MetricUnit.bytes.format(Double(f.memoryBytes)), dim: true))
-        items.append(.row("macOS", f.osVersion, dim: true))
-        if let up = MachineInfo.uptime {
-            items.append(.row("Uptime", MachineInfo.formatDuration(up), dim: true))
-        }
-        return items
+        var specs: [BodyItem] = [.heading("Sensors")]
+        specs.append(.row("CPU temperature", "mean of the Tp/Te core diodes", dim: true))
+        specs.append(.row("GPU temperature", "mean of the Tg cluster sensors", dim: true))
+        specs.append(.row("Every sensor on this machine", "Sensors tab", dim: true))
+        specs.append(.row("Fan control", "Fans tab", dim: true))
+        specs.append(.heading("Graph"))
+        specs.append(.row("Plotted here", "CPU temperature", dim: true))
+        return (live, specs)
     }
 
-    private func tint(_ percent: Double) -> NSColor {
-        percent >= 90 ? Palette.critical : (percent >= 70 ? Palette.warn : Palette.accent)
+    // ── Formatting ──────────────────────────────────────────────────────────
+
+    /// A link's name for a list: its display name where SystemConfiguration has
+    /// one, and its BSD name otherwise — which is every `utun*`, and is exactly
+    /// what a WireGuard tunnel should be called rather than a guess.
+    private static func label(for bsdName: String, in net: NetworkInventory.Snapshot) -> String {
+        guard let iface = net.interface(bsdName) else { return bsdName }
+        guard let name = iface.displayName else { return "\(bsdName) · \(iface.kind.title)" }
+        return "\(name) (\(bsdName))"
     }
-    /// 30 °C idle to 100 °C throttle, the same scale the Sensors pane uses.
-    private func heatBar(_ c: Double) -> Double { min(max((c - 30) / 70, 0), 1) }
-    private func heatTint(_ c: Double) -> NSColor {
+
+    private static func bitRate(_ bits: UInt64) -> String {
+        let v = Double(bits)
+        if v >= 1e9 { return String(format: v >= 1e10 ? "%.0f Gb/s" : "%.1f Gb/s", v / 1e9) }
+        if v >= 1e6 { return String(format: "%.0f Mb/s", v / 1e6) }
+        return String(format: "%.0f Kb/s", v / 1e3)
+    }
+
+    private static let counter: NumberFormatter = {
+        let f = NumberFormatter()
+        f.numberStyle = .decimal
+        return f
+    }()
+
+    /// Cached, because building a NumberFormatter is expensive and this runs on
+    /// every tick the CPU detail is open.
+    private static func grouped(_ n: Int) -> String {
+        counter.string(from: NSNumber(value: n)) ?? "\(n)"
+    }
+
+    /// 75 °C warm, 90 °C hot — the same scale the Sensors pane uses.
+    private static func heatTint(_ c: Double) -> NSColor {
         c >= 90 ? Palette.critical : (c >= 75 ? Palette.warn : Palette.accent)
     }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// MARK: Graph variants
 
-/// One card of the graph strip: a name, the current reading, and the trend.
+/// The full graph with its zoom and pan switched off.
 ///
-/// The graph itself is `HistoryGraphView` — the same view the battery history uses,
-/// with its zoom, pan, hover crosshair, decimation whiskers and gap bridging. There
-/// is no second, simpler graph in this app, which is the point: a sparkline that
-/// hides a spike would be a different class of object wearing the same colours.
-final class MiniGraph: NSView {
+/// These hold fifteen minutes of in-memory points and have no store behind them,
+/// so there is nothing to zoom into and nothing to pan to — and because there is
+/// no range picker here, an accidental scroll would pin the view to a stale window
+/// with no way back. Hover and the crosshair are left alone: reading a value off
+/// the line is the interaction that pays.
+class FixedWindowGraphView: HistoryGraphView {
+    override func scrollWheel(with event: NSEvent) { nextResponder?.scrollWheel(with: event) }
+    override func mouseDown(with event: NSEvent) {}
+    override func mouseDragged(with event: NSEvent) {}
+    override func mouseUp(with event: NSEvent) {}
+}
 
-    /// The full graph with its axis rewriting switched off.
-    ///
-    /// A card holds fifteen minutes of in-memory points and has no store behind it,
-    /// so there is nothing to zoom into and nothing to pan to — and because a card
-    /// carries no range picker, an accidental scroll would pin it to a stale window
-    /// with no way back. Hover and the crosshair are left alone: reading a value off
-    /// the line is the interaction that pays here.
-    private final class StripGraphView: HistoryGraphView {
-        override func scrollWheel(with event: NSEvent) {
-            nextResponder?.scrollWheel(with: event)
-        }
-        override func mouseDown(with event: NSEvent) {}
-        override func mouseDragged(with event: NSEvent) {}
-        override func mouseUp(with event: NSEvent) {}
+/// The same graph, in a box too small for an axis. See `HistoryGraphView.showsAxes`.
+final class SparkGraphView: FixedWindowGraphView {
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        showsAxes = false
+        showsGrid = false
+        bridgesGaps = false
     }
+    required init?(coder: NSCoder) { fatalError() }
+}
 
-    private let titleLabel = NSTextField(labelWithString: "")
+// ─────────────────────────────────────────────────────────────────────────────
+// MARK: The rail card
+
+/// One row of the rail: a sparkline, the resource's name, and its current reading.
+///
+/// The sparkline is `HistoryGraphView` with its axes off, not a second simpler
+/// chart — the same decimation and the same min/max whiskers, so a spike that
+/// shows in the big graph shows here too. A sparkline that quietly smoothed one
+/// away would be a different class of object wearing the same colours.
+final class ResourceCard: NSView {
+
+    private let spark = SparkGraphView(frame: .zero)
+    private let nameLabel = NSTextField(labelWithString: "")
     private let valueLabel = NSTextField(labelWithString: "")
-    /// The card's line, restated at the top-left. Five cards on one strip is five
-    /// differently-coloured lines, and a card whose only colour is inside the plot
-    /// makes you look down at the graph to find out which one it is. Same shape as
-    /// the graph's own legend swatch, so it reads as the same statement.
-    private let swatch = NSView()
-    private let graph = StripGraphView(frame: .zero)
-    private let title: String
-    private let unit: String
-    private let color: NSColor
-    private var points: [HistoryGraphView.Point] = []
+    private let resource: Resource
+    private let onClick: (Resource) -> Void
 
-    init(title: String, unit: String, color: NSColor) {
-        self.title = title
-        self.unit = unit
-        self.color = color
+    var isSelected = false { didSet { needsDisplay = true } }
+
+    init(resource: Resource, onClick: @escaping (Resource) -> Void) {
+        self.resource = resource
+        self.onClick = onClick
         super.init(frame: .zero)
         translatesAutoresizingMaskIntoConstraints = false
-        wantsLayer = true
-        layer?.cornerRadius = Palette.Radius.inner
-        layer?.masksToBounds = true
 
-        valueLabel.font = Palette.Font.mono(12, .semibold)
-        valueLabel.alignment = .right
-        graph.showsGrid = false
-        // The card's own header already names the series, so the graph's built-in
-        // label would say it twice in a 200 pt box. Leaving it empty is also what
-        // tells the graph its header band is unused, which buys the plot back the
-        // 10 pt that band would have reserved — a fifth of the height in a card
-        // this short.
-        graph.yAxisLabel = ""
+        nameLabel.font = Palette.Font.sans(12, .medium)
+        nameLabel.lineBreakMode = .byTruncatingTail
+        valueLabel.font = Palette.Font.mono(10)
+        valueLabel.lineBreakMode = .byTruncatingTail
 
-        swatch.wantsLayer = true
-        swatch.translatesAutoresizingMaskIntoConstraints = false
-        swatch.layer?.cornerRadius = 1.25
+        spark.translatesAutoresizingMaskIntoConstraints = false
+        spark.wantsLayer = true
+        spark.layer?.cornerRadius = Palette.Radius.chip
+        spark.layer?.masksToBounds = true
 
-        let header = NSStackView(views: [swatch, titleLabel, valueLabel])
-        header.orientation = .horizontal
-        header.distribution = .fill
-        header.spacing = 6
-        titleLabel.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        valueLabel.setContentHuggingPriority(.defaultHigh, for: .horizontal)
+        let text = NSStackView(views: [nameLabel, valueLabel])
+        text.orientation = .vertical
+        text.alignment = .leading
+        text.spacing = 1
+        text.translatesAutoresizingMaskIntoConstraints = false
+
+        addSubview(spark)
+        addSubview(text)
         NSLayoutConstraint.activate([
-            swatch.widthAnchor.constraint(equalToConstant: 9),
-            swatch.heightAnchor.constraint(equalToConstant: 2.5),
+            heightAnchor.constraint(equalToConstant: 58),
+            spark.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 10),
+            spark.centerYAnchor.constraint(equalTo: centerYAnchor),
+            spark.widthAnchor.constraint(equalToConstant: 74),
+            spark.heightAnchor.constraint(equalToConstant: 36),
+            text.leadingAnchor.constraint(equalTo: spark.trailingAnchor, constant: 10),
+            text.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
+            text.centerYAnchor.constraint(equalTo: centerYAnchor),
         ])
 
-        for v in [header, graph] as [NSView] {
+        // Without this the rail is invisible to VoiceOver and to any automation: a
+        // plain NSView with a mouseDown override is a button to a sighted user and
+        // nothing at all to anyone else. Same bargain `SidebarView.RowView` makes.
+        setAccessibilityRole(.button)
+        setAccessibilityElement(true)
+        restyle()
+    }
+    required init?(coder: NSCoder) { fatalError() }
+
+    override func accessibilityPerformPress() -> Bool {
+        onClick(resource)
+        return true
+    }
+    override func mouseDown(with event: NSEvent) { onClick(resource) }
+    override func resetCursorRects() { addCursorRect(bounds, cursor: .pointingHand) }
+    override func viewDidChangeEffectiveAppearance() { restyle() }
+
+    func restyle() {
+        nameLabel.textColor = Palette.text
+        valueLabel.textColor = Palette.dim
+        needsDisplay = true
+    }
+
+    /// Take this tick's title, reading and points. Assignments are guarded because
+    /// setting an NSTextField's `stringValue` invalidates its intrinsic size and
+    /// re-solves the enclosing stack — six cards a tick, for strings that usually
+    /// did not move.
+    func apply(_ track: ResourceTrack) {
+        if nameLabel.stringValue != track.title {
+            nameLabel.stringValue = track.title
+            setAccessibilityLabel(track.title)
+        }
+        if valueLabel.stringValue != track.summary { valueLabel.stringValue = track.summary }
+        spark.yMax = resource.axisMax
+        spark.series = [.init(name: track.title, color: resource.color,
+                              points: track.points, filled: true)]
+    }
+
+    /// The selected card: the wash, plus a hard accent edge down its leading side —
+    /// the same two-part mark the process table's selected row wears, because it is
+    /// the same statement. Hover washes, selection is MARKED.
+    override func draw(_ dirtyRect: NSRect) {
+        guard isSelected else { return }
+        let pill = NSBezierPath(roundedRect: bounds.insetBy(dx: 0, dy: 1),
+                                xRadius: Palette.Radius.inner,
+                                yRadius: Palette.Radius.inner)
+        Palette.selection.setFill()
+        pill.fill()
+        NSGraphicsContext.saveGraphicsState()
+        pill.addClip()
+        resource.color.setFill()
+        NSRect(x: 0, y: bounds.minY, width: 2.5, height: bounds.height).fill()
+        NSGraphicsContext.restoreGraphicsState()
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// MARK: The detail column
+
+/// The right-hand half: heading, one large graph, and the two property groups.
+final class ResourceDetailView: NSView {
+
+    private let heading = NSTextField(labelWithString: "")
+    private let hardware = NSTextField(labelWithString: "")
+    let graph = FixedWindowGraphView(frame: .zero)
+    let live = BodyStack()
+    let specs = BodyStack()
+    private let scroll = NSScrollView()
+
+    private final class FlippedClipView: NSClipView {
+        override var isFlipped: Bool { true }
+    }
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        translatesAutoresizingMaskIntoConstraints = false
+
+        heading.font = Palette.Font.sans(17, .semibold)
+        hardware.font = Palette.Font.mono(11)
+        hardware.alignment = .right
+        hardware.lineBreakMode = .byTruncatingHead
+
+        // GRID ON, unlike every other graph in this app. The others plot a rate
+        // whose absolute level is read off the endpoint marker; this one is a
+        // utilisation against a pinned axis, where the question is "how close to
+        // the top" and the ruling is what answers it.
+        graph.showsGrid = true
+        // The departure this tab exists to make: a session-scoped live buffer marks
+        // no gaps. See `HistoryGraphView.bridgesGaps`.
+        graph.bridgesGaps = false
+        graph.translatesAutoresizingMaskIntoConstraints = false
+        graph.wantsLayer = true
+        graph.layer?.cornerRadius = Palette.Radius.inner
+        graph.layer?.masksToBounds = true
+
+        let columns = NSStackView(views: [live, specs])
+        columns.orientation = .horizontal
+        columns.alignment = .top
+        columns.distribution = .fill
+        columns.spacing = 24
+        columns.translatesAutoresizingMaskIntoConstraints = false
+
+        scroll.hasVerticalScroller = true
+        scroll.borderType = .noBorder
+        scroll.drawsBackground = false
+        scroll.contentView = FlippedClipView()
+        scroll.documentView = columns
+        scroll.translatesAutoresizingMaskIntoConstraints = false
+
+        for v in [heading, hardware, graph, scroll] as [NSView] {
             v.translatesAutoresizingMaskIntoConstraints = false
             addSubview(v)
         }
+        // The graph takes 42% of the column, which on a 640 pt pane is ~270 pt and
+        // leaves the properties block the rest. Clamped so a short window still
+        // gets a readable chart and a tall one does not spend two thirds of itself
+        // on one line.
+        let graphHeight = graph.heightAnchor.constraint(equalTo: heightAnchor, multiplier: 0.42)
+        graphHeight.priority = .defaultHigh
         NSLayoutConstraint.activate([
-            header.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 9),
-            header.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -9),
-            header.topAnchor.constraint(equalTo: topAnchor, constant: 7),
+            heading.leadingAnchor.constraint(equalTo: leadingAnchor),
+            heading.topAnchor.constraint(equalTo: topAnchor),
+            hardware.leadingAnchor.constraint(greaterThanOrEqualTo: heading.trailingAnchor,
+                                              constant: 12),
+            hardware.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -6),
+            hardware.lastBaselineAnchor.constraint(equalTo: heading.lastBaselineAnchor),
 
             graph.leadingAnchor.constraint(equalTo: leadingAnchor),
-            graph.trailingAnchor.constraint(equalTo: trailingAnchor),
-            graph.topAnchor.constraint(equalTo: header.bottomAnchor, constant: 4),
-            graph.bottomAnchor.constraint(equalTo: bottomAnchor),
+            graph.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -6),
+            graph.topAnchor.constraint(equalTo: heading.bottomAnchor, constant: 8),
+            graphHeight,
+            graph.heightAnchor.constraint(greaterThanOrEqualToConstant: 140),
+
+            scroll.leadingAnchor.constraint(equalTo: leadingAnchor),
+            scroll.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -6),
+            scroll.topAnchor.constraint(equalTo: graph.bottomAnchor, constant: 14),
+            scroll.bottomAnchor.constraint(equalTo: bottomAnchor),
+
+            columns.leadingAnchor.constraint(equalTo: scroll.contentView.leadingAnchor),
+            columns.topAnchor.constraint(equalTo: scroll.contentView.topAnchor),
+            columns.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor),
+            // 42/58. The live figures are set large and there are few of them; the
+            // specs are small pairs and there are many, so the wider column is the
+            // one carrying "IPv6 fe80::1c6e:9314:7579:e4ae" without truncating it.
+            live.widthAnchor.constraint(equalTo: columns.widthAnchor, multiplier: 0.42,
+                                        constant: -12),
         ])
         restyle()
     }
     required init?(coder: NSCoder) { fatalError() }
 
-    func restyle() {
-        // The SAME ground the graph paints. `HistoryGraphView` fills
-        // `controlBackgroundColor` — semantic, so light and dark stay automatic —
-        // and the graph runs to the card's bottom edge, so anything else here would
-        // split the card into two tones at the header's baseline.
-        //
-        // Resolved inside the view's OWN appearance: a dynamic NSColor flattened to
-        // a CGColor takes whatever appearance is current at that moment, and this
-        // runs from `viewDidChangeEffectiveAppearance`, where the current one is
-        // still the outgoing theme.
-        effectiveAppearance.performAsCurrentDrawingAppearance {
-            layer?.backgroundColor = NSColor.controlBackgroundColor.cgColor
-            swatch.layer?.backgroundColor = color.cgColor
-        }
-        // The same small-label voice the table header and the graph's axis name
-        // wear. Five cards, twelve column headings and one axis all label a
-        // measurement, and they now do it in one typeface instead of three.
-        titleLabel.attributedStringValue = NSAttributedString(
-            string: title.uppercased(),
-            attributes: Palette.labelAttributes(Palette.faint))
-        valueLabel.textColor = Palette.text
-    }
+    override var isFlipped: Bool { true }
     override func viewDidChangeEffectiveAppearance() { restyle() }
 
-    /// Record one reading. A nil value appends nothing — see `ResourcesPane.push`.
-    func push(_ value: Double?, at time: Date, before cutoff: Date, text: String?) {
-        // Only on a change: assigning `stringValue` invalidates an NSTextField's
-        // intrinsic size and re-solves the enclosing stack, every tick, for a
-        // string that usually did not move.
-        let shown = text ?? "—"
-        if valueLabel.stringValue != shown { valueLabel.stringValue = shown }
-        if let value, value.isFinite {
-            points.append(.init(time: time, value: value))
-        }
-        if let first = points.first, first.time < cutoff {
-            points.removeAll { $0.time < cutoff }
-        }
-        graph.series = [.init(name: unit, color: color, points: points, filled: true)]
+    func restyle() {
+        heading.textColor = Palette.text
+        hardware.textColor = Palette.dim
+        live.restyleRows()
+        specs.restyleRows()
+    }
+
+    /// Point the graph at a resource's buffer.
+    ///
+    /// The time domain is set EXPLICITLY to the whole retained window rather than
+    /// left to follow the data, so the x axis holds still while the tab is open and
+    /// a resource with two minutes of history draws two minutes of line in a fifteen
+    /// minute frame instead of stretching it across the whole plot.
+    func show(track: ResourceTrack, now: Date, span: TimeInterval) {
+        if heading.stringValue != track.title { heading.stringValue = track.title }
+        if hardware.stringValue != track.hardware { hardware.stringValue = track.hardware }
+        graph.yAxisLabel = track.resource.axisLabel
+        graph.yMax = track.resource.axisMax
+        graph.timeDomain = (now.addingTimeInterval(-span), now)
+        graph.series = [.init(name: track.resource.axisLabel, color: track.resource.color,
+                              points: track.points, filled: true)]
+    }
+
+    func setColumns(live liveItems: [BodyItem], specs specItems: [BodyItem]) {
+        live.setItems(liveItems)
+        specs.setItems(specItems)
+    }
+
+    func showPlaceholder(_ text: String) {
+        live.setItems([.row(text, "—", dim: true)])
+        specs.setItems([])
     }
 }
