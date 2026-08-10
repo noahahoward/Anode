@@ -1,5 +1,18 @@
 import Foundation
 import Security
+import os
+
+/// Fan control is the one path in this project that CANNOT be exercised without
+/// root, so it is the one path where a failure has to explain itself after the
+/// fact. Every connect, refusal and command lands here.
+///
+///     log show --predicate 'subsystem == "dev.noah.betterstats"' --last 10m
+///
+/// Written after the first real privileged run did nothing visible and left no
+/// trace to diagnose: the fans read 0 rpm, `F0Tg` read 0, and there was no way
+/// to tell whether the app never connected, was refused, or wrote and was
+/// ignored by the SMC. Those are three different bugs.
+public let fanLog = Logger(subsystem: "dev.noah.betterstats", category: "fan")
 
 // The channel between BetterStats and the one privileged thing it does.
 //
@@ -404,8 +417,10 @@ public final class FanControlLink {
 
     public func send(_ command: FanCommand, _ done: @escaping (FanReply) -> Void) {
         queue.async { [self] in
+            fanLog.info("sending \(String(describing: command), privacy: .public)")
             let reply = exchange(.command(command))
                 ?? FanReply(ok: false, message: "the fan helper stopped answering")
+            fanLog.info("reply ok=\(reply.ok) — \(reply.message, privacy: .public)")
             DispatchQueue.main.async { done(reply) }
         }
     }
@@ -440,6 +455,8 @@ public final class FanControlLink {
         // unqualified name resolves to it.
         let rc = FanSocketIO.withAddress(&addr) { p, len in Darwin.connect(s, p, len) }
         guard rc == 0 else {
+            let why = String(cString: strerror(errno))
+            fanLog.info("connect(\(self.socketPath, privacy: .public)) failed: \(why, privacy: .public)")
             close(s)
             // ENOENT: no socket file. ECONNREFUSED: the file is there but nobody
             // is listening, which is what a hard-killed helper leaves behind.
@@ -451,12 +468,15 @@ public final class FanControlLink {
         fd = s
 
         guard let reply = exchange(.hello) else {
+            fanLog.error("connected, but the helper closed without answering hello")
             return .refused("the fan helper closed the connection without answering")
         }
         guard reply.ok else {
+            fanLog.error("helper REFUSED this app: \(reply.message, privacy: .public)")
             close(fd); fd = -1
             return .refused(reply.message)
         }
+        fanLog.info("connected — helper reports \(reply.fanCount ?? 0) fan(s)")
         return .connected(fanCount: reply.fanCount ?? 0)
     }
 
