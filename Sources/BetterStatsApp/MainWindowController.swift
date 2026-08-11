@@ -272,7 +272,10 @@ final class MainWindowController: NSObject {
     func setGraphHidden(_ hidden: Bool) {
         guard graphContainer.isHidden != hidden else { return }
         graphContainer.isHidden = hidden
-        graphRanges.isHidden = hidden
+        // NOT the range picker. Two things decide whether it is on screen — this,
+        // and whether the subject offers more than one range — and a view with two
+        // owners ends up visible because one of them ran last. `retargetBottom`
+        // owns it, and it is the only caller of this.
         glanceWidth.isActive = !hidden
         graphLeading.isActive = !hidden
         glanceWide.isActive = hidden
@@ -673,6 +676,12 @@ final class RangePicker: NSView {
     ]
 
     var onSelect: ((TimeInterval) -> Void)?
+    /// Worth showing at all: a chooser with one option is not a chooser. It reads
+    /// as a button that does nothing, and its dead width sits on top of the graph
+    /// — which is where the click that zoomed a temperature graph into a
+    /// historical view landed.
+    var isWorthShowing: Bool { shown.count > 1 }
+
     /// The options actually offered, which is not always all of them.
     ///
     /// Temperatures and fan speeds live only in this session's memory, so a 7D
@@ -698,6 +707,7 @@ final class RangePicker: NSView {
         shown = resolved
         selectedIndex = min(selectedIndex, shown.count - 1)
         cells = makeCells()
+        invalidateIntrinsicContentSize()
         invalidateIntrinsicContentSize()
         needsDisplay = true
     }

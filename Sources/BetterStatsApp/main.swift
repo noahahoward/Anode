@@ -856,6 +856,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
                 // Disk returned above. Network is handled with it, and the
                 // session-only subjects never reach here at all: their ranges
                 // offer 1H alone, so nothing ever asks the store for them.
+                // Disk and network returned above; battery has its own path. The
+                // session-only subjects never reach here — `loadHistorySeries`
+                // turns back before the store is asked — and if one ever does, no
+                // point is better than a point on the wrong axis.
                 case .battery, .disk, .network, .sensors, .fans: v = nil
                 }
                 // A bucket the store has no reading for yields NO point, so the
@@ -883,6 +887,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
     /// Bucketed SQL-side to at most ~700 points, so a 7-day query costs the same
     /// as an hour and the view never receives more samples than it has pixels.
     func loadHistorySeries(start: Date, end: Date) {
+        // A subject the store has never held cannot be answered from it, and
+        // asking anyway is worse than not asking: the query returns nothing, the
+        // caller falls through to the generic utilisation path, and a temperature
+        // graph ends up titled "% TEMPERATURE" on a 0-100 axis over "no history
+        // yet". Reached by clicking beside the range pill, which lands on the
+        // graph and zooms it — and a zoomed graph is a historical one.
+        guard !bottomContext.isSessionOnly else {
+            return updateGraph(lastSnapshot, appending: false)
+        }
         guard let store else { return }
         // A change of subject changes the query, not just the label. The store has
         // kept CPU, memory and GPU alongside the battery all along — see
@@ -1140,10 +1153,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
     /// duplicate sample into the history for every click.
     func updateGraph(_ s: PowerMonitor.Snapshot?, appending: Bool = true) {
         guard let s else { return }
-        // A historical or zoomed view is not a live chart. Ticking new points into
-        // it would make the line creep rightward under a fixed axis and slowly
-        // overwrite what the user asked to look at.
-        guard graphRange <= 3600, graphDomainOverride == nil else { return }
         let now = Date()
         if appending {
             totalSeries.append(.init(time: now, value: s.smoothed_pctHr))
@@ -1180,6 +1189,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         for series in Self.sessionSeries {
             self[keyPath: series].removeAll { $0.time < cutoff }
         }
+
+        // RECORDING IS DONE. Everything above this line happens on every tick;
+        // everything below draws.
+        //
+        // A historical or zoomed view is not a live chart — ticking new points
+        // into it would make the line creep rightward under a fixed axis and
+        // overwrite what the user asked to look at. So the DRAWING stops here.
+        //
+        // The recording must not, and used to. This guard sat at the top of the
+        // function, so while the graph was zoomed nothing was appended to any live
+        // buffer. For the persisted subjects that is invisible — the store kept
+        // collecting and the gap fills itself on the way back. For temperatures
+        // and fan speeds there is no store, so the hole was permanent: reported as
+        // "while I was on that invisible option graph, it stopped collecting temp
+        // data", and the graph drew a two-minute break to say so.
+        //
+        // Which is the general rule this got wrong: what the app RECORDS cannot
+        // depend on what it happens to be SHOWING.
+        guard graphRange <= 3600, graphDomainOverride == nil else { return }
 
         // Accumulate per-contributor history whenever a bucket is drilled into.
         if let seg = graphSegment {
@@ -1628,10 +1656,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
     func retargetBottom() {
         let context = bottomContext
         main.setGraphHidden(graphHidden)
+
         // Offer only the ranges this subject can answer. Temperatures and fan
         // speeds exist for this session alone, so a 7D button on them would
         // promise a week and draw an empty plot.
         main.graphRanges.setRanges(context.ranges)
+        // ONE owner for this. Two reasons to hide it — no graph at all, or a
+        // subject with a single range — and both are decided here rather than
+        // half here and half in the window controller.
+        main.graphRanges.isHidden = graphHidden || !main.graphRanges.isWorthShowing
         if !context.ranges.contains(graphRange), let first = context.ranges.first {
             graphRange = first
             graphDomainOverride = nil

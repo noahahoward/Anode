@@ -146,6 +146,21 @@ public enum BottomContext: String, CaseIterable {
         }
     }
 
+    /// Never written to the store, so it exists for this session and no longer.
+    ///
+    /// The SMC sweep is gated on a tab that reads it being open, so there is no
+    /// history of temperatures or fan speeds to go and get. Anything that would
+    /// ask the store for one has to check this first: the store answers with
+    /// nothing, and "nothing" then reaches the graph as a subject with no data
+    /// and, worse, whatever label the generic path puts on it — which is how a
+    /// temperature graph came to be titled "% TEMPERATURE" with a 0-100 axis.
+    public var isSessionOnly: Bool {
+        switch self {
+        case .sensors, .fans: return true
+        case .battery, .cpu, .gpu, .memory, .disk, .network: return false
+        }
+    }
+
     /// Ranges this subject can honestly offer.
     ///
     /// NOT the same set for every subject, and deliberately so. CPU, GPU and

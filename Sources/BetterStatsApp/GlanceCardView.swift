@@ -50,9 +50,16 @@ final class GlanceCardView: NSView {
     /// those strings say, so nothing about the view has to know which subject it
     /// is drawing.
     ///
-    /// `percent` drives the small charge pill beside the caption, so a utilisation
-    /// passes its own percentage there — the pill then reads as the same figure
-    /// the headline states rather than as a battery level under a CPU heading.
+    /// THE PILL IS ONLY FOR A SECOND QUANTITY. It exists because the battery's
+    /// headline is a duration — "73% · on battery" beside "9h 41m" says something
+    /// the headline cannot. A subject whose headline is already a percentage has
+    /// nothing to put there, and passing its own percentage twice printed "10.7%"
+    /// over "11% · CPU · measured": the same number, rounded differently, two
+    /// lines apart.
+    ///
+    /// So the rule is: no percentage pill under a percentage headline. Fans keep
+    /// theirs because 29% of a fan's range and 2200 rpm are genuinely two facts,
+    /// and `testNoCardRestatesItsOwnHeadlineInThePill` holds the line.
     static func model(for context: BottomContext,
                       system sys: SystemMetrics.Snapshot,
                       facts: MachineInfo.Facts,
@@ -97,14 +104,11 @@ final class GlanceCardView: NSView {
             rows.append(("User · sys",
                          String(format: "%.1f%%", cpu.user),
                          String(format: "%.1f%%", cpu.system)))
-            return card(String(format: "%.1f%%", cpu.total),
-                        String(format: "%.0f%%", cpu.total.rounded()),
-                        "CPU · measured", rows)
+            return card(String(format: "%.1f%%", cpu.total), nil, "CPU · measured", rows)
 
         case .gpu:
             guard let gpu = sys.gpu else { return nil }
-            return card(String(format: "%.1f%%", gpu.utilization),
-                        String(format: "%.0f%%", gpu.utilization.rounded()),
+            return card(String(format: "%.1f%%", gpu.utilization), nil,
                         "GPU · measured",
                         [("Chip", facts.chip, nil)])
 
@@ -116,8 +120,7 @@ final class GlanceCardView: NSView {
             // Installed rides in the caption rather than taking a row: it is what
             // the percentage is OF, which is context for the headline rather than
             // a fourth kind of memory alongside app, wired and compressed.
-            return card(String(format: "%.0f%%", m.usedPercent),
-                        String(format: "%.0f%%", m.usedPercent.rounded()),
+            return card(String(format: "%.0f%%", m.usedPercent), nil,
                         "of \(gb(m.total)) installed",
                         [("App", gb(m.app), nil),
                          ("Wired", gb(m.wired), nil),
