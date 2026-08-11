@@ -588,29 +588,64 @@ final class BetterStatsRowView: NSTableRowView {
                      yRadius: Palette.Radius.row)
     }
 
+    /// Put this row under the pointer without a pointer.
+    ///
+    /// A test seam, on the ROW rather than the table, because that is where the
+    /// drawing reads it: a row view held outside a real table has no index, so
+    /// asking the table which row is hovered can only ever answer "none".
+    var hoverForTesting: Bool?
+
     private var isHovered: Bool {
+        if let hoverForTesting { return hoverForTesting }
         guard let table = superview as? HoverTableView else { return false }
         let myRow = table.row(for: self)
         return myRow >= 0 && myRow == table.hoveredRow
     }
 
-    /// The selected row: the wash, plus a hard accent edge down its leading side.
+    /// Whether this row gets the alternating tint.
     ///
-    /// Selection and hover were the same shape in the same colour at two
-    /// strengths — a difference you can only judge with both on screen at once,
-    /// and they never are, because the pointer is on the hovered row. The edge is
-    /// a second, categorical signal rather than a louder version of the first:
-    /// hover washes, selection is MARKED. Clipped to the pill so it follows the
-    /// same curve instead of squaring off two of its corners.
-    private func fillSelection() {
-        Palette.selection.setFill()
+    /// Zebra striping, in the app's OWN ink rather than macOS's — the system pair
+    /// is tuned for a window painted in the control grey and reads as two foreign
+    /// colours on a black ground, which is why the detail table's system stripes
+    /// were turned off in this same sweep.
+    ///
+    /// It is there to make a row easier to hit with a pointer across twelve
+    /// columns of a wide window, so it is a ground rather than a signal: barely
+    /// there, and quieter than either hover or selection, both of which land on
+    /// top of it.
+    private var isAlternate: Bool {
+        guard let table = superview as? NSTableView else { return false }
+        let row = table.row(for: self)
+        return row >= 0 && row % 2 == 1
+    }
+
+    /// The row's background, in layers: stripe, then selection, then hover.
+    ///
+    /// STACKING, not replacing. Selection used to win outright and carry a hard
+    /// accent edge, on the reasoning that hover and selection needed to be
+    /// categorically different marks rather than one mark at two strengths. That
+    /// bought a distinction nobody needs — you cannot be looking at a hovered row
+    /// and a selected row as separate questions, because the pointer is on one of
+    /// them — and it cost the obvious behaviour, where the row under the pointer
+    /// is always the brightest thing on screen.
+    ///
+    /// Layered, "selected" and "selected and under the pointer" are simply two
+    /// steps of the same wash, and the brightest row is always the one about to
+    /// be clicked.
+    private func fillBackground() {
         let shape = pill
-        shape.fill()
-        NSGraphicsContext.saveGraphicsState()
-        shape.addClip()
-        Palette.accent.setFill()
-        NSRect(x: 6, y: bounds.minY, width: 2.5, height: bounds.height).fill()
-        NSGraphicsContext.restoreGraphicsState()
+        if isAlternate {
+            Palette.surfaceAlt.withAlphaComponent(0.45).setFill()
+            shape.fill()
+        }
+        if isSelected {
+            Palette.selection.setFill()
+            shape.fill()
+        }
+        if isHovered {
+            Palette.selection.withAlphaComponent(0.45).setFill()
+            shape.fill()
+        }
     }
 
     override func drawSelection(in dirtyRect: NSRect) {
@@ -618,22 +653,16 @@ final class BetterStatsRowView: NSTableRowView {
         // to its row views, and the table is set to .none precisely BECAUSE we draw
         // the selection ourselves — so guarding on it made this method return early
         // and the selection never appeared at all.
-        fillSelection()
+        //
+        // Nothing is drawn here now: `drawBackground` paints every layer in order,
+        // and painting the selection twice would double its wash on a selected row.
     }
 
-    /// AppKit only calls drawSelection when it believes the row is selected AND the
-    /// style is not .none, so draw it from drawBackground as well.
-    private var shouldDrawSelection: Bool { isSelected }
-
     override func drawBackground(in dirtyRect: NSRect) {
-        if shouldDrawSelection {
-            fillSelection()
-            return   // no hairline under a rounded selection
-        }
-        if isHovered {
-            Palette.selection.withAlphaComponent(0.45).setFill()
-            pill.fill()
-        }
+        fillBackground()
+        // No hairline under a row that already has a shape of its own — a rule
+        // across the bottom of a rounded pill cuts its corners off.
+        guard !isSelected, !isHovered, !isAlternate else { return }
         Palette.lineSoft.setFill()
         NSRect(x: 6 + Palette.Radius.row, y: bounds.maxY - 1,
                width: bounds.width - 12 - Palette.Radius.row * 2, height: 1).fill()

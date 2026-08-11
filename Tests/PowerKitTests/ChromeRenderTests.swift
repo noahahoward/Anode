@@ -555,34 +555,54 @@ final class TableChromeRenderTests: XCTestCase {
         }
     }
 
-    /// Selection and hover were one shape in one colour at two strengths, which
-    /// is a difference you can only judge with both on screen — and they never
-    /// are, because the pointer is on the hovered row. The selected row is MARKED
-    /// down its leading edge: opaque ink where the wash is 16%.
-    func testASelectedRowIsMarkedAndNotJustWashed() {
+    /// Hover STACKS on selection: the row under the pointer is always the
+    /// brightest thing on screen.
+    ///
+    /// This reverses an earlier decision. Selection used to win outright and carry
+    /// a hard accent edge down its leading side, on the reasoning that hover and
+    /// selection should be categorically different marks rather than one mark at
+    /// two strengths. That bought a distinction nobody needs — you cannot look at
+    /// a hovered row and a selected row as separate questions, because the pointer
+    /// is on one of them — and it cost the obvious behaviour.
+    ///
+    /// Asserted as an ORDER rather than as three numbers, so it survives any
+    /// future change to the wash strengths as long as the layering is kept.
+    func testHoverStacksOnTopOfSelection() {
+        inTheme(.darkAqua) {
+            let size = NSSize(width: 320, height: 20)
+            let sample = NSRect(x: 120, y: 2, width: 80, height: 16)
+
+            func brightness(selected: Bool, hovered: Bool) -> CGFloat {
+                let row = BetterStatsRowView(frame: NSRect(origin: .zero, size: size))
+                row.isSelected = selected
+                row.hoverForTesting = hovered
+                return render(row, size: size).maxAlpha(in: sample)
+            }
+
+            let plain = brightness(selected: false, hovered: false)
+            let selected = brightness(selected: true, hovered: false)
+            let both = brightness(selected: true, hovered: true)
+
+            XCTAssertGreaterThan(selected, plain + 0.02, "a selected row is not washed")
+            XCTAssertGreaterThan(both, selected + 0.02,
+                                 "hovering a selected row did not brighten it — hover is "
+                                 + "replacing the selection rather than stacking on it")
+        }
+    }
+
+    /// And nothing paints a hard accent edge any more. It was the mark that said
+    /// "selected" categorically, and it is gone by request; a stray one would read
+    /// as a second selection idiom.
+    func testNoRowDrawsALeadingAccentEdge() {
         inTheme(.darkAqua) {
             let row = BetterStatsRowView(frame: .zero)
             row.isSelected = true
             let size = NSSize(width: 320, height: 20)
             let frame = render(row, size: size)
-
             let edge = frame.maxAlpha(in: NSRect(x: 6, y: 2, width: 3, height: 16))
             let wash = frame.maxAlpha(in: NSRect(x: 120, y: 2, width: 80, height: 16))
-            XCTAssertGreaterThan(wash, 0.05, "the selection wash disappeared")
-            XCTAssertGreaterThan(edge, wash + 0.3,
-                                 "the selected row has no edge mark, only a wash")
-        }
-    }
-
-    /// An unselected row is not marked. The edge has to mean selection, or it
-    /// means nothing.
-    func testAnUnselectedRowHasNoEdgeMark() {
-        inTheme(.darkAqua) {
-            let row = BetterStatsRowView(frame: .zero)
-            let size = NSSize(width: 320, height: 20)
-            let frame = render(row, size: size)
-            XCTAssertLessThan(frame.maxAlpha(in: NSRect(x: 6, y: 2, width: 3, height: 16)),
-                              0.6, "an unselected row drew a selection mark")
+            XCTAssertLessThan(edge, wash + 0.2,
+                              "the leading edge is still marked harder than the wash")
         }
     }
 }
