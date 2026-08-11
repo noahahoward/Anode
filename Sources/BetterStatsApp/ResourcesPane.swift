@@ -44,6 +44,21 @@ final class ResourcesPane: SystemPane {
 
     private let layout = ResourcesContent()
 
+    /// Which card the rail has selected.
+    ///
+    /// Exposed because the bottom of the window follows it: the tab alone is not
+    /// enough when six resources sit behind one tab, and answering all six with
+    /// one subject is the same mistake as answering five tabs with one sort.
+    var selectedResource: Resource { layout.selectedResource }
+
+    /// Fired when the rail's selection changes, so the bottom can retarget at
+    /// once rather than on the next tick — the lesson this pane taught in the
+    /// first place.
+    var onSelectResource: (() -> Void)? {
+        get { layout.onSelectResource }
+        set { layout.onSelectResource = newValue }
+    }
+
     override init(frame: NSRect) {
         super.init(frame: frame)
         setContent(layout)
@@ -186,6 +201,8 @@ final class ResourcesContent: NSView, PaneContentView {
     private var tracks: [Resource: ResourceTrack] = [:]
     private var cards: [Resource: ResourceCard] = [:]
     private var selected: Resource = .cpu
+    var selectedResource: Resource { selected }
+    var onSelectResource: (() -> Void)?
 
     private let railStack = NSStackView()
     private let railScroll = NSScrollView()
@@ -377,6 +394,7 @@ final class ResourcesContent: NSView, PaneContentView {
         cards[selected]?.isSelected = false
         selected = resource
         cards[resource]?.isSelected = true
+        onSelectResource?()
 
         // Redrawn from the LAST TICK'S readings, not from nothing.
         //
@@ -889,7 +907,10 @@ final class ResourcesContent: NSView, PaneContentView {
         return "\(name) (\(bsdName))"
     }
 
-    private static func bitRate(_ bits: UInt64) -> String {
+    /// Internal rather than private: the bottom card states the same link speed,
+    /// and two formatters for one number is how "1.0 Gb/s" and "1000 Mb/s" end up
+    /// on one screen.
+    static func bitRate(_ bits: UInt64) -> String {
         let v = Double(bits)
         if v >= 1e9 { return String(format: v >= 1e10 ? "%.0f Gb/s" : "%.1f Gb/s", v / 1e9) }
         if v >= 1e6 { return String(format: "%.0f Mb/s", v / 1e6) }

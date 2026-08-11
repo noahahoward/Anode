@@ -248,6 +248,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
 
         main.setColumns(columns)
         main.sidebar.onSelect = { [weak self] lens in self?.select(lens) }
+        // Clicking a rail card changes the subject exactly as clicking a tab or a
+        // column header does, so it goes through the same path.
+        resourcesPane.onSelectResource = { [weak self] in self?.retargetBottom() }
         // 20, not 22. Twelve columns is a table you scan down as much as across, and
         // two points a row is three more rows on screen at this window height.
         main.table.rowHeight = 20
@@ -690,15 +693,45 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
                                   systemProcesses: sum({ $0.diskBytesPerSec }, apps: false)),
                 scale: .bytesPerSecond)
 
-        // Network, sensors, fans and Resources fall back to the battery bar.
-        //
-        // Not an oversight. The bar's shape is "a measured whole, cut into named
-        // parts", and none of these has one: a temperature is not a quantity that
-        // divides among processes, a fan speed is not either, and per-app network
-        // bytes are a different measurement from the interface counters the
-        // Network pane is showing above. The battery ledger is still true, so it
-        // stays rather than being replaced by a blank.
-        case .network, .sensors, .fans, .resources:
+        case .network:
+            guard let n = sys.network else { return false }
+            // Per-process network is a real measurement here — `NetworkAttribution`
+            // reads each process's own counters — so this is the same cut as CPU
+            // rather than an apportionment. The unattributed slice is usually
+            // large and honestly so: the interface counters see everything on the
+            // wire, including every process this app cannot read.
+            func netSum(apps: Bool) -> Double {
+                let names = Set(rows.filter { $0.app?.identity.isApp == apps }.map(\.name))
+                return netAttribution.latest
+                    .filter { names.contains($0.name) }
+                    .reduce(0) { $0 + $1.totalPerSec }
+            }
+            main.ledger.utilization = .attributed(
+                "Network",
+                UtilizationSlices(total: n.totalPerSec,
+                                  apps: netSum(apps: true),
+                                  systemProcesses: netSum(apps: false)),
+                scale: .bytesPerSecond)
+
+        case .fans:
+            guard !sys.fans.isEmpty else { return false }
+            // A GAUGE, not a split. Two fans do not divide one quantity between
+            // them — they each sit somewhere in their own min..max — so the bar
+            // shows how far into that range they are and what is left, which is
+            // exactly what the graph above plots and the pane's own dials show.
+            let load = sys.fans.reduce(0) { $0 + $1.load } / Double(sys.fans.count) * 100
+            let rpm = sys.fans.reduce(0) { $0 + $1.currentRPM } / Double(sys.fans.count)
+            main.ledger.utilization = .gauge(
+                "Fan speed", percent: load,
+                caption: String(format: "%.0f rpm average of %d", rpm, sys.fans.count))
+
+        case .sensors:
+            // NO BAR OF ITS OWN, deliberately. A bar states parts of a whole, and
+            // a temperature has neither: sensors do not divide a quantity between
+            // them, and there is no ceiling to be a fraction of that this machine
+            // reports. Inventing one — a fixed 100 °C, a "thermal limit" nobody
+            // published — would be the one thing this app does not do. The battery
+            // ledger is still true, so it stays rather than leaving a blank.
             return false
         }
         return true
@@ -804,7 +837,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
                 // Disk returned above. Network is handled with it, and the
                 // session-only subjects never reach here at all: their ranges
                 // offer 1H alone, so nothing ever asks the store for them.
-                case .battery, .disk, .network, .sensors, .fans, .resources: v = nil
+                case .battery, .disk, .network, .sensors, .fans: v = nil
                 }
                 // A bucket the store has no reading for yields NO point, so the
                 // graph's own gap rule draws the silence. A zero here would be a
@@ -1067,7 +1100,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
     static func mib(_ bytesPerSec: Double) -> Double { bytesPerSec / 1_048_576 }
 
     /// What the bottom of the window is currently about. See `BottomContext`.
-    var bottomContext: BottomContext { BottomContext.forLens(lens, sortKey: sortKey) }
+    var bottomContext: BottomContext {
+        BottomContext.forLens(lens, sortKey: sortKey, resource: resourcesPane.selectedResource)
+    }
+
+    /// The Resources tab draws a graph on every card plus one at the top of its
+    /// rail, so the bottom one is hidden there and the space goes to the pane.
+    ///
+    /// A fact about the TAB, not about the subject: CPU is the same subject
+    /// whether it was reached by sorting the table or by clicking a rail card, and
+    /// it would be strange for one of those to come with a graph and the other not.
+    var graphHidden: Bool { lens == .resources }
 
     /// `appending: false` redraws from the buffers WITHOUT adding a sample.
     ///
@@ -1565,7 +1608,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
     /// the tab.
     func retargetBottom() {
         let context = bottomContext
-        main.setBottomHidden(context.hidesGraph)
+        main.setGraphHidden(graphHidden)
         // Offer only the ranges this subject can answer. Temperatures and fan
         // speeds exist for this session alone, so a 7D button on them would
         // promise a week and draw an empty plot.
@@ -1575,7 +1618,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
             graphDomainOverride = nil
             main.graphRanges.select(seconds: first)
         }
-        guard !context.hidesGraph else { return }
 
         if let s = lastSnapshot {
             updateLedger(s)

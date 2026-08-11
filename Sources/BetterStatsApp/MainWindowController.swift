@@ -38,6 +38,17 @@ final class MainWindowController: NSObject {
     /// The bottom row's height, held so Resources can collapse it. See
     /// `setBottomHidden`.
     private var bottomRowHeight: NSLayoutConstraint!
+    /// The card's width, held so it can take the graph's space on Resources.
+    private var glanceWidth: NSLayoutConstraint!
+    /// The card's trailing edge when it HAS taken that space. Swapped with
+    /// `glanceWidth` rather than setting a measured constant, so the card keeps
+    /// filling the window as the window is resized.
+    private var glanceWide: NSLayoutConstraint!
+    /// Where the graph starts. Collapsed to the window's own trailing edge while
+    /// hidden: a hidden view still solves its constraints, and leaving this
+    /// pinned 18 pt past a full-width card asks the solver for a negative width.
+    private var graphLeading: NSLayoutConstraint!
+    private var graphLeadingCollapsed: NSLayoutConstraint!
 
     private let scroll = NSScrollView()
     private var detailWidth: CGFloat = 380
@@ -137,6 +148,13 @@ final class MainWindowController: NSObject {
 
         let railWidth = SidebarView.width
         bottomRowHeight = glance.heightAnchor.constraint(equalToConstant: 128)
+        glanceWidth = glance.widthAnchor.constraint(equalToConstant: 236)
+        glanceWide = glance.trailingAnchor.constraint(equalTo: content.trailingAnchor,
+                                                      constant: -16)
+        graphLeading = graphContainer.leadingAnchor.constraint(
+            equalTo: glance.trailingAnchor, constant: 18)
+        graphLeadingCollapsed = graphContainer.leadingAnchor.constraint(
+            equalTo: content.trailingAnchor, constant: -16)
         NSLayoutConstraint.activate([
             sidebar.leadingAnchor.constraint(equalTo: content.leadingAnchor),
             sidebar.topAnchor.constraint(equalTo: content.topAnchor),
@@ -163,14 +181,14 @@ final class MainWindowController: NSObject {
             // did — the table and ledger were squeezed to nothing and the window
             // became one giant card and graph.
             glance.leadingAnchor.constraint(equalTo: sidebar.trailingAnchor, constant: 16),
-            glance.widthAnchor.constraint(equalToConstant: 236),
+            glanceWidth,
             glance.topAnchor.constraint(equalTo: ledger.bottomAnchor, constant: 14),
             bottomRowHeight,
             glance.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -14),
 
             // Same top and bottom as the card, so the two line up by construction
             // rather than by matching numbers in two places.
-            graphContainer.leadingAnchor.constraint(equalTo: glance.trailingAnchor, constant: 18),
+            graphLeading,
             graphContainer.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -16),
             graphContainer.topAnchor.constraint(equalTo: glance.topAnchor),
             graphContainer.bottomAnchor.constraint(equalTo: glance.bottomAnchor),
@@ -241,24 +259,25 @@ final class MainWindowController: NSObject {
         table.headerView?.needsDisplay = true
     }
 
-    /// Collapse the card and the graph, giving their height back to the pane.
+    /// Drop the graph, and give its width to the card.
     ///
     /// Resources only. That tab draws a graph on every card plus one at the top of
-    /// its rail, so a ninth at the bottom of the window is noise — and the space
-    /// is worth more to the pane, which is the thing the tab exists to show.
+    /// its rail, so a ninth at the bottom of the window is noise.
     ///
-    /// The card goes with the graph rather than staying behind. A 236 pt card
-    /// alone beside 700 pt of empty window is worse than either keeping both or
-    /// dropping both. The LEDGER stays: it is one bar tall, it describes the
-    /// battery, and the battery is the one thing the Resources pane never says.
-    func setBottomHidden(_ hidden: Bool) {
-        guard glance.isHidden != hidden else { return }
-        glance.isHidden = hidden
+    /// The CARD STAYS, and widens to take the space. It is the thing that follows
+    /// the rail's selection — click Memory and it says what memory is doing — so
+    /// dropping it with the graph would be dropping the answer along with the
+    /// duplicate. An earlier version did exactly that, which left the tab with no
+    /// bottom at all.
+    func setGraphHidden(_ hidden: Bool) {
+        guard graphContainer.isHidden != hidden else { return }
         graphContainer.isHidden = hidden
         graphRanges.isHidden = hidden
-        // Hidden views still occupy their constraints, so the height has to go
-        // too or the pane gains nothing.
-        bottomRowHeight.constant = hidden ? 0 : 128
+        glanceWidth.isActive = !hidden
+        graphLeading.isActive = !hidden
+        glanceWide.isActive = hidden
+        graphLeadingCollapsed.isActive = hidden
+        glance.isWide = hidden
     }
 
     /// Show a whole-machine pane instead of the process table, or nil for the table.
