@@ -39,6 +39,7 @@ public final class Settings {
         public static let menuBarWidgetsEnabled = "menuBarWidgetsEnabled"
         public static let fanControlEnabled = "fanControlEnabled"
         public static let fanSyncEnabled = "fanSyncEnabled"
+        public static let speedTestAgreed = "speedTestAgreed"
         /// Wildcard — an observer registered on this key fires for every change.
         public static let any = "*"
     }
@@ -88,6 +89,11 @@ public final class Settings {
         /// default, and it also halves the number of privileged writes a drag
         /// makes on the common case.
         static let fanSyncEnabled = true
+        /// Has the user been told, once, what the speed test sends and to whom?
+        /// False until they have agreed — never assumed, and never true by
+        /// default, because the whole point of the disclosure is that egress from
+        /// this app is a thing someone chose.
+        static let speedTestAgreed = false
         /// Matches what the status item shows today: smoothed drain + runtime.
         // Must be real, currently-registered metric IDs. Stale ones are invisible
         // in the picker and get preserved forever as "unknown" bindings.
@@ -111,7 +117,7 @@ public final class Settings {
         var sampleInterval, powerWindowHours, historyRetentionDays,
             minimumDisplayPercentPerHour: Double
         var showDaemons, startInMenuBarOnly, batteryLogging, menuBarWidgetsEnabled,
-            fanControlEnabled, fanSyncEnabled: Bool
+            fanControlEnabled, fanSyncEnabled, speedTestAgreed: Bool
         var menuBarWidgets: [String]
     }
     private var snapshot: Values
@@ -227,6 +233,12 @@ public final class Settings {
     public var fanSyncEnabled: Bool {
         get { Settings.readBool(defaults, Key.fanSyncEnabled, Default.fanSyncEnabled) }
         set { writeBool(Key.fanSyncEnabled, \.fanSyncEnabled, newValue, Default.fanSyncEnabled) }
+    }
+
+    /// Has the user agreed, once, to the speed test's egress disclosure?
+    public var speedTestAgreed: Bool {
+        get { Settings.readBool(defaults, Key.speedTestAgreed, Default.speedTestAgreed) }
+        set { writeBool(Key.speedTestAgreed, \.speedTestAgreed, newValue, Default.speedTestAgreed) }
     }
 
     /// Floor below which rows display as "<0.01" instead of a meaningless digit.
@@ -419,6 +431,7 @@ public final class Settings {
         }
         if old.fanControlEnabled != now.fanControlEnabled { notify(Key.fanControlEnabled) }
         if old.fanSyncEnabled != now.fanSyncEnabled { notify(Key.fanSyncEnabled) }
+        if old.speedTestAgreed != now.speedTestAgreed { notify(Key.speedTestAgreed) }
         if old.menuBarWidgets != now.menuBarWidgets { notify(Key.menuBarWidgets) }
     }
 
@@ -502,6 +515,7 @@ public final class Settings {
                fanControlEnabled: readBool(d, Key.fanControlEnabled,
                                            Default.fanControlEnabled),
                fanSyncEnabled: readBool(d, Key.fanSyncEnabled, Default.fanSyncEnabled),
+               speedTestAgreed: readBool(d, Key.speedTestAgreed, Default.speedTestAgreed),
                menuBarWidgets: readWidgets(d, Default.menuBarWidgets))
     }
 }

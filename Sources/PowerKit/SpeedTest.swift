@@ -234,3 +234,69 @@ extension SpeedTest {
         }
     }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Whether to just run the test, or ask first.
+///
+/// Split from the view because "does this cost the user money" is a rule, not a
+/// layout, and it is the one part of this feature that can be got wrong
+/// expensively. A monitor that quietly moves 47 MB over someone's phone plan has
+/// done real harm with a button press.
+public enum SpeedTestGate {
+
+    /// The worst case, if every rung of both ladders is climbed. A fast link
+    /// stops earlier — each phase ends as soon as it has enough bytes AND enough
+    /// seconds — so this is the number to disclose, not the number to expect.
+    /// Every rung of both ladders, because a link fast enough to climb them all
+    /// transfers all of them — the earlier sizes are not replaced by the later
+    /// ones, they are spent on the way up.
+    public static var worstCaseBytes: Int {
+        SpeedTest.downSizes.reduce(0, +) + SpeedTest.upSizes.reduce(0, +)
+    }
+
+    public enum Decision: Equatable {
+        /// Run it. Nothing to say that has not been said.
+        case run
+        /// Put this question to the user first, and run only if they agree.
+        case ask(String)
+    }
+
+    /// `hasAgreedBefore` is a stored preference: the disclosure is worth making
+    /// once, and worth NOT making every time, or it becomes the dialog people
+    /// dismiss without reading.
+    ///
+    /// A metered path re-asks every time regardless, because the cost is real and
+    /// recurring rather than a one-off explanation. `isConstrained` is Low Data
+    /// Mode — the user has already said, at the OS level, that they want less
+    /// traffic on this network, and a speed test is the least respectful possible
+    /// answer to that.
+    public static func decide(hasAgreedBefore: Bool,
+                              isExpensive: Bool,
+                              isConstrained: Bool,
+                              host: String) -> Decision {
+        let mb = String(format: "%.0f MB", Double(worstCaseBytes) / 1e6)
+        if isExpensive || isConstrained {
+            let why = isConstrained
+                ? "This network is in Low Data Mode"
+                : "This looks like a cellular or personal hotspot connection"
+            return .ask("""
+            \(why), and a speed test is the opposite of low data: it will send \
+            and receive up to \(mb) to \(host).
+
+            On a metered plan that is a real cost. Run it anyway?
+            """)
+        }
+        guard !hasAgreedBefore else { return .run }
+        return .ask("""
+        This is the only thing BetterStats ever sends anywhere.
+
+        It transfers up to \(mb) to and from \(host) — usually less, because each \
+        stage stops as soon as it has measured enough. Cloudflare will see your \
+        IP address, as any speed test's server must.
+
+        Nothing here runs on a timer or at launch. It happens when you press the \
+        button and at no other time.
+        """)
+    }
+}

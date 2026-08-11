@@ -402,6 +402,31 @@ protocol PaneContentView: AnyObject {
 
 final class NetworkPane: SystemPane {
 
+    /// Owned by the pane, like the Fans tab's control strip and for the same
+    /// reason: it is the only thing that uses it.
+    let speedTest = SpeedTestStrip(frame: .zero)
+
+    /// True while a speed test is transferring.
+    ///
+    /// The throughput readings below are about to show a spike this app caused,
+    /// so the caption says so while it is happening. A monitor that makes a mess
+    /// of its own readings without mentioning it is the quiet kind of dishonesty
+    /// this project is meant to be the opposite of.
+    private var testingNow = false
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        setAccessory(speedTest, height: speedTest.preferredHeight)
+        speedTest.onLayoutChanged = { [weak self] in
+            guard let self else { return }
+            self.setAccessoryHeight(self.speedTest.preferredHeight)
+        }
+        speedTest.onActivity = { [weak self] running in
+            self?.testingNow = running
+        }
+    }
+    required init?(coder: NSCoder) { fatalError() }
+
     func update(_ s: NetworkThroughput.Sample?,
                 perProcess: [NetworkAttribution.Row] = [],
                 age: TimeInterval? = nil) {
@@ -414,9 +439,12 @@ final class NetworkPane: SystemPane {
             return
         }
         captionLabel.stringValue = String(
-            format: "%@ down · %@ up · loopback excluded",
+            format: "%@ down · %@ up · loopback excluded%@",
             MetricUnit.bytesPerSecond.format(n.bytesInPerSec),
-            MetricUnit.bytesPerSecond.format(n.bytesOutPerSec))
+            MetricUnit.bytesPerSecond.format(n.bytesOutPerSec),
+            // Said while it is happening, not afterwards. The spike below is ours.
+            testingNow ? " · BETTERSTATS IS RUNNING A SPEED TEST — this traffic is its own"
+                       : "")
 
         var items: [BodyItem] = [
             .heading("Total"),

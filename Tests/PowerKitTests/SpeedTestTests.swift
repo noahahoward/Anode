@@ -72,3 +72,75 @@ final class SpeedTestTests: XCTestCase {
         XCTAssertTrue(SpeedTest.Endpoint.cloudflare.upURL.absoluteString.hasPrefix("https://"))
     }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Whether to ask before spending someone's data.
+///
+/// The only part of this feature that can be got wrong expensively: a monitor
+/// that quietly moves 47 MB over a phone plan has done real harm with one click.
+final class SpeedTestGateTests: XCTestCase {
+
+    private let host = "speed.cloudflare.com"
+
+    /// Every rung of both ladders. The earlier sizes are not replaced by the
+    /// later ones — they are spent climbing to them.
+    func testTheDisclosedSizeIsEveryRungOfBothLadders() {
+        XCTAssertEqual(SpeedTestGate.worstCaseBytes,
+                       SpeedTest.downSizes.reduce(0, +) + SpeedTest.upSizes.reduce(0, +))
+        // 1 + 10 + 25 down, 1 + 10 up, on the ladders as they stand.
+        XCTAssertEqual(SpeedTestGate.worstCaseBytes, 47_000_000)
+    }
+
+    /// Said once, properly, rather than every time — a dialog shown on every run
+    /// is one nobody reads.
+    func testTheFirstRunExplainsItselfAndLaterOnesDoNot() {
+        guard case .ask(let text) = SpeedTestGate.decide(hasAgreedBefore: false,
+                                                         isExpensive: false,
+                                                         isConstrained: false,
+                                                         host: host) else {
+            return XCTFail("the first run said nothing before sending data")
+        }
+        XCTAssertTrue(text.contains(host), "the disclosure does not name who is contacted")
+        XCTAssertTrue(text.contains("47 MB"), "the disclosure does not say what it costs")
+        XCTAssertTrue(text.localizedCaseInsensitiveContains("IP address"),
+                      "the disclosure does not mention what the far end learns")
+
+        XCTAssertEqual(SpeedTestGate.decide(hasAgreedBefore: true, isExpensive: false,
+                                            isConstrained: false, host: host), .run)
+    }
+
+    /// A metered path asks EVERY time, agreed before or not. The cost there is
+    /// recurring rather than a one-off explanation.
+    func testAMeteredPathAsksEveryTime() {
+        for constrained in [true, false] {
+            for expensive in [true, false] where expensive || constrained {
+                guard case .ask(let text) = SpeedTestGate.decide(hasAgreedBefore: true,
+                                                                 isExpensive: expensive,
+                                                                 isConstrained: constrained,
+                                                                 host: host) else {
+                    return XCTFail("ran a 47 MB transfer on a metered path without asking")
+                }
+                XCTAssertTrue(text.contains("47 MB"))
+            }
+        }
+    }
+
+    /// Low Data Mode is the user having already said, at the OS level, that they
+    /// want less traffic here. The wording should show we heard that rather than
+    /// guessing at cellular.
+    func testLowDataModeIsNamedForWhatItIs() {
+        guard case .ask(let text) = SpeedTestGate.decide(hasAgreedBefore: true,
+                                                         isExpensive: false,
+                                                         isConstrained: true,
+                                                         host: host) else {
+            return XCTFail("Low Data Mode did not ask")
+        }
+        XCTAssertTrue(text.contains("Low Data Mode"), text)
+    }
+
+    func testAnOrdinaryConnectionThatHasAgreedJustRuns() {
+        XCTAssertEqual(SpeedTestGate.decide(hasAgreedBefore: true, isExpensive: false,
+                                            isConstrained: false, host: host), .run)
+    }
+}
