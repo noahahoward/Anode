@@ -408,11 +408,18 @@ public final class MetricRegistry {
     /// `source` rides along because a figure measured from the pack's own discharge
     /// integral and a figure inferred from this instant's power draw are not the
     /// same claim, and the renderer is where that difference has to become visible.
+    /// `windowSpan` is how much measured history stands behind the figure, and it
+    /// is carried so the TIME can be withheld while the RATE is still shown. See
+    /// `DrainEstimate.canQuoteTime`: `source` alone cannot tell "the trend was
+    /// reset ten seconds ago" from "this machine's history is simply flat", and
+    /// only the first should read as still measuring.
     public private(set) var displayedRate: (pctHr: Double, timeRemaining_hr: Double?,
-                                            source: DrainEstimate.Source)?
+                                            source: DrainEstimate.Source,
+                                            windowSpan: TimeInterval)?
 
     public func update(displayedRate: (pctHr: Double, timeRemaining_hr: Double?,
-                                       source: DrainEstimate.Source)?) {
+                                       source: DrainEstimate.Source,
+                                       windowSpan: TimeInterval)?) {
         lock.lock(); defer { lock.unlock() }
         self.displayedRate = displayedRate
     }
@@ -490,6 +497,15 @@ public final class MetricRegistry {
             // prints "measured drain" / "estimated from draw" / "no estimate yet"
             // beneath the headline. `battery.drain` still drops the marker when
             // its rate is measured, because a rate genuinely is.
+            // Nothing quoted until there is history behind it. A time extrapolated
+            // from the first seconds after an unplug is a claim about the next ten
+            // hours built on whatever the machine was doing in one of them — see
+            // `DrainEstimate.canQuoteTime`.
+            if let shared = self?.displayedRate,
+               !DrainEstimate.canQuoteTime(source: shared.source,
+                                           windowSpan: shared.windowSpan) {
+                return nil
+            }
             if let shared = self?.displayedRate, let hr = shared.timeRemaining_hr,
                hr.isFinite, hr > 0 {
                 return MetricValue(hr * 60, unit: .minutes, isEstimate: true)

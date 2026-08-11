@@ -563,3 +563,51 @@ public final class DrainRateEstimator {
                              sampleCount: count)
     }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+
+extension DrainEstimate {
+
+    /// How much measured history a TIME-to-empty needs behind it.
+    ///
+    /// Two minutes, which is the same bar `DischargeTrend.minTicks` sets before it
+    /// will speak at all — so this covers exactly the gap between "the trend was
+    /// just reset" and "the trend has something to say".
+    public static let settleSeconds: TimeInterval = 120
+
+    /// Is there enough behind this estimate to put a TIME on it?
+    ///
+    /// The RATE is always worth showing: even the power-only tier is a real
+    /// reading of what the machine is drawing right now. The TIME is not the same
+    /// claim — it extrapolates that instant across the whole rest of the battery,
+    /// and in the first seconds after an unplug or a wake the instant it
+    /// extrapolates is whatever the machine happened to be doing.
+    ///
+    /// Reported from the field: a laptop unplugged while idle read 3 %/hr — which
+    /// was TRUE, an idle Mac draws about 2.2 W — and beside it "25 hours", which
+    /// nobody was going to get. The rate was honest and the time was not, because
+    /// only one of them claimed to know about the future.
+    ///
+    /// So a time is quoted once there is real history, and before that the UI says
+    /// it is still measuring. `DrainEstimate.timeRemaining`'s own documentation
+    /// already asked for this — "nil when unknowable: show '—' or 'estimating…',
+    /// never a substitute number" — for the case where nothing is known at all.
+    /// This extends it to the case where too little is.
+    public static func canQuoteTime(source: Source, windowSpan: TimeInterval) -> Bool {
+        switch source {
+        case .insufficient:
+            return false
+        case .power:
+            // The instantaneous tier. Fine once it has been watching a while,
+            // misleading in the first seconds after a reset.
+            return windowSpan >= settleSeconds
+        case .discharge, .observed, .blended:
+            // All of these are backed by an accumulated window by construction.
+            return true
+        }
+    }
+
+    public var canQuoteTime: Bool {
+        DrainEstimate.canQuoteTime(source: source, windowSpan: windowSpan)
+    }
+}
