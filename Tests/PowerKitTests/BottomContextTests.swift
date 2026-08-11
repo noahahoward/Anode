@@ -309,6 +309,57 @@ final class BottomPanelTests: XCTestCase {
         XCTAssertTrue(text.contains(MetricUnit.bytesPerSecond.format(1_048_576)))
     }
 
+    /// A utilisation bar can never claim more than the whole device.
+    ///
+    /// It did. Reported as "the little bar graph was saying the cpu was 105% in
+    /// use"; the screenshot showed 129.0%, with apps at 74.3 and system processes
+    /// at 54.6 while the machine was at 17.3%.
+    ///
+    /// The cause is two conventions meeting: `AppDrain.cpuPercent` is percent of
+    /// ONE core — Activity Monitor's convention, where a busy four-thread process
+    /// reads 400% — and `CPUUsage.total` is 0-100 across ALL cores. Summing the
+    /// first and handing it to a slice measured against the second overstates by
+    /// the core count, which on that machine was 15.
+    ///
+    /// The slices type cannot catch this on its own, since 129 is a perfectly
+    /// valid percent-of-one-core. What it CAN enforce is that the named parts
+    /// never exceed the measured whole, which is the property that failed.
+    func testTheNamedPartsNeverExceedTheMeasuredWhole() {
+        // The real numbers off the screenshot, before the divisor.
+        let wrong = UtilizationSlices(total: 17.3, apps: 74.3, systemProcesses: 54.6)
+        XCTAssertEqual(wrong.unattributed, 0, accuracy: 0.001,
+                       "a remainder cannot be negative")
+        // After dividing by the 15 cores those figures were measured against.
+        let right = UtilizationSlices(total: 17.3, apps: 74.3 / 15, systemProcesses: 54.6 / 15)
+        XCTAssertLessThanOrEqual(right.apps + right.systemProcesses, right.used + 0.001)
+        XCTAssertEqual(right.used, 17.3, accuracy: 0.001,
+                       "the parts must add up to what was measured, not past it")
+        XCTAssertGreaterThan(right.unattributed, 0,
+                             "575 of 926 processes are readable, so some of it is unnamed")
+    }
+
+    /// Idle is drawn, so the bar is the whole device rather than the used sliver.
+    ///
+    /// The reverse of the original call ("the cpu/gpu bar should only show the
+    /// used portion"), and the reason for the reversal is that the split alone
+    /// says nothing about how hard the machine is working: "17% used, and of that
+    /// mostly apps" is one glance instead of two.
+    func testTheCPUBarShowsIdleAndStillCaptionsTheUsedPart() {
+        let bar = LedgerBarView.UtilizationBar.attributed(
+            "CPU", UtilizationSlices(total: 17.3, apps: 5, systemProcesses: 3.6),
+            idle: 82.7)
+        XCTAssertEqual(bar.parts.map(\.title),
+                       ["apps", "system processes", "unattributed", "idle"])
+        XCTAssertEqual(bar.used, 100, accuracy: 0.001, "the bar is now the whole device")
+        // Idle is the best-known part here, not the least-known: hatching means
+        // "measured and could not be named", which is the opposite of idle.
+        XCTAssertFalse(bar.parts.last?.hatched ?? true)
+        // And a rate has no idle to show.
+        XCTAssertEqual(LedgerBarView.UtilizationBar.attributed(
+            "Disk", UtilizationSlices(total: 100, apps: 40, systemProcesses: 10),
+            scale: .bytesPerSecond).parts.count, 3)
+    }
+
     /// Fans get a GAUGE, not a split. Two fans do not divide one quantity between
     /// them — each sits somewhere in its own min..max — so the bar shows how far
     /// in they are and what is left, which is what the graph above plots and what

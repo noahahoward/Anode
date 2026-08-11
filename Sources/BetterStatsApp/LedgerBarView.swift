@@ -312,17 +312,38 @@ final class LedgerBarView: NSView {
         }
 
         /// CPU and GPU: apps, unreadable processes, and the measured remainder.
+        ///
+        /// `idle` puts the bar on the whole device rather than on the used portion
+        /// alone. This started the other way — "the cpu/gpu bar should only show
+        /// the used portion, as it doesn't really help seeing the idle portion" —
+        /// and the reversal is right: without it the bar shows the SPLIT between
+        /// apps and daemons but says nothing about how hard the machine is
+        /// actually working, and the two questions are usually asked together.
+        /// "17% used, and of that, mostly apps" is one glance instead of two.
+        ///
+        /// Nil for the rates, which have no idle to show. Bytes per second is not
+        /// a fraction of anything.
         static func attributed(_ title: String, _ s: UtilizationSlices,
+                               idle: Double? = nil,
                                scale: Scale = .percent,
                                note: String? = nil) -> UtilizationBar {
-            UtilizationBar(title: title, used: s.used, parts: [
+            var parts: [Part] = [
                 .init(title: "apps", value: s.apps,
                       color: LedgerBarView.color(for: .apps), hatched: false),
                 .init(title: "system processes", value: s.systemProcesses,
                       color: LedgerBarView.color(for: .systemProcesses), hatched: false),
                 .init(title: "unattributed", value: s.unattributed,
                       color: Palette.line, hatched: true),
-            ], scale: scale, attributionNote: note)
+            ]
+            // Last, and flat rather than hatched: idle is the best-known part of
+            // this bar, not the least-known one. The hatch means "measured and
+            // could not be named", which is the opposite of what idle is.
+            if let idle {
+                parts.append(.init(title: "idle", value: idle,
+                                   color: Palette.surfaceAlt, hatched: false))
+            }
+            return UtilizationBar(title: title, used: s.used + (idle ?? 0),
+                                  parts: parts, scale: scale, attributionNote: note)
         }
 
         /// Memory does not split into apps and daemons — the kernel reports it by
@@ -522,13 +543,21 @@ final class LedgerBarView: NSView {
             x = r.maxX
         }
 
-        // The whole the bar is a portion OF, said in words: without it a full bar
-        // reads as "everything", when it means "all of the 12 % in use".
+        // What the bar is a portion OF, said in words. When idle is drawn the bar
+        // IS the whole device, so the caption states the used part instead — the
+        // number the eye is looking for is "how much of this is me", and reading
+        // it off the widths of three segments is work.
+        //
         // "in use" is a claim about a portion of a whole, so a rate does not make
         // it: 4 MB/s is not 4 MB/s OF anything.
-        var caption = u.scale == .percent
-            ? "\(u.title) \(u.scale(u.used))% in use"
-            : "\(u.title) \(u.scale(u.used)) total"
+        var caption: String
+        switch u.scale {
+        case .percent:
+            let inUse = u.parts.filter { $0.title != "idle" }.reduce(0) { $0 + $1.value }
+            caption = "\(u.title) \(u.scale(inUse))% in use"
+        case .bytesPerSecond:
+            caption = "\(u.title) \(u.scale(u.used)) total"
+        }
         if let note = u.attributionNote { caption += " · " + note }
         let attrs: [NSAttributedString.Key: Any] = [
             .font: Palette.Font.mono(10),
