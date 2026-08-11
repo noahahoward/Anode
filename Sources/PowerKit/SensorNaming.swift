@@ -167,6 +167,68 @@ public enum SensorNaming {
         ("Tm", "Memory sensor"),
     ]
 
+    // ── Grouping ────────────────────────────────────────────────────────────
+
+    /// What a sensor is ATTACHED to, for a UI that wants to list them by purpose
+    /// rather than 256 deep in one column.
+    ///
+    /// Built from the evidence already gathered above and NOTHING MORE. Every
+    /// group here is either an exact key this file already names or one of the
+    /// `ordinalFamilies` whose prefix has both cross-generation consensus and
+    /// measured behaviour behind it. The hedged majority — 140 keys on this
+    /// machine that get "Thermal sensor N" — go to `.unidentified` and stay
+    /// together, because inventing a home for them is exactly the over-claim the
+    /// naming layer refuses to make one line at a time.
+    ///
+    /// In particular this does NOT split `Tp*` into efficiency and performance
+    /// cores. See `ordinalFamilies`: the published tables miss five of this
+    /// machine's keys and nothing measured supports the boundary.
+    public enum Group: String, CaseIterable, Sendable {
+        case cpu = "CPU"
+        case gpu = "GPU"
+        case memory = "Memory"
+        case battery = "Battery"
+        case storage = "Storage"
+        case wireless = "Wireless"
+        case enclosure = "Enclosure"
+        case unidentified = "Unidentified"
+
+        /// Named parts of the machine first, in the order someone looking for a
+        /// hot component would check, and the 140 unknowns last.
+        public var order: Int {
+            switch self {
+            case .cpu: return 0
+            case .gpu: return 1
+            case .memory: return 2
+            case .battery: return 3
+            case .storage: return 4
+            case .wireless: return 5
+            case .enclosure: return 6
+            case .unidentified: return 7
+            }
+        }
+    }
+
+    /// The group a temperature key belongs to.
+    ///
+    /// Keyed on the same prefixes and exact keys the names come from, so a sensor
+    /// can never be filed under one heading and labelled as another.
+    public static func group(forKey key: String) -> Group {
+        if let exact = exactTemperatures[key] {
+            if exact.hasPrefix("Battery") { return .battery }
+            if exact.hasPrefix("NAND") { return .storage }
+            if exact.hasPrefix("Wi-Fi") { return .wireless }
+            // Airflow and palm rest are both "the case around it".
+            return .enclosure
+        }
+        switch key.prefix(2) {
+        case "Tp", "Te": return .cpu
+        case "Tg":       return .gpu
+        case "Tm":       return .memory
+        default:         return .unidentified
+        }
+    }
+
     /// Apple Silicon reports temperatures as `flt`; Intel uses `sp78`. The
     /// families above were established on Apple Silicon only, and at least one
     /// of those prefixes means something else entirely on Intel (`Tm0P`,

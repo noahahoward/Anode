@@ -165,6 +165,23 @@ public class HistoryGraphView: NSView {
         didSet { if sharesRightAxisScale != oldValue { needsDisplay = true } }
     }
 
+    /// The unit the RIGHT axis is counted in.
+    ///
+    /// It was "%" and nothing else, because the right axis was built for one
+    /// caller: battery charge, which is a percentage. The fan graph puts a
+    /// TEMPERATURE there — see `BottomContext.fans` — and inherited an axis whose
+    /// ticks read "0%, 25%, 50%, 100%" beside a line that was degrees. A 51 °C
+    /// reading drawn at the 50% gridline looks plausible, which is the worst kind
+    /// of wrong: reported as "why are both sides percentages? I thought one side
+    /// was going to be temps".
+    ///
+    /// 0-100 remains the range, and for a temperature that is honest rather than
+    /// convenient — this hardware throttles well inside it, and a fixed scale lets
+    /// two sessions be compared by eye.
+    public var rightAxisUnit: String = "%" {
+        didSet { if rightAxisUnit != oldValue { needsDisplay = true } }
+    }
+
     public var rightAxisLabel: String = "" {
         didSet { needsDisplay = true }
     }
@@ -1199,7 +1216,7 @@ public class HistoryGraphView: NSView {
         var rightAttrs = tickAttrs
         rightAttrs[.foregroundColor] = r.color
         for v in Self.sharedAxisTicks {
-            let label = "\(Int(v))%" as NSString
+            let label = "\(Int(v))\(rightAxisUnit)" as NSString
             let sz = label.size(withAttributes: rightAttrs)
             label.draw(at: NSPoint(x: plot.maxX + 5,
                                    y: yForRight(v) - sz.height / 2),

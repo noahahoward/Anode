@@ -24,25 +24,42 @@ struct BodyItem {
     /// the hardware specs stay small label/value pairs beside them. That separation
     /// is most of what makes the layout readable, and it maps onto the distinction
     /// this project already cares most about: measured now, versus known all along.
-    enum Kind { case heading, row, figure }
+    ///
+    /// `.group` is a heading you can COLLAPSE. It exists because this machine
+    /// reports 256 temperatures and a flat list of them is not a list anyone
+    /// reads — the sensor you want is somewhere in 140 called "Thermal sensor N".
+    enum Kind { case heading, row, figure, group }
     let kind: Kind
     let label: String
     let value: String
     let fill: Double?
     let color: NSColor?
     let dim: Bool
+    /// Only meaningful for `.group`: which way the chevron points.
+    let expanded: Bool
+
+    /// A collapsible heading. `value` is the summary that stays visible when the
+    /// group is shut — a group you have to open to find out whether it matters is
+    /// a group you open every time.
+    static func group(_ text: String, _ summary: String, expanded: Bool) -> BodyItem {
+        BodyItem(kind: .group, label: text, value: summary, fill: nil, color: nil,
+                 dim: false, expanded: expanded)
+    }
 
     static func heading(_ text: String) -> BodyItem {
-        BodyItem(kind: .heading, label: text, value: "", fill: nil, color: nil, dim: false)
+        BodyItem(kind: .heading, label: text, value: "", fill: nil, color: nil,
+                 dim: false, expanded: false)
     }
 
     static func row(_ label: String, _ value: String, fill: Double? = nil,
                     color: NSColor? = nil, dim: Bool = false) -> BodyItem {
-        BodyItem(kind: .row, label: label, value: value, fill: fill, color: color, dim: dim)
+        BodyItem(kind: .row, label: label, value: value, fill: fill, color: color,
+                 dim: dim, expanded: false)
     }
 
     static func figure(_ label: String, _ value: String, color: NSColor? = nil) -> BodyItem {
-        BodyItem(kind: .figure, label: label, value: value, fill: nil, color: color, dim: false)
+        BodyItem(kind: .figure, label: label, value: value, fill: nil, color: color,
+                 dim: false, expanded: false)
     }
 }
 
@@ -51,6 +68,106 @@ struct BodyItem {
 protocol PaneBodyView: AnyObject {
     func apply(_ item: BodyItem)
     func restyle()
+}
+
+extension SystemPane {
+
+    /// A collapsible group header: a chevron, a name, and the summary that stays
+    /// visible when the group is shut.
+    ///
+    /// The summary is the point. A group you have to open to find out whether it
+    /// matters is a group you open every time, and with eight of them that is
+    /// worse than the flat list this replaced.
+    final class GroupHeaderView: NSView, PaneBodyView {
+        private let name = NSTextField(labelWithString: "")
+        private let summary = NSTextField(labelWithString: "")
+        private var expanded = false
+        private var hovered = false
+        var onToggle: (() -> Void)?
+
+        init(_ item: BodyItem) {
+            super.init(frame: .zero)
+            translatesAutoresizingMaskIntoConstraints = false
+            for f in [name, summary] {
+                f.translatesAutoresizingMaskIntoConstraints = false
+                addSubview(f)
+            }
+            NSLayoutConstraint.activate([
+                // Left inset leaves room for the chevron this view draws itself.
+                name.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 16),
+                name.centerYAnchor.constraint(equalTo: centerYAnchor),
+                summary.trailingAnchor.constraint(equalTo: trailingAnchor),
+                summary.centerYAnchor.constraint(equalTo: centerYAnchor),
+                summary.leadingAnchor.constraint(greaterThanOrEqualTo: name.trailingAnchor,
+                                                 constant: 8),
+            ])
+            apply(item)
+        }
+        required init?(coder: NSCoder) { fatalError() }
+
+        override var isFlipped: Bool { true }
+
+        func apply(_ item: BodyItem) {
+            expanded = item.expanded
+            name.attributedStringValue = NSAttributedString(
+                string: item.label.uppercased(),
+                attributes: Palette.labelAttributes(Palette.dim))
+            summary.attributedStringValue = NSAttributedString(
+                string: item.value,
+                attributes: [.font: Palette.Font.mono(11), .foregroundColor: Palette.faint])
+            needsDisplay = true
+        }
+
+        func restyle() { needsDisplay = true }
+        override func viewDidChangeEffectiveAppearance() { restyle() }
+
+        override func updateTrackingAreas() {
+            super.updateTrackingAreas()
+            trackingAreas.forEach(removeTrackingArea)
+            addTrackingArea(NSTrackingArea(
+                rect: bounds, options: [.mouseEnteredAndExited, .activeInKeyWindow],
+                owner: self))
+        }
+        override func mouseEntered(with e: NSEvent) { hovered = true; needsDisplay = true }
+        override func mouseExited(with e: NSEvent) { hovered = false; needsDisplay = true }
+        override func mouseDown(with e: NSEvent) { onToggle?() }
+        override func resetCursorRects() {
+            addCursorRect(bounds, cursor: .pointingHand)
+        }
+
+        override func draw(_ dirtyRect: NSRect) {
+            if hovered {
+                Palette.surfaceAlt.setFill()
+                NSBezierPath(roundedRect: bounds.insetBy(dx: -4, dy: 1),
+                             xRadius: Palette.Radius.row,
+                             yRadius: Palette.Radius.row).fill()
+            }
+            // The SAME chevron the table header draws for the sorted column, at the
+            // same size and in the same ink. It means the same thing in both places
+            // — "this is the one, and this is which way" — and two chevrons that
+            // looked different would be two ideas.
+            let w: CGFloat = 8, h: CGFloat = 5
+            let r = NSRect(x: 1, y: bounds.midY - h / 2, width: w, height: h)
+            // Flipped, so minY is the top. Down when open, right-ish when shut is
+            // the usual disclosure idiom; here shut points down-left to stay one
+            // shape rather than two.
+            let path = NSBezierPath()
+            if expanded {
+                path.move(to: NSPoint(x: r.minX, y: r.minY))
+                path.line(to: NSPoint(x: r.midX, y: r.maxY))
+                path.line(to: NSPoint(x: r.maxX, y: r.minY))
+            } else {
+                path.move(to: NSPoint(x: r.minX, y: r.minY))
+                path.line(to: NSPoint(x: r.maxX, y: r.midY))
+                path.line(to: NSPoint(x: r.minX, y: r.maxY))
+            }
+            path.lineWidth = 1.5
+            path.lineCapStyle = .round
+            path.lineJoinStyle = .round
+            Palette.accent.setStroke()
+            path.stroke()
+        }
+    }
 }
 
 /// A vertical list of `BodyItem`s that updates in place.
@@ -89,6 +206,7 @@ final class BodyStack: NSStackView {
                 case .row:     return view is SystemPane.BarRow
                 case .heading: return view is SystemPane.HeadingView
                 case .figure:  return view is SystemPane.FigureView
+                case .group:   return view is SystemPane.GroupHeaderView
                 }
             }
         guard reusable else { return rebuild(items) }
@@ -96,6 +214,10 @@ final class BodyStack: NSStackView {
             (view as? PaneBodyView)?.apply(item)
         }
     }
+
+    /// Told which group header was clicked. The stack does not own the expanded
+    /// state — the pane does, because the pane is what rebuilds the list from it.
+    var onToggleGroup: ((String) -> Void)?
 
     func restyleRows() {
         arrangedSubviews.forEach { ($0 as? PaneBodyView)?.restyle() }
@@ -110,6 +232,11 @@ final class BodyStack: NSStackView {
             case .row:     view = SystemPane.BarRow(item);      height = 22
             case .figure:  view = SystemPane.FigureView(item);  height = 42
             case .heading: view = SystemPane.HeadingView(item); height = nil
+            case .group:
+                let header = SystemPane.GroupHeaderView(item)
+                header.onToggle = { [weak self] in self?.onToggleGroup?(item.label) }
+                view = header
+                height = 26
             }
             addArrangedSubview(view)
             view.widthAnchor.constraint(equalTo: widthAnchor).isActive = true
@@ -271,6 +398,8 @@ class SystemPane: NSView {
     /// Install `items` as the body. See `BodyStack.setItems`, which owns the
     /// reconcile and the measurement behind it.
     func setBody(_ items: [BodyItem]) { body.setItems(items) }
+    /// The list itself, for a pane that needs to hear about clicks in it.
+    var bodyStack: BodyStack { body }
 
     /// One row, optionally with a proportional fill behind it. The bar is drawn
     /// rather than composed from views so it can sit *behind* the text without a
@@ -528,6 +657,26 @@ final class SensorsPane: SystemPane {
     private var cpuTemp: Double?
     private var gpuTemp: Double?
 
+    /// Wires the header clicks the first time the pane renders. The stack is
+    /// rebuilt whenever the shape of the list changes, and `onToggleGroup` lives
+    /// on the stack rather than on each header, so one hookup covers every
+    /// rebuild.
+    private func hookGroupToggles() {
+        guard bodyStack.onToggleGroup == nil else { return }
+        bodyStack.onToggleGroup = { [weak self] name in
+            guard let self else { return }
+            if expandedGroups.contains(name) { expandedGroups.remove(name) }
+            else { expandedGroups.insert(name) }
+            render()
+        }
+    }
+
+    /// Which groups are open. Starts EMPTY — all shut — because the point of
+    /// grouping 256 readings is that the pane opens as eight lines you can scan,
+    /// not as 256 with headings sprinkled through them. Each header states its
+    /// own count and hottest reading, so nothing has to be opened to be read.
+    private var expandedGroups: Set<String> = []
+
     func update(cpu: Double?, gpu: Double?) {
         cpuTemp = cpu
         gpuTemp = gpu
@@ -553,6 +702,7 @@ final class SensorsPane: SystemPane {
 
     private func render() {
         titleLabel.stringValue = "Sensors"
+        hookGroupToggles()
 
         guard let all = sensors.latest else {
             // Before the first sweep lands there is no list. Drawing the empty
@@ -590,19 +740,37 @@ final class SensorsPane: SystemPane {
             items.append(.row("GPU", String(format: "%.1f °C", g), fill: bar(g), color: tint(g)))
         }
 
-        items.append(.heading("All sensors, hottest first"))
-        for t in all.sorted(by: { $0.value > $1.value }) {
-            // Named families first-class; everything else keeps its raw SMC key,
-            // because a guessed label is worse than an honest four-character code.
-            // `name != key` is NOT the test for "we know what this is". All 140
-            // hedged temperatures have a name ("Thermal sensor 37") that differs
-            // from their key, so this dimmed the wrong rows: it rendered every
-            // guess as a confident name and dimmed only the raw-key ones.
-            // `isIdentified` is the flag the naming layer actually publishes.
-            let named = t.isIdentified
-            items.append(.row(t.qualifiedName,
-                              String(format: "%.1f °C", t.value),
-                              fill: bar(t.value), color: tint(t.value), dim: !named))
+        // BY PURPOSE, not one flat column. This machine reports 256 temperatures
+        // and 140 of them are called "Thermal sensor N"; hottest-first put four
+        // unidentifiable keys above the CPU on a warm day, and finding the GPU
+        // meant reading the list. Grouping is honest here because the naming layer
+        // already establishes these families with cross-generation consensus and
+        // measured behaviour — see `SensorNaming.Group`, which refuses to invent
+        // any group the evidence does not support and keeps the 140 together.
+        //
+        // Each group states its own hottest and its count while shut, so a closed
+        // group is still an answer rather than a thing to open.
+        let grouped = Dictionary(grouping: all) { SensorNaming.group(forKey: $0.key) }
+        for group in grouped.keys.sorted(by: { $0.order < $1.order }) {
+            let readings = grouped[group]!.sorted { $0.value > $1.value }
+            let hottest = readings.first?.value ?? 0
+            let open = expandedGroups.contains(group.rawValue)
+            items.append(.group(group.rawValue,
+                                String(format: "%d · %.1f °C max", readings.count, hottest),
+                                expanded: open))
+            guard open else { continue }
+            for t in readings {
+                // Named families first-class; everything else keeps its raw SMC
+                // key, because a guessed label is worse than an honest
+                // four-character code. `name != key` is NOT the test for "we know
+                // what this is": all 140 hedged temperatures have a name that
+                // differs from their key. `isIdentified` is the flag the naming
+                // layer actually publishes.
+                items.append(.row(t.qualifiedName,
+                                  String(format: "%.1f °C", t.value),
+                                  fill: bar(t.value), color: tint(t.value),
+                                  dim: !t.isIdentified))
+            }
         }
         setBody(items)
     }
