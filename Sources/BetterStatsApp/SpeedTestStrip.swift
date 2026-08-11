@@ -48,6 +48,11 @@ final class SpeedTestStrip: NSView {
     /// presented as current would be a worse answer than no answer.
     private var lastResult: SpeedTest.Result?
     private var lastError: String?
+    /// When the button becomes pressable again. See `SpeedTest.cooldownSeconds`:
+    /// the endpoint is free and rate-limits by volume, and one run is a few
+    /// hundred megabytes of it.
+    private var readyAt = Date.distantPast
+    private var cooldownTimer: Timer?
 
     /// Watches the current path so the metered question can be answered before
     /// the user is asked anything. Started once; `NWPathMonitor` is cheap and
@@ -78,7 +83,7 @@ final class SpeedTestStrip: NSView {
     // ── The one action ──────────────────────────────────────────────────────
 
     @objc private func runTapped() {
-        guard !running else { return }
+        guard !running, Date() >= readyAt else { return }
         switch SpeedTestGate.decide(hasAgreedBefore: Settings.shared.speedTestAgreed,
                                     isExpensive: pathIsExpensive,
                                     isConstrained: pathIsConstrained,
@@ -154,6 +159,13 @@ final class SpeedTestStrip: NSView {
     private func finished(_ outcome: Result<SpeedTest.Result, Error>) {
         running = false
         onActivity?(false)
+        readyAt = Date().addingTimeInterval(SpeedTest.cooldownSeconds)
+        cooldownTimer?.invalidate()
+        cooldownTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] t in
+            guard let self else { return t.invalidate() }
+            if Date() >= self.readyAt { t.invalidate(); self.cooldownTimer = nil }
+            self.render()
+        }
         switch outcome {
         case .success(let r):
             lastResult = r
@@ -177,8 +189,11 @@ final class SpeedTestStrip: NSView {
 
     private func render() {
         let host = SpeedTest.Endpoint.cloudflare.host
-        button.isEnabled = !running
-        button.title = running ? "Testing…" : "Test Internet Speed"
+        let waiting = max(0, readyAt.timeIntervalSinceNow)
+        button.isEnabled = !running && waiting <= 0
+        button.title = running ? "Testing…"
+            : waiting > 0 ? "Test again in \(Int(waiting.rounded(.up)))s"
+            : "Test Internet Speed"
         // The button steps aside for the dial while a test runs — the live number
         // IS the feedback, and a disabled button sitting under it is furniture.
         button.isHidden = running
