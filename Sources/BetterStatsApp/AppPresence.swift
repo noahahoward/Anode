@@ -1,4 +1,5 @@
 import AppKit
+import PowerKit
 
 /// Where BetterStats is allowed to be invisible, and where it is not.
 ///
@@ -45,14 +46,34 @@ import AppKit
 /// Monitor. That is the state these two functions exist to make unreachable.
 enum AppPresence {
 
+    /// Was this process started by the login agent rather than by a person?
+    ///
+    /// Read from our OWN argument, which the agent's plist puts there — see
+    /// `LoginAgent.loginArgument` for why an argument and not the environment.
+    static var openedAtLogin: Bool {
+        CommandLine.arguments.contains(LoginAgent.loginArgument)
+    }
+
     /// Does launch end with the main window on screen?
     ///
     /// `startInMenuBarOnly` is honoured only when there is a menu bar to start
     /// in. With widgets off it is overridden rather than obeyed, and Preferences
     /// says so beside the checkbox — an override the user cannot see is the same
     /// bug as a control that does nothing.
-    static func showsWindowAtLaunch(startInMenuBarOnly: Bool, widgetsEnabled: Bool) -> Bool {
-        !(startInMenuBarOnly && widgetsEnabled)
+    ///
+    /// AND ONLY AT LOGIN. The setting says "start in menu bar only", and starting
+    /// is what a machine does at login; opening an app is what a person does on
+    /// purpose. Applying it to both meant double-clicking BetterStats put nothing
+    /// on screen — indistinguishable, from the user's side, from a launch that
+    /// failed.
+    ///
+    /// The default when we cannot tell is to SHOW the window. An unwanted window
+    /// at login is visible and one click from gone; a launch that appears to do
+    /// nothing teaches people the app is broken.
+    static func showsWindowAtLaunch(startInMenuBarOnly: Bool, widgetsEnabled: Bool,
+                                    openedAtLogin: Bool = AppPresence.openedAtLogin) -> Bool {
+        guard openedAtLogin else { return true }
+        return !(startInMenuBarOnly && widgetsEnabled)
     }
 
     /// Activation policy to adopt at launch, before the first frame.
@@ -61,9 +82,12 @@ enum AppPresence {
     /// form flashes a Dock tile at every login for the state the user asked not
     /// to have.
     static func launchActivationPolicy(startInMenuBarOnly: Bool,
-                                       widgetsEnabled: Bool) -> NSApplication.ActivationPolicy {
+                                       widgetsEnabled: Bool,
+                                       openedAtLogin: Bool = AppPresence.openedAtLogin)
+        -> NSApplication.ActivationPolicy {
         showsWindowAtLaunch(startInMenuBarOnly: startInMenuBarOnly,
-                            widgetsEnabled: widgetsEnabled) ? .regular : .accessory
+                            widgetsEnabled: widgetsEnabled,
+                            openedAtLogin: openedAtLogin) ? .regular : .accessory
     }
 
     /// Activation policy once the window is closed or never opened.

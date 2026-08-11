@@ -37,6 +37,23 @@ public enum LoginAgent {
     /// SMAppService uses for the same app.
     public static let label = "dev.noah.betterstats.loginagent"
 
+    /// Passed to the app by the agent, so a launch AT LOGIN can be told apart
+    /// from a user opening the app.
+    ///
+    /// The app has one setting — "start in menu bar only" — that is meant for the
+    /// first case and was being applied to both, so double-clicking the app did
+    /// nothing visible. That reads as a broken app rather than as a preference.
+    ///
+    /// AN ARGUMENT, not an environment variable. Measured: launchd sets
+    /// `XPC_SERVICE_NAME` to this agent's Label for a job it starts, while a
+    /// manual launch gets `application.dev.noah.betterstats.<hash>` from
+    /// LaunchServices — so the two ARE distinguishable that way. It is still the
+    /// wrong mechanism, because `SMAppService` (the other registrar this app
+    /// tries first) starts the app through LaunchServices too, and its login
+    /// launch is then indistinguishable from a double-click. An argument we put
+    /// in the plist ourselves cannot be ambiguous.
+    public static let loginArgument = "--opened-at-login"
+
     public static var plistURL: URL {
         FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/LaunchAgents/\(label).plist")
@@ -102,7 +119,7 @@ public enum LoginAgent {
         let exec = currentExecutablePath
         let plist: [String: Any] = [
             "Label": label,
-            "ProgramArguments": [exec],
+            "ProgramArguments": [exec, loginArgument],
             "RunAtLoad": true,
             // Interactive: it draws a menu bar. Background would have launchd
             // treat it as a daemon and throttle it.
