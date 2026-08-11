@@ -555,33 +555,22 @@ final class BetterStatsHeaderCell: NSTableHeaderCell {
         // goes left of it and stays beside the word instead of floating in the
         // middle of a wide column. The name column aligns the other way and so
         // does its chevron. The column sizer already reserves the width for this.
-        // 8 + 4 is exactly the 12 pt the column sizer reserves. The height was
-        // 3.5, which with a 1.5 pt stroke is barely a shape at all — the two
-        // directions rendered nearly identically, which a test caught and a user
-        // would have experienced as "there is a mark but I cannot tell which way".
-        let gap: CGFloat = 4, width: CGFloat = 8, height: CGFloat = 5
+        // 4 pt of gap plus the chevron's own 8 is exactly the 12 pt the column
+        // sizer reserves.
+        let gap: CGFloat = 4, size = Palette.Chevron.up.size
         let originX = alignment == .right
-            ? x - gap - width
+            ? x - gap - size.width
             : x + baseSize.width + markSize.width + gap
-        let rect = NSRect(x: originX, y: cellFrame.midY - height / 2,
-                          width: width, height: height)
+        let rect = NSRect(x: originX, y: cellFrame.midY - size.height / 2,
+                          width: size.width, height: size.height)
         lastIndicatorRect = rect
 
-        // The header view is FLIPPED, so up on screen is the smaller y. Ascending
-        // points up, matching Finder and Explorer both: the apex is the end the
-        // small values are at.
-        let up = sortIndicator == .ascending
-        let apexY = up ? rect.minY : rect.maxY
-        let baseY = up ? rect.maxY : rect.minY
-        let path = NSBezierPath()
-        path.move(to: NSPoint(x: rect.minX, y: baseY))
-        path.line(to: NSPoint(x: rect.midX, y: apexY))
-        path.line(to: NSPoint(x: rect.maxX, y: baseY))
-        path.lineWidth = 1.5
-        path.lineCapStyle = .round
-        path.lineJoinStyle = .round
+        // Ascending points up, matching Finder and Explorer both: the apex is the
+        // end the small values are at. The header view is flipped and the shared
+        // drawer takes that as its default.
         Palette.accent.setStroke()
-        path.stroke()
+        Palette.chevron(sortIndicator == .ascending ? .up : .down,
+                        at: NSPoint(x: rect.midX, y: rect.midY)).stroke()
     }
 }
 

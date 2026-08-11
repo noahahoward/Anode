@@ -124,6 +124,72 @@ enum Palette {
         static let bar: CGFloat = 2
     }
 
+    // ── Marks ───────────────────────────────────────────────────────────────
+
+    /// The app's chevron, in one definition.
+    ///
+    /// Two places draw one: the table header, marking the sorted column and which
+    /// way, and the Sensors list, marking a group open or shut. They mean the same
+    /// thing — "this is the one, and this is which way" — so they have to look
+    /// identical, and until now they were identical only because two files
+    /// happened to carry the same numbers.
+    ///
+    /// The proportions are the whole reason this is shared. A chevron drawn 8
+    /// across and 5 deep has 8.4 pt legs pointing sideways and 6.4 pointing down;
+    /// keeping the long axis 8 and the short axis 5 whichever way it points is
+    /// what makes a sideways one the rotation of a downward one rather than a
+    /// longer, flatter version of it. That was a real bug once, reported as the
+    /// collapsed chevrons looking too long.
+    enum Chevron {
+        case up, down, left, right
+
+        /// Long axis across the flat, short axis to the apex.
+        var size: NSSize {
+            switch self {
+            case .up, .down:    return NSSize(width: 8, height: 5)
+            case .left, .right: return NSSize(width: 5, height: 8)
+            }
+        }
+    }
+
+    /// A stroked chevron centred on `point`, ready to `stroke()`.
+    ///
+    /// `flipped` is the view's own `isFlipped`: in a flipped view the smaller y is
+    /// the top of the screen, and every caller of this so far is flipped. Passing
+    /// it rather than assuming it means an unflipped caller cannot silently get an
+    /// upside-down mark.
+    static func chevron(_ direction: Chevron, at point: NSPoint,
+                        flipped: Bool = true) -> NSBezierPath {
+        let s = direction.size
+        let r = NSRect(x: point.x - s.width / 2, y: point.y - s.height / 2,
+                       width: s.width, height: s.height)
+        let top = flipped ? r.minY : r.maxY
+        let bottom = flipped ? r.maxY : r.minY
+        let path = NSBezierPath()
+        switch direction {
+        case .up:
+            path.move(to: NSPoint(x: r.minX, y: bottom))
+            path.line(to: NSPoint(x: r.midX, y: top))
+            path.line(to: NSPoint(x: r.maxX, y: bottom))
+        case .down:
+            path.move(to: NSPoint(x: r.minX, y: top))
+            path.line(to: NSPoint(x: r.midX, y: bottom))
+            path.line(to: NSPoint(x: r.maxX, y: top))
+        case .right:
+            path.move(to: NSPoint(x: r.minX, y: top))
+            path.line(to: NSPoint(x: r.maxX, y: r.midY))
+            path.line(to: NSPoint(x: r.minX, y: bottom))
+        case .left:
+            path.move(to: NSPoint(x: r.maxX, y: top))
+            path.line(to: NSPoint(x: r.minX, y: r.midY))
+            path.line(to: NSPoint(x: r.maxX, y: bottom))
+        }
+        path.lineWidth = 1.5
+        path.lineCapStyle = .round
+        path.lineJoinStyle = .round
+        return path
+    }
+
     // ── Type ────────────────────────────────────────────────────────────────
     enum Font {
         static func mono(_ size: CGFloat, _ weight: NSFont.Weight = .regular) -> NSFont {

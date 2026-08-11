@@ -129,7 +129,7 @@ public final class AppDetailView: NSView, NSTableViewDataSource, NSTableViewDele
         // ── Header ──────────────────────────────────────────────────────────
         iconView.imageScaling = .scaleProportionallyUpOrDown
 
-        nameLabel.font = .systemFont(ofSize: 15, weight: .semibold)
+        nameLabel.font = Palette.Font.sans(15, .semibold)
         nameLabel.lineBreakMode = .byTruncatingTail
         // Long Electron names ("Visual Studio Code - Insiders …") must not push the
         // totals off the right edge; the name compresses first.
@@ -140,15 +140,21 @@ public final class AppDetailView: NSView, NSTableViewDataSource, NSTableViewDele
         subtitleLabel.lineBreakMode = .byTruncatingMiddle
         subtitleLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
-        totalLabel.font = .monospacedDigitSystemFont(ofSize: 22, weight: .semibold)
+        totalLabel.font = Palette.Font.mono(22, .semibold)
         totalLabel.alignment = .right
-        procCountLabel.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
+        procCountLabel.font = Palette.Font.mono(11)
         procCountLabel.textColor = Palette.dim
         procCountLabel.alignment = .right
 
         // ── Table ───────────────────────────────────────────────────────────
         func column(_ id: String, _ title: String, _ width: CGFloat, right: Bool) {
             let c = NSTableColumn(identifier: .init(id))
+            // The app's own header cell, the same one the process table uses.
+            // A default `NSTableHeaderCell` paints the system's control grey,
+            // which against this window's black is a band of the wrong colour —
+            // and it put two differently-styled headers in one window, four
+            // inches apart.
+            c.headerCell = BetterStatsHeaderCell(textCell: title)
             c.title = title
             c.width = width
             c.minWidth = 40
@@ -160,7 +166,14 @@ public final class AppDetailView: NSView, NSTableViewDataSource, NSTableViewDele
         column("pctHr", "%/hr", 84, right: true)
         column("joules", "Joules", 90, right: true)
 
-        table.usesAlternatingRowBackgroundColors = true
+        // OFF, like the main table. macOS's alternating stripes are tuned for a
+        // window painted in the system's control grey; on this app's black ground
+        // they are a pair of greys that belong to a different design, and the
+        // process table two panes over already turns them off and draws its own
+        // rows. Two tables side by side striped differently is exactly the
+        // inconsistency this sweep is for.
+        table.usesAlternatingRowBackgroundColors = false
+        table.backgroundColor = .clear
         table.rowSizeStyle = .small
         // Names deserve the spare width; the numeric columns stay compact at the
         // trailing edge (default style would stretch the LAST column instead).
@@ -183,7 +196,7 @@ public final class AppDetailView: NSView, NSTableViewDataSource, NSTableViewDele
         scroll.hasVerticalScroller = true
         scroll.borderType = .noBorder
 
-        emptyLabel.font = .systemFont(ofSize: 12)
+        emptyLabel.font = Palette.Font.sans(12)
         emptyLabel.textColor = Palette.dim
         emptyLabel.alignment = .center
         emptyLabel.isHidden = true
@@ -197,7 +210,7 @@ public final class AppDetailView: NSView, NSTableViewDataSource, NSTableViewDele
             return l
         }
         for v in [attributedValue, measuredValue] {
-            v.font = .monospacedDigitSystemFont(ofSize: 11, weight: .semibold)
+            v.font = Palette.Font.mono(11, .semibold)
             v.alignment = .right
         }
         let grid = NSGridView(views: [
@@ -219,7 +232,7 @@ public final class AppDetailView: NSView, NSTableViewDataSource, NSTableViewDele
 
         quitButton.bezelStyle = .rounded
         quitButton.controlSize = .small
-        quitButton.font = .systemFont(ofSize: 11)
+        quitButton.font = Palette.Font.sans(11)
         quitButton.target = self
         quitButton.action = #selector(quitClicked)
         quitButton.toolTip = "Ask to quit the selected process — the request goes to the app, which decides"

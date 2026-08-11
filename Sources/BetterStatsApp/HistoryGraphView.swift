@@ -465,7 +465,7 @@ public class HistoryGraphView: NSView {
         Palette.background.setFill()
         bounds.fill()
 
-        let tickFont = NSFont.monospacedDigitSystemFont(ofSize: 9, weight: .regular)
+        let tickFont = Palette.Font.mono(9, .regular)
         let tickAttrs: [NSAttributedString.Key: Any] = [
             .font: tickFont,
             .foregroundColor: Palette.dim,
@@ -736,7 +736,7 @@ public class HistoryGraphView: NSView {
             if showsAxes {
                 let s = "no history yet" as NSString
                 let attrs: [NSAttributedString.Key: Any] = [
-                    .font: NSFont.systemFont(ofSize: 11),
+                    .font: Palette.Font.sans(11),
                     .foregroundColor: Palette.faint,
                 ]
                 let size = s.size(withAttributes: attrs)
@@ -1705,15 +1705,15 @@ extension HistoryGraphView {
         // the three to find. And with up to eight lines under the crosshair the
         // readout carried NO colour at all, so nothing tied a row to its line.
         let stampAttrs: [NSAttributedString.Key: Any] = [
-            .font: NSFont.monospacedDigitSystemFont(ofSize: 9.5, weight: .regular),
+            .font: Palette.Font.mono(9.5, .regular),
             .foregroundColor: Palette.dim,
         ]
         let nameAttrs: [NSAttributedString.Key: Any] = [
-            .font: NSFont.monospacedDigitSystemFont(ofSize: 10, weight: .regular),
+            .font: Palette.Font.mono(10, .regular),
             .foregroundColor: Palette.dim,
         ]
         let valueAttrs: [NSAttributedString.Key: Any] = [
-            .font: NSFont.monospacedDigitSystemFont(ofSize: 10, weight: .medium),
+            .font: Palette.Font.mono(10, .medium),
             .foregroundColor: Palette.text,
         ]
 

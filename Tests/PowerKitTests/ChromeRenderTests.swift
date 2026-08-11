@@ -408,6 +408,27 @@ final class TableChromeRenderTests: XCTestCase {
         return (Frame(rep: rep, viewSize: size, flipped: host.isFlipped), cell)
     }
 
+    /// A sideways chevron is the rotation of a downward one, not a flatter
+    /// version of it.
+    ///
+    /// At a fixed 8x5 the right-pointing form has 8.4 pt legs against the
+    /// down-pointing form's 6.4, which reads as two different marks — reported
+    /// once as the collapsed chevrons looking too long. Swapping the axes is what
+    /// makes them the same mark, and asserting on the LEG LENGTH says that
+    /// directly rather than restating the sizes.
+    func testEveryChevronIsTheSameMarkWhicheverWayItPoints() {
+        func leg(_ d: Palette.Chevron) -> CGFloat {
+            let s = d.size
+            // Half the long axis, and the full short axis, is one leg.
+            return (pow(s.width, 2) + pow(s.height, 2)).squareRoot()
+        }
+        let lengths = [Palette.Chevron.up, .down, .left, .right].map { leg($0) }
+        for l in lengths {
+            XCTAssertEqual(l, lengths[0], accuracy: 0.001,
+                           "one direction draws a longer mark than the others")
+        }
+    }
+
     /// Only the sorted column is marked.
     ///
     /// This is the whole defect the chevron fixes: the table sorted correctly and
