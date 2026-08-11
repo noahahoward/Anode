@@ -84,9 +84,41 @@ final class BottomContextTests: XCTestCase {
     /// Only the subjects that are actually persisted offer long ranges. A 7D
     /// button that draws an empty plot is a worse answer than no button.
     func testEverySubjectOffersOnlyRangesItCanAnswer() {
-        for c in BottomContext.allCases {
-            XCTAssertFalse(c.ranges.isEmpty, "\(c) offers no range at all")
+        for c in BottomContext.allCases where !c.hidesGraph {
+            XCTAssertFalse(c.ranges.isEmpty, "\(c) draws a graph but offers no range")
         }
+        // And a subject with no graph needs no ranges — the picker goes with it.
+        XCTAssertTrue(BottomContext.resources.ranges.isEmpty)
+    }
+
+    /// The session-only subjects offer the hour and nothing beyond it.
+    ///
+    /// Temperatures and fan speeds are never written to the store: the SMC sweep
+    /// is gated on a tab that reads it being open, so there is no week of them to
+    /// draw. This is the case the per-subject range list exists for — every other
+    /// subject is persisted, so until these arrived the list could have been one
+    /// constant and nobody would have noticed.
+    func testTheSessionOnlySubjectsOfferTheHourAlone() {
+        for c in [BottomContext.sensors, .fans] {
+            XCTAssertEqual(c.ranges, [3600], "\(c) promises history it never stored")
+        }
+    }
+
+    /// The tab wins over the sort everywhere except Processes, where there is no
+    /// tab-level subject to win with.
+    ///
+    /// Sorting by CPU and then opening Fans used to leave a CPU graph under a fan
+    /// pane — the same defect as the Resources rail changing its highlight and
+    /// leaving the readings behind, one level up.
+    func testTheTabPicksTheSubjectAndTheSortOnlyDecidesOnProcesses() {
+        XCTAssertEqual(BottomContext.forLens(.fans, sortKey: "cpu"), .fans)
+        XCTAssertEqual(BottomContext.forLens(.network, sortKey: "cpu"), .network)
+        XCTAssertEqual(BottomContext.forLens(.sensors, sortKey: "memPct"), .sensors)
+        XCTAssertEqual(BottomContext.forLens(.resources, sortKey: "cpu"), .resources)
+        // Processes has no subject of its own, so the sort keeps deciding.
+        XCTAssertEqual(BottomContext.forLens(.processes, sortKey: "cpu"), .cpu)
+        XCTAssertEqual(BottomContext.forLens(.processes, sortKey: "diskRead"), .disk)
+        XCTAssertEqual(BottomContext.forLens(.processes, sortKey: "pctHr"), .battery)
     }
 }
 
@@ -213,7 +245,7 @@ final class BottomPanelTests: XCTestCase {
     /// column is a 5 % disagreement nobody would ever track down.
     func testTheDiskAxisAgreesWithTheAppsByteUnits() {
         XCTAssertEqual(AppDelegate.mib(1_048_576), 1, accuracy: 1e-9)
-        XCTAssertEqual(AppDelegate.diskAxisLabel, "MB/s")
+        XCTAssertEqual(AppDelegate.rateAxisLabel, "MB/s")
         XCTAssertTrue(MetricUnit.bytesPerSecond.format(1_048_576).hasSuffix("MB/s"))
     }
 

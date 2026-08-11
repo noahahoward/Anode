@@ -26,6 +26,36 @@ import PowerKit
 /// exist for a utilisation. Nothing is spending CPU on backlight.
 public enum BottomContext: String, CaseIterable {
     case battery, cpu, gpu, memory, disk
+    /// Whole-machine subjects, chosen by the TAB rather than by a sort.
+    case network, sensors, fans
+    /// Resources draws its own graph per card, so the bottom one is hidden.
+    case resources
+
+    /// What the bottom is about, from the tab first and the sort second.
+    ///
+    /// THE TAB WINS, and it has to. The sort is a statement about the process
+    /// table, and on every tab but Processes that table is not on screen — so the
+    /// bottom was answering a question the user could no longer see they had
+    /// asked. Sorting by CPU, switching to Fans, and still being shown a CPU
+    /// graph is the same defect as the Resources rail updating its highlight and
+    /// leaving the readings behind.
+    ///
+    /// On Processes there is no tab-level subject, so the sort is the only signal
+    /// and it stays in charge.
+    static func forLens(_ lens: SidebarView.Lens, sortKey: String) -> BottomContext {
+        switch lens {
+        case .processes: return forSortKey(sortKey)
+        case .resources: return .resources
+        case .network:   return .network
+        case .sensors:   return .sensors
+        case .fans:      return .fans
+        }
+    }
+
+    /// Resources is already a wall of graphs — one per card, plus the big one at
+    /// the top of the rail. A ninth at the bottom of the window is noise, and the
+    /// space is better given back to the pane.
+    public var hidesGraph: Bool { self == .resources }
 
     /// The subject implied by a sort column.
     ///
@@ -58,6 +88,9 @@ public enum BottomContext: String, CaseIterable {
         case .battery: return "%/hr"
         case .cpu, .gpu, .memory: return "%"
         case .disk: return "B/s"
+        case .network: return "B/s"
+        case .sensors, .fans: return "°C"
+        case .resources: return ""
         }
     }
 
@@ -68,6 +101,10 @@ public enum BottomContext: String, CaseIterable {
         case .gpu:     return "GPU"
         case .memory:  return "Memory"
         case .disk:    return "Disk"
+        case .network: return "Network"
+        case .sensors: return "Temperature"
+        case .fans:    return "Fans"
+        case .resources: return "Resources"
         }
     }
 
@@ -83,7 +120,10 @@ public enum BottomContext: String, CaseIterable {
     public var isPercentage: Bool {
         switch self {
         case .battery, .cpu, .gpu, .memory: return true
-        case .disk:                         return false
+        // Rates and temperatures. A fan graph plots a percentage AND a
+        // temperature, and it is the temperature axis that has no ceiling — see
+        // `fans` below, which puts them on separate axes for that reason.
+        case .disk, .network, .sensors, .fans, .resources: return false
         }
     }
 
@@ -96,8 +136,18 @@ public enum BottomContext: String, CaseIterable {
     /// not offering it.
     public var ranges: [TimeInterval] {
         switch self {
-        case .battery, .cpu, .gpu, .memory, .disk:
+        // Columns on the interval table, written every tick since the first
+        // release. A week of these is as real as a week of drain.
+        case .battery, .cpu, .gpu, .memory, .disk, .network:
             return [3600, 6 * 3600, 24 * 3600, 7 * 24 * 3600]
+        // NOT persisted. Temperatures and fan speeds live only in this session's
+        // memory — the SMC sweep is gated on a tab being open, so there is no
+        // week of it to draw and a 7D button here would promise an empty plot.
+        // The ranges genuinely need not match across subjects.
+        case .sensors, .fans:
+            return [3600]
+        case .resources:
+            return []
         }
     }
 }

@@ -119,6 +119,17 @@ final class GlanceCardView: NSView {
             // NO pill: there is no honest disk-busy percentage to put there. The
             // IOKit counter that looks like one is not one — see `DiskActivity`.
             return card(bps.format(d.totalPerSec), nil, "Disk · measured", rows)
+
+        // The tab-chosen subjects keep the battery card.
+        //
+        // Each of these tabs already states its own numbers, in a pane built for
+        // them: the Network pane names the interface and its rates, the Sensors
+        // pane lists every reading, the Fans pane shows each fan's gauge. A card
+        // restating three of those in the corner would be a fourth place to keep
+        // the same figures consistent, and the battery is the one thing none of
+        // those panes says.
+        case .network, .sensors, .fans, .resources:
+            return nil
         }
     }
 

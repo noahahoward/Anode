@@ -35,6 +35,10 @@ final class MainWindowController: NSObject {
     /// parked there would vanish the moment the graph was installed.
     let graphRanges = RangePicker()
 
+    /// The bottom row's height, held so Resources can collapse it. See
+    /// `setBottomHidden`.
+    private var bottomRowHeight: NSLayoutConstraint!
+
     private let scroll = NSScrollView()
     private var detailWidth: CGFloat = 380
     private var detailShown = false
@@ -132,6 +136,7 @@ final class MainWindowController: NSObject {
         content.addSubview(graphRanges)
 
         let railWidth = SidebarView.width
+        bottomRowHeight = glance.heightAnchor.constraint(equalToConstant: 128)
         NSLayoutConstraint.activate([
             sidebar.leadingAnchor.constraint(equalTo: content.leadingAnchor),
             sidebar.topAnchor.constraint(equalTo: content.topAnchor),
@@ -160,7 +165,7 @@ final class MainWindowController: NSObject {
             glance.leadingAnchor.constraint(equalTo: sidebar.trailingAnchor, constant: 16),
             glance.widthAnchor.constraint(equalToConstant: 236),
             glance.topAnchor.constraint(equalTo: ledger.bottomAnchor, constant: 14),
-            glance.heightAnchor.constraint(equalToConstant: 128),
+            bottomRowHeight,
             glance.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -14),
 
             // Same top and bottom as the card, so the two line up by construction
@@ -234,6 +239,26 @@ final class MainWindowController: NSObject {
                 : .none
         }
         table.headerView?.needsDisplay = true
+    }
+
+    /// Collapse the card and the graph, giving their height back to the pane.
+    ///
+    /// Resources only. That tab draws a graph on every card plus one at the top of
+    /// its rail, so a ninth at the bottom of the window is noise — and the space
+    /// is worth more to the pane, which is the thing the tab exists to show.
+    ///
+    /// The card goes with the graph rather than staying behind. A 236 pt card
+    /// alone beside 700 pt of empty window is worse than either keeping both or
+    /// dropping both. The LEDGER stays: it is one bar tall, it describes the
+    /// battery, and the battery is the one thing the Resources pane never says.
+    func setBottomHidden(_ hidden: Bool) {
+        guard glance.isHidden != hidden else { return }
+        glance.isHidden = hidden
+        graphContainer.isHidden = hidden
+        graphRanges.isHidden = hidden
+        // Hidden views still occupy their constraints, so the height has to go
+        // too or the pane gains nothing.
+        bottomRowHeight.constant = hidden ? 0 : 128
     }
 
     /// Show a whole-machine pane instead of the process table, or nil for the table.
@@ -629,6 +654,12 @@ final class RangePicker: NSView {
     ]
 
     var onSelect: ((TimeInterval) -> Void)?
+    /// The options actually offered, which is not always all of them.
+    ///
+    /// Temperatures and fan speeds live only in this session's memory, so a 7D
+    /// button on those subjects would promise a week and draw an empty plot. A
+    /// range picker that offers what it cannot answer is worse than a shorter one.
+    private(set) var shown = options
     private(set) var selectedIndex = 0
     private var hoverIndex: Int?
     private var tracking: NSTrackingArea?
@@ -636,8 +667,24 @@ final class RangePicker: NSView {
     fileprivate let cellW: CGFloat = 34
     fileprivate let height: CGFloat = 19
 
+    /// Offer exactly these, in the static order. An empty or unknown set falls
+    /// back to all of them rather than rendering a picker with no cells.
+    func setRanges(_ seconds: [TimeInterval]) {
+        let wanted = Set(seconds)
+        let next = Self.options.filter { wanted.contains($0.seconds) }
+        let resolved = next.isEmpty ? Self.options : next
+        // Compared on seconds because the options are tuples, which are not
+        // Equatable — and without the guard this invalidates layout on every tick.
+        guard resolved.map(\.seconds) != shown.map(\.seconds) else { return }
+        shown = resolved
+        selectedIndex = min(selectedIndex, shown.count - 1)
+        cells = makeCells()
+        invalidateIntrinsicContentSize()
+        needsDisplay = true
+    }
+
     override var intrinsicContentSize: NSSize {
-        NSSize(width: cellW * CGFloat(Self.options.count), height: height)
+        NSSize(width: cellW * CGFloat(shown.count), height: height)
     }
     override var isFlipped: Bool { true }
 
@@ -655,7 +702,7 @@ final class RangePicker: NSView {
     private func index(at p: NSPoint) -> Int? {
         guard bounds.contains(p) else { return nil }
         let i = Int(p.x / cellW)
-        return (i >= 0 && i < Self.options.count) ? i : nil
+        return (i >= 0 && i < shown.count) ? i : nil
     }
 
     override func mouseMoved(with e: NSEvent) {
@@ -668,12 +715,12 @@ final class RangePicker: NSView {
         guard let i = index(at: convert(e.locationInWindow, from: nil)) else { return }
         selectedIndex = i
         needsDisplay = true
-        onSelect?(Self.options[i].seconds)
+        onSelect?(shown[i].seconds)
     }
 
     /// Reflect a range set from elsewhere without re-firing onSelect.
     func select(seconds: TimeInterval) {
-        if let i = Self.options.firstIndex(where: { $0.seconds == seconds }) {
+        if let i = shown.firstIndex(where: { $0.seconds == seconds }) {
             selectedIndex = i
             needsDisplay = true
         }
@@ -686,16 +733,24 @@ final class RangePicker: NSView {
     override func accessibilityRole() -> NSAccessibility.Role? { .radioGroup }
     override func accessibilityLabel() -> String? { "Graph time range" }
     override func accessibilityChildren() -> [Any]? { cells }
-    override func accessibilityValue() -> Any? { Self.options[selectedIndex].label }
+    override func accessibilityValue() -> Any? { shown[selectedIndex].label }
 
     /// One proxy element per cell, so each range is individually focusable and
     /// pressable rather than the whole strip being one opaque blob.
-    private lazy var cells: [NSAccessibilityElement] = Self.options.enumerated().map { i, opt in
-        let e = RangeCell(picker: self, index: i)
-        e.setAccessibilityRole(.radioButton)
-        e.setAccessibilityLabel(opt.label)
-        e.setAccessibilityParent(self)
-        return e
+    /// Rebuilt whenever the offered set changes, NOT built once from the static
+    /// list. VoiceOver would otherwise announce four ranges on a subject that
+    /// draws one, and each cell's index would address the wrong option the moment
+    /// the offered set was anything but a prefix of the full one.
+    private lazy var cells: [NSAccessibilityElement] = makeCells()
+
+    private func makeCells() -> [NSAccessibilityElement] {
+        shown.enumerated().map { i, opt in
+            let e = RangeCell(picker: self, index: i)
+            e.setAccessibilityRole(.radioButton)
+            e.setAccessibilityLabel(opt.label)
+            e.setAccessibilityParent(self)
+            return e
+        }
     }
 
     final class RangeCell: NSAccessibilityElement {
@@ -723,7 +778,7 @@ final class RangePicker: NSView {
     }
 
     override func draw(_ dirtyRect: NSRect) {
-        let track = NSRect(x: 0, y: 0, width: cellW * CGFloat(Self.options.count), height: height)
+        let track = NSRect(x: 0, y: 0, width: cellW * CGFloat(shown.count), height: height)
         let radius = Palette.Radius.chip
 
         // A faint trough, so the control reads as one object rather than four
@@ -731,7 +786,7 @@ final class RangePicker: NSView {
         Palette.surfaceAlt.withAlphaComponent(0.55).setFill()
         NSBezierPath(roundedRect: track, xRadius: radius, yRadius: radius).fill()
 
-        for (i, opt) in Self.options.enumerated() {
+        for (i, opt) in shown.enumerated() {
             let cell = NSRect(x: CGFloat(i) * cellW, y: 0, width: cellW, height: height)
             if i == selectedIndex {
                 Palette.accent.withAlphaComponent(0.18).setFill()
