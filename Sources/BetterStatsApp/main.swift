@@ -614,6 +614,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
                 return .charge(time: p.time, percent: soc, onBattery: p.onBattery)
             }
             DispatchQueue.main.async {
+                self.graph.sharesRightAxisScale = true
                 self.graph.series = [.init(name: "total", color: Palette.accent, points: series)]
                 self.graph.rightSeries = charge.count >= 2
                     ? .init(name: "battery", color: Palette.chargeLine, points: charge)
@@ -795,6 +796,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         }
         // Charge on its own axis, sampled at the same cadence as the rate, so the
         // fall can be read against the spike that caused it.
+        // Same steps on both axes: a drain line level with the 50% gridline
+        // means half the battery in an hour, read off the picture.
+        graph.sharesRightAxisScale = true
         graph.rightSeries = chargeSeries.isEmpty ? nil
             : .init(name: "charge", color: Palette.chargeLine,
                     points: chargeSeries, filled: false)
