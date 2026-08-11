@@ -107,14 +107,35 @@ public enum SpeedTest {
     /// A hard ceiling per phase, so a very fast link cannot turn a six-second
     /// test into a gigabyte.
     static let maxBytesPerPhase = 600_000_000
+    /// How long to make a user wait between tests.
+    ///
+    /// NOT arbitrary politeness. `speed.cloudflare.com` rate-limits by download
+    /// VOLUME, and it is a courtesy endpoint this project does not pay for:
+    /// measured, after several GB in twenty minutes, 1 MB requests still answered
+    /// 200 while 10 MB and 64 MB answered 429. One run moves a few hundred
+    /// megabytes on a fast line, so a button with no cooldown is a button that
+    /// gets a user rate-limited by their third press — and an open-source app
+    /// shipping that to everyone is how a free endpoint stops being free.
+    public static let cooldownSeconds: Double = 60
+
+    /// Below this, a phase has not measured anything — it has caught the tail of
+    /// a refusal or a connection that died. Reported as a failure rather than as
+    /// a very small number, because "0.0 Mbps" is a claim about the link.
+    static let minimumBytesToBelieve = 1_000_000
     /// A transfer shorter than this is dominated by connection setup and the TCP
     /// ramp, so it is not evidence about steady-state throughput.
     static let minPhaseSeconds: Double = 2.0
     /// Ceiling per phase, so a slow link fails fast instead of hanging.
     static let maxPhaseSeconds: Double = 25.0
-    /// One request's worth. Large enough that a fast stream is not spending its
-    /// time on request overhead, small enough that the clock is checked often.
-    static let chunkBytes = 25_000_000
+    /// What one request asks for.
+    ///
+    /// MEASURED CEILING: `__down` answers 200 up to 90 MB and 403s at 100 MB, so
+    /// "ask for more than the window can deliver" is not available — an earlier
+    /// draft asked for 2 GB and every download returned nothing at all. 64 MB
+    /// sits clear of the limit, and a stream that finishes before the clock is
+    /// simply replaced (`didCompleteWithError`), so the flow is continuous
+    /// whatever the line speed.
+    static let requestBytes = 64_000_000
 
     /// Megabits per second from bytes and seconds. Base 10: 1 Mbit = 1e6 bits.
     static func mbps(bytes: Int, seconds: Double) -> Double? {
@@ -168,21 +189,28 @@ extension SpeedTest {
         cfg.urlCache = nil
         cfg.timeoutIntervalForRequest = maxPhaseSeconds
         cfg.timeoutIntervalForResource = maxPhaseSeconds * 3
-        let session = URLSession(configuration: cfg)
+        // The counter IS the session's delegate: bytes are counted where they
+        // arrive rather than when a whole body has landed.
+        let counter = PhaseCounter()
+        let session = URLSession(configuration: cfg, delegate: counter, delegateQueue: nil)
         defer { session.finishTasksAndInvalidate() }
 
         progress(Update(phase: "latency", fraction: 0.05, mbps: nil))
         let latency = try await measureLatency(session: session, endpoint: endpoint)
 
         progress(Update(phase: "download", fraction: 0.1, mbps: nil))
-        let down = try await measureDownload(session: session, endpoint: endpoint) { f, rate in
+        counter.onProgress = { f, rate in
             progress(Update(phase: "download", fraction: 0.1 + 0.55 * f, mbps: rate))
         }
+        let down = try await measureDownload(session: session, endpoint: endpoint,
+                                             counter: counter)
 
         progress(Update(phase: "upload", fraction: 0.65, mbps: nil))
-        let up = try await measureUpload(session: session, endpoint: endpoint) { f, rate in
+        counter.onProgress = { f, rate in
             progress(Update(phase: "upload", fraction: 0.65 + 0.35 * f, mbps: rate))
         }
+        let up = try await measureUpload(session: session, endpoint: endpoint,
+                                         counter: counter)
 
         progress(Update(phase: "done", fraction: 1, mbps: nil))
         return Result(downloadMbps: down.mbps, uploadMbps: up.mbps, latencyMs: latency,
@@ -208,98 +236,194 @@ extension SpeedTest {
         return best
     }
 
-    /// A phase: `streams` transfers running at once, restarted as they finish,
-    /// until the clock runs out.
+    /// A phase: `streams` transfers at once, counted AS THE BYTES ARRIVE, each
+    /// replaced when it finishes, all stopped when the clock runs out.
     ///
-    /// Bytes that arrive during the WARMUP are counted for the progress display
-    /// and thrown away for the measurement. That window is DNS, TLS and TCP slow
-    /// start — the ramp the old ladder measured by accident — and the whole point
-    /// of the rewrite is not to average it in.
+    /// Two things had to be true together and the first draft had neither. Bytes
+    /// must be counted continuously — counting only completed transfers quantises
+    /// the measurement to the request size and lets one slow transfer outlive the
+    /// window it is supposed to describe. And the flow must not stop early —
+    /// `__down` caps at 90 MB, so on a fast link a single request is over in
+    /// under two seconds.
     ///
-    /// `transfer` moves one chunk and returns how many bytes it moved, so the
-    /// download and upload phases differ only in that closure.
+    /// Both failure modes were seen on one ethernet link: 445 Mbps then 65.8 from
+    /// the first, and 0.0 Mbps from an attempt to fix it by asking for 2 GB.
     private static func runPhase(seconds: Double,
-                                 progress: @escaping (Double, Double) -> Void,
-                                 transfer: @escaping () async throws -> Int
+                                 session: URLSession,
+                                 counter: PhaseCounter
     ) async throws -> (mbps: Double, bytes: Int) {
-        let started = Date()
-        let counted = Counter()
+        counter.begin(seconds: seconds, warmup: warmupSeconds, session: session)
+        try? await Task.sleep(nanoseconds: UInt64(seconds * 1e9))
+        counter.stop()
+        // A moment for the last in-flight callbacks to land before reading.
+        try? await Task.sleep(nanoseconds: 150_000_000)
 
-        try await withThrowingTaskGroup(of: Void.self) { group in
-            for _ in 0..<streams {
-                group.addTask {
-                    while true {
-                        let elapsed = Date().timeIntervalSince(started)
-                        if elapsed >= seconds { return }
-                        if await counted.total >= maxBytesPerPhase { return }
-                        let moved = try await transfer()
-                        let now = Date().timeIntervalSince(started)
-                        // Counted for the measurement only once past the warmup.
-                        await counted.add(moved, measured: now > warmupSeconds)
-                        let measuredFor = max(0, now - warmupSeconds)
-                        let rate = mbps(bytes: await counted.measured,
-                                        seconds: measuredFor) ?? 0
-                        progress(min(1, now / seconds), rate)
-                    }
-                }
-            }
-            try await group.waitForAll()
+        if let status = counter.rejection {
+            throw Failure.unreachable("the server answered HTTP \(status)"
+                                    + (status == 429 || status == 403
+                                       ? " — too many tests too quickly; wait a minute" : ""))
         }
-
-        let elapsed = Date().timeIntervalSince(started)
-        let measuredFor = elapsed - warmupSeconds
-        let measured = await counted.measured
-        let total = await counted.total
-
-        // Nothing survived the warmup — a link so slow that one chunk did not
-        // finish inside the window. Fall back to everything that did arrive
-        // rather than reporting nothing; the ramp is a poor measurement but it is
-        // the only one there is, and a slow link's ramp is most of its life.
-        if measured == 0 || measuredFor < 0.5 {
-            guard let rate = mbps(bytes: total, seconds: elapsed) else {
+        let (measured, total, window) = counter.read()
+        // A trickle is not a measurement. Without a floor, a refusal whose error
+        // body is a few hundred bytes gets divided by six seconds and printed as
+        // a confident 0.0 Mbps.
+        guard total >= minimumBytesToBelieve else {
+            throw Failure.unreachable("only \(total) bytes arrived — the connection "
+                                    + "dropped or the server refused")
+        }
+        // Below the warmup there is nothing but the ramp; a link that slow has
+        // spent the whole window ramping, so the ramp is the answer there.
+        if measured == 0 || window < 0.5 {
+            guard let rate = mbps(bytes: total, seconds: seconds) else {
                 throw Failure.tooSlowToMeasure
             }
             return (rate, total)
         }
-        guard let rate = mbps(bytes: measured, seconds: measuredFor) else {
+        guard let rate = mbps(bytes: measured, seconds: window) else {
             throw Failure.tooSlowToMeasure
         }
         return (rate, total)
     }
 
-    /// Bytes moved, behind an actor because `streams` tasks add to it at once.
-    private actor Counter {
-        private(set) var total = 0
-        /// Bytes that arrived after the warmup — the only ones the rate uses.
-        private(set) var measured = 0
-        func add(_ bytes: Int, measured isMeasured: Bool) {
+    /// Counts bytes in flight, keeps `streams` transfers running, and stops them
+    /// when the clock runs out.
+    ///
+    /// A delegate rather than `await session.data(...)`, because that call only
+    /// yields once the whole body has arrived — which is exactly the granularity
+    /// that made the first version swing between 445 and 66 Mbps on one link.
+    final class PhaseCounter: NSObject, URLSessionDataDelegate, @unchecked Sendable {
+        private let lock = NSLock()
+        private var total = 0
+        private var afterWarmup = 0
+        private var warmupEnds = Date.distantFuture
+        private var deadline = Date.distantPast
+        private var startedAt = Date()
+        private var live: [URLSessionTask] = []
+        private var running = false
+        /// Consecutive replacements that carried nothing, so a request the server
+        /// refuses outright cannot become a restart loop.
+        private var emptyCompletions = 0
+        /// The last non-200 the server answered with, if any. A refusal is a
+        /// failure to report, not a slow connection to average in — Cloudflare
+        /// 403s a request over 90 MB, and rate-limits a client that has asked too
+        /// often, which is a thing this will meet in the field.
+        private(set) var rejection: Int?
+
+        /// Builds one request. Set before `begin`.
+        var makeTask: ((URLSession) -> URLSessionTask)?
+        /// Live progress, for the dial.
+        var onProgress: ((Double, Double) -> Void)?
+
+        func begin(seconds: Double, warmup: Double, session: URLSession) {
+            lock.lock()
+            total = 0; afterWarmup = 0; emptyCompletions = 0
+            startedAt = Date()
+            warmupEnds = startedAt.addingTimeInterval(warmup)
+            deadline = startedAt.addingTimeInterval(seconds)
+            running = true
+            live.removeAll()
+            lock.unlock()
+            for _ in 0..<SpeedTest.streams { launch(on: session) }
+        }
+
+        func stop() {
+            lock.lock()
+            running = false
+            let tasks = live
+            live.removeAll()
+            lock.unlock()
+            for t in tasks { t.cancel() }
+        }
+
+        /// (bytes after the warmup, bytes in total, seconds the first covers).
+        func read() -> (measured: Int, total: Int, window: Double) {
+            lock.lock(); defer { lock.unlock() }
+            return (afterWarmup, total, max(0, min(Date(), deadline).timeIntervalSince(warmupEnds)))
+        }
+
+        private func launch(on session: URLSession) {
+            guard let makeTask else { return }
+            let task = makeTask(session)
+            lock.lock()
+            guard running else { lock.unlock(); return }
+            live.append(task)
+            lock.unlock()
+            task.resume()
+        }
+
+        private func count(_ bytes: Int, task: URLSessionTask) {
+            let now = Date()
+            lock.lock()
             total += bytes
-            if isMeasured { measured += bytes }
+            if now > warmupEnds { afterWarmup += bytes }
+            if bytes > 0 { emptyCompletions = 0 }
+            let measured = afterWarmup
+            let window = now.timeIntervalSince(warmupEnds)
+            let elapsed = now.timeIntervalSince(startedAt)
+            let span = max(deadline.timeIntervalSince(startedAt), 0.001)
+            let past = now > deadline
+            lock.unlock()
+
+            if past { task.cancel() }
+            let rate = window > 0.3 ? (SpeedTest.mbps(bytes: measured, seconds: window) ?? 0) : 0
+            onProgress?(min(1, elapsed / span), rate)
+        }
+
+        func urlSession(_ session: URLSession, dataTask: URLSessionDataTask,
+                        didReceive data: Data) {
+            count(data.count, task: dataTask)
+        }
+
+        /// Refuse to measure a refusal. Without this the error body is counted as
+        /// payload and a rate-limited test reports a confident 0.0 Mbps, which is
+        /// the one thing this type promises never to do.
+        func urlSession(_ session: URLSession, dataTask: URLSessionDataTask,
+                        didReceive response: URLResponse,
+                        completionHandler: @escaping (URLSession.ResponseDisposition) -> Void) {
+            if let http = response as? HTTPURLResponse, http.statusCode != 200 {
+                lock.lock(); rejection = http.statusCode; running = false; lock.unlock()
+                completionHandler(.cancel)
+                return
+            }
+            completionHandler(.allow)
+        }
+
+        func urlSession(_ session: URLSession, task: URLSessionTask,
+                        didSendBodyData bytesSent: Int64,
+                        totalBytesSent: Int64, totalBytesExpectedToSend: Int64) {
+            count(Int(bytesSent), task: task)
+        }
+
+        /// One transfer ended. Replace it, so the line stays busy for the whole
+        /// window rather than going quiet the moment a 64 MB request completes.
+        func urlSession(_ session: URLSession, task: URLSessionTask,
+                        didCompleteWithError error: Error?) {
+            lock.lock()
+            live.removeAll { $0 === task }
+            let moved = task.countOfBytesReceived + task.countOfBytesSent
+            if moved == 0 { emptyCompletions += 1 }
+            let giveUp = emptyCompletions >= SpeedTest.streams * 2
+            let keepGoing = running && Date() < deadline && !giveUp
+            lock.unlock()
+            guard keepGoing else { return }
+            launch(on: session)
         }
     }
 
     private static func measureDownload(session: URLSession, endpoint: Endpoint,
-                                        progress: @escaping (Double, Double) -> Void
+                                        counter: PhaseCounter
     ) async throws -> (mbps: Double, bytes: Int) {
-        do {
-            return try await runPhase(seconds: downSeconds, progress: progress) {
-                let (data, _) = try await session.data(from: endpoint.downURL(chunkBytes))
-                return data.count
-            }
-        } catch let failure as Failure {
-            throw failure
-        } catch {
-            throw Failure.unreachable(String(describing: error))
-        }
+        let url = endpoint.downURL(requestBytes)
+        counter.makeTask = { $0.dataTask(with: url) }
+        return try await runPhase(seconds: downSeconds, session: session, counter: counter)
     }
 
     private static func measureUpload(session: URLSession, endpoint: Endpoint,
-                                      progress: @escaping (Double, Double) -> Void
+                                      counter: PhaseCounter
     ) async throws -> (mbps: Double, bytes: Int) {
-        // Built once and reused. Incompressible, so a transparent proxy or the
-        // server's own gzip cannot shrink it in flight and hand us a rate for
-        // bytes that were never actually sent.
-        var payload = Data(count: chunkBytes)
+        // Incompressible, so a transparent proxy or the server's own gzip cannot
+        // shrink it in flight and hand us a rate for bytes that were never sent.
+        var payload = Data(count: requestBytes)
         payload.withUnsafeMutableBytes { raw in
             guard let base = raw.baseAddress else { return }
             arc4random_buf(base, raw.count)
@@ -308,19 +432,10 @@ extension SpeedTest {
         req.httpMethod = "POST"
         req.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
 
-        do {
-            return try await runPhase(seconds: upSeconds, progress: progress) {
-                _ = try await session.upload(for: req, from: payload)
-                return payload.count
-            }
-        } catch let failure as Failure {
-            throw failure
-        } catch {
-            throw Failure.unreachable(String(describing: error))
-        }
+        counter.makeTask = { $0.uploadTask(with: req, from: payload) }
+        return try await runPhase(seconds: upSeconds, session: session, counter: counter)
     }
 }
-
 
 // ─────────────────────────────────────────────────────────────────────────────
 
