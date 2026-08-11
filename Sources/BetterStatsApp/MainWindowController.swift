@@ -580,32 +580,20 @@ final class BetterStatsHeaderCell: NSTableHeaderCell {
 /// corners, which is visible the moment a row is selected.
 final class BetterStatsRowView: NSTableRowView {
 
-    /// Geometry shared by selection and hover so the two read as one control at
-    /// different strengths rather than two different shapes.
+    /// FULL BLEED, and square. Every ground this row draws is the same rectangle.
     ///
-    /// Inset by a point vertically: these are PILLS, and a pill wants a little air
-    /// above and below or it reads as a band.
-    private var pill: NSBezierPath {
-        NSBezierPath(roundedRect: bounds.insetBy(dx: 6, dy: 1),
-                     xRadius: Palette.Radius.row,
-                     yRadius: Palette.Radius.row)
-    }
-
-    /// The alternating ground, which is FULL HEIGHT.
+    /// These were inset pills at `Radius.row`, which is the right shape for a
+    /// short list in a panel and the wrong one for a dense grid. Twelve columns is
+    /// a long way for the eye to hold one row across, and a highlight that stops
+    /// 14 pt short at both ends — the inset plus the corner radius — breaks the
+    /// only line the eye has to follow. The separators were inset to match, so
+    /// they did not reach the edges either.
     ///
-    /// Not the pill. A pill's 1 pt of vertical air is right for a mark that sits
-    /// on the row; the stripe IS the row's ground, so stopping short leaves a
-    /// sliver of window between it and the separator above — reported as a gap
-    /// between the ledger line and the top of the highlight. Two rows apart that
-    /// sliver is 2 pt, which is why it was visible at all.
-    ///
-    /// Same horizontal inset and the same radius, so it stays inside the same
-    /// column of shapes everything else in this row draws in.
-    private var stripe: NSBezierPath {
-        NSBezierPath(roundedRect: bounds.insetBy(dx: 6, dy: 0),
-                     xRadius: Palette.Radius.row,
-                     yRadius: Palette.Radius.row)
-    }
+    /// So: function over form here, form still wins in the panel lists. The
+    /// Sensors rows keep their pills deliberately — that list is one narrow
+    /// column inside a bounded panel, where a pill reads as an item and a
+    /// full-bleed band would read as a table this app does not have there.
+    private var band: NSBezierPath { NSBezierPath(rect: bounds) }
 
     /// Put this row under the pointer without a pointer.
     ///
@@ -657,10 +645,10 @@ final class BetterStatsRowView: NSTableRowView {
     /// steps of the same wash, and the brightest row is always the one about to
     /// be clicked.
     private func fillBackground() {
-        let shape = pill
+        let shape = band
         if isAlternate {
             Palette.rowAlternate.setFill()
-            stripe.fill()
+            shape.fill()
         }
         if isSelected {
             Palette.selection.setFill()
@@ -684,12 +672,17 @@ final class BetterStatsRowView: NSTableRowView {
 
     override func drawBackground(in dirtyRect: NSRect) {
         fillBackground()
-        // No hairline under a row that already has a shape of its own — a rule
-        // across the bottom of a rounded pill cuts its corners off.
-        guard !isSelected, !isHovered, !isAlternate else { return }
+        // ON EVERY ROW. It used to be suppressed wherever the row had a ground of
+        // its own, because a rule across the bottom of a rounded pill cuts its
+        // corners off — a correct rule for a shape that no longer exists. With
+        // alternating stripes that suppression silently removed the line from
+        // every other row, which is half of what "they don't extend" was
+        // describing.
+        //
+        // Edge to edge, for the same reason the grounds are: this is a ledger, and
+        // a rule that stops short is not one.
         Palette.lineSoft.setFill()
-        NSRect(x: 6 + Palette.Radius.row, y: bounds.maxY - 1,
-               width: bounds.width - 12 - Palette.Radius.row * 2, height: 1).fill()
+        NSRect(x: 0, y: bounds.maxY - 1, width: bounds.width, height: 1).fill()
     }
 
     override var isEmphasized: Bool {

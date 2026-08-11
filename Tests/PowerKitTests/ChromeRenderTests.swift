@@ -662,6 +662,65 @@ final class TableChromeRenderTests: XCTestCase {
         }
     }
 
+    /// Every ground reaches both edges of the row.
+    ///
+    /// They were pills inset 6 pt with an 8 pt radius, so a highlight stopped
+    /// 14 pt short at each end — reported as the ledger lines not reaching the
+    /// front or the back. Twelve columns is a long way for the eye to hold one
+    /// row across, and the highlight is the only line it has to follow.
+    ///
+    /// Sampled in the outermost column of pixels, which a pill of any radius
+    /// cannot reach.
+    func testTheRowGroundsReachBothEdges() {
+        inTheme(.darkAqua) {
+            let size = NSSize(width: 320, height: 20)
+            func edges(_ configure: (BetterStatsRowView) -> Void) -> (CGFloat, CGFloat) {
+                let v = BetterStatsRowView(frame: NSRect(origin: .zero, size: size))
+                configure(v)
+                let f = render(v, size: size)
+                let mid = NSRect(x: 0, y: 8, width: 1, height: 4)
+                let far = NSRect(x: size.width - 1, y: 8, width: 1, height: 4)
+                return (f.meanLuminance(in: mid), f.meanLuminance(in: far))
+            }
+            let plain = edges { _ in }
+            for (name, configure) in [
+                ("stripe", { (v: BetterStatsRowView) in v.alternateForTesting = true }),
+                ("selection", { (v: BetterStatsRowView) in v.isSelected = true }),
+                ("hover", { (v: BetterStatsRowView) in v.hoverForTesting = true }),
+            ] {
+                let (leading, trailing) = edges(configure)
+                XCTAssertGreaterThan(leading, plain.0 + 0.01,
+                                     "the \(name) does not reach the leading edge")
+                XCTAssertGreaterThan(trailing, plain.1 + 0.01,
+                                     "the \(name) does not reach the trailing edge")
+            }
+        }
+    }
+
+    /// And the separator is ruled on every row, including the ones with a ground.
+    ///
+    /// It was suppressed wherever the row had a shape of its own, because a rule
+    /// across the bottom of a rounded pill clips its corners. Once every other row
+    /// gained a stripe, that quietly removed the line from half the table.
+    func testTheSeparatorIsRuledOnEveryRow() {
+        inTheme(.darkAqua) {
+            let size = NSSize(width: 320, height: 20)
+            func hasRule(_ configure: (BetterStatsRowView) -> Void) -> CGFloat {
+                let v = BetterStatsRowView(frame: NSRect(origin: .zero, size: size))
+                configure(v)
+                let f = render(v, size: size)
+                // The last row of pixels against the row just above it.
+                return f.meanLuminance(in: NSRect(x: 40, y: size.height - 1,
+                                                  width: 240, height: 1))
+                     - f.meanLuminance(in: NSRect(x: 40, y: size.height - 5,
+                                                  width: 240, height: 1))
+            }
+            XCTAssertGreaterThan(hasRule { _ in }, 0.01, "a plain row lost its rule")
+            XCTAssertGreaterThan(hasRule { $0.alternateForTesting = true }, 0.01,
+                                 "a striped row has no separator under it")
+        }
+    }
+
     /// And nothing paints a hard accent edge any more. It was the mark that said
     /// "selected" categorically, and it is gone by request; a stray one would read
     /// as a second selection idiom.
