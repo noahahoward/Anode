@@ -1373,8 +1373,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
             graph.rightAxisLabel = "°C"
             graph.rightAxisUnit = "°C"
             graph.rightSeries = temperatureSeries.isEmpty ? nil
+                // Filled, like every other line that is alone on its axis. It is
+                // cut by the fan-speed fill underneath it, so the two never stack
+                // into a third apparent value.
                 : .init(name: "temp", color: Palette.warn,
-                        points: temperatureSeries, filled: false)
+                        points: temperatureSeries, filled: true)
         } else {
             graph.sharesRightAxisScale = false
             // A rate has no ceiling to pin to. Pinning disk at 100 would draw
