@@ -1105,7 +1105,24 @@ public class HistoryGraphView: NSView {
             window.removeAll(keepingCapacity: true)
             window.append(contentsOf: deltas[lo...hi])
             window.sort()
-            out[i] = deltas[i] > max(window[window.count / 2] * 4, 90)
+            // A MARGIN THE SIZE OF THE MEASUREMENT'S OWN RESOLUTION, or the
+            // verdict flickers on anything near the line.
+            //
+            // The graph re-buckets against a moving `now`, so bucket edges shift
+            // every tick and which sample lands in which bucket changes with
+            // them: a gap's measured delta wobbles by up to one bucket width.
+            // Measured on this store, an 85.4 s gap sat against a 90 s limit —
+            // ratio 0.95, well inside a 5.1 s bucket — and flipped between broken
+            // and solid every few redraws. Reported as the dotted line
+            // occasionally going solid, and the solid version was the correct one.
+            //
+            // The median IS that resolution for a dense series, so the margin
+            // scales with it: a gap must beat the limit by more than the
+            // uncertainty in its own measurement before it counts as one. A real
+            // absence is orders of magnitude past this — the night that produced
+            // the local-cadence rule held a 9540 s one.
+            let median = window[window.count / 2]
+            out[i] = deltas[i] > max(median * 4, 90) + 2 * median
         }
         return out
     }
