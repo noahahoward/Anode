@@ -1,6 +1,7 @@
 import AppKit
 import XCTest
 @testable import BetterStatsApp
+import PowerKit
 
 /// The rule that keeps BetterStats reachable.
 ///
@@ -27,9 +28,54 @@ final class AppPresenceTests: XCTestCase {
 
     func testMenuBarOnlyLaunchesWithNoWindowAndNoDockTile() {
         XCTAssertFalse(AppPresence.showsWindowAtLaunch(startInMenuBarOnly: true,
-                                                       widgetsEnabled: true))
+                                                       widgetsEnabled: true,
+                                                       openedAtLogin: true))
         XCTAssertEqual(AppPresence.launchActivationPolicy(startInMenuBarOnly: true,
-                                                          widgetsEnabled: true), .accessory)
+                                                          widgetsEnabled: true,
+                                                          openedAtLogin: true), .accessory)
+    }
+
+    /// THE SETTING IS ABOUT STARTING, NOT ABOUT OPENING.
+    ///
+    /// "Start in menu bar only" was applied to every launch, so double-clicking
+    /// the app put nothing on screen — from the user's side, indistinguishable
+    /// from a launch that failed. Starting is what a machine does at login;
+    /// opening is what a person does on purpose, and a person who just opened an
+    /// app is asking to see it.
+    func testOpeningTheAppByHandAlwaysShowsTheWindow() {
+        XCTAssertTrue(AppPresence.showsWindowAtLaunch(startInMenuBarOnly: true,
+                                                      widgetsEnabled: true,
+                                                      openedAtLogin: false),
+                      "double-clicking the app did nothing visible")
+        XCTAssertEqual(AppPresence.launchActivationPolicy(startInMenuBarOnly: true,
+                                                          widgetsEnabled: true,
+                                                          openedAtLogin: false), .regular)
+    }
+
+    /// The default when the origin is unknown is to SHOW.
+    ///
+    /// Only the login agent's own plist carries the marker, so anything else —
+    /// a double-click, `open`, a launch by `SMAppService`, a debugger — reads as
+    /// opened by hand. That last one is a genuine miss: `SMAppService` starts the
+    /// app through LaunchServices, so its login launch cannot be told from a
+    /// double-click, and such a user gets a window they asked not to have.
+    ///
+    /// That is the right way round. An unwanted window is visible and one click
+    /// from gone; a launch that appears to do nothing teaches people the app is
+    /// broken, and they cannot tell it apart from a crash.
+    func testAnUnknownOriginShowsTheWindow() {
+        XCTAssertTrue(AppPresence.showsWindowAtLaunch(startInMenuBarOnly: true,
+                                                      widgetsEnabled: true,
+                                                      openedAtLogin: false))
+    }
+
+    /// The marker is only ever set by the agent we write ourselves.
+    func testTheLoginMarkerIsReadFromOurOwnArguments() {
+        // The running test process was not started by the agent.
+        XCTAssertFalse(AppPresence.openedAtLogin)
+        XCTAssertFalse(CommandLine.arguments.contains(LoginAgent.loginArgument))
+        // And it is a flag, not something a user could type by accident.
+        XCTAssertTrue(LoginAgent.loginArgument.hasPrefix("--"))
     }
 
     /// THE TRAP. Menu-bar-only plus no menu bar is an app with no surface at all,
