@@ -30,6 +30,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
     /// Latest utilisation snapshot, so a pane can redraw without waiting for the
     /// next sample.
     var lastSystem: SystemMetrics.Snapshot?
+    /// Process and thread counts, for the card when the subject is CPU.
+    ///
+    /// Refreshed only while CPU IS the subject, the same rule the Resources tab
+    /// applies: it is a 0.48 ms sweep of ~900 processes, which is affordable once
+    /// a tick for a number on screen and not worth paying on the ticks where
+    /// nothing displays it.
+    var lastCensus: MachineInfo.Census?
     var widgets: MenuBarWidgetController!
 
     var monitor: PowerMonitor?
@@ -562,7 +569,72 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         refreshPane()
     }
 
+    /// The bar, for whichever subject the sort names. See `BottomContext`.
+    ///
+    /// Split by the same test the process table uses — `identity.isApp` — so the
+    /// bar's "apps" is exactly the set of rows the table calls apps. Two
+    /// definitions of an app on one screen is how a total stops matching its own
+    /// breakdown.
+    func updateUtilizationBar(_ context: BottomContext) -> Bool {
+        guard let sys = lastSystem else { return false }
+        func sum(_ value: (AppDrain) -> Double, apps: Bool) -> Double {
+            rows.compactMap(\.app)
+                .filter { $0.identity.isApp == apps }
+                .reduce(0) { $0 + value($1) }
+        }
+
+        switch context {
+        case .battery:
+            return false
+
+        case .cpu:
+            guard let total = sys.cpu?.total else { return false }
+            main.ledger.utilization = .attributed(
+                "CPU",
+                UtilizationSlices(total: total,
+                                  apps: sum({ $0.cpuPercent }, apps: true),
+                                  systemProcesses: sum({ $0.cpuPercent }, apps: false)))
+
+        case .gpu:
+            guard let total = sys.gpu?.utilization else { return false }
+            // Said out loud rather than smoothed over. Per-app GPU comes from the
+            // coalition store at ~30-60 s resolution while the device total is
+            // read every tick, so the split steps while the whole moves — which
+            // looks like a stall and is not one.
+            //
+            // APPORTIONED, not measured per process. macOS exposes no per-process
+            // GPU utilisation; what exists is each coalition's share of GPU TIME,
+            // and the device's own utilisation is measured whole. Multiplying one
+            // by the other is the same method the GPU %/hr column uses, and it is
+            // an apportionment either way — which is why the remainder still gets
+            // its hatched slice rather than being folded into the named ones.
+            func gpuShare(apps: Bool) -> Double {
+                rows.filter { $0.app?.identity.isApp == apps }
+                    .reduce(0) { $0 + ($1.gpuTimeShare ?? 0) } * total
+            }
+            main.ledger.utilization = .attributed(
+                "GPU",
+                UtilizationSlices(total: total,
+                                  apps: gpuShare(apps: true),
+                                  systemProcesses: gpuShare(apps: false)),
+                note: "per-app GPU updates every ~30-60 s")
+
+        case .memory:
+            guard let m = sys.memory, m.total > 0 else { return false }
+            func pct(_ b: UInt64) -> Double { Double(b) / Double(m.total) * 100 }
+            main.ledger.utilization = .memory(app: pct(m.app),
+                                              wired: pct(m.wired),
+                                              compressed: pct(m.compressed))
+        }
+        return true
+    }
+
     func updateLedger(_ s: PowerMonitor.Snapshot) {
+        // A change of subject takes the bar with it. Nil-ing it first means a
+        // subject with no reading yet falls back to the battery bar rather than
+        // leaving the previous subject's numbers on screen under a new title.
+        main.ledger.utilization = nil
+        if updateUtilizationBar(bottomContext) { return }
         main.ledger.model = LedgerBarView.Model(
             apps_pctHr: s.attributed_pctHr,
             systemProcesses_pctHr: s.systemProcesses_pctHr ?? 0,
@@ -591,7 +663,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
             attempted: s.attempted,
             overflow: s.hasAttributionOverflow)
 
-        main.glance.model = GlanceCardView.model(from: s, drain: lastDrain)
+        // The card follows the same subject the bar and the graph do. It falls
+        // back to the battery whenever the subject has no reading yet, rather than
+        // leaving the previous one's numbers under a new heading.
+        lastCensus = bottomContext == .cpu ? MachineInfo.census() : nil
+        main.glance.model = lastSystem.flatMap {
+            GlanceCardView.model(for: bottomContext, system: $0,
+                                 facts: MachineInfo.facts, census: lastCensus)
+        } ?? GlanceCardView.model(from: s, drain: lastDrain)
         main.sidebar.refreshValues()
     }
 

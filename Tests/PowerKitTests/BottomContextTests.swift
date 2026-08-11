@@ -110,3 +110,79 @@ final class BottomGraphContextTests: XCTestCase {
         }
     }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// The bar and the card, for a subject that is not the battery.
+final class BottomPanelTests: XCTestCase {
+
+    private func sys(cpu: CPUUsage.Sample? = nil,
+                     memory: MemoryUsage.Sample? = nil) -> SystemMetrics.Snapshot {
+        SystemMetrics.Snapshot(cpu: cpu, memory: memory, gpu: nil, network: nil,
+                               disk: nil, cpuTemperature: nil, gpuTemperature: nil,
+                               fans: [])
+    }
+
+    /// Memory is cut by KIND, not into apps and daemons — the kernel reports it
+    /// that way and it is the more useful cut: wired cannot be paged out, and
+    /// compressed is pressure that has already happened.
+    func testTheMemoryBarIsCutByKindAndHasNothingUnattributed() {
+        let bar = LedgerBarView.UtilizationBar.memory(app: 30, wired: 12, compressed: 5)
+        XCTAssertEqual(bar.parts.map(\.title), ["app", "wired", "compressed"])
+        XCTAssertEqual(bar.used, 47, accuracy: 0.001)
+        XCTAssertFalse(bar.parts.contains { $0.hatched },
+                       "memory has no unattributed part to hatch")
+    }
+
+    /// CPU and GPU keep the battery bar's shape, including the hatched remainder:
+    /// something measured whole, attributed in part, with the rest shown rather
+    /// than folded into a neighbour.
+    func testAnAttributedBarAlwaysMarksItsRemainder() {
+        let bar = LedgerBarView.UtilizationBar.attributed(
+            "CPU", UtilizationSlices(total: 40, apps: 25, systemProcesses: 10))
+        XCTAssertEqual(bar.parts.map(\.title), ["apps", "system processes", "unattributed"])
+        XCTAssertTrue(bar.parts.last?.hatched ?? false,
+                      "the part that could not be named is not marked as such")
+        XCTAssertEqual(bar.used, 40, accuracy: 0.001)
+    }
+
+    /// The GPU bar says its split is slower than its total. Per-app GPU is a
+    /// coalition rollup at ~30-60 s while the device figure is read every tick,
+    /// so the parts step while the whole moves — which looks like a stall.
+    func testTheGPUBarDisclosesItsSlowerAttribution() {
+        let bar = LedgerBarView.UtilizationBar.attributed(
+            "GPU", UtilizationSlices(total: 20, apps: 12, systemProcesses: 3),
+            note: "per-app GPU updates every ~30-60 s")
+        XCTAssertNotNil(bar.attributionNote)
+        // And the CPU bar does not, because its parts and its whole are both read
+        // every tick.
+        XCTAssertNil(LedgerBarView.UtilizationBar.attributed(
+            "CPU", UtilizationSlices(total: 20, apps: 12, systemProcesses: 3)).attributionNote)
+    }
+
+    /// The card states the same number its headline does, and names its facts.
+    func testTheCPUCardShowsTheChipAndTheSplit() throws {
+        let s = sys(cpu: CPUUsage.Sample(total: 16.4, user: 12.4, system: 4.1,
+                                         idle: 83.6, interval: 2))
+        let m = try XCTUnwrap(GlanceCardView.model(for: .cpu, system: s,
+                                                   facts: MachineInfo.facts, census: nil))
+        XCTAssertEqual(m.headline, "16.4%")
+        XCTAssertEqual(m.percent, 16, "the pill disagrees with the headline")
+        let labels = m.rows.map(\.label)
+        XCTAssertTrue(labels.contains("Chip"))
+        XCTAssertTrue(labels.contains("User"))
+        XCTAssertTrue(labels.contains("System"))
+    }
+
+    /// And a subject with no reading yet returns nil so the caller can fall back
+    /// to the battery, rather than inventing a card of zeroes.
+    func testASubjectWithNoReadingYieldsNoCard() {
+        XCTAssertNil(GlanceCardView.model(for: .cpu, system: sys(),
+                                          facts: MachineInfo.facts, census: nil))
+        XCTAssertNil(GlanceCardView.model(for: .memory, system: sys(),
+                                          facts: MachineInfo.facts, census: nil))
+        XCTAssertNil(GlanceCardView.model(for: .battery, system: sys(),
+                                          facts: MachineInfo.facts, census: nil),
+                     "battery is the fallback, not something this builds")
+    }
+}

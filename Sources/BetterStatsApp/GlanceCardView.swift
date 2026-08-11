@@ -28,6 +28,71 @@ final class GlanceCardView: NSView {
 
     var model: Model? { didSet { rebuild() } }
 
+    /// The card, for a subject that is not the battery. See `BottomContext`.
+    ///
+    /// The same `Model` rather than a second type: it is already a headline, a
+    /// caption and a list of label/value rows, which is exactly the shape of "16.4
+    /// %" over "Apple M5 Pro / 15 cores / 3002 threads". What changes is what
+    /// those strings say, so nothing about the view has to know which subject it
+    /// is drawing.
+    ///
+    /// `percent` drives the small charge pill beside the caption, so a utilisation
+    /// passes its own percentage there — the pill then reads as the same figure
+    /// the headline states rather than as a battery level under a CPU heading.
+    static func model(for context: BottomContext,
+                      system sys: SystemMetrics.Snapshot,
+                      facts: MachineInfo.Facts,
+                      census: MachineInfo.Census?) -> Model? {
+        func card(_ headline: String, _ percent: Int, _ label: String,
+                  _ rows: [(String, String, String?)]) -> Model {
+            Model(source: .ac, headline: headline, percent: percent,
+                  sourceLabel: label, rows: rows)
+        }
+
+        switch context {
+        case .battery:
+            return nil
+
+        case .cpu:
+            guard let cpu = sys.cpu else { return nil }
+            var rows: [(String, String, String?)] = [
+                ("Chip", facts.chip, nil),
+                ("Cores", "\(facts.coreSummary)", nil),
+            ]
+            // Threads only when they were counted. The sweep can only read the
+            // processes this app owns, so a partial count says how partial it is
+            // rather than presenting itself as the machine's total.
+            if let c = census {
+                rows.append(("Threads", "\(c.threads)",
+                             c.isComplete ? nil : "of \(c.processesRead)/\(c.processes) procs"))
+            }
+            rows.append(("User", String(format: "%.1f%%", cpu.user), nil))
+            rows.append(("System", String(format: "%.1f%%", cpu.system), nil))
+            return card(String(format: "%.1f%%", cpu.total), Int(cpu.total.rounded()),
+                        "CPU · measured", rows)
+
+        case .gpu:
+            guard let gpu = sys.gpu else { return nil }
+            return card(String(format: "%.1f%%", gpu.utilization),
+                        Int(gpu.utilization.rounded()),
+                        "GPU · measured",
+                        [("Chip", facts.chip, nil)])
+
+        case .memory:
+            guard let m = sys.memory, m.total > 0 else { return nil }
+            func gb(_ b: UInt64) -> String {
+                String(format: "%.1f GB", Double(b) / 1_073_741_824)
+            }
+            return card(String(format: "%.0f%%", m.usedPercent),
+                        Int(m.usedPercent.rounded()),
+                        "Memory · measured",
+                        [("App", gb(m.app), nil),
+                         ("Wired", gb(m.wired), nil),
+                         ("Compressed", gb(m.compressed), nil),
+                         ("Installed", gb(m.total), nil)])
+        }
+    }
+
     private let headline = NSTextField(labelWithString: "—")
     private let sub = NSTextField(labelWithString: "")
     private let rowStack = NSStackView()

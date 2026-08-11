@@ -249,7 +249,76 @@ final class LedgerBarView: NSView {
     override var isFlipped: Bool { true }
     override func viewDidChangeEffectiveAppearance() { redrawOnAppearanceChange() }
 
+    /// The bar as a utilisation rather than a drain. See `BottomContext`.
+    ///
+    /// A SECOND PATH rather than a generalisation of the one below, and that is a
+    /// deliberate choice about which duplication is honest. The battery bar has
+    /// eight named buckets, three of which are hardware rails with their own
+    /// provenance rules, a span that is not always its own total, and a
+    /// drill-down. A utilisation bar has three slices and none of that. Forcing
+    /// one routine to draw both would mean a positional array where half the
+    /// entries are always zero, and every rule in it qualified by which kind of
+    /// bar it happened to be — which is how the display code in this app got
+    /// confusing the first time.
+    var utilization: UtilizationBar? {
+        didSet { needsDisplay = true }
+    }
+
+    struct UtilizationBar: Equatable {
+        let title: String
+        /// Whatever this bar is a portion of, in the same unit as the parts.
+        let used: Double
+        /// Labelled parts, in draw order. The last one drawn takes the remaining
+        /// width; the hatched one is what was measured and could not be named.
+        let parts: [Part]
+        /// Said out loud when the parts move slower than the whole.
+        ///
+        /// Per-app GPU comes from the coalition store at ~30-60 s resolution while
+        /// the device total is read every tick, so the split steps while the bar
+        /// moves smoothly. That looks like a stall and is not one.
+        let attributionNote: String?
+
+        struct Part: Equatable {
+            let title: String
+            let value: Double
+            let color: NSColor
+            /// Drawn as hatch rather than a colour: this app marks the part it
+            /// could not attribute, everywhere, rather than folding it into a
+            /// neighbour.
+            let hatched: Bool
+        }
+
+        /// CPU and GPU: apps, unreadable processes, and the measured remainder.
+        static func attributed(_ title: String, _ s: UtilizationSlices,
+                               note: String? = nil) -> UtilizationBar {
+            UtilizationBar(title: title, used: s.used, parts: [
+                .init(title: "apps", value: s.apps,
+                      color: LedgerBarView.color(for: .apps), hatched: false),
+                .init(title: "system processes", value: s.systemProcesses,
+                      color: LedgerBarView.color(for: .systemProcesses), hatched: false),
+                .init(title: "unattributed", value: s.unattributed,
+                      color: Palette.line, hatched: true),
+            ], attributionNote: note)
+        }
+
+        /// Memory does not split into apps and daemons — the kernel reports it by
+        /// KIND, and that is the more useful cut anyway: wired memory cannot be
+        /// paged out and compressed memory is pressure that has already happened.
+        /// Nothing here is unattributed, so nothing is hatched.
+        static func memory(app: Double, wired: Double, compressed: Double) -> UtilizationBar {
+            UtilizationBar(title: "Memory", used: app + wired + compressed, parts: [
+                .init(title: "app", value: app,
+                      color: LedgerBarView.color(for: .apps), hatched: false),
+                .init(title: "wired", value: wired,
+                      color: LedgerBarView.color(for: .memory), hatched: false),
+                .init(title: "compressed", value: compressed,
+                      color: LedgerBarView.color(for: .storage), hatched: false),
+            ], attributionNote: nil)
+        }
+    }
+
     override func draw(_ dirtyRect: NSRect) {
+        if let u = utilization { return drawUtilization(u) }
         guard let m = model else { return }
         let barRect = NSRect(x: 0, y: 0, width: bounds.width, height: barHeight)
 
@@ -377,6 +446,49 @@ final class LedgerBarView: NSView {
         }
         path.stroke()
         NSGraphicsContext.restoreGraphicsState()
+    }
+
+    /// Three slices of the USED portion: what belongs to apps, what belongs to
+    /// processes we cannot read, and what was measured and belongs to neither.
+    ///
+    /// Idle never appears. It is most of a CPU bar most of the time and carries no
+    /// information — a bar that is 85 % "nothing is happening" says less about
+    /// what is happening than the same bar with the idle taken out.
+    private func drawUtilization(_ u: UtilizationBar) {
+        let barRect = NSRect(x: 0, y: 0, width: bounds.width, height: barHeight)
+        let used = max(u.used, 0.0001)
+
+        var x: CGFloat = 0
+        for (i, part) in u.parts.enumerated() where part.value > 0 {
+            // The last drawn slice takes the remaining width rather than its own
+            // share, for the same reason the battery bar does: the parts are
+            // clamped independently so they need not sum exactly, and a bar that
+            // stops short of its own end reads as a rendering fault.
+            let isLast = !u.parts[(i + 1)...].contains { $0.value > 0 }
+            let w = isLast ? barRect.maxX - x
+                           : CGFloat(part.value / used) * barRect.width
+            let r = NSRect(x: x, y: 0, width: max(0, w), height: barHeight)
+            if part.hatched {
+                drawHatch(in: r)
+            } else {
+                part.color.setFill()
+                NSBezierPath(roundedRect: r, xRadius: Palette.Radius.bar,
+                             yRadius: Palette.Radius.bar).fill()
+            }
+            drawLabel(String(format: "%@ %.1f", part.title, part.value), in: r,
+                      color: part.hatched ? Palette.dim : Palette.onAccent)
+            x = r.maxX
+        }
+
+        // The whole the bar is a portion OF, said in words: without it a full bar
+        // reads as "everything", when it means "all of the 12 % in use".
+        var caption = String(format: "%@ %.1f%% in use", u.title, u.used)
+        if let note = u.attributionNote { caption += " · " + note }
+        let attrs: [NSAttributedString.Key: Any] = [
+            .font: Palette.Font.mono(10),
+            .foregroundColor: Palette.dim,
+        ]
+        (caption as NSString).draw(at: NSPoint(x: 0, y: barHeight + gap), withAttributes: attrs)
     }
 
     private func drawLabel(_ text: String, in rect: NSRect, color: NSColor) {
