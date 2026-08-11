@@ -124,6 +124,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
     /// own load. Same window, same cutoff, same 1H buffer — the longer ranges
     /// come from `utilizationSeries`, which the store has kept all along.
     var utilizationSeries: [BottomContext: [HistoryGraphView.Point]] = [:]
+    /// Disk's live buffers, in MiB/s. Its own pair rather than a `.disk` entry
+    /// above, because it is the one subject that draws two lines and the
+    /// dictionary holds exactly one series per subject.
+    var diskReadSeries: [HistoryGraphView.Point] = []
+    var diskWriteSeries: [HistoryGraphView.Point] = []
     let graphSpan: TimeInterval = 3600
 
     var lastSnapshot: PowerMonitor.Snapshot?
@@ -177,6 +182,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
             guard let soc = p.socPercent else { return nil }
             return .charge(time: p.time, percent: soc, onBattery: p.onBattery)
         }
+
+        // The other subjects too, or the 1H view of a CPU graph starts at the
+        // moment the app launched while its own 6H view shows the full week's
+        // worth — which is the exact complaint the battery graph drew ("only
+        // showing 6 mins as that's when I restarted the app"), and seeding only
+        // the battery buffer fixed it for one subject out of five.
+        let util = store.utilizationSeries(since: now.addingTimeInterval(-graphSpan),
+                                           until: now, maxPoints: 700)
+        func seed(_ context: BottomContext, _ get: (HistoryStore.UtilizationPoint) -> Double?) {
+            let s = util.compactMap { p in get(p).map { HistoryGraphView.Point(time: p.time, value: $0) } }
+            if !s.isEmpty { utilizationSeries[context] = s }
+        }
+        seed(.cpu) { $0.cpuPercent }
+        seed(.gpu) { $0.gpuPercent }
+        seed(.memory) { $0.memoryPercent }
+        func seedDisk(_ get: (HistoryStore.UtilizationPoint) -> Double?)
+            -> [HistoryGraphView.Point] {
+            util.compactMap { p in
+                get(p).map { .init(time: p.time, value: Self.mib($0)) }
+            }
+        }
+        diskReadSeries = seedDisk { $0.diskReadBytesPerSec }
+        diskWriteSeries = seedDisk { $0.diskWriteBytesPerSec }
     }
 
     func applicationDidFinishLaunching(_ note: Notification) {
@@ -565,6 +593,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         main.table.refreshHover()
 
         updateLedger(s)
+        updateGlance(s)
         updateGraph(s)
         refreshPane()
     }
@@ -625,6 +654,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
             main.ledger.utilization = .memory(app: pct(m.app),
                                               wired: pct(m.wired),
                                               compressed: pct(m.compressed))
+
+        case .disk:
+            guard let d = sys.disk else { return false }
+            // The same cut as CPU, in bytes per second instead of percent. Read
+            // and write are NOT the cut here: the bar answers "who", and the two
+            // graph lines behind it already answer "which direction".
+            //
+            // The unattributed slice is usually the large one and that is real.
+            // `ri_diskio_bytesread` counts a process's own I/O; the device counter
+            // counts everything reaching the block device, which includes the page
+            // cache flushing, Spotlight, and every process this app cannot read.
+            main.ledger.utilization = .attributed(
+                "Disk",
+                UtilizationSlices(total: d.totalPerSec,
+                                  apps: sum({ $0.diskBytesPerSec }, apps: true),
+                                  systemProcesses: sum({ $0.diskBytesPerSec }, apps: false)),
+                scale: .bytesPerSecond)
         }
         return true
     }
@@ -634,7 +680,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         // subject with no reading yet falls back to the battery bar rather than
         // leaving the previous subject's numbers on screen under a new title.
         main.ledger.utilization = nil
-        if updateUtilizationBar(bottomContext) { return }
+        if updateUtilizationBar(bottomContext) {
+            main.sidebar.refreshValues()
+            return
+        }
         main.ledger.model = LedgerBarView.Model(
             apps_pctHr: s.attributed_pctHr,
             systemProcesses_pctHr: s.systemProcesses_pctHr ?? 0,
@@ -663,15 +712,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
             attempted: s.attempted,
             overflow: s.hasAttributionOverflow)
 
-        // The card follows the same subject the bar and the graph do. It falls
-        // back to the battery whenever the subject has no reading yet, rather than
-        // leaving the previous one's numbers under a new heading.
+        main.sidebar.refreshValues()
+    }
+
+    /// The card in the corner, for whichever subject the sort names.
+    ///
+    /// ITS OWN FUNCTION, because it used to be the tail of `updateLedger` and that
+    /// function grew an early return: the moment the bar switched to CPU it
+    /// returned before reaching this, so the card froze on whatever it had last
+    /// drawn. Reported as "the card doesn't change according to the sort", and it
+    /// was not that the card ignored the sort — it was that nothing told it.
+    ///
+    /// Falls back to the battery when the subject has no reading yet, rather than
+    /// leaving the previous subject's numbers under a new heading.
+    func updateGlance(_ s: PowerMonitor.Snapshot) {
         lastCensus = bottomContext == .cpu ? MachineInfo.census() : nil
         main.glance.model = lastSystem.flatMap {
             GlanceCardView.model(for: bottomContext, system: $0,
                                  facts: MachineInfo.facts, census: lastCensus)
         } ?? GlanceCardView.model(from: s, drain: lastDrain)
-        main.sidebar.refreshValues()
     }
 
     /// The same range, for a subject that is a utilisation rather than a drain.
@@ -685,13 +744,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         guard let store else { return }
         DispatchQueue.global(qos: .userInitiated).async {
             let pts = store.utilizationSeries(since: start, until: end, maxPoints: 700)
+            if context == .disk {
+                // Both directions come out of the same bucket, and each is
+                // dropped independently when that bucket never measured it.
+                func line(_ get: (HistoryStore.UtilizationPoint) -> Double?)
+                    -> [HistoryGraphView.Point] {
+                    pts.compactMap { p in
+                        get(p).map { .init(time: p.time, value: Self.mib($0)) }
+                    }
+                }
+                let read = line { $0.diskReadBytesPerSec }
+                let write = line { $0.diskWriteBytesPerSec }
+                return DispatchQueue.main.async {
+                    self.graph.sharesRightAxisScale = false
+                    self.graph.yMax = nil
+                    self.graph.rightSeries = nil
+                    self.graph.rightAxisLabel = ""
+                    self.graph.series = Self.diskSeries(read: read, write: write)
+                    self.graph.yAxisLabel = Self.diskAxisLabel
+                }
+            }
             let series = pts.compactMap { p -> HistoryGraphView.Point? in
                 let v: Double?
                 switch context {
                 case .cpu:    v = p.cpuPercent
                 case .memory: v = p.memoryPercent
                 case .gpu:    v = p.gpuPercent
-                case .battery: v = nil
+                case .battery, .disk: v = nil
                 }
                 // A bucket the store has no reading for yields NO point, so the
                 // graph's own gap rule draws the silence. A zero here would be a
@@ -874,7 +953,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         if let mem = sys.memory?.usedPercent {
             utilizationSeries[.memory, default: []].append(.init(time: now, value: mem))
         }
+        // Disk is the one subject that plots TWO lines, so it does not fit the
+        // one-series-per-subject buffer above and keeps its own pair.
+        if let d = sys.disk {
+            diskReadSeries.append(.init(time: now, value: Self.mib(d.bytesReadPerSec)))
+            diskWriteSeries.append(.init(time: now, value: Self.mib(d.bytesWrittenPerSec)))
+        }
     }
+
+    /// The disk graph's two lines, built the same way whether they came from the
+    /// live buffer or out of the store — the 1H view and the 6H view differing in
+    /// colour or legend order is precisely the class of bug that let the live
+    /// charge line stay the wrong colour for a whole release.
+    static func diskSeries(read: [HistoryGraphView.Point],
+                           write: [HistoryGraphView.Point]) -> [HistoryGraphView.Series] {
+        [.init(name: "read", color: Palette.accent, points: read, filled: false),
+         .init(name: "write", color: Palette.blue, points: write, filled: false)]
+    }
+
+    /// MB, meaning 1024², to match `MetricUnit.bytesPerSecond` and the Disk columns.
+    static let diskAxisLabel = "MB/s"
+
+    /// Bytes per second as MiB/s, which is what the disk graph plots.
+    ///
+    /// The axis draws bare numbers, so a byte rate has to arrive pre-scaled or the
+    /// gridlines read "12000000". 1024-based to match `MetricUnit.bytesPerSecond`,
+    /// which is what the Disk columns and the bar's own labels use — the axis
+    /// saying "MB/s" while the column beside it means MiB/s is a 5 % lie that
+    /// nobody would ever track down.
+    static func mib(_ bytesPerSec: Double) -> Double { bytesPerSec / 1_048_576 }
 
     /// What the bottom of the window is currently about. See `BottomContext`.
     var bottomContext: BottomContext { BottomContext.forSortKey(sortKey) }
@@ -925,6 +1032,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         for key in utilizationSeries.keys {
             utilizationSeries[key]?.removeAll { $0.time < cutoff }
         }
+        diskReadSeries.removeAll { $0.time < cutoff }
+        diskWriteSeries.removeAll { $0.time < cutoff }
 
         // Accumulate per-contributor history whenever a bucket is drilled into.
         if let seg = graphSegment {
@@ -953,6 +1062,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
                 .init(name: r.name, color: Self.seriesColor(i), points: r.pts, filled: false)
             }
             graph.yAxisLabel = "%/hr · \(seg.title)"
+        } else if bottomContext == .disk {
+            // Two lines, unfilled. A filled area under both would put one
+            // translucent wash on top of another and the overlap would read as a
+            // third value; the battery graph fills because it has one left-hand
+            // series to fill.
+            graph.series = Self.diskSeries(read: diskReadSeries, write: diskWriteSeries)
+            graph.yAxisLabel = Self.diskAxisLabel
         } else if bottomContext != .battery {
             // The subject the table is sorted by. See `BottomContext`: the sort is
             // the user saying what the question is, and the bottom answers that
@@ -992,7 +1108,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
                         points: chargeSeries, filled: false)
         } else {
             graph.sharesRightAxisScale = false
-            graph.yMax = 100
+            // A rate has no ceiling to pin to. Pinning disk at 100 would draw
+            // every ordinary moment as a flat line on the floor and clip the one
+            // burst worth looking at.
+            graph.yMax = bottomContext.isPercentage ? 100 : nil
             graph.rightSeries = nil
         }
     }
@@ -1301,6 +1420,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         ascending = d.ascending
         sortRows()
         tv.reloadData()
+        main.refreshSortIndicators()
 
         // The bottom follows the sort, so it redraws NOW rather than on the next
         // tick. Two seconds of three panels describing the column you just sorted
@@ -1310,6 +1430,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         // both battery, and rebuilding the graph for that would be work nobody
         // asked for and a visible flicker.
         guard bottomContext != before else { return }
+        if let s = lastSnapshot {
+            updateLedger(s)
+            updateGlance(s)
+        }
         if graphRange > 3600 || graphDomainOverride != nil {
             let end = Date()
             loadHistorySeries(start: end.addingTimeInterval(-graphRange), end: end)

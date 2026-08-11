@@ -377,6 +377,104 @@ final class TableChromeRenderTests: XCTestCase {
         return Frame(rep: rep, viewSize: size)
     }
 
+    /// A header cell drawn the way the real one is: through a FLIPPED view's own
+    /// draw path.
+    ///
+    /// `cacheDisplay(in:to:)` rather than a hand-made `NSGraphicsContext`, which is
+    /// what `headerFrame` above does and what this started as. A context built
+    /// straight from a bitmap rep is NOT flipped whatever view you hand alongside
+    /// it — `isFlipped` only reaches the CTM through the view's own display
+    /// machinery. So the first version of this drew bottom-up while telling `Frame`
+    /// the image was top-down, and every up/down assertion read exactly inverted.
+    /// `NSTableHeaderView` is flipped, and the chevron's direction is the whole
+    /// point here, so the test has to render through the same path.
+    private final class FlippedHost: NSView {
+        var cell: BetterStatsHeaderCell?
+        override var isFlipped: Bool { true }
+        override func draw(_ dirtyRect: NSRect) { cell?.draw(withFrame: bounds, in: self) }
+    }
+
+    private func sortedHeader(title: String, size: NSSize,
+                              _ indicator: BetterStatsHeaderCell.SortIndicator,
+                              alignment: NSTextAlignment = .right)
+        -> (frame: Frame, cell: BetterStatsHeaderCell) {
+        let host = FlippedHost(frame: NSRect(origin: .zero, size: size))
+        let cell = BetterStatsHeaderCell(textCell: title)
+        cell.alignment = alignment
+        cell.sortIndicator = indicator
+        host.cell = cell
+        let rep = host.bitmapImageRepForCachingDisplay(in: host.bounds)!
+        host.cacheDisplay(in: host.bounds, to: rep)
+        return (Frame(rep: rep, viewSize: size, flipped: host.isFlipped), cell)
+    }
+
+    /// Only the sorted column is marked.
+    ///
+    /// This is the whole defect the chevron fixes: the table sorted correctly and
+    /// said nothing about it, because `draw(withFrame:in:)` replaces the
+    /// superclass's draw — and the superclass's draw is what would have called
+    /// `drawSortIndicator`.
+    func testOnlyTheSortedColumnDrawsAChevron() {
+        inTheme(.darkAqua) {
+            let size = NSSize(width: 90, height: 24)
+            XCTAssertNil(sortedHeader(title: "% CPU", size: size, .none).cell.lastIndicatorRect,
+                         "an unsorted column drew a sort marker")
+            XCTAssertNotNil(sortedHeader(title: "% CPU", size: size, .descending)
+                                .cell.lastIndicatorRect,
+                            "the sorted column drew nothing to say so")
+        }
+    }
+
+    /// The chevron points UP for ascending, and the two directions are told apart
+    /// by where the ink is — not by a flag the drawing could ignore.
+    ///
+    /// Measured at the indicator's own top-left corner: a chevron with its apex up
+    /// starts that corner empty and puts ink at the middle-top, and one pointing
+    /// down does the reverse. Asserting on the rendered pixels rather than on the
+    /// enum is the point, since the enum was always right and the drawing is what
+    /// did not exist.
+    func testTheChevronFlipsWithTheDirection() {
+        inTheme(.darkAqua) {
+            let size = NSSize(width: 90, height: 24)
+            let up = sortedHeader(title: "% CPU", size: size, .ascending)
+            let down = sortedHeader(title: "% CPU", size: size, .descending)
+            let r = try! XCTUnwrap(up.cell.lastIndicatorRect)
+            XCTAssertEqual(r, try! XCTUnwrap(down.cell.lastIndicatorRect),
+                           "the two directions must occupy the same box")
+
+            // Flipped: minY is the TOP edge on screen. Probe the APEX position —
+            // the middle of the top edge. An up-pointing chevron puts its point
+            // there; a down-pointing one has its two ends at the top corners and
+            // nothing between them. The corners are a bad probe at this size: both
+            // shapes have a stroke passing near them.
+            let apex = NSRect(x: r.midX - 1, y: r.minY - 0.5, width: 2, height: 1.5)
+            XCTAssertGreaterThan(up.frame.maxLuminance(in: apex),
+                                 down.frame.maxLuminance(in: apex) + 0.1,
+                                 "ascending should point up: ink at the top middle, and none for descending")
+        }
+    }
+
+    /// The chevron stays inside its own column.
+    ///
+    /// Sized the way `autosizeColumns` sizes a header-bound column — the title,
+    /// plus the 12 pt it reserves for exactly this marker, plus the 16 pt padding
+    /// every non-name column gets. The reserve predates the drawing: it was added
+    /// for an AppKit indicator that never appeared, so nothing had ever checked it
+    /// was actually enough.
+    func testTheChevronFitsInsideTheWidthTheSizerReserves() {
+        inTheme(.darkAqua) {
+            let title = "% CPU"
+            let titleW = (title.uppercased() as NSString)
+                .size(withAttributes: [.font: BetterStatsHeaderCell.font, .kern: 0.4]).width
+            let size = NSSize(width: ceil(titleW + 12) + 16, height: 24)
+            let h = sortedHeader(title: title, size: size, .descending)
+            let r = try! XCTUnwrap(h.cell.lastIndicatorRect)
+            XCTAssertGreaterThanOrEqual(r.minX, 0,
+                                        "the chevron hangs off the leading edge into the column before it")
+            XCTAssertLessThanOrEqual(r.maxX, size.width)
+        }
+    }
+
     /// The "*" is the whole difference between a measured column and an
     /// apportioned one, and in the header's own grey at 9.5 pt it was the least
     /// visible thing in the row. It is drawn in a brighter ink than the heading,

@@ -18,8 +18,14 @@ final class GlanceCardView: NSView {
         let source: Source
         /// Headline: time remaining, time to full, or "On AC".
         let headline: String
-        /// "73% · on battery"
-        let percent: Int
+        /// The bold figure ahead of `sourceLabel` — "73% · on battery".
+        ///
+        /// A STRING, and optional. It used to be an `Int` with the "%" written into
+        /// the view, which quietly assumed every subject this card can describe is
+        /// a percentage. Disk is not: it is a rate, and the honest thing beside
+        /// "4.2MB/s" is nothing at all rather than a number ending in a unit it
+        /// does not have. nil leaves the caption as just the label.
+        let pill: String?
         let sourceLabel: String
         /// Ordered label/value rows. Value may carry a second, equally weighted
         /// component (the projected clock time).
@@ -43,9 +49,9 @@ final class GlanceCardView: NSView {
                       system sys: SystemMetrics.Snapshot,
                       facts: MachineInfo.Facts,
                       census: MachineInfo.Census?) -> Model? {
-        func card(_ headline: String, _ percent: Int, _ label: String,
+        func card(_ headline: String, _ pill: String?, _ label: String,
                   _ rows: [(String, String, String?)]) -> Model {
-            Model(source: .ac, headline: headline, percent: percent,
+            Model(source: .ac, headline: headline, pill: pill,
                   sourceLabel: label, rows: rows)
         }
 
@@ -68,13 +74,14 @@ final class GlanceCardView: NSView {
             }
             rows.append(("User", String(format: "%.1f%%", cpu.user), nil))
             rows.append(("System", String(format: "%.1f%%", cpu.system), nil))
-            return card(String(format: "%.1f%%", cpu.total), Int(cpu.total.rounded()),
+            return card(String(format: "%.1f%%", cpu.total),
+                        String(format: "%.0f%%", cpu.total.rounded()),
                         "CPU · measured", rows)
 
         case .gpu:
             guard let gpu = sys.gpu else { return nil }
             return card(String(format: "%.1f%%", gpu.utilization),
-                        Int(gpu.utilization.rounded()),
+                        String(format: "%.0f%%", gpu.utilization.rounded()),
                         "GPU · measured",
                         [("Chip", facts.chip, nil)])
 
@@ -84,12 +91,34 @@ final class GlanceCardView: NSView {
                 String(format: "%.1f GB", Double(b) / 1_073_741_824)
             }
             return card(String(format: "%.0f%%", m.usedPercent),
-                        Int(m.usedPercent.rounded()),
+                        String(format: "%.0f%%", m.usedPercent.rounded()),
                         "Memory · measured",
                         [("App", gb(m.app), nil),
                          ("Wired", gb(m.wired), nil),
                          ("Compressed", gb(m.compressed), nil),
                          ("Installed", gb(m.total), nil)])
+
+        case .disk:
+            guard let d = sys.disk else { return nil }
+            let bps = MetricUnit.bytesPerSecond
+            var rows: [(String, String, String?)] = [
+                ("Read", bps.format(d.bytesReadPerSec), nil),
+                ("Write", bps.format(d.bytesWrittenPerSec), nil),
+            ]
+            // The boot volume, when there is one. `StorageInfo` caches for 30 s, so
+            // asking on every tick costs a dictionary lookup rather than a stat of
+            // every mount. Free space is `...ForImportantUsage` — what the Finder
+            // shows, and what you would actually get — not raw free bytes.
+            if let v = StorageInfo.volumes().first {
+                func gb(_ b: Int64) -> String {
+                    String(format: "%.0f GB", Double(b) / 1_073_741_824)
+                }
+                if let free = v.availableBytes { rows.append(("Free", gb(free), nil)) }
+                rows.append(("Capacity", gb(v.totalBytes), nil))
+            }
+            // NO pill: there is no honest disk-busy percentage to put there. The
+            // IOKit counter that looks like one is not one — see `DiskActivity`.
+            return card(bps.format(d.totalPerSec), nil, "Disk · measured", rows)
         }
     }
 
@@ -163,11 +192,15 @@ final class GlanceCardView: NSView {
 
         // Charge rides with the source line rather than competing with the headline:
         // it is context for the estimate, not the answer itself.
-        let line = NSMutableAttributedString(
-            string: "\(m.percent)%",
-            attributes: [.font: Palette.Font.mono(11, .bold), .foregroundColor: Palette.text])
+        let line = NSMutableAttributedString()
+        if let pill = m.pill {
+            line.append(NSAttributedString(
+                string: pill + " · ",
+                attributes: [.font: Palette.Font.mono(11, .bold),
+                             .foregroundColor: Palette.text]))
+        }
         line.append(NSAttributedString(
-            string: " · \(m.sourceLabel)",
+            string: m.sourceLabel,
             attributes: [.font: Palette.Font.mono(11), .foregroundColor: Palette.dim]))
         sub.attributedStringValue = line
 
@@ -241,7 +274,7 @@ final class GlanceCardView: NSView {
             return Model(
                 source: .charging,
                 headline: hrs.map(hm) ?? "Charging",
-                percent: st.percent,
+                pill: "\(st.percent)%",
                 // Says what it is counting DOWN TO, because on this machine that is
                 // 80% and not full, and a bare "charging" left the countdown looking
                 // like it was heading somewhere it was never going to arrive.
@@ -273,7 +306,7 @@ final class GlanceCardView: NSView {
             return Model(
                 source: .ac,
                 headline: "On AC",
-                percent: st.percent,
+                pill: "\(st.percent)%",
                 sourceLabel: held.map { String(format: "held at %.0f%% limit", $0) }
                     ?? (st.percent >= 99 ? "fully charged" : "not charging"),
                 rows: [
@@ -311,7 +344,7 @@ final class GlanceCardView: NSView {
                 // number. "—" is for a figure that is unknowABLE rather than
                 // not-yet-known.
                 headline: hrs.map(hm) ?? (settled ? "—" : "measuring…"),
-                percent: st.percent,
+                pill: "\(st.percent)%",
                 sourceLabel: "on battery · " + provenance(shared.source, settled: settled),
                 rows: [
                     ("Drain", String(format: "%.1f %%/hr", shared.pctHr), nil),
