@@ -1024,3 +1024,53 @@ final class PaletteConsistencyTests: XCTestCase {
 // inks come from one place — and the shape of a corner is currently a thing a
 // person has to look at.
 
+
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Hover on a rail card, in the same two weights the table's rows use.
+final class ResourceCardHoverTests: XCTestCase {
+
+    override func setUp() { _ = appKitForTests }
+
+    private func card(selected: Bool, hovered: Bool) -> ResourceCard {
+        let c = ResourceCard(resource: .cpu, onClick: { _ in })
+        c.isSelected = selected
+        if hovered {
+            c.frame = NSRect(x: 0, y: 0, width: 210, height: 58)
+            c.updateTrackingAreas()
+            c.mouseEntered(with: NSEvent())
+        }
+        return c
+    }
+
+    /// A hovered card is washed where an idle one is not — the rail is a list of
+    /// buttons and had nothing under the pointer but a cursor change.
+    func testHoverWashesTheCard() {
+        inTheme(.darkAqua) {
+            let size = NSSize(width: 210, height: 58)
+            let box = NSRect(x: 120, y: 6, width: 60, height: 46)
+            let idle = render(card(selected: false, hovered: false), size: size)
+                .maxAlpha(in: box)
+            let hovered = render(card(selected: false, hovered: true), size: size)
+                .maxAlpha(in: box)
+            XCTAssertGreaterThan(hovered, idle + 0.02,
+                                 "hovering a card changes nothing on screen")
+        }
+    }
+
+    /// And selection outranks it: a hovered selected card stays at full strength
+    /// rather than lightening under the pointer, which would read as losing state
+    /// at the moment of touching it.
+    func testSelectionOutranksHover() {
+        inTheme(.darkAqua) {
+            let size = NSSize(width: 210, height: 58)
+            let box = NSRect(x: 120, y: 6, width: 60, height: 46)
+            let selected = render(card(selected: true, hovered: false), size: size)
+                .maxAlpha(in: box)
+            let both = render(card(selected: true, hovered: true), size: size)
+                .maxAlpha(in: box)
+            XCTAssertEqual(both, selected, accuracy: 0.01,
+                           "a selected card changed weight when hovered")
+        }
+    }
+}

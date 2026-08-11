@@ -927,6 +927,15 @@ final class ResourceCard: NSView {
 
     var isSelected = false { didSet { needsDisplay = true } }
 
+    /// Pointer is over this card.
+    ///
+    /// The rail is a list of buttons and had nothing saying so under the pointer —
+    /// only the cursor changed, which is the weakest possible signal and the one
+    /// that disappears the moment someone is using a trackpad without looking at
+    /// the arrow.
+    private var isHovered = false { didSet { needsDisplay = true } }
+    private var trackingAreaRef: NSTrackingArea?
+
     init(resource: Resource, onClick: @escaping (Resource) -> Void) {
         self.resource = resource
         self.onClick = onClick
@@ -976,6 +985,19 @@ final class ResourceCard: NSView {
         return true
     }
     override func mouseDown(with event: NSEvent) { onClick(resource) }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let t = trackingAreaRef { removeTrackingArea(t) }
+        let t = NSTrackingArea(rect: bounds,
+                               options: [.mouseEnteredAndExited, .activeInKeyWindow],
+                               owner: self, userInfo: nil)
+        addTrackingArea(t)
+        trackingAreaRef = t
+    }
+
+    override func mouseEntered(with event: NSEvent) { isHovered = true }
+    override func mouseExited(with event: NSEvent) { isHovered = false }
     override func resetCursorRects() { addCursorRect(bounds, cursor: .pointingHand) }
     override func viewDidChangeEffectiveAppearance() { restyle() }
 
@@ -1020,8 +1042,17 @@ final class ResourceCard: NSView {
     /// `Palette.selection` is one colour for every card, so selection reads the
     /// same wherever it lands.
     override func draw(_ dirtyRect: NSRect) {
-        guard isSelected else { return }
-        Palette.selection.setFill()
+        guard isSelected || isHovered else { return }
+        // The SAME two weights the process table's rows use — full for selected,
+        // 0.45 for hovered — in the same shape. A hover that looked different here
+        // would be a second visual language for one idea, on a screen the table is
+        // one click away from.
+        //
+        // Selection wins: a hovered selected card stays at full strength rather
+        // than lightening under the pointer, which would read as losing state at
+        // the moment of touching it.
+        (isSelected ? Palette.selection
+                    : Palette.selection.withAlphaComponent(0.45)).setFill()
         NSBezierPath(roundedRect: bounds.insetBy(dx: 0, dy: 1),
                      xRadius: Palette.Radius.inner,
                      yRadius: Palette.Radius.inner).fill()
