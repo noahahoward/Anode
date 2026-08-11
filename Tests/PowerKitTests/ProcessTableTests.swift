@@ -53,11 +53,13 @@ private func makeRow(app: AppDrain? = nil,
                      system: SystemAttribution.Row? = nil,
                      gpu: SystemAttribution.Row? = nil,
                      gpuTimeShare: Double? = nil,
+                     gpuPercent: Double? = nil,
                      windowPct: Double? = nil,
                      costMin: Double? = nil,
                      totalMemory: UInt64 = 16 * 1024 * 1024 * 1024) -> Row {
     Row(app: app, system: system, gpu: gpu, gpuTimeShare: gpuTimeShare,
-        windowPct: windowPct, costMin: costMin, totalMemoryBytes: totalMemory)
+        gpuPercent: gpuPercent, windowPct: windowPct, costMin: costMin,
+        totalMemoryBytes: totalMemory)
 }
 
 private func columns() -> [ProcessColumn] { ProcessColumns.all(powerWindowHours: 10) }
@@ -212,7 +214,7 @@ final class ProcessCellHonestyTests: XCTestCase {
     func testASampledButIdleReadingIsAZeroAndNotADash() {
         let idle = makeRow(app: makeApp(name: "Idle", cpu: 0, disk: 0),
                            gpu: makeAttributed(name: "Idle", pctHr: 0, gpu_ms: 0),
-                           gpuTimeShare: 0)
+                           gpuTimeShare: 0, gpuPercent: 0)
         for id in ["cpu", "diskRead", "diskWrite", "gpuPct", "gputime", "gpuPctHr"] {
             let (text, dim) = column(id).text(idle)
             XCTAssertEqual(text, "0", "\(id) drew a measured zero as an absence")
@@ -335,7 +337,8 @@ final class ProcessSortTests: XCTestCase {
         let a = makeRow(app: makeApp(name: "A", pctHr: 1, procs: 3, cpu: 5,
                                      memory: 1024, disk: 10),
                         gpu: makeAttributed(name: "A", pctHr: 2, gpu_ms: 50),
-                        gpuTimeShare: 0.5, windowPct: 1.5, costMin: 30)
+                        gpuTimeShare: 0.5, gpuPercent: 4.5,
+                        windowPct: 1.5, costMin: 30)
         for c in columns() where c.stringValue == nil {
             XCTAssertNotNil(c.value(a), "\(c.id) cannot order a fully populated row")
         }
@@ -350,11 +353,47 @@ final class ProcessRowBuilderTests: XCTestCase {
     private func build(apps: [AppDrain] = [],
                        system: [SystemAttribution.Row] = [],
                        gpu: [SystemAttribution.Row] = [],
-                       window: [String: Double] = [:]) -> [Row] {
+                       window: [String: Double] = [:],
+                       deviceGPU: Double? = 100) -> [Row] {
         ProcessRowBuilder.rows(apps: apps, systemApps: system, gpuApps: gpu,
                                windowPercents: window,
                                runtimeCost: { _ in nil },
-                               totalMemoryBytes: 16 * 1024 * 1024 * 1024)
+                               totalMemoryBytes: 16 * 1024 * 1024 * 1024,
+                               deviceGPUPercent: deviceGPU)
+    }
+
+    /// GPU % is a share of the WHOLE GPU, so the column sums to the device's own
+    /// utilisation rather than to 100.
+    ///
+    /// It used to print the raw coalition share, which sums to 100 % across the
+    /// table by construction: two busy processes on an 8 % GPU read "65.0" and
+    /// "35.0". That is true of the GPU's WORK and it is not what a column headed
+    /// "GPU %" claims — reported as "the average user is going to see this and be
+    /// like, woah, these 2 procs are using 100% of my gpu".
+    func testGPUPercentIsOfTheWholeDeviceAndNotOfTheOtherProcesses() {
+        let rows = build(gpu: [makeAttributed(name: "A", pctHr: 1, gpu_ms: 65),
+                               makeAttributed(name: "B", pctHr: 1, gpu_ms: 35)],
+                         deviceGPU: 8)
+        let pcts = rows.compactMap(\.gpuPercent).sorted(by: >)
+        XCTAssertEqual(pcts.count, 2)
+        XCTAssertEqual(pcts.reduce(0, +), 8, accuracy: 0.001,
+                       "the column must sum to the device utilisation, not to 100")
+        XCTAssertEqual(pcts[0], 5.2, accuracy: 0.001)
+        // The share is still there, and still sums to 1 — the ledger bar
+        // apportions with it. The two are different quantities, which is exactly
+        // what the old column got wrong by showing one under the other's name.
+        XCTAssertEqual(rows.compactMap(\.gpuTimeShare).reduce(0, +), 1, accuracy: 0.001)
+    }
+
+    /// With no device reading there is no scale to apply, so the cell says so
+    /// rather than falling back to the share — which would silently be the old,
+    /// wrong number under the new heading.
+    func testNoDeviceReadingMeansNoGPUPercentRatherThanTheBareShare() {
+        let rows = build(gpu: [makeAttributed(name: "A", pctHr: 1, gpu_ms: 50)],
+                         deviceGPU: nil)
+        XCTAssertNil(rows.first?.gpuPercent)
+        XCTAssertNotNil(rows.first?.gpuTimeShare)
+        XCTAssertEqual(column("gpuPct").text(rows[0]).text, "—")
     }
 
     /// The whole point of one table: an app burning CPU and holding the GPU is ONE

@@ -811,16 +811,22 @@ public class HistoryGraphView: NSView {
             // So: the same rule the sparse path below uses, four times the data's
             // own median spacing with a 90 s floor, applied to the time between
             // filled buckets. One definition of "a hole" for both paths.
-            let bucketSeconds = spanS / Double(bucketCount)
+            // HOISTED. This was `Self.gapLimit(for: pts)` INSIDE the loop below,
+            // so a 700-bucket draw sorted 700 deltas 700 times — on every frame,
+            // in an app whose premise is not costing what it measures.
+            let gaps = Self.gapSpans(in: pts)
             var lastFilled = -1
+            var lastFilledTime = t0
             for (i, b) in buckets.enumerated() where b.n > 0 {
-                let bx = xFor(t0.addingTimeInterval((Double(i) + 0.5) / Double(bucketCount) * spanS))
+                let time = t0.addingTimeInterval((Double(i) + 0.5) / Double(bucketCount) * spanS)
+                let bx = xFor(time)
                 let mean = b.sum / Double(b.n)
                 if lastFilled >= 0,
-                   Double(i - lastFilled) * bucketSeconds > Self.gapLimit(for: pts),
+                   gaps.contains(where: { $0.start >= lastFilledTime && $0.start < time }),
                    !runs[runs.count - 1].isEmpty {
                     runs.append([])
                 }
+                lastFilledTime = time
                 lastFilled = i
                 runs[runs.count - 1].append((bx, yFor(mean)))
                 // Whisker only when the bucket's true range visibly exceeds the
@@ -839,14 +845,11 @@ public class HistoryGraphView: NSView {
             // either blind on one and trigger-happy on the other. Four times the
             // median tolerates ordinary jitter and a dropped tick; the 90 s floor
             // stops a dense live series breaking on a single slow frame.
-            let limit = Self.gapLimit(for: pts)
-            var previous: Date?
-            for p in pts {
-                if let prev = previous, p.time.timeIntervalSince(prev) > limit,
-                   !runs[runs.count - 1].isEmpty {
+            let breaks = Self.breaks(in: pts)
+            for (i, p) in pts.enumerated() {
+                if i > 0, breaks[i - 1], !runs[runs.count - 1].isEmpty {
                     runs.append([])
                 }
-                previous = p.time
                 runs[runs.count - 1].append((xFor(p.time), yFor(p.value)))
             }
         }
@@ -998,26 +1001,65 @@ public class HistoryGraphView: NSView {
     /// whisker instead, and both passed against the bug.
     private(set) var lastEndpointMarkers: [NSPoint] = []
 
-    /// How long a silence has to be before it counts as a HOLE rather than as
-    /// sparse sampling.
+    /// Where the line breaks: one flag per interval between consecutive points.
     ///
-    /// Four times the data's own median spacing, floored at 90 s. Derived rather
-    /// than fixed because this view is handed anything from 2 s live ticks to
-    /// 1 min stored buckets, and a constant would be blind on one and
-    /// trigger-happy on the other. The floor stops a dense series breaking on a
-    /// single slow frame.
+    /// LOCAL cadence, not one threshold for the whole series, and that is the
+    /// entire point. This used to take the median spacing of every point on
+    /// screen and compare every interval to it — which works only if the series
+    /// has ONE cadence, and an hour of this app's history routinely has two: the
+    /// sampler ticks about every 2 s while the window is open and about every
+    /// 64 s while it is shut. The dense stretch supplies most of the points, so
+    /// the median landed at 2 s, the limit at its 90 s floor, and every ordinary
+    /// spacing in the sparse stretch was reported as the machine having slept.
     ///
-    /// Shared by both drawing paths on purpose. They had separate rules — the
-    /// bucketed one broke the line at any empty bucket — so the same measurements
-    /// drew as a line or as isolated dots depending on how many of them there
-    /// were.
-    static func gapLimit(for pts: [Point]) -> TimeInterval {
-        guard pts.count > 1 else { return 90 }
+    /// What made that visible was a beat frequency, and it is worth naming
+    /// because nothing about it is a fault: samples arrive every ~64 s and
+    /// compaction folds them into 60 s buckets, so every fifteenth sample skips a
+    /// bucket entirely (64 × 15 = 960 = exactly one empty minute every 16). The
+    /// store had 25 of these overnight, each a 120 s hole between two rows whose
+    /// own `dur` shows the machine measuring the whole time. A machine that never
+    /// slept was drawn as sleeping 25 times.
+    ///
+    /// Judged against a window of neighbouring intervals, each stretch is
+    /// measured against its own cadence: 90 s in the dense one (the floor), ~240 s
+    /// in the sparse one. A real absence — the 9540 s in that same night's data —
+    /// is far outside either.
+    ///
+    /// The cost of the local rule is that a sleep SHORTER than a few missed
+    /// samples no longer draws a break. At 64 s sampling that is a couple of
+    /// minutes, which the line now interpolates across. That is the right trade:
+    /// two minutes is one missing sample at that resolution, and drawing a chasm
+    /// for it is what was wrong.
+    static func breaks(in pts: [Point]) -> [Bool] {
+        guard pts.count > 1 else { return [] }
         var deltas: [TimeInterval] = []
         deltas.reserveCapacity(pts.count - 1)
         for i in 1..<pts.count { deltas.append(pts[i].time.timeIntervalSince(pts[i - 1].time)) }
-        deltas.sort()
-        return max(deltas[deltas.count / 2] * 4, 90)
+
+        // Wide enough to span a stretch of one cadence, narrow enough that a
+        // change of cadence is local. At a boundary the window straddles both and
+        // the median is one of them — either way the 4x factor keeps an ordinary
+        // spacing on the slower side under the limit.
+        let half = 15
+        var out = [Bool](repeating: false, count: deltas.count)
+        var window: [TimeInterval] = []
+        window.reserveCapacity(2 * half + 1)
+        for i in deltas.indices {
+            let lo = max(0, i - half), hi = min(deltas.count - 1, i + half)
+            window.removeAll(keepingCapacity: true)
+            window.append(contentsOf: deltas[lo...hi])
+            window.sort()
+            out[i] = deltas[i] > max(window[window.count / 2] * 4, 90)
+        }
+        return out
+    }
+
+    /// The same breaks as spans, for the path that draws buckets rather than
+    /// points and so has to ask "was there a hole between these two times".
+    static func gapSpans(in pts: [Point]) -> [(start: Date, end: Date)] {
+        breaks(in: pts).enumerated().compactMap { i, isBreak in
+            isBreak ? (pts[i].time, pts[i + 1].time) : nil
+        }
     }
 
     private func drawEndpointMarker(at p: NSPoint, in plot: NSRect, color: NSColor) {
@@ -1083,17 +1125,18 @@ public class HistoryGraphView: NSView {
             // hours the machine was off asserts a discharge that was never
             // observed. The threshold is derived from this series' own median
             // spacing for the same reason.
-            var deltas: [TimeInterval] = []
-            for i in 1..<pts.count { deltas.append(pts[i].time.timeIntervalSince(pts[i - 1].time)) }
-            deltas.sort()
-            let gapLimit = max((deltas.isEmpty ? 0 : deltas[deltas.count / 2]) * 4, 90)
+            // The same function, not a third copy of the arithmetic. This one had
+            // its own inline version of the old global-median rule, so the charge
+            // line broke wherever the rate line did — including at all 25 of the
+            // phantom holes.
+            let breaks = Self.breaks(in: pts)
 
             var runs: [(charging: Bool, path: NSBezierPath)] = []
             var gapBridges: [(from: NSPoint, to: NSPoint)] = []
             for i in 0..<(pts.count - 1) {
                 // Skip the segment entirely across a gap, and force the next
                 // segment to start a fresh path rather than continuing this one.
-                if pts[i + 1].time.timeIntervalSince(pts[i].time) > gapLimit {
+                if breaks[i] {
                     gapBridges.append((
                         NSPoint(x: xFor(pts[i].time), y: yForRight(pts[i].value)),
                         NSPoint(x: xFor(pts[i + 1].time), y: yForRight(pts[i + 1].value))))

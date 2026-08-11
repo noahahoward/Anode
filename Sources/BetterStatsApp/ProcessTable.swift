@@ -49,7 +49,22 @@ final class Row: NSObject {
     /// the same quantity `gpu.watts` was divided on, so the two columns cannot
     /// disagree. Not a fraction of the hour's accumulated GPU time, which is a
     /// different question and is answered by the GPU time column.
+    /// This row's share of the GPU work happening now, 0…1 across all rows.
+    ///
+    /// Kept because it is what the ledger bar apportions with. It is NOT what the
+    /// GPU % column shows — see `gpuPercent`.
     let gpuTimeShare: Double?
+    /// The share of the WHOLE GPU, which is what "GPU %" has to mean.
+    ///
+    /// `gpuTimeShare` alone sums to 100 % across the table by construction, so two
+    /// busy processes on an idle GPU read "65.0" and "35.0" — which any reasonable
+    /// person reads as those two processes consuming the entire GPU. They were
+    /// consuming all of the GPU's WORK, which is a different claim and not the one
+    /// a column headed "GPU %" makes.
+    ///
+    /// nil when the device utilisation is unknown, rather than falling back to the
+    /// share: a wrong scale is worse than no number.
+    let gpuPercent: Double?
     /// Percent of battery consumed over the trailing on-battery window. nil until
     /// the history store has data for this app — shown as "—", never as 0, because
     /// "no data yet" and "used nothing" are different claims.
@@ -75,6 +90,7 @@ final class Row: NSObject {
          system: SystemAttribution.Row?,
          gpu: SystemAttribution.Row?,
          gpuTimeShare: Double?,
+         gpuPercent: Double?,
          windowPct: Double?,
          costMin: Double?,
          totalMemoryBytes: UInt64) {
@@ -86,6 +102,7 @@ final class Row: NSObject {
         self.system = system
         self.gpu = gpu
         self.gpuTimeShare = gpuTimeShare
+        self.gpuPercent = gpuPercent
         self.windowPct = windowPct
         self.costMin = costMin
         self.memoryPercent = {
@@ -346,22 +363,23 @@ enum ProcessColumns {
 
             ProcessColumn(
                 id: "gpuPct", title: "GPU %", width: 62, isModeled: true,
-                tooltip: "Share of the GPU work happening NOW, on the same rate the GPU "
-                       + "%/hr column beside it was divided on — not a share of the "
-                       + "hour's accumulated GPU time. Apportioned from Apple's coalition "
-                       + "rollup, never measured per process: macOS exposes no "
-                       + "per-process GPU utilisation.",
+                tooltip: "Percent of the WHOLE GPU this app is using now — so the "
+                       + "column sums to the GPU's own utilisation, not to 100. "
+                       + "Apportioned: this app's share of current GPU work, times "
+                       + "the device utilisation. macOS exposes no per-process GPU "
+                       + "utilisation, so the share behind it comes from Apple's "
+                       + "coalition rollup and refreshes every ~30-60 s, while the "
+                       + "device figure it scales is read every tick.",
                 // A coalition that appears in the rollup with no GPU time did no
                 // GPU work; a row the rollup never named has no GPU reading. The
                 // three GPU columns below draw that distinction the same way the
                 // measured columns above do.
                 text: { r in
-                    guard let s = r.gpuTimeShare else { return ("—", true) }
-                    guard s > 0 else { return ("0", true) }
-                    let pct = s * 100
+                    guard let pct = r.gpuPercent else { return ("—", true) }
+                    guard pct > 0 else { return ("0", true) }
                     return (pct < 0.1 ? "<0.1" : String(format: "%.1f", pct), false)
                 },
-                value: { $0.gpuTimeShare }),
+                value: { $0.gpuPercent }),
 
             ProcessColumn(
                 id: "gputime", title: "GPU time", width: 74, isModeled: true,
@@ -425,7 +443,8 @@ enum ProcessRowBuilder {
                      gpuApps: [SystemAttribution.Row],
                      windowPercents: [String: Double],
                      runtimeCost: (Double) -> Double?,
-                     totalMemoryBytes: UInt64) -> [Row] {
+                     totalMemoryBytes: UInt64,
+                     deviceGPUPercent: Double?) -> [Row] {
 
         func key(bundleID: String?, name: String) -> String {
             // Bundle ids are already lowercase by convention; names are not, and
@@ -459,6 +478,19 @@ enum ProcessRowBuilder {
             return g.gpuRate_msPerS / totalGPURate
         }
 
+        /// The share scaled onto the device's own utilisation — the same
+        /// apportionment the ledger bar makes, so the column and the bar under it
+        /// cannot state different things about the same process.
+        ///
+        /// This is also what makes the column MOVE. The share is a coalition
+        /// rollup refreshed every ~30-60 s and it steps; the device utilisation is
+        /// read every tick. Their product tracks the GPU in real time even while
+        /// the split between processes is still catching up.
+        func percent(_ g: SystemAttribution.Row?) -> Double? {
+            guard let s = share(g), let device = deviceGPUPercent else { return nil }
+            return s * device
+        }
+
         var claimedGPU = Set<String>()
         func takeGPU(bundleID: String?, name: String) -> SystemAttribution.Row? {
             let k = key(bundleID: bundleID, name: name)
@@ -475,6 +507,7 @@ enum ProcessRowBuilder {
         for a in apps {
             let g = takeGPU(bundleID: a.identity.bundleID, name: a.name)
             out.append(Row(app: a, system: nil, gpu: g, gpuTimeShare: share(g),
+                           gpuPercent: percent(g),
                            windowPct: windowPercents[a.name],
                            costMin: runtimeCost(a.watts),
                            totalMemoryBytes: totalMemoryBytes))
@@ -484,11 +517,13 @@ enum ProcessRowBuilder {
             // No `windowPct` and no runtime cost: there is no per-app history for a
             // coalition, and the quit-this counterfactual needs a process to quit.
             out.append(Row(app: nil, system: s, gpu: g, gpuTimeShare: share(g),
+                           gpuPercent: percent(g),
                            windowPct: nil, costMin: nil,
                            totalMemoryBytes: totalMemoryBytes))
         }
         for g in gpuApps where !claimedGPU.contains(key(bundleID: g.bundleID, name: g.name)) {
             out.append(Row(app: nil, system: nil, gpu: g, gpuTimeShare: share(g),
+                           gpuPercent: percent(g),
                            windowPct: nil, costMin: nil,
                            totalMemoryBytes: totalMemoryBytes))
         }

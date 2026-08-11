@@ -565,7 +565,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
             gpuApps: s.gpuApps,
             windowPercents: windowPercents,
             runtimeCost: { RuntimeCost.minutes(appWatts: $0, snapshot: s) },
-            totalMemoryBytes: totalMemoryBytes)
+            totalMemoryBytes: totalMemoryBytes,
+            deviceGPUPercent: lastSystem?.gpu?.utilization)
             // The GPU rollup is fed in whatever the setting says, so an APP always
             // finds its GPU share; this is what drops the coalitions that matched
             // no app — WindowServer and friends — when daemons are switched off.

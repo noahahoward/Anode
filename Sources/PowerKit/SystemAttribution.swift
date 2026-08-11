@@ -77,11 +77,30 @@ public final class SystemAttribution {
     /// most recent measurable RATE (see `CoalitionUsage.cpuRate_msPerS`), which
     /// costs nothing extra — it comes out of records this window already parsed.
     ///
-    /// 120 s refresh, not 60: a 60 minute rollup costs ~0.2 s to spawn and ~0.2 s
-    /// to parse, and 0.4 s per minute is 0.65% of a core spent by a tool whose
-    /// entire premise is not costing what it measures. At 120 s the window still
-    /// moves far faster than an hour of history changes.
-    public init(window: TimeInterval = 3600, refreshInterval: TimeInterval = 120) {
+    /// 60 s, down from 120, and matched to the DATA rather than chosen for cost.
+    ///
+    /// Measured on this machine: `systemstats` writes its coalition records in
+    /// batches roughly every 45 s. Sampled three times over a minute, the newest
+    /// record was 1.8 s old, then 21.6 s, then 27.0 s — and did not advance at all
+    /// across one 25 s span. So there is a hard floor here that is not ours: below
+    /// ~45 s there is no newer data to fetch, however often we ask.
+    ///
+    /// At 120 s we were adding up to another 120 s of staleness on top of that
+    /// floor, which is what made the GPU columns look frozen. 60 s is the first
+    /// interval that does not dominate the source's own cadence.
+    ///
+    /// The cost is real and bounded: the hour rollup measures 0.14 s of CPU to
+    /// spawn and run, plus this app's parse. Halving the interval doubles that,
+    /// and it is only ever paid while the window is OPEN — `refreshIfNeeded` is
+    /// called only on a full tick, and a hidden window takes light ones. The
+    /// closed-window cost, which is the one that matters for battery, is
+    /// unchanged at zero.
+    ///
+    /// If this ever needs to be faster than 45 s it cannot be, and if it needs to
+    /// be cheaper the move is a second, SHORT rollup for the rate weights alone —
+    /// a 10 minute window measures 0.07 s against the hour's 0.14 s — rather than
+    /// asking for an hour of history more often.
+    public init(window: TimeInterval = 3600, refreshInterval: TimeInterval = 60) {
         self.window = window
         self.refreshInterval = refreshInterval
     }
