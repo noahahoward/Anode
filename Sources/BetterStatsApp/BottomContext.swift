@@ -28,8 +28,6 @@ public enum BottomContext: String, CaseIterable {
     case battery, cpu, gpu, memory, disk
     /// Whole-machine subjects, chosen by the TAB rather than by a sort.
     case network, sensors, fans
-    /// Resources draws its own graph per card, so the bottom one is hidden.
-    case resources
 
     /// What the bottom is about, from the tab first and the sort second.
     ///
@@ -42,20 +40,43 @@ public enum BottomContext: String, CaseIterable {
     ///
     /// On Processes there is no tab-level subject, so the sort is the only signal
     /// and it stays in charge.
-    static func forLens(_ lens: SidebarView.Lens, sortKey: String) -> BottomContext {
+    /// Every tab has a SELECTION inside it, and the bottom follows that too.
+    ///
+    /// The tab alone is not enough. Resources is six cards behind one tab, and
+    /// answering all six with one subject is the same mistake as answering five
+    /// tabs with one sort. So the rail's own selection reaches in here, and the
+    /// mapping is exact — every resource that rail can show is already a subject
+    /// this enum has.
+    ///
+    /// Note that hiding the Resources GRAPH is not decided here. That is a fact
+    /// about the tab (it already draws a graph per card), not about the subject:
+    /// CPU is the same subject whether it was reached from a sort or from a card,
+    /// and it would be wrong for one of those to come with a graph and the other
+    /// not to.
+    static func forLens(_ lens: SidebarView.Lens, sortKey: String,
+                        resource: Resource) -> BottomContext {
         switch lens {
         case .processes: return forSortKey(sortKey)
-        case .resources: return .resources
+        case .resources: return forResource(resource)
         case .network:   return .network
         case .sensors:   return .sensors
         case .fans:      return .fans
         }
     }
 
-    /// Resources is already a wall of graphs — one per card, plus the big one at
-    /// the top of the rail. A ninth at the bottom of the window is noise, and the
-    /// space is better given back to the pane.
-    public var hidesGraph: Bool { self == .resources }
+    /// A Resources rail card's subject. One-to-one, and it should stay that way:
+    /// a resource the rail can select and the bottom cannot describe is a card
+    /// that goes dead when you click it.
+    static func forResource(_ resource: Resource) -> BottomContext {
+        switch resource {
+        case .cpu:     return .cpu
+        case .memory:  return .memory
+        case .gpu:     return .gpu
+        case .network: return .network
+        case .disk:    return .disk
+        case .sensors: return .sensors
+        }
+    }
 
     /// The subject implied by a sort column.
     ///
@@ -90,7 +111,6 @@ public enum BottomContext: String, CaseIterable {
         case .disk: return "B/s"
         case .network: return "B/s"
         case .sensors, .fans: return "°C"
-        case .resources: return ""
         }
     }
 
@@ -104,7 +124,6 @@ public enum BottomContext: String, CaseIterable {
         case .network: return "Network"
         case .sensors: return "Temperature"
         case .fans:    return "Fans"
-        case .resources: return "Resources"
         }
     }
 
@@ -123,7 +142,7 @@ public enum BottomContext: String, CaseIterable {
         // Rates and temperatures. A fan graph plots a percentage AND a
         // temperature, and it is the temperature axis that has no ceiling — see
         // `fans` below, which puts them on separate axes for that reason.
-        case .disk, .network, .sensors, .fans, .resources: return false
+        case .disk, .network, .sensors, .fans: return false
         }
     }
 
@@ -146,8 +165,6 @@ public enum BottomContext: String, CaseIterable {
         // The ranges genuinely need not match across subjects.
         case .sensors, .fans:
             return [3600]
-        case .resources:
-            return []
         }
     }
 }

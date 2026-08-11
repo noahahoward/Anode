@@ -84,11 +84,9 @@ final class BottomContextTests: XCTestCase {
     /// Only the subjects that are actually persisted offer long ranges. A 7D
     /// button that draws an empty plot is a worse answer than no button.
     func testEverySubjectOffersOnlyRangesItCanAnswer() {
-        for c in BottomContext.allCases where !c.hidesGraph {
+        for c in BottomContext.allCases {
             XCTAssertFalse(c.ranges.isEmpty, "\(c) draws a graph but offers no range")
         }
-        // And a subject with no graph needs no ranges — the picker goes with it.
-        XCTAssertTrue(BottomContext.resources.ranges.isEmpty)
     }
 
     /// The session-only subjects offer the hour and nothing beyond it.
@@ -111,14 +109,39 @@ final class BottomContextTests: XCTestCase {
     /// pane — the same defect as the Resources rail changing its highlight and
     /// leaving the readings behind, one level up.
     func testTheTabPicksTheSubjectAndTheSortOnlyDecidesOnProcesses() {
-        XCTAssertEqual(BottomContext.forLens(.fans, sortKey: "cpu"), .fans)
-        XCTAssertEqual(BottomContext.forLens(.network, sortKey: "cpu"), .network)
-        XCTAssertEqual(BottomContext.forLens(.sensors, sortKey: "memPct"), .sensors)
-        XCTAssertEqual(BottomContext.forLens(.resources, sortKey: "cpu"), .resources)
+        func subject(_ lens: SidebarView.Lens, _ key: String = "cpu",
+                     _ resource: Resource = .cpu) -> BottomContext {
+            BottomContext.forLens(lens, sortKey: key, resource: resource)
+        }
+        XCTAssertEqual(subject(.fans), .fans)
+        XCTAssertEqual(subject(.network), .network)
+        XCTAssertEqual(subject(.sensors, "memPct"), .sensors)
         // Processes has no subject of its own, so the sort keeps deciding.
-        XCTAssertEqual(BottomContext.forLens(.processes, sortKey: "cpu"), .cpu)
-        XCTAssertEqual(BottomContext.forLens(.processes, sortKey: "diskRead"), .disk)
-        XCTAssertEqual(BottomContext.forLens(.processes, sortKey: "pctHr"), .battery)
+        XCTAssertEqual(subject(.processes, "cpu"), .cpu)
+        XCTAssertEqual(subject(.processes, "diskRead"), .disk)
+        XCTAssertEqual(subject(.processes, "pctHr"), .battery)
+    }
+
+    /// Six cards behind one tab, and the bottom follows the card. A rail whose
+    /// selection the bottom ignored would answer Memory with a CPU card.
+    func testTheResourcesRailSelectionPicksTheSubject() {
+        for (resource, expected): (Resource, BottomContext) in [
+            (.cpu, .cpu), (.memory, .memory), (.gpu, .gpu),
+            (.network, .network), (.disk, .disk), (.sensors, .sensors),
+        ] {
+            XCTAssertEqual(
+                BottomContext.forLens(.resources, sortKey: "pctHr", resource: resource),
+                expected, "\(resource)")
+        }
+    }
+
+    /// EVERY resource the rail can select resolves to a subject. A card that can
+    /// be clicked and leaves the bottom describing something else is worse than a
+    /// card that cannot be clicked.
+    func testEveryRailCardHasASubject() {
+        let subjects = Resource.allCases.map { BottomContext.forResource($0) }
+        XCTAssertEqual(Set(subjects).count, Resource.allCases.count,
+                       "two rail cards share one subject, so one of them lies")
     }
 }
 
@@ -165,10 +188,12 @@ final class BottomPanelTests: XCTestCase {
 
     private func sys(cpu: CPUUsage.Sample? = nil,
                      memory: MemoryUsage.Sample? = nil,
-                     disk: DiskActivity.Sample? = nil) -> SystemMetrics.Snapshot {
-        SystemMetrics.Snapshot(cpu: cpu, memory: memory, gpu: nil, network: nil,
+                     disk: DiskActivity.Sample? = nil,
+                     network: NetworkThroughput.Sample? = nil,
+                     fans: [FanInfo] = []) -> SystemMetrics.Snapshot {
+        SystemMetrics.Snapshot(cpu: cpu, memory: memory, gpu: nil, network: network,
                                disk: disk, cpuTemperature: nil, gpuTemperature: nil,
-                               fans: [])
+                               fans: fans)
     }
 
     /// Memory is cut by KIND, not into apps and daemons — the kernel reports it
@@ -276,6 +301,59 @@ final class BottomPanelTests: XCTestCase {
         let labels = m.rows.map(\.label)
         XCTAssertTrue(labels.contains("Read"))
         XCTAssertTrue(labels.contains("Write"))
+    }
+
+    /// Fans get a GAUGE, not a split. Two fans do not divide one quantity between
+    /// them — each sits somewhere in its own min..max — so the bar shows how far
+    /// in they are and what is left, which is what the graph above plots and what
+    /// the pane's own dials show.
+    func testTheFanBarIsAGaugeRatherThanASplit() {
+        let bar = LedgerBarView.UtilizationBar.gauge("Fan speed", percent: 42)
+        XCTAssertEqual(bar.used, 100, accuracy: 0.001, "a gauge is always of its whole")
+        XCTAssertEqual(bar.parts.map(\.title), ["now", "headroom"])
+        XCTAssertEqual(bar.parts[0].value, 42, accuracy: 0.001)
+        XCTAssertEqual(bar.parts[1].value, 58, accuracy: 0.001)
+        XCTAssertFalse(bar.parts.contains { $0.hatched },
+                       "headroom is known, not unattributed")
+    }
+
+    /// And it cannot run off either end. A fan parked below its own minimum
+    /// reports a negative position, and a bar with a negative slice draws
+    /// backwards over its neighbour.
+    func testTheGaugeClampsToItsOwnEnds() {
+        XCTAssertEqual(LedgerBarView.UtilizationBar.gauge("x", percent: -10).parts[0].value, 0)
+        XCTAssertEqual(LedgerBarView.UtilizationBar.gauge("x", percent: 140).parts[0].value, 100)
+        XCTAssertEqual(LedgerBarView.UtilizationBar.gauge("x", percent: 140).parts[1].value, 0)
+    }
+
+    /// The network card names the link, and states the rate the pane above states.
+    func testTheNetworkCardNamesTheLinkAndItsRates() throws {
+        let s = sys(network: NetworkThroughput.Sample(
+            bytesInPerSec: 2_097_152, bytesOutPerSec: 1_048_576,
+            interfaces: [], measured: [], interval: 2))
+        let m = try XCTUnwrap(GlanceCardView.model(for: .network, system: s,
+                                                   facts: MachineInfo.facts, census: nil))
+        XCTAssertEqual(m.headline, MetricUnit.bytesPerSecond.format(3_145_728))
+        XCTAssertNil(m.pill, "a throughput has no percentage to pair with")
+        let labels = m.rows.map { $0.label }
+        XCTAssertTrue(labels.contains("Down"))
+        XCTAssertTrue(labels.contains("Up"))
+    }
+
+    /// The fan card states each fan's own range beside its speed: 2200 rpm means
+    /// nothing without knowing whether that is idle or flat out, and two fans in
+    /// one machine often do not share a range.
+    func testTheFanCardGivesEachFanItsOwnRange() throws {
+        let s = sys(fans: [FanInfo(index: 0, currentRPM: 2200, minRPM: 1200,
+                                   maxRPM: 4600, targetRPM: nil)])
+        let m = try XCTUnwrap(GlanceCardView.model(for: .fans, system: s,
+                                                   facts: MachineInfo.facts, census: nil))
+        XCTAssertEqual(m.headline, "2200 rpm")
+        // (2200-1200)/(4600-1200) = 29.4%
+        XCTAssertEqual(m.pill, "29%")
+        XCTAssertEqual(m.rows.first?.label, "Fan 1")
+        XCTAssertEqual(m.rows.first?.trailing, "1200–4600",
+                       "a speed with no range attached says nothing")
     }
 
     /// And a subject with no reading yet returns nil so the caller can fall back

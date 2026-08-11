@@ -34,6 +34,14 @@ final class GlanceCardView: NSView {
 
     var model: Model? { didSet { rebuild() } }
 
+    /// Laid out for the full width of the window rather than a 236 pt column.
+    ///
+    /// Set when the graph beside it is hidden — Resources. The rows flow into
+    /// columns instead of one tall list, because eight label/value pairs stacked
+    /// down the left of a 900 pt card is a stripe of text beside a field of empty,
+    /// and the card is the whole bottom of that tab.
+    var isWide = false { didSet { if isWide != oldValue { rebuild() } } }
+
     /// The card, for a subject that is not the battery. See `BottomContext`.
     ///
     /// The same `Model` rather than a second type: it is already a headline, a
@@ -49,6 +57,16 @@ final class GlanceCardView: NSView {
                       system sys: SystemMetrics.Snapshot,
                       facts: MachineInfo.Facts,
                       census: MachineInfo.Census?) -> Model? {
+        /// The machine's temperature, as the mean of what it reports by name.
+        ///
+        /// CPU and GPU only, because those are the two `SystemMetrics` reads every
+        /// tick. The full per-key sweep is 90 ms of blocked IOKit and belongs to
+        /// the Sensors pane's own cache, not to a card that redraws every 2 s.
+        func temperature(_ sys: SystemMetrics.Snapshot) -> Double? {
+            let t = [sys.cpuTemperature, sys.gpuTemperature].compactMap { $0 }
+            return t.isEmpty ? nil : t.reduce(0, +) / Double(t.count)
+        }
+
         func card(_ headline: String, _ pill: String?, _ label: String,
                   _ rows: [(String, String, String?)]) -> Model {
             Model(source: .ac, headline: headline, pill: pill,
@@ -120,16 +138,73 @@ final class GlanceCardView: NSView {
             // IOKit counter that looks like one is not one — see `DiskActivity`.
             return card(bps.format(d.totalPerSec), nil, "Disk · measured", rows)
 
-        // The tab-chosen subjects keep the battery card.
-        //
-        // Each of these tabs already states its own numbers, in a pane built for
-        // them: the Network pane names the interface and its rates, the Sensors
-        // pane lists every reading, the Fans pane shows each fan's gauge. A card
-        // restating three of those in the corner would be a fourth place to keep
-        // the same figures consistent, and the battery is the one thing none of
-        // those panes says.
-        case .network, .sensors, .fans, .resources:
-            return nil
+        case .network:
+            guard let n = sys.network else { return nil }
+            let bps = MetricUnit.bytesPerSecond
+            var rows: [(String, String, String?)] = [
+                ("Down", bps.format(n.bytesInPerSec), nil),
+                ("Up", bps.format(n.bytesOutPerSec), nil),
+            ]
+            // The link itself, from the same inventory the Resources network card
+            // reads — so the two cannot name different interfaces.
+            //
+            // NO NETWORK NAME, and that is measured rather than an omission: on
+            // macOS 27 the SSID is location data and every fast path is redacted
+            // without Location Services. Associated with a network at the time,
+            // CoreWLAN's `ssid()` returned nil, `ipconfig getsummary` printed
+            // "<redacted>", and SCDynamicStore's SSID_STR was empty.
+            // `system_profiler SPAirPortDataType` does return it, in 14.3 seconds.
+            // A system monitor asking for location permission to print a name is
+            // a bad trade. On Ethernet and Thunderbolt `displayName` IS the port's
+            // real name, so it shows there — which is the case this machine is in.
+            if let link = NetworkInventory.snapshot().primary {
+                if let name = link.displayName,
+                   name.caseInsensitiveCompare(link.kind.title) != .orderedSame {
+                    rows.append(("Link", name, nil))
+                } else {
+                    rows.append(("Link", link.kind.title, nil))
+                }
+                if let speed = link.linkSpeedBitsPerSec {
+                    rows.append(("Speed", ResourcesContent.bitRate(speed), nil))
+                }
+                if let ip = link.ipv4.first { rows.append(("IPv4", ip, nil)) }
+            }
+            return card(bps.format(n.totalPerSec), nil, "Network · measured", rows)
+
+        case .fans:
+            guard !sys.fans.isEmpty else { return nil }
+            let load = sys.fans.reduce(0) { $0 + $1.load } / Double(sys.fans.count) * 100
+            let rpm = sys.fans.reduce(0) { $0 + $1.currentRPM } / Double(sys.fans.count)
+            var rows: [(String, String, String?)] = []
+            for f in sys.fans {
+                // Each fan's own range beside its speed: 2200 rpm means nothing
+                // without knowing whether that is idle or flat out, and the two
+                // fans in a machine often do not share a range.
+                rows.append(("Fan \(f.index + 1)", String(format: "%.0f rpm", f.currentRPM),
+                             String(format: "%.0f–%.0f", f.minRPM, f.maxRPM)))
+            }
+            if let t = temperature(sys) {
+                rows.append(("Temperature", String(format: "%.0f°C", t), nil))
+            }
+            return card(String(format: "%.0f rpm", rpm),
+                        String(format: "%.0f%%", load), "Fans · measured", rows)
+
+        case .sensors:
+            guard let avg = temperature(sys) else { return nil }
+            var rows: [(String, String, String?)] = []
+            if let c = sys.cpuTemperature {
+                rows.append(("CPU", String(format: "%.1f°C", c), nil))
+            }
+            if let g = sys.gpuTemperature {
+                rows.append(("GPU", String(format: "%.1f°C", g), nil))
+            }
+            if !sys.fans.isEmpty {
+                let rpm = sys.fans.reduce(0) { $0 + $1.currentRPM } / Double(sys.fans.count)
+                // What the machine is DOING about the temperature, which is the
+                // next thing anyone reading a thermal number wants to know.
+                rows.append(("Fans", String(format: "%.0f rpm", rpm), nil))
+            }
+            return card(String(format: "%.0f°C", avg), nil, "Temperature · measured", rows)
         }
     }
 
@@ -217,6 +292,28 @@ final class GlanceCardView: NSView {
 
         rowStack.arrangedSubviews.forEach {
             rowStack.removeArrangedSubview($0); $0.removeFromSuperview()
+        }
+        rowStack.orientation = isWide ? .horizontal : .vertical
+        rowStack.distribution = isWide ? .fillEqually : .fill
+        rowStack.spacing = isWide ? 24 : 5
+        if isWide {
+            // Four rows to a column, so the card grows sideways rather than
+            // downwards — its height is fixed by the row it shares with the ledger.
+            for chunk in stride(from: 0, to: m.rows.count, by: 4).map({
+                Array(m.rows[$0..<min($0 + 4, m.rows.count)])
+            }) {
+                let column = NSStackView()
+                column.orientation = .vertical
+                column.alignment = .leading
+                column.spacing = 5
+                for r in chunk {
+                    let row = makeRow(r)
+                    column.addArrangedSubview(row)
+                    row.widthAnchor.constraint(equalTo: column.widthAnchor).isActive = true
+                }
+                rowStack.addArrangedSubview(column)
+            }
+            return
         }
         for r in m.rows {
             let row = makeRow(r)

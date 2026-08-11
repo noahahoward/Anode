@@ -339,6 +339,24 @@ final class LedgerBarView: NSView {
                       color: LedgerBarView.color(for: .storage), hatched: false),
             ], scale: .percent, attributionNote: nil)
         }
+
+        /// One quantity against its own ceiling: how far into its range something
+        /// is sitting. A fan at 42 % of min..max, and the 58 % it has left.
+        ///
+        /// Not `attributed`: there is nothing to attribute. The headroom is a
+        /// SLICE rather than an absence so the bar still spans its own width and
+        /// reads as a gauge instead of as a bar that stopped early — which is the
+        /// same reason the battery bar's last segment takes the remainder.
+        static func gauge(_ title: String, percent: Double,
+                          caption: String? = nil) -> UtilizationBar {
+            let used = min(100, max(0, percent))
+            return UtilizationBar(title: title, used: 100, parts: [
+                .init(title: "now", value: used,
+                      color: LedgerBarView.color(for: .apps), hatched: false),
+                .init(title: "headroom", value: 100 - used,
+                      color: Palette.line, hatched: false),
+            ], scale: .percent, attributionNote: caption)
+        }
     }
 
     override func draw(_ dirtyRect: NSRect) {
