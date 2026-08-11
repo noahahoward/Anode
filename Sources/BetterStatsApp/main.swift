@@ -710,10 +710,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         let source: DrainEstimate.Source = shown > 0.01
             ? (trustInferred ? (est?.source ?? .power) : .power)
             : .insufficient
-        // The span behind the number ACTUALLY shown. Zero when the power figure
-        // was taken instead of the estimator's, because that figure has no window
-        // — which is exactly the state `canQuoteTime` withholds a time for.
-        let span = (trustInferred ? est?.windowSpan : nil) ?? 0
+        // HOW LONG WE HAVE BEEN WATCHING — not the window of whichever number
+        // won. `DrainEstimate.windowSpan` is documented as the history that has
+        // ACCUMULATED, and it says so in every tier including the power-only one.
+        //
+        // The first version of this zeroed the span whenever the power figure was
+        // taken instead of the estimator's, on the theory that such a figure "has
+        // no window". Two different things were being conflated: the estimator's
+        // rate being DISTRUSTED (the two disagreed by more than 2x) and there
+        // being NO HISTORY. Only the second should read as still measuring, and
+        // the first is not rare — on a machine where the two systematically
+        // disagree it holds forever, so the estimate would have said "measuring"
+        // for as long as the app ran.
+        let span = est?.windowSpan ?? 0
         return (shown, hours, source, span)
     }
 

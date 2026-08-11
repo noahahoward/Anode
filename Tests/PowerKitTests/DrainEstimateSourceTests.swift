@@ -390,3 +390,36 @@ final class DischargeTrendPersistenceTests: XCTestCase {
         XCTAssertNil(other.trend)
     }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// What the "still measuring" gate is allowed to key on.
+///
+/// It must mean NO HISTORY and nothing else. The first wiring zeroed the span
+/// whenever the estimator's rate was distrusted — which happens whenever it and
+/// the power figure disagree by more than 2x — so on a machine where those two
+/// systematically disagree the estimate would have read "measuring" for as long
+/// as the app ran, with hours of measurement behind it.
+final class SettleGateTests: XCTestCase {
+
+    func testAnAccumulatedWindowQuotesATimeWhicheverNumberWon() {
+        // The power tier, which is what a distrusted estimator falls back to —
+        // but with real history accumulated behind it.
+        XCTAssertTrue(DrainEstimate.canQuoteTime(source: .power, windowSpan: 1800))
+    }
+
+    func testOnlyAnEmptyWindowReadsAsStillMeasuring() {
+        XCTAssertFalse(DrainEstimate.canQuoteTime(source: .power, windowSpan: 0))
+        XCTAssertFalse(DrainEstimate.canQuoteTime(source: .power,
+                                                  windowSpan: DrainEstimate.settleSeconds - 1))
+        XCTAssertTrue(DrainEstimate.canQuoteTime(source: .power,
+                                                 windowSpan: DrainEstimate.settleSeconds))
+    }
+
+    /// The settle threshold is the same bar the trend itself sets before it will
+    /// speak, so the two cannot disagree about when there is enough.
+    func testTheThresholdMatchesTheTrendsOwnMinimum() {
+        // `minTicks` is 120 ticks at 1 Hz.
+        XCTAssertEqual(DrainEstimate.settleSeconds, 120)
+    }
+}
