@@ -557,7 +557,7 @@ final class ResourcesContent: NSView, PaneContentView {
         // the machine is DOING about it is the second line.
         sensors.push(sys.cpuTemperature, at: now, before: cutoff,
                      companion: sys.fans.isEmpty ? nil
-                        : sys.fans.reduce(0) { $0 + $1.load } / Double(sys.fans.count) * 100)
+                        : sys.fans.averageLoad * 100)
         sensors.summary = sys.sensorsSampled
             ? [sys.cpuTemperature.map { String(format: "CPU %.0f °C", $0) },
                sys.gpuTemperature.map { String(format: "GPU %.0f °C", $0) }]

@@ -493,6 +493,39 @@ final class BottomPanelTests: XCTestCase {
         }
     }
 
+    /// The menu bar widget reports the SAME fan number the window does.
+    ///
+    /// It reported the fastest fan while every surface in the window reported the
+    /// average. On this machine the fans sit at 2318 and 2500 rpm, so the widget
+    /// read as though it were simply the second fan — which is how it was
+    /// reported. The rationale for the maximum was real (the fastest is the one
+    /// you can hear) and it lost to the app agreeing with itself.
+    func testTheFanWidgetAgreesWithTheFanCard() {
+        let fans = [FanInfo(index: 0, currentRPM: 2318, minRPM: 2317,
+                            maxRPM: 7826, targetRPM: nil),
+                    FanInfo(index: 1, currentRPM: 2500, minRPM: 2317,
+                            maxRPM: 7826, targetRPM: nil)]
+        XCTAssertEqual(fans.averageRPM, 2409, accuracy: 0.001)
+        XCTAssertNotEqual(fans.averageRPM, fans.map(\.currentRPM).max(),
+                          "this fixture cannot tell the average from the maximum")
+
+        // And the card's headline is built from the same property, so the two
+        // cannot drift apart again.
+        let card = GlanceCardView.model(for: .fans, system: sys(fans: fans),
+                                        facts: MachineInfo.facts, census: nil)
+        XCTAssertEqual(card?.headline, "2409 rpm")
+    }
+
+    /// No fans is zero, and it is the CALLER's job to tell that from fans at rest.
+    func testAnEmptyFanListAveragesToZeroRatherThanCrashing() {
+        XCTAssertEqual([FanInfo]().averageRPM, 0)
+        XCTAssertEqual([FanInfo]().averageLoad, 0)
+        // The card declines entirely, which is the distinction the average cannot
+        // carry on its own: a fanless Mac is not a Mac whose fans are stopped.
+        XCTAssertNil(GlanceCardView.model(for: .fans, system: sys(fans: []),
+                                          facts: MachineInfo.facts, census: nil))
+    }
+
     /// A SPINNING FAN NEVER READS ZERO.
     ///
     /// Fan speed was a fraction of the min..max range, and the minimum is not

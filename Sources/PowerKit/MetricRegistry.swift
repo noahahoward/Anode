@@ -388,10 +388,21 @@ public final class MetricRegistry {
             id: .fanSpeed, title: "Fan speed", shortTitle: "Fan",
             unit: .rpm, category: "Sensors", higherIsWorse: true
         )) { [weak self] in
-            // Fastest fan, since that is the one you can hear. A fanless machine
-            // returns nil rather than 0 — absent and idle are different claims.
+            // THE AVERAGE, which is what the app itself shows largest.
+            //
+            // This took the fastest fan, on the reasoning that it is the one you
+            // can hear. That is a fair argument on its own and it lost to a better
+            // one: the window's fan card sets the average in its headline, the
+            // bar captions it, and the graph plots it — so a widget reporting the
+            // maximum disagreed with every other place the app says "fan speed".
+            // On this machine the two fans sit at 2318 and 2500 rpm, so the widget
+            // read as though it were simply the second fan.
+            //
+            // A fanless machine returns nil rather than 0 — absent and idle are
+            // different claims.
             guard let fans = self?.latestSystem()?.fans, !fans.isEmpty else { return nil }
-            return MetricValue(fans.map(\.currentRPM).max() ?? 0, unit: .rpm, isEstimate: false)
+            let mean = fans.averageRPM
+            return MetricValue(mean, unit: .rpm, isEstimate: false)
         }
     }
 
