@@ -1327,3 +1327,67 @@ final class GraphGapRuleTests: XCTestCase {
     }
 }
 
+
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// The right-hand series' gradient.
+///
+/// Written because two commits claimed to add it and neither did — the edit
+/// no-matched, both builds were clean, both suites passed, and nothing changed
+/// on screen. A clean compile says a change is VALID, never that it happened.
+/// This asks the pixels.
+final class RightSeriesFillTests: XCTestCase {
+
+    override func setUp() { _ = appKitForTests }
+
+    /// A flat left series low on the plot and a flat right series high on it.
+    /// The band BETWEEN them belongs to the right series' wash and to nothing
+    /// else, so it is the one place that answers "did the fill draw".
+    private func graph(rightFilled: Bool, shared: Bool = false) -> Frame {
+        let g = HistoryGraphView(frame: .zero)
+        g.translatesAutoresizingMaskIntoConstraints = true
+        g.sharesRightAxisScale = shared
+        g.yMax = shared ? nil : 100
+        g.series = [.init(name: "drain", color: Palette.accent,
+                          points: ramp([10, 10, 10, 10], over: 600), filled: true)]
+        // `onPower` true: the pack was FILLING, so the line is green and its wash
+        // must be too. A blue wash under a green line is what made this invisible.
+        let charge = ramp([80, 80, 80, 80], over: 600).map {
+            HistoryGraphView.Point(time: $0.time, value: $0.value, onPower: true)
+        }
+        g.rightSeries = .init(name: "charge", color: Palette.chargeLine,
+                              points: charge, filled: rightFilled)
+        return render(g, size: NSSize(width: 420, height: 220))
+    }
+
+    /// The BATTERY's exact configuration: a shared 0-100 scale and an autoscaled
+    /// left axis. The plain case above passes, so if this one does not, the
+    /// difference is in how a shared-scale graph reaches its right series.
+    func testTheChargeLineFillsOnTheBatteryConfiguration() {
+        inTheme(.darkAqua) {
+            let band = NSRect(x: 180, y: 90, width: 60, height: 40)
+            let off = graph(rightFilled: false, shared: true).maxLuminance(in: band)
+            let on = graph(rightFilled: true, shared: true).maxLuminance(in: band)
+            // 0.08, not "greater than zero". The first version of this fill DID
+            // draw and measured 0.054 — a deep blue wash under a green charging
+            // line, which a test can see and an eye reasonably cannot. "Something
+            // was painted" is not the property worth asserting; "you can tell"
+            // is. In the line's own ink it measures ~0.104.
+            XCTAssertGreaterThan(on, off + 0.08,
+                                 "the charge wash is too faint to see — check it is "
+                                 + "using the segment's own ink, not the series colour")
+        }
+    }
+
+    func testTheRightSeriesFillsUnderItsOwnLine() {
+        inTheme(.darkAqua) {
+            // Mid-plot horizontally, and vertically between the two lines: above
+            // the drain line at 10 and below the charge line at 80.
+            let band = NSRect(x: 180, y: 90, width: 60, height: 40)
+            let off = graph(rightFilled: false).maxLuminance(in: band)
+            let on = graph(rightFilled: true).maxLuminance(in: band)
+            XCTAssertGreaterThan(on, off + 0.03,
+                                 "the right series drew no wash under its line")
+        }
+    }
+}
