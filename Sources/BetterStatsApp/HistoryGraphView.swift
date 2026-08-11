@@ -60,6 +60,30 @@ public class HistoryGraphView: NSView {
             self.value = value
             self.onPower = onPower
         }
+
+        // ── Two callers, two opposite words for one fact ─────────────────────
+        //
+        // The live buffer knows `onAC`; the store knows `on_battery`. Both used
+        // to build the flag inline, and they disagreed: the live path negated
+        // `onAC` to match the SHAPE of the store path's `!onBattery`, which is a
+        // double negative. The 1H graph drew the machine as charging while it ran
+        // the battery down, and the comment beside it asserted the two could not
+        // disagree.
+        //
+        // So neither caller writes the sign any more. Naming the input is the
+        // whole point: `charge(…, onAC:)` and `charge(…, onBattery:)` cannot be
+        // confused for each other at a call site, and there is one place left
+        // where the meaning of "charging" lives.
+
+        /// A battery-percentage point whose source knows it is on the adapter.
+        public static func charge(time: Date, percent: Double, onAC: Bool) -> Point {
+            Point(time: time, value: percent, onPower: onAC)
+        }
+
+        /// A battery-percentage point whose source knows it is on battery.
+        public static func charge(time: Date, percent: Double, onBattery: Bool) -> Point {
+            Point(time: time, value: percent, onPower: !onBattery)
+        }
     }
 
     public struct Series {
