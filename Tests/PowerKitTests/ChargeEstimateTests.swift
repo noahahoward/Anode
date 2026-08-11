@@ -57,9 +57,15 @@ final class ChargeEstimateTests: XCTestCase {
             chargeTarget: target)
     }
 
+    /// A throwaway suite, under the project's own test prefix and a STABLE name.
+    ///
+    /// This built a fresh `chargeLimitTests.<UUID>` suite per call and never tore
+    /// one down — 990 files in the real `~/Library/Preferences`, under a prefix
+    /// nobody thought to look for because it did not match the one the cleanup was
+    /// written against. Every call now reuses one domain and empties it first, so
+    /// the tests stay isolated from each other without leaving a trail.
     private func store() -> UserDefaults {
-        let d = UserDefaults(suiteName: "chargeLimitTests.\(UUID().uuidString)")!
-        return d
+        (try? TestDefaults.make(owner: "ChargeEstimate").defaults) ?? .standard
     }
 
     // ── The target ──────────────────────────────────────────────────────────

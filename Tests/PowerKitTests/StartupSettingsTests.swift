@@ -17,12 +17,11 @@ final class StartupSettingsTests: XCTestCase {
     override func setUpWithError() throws {
         // A throwaway suite: these tests write settings, and the user's real
         // preferences are not a fixture.
-        suiteName = "com.betterstats.tests.\(UUID().uuidString)"
-        defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        (defaults, suiteName) = try TestDefaults.make(owner: "StartupSettings")
     }
 
     override func tearDownWithError() throws {
-        defaults.removePersistentDomain(forName: suiteName)
+        TestDefaults.destroy(defaults, suiteName)
     }
 
     // ── Defaults ────────────────────────────────────────────────────────────
