@@ -153,6 +153,18 @@ final class ResourceTrack {
     /// The hardware behind it, shown right-aligned beside the detail's heading.
     var hardware: String = ""
     var points: [HistoryGraphView.Point] = []
+    /// A second quantity on the RIGHT axis, where one genuinely explains the
+    /// first. Load and heat is the pairing worth having — a CPU graph that shows
+    /// the temperature it produced answers "did that spike cost anything" without
+    /// a second tab — and it is the same shape the fan graph uses for speed
+    /// against temperature.
+    ///
+    /// Empty for the resources where there is no honest second axis. Memory
+    /// against nothing, disk bytes against nothing: a second line invented to fill
+    /// an axis is worse than an empty one.
+    var companion: [HistoryGraphView.Point] = []
+    var companionName = ""
+    var companionUnit = "%"
 
     init(_ resource: Resource, title: String) {
         self.resource = resource
@@ -164,12 +176,21 @@ final class ResourceTrack {
     /// A missing value appends NOTHING rather than a zero — a subsystem that was
     /// not sampled did not report zero. The graph draws the resulting hole as a
     /// break in the line and, unlike the battery history, does not mark it.
-    func push(_ value: Double?, at now: Date, before cutoff: Date) {
+    func push(_ value: Double?, at now: Date, before cutoff: Date,
+              companion second: Double? = nil, detail: ((Double) -> String)? = nil) {
         if let value, value.isFinite {
-            points.append(.init(time: now, value: value))
+            points.append(.init(time: now, value: value,
+                                detail: detail.map { $0(value) }))
+        }
+        if let second, second.isFinite {
+            companion.append(.init(time: now, value: second,
+                                   detail: String(format: "%.1f %@", second, companionUnit)))
         }
         if let first = points.first, first.time < cutoff {
             points.removeAll { $0.time < cutoff }
+        }
+        if let first = companion.first, first.time < cutoff {
+            companion.removeAll { $0.time < cutoff }
         }
     }
 }
@@ -283,7 +304,18 @@ final class ResourcesContent: NSView, PaneContentView {
         translatesAutoresizingMaskIntoConstraints = false
 
         for resource in Resource.allCases {
-            tracks[resource] = ResourceTrack(resource, title: Self.defaultTitle(resource))
+            let track = ResourceTrack(resource, title: Self.defaultTitle(resource))
+            switch resource {
+            case .cpu, .gpu:
+                track.companionName = "temp"
+                track.companionUnit = "°C"
+            case .sensors:
+                track.companionName = "fans"
+                track.companionUnit = "%"
+            case .memory, .network, .disk:
+                break   // no second quantity that explains the first
+            }
+            tracks[resource] = track
         }
 
         railStack.orientation = .vertical
@@ -458,7 +490,8 @@ final class ResourcesContent: NSView, PaneContentView {
         func track(_ r: Resource) -> ResourceTrack { tracks[r]! }
 
         let cpu = track(.cpu)
-        cpu.push(sys.cpu?.total, at: now, before: cutoff)
+        // Load on the left, the heat it produced on the right.
+        cpu.push(sys.cpu?.total, at: now, before: cutoff, companion: sys.cpuTemperature)
         cpu.summary = [sys.cpu.map { String(format: "%.0f%%", $0.total) },
                        sys.cpuTemperature.map { String(format: "%.0f °C", $0) }]
             .compactMap { $0 }.joined(separator: " · ")
@@ -478,7 +511,8 @@ final class ResourcesContent: NSView, PaneContentView {
         memory.hardware = MetricUnit.bytes.format(Double(MachineInfo.facts.memoryBytes))
 
         let gpu = track(.gpu)
-        gpu.push(sys.gpu?.utilization, at: now, before: cutoff)
+        gpu.push(sys.gpu?.utilization, at: now, before: cutoff,
+                 companion: sys.gpuTemperature)
         gpu.summary = [sys.gpu.map { String(format: "%.0f%%", $0.utilization) },
                        sys.gpuTemperature.map { String(format: "%.0f °C", $0) }]
             .compactMap { $0 }.joined(separator: " · ")
@@ -519,7 +553,11 @@ final class ResourcesContent: NSView, PaneContentView {
             .identity.product ?? ""
 
         let sensors = track(.sensors)
-        sensors.push(sys.cpuTemperature, at: now, before: cutoff)
+        // The other way round for temperature: the heat is the subject, and what
+        // the machine is DOING about it is the second line.
+        sensors.push(sys.cpuTemperature, at: now, before: cutoff,
+                     companion: sys.fans.isEmpty ? nil
+                        : sys.fans.reduce(0) { $0 + $1.load } / Double(sys.fans.count) * 100)
         sensors.summary = sys.sensorsSampled
             ? [sys.cpuTemperature.map { String(format: "CPU %.0f °C", $0) },
                sys.gpuTemperature.map { String(format: "GPU %.0f °C", $0) }]
@@ -1253,6 +1291,15 @@ final class ResourceDetailView: NSView {
         graph.timeDomain = (now.addingTimeInterval(-span), now)
         graph.series = [.init(name: track.resource.axisLabel, color: Palette.accent,
                               points: track.points, filled: true)]
+        // The right axis, for the resources that have an honest second quantity.
+        // The hover reads both, which is the whole point of putting them on one
+        // chart rather than two.
+        graph.rightAxisUnit = track.companionUnit
+        graph.rightAxisLabel = track.companionName
+        graph.rightSeries = track.companion.count >= 2
+            ? .init(name: track.companionName, color: Palette.warn,
+                    points: track.companion, filled: false)
+            : nil
     }
 
     /// The specs only. The live figures moved to the rail's column — see
