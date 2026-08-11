@@ -218,6 +218,9 @@ final class BodyStack: NSStackView {
     /// Told which group header was clicked. The stack does not own the expanded
     /// state — the pane does, because the pane is what rebuilds the list from it.
     var onToggleGroup: ((String) -> Void)?
+    /// Told which ROW was clicked, by label. Same division: the stack reports, the
+    /// pane decides what a selection means.
+    var onSelectRow: ((String) -> Void)?
 
     func restyleRows() {
         arrangedSubviews.forEach { ($0 as? PaneBodyView)?.restyle() }
@@ -229,7 +232,11 @@ final class BodyStack: NSStackView {
             let view: NSView
             var height: CGFloat?
             switch item.kind {
-            case .row:     view = SystemPane.BarRow(item);      height = 22
+            case .row:
+                let row = SystemPane.BarRow(item)
+                row.onSelect = { [weak self] in self?.onSelectRow?(item.label) }
+                view = row
+                height = 22
             case .figure:  view = SystemPane.FigureView(item);  height = 42
             case .heading: view = SystemPane.HeadingView(item); height = nil
             case .group:
@@ -401,14 +408,65 @@ class SystemPane: NSView {
     /// The list itself, for a pane that needs to hear about clicks in it.
     var bodyStack: BodyStack { body }
 
+    /// Mark one row as picked and clear the rest.
+    ///
+    /// Pushed after `setBody` rather than carried on `BodyItem`, because the stack
+    /// REUSES its row views when the shape of the list is unchanged — so a picked
+    /// flag baked into the item would only take effect on the rebuilds, which is
+    /// most of the time but not all of it, and "the highlight is on the wrong row
+    /// until something else changes" is the resulting bug.
+    func markPickedRow(_ label: String?) {
+        for view in body.arrangedSubviews {
+            guard let row = view as? SystemPane.BarRow else { continue }
+            row.isPicked = row.rowLabel == label
+        }
+    }
+
     /// One row, optionally with a proportional fill behind it. The bar is drawn
     /// rather than composed from views so it can sit *behind* the text without a
     /// container per row — these lists can be 250 rows long.
     final class BarRow: NSView, PaneBodyView {
         private var label: String, value: String
+        /// What this row is called, for a caller matching a selection to a view.
+        var rowLabel: String { label }
         private var fill: Double?
         private var color: NSColor
         private var dim: Bool
+        /// Set only where a click means something — the Sensors list. Elsewhere it
+        /// stays nil and the row behaves exactly as it always has, so a pane that
+        /// has no notion of selection does not grow a pointing hand.
+        var onSelect: (() -> Void)?
+        /// Drawn as picked. The pane owns which row that is.
+        var isPicked = false { didSet { if isPicked != oldValue { needsDisplay = true } } }
+        private var hovered = false
+
+        override func updateTrackingAreas() {
+            super.updateTrackingAreas()
+            guard onSelect != nil else { return }
+            trackingAreas.forEach(removeTrackingArea)
+            addTrackingArea(NSTrackingArea(
+                rect: bounds, options: [.mouseEnteredAndExited, .activeInKeyWindow],
+                owner: self))
+        }
+        override func mouseEntered(with e: NSEvent) { hovered = true; needsDisplay = true }
+        override func mouseExited(with e: NSEvent) { hovered = false; needsDisplay = true }
+        override func mouseDown(with e: NSEvent) { onSelect?() }
+        override func resetCursorRects() {
+            if onSelect != nil { addCursorRect(bounds, cursor: .pointingHand) }
+        }
+
+        /// The same two weights the process table's rows use — full for picked,
+        /// 0.45 for hovered — in the same shape. A third selection idiom in one
+        /// app is a third thing to learn.
+        func drawSelection() {
+            guard isPicked || hovered else { return }
+            let shape = NSBezierPath(roundedRect: bounds.insetBy(dx: -4, dy: 1),
+                                     xRadius: Palette.Radius.row,
+                                     yRadius: Palette.Radius.row)
+            (isPicked ? Palette.selection
+                      : Palette.selection.withAlphaComponent(0.45)).setFill()
+            shape.fill()
+        }
 
         init(_ item: BodyItem) {
             label = item.label; value = item.value
@@ -434,6 +492,9 @@ class SystemPane: NSView {
         func restyle() { needsDisplay = true }
 
         override func draw(_ dirtyRect: NSRect) {
+            // Under the fill bar, not over it: the wash says which row, the bar
+            // says how hot, and one must not hide the other.
+            drawSelection()
             if let f = fill, f > 0 {
                 let w = bounds.width * CGFloat(min(max(f, 0), 1))
                 color.withAlphaComponent(0.16).setFill()
@@ -669,6 +730,14 @@ final class SensorsPane: SystemPane {
             else { expandedGroups.insert(name) }
             render()
         }
+        bodyStack.onSelectRow = { [weak self] name in
+            guard let self else { return }
+            // Clicking the picked one again clears it, so there is a way back to
+            // "just the averages" without hunting for a deselect control.
+            pickedSensor = pickedSensor == name ? nil : name
+            render()
+            onPickSensor?(pickedSensor)
+        }
     }
 
     /// Which groups are open. Starts EMPTY — all shut — because the point of
@@ -676,6 +745,16 @@ final class SensorsPane: SystemPane {
     /// not as 256 with headings sprinkled through them. Each header states its
     /// own count and hottest reading, so nothing has to be opened to be read.
     private var expandedGroups: Set<String> = []
+
+    /// The sensor whose own line is drawn on the bottom graph, by qualified name.
+    ///
+    /// By NAME rather than by key, because the name is what the row shows and what
+    /// the graph's legend has to say. The key is the identity the naming layer
+    /// cares about; this is the identity the user pointed at.
+    private(set) var pickedSensor: String?
+    /// Fired when that changes, so the graph can pick up its second line at once
+    /// rather than on the next sweep.
+    var onPickSensor: ((String?) -> Void)?
 
     func update(cpu: Double?, gpu: Double?) {
         cpuTemp = cpu
@@ -773,6 +852,7 @@ final class SensorsPane: SystemPane {
             }
         }
         setBody(items)
+        markPickedRow(pickedSensor)
     }
 
     /// 30 °C idle to 100 °C throttle.

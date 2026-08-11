@@ -406,6 +406,73 @@ final class BottomPanelTests: XCTestCase {
             scale: .bytesPerSecond).parts.count, 3)
     }
 
+    /// Sensor groups are built from evidence the naming layer already has, and
+    /// invent nothing.
+    ///
+    /// In particular `Tp*` is CPU as one family and is NOT split into efficiency
+    /// and performance cores: the published tables miss five of this machine's
+    /// keys and nothing measured supports the boundary. See
+    /// `SensorNaming.ordinalFamilies`.
+    func testSensorGroupsMatchTheFamiliesTheNamingLayerEstablished() {
+        XCTAssertEqual(SensorNaming.group(forKey: "Tp01"), .cpu)
+        XCTAssertEqual(SensorNaming.group(forKey: "Te05"), .cpu)
+        XCTAssertEqual(SensorNaming.group(forKey: "Tg0f"), .gpu)
+        XCTAssertEqual(SensorNaming.group(forKey: "Tm02"), .memory)
+        XCTAssertEqual(SensorNaming.group(forKey: "TB0T"), .battery)
+        XCTAssertEqual(SensorNaming.group(forKey: "TH0a"), .storage)
+        XCTAssertEqual(SensorNaming.group(forKey: "TW0P"), .wireless)
+        XCTAssertEqual(SensorNaming.group(forKey: "Ts0P"), .enclosure)
+        XCTAssertEqual(SensorNaming.group(forKey: "TaLP"), .enclosure)
+        // The 140 hedged keys stay together rather than being given homes.
+        XCTAssertEqual(SensorNaming.group(forKey: "Tq3z"), .unidentified)
+        XCTAssertEqual(SensorNaming.group(forKey: "XXXX"), .unidentified)
+    }
+
+    /// A key that this file NAMES is filed under a heading that matches its name.
+    /// A sensor called "Battery sensor 1" sitting under Storage would be one
+    /// mapping drifting from the other.
+    func testAGroupNeverContradictsTheNameOfTheSameKey() {
+        for (key, name) in SensorNaming.exactTemperatures {
+            let group = SensorNaming.group(forKey: key)
+            switch group {
+            case .battery: XCTAssertTrue(name.hasPrefix("Battery"), key)
+            case .storage: XCTAssertTrue(name.hasPrefix("NAND"), key)
+            case .wireless: XCTAssertTrue(name.hasPrefix("Wi-Fi"), key)
+            case .enclosure:
+                XCTAssertTrue(name.hasPrefix("Airflow") || name.hasPrefix("Palm"), key)
+            default:
+                XCTFail("\(key) (\(name)) landed in \(group)")
+            }
+        }
+    }
+
+    /// A SPINNING FAN NEVER READS ZERO.
+    ///
+    /// Fan speed was a fraction of the min..max range, and the minimum is not
+    /// zero. Measured on this machine: the two fans idle at 2318 and 2500 rpm
+    /// against a minimum of 2317 and a maximum of 7826, so range-relative load
+    /// was 0.02% and 3.3% while both were plainly spinning — a flat green line on
+    /// the floor of the fan graph.
+    ///
+    /// Fraction of TOP SPEED answers the question actually being asked and is
+    /// right at both ends: parked reads 0, flat out reads 100.
+    func testAFanAtItsMinimumIsNotReportedAsStopped() {
+        let idling = FanInfo(index: 0, currentRPM: 2318, minRPM: 2317,
+                             maxRPM: 7826, targetRPM: 2317)
+        XCTAssertEqual(idling.load, 2318.0 / 7826.0, accuracy: 0.001)
+        XCTAssertGreaterThan(idling.load, 0.25,
+                             "a fan doing 2318 of 7826 rpm is not at the bottom of the graph")
+
+        // Both ends still behave. A parked fan is genuinely zero...
+        XCTAssertEqual(FanInfo(index: 0, currentRPM: 0, minRPM: 2317,
+                               maxRPM: 7826, targetRPM: nil).load, 0)
+        // ...and flat out is one, not more.
+        XCTAssertEqual(FanInfo(index: 0, currentRPM: 7826, minRPM: 2317,
+                               maxRPM: 7826, targetRPM: nil).load, 1)
+        XCTAssertEqual(FanInfo(index: 0, currentRPM: 9000, minRPM: 2317,
+                               maxRPM: 7826, targetRPM: nil).load, 1)
+    }
+
     /// Fans get a GAUGE, not a split. Two fans do not divide one quantity between
     /// them — each sits somewhere in its own min..max — so the bar shows how far
     /// in they are and what is left, which is what the graph above plots and what
@@ -454,8 +521,9 @@ final class BottomPanelTests: XCTestCase {
         let m = try XCTUnwrap(GlanceCardView.model(for: .fans, system: s,
                                                    facts: MachineInfo.facts, census: nil))
         XCTAssertEqual(m.headline, "2200 rpm")
-        // (2200-1200)/(4600-1200) = 29.4%
-        XCTAssertEqual(m.pill, "29%")
+        // Of TOP SPEED: 2200/4600 = 47.8%. Not of the min..max range, which would
+        // be 29% here and 0% on the real machine — see below.
+        XCTAssertEqual(m.pill, "48%")
         XCTAssertEqual(m.rows.first?.label, "Fan 1")
         XCTAssertEqual(m.rows.first?.trailing, "1200–4600",
                        "a speed with no range attached says nothing")

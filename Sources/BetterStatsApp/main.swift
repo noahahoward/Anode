@@ -137,6 +137,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
     static let sessionSeries: [ReferenceWritableKeyPath<AppDelegate, [HistoryGraphView.Point]>] = [
         \.diskReadSeries, \.diskWriteSeries, \.netInSeries, \.netOutSeries,
         \.fanLoadSeries, \.temperatureSeries, \.cpuTempSeries, \.gpuTempSeries,
+        \.pickedSensorSeries,
     ]
 
     /// Session-only, and unavoidably so: the SMC sweep is gated on a tab that
@@ -146,6 +147,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
     var temperatureSeries: [HistoryGraphView.Point] = []
     var cpuTempSeries: [HistoryGraphView.Point] = []
     var gpuTempSeries: [HistoryGraphView.Point] = []
+    /// The one sensor the user clicked in the Sensors list, alongside the
+    /// averages. Cleared when the pick changes: a line that kept its old points
+    /// under a new name would be two sensors drawn as one.
+    var pickedSensorSeries: [HistoryGraphView.Point] = []
     let graphSpan: TimeInterval = 3600
 
     var lastSnapshot: PowerMonitor.Snapshot?
@@ -251,6 +256,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         // Clicking a rail card changes the subject exactly as clicking a tab or a
         // column header does, so it goes through the same path.
         resourcesPane.onSelectResource = { [weak self] in self?.retargetBottom() }
+        // Picking a sensor gives it its own line. The buffer is cleared rather
+        // than kept, because points recorded under the previous pick belong to a
+        // different sensor and drawing them under a new name is a lie the graph
+        // has no way to unpick.
+        sensorsPane.onPickSensor = { [weak self] _ in
+            guard let self else { return }
+            pickedSensorSeries.removeAll()
+            updateGraph(lastSnapshot, appending: false)
+        }
         // 20, not 22. Twelve columns is a table you scan down as much as across, and
         // two points a row is three more rows on screen at this window height.
         main.table.rowHeight = 20
@@ -1077,6 +1091,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
             if let g = sys.gpuTemperature {
                 gpuTempSeries.append(.init(time: now, value: g))
             }
+            // The picked sensor, off the same cached sweep the pane just did — a
+            // dictionary read, not a second SMC walk. Only while one is picked and
+            // only on the tab that sweeps, so it costs nothing the rest of the time.
+            if let picked = sensorsPane.pickedSensor,
+               let r = Sensors.temperatures().first(where: { $0.qualifiedName == picked }) {
+                pickedSensorSeries.append(.init(time: now, value: r.value))
+            }
             let temps = [sys.cpuTemperature, sys.gpuTemperature].compactMap { $0 }
             if !temps.isEmpty {
                 temperatureSeries.append(.init(time: now,
@@ -1247,12 +1268,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
             // Average first so it reads as the headline, with the two the machine
             // reports by name behind it. Filled would be three washes over each
             // other; see the disk graph for the same call.
-            graph.series = [
+            var series: [HistoryGraphView.Series] = [
                 .init(name: "average", color: Palette.accent,
                       points: temperatureSeries, filled: false),
                 .init(name: "cpu", color: Palette.blue, points: cpuTempSeries, filled: false),
                 .init(name: "gpu", color: Palette.violet, points: gpuTempSeries, filled: false),
             ]
+            // The picked one LAST so it draws over the averages it is being
+            // compared against, and in the warn ink so it reads as the singled-out
+            // line rather than as a fourth average.
+            if let picked = sensorsPane.pickedSensor, !pickedSensorSeries.isEmpty {
+                series.append(.init(name: picked, color: Palette.warn,
+                                    points: pickedSensorSeries, filled: false))
+            }
+            graph.series = series
             graph.yAxisLabel = "°C"
         } else if bottomContext == .disk {
             // Two lines, unfilled. A filled area under both would put one

@@ -168,11 +168,25 @@ public struct FanInfo {
     public let minRPM: Double
     public let maxRPM: Double
     public let targetRPM: Double?
-    /// Fraction of the min..max range, for a gauge. A parked fan (0 rpm, below
-    /// min) clamps to 0 rather than going negative.
+    /// Fraction of the fan's TOP SPEED, for a gauge.
+    ///
+    /// It was a fraction of the min..max RANGE, and that is a different question
+    /// with a much worse answer. Measured on this machine: the fans idle at 2318
+    /// and 2500 rpm against a minimum of 2317 and a maximum of 7826 — so
+    /// range-relative load was 0.02% and 3.3% while both fans were plainly
+    /// spinning, and the graph drew a flat line on the floor. Reported as "the
+    /// green staying at the bottom, even though the fans are spinning".
+    ///
+    /// The minimum is not zero, so "how far into its adjustable range" is not the
+    /// question anyone is asking of a fan graph. "How fast, out of as fast as it
+    /// goes" is, and it answers correctly at both ends: a fan parked at 0 rpm
+    /// reads 0, and a fan flat out reads 100.
+    ///
+    /// One definition, so the pane's gauges, the Resources rows, the bottom bar
+    /// and the graph cannot disagree about what "% fan speed" means.
     public var load: Double {
-        guard maxRPM > minRPM else { return 0 }
-        return min(1, max(0, (currentRPM - minRPM) / (maxRPM - minRPM)))
+        guard maxRPM > 0 else { return 0 }
+        return min(1, max(0, currentRPM / maxRPM))
     }
 }
 
