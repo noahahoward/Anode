@@ -129,6 +129,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
     /// dictionary holds exactly one series per subject.
     var diskReadSeries: [HistoryGraphView.Point] = []
     var diskWriteSeries: [HistoryGraphView.Point] = []
+    var netInSeries: [HistoryGraphView.Point] = []
+    var netOutSeries: [HistoryGraphView.Point] = []
+    /// Every live buffer that is not `totalSeries`, `chargeSeries` or the
+    /// per-subject dictionary — listed once so the cutoff cannot trim seven of
+    /// eight and leave one growing without bound.
+    static let sessionSeries: [ReferenceWritableKeyPath<AppDelegate, [HistoryGraphView.Point]>] = [
+        \.diskReadSeries, \.diskWriteSeries, \.netInSeries, \.netOutSeries,
+        \.fanLoadSeries, \.temperatureSeries, \.cpuTempSeries, \.gpuTempSeries,
+    ]
+
+    /// Session-only, and unavoidably so: the SMC sweep is gated on a tab that
+    /// reads it being open, so there is no history of these to seed from. Both
+    /// subjects offer 1H alone for exactly that reason — see `BottomContext.ranges`.
+    var fanLoadSeries: [HistoryGraphView.Point] = []
+    var temperatureSeries: [HistoryGraphView.Point] = []
+    var cpuTempSeries: [HistoryGraphView.Point] = []
+    var gpuTempSeries: [HistoryGraphView.Point] = []
     let graphSpan: TimeInterval = 3600
 
     var lastSnapshot: PowerMonitor.Snapshot?
@@ -672,6 +689,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
                                   apps: sum({ $0.diskBytesPerSec }, apps: true),
                                   systemProcesses: sum({ $0.diskBytesPerSec }, apps: false)),
                 scale: .bytesPerSecond)
+
+        // Network, sensors, fans and Resources fall back to the battery bar.
+        //
+        // Not an oversight. The bar's shape is "a measured whole, cut into named
+        // parts", and none of these has one: a temperature is not a quantity that
+        // divides among processes, a fan speed is not either, and per-app network
+        // bytes are a different measurement from the interface counters the
+        // Network pane is showing above. The battery ledger is still true, so it
+        // stays rather than being replaced by a blank.
+        case .network, .sensors, .fans, .resources:
+            return false
         }
         return true
     }
@@ -745,7 +773,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         guard let store else { return }
         DispatchQueue.global(qos: .userInitiated).async {
             let pts = store.utilizationSeries(since: start, until: end, maxPoints: 700)
-            if context == .disk {
+            if context == .disk || context == .network {
                 // Both directions come out of the same bucket, and each is
                 // dropped independently when that bucket never measured it.
                 func line(_ get: (HistoryStore.UtilizationPoint) -> Double?)
@@ -754,15 +782,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
                         get(p).map { .init(time: p.time, value: Self.mib($0)) }
                     }
                 }
-                let read = line { $0.diskReadBytesPerSec }
-                let write = line { $0.diskWriteBytesPerSec }
+                let isDisk = context == .disk
+                let a = line { isDisk ? $0.diskReadBytesPerSec : $0.networkInBytesPerSec }
+                let b = line { isDisk ? $0.diskWriteBytesPerSec : $0.networkOutBytesPerSec }
                 return DispatchQueue.main.async {
                     self.graph.sharesRightAxisScale = false
                     self.graph.yMax = nil
                     self.graph.rightSeries = nil
                     self.graph.rightAxisLabel = ""
-                    self.graph.series = Self.diskSeries(read: read, write: write)
-                    self.graph.yAxisLabel = Self.diskAxisLabel
+                    self.graph.series = isDisk ? Self.diskSeries(read: a, write: b)
+                                               : Self.networkSeries(down: a, up: b)
+                    self.graph.yAxisLabel = Self.rateAxisLabel
                 }
             }
             let series = pts.compactMap { p -> HistoryGraphView.Point? in
@@ -771,7 +801,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
                 case .cpu:    v = p.cpuPercent
                 case .memory: v = p.memoryPercent
                 case .gpu:    v = p.gpuPercent
-                case .battery, .disk: v = nil
+                // Disk returned above. Network is handled with it, and the
+                // session-only subjects never reach here at all: their ranges
+                // offer 1H alone, so nothing ever asks the store for them.
+                case .battery, .disk, .network, .sensors, .fans, .resources: v = nil
                 }
                 // A bucket the store has no reading for yields NO point, so the
                 // graph's own gap rule draws the silence. A zero here would be a
@@ -960,6 +993,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
             diskReadSeries.append(.init(time: now, value: Self.mib(d.bytesReadPerSec)))
             diskWriteSeries.append(.init(time: now, value: Self.mib(d.bytesWrittenPerSec)))
         }
+        if let n = sys.network {
+            netInSeries.append(.init(time: now, value: Self.mib(n.bytesInPerSec)))
+            netOutSeries.append(.init(time: now, value: Self.mib(n.bytesOutPerSec)))
+        }
+        // Only when the SMC was actually read. A skipped sweep yields an empty fan
+        // list and nil temperatures, and appending a zero for that would draw the
+        // fans stopping every time the window was hidden.
+        if sys.sensorsSampled {
+            if !sys.fans.isEmpty {
+                let load = sys.fans.reduce(0) { $0 + $1.load } / Double(sys.fans.count)
+                fanLoadSeries.append(.init(time: now, value: load * 100))
+            }
+            if let c = sys.cpuTemperature {
+                cpuTempSeries.append(.init(time: now, value: c))
+            }
+            if let g = sys.gpuTemperature {
+                gpuTempSeries.append(.init(time: now, value: g))
+            }
+            let temps = [sys.cpuTemperature, sys.gpuTemperature].compactMap { $0 }
+            if !temps.isEmpty {
+                temperatureSeries.append(.init(time: now,
+                                               value: temps.reduce(0, +) / Double(temps.count)))
+            }
+        }
     }
 
     /// The disk graph's two lines, built the same way whether they came from the
@@ -972,8 +1029,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
          .init(name: "write", color: Palette.blue, points: write, filled: false)]
     }
 
-    /// MB, meaning 1024², to match `MetricUnit.bytesPerSecond` and the Disk columns.
-    static let diskAxisLabel = "MB/s"
+    /// Network's two lines, in the same shape and for the same reason as disk's.
+    ///
+    /// Down before up, because that is the order the Network pane states them in
+    /// and the order the numbers are usually read in.
+    static func networkSeries(down: [HistoryGraphView.Point],
+                              up: [HistoryGraphView.Point]) -> [HistoryGraphView.Series] {
+        [.init(name: "down", color: Palette.accent, points: down, filled: false),
+         .init(name: "up", color: Palette.blue, points: up, filled: false)]
+    }
+
+    /// The fan graph: speed as a percentage of each fan's own range on the left,
+    /// temperature on the right — the shape the battery graph uses for rate
+    /// against charge, and for the same reason. A fan spins up BECAUSE something
+    /// got hot, and the two lines against a shared time axis is the whole story;
+    /// on one axis, a 2200 rpm fan and a 45 °C sensor would have to share a scale
+    /// that suits neither.
+    ///
+    /// A percentage of each fan's OWN min..max, averaged, rather than of the
+    /// fastest fan's range: `FanInfo.load` is what the Fans pane's gauges already
+    /// show, so the graph and the gauges above it cannot disagree.
+    static func fanSeries(load: [HistoryGraphView.Point]) -> [HistoryGraphView.Series] {
+        [.init(name: "fan speed", color: Palette.accent, points: load, filled: true)]
+    }
+
+    /// MB, meaning 1024², to match `MetricUnit.bytesPerSecond` and the Disk and
+    /// Network columns. Shared by both rate subjects so they cannot drift.
+    static let rateAxisLabel = "MB/s"
 
     /// Bytes per second as MiB/s, which is what the disk graph plots.
     ///
@@ -985,7 +1067,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
     static func mib(_ bytesPerSec: Double) -> Double { bytesPerSec / 1_048_576 }
 
     /// What the bottom of the window is currently about. See `BottomContext`.
-    var bottomContext: BottomContext { BottomContext.forSortKey(sortKey) }
+    var bottomContext: BottomContext { BottomContext.forLens(lens, sortKey: sortKey) }
 
     /// `appending: false` redraws from the buffers WITHOUT adding a sample.
     ///
@@ -1033,8 +1115,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         for key in utilizationSeries.keys {
             utilizationSeries[key]?.removeAll { $0.time < cutoff }
         }
-        diskReadSeries.removeAll { $0.time < cutoff }
-        diskWriteSeries.removeAll { $0.time < cutoff }
+        for series in Self.sessionSeries {
+            self[keyPath: series].removeAll { $0.time < cutoff }
+        }
 
         // Accumulate per-contributor history whenever a bucket is drilled into.
         if let seg = graphSegment {
@@ -1063,13 +1146,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
                 .init(name: r.name, color: Self.seriesColor(i), points: r.pts, filled: false)
             }
             graph.yAxisLabel = "%/hr · \(seg.title)"
+        } else if bottomContext == .network {
+            graph.series = Self.networkSeries(down: netInSeries, up: netOutSeries)
+            graph.yAxisLabel = Self.rateAxisLabel
+        } else if bottomContext == .fans {
+            graph.series = Self.fanSeries(load: fanLoadSeries)
+            graph.yAxisLabel = "% fan speed"
+        } else if bottomContext == .sensors {
+            // Average first so it reads as the headline, with the two the machine
+            // reports by name behind it. Filled would be three washes over each
+            // other; see the disk graph for the same call.
+            graph.series = [
+                .init(name: "average", color: Palette.accent,
+                      points: temperatureSeries, filled: false),
+                .init(name: "cpu", color: Palette.blue, points: cpuTempSeries, filled: false),
+                .init(name: "gpu", color: Palette.violet, points: gpuTempSeries, filled: false),
+            ]
+            graph.yAxisLabel = "°C"
         } else if bottomContext == .disk {
             // Two lines, unfilled. A filled area under both would put one
             // translucent wash on top of another and the overlap would read as a
             // third value; the battery graph fills because it has one left-hand
             // series to fill.
             graph.series = Self.diskSeries(read: diskReadSeries, write: diskWriteSeries)
-            graph.yAxisLabel = Self.diskAxisLabel
+            graph.yAxisLabel = Self.rateAxisLabel
         } else if bottomContext != .battery {
             // The subject the table is sorted by. See `BottomContext`: the sort is
             // the user saying what the question is, and the bottom answers that
@@ -1101,12 +1201,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         // hour. A CPU graph is already a percentage of a fixed whole, so it pins
         // its own axis at 100 instead: an autoscaled utilisation graph makes 4 %
         // and 40 % look identical, and the height is the entire reading.
+        // Set on EVERY branch, including the empty case. This used to be left
+        // untouched by the live path, so it kept whatever the last history load
+        // had written — which was invisible while battery was the only subject
+        // with a right axis and becomes "°C" labelling a battery axis the moment
+        // there are two.
         if bottomContext == .battery {
             graph.sharesRightAxisScale = true
             graph.yMax = nil
             graph.rightSeries = chargeSeries.isEmpty ? nil
                 : .init(name: "charge", color: Palette.chargeLine,
                         points: chargeSeries, filled: false)
+            graph.rightAxisLabel = chargeSeries.count >= 2 ? "battery" : ""
+        } else if bottomContext == .fans {
+            // Temperature on the right axis, fan speed on the left: the shape the
+            // battery graph uses for rate against charge. NOT a shared scale —
+            // 100 % of a fan's range and 100 °C are not commensurable, and the
+            // battery's two ARE (a drain line level with the 50 % gridline means
+            // half the battery in an hour), which is the entire reason that one
+            // shares.
+            graph.sharesRightAxisScale = false
+            graph.yMax = 100
+            graph.rightAxisLabel = "°C"
+            graph.rightSeries = temperatureSeries.isEmpty ? nil
+                : .init(name: "temp", color: Palette.warn,
+                        points: temperatureSeries, filled: false)
         } else {
             graph.sharesRightAxisScale = false
             // A rate has no ceiling to pin to. Pinning disk at 100 would draw
@@ -1114,6 +1233,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
             // burst worth looking at.
             graph.yMax = bottomContext.isPercentage ? 100 : nil
             graph.rightSeries = nil
+            graph.rightAxisLabel = ""
         }
     }
 
@@ -1281,7 +1401,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
     /// therefore also a statement about what the app is allowed to cost while it is
     /// open — see `visibleNeeds`.
     func select(_ lens: SidebarView.Lens) {
+        let before = bottomContext
         self.lens = lens
+        // The bottom follows the TAB now, so a tab change moves it exactly as a
+        // sort change does — and for the same reason: two seconds of a graph
+        // describing the tab you just left is the defect the Resources rail
+        // taught, one level up.
+        if bottomContext != before { retargetBottom() }
 
         // Whole-machine tabs get their own pane; there is no honest per-process
         // view of network traffic or fan speed.
@@ -1431,6 +1557,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         // both battery, and rebuilding the graph for that would be work nobody
         // asked for and a visible flicker.
         guard bottomContext != before else { return }
+        retargetBottom()
+    }
+
+    /// Point the whole bottom at the current subject, NOW rather than on the next
+    /// tick. Called from both things that can change the subject — the sort and
+    /// the tab.
+    func retargetBottom() {
+        let context = bottomContext
+        main.setBottomHidden(context.hidesGraph)
+        // Offer only the ranges this subject can answer. Temperatures and fan
+        // speeds exist for this session alone, so a 7D button on them would
+        // promise a week and draw an empty plot.
+        main.graphRanges.setRanges(context.ranges)
+        if !context.ranges.contains(graphRange), let first = context.ranges.first {
+            graphRange = first
+            graphDomainOverride = nil
+            main.graphRanges.select(seconds: first)
+        }
+        guard !context.hidesGraph else { return }
+
         if let s = lastSnapshot {
             updateLedger(s)
             updateGlance(s)
