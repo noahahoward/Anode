@@ -498,9 +498,15 @@ class SystemPane: NSView {
             if let f = fill, f > 0 {
                 let w = bounds.width * CGFloat(min(max(f, 0), 1))
                 color.withAlphaComponent(0.16).setFill()
+                // `bar`, not `chip`. This is the same KIND of thing as a ledger
+                // segment — a horizontal fill showing how much of something — and
+                // it was rounded at 7 pt against the ledger's 2, which on an 18 pt
+                // row is nearly half the height and reads as a lozenge beside a
+                // near-square bar. The Palette says as much where `bar` is
+                // defined: chip and up are wider than these shapes are tall.
                 NSBezierPath(roundedRect: NSRect(x: 0, y: 2, width: w, height: bounds.height - 4),
-                             xRadius: Palette.Radius.chip,
-                             yRadius: Palette.Radius.chip).fill()
+                             xRadius: Palette.Radius.bar,
+                             yRadius: Palette.Radius.bar).fill()
             }
             let nameAttrs: [NSAttributedString.Key: Any] = [
                 .font: Palette.Font.sans(11.5),
