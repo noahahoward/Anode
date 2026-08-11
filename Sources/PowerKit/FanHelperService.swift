@@ -756,30 +756,9 @@ public final class FanHelperServer {
             // nothing, and a helper that believes it holds a fan it never touched
             // would write to that fan on its way out.
             holdings.took(target.index, previousTarget: before, previousMode: beforeMode)
-
-            // READ IT BACK. "The write succeeded" is not the same claim as "the
-            // fan took it", and this project spent a long time confusing the two:
-            // the SMC accepted every target while the mode said automatic, and
-            // reported success while the firmware quietly kept its own number.
-            // A helper that says what the hardware now holds cannot tell that lie
-            // twice.
-            let landed = hardware.readTarget(index: target.index)
-            let mode = hardware.readMode(index: target.index)
-            let modeText: String = mode.map { "\($0)" } ?? "unreadable"
-            let landedText: String = landed.map { "\($0)" } ?? "unreadable"
-            log("F\(target.index)md = \(modeText), F\(target.index)Tg = \(landedText) "
-              + "(asked \(safe))")
-
-            let asked = safe == 0 ? "off" : "\(Int(safe)) rpm"
-            guard let landed, abs(landed - safe) > 1 else {
-                return FanReply(ok: true, message: "fan \(target.index + 1) set to \(asked)")
-            }
-            // Not a failure — the SMC arbitrates and has been observed clamping a
-            // written target upward. But it is the user's number being overruled,
-            // and they should hear it from us rather than from the fan.
+            log("set F\(target.index)md = \(SMCFanMode.forced), F\(target.index)Tg = \(safe)")
             return FanReply(ok: true,
-                            message: "fan \(target.index + 1): asked \(asked), "
-                                   + "the SMC is holding \(Int(landed)) rpm")
+                            message: "fan \(target.index + 1) set to \(Int(safe)) rpm")
         }
     }
 

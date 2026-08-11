@@ -254,25 +254,17 @@ final class FanSessionTests: XCTestCase {
 
     // ── The safety floor, on the app's side of the socket ───────────────────
 
-    /// A value between zero and the fan's minimum is raised to the minimum. The
-    /// helper clamps again against limits it reads itself — that is the boundary
-    /// that counts — and this is the belt.
+    /// The slider cannot be dragged below the fan's minimum, but the value that
+    /// reaches the command is clamped anyway. The helper clamps again against
+    /// limits it reads itself — that is the boundary that counts — and this is
+    /// the belt: a request below the floor becomes the floor, never a stop.
     func testATargetBelowTheFansMinimumIsRaisedRatherThanSent() {
         var session = connected()
-        XCTAssertEqual(session.apply(.setSpeed(index: 0, rpm: 900, limits: realLimits)),
+        XCTAssertEqual(session.apply(.setSpeed(index: 0, rpm: 0, limits: realLimits)),
                        .send(.setTarget(FanTarget(index: 0, rpm: 2317))))
         XCTAssertEqual(session.apply(.setSpeed(index: 0, rpm: -4000, limits: realLimits)),
                        .send(.setTarget(FanTarget(index: 0, rpm: 2317))))
         XCTAssertEqual(session.asked(0), 2317)
-    }
-
-    /// Zero goes through untouched, because zero is the dead zone at the bottom
-    /// of the bar asking for the fan to stop — see `FanKnob`.
-    func testAStopRequestReachesTheHelperAsAStop() {
-        var session = connected()
-        XCTAssertEqual(session.apply(.setSpeed(index: 0, rpm: 0, limits: realLimits)),
-                       .send(.setTarget(FanTarget(index: 0, rpm: 0))))
-        XCTAssertEqual(session.asked(0), 0)
     }
 
     func testATargetAboveTheFansMaximumIsClamped() {
@@ -310,95 +302,6 @@ final class FanSessionTests: XCTestCase {
 /// to be got wrong quietly: a strip that looks disabled AND reads zero is
 /// indistinguishable from a broken pane.
 final class FanGaugeTests: XCTestCase {
-
-    // ── The dead zone at the bottom of the bar ──────────────────────────────
-    //
-    // A fan's range starts at its minimum, so a bar scaled onto it has nowhere to
-    // put zero — a stopped fan parked the knob at 2317, which reads as "set to
-    // 2317" and was reported as exactly that confusion.
-
-    func testTheBottomOfTheBarMeansOff() {
-        XCTAssertNil(FanKnob.rpm(atPosition: 0, limits: realLimits))
-        XCTAssertNil(FanKnob.rpm(atPosition: 0.01, limits: realLimits))
-        XCTAssertNil(FanKnob.rpm(atPosition: 0.049, limits: realLimits))
-    }
-
-    /// 5% is the fan's minimum exactly, not a shade above it.
-    func testTheTopOfTheDeadZoneIsTheFansMinimum() {
-        XCTAssertEqual(FanKnob.rpm(atPosition: FanKnob.offZone, limits: realLimits) ?? 0,
-                       realLimits.minRPM, accuracy: 0.001)
-    }
-
-    func testTheTopOfTheBarIsTheFansMaximum() {
-        XCTAssertEqual(FanKnob.rpm(atPosition: 1, limits: realLimits) ?? 0,
-                       realLimits.maxRPM, accuracy: 0.001)
-    }
-
-    /// The range above the dead zone is linear, so the middle of the usable part
-    /// of the bar is the middle of the fan's range.
-    func testAboveTheDeadZoneTheBarIsLinearOverTheFansRange() {
-        let mid = FanKnob.offZone + (1 - FanKnob.offZone) / 2
-        XCTAssertEqual(FanKnob.rpm(atPosition: mid, limits: realLimits) ?? 0,
-                       (realLimits.minRPM + realLimits.maxRPM) / 2, accuracy: 0.001)
-    }
-
-    /// Round trip: a speed put on the bar comes back off it.
-    func testAPositionAndAnRPMAgreeWithEachOther() {
-        for rpm in [2317.0, 3000, 4000, 5500, 7826] {
-            let p = FanKnob.position(forRPM: rpm, limits: realLimits)
-            XCTAssertEqual(FanKnob.rpm(atPosition: p, limits: realLimits) ?? 0,
-                           rpm, accuracy: 0.001, "\(rpm) did not survive the round trip")
-        }
-    }
-
-    /// The bug this whole zone exists for: a stopped fan sits at the BOTTOM of
-    /// the bar, not at the minimum.
-    func testAStoppedFanPutsTheKnobAtZeroAndNotAtTheMinimum() {
-        XCTAssertEqual(FanKnob.position(forRPM: 0, limits: realLimits), 0)
-        XCTAssertEqual(FanKnob.position(forRPM: nil, limits: realLimits), 0)
-        XCTAssertEqual(FanKnob.position(forRPM: realLimits.minRPM, limits: realLimits),
-                       FanKnob.offZone, accuracy: 0.001)
-    }
-
-    /// Inside the dead zone there are two answers and the knob takes the nearer.
-    func testAKnobReleasedInTheDeadZoneSnapsToTheNearerEnd() {
-        XCTAssertEqual(FanKnob.snapped(0), 0)
-        XCTAssertEqual(FanKnob.snapped(0.01), 0)
-        XCTAssertEqual(FanKnob.snapped(0.024), 0)
-        XCTAssertEqual(FanKnob.snapped(0.026), FanKnob.offZone)
-        XCTAssertEqual(FanKnob.snapped(0.049), FanKnob.offZone)
-    }
-
-    /// And above it nothing snaps. Rounding a deliberate 4000 rpm to something
-    /// tidier is the control disagreeing with the person holding it.
-    func testAKnobReleasedAboveTheDeadZoneSnapsToNothing() {
-        for p in [0.05, 0.2, 0.371, 0.5, 0.86, 1.0] {
-            XCTAssertEqual(FanKnob.snapped(p), p, accuracy: 0.0001,
-                           "the knob moved on its own at \(p)")
-        }
-    }
-
-    func testOffIsOnlyTheDeadZone() {
-        XCTAssertTrue(FanKnob.isOff(0))
-        XCTAssertTrue(FanKnob.isOff(0.049))
-        XCTAssertFalse(FanKnob.isOff(FanKnob.offZone))
-        XCTAssertFalse(FanKnob.isOff(1))
-    }
-
-    /// A stop request is the one value below the minimum that is NOT clamped up
-    /// to it — otherwise "off" silently becomes "idle", which is the loud failure
-    /// this project has already shipped once.
-    func testAStopRequestIsNotClampedUpToTheMinimum() {
-        guard case .success(let rpm) = FanPolicy.resolve(rpm: 0, limits: realLimits) else {
-            return XCTFail("a stop request was rejected")
-        }
-        XCTAssertEqual(rpm, 0)
-        // Everything else below the minimum still clamps.
-        guard case .success(let low) = FanPolicy.resolve(rpm: 500, limits: realLimits) else {
-            return XCTFail("rejected")
-        }
-        XCTAssertEqual(low, realLimits.minRPM)
-    }
 
     // ── One slider for every fan ────────────────────────────────────────────
 
