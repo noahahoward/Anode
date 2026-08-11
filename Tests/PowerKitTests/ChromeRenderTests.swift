@@ -1308,6 +1308,29 @@ final class GraphGapRuleTests: XCTestCase {
         XCTAssertFalse(breaks.contains(true), "nothing else in this hour is a hole either")
     }
 
+    /// A gap near the threshold does not flicker as the graph re-buckets.
+    ///
+    /// THE REPORTED CASE, with its real numbers: an 85.4 s gap against a 90 s
+    /// limit, in a series bucketed at ~5.1 s. The graph re-buckets against a
+    /// moving `now`, so the measured delta wobbles by up to a bucket width — and
+    /// 85.4 plus or minus 5.1 straddles 90, which is why the dotted line went
+    /// solid every few redraws. The solid version was the correct one.
+    ///
+    /// Simulated by nudging the gap across the range that jitter covers: every
+    /// one of those must give the SAME verdict, or the line changes under a
+    /// stationary pointer.
+    func testAGapNearTheThresholdDoesNotFlickerAsBucketsShift() {
+        for nudge in stride(from: -6.0, through: 6.0, by: 1.0) {
+            var series = pts([(40, 5.1)])
+            for i in 20..<series.count {
+                series[i] = .init(time: series[i].time.addingTimeInterval(85.4 - 5.1 + nudge),
+                                  value: series[i].value)
+            }
+            XCTAssertFalse(HistoryGraphView.breaks(in: series).contains(true),
+                           "an 85 s gap at \(nudge) s of bucket jitter was called an absence")
+        }
+    }
+
     /// A real absence still breaks the line, in either stretch. Ten minutes is
     /// far outside both cadences, and the night this was diagnosed from held a
     /// genuine 9540 s one.
