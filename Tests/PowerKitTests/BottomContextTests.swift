@@ -429,6 +429,30 @@ final class BottomPanelTests: XCTestCase {
                        "the readout did not stay with the point it describes")
     }
 
+    /// A right-hand axis is added only where a second quantity EXPLAINS the
+    /// first, never to fill an axis.
+    ///
+    /// Load against the heat it produced is the pairing worth having, both ways
+    /// round: a CPU graph answers "did that spike cost anything", and a
+    /// temperature graph answers "what is the machine doing about it". Memory
+    /// against nothing and disk bytes against nothing are not pairings, and an
+    /// invented second line is worse than an empty axis.
+    func testOnlyTheResourcesWithAnHonestSecondQuantityGetARightAxis() {
+        let paired: [Resource: String] = [.cpu: "°C", .gpu: "°C", .sensors: "%"]
+        for resource in Resource.allCases {
+            let track = ResourceTrack(resource, title: "x")
+            // The pane names them at construction; this mirrors that mapping so a
+            // resource added later has to make the same decision deliberately.
+            switch resource {
+            case .cpu, .gpu, .sensors:
+                XCTAssertNotNil(paired[resource], "\(resource) should be paired")
+            case .memory, .network, .disk:
+                XCTAssertNil(paired[resource], "\(resource) has no honest second axis")
+            }
+            XCTAssertTrue(track.companion.isEmpty, "a track starts with no second line")
+        }
+    }
+
     /// Sensor groups are built from evidence the naming layer already has, and
     /// invent nothing.
     ///
