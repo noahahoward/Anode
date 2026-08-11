@@ -171,3 +171,33 @@ echo "› to undo everything this project has ever done as root:"
 echo "›   sudo '$INSTALL_DIR/BetterStats.app/Contents/MacOS/BetterStatsHelper' --uninstall"
 echo "› (the build-directory copy is removed on purpose — that path's"
 echo "›  LaunchServices state hides the menu bar widgets. See WIDGET-BUG.md.)"
+
+# ── Launch it ───────────────────────────────────────────────────────────────
+#
+# TWICE, and that is a workaround rather than a nicety.
+#
+# `AppPresence.showsWindowAtLaunch` is `!(startInMenuBarOnly && widgetsEnabled)`,
+# so with both settings on NO launch opens the window — the second `open` is what
+# produces one, because it arrives as a REOPEN and takes a different path
+# (`applicationShouldHandleReopen`). A developer who quits to pick up a new build
+# therefore gets widgets and no window, every time, and learns to build twice.
+#
+# The real bug is that "start in menu bar only" is a statement about LOGIN and is
+# being applied to every launch including a deliberate one. Fixing it needs the
+# app to tell those apart, and the obvious signal cannot:
+# `NSApplicationLaunchIsDefaultLaunchKey` is true for a manual launch and Apple
+# documents it as false only for file/print/Apple-event launches, so a login
+# launch reports true as well. Measured here, not assumed.
+#
+# So this is the dev workflow papering over a product bug, deliberately and in
+# one place. Skip it with BETTERSTATS_NO_LAUNCH=1 — for CI, or for a build made
+# while the app is deliberately not running.
+if [ "${BETTERSTATS_NO_LAUNCH:-0}" != "1" ]; then
+    echo "›"
+    echo "› launching…"
+    open -a "$INSTALL_DIR/BetterStats.app"
+    # Long enough for the first launch to finish registering; a reopen that lands
+    # while the app is still starting is swallowed and the window never appears.
+    sleep 2
+    open -a "$INSTALL_DIR/BetterStats.app"
+fi
