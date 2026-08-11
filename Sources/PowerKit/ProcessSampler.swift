@@ -225,7 +225,18 @@ public struct ProcessDrain {
     public let cpuPercent: Double
     /// Physical footprint right now. Instantaneous, so it is not differenced.
     public let memoryBytes: UInt64
-    public let diskBytesPerSec: Double
+    /// Read and write kept APART all the way to the table.
+    ///
+    /// They were summed in `DrainTracker` the moment they were read, which threw
+    /// away the more useful half of the fact: a process reading 40 MB/s is warming
+    /// a cache, and one writing 40 MB/s is wearing the SSD and dirtying pages the
+    /// OS has to flush. One number cannot say which, and this app has already been
+    /// killed once by macOS for the second kind.
+    public let diskReadPerSec: Double
+    public let diskWrittenPerSec: Double
+    /// Both directions, for the places that legitimately want one figure — the
+    /// sidebar row and the sort that ranks "busiest disk".
+    public var diskBytesPerSec: Double { diskReadPerSec + diskWrittenPerSec }
 }
 
 public enum DrainCalculator {
@@ -266,7 +277,8 @@ public enum DrainCalculator {
                 // MachTime, not /1e9 — see MachTime for why this was 41.667x low.
                 cpuPercent: MachTime.corePercent(units: cpuDeltaUnits, over: dt),
                 memoryBytes: now.footprint,
-                diskBytesPerSec: 0
+                diskReadPerSec: 0,
+                diskWrittenPerSec: 0
             ))
         }
         return out.sorted { $0.percentPerHour > $1.percentPerHour }

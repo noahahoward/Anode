@@ -1181,6 +1181,6 @@ public extension AppDrain {
         self.init(identity: identity, joules: joules,
                   watts: interval > 0 ? joules / interval : 0,
                   percentPerHour: 0, processCount: 1, pids: [],
-                  cpuPercent: 0, memoryBytes: 0, diskBytesPerSec: 0)
+                  cpuPercent: 0, memoryBytes: 0, diskReadPerSec: 0, diskWrittenPerSec: 0)
     }
 }
