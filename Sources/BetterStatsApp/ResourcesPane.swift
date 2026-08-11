@@ -198,6 +198,24 @@ final class ResourcesContent: NSView, PaneContentView {
     /// what is on screen. See the cost note on `ResourcesPane`.
     private var census: MachineInfo.Census?
 
+    /// The last tick's readings, kept so a CLICK can redraw from them.
+    ///
+    /// Selecting a card changed the highlight at once and left the readings
+    /// underneath showing the previous resource until the next sample landed — up
+    /// to two seconds of a tab that had visibly switched and was still describing
+    /// the thing you clicked away from. The data was never missing; this view
+    /// simply threw away the only copy it had after drawing it once.
+    private var lastSample: (sys: SystemMetrics.Snapshot,
+                             power: PowerMonitor.Snapshot?,
+                             net: NetworkInventory.Snapshot,
+                             span: TimeInterval)?
+
+    /// What `renderDetail` last put in the two columns. A test seam: the rows
+    /// themselves are views inside a stack, and reaching through them to ask what
+    /// a click did would test AppKit rather than this.
+    private(set) var lastLiveItems: [BodyItem] = []
+    private(set) var lastSpecItems: [BodyItem] = []
+
     /// The panel this content sits on.
     ///
     /// It had none. `SystemPane` fills the pane with `Palette.background`, this
@@ -353,15 +371,31 @@ final class ResourcesContent: NSView, PaneContentView {
         }
     }
 
-    private func select(_ resource: Resource) {
+    /// Internal rather than private so a test can click without a mouse.
+    func select(_ resource: Resource) {
         guard resource != selected else { return }
         cards[selected]?.isSelected = false
         selected = resource
         cards[resource]?.isSelected = true
-        // The detail is rebuilt from the NEXT tick's data, but its graph and
-        // heading can change now — waiting two seconds to redraw after a click
-        // reads as a click that did nothing.
-        renderDetail(nil, power: nil)
+
+        // Redrawn from the LAST TICK'S readings, not from nothing.
+        //
+        // This used to pass nil, on the reasoning that the rows would be rebuilt
+        // by the next tick — so the graph and heading switched instantly and the
+        // numbers under them went on describing the resource you had just clicked
+        // away from, for as long as two seconds. The readings were never
+        // unavailable; they were simply not kept.
+        //
+        // The census is per-selection and is recomputed here for the same reason:
+        // it is only gathered for CPU, so selecting CPU would otherwise show no
+        // process or thread counts until the next sample. 0.48 ms, once, on a
+        // click a person just made.
+        census = resource == .cpu ? MachineInfo.census() : nil
+        if let s = lastSample {
+            renderDetail(s.sys, power: s.power, network: s.net, span: s.span)
+        } else {
+            renderDetail(nil, power: nil)
+        }
     }
 
     func waitForFirstSample() {
@@ -387,6 +421,7 @@ final class ResourcesContent: NSView, PaneContentView {
         for (resource, track) in tracks {
             cards[resource]?.apply(track)
         }
+        lastSample = (sys, power, net, span)
         renderDetail(sys, power: power, network: net, now: now, span: span)
     }
 
@@ -478,6 +513,8 @@ final class ResourcesContent: NSView, PaneContentView {
         guard let sys else { return }
         let net = network ?? NetworkInventory.snapshot(now: now)
         let (live, specs) = build(selected, sys: sys, power: power, network: net)
+        lastLiveItems = live
+        lastSpecItems = specs
         liveColumn.setItems(live)
         detail.setSpecs(specs)
     }
