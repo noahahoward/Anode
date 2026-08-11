@@ -110,6 +110,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
     var totalSeries: [HistoryGraphView.Point] = []
     /// Battery charge over the same window, plotted on the right-hand 0-100 axis.
     var chargeSeries: [HistoryGraphView.Point] = []
+    /// Live utilisation, for the bottom graph when it is not about the battery.
+    ///
+    /// Kept beside `totalSeries` rather than derived from it because they are
+    /// different measurements: one is the pack's drain, these are the device's
+    /// own load. Same window, same cutoff, same 1H buffer — the longer ranges
+    /// come from `utilizationSeries`, which the store has kept all along.
+    var utilizationSeries: [BottomContext: [HistoryGraphView.Point]] = [:]
     let graphSpan: TimeInterval = 3600
 
     var lastSnapshot: PowerMonitor.Snapshot?
@@ -588,12 +595,58 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         main.sidebar.refreshValues()
     }
 
+    /// The same range, for a subject that is a utilisation rather than a drain.
+    ///
+    /// One series and no right-hand axis: the battery's charge line belongs to the
+    /// battery, and drawing it under a CPU curve is a fact about something else
+    /// laid over the answer. The axis is pinned at 100 for the same reason the
+    /// live path pins it — a percentage of a fixed whole read against an
+    /// autoscaled axis makes 4 % and 40 % look identical.
+    func loadUtilizationHistory(_ context: BottomContext, start: Date, end: Date) {
+        guard let store else { return }
+        DispatchQueue.global(qos: .userInitiated).async {
+            let pts = store.utilizationSeries(since: start, until: end, maxPoints: 700)
+            let series = pts.compactMap { p -> HistoryGraphView.Point? in
+                let v: Double?
+                switch context {
+                case .cpu:    v = p.cpuPercent
+                case .memory: v = p.memoryPercent
+                case .gpu:    v = p.gpuPercent
+                case .battery: v = nil
+                }
+                // A bucket the store has no reading for yields NO point, so the
+                // graph's own gap rule draws the silence. A zero here would be a
+                // claim that the device was idle in a window nobody sampled.
+                guard let v else { return nil }
+                return .init(time: p.time, value: v)
+            }
+            DispatchQueue.main.async {
+                self.graph.sharesRightAxisScale = false
+                self.graph.yMax = 100
+                self.graph.rightSeries = nil
+                self.graph.rightAxisLabel = ""
+                self.graph.series = [
+                    .init(name: context.title.lowercased(), color: Palette.accent,
+                          points: series, filled: true)
+                ]
+                self.graph.yAxisLabel = "% \(context.title.lowercased())"
+            }
+        }
+    }
+
     /// Pull a historical range out of the store and hand it to the graph.
     ///
     /// Bucketed SQL-side to at most ~700 points, so a 7-day query costs the same
     /// as an hour and the view never receives more samples than it has pixels.
     func loadHistorySeries(start: Date, end: Date) {
         guard let store else { return }
+        // A change of subject changes the query, not just the label. The store has
+        // kept CPU, memory and GPU alongside the battery all along — see
+        // `utilizationSeries` — so a week of CPU is as real as a week of drain and
+        // costs the same to ask for.
+        guard bottomContext == .battery else {
+            return loadUtilizationHistory(bottomContext, start: start, end: end)
+        }
         let scale = lastSnapshot?.scale
         DispatchQueue.global(qos: .userInitiated).async {
             let pts = store.powerSeries(since: start, until: end, maxPoints: 700)
@@ -727,36 +780,72 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         return (shown, hours, source, span)
     }
 
-    func updateGraph(_ s: PowerMonitor.Snapshot?) {
+    /// One tick of device load, for each subject the bottom can be about.
+    ///
+    /// A missing reading appends NOTHING rather than a zero — the graph's own gap
+    /// rule then draws the silence as a silence. A zero would be a claim that the
+    /// GPU was idle during a window where nobody asked it.
+    func appendUtilization(_ sys: SystemMetrics.Snapshot, at now: Date) {
+        if let cpu = sys.cpu?.total {
+            utilizationSeries[.cpu, default: []].append(.init(time: now, value: cpu))
+        }
+        if let gpu = sys.gpu?.utilization {
+            utilizationSeries[.gpu, default: []].append(.init(time: now, value: gpu))
+        }
+        if let mem = sys.memory?.usedPercent {
+            utilizationSeries[.memory, default: []].append(.init(time: now, value: mem))
+        }
+    }
+
+    /// What the bottom of the window is currently about. See `BottomContext`.
+    var bottomContext: BottomContext { BottomContext.forSortKey(sortKey) }
+
+    /// `appending: false` redraws from the buffers WITHOUT adding a sample.
+    ///
+    /// Changing the sort has to redraw the bottom at once — the same lesson the
+    /// Resources rail taught, where a click changed the highlight and left the
+    /// readings describing the thing you clicked away from. But this function also
+    /// records a tick, and calling it out of band to force a redraw would push a
+    /// duplicate sample into the history for every click.
+    func updateGraph(_ s: PowerMonitor.Snapshot?, appending: Bool = true) {
         guard let s else { return }
         // A historical or zoomed view is not a live chart. Ticking new points into
         // it would make the line creep rightward under a fixed axis and slowly
         // overwrite what the user asked to look at.
         guard graphRange <= 3600, graphDomainOverride == nil else { return }
         let now = Date()
-        totalSeries.append(.init(time: now, value: s.smoothed_pctHr))
-        if let pct = s.state?.percent {
-            // `onPower` is what paints the charging spans green, and the LIVE
-            // series forgot it while the store-backed one (loadHistorySeries)
-            // has always set it. That is why 1H drew a charging span in the
-            // ordinary colour while 6H/24H/7D drew the same span green: the
-            // 1H view is this in-memory buffer, the rest come from SQLite.
-            //
-            // `onPower` means ON THE ADAPTER, so this is `onAC` and NOT its
-            // negation. The store path builds the same flag from the opposite
-            // column — `onPower: !p.onBattery` — and negating `onAC` to match the
-            // SHAPE of that line is a double negative: it made the 1H view claim
-            // the machine was charging while it was running the battery down, and
-            // the comment that used to sit here asserted the two paths agreed.
-            //
-            // Only 1H was affected, because only 1H comes from this buffer, which
-            // is exactly why it survived the fix that was supposed to address it.
-            chargeSeries.append(.charge(time: now, percent: Double(pct),
-                                        onAC: s.state?.onAC ?? false))
+        if appending {
+            totalSeries.append(.init(time: now, value: s.smoothed_pctHr))
+            if let pct = s.state?.percent {
+                // `onPower` is what paints the charging spans green, and the LIVE
+                // series forgot it while the store-backed one (loadHistorySeries)
+                // has always set it. That is why 1H drew a charging span in the
+                // ordinary colour while 6H/24H/7D drew the same span green: the
+                // 1H view is this in-memory buffer, the rest come from SQLite.
+                //
+                // `onPower` means ON THE ADAPTER, so this is `onAC` and NOT its
+                // negation. The store path builds the same flag from the opposite
+                // column — `onPower: !p.onBattery` — and negating `onAC` to match the
+                // SHAPE of that line is a double negative: it made the 1H view claim
+                // the machine was charging while it was running the battery down, and
+                // the comment that used to sit here asserted the two paths agreed.
+                //
+                // Only 1H was affected, because only 1H comes from this buffer, which
+                // is exactly why it survived the fix that was supposed to address it.
+                chargeSeries.append(.charge(time: now, percent: Double(pct),
+                                            onAC: s.state?.onAC ?? false))
+            }
+            if let sys = lastSystem {
+                appendUtilization(sys, at: now)
+            }
         }
+
         let cutoff = now.addingTimeInterval(-graphSpan)
         totalSeries.removeAll { $0.time < cutoff }
         chargeSeries.removeAll { $0.time < cutoff }
+        for key in utilizationSeries.keys {
+            utilizationSeries[key]?.removeAll { $0.time < cutoff }
+        }
 
         // Accumulate per-contributor history whenever a bucket is drilled into.
         if let seg = graphSegment {
@@ -785,6 +874,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
                 .init(name: r.name, color: Self.seriesColor(i), points: r.pts, filled: false)
             }
             graph.yAxisLabel = "%/hr · \(seg.title)"
+        } else if bottomContext != .battery {
+            // The subject the table is sorted by. See `BottomContext`: the sort is
+            // the user saying what the question is, and the bottom answers that
+            // question rather than the one the app happens to be named after.
+            let context = bottomContext
+            graph.series = [
+                .init(name: context.title.lowercased(), color: Palette.accent,
+                      points: utilizationSeries[context] ?? [], filled: true)
+            ]
+            graph.yAxisLabel = "% \(context.title.lowercased())"
         } else {
             // One series: total drain. The attributed-versus-unaccounted split
             // already has a home in the ledger bar directly above, and drawing it
@@ -794,14 +893,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
             ]
             graph.yAxisLabel = "%/hr"
         }
-        // Charge on its own axis, sampled at the same cadence as the rate, so the
-        // fall can be read against the spike that caused it.
-        // Same steps on both axes: a drain line level with the 50% gridline
-        // means half the battery in an hour, read off the picture.
-        graph.sharesRightAxisScale = true
-        graph.rightSeries = chargeSeries.isEmpty ? nil
-            : .init(name: "charge", color: Palette.chargeLine,
-                    points: chargeSeries, filled: false)
+        // BOTH OF THESE ARE ABOUT THE BATTERY and neither survives a change of
+        // subject.
+        //
+        // The charge line is a second series on a second axis, there so a drop can
+        // be read against the spike that caused it. On a CPU graph it is a fact
+        // about something else, drawn over the answer.
+        //
+        // And the shared 0-100 scale exists because %/hr and % are commensurable —
+        // a drain line level with the 50 % gridline means half the battery in an
+        // hour. A CPU graph is already a percentage of a fixed whole, so it pins
+        // its own axis at 100 instead: an autoscaled utilisation graph makes 4 %
+        // and 40 % look identical, and the height is the entire reading.
+        if bottomContext == .battery {
+            graph.sharesRightAxisScale = true
+            graph.yMax = nil
+            graph.rightSeries = chargeSeries.isEmpty ? nil
+                : .init(name: "charge", color: Palette.chargeLine,
+                        points: chargeSeries, filled: false)
+        } else {
+            graph.sharesRightAxisScale = false
+            graph.yMax = 100
+            graph.rightSeries = nil
+        }
     }
 
     func updateDetail() {
@@ -1103,10 +1217,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
 
     func tableView(_ tv: NSTableView, sortDescriptorsDidChange old: [NSSortDescriptor]) {
         guard let d = tv.sortDescriptors.first, let k = d.key else { return }
+        let before = bottomContext
         sortKey = k
         ascending = d.ascending
         sortRows()
         tv.reloadData()
+
+        // The bottom follows the sort, so it redraws NOW rather than on the next
+        // tick. Two seconds of three panels describing the column you just sorted
+        // away from is the same defect the Resources rail had.
+        //
+        // Only when the SUBJECT changed: sorting by name and by process count are
+        // both battery, and rebuilding the graph for that would be work nobody
+        // asked for and a visible flicker.
+        guard bottomContext != before else { return }
+        if graphRange > 3600 || graphDomainOverride != nil {
+            let end = Date()
+            loadHistorySeries(start: end.addingTimeInterval(-graphRange), end: end)
+        } else {
+            updateGraph(lastSnapshot, appending: false)
+        }
     }
 
     /// What a cell says, from the column's own definition.
