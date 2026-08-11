@@ -195,14 +195,27 @@ final class ResourcesContent: NSView, PaneContentView {
     /// same `Radius.card` as the rest, and repaints on a theme flip like
     /// everything else.
     override func draw(_ dirtyRect: NSRect) {
-        // BLACK, with rounded corners and no border. `surface` lifted this into a
-        // card, which is one more surface than the pane needs — the readings sit
-        // directly on the app's ground and the rounding is the only edge.
-        let panel = NSBezierPath(roundedRect: bounds,
-                                 xRadius: Palette.Radius.card,
-                                 yRadius: Palette.Radius.card)
+        // TWO grounds, because there are two things here.
+        //
+        // The readings are on BLACK: they are the content, and content sits on the
+        // app's own ground with the rounding as its only edge. A lighter card
+        // under them was one surface more than the pane needs.
+        //
+        // The rail is on `surface`, because it is a CHOOSER. Without a ground
+        // behind them the six cards read as six loose graphs rather than as a list
+        // you pick from — the panel is what says these are tabs. That is also why
+        // it is the whole column rather than a box per card: the group is the
+        // thing being drawn.
         Palette.background.setFill()
-        panel.fill()
+        NSBezierPath(roundedRect: bounds,
+                     xRadius: Palette.Radius.card,
+                     yRadius: Palette.Radius.card).fill()
+
+        Palette.surface.setFill()
+        NSBezierPath(roundedRect: NSRect(x: 0, y: 0,
+                                         width: Self.railWidth, height: bounds.height),
+                     xRadius: Palette.Radius.card,
+                     yRadius: Palette.Radius.card).fill()
     }
 
     override func viewDidChangeEffectiveAppearance() { needsDisplay = true }
