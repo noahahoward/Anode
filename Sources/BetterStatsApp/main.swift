@@ -942,7 +942,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
                 self.graph.sharesRightAxisScale = true
                 self.graph.series = [.init(name: Self.drainSeriesName, color: Palette.accent, points: series)]
                 self.graph.rightSeries = charge.count >= 2
-                    ? .init(name: "battery", color: Palette.chargeLine, points: charge)
+                    ? .init(name: "battery", color: Palette.chargeLine,
+                            points: charge, filled: true)
                     : nil
                 self.graph.rightAxisLabel = charge.count >= 2 ? "battery" : ""
             }
@@ -1357,8 +1358,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
             graph.sharesRightAxisScale = true
             graph.yMax = nil
             graph.rightSeries = chargeSeries.isEmpty ? nil
+                // Filled, like every other line alone on its axis. It is cut by
+                // the drain fill below it, so the charge line's wash stops where
+                // that one starts instead of the two stacking.
                 : .init(name: "charge", color: Palette.chargeLine,
-                        points: chargeSeries, filled: false)
+                        points: chargeSeries, filled: true)
             graph.rightAxisLabel = chargeSeries.count >= 2 ? "battery" : ""
             graph.rightAxisUnit = "%"
         } else if bottomContext == .fans {
