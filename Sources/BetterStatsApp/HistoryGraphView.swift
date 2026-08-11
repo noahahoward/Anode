@@ -1502,9 +1502,23 @@ extension HistoryGraphView {
         // axis. On the fan graph it is the temperature, and "what was the temp
         // when the fans spun up" is the entire reason the two share a chart.
         if let r = rightSeries, let near = nearest(Self.sanitize(r.points)) {
-            lines.append((r.name, r.color,
+            // THE COLOUR OF THE SEGMENT UNDER THE CROSSHAIR, not of the series.
+            //
+            // The charge line is drawn per-segment: green across the spans where
+            // the pack was filling, the series ink everywhere else, because "was
+            // it plugged in" is the one thing people scan a charge history for.
+            // The readout took the series colour regardless, so hovering a green
+            // stretch produced a blue swatch beside it — the box says one thing
+            // and the line under it says another.
+            //
+            // The axis TICKS keep the series colour on purpose (see
+            // `drawRightSeries`): they label the whole axis, which belongs to the
+            // line rather than to what it was doing at one instant. This box is
+            // reporting that instant, so it follows the instant.
+            let ink = near.onPower == true ? Palette.chargingLine : r.color
+            lines.append((r.name, ink,
                           near.detail ?? String(format: "%.2f", near.value)))
-            mark(near, yForRight, r.color)
+            mark(near, yForRight, ink)
         }
         guard !lines.isEmpty else { return }
 
