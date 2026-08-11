@@ -611,3 +611,50 @@ extension DrainEstimate {
         DrainEstimate.canQuoteTime(source: source, windowSpan: windowSpan)
     }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+
+extension DrainRateEstimator {
+    /// The measured-discharge trend, for saving across a restart. See
+    /// `BatteryDischargeTrend.Persisted` for why this is safe and what still
+    /// invalidates it.
+    public func persistedTrend() -> BatteryDischargeTrend.Persisted { dischargeTrend.persisted() }
+
+    public func restoreTrend(_ p: BatteryDischargeTrend.Persisted) {
+        dischargeTrend.restore(p)
+    }
+}
+
+extension BatteryDischargeTrend.Persisted {
+
+    /// Beside the history database, because it is the same kind of thing: state
+    /// about this machine's battery that outlives the process.
+    public static func fileURL(fileManager fm: FileManager = .default) -> URL? {
+        guard let base = fm.urls(for: .applicationSupportDirectory,
+                                 in: .userDomainMask).first else { return nil }
+        return base.appendingPathComponent("BetterStats/discharge-trend.json")
+    }
+
+    /// nil when there is nothing saved, when it cannot be read, or when it is
+    /// from a format this build does not know. Every one of those is "start
+    /// fresh", which is the behaviour this replaces and therefore cannot be worse
+    /// than.
+    public static func load(fileManager fm: FileManager = .default)
+        -> BatteryDischargeTrend.Persisted? {
+        guard let url = fileURL(fileManager: fm),
+              let data = try? Data(contentsOf: url) else { return nil }
+        return try? JSONDecoder().decode(BatteryDischargeTrend.Persisted.self, from: data)
+    }
+
+    /// Small and rare on purpose: a few dozen samples of five numbers, written on
+    /// quit and occasionally in between. macOS has killed this app before for
+    /// dirtying pages too fast, so nothing here goes near a per-tick write.
+    @discardableResult
+    public func save(fileManager fm: FileManager = .default) -> Bool {
+        guard let url = Self.fileURL(fileManager: fm),
+              let data = try? JSONEncoder().encode(self) else { return false }
+        try? fm.createDirectory(at: url.deletingLastPathComponent(),
+                                withIntermediateDirectories: true)
+        return (try? data.write(to: url, options: .atomic)) != nil
+    }
+}

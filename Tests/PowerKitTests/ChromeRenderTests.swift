@@ -712,3 +712,42 @@ final class ChargePointPolarityTests: XCTestCase {
                                                      onBattery: false).onPower, true)
     }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// The glance card's headline slot, which is sized for a duration.
+///
+/// It shipped clipped: "measuring…" in a slot tuned for "9h 41m" overflowed the
+/// width and lost the bottom of every glyph, because the card's height comes from
+/// the graph beside it and the stack is compressed rather than grown. Descenders
+/// are the tell — a `g` that stops at the baseline is a frame that is too short —
+/// so the test asks the font itself whether the line box can hold one.
+final class GlanceHeadlineFitTests: XCTestCase {
+
+    override func setUp() { _ = appKitForTests }
+
+    /// A word must be set in a face whose line height fits the same slot a
+    /// duration does, descenders included.
+    func testAWordFitsTheSlotADurationFits() {
+        let duration = Palette.Font.mono(30, .semibold)
+        let word = Palette.Font.sans(21, .semibold)
+        // Line height including the descent, which is the part that was cut.
+        let durationLine = duration.ascender - duration.descender
+        let wordLine = word.ascender - word.descender
+        XCTAssertLessThanOrEqual(wordLine, durationLine,
+                                 "a word is set taller than the slot a duration gets")
+        XCTAssertLessThan(word.descender, 0, "this face has no descent to fit")
+    }
+
+    /// And it must be narrower, since the slot is a fixed strip.
+    func testTheLongestWordUsedIsNoWiderThanTheLongestDuration() {
+        let word = NSAttributedString(
+            string: "measuring…",
+            attributes: [.font: Palette.Font.sans(21, .semibold)]).size().width
+        let duration = NSAttributedString(
+            string: "10h 41m",
+            attributes: [.font: Palette.Font.mono(30, .semibold)]).size().width
+        XCTAssertLessThanOrEqual(word, duration * 1.05,
+                                 "the word headline is wider than the slot it shares")
+    }
+}
