@@ -423,3 +423,58 @@ final class SettleGateTests: XCTestCase {
         XCTAssertEqual(DrainEstimate.settleSeconds, 120)
     }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// A restored trend counts as history even when its rate loses the cross-check.
+///
+/// The failure this pins is a freshly launched app: the mAh regression's window
+/// is empty for the first minutes, so reporting only that window announced "no
+/// history" while a restored trend held half an hour of measured discharge. The
+/// "still measuring" gate believed it, and the estimate read measuring on every
+/// launch — which is exactly what restoring the trend was meant to stop.
+final class RestoredTrendSpanTests: XCTestCase {
+
+    private let scale = BatteryScale(fullChargeCapacity_mAh: 6193,
+                                     designCapacity_mAh: 6249,
+                                     nominalVoltage_V: BatteryScale.seedNominalVoltage_V,
+                                     isCalibrated: true)
+
+    func testAFreshLaunchWithARestoredTrendIsNotStillMeasuring() throws {
+        let est = DrainRateEstimator()
+
+        // Half an hour of measured discharge, as if restored from disk.
+        let t0 = Date().addingTimeInterval(-1800)
+        var restored: [BatteryDischargeTrend.Sample] = []
+        for i in 0...30 {
+            let seconds: Double = 60 * Double(i)
+            restored.append(.init(accumulatedDischarge: Int64(-6000.0 * seconds),
+                                  accumulatorCount: UInt64(60 * i),
+                                  voltage_mV: 11_800,
+                                  timestamp: t0.addingTimeInterval(seconds),
+                                  awake: 10_000 + seconds))
+        }
+        est.restoreTrend(.init(samples: restored, version: 1))
+
+        // One tick, as a just-launched app would take.
+        // The raw path, so the test drives the accumulator instead of reading
+        // this machine's. `record(state:…)` samples the real hardware, whose
+        // counter is nowhere near the synthetic one — an implausible jump that
+        // resets the very trend under test.
+        let next = BatteryDischargeTrend.Sample(
+            accumulatedDischarge: Int64(-6000.0 * 1860),
+            accumulatorCount: 60 * 31,
+            voltage_mV: 11_800,
+            timestamp: t0.addingTimeInterval(1860),
+            awake: 10_000 + 1860)
+        est.record(remainingCapacity_mAh: 3667, onAC: false, isCharging: false,
+                   scale: scale, powerBased_pctHr: 8.0, discharge: next,
+                   at: t0.addingTimeInterval(1860))
+
+        let e = try XCTUnwrap(est.estimate())
+        XCTAssertGreaterThanOrEqual(e.windowSpan, DrainEstimate.settleSeconds,
+                                    "a restored half-hour trend reported as no history")
+        XCTAssertTrue(DrainEstimate.canQuoteTime(source: e.source, windowSpan: e.windowSpan),
+                      "a just-launched app with restored history still read as measuring")
+    }
+}
