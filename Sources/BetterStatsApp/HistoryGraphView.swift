@@ -148,6 +148,21 @@ public class HistoryGraphView: NSView {
     /// rather than a coincidence maintained in two places.
     static let sharedAxisTicks: [Double] = [0, 25, 50, 75, 100]
 
+    /// The area wash under a line: dense at the line, effectively gone by the end
+    /// of its fade.
+    ///
+    /// ONE PAIR OF NUMBERS. The left-hand series used 0.24 and the right-hand one
+    /// 0.28 — the same material at two densities, which is the complaint that
+    /// started the fade work in the first place, reappearing between the two
+    /// halves of the fix for it.
+    ///
+    /// A gradient rather than a flat wash: the two carry identical information and
+    /// average to the same ink, but a flat block reads as a second, paler series
+    /// with its own bottom edge, while a fade reads as depth belonging to the line
+    /// above it.
+    static let washTop: CGFloat = 0.24
+    static let washBottom: CGFloat = 0.02
+
     /// Height of a legend swatch. The two legends — the header strip and the
     /// hover card — drew the same mark from two copies of the same numbers.
     static let swatchH: CGFloat = 2.5
@@ -977,8 +992,8 @@ public class HistoryGraphView: NSView {
             // with its own bottom edge, while a fade reads as depth belonging to
             // the line above it. Densest at the line, effectively gone by the
             // baseline, so it never competes with the band drawn behind it.
-            let gradient = NSGradient(starting: s.color.withAlphaComponent(0.24),
-                                      ending: s.color.withAlphaComponent(0.02))
+            let gradient = NSGradient(starting: s.color.withAlphaComponent(Self.washTop),
+                                      ending: s.color.withAlphaComponent(Self.washBottom))
             for run in runs where run.count >= 2 {
                 let fill = NSBezierPath()
                 fill.move(to: NSPoint(x: run[0].x, y: run[0].y))
@@ -1296,8 +1311,8 @@ public class HistoryGraphView: NSView {
                     area.line(to: NSPoint(x: span[0].x, y: plot.minY))
                     area.close()
                     let ink = spanCharging ? Palette.chargingLine : r.color
-                    if let g = NSGradient(starting: ink.withAlphaComponent(0.28),
-                                          ending: ink.withAlphaComponent(0.02)) {
+                    if let g = NSGradient(starting: ink.withAlphaComponent(Self.washTop),
+                                          ending: ink.withAlphaComponent(Self.washBottom)) {
                         NSGraphicsContext.saveGraphicsState()
                         area.addClip()
                         let top = span.map(\.y).max() ?? plot.maxY
