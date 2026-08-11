@@ -1188,34 +1188,81 @@ public class HistoryGraphView: NSView {
             let breaks = Self.breaks(in: pts)
 
             // The gradient, before the line so the stroke sits on top of its own
-            // wash.
+            // wash — and in the SAME ink as the segment above it, which is why
+            // this is per-span rather than one area for the series.
+            //
+            // The charge line is drawn green across the spans where the pack was
+            // filling. Filling the whole series in `r.color` put a deep blue wash
+            // under a green line, and at 0.24 alpha on a black ground that is
+            // very nearly invisible: measured, it lifted the region's luminance by
+            // 0.054, which a test can see and an eye reasonably cannot. Reported
+            // twice as "still no gradient" — it was drawing, in a colour chosen to
+            // disappear.
             //
             // Clipped to the plot MINUS everything already filled this pass: an
             // even-odd path of the plot rect plus the earlier areas leaves exactly
             // the region no lower fill has claimed. That is "the bottom one cuts
             // the top one off", done geometrically, so crossing lines resolve per
-            // pixel instead of by an assumed ordering — and fan speed and
-            // temperature do cross, every time the fans spin up.
-            if r.filled, pts.count >= 2,
-               let gradient = NSGradient(starting: r.color.withAlphaComponent(0.24),
-                                         ending: r.color.withAlphaComponent(0.02)) {
-                let area = NSBezierPath()
-                area.move(to: NSPoint(x: xFor(pts[0].time), y: yForRight(pts[0].value)))
-                for n in pts.dropFirst() {
-                    area.line(to: NSPoint(x: xFor(n.time), y: yForRight(n.value)))
-                }
-                area.line(to: NSPoint(x: xFor(pts[pts.count - 1].time), y: plot.minY))
-                area.line(to: NSPoint(x: xFor(pts[0].time), y: plot.minY))
-                area.close()
-
+            // pixel instead of by an assumed ordering.
+            if r.filled {
                 NSGraphicsContext.saveGraphicsState()
                 let mask = NSBezierPath(rect: plot)
                 mask.append(filledSoFar)
                 mask.windingRule = .evenOdd
                 mask.addClip()
-                gradient.draw(in: area, angle: 90)
+
+                var span: [NSPoint] = []
+                var spanCharging = false
+                let drawn = NSBezierPath()
+
+                /// Close the run to the floor, fill it in its own ink, and keep it
+                /// so later fills are cut by it too.
+                func flush() {
+                    defer { span.removeAll() }
+                    guard span.count >= 2 else { return }
+                    let area = NSBezierPath()
+                    area.move(to: span[0])
+                    for pt in span.dropFirst() { area.line(to: pt) }
+                    area.line(to: NSPoint(x: span[span.count - 1].x, y: plot.minY))
+                    area.line(to: NSPoint(x: span[0].x, y: plot.minY))
+                    area.close()
+                    let ink = spanCharging ? Palette.chargingLine : r.color
+                    if let g = NSGradient(starting: ink.withAlphaComponent(0.28),
+                                          ending: ink.withAlphaComponent(0.02)) {
+                        g.draw(in: area, angle: 90)
+                    } else {
+                        ink.withAlphaComponent(0.16).setFill()
+                        area.fill()
+                    }
+                    drawn.append(area)
+                }
+
+                for i in 0..<(pts.count - 1) {
+                    // A break is a span the machine was not observed across, and a
+                    // wash drawn over it claims a level nobody measured — the same
+                    // reason the line itself stops there.
+                    if breaks[i] { flush(); continue }
+                    let isCharging = charging[i] && charging[i + 1]
+                    if span.isEmpty {
+                        spanCharging = isCharging
+                        span.append(NSPoint(x: xFor(pts[i].time),
+                                            y: yForRight(pts[i].value)))
+                    } else if isCharging != spanCharging {
+                        // Hand the boundary vertex to both spans so their washes
+                        // meet exactly where the line changes colour.
+                        span.append(NSPoint(x: xFor(pts[i].time),
+                                            y: yForRight(pts[i].value)))
+                        flush()
+                        spanCharging = isCharging
+                        span.append(NSPoint(x: xFor(pts[i].time),
+                                            y: yForRight(pts[i].value)))
+                    }
+                    span.append(NSPoint(x: xFor(pts[i + 1].time),
+                                        y: yForRight(pts[i + 1].value)))
+                }
+                flush()
                 NSGraphicsContext.restoreGraphicsState()
-                filledSoFar.append(area)
+                filledSoFar.append(drawn)
             }
 
             var runs: [(charging: Bool, path: NSBezierPath)] = []
