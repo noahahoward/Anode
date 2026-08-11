@@ -200,6 +200,19 @@ public class HistoryGraphView: NSView {
     /// 0-100 remains the range, and for a temperature that is honest rather than
     /// convenient — this hardware throttles well inside it, and a fixed scale lets
     /// two sessions be compared by eye.
+    /// Every area already filled on this pass, so a fill drawn LATER can be cut
+    /// by the ones under it.
+    ///
+    /// The rule the user set: where two gradients would overlap, the lower one
+    /// wins and the higher one stops at it. Two translucent washes stacked read
+    /// as a third value at the overlap — a number nobody measured — which is the
+    /// same objection that kept multi-line graphs unfilled entirely.
+    ///
+    /// A CLIP rather than rebuilt bands, and that is what makes it correct when
+    /// the lines cross: geometry decides what is on top at each x, so nothing
+    /// depends on one series being "above" another for the whole span.
+    private var filledSoFar = NSBezierPath()
+
     public var rightAxisUnit: String = "%" {
         didSet { if rightAxisUnit != oldValue { needsDisplay = true } }
     }
@@ -442,6 +455,9 @@ public class HistoryGraphView: NSView {
     // MARK: - Drawing
 
     public override func draw(_ dirtyRect: NSRect) {
+        // Cleared per pass: this records what has been filled during THIS draw,
+        // and a path kept across frames would clip against last frame's shapes.
+        filledSoFar = NSBezierPath()
         guard let ctx = NSGraphicsContext.current?.cgContext else { return }
         ctx.setShouldAntialias(true)
 
@@ -970,6 +986,7 @@ public class HistoryGraphView: NSView {
                 fill.line(to: NSPoint(x: run[run.count - 1].x, y: zeroY))
                 fill.line(to: NSPoint(x: run[0].x, y: zeroY))
                 fill.close()
+                filledSoFar.append(fill)
                 guard let gradient else {
                     // Fail soft: a series colour that will not convert to a
                     // gradient's colour space still gets its area, flat.
