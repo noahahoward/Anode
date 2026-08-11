@@ -752,8 +752,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
             // them — they each sit somewhere in their own min..max — so the bar
             // shows how far into that range they are and what is left, which is
             // exactly what the graph above plots and the pane's own dials show.
-            let load = sys.fans.reduce(0) { $0 + $1.load } / Double(sys.fans.count) * 100
-            let rpm = sys.fans.reduce(0) { $0 + $1.currentRPM } / Double(sys.fans.count)
+            let load = sys.fans.averageLoad * 100
+            let rpm = sys.fans.averageRPM
             main.ledger.utilization = .gauge(
                 "Fan speed", percent: load,
                 caption: String(format: "%.0f rpm average of %d", rpm, sys.fans.count))
@@ -1083,8 +1083,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         // fans stopping every time the window was hidden.
         if sys.sensorsSampled {
             if !sys.fans.isEmpty {
-                let load = sys.fans.reduce(0) { $0 + $1.load } / Double(sys.fans.count)
-                let rpm = sys.fans.reduce(0) { $0 + $1.currentRPM } / Double(sys.fans.count)
+                let load = sys.fans.averageLoad
+                let rpm = sys.fans.averageRPM
                 // The rpm rides ALONG with the percentage rather than replacing
                 // it. The line has to be a percentage — two fans with different
                 // top speeds have no shared rpm scale — but nobody reads a fan in

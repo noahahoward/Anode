@@ -162,6 +162,30 @@ public enum NaturalOrder {
     }
 }
 
+public extension Array where Element == FanInfo {
+    /// What this machine's fans are doing, as one number.
+    ///
+    /// THE AVERAGE, and it is an average everywhere: the window's fan card sets
+    /// it in the headline, the bar captions it, the graph plots it, and the menu
+    /// bar widget reports it. That widget used to report the FASTEST fan instead —
+    /// a fair argument on its own, since the fastest is the one you can hear, and
+    /// it lost to the app agreeing with itself. On a machine whose fans sit at
+    /// 2318 and 2500 rpm it simply read as the second fan.
+    ///
+    /// Written once because it was written seven times, which is how the widget
+    /// managed to disagree with everything around it in the first place. Zero for
+    /// no fans; callers that need to tell "no fans" from "fans at rest" check the
+    /// array itself, since those are different claims.
+    var averageRPM: Double {
+        isEmpty ? 0 : reduce(0) { $0 + $1.currentRPM } / Double(count)
+    }
+
+    /// The same, as a fraction of top speed. See `FanInfo.load`.
+    var averageLoad: Double {
+        isEmpty ? 0 : reduce(0) { $0 + $1.load } / Double(count)
+    }
+}
+
 public struct FanInfo {
     public let index: Int
     public let currentRPM: Double

@@ -192,8 +192,8 @@ final class GlanceCardView: NSView {
 
         case .fans:
             guard !sys.fans.isEmpty else { return nil }
-            let load = sys.fans.reduce(0) { $0 + $1.load } / Double(sys.fans.count) * 100
-            let rpm = sys.fans.reduce(0) { $0 + $1.currentRPM } / Double(sys.fans.count)
+            let load = sys.fans.averageLoad * 100
+            let rpm = sys.fans.averageRPM
             var rows: [(String, String, String?)] = []
             for f in sys.fans {
                 // Each fan's own range beside its speed: 2200 rpm means nothing
@@ -218,7 +218,7 @@ final class GlanceCardView: NSView {
                 rows.append(("GPU", String(format: "%.1f°C", g), nil))
             }
             if !sys.fans.isEmpty {
-                let rpm = sys.fans.reduce(0) { $0 + $1.currentRPM } / Double(sys.fans.count)
+                let rpm = sys.fans.averageRPM
                 // What the machine is DOING about the temperature, which is the
                 // next thing anyone reading a thermal number wants to know.
                 rows.append(("Fans", String(format: "%.0f rpm", rpm), nil))
