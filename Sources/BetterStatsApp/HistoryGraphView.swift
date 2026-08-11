@@ -55,9 +55,23 @@ public class HistoryGraphView: NSView {
         /// nil means the caller does not know, which draws in the ordinary
         /// colour — an unknown must never render as a claim either way.
         public let onPower: Bool?
-        public init(time: Date, value: Double, onPower: Bool? = nil) {
+        /// What the hover readout says for this point, when the plotted number is
+        /// not the whole story.
+        ///
+        /// The fan graph plots a PERCENTAGE — it has to, since it shares an axis
+        /// with nothing and a second fan — but "48%" is not what anyone wants to
+        /// read off a fan; "48% · 3760 rpm" is. Rather than teach the view about
+        /// fans, the point carries the sentence its caller would write.
+        ///
+        /// On the POINT rather than as a parallel array, for exactly the reason
+        /// `onPower` is: the drawing filters and re-sorts, and a parallel array
+        /// desyncs the moment one point is dropped.
+        public let detail: String?
+        public init(time: Date, value: Double, onPower: Bool? = nil,
+                    detail: String? = nil) {
             self.time = time
             self.value = value
+            self.detail = detail
             self.onPower = onPower
         }
 
@@ -115,6 +129,14 @@ public class HistoryGraphView: NSView {
 
     /// Drawn top-left, e.g. "%/hr". Text, not a unit conversion — this view
     /// draws whatever numbers it is handed and never re-units them.
+    /// The points a series will actually draw, after sorting and dropping the
+    /// non-finite ones. A test seam: the sanitise is where a per-point annotation
+    /// would get separated from its value if it were held anywhere else.
+    public func sanitizedPoints(inSeries index: Int) -> [Point] {
+        guard sanitized.indices.contains(index) else { return [] }
+        return sanitized[index].points
+    }
+
     public var yAxisLabel: String = "" {
         didSet { needsDisplay = true }
     }
@@ -750,7 +772,7 @@ public class HistoryGraphView: NSView {
         }
 
         // Last, so the crosshair and its readout sit above the lines they report.
-        drawHover(in: plot, xFor: xFor, yFor: yFor)
+        drawHover(in: plot, xFor: xFor, yFor: yFor, yForRight: yForRight)
         if showsAxes { drawHeader(nameAttrs: axisNameAttrs, legendAttrs: tickAttrs) }
     }
 
@@ -1440,7 +1462,8 @@ extension HistoryGraphView {
 
     /// Crosshair plus a readout of every series at the hovered instant. Drawn
     /// after the plot so it sits on top of the lines it is reading.
-    func drawHover(in plot: NSRect, xFor: (Date) -> CGFloat, yFor: (Double) -> CGFloat) {
+    func drawHover(in plot: NSRect, xFor: (Date) -> CGFloat, yFor: (Double) -> CGFloat,
+                   yForRight: (Double) -> CGFloat) {
         guard let h = hoverPoint, plot.contains(h), panAnchor == nil else { return }
         let t = time(atX: h.x)
 
@@ -1454,16 +1477,34 @@ extension HistoryGraphView {
         // Nearest sample per series, not interpolation: these are bucketed
         // averages, and inventing a value between two buckets would report a
         // number that was never measured.
-        var lines: [(String, NSColor, Double)] = []
-        for s in sanitized {
-            guard let near = s.points.min(by: {
+        var lines: [(String, NSColor, String)] = []
+        /// Nearest sample to the crosshair, or nothing when the nearest is too far
+        /// to be describing this instant.
+        func nearest(_ points: [Point]) -> Point? {
+            guard let near = points.min(by: {
                 abs($0.time.timeIntervalSince(t)) < abs($1.time.timeIntervalSince(t))
-            }) else { continue }
-            guard abs(near.time.timeIntervalSince(t)) < max(60, currentSpan / 40) else { continue }
-            lines.append((s.name, s.color, near.value))
-            let p = NSPoint(x: xFor(near.time), y: yFor(near.value))
-            s.color.setFill()
-            NSBezierPath(ovalIn: NSRect(x: p.x - 3, y: p.y - 3, width: 6, height: 6)).fill()
+            }), abs(near.time.timeIntervalSince(t)) < max(60, currentSpan / 40) else { return nil }
+            return near
+        }
+        func mark(_ p: Point, _ y: (Double) -> CGFloat, _ color: NSColor) {
+            let at = NSPoint(x: xFor(p.time), y: y(p.value))
+            color.setFill()
+            NSBezierPath(ovalIn: NSRect(x: at.x - 3, y: at.y - 3, width: 6, height: 6)).fill()
+        }
+        for s in sanitized {
+            guard let near = nearest(s.points) else { continue }
+            lines.append((s.name, s.color,
+                          near.detail ?? String(format: "%.2f", near.value)))
+            mark(near, yFor, s.color)
+        }
+        // THE RIGHT-HAND SERIES TOO. It was left out, which was survivable while
+        // it was only ever the battery charge line — a number you read off the
+        // axis. On the fan graph it is the temperature, and "what was the temp
+        // when the fans spun up" is the entire reason the two share a chart.
+        if let r = rightSeries, let near = nearest(Self.sanitize(r.points)) {
+            lines.append((r.name, r.color,
+                          near.detail ?? String(format: "%.2f", near.value)))
+            mark(near, yForRight, r.color)
         }
         guard !lines.isEmpty else { return }
 
@@ -1493,7 +1534,7 @@ extension HistoryGraphView {
         ]
 
         let entries = lines.map { (name: $0.0 as NSString, color: $0.1,
-                                  value: String(format: "%.2f", $0.2) as NSString) }
+                                  value: $0.2 as NSString) }
         let swatchW: CGFloat = 9, swatchGap: CGFloat = 6, colGap: CGFloat = 14
         let padX: CGFloat = 8, padY: CGFloat = 6, stampGap: CGFloat = 4
         var nameW: CGFloat = 0, valueW: CGFloat = 0, rowH: CGFloat = 0

@@ -406,6 +406,29 @@ final class BottomPanelTests: XCTestCase {
             scale: .bytesPerSecond).parts.count, 3)
     }
 
+    /// A point can say what the hover should read, and it survives the sanitise
+    /// the view does before drawing.
+    ///
+    /// The fan line has to be a PERCENTAGE — two fans with different top speeds
+    /// have no shared rpm scale — but nobody reads a fan in percent. The readout
+    /// says both, and the rpm is recorded at the same instant as the percentage it
+    /// annotates, which is the whole reason it rides on the point rather than in a
+    /// parallel array: the view filters and re-sorts before drawing.
+    func testAPointCarriesItsOwnReadoutThroughSanitising() {
+        let g = HistoryGraphView(frame: NSRect(x: 0, y: 0, width: 400, height: 120))
+        let t = Date()
+        g.series = [.init(name: "fan speed", color: .green, points: [
+            // Out of order and with a non-finite neighbour, which is exactly what
+            // the sanitise pass exists to fix.
+            .init(time: t.addingTimeInterval(2), value: 48, detail: "48% · 3760 rpm"),
+            .init(time: t, value: 31, detail: "31% · 2430 rpm"),
+            .init(time: t.addingTimeInterval(1), value: .nan, detail: "dropped"),
+        ])]
+        let kept = g.sanitizedPoints(inSeries: 0)
+        XCTAssertEqual(kept.map(\.detail), ["31% · 2430 rpm", "48% · 3760 rpm"],
+                       "the readout did not stay with the point it describes")
+    }
+
     /// Sensor groups are built from evidence the naming layer already has, and
     /// invent nothing.
     ///
