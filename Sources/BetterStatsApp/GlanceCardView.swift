@@ -79,19 +79,24 @@ final class GlanceCardView: NSView {
 
         case .cpu:
             guard let cpu = sys.cpu else { return nil }
+            // THREE rows, because three is what the card's height holds — see
+            // `maxRows`. Paired rather than truncated: every fact that was here
+            // before is still here, sharing a line with the one it belongs with.
             var rows: [(String, String, String?)] = [
                 ("Chip", facts.chip, nil),
-                ("Cores", "\(facts.coreSummary)", nil),
+                // Cores and threads are one fact about the same silicon. Threads
+                // only when they were counted: the sweep reads the processes this
+                // app owns, so a partial count says how partial it is rather than
+                // presenting itself as the machine's total.
+                ("Cores", "\(facts.coreSummary)",
+                 census.map { c in
+                     c.isComplete ? "\(c.threads) threads"
+                                  : "\(c.threads) threads of \(c.processesRead)/\(c.processes) procs"
+                 }),
             ]
-            // Threads only when they were counted. The sweep can only read the
-            // processes this app owns, so a partial count says how partial it is
-            // rather than presenting itself as the machine's total.
-            if let c = census {
-                rows.append(("Threads", "\(c.threads)",
-                             c.isComplete ? nil : "of \(c.processesRead)/\(c.processes) procs"))
-            }
-            rows.append(("User", String(format: "%.1f%%", cpu.user), nil))
-            rows.append(("System", String(format: "%.1f%%", cpu.system), nil))
+            rows.append(("User · sys",
+                         String(format: "%.1f%%", cpu.user),
+                         String(format: "%.1f%%", cpu.system)))
             return card(String(format: "%.1f%%", cpu.total),
                         String(format: "%.0f%%", cpu.total.rounded()),
                         "CPU · measured", rows)
@@ -108,20 +113,25 @@ final class GlanceCardView: NSView {
             func gb(_ b: UInt64) -> String {
                 String(format: "%.1f GB", Double(b) / 1_073_741_824)
             }
+            // Installed rides in the caption rather than taking a row: it is what
+            // the percentage is OF, which is context for the headline rather than
+            // a fourth kind of memory alongside app, wired and compressed.
             return card(String(format: "%.0f%%", m.usedPercent),
                         String(format: "%.0f%%", m.usedPercent.rounded()),
-                        "Memory · measured",
+                        "of \(gb(m.total)) installed",
                         [("App", gb(m.app), nil),
                          ("Wired", gb(m.wired), nil),
-                         ("Compressed", gb(m.compressed), nil),
-                         ("Installed", gb(m.total), nil)])
+                         ("Compressed", gb(m.compressed), nil)])
 
         case .disk:
             guard let d = sys.disk else { return nil }
             let bps = MetricUnit.bytesPerSecond
+            // Read and write share a row: they are the graph's own two lines,
+            // labelled in its legend a few inches to the right, and the headline
+            // is already their sum.
             var rows: [(String, String, String?)] = [
-                ("Read", bps.format(d.bytesReadPerSec), nil),
-                ("Write", bps.format(d.bytesWrittenPerSec), nil),
+                ("Read · write", bps.format(d.bytesReadPerSec),
+                 bps.format(d.bytesWrittenPerSec)),
             ]
             // The boot volume, when there is one. `StorageInfo` caches for 30 s, so
             // asking on every tick costs a dictionary lookup rather than a stat of
@@ -131,8 +141,11 @@ final class GlanceCardView: NSView {
                 func gb(_ b: Int64) -> String {
                     String(format: "%.0f GB", Double(b) / 1_073_741_824)
                 }
-                if let free = v.availableBytes { rows.append(("Free", gb(free), nil)) }
-                rows.append(("Capacity", gb(v.totalBytes), nil))
+                if let free = v.availableBytes {
+                    rows.append(("Free", gb(free), "of \(gb(v.totalBytes))"))
+                } else {
+                    rows.append(("Capacity", gb(v.totalBytes), nil))
+                }
             }
             // NO pill: there is no honest disk-busy percentage to put there. The
             // IOKit counter that looks like one is not one — see `DiskActivity`.
@@ -141,9 +154,13 @@ final class GlanceCardView: NSView {
         case .network:
             guard let n = sys.network else { return nil }
             let bps = MetricUnit.bytesPerSecond
+            // Down and up on one row, for the same reason disk's read and write
+            // share one: they are the two lines on the graph beside this, and the
+            // headline is their total. Spending two of three rows restating the
+            // legend left no room for the link itself, which is the part of this
+            // card that says something the graph cannot.
             var rows: [(String, String, String?)] = [
-                ("Down", bps.format(n.bytesInPerSec), nil),
-                ("Up", bps.format(n.bytesOutPerSec), nil),
+                ("Down · up", bps.format(n.bytesInPerSec), bps.format(n.bytesOutPerSec)),
             ]
             // The link itself, from the same inventory the Resources network card
             // reads — so the two cannot name different interfaces.
@@ -158,14 +175,13 @@ final class GlanceCardView: NSView {
             // a bad trade. On Ethernet and Thunderbolt `displayName` IS the port's
             // real name, so it shows there — which is the case this machine is in.
             if let link = NetworkInventory.snapshot().primary {
-                if let name = link.displayName,
-                   name.caseInsensitiveCompare(link.kind.title) != .orderedSame {
-                    rows.append(("Link", name, nil))
-                } else {
-                    rows.append(("Link", link.kind.title, nil))
-                }
-                if let speed = link.linkSpeedBitsPerSec {
-                    rows.append(("Speed", ResourcesContent.bitRate(speed), nil))
+                rows.append(("Link", link.displayName.flatMap {
+                    $0.caseInsensitiveCompare(link.kind.title) == .orderedSame ? nil : $0
+                } ?? link.kind.title, nil))
+                if let speed = link.linkSpeedBitsPerSec, !rows.isEmpty {
+                    // Onto the link's own row: "Wi-Fi · 366 Mb/s" is one fact
+                    // about one adapter.
+                    rows[rows.count - 1].2 = ResourcesContent.bitRate(speed)
                 }
                 if let ip = link.ipv4.first { rows.append(("IPv4", ip, nil)) }
             }
@@ -208,6 +224,26 @@ final class GlanceCardView: NSView {
         }
     }
 
+    /// How many rows fit in a card of this height, from the card's own measured
+    /// metrics: 77 pt for the headline, the caption and one row, and 19 pt for
+    /// every row after it.
+    ///
+    /// The card is top-pinned with `bottom <= bottom`, so content taller than the
+    /// card does not overflow — Auto Layout COMPRESSES it, and an NSTextField
+    /// given less height than it needs centres its text and loses the top and
+    /// bottom of every glyph. That is what ate the headline on the Network card,
+    /// and it is the same failure the estimate headline hit once before with
+    /// "measuring…". Both times it looked like a font bug and both times it was
+    /// the stack being asked for more than it had.
+    ///
+    /// So the cap is enforced rather than trusted to content discipline: five
+    /// rows in a 128 pt card is 153 pt of content, and the card had no way to say
+    /// no. `testNoCardOverflowsTheHeightItIsGiven` renders every subject's real
+    /// card and fails if any of them still does.
+    static func maxRows(forHeight height: CGFloat) -> Int {
+        max(1, Int((height - 77) / 19) + 1)
+    }
+
     private let headline = NSTextField(labelWithString: "—")
     private let sub = NSTextField(labelWithString: "")
     private let rowStack = NSStackView()
@@ -224,6 +260,12 @@ final class GlanceCardView: NSView {
     private func build() {
         headline.font = Palette.Font.mono(30, .semibold)
         headline.textColor = Palette.text
+        // The headline is the answer; it does not give up its height to make room
+        // for the rows under it. Without this the stack takes the difference out
+        // of whichever view resists least, and clipped 30 pt digits are far more
+        // wrong than one row fewer.
+        headline.setContentCompressionResistancePriority(.required, for: .vertical)
+        sub.setContentCompressionResistancePriority(.required, for: .vertical)
 
         sub.font = Palette.Font.mono(11)
         sub.textColor = Palette.dim
@@ -296,11 +338,17 @@ final class GlanceCardView: NSView {
         rowStack.orientation = isWide ? .horizontal : .vertical
         rowStack.distribution = isWide ? .fillEqually : .fill
         rowStack.spacing = isWide ? 24 : 5
+
+        // The card's height is fixed by the row it shares with the ledger, so the
+        // rows have a budget. `bounds` is zero before the first layout, which is
+        // exactly when the model is first set, so fall back to the height the
+        // window actually gives it.
+        let budget = Self.maxRows(forHeight: bounds.height > 0 ? bounds.height : 128)
         if isWide {
-            // Four rows to a column, so the card grows sideways rather than
-            // downwards — its height is fixed by the row it shares with the ledger.
-            for chunk in stride(from: 0, to: m.rows.count, by: 4).map({
-                Array(m.rows[$0..<min($0 + 4, m.rows.count)])
+            // Sideways, in columns of the same budget: the card gets wider on
+            // Resources, not taller, so a column is bound by the same height.
+            for chunk in stride(from: 0, to: m.rows.count, by: budget).map({
+                Array(m.rows[$0..<min($0 + budget, m.rows.count)])
             }) {
                 let column = NSStackView()
                 column.orientation = .vertical
@@ -315,7 +363,7 @@ final class GlanceCardView: NSView {
             }
             return
         }
-        for r in m.rows {
+        for r in m.rows.prefix(budget) {
             let row = makeRow(r)
             rowStack.addArrangedSubview(row)
             row.widthAnchor.constraint(equalTo: rowStack.widthAnchor).isActive = true
