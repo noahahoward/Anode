@@ -89,6 +89,37 @@ final class BottomContextTests: XCTestCase {
         }
     }
 
+    /// A subject with no history must never be asked the store for it.
+    ///
+    /// Clicking beside the range pill lands on the graph, which zooms it — and a
+    /// zoomed graph is a historical one, so it went to the store. The store has
+    /// never held a temperature, so the query returned nothing and the caller fell
+    /// through to the generic utilisation path: a temperature graph titled
+    /// "% TEMPERATURE" on a 0-100 axis over "no history yet".
+    ///
+    /// `isSessionOnly` is what the history path checks, and it must agree with the
+    /// range list: a subject offering only the live hour is exactly a subject with
+    /// nothing stored.
+    func testTheSubjectsWithNoStoredHistoryAreTheOnesOfferingOnlyTheLiveHour() {
+        for c in BottomContext.allCases {
+            XCTAssertEqual(c.isSessionOnly, c.ranges == [3600],
+                           "\(c) disagrees with itself about whether it has history")
+        }
+        XCTAssertTrue(BottomContext.sensors.isSessionOnly)
+        XCTAssertTrue(BottomContext.fans.isSessionOnly)
+        XCTAssertFalse(BottomContext.network.isSessionOnly,
+                       "network IS stored — net_in_bps and net_out_bps")
+    }
+
+    /// And a temperature never gets a percent axis, whichever path drew it.
+    func testATemperatureIsNeverLabelledAsAPercentage() {
+        for c in [BottomContext.sensors, .fans] {
+            XCTAssertNotEqual(c.unit, "%", "\(c) is not a fraction of anything")
+            XCTAssertFalse(c.isPercentage)
+        }
+        XCTAssertEqual(BottomContext.sensors.unit, "°C")
+    }
+
     /// The session-only subjects offer the hour and nothing beyond it.
     ///
     /// Temperatures and fan speeds are never written to the store: the SMC sweep
@@ -240,7 +271,9 @@ final class BottomPanelTests: XCTestCase {
         let m = try XCTUnwrap(GlanceCardView.model(for: .cpu, system: s,
                                                    facts: MachineInfo.facts, census: nil))
         XCTAssertEqual(m.headline, "16.4%")
-        XCTAssertEqual(m.pill, "16%", "the pill disagrees with the headline")
+        // No pill: the headline is already the percentage, and printing it again
+        // rounded differently is what "10.7%" over "11% · CPU · measured" was.
+        XCTAssertNil(m.pill)
         // Paired into three rows to fit the card's height, so this asserts the
         // FACTS survived rather than the labels — user and system share a row now,
         // and cores carries threads. Truncating instead of pairing is what this
@@ -415,6 +448,47 @@ final class BottomPanelTests: XCTestCase {
                        "a speed with no range attached says nothing")
     }
 
+    /// Every subject readable at once, so the whole-card tests below check the
+    /// real cards rather than a hand-built model that drifts from them.
+    private var fullSample: SystemMetrics.Snapshot {
+        sys(cpu: CPUUsage.Sample(total: 16.4, user: 12.4, system: 4.1,
+                                 idle: 83.6, interval: 2),
+            memory: MemoryUsage.Sample(total: 34_359_738_368, used: 20_000_000_000,
+                                       wired: 5_000_000_000, compressed: 3_000_000_000,
+                                       app: 12_000_000_000, free: 14_359_738_368),
+            disk: DiskActivity.Sample(bytesReadPerSec: 3_145_728,
+                                      bytesWrittenPerSec: 1_048_576,
+                                      devices: [], interval: 2),
+            network: NetworkThroughput.Sample(bytesInPerSec: 14_500,
+                                              bytesOutPerSec: 340_000,
+                                              interfaces: [], measured: [], interval: 2),
+            fans: [FanInfo(index: 0, currentRPM: 2200, minRPM: 1200,
+                           maxRPM: 4600, targetRPM: nil),
+                   FanInfo(index: 1, currentRPM: 2100, minRPM: 1200,
+                           maxRPM: 4600, targetRPM: nil)])
+    }
+
+    /// NO CARD RESTATES ITS OWN HEADLINE IN THE PILL.
+    ///
+    /// The pill exists for the battery, whose headline is a DURATION — "73% · on
+    /// battery" beside "9h 41m" says something the headline cannot. Handing a
+    /// percentage subject its own percentage printed "10.7%" over "11% · CPU ·
+    /// measured": one number, rounded twice, two lines apart.
+    ///
+    /// The rule is checkable, so it is checked rather than remembered: a headline
+    /// that is a percentage gets no percentage pill. Fans keep theirs, because 29%
+    /// of a fan's range and 2200 rpm are two facts.
+    func testNoCardRestatesItsOwnHeadlineInThePill() {
+        for context in BottomContext.allCases {
+            guard let m = GlanceCardView.model(for: context, system: fullSample,
+                                               facts: MachineInfo.facts,
+                                               census: MachineInfo.census()) else { continue }
+            guard m.headline.hasSuffix("%"), let pill = m.pill else { continue }
+            XCTAssertFalse(pill.hasSuffix("%"),
+                           "\(context) prints \(m.headline) and \(pill) two lines apart")
+        }
+    }
+
     /// NO CARD OVERFLOWS THE HEIGHT IT IS GIVEN.
     ///
     /// The card is top-pinned with `bottom <= bottom`, so content taller than the
@@ -428,21 +502,7 @@ final class BottomPanelTests: XCTestCase {
     /// real 236x128 and asks what height it wanted. Counting rows by hand in the
     /// factory above is what let five of them through in the first place.
     func testNoCardOverflowsTheHeightItIsGiven() {
-        let s = sys(cpu: CPUUsage.Sample(total: 16.4, user: 12.4, system: 4.1,
-                                         idle: 83.6, interval: 2),
-                    memory: MemoryUsage.Sample(total: 34_359_738_368, used: 20_000_000_000,
-                                               wired: 5_000_000_000, compressed: 3_000_000_000,
-                                               app: 12_000_000_000, free: 14_359_738_368),
-                    disk: DiskActivity.Sample(bytesReadPerSec: 3_145_728,
-                                              bytesWrittenPerSec: 1_048_576,
-                                              devices: [], interval: 2),
-                    network: NetworkThroughput.Sample(bytesInPerSec: 14_500,
-                                                      bytesOutPerSec: 340_000,
-                                                      interfaces: [], measured: [], interval: 2),
-                    fans: [FanInfo(index: 0, currentRPM: 2200, minRPM: 1200,
-                                   maxRPM: 4600, targetRPM: nil),
-                           FanInfo(index: 1, currentRPM: 2100, minRPM: 1200,
-                                   maxRPM: 4600, targetRPM: nil)])
+        let s = fullSample
         let size = NSSize(width: 236, height: 128)
         for context in BottomContext.allCases {
             guard let m = GlanceCardView.model(for: context, system: s,
