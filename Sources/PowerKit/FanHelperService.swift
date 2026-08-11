@@ -752,14 +752,79 @@ public final class FanHelperServer {
                 }
                 return FanReply(ok: false, message: "the SMC refused the write")
             }
-            // Recorded only once the write actually landed. A refused write took
-            // nothing, and a helper that believes it holds a fan it never touched
-            // would write to that fan on its way out.
+            // READ IT BACK. `writeTarget` returning true means the SMC accepted
+            // the call, not that the firmware kept the number — and that gap is
+            // the exact shape of the bug that made this feature appear to work
+            // and do nothing for weeks: the write was accepted, the reply said
+            // "set to 2675 rpm", and the fans sat where they were because the
+            // mode had never been taken.
+            //
+            // The TARGET key is safe to check immediately: `F<n>Tg` is the
+            // commanded value, not the measured one. The actual speed `F<n>Ac`
+            // ramps over seconds and is deliberately not what this compares.
+            let afterMode = hardware.readMode(index: target.index)
+            let afterTarget = hardware.readTarget(index: target.index)
+            guard FanHelperServer.readbackHolds(mode: afterMode,
+                                                 target: afterTarget,
+                                                 wanted: safe) else {
+                // FAIL SAFE. The firmware is not doing what was asked and this
+                // helper cannot tell why, so the fan goes back to automatic rather
+                // than being left forced to a speed nobody can confirm. Automatic
+                // is the state that cannot cook the machine.
+                if !alreadyHeld, let beforeMode {
+                    _ = hardware.writeMode(index: target.index, value: beforeMode)
+                }
+                if !alreadyHeld, let before {
+                    _ = hardware.writeTarget(index: target.index, rpm: before)
+                }
+                let modeText = afterMode.map { String($0) } ?? "unreadable"
+                let targetText = afterTarget.map { String($0) } ?? "unreadable"
+                log("readback disagreed on F\(target.index): mode \(modeText), "
+                    + "target \(targetText), wanted \(safe)")
+                return FanReply(ok: false,
+                                message: "the SMC accepted the write and did not keep it "
+                                       + "— fan \(target.index + 1) is back on automatic")
+            }
+
+            // Recorded only once the write actually landed AND read back. A
+            // refused write took nothing, and a helper that believes it holds a
+            // fan it never touched would write to that fan on its way out.
             holdings.took(target.index, previousTarget: before, previousMode: beforeMode)
-            log("set F\(target.index)md = \(SMCFanMode.forced), F\(target.index)Tg = \(safe)")
+            let readBack = afterTarget.map { String($0) } ?? "?"
+            log("set F\(target.index)md = \(SMCFanMode.forced), "
+                + "F\(target.index)Tg = \(safe) (read back \(readBack))")
             return FanReply(ok: true,
                             message: "fan \(target.index + 1) set to \(Int(safe)) rpm")
         }
+    }
+
+    /// Did the SMC keep what it was just given?
+    ///
+    /// Its own function because the write path around it has no test coverage —
+    /// it is private, it talks to real hardware, and this project does not test
+    /// fan writes against a live machine on purpose. The DECISION is the part with
+    /// the interesting rules, and it is pure, so it can be tested on its own.
+    ///
+    /// An UNREADABLE mode does not fail, and that is policy rather than leniency:
+    /// the take only claims the mode when it could be read AND said automatic, so
+    /// a machine whose mode key is unreadable was never having its mode changed.
+    /// Failing here would refuse those machines outright, which is a different
+    /// decision from the one this check is making.
+    ///
+    /// A readable mode still saying automatic IS the failure worth catching: the
+    /// take was issued, the SMC said yes, and the firmware kept control anyway.
+    /// That is the exact shape of the bug that made this feature appear to work
+    /// and do nothing — accepted write, confident reply, fans unchanged.
+    ///
+    /// An unreadable TARGET fails. It is the number just written, and a machine
+    /// that cannot read back what it accepted has told us nothing at all.
+    public static func readbackHolds(mode: Double?, target: Double?, wanted: Double) -> Bool {
+        let modeHeld = mode.map { $0 != SMCFanMode.automatic } ?? true
+        // A rounding tolerance, not a range: the SMC stores this as a float and
+        // hands back what it was given, so anything past a single rpm is the
+        // firmware substituting its own number.
+        let targetHeld = target.map { abs($0 - wanted) <= 1 } ?? false
+        return modeHeld && targetHeld
     }
 
     @discardableResult
