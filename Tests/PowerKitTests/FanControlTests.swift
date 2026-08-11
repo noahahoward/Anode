@@ -1388,3 +1388,62 @@ final class FanUninstallTests: XCTestCase {
         XCTAssertTrue(fm.fileExists(atPath: support.path))
     }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Whether the SMC kept what it was handed.
+///
+/// `writeTarget` returning true means the call was ACCEPTED, not that the
+/// firmware kept the number — and that gap is the exact shape of the bug that
+/// made fan control appear to work and do nothing: the write was accepted, the
+/// reply said "set to 2675 rpm", and the fans sat where they were because the
+/// mode had never been taken. The reply was confident and wrong.
+final class FanReadbackTests: XCTestCase {
+
+    /// The happy path: mode taken, target kept.
+    func testAKeptWriteReadsBack() {
+        XCTAssertTrue(FanHelperServer.readbackHolds(
+            mode: SMCFanMode.forced, target: 2675, wanted: 2675))
+    }
+
+    /// THE BUG THIS EXISTS FOR. The SMC accepted everything and the fan is still
+    /// on automatic, so the target is decorative and the firmware is driving.
+    func testAFanStillOnAutomaticFailsEvenWithTheRightTarget() {
+        XCTAssertFalse(FanHelperServer.readbackHolds(
+            mode: SMCFanMode.automatic, target: 2675, wanted: 2675),
+            "a fan on automatic is not under our control whatever its target says")
+    }
+
+    /// The firmware substituted its own number.
+    func testATargetTheFirmwareChangedFails() {
+        XCTAssertFalse(FanHelperServer.readbackHolds(
+            mode: SMCFanMode.forced, target: 4600, wanted: 2675))
+        // A single rpm of float rounding is not a substitution.
+        XCTAssertTrue(FanHelperServer.readbackHolds(
+            mode: SMCFanMode.forced, target: 2675.4, wanted: 2675))
+        XCTAssertFalse(FanHelperServer.readbackHolds(
+            mode: SMCFanMode.forced, target: 2677, wanted: 2675))
+    }
+
+    /// An unreadable TARGET tells us nothing, so it cannot pass. This is the
+    /// number that was just written.
+    func testAnUnreadableTargetFails() {
+        XCTAssertFalse(FanHelperServer.readbackHolds(
+            mode: SMCFanMode.forced, target: nil, wanted: 2675))
+    }
+
+    /// An unreadable MODE passes, and that is policy rather than an oversight.
+    ///
+    /// The take only claims the mode when it could be read AND said automatic, so
+    /// a machine whose mode key is unreadable was never having its mode changed.
+    /// Failing here would refuse those machines outright — a different decision
+    /// from the one this check is making, and one that would silently drop
+    /// support for hardware nobody here has run on.
+    func testAnUnreadableModeDoesNotFailAWriteThatWasKept() {
+        XCTAssertTrue(FanHelperServer.readbackHolds(
+            mode: nil, target: 2675, wanted: 2675))
+        // It still has to have kept the target.
+        XCTAssertFalse(FanHelperServer.readbackHolds(
+            mode: nil, target: 1200, wanted: 2675))
+    }
+}
