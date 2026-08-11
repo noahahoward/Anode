@@ -582,8 +582,27 @@ final class BetterStatsRowView: NSTableRowView {
 
     /// Geometry shared by selection and hover so the two read as one control at
     /// different strengths rather than two different shapes.
+    ///
+    /// Inset by a point vertically: these are PILLS, and a pill wants a little air
+    /// above and below or it reads as a band.
     private var pill: NSBezierPath {
         NSBezierPath(roundedRect: bounds.insetBy(dx: 6, dy: 1),
+                     xRadius: Palette.Radius.row,
+                     yRadius: Palette.Radius.row)
+    }
+
+    /// The alternating ground, which is FULL HEIGHT.
+    ///
+    /// Not the pill. A pill's 1 pt of vertical air is right for a mark that sits
+    /// on the row; the stripe IS the row's ground, so stopping short leaves a
+    /// sliver of window between it and the separator above — reported as a gap
+    /// between the ledger line and the top of the highlight. Two rows apart that
+    /// sliver is 2 pt, which is why it was visible at all.
+    ///
+    /// Same horizontal inset and the same radius, so it stays inside the same
+    /// column of shapes everything else in this row draws in.
+    private var stripe: NSBezierPath {
+        NSBezierPath(roundedRect: bounds.insetBy(dx: 6, dy: 0),
                      xRadius: Palette.Radius.row,
                      yRadius: Palette.Radius.row)
     }
@@ -641,7 +660,7 @@ final class BetterStatsRowView: NSTableRowView {
         let shape = pill
         if isAlternate {
             Palette.rowAlternate.setFill()
-            shape.fill()
+            stripe.fill()
         }
         if isSelected {
             Palette.selection.setFill()
