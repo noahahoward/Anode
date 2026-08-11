@@ -1268,28 +1268,62 @@ final class GraphGapRuleTests: XCTestCase {
 
     /// A steady 63 s cadence is sampling, not absence — the floor is 90 s.
     func testTheSlowCadenceIsNotAHole() {
-        XCTAssertGreaterThan(HistoryGraphView.gapLimit(for: pts([(60, 63)])), 63)
+        XCTAssertFalse(HistoryGraphView.breaks(in: pts([(60, 63)])).contains(true))
     }
 
-    /// And a mixed hour takes its limit from the median, which the dense half
-    /// dominates — so the rule has to be the 90 s FLOOR rather than 4x median,
-    /// or the slow half breaks apart exactly as it did.
-    func testAMixedCadenceStillToleratesTheSlowHalf() {
-        // 18 minutes at 63 s, then 40 minutes at 2 s: median is 2 s.
-        let mixed = pts([(17, 63), (1200, 2)])
-        let limit = HistoryGraphView.gapLimit(for: mixed)
-        XCTAssertEqual(limit, 90, accuracy: 0.001,
-                       "the median collapsed to the dense half with no floor")
-        XCTAssertGreaterThan(limit, 63,
-                             "63 s samples would still be drawn as isolated dots")
+    /// A mixed hour judges each stretch by its OWN cadence.
+    ///
+    /// The rule used to take one median across every point on screen. The dense
+    /// stretch supplies almost all of them, so the median sat at 2 s, the limit
+    /// at its 90 s floor, and the slow stretch survived only because 63 < 90 —
+    /// by a margin of 27 seconds, with nothing holding it there.
+    func testAMixedCadenceJudgesEachStretchByItsOwn() {
+        let mixed = pts([(40, 63), (1200, 2)])
+        XCTAssertFalse(HistoryGraphView.breaks(in: mixed).contains(true),
+                       "an ordinary spacing was read as an absence")
     }
 
-    /// A real absence still breaks the line: the app was closed for ten minutes.
+    /// THE REPORTED BUG. A 120 s hole inside the slow stretch is not sleep.
+    ///
+    /// It is a beat frequency: samples arrive every ~64 s and compaction folds
+    /// them into 60 s buckets, so every fifteenth sample skips a bucket and
+    /// leaves exactly one empty minute every sixteen. The store held 25 of these
+    /// in one night, each between two rows whose own `dur` shows the machine
+    /// measuring the whole span — and the graph drew every one of them as the
+    /// machine having slept, with the user watching it not sleep.
+    ///
+    /// Under the old global median this fails: 2 s median, 90 s limit, 120 > 90.
+    func testTheSixteenMinuteBucketHoleIsNotSleep() {
+        var mixed = pts([(40, 64), (1200, 2)])
+        // One skipped bucket, a third of the way into the slow stretch.
+        let hole = 120.0 - 64.0
+        for i in 14..<mixed.count {
+            mixed[i] = .init(time: mixed[i].time.addingTimeInterval(hole),
+                             value: mixed[i].value)
+        }
+        let breaks = HistoryGraphView.breaks(in: mixed)
+        XCTAssertEqual(mixed[14].time.timeIntervalSince(mixed[13].time), 120, accuracy: 0.001)
+        XCTAssertFalse(breaks[13],
+                       "a skipped 60 s bucket at a 64 s cadence is arithmetic, not sleep")
+        XCTAssertFalse(breaks.contains(true), "nothing else in this hour is a hole either")
+    }
+
+    /// A real absence still breaks the line, in either stretch. Ten minutes is
+    /// far outside both cadences, and the night this was diagnosed from held a
+    /// genuine 9540 s one.
     func testARealAbsenceIsStillAHole() {
-        let withHole = pts([(30, 2)]) + [
-            .init(time: Date(timeIntervalSince1970: 1_000_000 + 60 + 600), value: 10)
-        ]
-        XCTAssertLessThan(HistoryGraphView.gapLimit(for: withHole), 600,
-                          "a ten-minute silence must still read as a hole")
+        for cadence in [2.0, 64.0] {
+            var series = pts([(40, cadence)])
+            for i in 20..<series.count {
+                series[i] = .init(time: series[i].time.addingTimeInterval(600),
+                                  value: series[i].value)
+            }
+            let breaks = HistoryGraphView.breaks(in: series)
+            XCTAssertTrue(breaks[19],
+                          "a ten-minute silence at \(cadence) s sampling must read as a hole")
+            XCTAssertEqual(breaks.filter { $0 }.count, 1,
+                           "only the silence is a hole")
+        }
     }
 }
+
