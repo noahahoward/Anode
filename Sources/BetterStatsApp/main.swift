@@ -940,7 +940,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
             }
             DispatchQueue.main.async {
                 self.graph.sharesRightAxisScale = true
-                self.graph.series = [.init(name: "total", color: Palette.accent, points: series)]
+                self.graph.series = [.init(name: Self.drainSeriesName, color: Palette.accent, points: series)]
                 self.graph.rightSeries = charge.count >= 2
                     ? .init(name: "battery", color: Palette.chargeLine, points: charge)
                     : nil
@@ -1154,6 +1154,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         [.init(name: "fan speed", color: Palette.accent, points: load, filled: true)]
     }
 
+    /// What the battery's own line is called, in the legend and in the hover.
+    ///
+    /// It was "total" — which says what the line is a total OF only to someone who
+    /// already knows, and reads as a running sum to everyone else. The unit says
+    /// what the number IS, which is the job of a legend sitting next to three
+    /// other lines that are not it.
+    ///
+    /// One constant because the live path and the store-backed path both name it,
+    /// and a legend that renames itself when you press 6H is the same class of
+    /// drift as the charge line that was the wrong colour for only one range.
+    static let drainSeriesName = "%/hr"
+
     /// MB, meaning 1024², to match `MetricUnit.bytesPerSecond` and the Disk and
     /// Network columns. Shared by both rate subjects so they cannot drift.
     static let rateAxisLabel = "MB/s"
@@ -1319,7 +1331,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
             // already has a home in the ledger bar directly above, and drawing it
             // twice turned a glanceable trend into something you had to decode.
             graph.series = [
-                .init(name: "total", color: Palette.accent, points: totalSeries, filled: true)
+                .init(name: Self.drainSeriesName, color: Palette.accent,
+                      points: totalSeries, filled: true)
             ]
             graph.yAxisLabel = "%/hr"
         }
