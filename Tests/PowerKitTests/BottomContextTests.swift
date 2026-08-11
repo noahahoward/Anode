@@ -553,6 +553,50 @@ final class BottomPanelTests: XCTestCase {
                                maxRPM: 7826, targetRPM: nil).load, 1)
     }
 
+    /// The Sensors bar is a SPREAD, and its scale is fixed rather than fitted.
+    ///
+    /// A stacked bar states parts of a whole and a temperature has neither, which
+    /// is why this tab had no bar for a while. A range invents nothing — both ends
+    /// are readings the machine reported.
+    ///
+    /// The fixed 20–100 °C scale is the part worth protecting. Fitted to the data,
+    /// a machine sitting at 41–43 °C and one sitting at 60–95 °C would draw
+    /// identically, which is the opposite of what anyone opens this tab to learn.
+    func testTheTemperatureSpreadUsesAFixedScale() {
+        let cool = LedgerBarView.SpreadBar(
+            title: "Temperature", low: 41, high: 43, lowName: "a", highName: "b",
+            average: 42, count: 100, scale: LedgerBarView.SpreadBar.celsius)
+        let hot = LedgerBarView.SpreadBar(
+            title: "Temperature", low: 60, high: 95, lowName: "a", highName: "b",
+            average: 78, count: 100, scale: LedgerBarView.SpreadBar.celsius)
+        // The cool machine occupies a narrow band low on the scale...
+        XCTAssertLessThan(cool.fraction(cool.high) - cool.fraction(cool.low), 0.05)
+        XCTAssertLessThan(cool.fraction(cool.high), 0.35)
+        // ...and the hot one a wide band high on it. Fitted scales would make
+        // these two identical.
+        XCTAssertGreaterThan(hot.fraction(hot.high) - hot.fraction(hot.low), 0.35)
+        XCTAssertGreaterThan(hot.fraction(hot.high), 0.9)
+    }
+
+    /// And a reading off either end of that scale is clamped rather than drawn
+    /// outside the bar. A sensor reporting 130 °C is a sensor to look at, not a
+    /// reason to paint past the view.
+    func testTheSpreadClampsToItsScale() {
+        let b = LedgerBarView.SpreadBar(
+            title: "t", low: -40, high: 130, lowName: "a", highName: "b",
+            average: 45, count: 2, scale: LedgerBarView.SpreadBar.celsius)
+        XCTAssertEqual(b.fraction(b.low), 0)
+        XCTAssertEqual(b.fraction(b.high), 1)
+    }
+
+    /// One temperature scale across the app: the bar tints a reading exactly as
+    /// the Sensors and Resources rows do.
+    func testOneTemperatureInkForTheWholeApp() {
+        XCTAssertEqual(LedgerBarView.temperatureInk(50), Palette.accent)
+        XCTAssertEqual(LedgerBarView.temperatureInk(80), Palette.warn)
+        XCTAssertEqual(LedgerBarView.temperatureInk(95), Palette.critical)
+    }
+
     /// Fans get a GAUGE, not a split. Two fans do not divide one quantity between
     /// them — each sits somewhere in its own min..max — so the bar shows how far
     /// in they are and what is left, which is what the graph above plots and what

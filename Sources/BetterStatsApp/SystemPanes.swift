@@ -851,7 +851,7 @@ final class SensorsPane: SystemPane {
     /// 30 °C idle to 100 °C throttle.
     private func bar(_ c: Double) -> Double { min(max((c - 30) / 70, 0), 1) }
     private func tint(_ c: Double) -> NSColor {
-        c >= 90 ? Palette.critical : (c >= 75 ? Palette.warn : Palette.accent)
+        LedgerBarView.temperatureInk(c)
     }
 }
 

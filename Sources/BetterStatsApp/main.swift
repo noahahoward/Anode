@@ -759,13 +759,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
                 caption: String(format: "%.0f rpm average of %d", rpm, sys.fans.count))
 
         case .sensors:
-            // NO BAR OF ITS OWN, deliberately. A bar states parts of a whole, and
-            // a temperature has neither: sensors do not divide a quantity between
-            // them, and there is no ceiling to be a fraction of that this machine
-            // reports. Inventing one — a fixed 100 °C, a "thermal limit" nobody
-            // published — would be the one thing this app does not do. The battery
-            // ledger is still true, so it stays rather than leaving a blank.
-            return false
+            // A SPREAD, not a division. A stacked bar states parts of a whole and
+            // a temperature has neither — sensors do not divide a quantity between
+            // them, and this machine publishes no ceiling to be a fraction of — so
+            // this tab had no bar at all for a while. A range invents nothing: both
+            // ends are readings the machine reported and the mark is their mean.
+            //
+            // Off the same cached sweep the Sensors pane just did, so this is a
+            // read of a dictionary rather than a second 90 ms walk of the SMC.
+            let temps = Sensors.temperatures()
+            guard let coolest = temps.min(by: { $0.value < $1.value }),
+                  let hottest = temps.max(by: { $0.value < $1.value })
+            else { return false }
+            let mean = temps.reduce(0) { $0 + $1.value } / Double(temps.count)
+            main.ledger.spread = .init(
+                title: "Temperature",
+                low: coolest.value, high: hottest.value,
+                lowName: coolest.qualifiedName, highName: hottest.qualifiedName,
+                average: mean, count: temps.count,
+                scale: LedgerBarView.SpreadBar.celsius)
+            return true
         }
         return true
     }
@@ -774,7 +787,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         // A change of subject takes the bar with it. Nil-ing it first means a
         // subject with no reading yet falls back to the battery bar rather than
         // leaving the previous subject's numbers on screen under a new title.
+        // Both cleared first. A subject that sets neither falls back to the
+        // battery bar, and a leftover from the previous subject would otherwise
+        // sit under a new heading — the same staleness the card had.
         main.ledger.utilization = nil
+        main.ledger.spread = nil
         if updateUtilizationBar(bottomContext) {
             main.sidebar.refreshValues()
             return

@@ -264,6 +264,47 @@ final class LedgerBarView: NSView {
         didSet { needsDisplay = true }
     }
 
+    /// A RANGE rather than a division: where this machine's temperatures sit.
+    ///
+    /// The Sensors tab had no bar at all, and the reason was sound — a bar states
+    /// parts of a whole, and a temperature has neither. Sensors do not divide a
+    /// quantity between them, and this hardware publishes no ceiling to be a
+    /// fraction of, so a stacked bar there would have had to invent one.
+    ///
+    /// A spread invents nothing. Both ends are readings the machine actually
+    /// reported, the mark between them is their mean, and the scale they sit on is
+    /// stated rather than fitted — which is the point: a fitted scale would make
+    /// every machine look equally hot, and the useful glance is "this one is cool
+    /// and even" against "this one is hot at one end".
+    var spread: SpreadBar? {
+        didSet { needsDisplay = true }
+    }
+
+    struct SpreadBar: Equatable {
+        let title: String
+        /// The coolest and hottest readings, and what they are.
+        let low: Double, high: Double
+        let lowName: String, highName: String
+        let average: Double
+        let count: Int
+        /// The axis both ends are placed on. FIXED, not fitted to the data.
+        let scale: ClosedRange<Double>
+
+        /// 20 °C to 100 °C: a Mac at rest against a Mac at its throttle point.
+        ///
+        /// Fixed so the bar means the same thing from one glance to the next. A
+        /// scale fitted to the readings would put a machine sitting at 41-43 °C
+        /// and one sitting at 60-95 °C in exactly the same place, which is the
+        /// opposite of what anyone opens this tab to find out.
+        static let celsius: ClosedRange<Double> = 20...100
+
+        func fraction(_ value: Double) -> Double {
+            let span = scale.upperBound - scale.lowerBound
+            guard span > 0 else { return 0 }
+            return min(1, max(0, (value - scale.lowerBound) / span))
+        }
+    }
+
     struct UtilizationBar: Equatable {
         let title: String
         /// Whatever this bar is a portion of, in the same unit as the parts.
@@ -381,6 +422,7 @@ final class LedgerBarView: NSView {
     }
 
     override func draw(_ dirtyRect: NSRect) {
+        if let s = spread { return drawSpread(s) }
         if let u = utilization { return drawUtilization(u) }
         guard let m = model else { return }
         let barRect = NSRect(x: 0, y: 0, width: bounds.width, height: barHeight)
@@ -569,6 +611,49 @@ final class LedgerBarView: NSView {
             .foregroundColor: Palette.dim,
         ]
         (caption as NSString).draw(at: NSPoint(x: 0, y: barHeight + gap), withAttributes: attrs)
+    }
+
+    /// The spread: a track, the span the machine is actually occupying, and a
+    /// mark at the mean.
+    private func drawSpread(_ s: SpreadBar) {
+        let barRect = NSRect(x: 0, y: 0, width: bounds.width, height: barHeight)
+        let radius = Palette.Radius.bar
+
+        // The unoccupied scale, so the span reads as a position on something
+        // rather than as a bar that happens to start late.
+        Palette.surfaceAlt.setFill()
+        NSBezierPath(roundedRect: barRect, xRadius: radius, yRadius: radius).fill()
+
+        let x0 = barRect.width * CGFloat(s.fraction(s.low))
+        let x1 = barRect.width * CGFloat(s.fraction(s.high))
+        // A visible minimum: every sensor reading the same value is a real and
+        // interesting state, and a zero-width span would draw it as nothing.
+        let span = NSRect(x: x0, y: 0, width: max(3, x1 - x0), height: barHeight)
+        LedgerBarView.temperatureInk(s.high).setFill()
+        NSBezierPath(roundedRect: span, xRadius: radius, yRadius: radius).fill()
+
+        // The mean, as a rule across the span rather than a third colour.
+        let mid = barRect.width * CGFloat(s.fraction(s.average))
+        Palette.background.withAlphaComponent(0.55).setFill()
+        NSRect(x: mid - 1, y: 2, width: 2, height: barHeight - 4).fill()
+
+        drawLabel(String(format: "%.0f–%.0f °C", s.low, s.high), in: span,
+                  color: Palette.onAccent)
+
+        // The ends are NAMED. "58 °C" is a number; "58 °C on the GPU" is a
+        // reason to do something, and naming them is the whole advantage a spread
+        // has over a single average.
+        let caption = String(format: "%@ %.0f °C average · coolest %@ · hottest %@ · %d sensors",
+                             s.title, s.average, s.lowName, s.highName, s.count)
+        (caption as NSString).draw(
+            at: NSPoint(x: 0, y: barHeight + gap),
+            withAttributes: [.font: Palette.Font.mono(10), .foregroundColor: Palette.dim])
+    }
+
+    /// One temperature scale for the whole app: the Sensors rows, the Resources
+    /// rows and this bar all colour a reading the same way.
+    static func temperatureInk(_ celsius: Double) -> NSColor {
+        celsius >= 90 ? Palette.critical : (celsius >= 75 ? Palette.warn : Palette.accent)
     }
 
     private func drawLabel(_ text: String, in rect: NSRect, color: NSColor) {
