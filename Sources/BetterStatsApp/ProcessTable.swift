@@ -305,25 +305,44 @@ enum ProcessColumns {
                 },
                 value: { $0.app.map { Double($0.memoryBytes) } }),
 
+            // Read and write, apart.
+            //
+            // They were summed in `DrainTracker` the moment they were sampled, and
+            // the comment that used to sit here said the split needed a PowerKit
+            // change. It did, and this is the other half of it. The two are worth
+            // separating because they mean different things: sustained READS are a
+            // process warming a cache and cost time, while sustained WRITES wear
+            // the SSD and dirty pages the OS must flush — and this app has already
+            // been killed by macOS once for the second kind, which a combined
+            // column would have hidden.
+            //
+            // Same rule as % CPU throughout: a sampled process that moved no bytes
+            // is a measured zero, not a missing reading. "0" rather than "0 B/s"
+            // because a zero rate has no unit worth the width in a table this wide
+            // — the header already says what the column measures.
             ProcessColumn(
-                id: "disk", title: "Disk I/O", width: 78,
-                // Read and write ARE sampled separately per process, and then summed
-                // before they reach here — `DrainTracker` keeps one `diskBytes`
-                // counter. Splitting the column needs that type to carry both, which
-                // is a PowerKit change; until then one honest combined figure beats
-                // two invented ones.
-                tooltip: "Bytes per second read AND written, combined. The per-process "
-                       + "sampler sums the two counters, so this app cannot split them.",
-                // Same rule as % CPU: a sampled process that moved no bytes is a
-                // measured zero, not a missing reading. "0" rather than "0 B/s"
-                // because a zero rate has no unit worth the width in a table this
-                // wide — the header already says what the column measures.
+                id: "diskRead", title: "Disk Read", width: 74,
+                tooltip: "Bytes per second read from disk by this app, over the "
+                       + "rate window. Sampled per process and no longer summed "
+                       + "with writes.",
                 text: { r in
                     guard let a = r.app else { return ("—", true) }
-                    guard a.diskBytesPerSec >= 1 else { return ("0", true) }
-                    return (MetricUnit.bytesPerSecond.format(a.diskBytesPerSec), false)
+                    guard a.diskReadPerSec >= 1 else { return ("0", true) }
+                    return (MetricUnit.bytesPerSecond.format(a.diskReadPerSec), false)
                 },
-                value: { $0.app?.diskBytesPerSec }),
+                value: { $0.app?.diskReadPerSec }),
+
+            ProcessColumn(
+                id: "diskWrite", title: "Disk Write", width: 74,
+                tooltip: "Bytes per second written to disk by this app, over the "
+                       + "rate window. The half worth watching: writes wear the "
+                       + "SSD and dirty pages the system has to flush.",
+                text: { r in
+                    guard let a = r.app else { return ("—", true) }
+                    guard a.diskWrittenPerSec >= 1 else { return ("0", true) }
+                    return (MetricUnit.bytesPerSecond.format(a.diskWrittenPerSec), false)
+                },
+                value: { $0.app?.diskWrittenPerSec }),
 
             ProcessColumn(
                 id: "gpuPct", title: "GPU %", width: 62, isModeled: true,

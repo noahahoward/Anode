@@ -133,10 +133,10 @@ final class DrainTrackerTests: XCTestCase {
         let drains = [
             ProcessDrain(name: "a", pid: 1, path: "/Applications/X.app/Contents/MacOS/a",
                          joules: 1, watts: 1, percentPerHour: 1,
-                         cpuPercent: 30, memoryBytes: 100, diskBytesPerSec: 10),
+                         cpuPercent: 30, memoryBytes: 100, diskReadPerSec: 10, diskWrittenPerSec: 0),
             ProcessDrain(name: "b", pid: 2, path: "/Applications/X.app/Contents/MacOS/b",
                          joules: 2, watts: 2, percentPerHour: 2,
-                         cpuPercent: 70, memoryBytes: 200, diskBytesPerSec: 5),
+                         cpuPercent: 70, memoryBytes: 200, diskReadPerSec: 5, diskWrittenPerSec: 0),
         ]
         let apps = DrainCalculator.group(drains, scale: scale)
         XCTAssertEqual(apps.count, 1, "both processes belong to the same .app bundle")

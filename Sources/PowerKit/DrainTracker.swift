@@ -50,7 +50,10 @@ public final class DrainTracker {
         /// is also cumulative, and also updates irregularly.
         /// Mach absolute time units, NOT nanoseconds. See MachTime.
         let cpu_ns: UInt64
-        let diskBytes: UInt64
+        /// Kept apart, not summed. A read and a write are different facts
+        /// about a process and the table shows them separately.
+        let diskRead: UInt64
+        let diskWritten: UInt64
     }
 
     private var history: [ProcessKey: [Sample]] = [:]
@@ -78,7 +81,6 @@ public final class DrainTracker {
             // that slipped past the (pid, startAbsTime) key, or a counter reset.
             // Discard the history rather than emitting a negative or absurd rate.
             let cpu = proc.userTime_ns &+ proc.systemTime_ns
-            let disk = proc.diskRead &+ proc.diskWritten
             if let last = samples.last, proc.energy_nJ < last.energy_nJ || cpu < last.cpu_ns {
                 samples.removeAll()
             }
@@ -93,7 +95,9 @@ public final class DrainTracker {
             if samples.isEmpty || samples[samples.count - 1].energy_nJ != proc.energy_nJ
                 || samples[samples.count - 1].cpu_ns != cpu {
                 samples.append(Sample(time: now, energy_nJ: proc.energy_nJ,
-                                      cpu_ns: cpu, diskBytes: disk))
+                                      cpu_ns: cpu,
+                                      diskRead: proc.diskRead,
+                                      diskWritten: proc.diskWritten))
             }
 
             // Keep one sample older than the cutoff so the window is fully spanned
@@ -123,7 +127,8 @@ public final class DrainTracker {
             // MachTime, not /1e9: these are mach absolute time units, not
             // nanoseconds, and the difference is a factor of 41.667.
             let cpuPct = MachTime.corePercent(units: newest.cpu_ns &- oldest.cpu_ns, over: dt)
-            let diskRate = Double(newest.diskBytes &- oldest.diskBytes) / dt
+            let readRate = Double(newest.diskRead &- oldest.diskRead) / dt
+            let writeRate = Double(newest.diskWritten &- oldest.diskWritten) / dt
 
             out.append(ProcessDrain(
                 name: proc.name,
@@ -134,7 +139,8 @@ public final class DrainTracker {
                 percentPerHour: 3600 * watts / scale.joulesPerPercent,
                 cpuPercent: cpuPct,
                 memoryBytes: proc.footprint,
-                diskBytesPerSec: diskRate))
+                diskReadPerSec: readRate,
+                diskWrittenPerSec: writeRate))
         }
 
         // Drop processes that have exited so the dictionaries cannot grow unbounded

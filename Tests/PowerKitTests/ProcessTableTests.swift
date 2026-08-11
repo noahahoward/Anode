@@ -21,7 +21,7 @@ private func makeApp(name: String,
                      procs: Int = 1,
                      cpu: Double = 12.5,
                      memory: UInt64 = 512 * 1024 * 1024,
-                     disk: Double = 0) -> AppDrain {
+                     disk: Double = 0, written: Double = 0) -> AppDrain {
     AppDrain(identity: AppIdentity(name: name, bundlePath: nil,
                                    bundleID: bundleID, isApp: isApp),
              joules: watts * 2,
@@ -31,7 +31,8 @@ private func makeApp(name: String,
              pids: Array(1...max(1, procs)).map { pid_t($0) },
              cpuPercent: cpu,
              memoryBytes: memory,
-             diskBytesPerSec: disk)
+             diskReadPerSec: disk,
+             diskWrittenPerSec: written)
 }
 
 /// `gpuRate` defaults to the hour total spread evenly, which is the only case in
@@ -76,7 +77,39 @@ final class ProcessColumnDefinitionTests: XCTestCase {
     func testTheColumnsAreTheOnesSpecified() {
         XCTAssertEqual(columns().map(\.id),
                        ["name", "pctHr", "window", "cost", "procs", "cpu",
-                        "memPct", "mem", "disk", "gpuPct", "gputime", "gpuPctHr"])
+                        "memPct", "mem", "diskRead", "diskWrite",
+                        "gpuPct", "gputime", "gpuPctHr"])
+    }
+
+    /// Read and write are DIFFERENT NUMBERS in different columns.
+    ///
+    /// They used to be summed in `DrainTracker` the moment they were sampled, so
+    /// the table could not have told them apart if it wanted to. The regression
+    /// this guards is subtle: re-summing anywhere in the chain still produces two
+    /// plausible-looking columns, both showing the total.
+    func testReadAndWriteAreShownSeparatelyAndNotSummed() {
+        let row = makeRow(app: makeApp(name: "Busy", disk: 1_000_000, written: 4_000_000))
+        let read = column("diskRead").text(row).text
+        let written = column("diskWrite").text(row).text
+        // Against the formatter, not against digits: bytesPerSecond is base 2, so
+        // 1,000,000 renders "977KB/s" and guessing at a "1" fails for reasons
+        // that have nothing to do with the property under test.
+        XCTAssertEqual(read, MetricUnit.bytesPerSecond.format(1_000_000))
+        XCTAssertEqual(written, MetricUnit.bytesPerSecond.format(4_000_000))
+        XCTAssertNotEqual(read, written, "both columns showed the same figure")
+        // And neither is the sum, which is what a re-sum anywhere in the chain
+        // would produce — twice, plausibly, in both columns.
+        let summed = MetricUnit.bytesPerSecond.format(5_000_000)
+        XCTAssertNotEqual(read, summed, "the read column is showing read+write")
+        XCTAssertNotEqual(written, summed, "the write column is showing read+write")
+    }
+
+    /// A process that read nothing and wrote nothing reads "0" in both, not a
+    /// dash: it was sampled, and zero is what was measured.
+    func testAMeasuredZeroIsAZeroInBothColumns() {
+        let row = makeRow(app: makeApp(name: "Idle", disk: 0, written: 0))
+        XCTAssertEqual(column("diskRead").text(row).text, "0")
+        XCTAssertEqual(column("diskWrite").text(row).text, "0")
     }
 
     func testEveryColumnIsAddressableExactlyOnce() {
@@ -147,7 +180,7 @@ final class ProcessCellHonestyTests: XCTestCase {
     /// not measured, and a zero would be a claim that it was.
     func testAnAbsentReadingIsADashAndNotAZero() {
         let bare = makeRow(system: makeAttributed(name: "WindowServer"))
-        for id in ["window", "cost", "cpu", "memPct", "mem", "disk",
+        for id in ["window", "cost", "cpu", "memPct", "mem", "diskRead", "diskWrite",
                    "gpuPct", "gputime", "gpuPctHr"] {
             let (text, dim) = column(id).text(bare)
             XCTAssertEqual(text, "—", "\(id) invented a value for an unmeasured row")
@@ -180,7 +213,7 @@ final class ProcessCellHonestyTests: XCTestCase {
         let idle = makeRow(app: makeApp(name: "Idle", cpu: 0, disk: 0),
                            gpu: makeAttributed(name: "Idle", pctHr: 0, gpu_ms: 0),
                            gpuTimeShare: 0)
-        for id in ["cpu", "disk", "gpuPct", "gputime", "gpuPctHr"] {
+        for id in ["cpu", "diskRead", "diskWrite", "gpuPct", "gputime", "gpuPctHr"] {
             let (text, dim) = column(id).text(idle)
             XCTAssertEqual(text, "0", "\(id) drew a measured zero as an absence")
             XCTAssertTrue(dim, "\(id) drew a zero at full strength")

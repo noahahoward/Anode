@@ -71,7 +71,8 @@ func makeDrain(pid: pid_t,
                name: String = "p",
                cpuPercent: Double = 0,
                memoryBytes: UInt64 = 0,
-               diskBytesPerSec: Double = 0) -> ProcessDrain {
+               diskReadPerSec: Double = 0,
+               diskWrittenPerSec: Double = 0) -> ProcessDrain {
     ProcessDrain(name: name,
                  pid: pid,
                  path: path,
@@ -80,5 +81,6 @@ func makeDrain(pid: pid_t,
                  percentPerHour: watts,
                  cpuPercent: cpuPercent,
                  memoryBytes: memoryBytes,
-                 diskBytesPerSec: diskBytesPerSec)
+                 diskReadPerSec: diskReadPerSec,
+                 diskWrittenPerSec: diskWrittenPerSec)
 }
