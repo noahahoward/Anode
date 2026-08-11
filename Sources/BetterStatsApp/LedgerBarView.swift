@@ -538,8 +538,13 @@ final class LedgerBarView: NSView {
                 NSBezierPath(roundedRect: r, xRadius: Palette.Radius.bar,
                              yRadius: Palette.Radius.bar).fill()
             }
+            // `onAccent` is dark ink, for text sitting ON a bright fill. Idle's
+            // fill is `surfaceAlt`, which is nearly the window's own black, so
+            // "idle 81.3" was drawn dark-on-dark and could barely be read. The
+            // ink follows the FILL rather than the fact that this is a segment.
             drawLabel("\(part.title) \(u.scale(part.value))", in: r,
-                      color: part.hatched ? Palette.dim : Palette.onAccent)
+                      color: part.hatched || part.title == "idle" || part.title == "headroom"
+                          ? Palette.dim : Palette.onAccent)
             x = r.maxX
         }
 
