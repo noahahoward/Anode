@@ -21,20 +21,10 @@ final class FanPolicyTests: XCTestCase {
         XCTAssertEqual(try? FanPolicy.resolve(rpm: 10, limits: real).get(), 2317)
     }
 
-    /// EXACTLY zero is a stop, and nothing else below the minimum is.
-    ///
-    /// This reverses a rule this file used to assert the other way round —
-    /// "stopping a fan is not on this slider". It is now, at the user's request:
-    /// the slider's bottom 5% is a dead zone that means off (`FanKnob`). What has
-    /// NOT changed is everything between: a request for 10 rpm is a client that
-    /// has miscalculated, not a person asking for silence, and it still becomes
-    /// the fan's own minimum.
-    func testOnlyExactlyZeroStopsTheFan() {
-        XCTAssertEqual(try? FanPolicy.resolve(rpm: 0, limits: real).get(), 0)
-        XCTAssertEqual(try? FanPolicy.resolve(rpm: 10, limits: real).get(), 2317)
-        XCTAssertEqual(try? FanPolicy.resolve(rpm: 500, limits: real).get(), 2317)
-        // Negative is not a quieter kind of zero. It is nonsense, and nonsense
-        // gets the floor rather than the most dangerous reading of itself.
+    /// Zero must NOT be honoured as "off". The floor is the fan's own reported
+    /// minimum, and a request below it becomes that minimum rather than a stop.
+    func testZeroBecomesTheMinimumRatherThanStoppingTheFan() {
+        XCTAssertEqual(try? FanPolicy.resolve(rpm: 0, limits: real).get(), 2317)
         XCTAssertEqual(try? FanPolicy.resolve(rpm: -500, limits: real).get(), 2317)
     }
 

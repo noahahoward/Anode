@@ -87,22 +87,11 @@ public enum FanPolicy {
         guard l.minRPM > 0, l.maxRPM > l.minRPM, l.maxRPM < 20000 else {
             return .failure(.limitsImplausible)
         }
-        // ZERO PASSES THROUGH. It is the only value below the minimum that is not
-        // clamped up to it, and it is how the slider's dead zone asks for a fan to
-        // stop rather than idle.
-        //
-        // The same number means something else in `FanRelease`, and the
-        // difference is the MODE, not the target: 0 with the mode handed back to
-        // the firmware is "no forced target, you decide", while 0 with the mode
-        // still ours is "stay stopped". Reading a target of 0 tells you nothing on
-        // its own — always read `F<n>md` beside it.
-        if rpm == 0 { return .success(0) }
         return .success(min(max(rpm, l.minRPM), l.maxRPM))
     }
 
-    /// Fraction of the fan's range. 0 = minimum, 1 = maximum. This is the fan's
-    /// OWN range and has no notion of stopped; `FanKnob` is the slider's space,
-    /// which does.
+    /// Fraction of the fan's range, for a slider. 0 = minimum, 1 = maximum —
+    /// NOT 0 = stopped, because stopping a fan is not on this slider.
     public static func fraction(rpm: Double, limits: Limits) -> Double {
         guard limits.maxRPM > limits.minRPM else { return 0 }
         return min(max((rpm - limits.minRPM) / (limits.maxRPM - limits.minRPM), 0), 1)
@@ -115,66 +104,6 @@ public enum FanPolicy {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-
-/// The slider's own coordinate space, 0 to 1, and how it maps to a fan speed.
-///
-/// A fan's range starts at its minimum — 2317 rpm on this hardware — so a bar
-/// scaled straight onto that range has NOWHERE TO PUT ZERO. A stopped fan parked
-/// the knob at the minimum, which reads as "set to 2317" and was reported as
-/// exactly that confusion by a user watching a silent machine.
-///
-/// So the bottom of the bar is a dead zone that means OFF, and the fan's range
-/// starts above it:
-///
-///     0 ────────────── 0.05 ──────────────────────────────────── 1
-///     off              minRPM                                maxRPM
-///     └── snaps ──┘
-///
-/// Inside the dead zone there are only two answers, so a knob released there
-/// takes the nearer one. Above it the knob is continuous and snaps to nothing —
-/// a user aiming for 4000 rpm should get 4000 rpm.
-public enum FanKnob {
-
-    /// Where "off" ends and the fan's own range begins.
-    public static let offZone: Double = 0.05
-
-    /// The requested speed for a knob position, or nil for "off".
-    ///
-    /// nil is not zero. Zero is a number this project writes to mean "no forced
-    /// target"; nil here means the user asked for the fan to stop, and what that
-    /// costs on the wire is `FanPolicy`'s problem, not the slider's.
-    public static func rpm(atPosition position: Double,
-                           limits: FanPolicy.Limits) -> Double? {
-        let p = clamped(position)
-        guard p >= offZone else { return nil }
-        let span = (p - offZone) / (1 - offZone)
-        return limits.minRPM + span * (limits.maxRPM - limits.minRPM)
-    }
-
-    /// Where the knob sits to show a speed. nil means the fan is off or stopped.
-    public static func position(forRPM rpm: Double?, limits: FanPolicy.Limits) -> Double {
-        guard let rpm, rpm.isFinite, rpm > 0 else { return 0 }
-        guard limits.maxRPM > limits.minRPM else { return offZone }
-        let span = (rpm - limits.minRPM) / (limits.maxRPM - limits.minRPM)
-        return clamped(offZone + min(max(span, 0), 1) * (1 - offZone))
-    }
-
-    /// Where a released knob lands.
-    ///
-    /// ONLY inside the dead zone, and to whichever end is nearer. Above it
-    /// nothing snaps: rounding a deliberate 4000 to some tidier number is the
-    /// control disagreeing with the person holding it.
-    public static func snapped(_ position: Double) -> Double {
-        let p = clamped(position)
-        guard p < offZone else { return p }
-        return p < offZone / 2 ? 0 : offZone
-    }
-
-    /// Is this position asking for the fan to stop?
-    public static func isOff(_ position: Double) -> Bool { clamped(position) < offZone }
-
-    private static func clamped(_ p: Double) -> Double { min(max(p, 0), 1) }
-}
 
 /// Where a fan slider's knob sits, and what the number beside it says.
 ///
