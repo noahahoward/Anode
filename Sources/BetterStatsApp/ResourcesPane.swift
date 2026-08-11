@@ -792,6 +792,9 @@ final class SparkGraphView: FixedWindowGraphView {
         showsAxes = false
         showsGrid = false
         bridgesGaps = false
+        // A thumbnail has nowhere to show a reading, and the card around it is a
+        // button: a hover here competed with the click it exists to invite.
+        respondsToHover = false
     }
     required init?(coder: NSCoder) { fatalError() }
 }

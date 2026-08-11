@@ -751,3 +751,67 @@ final class GlanceHeadlineFitTests: XCTestCase {
                                  "the word headline is wider than the slot it shares")
     }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// The battery chart's two axes, and the rail sparkline's lack of a pointer.
+final class GraphAxisAndHoverTests: XCTestCase {
+
+    override func setUp() { _ = appKitForTests }
+
+    /// The whole point of the shared scale: a drain of 50 %/hr must sit at the
+    /// same height as 50 % charge, so "half the battery in an hour" is legible
+    /// without arithmetic. Read off the RENDERED frame, because a scale that
+    /// agrees in the code and not on screen is the failure being prevented.
+    func testFiftyPerHourLandsLevelWithFiftyPercent() {
+        let g = HistoryGraphView(frame: .zero)
+        g.sharesRightAxisScale = true
+        let now = Date()
+        let times = (0..<20).map { now.addingTimeInterval(-Double(19 - $0) * 60) }
+        g.series = [.init(name: "total", color: Palette.accent,
+                          points: times.map { .init(time: $0, value: 50) })]
+        g.rightSeries = .init(name: "battery", color: Palette.chargeLine,
+                              points: times.map { .init(time: $0, value: 50) })
+        let size = NSSize(width: 520, height: 200)
+        let frame = render(g, size: size)
+
+        // Both lines are flat at 50; if the axes share a scale they are the same
+        // line, so the ink in a mid column has ONE centre, not two.
+        let mid = NSRect(x: 200, y: 0, width: 40, height: size.height)
+        let centre = frame.inkCentroidY(inColumn: mid.minX, width: mid.width,
+                                        ground: Palette.background)
+        let c = try? XCTUnwrap(centre)
+        XCTAssertNotNil(c)
+        if let c {
+            // Within a few points of the plot's vertical middle.
+            XCTAssertEqual(c, size.height / 2, accuracy: 26,
+                           "50 %/hr does not sit level with 50 % charge")
+        }
+    }
+
+    /// And the scale is not shared by default — the other charts still fit their
+    /// own data, which is what makes a rate legible when it is small.
+    func testTheSharedScaleIsOptIn() {
+        XCTAssertFalse(HistoryGraphView(frame: .zero).sharesRightAxisScale)
+    }
+
+    /// A thumbnail installs NO tracking area, rather than a handler that returns
+    /// early: an unused one still makes AppKit deliver a mouse-moved event for
+    /// every pixel the pointer crosses.
+    func testARailSparklineTakesNoPointerEvents() {
+        let spark = SparkGraphView(frame: NSRect(x: 0, y: 0, width: 74, height: 36))
+        XCTAssertFalse(spark.respondsToHover)
+        spark.updateTrackingAreas()
+        XCTAssertTrue(spark.trackingAreas.isEmpty,
+                      "the rail sparkline is still listening for the pointer")
+    }
+
+    /// The full-size graphs still are hoverable — the readout is the reason they
+    /// exist at that size.
+    func testAFullGraphStillAnswersThePointer() {
+        let g = HistoryGraphView(frame: NSRect(x: 0, y: 0, width: 400, height: 200))
+        XCTAssertTrue(g.respondsToHover)
+        g.updateTrackingAreas()
+        XCTAssertFalse(g.trackingAreas.isEmpty)
+    }
+}

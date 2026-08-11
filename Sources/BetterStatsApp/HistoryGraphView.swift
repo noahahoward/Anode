@@ -121,6 +121,11 @@ public class HistoryGraphView: NSView {
 
     /// nil = autoscale (nice-rounded, with hysteresis). Non-nil pins the top of
     /// the axis; data above it is clipped to the plot rect, not rescaled.
+    /// The gridlines the right axis draws, and the ones the left copies when
+    /// `sharesRightAxisScale` is set. One list, so "the same steps" is a fact
+    /// rather than a coincidence maintained in two places.
+    static let sharedAxisTicks: [Double] = [0, 25, 50, 75, 100]
+
     public var yMax: Double? {
         didSet { needsDisplay = true }
     }
@@ -138,6 +143,24 @@ public class HistoryGraphView: NSView {
     public var rightSeries: Series? {
         didSet { needsDisplay = true }
     }
+    /// Put the left axis on the SAME 0-100 scale and the same gridlines as the
+    /// right one.
+    ///
+    /// The two axes measure different things — %/hr against % — and that is
+    /// exactly why sharing the scale is worth doing on the battery chart. A drain
+    /// line drawn level with the 50 % gridline means "at this rate, half the
+    /// battery in an hour", read straight off the picture with no arithmetic. The
+    /// two quantities are commensurable in the only way that matters to someone
+    /// looking at a battery: one is the rate at which the other is spent.
+    ///
+    /// THE COST IS RESOLUTION, and it is real. Ordinary drains sit between 5 and
+    /// 20 %/hr, so the line lives in the bottom fifth of the plot and small
+    /// changes are harder to see. That is the trade: legibility of the SHAPE for
+    /// legibility of the MEANING.
+    public var sharesRightAxisScale = false {
+        didSet { if sharesRightAxisScale != oldValue { needsDisplay = true } }
+    }
+
     public var rightAxisLabel: String = "" {
         didSet { needsDisplay = true }
     }
@@ -161,6 +184,26 @@ public class HistoryGraphView: NSView {
     /// Shortest and longest spans the axis may take.
     private let minSpan: TimeInterval = 60
     private let maxSpan: TimeInterval = 7 * 86400
+
+    /// Whether this graph answers the pointer at all.
+    ///
+    /// A readout under the cursor needs somewhere to put the readout. The rail's
+    /// sparklines are 74x36 with no axes and no room for a crosshair, and they
+    /// sit inside a card that is itself a button — so a hover there fought the
+    /// click it was meant to invite and reported a value nobody could read.
+    ///
+    /// Off means no tracking area is installed at all, rather than a handler that
+    /// returns early: an unused tracking area still makes AppKit deliver
+    /// mouse-moved events to a view for every pixel the pointer crosses.
+    public var respondsToHover = true {
+        didSet {
+            if respondsToHover != oldValue {
+                hoverPoint = nil
+                needsDisplay = true
+                updateTrackingAreas()
+            }
+        }
+    }
 
     private var hoverPoint: NSPoint?
     private var trackingAreaRef: NSTrackingArea?
@@ -394,7 +437,11 @@ public class HistoryGraphView: NSView {
         // Vertical scale. yMax pins; otherwise nice-round with hysteresis.
         var top: Double
         var bottom: Double
-        if let pinned = yMax, pinned.isFinite, pinned > 0 {
+        if sharesRightAxisScale {
+            // The right axis is 0-100 and fixed; matching it is the whole point.
+            top = 100
+            bottom = 0
+        } else if let pinned = yMax, pinned.isFinite, pinned > 0 {
             top = pinned
             bottom = 0
         } else {
@@ -441,13 +488,20 @@ public class HistoryGraphView: NSView {
         // Left gutter sized to the widest y tick label so labels never collide
         // with the plot; recomputed per frame because the labels change with
         // the scale (cheap: ≤ 6 strings).
-        let yTickStep = Self.niceCeil(
-            (top - bottom) / Double(Self.yTickTarget(forPlotHeight: plotHeight)))
         var yTicks: [Double] = []
-        var yTick = (bottom / yTickStep).rounded(.up) * yTickStep
-        while yTick <= top + yTickStep * 0.001 {
-            yTicks.append(yTick)
-            yTick += yTickStep
+        if sharesRightAxisScale {
+            // The right axis's own steps, verbatim. Computing "quarters of 100"
+            // separately here would be two places that have to agree about what
+            // the gridlines are, and the entire feature is that they do.
+            yTicks = Self.sharedAxisTicks
+        } else {
+            let yTickStep = Self.niceCeil(
+                (top - bottom) / Double(Self.yTickTarget(forPlotHeight: plotHeight)))
+            var yTick = (bottom / yTickStep).rounded(.up) * yTickStep
+            while yTick <= top + yTickStep * 0.001 {
+                yTicks.append(yTick)
+                yTick += yTickStep
+            }
         }
         var maxYLabelW: CGFloat = 0
         for v in yTicks {
@@ -1024,7 +1078,7 @@ public class HistoryGraphView: NSView {
         // one: the axis belongs to the line, not to what it was doing.
         var rightAttrs = tickAttrs
         rightAttrs[.foregroundColor] = r.color
-        for v in stride(from: 0.0, through: 100.0, by: 25.0) {
+        for v in Self.sharedAxisTicks {
             let label = "\(Int(v))%" as NSString
             let sz = label.size(withAttributes: rightAttrs)
             label.draw(at: NSPoint(x: plot.maxX + 5,
@@ -1225,7 +1279,8 @@ extension HistoryGraphView {
 
     public override func updateTrackingAreas() {
         super.updateTrackingAreas()
-        if let t = trackingAreaRef { removeTrackingArea(t) }
+        if let t = trackingAreaRef { removeTrackingArea(t); trackingAreaRef = nil }
+        guard respondsToHover else { return }
         let t = NSTrackingArea(rect: bounds,
                                options: [.mouseMoved, .mouseEnteredAndExited, .activeInKeyWindow],
                                owner: self, userInfo: nil)
