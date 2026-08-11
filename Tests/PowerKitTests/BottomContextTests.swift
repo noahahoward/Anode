@@ -241,10 +241,14 @@ final class BottomPanelTests: XCTestCase {
                                                    facts: MachineInfo.facts, census: nil))
         XCTAssertEqual(m.headline, "16.4%")
         XCTAssertEqual(m.pill, "16%", "the pill disagrees with the headline")
-        let labels = m.rows.map(\.label)
-        XCTAssertTrue(labels.contains("Chip"))
-        XCTAssertTrue(labels.contains("User"))
-        XCTAssertTrue(labels.contains("System"))
+        // Paired into three rows to fit the card's height, so this asserts the
+        // FACTS survived rather than the labels — user and system share a row now,
+        // and cores carries threads. Truncating instead of pairing is what this
+        // guards against: every number that was here is still here.
+        let text = m.rows.map { "\($0.label) \($0.value) \($0.trailing ?? "")" }.joined(separator: "|")
+        XCTAssertTrue(m.rows.contains { $0.label == "Chip" })
+        XCTAssertTrue(text.contains("12.4%"), "user time was dropped, not paired")
+        XCTAssertTrue(text.contains("4.1%"), "system time was dropped, not paired")
     }
 
     /// Disk keeps the attributed shape but counts in bytes per second, and it has
@@ -298,9 +302,11 @@ final class BottomPanelTests: XCTestCase {
                                                    facts: MachineInfo.facts, census: nil))
         XCTAssertEqual(m.headline, MetricUnit.bytesPerSecond.format(4_194_304))
         XCTAssertNil(m.pill, "there is no honest disk-busy percentage to show")
-        let labels = m.rows.map(\.label)
-        XCTAssertTrue(labels.contains("Read"))
-        XCTAssertTrue(labels.contains("Write"))
+        // Read and write share one row: they are the graph's own two lines, and
+        // the headline is their sum. Both figures still appear.
+        let text = m.rows.map { "\($0.value) \($0.trailing ?? "")" }.joined(separator: "|")
+        XCTAssertTrue(text.contains(MetricUnit.bytesPerSecond.format(3_145_728)))
+        XCTAssertTrue(text.contains(MetricUnit.bytesPerSecond.format(1_048_576)))
     }
 
     /// Fans get a GAUGE, not a split. Two fans do not divide one quantity between
@@ -335,9 +341,11 @@ final class BottomPanelTests: XCTestCase {
                                                    facts: MachineInfo.facts, census: nil))
         XCTAssertEqual(m.headline, MetricUnit.bytesPerSecond.format(3_145_728))
         XCTAssertNil(m.pill, "a throughput has no percentage to pair with")
-        let labels = m.rows.map { $0.label }
-        XCTAssertTrue(labels.contains("Down"))
-        XCTAssertTrue(labels.contains("Up"))
+        // Down and up share a row so the link facts have somewhere to go — those
+        // are the part of this card the graph beside it cannot say.
+        let text = m.rows.map { "\($0.value) \($0.trailing ?? "")" }.joined(separator: "|")
+        XCTAssertTrue(text.contains(MetricUnit.bytesPerSecond.format(2_097_152)))
+        XCTAssertTrue(text.contains(MetricUnit.bytesPerSecond.format(1_048_576)))
     }
 
     /// The fan card states each fan's own range beside its speed: 2200 rpm means
@@ -356,6 +364,64 @@ final class BottomPanelTests: XCTestCase {
                        "a speed with no range attached says nothing")
     }
 
+    /// NO CARD OVERFLOWS THE HEIGHT IT IS GIVEN.
+    ///
+    /// The card is top-pinned with `bottom <= bottom`, so content taller than the
+    /// card is COMPRESSED rather than clipped — and an NSTextField with less
+    /// height than it needs centres its text and loses the top and bottom of every
+    /// glyph. That ate the headline on the Network card ("cutting off that text
+    /// with the c card"), and the same mechanism had already eaten the estimate
+    /// headline once with "measuring…". Both looked like font bugs.
+    ///
+    /// Measured rather than reasoned: this renders each subject's REAL card at the
+    /// real 236x128 and asks what height it wanted. Counting rows by hand in the
+    /// factory above is what let five of them through in the first place.
+    func testNoCardOverflowsTheHeightItIsGiven() {
+        let s = sys(cpu: CPUUsage.Sample(total: 16.4, user: 12.4, system: 4.1,
+                                         idle: 83.6, interval: 2),
+                    memory: MemoryUsage.Sample(total: 34_359_738_368, used: 20_000_000_000,
+                                               wired: 5_000_000_000, compressed: 3_000_000_000,
+                                               app: 12_000_000_000, free: 14_359_738_368),
+                    disk: DiskActivity.Sample(bytesReadPerSec: 3_145_728,
+                                              bytesWrittenPerSec: 1_048_576,
+                                              devices: [], interval: 2),
+                    network: NetworkThroughput.Sample(bytesInPerSec: 14_500,
+                                                      bytesOutPerSec: 340_000,
+                                                      interfaces: [], measured: [], interval: 2),
+                    fans: [FanInfo(index: 0, currentRPM: 2200, minRPM: 1200,
+                                   maxRPM: 4600, targetRPM: nil),
+                           FanInfo(index: 1, currentRPM: 2100, minRPM: 1200,
+                                   maxRPM: 4600, targetRPM: nil)])
+        let size = NSSize(width: 236, height: 128)
+        for context in BottomContext.allCases {
+            guard let m = GlanceCardView.model(for: context, system: s,
+                                               facts: MachineInfo.facts,
+                                               census: MachineInfo.census()) else { continue }
+            let card = GlanceCardView(frame: NSRect(origin: .zero, size: size))
+            card.model = m
+            card.layoutSubtreeIfNeeded()
+            XCTAssertLessThanOrEqual(
+                card.fittingSize.height, size.height,
+                "\(context) wants \(card.fittingSize.height) pt in \(size.height) — its "
+                + "headline will be compressed and clipped")
+        }
+    }
+
+    /// And the cap the card enforces matches what actually fits, so a subject that
+    /// hands over more rows loses the extra rather than the headline.
+    func testTheRowBudgetIsWhatTheCardCanActuallyHold() {
+        let budget = GlanceCardView.maxRows(forHeight: 128)
+        let card = GlanceCardView(frame: NSRect(x: 0, y: 0, width: 236, height: 128))
+        card.model = GlanceCardView.Model(
+            source: .ac, headline: "347KB/s", pill: nil, sourceLabel: "Network · measured",
+            // Twice the budget, which is what a careless factory would hand it.
+            rows: (0..<(budget * 2)).map { ("Label\($0)", "1234", nil) })
+        card.layoutSubtreeIfNeeded()
+        XCTAssertLessThanOrEqual(card.fittingSize.height, 128,
+                                 "the cap does not actually keep the card inside its height")
+        XCTAssertGreaterThanOrEqual(budget, 3, "a card this size held three rows when measured")
+    }
+
     /// And a subject with no reading yet returns nil so the caller can fall back
     /// to the battery, rather than inventing a card of zeroes.
     func testASubjectWithNoReadingYieldsNoCard() {
@@ -368,3 +434,4 @@ final class BottomPanelTests: XCTestCase {
                      "battery is the fallback, not something this builds")
     }
 }
+
