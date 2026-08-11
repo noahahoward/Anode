@@ -1215,6 +1215,22 @@ public class HistoryGraphView: NSView {
                 var spanCharging = false
                 let drawn = NSBezierPath()
 
+                // WHERE THIS WASH ENDS, which is not the plot floor.
+                //
+                // The area path runs down to the floor so it can be closed, but
+                // the visible part stops at whatever is already filled beneath it.
+                // Handing that whole path to `draw(in:angle:)` spreads the fade
+                // across the full height, so the charge wash was still at a third
+                // of its strength where it got cut while the drain wash beneath it
+                // had faded to nothing over a much shorter run — two washes at
+                // visibly different rates, reported as "the gradient is not in the
+                // same place as each other".
+                //
+                // Drawing between explicit points instead makes each wash fade
+                // over ITS OWN band, so they read as the same material.
+                let washFloor = filledSoFar.isEmpty ? plot.minY
+                    : min(plot.maxY, max(plot.minY, filledSoFar.bounds.maxY))
+
                 /// Close the run to the floor, fill it in its own ink, and keep it
                 /// so later fills are cut by it too.
                 func flush() {
@@ -1229,7 +1245,12 @@ public class HistoryGraphView: NSView {
                     let ink = spanCharging ? Palette.chargingLine : r.color
                     if let g = NSGradient(starting: ink.withAlphaComponent(0.28),
                                           ending: ink.withAlphaComponent(0.02)) {
-                        g.draw(in: area, angle: 90)
+                        NSGraphicsContext.saveGraphicsState()
+                        area.addClip()
+                        let top = span.map(\.y).max() ?? plot.maxY
+                        g.draw(from: NSPoint(x: 0, y: top),
+                               to: NSPoint(x: 0, y: washFloor), options: [])
+                        NSGraphicsContext.restoreGraphicsState()
                     } else {
                         ink.withAlphaComponent(0.16).setFill()
                         area.fill()
