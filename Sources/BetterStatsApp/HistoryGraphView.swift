@@ -793,14 +793,32 @@ public class HistoryGraphView: NSView {
                 buckets[i].sum += p.value
                 buckets[i].n += 1
             }
-            // An EMPTY bucket between two full ones is a real hole: this branch
-            // only runs when the samples outnumber the buckets by 1.5x, so a
-            // bucket with nothing in it means the data is missing, not sparse.
+            // A hole is measured in TIME, not in empty buckets.
+            //
+            // This used to break the line at any gap of one bucket, on the
+            // argument that the branch only runs when samples outnumber buckets
+            // by 1.5x, so an empty bucket must mean missing data. That is true of
+            // the AVERAGE density and the average is not what decides it: this app
+            // samples every ~2 s with the window open and every ~63 s with it
+            // closed, so an hour holding both is dense enough to reach this branch
+            // while its older half legitimately leaves ~17 buckets empty between
+            // consecutive samples.
+            //
+            // The result was an hour that drew as a solid line where it was
+            // watched and a row of isolated dots where it was not — the same
+            // measurements, rendered as if half of them had failed.
+            //
+            // So: the same rule the sparse path below uses, four times the data's
+            // own median spacing with a 90 s floor, applied to the time between
+            // filled buckets. One definition of "a hole" for both paths.
+            let bucketSeconds = spanS / Double(bucketCount)
             var lastFilled = -1
             for (i, b) in buckets.enumerated() where b.n > 0 {
                 let bx = xFor(t0.addingTimeInterval((Double(i) + 0.5) / Double(bucketCount) * spanS))
                 let mean = b.sum / Double(b.n)
-                if lastFilled >= 0, i - lastFilled > 1, !runs[runs.count - 1].isEmpty {
+                if lastFilled >= 0,
+                   Double(i - lastFilled) * bucketSeconds > Self.gapLimit(for: pts),
+                   !runs[runs.count - 1].isEmpty {
                     runs.append([])
                 }
                 lastFilled = i
@@ -821,15 +839,10 @@ public class HistoryGraphView: NSView {
             // either blind on one and trigger-happy on the other. Four times the
             // median tolerates ordinary jitter and a dropped tick; the 90 s floor
             // stops a dense live series breaking on a single slow frame.
-            var deltas: [TimeInterval] = []
-            deltas.reserveCapacity(pts.count)
-            for i in 1..<pts.count { deltas.append(pts[i].time.timeIntervalSince(pts[i - 1].time)) }
-            deltas.sort()
-            let median = deltas.isEmpty ? 0 : deltas[deltas.count / 2]
-            let gapLimit = max(median * 4, 90)
+            let limit = Self.gapLimit(for: pts)
             var previous: Date?
             for p in pts {
-                if let prev = previous, p.time.timeIntervalSince(prev) > gapLimit,
+                if let prev = previous, p.time.timeIntervalSince(prev) > limit,
                    !runs[runs.count - 1].isEmpty {
                     runs.append([])
                 }
@@ -984,6 +997,28 @@ public class HistoryGraphView: NSView {
     /// measuring whatever else is nearby. Two attempts at this one measured a
     /// whisker instead, and both passed against the bug.
     private(set) var lastEndpointMarkers: [NSPoint] = []
+
+    /// How long a silence has to be before it counts as a HOLE rather than as
+    /// sparse sampling.
+    ///
+    /// Four times the data's own median spacing, floored at 90 s. Derived rather
+    /// than fixed because this view is handed anything from 2 s live ticks to
+    /// 1 min stored buckets, and a constant would be blind on one and
+    /// trigger-happy on the other. The floor stops a dense series breaking on a
+    /// single slow frame.
+    ///
+    /// Shared by both drawing paths on purpose. They had separate rules — the
+    /// bucketed one broke the line at any empty bucket — so the same measurements
+    /// drew as a line or as isolated dots depending on how many of them there
+    /// were.
+    static func gapLimit(for pts: [Point]) -> TimeInterval {
+        guard pts.count > 1 else { return 90 }
+        var deltas: [TimeInterval] = []
+        deltas.reserveCapacity(pts.count - 1)
+        for i in 1..<pts.count { deltas.append(pts[i].time.timeIntervalSince(pts[i - 1].time)) }
+        deltas.sort()
+        return max(deltas[deltas.count / 2] * 4, 90)
+    }
 
     private func drawEndpointMarker(at p: NSPoint, in plot: NSRect, color: NSColor) {
         // Clamped to the VIEW, not to the plot.

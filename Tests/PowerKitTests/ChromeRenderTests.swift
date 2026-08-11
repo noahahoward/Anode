@@ -1136,3 +1136,62 @@ final class ResourceSelectionTests: XCTestCase {
         XCTAssertTrue(content.lastLiveItems.isEmpty)
     }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// One definition of "a hole", whichever way the line is drawn.
+///
+/// The two paths disagreed. The sparse one asked whether the TIME between
+/// samples exceeded four times their median; the bucketed one broke the line at
+/// any empty bucket, on the argument that its own branch condition guaranteed the
+/// data was dense. That is true of the AVERAGE density, and the average is not
+/// what decides it — this app samples every ~2 s with the window open and every
+/// ~63 s with it closed, so an hour holding both is dense enough to take the
+/// bucketed path while its older half leaves ~17 buckets empty between
+/// consecutive samples.
+///
+/// Reported as a "weird bug in the bottom left corner": an hour that drew as a
+/// line where it was watched and as isolated dots where it was not.
+final class GraphGapRuleTests: XCTestCase {
+
+    override func setUp() { _ = appKitForTests }
+
+    private func pts(_ spacings: [(count: Int, seconds: Double)]) -> [HistoryGraphView.Point] {
+        var out: [HistoryGraphView.Point] = []
+        var t = Date(timeIntervalSince1970: 1_000_000)
+        for s in spacings {
+            for _ in 0..<s.count {
+                out.append(.init(time: t, value: 10))
+                t = t.addingTimeInterval(s.seconds)
+            }
+        }
+        return out
+    }
+
+    /// A steady 63 s cadence is sampling, not absence — the floor is 90 s.
+    func testTheSlowCadenceIsNotAHole() {
+        XCTAssertGreaterThan(HistoryGraphView.gapLimit(for: pts([(60, 63)])), 63)
+    }
+
+    /// And a mixed hour takes its limit from the median, which the dense half
+    /// dominates — so the rule has to be the 90 s FLOOR rather than 4x median,
+    /// or the slow half breaks apart exactly as it did.
+    func testAMixedCadenceStillToleratesTheSlowHalf() {
+        // 18 minutes at 63 s, then 40 minutes at 2 s: median is 2 s.
+        let mixed = pts([(17, 63), (1200, 2)])
+        let limit = HistoryGraphView.gapLimit(for: mixed)
+        XCTAssertEqual(limit, 90, accuracy: 0.001,
+                       "the median collapsed to the dense half with no floor")
+        XCTAssertGreaterThan(limit, 63,
+                             "63 s samples would still be drawn as isolated dots")
+    }
+
+    /// A real absence still breaks the line: the app was closed for ten minutes.
+    func testARealAbsenceIsStillAHole() {
+        let withHole = pts([(30, 2)]) + [
+            .init(time: Date(timeIntervalSince1970: 1_000_000 + 60 + 600), value: 10)
+        ]
+        XCTAssertLessThan(HistoryGraphView.gapLimit(for: withHole), 600,
+                          "a ten-minute silence must still read as a hole")
+    }
+}
