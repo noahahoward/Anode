@@ -1187,6 +1187,37 @@ public class HistoryGraphView: NSView {
             // phantom holes.
             let breaks = Self.breaks(in: pts)
 
+            // The gradient, before the line so the stroke sits on top of its own
+            // wash.
+            //
+            // Clipped to the plot MINUS everything already filled this pass: an
+            // even-odd path of the plot rect plus the earlier areas leaves exactly
+            // the region no lower fill has claimed. That is "the bottom one cuts
+            // the top one off", done geometrically, so crossing lines resolve per
+            // pixel instead of by an assumed ordering — and fan speed and
+            // temperature do cross, every time the fans spin up.
+            if r.filled, pts.count >= 2,
+               let gradient = NSGradient(starting: r.color.withAlphaComponent(0.24),
+                                         ending: r.color.withAlphaComponent(0.02)) {
+                let area = NSBezierPath()
+                area.move(to: NSPoint(x: xFor(pts[0].time), y: yForRight(pts[0].value)))
+                for n in pts.dropFirst() {
+                    area.line(to: NSPoint(x: xFor(n.time), y: yForRight(n.value)))
+                }
+                area.line(to: NSPoint(x: xFor(pts[pts.count - 1].time), y: plot.minY))
+                area.line(to: NSPoint(x: xFor(pts[0].time), y: plot.minY))
+                area.close()
+
+                NSGraphicsContext.saveGraphicsState()
+                let mask = NSBezierPath(rect: plot)
+                mask.append(filledSoFar)
+                mask.windingRule = .evenOdd
+                mask.addClip()
+                gradient.draw(in: area, angle: 90)
+                NSGraphicsContext.restoreGraphicsState()
+                filledSoFar.append(area)
+            }
+
             var runs: [(charging: Bool, path: NSBezierPath)] = []
             var gapBridges: [(from: NSPoint, to: NSPoint)] = []
             for i in 0..<(pts.count - 1) {
