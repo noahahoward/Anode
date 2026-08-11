@@ -584,7 +584,27 @@ private final class ResourcesContent: NSView, PaneContentView {
                               "macOS is not routing through any link", dim: true))
             return (live, specs)
         }
-        if let name = primary.displayName { specs.append(.row("Name", name, dim: true)) }
+        // The name, only when it SAYS something the next row does not.
+        //
+        // macOS calls the Wi-Fi interface "Wi-Fi", so this printed "Name: Wi-Fi"
+        // directly above "Connection type: Wi-Fi" — two rows carrying one fact.
+        //
+        // The obvious improvement is the network's name, and it is not available:
+        // on macOS 27 the SSID is location data and every fast path is redacted
+        // without Location Services permission. Measured here, associated with a
+        // network at the time: CoreWLAN's `ssid()` returned nil, `ipconfig
+        // getsummary` printed "<redacted>", and SCDynamicStore's `SSID_STR` was an
+        // empty string. `system_profiler SPAirPortDataType` does return it and
+        // takes 14.3 SECONDS, which is not a thing to do on a pane refresh.
+        //
+        // So this asks for a permission BetterStats does not otherwise need, and
+        // the row is dropped instead of a location prompt being added to a system
+        // monitor. On Ethernet and Thunderbolt the name is a real port name and
+        // still earns its place.
+        if let name = primary.displayName,
+           name.caseInsensitiveCompare(primary.kind.title) != .orderedSame {
+            specs.append(.row("Name", name, dim: true))
+        }
         specs.append(.row("Connection type", primary.kind.title, dim: true))
         specs.append(.row("Interface", primary.bsdName, dim: true))
         if let speed = primary.linkSpeedBitsPerSec {
