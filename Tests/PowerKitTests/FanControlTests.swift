@@ -734,9 +734,9 @@ final class FanHelperServerTests: XCTestCase {
         try start(twoFans())
         connect()
         XCTAssertTrue(send(.setTarget(FanTarget(index: 0, rpm: 99_999))).ok)
-        XCTAssertTrue(send(.setTarget(FanTarget(index: 0, rpm: 0))).ok)
+        XCTAssertTrue(send(.setTarget(FanTarget(index: 0, rpm: 900))).ok)
         XCTAssertTrue(send(.setTarget(FanTarget(index: 0, rpm: -5000))).ok)
-        XCTAssertEqual(hardware.writes, [FakeFans.Write(index: 0, rpm: 7826),
+        XCTAssertEqual(hardware.targetWrites, [FakeFans.Write(index: 0, rpm: 7826),
                                          FakeFans.Write(index: 0, rpm: 2317),
                                          FakeFans.Write(index: 0, rpm: 2317)],
                        "a request below the fan's own minimum must become the "

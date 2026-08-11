@@ -262,7 +262,10 @@ final class FanControlPanel: NSView {
 
     @objc private func sliderChanged(_ sender: NSSlider) {
         guard let limits = limits(for: sender.tag) else { return }
-        gesture(.setSpeed(index: sender.tag, rpm: sender.doubleValue, limits: limits))
+        // The knob is a POSITION; `FanKnob` turns it into a speed, or into the
+        // stop request the bottom of the bar means.
+        let rpm = FanKnob.rpm(atPosition: sender.doubleValue, limits: limits) ?? 0
+        gesture(.setSpeed(index: sender.tag, rpm: rpm, limits: limits))
     }
 
     @objc private func boostTapped(_ sender: NSButton) {
@@ -718,9 +721,14 @@ final class FanControlPanel: NSView {
         for f in usable {
             let row = FanRow(index: f.index)
             let slider = GaugeSlider()
-            slider.minValue = f.minRPM
-            slider.maxValue = f.maxRPM
-            slider.doubleValue = f.currentRPM
+            // Knob POSITION, not rpm — the bar's bottom 5% means "off", which a
+            // bar scaled onto the fan's own range cannot express. `FanKnob` owns
+            // the mapping both ways.
+            slider.minValue = 0
+            slider.maxValue = 1
+            slider.doubleValue = FanKnob.position(forRPM: f.currentRPM,
+                                                  limits: .init(minRPM: f.minRPM,
+                                                                maxRPM: f.maxRPM))
             slider.target = self
             slider.action = #selector(sliderChanged(_:))
             // Fires on mouse-up, not on every pixel: one privileged round trip
@@ -781,8 +789,8 @@ final class FanControlPanel: NSView {
 
         let row = FanRow(index: Self.syncedRow)
         let slider = GaugeSlider()
-        slider.minValue = shared.minRPM
-        slider.maxValue = shared.maxRPM
+        slider.minValue = 0
+        slider.maxValue = 1
         slider.target = self
         slider.action = #selector(syncSliderChanged(_:))
         slider.isContinuous = false
@@ -833,13 +841,13 @@ final class FanControlPanel: NSView {
             return first
         }()
         if !((slider as? GaugeSlider)?.isTracking ?? false) {
-            slider.minValue = shared.minRPM
-            slider.maxValue = shared.maxRPM
+            slider.minValue = 0
+            slider.maxValue = 1
             // The fastest fan, when nothing has been asked for. A knob parked at
             // the slowest would read as "everything is idle" on a machine where
             // one fan is working.
             let current = usable.map(\.currentRPM).filter(\.isFinite).max() ?? 0
-            slider.doubleValue = FanGauge.knobRPM(current: current, asked: agreed, limits: shared)
+            slider.doubleValue = FanKnob.position(forRPM: agreed ?? current, limits: shared)
         }
         label.stringValue = FanGauge.syncedReadout(currents: usable.map(\.currentRPM),
                                                    asked: agreed)
@@ -867,9 +875,16 @@ final class FanControlPanel: NSView {
     /// per-fan it would put a confirmation sheet on screen for each fan the
     /// machine has, and a cancel would then be asked again for the next one.
     @objc private func syncSliderChanged(_ sender: NSSlider) {
-        applyToEveryFan { FanSession.Gesture.setSpeed(index: $0.index, rpm: sender.doubleValue,
-                                                      limits: .init(minRPM: $0.minRPM,
-                                                                    maxRPM: $0.maxRPM)) }
+        // The POSITION is what is shared, not the rpm. Fans with different ranges
+        // given the same position each get the same proportion of their own
+        // range, which is what one knob across two fans has to mean.
+        let position = sender.doubleValue
+        applyToEveryFan { f in
+            let limits = FanPolicy.Limits(minRPM: f.minRPM, maxRPM: f.maxRPM)
+            return .setSpeed(index: f.index,
+                             rpm: FanKnob.rpm(atPosition: position, limits: limits) ?? 0,
+                             limits: limits)
+        }
     }
 
     @objc private func syncBoostTapped() {
@@ -892,10 +907,13 @@ final class FanControlPanel: NSView {
         // Never under a hand that is dragging it. The reading beside it still
         // updates — that is the number the user is aiming with.
         if !((slider as? GaugeSlider)?.isTracking ?? false) {
-            slider.minValue = f.minRPM
-            slider.maxValue = f.maxRPM
-            slider.doubleValue = FanGauge.knobRPM(current: f.currentRPM, asked: asked,
-                                                  limits: limits)
+            slider.minValue = 0
+            slider.maxValue = 1
+            // A fan we have asked to STOP shows the bottom of the bar, not the
+            // live reading: it is still spinning down, and the knob should say
+            // what was asked for rather than drift back up the bar on the way.
+            let shown = asked ?? f.currentRPM
+            slider.doubleValue = FanKnob.position(forRPM: shown, limits: limits)
         }
         label.stringValue = FanGauge.readout(current: f.currentRPM, asked: asked)
 
@@ -1047,12 +1065,31 @@ final class FanControlPanel: NSView {
     /// under a hand that is dragging it would make the control fight the user.
     /// `super.mouseDown` runs AppKit's own tracking loop and returns when the
     /// mouse is let go, so the flag is exact rather than guessed from event state.
+    /// A slider whose value is a KNOB POSITION, 0 to 1 — see `FanKnob`, which
+    /// owns the mapping to a fan speed.
+    ///
+    /// Positions rather than rpm because the bar has to be able to express "off",
+    /// and a fan's own range starts at its minimum. It also lets one bar mean the
+    /// same thing for two fans with different ranges, which is what the synced row
+    /// needs.
     private final class GaugeSlider: NSSlider {
         private(set) var isTracking = false
+
+        /// Snapping happens on MOUSE-UP, after `super.mouseDown` returns — that
+        /// call runs the whole drag, so this is the moment the knob is let go.
+        /// Snapping during the drag would fight the pointer inside the dead zone.
         override func mouseDown(with event: NSEvent) {
             isTracking = true
             super.mouseDown(with: event)
             isTracking = false
+            let snapped = FanKnob.snapped(doubleValue)
+            if snapped != doubleValue {
+                doubleValue = snapped
+                // The action already fired for the unsnapped value on mouse-up.
+                // Send it again for the value actually landed on, or the fan ends
+                // up at a speed the knob is no longer showing.
+                sendAction(action, to: target)
+            }
         }
     }
 
