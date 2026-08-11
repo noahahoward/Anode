@@ -51,6 +51,20 @@ enum Palette {
     static var surface:    NSColor { pick(hex(0x0A0E12), hex(0xFFFFFF)) }
     static var surfaceAlt: NSColor { pick(hex(0x141A20), hex(0xEEF3F6)) }
     static var sidebar:    NSColor { pick(hex(0x050709), hex(0xE6EDF1)) }
+    /// The ground on every other row of the process table.
+    ///
+    /// Its own token rather than an alpha on `surfaceAlt`, because it is a
+    /// DECISION about how visible a stripe should be and that decision belongs in
+    /// one place. It started as `surfaceAlt` at 0.45, which over a true black
+    /// ground resolves to about (9, 12, 14) — a difference of ten values, which is
+    /// the same "nobody can see that" mistake the rail ground already made once
+    /// and is recorded against `surfaceAlt` itself.
+    ///
+    /// A step above `surfaceAlt` in dark: the header band and the rail ground can
+    /// afford to be quiet because they are large continuous areas, and a 20 pt
+    /// stripe alternating down a list cannot. In light mode the same reasoning
+    /// runs the other way — the stripe darkens rather than lifts.
+    static var rowAlternate: NSColor { pick(hex(0x1B222A), hex(0xE9EFF3)) }
 
     // ── Ink ─────────────────────────────────────────────────────────────────
     static var text:  NSColor { pick(hex(0xFFFFFF), hex(0x000000)) }

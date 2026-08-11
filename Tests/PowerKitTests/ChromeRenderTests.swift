@@ -78,6 +78,27 @@ private struct Frame {
         return best
     }
 
+    /// Average perceived brightness over a region, weighted by coverage.
+    ///
+    /// The measure for LAYERING. `maxLuminance` finds the single brightest pixel,
+    /// which in a region containing any exposed ground is that ground rather than
+    /// the wash being tested; `maxAlpha` saturates at 1 the moment anything opaque
+    /// is drawn, so every layer above it becomes invisible. Both were tried here
+    /// first, and both reported "no change" for washes that were plainly stacking.
+    func meanLuminance(in r: NSRect) -> CGFloat {
+        var total: CGFloat = 0, n = 0
+        forEachPixel(in: r) { c in
+            guard let s = c.usingColorSpace(.sRGB) else { return }
+            // Premultiplied by alpha, so a translucent wash over nothing counts as
+            // the little light it actually adds.
+            let l = 0.2126 * s.redComponent + 0.7152 * s.greenComponent
+                  + 0.0722 * s.blueComponent
+            total += l * s.alphaComponent
+            n += 1
+        }
+        return n == 0 ? 0 : total / CGFloat(n)
+    }
+
     func maxAlpha(in r: NSRect) -> CGFloat {
         var best: CGFloat = 0
         forEachPixel(in: r) { c in if c.alphaComponent > best { best = c.alphaComponent } }
@@ -572,21 +593,41 @@ final class TableChromeRenderTests: XCTestCase {
             let size = NSSize(width: 320, height: 20)
             let sample = NSRect(x: 120, y: 2, width: 80, height: 16)
 
-            func brightness(selected: Bool, hovered: Bool) -> CGFloat {
+            func brightness(selected: Bool, hovered: Bool, alternate: Bool) -> CGFloat {
                 let row = BetterStatsRowView(frame: NSRect(origin: .zero, size: size))
                 row.isSelected = selected
                 row.hoverForTesting = hovered
-                return render(row, size: size).maxAlpha(in: sample)
+                row.alternateForTesting = alternate
+                // MEAN luminance. Alpha saturates once the stripe is opaque, and
+                // the brightest single pixel is whatever ground shows through —
+                // both were tried and both reported "no change" for washes that
+                // were visibly stacking.
+                return render(row, size: size).meanLuminance(in: sample)
             }
 
-            let plain = brightness(selected: false, hovered: false)
-            let selected = brightness(selected: true, hovered: false)
-            let both = brightness(selected: true, hovered: true)
+            // BOTH stripe states. The alternating ground is the newest layer under
+            // all of this, and a selection that vanished on the striped rows would
+            // be a selection that works half the time.
+            for alternate in [false, true] {
+                let plain = brightness(selected: false, hovered: false, alternate: alternate)
+                let selected = brightness(selected: true, hovered: false, alternate: alternate)
+                let both = brightness(selected: true, hovered: true, alternate: alternate)
 
-            XCTAssertGreaterThan(selected, plain + 0.02, "a selected row is not washed")
-            XCTAssertGreaterThan(both, selected + 0.02,
-                                 "hovering a selected row did not brighten it — hover is "
-                                 + "replacing the selection rather than stacking on it")
+                XCTAssertGreaterThan(selected, plain + 0.02,
+                                     "a selected row is not washed (alternate: \(alternate))")
+                XCTAssertGreaterThan(both, selected + 0.02,
+                                     "hovering a selected row did not brighten it — hover is "
+                                     + "replacing the selection rather than stacking on it "
+                                     + "(alternate: \(alternate))")
+            }
+
+            // And the stripe itself is actually visible. It was `surfaceAlt` at
+            // 0.45 over a true black ground, which resolves to about (9, 12, 14) —
+            // reported as "can barely see it".
+            XCTAssertGreaterThan(brightness(selected: false, hovered: false, alternate: true),
+                                 brightness(selected: false, hovered: false, alternate: false)
+                                     + 0.02,
+                                 "the alternating stripe is invisible")
         }
     }
 

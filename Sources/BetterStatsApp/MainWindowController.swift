@@ -613,7 +613,12 @@ final class BetterStatsRowView: NSTableRowView {
     /// columns of a wide window, so it is a ground rather than a signal: barely
     /// there, and quieter than either hover or selection, both of which land on
     /// top of it.
+    /// Test seam, for the same reason `hoverForTesting` is one: a row held
+    /// outside a live table has no index, so it can never be the odd one.
+    var alternateForTesting: Bool?
+
     private var isAlternate: Bool {
+        if let alternateForTesting { return alternateForTesting }
         guard let table = superview as? NSTableView else { return false }
         let row = table.row(for: self)
         return row >= 0 && row % 2 == 1
@@ -635,7 +640,7 @@ final class BetterStatsRowView: NSTableRowView {
     private func fillBackground() {
         let shape = pill
         if isAlternate {
-            Palette.surfaceAlt.withAlphaComponent(0.45).setFill()
+            Palette.rowAlternate.setFill()
             shape.fill()
         }
         if isSelected {
