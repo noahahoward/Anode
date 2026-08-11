@@ -135,7 +135,7 @@ public final class AppDetailView: NSView, NSTableViewDataSource, NSTableViewDele
         // totals off the right edge; the name compresses first.
         nameLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
-        subtitleLabel.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
+        subtitleLabel.font = Palette.Font.mono(11)
         subtitleLabel.textColor = Palette.dim
         subtitleLabel.lineBreakMode = .byTruncatingMiddle
         subtitleLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
@@ -463,6 +463,10 @@ public final class AppDetailView: NSView, NSTableViewDataSource, NSTableViewDele
 private final class ShareBar: NSView {
     /// nil = no measurement yet: draw only the track, never a fake zero-length fill.
     var fraction: Double? { didSet { needsDisplay = true } }
+
+    /// `Palette` resolves at draw time, so a view that never redraws keeps the
+    /// previous appearance's ink until something else happens to dirty it.
+    override func viewDidChangeEffectiveAppearance() { needsDisplay = true }
 
     override func draw(_ dirtyRect: NSRect) {
         let r = bounds
