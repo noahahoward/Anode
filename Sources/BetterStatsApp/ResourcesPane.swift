@@ -80,20 +80,25 @@ final class ResourcesPane: SystemPane {
 enum Resource: CaseIterable {
     case cpu, memory, gpu, network, disk, sensors
 
-    /// The colour of this resource's line, everywhere it appears — the sparkline,
-    /// the card's swatch, the big graph, and the accent on its live figures. One
-    /// resource, one colour, so a glance at the rail and a glance at the detail
-    /// agree about what is being looked at.
-    var color: NSColor {
-        switch self {
-        case .cpu:     return Palette.accent
-        case .memory:  return Palette.warn
-        case .gpu:     return Palette.blue
-        case .network: return Palette.chargeLine
-        case .disk:    return Palette.accentDim
-        case .sensors: return Palette.critical
-        }
-    }
+    // NO PER-RESOURCE COLOUR ANY MORE, and this is the note rather than the
+    // property.
+    //
+    // Each resource used to own an ink — CPU green, memory amber, GPU blue — on
+    // the argument that one resource means one colour, so the rail and the detail
+    // agree about what is being looked at. The argument holds for a chart with
+    // several lines on it. It does not hold here, where the rail is six cards each
+    // showing ONE line, and the detail shows ONE resource at a time: the colour
+    // never distinguished anything from anything, because the name is already
+    // beside the number.
+    //
+    // What it did instead was make the app change colour as you moved through it —
+    // the same figure amber on one tab and blue on the next, six stacked cards
+    // reading as six unrelated widgets. Reported as "some colours change from
+    // resource tab to resource tab", which was exactly right.
+    //
+    // Everything here is `Palette.accent` now. The palette still has the other
+    // hues and the ledger still uses them, where they DO separate things drawn
+    // together.
 
     /// The y-axis NAME on the big graph. Named, never assumed: "%" and "MB/s" and
     /// "°C" are not interchangeable and a chart that does not say which it is
@@ -190,14 +195,14 @@ final class ResourcesContent: NSView, PaneContentView {
     /// same `Radius.card` as the rest, and repaints on a theme flip like
     /// everything else.
     override func draw(_ dirtyRect: NSRect) {
+        // BLACK, with rounded corners and no border. `surface` lifted this into a
+        // card, which is one more surface than the pane needs — the readings sit
+        // directly on the app's ground and the rounding is the only edge.
         let panel = NSBezierPath(roundedRect: bounds,
                                  xRadius: Palette.Radius.card,
                                  yRadius: Palette.Radius.card)
-        Palette.surface.setFill()
+        Palette.background.setFill()
         panel.fill()
-        Palette.lineSoft.setStroke()
-        panel.lineWidth = 1
-        panel.stroke()
     }
 
     override func viewDidChangeEffectiveAppearance() { needsDisplay = true }
@@ -253,6 +258,19 @@ final class ResourcesContent: NSView, PaneContentView {
 
     private final class FlippedClipView: NSClipView {
         override var isFlipped: Bool { true }
+
+        /// A fresh clip view draws its OWN background, and `drawsBackground` on
+        /// the scroll view only reaches the clip view that exists when it is set —
+        /// every caller here assigns this one AFTERWARDS, so all four scrollers
+        /// were painting an unstyled grey rectangle behind their content, with
+        /// square corners, in an app whose own surfaces are rounded and black.
+        ///
+        /// Cleared here rather than at each call site so the order of two lines
+        /// cannot bring it back.
+        override var drawsBackground: Bool {
+            get { false }
+            set { }
+        }
     }
 
     override var isFlipped: Bool { true }
@@ -420,7 +438,7 @@ final class ResourcesContent: NSView, PaneContentView {
         var live: [BodyItem] = [.heading("Now")]
         if let c = sys.cpu {
             live.append(.figure("Utilisation", String(format: "%.1f%%", c.total),
-                                color: Resource.cpu.color))
+                                color: Palette.accent))
         } else {
             live.append(.figure("Utilisation", "—"))
         }
@@ -482,7 +500,7 @@ final class ResourcesContent: NSView, PaneContentView {
             live.append(.figure("In use",
                                 String(format: "%@  (%.0f%%)",
                                        MetricUnit.bytes.format(Double(m.used)), m.usedPercent),
-                                color: Resource.memory.color))
+                                color: Palette.accent))
             live.append(.figure("Free", MetricUnit.bytes.format(Double(m.free))))
             live.append(.heading("Breakdown"))
             // The same split the app already computes, and the same one Activity
@@ -529,7 +547,7 @@ final class ResourcesContent: NSView, PaneContentView {
         var live: [BodyItem] = [.heading("Now")]
         if let g = sys.gpu {
             live.append(.figure("Utilisation", String(format: "%.1f%%", g.utilization),
-                                color: Resource.gpu.color))
+                                color: Palette.accent))
             if let r = g.rendererUtilization {
                 live.append(.figure("Renderer", String(format: "%.1f%%", r)))
             }
@@ -574,7 +592,7 @@ final class ResourcesContent: NSView, PaneContentView {
         let rate = primary.flatMap { sys.network?.rate(for: $0.bsdName) }
         if let rate {
             live.append(.figure("Receive", MetricUnit.bytesPerSecond.format(rate.inPerSec),
-                                color: Resource.network.color))
+                                color: Palette.accent))
             live.append(.figure("Send", MetricUnit.bytesPerSecond.format(rate.outPerSec)))
         } else {
             // Throughput only exists between two reads, and this pane may have just
@@ -600,7 +618,7 @@ final class ResourcesContent: NSView, PaneContentView {
                                             MetricUnit.bytesPerSecond.format(i.inPerSec),
                                             MetricUnit.bytesPerSecond.format(i.outPerSec)),
                                      fill: peak > 0 ? i.totalPerSec / peak : 0,
-                                     color: Resource.network.color, dim: true))
+                                     color: Palette.accent, dim: true))
                 }
             }
         }
@@ -662,7 +680,7 @@ final class ResourcesContent: NSView, PaneContentView {
         var live: [BodyItem] = [.heading("Now")]
         if let d = sys.disk {
             live.append(.figure("Read", MetricUnit.bytesPerSecond.format(d.bytesReadPerSec),
-                                color: Resource.disk.color))
+                                color: Palette.accent))
             live.append(.figure("Write", MetricUnit.bytesPerSecond.format(d.bytesWrittenPerSec)))
             if !d.devices.isEmpty {
                 live.append(.heading("By device"))
@@ -673,7 +691,7 @@ final class ResourcesContent: NSView, PaneContentView {
                                             MetricUnit.bytesPerSecond.format(device.bytesReadPerSec),
                                             MetricUnit.bytesPerSecond.format(device.bytesWrittenPerSec)),
                                      fill: peak > 0 ? device.totalPerSec / peak : 0,
-                                     color: Resource.disk.color, dim: true))
+                                     color: Palette.accent, dim: true))
                 }
             }
         } else {
@@ -914,25 +932,35 @@ final class ResourceCard: NSView {
         }
         if valueLabel.stringValue != track.summary { valueLabel.stringValue = track.summary }
         spark.yMax = resource.axisMax
-        spark.series = [.init(name: track.title, color: resource.color,
+        // ONE colour for every card, not one per resource.
+        //
+        // `Resource.color` still identifies a resource in the DETAIL view, where a
+        // single line is being read. In the rail it made six cards six different
+        // colours stacked on top of each other, which reads as six unrelated
+        // widgets rather than one list — and the colour was never carrying
+        // information there, since the card's own name is right beside it.
+        spark.series = [.init(name: track.title, color: Palette.accent,
                               points: track.points, filled: true)]
     }
 
-    /// The selected card: the wash, plus a hard accent edge down its leading side —
-    /// the same two-part mark the process table's selected row wears, because it is
-    /// the same statement. Hover washes, selection is MARKED.
+    /// The selected card: a wash, and nothing else.
+    ///
+    /// It used to carry a hard edge down its leading side in the RESOURCE's colour,
+    /// borrowed from the process table's selected row. Two things were wrong with
+    /// it here. The edge was a different colour on every card, so the one mark that
+    /// should mean "this is the selected one" was also the mark that made six cards
+    /// look like six unrelated widgets. And the rail is six items where the table
+    /// is hundreds: a wash is unambiguous among six, which is what the edge was
+    /// there to rescue in a long list.
+    ///
+    /// `Palette.selection` is one colour for every card, so selection reads the
+    /// same wherever it lands.
     override func draw(_ dirtyRect: NSRect) {
         guard isSelected else { return }
-        let pill = NSBezierPath(roundedRect: bounds.insetBy(dx: 0, dy: 1),
-                                xRadius: Palette.Radius.inner,
-                                yRadius: Palette.Radius.inner)
         Palette.selection.setFill()
-        pill.fill()
-        NSGraphicsContext.saveGraphicsState()
-        pill.addClip()
-        resource.color.setFill()
-        NSRect(x: 0, y: bounds.minY, width: 2.5, height: bounds.height).fill()
-        NSGraphicsContext.restoreGraphicsState()
+        NSBezierPath(roundedRect: bounds.insetBy(dx: 0, dy: 1),
+                     xRadius: Palette.Radius.inner,
+                     yRadius: Palette.Radius.inner).fill()
     }
 }
 
@@ -951,6 +979,19 @@ final class ResourceDetailView: NSView {
 
     private final class FlippedClipView: NSClipView {
         override var isFlipped: Bool { true }
+
+        /// A fresh clip view draws its OWN background, and `drawsBackground` on
+        /// the scroll view only reaches the clip view that exists when it is set —
+        /// every caller here assigns this one AFTERWARDS, so all four scrollers
+        /// were painting an unstyled grey rectangle behind their content, with
+        /// square corners, in an app whose own surfaces are rounded and black.
+        ///
+        /// Cleared here rather than at each call site so the order of two lines
+        /// cannot bring it back.
+        override var drawsBackground: Bool {
+            get { false }
+            set { }
+        }
     }
 
     override init(frame frameRect: NSRect) {
@@ -1053,7 +1094,7 @@ final class ResourceDetailView: NSView {
         graph.yAxisLabel = track.resource.axisLabel
         graph.yMax = track.resource.axisMax
         graph.timeDomain = (now.addingTimeInterval(-span), now)
-        graph.series = [.init(name: track.resource.axisLabel, color: track.resource.color,
+        graph.series = [.init(name: track.resource.axisLabel, color: Palette.accent,
                               points: track.points, filled: true)]
     }
 
