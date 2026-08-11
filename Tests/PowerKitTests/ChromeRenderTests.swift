@@ -631,6 +631,37 @@ final class TableChromeRenderTests: XCTestCase {
         }
     }
 
+    /// The stripe reaches the row's own top and bottom edge.
+    ///
+    /// It was drawn with the selection pill's geometry, which insets a point
+    /// vertically — right for a mark that sits ON a row, wrong for the row's
+    /// ground. That left a sliver of window between the stripe and the separator
+    /// above it, and two rows apart the sliver is 2 pt, which is why it was
+    /// visible: reported as a gap between the ledger line and the top of the
+    /// highlight.
+    ///
+    /// Measured at the very first and last row of pixels, well inside the
+    /// horizontal inset so the corner radius cannot be what is being sampled.
+    func testTheAlternatingStripeFillsTheWholeRowHeight() {
+        inTheme(.darkAqua) {
+            let size = NSSize(width: 320, height: 20)
+            func row(_ alternate: Bool) -> Frame {
+                let v = BetterStatsRowView(frame: NSRect(origin: .zero, size: size))
+                v.alternateForTesting = alternate
+                return render(v, size: size)
+            }
+            let mid = NSRect(x: 140, y: 0, width: 40, height: 1)          // top edge
+            let bottom = NSRect(x: 140, y: size.height - 1, width: 40, height: 1)
+            let striped = row(true), plain = row(false)
+            XCTAssertGreaterThan(striped.meanLuminance(in: mid),
+                                 plain.meanLuminance(in: mid) + 0.01,
+                                 "the stripe stops short of the row's top edge")
+            XCTAssertGreaterThan(striped.meanLuminance(in: bottom),
+                                 plain.meanLuminance(in: bottom) + 0.01,
+                                 "the stripe stops short of the row's bottom edge")
+        }
+    }
+
     /// And nothing paints a hard accent edge any more. It was the mark that said
     /// "selected" categorically, and it is gone by request; a stray one would read
     /// as a second selection idiom.
