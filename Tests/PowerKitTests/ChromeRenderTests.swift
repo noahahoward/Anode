@@ -1074,3 +1074,65 @@ final class ResourceCardHoverTests: XCTestCase {
         }
     }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Clicking a resource card changes what is under the graph, immediately.
+///
+/// It did not. Selection changed the highlight and the graph at once and left the
+/// readings describing the resource you had just clicked away from until the next
+/// sample landed — up to two seconds of a tab that had visibly switched and was
+/// still showing the wrong thing. The data was never missing: this view drew it
+/// once and kept no copy, so a click had nothing to redraw from.
+final class ResourceSelectionTests: XCTestCase {
+
+    override func setUp() { _ = appKitForTests }
+
+    private func sample() -> SystemMetrics.Snapshot {
+        SystemMetrics.Snapshot(
+            cpu: CPUUsage.Sample(total: 16.4, user: 12.4, system: 4.1, idle: 83.6,
+                                 interval: 2),
+            memory: MemoryUsage.Sample(total: 24_000_000_000, used: 12_000_000_000,
+                                       wired: 3_000_000_000, compressed: 1_000_000_000,
+                                       app: 8_000_000_000, free: 12_000_000_000),
+            gpu: nil, network: nil, disk: nil,
+            cpuTemperature: 39, gpuTemperature: nil, fans: [])
+    }
+
+    /// One update, then a click. The rows must change with no second update.
+    func testSelectingRedrawsTheReadingsWithoutWaitingForASample() {
+        let content = ResourcesContent(frame: NSRect(x: 0, y: 0, width: 900, height: 600))
+        content.update(sample(), power: nil, span: 900)
+
+        let beforeLabels = content.lastLiveItems.map(\.label)
+        XCTAssertFalse(beforeLabels.isEmpty, "nothing was rendered for the first tick")
+
+        // No `update` between these two lines. That is the whole test.
+        content.select(.memory)
+        let afterLabels = content.lastLiveItems.map(\.label)
+
+        XCTAssertNotEqual(afterLabels, beforeLabels,
+                          "the readings did not change when the tab did")
+        XCTAssertFalse(afterLabels.isEmpty,
+                       "selecting emptied the readings instead of rebuilding them")
+    }
+
+    /// And the specs column too — it is built from the same sample and was left
+    /// behind by the same nil.
+    func testTheSpecsColumnAlsoFollowsTheClick() {
+        let content = ResourcesContent(frame: NSRect(x: 0, y: 0, width: 900, height: 600))
+        content.update(sample(), power: nil, span: 900)
+        let before = content.lastSpecItems.map(\.label)
+        content.select(.memory)
+        XCTAssertNotEqual(content.lastSpecItems.map(\.label), before,
+                          "the hardware column still describes the previous resource")
+    }
+
+    /// Before any sample there is nothing to redraw from, and a click must not
+    /// invent one — it leaves the placeholder rather than emptying the pane.
+    func testAClickBeforeTheFirstSampleIsHarmless() {
+        let content = ResourcesContent(frame: NSRect(x: 0, y: 0, width: 900, height: 600))
+        content.select(.gpu)
+        XCTAssertTrue(content.lastLiveItems.isEmpty)
+    }
+}
