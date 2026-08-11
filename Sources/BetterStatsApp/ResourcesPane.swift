@@ -979,7 +979,7 @@ final class ResourcesContent: NSView, PaneContentView {
 
     /// 75 °C warm, 90 °C hot — the same scale the Sensors pane uses.
     private static func heatTint(_ c: Double) -> NSColor {
-        c >= 90 ? Palette.critical : (c >= 75 ? Palette.warn : Palette.accent)
+        LedgerBarView.temperatureInk(c)
     }
 }
 
