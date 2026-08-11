@@ -79,6 +79,22 @@ final class GlanceCardView: NSView {
 
         headline.stringValue = m.headline
         headline.textColor = Palette.text
+        // A WORD is not a duration and must not be set like one.
+        //
+        // This slot is tuned for "9h 41m": six monospace characters, all digits,
+        // none of which has a descender. Putting "measuring…" in it at the same
+        // size overflowed the width AND — because the card's height comes from the
+        // graph beside it, so the stack is compressed rather than grown — clipped
+        // the bottom off every letter, `g` worst of all.
+        //
+        // So a non-numeric headline gets a proportional face at a size that fits.
+        // Detected from the string rather than carried as a flag, because every
+        // caller that ever puts a word here needs this and none of them should
+        // have to remember to say so.
+        let isNumeric = m.headline.contains { $0.isNumber }
+        headline.font = isNumeric ? Palette.Font.mono(30, .semibold)
+                                  : Palette.Font.sans(21, .semibold)
+        headline.lineBreakMode = .byTruncatingTail
 
         // Charge rides with the source line rather than competing with the headline:
         // it is context for the estimate, not the answer itself.
@@ -292,7 +308,10 @@ final class GlanceCardView: NSView {
     /// for words — the menu bar just shows nothing.
     private static func provenance(_ source: DrainEstimate.Source,
                                    settled: Bool = true) -> String {
-        guard settled else { return "measuring — not enough history yet" }
+        // One word. The sub line is a fixed-width strip and already carries the
+        // charge and the power source; "measuring — not enough history yet" ran
+        // off the end of it, which says even less than the short version.
+        guard settled else { return "measuring" }
         return provenanceWord(source)
     }
 

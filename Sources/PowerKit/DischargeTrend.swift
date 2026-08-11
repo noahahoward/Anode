@@ -71,7 +71,7 @@ public final class BatteryDischargeTrend {
 
     /// One reading of the discharge accumulator plus what is needed to turn it into
     /// a rate. Values, not IOKit calls, so tests and harnesses can drive this.
-    public struct Sample {
+    public struct Sample: Codable {
         /// `AccumulatedBatteryDischarge`. SIGNED and NEGATIVE while discharging, so
         /// it counts DOWN; the delta is taken in two's complement so a wrap through
         /// either end of the range is still the true difference.
@@ -453,5 +453,59 @@ public final class BatteryDischargeTrend {
         var drop = 0
         while drop + 1 < samples.count && samples[drop + 1].timestamp < cutoff { drop += 1 }
         if drop > 0 { samples.removeFirst(drop) }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+
+extension BatteryDischargeTrend {
+
+    /// Carrying the trend across an app restart.
+    ///
+    /// THE APP RESTARTING IS NOT AN EVENT THE BATTERY KNOWS ABOUT. Without this
+    /// the trend began empty on every launch, so quitting and reopening threw
+    /// away up to half an hour of measured discharge and put the estimate back to
+    /// "measuring" — which a user correctly read as wrong, since nothing about
+    /// the machine had changed. The three things that SHOULD clear it are a
+    /// reboot, a first-ever launch, and going on and off the adapter.
+    ///
+    /// This works because the accumulator is HARDWARE and cumulative. It keeps
+    /// counting while nothing is watching, and this file already says what that
+    /// means: "a cumulative counter loses nothing when a poll is missed — the
+    /// unobserved ticks are still inside the next difference." So a sample from
+    /// before the restart differences correctly against one from after it.
+    ///
+    /// NOTHING NEW IS TRUSTED HERE. The restored samples go back exactly where
+    /// they were and the next `record` validates them with the guards that were
+    /// already there, each of which catches one of the three cases above:
+    ///
+    ///   * a REBOOT resets `CLOCK_UPTIME_RAW`, so the awake clock disagrees with
+    ///     the wall clock and the sleep guard clears the trend;
+    ///   * TIME ON THE ADAPTER makes the discharge delta non-negative, and
+    ///     `Window.between` returns nil, which clears it;
+    ///   * a long absence produces one window longer than the trend window, which
+    ///     clears it too — so a restart after an hour starts fresh, and one after
+    ///     a minute does not.
+    ///
+    /// The guards are load-bearing rather than decorative: restoring without them
+    /// would fit a rate across a gap that may contain a charge, a sleep, or a
+    /// different boot entirely.
+    public struct Persisted: Codable {
+        public let samples: [Sample]
+        /// Stamped so a file from a previous format is ignored rather than
+        /// decoded into something that looks plausible.
+        public let version: Int
+        public static let currentVersion = 1
+    }
+
+    public func persisted() -> Persisted {
+        Persisted(samples: samples, version: Persisted.currentVersion)
+    }
+
+    /// Put a saved trend back. Ignored when the file is from another format.
+    public func restore(_ p: Persisted) {
+        guard p.version == Persisted.currentVersion else { return }
+        samples = p.samples
+        endRun()
     }
 }

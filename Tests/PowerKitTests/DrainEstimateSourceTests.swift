@@ -296,3 +296,97 @@ final class DrainEstimateSourceTests: XCTestCase {
         XCTAssertFalse(DrainEstimate.canQuoteTime(source: .insufficient, windowSpan: 9999))
     }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Carrying the trend across an app restart.
+///
+/// The battery does not know the app restarted. Without this the trend began
+/// empty on every launch, so quitting and reopening threw away up to half an
+/// hour of measured discharge and put the estimate back to "measuring" — which
+/// is wrong, because nothing about the machine had changed. The three things
+/// that SHOULD clear it are a reboot, a first-ever launch, and the adapter.
+final class DischargeTrendPersistenceTests: XCTestCase {
+
+    /// One sample per minute of steady discharge, as the hardware would publish
+    /// it: the accumulator counts down at 1 Hz in 60-tick batches.
+    private func samples(minutes: Int, mW: Double, from t0: Date = Date(timeIntervalSince1970: 1_000_000),
+                         awake0: TimeInterval = 10_000)
+        -> [BatteryDischargeTrend.Sample] {
+        (0...minutes).map { i -> BatteryDischargeTrend.Sample in
+            let seconds: Double = 60 * Double(i)
+            let discharge: Int64 = Int64(-mW * seconds)
+            let ticks: UInt64 = UInt64(60 * i)
+            return BatteryDischargeTrend.Sample(
+                accumulatedDischarge: discharge,
+                accumulatorCount: ticks,
+                voltage_mV: 11_800,
+                timestamp: t0.addingTimeInterval(seconds),
+                awake: awake0 + seconds)
+        }
+    }
+
+    private func trend(_ s: [BatteryDischargeTrend.Sample]) -> BatteryDischargeTrend {
+        let t = BatteryDischargeTrend()
+        for x in s { t.record(x, onBattery: true) }
+        return t
+    }
+
+    /// A saved trend comes back saying the same thing it said before.
+    func testARestoredTrendReportsTheSameRate() throws {
+        let original = trend(samples(minutes: 12, mW: 6000))
+        let before = try XCTUnwrap(original.trend)
+
+        let data = try JSONEncoder().encode(original.persisted())
+        let decoded = try JSONDecoder().decode(BatteryDischargeTrend.Persisted.self, from: data)
+        let restored = BatteryDischargeTrend()
+        restored.restore(decoded)
+
+        let after = try XCTUnwrap(restored.trend)
+        XCTAssertEqual(after.power_mW, before.power_mW, accuracy: 0.001,
+                       "a restart changed what the battery had been doing")
+    }
+
+    /// And it keeps measuring from where it was, rather than starting over: a
+    /// sample recorded after the restart differences against the restored
+    /// history, because the accumulator kept counting while nobody watched.
+    func testMeasurementContinuesAcrossTheRestart() throws {
+        let saved = trend(samples(minutes: 10, mW: 6000)).persisted()
+        let restored = BatteryDischargeTrend()
+        restored.restore(saved)
+
+        // The app was closed for two minutes; the hardware counted through it.
+        let next = BatteryDischargeTrend.Sample(
+            accumulatedDischarge: Int64(-6000.0 * 60 * 12),
+            accumulatorCount: 60 * 12,
+            voltage_mV: 11_800,
+            timestamp: Date(timeIntervalSince1970: 1_000_000 + 720),
+            awake: 10_000 + 720)
+        XCTAssertTrue(restored.record(next, onBattery: true),
+                      "the restored trend refused a sample it should have accepted")
+        XCTAssertEqual(try XCTUnwrap(restored.trend).power_mW, 6000, accuracy: 1)
+    }
+
+    /// TIME ON THE ADAPTER still clears it, restored or not. This is the guard
+    /// that makes restoring safe: the app cannot know what happened while it was
+    /// closed, so the arithmetic has to notice.
+    func testGoingOnTheAdapterStillClearsARestoredTrend() throws {
+        let restored = BatteryDischargeTrend()
+        restored.restore(trend(samples(minutes: 10, mW: 6000)).persisted())
+        restored.record(samples(minutes: 1, mW: 6000)[0], onBattery: false)
+        XCTAssertNil(restored.trend, "adapter time survived into the trend")
+    }
+
+    /// A file from another format is ignored rather than decoded into something
+    /// that looks plausible.
+    func testAFileFromAnotherFormatIsIgnored() throws {
+        let restored = BatteryDischargeTrend()
+        restored.restore(trend(samples(minutes: 10, mW: 6000)).persisted())
+        XCTAssertNotNil(restored.trend)
+
+        let stale = BatteryDischargeTrend.Persisted(samples: [], version: 999)
+        let other = BatteryDischargeTrend()
+        other.restore(stale)
+        XCTAssertNil(other.trend)
+    }
+}

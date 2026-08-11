@@ -35,6 +35,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
     var monitor: PowerMonitor?
     var store: HistoryStore?
     let drain = DrainRateEstimator()
+    /// Throttles the trend's crash-insurance write. See the call site.
+    var lastTrendSave = Date.distantPast
     /// The most recent estimate, computed on the sampling queue beside the
     /// `record` that produced it and then handed to the main thread as a value.
     /// `DrainRateEstimator` is not thread-safe and `record` does not run on main,
@@ -167,6 +169,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         monitor = PowerMonitor()
         store = HistoryStore()
         seedLiveGraphFromHistory()
+        // The battery does not know the app restarted, so the trend must not
+        // either. Restoring is safe because the accumulator is hardware and keeps
+        // counting while nothing is watching; the guards in `record` still throw
+        // the restored history away on a reboot, on time spent on the adapter, or
+        // on an absence longer than the window. See
+        // `BatteryDischargeTrend.Persisted`.
+        if let saved = BatteryDischargeTrend.Persisted.load() { drain.restoreTrend(saved) }
 
         buildMenu()
 
@@ -432,6 +441,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
                 self.drain.record(state: st, scale: snap.scale,
                                   powerBased_pctHr: snap.smoothed_pctHr)
                 est = self.drain.estimate()
+
+                // Insurance against the exits that skip `applicationWillTerminate`
+                // — a crash, a force quit, a logout that does not wait. Every two
+                // minutes and not every tick: this is a few dozen samples of five
+                // numbers, and macOS has killed this app once already for dirtying
+                // pages too fast. Losing at most two minutes of a thirty-minute
+                // window is not worth a write per second to avoid.
+                if Date().timeIntervalSince(self.lastTrendSave) > 120 {
+                    self.lastTrendSave = Date()
+                    let snapshot = self.drain.persistedTrend()
+                    DispatchQueue.global(qos: .utility).async { snapshot.save() }
+                }
             }
 
             // The window query walks history, so it is not worth doing every tick.
@@ -1041,6 +1062,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
     /// which is exactly why the release cannot live only here.
     func applicationWillTerminate(_ note: Notification) {
         fansPane.teardown()
+        drain.persistedTrend().save()
     }
 
     /// Closing the window leaves the app alive in the menu bar, so activating it
