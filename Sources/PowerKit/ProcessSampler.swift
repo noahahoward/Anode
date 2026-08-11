@@ -222,6 +222,15 @@ public struct ProcessDrain {
 
     /// Percent of ONE core-second per wall-second, the same convention Activity
     /// Monitor uses — so a fully busy 4-thread process reads 400%, not 100%.
+    /// Percent of ONE core — a busy four-thread process reads 400%. Activity
+    /// Monitor's convention, and the right one for a per-process column.
+    ///
+    /// IT IS NOT COMPARABLE TO `CPUUsage.total`, which is 0-100 across every
+    /// core, and the two are spelled almost identically: `HistoryStore`'s
+    /// utilisation point calls the whole-machine figure `cpuPercent` as well.
+    /// Summing these and measuring the sum against that total overstates by the
+    /// core count — it printed "CPU 129.0% in use" on a machine sitting at 17.3%.
+    /// Divide by `activeProcessorCount` before the two ever meet.
     public let cpuPercent: Double
     /// Physical footprint right now. Instantaneous, so it is not differenced.
     public let memoryBytes: UInt64
