@@ -942,8 +942,20 @@ public class HistoryGraphView: NSView {
         // when this is the SOLE series: with eight drilled-in lines it would be
         // eight dots in the same 20 pt of edge, and there the legend is what
         // tells the lines apart anyway.
-        if isOnlySeries, let head = runs.last?.last {
-            drawEndpointMarker(at: NSPoint(x: head.x, y: head.y), in: plot, color: s.color)
+        //
+        // FROM THE DATA, not from the drawn nodes. When there are more samples
+        // than pixels the line above is BUCKETED, and each node sits at its
+        // bucket's MEAN — so taking the last node put this marker on the average
+        // of the final bucket rather than on the latest reading, which is the one
+        // thing it claims to be. Wherever a bucket held a spike, the dot sat
+        // visibly off the end of its own line.
+        //
+        // It looked correct on sparse graphs, which draw real samples and have no
+        // buckets, and wrong on dense ones — which is most of them. The
+        // right-hand series never had this because it always used `pts.last`.
+        if isOnlySeries, let last = pts.last {
+            drawEndpointMarker(at: NSPoint(x: xFor(last.time), y: yFor(last.value)),
+                               in: plot, color: s.color)
         }
     }
 

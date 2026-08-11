@@ -815,3 +815,119 @@ final class GraphAxisAndHoverTests: XCTestCase {
         XCTAssertFalse(g.trackingAreas.isEmpty)
     }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// The endpoint marker — the dot at the head of the line.
+///
+/// It shipped on the wrong value. When a graph holds more samples than pixels the
+/// line is BUCKETED and each node is drawn at its bucket's mean, and the marker
+/// was taken from the last drawn node — so it sat on the average of the final
+/// bucket rather than on the latest reading, which is the only thing it claims to
+/// be. Sparse graphs draw real samples and looked right; dense ones, which is
+/// most of them, did not.
+final class EndpointMarkerTests: XCTestCase {
+
+    override func setUp() { _ = appKitForTests }
+
+    /// Pixels that differ between two frames inside a rect.
+    ///
+    /// Frame-to-frame, because every reference this test tried first was wrong
+    /// about the rendered image: `Palette.background` is not the ground the graph
+    /// actually paints, and an sRGB token read back out of a P3 buffer is not
+    /// itself. Two renders of the same view differ only where the thing under
+    /// test moved, and that comparison needs no reference colour at all.
+    private static func differing(_ a: Frame, _ b: Frame, in r: NSRect) -> Int {
+        var n = 0
+        for y in stride(from: r.minY, to: r.maxY, by: 1) {
+            for x in stride(from: r.minX, to: r.maxX, by: 1) {
+                let p = NSPoint(x: x, y: y)
+                guard let ca = a.color(atViewPoint: p), let cb = b.color(atViewPoint: p) else {
+                    continue
+                }
+                let d = max(abs(ca.redComponent - cb.redComponent),
+                            max(abs(ca.greenComponent - cb.greenComponent),
+                                abs(ca.blueComponent - cb.blueComponent)))
+                if d > 0.05 { n += 1 }
+            }
+        }
+        return n
+    }
+
+    private func dense(lastValue: Double, spikeAtEnd: Bool) -> HistoryGraphView {
+        let g = HistoryGraphView(frame: .zero)
+        g.yMax = 100
+        let now = Date()
+        // More samples than pixels, so the BUCKETED path is the one under test.
+        var pts: [HistoryGraphView.Point] = (0..<1199).map {
+            .init(time: now.addingTimeInterval(-1200 + Double($0)), value: 10)
+        }
+        // Both variants put a 90 in the final bucket so both draw the SAME
+        // whisker, and they differ only in whether the high point is the LAST one
+        // — which is the only thing the marker should follow.
+        //
+        // Index 1198, immediately before the appended sample, so the two land in
+        // one bucket. An earlier draft used 1195: at ~3 samples per bucket that is
+        // a different bucket, the whisker moved with it, and the difference the
+        // test measured was the whisker rather than the marker — so it passed
+        // against the bug twice.
+        if !spikeAtEnd { pts[1198] = .init(time: pts[1198].time, value: 90) }
+        pts.append(.init(time: now, value: spikeAtEnd ? lastValue : 10))
+        g.series = [.init(name: "v", color: Palette.accent, points: pts)]
+        return g
+    }
+
+    /// The marker follows the LATEST READING, not the final bucket's mean.
+    ///
+    /// Two frames that differ only in where the spike sits inside the last
+    /// bucket. Both draw the same whisker to the top, so whisker ink cancels; the
+    /// only thing left that can differ up there is the marker.
+    ///
+    /// Compared frame-to-frame rather than against `Palette.accent`, because this
+    /// file's own harness says why: an sRGB token rendered into a P3 buffer does
+    /// not read back as itself, so matching a named colour tests the display. An
+    /// earlier version of this test made both mistakes — it measured the whisker,
+    /// and then it matched a token — and passed against the bug it was written
+    /// for.
+    func testTheMarkerSitsOnTheLatestReadingNotTheBucketMean() {
+        let size = NSSize(width: 400, height: 200)
+        let markerHigh = render(dense(lastValue: 90, spikeAtEnd: true), size: size)
+        let markerLow = render(dense(lastValue: 90, spikeAtEnd: false), size: size)
+
+        // A tight box at the right-hand end, around where 90 lands.
+        let box = NSRect(x: size.width - 26, y: size.height * 0.78,
+                         width: 24, height: size.height * 0.14)
+        let moved = Self.differing(markerHigh, markerLow, in: box)
+        // A 7 pt disc sampled at 1 pt steps is ~38 points; measured at 52 here with
+        // the marker present and 0 without it, so 25 sits clear of both.
+        
+        XCTAssertGreaterThan(moved, 10,
+                             "the marker did not move to the latest reading "
+                           + "(\(moved) pixels differ where it should have appeared)")
+    }
+
+    /// And a sparse graph, which never had buckets and never regressed, still
+    /// marks its last sample.
+    func testASparseGraphStillMarksItsLastSample() {
+        let size = NSSize(width: 400, height: 200)
+        let g = HistoryGraphView(frame: .zero)
+        g.yMax = 100
+        let now = Date()
+        g.series = [.init(name: "v", color: Palette.accent,
+                          points: (0..<8).map {
+                              .init(time: now.addingTimeInterval(-480 + Double($0) * 60),
+                                    value: $0 == 7 ? 90 : 10)
+                          })]
+        let flat = HistoryGraphView(frame: .zero)
+        flat.yMax = 100
+        flat.series = [.init(name: "v", color: Palette.accent,
+                             points: (0..<8).map {
+                                 .init(time: now.addingTimeInterval(-480 + Double($0) * 60),
+                                       value: 10)
+                             })]
+        let box = NSRect(x: size.width - 26, y: size.height * 0.78,
+                         width: 24, height: size.height * 0.14)
+        let moved = Self.differing(render(g, size: size), render(flat, size: size), in: box)
+        XCTAssertGreaterThan(moved, 10, "the sparse graph lost its endpoint marker")
+    }
+}
