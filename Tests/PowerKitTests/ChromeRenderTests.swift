@@ -455,31 +455,48 @@ final class ResourcesCardRenderTests: XCTestCase {
     override func setUp() { _ = appKitForTests }
 
 
-    /// The rail is one card per resource and the colour is what tells them apart
-    /// at a glance — in the sparkline, in the selected card's edge, and in the
-    /// detail column's line. Two resources sharing an ink would make the rail and
-    /// the detail agree about the wrong thing, silently.
-    func testEveryResourceHasItsOwnColour() {
-        let inks = Resource.allCases.compactMap {
-            ($0, $0.color.usingColorSpace(.sRGB))
-        }
-        XCTAssertEqual(inks.count, Resource.allCases.count, "a resource colour did not resolve")
-        for (a, i) in inks.enumerated() {
-            for j in inks[(a + 1)...] {
-                guard let x = i.1, let y = j.1 else { continue }
-                let d = max(abs(x.redComponent - y.redComponent),
-                            max(abs(x.greenComponent - y.greenComponent),
-                                abs(x.blueComponent - y.blueComponent)))
-                XCTAssertGreaterThan(d, 0.05, "\(i.0) and \(j.0) are the same colour")
-            }
+    /// ONE ink across the whole Resources tab, which reverses what this test used
+    /// to assert.
+    ///
+    /// It required every resource to have its OWN colour, on the argument that a
+    /// glance at the rail and a glance at the detail should agree about what is
+    /// being looked at. That argument is for a chart with several lines on it.
+    /// Here the rail is six cards each showing one line and the detail shows one
+    /// resource at a time, so the colour separated nothing — the name is already
+    /// beside the number — while making the app change colour as you moved
+    /// through it. Reported as "some colours change from resource tab to resource
+    /// tab".
+    ///
+    /// The other hues are still in the palette and the ledger still uses them,
+    /// where they do separate things drawn together.
+    func testTheResourcesTabUsesOneInkThroughout() throws {
+        let sources = try String(
+            contentsOf: URL(fileURLWithPath: #filePath)
+                .deletingLastPathComponent().deletingLastPathComponent()
+                .deletingLastPathComponent()
+                .appendingPathComponent("Sources/BetterStatsApp/ResourcesPane.swift"),
+            encoding: .utf8)
+        for line in sources.split(separator: "\n") {
+            let code = line.trimmingCharacters(in: .whitespaces)
+            guard !code.hasPrefix("//") else { continue }
+            XCTAssertFalse(code.contains(".color") && code.contains("Resource"),
+                           "a per-resource colour came back: \(code)")
         }
     }
 
-    /// Selection on a card is the same two-part mark the process table's rows
-    /// wear: a wash across the card, plus an opaque edge down its leading side in
-    /// the resource's own colour. The wash alone is a difference you can only
-    /// judge with an unselected card beside it.
-    func testASelectedCardIsMarkedAndNotJustWashed() {
+    /// Selection on a card is a WASH, and only a wash.
+    ///
+    /// This used to require an opaque edge down the leading side as well —
+    /// borrowed from the process table's selected row, where a wash alone is easy
+    /// to lose among hundreds. The rail is six items, where a wash is
+    /// unmistakable, and the edge was drawn in the resource's own colour: the one
+    /// mark meaning "this is selected" was also the mark that made six cards look
+    /// like six unrelated widgets.
+    ///
+    /// The table keeps its edge. `testASelectedRowIsMarkedAndNotJustWashed` above
+    /// is the one that still asserts it, and it is a different question about a
+    /// different list.
+    func testASelectedCardIsWashedAndCarriesNoEdge() {
         inTheme(.darkAqua) {
             let card = ResourceCard(resource: .cpu, onClick: { _ in })
             card.isSelected = true
@@ -489,8 +506,8 @@ final class ResourcesCardRenderTests: XCTestCase {
             let edge = frame.maxAlpha(in: NSRect(x: 0, y: 6, width: 2, height: 46))
             let wash = frame.maxAlpha(in: NSRect(x: 120, y: 6, width: 60, height: 46))
             XCTAssertGreaterThan(wash, 0.05, "the selection wash disappeared")
-            XCTAssertGreaterThan(edge, wash + 0.3,
-                                 "the selected card has no edge mark, only a wash")
+            XCTAssertLessThan(edge, wash + 0.15,
+                              "the card still draws a hard edge beside its wash")
         }
     }
 
