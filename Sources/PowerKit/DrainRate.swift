@@ -492,10 +492,21 @@ public final class DrainRateEstimator {
                                                              ratePctHr: p),
                     confidence: 0,
                     source: .power,
-                    // The same pair the ordinary power tier reports: how much
-                    // history has ACCUMULATED, not the span of a window this
-                    // figure did not come from.
-                    windowSpan: slowFit?.span ?? 0,
+                    // How much history has ACCUMULATED — and the trend's span is
+                    // part of that even when its rate lost the cross-check.
+                    //
+                    // This used to report `slowFit?.span` alone, which is the mAh
+                    // regression's window and is EMPTY for the first minutes after
+                    // a launch. So a freshly started app holding a restored trend
+                    // with half an hour of measured discharge in it announced that
+                    // it had no history at all, and anything keying on that — the
+                    // "still measuring" gate — believed it.
+                    //
+                    // The rate published here is the power figure, deliberately.
+                    // The SPAN is not about which number won; it is about how long
+                    // this estimator has been watching, and it has been watching
+                    // for the whole of the trend's window.
+                    windowSpan: max(slowFit?.span ?? 0, t.span),
                     sampleCount: samples.count)
             }
             return DrainEstimate(
