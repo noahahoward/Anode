@@ -403,19 +403,19 @@ public class HistoryGraphView: NSView {
         ctx.setShouldAntialias(true)
 
         // Background first — semantic, so aqua/darkAqua both come out right.
-        NSColor.controlBackgroundColor.setFill()
+        Palette.background.setFill()
         bounds.fill()
 
         let tickFont = NSFont.monospacedDigitSystemFont(ofSize: 9, weight: .regular)
         let tickAttrs: [NSAttributedString.Key: Any] = [
             .font: tickFont,
-            .foregroundColor: NSColor.secondaryLabelColor,
+            .foregroundColor: Palette.dim,
         ]
         // The axis NAME is a label, not a reading, so it wears the app's
         // small-label voice — the same uppercase kerned mono the table header and
         // the Resources cards use. Only the TYPE comes from Palette; the ink stays
         // semantic like the rest of this view's chrome.
-        let axisNameAttrs = Palette.labelAttributes(NSColor.secondaryLabelColor)
+        let axisNameAttrs = Palette.labelAttributes(Palette.dim)
 
         // ── Scales ──────────────────────────────────────────────────────────
         var dataMin = Double.infinity
@@ -577,7 +577,11 @@ public class HistoryGraphView: NSView {
         // so the two rules do not stack into one double-weight hairline.
         let zeroY = snap(yFor(min(max(0, bottom), top)))
         if showsGrid {
-            NSColor.separatorColor.setStroke()
+            // lineSoft, not line. `separatorColor` — what this was — is far more
+            // reserved than a solid rule, and swapping it for one turned the grid
+            // from something the eye passes over into something it reads. The grid
+            // is the thing you measure AGAINST; it is not a thing to look at.
+            Palette.lineSoft.setStroke()
             let gridPath = NSBezierPath()
             gridPath.lineWidth = 1
             for v in yTicks {
@@ -598,7 +602,7 @@ public class HistoryGraphView: NSView {
         // the axis does not reach zero this is the plot floor instead, which is
         // the same statement — it is where the measurement bottoms out.
         if showsAxes {
-            NSColor.separatorColor.setStroke()
+            Palette.line.setStroke()
             let baseline = NSBezierPath()
             baseline.lineWidth = 1
             baseline.move(to: NSPoint(x: plot.minX, y: zeroY))
@@ -658,7 +662,7 @@ public class HistoryGraphView: NSView {
         // value ladder is the one you read AGAINST, so ruling both at the same
         // weight makes a cross-hatch out of what should be a background.
         if !timeGrid.isEmpty {
-            NSColor.separatorColor.withAlphaComponent(0.55).setStroke()
+            Palette.lineSoft.withAlphaComponent(0.55).setStroke()
             timeGrid.stroke()
         }
 
@@ -674,7 +678,7 @@ public class HistoryGraphView: NSView {
                 let s = "no history yet" as NSString
                 let attrs: [NSAttributedString.Key: Any] = [
                     .font: NSFont.systemFont(ofSize: 11),
-                    .foregroundColor: NSColor.tertiaryLabelColor,
+                    .foregroundColor: Palette.faint,
                 ]
                 let size = s.size(withAttributes: attrs)
                 s.draw(at: NSPoint(x: plot.midX - size.width / 2, y: plot.midY - size.height / 2),
@@ -863,7 +867,7 @@ public class HistoryGraphView: NSView {
                 bridge.move(to: NSPoint(x: from.x, y: from.y))
                 bridge.line(to: NSPoint(x: to.x, y: to.y))
             }
-            NSColor.tertiaryLabelColor.setStroke()
+            Palette.faint.setStroke()
             bridge.stroke()
         }
 
@@ -992,7 +996,7 @@ public class HistoryGraphView: NSView {
         // clamp remains for the degenerate case of a plot flush to the view.
         let x = min(max(p.x, bounds.minX + 3.5), bounds.maxX - 3.5)
         lastEndpointMarkers.append(NSPoint(x: x, y: p.y))
-        NSColor.controlBackgroundColor.setFill()
+        Palette.background.setFill()
         NSBezierPath(ovalIn: NSRect(x: x - 3.5, y: p.y - 3.5, width: 7, height: 7)).fill()
         color.setFill()
         NSBezierPath(ovalIn: NSRect(x: x - 2.25, y: p.y - 2.25, width: 4.5, height: 4.5)).fill()
@@ -1084,7 +1088,7 @@ public class HistoryGraphView: NSView {
                     bridge.move(to: g.from)
                     bridge.line(to: g.to)
                 }
-                NSColor.tertiaryLabelColor.setStroke()
+                Palette.faint.setStroke()
                 bridge.stroke()
             }
             for run in runs where !run.path.isEmpty {
@@ -1338,7 +1342,7 @@ extension HistoryGraphView {
         guard let h = hoverPoint, plot.contains(h), panAnchor == nil else { return }
         let t = time(atX: h.x)
 
-        NSColor.secondaryLabelColor.withAlphaComponent(0.55).setStroke()
+        Palette.dim.withAlphaComponent(0.55).setStroke()
         let line = NSBezierPath()
         line.lineWidth = 1
         line.move(to: NSPoint(x: h.x, y: plot.minY))
@@ -1375,15 +1379,15 @@ extension HistoryGraphView {
         // readout carried NO colour at all, so nothing tied a row to its line.
         let stampAttrs: [NSAttributedString.Key: Any] = [
             .font: NSFont.monospacedDigitSystemFont(ofSize: 9.5, weight: .regular),
-            .foregroundColor: NSColor.secondaryLabelColor,
+            .foregroundColor: Palette.dim,
         ]
         let nameAttrs: [NSAttributedString.Key: Any] = [
             .font: NSFont.monospacedDigitSystemFont(ofSize: 10, weight: .regular),
-            .foregroundColor: NSColor.secondaryLabelColor,
+            .foregroundColor: Palette.dim,
         ]
         let valueAttrs: [NSAttributedString.Key: Any] = [
             .font: NSFont.monospacedDigitSystemFont(ofSize: 10, weight: .medium),
-            .foregroundColor: NSColor.labelColor,
+            .foregroundColor: Palette.text,
         ]
 
         let entries = lines.map { (name: $0.0 as NSString, color: $0.1,
@@ -1408,11 +1412,11 @@ extension HistoryGraphView {
         let bottom = min(max(h.y - boxH / 2, plot.minY), plot.maxY - boxH)
         let box = NSRect(x: left, y: bottom, width: boxW, height: boxH)
 
-        NSColor.controlBackgroundColor.withAlphaComponent(0.96).setFill()
+        Palette.background.withAlphaComponent(0.96).setFill()
         let bp = NSBezierPath(roundedRect: box,
                               xRadius: Palette.Radius.chip, yRadius: Palette.Radius.chip)
         bp.fill()
-        NSColor.separatorColor.setStroke()
+        Palette.line.setStroke()
         bp.stroke()
 
         var y = box.maxY - padY - ceil(stampSize.height)

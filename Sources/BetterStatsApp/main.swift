@@ -652,7 +652,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         let palette: [NSColor] = [Palette.accent, Palette.blue, Palette.warn,
                                   Palette.chargeLine, Palette.critical,
                                   Palette.accentDim,
-                                  NSColor.systemPurple, NSColor.systemTeal]
+                                  Palette.violet, Palette.teal]
         return palette[i % palette.count]
     }
 

@@ -400,8 +400,8 @@ final class LedgerBarView: NSView {
         case .apps:           return Palette.accent
         case .systemProcesses: return Palette.accentDim
         case .gpu:            return Palette.blue
-        case .memory:         return .systemPurple
-        case .storage:        return .systemTeal
+        case .memory:         return Palette.violet
+        case .storage:        return Palette.teal
         case .usb:            return Palette.critical
         case .display:        return Palette.warn
         case .platform:       return Palette.line
@@ -442,7 +442,8 @@ final class LedgerBarView: NSView {
         where modelShare(seg) > 0 {
             swatch({ r in
                 Self.color(for: seg).setFill()
-                NSBezierPath(roundedRect: r, xRadius: 2, yRadius: 2).fill()
+                NSBezierPath(roundedRect: r, xRadius: Palette.Radius.bar,
+                             yRadius: Palette.Radius.bar).fill()
             }, seg.title)
         }
         swatch({ r in

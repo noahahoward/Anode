@@ -121,7 +121,7 @@ public final class AppDetailView: NSView, NSTableViewDataSource, NSTableViewDele
     // integrator embeds it (window, sheet, popover) instead of relying on whatever
     // happens to be behind it. Semantic colour resolves per effectiveAppearance.
     public override func draw(_ dirtyRect: NSRect) {
-        NSColor.windowBackgroundColor.setFill()
+        Palette.background.setFill()
         dirtyRect.fill()
     }
 
@@ -136,14 +136,14 @@ public final class AppDetailView: NSView, NSTableViewDataSource, NSTableViewDele
         nameLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
         subtitleLabel.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
-        subtitleLabel.textColor = .secondaryLabelColor
+        subtitleLabel.textColor = Palette.dim
         subtitleLabel.lineBreakMode = .byTruncatingMiddle
         subtitleLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
         totalLabel.font = .monospacedDigitSystemFont(ofSize: 22, weight: .semibold)
         totalLabel.alignment = .right
         procCountLabel.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
-        procCountLabel.textColor = .secondaryLabelColor
+        procCountLabel.textColor = Palette.dim
         procCountLabel.alignment = .right
 
         // ── Table ───────────────────────────────────────────────────────────
@@ -184,7 +184,7 @@ public final class AppDetailView: NSView, NSTableViewDataSource, NSTableViewDele
         scroll.borderType = .noBorder
 
         emptyLabel.font = .systemFont(ofSize: 12)
-        emptyLabel.textColor = .secondaryLabelColor
+        emptyLabel.textColor = Palette.dim
         emptyLabel.alignment = .center
         emptyLabel.isHidden = true
 
@@ -192,7 +192,7 @@ public final class AppDetailView: NSView, NSTableViewDataSource, NSTableViewDele
         func caption(_ s: String) -> NSTextField {
             let l = NSTextField(labelWithString: s)
             l.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
-            l.textColor = .labelColor
+            l.textColor = Palette.text
             l.lineBreakMode = .byTruncatingTail
             return l
         }
@@ -212,7 +212,7 @@ public final class AppDetailView: NSView, NSTableViewDataSource, NSTableViewDele
         for r in 0..<grid.numberOfRows { grid.row(at: r).yPlacement = .center }
 
         caveatLabel.font = .monospacedSystemFont(ofSize: 10, weight: .regular)
-        caveatLabel.textColor = .tertiaryLabelColor
+        caveatLabel.textColor = Palette.faint
         caveatLabel.lineBreakMode = .byTruncatingTail
         caveatLabel.stringValue =
             "different denominators — measured includes display, radios, SSD, kernel and root daemons that no app row can claim"
@@ -420,19 +420,19 @@ public final class AppDetailView: NSView, NSTableViewDataSource, NSTableViewDele
         case "proc":
             cell.stringValue = r.name
             cell.alignment = .left
-            cell.textColor = .labelColor
+            cell.textColor = Palette.text
         case "pid":
             cell.stringValue = "\(r.pid)"
             cell.alignment = .right
-            cell.textColor = .secondaryLabelColor
+            cell.textColor = Palette.dim
         case "pctHr":
             cell.stringValue = Self.pctHrText(r.percentPerHour)
             cell.alignment = .right
-            cell.textColor = .labelColor
+            cell.textColor = Palette.text
         default: // joules
             cell.stringValue = String(format: "%.2f", r.joules)
             cell.alignment = .right
-            cell.textColor = .labelColor
+            cell.textColor = Palette.text
         }
         // The executable path answers "which helper is this, exactly" — too long
         // for a column, so it rides on every cell as a tooltip.
@@ -455,12 +455,15 @@ private final class ShareBar: NSView {
         let r = bounds
         guard r.width > 0, r.height > 0 else { return }
         let radius = r.height / 2
-        NSColor.quaternaryLabelColor.setFill()
+        Palette.lineSoft.setFill()
         NSBezierPath(roundedRect: r, xRadius: radius, yRadius: radius).fill()
 
         guard let f = fraction, f.isFinite, f > 0 else { return }
         let w = max(r.height, r.width * CGFloat(min(1, f)))
-        NSColor.controlAccentColor.setFill()
+        // This app's accent, not the one the user picked for macOS: every other
+        // bar in the app is Palette.accent, and following the system setting made
+        // this one alone turn pink or orange on some machines.
+        Palette.accent.setFill()
         NSBezierPath(roundedRect: NSRect(x: 0, y: 0, width: w, height: r.height),
                      xRadius: radius, yRadius: radius).fill()
     }

@@ -409,7 +409,7 @@ enum AboutPanel {
         guard let text = creditsText(info: info) else { return [:] }
         let credits = NSAttributedString(string: text, attributes: [
             .font: NSFont.systemFont(ofSize: NSFont.smallSystemFontSize),
-            .foregroundColor: NSColor.secondaryLabelColor,
+            .foregroundColor: Palette.dim,
         ])
         return [.credits: credits]
     }
