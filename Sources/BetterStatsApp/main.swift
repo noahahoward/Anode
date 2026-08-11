@@ -1083,25 +1083,39 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         if sys.sensorsSampled {
             if !sys.fans.isEmpty {
                 let load = sys.fans.reduce(0) { $0 + $1.load } / Double(sys.fans.count)
-                fanLoadSeries.append(.init(time: now, value: load * 100))
+                let rpm = sys.fans.reduce(0) { $0 + $1.currentRPM } / Double(sys.fans.count)
+                // The rpm rides ALONG with the percentage rather than replacing
+                // it. The line has to be a percentage — two fans with different
+                // top speeds have no shared rpm scale — but nobody reads a fan in
+                // percent, so the readout says both. Recorded at the same instant
+                // as the value it annotates, which is the whole reason it is
+                // carried on the point.
+                fanLoadSeries.append(.init(
+                    time: now, value: load * 100,
+                    detail: String(format: "%.0f%% · %.0f rpm", load * 100, rpm)))
             }
             if let c = sys.cpuTemperature {
-                cpuTempSeries.append(.init(time: now, value: c))
+                cpuTempSeries.append(.init(time: now, value: c,
+                                           detail: String(format: "%.1f °C", c)))
             }
             if let g = sys.gpuTemperature {
-                gpuTempSeries.append(.init(time: now, value: g))
+                gpuTempSeries.append(.init(time: now, value: g,
+                                           detail: String(format: "%.1f °C", g)))
             }
             // The picked sensor, off the same cached sweep the pane just did — a
             // dictionary read, not a second SMC walk. Only while one is picked and
             // only on the tab that sweeps, so it costs nothing the rest of the time.
             if let picked = sensorsPane.pickedSensor,
                let r = Sensors.temperatures().first(where: { $0.qualifiedName == picked }) {
-                pickedSensorSeries.append(.init(time: now, value: r.value))
+                pickedSensorSeries.append(.init(time: now, value: r.value,
+                                                detail: String(format: "%.1f °C", r.value)))
             }
             let temps = [sys.cpuTemperature, sys.gpuTemperature].compactMap { $0 }
             if !temps.isEmpty {
-                temperatureSeries.append(.init(time: now,
-                                               value: temps.reduce(0, +) / Double(temps.count)))
+                let mean = temps.reduce(0, +) / Double(temps.count)
+                temperatureSeries.append(.init(
+                    time: now, value: mean,
+                    detail: String(format: "%.1f °C", mean)))
             }
         }
     }
