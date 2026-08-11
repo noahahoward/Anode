@@ -22,12 +22,11 @@ final class StoreRetentionTests: XCTestCase {
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         // A throwaway suite: these tests write retention settings, and the user's
         // real preferences are not a fixture.
-        suiteName = "com.betterstats.tests.\(UUID().uuidString)"
-        defaults = UserDefaults(suiteName: suiteName)
+        (defaults, suiteName) = try TestDefaults.make(owner: "StoreRetention")
     }
 
     override func tearDownWithError() throws {
-        defaults.removePersistentDomain(forName: suiteName)
+        TestDefaults.destroy(defaults, suiteName)
         try? FileManager.default.removeItem(at: dir)
     }
 
