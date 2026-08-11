@@ -146,7 +146,12 @@ extension SystemPane {
             // same size and in the same ink. It means the same thing in both places
             // — "this is the one, and this is which way" — and two chevrons that
             // looked different would be two ideas.
-            let w: CGFloat = 8, h: CGFloat = 5
+            // SWAPPED when shut, so the closed chevron is the open one rotated
+            // rather than a longer, flatter version of it. At a fixed 8x5 the
+            // right-pointing form has 8.4 pt legs against the down-pointing
+            // form's 6.4, which reads as two different marks — reported as the
+            // collapsed chevrons being "a bit long compared to the expanded".
+            let w: CGFloat = expanded ? 8 : 5, h: CGFloat = expanded ? 5 : 8
             let r = NSRect(x: 1, y: bounds.midY - h / 2, width: w, height: h)
             // Flipped, so minY is the top. Down when open, right-ish when shut is
             // the usual disclosure idiom; here shut points down-left to stay one
