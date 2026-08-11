@@ -978,3 +978,32 @@ final class PaletteConsistencyTests: XCTestCase {
                     + "system menu bar tint, which Palette does not track")
     }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// NO TEST FOR THE RESOURCES PANEL'S CORNER RADIUS, and this note is here instead
+// of one because the absence is a decision.
+//
+// The panel had no background at all — `SystemPane` fills the pane, the content
+// view drew nothing, so the readings sat on whatever AppKit put behind them, with
+// square corners in an app where every other surface is rounded. That is fixed in
+// `ResourcesContent.draw`. What is not here is proof.
+//
+// Six attempts, each of which passed against a deliberately squared panel:
+//
+//   * corner pixel vs interior, rendering the PANE — the corner sample landed in
+//     the pane's inset, outside the view under test;
+//   * the same, rendering the content view — the corner landed on the panel's own
+//     border STROKE, which differs from the fill either way;
+//   * alpha at the extreme corner — `cacheDisplay` returns an opaque bitmap, so
+//     an unpainted pixel is not transparent;
+//   * corner vs the middle of the left edge, which is on the stroke in both
+//     variants — correctly failed the square panel and also failed the round one.
+//
+// Every one of those measured something real; none measured the radius. A
+// rendering test that has not been run against the broken version is not
+// evidence, and one that cannot be is worse than none: it reads as coverage.
+// `PaletteConsistencyTests` covers what IS mechanically checkable here — that the
+// inks come from one place — and the shape of a corner is currently a thing a
+// person has to look at.
+
