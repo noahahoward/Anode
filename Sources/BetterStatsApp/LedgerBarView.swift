@@ -449,7 +449,11 @@ final class LedgerBarView: NSView {
         swatch({ r in
             drawHatch(in: r)
             Palette.line.setStroke()
-            NSBezierPath(rect: r).stroke()
+            // The same rounding as every coloured swatch beside it. This was a
+            // bare rect, so one key in a row of eight had square corners — the
+            // kind of difference nobody can name and everybody sees.
+            NSBezierPath(roundedRect: r, xRadius: Palette.Radius.bar,
+                         yRadius: Palette.Radius.bar).stroke()
         }, "always-on · unidentified")
 
         // The overflow badge, right-aligned and drawn UNCONDITIONALLY. It used to be
