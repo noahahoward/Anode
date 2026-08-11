@@ -111,6 +111,19 @@ final class BottomContextTests: XCTestCase {
                        "network IS stored — net_in_bps and net_out_bps")
     }
 
+    /// The RIGHT axis prints the unit it is actually counted in.
+    ///
+    /// It printed "%" unconditionally, because it had exactly one caller: battery
+    /// charge. The fan graph puts a temperature there and inherited ticks reading
+    /// "0%, 25%, 50%, 100%" beside a line in degrees — and a 51 °C reading sitting
+    /// on the 50% gridline looks plausible, which is the worst kind of wrong.
+    func testTheRightAxisPrintsTheUnitItCounts() {
+        let g = HistoryGraphView(frame: NSRect(x: 0, y: 0, width: 400, height: 120))
+        XCTAssertEqual(g.rightAxisUnit, "%", "battery charge is the default and is a percent")
+        g.rightAxisUnit = "°C"
+        XCTAssertEqual(g.rightAxisUnit, "°C")
+    }
+
     /// And a temperature never gets a percent axis, whichever path drew it.
     func testATemperatureIsNeverLabelledAsAPercentage() {
         for c in [BottomContext.sensors, .fans] {

@@ -842,6 +842,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
                     self.graph.yMax = nil
                     self.graph.rightSeries = nil
                     self.graph.rightAxisLabel = ""
+                    self.graph.rightAxisUnit = "%"
                     self.graph.series = isDisk ? Self.diskSeries(read: a, write: b)
                                                : Self.networkSeries(down: a, up: b)
                     self.graph.yAxisLabel = Self.rateAxisLabel
@@ -1303,6 +1304,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
                 : .init(name: "charge", color: Palette.chargeLine,
                         points: chargeSeries, filled: false)
             graph.rightAxisLabel = chargeSeries.count >= 2 ? "battery" : ""
+            graph.rightAxisUnit = "%"
         } else if bottomContext == .fans {
             // Temperature on the right axis, fan speed on the left: the shape the
             // battery graph uses for rate against charge. NOT a shared scale —
@@ -1313,6 +1315,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
             graph.sharesRightAxisScale = false
             graph.yMax = 100
             graph.rightAxisLabel = "°C"
+            graph.rightAxisUnit = "°C"
             graph.rightSeries = temperatureSeries.isEmpty ? nil
                 : .init(name: "temp", color: Palette.warn,
                         points: temperatureSeries, filled: false)
@@ -1324,6 +1327,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
             graph.yMax = bottomContext.isPercentage ? 100 : nil
             graph.rightSeries = nil
             graph.rightAxisLabel = ""
+            graph.rightAxisUnit = "%"
         }
     }
 
