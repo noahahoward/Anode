@@ -196,9 +196,11 @@ if args.contains("--speedtest") {
     let sem = DispatchSemaphore(value: 0)
     var out: Result<SpeedTest.Result, Error>?
     Task {
-        do { out = .success(try await SpeedTest.run { f, phase in
-            FileHandle.standardError.write(String(format: "\r  %-9@ %3.0f%%",
-                                                  phase as NSString, f * 100).data(using: .utf8)!)
+        do { out = .success(try await SpeedTest.run { u in
+            let rate = u.mbps.map { String(format: "  %6.1f Mbps", $0) } ?? ""
+            FileHandle.standardError.write(String(format: "\r  %-9@ %3.0f%%%@",
+                                                  u.phase as NSString, u.fraction * 100,
+                                                  rate as NSString).data(using: .utf8)!)
         }) } catch { out = .failure(error) }
         sem.signal()
     }
@@ -213,9 +215,10 @@ if args.contains("--speedtest") {
                      r.uploadMbps, Double(r.uploadBytes) / 1e6))
         print(String(format: "  latency    %8.1f ms     (minimum of 4 warm probes)", r.latencyMs))
         print("")
-        print("  Single-stream HTTP to one server — what a download actually gets.")
-        print("  Multi-stream tools report higher on the same link; that is not a")
-        print("  contradiction, it is a different question.")
+        print("  \(SpeedTest.streams) parallel HTTP streams to one server, "
+              + "measured over \(Int(SpeedTest.downSeconds))s/\(Int(SpeedTest.upSeconds))s")
+        print("  The opening \(Int(SpeedTest.warmupSeconds))s of each phase is discarded — "
+              + "it is TCP slow start, not the link.")
         exit(0)
     case .failure(let e):
         print("speed test failed: \(e)")

@@ -19,13 +19,20 @@ import Foundation
 ///  * **Failure is nil, never zero.** An unreachable network yields no result.
 ///    Zero megabits is a measurement, and we would not have made one.
 ///
-/// WHAT THIS MEASURES, and what it does not: single-stream HTTP throughput to one
-/// server, which is what a browser download or an app update will actually get.
-/// It is NOT a line-rate benchmark — multi-stream tools routinely report higher
-/// numbers on the same link because they defeat per-connection bottlenecks like
-/// TCP window limits and single-path routing. Reporting one figure and calling it
-/// "your speed" would be the same category of overclaim this project rejects in
-/// the ledger, so the result carries its own method.
+/// WHAT THIS MEASURES: HTTP throughput to one server over several connections at
+/// once, for a fixed number of seconds, discarding the opening warmup.
+///
+/// That is a deliberate change of position and it is worth recording. This used
+/// to run ONE stream, on the argument that it is what a browser download
+/// actually gets. The argument is sound and the number was still wrong: a single
+/// connection to a distant CDN node is bounded by round-trip time and the TCP
+/// window rather than by the link, so on a 364 Mbps ethernet connection it read
+/// about a third of what every other tool reported. A figure that is defensible
+/// in principle and wrong in practice is not the honest one — it just moves the
+/// error somewhere the user cannot see it.
+///
+/// It is still not a line-rate benchmark, and the result carries its own method
+/// so nobody has to guess which question was asked.
 public enum SpeedTest {
 
     /// Cloudflare's public speed endpoints: unauthenticated, no API key, no
@@ -70,18 +77,44 @@ public enum SpeedTest {
         case cancelled
     }
 
-    /// Sizes are ramped rather than fixed. A fast link finishes 1 MB before TCP
-    /// has left slow start, so a single small transfer measures the ramp instead
-    /// of the plateau; a slow link would sit through a 100 MB download for
-    /// minutes. Each phase stops as soon as it has both enough bytes and enough
-    /// time to be meaningful.
-    static let downSizes = [1_000_000, 10_000_000, 25_000_000]
-    static let upSizes = [1_000_000, 10_000_000]
+    /// MEASURE FOR A DURATION, NOT FOR A SIZE.
+    ///
+    /// The first version of this climbed a fixed ladder — 1, 10, 25 MB — and
+    /// stopped when a transfer took at least two seconds. On a fast link it never
+    /// got there: 25 MB at 364 Mbps is 0.55 s, so the ladder ran out of rungs
+    /// while still inside TCP slow start and the reported figure was the RAMP.
+    /// Measured against other tools on the same ethernet link, it under-reported
+    /// by roughly a factor of three.
+    ///
+    /// So a phase now runs for a fixed number of seconds and the bytes are
+    /// whatever fits. The cost of that is honest but not fixed: a fast link moves
+    /// far more data than a slow one, which is the opposite of the old ladder and
+    /// the reason `SpeedTestGate` can no longer quote one number.
+    public static let downSeconds: Double = 6
+    public static let upSeconds: Double = 4
+    /// The opening transfer of each phase is thrown away. It is the connection
+    /// warming up — DNS, TLS, and slow start — and averaging it in is exactly the
+    /// mistake the ladder made.
+    public static let warmupSeconds: Double = 1.0
+    /// Streams per phase.
+    ///
+    /// One connection to a distant CDN node is limited by round-trip time and
+    /// the TCP window rather than by the link, which is why single-stream tools
+    /// read low on fast connections. Every speed test a user will compare this
+    /// against — fast.com, Ookla, Cloudflare's own page — runs several. Matching
+    /// them is the point of the number.
+    public static let streams = 4
+    /// A hard ceiling per phase, so a very fast link cannot turn a six-second
+    /// test into a gigabyte.
+    static let maxBytesPerPhase = 600_000_000
     /// A transfer shorter than this is dominated by connection setup and the TCP
     /// ramp, so it is not evidence about steady-state throughput.
     static let minPhaseSeconds: Double = 2.0
     /// Ceiling per phase, so a slow link fails fast instead of hanging.
-    static let maxPhaseSeconds: Double = 15.0
+    static let maxPhaseSeconds: Double = 25.0
+    /// One request's worth. Large enough that a fast stream is not spending its
+    /// time on request overhead, small enough that the clock is checked often.
+    static let chunkBytes = 25_000_000
 
     /// Megabits per second from bytes and seconds. Base 10: 1 Mbit = 1e6 bits.
     static func mbps(bytes: Int, seconds: Double) -> Double? {
@@ -93,14 +126,11 @@ public enum SpeedTest {
     /// ramp? Separated out so the rule is testable without a network.
     static func isMeaningful(seconds: Double) -> Bool { seconds >= minPhaseSeconds }
 
-    /// The next size to try, or nil when the ramp is done. A phase that finished
-    /// too quickly to be meaningful gets the next size up; one that took long
-    /// enough stops there, because more bytes would cost the user data for no
-    /// extra confidence.
-    static func nextSize(after size: Int, seconds: Double, in ladder: [Int]) -> Int? {
-        guard !isMeaningful(seconds: seconds) else { return nil }
-        guard let i = ladder.firstIndex(of: size), i + 1 < ladder.count else { return nil }
-        return ladder[i + 1]
+    /// Roughly what a phase will transfer at a given rate, for the disclosure.
+    /// An estimate and labelled as one: the real figure depends on a line speed
+    /// nobody knows until the test has run.
+    public static func estimatedBytes(atMbps rate: Double, seconds: Double) -> Int {
+        min(maxBytesPerPhase, Int(rate * 1e6 / 8 * seconds))
     }
 }
 
@@ -109,14 +139,26 @@ public enum SpeedTest {
 
 extension SpeedTest {
 
-    /// Run a full test. `progress` is called on an arbitrary queue with a 0…1
-    /// fraction and a phase name, so a UI can show something is happening —
-    /// a 20-second freeze reads as a hang.
+    /// What a test reports while it is running.
+    ///
+    /// `mbps` is the rate SO FAR in the current phase, not a final answer, and it
+    /// is what a live gauge needs: a progress bar that only says "43%" tells a
+    /// user nothing they wanted to know about their connection.
+    public struct Update: Equatable {
+        public let phase: String
+        /// 0…1 through the whole test, for anything that wants one bar.
+        public let fraction: Double
+        /// Live rate in the current phase, or nil during latency and at the end.
+        public let mbps: Double?
+    }
+
+    /// Run a full test. `progress` is called on an arbitrary queue, so a UI can
+    /// show something is happening — a 20-second freeze reads as a hang.
     ///
     /// Every phase is bounded in time, so a dead link fails in seconds rather
     /// than hanging on a socket that will never answer.
     public static func run(endpoint: Endpoint = .cloudflare,
-                           progress: @escaping (Double, String) -> Void = { _, _ in }
+                           progress: @escaping (Update) -> Void = { _ in }
     ) async throws -> Result {
         let cfg = URLSessionConfiguration.ephemeral
         // Ephemeral, and caching explicitly off: a cached body would measure the
@@ -129,20 +171,20 @@ extension SpeedTest {
         let session = URLSession(configuration: cfg)
         defer { session.finishTasksAndInvalidate() }
 
-        progress(0.05, "latency")
+        progress(Update(phase: "latency", fraction: 0.05, mbps: nil))
         let latency = try await measureLatency(session: session, endpoint: endpoint)
 
-        progress(0.15, "download")
-        let down = try await measureDownload(session: session, endpoint: endpoint) {
-            progress(0.15 + 0.5 * $0, "download")
+        progress(Update(phase: "download", fraction: 0.1, mbps: nil))
+        let down = try await measureDownload(session: session, endpoint: endpoint) { f, rate in
+            progress(Update(phase: "download", fraction: 0.1 + 0.55 * f, mbps: rate))
         }
 
-        progress(0.7, "upload")
-        let up = try await measureUpload(session: session, endpoint: endpoint) {
-            progress(0.7 + 0.3 * $0, "upload")
+        progress(Update(phase: "upload", fraction: 0.65, mbps: nil))
+        let up = try await measureUpload(session: session, endpoint: endpoint) { f, rate in
+            progress(Update(phase: "upload", fraction: 0.65 + 0.35 * f, mbps: rate))
         }
 
-        progress(1, "done")
+        progress(Update(phase: "done", fraction: 1, mbps: nil))
         return Result(downloadMbps: down.mbps, uploadMbps: up.mbps, latencyMs: latency,
                       downloadBytes: down.bytes, uploadBytes: up.bytes, host: endpoint.host)
     }
@@ -166,74 +208,119 @@ extension SpeedTest {
         return best
     }
 
-    private static func measureDownload(session: URLSession, endpoint: Endpoint,
-                                        progress: @escaping (Double) -> Void
+    /// A phase: `streams` transfers running at once, restarted as they finish,
+    /// until the clock runs out.
+    ///
+    /// Bytes that arrive during the WARMUP are counted for the progress display
+    /// and thrown away for the measurement. That window is DNS, TLS and TCP slow
+    /// start — the ramp the old ladder measured by accident — and the whole point
+    /// of the rewrite is not to average it in.
+    ///
+    /// `transfer` moves one chunk and returns how many bytes it moved, so the
+    /// download and upload phases differ only in that closure.
+    private static func runPhase(seconds: Double,
+                                 progress: @escaping (Double, Double) -> Void,
+                                 transfer: @escaping () async throws -> Int
     ) async throws -> (mbps: Double, bytes: Int) {
-        var size = downSizes[0]
-        var last: (mbps: Double, bytes: Int)?
-        while true {
-            let t0 = Date()
-            let bytes: Int
-            do {
-                let (data, _) = try await session.data(from: endpoint.downURL(size))
-                bytes = data.count
-            } catch {
-                if let l = last { return l }          // a smaller size already worked
-                throw Failure.unreachable(String(describing: error))
+        let started = Date()
+        let counted = Counter()
+
+        try await withThrowingTaskGroup(of: Void.self) { group in
+            for _ in 0..<streams {
+                group.addTask {
+                    while true {
+                        let elapsed = Date().timeIntervalSince(started)
+                        if elapsed >= seconds { return }
+                        if await counted.total >= maxBytesPerPhase { return }
+                        let moved = try await transfer()
+                        let now = Date().timeIntervalSince(started)
+                        // Counted for the measurement only once past the warmup.
+                        await counted.add(moved, measured: now > warmupSeconds)
+                        let measuredFor = max(0, now - warmupSeconds)
+                        let rate = mbps(bytes: await counted.measured,
+                                        seconds: measuredFor) ?? 0
+                        progress(min(1, now / seconds), rate)
+                    }
+                }
             }
-            let secs = Date().timeIntervalSince(t0)
-            guard let rate = mbps(bytes: bytes, seconds: secs) else {
+            try await group.waitForAll()
+        }
+
+        let elapsed = Date().timeIntervalSince(started)
+        let measuredFor = elapsed - warmupSeconds
+        let measured = await counted.measured
+        let total = await counted.total
+
+        // Nothing survived the warmup — a link so slow that one chunk did not
+        // finish inside the window. Fall back to everything that did arrive
+        // rather than reporting nothing; the ramp is a poor measurement but it is
+        // the only one there is, and a slow link's ramp is most of its life.
+        if measured == 0 || measuredFor < 0.5 {
+            guard let rate = mbps(bytes: total, seconds: elapsed) else {
                 throw Failure.tooSlowToMeasure
             }
-            last = (rate, bytes)
-            progress(min(1, Double(downSizes.firstIndex(of: size).map { $0 + 1 } ?? 1)
-                            / Double(downSizes.count)))
-            guard let next = nextSize(after: size, seconds: secs, in: downSizes) else {
-                return (rate, bytes)
+            return (rate, total)
+        }
+        guard let rate = mbps(bytes: measured, seconds: measuredFor) else {
+            throw Failure.tooSlowToMeasure
+        }
+        return (rate, total)
+    }
+
+    /// Bytes moved, behind an actor because `streams` tasks add to it at once.
+    private actor Counter {
+        private(set) var total = 0
+        /// Bytes that arrived after the warmup — the only ones the rate uses.
+        private(set) var measured = 0
+        func add(_ bytes: Int, measured isMeasured: Bool) {
+            total += bytes
+            if isMeasured { measured += bytes }
+        }
+    }
+
+    private static func measureDownload(session: URLSession, endpoint: Endpoint,
+                                        progress: @escaping (Double, Double) -> Void
+    ) async throws -> (mbps: Double, bytes: Int) {
+        do {
+            return try await runPhase(seconds: downSeconds, progress: progress) {
+                let (data, _) = try await session.data(from: endpoint.downURL(chunkBytes))
+                return data.count
             }
-            size = next
+        } catch let failure as Failure {
+            throw failure
+        } catch {
+            throw Failure.unreachable(String(describing: error))
         }
     }
 
     private static func measureUpload(session: URLSession, endpoint: Endpoint,
-                                      progress: @escaping (Double) -> Void
+                                      progress: @escaping (Double, Double) -> Void
     ) async throws -> (mbps: Double, bytes: Int) {
-        var size = upSizes[0]
-        var last: (mbps: Double, bytes: Int)?
-        while true {
-            // Incompressible, so a transparent proxy or the server's own gzip
-            // cannot shrink it in flight and hand us a rate for bytes that were
-            // never actually sent.
-            var payload = Data(count: size)
-            payload.withUnsafeMutableBytes { raw in
-                guard let base = raw.baseAddress else { return }
-                arc4random_buf(base, raw.count)
-            }
-            var req = URLRequest(url: endpoint.upURL)
-            req.httpMethod = "POST"
-            req.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
+        // Built once and reused. Incompressible, so a transparent proxy or the
+        // server's own gzip cannot shrink it in flight and hand us a rate for
+        // bytes that were never actually sent.
+        var payload = Data(count: chunkBytes)
+        payload.withUnsafeMutableBytes { raw in
+            guard let base = raw.baseAddress else { return }
+            arc4random_buf(base, raw.count)
+        }
+        var req = URLRequest(url: endpoint.upURL)
+        req.httpMethod = "POST"
+        req.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
 
-            let t0 = Date()
-            do {
+        do {
+            return try await runPhase(seconds: upSeconds, progress: progress) {
                 _ = try await session.upload(for: req, from: payload)
-            } catch {
-                if let l = last { return l }
-                throw Failure.unreachable(String(describing: error))
+                return payload.count
             }
-            let secs = Date().timeIntervalSince(t0)
-            guard let rate = mbps(bytes: size, seconds: secs) else {
-                throw Failure.tooSlowToMeasure
-            }
-            last = (rate, size)
-            progress(min(1, Double(upSizes.firstIndex(of: size).map { $0 + 1 } ?? 1)
-                            / Double(upSizes.count)))
-            guard let next = nextSize(after: size, seconds: secs, in: upSizes) else {
-                return (rate, size)
-            }
-            size = next
+        } catch let failure as Failure {
+            throw failure
+        } catch {
+            throw Failure.unreachable(String(describing: error))
         }
     }
 }
+
 
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -241,18 +328,25 @@ extension SpeedTest {
 ///
 /// Split from the view because "does this cost the user money" is a rule, not a
 /// layout, and it is the one part of this feature that can be got wrong
-/// expensively. A monitor that quietly moves 47 MB over someone's phone plan has
-/// done real harm with a button press.
+/// expensively. A monitor that quietly moves several hundred megabytes over
+/// someone's phone plan has done real harm with a button press.
 public enum SpeedTestGate {
 
-    /// The worst case, if every rung of both ladders is climbed. A fast link
-    /// stops earlier — each phase ends as soon as it has enough bytes AND enough
-    /// seconds — so this is the number to disclose, not the number to expect.
-    /// Every rung of both ladders, because a link fast enough to climb them all
-    /// transfers all of them — the earlier sizes are not replaced by the later
-    /// ones, they are spent on the way up.
-    public static var worstCaseBytes: Int {
-        SpeedTest.downSizes.reduce(0, +) + SpeedTest.upSizes.reduce(0, +)
+    /// THE COST IS NO LONGER A FIXED NUMBER, and pretending otherwise would be
+    /// the more comfortable lie.
+    ///
+    /// The old ladder transferred at most 47 MB whatever your line did, and could
+    /// therefore promise it. Measuring for a fixed DURATION means a fast link
+    /// moves more — that is the whole point of the change — so the disclosure
+    /// gives the shape and the ceiling instead of a single figure.
+    public static var ceilingBytes: Int { SpeedTest.maxBytesPerPhase * 2 }
+
+    /// Roughly what a link of a given speed will spend. Used to put a real number
+    /// in front of someone on a metered connection, where "it depends" is not an
+    /// acceptable answer.
+    public static func estimatedBytes(atMbps rate: Double) -> Int {
+        SpeedTest.estimatedBytes(atMbps: rate, seconds: SpeedTest.downSeconds)
+            + SpeedTest.estimatedBytes(atMbps: rate, seconds: SpeedTest.upSeconds)
     }
 
     public enum Decision: Equatable {
@@ -275,14 +369,18 @@ public enum SpeedTestGate {
                               isExpensive: Bool,
                               isConstrained: Bool,
                               host: String) -> Decision {
-        let mb = String(format: "%.0f MB", Double(worstCaseBytes) / 1e6)
+        let seconds = Int(SpeedTest.downSeconds + SpeedTest.upSeconds)
         if isExpensive || isConstrained {
             let why = isConstrained
                 ? "This network is in Low Data Mode"
                 : "This looks like a cellular or personal hotspot connection"
             return .ask("""
-            \(why), and a speed test is the opposite of low data: it will send \
-            and receive up to \(mb) to \(host).
+            \(why), and a speed test is the opposite of low data.
+
+            It transfers for about \(seconds) seconds as fast as the connection \
+            will go, so the faster the link the more it spends — roughly \
+            \(mb(estimatedBytes(atMbps: 50))) on a 50 Mbps connection and \
+            \(mb(estimatedBytes(atMbps: 300))) on a 300 Mbps one.
 
             On a metered plan that is a real cost. Run it anyway?
             """)
@@ -291,12 +389,19 @@ public enum SpeedTestGate {
         return .ask("""
         This is the only thing BetterStats ever sends anywhere.
 
-        It transfers up to \(mb) to and from \(host) — usually less, because each \
-        stage stops as soon as it has measured enough. Cloudflare will see your \
-        IP address, as any speed test's server must.
+        It transfers for about \(seconds) seconds to and from \(host), as fast as \
+        your connection will go — so the amount of data depends on your speed: \
+        roughly \(mb(estimatedBytes(atMbps: 50))) at 50 Mbps, \
+        \(mb(estimatedBytes(atMbps: 300))) at 300 Mbps, never more than \
+        \(mb(ceilingBytes)). Cloudflare will see your IP address, as any speed \
+        test's server must.
 
         Nothing here runs on a timer or at launch. It happens when you press the \
         button and at no other time.
         """)
+    }
+
+    private static func mb(_ bytes: Int) -> String {
+        String(format: "%.0f MB", Double(bytes) / 1e6)
     }
 }

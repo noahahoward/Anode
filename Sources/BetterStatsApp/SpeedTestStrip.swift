@@ -2,8 +2,7 @@ import AppKit
 import Network
 import PowerKit
 
-/// The Network tab's speed-test control: a button, a progress line, and the
-/// result.
+/// The Network tab's speed test: a dial, a button under it, and two result tiles.
 ///
 /// THIS IS THE ONLY CONTROL IN THE APP THAT SENDS DATA ANYWHERE, and the whole
 /// design of it follows from that. `SpeedTest.swift` states the engine's side of
@@ -12,13 +11,14 @@ import PowerKit
 ///
 ///  * **Nothing happens until the button is pressed.** No timer, no run on first
 ///    open, no "refresh while you are looking at the tab". Opening the Network
-///    tab is not consent to transfer 47 MB.
-///  * **The first press explains itself**, once, naming Cloudflare and the size
-///    and the fact that they see your IP. `SpeedTestGate` owns that decision so
-///    it is a rule rather than a layout, and so it can be tested.
+///    tab is not consent to transfer several hundred megabytes.
+///  * **The first press explains itself**, once, naming Cloudflare and roughly
+///    what it will cost at a couple of line speeds and the fact that they see
+///    your IP. `SpeedTestGate` owns that decision so it is a rule rather than a
+///    layout, and so it can be tested.
 ///  * **A metered path asks every time.** Low Data Mode and personal hotspots
 ///    are the user having already said they want less traffic here; the answer
-///    to that is not a silent 47 MB.
+///    to that is not a silent few hundred megabytes.
 ///  * **The host is on screen even when idle.** Who gets contacted should not be
 ///    something you have to press a button to discover.
 final class SpeedTestStrip: NSView {
@@ -35,9 +35,11 @@ final class SpeedTestStrip: NSView {
     /// project exists to avoid.
     var onActivity: ((Bool) -> Void)?
 
+    private let dial = SpeedometerView(frame: .zero)
+    private let downTile = SpeedTileView(caption: "Mbps download")
+    private let upTile = SpeedTileView(caption: "Mbps upload")
     private let button = NSButton(title: "", target: nil, action: nil)
     private let statusLabel = NSTextField(labelWithString: "")
-    private let resultLabel = NSTextField(labelWithString: "")
     private let stack = NSStackView()
 
     private var running = false
@@ -106,23 +108,46 @@ final class SpeedTestStrip: NSView {
         running = true
         lastError = nil
         lastResult = nil
-        statusLabel.stringValue = "Starting…"
+        dial.mbps = nil
+        downTile.mbps = nil
+        upTile.mbps = nil
+        dial.phase = "Starting…"
         onActivity?(true)
         render()
 
         Task { [weak self] in
             do {
-                let result = try await SpeedTest.run { fraction, phase in
+                let result = try await SpeedTest.run { update in
                     // `progress` is documented as arriving on an arbitrary queue.
-                    DispatchQueue.main.async {
-                        self?.statusLabel.stringValue =
-                            String(format: "%@ — %.0f%%", phase.capitalized, fraction * 100)
-                    }
+                    DispatchQueue.main.async { self?.show(update) }
                 }
                 await MainActor.run { self?.finished(.success(result)) }
             } catch {
                 await MainActor.run { self?.finished(.failure(error)) }
             }
+        }
+    }
+
+    /// One live update, straight onto the dial.
+    ///
+    /// The tiles fill in as each phase FINISHES rather than tracking the live
+    /// figure, so a settled number never twitches: the dial is the thing that
+    /// moves and the tiles are the thing you read afterwards.
+    private func show(_ update: SpeedTest.Update) {
+        switch update.phase {
+        case "download":
+            dial.phase = "Testing download…"
+            dial.mbps = update.mbps
+        case "upload":
+            // Download is finished the moment upload starts, so its tile lands
+            // here with the last live figure the dial had.
+            if downTile.mbps == nil { downTile.mbps = dial.mbps }
+            dial.phase = "Testing upload…"
+            dial.mbps = update.mbps
+        case "latency":
+            dial.phase = "Measuring latency…"
+        default:
+            dial.phase = nil
         }
     }
 
@@ -132,10 +157,18 @@ final class SpeedTestStrip: NSView {
         switch outcome {
         case .success(let r):
             lastResult = r
+            downTile.mbps = r.downloadMbps
+            upTile.mbps = r.uploadMbps
+            dial.mbps = r.downloadMbps
+            dial.phase = nil
         case .failure(let error):
             // A failed test yields NO number. "0 Mbps" is a measurement, and we
             // did not make one — the same rule the ledger follows everywhere.
             lastError = (error as NSError).localizedDescription
+            dial.mbps = nil
+            dial.phase = nil
+            downTile.mbps = nil
+            upTile.mbps = nil
         }
         render()
     }
@@ -146,68 +179,81 @@ final class SpeedTestStrip: NSView {
         let host = SpeedTest.Endpoint.cloudflare.host
         button.isEnabled = !running
         button.title = running ? "Testing…" : "Test Internet Speed"
+        // The button steps aside for the dial while a test runs — the live number
+        // IS the feedback, and a disabled button sitting under it is furniture.
+        button.isHidden = running
 
         if running {
-            // statusLabel is owned by the progress callback while a test runs.
+            statusLabel.stringValue = ""
+        } else if let why = lastError {
+            statusLabel.stringValue = "No result — \(why)"
         } else if pathIsExpensive || pathIsConstrained {
             statusLabel.stringValue = pathIsConstrained
-                ? "This network is in Low Data Mode — the test will ask before using data."
-                : "This looks like a metered connection — the test will ask before using data."
+                ? "Low Data Mode — this will ask before using data."
+                : "Metered connection — this will ask before using data."
+        } else if let r = lastResult {
+            statusLabel.stringValue = String(format: "%.0f ms · %@ · %.0f MB moved",
+                                             r.latencyMs, r.host,
+                                             Double(r.downloadBytes + r.uploadBytes) / 1e6)
         } else {
             statusLabel.stringValue = String(
-                format: "Sends up to %.0f MB to and from %@. Only when you press the button.",
-                Double(SpeedTestGate.worstCaseBytes) / 1e6, host)
+                format: "About %ds to and from %@, only when you press it",
+                Int(SpeedTest.downSeconds + SpeedTest.upSeconds), host)
         }
-
-        if let r = lastResult {
-            resultLabel.stringValue = String(
-                format: "%.1f Mbps down · %.1f Mbps up · %.0f ms · %@  (%.0f MB moved)",
-                r.downloadMbps, r.uploadMbps, r.latencyMs, r.host,
-                Double(r.downloadBytes + r.uploadBytes) / 1e6)
-            resultLabel.textColor = Palette.text
-        } else if let why = lastError {
-            resultLabel.stringValue = "No result — \(why)"
-            resultLabel.textColor = Palette.dim
-        } else {
-            resultLabel.stringValue = ""
-        }
-        resultLabel.isHidden = resultLabel.stringValue.isEmpty
-
+        statusLabel.isHidden = statusLabel.stringValue.isEmpty
         statusLabel.textColor = Palette.dim
         onLayoutChanged?()
     }
 
-    /// The height this strip needs, so the pane can give it exactly that.
-    var preferredHeight: CGFloat { resultLabel.isHidden ? 46 : 66 }
+    /// Tall enough for the dial, the button beneath it and the two tiles.
+    var preferredHeight: CGFloat { 300 }
 
     private func build() {
         button.bezelStyle = .rounded
-        button.controlSize = .small
-        button.font = Palette.Font.sans(11)
+        button.controlSize = .regular
+        button.font = Palette.Font.sans(12)
         button.target = self
         button.action = #selector(runTapped)
 
         statusLabel.font = Palette.Font.sans(10.5)
+        statusLabel.alignment = .center
         statusLabel.lineBreakMode = .byTruncatingTail
-        resultLabel.font = Palette.Font.mono(11)
-        resultLabel.lineBreakMode = .byTruncatingTail
 
-        let top = NSStackView(views: [button, statusLabel])
-        top.orientation = .horizontal
-        top.spacing = 10
-        top.alignment = .centerY
+        dial.translatesAutoresizingMaskIntoConstraints = false
+
+        // The two tiles, side by side under the dial, with a hairline between
+        // them — the same divider the rest of the app uses between columns.
+        let divider = NSBox()
+        divider.boxType = .separator
+        divider.translatesAutoresizingMaskIntoConstraints = false
+
+        let tiles = NSStackView(views: [downTile, divider, upTile])
+        tiles.orientation = .horizontal
+        tiles.distribution = .fillProportionally
+        tiles.spacing = 0
+        tiles.translatesAutoresizingMaskIntoConstraints = false
 
         stack.orientation = .vertical
-        stack.alignment = .leading
-        stack.spacing = 5
+        stack.alignment = .centerX
+        stack.spacing = 6
         stack.translatesAutoresizingMaskIntoConstraints = false
-        stack.addArrangedSubview(top)
-        stack.addArrangedSubview(resultLabel)
+        stack.addArrangedSubview(dial)
+        stack.addArrangedSubview(button)
+        stack.addArrangedSubview(statusLabel)
+        stack.addArrangedSubview(tiles)
         addSubview(stack)
+
         NSLayoutConstraint.activate([
             stack.leadingAnchor.constraint(equalTo: leadingAnchor),
-            stack.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor),
+            stack.trailingAnchor.constraint(equalTo: trailingAnchor),
             stack.topAnchor.constraint(equalTo: topAnchor),
+            dial.widthAnchor.constraint(equalTo: stack.widthAnchor),
+            dial.heightAnchor.constraint(equalToConstant: 190),
+            tiles.widthAnchor.constraint(equalTo: stack.widthAnchor),
+            tiles.heightAnchor.constraint(equalToConstant: 56),
+            divider.widthAnchor.constraint(equalToConstant: 1),
+            downTile.widthAnchor.constraint(equalTo: upTile.widthAnchor),
+            statusLabel.widthAnchor.constraint(equalTo: stack.widthAnchor),
         ])
     }
 }

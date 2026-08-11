@@ -27,40 +27,42 @@ final class SpeedTestTests: XCTestCase {
         XCTAssertNil(SpeedTest.mbps(bytes: -5, seconds: 1))
     }
 
-    /// A transfer that finishes before TCP leaves slow start measures the ramp,
-    /// not the link, so the ladder steps up.
-    func testAFastPhaseRampsToALargerSize() {
-        XCTAssertEqual(SpeedTest.nextSize(after: 1_000_000, seconds: 0.3,
-                                          in: SpeedTest.downSizes), 10_000_000)
-        XCTAssertEqual(SpeedTest.nextSize(after: 10_000_000, seconds: 1.1,
-                                          in: SpeedTest.downSizes), 25_000_000)
+    // ── Measuring for a duration, not for a size ────────────────────────────
+    //
+    // The ladder these tests used to cover is gone, and it is worth recording
+    // why rather than just deleting them. It climbed 1 → 10 → 25 MB and stopped
+    // once a transfer took 2 s. On a 364 Mbps ethernet link 25 MB takes 0.55 s,
+    // so it ran out of rungs while still inside TCP slow start and reported the
+    // RAMP — about a third of the real figure, measured against other tools on
+    // the same connection.
+
+    /// The warmup is thrown away, so a phase has to be long enough to have
+    /// something left after it.
+    func testAPhaseOutlastsItsOwnWarmup() {
+        XCTAssertGreaterThan(SpeedTest.downSeconds, SpeedTest.warmupSeconds * 2)
+        XCTAssertGreaterThan(SpeedTest.upSeconds, SpeedTest.warmupSeconds * 2)
     }
 
-    /// Once a phase has run long enough to be meaningful, stop — more bytes
-    /// would spend the user's data for no extra confidence.
-    func testAMeaningfulPhaseStopsTheRamp() {
-        XCTAssertNil(SpeedTest.nextSize(after: 1_000_000, seconds: 2.0,
-                                        in: SpeedTest.downSizes))
-        XCTAssertNil(SpeedTest.nextSize(after: 1_000_000, seconds: 9,
-                                        in: SpeedTest.downSizes))
-    }
-
-    /// The ladder is finite: a link so slow that even the largest size is quick
-    /// must not loop forever asking for a bigger one.
-    func testTheRampTerminatesAtTheTopOfTheLadder() {
-        XCTAssertNil(SpeedTest.nextSize(after: 25_000_000, seconds: 0.1,
-                                        in: SpeedTest.downSizes))
-        XCTAssertNil(SpeedTest.nextSize(after: 10_000_000, seconds: 0.1,
-                                        in: SpeedTest.upSizes))
-        // A size that is not on the ladder at all cannot select a successor.
-        XCTAssertNil(SpeedTest.nextSize(after: 7, seconds: 0.1, in: SpeedTest.downSizes))
-    }
-
-    /// The upload ladder is smaller than the download one on purpose: upload is
-    /// usually the slower direction, so the same byte count costs more time, and
-    /// this is data the user is sending from their own connection.
+    /// Upload runs for less time than download on purpose: it is usually the
+    /// slower direction and it is the user's own data leaving their connection.
     func testUploadSpendsLessOfTheUsersData() {
-        XCTAssertLessThan(SpeedTest.upSizes.max()!, SpeedTest.downSizes.max()!)
+        XCTAssertLessThan(SpeedTest.upSeconds, SpeedTest.downSeconds)
+    }
+
+    /// Several streams, because one connection to a distant CDN node is limited
+    /// by round-trip time and the TCP window rather than by the link — which is
+    /// exactly why a single-stream figure reads low on a fast line.
+    func testItUsesMoreThanOneStream() {
+        XCTAssertGreaterThan(SpeedTest.streams, 1)
+    }
+
+    /// Bytes follow from rate and time, and are bounded however fast the link is.
+    func testTheEstimateIsRateTimesTimeAndIsCapped() {
+        // 100 Mbps for 6 s = 75 MB.
+        XCTAssertEqual(Double(SpeedTest.estimatedBytes(atMbps: 100, seconds: 6)),
+                       75e6, accuracy: 1e5)
+        XCTAssertEqual(SpeedTest.estimatedBytes(atMbps: 1_000_000, seconds: 6),
+                       SpeedTest.maxBytesPerPhase)
     }
 
     /// The endpoint is nameable before anything is sent — the UI has to be able
@@ -83,13 +85,18 @@ final class SpeedTestGateTests: XCTestCase {
 
     private let host = "speed.cloudflare.com"
 
-    /// Every rung of both ladders. The earlier sizes are not replaced by the
-    /// later ones — they are spent climbing to them.
-    func testTheDisclosedSizeIsEveryRungOfBothLadders() {
-        XCTAssertEqual(SpeedTestGate.worstCaseBytes,
-                       SpeedTest.downSizes.reduce(0, +) + SpeedTest.upSizes.reduce(0, +))
-        // 1 + 10 + 25 down, 1 + 10 up, on the ladders as they stand.
-        XCTAssertEqual(SpeedTestGate.worstCaseBytes, 47_000_000)
+    /// The cost scales with the line, because the test runs for a DURATION. A
+    /// faster connection spends more, which is the honest consequence of not
+    /// measuring the TCP ramp by accident.
+    func testTheEstimatedCostRisesWithLineSpeed() {
+        let slow = SpeedTestGate.estimatedBytes(atMbps: 10)
+        let fast = SpeedTestGate.estimatedBytes(atMbps: 300)
+        XCTAssertGreaterThan(fast, slow * 5)
+        // 10 Mbps for 10 s of transfer is about 12.5 MB.
+        XCTAssertEqual(Double(slow), 12.5e6, accuracy: 1e6)
+        XCTAssertLessThanOrEqual(SpeedTestGate.estimatedBytes(atMbps: 100_000),
+                                 SpeedTestGate.ceilingBytes,
+                                 "a very fast link must still be bounded")
     }
 
     /// Said once, properly, rather than every time — a dialog shown on every run
@@ -102,7 +109,7 @@ final class SpeedTestGateTests: XCTestCase {
             return XCTFail("the first run said nothing before sending data")
         }
         XCTAssertTrue(text.contains(host), "the disclosure does not name who is contacted")
-        XCTAssertTrue(text.contains("47 MB"), "the disclosure does not say what it costs")
+        XCTAssertTrue(text.contains("MB"), "the disclosure does not say what it costs")
         XCTAssertTrue(text.localizedCaseInsensitiveContains("IP address"),
                       "the disclosure does not mention what the far end learns")
 
@@ -121,7 +128,7 @@ final class SpeedTestGateTests: XCTestCase {
                                                                  host: host) else {
                     return XCTFail("ran a 47 MB transfer on a metered path without asking")
                 }
-                XCTAssertTrue(text.contains("47 MB"))
+                XCTAssertTrue(text.contains("MB"), text)
             }
         }
     }
