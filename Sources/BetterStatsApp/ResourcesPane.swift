@@ -209,6 +209,10 @@ final class ResourcesContent: NSView, PaneContentView {
     /// The live figures. Owned here rather than by the detail because they
     /// live in the rail's column now, under the cards.
     private let liveColumn = BodyStack()
+    /// Rail cards and live figures in ONE scrolling document, so they cannot
+    /// fight over a column too short for both.
+    private let leftColumn = NSStackView()
+    private let railGround = RailGround()
     private let detail = ResourceDetailView()
 
     /// Held so the CPU detail's census is only paid for while the CPU detail is
@@ -261,24 +265,15 @@ final class ResourcesContent: NSView, PaneContentView {
                      xRadius: Palette.Radius.card,
                      yRadius: Palette.Radius.card).fill()
 
-        // Stops at the last card rather than running to the floor. A panel that
-        // reaches the bottom of the window claims the empty space below the cards
-        // is part of the chooser, which is both untrue and the reason it read as a
-        // column of background rather than as a group of tabs.
+        // The rail's own ground is NOT drawn here any more — `RailGround` draws it,
+        // inside the scroll view and behind the cards.
         //
-        // Clamped to the view: once there are more cards than fit, the rail
-        // scrolls and the panel is the full height because the group really does
-        // fill it. This view is FLIPPED, so y = 0 is the top and the panel grows
-        // downward from there.
-        let railHeight = min(railStack.fittingSize.height, bounds.height)
-        // surfaceAlt, not surface. `surface` is 0x0A0E12 against a 0x000000
-        // ground — a difference of ten values, which is not a surface anyone can
-        // see. This is the token the table header already uses for the same job.
-        Palette.surfaceAlt.setFill()
-        NSBezierPath(roundedRect: NSRect(x: 0, y: 0,
-                                         width: Self.railWidth, height: railHeight),
-                     xRadius: Palette.Radius.card,
-                     yRadius: Palette.Radius.card).fill()
+        // It used to be painted here at the card stack's FITTING height while the
+        // scroll view was free to be a different height entirely, and on a short
+        // window those two disagreed badly: the scroll collapsed to one card and
+        // the panel kept its full six-card height, so the panel covered the live
+        // readings underneath. Drawing it in the same view as the cards makes the
+        // disagreement impossible rather than unlikely, and it scrolls with them.
     }
 
     override func viewDidChangeEffectiveAppearance() { needsDisplay = true }
@@ -306,38 +301,53 @@ final class ResourcesContent: NSView, PaneContentView {
         // A scroller rather than a fixed column: six cards need ~390 pt and a short
         // window has less. Clipping the last card would hide a whole resource with
         // nothing saying it was there.
+        //
+        // The LIVE FIGURES SCROLL WITH IT, in one document rather than as a
+        // sibling pinned under it. As siblings they competed for a column that
+        // could not hold both — six cards and eleven readings want ~650 pt and a
+        // short window offers ~520 — and the loser was the rail, which collapsed
+        // to a single card while the panel behind it kept its full height and
+        // covered the readings. Reported as "why is the graph tabs basically
+        // inside the info". One document means they cannot overlap: it is taller
+        // than the viewport and you scroll, which is what the scroll view was
+        // added for in the first place.
+        railGround.addSubview(railStack)
+        leftColumn.orientation = .vertical
+        leftColumn.alignment = .leading
+        leftColumn.spacing = 18
+        leftColumn.translatesAutoresizingMaskIntoConstraints = false
+        leftColumn.addArrangedSubview(railGround)
+        leftColumn.addArrangedSubview(liveColumn)
+
         railScroll.hasVerticalScroller = true
         railScroll.borderType = .noBorder
         railScroll.drawsBackground = false
         railScroll.contentView = FlippedClipView()
-        railScroll.documentView = railStack
+        railScroll.documentView = leftColumn
         railScroll.translatesAutoresizingMaskIntoConstraints = false
 
-        for v in [railScroll, liveColumn, detail] as [NSView] { addSubview(v) }
+        for v in [railScroll, detail] as [NSView] { addSubview(v) }
         NSLayoutConstraint.activate([
+            // FILLS the column now, rather than hugging its cards. What it holds
+            // is taller than it, which is the normal state of a scroll view.
             railScroll.leadingAnchor.constraint(equalTo: leadingAnchor),
             railScroll.topAnchor.constraint(equalTo: topAnchor),
-            // Hugs its cards instead of filling the column. The space below was
-            // always empty and always inside this scroll, which is why the panel
-            // behind it had to run to the floor to cover anything.
-            railScroll.heightAnchor.constraint(
-                lessThanOrEqualToConstant: Self.railContentHeight),
-            railScroll.bottomAnchor.constraint(lessThanOrEqualTo: bottomAnchor),
+            railScroll.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -12),
             railScroll.widthAnchor.constraint(equalToConstant: Self.railWidth),
 
-            // The live figures, in the column the rail just gave up. They are the
-            // numbers that MOVE, and putting them here leaves the whole right-hand
-            // side to the graph and the hardware facts.
-            liveColumn.leadingAnchor.constraint(equalTo: leadingAnchor),
-            liveColumn.topAnchor.constraint(equalTo: railScroll.bottomAnchor,
-                                            constant: 18),
-            liveColumn.widthAnchor.constraint(equalToConstant: Self.railWidth),
-            liveColumn.bottomAnchor.constraint(lessThanOrEqualTo: bottomAnchor,
-                                               constant: -12),
+            leftColumn.leadingAnchor.constraint(equalTo: railScroll.contentView.leadingAnchor),
+            leftColumn.topAnchor.constraint(equalTo: railScroll.contentView.topAnchor),
+            leftColumn.widthAnchor.constraint(equalTo: railScroll.contentView.widthAnchor),
 
-            railStack.leadingAnchor.constraint(equalTo: railScroll.contentView.leadingAnchor),
-            railStack.topAnchor.constraint(equalTo: railScroll.contentView.topAnchor),
-            railStack.widthAnchor.constraint(equalTo: railScroll.contentView.widthAnchor),
+            // The ground hugs the cards exactly — it IS the group, so it ends at
+            // the last card and never at the floor.
+            railGround.widthAnchor.constraint(equalTo: leftColumn.widthAnchor),
+            railStack.leadingAnchor.constraint(equalTo: railGround.leadingAnchor),
+            railStack.trailingAnchor.constraint(equalTo: railGround.trailingAnchor),
+            railStack.topAnchor.constraint(equalTo: railGround.topAnchor),
+            railStack.bottomAnchor.constraint(equalTo: railGround.bottomAnchor),
+
+            liveColumn.widthAnchor.constraint(equalTo: leftColumn.widthAnchor),
 
             detail.leadingAnchor.constraint(equalTo: railScroll.trailingAnchor, constant: 18),
             detail.trailingAnchor.constraint(equalTo: trailingAnchor),
@@ -1259,4 +1269,34 @@ final class ResourceDetailView: NSView {
     func showPlaceholder() {
         specs.setItems([])
     }
+}
+
+
+/// The rail's ground: the thing that says the six cards are a chooser rather than
+/// six loose graphs.
+///
+/// Its own view, inside the scroll and behind the cards, because it used to be
+/// painted by the parent at the card stack's fitting height while the scroll view
+/// was free to be a different height entirely. On a short window those disagreed —
+/// the scroll collapsed to one card, the panel kept six cards' worth, and the
+/// panel covered the readings below. A ground that IS a sibling of the cards
+/// cannot disagree with them about how tall they are, and it scrolls with them.
+///
+/// `surfaceAlt`, not `surface`: `surface` is 0x0A0E12 against a 0x000000 ground,
+/// a difference of ten values that nobody can see. This is the token the table
+/// header already uses for the same job.
+final class RailGround: NSView {
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        translatesAutoresizingMaskIntoConstraints = false
+    }
+    required init?(coder: NSCoder) { fatalError() }
+    override var isFlipped: Bool { true }
+    override func draw(_ dirtyRect: NSRect) {
+        Palette.surfaceAlt.setFill()
+        NSBezierPath(roundedRect: bounds,
+                     xRadius: Palette.Radius.card,
+                     yRadius: Palette.Radius.card).fill()
+    }
+    override func viewDidChangeEffectiveAppearance() { needsDisplay = true }
 }
