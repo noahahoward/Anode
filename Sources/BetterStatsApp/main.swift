@@ -557,7 +557,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
             // detector can distinguish from idling unplugged.
             let charge = pts.compactMap { p -> HistoryGraphView.Point? in
                 guard let soc = p.socPercent else { return nil }
-                return .init(time: p.time, value: soc, onPower: !p.onBattery)
+                return .charge(time: p.time, percent: soc, onBattery: p.onBattery)
             }
             DispatchQueue.main.async {
                 self.graph.series = [.init(name: "total", color: Palette.accent, points: series)]
@@ -673,10 +673,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
             // ordinary colour while 6H/24H/7D drew the same span green: the
             // 1H view is this in-memory buffer, the rest come from SQLite.
             //
-            // Same definition as the store's `on_battery` column, negated, so
-            // the two paths cannot disagree about what "charging" means.
-            chargeSeries.append(.init(time: now, value: Double(pct),
-                                      onPower: !(s.state?.onAC ?? true)))
+            // `onPower` means ON THE ADAPTER, so this is `onAC` and NOT its
+            // negation. The store path builds the same flag from the opposite
+            // column — `onPower: !p.onBattery` — and negating `onAC` to match the
+            // SHAPE of that line is a double negative: it made the 1H view claim
+            // the machine was charging while it was running the battery down, and
+            // the comment that used to sit here asserted the two paths agreed.
+            //
+            // Only 1H was affected, because only 1H comes from this buffer, which
+            // is exactly why it survived the fix that was supposed to address it.
+            chargeSeries.append(.charge(time: now, percent: Double(pct),
+                                        onAC: s.state?.onAC ?? false))
         }
         let cutoff = now.addingTimeInterval(-graphSpan)
         totalSeries.removeAll { $0.time < cutoff }

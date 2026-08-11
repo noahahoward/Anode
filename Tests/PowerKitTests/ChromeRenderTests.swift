@@ -673,3 +673,42 @@ final class LedgerBarRenderTests: XCTestCase {
         }
     }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// The two ways a caller can say "the adapter is attached".
+///
+/// These shipped disagreeing. The 1H buffer knows `onAC` and the store knows
+/// `on_battery`; both built the flag inline, and the live path negated `onAC` to
+/// match the SHAPE of the store path's `!onBattery` — a double negative. The 1H
+/// graph drew charging while the machine ran the battery down, and only 1H was
+/// wrong, because only 1H comes from that buffer.
+final class ChargePointPolarityTests: XCTestCase {
+
+    /// One physical state, two vocabularies, one answer.
+    func testBothWaysOfSayingItAgree() {
+        let t = Date(timeIntervalSince1970: 1_000_000)
+        for onAC in [true, false] {
+            let fromAC = HistoryGraphView.Point.charge(time: t, percent: 80, onAC: onAC)
+            let fromBattery = HistoryGraphView.Point.charge(time: t, percent: 80,
+                                                            onBattery: !onAC)
+            XCTAssertEqual(fromAC.onPower, fromBattery.onPower,
+                           "the two constructors disagree when onAC = \(onAC)")
+        }
+    }
+
+    /// And the sign itself, stated once so a future "simplification" that flips
+    /// it has something to fail against. `onPower` is what the renderer colours
+    /// green, so true must mean ON THE ADAPTER.
+    func testOnPowerMeansOnTheAdapter() {
+        let t = Date(timeIntervalSince1970: 1_000_000)
+        XCTAssertEqual(HistoryGraphView.Point.charge(time: t, percent: 80, onAC: true).onPower,
+                       true, "a machine on the adapter must draw as charging")
+        XCTAssertEqual(HistoryGraphView.Point.charge(time: t, percent: 80, onAC: false).onPower,
+                       false, "a machine on battery must not draw as charging")
+        XCTAssertEqual(HistoryGraphView.Point.charge(time: t, percent: 80,
+                                                     onBattery: true).onPower, false)
+        XCTAssertEqual(HistoryGraphView.Point.charge(time: t, percent: 80,
+                                                     onBattery: false).onPower, true)
+    }
+}
