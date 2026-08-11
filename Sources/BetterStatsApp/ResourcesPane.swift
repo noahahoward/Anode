@@ -170,6 +170,18 @@ final class ResourcesContent: NSView, PaneContentView {
     /// Wide enough for a 78 pt sparkline, the gutters, and a two-line label that
     /// can hold "Peer-to-peer Wi-Fi" without truncating.
     private static let railWidth: CGFloat = 214
+    /// Card height and spacing, and the height the rail therefore is.
+    ///
+    /// Stated once because three things need it: the scroll's height, the panel
+    /// drawn behind it, and where the live figures start underneath. Derived from
+    /// the card count rather than typed as 378, so adding a resource moves all
+    /// three together.
+    static let cardHeight: CGFloat = 58
+    private static let cardGap: CGFloat = 6
+    private static var railContentHeight: CGFloat {
+        CGFloat(Resource.allCases.count) * cardHeight
+            + CGFloat(Resource.allCases.count - 1) * cardGap
+    }
 
     private var tracks: [Resource: ResourceTrack] = [:]
     private var cards: [Resource: ResourceCard] = [:]
@@ -177,6 +189,9 @@ final class ResourcesContent: NSView, PaneContentView {
 
     private let railStack = NSStackView()
     private let railScroll = NSScrollView()
+    /// The live figures. Owned here rather than by the detail because they
+    /// live in the rail's column now, under the cards.
+    private let liveColumn = BodyStack()
     private let detail = ResourceDetailView()
 
     /// Held so the CPU detail's census is only paid for while the CPU detail is
@@ -211,9 +226,22 @@ final class ResourcesContent: NSView, PaneContentView {
                      xRadius: Palette.Radius.card,
                      yRadius: Palette.Radius.card).fill()
 
-        Palette.surface.setFill()
+        // Stops at the last card rather than running to the floor. A panel that
+        // reaches the bottom of the window claims the empty space below the cards
+        // is part of the chooser, which is both untrue and the reason it read as a
+        // column of background rather than as a group of tabs.
+        //
+        // Clamped to the view: once there are more cards than fit, the rail
+        // scrolls and the panel is the full height because the group really does
+        // fill it. This view is FLIPPED, so y = 0 is the top and the panel grows
+        // downward from there.
+        let railHeight = min(railStack.fittingSize.height, bounds.height)
+        // surfaceAlt, not surface. `surface` is 0x0A0E12 against a 0x000000
+        // ground — a difference of ten values, which is not a surface anyone can
+        // see. This is the token the table header already uses for the same job.
+        Palette.surfaceAlt.setFill()
         NSBezierPath(roundedRect: NSRect(x: 0, y: 0,
-                                         width: Self.railWidth, height: bounds.height),
+                                         width: Self.railWidth, height: railHeight),
                      xRadius: Palette.Radius.card,
                      yRadius: Palette.Radius.card).fill()
     }
@@ -230,7 +258,7 @@ final class ResourcesContent: NSView, PaneContentView {
 
         railStack.orientation = .vertical
         railStack.alignment = .leading
-        railStack.spacing = 6
+        railStack.spacing = Self.cardGap
         railStack.translatesAutoresizingMaskIntoConstraints = false
         for resource in Resource.allCases {
             let card = ResourceCard(resource: resource) { [weak self] in self?.select($0) }
@@ -250,12 +278,27 @@ final class ResourcesContent: NSView, PaneContentView {
         railScroll.documentView = railStack
         railScroll.translatesAutoresizingMaskIntoConstraints = false
 
-        for v in [railScroll, detail] as [NSView] { addSubview(v) }
+        for v in [railScroll, liveColumn, detail] as [NSView] { addSubview(v) }
         NSLayoutConstraint.activate([
             railScroll.leadingAnchor.constraint(equalTo: leadingAnchor),
             railScroll.topAnchor.constraint(equalTo: topAnchor),
-            railScroll.bottomAnchor.constraint(equalTo: bottomAnchor),
+            // Hugs its cards instead of filling the column. The space below was
+            // always empty and always inside this scroll, which is why the panel
+            // behind it had to run to the floor to cover anything.
+            railScroll.heightAnchor.constraint(
+                lessThanOrEqualToConstant: Self.railContentHeight),
+            railScroll.bottomAnchor.constraint(lessThanOrEqualTo: bottomAnchor),
             railScroll.widthAnchor.constraint(equalToConstant: Self.railWidth),
+
+            // The live figures, in the column the rail just gave up. They are the
+            // numbers that MOVE, and putting them here leaves the whole right-hand
+            // side to the graph and the hardware facts.
+            liveColumn.leadingAnchor.constraint(equalTo: leadingAnchor),
+            liveColumn.topAnchor.constraint(equalTo: railScroll.bottomAnchor,
+                                            constant: 18),
+            liveColumn.widthAnchor.constraint(equalToConstant: Self.railWidth),
+            liveColumn.bottomAnchor.constraint(lessThanOrEqualTo: bottomAnchor,
+                                               constant: -12),
 
             railStack.leadingAnchor.constraint(equalTo: railScroll.contentView.leadingAnchor),
             railStack.topAnchor.constraint(equalTo: railScroll.contentView.topAnchor),
@@ -290,7 +333,13 @@ final class ResourcesContent: NSView, PaneContentView {
 
     func restyleForAppearanceChange() {
         cards.values.forEach { $0.restyle() }
+        // The live figures moved here from the detail, so their restyle has to
+        // move with them — a reused row only repaints when its own content
+        // changes, so a theme flip keeps the old appearance's ink until a value
+        // happens to move.
+        liveColumn.restyleRows()
         detail.restyle()
+        needsDisplay = true
     }
 
     private static func defaultTitle(_ r: Resource) -> String {
@@ -316,7 +365,8 @@ final class ResourcesContent: NSView, PaneContentView {
     }
 
     func waitForFirstSample() {
-        detail.showPlaceholder("Waiting for the first sample.")
+        detail.showPlaceholder()
+        liveColumn.setItems([.row("Waiting for the first sample.", "—", dim: true)])
     }
 
     // ── Tick ────────────────────────────────────────────────────────────────
@@ -428,7 +478,8 @@ final class ResourcesContent: NSView, PaneContentView {
         guard let sys else { return }
         let net = network ?? NetworkInventory.snapshot(now: now)
         let (live, specs) = build(selected, sys: sys, power: power, network: net)
-        detail.setColumns(live: live, specs: specs)
+        liveColumn.setItems(live)
+        detail.setSpecs(specs)
     }
 
     /// The two columns for one resource: what is moving, and what is fixed.
@@ -986,7 +1037,6 @@ final class ResourceDetailView: NSView {
     private let heading = NSTextField(labelWithString: "")
     private let hardware = NSTextField(labelWithString: "")
     let graph = FixedWindowGraphView(frame: .zero)
-    let live = BodyStack()
     let specs = BodyStack()
     private let scroll = NSScrollView()
 
@@ -1029,7 +1079,7 @@ final class ResourceDetailView: NSView {
         graph.layer?.cornerRadius = Palette.Radius.inner
         graph.layer?.masksToBounds = true
 
-        let columns = NSStackView(views: [live, specs])
+        let columns = NSStackView(views: [specs])
         columns.orientation = .horizontal
         columns.alignment = .top
         columns.distribution = .fill
@@ -1075,11 +1125,7 @@ final class ResourceDetailView: NSView {
             columns.leadingAnchor.constraint(equalTo: scroll.contentView.leadingAnchor),
             columns.topAnchor.constraint(equalTo: scroll.contentView.topAnchor),
             columns.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor),
-            // 42/58. The live figures are set large and there are few of them; the
-            // specs are small pairs and there are many, so the wider column is the
-            // one carrying "IPv6 fe80::1c6e:9314:7579:e4ae" without truncating it.
-            live.widthAnchor.constraint(equalTo: columns.widthAnchor, multiplier: 0.42,
-                                        constant: -12),
+            specs.widthAnchor.constraint(equalTo: columns.widthAnchor),
         ])
         restyle()
     }
@@ -1091,7 +1137,6 @@ final class ResourceDetailView: NSView {
     func restyle() {
         heading.textColor = Palette.text
         hardware.textColor = Palette.dim
-        live.restyleRows()
         specs.restyleRows()
     }
 
@@ -1111,13 +1156,18 @@ final class ResourceDetailView: NSView {
                               points: track.points, filled: true)]
     }
 
-    func setColumns(live liveItems: [BodyItem], specs specItems: [BodyItem]) {
-        live.setItems(liveItems)
+    /// The specs only. The live figures moved to the rail's column — see
+    /// `ResourcesContent.liveColumn` — so this view is the graph and the hardware
+    /// facts, and the specs get the whole width instead of 58 % of it.
+    func setSpecs(_ specItems: [BodyItem]) {
         specs.setItems(specItems)
     }
 
-    func showPlaceholder(_ text: String) {
-        live.setItems([.row(text, "—", dim: true)])
+    /// Specs only, like `setSpecs`. The live column is the content view's now, so
+    /// the caller places its half of the placeholder — leaving it here would have
+    /// written into a stack that is no longer on screen, which is a placeholder
+    /// that silently never appears.
+    func showPlaceholder() {
         specs.setItems([])
     }
 }
