@@ -1,4 +1,16 @@
 import AppKit
+
+// THE MENU BAR KEEPS macOS's OWN INKS, and that is not an oversight.
+//
+// Everything inside the window draws from `Palette`, which is this app's design
+// and is tuned to its near-black ground. A status item is not on that ground: it
+// sits in the menu bar, whose tint follows the wallpaper behind it and inverts
+// with the system appearance independently of anything here. `labelColor` and
+// its siblings are the only inks that track that, which is why they are correct
+// here and wrong in every other file.
+//
+// The one real exception is `NSColor.black` on the battery fill, which is a
+// deliberate contrast pick against a bright fill rather than a semantic colour.
 import PowerKit
 
 // Menu bar widgets, bound to metrics by ID.

@@ -232,7 +232,10 @@ final class GraphRenderTests: XCTestCase {
         XCTAssertGreaterThan(plot.width, 200, "the plot laid out to nothing")
         XCTAssertGreaterThan(plot.height, 60, "the plot laid out to nothing")
 
-        let ground = NSColor.controlBackgroundColor
+        // The view's OWN ground. This named `controlBackgroundColor`, which was
+        // never what the graph painted — it only worked while every other ink in
+        // the plot happened to sit far from it.
+        let ground = Palette.background
         guard let left = frame.inkCentroidY(inColumn: plot.minX + plot.width * 0.10,
                                             width: 4, ground: ground),
               let right = frame.inkCentroidY(inColumn: plot.minX + plot.width * 0.85,
@@ -888,5 +891,90 @@ final class EndpointMarkerTests: XCTestCase {
         let plot = g.lastPlot
         XCTAssertEqual(marker.y, plot.minY + plot.height * 0.9, accuracy: 2)
         XCTAssertEqual(marker.x, plot.maxX, accuracy: 0.51)
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// One palette, one set of radii — enforced by reading the source.
+///
+/// Consistency is the kind of property that decays silently: every individual
+/// `NSColor.secondaryLabelColor` looks right in the file it is in, and the drift
+/// only shows up when two panes are open at once. Found by eye at the point where
+/// the ledger's memory and storage segments were macOS system colours, one pane's
+/// grey was a different grey from the next, and a bar was drawn in whatever
+/// accent colour the user had picked for macOS.
+///
+/// So this scans the sources rather than the pixels. It is the only test here
+/// that reads code, and it earns that by checking something no rendered frame
+/// can: not "does this frame look right" but "will the next one still match".
+final class PaletteConsistencyTests: XCTestCase {
+
+    /// The app's own view layer. `MenuBarWidgets` is deliberately absent — a
+    /// status item sits in the menu bar, whose tint follows the wallpaper and
+    /// inverts independently of this app, so macOS's semantic inks are the
+    /// correct ones there and Palette's would be wrong.
+    private static let windowSources = [
+        "HistoryGraphView.swift", "AppDetailView.swift", "AppMenu.swift",
+        "LedgerBarView.swift", "ResourcesPane.swift", "SystemPanes.swift",
+        "SidebarView.swift", "ProcessTable.swift", "GlanceCardView.swift",
+        "InspectorView.swift", "FanControlPanel.swift", "SpeedometerView.swift",
+        "SpeedTestStrip.swift",
+    ]
+
+    /// Inks that must come from `Palette`, with what to use instead.
+    ///
+    /// Matched WITHOUT the `NSColor` prefix, because Swift infers it: the ledger
+    /// wrote `return .systemPurple`, and a first version of this test looked for
+    /// `NSColor.systemPurple` and sailed straight past the exact line that
+    /// prompted it.
+    private static let banned = [
+        ".labelColor":            "Palette.text",
+        ".secondaryLabelColor":   "Palette.dim",
+        ".tertiaryLabelColor":    "Palette.faint",
+        ".quaternaryLabelColor":  "Palette.lineSoft",
+        ".separatorColor":        "Palette.line or Palette.lineSoft",
+        ".windowBackgroundColor": "Palette.background",
+        ".controlBackgroundColor": "Palette.background",
+        // The user's macOS accent, not this app's. It made one bar turn pink on
+        // machines where that was the system setting.
+        ".controlAccentColor":    "Palette.accent",
+        ".systemPurple":          "Palette.violet",
+        ".systemTeal":            "Palette.teal",
+    ]
+
+    private func source(_ name: String) throws -> String {
+        let dir = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()   // PowerKitTests
+            .deletingLastPathComponent()   // Tests
+            .deletingLastPathComponent()   // package root
+        let url = dir.appendingPathComponent("Sources/BetterStatsApp/\(name)")
+        return try String(contentsOf: url, encoding: .utf8)
+    }
+
+    func testWindowViewsTakeTheirInksFromThePalette() throws {
+        var offences: [String] = []
+        for name in Self.windowSources {
+            let text = try source(name)
+            for (bad, good) in Self.banned where text.contains(bad) {
+                // A mention inside a comment is a record of why, not a use.
+                let used = text.split(separator: "\n").contains { line in
+                    line.contains(bad) && !line.trimmingCharacters(in: .whitespaces)
+                        .hasPrefix("//")
+                }
+                if used { offences.append("\(name): \(bad) — use \(good)") }
+            }
+        }
+        XCTAssertEqual(offences, [], "system colours leaked back into window views:\n"
+                                   + offences.joined(separator: "\n"))
+    }
+
+    /// And the menu bar is left alone, which this states so a future sweep does
+    /// not "fix" it into looking wrong on a light wallpaper.
+    func testTheMenuBarKeepsTheSystemInks() throws {
+        let text = try source("MenuBarWidgets.swift")
+        XCTAssertTrue(text.contains(".labelColor"),
+                      "the menu bar was moved onto Palette — it must follow the "
+                    + "system menu bar tint, which Palette does not track")
     }
 }
