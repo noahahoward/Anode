@@ -217,16 +217,21 @@ final class GlanceCardView: NSView {
             // points the gauge is off by, and rounding the projection to agree with
             // the rounder of the two inputs would be the wrong repair.
             let shared = AppDelegate.reconciledRate(s, drain)
-            let hrs = shared.timeRemaining_hr
+            // Withheld until there is history behind it — the same rule the menu
+            // bar metric follows, so the two cannot print different answers to one
+            // question three inches apart. See `DrainEstimate.canQuoteTime`.
+            let settled = DrainEstimate.canQuoteTime(source: shared.source,
+                                                     windowSpan: shared.windowSpan)
+            let hrs = settled ? shared.timeRemaining_hr : nil
 
             return Model(
                 source: .battery,
                 // "estimating…" while nothing is known yet, never a placeholder
                 // number. "—" is for a figure that is unknowABLE rather than
                 // not-yet-known.
-                headline: hrs.map(hm) ?? (shared.source == .insufficient ? "estimating…" : "—"),
+                headline: hrs.map(hm) ?? (settled ? "—" : "measuring…"),
                 percent: st.percent,
-                sourceLabel: "on battery · " + provenance(shared.source),
+                sourceLabel: "on battery · " + provenance(shared.source, settled: settled),
                 rows: [
                     ("Drain", String(format: "%.1f %%/hr", shared.pctHr), nil),
                     ("Draw", String(format: "%.1f W", s.smoothed_W), nil),
@@ -281,7 +286,17 @@ final class GlanceCardView: NSView {
     /// are inferred from what the machine is drawing at this instant and will move
     /// with it. A user deciding whether to trust "3h 40m" needs to know which they
     /// are looking at.
-    private static func provenance(_ source: DrainEstimate.Source) -> String {
+    /// `settled` is false in the first couple of minutes after an unplug or a
+    /// wake, when the trend has been reset and there is a rate but no history to
+    /// project it across. Said in words here because this is where there is room
+    /// for words — the menu bar just shows nothing.
+    private static func provenance(_ source: DrainEstimate.Source,
+                                   settled: Bool = true) -> String {
+        guard settled else { return "measuring — not enough history yet" }
+        return provenanceWord(source)
+    }
+
+    private static func provenanceWord(_ source: DrainEstimate.Source) -> String {
         switch source {
         case .discharge:    return "measured drain"
         case .observed:     return "observed drain"

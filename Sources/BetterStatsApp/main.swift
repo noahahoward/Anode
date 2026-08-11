@@ -131,9 +131,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
     var windowPercents: [String: Double] = [:]
     var lastWindowQuery = Date.distantPast
 
+    /// Fill the 1H graph from the database before the first tick.
+    ///
+    /// The 1H view is an in-memory ring; 6H and longer read SQLite. So the live
+    /// hour started EMPTY on every launch and grew a pixel at a time — a user who
+    /// had just reopened the app saw one minute of history in a window labelled
+    /// one hour, which reads as data loss rather than as a buffer filling.
+    ///
+    /// Same source and same units as `refreshHistoryGraph`, so a restart is
+    /// invisible: the seeded points and the ones appended a second later are the
+    /// same measurements from the same store.
+    ///
+    /// Synchronous, and deliberately so — it runs once, before the first frame,
+    /// and doing it asynchronously would race the first tick's `append` and
+    /// interleave an hour of history after a second of live data.
+    private func seedLiveGraphFromHistory() {
+        guard let store else { return }
+        let now = Date()
+        let pts = store.powerSeries(since: now.addingTimeInterval(-graphSpan),
+                                    until: now, maxPoints: 700)
+        guard !pts.isEmpty else { return }
+        let scale = monitor?.scale
+        totalSeries = pts.map { p in
+            // %/hr, not watts — matching the live append and the long views.
+            let pctHr = scale.map { 3600 * p.watts / $0.joulesPerPercent } ?? p.watts
+            return .init(time: p.time, value: pctHr)
+        }
+        chargeSeries = pts.compactMap { p in
+            guard let soc = p.socPercent else { return nil }
+            return .charge(time: p.time, percent: soc, onBattery: p.onBattery)
+        }
+    }
+
     func applicationDidFinishLaunching(_ note: Notification) {
         monitor = PowerMonitor()
         store = HistoryStore()
+        seedLiveGraphFromHistory()
 
         buildMenu()
 
@@ -629,10 +662,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
     /// charge on the mAh basis — so the rate published here and the hours published
     /// here always multiply back to the charge, whichever tier answered.
     static func reconciledRate(_ s: PowerMonitor.Snapshot, _ est: DrainEstimate?)
-        -> (pctHr: Double, timeRemaining_hr: Double?, source: DrainEstimate.Source) {
+        -> (pctHr: Double, timeRemaining_hr: Double?, source: DrainEstimate.Source,
+            windowSpan: TimeInterval) {
         let draining = s.direction == .draining
         if let e = est, e.source == .discharge, draining {
-            return (e.percentPerHour, e.timeRemaining.map { $0 / 3600 }, .discharge)
+            return (e.percentPerHour, e.timeRemaining.map { $0 / 3600 }, .discharge, e.windowSpan)
         }
         let measured = s.smoothed_pctHr
         let inferred = est?.percentPerHour
@@ -655,7 +689,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         let source: DrainEstimate.Source = shown > 0.01
             ? (trustInferred ? (est?.source ?? .power) : .power)
             : .insufficient
-        return (shown, hours, source)
+        // The span behind the number ACTUALLY shown. Zero when the power figure
+        // was taken instead of the estimator's, because that figure has no window
+        // — which is exactly the state `canQuoteTime` withholds a time for.
+        let span = (trustInferred ? est?.windowSpan : nil) ?? 0
+        return (shown, hours, source, span)
     }
 
     func updateGraph(_ s: PowerMonitor.Snapshot?) {

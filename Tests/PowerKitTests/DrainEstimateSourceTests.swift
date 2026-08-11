@@ -181,8 +181,13 @@ final class DrainEstimateSourceTests: XCTestCase {
 
     // ── Provenance reaching the screen ──────────────────────────────────────
 
+    /// `windowSpan` defaults past `DrainEstimate.settleSeconds`, so the existing
+    /// cases keep asking what they were asking: whether the MARKER is right. The
+    /// separate question — whether there is enough history to quote a time at all
+    /// — is `canQuoteTime`, and it has its own tests.
     private func registry(_ shared: (pctHr: Double, timeRemaining_hr: Double?,
-                                     source: DrainEstimate.Source)?) -> MetricRegistry {
+                                     source: DrainEstimate.Source)?,
+                          windowSpan: TimeInterval = 1800) -> MetricRegistry {
         let st = Battery.State(percent: 61, isCharging: false, onAC: false,
                                cycleCount: 20, voltage_mV: 11878, amperage_mA: -347,
                                remainingCapacity_mAh: 3667, timeRemaining_min: nil)
@@ -198,7 +203,8 @@ final class DrainEstimateSourceTests: XCTestCase {
             displayIsMeasured: false, baseline_W: nil, didJump: false,
             residual_W: 0, rawResidual_W: 0, scale: scale, state: st,
             coverage: 1, denied: 0, readable: 1, attempted: 1, interval: 2))
-        r.update(displayedRate: shared)
+        r.update(displayedRate: shared.map { ($0.pctHr, $0.timeRemaining_hr,
+                                              $0.source, windowSpan) })
         return r
     }
 
@@ -245,10 +251,48 @@ final class DrainEstimateSourceTests: XCTestCase {
         XCTAssertTrue(r.value(for: .batteryTimeLeft)?.isEstimate ?? false)
     }
 
-    func testASharedTimeOfNilLeavesTheWidgetOnItsOwnProjection() {
+    /// `.insufficient` means nothing is known yet, so no time is shown — not even
+    /// the widget's own projection from smoothed draw.
+    ///
+    /// This TIGHTENS what the test here used to assert. It used to let the widget
+    /// fall back to `projectedRuntime_hr`, on the grounds that smoothed draw is a
+    /// measurement. It is — and the RATE is still shown from it. The TIME is a
+    /// different claim: charge ÷ an instantaneous rate, projected across the whole
+    /// rest of the battery. Reported from the field, a machine unplugged while
+    /// idle read "3 %/hr" beside "25 hours"; the rate was true and the time was
+    /// not, because only one of them claimed to know about the future.
+    ///
+    /// The rate is unaffected and still carries its marker, which is the half this
+    /// test was really about.
+    func testAnInsufficientSharedFigureShowsNoTimeAtAll() {
         let r = registry((8.16, nil, .insufficient))
-        XCTAssertTrue(r.value(for: .batteryTimeLeft)?.isEstimate ?? false)
+        XCTAssertNil(r.value(for: .batteryTimeLeft),
+                     "a time was quoted with no history behind it")
         XCTAssertTrue(r.value(for: .batteryDrain)?.isEstimate ?? false,
                       "an insufficient-history rate is not a measured one")
+    }
+
+    /// The settle window, which is the case this exists for: the trend has just
+    /// been reset by an unplug or a wake, so the figure is the instantaneous power
+    /// tier with no window behind it.
+    func testNoTimeIsQuotedInTheFirstMinutesAfterAnUnplug() {
+        let justUnplugged = registry((3.0, 25.0, .power), windowSpan: 10)
+        XCTAssertNil(justUnplugged.value(for: .batteryTimeLeft),
+                     "quoted 25 hours from ten seconds of history")
+        XCTAssertNotNil(justUnplugged.value(for: .batteryDrain),
+                        "the RATE is a real reading and must still be shown")
+
+        // And once there is history, the same tier is allowed to speak.
+        let settled = registry((3.0, 25.0, .power), windowSpan: 600)
+        XCTAssertNotNil(settled.value(for: .batteryTimeLeft))
+    }
+
+    /// A measured-discharge figure is never withheld: it is backed by an
+    /// accumulated window by construction.
+    func testAMeasuredFigureIsNeverWithheld() {
+        XCTAssertTrue(DrainEstimate.canQuoteTime(source: .discharge, windowSpan: 0))
+        XCTAssertTrue(DrainEstimate.canQuoteTime(source: .observed, windowSpan: 0))
+        XCTAssertTrue(DrainEstimate.canQuoteTime(source: .blended, windowSpan: 0))
+        XCTAssertFalse(DrainEstimate.canQuoteTime(source: .insufficient, windowSpan: 9999))
     }
 }
