@@ -71,10 +71,25 @@ public enum SpeedTest {
         public let host: String
     }
 
-    public enum Failure: Error, Equatable {
+    /// LocalizedError, not merely Error, and that conformance is load-bearing.
+    ///
+    /// A Swift error bridged to NSError without it produces
+    /// "PowerKit.SpeedTest.Failure error 0" — the case's INDEX. Every explanation
+    /// this type is careful to build ("the server answered HTTP 429 — too many
+    /// tests too quickly") was thrown away at the last step, and the one message
+    /// the user actually saw was the one nobody wrote.
+    public enum Failure: LocalizedError, Equatable {
         case unreachable(String)
         case tooSlowToMeasure
         case cancelled
+
+        public var errorDescription: String? {
+            switch self {
+            case .unreachable(let why):  return why
+            case .tooSlowToMeasure:      return "the connection was too slow to measure"
+            case .cancelled:             return "the test was cancelled"
+            }
+        }
     }
 
     /// MEASURE FOR A DURATION, NOT FOR A SIZE.
