@@ -126,6 +126,10 @@ public class HistoryGraphView: NSView {
     /// rather than a coincidence maintained in two places.
     static let sharedAxisTicks: [Double] = [0, 25, 50, 75, 100]
 
+    /// Height of a legend swatch. The two legends — the header strip and the
+    /// hover card — drew the same mark from two copies of the same numbers.
+    static let swatchH: CGFloat = 2.5
+
     public var yMax: Double? {
         didSet { needsDisplay = true }
     }
@@ -1167,9 +1171,12 @@ public class HistoryGraphView: NSView {
             name.draw(at: NSPoint(x: x, y: y), withAttributes: legendAttrs)
             x -= swatchGap + swatchW
             s.color.setFill()
-            NSBezierPath(roundedRect: NSRect(x: x, y: y + size.height / 2 - 1.25,
-                                             width: swatchW, height: 2.5),
-                         xRadius: 1.25, yRadius: 1.25).fill()
+            // A CAPSULE: radius is half the height, written as the relationship
+            // rather than as 1.25 — the same number today and the wrong one the
+            // moment the swatch is resized.
+            NSBezierPath(roundedRect: NSRect(x: x, y: y + size.height / 2 - Self.swatchH / 2,
+                                             width: swatchW, height: Self.swatchH),
+                         xRadius: Self.swatchH / 2, yRadius: Self.swatchH / 2).fill()
             x -= entryGap
         }
     }
@@ -1425,9 +1432,10 @@ extension HistoryGraphView {
         for e in entries {
             y -= rowH
             e.color.setFill()
-            NSBezierPath(roundedRect: NSRect(x: box.minX + padX, y: y + rowH / 2 - 1.25,
-                                             width: swatchW, height: 2.5),
-                         xRadius: 1.25, yRadius: 1.25).fill()
+            NSBezierPath(roundedRect: NSRect(x: box.minX + padX,
+                                             y: y + rowH / 2 - Self.swatchH / 2,
+                                             width: swatchW, height: Self.swatchH),
+                         xRadius: Self.swatchH / 2, yRadius: Self.swatchH / 2).fill()
             let n = e.name.size(withAttributes: nameAttrs)
             e.name.draw(at: NSPoint(x: box.minX + padX + swatchW + swatchGap,
                                     y: y + (rowH - n.height) / 2),
