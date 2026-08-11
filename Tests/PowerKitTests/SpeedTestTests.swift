@@ -151,3 +151,31 @@ final class SpeedTestGateTests: XCTestCase {
                                             isConstrained: false, host: host), .run)
     }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// The messages have to survive the trip to a label.
+///
+/// They did not: without `LocalizedError`, a bridged Swift error renders as
+/// "PowerKit.SpeedTest.Failure error 0" — the case index — so every explanation
+/// this type builds was discarded at the last step and the user was shown the
+/// one message nobody wrote.
+final class SpeedTestFailureTests: XCTestCase {
+
+    func testAFailureExplainsItselfRatherThanPrintingItsCaseNumber() {
+        let failure = SpeedTest.Failure.unreachable("the server answered HTTP 429")
+        XCTAssertEqual(failure.errorDescription, "the server answered HTTP 429")
+        // The path a view actually takes.
+        XCTAssertEqual((failure as Error).localizedDescription,
+                       "the server answered HTTP 429")
+    }
+
+    func testEveryFailureHasSomethingToSay() {
+        for failure: SpeedTest.Failure in [.unreachable("x"), .tooSlowToMeasure, .cancelled] {
+            let text = (failure as Error).localizedDescription
+            XCTAssertFalse(text.isEmpty)
+            XCTAssertFalse(text.contains("error 0"), text)
+            XCTAssertFalse(text.contains("PowerKit"), text)
+        }
+    }
+}

@@ -176,7 +176,11 @@ final class SpeedTestStrip: NSView {
         case .failure(let error):
             // A failed test yields NO number. "0 Mbps" is a measurement, and we
             // did not make one — the same rule the ledger follows everywhere.
-            lastError = (error as NSError).localizedDescription
+            //
+            // `localizedDescription` and not `String(describing:)`: the former is
+            // the sentence written for a person, now that `Failure` is a
+            // LocalizedError. The latter would print the enum case.
+            lastError = error.localizedDescription
             dial.mbps = nil
             dial.phase = nil
             downTile.mbps = nil
