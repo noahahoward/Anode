@@ -1121,10 +1121,33 @@ public class HistoryGraphView: NSView {
             // uncertainty in its own measurement before it counts as one. A real
             // absence is orders of magnitude past this — the night that produced
             // the local-cadence rule held a 9540 s one.
-            let median = window[window.count / 2]
+            // QUANTISED, because the threshold has to stop moving.
+            //
+            // The margin above was scaled by the raw median — and the median is
+            // itself the thing that moves as the window scrolls, so the threshold
+            // wobbled along with the delta it was judging. That made the flicker
+            // worse rather than better, which is what the second report said.
+            //
+            // Snapping to a ladder means an ordinary shuffle in the window
+            // changes nothing at all: the limit only moves when the sampling
+            // cadence genuinely changes regime, which is the only time it should.
+            let median = Self.cadenceStep(window[window.count / 2])
             out[i] = deltas[i] > max(median * 4, 90) + 2 * median
         }
         return out
+    }
+
+    /// The nearest cadence this series could plausibly be sampled at, at or below
+    /// the measured spacing.
+    ///
+    /// A ladder rather than the raw number so that small, meaningless variation —
+    /// a bucket boundary landing differently, one sample ageing out of the window
+    /// — cannot move a threshold derived from it. The steps are the cadences this
+    /// app actually samples at: sub-second frames, the 2 s visible tick, bucketed
+    /// history, the ~64 s hidden tick, and coarser stored buckets beyond.
+    static func cadenceStep(_ seconds: TimeInterval) -> TimeInterval {
+        let ladder: [TimeInterval] = [1, 2, 5, 10, 20, 60, 120, 300, 900]
+        return ladder.last { $0 <= seconds } ?? ladder[0]
     }
 
     /// The same breaks as spans, for the path that draws buckets rather than
@@ -1245,8 +1268,21 @@ public class HistoryGraphView: NSView {
                 //
                 // Drawing between explicit points instead makes each wash fade
                 // over ITS OWN band, so they read as the same material.
-                let washFloor = filledSoFar.isEmpty ? plot.minY
-                    : min(plot.maxY, max(plot.minY, filledSoFar.bounds.maxY))
+                // A FIXED distance, not the top of whatever is filled below.
+                //
+                // It was `filledSoFar.bounds.maxY` — the highest point of the
+                // drain fill — which moves every single tick as new samples
+                // arrive, so the charge wash's fade rate changed frame to frame
+                // and the whole band shimmered. A rate that depends on another
+                // series' running maximum cannot be steady.
+                //
+                // Measured DOWN FROM EACH LINE, not from the top of the plot: a
+                // fixed height in the plot fades out at the same altitude for
+                // every series, so a high line gets a short wash and a low one
+                // gets none. Same distance below its own line is what makes two
+                // washes read as one material, and it depends on nothing that
+                // moves between frames.
+                let washDepth = plot.height * 0.55
 
                 /// Close the run to the floor, fill it in its own ink, and keep it
                 /// so later fills are cut by it too.
@@ -1266,7 +1302,8 @@ public class HistoryGraphView: NSView {
                         area.addClip()
                         let top = span.map(\.y).max() ?? plot.maxY
                         g.draw(from: NSPoint(x: 0, y: top),
-                               to: NSPoint(x: 0, y: washFloor), options: [])
+                               to: NSPoint(x: 0, y: max(plot.minY, top - washDepth)),
+                               options: [])
                         NSGraphicsContext.restoreGraphicsState()
                     } else {
                         ink.withAlphaComponent(0.16).setFill()

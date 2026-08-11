@@ -1308,6 +1308,26 @@ final class GraphGapRuleTests: XCTestCase {
         XCTAssertFalse(breaks.contains(true), "nothing else in this hour is a hole either")
     }
 
+    /// The cadence ladder does not move under ordinary jitter.
+    ///
+    /// This is what stops the gap verdict flickering: the threshold is derived
+    /// from the sampling cadence, so if that number wanders every frame the
+    /// threshold wanders with it. Scaling by the RAW median made the flicker
+    /// worse, which is what the second report said. Snapped to a ladder, an
+    /// ordinary shuffle in the window changes nothing at all.
+    func testTheCadenceLadderIgnoresOrdinaryJitter() {
+        // A bucketed hour lands around 5.1 s and wobbles as bucket edges shift.
+        for spacing in [5.0, 5.14, 6.0, 8.9, 9.99] {
+            XCTAssertEqual(HistoryGraphView.cadenceStep(spacing), 5, "\(spacing)")
+        }
+        // And it still moves when the cadence genuinely changes regime — the
+        // 2 s visible tick against the ~64 s hidden one.
+        XCTAssertEqual(HistoryGraphView.cadenceStep(2.1), 2)
+        XCTAssertEqual(HistoryGraphView.cadenceStep(64), 60)
+        // Never returns zero: a threshold of zero would call every sample a gap.
+        XCTAssertEqual(HistoryGraphView.cadenceStep(0.001), 1)
+    }
+
     /// A gap near the threshold does not flicker as the graph re-buckets.
     ///
     /// THE REPORTED CASE, with its real numbers: an 85.4 s gap against a 90 s
