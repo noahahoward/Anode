@@ -215,6 +215,25 @@ final class MainWindowController: NSObject {
         if let sort, columns.contains(where: { $0.id == sort.key }) {
             table.sortDescriptors = [sort]
         }
+        refreshSortIndicators()
+    }
+
+    /// Mark the sorted column, and unmark every other one.
+    ///
+    /// Pushed rather than pulled: a header cell has no idea which column it
+    /// belongs to (`NSTableHeaderCell` is handed a rect, not an identity), so
+    /// asking each cell to work out whether it is the sorted one means reaching
+    /// back through the header view to match rects, which is exactly the kind of
+    /// geometry guess that breaks when a column is dragged.
+    func refreshSortIndicators() {
+        let sorted = table.sortDescriptors.first
+        for column in table.tableColumns {
+            guard let cell = column.headerCell as? BetterStatsHeaderCell else { continue }
+            cell.sortIndicator = column.identifier.rawValue == sorted?.key
+                ? (sorted?.ascending == true ? .ascending : .descending)
+                : .none
+        }
+        table.headerView?.needsDisplay = true
     }
 
     /// Show a whole-machine pane instead of the process table, or nil for the table.
@@ -399,13 +418,30 @@ final class HoverTableView: NSTableView {
 /// true black window reads as a control someone dropped onto the design rather than
 /// part of it — and against twelve columns it is a wide band of the wrong colour.
 ///
-/// Only the GROUND is taken over. The title layout, the truncation and the sort
-/// indicator stay with AppKit (`super.drawInterior`, and no override of
-/// `drawSortIndicator`), because those are the parts that have to keep working with
-/// right-aligned titles, a sorted column and keyboard navigation — and replacing
-/// them buys a hairline's worth of styling for a class of bug that only shows up on
-/// screen.
+/// The sort marker is drawn HERE rather than left to AppKit, and it has to be.
+/// The comment that used to sit on this line claimed the indicator "stays with
+/// AppKit" — but `draw(withFrame:in:)` below replaces the superclass's draw and
+/// calls only `drawInterior`, and the superclass's draw is what would have called
+/// `drawSortIndicator`. So the indicator was never drawn: the table sorted
+/// correctly and said nothing about it, which with a bottom section that follows
+/// the sort means three panels change subject with nothing on screen naming the
+/// subject they changed to.
 final class BetterStatsHeaderCell: NSTableHeaderCell {
+
+    /// Which way this column is sorted, or that it is not the sorted one.
+    ///
+    /// Int-backed on purpose. `NSCell` copies through `NSCopyObject`, which is a
+    /// bitwise copy that does not retain Swift references — a stored `String` here
+    /// would be a dangling pointer in any copy AppKit decided to make. An enum
+    /// with an integer raw value is stored inline and survives that intact.
+    enum SortIndicator: Int { case none, ascending, descending }
+
+    var sortIndicator: SortIndicator = .none
+
+    /// Where the chevron was last drawn, for tests — the geometry is the whole
+    /// behaviour here, and the alternative is asserting on pixels in a rendered
+    /// image, which is how the endpoint-marker bug passed four tests in a row.
+    private(set) var lastIndicatorRect: NSRect?
 
     /// Uppercase, small, and monospaced so twelve headers read as a row of labels
     /// rather than twelve differently-shaped words. Now the shared small-label
@@ -432,9 +468,14 @@ final class BetterStatsHeaderCell: NSTableHeaderCell {
     }
 
     override func drawInterior(withFrame cellFrame: NSRect, in controlView: NSView) {
+        lastIndicatorRect = nil
         let text = stringValue
         guard !text.isEmpty else { return }
-        let attrs = Palette.labelAttributes(Palette.faint)
+        // The sorted column's own title brightens as well as gaining the chevron.
+        // One faint label out of twelve turning white is legible from across the
+        // window; a 7 pt chevron alone is not.
+        let sorted = sortIndicator != .none
+        let attrs = Palette.labelAttributes(sorted ? Palette.text : Palette.faint)
 
         // The estimate mark gets its own run, in the brighter ink.
         //
@@ -460,6 +501,40 @@ final class BetterStatsHeaderCell: NSTableHeaderCell {
         if marked {
             mark.draw(at: NSPoint(x: x + baseSize.width, y: y), withAttributes: markAttrs)
         }
+        guard sorted else { return }
+
+        // OUTSIDE the title's alignment edge: a right-aligned title is pinned to
+        // the cell's right edge and the slack is all on its left, so the chevron
+        // goes left of it and stays beside the word instead of floating in the
+        // middle of a wide column. The name column aligns the other way and so
+        // does its chevron. The column sizer already reserves the width for this.
+        // 8 + 4 is exactly the 12 pt the column sizer reserves. The height was
+        // 3.5, which with a 1.5 pt stroke is barely a shape at all — the two
+        // directions rendered nearly identically, which a test caught and a user
+        // would have experienced as "there is a mark but I cannot tell which way".
+        let gap: CGFloat = 4, width: CGFloat = 8, height: CGFloat = 5
+        let originX = alignment == .right
+            ? x - gap - width
+            : x + baseSize.width + markSize.width + gap
+        let rect = NSRect(x: originX, y: cellFrame.midY - height / 2,
+                          width: width, height: height)
+        lastIndicatorRect = rect
+
+        // The header view is FLIPPED, so up on screen is the smaller y. Ascending
+        // points up, matching Finder and Explorer both: the apex is the end the
+        // small values are at.
+        let up = sortIndicator == .ascending
+        let apexY = up ? rect.minY : rect.maxY
+        let baseY = up ? rect.maxY : rect.minY
+        let path = NSBezierPath()
+        path.move(to: NSPoint(x: rect.minX, y: baseY))
+        path.line(to: NSPoint(x: rect.midX, y: apexY))
+        path.line(to: NSPoint(x: rect.maxX, y: baseY))
+        path.lineWidth = 1.5
+        path.lineCapStyle = .round
+        path.lineJoinStyle = .round
+        Palette.accent.setStroke()
+        path.stroke()
     }
 }
 

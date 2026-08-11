@@ -25,7 +25,7 @@ import PowerKit
 /// The rails the battery bar carries — display, memory, storage, USB — do not
 /// exist for a utilisation. Nothing is spending CPU on backlight.
 public enum BottomContext: String, CaseIterable {
-    case battery, cpu, gpu, memory
+    case battery, cpu, gpu, memory, disk
 
     /// The subject implied by a sort column.
     ///
@@ -41,12 +41,13 @@ public enum BottomContext: String, CaseIterable {
         case "cpu":                       return .cpu
         case "gpuPct", "gputime":         return .gpu
         case "memPct", "mem":             return .memory
-        // pctHr, window, cost, gpuPctHr, name, procs, diskRead, diskWrite.
-        //
-        // Disk is deliberately here rather than a case of its own: there is no
-        // honest disk UTILISATION on this hardware (see `DiskActivity`), so a
-        // disk bar would have no whole to take a portion of. Bytes per second
-        // has no ceiling to divide by.
+        // BOTH disk columns land on one subject, and its graph draws both lines.
+        // Sorting by writes is a statement that disk is the question, not that
+        // reads have stopped mattering — and the two are read from the same
+        // counter pair on the same tick, so splitting them into two subjects
+        // would halve what is on screen to no end.
+        case "diskRead", "diskWrite":     return .disk
+        // pctHr, window, cost, gpuPctHr, name, procs.
         default:                          return .battery
         }
     }
@@ -56,6 +57,7 @@ public enum BottomContext: String, CaseIterable {
         switch self {
         case .battery: return "%/hr"
         case .cpu, .gpu, .memory: return "%"
+        case .disk: return "B/s"
         }
     }
 
@@ -65,6 +67,23 @@ public enum BottomContext: String, CaseIterable {
         case .cpu:     return "CPU"
         case .gpu:     return "GPU"
         case .memory:  return "Memory"
+        case .disk:    return "Disk"
+        }
+    }
+
+    /// Whether this subject is a percentage of a fixed whole.
+    ///
+    /// The one thing that genuinely differs between the utilisation subjects. CPU,
+    /// GPU and memory are portions of something with a ceiling, so their axis pins
+    /// at 100 and their bar's parts are already comparable to each other. Disk is
+    /// a RATE — bytes per second has no ceiling to divide by — so it autoscales,
+    /// formats through the byte units the rest of the app uses, and never claims a
+    /// percentage. There is a "disk busy %" in the IOKit counters and it is not
+    /// honest; see `DiskActivity`, where a disk doing 5 KB/s reads as 80 % busy.
+    public var isPercentage: Bool {
+        switch self {
+        case .battery, .cpu, .gpu, .memory: return true
+        case .disk:                         return false
         }
     }
 
@@ -77,7 +96,7 @@ public enum BottomContext: String, CaseIterable {
     /// not offering it.
     public var ranges: [TimeInterval] {
         switch self {
-        case .battery, .cpu, .gpu, .memory:
+        case .battery, .cpu, .gpu, .memory, .disk:
             return [3600, 6 * 3600, 24 * 3600, 7 * 24 * 3600]
         }
     }

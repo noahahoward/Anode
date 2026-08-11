@@ -271,12 +271,35 @@ final class LedgerBarView: NSView {
         /// Labelled parts, in draw order. The last one drawn takes the remaining
         /// width; the hatched one is what was measured and could not be named.
         let parts: [Part]
+        /// What the numbers mean, so the bar can render them.
+        ///
+        /// An ENUM rather than a formatting closure, because `UtilizationBar` is
+        /// Equatable and a closure is not — and the equality is what stops the bar
+        /// redrawing on every tick when nothing about it changed.
+        let scale: Scale
         /// Said out loud when the parts move slower than the whole.
         ///
         /// Per-app GPU comes from the coalition store at ~30-60 s resolution while
         /// the device total is read every tick, so the split steps while the bar
         /// moves smoothly. That looks like a stall and is not one.
         let attributionNote: String?
+
+        enum Scale: Equatable {
+            /// A portion of something with a ceiling: CPU, GPU, memory.
+            case percent
+            /// A rate. Rendered through the same byte units as the Disk columns,
+            /// so the bar and the table cannot disagree about what 1 MB is — this
+            /// app counts in 1024s, and hand-rolling a second divisor here is
+            /// exactly how "977KB/s" and "1.0MB/s" end up on screen together.
+            case bytesPerSecond
+
+            func callAsFunction(_ v: Double) -> String {
+                switch self {
+                case .percent:        return String(format: "%.1f", v)
+                case .bytesPerSecond: return MetricUnit.bytesPerSecond.format(v)
+                }
+            }
+        }
 
         struct Part: Equatable {
             let title: String
@@ -290,6 +313,7 @@ final class LedgerBarView: NSView {
 
         /// CPU and GPU: apps, unreadable processes, and the measured remainder.
         static func attributed(_ title: String, _ s: UtilizationSlices,
+                               scale: Scale = .percent,
                                note: String? = nil) -> UtilizationBar {
             UtilizationBar(title: title, used: s.used, parts: [
                 .init(title: "apps", value: s.apps,
@@ -298,7 +322,7 @@ final class LedgerBarView: NSView {
                       color: LedgerBarView.color(for: .systemProcesses), hatched: false),
                 .init(title: "unattributed", value: s.unattributed,
                       color: Palette.line, hatched: true),
-            ], attributionNote: note)
+            ], scale: scale, attributionNote: note)
         }
 
         /// Memory does not split into apps and daemons — the kernel reports it by
@@ -313,7 +337,7 @@ final class LedgerBarView: NSView {
                       color: LedgerBarView.color(for: .memory), hatched: false),
                 .init(title: "compressed", value: compressed,
                       color: LedgerBarView.color(for: .storage), hatched: false),
-            ], attributionNote: nil)
+            ], scale: .percent, attributionNote: nil)
         }
     }
 
@@ -475,14 +499,18 @@ final class LedgerBarView: NSView {
                 NSBezierPath(roundedRect: r, xRadius: Palette.Radius.bar,
                              yRadius: Palette.Radius.bar).fill()
             }
-            drawLabel(String(format: "%@ %.1f", part.title, part.value), in: r,
+            drawLabel("\(part.title) \(u.scale(part.value))", in: r,
                       color: part.hatched ? Palette.dim : Palette.onAccent)
             x = r.maxX
         }
 
         // The whole the bar is a portion OF, said in words: without it a full bar
         // reads as "everything", when it means "all of the 12 % in use".
-        var caption = String(format: "%@ %.1f%% in use", u.title, u.used)
+        // "in use" is a claim about a portion of a whole, so a rate does not make
+        // it: 4 MB/s is not 4 MB/s OF anything.
+        var caption = u.scale == .percent
+            ? "\(u.title) \(u.scale(u.used))% in use"
+            : "\(u.title) \(u.scale(u.used)) total"
         if let note = u.attributionNote { caption += " · " + note }
         let attrs: [NSAttributedString.Key: Any] = [
             .font: Palette.Font.mono(10),

@@ -29,9 +29,17 @@ final class BottomContextTests: XCTestCase {
     /// Columns that name no subsystem leave the question open rather than
     /// answering it with a guess.
     func testColumnsThatNameNoSubjectFallBackToBattery() {
-        for key in ["name", "procs", "diskRead", "diskWrite", "somethingAddedLater"] {
+        for key in ["name", "procs", "somethingAddedLater"] {
             XCTAssertEqual(BottomContext.forSortKey(key), .battery, key)
         }
+    }
+
+    /// Both disk columns land on one subject, whose graph draws both lines.
+    /// Sorting by writes says disk is the question, not that reads stopped
+    /// mattering — and the two come off the same counter pair on the same tick.
+    func testBothDiskColumnsShareOneSubject() {
+        XCTAssertEqual(BottomContext.forSortKey("diskRead"), .disk)
+        XCTAssertEqual(BottomContext.forSortKey("diskWrite"), .disk)
     }
 
     /// Every column the table actually has resolves to something. A column added
@@ -90,13 +98,20 @@ final class BottomGraphContextTests: XCTestCase {
     /// A utilisation is a percentage of a fixed whole, so its axis is pinned. An
     /// autoscaled one makes 4 % and 40 % look identical, and the height is the
     /// entire reading.
+    ///
+    /// Disk is the exception and has to be: bytes per second has no ceiling to
+    /// divide by, so it autoscales. `isPercentage` is the flag both the live and
+    /// the historical path read, so it is what this asserts against rather than
+    /// re-listing the cases — a subject added later gets caught by the unit check
+    /// below instead of silently pinning its axis at 100.
     func testAUtilisationGraphPinsItsAxisAndABatteryGraphDoesNot() {
-        // Encoded as the rule the two paths follow, since both the live and the
-        // historical path set these together and must not drift apart.
-        for c in BottomContext.allCases where c != .battery {
-            XCTAssertEqual(c.unit, "%", "\(c) is not a percentage of a fixed whole")
+        for c in BottomContext.allCases where c.isPercentage && c != .battery {
+            XCTAssertEqual(c.unit, "%", "\(c) claims to be a percentage")
         }
         XCTAssertEqual(BottomContext.battery.unit, "%/hr")
+        XCTAssertFalse(BottomContext.disk.isPercentage,
+                       "a byte rate has no ceiling to be a percentage of")
+        XCTAssertEqual(BottomContext.disk.unit, "B/s")
     }
 
     /// The subjects that offer a week are exactly the ones the store persists.
@@ -117,9 +132,10 @@ final class BottomGraphContextTests: XCTestCase {
 final class BottomPanelTests: XCTestCase {
 
     private func sys(cpu: CPUUsage.Sample? = nil,
-                     memory: MemoryUsage.Sample? = nil) -> SystemMetrics.Snapshot {
+                     memory: MemoryUsage.Sample? = nil,
+                     disk: DiskActivity.Sample? = nil) -> SystemMetrics.Snapshot {
         SystemMetrics.Snapshot(cpu: cpu, memory: memory, gpu: nil, network: nil,
-                               disk: nil, cpuTemperature: nil, gpuTemperature: nil,
+                               disk: disk, cpuTemperature: nil, gpuTemperature: nil,
                                fans: [])
     }
 
@@ -167,11 +183,67 @@ final class BottomPanelTests: XCTestCase {
         let m = try XCTUnwrap(GlanceCardView.model(for: .cpu, system: s,
                                                    facts: MachineInfo.facts, census: nil))
         XCTAssertEqual(m.headline, "16.4%")
-        XCTAssertEqual(m.percent, 16, "the pill disagrees with the headline")
+        XCTAssertEqual(m.pill, "16%", "the pill disagrees with the headline")
         let labels = m.rows.map(\.label)
         XCTAssertTrue(labels.contains("Chip"))
         XCTAssertTrue(labels.contains("User"))
         XCTAssertTrue(labels.contains("System"))
+    }
+
+    /// Disk keeps the attributed shape but counts in bytes per second, and it has
+    /// to: there is no ceiling to divide by, so nothing here is a percentage.
+    func testTheDiskBarCountsInBytesRatherThanPercent() {
+        let bar = LedgerBarView.UtilizationBar.attributed(
+            "Disk", UtilizationSlices(total: 4_194_304, apps: 1_048_576,
+                                      systemProcesses: 524_288),
+            scale: .bytesPerSecond)
+        XCTAssertEqual(bar.parts.map(\.title), ["apps", "system processes", "unattributed"])
+        XCTAssertEqual(bar.scale, .bytesPerSecond)
+        // Through the app's own byte formatter, so the bar and the Disk columns
+        // cannot disagree about what a megabyte is — this app counts in 1024s, and
+        // a hand-rolled divisor here is how "977KB/s" and "1.0MB/s" end up side by
+        // side on one screen.
+        XCTAssertEqual(bar.scale(1_048_576), "1.0MB/s")
+        XCTAssertEqual(bar.scale(1_048_576),
+                       MetricUnit.bytesPerSecond.format(1_048_576))
+    }
+
+    /// The axis plots MiB/s and says "MB/s", which is only honest because the rest
+    /// of the app means 1024² by "MB" too. A 1000-based axis beside a 1024-based
+    /// column is a 5 % disagreement nobody would ever track down.
+    func testTheDiskAxisAgreesWithTheAppsByteUnits() {
+        XCTAssertEqual(AppDelegate.mib(1_048_576), 1, accuracy: 1e-9)
+        XCTAssertEqual(AppDelegate.diskAxisLabel, "MB/s")
+        XCTAssertTrue(MetricUnit.bytesPerSecond.format(1_048_576).hasSuffix("MB/s"))
+    }
+
+    /// Two lines, and the same two whether they came from the live buffer or the
+    /// store. The live charge line stayed the wrong colour for a whole release
+    /// because the 1H view and the longer views built their series separately.
+    func testTheDiskGraphDrawsReadAndWriteInDistinctInks() {
+        let series = AppDelegate.diskSeries(
+            read: [.init(time: Date(), value: 1)],
+            write: [.init(time: Date(), value: 2)])
+        XCTAssertEqual(series.map { $0.name }, ["read", "write"])
+        XCTAssertNotEqual(series[0].color, series[1].color)
+        XCTAssertFalse(series.contains { $0.filled == true },
+                       "two filled areas overlap into a third apparent value")
+    }
+
+    /// Disk states a rate, so it has no percentage to put in the pill — and the
+    /// pill used to be an `Int` with the "%" written into the view, which assumed
+    /// every subject was one.
+    func testTheDiskCardStatesARateAndClaimsNoPercentage() throws {
+        let s = sys(disk: DiskActivity.Sample(bytesReadPerSec: 3_145_728,
+                                              bytesWrittenPerSec: 1_048_576,
+                                              devices: [], interval: 2))
+        let m = try XCTUnwrap(GlanceCardView.model(for: .disk, system: s,
+                                                   facts: MachineInfo.facts, census: nil))
+        XCTAssertEqual(m.headline, MetricUnit.bytesPerSecond.format(4_194_304))
+        XCTAssertNil(m.pill, "there is no honest disk-busy percentage to show")
+        let labels = m.rows.map(\.label)
+        XCTAssertTrue(labels.contains("Read"))
+        XCTAssertTrue(labels.contains("Write"))
     }
 
     /// And a subject with no reading yet returns nil so the caller can fall back
