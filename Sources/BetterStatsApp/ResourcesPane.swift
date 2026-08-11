@@ -157,7 +157,10 @@ final class ResourceTrack {
 // ─────────────────────────────────────────────────────────────────────────────
 // MARK: Content — rail + detail
 
-private final class ResourcesContent: NSView, PaneContentView {
+/// Internal, not private, so a test can render the panel itself: rendering the
+/// whole pane instead measured its INSET rather than its corner radius, and
+/// passed against a square panel.
+final class ResourcesContent: NSView, PaneContentView {
 
     /// Wide enough for a 78 pt sparkline, the gutters, and a two-line label that
     /// can hold "Peer-to-peer Wi-Fi" without truncating.
@@ -174,6 +177,30 @@ private final class ResourcesContent: NSView, PaneContentView {
     /// Held so the CPU detail's census is only paid for while the CPU detail is
     /// what is on screen. See the cost note on `ResourcesPane`.
     private var census: MachineInfo.Census?
+
+    /// The panel this content sits on.
+    ///
+    /// It had none. `SystemPane` fills the pane with `Palette.background`, this
+    /// view drew nothing, and the detail column drew nothing either — so the
+    /// readings sat on whatever AppKit put behind them, with square corners in an
+    /// app where every card, chip and graph is rounded. Reported as "doesn't look
+    /// rounded to me", and the reason is that it was not the app's surface at all.
+    ///
+    /// Drawn here rather than with a layer so it uses the same `Palette` and the
+    /// same `Radius.card` as the rest, and repaints on a theme flip like
+    /// everything else.
+    override func draw(_ dirtyRect: NSRect) {
+        let panel = NSBezierPath(roundedRect: bounds,
+                                 xRadius: Palette.Radius.card,
+                                 yRadius: Palette.Radius.card)
+        Palette.surface.setFill()
+        panel.fill()
+        Palette.lineSoft.setStroke()
+        panel.lineWidth = 1
+        panel.stroke()
+    }
+
+    override func viewDidChangeEffectiveAppearance() { needsDisplay = true }
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
