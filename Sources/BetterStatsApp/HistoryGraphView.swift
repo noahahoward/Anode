@@ -519,6 +519,7 @@ public class HistoryGraphView: NSView {
         // line at all"; the number it accompanies is printed beside it in full.
         let minPlot: CGFloat = showsAxes ? 20 : 8
         guard plot.width > minPlot, plot.height > minPlot else { return }
+        lastEndpointMarkers.removeAll(keepingCapacity: true)
         // Publish the geometry the rest of this frame draws with, so hover, the
         // sample dot and the zoom anchor all read the same rect the lines do.
         // Set after the size guard: a degenerate rect must never become the
@@ -968,8 +969,29 @@ public class HistoryGraphView: NSView {
     /// clip reads as a rendering fault rather than as a value. The nudge is at
     /// most 3 pt and moves only the MARKER — the line, and the marker's HEIGHT
     /// (which is the value it is reporting), still sit exactly where the data is.
+    /// Where the endpoint markers were drawn on the last frame, in view points.
+    ///
+    /// Published for the same reason `lastPlot` is: this is geometry the drawing
+    /// already computed, and a test that has to rediscover it from pixels ends up
+    /// measuring whatever else is nearby. Two attempts at this one measured a
+    /// whisker instead, and both passed against the bug.
+    private(set) var lastEndpointMarkers: [NSPoint] = []
+
     private func drawEndpointMarker(at p: NSPoint, in plot: NSRect, color: NSColor) {
-        let x = min(max(p.x, plot.minX + 3.5), plot.maxX - 3.5)
+        // Clamped to the VIEW, not to the plot.
+        //
+        // The latest sample sits at the plot's right edge by definition, and
+        // clamping to `plot.maxX - 3.5` therefore dragged this dot one radius back
+        // inside on every graph — reported as "the dots need to move right", and
+        // it was the same 3.5 pt everywhere because it was always the clamp
+        // binding rather than anything about the data.
+        //
+        // Nothing is lost by letting it sit at the edge: this is drawn after the
+        // plot clip is restored, and the right gutter is 10 pt with no second axis
+        // and 34 pt with one, so a 3.5 pt radius has room either way. The bounds
+        // clamp remains for the degenerate case of a plot flush to the view.
+        let x = min(max(p.x, bounds.minX + 3.5), bounds.maxX - 3.5)
+        lastEndpointMarkers.append(NSPoint(x: x, y: p.y))
         NSColor.controlBackgroundColor.setFill()
         NSBezierPath(ovalIn: NSRect(x: x - 3.5, y: p.y - 3.5, width: 7, height: 7)).fill()
         color.setFill()
