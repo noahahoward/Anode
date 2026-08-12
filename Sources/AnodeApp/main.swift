@@ -436,10 +436,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
     /// A window covered by another app is worth exactly as much work as a closed
     /// one, which is the light tick and the menu bar.
     var windowIsWorthDrawing: Bool {
-        AppPresence.windowIsWorthDrawing(
-            isOpen: main.window.isVisible,
-            isOnScreen: main.window.occlusionState.contains(.visible))
+        let open = main.window.isVisible
+        let onScreen = main.window.occlusionState.contains(.visible)
+        let answer = AppPresence.windowIsWorthDrawing(isOpen: open, isOnScreen: onScreen)
+        // `ANODE_LOG_VISIBILITY=1` prints every change to this answer and the two
+        // readings behind it. Kept because "is the window actually being drawn"
+        // is invisible from outside the process and cannot be measured by CPU
+        // alone — a busy machine hides the difference entirely, which is exactly
+        // what happened the first time this was checked.
+        if ProcessInfo.processInfo.environment["ANODE_LOG_VISIBILITY"] == "1",
+           answer != lastLoggedVisibility {
+            lastLoggedVisibility = answer
+            NSLog("anode.visibility drawing=\(answer) isVisible=\(open) onScreen=\(onScreen)")
+        }
+        return answer
     }
+    private var lastLoggedVisibility: Bool?
 
     /// Tick cadence while the window is hidden.
     ///
