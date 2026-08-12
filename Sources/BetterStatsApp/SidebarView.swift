@@ -313,13 +313,33 @@ final class SidebarView: NSView {
     /// part. They exist for the readings that are not speeds: a fan reporting
     /// 1 rpm took twenty-four minutes a turn before the ceiling existed, which a
     /// test caught.
-    static let glyphSlowdown: Double = 40
-    static func glyphTurnSeconds(rpm: Double) -> TimeInterval {
-        min(2.5, max(0.2, glyphSlowdown * 60 / max(rpm, 1)))
+    static func glyphTurnSeconds(rpm: Double, limits: FanPolicy.Limits? = nil) -> TimeInterval {
+        // Across the fan's OWN range when we know it, and that is the difference
+        // between a reading you can see and one you cannot.
+        //
+        // Strictly proportional to rpm, the glyph was right and useless: these
+        // fans idle at 2318 and 2500 rpm, an eight percent spread, so the whole
+        // visible difference between "resting" and "resting a bit harder" was
+        // eight percent of a rotation rate. Reported as not noticeably speeding
+        // up. Proportional to ABSOLUTE rpm is the wrong quantity — nobody is
+        // comparing this machine's fans to another machine's; they are asking
+        // where in its own range this one is sitting.
+        //
+        // Normalised, idle is a slow turn and flat out is a fast one, and the
+        // journey between them uses the whole range. Still monotonic and still
+        // linear, so faster is always visibly faster.
+        let slow = 2.0, fast = 0.25
+        guard let limits, limits.maxRPM > limits.minRPM else {
+            // No range to normalise against: fall back to something proportional,
+            // which is honest if less legible.
+            return min(2.5, max(0.25, 40 * 60 / max(rpm, 1)))
+        }
+        let f = min(1, max(0, (rpm - limits.minRPM) / (limits.maxRPM - limits.minRPM)))
+        return slow - (slow - fast) * f
     }
 
-    func setFanSpin(rpm: Double) {
-        rows[.fans]?.setSpinning(rpm > 0, rpm: rpm)
+    func setFanSpin(rpm: Double, limits: FanPolicy.Limits? = nil) {
+        rows[.fans]?.setSpinning(rpm > 0, rpm: rpm, limits: limits)
     }
 
     /// Colour the Sensors glyph by the hottest thing on the machine, and pulse it
@@ -459,7 +479,8 @@ final class SidebarView: NSView {
         /// blades still have something to draw once the view has let go.
         private var glyphImage: NSImage?
 
-        func setSpinning(_ spinning: Bool, rpm: Double = 0) {
+        func setSpinning(_ spinning: Bool, rpm: Double = 0,
+                         limits: FanPolicy.Limits? = nil) {
             guard lens == .fans else { return }
             let key = "spin"
             guard spinning else {
@@ -490,7 +511,7 @@ final class SidebarView: NSView {
             // `layoutBlades`, so the hand-off completes on its own.
             if blades.contents != nil { icon.image = nil }
 
-            let seconds = SidebarView.glyphTurnSeconds(rpm: rpm)
+            let seconds = SidebarView.glyphTurnSeconds(rpm: rpm, limits: limits)
             if let existing = blades.animation(forKey: key) as? CABasicAnimation,
                abs(existing.duration - seconds) < 0.05 { return }   // already right
             let turn = CABasicAnimation(keyPath: "transform.rotation.z")
@@ -507,8 +528,11 @@ final class SidebarView: NSView {
         /// On every layout, because it is derived from the icon's bounds and a
         /// one-time setup drifts the moment the rail changes size.
         private func layoutBlades() {
-            guard lens == .fans, icon.bounds.width > 0 else { return }
-            blades.bounds = icon.bounds
+            guard lens == .fans, icon.bounds.width > 0,
+                  let glyph = glyphImage else { return }
+            // The GLYPH's size inside the icon's box, so the contents draw at their
+            // natural scale rather than being stretched to fill a 22 pt square.
+            blades.bounds = NSRect(origin: .zero, size: glyph.size)
             blades.anchorPoint = CGPoint(x: 0.5, y: 0.5)
             blades.position = CGPoint(x: icon.bounds.midX, y: icon.bounds.midY)
             blades.contentsScale = window?.backingScaleFactor ?? 2
@@ -553,6 +577,19 @@ final class SidebarView: NSView {
             NSLayoutConstraint.activate([
                 icon.centerXAnchor.constraint(equalTo: centerXAnchor),
                 icon.centerYAnchor.constraint(equalTo: centerYAnchor),
+                // A FIXED BOX, not the image's own size.
+                //
+                // Sized by its content, the view collapses to nothing the moment
+                // its image is cleared — which is exactly what the spinning fan
+                // does when it hands the glyph to its blade layer. The layer kept
+                // its bounds while its parent shrank out from under it, so it drew
+                // half a glyph up and left of centre: the fan sitting outside its
+                // own tab, which is how it was reported.
+                //
+                // 22 pt holds a 15 pt symbol with room for its optical bounds, and
+                // it is the same box whichever tab and whatever it is drawing.
+                icon.widthAnchor.constraint(equalToConstant: 22),
+                icon.heightAnchor.constraint(equalToConstant: 22),
             ])
 
             // Without this the rail is invisible to VoiceOver and to any automation:

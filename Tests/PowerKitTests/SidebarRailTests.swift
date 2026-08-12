@@ -174,21 +174,36 @@ final class FanSpinTests: XCTestCase {
     /// The clamps sit outside the real operating range on purpose — 960 to
     /// 12 000 rpm — so every speed this hardware produces is in the proportional
     /// part. These fans run 2317 to 7826.
-    func testTheGlyphSpeedIsProportionalToTheFanSpeed() {
-        for (slow, fast) in [(1200.0, 2400.0), (2318.0, 4636.0), (2500.0, 7500.0)] {
-            let a = SidebarView.glyphTurnSeconds(rpm: slow)
-            let b = SidebarView.glyphTurnSeconds(rpm: fast)
-            // Duration is inverse speed, so the durations are in the inverse ratio.
-            XCTAssertEqual(a / b, fast / slow, accuracy: 0.001,
-                           "\(slow) to \(fast) rpm is not a proportional change")
-        }
-        // And the real range is entirely inside the clamps, or the above is a
-        // property of the test's numbers rather than of the app.
-        for rpm in [2317.0, 7826.0] {
-            let s = SidebarView.glyphTurnSeconds(rpm: rpm)
-            XCTAssertGreaterThan(s, 0.2, "\(rpm) rpm is clamped, so it is not proportional")
-            XCTAssertLessThan(s, 2.5, "\(rpm) rpm is clamped, so it is not proportional")
-        }
+    func testTheGlyphSpeedSpansTheFansOwnRange() {
+        // This machine's fans: they idle just above their minimum and top out far
+        // above it, so absolute rpm barely moves in ordinary use.
+        let limits = FanPolicy.Limits(minRPM: 2317, maxRPM: 7826)
+        let idle = SidebarView.glyphTurnSeconds(rpm: 2318, limits: limits)
+        let working = SidebarView.glyphTurnSeconds(rpm: 5000, limits: limits)
+        let flatOut = SidebarView.glyphTurnSeconds(rpm: 7826, limits: limits)
+
+        // Monotonic, and the whole visible range is used between the two ends.
+        XCTAssertGreaterThan(idle, working)
+        XCTAssertGreaterThan(working, flatOut)
+        XCTAssertGreaterThan(idle / flatOut, 5,
+                             "idle and flat out look nearly the same, which is the "
+                             + "complaint this replaced")
+
+        // THE CASE THAT MOTIVATED IT. Proportional to absolute rpm, the two fan
+        // speeds this machine actually rests at differ by eight percent — right,
+        // and invisible.
+        let restA = SidebarView.glyphTurnSeconds(rpm: 2318, limits: limits)
+        let restB = SidebarView.glyphTurnSeconds(rpm: 2500, limits: limits)
+        XCTAssertGreaterThan(restA / restB, 1.02,
+                             "a real change in fan speed produced no visible change")
+    }
+
+    /// With no range to normalise against it stays proportional, which is honest
+    /// if less legible — a machine whose SMC will not say what its fans can do.
+    func testWithoutLimitsItFallsBackToProportional() {
+        let a = SidebarView.glyphTurnSeconds(rpm: 1200)
+        let b = SidebarView.glyphTurnSeconds(rpm: 2400)
+        XCTAssertEqual(a / b, 2, accuracy: 0.001)
     }
 
     /// Faster fans turn the glyph faster, and a barely-turning one still turns.
