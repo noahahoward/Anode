@@ -289,14 +289,46 @@ final class FanControlPanel: NSView {
         // Grabbing a knob is the first thing most people will try, and it must
         // not silently do nothing just because the feature ships off. The sheet
         // is the same one the "Turn On" button shows, because it is the same
-        // decision — and a cancel here re-renders, which snaps the knob back to
-        // the live reading rather than leaving it where the drag ended.
+        // decision.
         if !Settings.shared.fanControlEnabled {
             if case .release = g { return render() }
-            guard ensureFanControlIsOn() else { return render() }
+            // THE ASKED-FOR SPEED IS HELD ACROSS THE SHEET.
+            //
+            // The sheet is modal and the strip keeps ticking behind it, and a tick
+            // re-renders every knob from `session.asked` — which is still nil,
+            // because the gesture that would set it is what is waiting on this
+            // answer. So the knob sprang back to the live reading while the
+            // question was still on screen, and answering yes left the fans where
+            // they had been rather than where they had been dragged to. Reported
+            // exactly: it moves, it asks, it goes back, and you have to do it
+            // again.
+            //
+            // Held here rather than in the session, because the session must not
+            // record a request the user has not agreed to yet.
+            wanted(from: g).map { pendingWish[$0.index] = $0.rpm }
+            let agreed = ensureFanControlIsOn()
+            // Cleared BEFORE the cancel re-renders, not after. On `defer` it
+            // survived into that render and left the knob sitting at a speed the
+            // user had just declined to authorise — the opposite of the bug this
+            // fixes, and the same shape.
+            pendingWish.removeAll()
+            guard agreed else { return render() }
         }
         perform(session.apply(g))
     }
+
+    /// The speed a gesture is asking for, if it is asking for one.
+    private func wanted(from g: FanSession.Gesture) -> (index: Int, rpm: Double)? {
+        switch g {
+        case .setSpeed(let i, let rpm, _):  return (i, rpm)
+        case .fullSpeed(let i, let limits): return (i, limits.maxRPM)
+        case .release:                      return nil
+        }
+    }
+
+    /// What the user has dragged to but not yet agreed to. Read by `applyReading`
+    /// so a tick behind the consent sheet cannot undo the drag that raised it.
+    private var pendingWish: [Int: Double] = [:]
 
     /// Switch fan control on if it is not already, having asked. Returns false if
     /// the user said no.
@@ -306,7 +338,13 @@ final class FanControlPanel: NSView {
     /// sheets, and cancelling the first would be answered by the second.
     private func ensureFanControlIsOn() -> Bool {
         guard !Settings.shared.fanControlEnabled else { return true }
-        guard confirmTurnOn() else { return false }
+        // Read once is read. The disclosure explains what the helper is; the thing
+        // that actually gates it is the Terminal window and the password, and this
+        // does not touch either. Someone adjusting fans daily should not be made
+        // to re-read it daily.
+        if !Settings.shared.fanDisclosureSeen {
+            guard confirmTurnOn() else { return false }
+        }
         Settings.shared.fanControlEnabled = true
         session.enabled = true
         return true
@@ -416,7 +454,15 @@ final class FanControlPanel: NSView {
         alert.accessoryView = command
         alert.addButton(withTitle: "Turn On")
         alert.addButton(withTitle: "Cancel")
-        return alert.runModal() == .alertFirstButtonReturn
+        alert.showsSuppressionButton = true
+        alert.suppressionButton?.title = "Don't show this again"
+        let agreed = alert.runModal() == .alertFirstButtonReturn
+        // Only when they said YES. Ticking the box and then cancelling is not
+        // consent to skip the explanation next time — it is a cancel.
+        if agreed, alert.suppressionButton?.state == .on {
+            Settings.shared.fanDisclosureSeen = true
+        }
+        return agreed
     }
 
     @objc private func disableTapped() {
@@ -888,7 +934,9 @@ final class FanControlPanel: NSView {
     private func applyReading(_ f: FanInfo) {
         guard let slider = sliders[f.index], let label = valueLabels[f.index] else { return }
         let limits = FanPolicy.Limits(minRPM: f.minRPM, maxRPM: f.maxRPM)
-        let asked = session.asked(f.index)
+        // `pendingWish` first: during the consent sheet it is the only record of
+        // what the user asked for, and the session has none yet by design.
+        let asked = pendingWish[f.index] ?? session.asked(f.index)
         // Never under a hand that is dragging it. The reading beside it still
         // updates — that is the number the user is aiming with.
         if !((slider as? GaugeSlider)?.isTracking ?? false) {
