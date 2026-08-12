@@ -141,6 +141,33 @@ final class FanSpinTests: XCTestCase {
         XCTAssertFalse(rail.isFanGlyphSpinning)
     }
 
+    /// The glyph's speed is PROPORTIONAL to the fans', not merely ordered by it.
+    ///
+    /// Twice the rpm is exactly twice the glyph speed, so the ratio between two
+    /// readings is the ratio between the fans that made them. Asserted as a ratio
+    /// rather than against fixed durations, because the slowdown constant is a
+    /// tuning decision and the proportionality is not.
+    ///
+    /// The clamps sit outside the real operating range on purpose — 960 to
+    /// 12 000 rpm — so every speed this hardware produces is in the proportional
+    /// part. These fans run 2317 to 7826.
+    func testTheGlyphSpeedIsProportionalToTheFanSpeed() {
+        for (slow, fast) in [(1200.0, 2400.0), (2318.0, 4636.0), (2500.0, 7500.0)] {
+            let a = SidebarView.glyphTurnSeconds(rpm: slow)
+            let b = SidebarView.glyphTurnSeconds(rpm: fast)
+            // Duration is inverse speed, so the durations are in the inverse ratio.
+            XCTAssertEqual(a / b, fast / slow, accuracy: 0.001,
+                           "\(slow) to \(fast) rpm is not a proportional change")
+        }
+        // And the real range is entirely inside the clamps, or the above is a
+        // property of the test's numbers rather than of the app.
+        for rpm in [2317.0, 7826.0] {
+            let s = SidebarView.glyphTurnSeconds(rpm: rpm)
+            XCTAssertGreaterThan(s, 0.2, "\(rpm) rpm is clamped, so it is not proportional")
+            XCTAssertLessThan(s, 2.5, "\(rpm) rpm is clamped, so it is not proportional")
+        }
+    }
+
     /// Faster fans turn the glyph faster, and a barely-turning one still turns.
     ///
     /// The scale is deliberately not real: 2500 rpm is 42 turns a second, which at
@@ -157,5 +184,59 @@ final class FanSpinTests: XCTestCase {
         // than taking a minute per turn.
         rail.setFanSpin(rpm: 1)
         XCTAssertLessThanOrEqual(try XCTUnwrap(rail.fanGlyphTurnSeconds), 60)
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// The two glyphs that change with the machine.
+final class RailGlyphStateTests: XCTestCase {
+
+    override func setUp() { _ = NSApplication.shared }
+
+    /// Every link kind has a glyph this system can actually draw.
+    ///
+    /// Same rule as the static rail symbols: a name that does not resolve is a
+    /// tab that renders as nothing, and the rail is the only way to navigate.
+    func testEveryLinkKindHasADrawableGlyph() {
+        for kind in [NetworkInventory.Kind.wifi, .ethernet, .thunderbolt,
+                     .bridge, .tunnel, .peerToPeer, .other] {
+            XCTAssertNotNil(NSImage(systemSymbolName: kind.symbolName,
+                                    accessibilityDescription: nil),
+                            "\(kind.title) has no drawable glyph (\(kind.symbolName))")
+        }
+    }
+
+    /// Wi-Fi gets the arc; a cable does not.
+    ///
+    /// The arc is the most universally read "network" shape and that was the point
+    /// of moving off the wire-frame globe — but taken literally it is a lie on a
+    /// wired machine, which is what this one is. So the glyph follows the link.
+    func testTheGlyphFollowsTheLinkRatherThanAlwaysSayingWiFi() {
+        let rail = SidebarView()
+        rail.setNetworkKind(.wifi)
+        XCTAssertEqual(rail.networkSymbolName, "wifi")
+        rail.setNetworkKind(.ethernet)
+        XCTAssertNotEqual(rail.networkSymbolName, "wifi",
+                          "a wired machine was shown a Wi-Fi glyph")
+        // Nothing routing at all falls back to the most recognisable shape.
+        rail.setNetworkKind(nil)
+        XCTAssertNotNil(rail.networkSymbolName)
+    }
+
+    /// The thermometer pulses only when the machine is genuinely hot, and stops.
+    ///
+    /// This is one of only two things in the app that animate on their own, so the
+    /// threshold matters: an alarm that is always on is not an alarm.
+    func testTheThermometerAlarmsOnlyWhenCritical() {
+        let rail = SidebarView()
+        rail.setTemperature(45)
+        XCTAssertFalse(rail.isTemperatureAlarming, "an idle machine set the alarm off")
+        rail.setTemperature(80)
+        XCTAssertFalse(rail.isTemperatureAlarming, "warm is not critical")
+        rail.setTemperature(95)
+        XCTAssertTrue(rail.isTemperatureAlarming)
+        rail.setTemperature(45)
+        XCTAssertFalse(rail.isTemperatureAlarming, "the alarm did not clear when it cooled")
     }
 }

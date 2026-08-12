@@ -320,6 +320,28 @@ enum NetworkInventory {
             case .other:       return "Network"
             }
         }
+
+        /// The rail's glyph for a machine connected THIS way.
+        ///
+        /// The tab used to wear `network` — a wire-frame globe, which reads as
+        /// "the internet" in the abstract and is the least specific thing it could
+        /// say. The Wi-Fi arc is far more universally recognised, and that is the
+        /// right instinct; taken literally it would also be a lie on this machine,
+        /// which is on Ethernet. So the glyph follows the link instead: the arc
+        /// when the traffic really is over Wi-Fi, a cable when it is not.
+        ///
+        /// Falls back to the arc when nothing is routing at all — an unconnected
+        /// machine has no link to describe, and the arc is the shape people read
+        /// as "network" fastest.
+        var symbolName: String {
+            switch self {
+            case .wifi, .peerToPeer: return "wifi"
+            case .ethernet:          return "cable.connector"
+            case .thunderbolt:       return "bolt.horizontal"
+            case .tunnel:            return "lock.shield"
+            case .bridge, .other:    return "wifi"
+            }
+        }
     }
 
     struct Interface {
