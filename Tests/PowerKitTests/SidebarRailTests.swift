@@ -278,3 +278,23 @@ final class RailGlyphStateTests: XCTestCase {
         XCTAssertFalse(rail.isTemperatureAlarming, "the alarm did not clear when it cooled")
     }
 }
+
+/// A window covered by another app is worth exactly as much work as a closed
+/// one. `isVisible` cannot tell the two apart, which is why this rule exists.
+final class WindowWorthDrawingTests: XCTestCase {
+
+    func testAnOpenWindowOnScreenIsDrawn() {
+        XCTAssertTrue(AppPresence.windowIsWorthDrawing(isOpen: true, isOnScreen: true))
+    }
+
+    /// The case the app was missing: open, but buried under another app's window.
+    /// AppKit stops drawing it; the sampler used to keep feeding it anyway.
+    func testAnOpenButFullyCoveredWindowIsNotDrawn() {
+        XCTAssertFalse(AppPresence.windowIsWorthDrawing(isOpen: true, isOnScreen: false))
+    }
+
+    func testAClosedWindowIsNeverDrawn() {
+        XCTAssertFalse(AppPresence.windowIsWorthDrawing(isOpen: false, isOnScreen: true))
+        XCTAssertFalse(AppPresence.windowIsWorthDrawing(isOpen: false, isOnScreen: false))
+    }
+}

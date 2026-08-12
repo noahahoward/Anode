@@ -99,6 +99,25 @@ enum AppPresence {
     /// window through `applicationShouldHandleReopen`. This is not the "fix" that
     /// `AppMenu.showMainWindow` warns against: that warning is about reinstating
     /// the tile while a widget already exists to click.
+    /// Whether anyone can actually SEE the window, which is not the same as the
+    /// window being open.
+    ///
+    /// `isVisible` stays true for a window buried under another app's, so a
+    /// window left open behind a browser kept the app on the two-second cadence:
+    /// building rows, re-sorting them, reconfiguring cells and redrawing a graph
+    /// for a surface with nothing in front of it. AppKit already knows better —
+    /// it stops calling `draw` on a fully covered window — and it will say so
+    /// through `occlusionState` if asked.
+    ///
+    /// Being unfocused is NOT the same thing and deliberately does not count: a
+    /// visible window beside the one you are typing in is still being read.
+    ///
+    /// Taken as two plain booleans so the rule can be tested without a window
+    /// server, since neither `isVisible` nor `occlusionState` can be set by hand.
+    static func windowIsWorthDrawing(isOpen: Bool, isOnScreen: Bool) -> Bool {
+        isOpen && isOnScreen
+    }
+
     static func policyWithWindowHidden(widgetsEnabled: Bool) -> NSApplication.ActivationPolicy {
         widgetsEnabled ? .accessory : .regular
     }
