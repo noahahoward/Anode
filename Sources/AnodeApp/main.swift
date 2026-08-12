@@ -608,7 +608,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
             .filter { ProcessRowBuilder.isNotable($0, floor_pctHr: floor) }
         sortRows()
 
-        main.table.reloadData()
+        refreshTable()
         autosizeColumns()
 
         // Re-find the selected APP by name. If it is gone (quit, or fell below the
@@ -1893,36 +1893,67 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
             v.identifier = col.identifier
             return v
         }
-        let r = rows[row]
-        let (text, dim) = cellText(r, id)
-
-        let cell: NSTableCellView
+        let cell: ProcessCellView
         if let reused = tv.makeView(withIdentifier: col.identifier, owner: self)
-            as? NSTableCellView {
+            as? ProcessCellView {
             cell = reused
         } else {
-            cell = NSTableCellView()
+            cell = ProcessCellView(leadingInset: id == "name" ? 10 : 4,
+                                   alignment: id == "name" ? .left : .right)
             cell.identifier = col.identifier
-            let label = NSTextField(labelWithString: "")
-            label.alignment = id == "name" ? .left : .right
-            label.lineBreakMode = .byTruncatingTail
-            label.translatesAutoresizingMaskIntoConstraints = false
-            cell.addSubview(label)
-            cell.textField = label
-            // A bare NSTextField is pinned to the top of its cell, so every row
-            // read as sitting high against its own separator. Centring it is the
-            // fix.
-            NSLayoutConstraint.activate([
-                label.leadingAnchor.constraint(equalTo: cell.leadingAnchor,
-                                               constant: id == "name" ? 10 : 4),
-                label.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -4),
-                label.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
-            ])
         }
+        configure(cell, with: rows[row], id: id)
+        return cell
+    }
 
-        guard let label = cell.textField else { return cell }
+    /// Refreshes the table without rebuilding it when nothing structural moved.
+    ///
+    /// `reloadData()` removes every visible row view and adds it back, and for
+    /// each one AppKit re-derives the tab-key focus chain by walking the row's
+    /// whole subtree. Profiled with `sample`, that was the largest single cost in
+    /// the app: 927 samples under `_addRowViewForVisibleRow:`, of which 462 were
+    /// `_setDefaultKeyViewLoop` alone — against 73 for the entire sampling queue
+    /// that produces the numbers. Every two seconds, to change some text.
+    ///
+    /// None of that work is needed here, because a row view holds nothing about
+    /// the row it is showing: `AnodeRowView` draws alternation, selection and
+    /// hover, all of which are properties of the INDEX and not of the process
+    /// sitting at it. So a re-sort — which is most ticks, since the table is
+    /// ordered by a number that keeps moving — needs no new views at all. Only
+    /// the labels are stale, and writing straight into them skips the teardown,
+    /// the re-add and the focus-chain walk entirely.
+    ///
+    /// A changed row COUNT is the one thing this cannot paint over, and it takes
+    /// `noteNumberOfRowsChanged()` rather than a reload: that adds or removes the
+    /// rows that actually differ instead of every row on screen.
+    func refreshTable() {
+        if main.table.numberOfRows != rows.count { main.table.noteNumberOfRowsChanged() }
+
+        let visible = main.table.rows(in: main.table.visibleRect)
+        guard visible.length > 0 else { main.table.reloadData(); return }
+
+        for row in visible.lowerBound..<min(visible.upperBound, rows.count) {
+            for (column, col) in main.table.tableColumns.enumerated() {
+                let id = col.identifier.rawValue
+                guard id != ProcessColumns.spacerID else { continue }
+                // `makeIfNecessary: false` is the whole point — a cell that does
+                // not exist yet is one AppKit has not scrolled into view, and
+                // making it here would be the very work being avoided.
+                guard let cell = main.table.view(atColumn: column, row: row,
+                                                 makeIfNecessary: false) as? ProcessCellView
+                else { continue }
+                configure(cell, with: rows[row], id: id)
+            }
+        }
+    }
+
+    /// Puts a row's values into an existing cell. The only writer of cell content,
+    /// so the in-place refresh above and AppKit's own `viewFor` cannot drift apart.
+    func configure(_ cell: ProcessCellView, with r: Row, id: String) {
+        let (text, dim) = cellText(r, id)
+        guard let label = cell.textField else { return }
         label.stringValue = text
-        label.font = font(for: id, isApp: r.isApp)
+        cell.setFont(font(for: id, isApp: r.isApp))
         // System rows take the same colour the ledger bar gives its "system
         // processes" segment, so the link is visual rather than something the
         // user has to be told: these rows ARE that segment, itemised. It also
@@ -1939,7 +1970,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
                 : r.name
             if label.toolTip != tip { label.toolTip = tip }
         }
-        return cell
     }
 }
 
