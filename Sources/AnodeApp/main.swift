@@ -514,6 +514,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         // is still running is dropped, not queued and not run beside it.
         sampleGate.submit(on: sampling) { [weak self] in
             guard let self else { return }
+            // `ANODE_LOG_TICKS=1` prints what each tick actually cost, in CPU
+            // rather than wall time, and which kind it was.
+            //
+            // Total CPU over a minute cannot separate one 60 s full tick from the
+            // seven light ticks beside it, and the background floor is the sum of
+            // exactly those two things — so the number that matters all day is the
+            // one an outside measurement cannot see. Thread CPU time, because this
+            // queue is serial and a block stays on the thread it started on.
+            let tickStartCPU = TickCost.now()
             // The background full tick exists for ONE reason — keeping the trailing
             // power window accruing while the window is closed. With logging off
             // there is nothing to accrue into, so the per-process sweep, the
@@ -584,7 +593,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
                                   uniquingKeysWith: { a, b in a + b })
             }
 
+            TickCost.log(kind: wantFull ? "FULL" : "light",
+                         visible: visible, needs: needs, since: tickStartCPU)
+
             DispatchQueue.main.async {
+                // The sampling queue's cost is logged above; this is the OTHER
+                // half of a tick, and the half that was never measured — the
+                // menu bar widgets redraw here on every hidden tick.
+                let mainStartCPU = TickCost.now()
+                defer { TickCost.log(kind: "main-thread", visible: visible,
+                                     needs: needs, since: mainStartCPU) }
                 self.lastSystem = sysSnap
                 self.lastDrain = est
                 if let p = pcts { self.windowPercents = p; self.lastWindowQuery = Date() }

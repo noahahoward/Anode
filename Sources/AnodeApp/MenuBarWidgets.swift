@@ -266,8 +266,23 @@ public final class MenuBarWidgetController: NSObject, NSMenuDelegate {
             history[entry.config.metricID] = h
         }
 
-        button.toolTip = WidgetRenderer.toolTip(
+        // Assigned only when it CHANGES, which is the whole point.
+        //
+        // A tooltip is backed by a cursor rect, so setting one invalidates the
+        // window's tracking areas — and this ran on every tick whatever the value
+        // was. Profiled with the window covered, the app's largest remaining cost
+        // was AppKit walking the view tree to rebuild those:
+        //
+        //   displayCycleUpdateStructuralRegions
+        //     -> updateTrackingAreasWithInvalidCursorRects:
+        //       -> -[NSNextStepFrame updateTrackingAreas]
+        //
+        // The value below it was already guarded against no-op redraws; this line
+        // sat above that guard and undid it, every eight seconds, for a tooltip
+        // nobody was pointing at.
+        let tip = WidgetRenderer.toolTip(
             metricID: entry.config.metricID, descriptor: descriptor, value: value)
+        if button.toolTip != tip { button.toolTip = tip }
 
         if entry.config.style == .group {
             // A menu attached to the status item opens directly beneath it, which is
