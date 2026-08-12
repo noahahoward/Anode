@@ -12,8 +12,8 @@ final class LoginAgentTests: XCTestCase {
     /// The label must not collide with the bundle id SMAppService uses for the
     /// same app, or removing one could remove the other.
     func testLabelIsDistinctFromTheBundleIdentifier() {
-        XCTAssertNotEqual(LoginAgent.label, "dev.noah.anode")
-        XCTAssertTrue(LoginAgent.label.hasPrefix("dev.noah.anode"))
+        XCTAssertNotEqual(LoginAgent.label, "dev.anode.app")
+        XCTAssertTrue(LoginAgent.label.hasPrefix("dev.anode.app"))
     }
 
     func testPlistLivesInTheUserLaunchAgentsDirectory() {

@@ -84,16 +84,16 @@ import Foundation
 //      an explicit reinstall, with its own authorisation, replaces it.
 //
 //   2. WHAT IT LISTENS TO IS PINNED BY SIGNING IDENTIFIER, not by hash.
-//      `dev.noah.anode` comes from CFBundleIdentifier and is the same in
+//      `dev.anode.app` comes from CFBundleIdentifier and is the same in
 //      every build. `FanClientPin.signingIdentifier` states in full what that
 //      stops and what it does not, and the short version is repeated here
 //      because it is the price of the button: ANYONE WHO CAN RUN `codesign -s -
-//      -i dev.noah.anode` ON THEIR OWN BINARY SATISFIES IT. Verified:
+//      -i dev.anode.app` ON THEIR OWN BINARY SATISFIES IT. Verified:
 //
 //          $ cc -o notmine t.c
-//          $ codesign --force --sign - -i dev.noah.anode notmine
+//          $ codesign --force --sign - -i dev.anode.app notmine
 //          $ codesign -dvv notmine
-//          Identifier=dev.noah.anode   Signature=adhoc   valid on disk
+//          Identifier=dev.anode.app   Signature=adhoc   valid on disk
 //
 //      So the installed daemon's real boundary is the uid check, which is the
 //      kernel's and cannot be forged, plus a vocabulary of two commands whose
@@ -132,31 +132,45 @@ public enum FanDaemon {
     /// Distinct from `FanHelperInstall.retiredDaemonLabel`, which named the first
     /// draft's daemon. A user may still have that one loaded; they are not the
     /// same job and must not share a label.
-    public static let label = "dev.noah.anode.fanhelper"
+    public static let label = "dev.anode.app.fanhelper"
 
-    /// What this daemon was called before the app was renamed.
+    /// Every name this daemon has ever had, newest first.
     ///
-    /// A rename cannot migrate this one. The plist is in `/Library/LaunchDaemons`
-    /// and the binary in `/Library/PrivilegedHelperTools`, both root-owned, and
-    /// this app has no way to move them — which is the correct arrangement and
-    /// also means an upgrade leaves a root daemon installed under a name nothing
+    /// A LIST, because there are now two of them: the app was renamed from
+    /// BetterStats to Anode, and then the bundle identifier had the author's name
+    /// taken out of it. A single `previousLabel` could only ever describe the most
+    /// recent rename, so the one before it would stop being looked for the moment
+    /// a second rename happened — silently, on exactly the machines that have been
+    /// running this longest.
+    ///
+    /// None of these can be migrated. The plist is in `/Library/LaunchDaemons` and
+    /// the binary in `/Library/PrivilegedHelperTools`, both root-owned, and this
+    /// app has no way to move them — which is the correct arrangement, and also
+    /// means every rename leaves a root daemon installed under a name nothing
     /// looks for any more.
     ///
     /// Detected rather than ignored, because the failure is bad in a specific
     /// way: `isInstalled` would report false, the app would offer to install, and
     /// the machine would end up with TWO root fan daemons — one of them orphaned,
     /// still holding a socket, and answering to a build that no longer exists.
-    public static let previousLabel = "dev.noah.betterstats.fanhelper"
+    public static let previousLabels = [
+        "dev.noah.anode.fanhelper",        // before the identifier was neutralised
+        "dev.noah.betterstats.fanhelper",  // before the app was renamed
+    ]
 
-    /// Is a daemon from before the rename still installed?
+    /// The ones actually on disk right now.
+    public static var previousInstallsPresent: [String] {
+        previousLabels.filter {
+            FileManager.default.fileExists(atPath: "/Library/LaunchDaemons/\($0).plist")
+        }
+    }
+
+    /// Is a daemon from before any rename still installed?
     ///
     /// Only ever reported, never acted on. Removing it needs root and it is
     /// exactly the kind of thing that must be done deliberately, with the command
     /// visible — the same rule the install follows.
-    public static var previousInstallIsPresent: Bool {
-        FileManager.default.fileExists(
-            atPath: "/Library/LaunchDaemons/\(previousLabel).plist")
-    }
+    public static var previousInstallIsPresent: Bool { !previousInstallsPresent.isEmpty }
 
     /// Is the daemon on disk the same build as the app asking it for things?
     ///
@@ -217,16 +231,36 @@ public enum FanDaemon {
     /// working on. Kept apart, `summary` stays a function of its argument and this
     /// stays a fact about the disk.
     public static var orphanNote: String? {
-        guard previousInstallIsPresent else { return nil }
-        return "A fan helper from the old BetterStats name is still installed as root. "
-             + "Remove it before installing this one, or the machine runs two."
+        let found = previousInstallsPresent
+        guard !found.isEmpty else { return nil }
+        let subject = found.count == 1 ? "A fan helper" : "\(found.count) fan helpers"
+        let verb = found.count == 1 ? "is" : "are"
+        return "\(subject) from an earlier name of this app \(verb) still installed as "
+             + "root. Remove \(found.count == 1 ? "it" : "them") before installing this "
+             + "one, or the machine runs more than one."
     }
 
-    /// What to run to be rid of it, for the app to show and the user to read.
+    /// What to run to be rid of the named daemons, for the app to show and the
+    /// user to read.
+    ///
+    /// TAKES the labels rather than reading the disk. The first draft of this
+    /// built itself from `previousInstallsPresent`, which made the wording a
+    /// function of what happens to be installed — the same mistake `orphanNote`
+    /// documents two functions up, where a test asserting the wording failed on
+    /// the one developer machine that HAD an old daemon. A command is a string
+    /// about labels; which labels are on disk is a separate question.
+    public static func uninstallCommand(for labels: [String]) -> String {
+        labels.map {
+            "sudo launchctl bootout system/\($0); "
+            + "sudo rm -f /Library/LaunchDaemons/\($0).plist "
+            + "/Library/PrivilegedHelperTools/\($0)"
+        }.joined(separator: "\n")
+    }
+
+    /// The command for what is actually installed, so the user is not asked to
+    /// run lines as root that do nothing.
     public static var previousUninstallCommand: String {
-        "sudo launchctl bootout system/\(previousLabel); "
-        + "sudo rm -f /Library/LaunchDaemons/\(previousLabel).plist "
-        + "/Library/PrivilegedHelperTools/\(previousLabel)"
+        uninstallCommand(for: previousInstallsPresent)
     }
 
     /// Root-owned, root-writable-only. The point of copying the helper here is
@@ -241,7 +275,7 @@ public enum FanDaemon {
     /// CFBundleIdentifier, so it is identical in every build of this app — which
     /// is the only reason the install survives a rebuild. See
     /// `FanClientPin.signingIdentifier` for what that costs.
-    public static let clientSigningIdentifier = "dev.noah.anode"
+    public static let clientSigningIdentifier = "dev.anode.app"
 
     /// Bumped when the socket protocol changes in a way an older daemon cannot
     /// serve.

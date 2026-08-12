@@ -20,7 +20,7 @@ import PowerKit
 ///                  LaunchServices to launchd too, so the parent says nothing.
 ///   XPC_SERVICE_NAME
 ///                  login:  application.com.knollsoft.Rectangle.533133.533332
-///                  manual: application.dev.noah.anode.60075201.60075206
+///                  manual: application.dev.anode.app.60075201.60075206
 ///                  Same `application.<bundle-id>.<n>.<n>` form either way.
 ///
 /// So the login launch is indistinguishable from a manual one by every signal the

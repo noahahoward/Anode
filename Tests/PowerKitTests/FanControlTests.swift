@@ -1138,7 +1138,7 @@ final class FanOnDemandTests: XCTestCase {
 
     /// The hash the server will compute for a connection from this process,
     /// obtained the same way it obtains it. Lets a test actually connect, rather
-    /// than skipping — `xctest` has no `dev.noah.anode` signing identifier,
+    /// than skipping — `xctest` has no `dev.anode.app` signing identifier,
     /// so the daemon's own pin would refuse it.
     private func ownCDHash() -> String? {
         var pair: [Int32] = [0, 0]
@@ -1334,8 +1334,8 @@ final class FanUninstallTests: XCTestCase {
     /// only after its replacement would leave a root daemon loaded.
     func testEveryPrivilegedArtifactIsOnTheList() {
         let paths = FanHelperInstall.artifacts().all.map(\.path)
-        for expected in ["/Library/LaunchDaemons/dev.noah.anode.helper.plist",
-                         "/Library/PrivilegedHelperTools/dev.noah.anode.helper",
+        for expected in ["/Library/LaunchDaemons/dev.anode.app.helper.plist",
+                         "/Library/PrivilegedHelperTools/dev.anode.app.helper",
                          "/Library/Application Support/Anode/client.cdhash",
                          "/Library/Application Support/Anode",
                          FanSocket.path] {

@@ -463,9 +463,9 @@ final class FanClientPinTests: XCTestCase {
     /// The identifier is a string anyone can choose. Measured, not argued:
     ///
     ///     cc -o notmine t.c
-    ///     codesign --force --sign - -i dev.noah.anode notmine
+    ///     codesign --force --sign - -i dev.anode.app notmine
     ///     codesign -dvv notmine
-    ///     Identifier=dev.noah.anode   Signature=adhoc   valid on disk
+    ///     Identifier=dev.anode.app   Signature=adhoc   valid on disk
     ///
     /// So a program that is not Anode, signed ad-hoc under our identifier
     /// by anyone who can run codesign, IS ACCEPTED by the installed daemon. That
@@ -598,8 +598,8 @@ final class FanElevationTests: XCTestCase {
     /// correct way to put one back, and getting it wrong here means running a
     /// different command as root than the one that was displayed.
     func testAnApostropheInThePathCannotEndTheQuoting() {
-        let quoted = FanElevation.shellQuoted("/Users/noah's mac/Anode.app")
-        XCTAssertEqual(quoted, "'/Users/noah'\\''s mac/Anode.app'")
+        let quoted = FanElevation.shellQuoted("/Users/sam's mac/Anode.app")
+        XCTAssertEqual(quoted, "'/Users/sam'\\''s mac/Anode.app'")
     }
 
     /// The same string then goes inside an AppleScript literal, where `"` and `\`
