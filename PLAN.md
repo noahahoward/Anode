@@ -52,94 +52,67 @@ because the reasoning matters more than the verdict.
 
 ---
 
-## Next, in order
+## The reviewed list — all ten landed
 
-Ordering is load-bearing where noted.
+Verified against the tree while reconciling this file, not from memory. Two were
+solved differently from the plan, and those are the interesting ones.
 
-### 1. Network counter wrap — S
-`if_data64` via `NET_RT_IFLIST2`; aggregate as Σ per-interface deltas, not
-Δ(Σ), so one interface vanishing no longer blanks the whole reading; drop an
-interface from the previous-sample map when it disappears so a reappearing
-`utunN` starts a fresh baseline; plausibility bound at 12.5e9 B/s.
+1. **Network counter wrap** — done, and NOT the way this plan said. It proposed
+   `sysctl(NET_RT_IFLIST2)`, whose `if_msghdr2.ifm_data` is declared `if_data64`.
+   Measured by pushing 7 GB over lo0, that path read 3,392,594,944 against a true
+   7,687,562,848 — short by exactly 2^32, high word left zero. So the plan's fix
+   would have carried the same bug in a wider-looking type.
+   `net.link.generic.ifdata` (`IFMIB_IFALLDATA`, what `netstat -ib` uses) returns
+   the counters at full width and matched `netstat` byte for byte. The wrap is
+   removed rather than compensated for.
 
-### 2. Sleep/wake gap — S/M. **Must land before or with item 3.**
-No `NSWorkspace.willSleepNotification` handling exists anywhere. A nine-hour
-sleep produces one interval of ~32,400 s; `selectWindowLocked` walks newest-first
-so that single row fills the entire 10-hour window by itself.
+2. **Sleep/wake gap** — done, and also differently. No `willSleepNotification`
+   subscription was added. A long interval is treated as the gap in observation
+   it already is (`straddlesGap`, `maxPlausibleInterval`), which covers sleep,
+   a stalled sampler and a run of dropped ticks with one rule instead of three.
 
-Drop the straddling interval (above). Then reset the full accumulator set — the
-original said "tracker/smoother", which is not the list: `tracker`, `smoother`
-(needs a `reset()`), `pstrWindow`, `ppmcWindow`, `fastSincePublish`,
-`pstrSincePublish`, `lastSweep`, and **`lastPublished`** — that last one is what
-stops the first post-wake gauge window spanning the entire sleep.
+3. **Serial sampling queue** — `SamplingGate` on a private serial queue, and the
+   dropped-tick count is published as a metric rather than swallowed.
 
-Add `interval <= maxPlausibleInterval` to `record` as defence in depth, and a
-read-side `dur <= 300` filter, because stores already on disk carry poisoned
-rows and will otherwise show no change.
+4. **Light ticks report confident falsehoods** — `isFullSample` on the snapshot;
+   the honesty metrics return nil rather than a confident 100%/0%.
 
-### 3. Serial sampling queue — S. **After item 2.**
-`refresh()` dispatches onto the *concurrent* global queue. `PowerMonitor`
-mutates `lastSweep`, `pstrWindow`, `ppmcWindow`, `fastSincePublish`,
-`lastPublished`; `CPUUsage.previous`, `NetworkThroughput.previous`,
-`AppDelegate.lastFullTick` likewise; `SMC` has no lock at all. Concurrent
-dictionary mutation is a crash, not a wrong number.
+5. **Ledger overflow alarm** — the `⚠︎ attribution overflow` prefix survives, and
+   the condition is logged as an error as well as drawn.
 
-Private serial queue plus an `isSampling` guard — but note the guard makes
-**dropped ticks a designed behaviour for the first time**, and the pipeline has
-no handling for one. That is item 2's failure mode at small scale arriving
-through this fix, which is why item 2 comes first. Count skipped ticks and
-surface the count rather than skipping silently.
+6. **History pruning** — `pruneChunk(olderThan:)`, chunked and off the sampler's
+   critical path, with a retention change scheduling the next prune.
 
-### 4. Light ticks report confident falsehoods — S
-While hidden, `attributed = 0` and `gpu = nil`, so `residualShare` is exactly
-1.0 and coverage is 0 — rendered as "100%" and "0%" with `isEstimate: false`.
-These are the two metrics whose whole job is stating measurement honesty. Add
-`isFullSample` to Snapshot; both providers return nil when false.
+7. **Graph hover/zoom geometry** — `draw` stores `lastPlot` and the interaction
+   code reads it, so the tooltip and the drawing agree at every range.
 
-### 5. Ledger overflow alarm is suppressed when it does not fit — S
-Reclassified from P4 cosmetic. The `⚠︎ attribution overflow` prefix makes the
-provenance string longer, so the warning is *more* likely to be dropped in
-exactly the state it reports — and it is the only surfaced indicator that the
-ledger is physically impossible.
+8. **Time remaining** — one reconciled rate feeds the surfaces
+   (`reconciledRate`).
 
-### 6. History is never pruned — S
-`prune` exists, `Settings.historyRetentionDays` exists with a Preferences
-control and a caption promising it works, and nothing calls it.
+9. **`ModelValidator`** — `selfTest()` runs in the suite, and the CLI constructs
+   the validator.
 
-**Do not run it inline on a settings change**, and do not call it "on the store's
-queue" as though that were free: `record()` blocks on that same serial queue
-every tick, so a long prune stalls the sampler — and after item 3 a stalled
-sampler *drops* ticks. Chunk the deletes, bound `incremental_vacuum`, run on a
-timer, and have a retention decrease schedule the next prune rather than perform
-one. Measure it with `--diskwatch` against the 24.9 KB/s sustained limit this app
-has already been killed by once.
+10. **Window-open performance** — the largest single item in the whole plan, and
+    the numbers are in the log rather than here: 15.05% of a core down to ~3.7%
+    window-open, and the background floor 3.02% down to ~0.3%. Table cells are
+    written in place rather than rebuilt, autosizing measures only visible rows,
+    and `Timer.tolerance` is set.
 
-### 7. Graph hover/zoom geometry disagrees with the drawing — S
-`draw` computes `padLeft`/`padRight` from the axis labels; the interaction code
-hardcodes 34 / 42 / 76. On a 7-day range that is ~2 hours of tooltip error, and
-scroll-zoom drifts the point under the cursor — which the code's own comment
-calls the most disorienting thing a zoomable chart can do. Store `lastPlot` in
-`draw` and read it. Also guard `abs(scrollingDeltaY) > 0` so a horizontal swipe
-does not zoom.
+---
 
-### 8. Time remaining disagrees between surfaces — S/M
-Three different answers, and the slew-limited one the code calls "THE value to
-display" drives nothing the user sees. **This reverses a documented decision**
-(`GlanceCardView.swift:184-191` explains why the card deliberately bypassed the
-estimator), so the reversal must be recorded in that comment, not silently
-deleted — and the accepted consequence stated: the headline time and the rate row
-will visibly fail to multiply out for ~2 minutes after a load change.
+## Next
 
-### 9. Wire `ModelValidator` — S
-426 lines of ground-truth harness, with its own `selfTest()`, that nothing ever
-constructs. Add `selfTest()` to the suite and a `--validate` CLI mode. Cheapest
-confidence available for a project whose entire pitch is measurement.
+Nothing in the reviewed list, and nothing marked TODO anywhere in `Sources/`.
+What is left is release work and the deferred items below.
 
-### 10. Performance, window-open — S each
-Table cells are rebuilt from scratch every tick (`makeView` reuse); autosizing
-measures every row not just visible ones; the Sensors pane bypasses the 5 s
-cache and re-reads ~270 SMC keys on the main thread; `Timer.tolerance` is never
-set anywhere.
+- **38 — no update mechanism.** The one distribution item still open. Parked
+  until the repo is public, since an updater needs somewhere to update from.
+- **Publication** — rename the remote from `betterstats` to `anode`, and turn on
+  GitHub's "keep my email address private" so the scrub cannot regress.
+- The **deferred** items below, unchanged and still deliberate. Item 9 is the one
+  with teeth: the battery scale is a seeded constant under every displayed
+  number, and until it is measured, absolute %/hr should not be compared across
+  machines.
 
 ---
 
@@ -175,24 +148,28 @@ signal whether that was deliberate. It is deliberate here:
   source and `build-app.sh`, since a locally built bundle is never quarantined.
 - **38** — no update mechanism, so any bug shipped to a friend is permanent.
 - **39** — ~~the root helper accepts any process whose path ends in the right
-  suffix~~ **CLOSED**, and not the way this entry expected. The path check is
-  gone, but so is the daemon: nothing is installed, nothing runs as root unless
-  the user starts it, and the helper is a program they run with `sudo` and stop
-  with ⌃C. Connections are checked on the caller's euid (`getpeereid`) and on a
-  cdhash taken from the peer's audit token, pinned **at helper startup** from the
-  app bundle on disk.
+  suffix~~ **CLOSED**, and not the way this entry expected. It has since been
+  overtaken twice, so what follows is the state as of this reconciliation rather
+  than as of the review.
 
-  The earlier plan — pin the cdhash in a root-owned file at install time — was
-  abandoned for an operational reason rather than a cryptographic one. The app is
-  distributed as source, so an ad-hoc cdhash changes on every `./build-app.sh`;
-  the pin would go stale every rebuild and the repair would be another admin
-  prompt, which trains reflexive `sudo` and is a worse hole than the one the pin
-  closes. A pin that lives and dies with the helper process cannot go stale.
+  **The default is still that nothing is installed.** No LaunchDaemon, no plist,
+  no root process when fan control is not in use. The helper is a program the
+  user runs with `sudo` and stops with ⌃C, and it pins its client to ONE BUILD by
+  cdhash taken from the peer's audit token at helper startup — the strongest
+  check available to a project with no Developer ID, and one that cannot go stale
+  because it lives and dies with the process.
 
-  This also **removes the dependency on 37** that this entry claimed. A
-  designated-requirement check is indeed satisfiable by anyone who re-signs
-  ad-hoc under the same identifier — but a cdhash is a hash of the code, so a
-  different binary produces a different hash whatever it calls itself. The
-  remaining honest limit is that nothing verifies the *helper* before it runs as
-  root; the user does, by reading the path they type. See the trust model at the
-  top of `Sources/PowerKit/FanLink.swift`.
+  **An install path was added after that**, because typing a sudo command every
+  session is not a thing to ask of anyone who is not developing this. One
+  authorisation, once, then fan control survives rebuilds and reboots. It is a
+  weaker check and is documented as one: a daemon that outlives every rebuild
+  cannot pin a hash that changes on every rebuild, so it pins the signing
+  IDENTIFIER, and anyone who can run `codesign -s - -i dev.anode.app` on their
+  own binary satisfies it — verified, not assumed. Its real boundary is the uid
+  check, which is the kernel's, plus a vocabulary of two commands whose values
+  the fan firmware re-clamps.
+
+  Both models are written out in full where they are implemented — the trust
+  model at the top of `Sources/PowerKit/FanLink.swift`, the install's reasoning
+  in `FanDaemon.swift`. This entry is a pointer, not the second copy that goes
+  stale.

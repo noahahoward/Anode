@@ -7,9 +7,17 @@ import IOKit
 /// state-of-charge- and load-dependent terminal reading (~12.5 V at 80% SoC on a
 /// 3S pack) and overstates full-charge energy by roughly 8%.
 ///
-/// `nominalVoltage` is a seed. Once we have observed a clean on-battery window we
-/// replace the whole scale with a measured `J/%` learned from the gas gauge, which
-/// removes the assumed voltage entirely and tracks pack aging. See `calibrated(with:)`.
+/// `nominalVoltage` is a seed, and it is STILL the seed — the design calls for
+/// replacing the whole scale with a measured `J/%` learned from the gas gauge over
+/// a clean on-battery window, which would remove the assumed voltage entirely and
+/// track pack ageing. That does not exist. `isCalibrated` below is the only trace
+/// of it and is always false.
+///
+/// This comment used to end "see `calibrated(with:)`", naming a function that was
+/// never written — the same claim `ARCHITECTURE.md` made and has since retracted.
+/// A cross-reference to nothing is worse than no cross-reference: it reads as
+/// evidence the work is done. What the seed costs when it is wrong is written out
+/// under "The battery scale" in that file.
 public struct BatteryScale {
     public let fullChargeCapacity_mAh: Double
     public let designCapacity_mAh: Double
