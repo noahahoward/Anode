@@ -335,6 +335,10 @@ final class SidebarView: NSView {
 
     /// Test seams for the two glyphs that change.
     var isTemperatureAlarming: Bool { rows[.sensors]?.alarmAnimation != nil }
+
+    /// Is there a fan glyph on screen at all? Spinning or still, SOMETHING has to
+    /// be drawing it — the view's own image, or the layer that took it over.
+    var hasVisibleFanGlyph: Bool { rows[.fans]?.hasVisibleGlyph ?? false }
     var networkSymbolName: String? { rows[.network]?.symbolName }
 
     /// Whether the fan glyph is turning, and how fast. Test seams: the animation
@@ -370,6 +374,13 @@ final class SidebarView: NSView {
         /// It stops when the fans stop, so a machine sitting with its fans parked
         /// is still and the icon means something: motion here is a reading, not
         /// decoration.
+        /// Something is drawing this row's glyph: either the image view still
+        /// holds it, or the blade layer has taken it and is visible.
+        var hasVisibleGlyph: Bool {
+            if !icon.isHidden, icon.image != nil { return true }
+            return !blades.isHidden && blades.contents != nil
+        }
+
         var spinAnimation: CABasicAnimation? {
             blades.animation(forKey: "spin") as? CABasicAnimation
         }
@@ -420,8 +431,11 @@ final class SidebarView: NSView {
         func setSymbol(_ name: String) {
             guard name != symbolName else { return }   // NSImage lookup is not free
             symbolName = name
-            icon.image = NSImage(systemSymbolName: name, accessibilityDescription: lens.title)?
+            glyphImage = NSImage(systemSymbolName: name, accessibilityDescription: lens.title)?
                 .withSymbolConfiguration(.init(pointSize: 15, weight: .medium))
+            // Not while the blades are carrying it — see `setSpinning`.
+            if blades.isHidden || blades.superlayer == nil { icon.image = glyphImage }
+            layoutBlades()
         }
 
         /// The turning glyph, on a layer this row OWNS.
@@ -440,13 +454,18 @@ final class SidebarView: NSView {
         /// view still draws every other tab's glyph — for this one it hands over.
         private let blades = CALayer()
 
+        /// The glyph itself, kept aside because the image view stops holding it
+        /// while the blades are turning. `tintedGlyph` bakes from this, so the
+        /// blades still have something to draw once the view has let go.
+        private var glyphImage: NSImage?
+
         func setSpinning(_ spinning: Bool, rpm: Double = 0) {
             guard lens == .fans else { return }
             let key = "spin"
             guard spinning else {
                 blades.removeAnimation(forKey: key)
                 blades.isHidden = true
-                icon.isHidden = false
+                icon.image = glyphImage   // the view takes the glyph back
                 return
             }
             icon.wantsLayer = true
@@ -459,9 +478,17 @@ final class SidebarView: NSView {
             // already on the layer waiting for it.
             layoutBlades()
             blades.isHidden = false
-            // Or the image view draws the same glyph underneath, stationary, and
-            // the two smear into each other.
-            icon.isHidden = true
+            // The VIEW lets go of its image — and ONLY once the blades have taken
+            // it. Not hidden: hiding it took the blades with it, since they are
+            // its sublayer and a hidden view hides its whole layer tree, so the
+            // tab went blank the moment the fans started turning.
+            //
+            // The guard matters because the blades bake their contents from the
+            // icon's bounds, which are zero until the rail has laid out. Letting
+            // go first leaves nothing drawing at all for a layout pass, and on the
+            // very first spin that pass may never have happened. `layout` re-runs
+            // `layoutBlades`, so the hand-off completes on its own.
+            if blades.contents != nil { icon.image = nil }
 
             let seconds = SidebarView.glyphTurnSeconds(rpm: rpm)
             if let existing = blades.animation(forKey: key) as? CABasicAnimation,
@@ -494,7 +521,7 @@ final class SidebarView: NSView {
         /// `contentTintColor` the way a template does inside an NSImageView — so
         /// the tint is baked in here, and re-baked whenever `restyle` runs.
         private func tintedGlyph() -> NSImage? {
-            guard let base = icon.image else { return nil }
+            guard let base = glyphImage else { return nil }
             let colour = icon.contentTintColor ?? Palette.dim
             return NSImage(size: base.size, flipped: false) { rect in
                 base.draw(in: rect)
@@ -515,12 +542,11 @@ final class SidebarView: NSView {
             super.init(frame: .zero)
             translatesAutoresizingMaskIntoConstraints = false
 
-            // A symbol configuration rather than a resized image: SF Symbols are
-            // vector glyphs with their own optical weights, and scaling a rendered
-            // one blurs the strokes at 17 pt.
-            icon.image = NSImage(systemSymbolName: lens.symbolName,
-                                 accessibilityDescription: lens.title)?
-                .withSymbolConfiguration(.init(pointSize: 15, weight: .medium))
+            // Through `setSymbol`, so the glyph is recorded in one place. Set
+            // straight onto the image view here, it was invisible to the blade
+            // layer, which bakes its contents from that record — a fan that had
+            // never had its symbol swapped would have had nothing to draw.
+            setSymbol(lens.symbolName)
             icon.imageScaling = .scaleNone
             icon.translatesAutoresizingMaskIntoConstraints = false
             addSubview(icon)

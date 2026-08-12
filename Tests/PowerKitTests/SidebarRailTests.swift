@@ -141,6 +141,29 @@ final class FanSpinTests: XCTestCase {
         XCTAssertFalse(rail.isFanGlyphSpinning)
     }
 
+    /// THE GLYPH IS ON SCREEN WHETHER IT IS TURNING OR NOT.
+    ///
+    /// Spinning it means handing it from the image view to a layer, and both
+    /// attempts at that hand-off lost it. Hiding the view took the blades with it
+    /// — they are its sublayer, and a hidden view hides its whole layer tree — so
+    /// the tab went blank the moment the fans started. Reported exactly that way.
+    ///
+    /// Asserted as "something is drawing it", not as which of the two, because
+    /// which one is an implementation detail and the user's complaint was not.
+    func testTheFanGlyphIsNeverLostInTheHandOff() {
+        let rail = SidebarView()
+        XCTAssertTrue(rail.hasVisibleFanGlyph, "no glyph before anything happened")
+        rail.setFanSpin(rpm: 2400)
+        XCTAssertTrue(rail.hasVisibleFanGlyph, "the glyph vanished when the fans started")
+        rail.setFanSpin(rpm: 0)
+        XCTAssertTrue(rail.hasVisibleFanGlyph, "the glyph did not come back when they stopped")
+        // And through a few changes of speed, which is what a real machine does.
+        for rpm in [2400.0, 3600.0, 0.0, 7800.0, 0.0] {
+            rail.setFanSpin(rpm: rpm)
+            XCTAssertTrue(rail.hasVisibleFanGlyph, "lost at \(rpm) rpm")
+        }
+    }
+
     /// The glyph's speed is PROPORTIONAL to the fans', not merely ordered by it.
     ///
     /// Twice the rpm is exactly twice the glyph speed, so the ratio between two
