@@ -846,6 +846,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
     /// that cannot run while nobody is looking.
     func updateFanSpin() {
         main.sidebar.setFanSpin(rpm: lastSystem?.fans.averageRPM ?? 0)
+        // The HOTTEST reading, not the average: the rail is an alarm here, and an
+        // average hides one component cooking behind five that are fine.
+        let temps = [lastSystem?.cpuTemperature, lastSystem?.gpuTemperature].compactMap { $0 }
+        main.sidebar.setTemperature(temps.max())
+        main.sidebar.setNetworkKind(NetworkInventory.snapshot().primary?.kind)
     }
 
     func updateGlance(_ s: PowerMonitor.Snapshot) {

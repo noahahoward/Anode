@@ -295,9 +295,47 @@ final class SidebarView: NSView {
     /// Called from the sampling tick, so it follows the machine rather than a
     /// clock. Zero rpm stops it: a parked fan is a reading worth being able to see
     /// at a glance, and a glyph that spins regardless would be decoration.
+    /// How long one turn of the fan glyph takes, for a fan at `rpm`.
+    ///
+    /// PROPORTIONAL, and that is the property rather than the constant: the glyph
+    /// turns `slowdown` times slower than the fan, so twice the rpm is always
+    /// exactly twice the glyph speed. The ratio between any two readings is the
+    /// ratio between the fans that produced them.
+    ///
+    /// It cannot be 1:1. These fans idle near 2300 rpm — 38 turns a second — and
+    /// a glyph at that speed is a grey disc; at their 7800 rpm ceiling it is a
+    /// grey disc that has been a grey disc for a while. The slowdown is what makes
+    /// the difference between "idling" and "working hard" something you can see,
+    /// which is the entire job.
+    ///
+    /// The clamps sit OUTSIDE the real operating range on purpose — they bite
+    /// below 960 rpm and above 12 000, so a real fan is always in the proportional
+    /// part. They exist for the readings that are not speeds: a fan reporting
+    /// 1 rpm took twenty-four minutes a turn before the ceiling existed, which a
+    /// test caught.
+    static let glyphSlowdown: Double = 40
+    static func glyphTurnSeconds(rpm: Double) -> TimeInterval {
+        min(2.5, max(0.2, glyphSlowdown * 60 / max(rpm, 1)))
+    }
+
     func setFanSpin(rpm: Double) {
         rows[.fans]?.setSpinning(rpm > 0, rpm: rpm)
     }
+
+    /// Colour the Sensors glyph by the hottest thing on the machine, and pulse it
+    /// once that is genuinely hot.
+    func setTemperature(_ celsius: Double?) {
+        rows[.sensors]?.setTemperature(celsius)
+    }
+
+    /// Point the Network glyph at the link actually carrying the traffic.
+    func setNetworkKind(_ kind: NetworkInventory.Kind?) {
+        rows[.network]?.setSymbol(kind?.symbolName ?? Lens.network.symbolName)
+    }
+
+    /// Test seams for the two glyphs that change.
+    var isTemperatureAlarming: Bool { rows[.sensors]?.alarmAnimation != nil }
+    var networkSymbolName: String? { rows[.network]?.symbolName }
 
     /// Whether the fan glyph is turning, and how fast. Test seams: the animation
     /// lives on the render server, so there is nothing to observe from here
@@ -336,6 +374,56 @@ final class SidebarView: NSView {
             icon.layer?.animation(forKey: "spin") as? CABasicAnimation
         }
 
+        var alarmAnimation: CABasicAnimation? {
+            icon.layer?.animation(forKey: "alarm") as? CABasicAnimation
+        }
+
+        /// Colour the thermometer by what it is reading, and make it pulse once
+        /// the machine is genuinely hot.
+        ///
+        /// The same scale everything else in the app uses — see
+        /// `LedgerBarView.temperatureInk`, which the Sensors rows, the Resources
+        /// rows and the spread bar all read. A tab that went red at a different
+        /// temperature from the rows inside it would be two opinions.
+        ///
+        /// The PULSE is reserved for critical, and it is the second exception to
+        /// this app not animating on its own. It earns that the way the fan glyph
+        /// does — Core Animation, so the window server pulses it and this process
+        /// never wakes — and unlike the fan it is a state nobody should be in for
+        /// long. A colour alone is easy to miss on a rail you are not looking at.
+        func setTemperature(_ celsius: Double?) {
+            guard lens == .sensors else { return }
+            temperature = celsius
+            restyle()
+            icon.wantsLayer = true
+            guard let layer = icon.layer else { return }
+            let critical = (celsius ?? 0) >= 90
+            guard critical else { return layer.removeAnimation(forKey: "alarm") }
+            guard layer.animation(forKey: "alarm") == nil else { return }
+            let pulse = CABasicAnimation(keyPath: "opacity")
+            pulse.fromValue = 1.0
+            pulse.toValue = 0.35
+            pulse.duration = 0.6
+            pulse.autoreverses = true
+            pulse.repeatCount = .infinity
+            layer.add(pulse, forKey: "alarm")
+        }
+
+        /// The last reading, so `restyle` can re-apply the tint after a theme
+        /// change or a selection without being handed it again.
+        private var temperature: Double?
+
+        /// Swap the glyph, keeping the symbol configuration the rail was built
+        /// with — a resized image blurs where a reconfigured symbol does not.
+        private(set) var symbolName: String = ""
+
+        func setSymbol(_ name: String) {
+            guard name != symbolName else { return }   // NSImage lookup is not free
+            symbolName = name
+            icon.image = NSImage(systemSymbolName: name, accessibilityDescription: lens.title)?
+                .withSymbolConfiguration(.init(pointSize: 15, weight: .medium))
+        }
+
         func setSpinning(_ spinning: Bool, rpm: Double = 0) {
             guard lens == .fans else { return }
             icon.wantsLayer = true
@@ -343,22 +431,20 @@ final class SidebarView: NSView {
             let key = "spin"
             guard spinning else { return layer.removeAnimation(forKey: key) }
 
-            // Scaled hard, and CLAMPED AT BOTH ENDS. A fan at 2500 rpm is 42
-            // turns a second, which at any frame rate is a blur that reads as
-            // broken — this is a needle, not a simulation.
-            //
-            // The chosen scale spans the speeds this hardware actually uses: its
-            // fans idle near 2300 rpm and top out near 7800, which maps to about
-            // 2.6 s and 0.8 s a turn. Both limits are real cases: without the
-            // ceiling a fan reporting 1 rpm took twenty-four minutes to come round
-            // (caught by a test), and without the floor a fast fan is a blur
-            // again.
-            let seconds = min(6, max(0.5, 6000 / max(rpm, 1)))
+            let seconds = SidebarView.glyphTurnSeconds(rpm: rpm)
             if let existing = layer.animation(forKey: key) as? CABasicAnimation,
                abs(existing.duration - seconds) < 0.05 { return }   // already right
 
-            layer.anchorPoint = CGPoint(x: 0.5, y: 0.5)
-            layer.frame = icon.bounds
+            // NOTHING TO CENTRE. A layer-backed NSView already has its anchor in
+            // the middle and its position set from its frame, so
+            // `transform.rotation.z` turns about the centre for free.
+            //
+            // An earlier version set both by hand and moved the glyph 17 pt left,
+            // because `position` is in the SUPERLAYER's coordinate space and it
+            // was being given `icon.bounds.midX` — the icon's own. The icon sits
+            // 17 pt into the rail, so that is exactly how far it slid. Reported as
+            // the fan not being centred, and it was centred before this feature
+            // touched it.
             let turn = CABasicAnimation(keyPath: "transform.rotation.z")
             turn.fromValue = 0
             turn.toValue = -Double.pi * 2   // clockwise on screen
@@ -417,6 +503,13 @@ final class SidebarView: NSView {
         }
 
         private func restyle() {
+            // A hot machine outranks selection. The rail's accent says "this is
+            // the tab you are on", which is a fact the user already knows; the
+            // temperature ink says something they may not.
+            if let t = temperature, t >= 75 {
+                icon.contentTintColor = LedgerBarView.temperatureInk(t)
+                return
+            }
             icon.contentTintColor = isSelected ? Palette.accent : Palette.dim
         }
 
