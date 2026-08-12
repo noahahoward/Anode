@@ -32,16 +32,62 @@ final class SpeedometerView: NSView {
     /// The live figure, or nil for "nothing measured yet" — which draws an empty
     /// dial rather than a confident zero.
     var mbps: Double? { didSet { needsDisplay = true } }
+
+    /// Whether the centre carries a number at all.
+    ///
+    /// False everywhere except during a run, because the rest of the time the
+    /// centre belongs to the button. A finished test does NOT put its result
+    /// here: the exact figure is already in the download tile an inch below, and
+    /// printing it twice buys nothing while costing the room the button needs.
+    /// What the dial keeps saying is the part a number cannot — where that speed
+    /// falls on a scale from a tethered phone to a fibre line.
+    var showsReadout: Bool = false { didSet { needsDisplay = true } }
     /// Shown under the number: "Testing download…", or nothing when idle.
     var phase: String? { didSet { needsDisplay = true } }
 
     override var isFlipped: Bool { false }
 
+    /// How thick the ring is. The track and the fill share it.
+    static let ringWidth: CGFloat = 12
+
+    /// The arc's radius for a given frame — the same arithmetic `draw` uses, so
+    /// anything reasoning about the dial's geometry agrees with what is on screen.
+    static func radius(in bounds: NSRect) -> CGFloat {
+        let box = bounds.insetBy(dx: 18, dy: 12)
+        return min(box.width, box.height) / 2 - 14
+    }
+
+    /// Where the arc's middle actually is, which is NOT the middle of the frame.
+    ///
+    /// `draw` lifts it six points to balance the gap at the bottom of the ring,
+    /// so anything centred on the frame instead sits visibly low inside its own
+    /// arc. Exposed because the button is positioned by Auto Layout against this
+    /// number, and a constant typed from memory is a sign error waiting to
+    /// happen — it was, the first time.
+    static func centre(in bounds: NSRect) -> NSPoint {
+        let box = bounds.insetBy(dx: 18, dy: 12)
+        return NSPoint(x: box.midX, y: box.midY + 6)
+    }
+
+    /// How far the arc's middle sits above the frame's middle.
+    static let centreLift: CGFloat = 6
+
+    /// The clear width inside the ring — what anything placed in the middle has
+    /// to fit within.
+    ///
+    /// Exists because the button now sits there, and "does the label fit inside
+    /// the arc" is a question with a numeric answer that nobody will re-derive
+    /// when they shorten the dial or lengthen a title. `SpeedTestStrip` puts a
+    /// control here; a test holds the two to each other.
+    static func openingWidth(in bounds: NSRect) -> CGFloat {
+        2 * (radius(in: bounds) - ringWidth / 2)
+    }
+
     override func draw(_ dirtyRect: NSRect) {
         let box = bounds.insetBy(dx: 18, dy: 12)
         guard box.width > 40, box.height > 40 else { return }
-        let radius = min(box.width, box.height) / 2 - 14
-        let centre = NSPoint(x: box.midX, y: box.midY + 6)
+        let radius = Self.radius(in: bounds)
+        let centre = Self.centre(in: bounds)
 
         drawTrack(centre: centre, radius: radius)
         if let mbps { drawFill(centre: centre, radius: radius, mbps: mbps) }
@@ -55,7 +101,7 @@ final class SpeedometerView: NSView {
         let path = NSBezierPath()
         path.appendArc(withCenter: centre, radius: radius,
                        startAngle: Self.startAngle, endAngle: Self.endAngle, clockwise: true)
-        path.lineWidth = 12
+        path.lineWidth = Self.ringWidth
         path.lineCapStyle = .round
         Palette.surfaceAlt.setStroke()
         path.stroke()
@@ -68,7 +114,7 @@ final class SpeedometerView: NSView {
         path.appendArc(withCenter: centre, radius: radius,
                        startAngle: Self.startAngle,
                        endAngle: Self.angle(at: f), clockwise: true)
-        path.lineWidth = 12
+        path.lineWidth = Self.ringWidth
         path.lineCapStyle = .round
         Palette.accent.setStroke()
         path.stroke()
@@ -98,6 +144,7 @@ final class SpeedometerView: NSView {
     }
 
     private func drawReadout(centre: NSPoint, radius: CGFloat) {
+        guard showsReadout else { return }
         let number: String
         let unit: String
         if let mbps {
