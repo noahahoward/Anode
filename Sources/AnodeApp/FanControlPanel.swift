@@ -650,7 +650,12 @@ final class FanControlPanel: NSView {
         case .off:
             statusLabel.stringValue = "Fan control is off — macOS is deciding. "
                                     + "The sliders are live readings; take one to turn it on."
-            hintField.stringValue = ""
+            // The orphan warning belongs HERE, in the state that offers to
+            // install. The first version put it in a branch that requires the new
+            // daemon to be installed already — which is precisely the machine that
+            // does not need telling. Reported as the app simply asking to install
+            // the fan helper, with no sign it had noticed the old one.
+            hintField.stringValue = FanDaemon.orphanNote ?? ""
             // NO "Turn On Fan Control" button. It did exactly what grabbing a
             // slider does — same sheet, same setting, and `gesture()` then
             // applies the grab you actually made — so it was a second path to
@@ -687,7 +692,8 @@ final class FanControlPanel: NSView {
             } else {
                 statusLabel.stringValue = "Fan control is on and macOS is deciding. "
                                         + "Take a slider or press ❄︎ and you will be asked to start the helper."
-                hintField.stringValue = Self.startCommand()
+                // Same reason: this is the other state that leads to an install.
+                hintField.stringValue = FanDaemon.orphanNote ?? Self.startCommand()
                 setButtons([("Copy Start Command", #selector(copyCommandTapped)),
                             ("Turn Off", #selector(disableTapped))])
             }

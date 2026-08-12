@@ -166,3 +166,33 @@ final class OrphanedDaemonTests: XCTestCase {
                           "it removes the files before unloading the job")
     }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Where the orphan warning has to appear.
+final class OrphanNoticePlacementTests: XCTestCase {
+
+    /// It must be shown in the states that OFFER TO INSTALL, which is the whole
+    /// point of noticing.
+    ///
+    /// The first version put it in a branch reached only when the new daemon is
+    /// already installed — the one machine that does not need telling. On a
+    /// machine with an old daemon and no new one, the app just asked to install,
+    /// with no sign it had seen anything. Reported exactly that way.
+    ///
+    /// Asserted against the source rather than a rendered panel: the claim is
+    /// about which branch carries it, and the states are a switch over a mode
+    /// that needs a live helper connection to reach.
+    func testTheWarningIsWiredIntoTheStatesThatOfferToInstall() throws {
+        let source = try String(contentsOfFile: FileManager.default.currentDirectoryPath
+            + "/Sources/AnodeApp/FanControlPanel.swift")
+        // The `.off` state — a machine that has never turned fan control on.
+        let offState = try XCTUnwrap(source.range(of: "case .off:"))
+        let afterOff = String(source[offState.upperBound...].prefix(900))
+        XCTAssertTrue(afterOff.contains("orphanNote"),
+                      "the state that offers the install does not mention the old daemon")
+        // And the one that leads to starting a helper by hand.
+        XCTAssertTrue(source.contains("FanDaemon.orphanNote ?? Self.startCommand()"),
+                      "the start-by-hand hint does not mention the old daemon")
+    }
+}
