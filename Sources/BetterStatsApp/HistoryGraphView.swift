@@ -148,6 +148,14 @@ public class HistoryGraphView: NSView {
     /// rather than a coincidence maintained in two places.
     static let sharedAxisTicks: [Double] = [0, 25, 50, 75, 100]
 
+    /// The spans this chart is ever actually asked to show — the range picker's
+    /// four, the Resources panes' fifteen minutes, and the short ones the smaller
+    /// graphs use. A live axis snaps to whichever of these it is within a few
+    /// percent of, so its labels stop moving.
+    static let spanLadder: [TimeInterval] = [
+        60, 300, 900, 1800, 3600, 6 * 3600, 12 * 3600, 86400, 7 * 86400,
+    ]
+
     /// The area wash under a line: dense at the line, effectively gone by the end
     /// of its fade.
     ///
@@ -435,6 +443,13 @@ public class HistoryGraphView: NSView {
     /// a mapping to invert.
     private var lastDomain: (start: Date, end: Date)?
 
+    /// The span the last draw actually used, for tests. The snapping above only
+    /// shows up in what was drawn, so asking the view is the only honest way to
+    /// check a buffer was not stretched to a rung it has no data for.
+    var lastDrawnSpan: TimeInterval? {
+        lastDomain.map { $0.end.timeIntervalSince($0.start) }
+    }
+
     // Axis hysteresis. `stableTop`/`stableBottom` are the currently displayed
     // axis limits. We grow immediately (data must never be silently clipped in
     // autoscale mode) but shrink only when the data has fallen below 45% of the
@@ -669,6 +684,28 @@ public class HistoryGraphView: NSView {
         // jitter.
         let liveEdge = abs(tMax.timeIntervalSinceNow) <= max(5, span * 0.02)
         if span < 1 { span = 60 }
+        // SNAPPED, when the axis is following the data rather than a set domain.
+        //
+        // A live chart's span is the extent of its buffer, and that extent wobbles
+        // by a second or two every tick as the oldest points age past the cutoff.
+        // Two seconds in an hour is a quarter of a pixel and it still showed,
+        // because the tick loop stops as soon as a label falls left of the plot:
+        // at span 3592 the "-1h" tick lands 2.4 pt outside and is not drawn, and
+        // at 3601 it is. Reported as the axis shifting slightly and the -1h marker
+        // occasionally disappearing.
+        //
+        // Worse, the LABEL STEP is chosen from the span too, so a span crossing
+        // 3600 can move the whole set from ten-minute marks to fifteen-minute
+        // ones. Both come from the same wobble.
+        //
+        // Only within a few percent: a buffer holding six minutes must still draw
+        // six minutes rather than being stretched to a quarter of an hour it does
+        // not have.
+        if timeDomain == nil, let rung = Self.spanLadder.first(where: {
+            abs(span - $0) <= $0 * 0.05
+        }) {
+            span = rung
+        }
         let tMin = tMax.addingTimeInterval(-span)
         // Publish the domain this frame actually drew, for the same reason
         // `lastPlot` is published: hover has to invert the EXACT mapping the

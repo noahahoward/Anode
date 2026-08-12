@@ -1598,6 +1598,67 @@ final class RightSeriesFillTests: XCTestCase {
         return render(g, size: NSSize(width: 420, height: 220))
     }
 
+    /// The leftmost time label survives a buffer that is a few seconds short.
+    ///
+    /// THE REPORTED CASE. A live chart's span is its buffer's extent, and that
+    /// wobbles by a second or two every tick as the oldest points age past the
+    /// cutoff. The tick loop stops as soon as a label falls left of the plot, so
+    /// at a span of 3592 s the "-1h" mark lands 2.4 pt outside and vanishes; at
+    /// 3601 it is back. Two seconds in an hour, and plainly visible.
+    ///
+    /// Rendered rather than reasoned about: the claim is that a label is on
+    /// screen, so the test looks for ink in the corner where it belongs.
+    func testTheLeftmostTimeLabelDoesNotFlickerWithTheBuffer() {
+        inTheme(.darkAqua) {
+            let size = NSSize(width: 460, height: 200)
+            func leftLabelInk(spanSeconds: Double) -> CGFloat {
+                let end = Date()
+                let pts = stride(from: 0.0, through: spanSeconds, by: 20).map {
+                    HistoryGraphView.Point(time: end.addingTimeInterval(-spanSeconds + $0),
+                                           value: 40)
+                }
+                let g = HistoryGraphView(frame: .zero)
+                g.translatesAutoresizingMaskIntoConstraints = true
+                g.yMax = 100
+                g.series = [.init(name: "x", color: Palette.accent, points: pts)]
+                // Bottom-left, where the earliest tick label is drawn.
+                return render(g, size: size)
+                    .meanLuminance(in: NSRect(x: 0, y: size.height - 14, width: 46, height: 13))
+            }
+            // A hair under an hour, a hair over, and exactly on it: all three have
+            // to draw the same leftmost label.
+            let short = leftLabelInk(spanSeconds: 3592)
+            let exact = leftLabelInk(spanSeconds: 3600)
+            let over = leftLabelInk(spanSeconds: 3608)
+            // IDENTICAL, not merely similar. Losing one label out of a 46x13 pt
+            // corner moves the mean by about 3 % — measured, 0.0556 against
+            // 0.0572 — so a loose threshold passes with the label missing, which
+            // is exactly what the first version of this test did. Three axes over
+            // the same hour must draw the same thing.
+            XCTAssertGreaterThan(exact, 0.01, "no label was drawn at all")
+            XCTAssertEqual(short, exact, accuracy: 0.0005,
+                           "a buffer eight seconds short drew a different axis")
+            XCTAssertEqual(over, exact, accuracy: 0.0005,
+                           "a buffer eight seconds long drew a different axis")
+        }
+    }
+
+    /// And a genuinely short buffer is NOT stretched to a span it does not have.
+    /// Six minutes of history must draw as six minutes, not as a quarter hour
+    /// with ten empty minutes on the left.
+    func testAShortBufferIsNotStretchedToTheNextRung() {
+        let g = HistoryGraphView(frame: NSRect(x: 0, y: 0, width: 460, height: 200))
+        let end = Date()
+        g.series = [.init(name: "x", color: Palette.accent,
+                          points: stride(from: 0.0, through: 360, by: 20).map {
+                              .init(time: end.addingTimeInterval(-360 + $0), value: 40)
+                          })]
+        g.translatesAutoresizingMaskIntoConstraints = true
+        _ = render(g, size: NSSize(width: 460, height: 200))
+        XCTAssertEqual(g.lastDrawnSpan ?? 0, 360, accuracy: 30,
+                       "six minutes of history was stretched to a rung it has no data for")
+    }
+
     /// TWO SERIES, ONE ANSWER ABOUT WHEN THE MACHINE WAS AWAKE.
     ///
     /// THE REPORTED CASE, with the user's own diagnosis: the dashed line
