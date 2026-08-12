@@ -1929,18 +1929,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
     func refreshTable() {
         if main.table.numberOfRows != rows.count { main.table.noteNumberOfRowsChanged() }
 
-        let visible = main.table.rows(in: main.table.visibleRect)
-        guard visible.length > 0 else { main.table.reloadData(); return }
-
-        for row in visible.lowerBound..<min(visible.upperBound, rows.count) {
+        // Every row view that EXISTS, which is not the same as every row view on
+        // screen: AppKit keeps a margin of them just outside the visible rect and
+        // does not ask for them again when they scroll back in. Refreshing only
+        // what `visibleRect` covers would leave that margin holding the values it
+        // had when it left, ready to be scrolled to. Rows with no view yet need
+        // nothing — they are built through `viewFor`, which configures them.
+        main.table.enumerateAvailableRowViews { rowView, row in
+            guard row >= 0, row < rows.count else { return }
             for (column, col) in main.table.tableColumns.enumerated() {
                 let id = col.identifier.rawValue
-                guard id != ProcessColumns.spacerID else { continue }
-                // `makeIfNecessary: false` is the whole point — a cell that does
-                // not exist yet is one AppKit has not scrolled into view, and
-                // making it here would be the very work being avoided.
-                guard let cell = main.table.view(atColumn: column, row: row,
-                                                 makeIfNecessary: false) as? ProcessCellView
+                guard id != ProcessColumns.spacerID,
+                      let cell = rowView.view(atColumn: column) as? ProcessCellView
                 else { continue }
                 configure(cell, with: rows[row], id: id)
             }
