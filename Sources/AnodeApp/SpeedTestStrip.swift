@@ -195,12 +195,18 @@ final class SpeedTestStrip: NSView {
         let host = SpeedTest.Endpoint.cloudflare.host
         let waiting = max(0, readyAt.timeIntervalSinceNow)
         button.isEnabled = !running && waiting <= 0
+        // Short, because the button is inside the ring now and the opening is
+        // about 126 points across — "Test Internet Speed" measures 135 with its
+        // bezel and would cross the arc on both sides. Nothing is lost: the line
+        // under the dial already names the endpoint and what it will cost.
         button.title = running ? "Testing…"
-            : waiting > 0 ? "Test again in \(Int(waiting.rounded(.up)))s"
-            : "Test Internet Speed"
+            : waiting > 0 ? "Again in \(Int(waiting.rounded(.up)))s"
+            : "Test Speed"
         // The button steps aside for the dial while a test runs — the live number
         // IS the feedback, and a disabled button sitting under it is furniture.
+        // They now occupy the same spot, so exactly one of them is ever visible.
         button.isHidden = running
+        dial.showsReadout = running
 
         if running {
             statusLabel.stringValue = ""
@@ -224,8 +230,13 @@ final class SpeedTestStrip: NSView {
         onLayoutChanged?()
     }
 
-    /// Tall enough for the dial, the button beneath it and the two tiles.
-    var preferredHeight: CGFloat { 300 }
+    /// Tall enough for the dial, the line under it and the two tiles.
+    ///
+    /// Was 300, when the button had a row of its own between the dial and the
+    /// tiles. It does not any more, so the tiles move up by that row and its
+    /// spacing — which is height given back to the graph above on a small
+    /// window, where this strip and the chart are competing for the same inches.
+    var preferredHeight: CGFloat { 268 }
 
     private func build() {
         button.bezelStyle = .rounded
@@ -257,10 +268,17 @@ final class SpeedTestStrip: NSView {
         stack.spacing = 6
         stack.translatesAutoresizingMaskIntoConstraints = false
         stack.addArrangedSubview(dial)
-        stack.addArrangedSubview(button)
         stack.addArrangedSubview(statusLabel)
         stack.addArrangedSubview(tiles)
         addSubview(stack)
+
+        // INSIDE the dial, where the number used to be — not in the stack under
+        // it. The centre of a dial that no longer prints a figure is the largest
+        // empty space on the tab, and a button in its own row below was pushing
+        // the two result tiles down for no reason. Putting the control where the
+        // reading was also says what the dial is for.
+        button.translatesAutoresizingMaskIntoConstraints = false
+        dial.addSubview(button)
 
         NSLayoutConstraint.activate([
             stack.leadingAnchor.constraint(equalTo: leadingAnchor),
@@ -268,6 +286,15 @@ final class SpeedTestStrip: NSView {
             stack.topAnchor.constraint(equalTo: topAnchor),
             dial.widthAnchor.constraint(equalTo: stack.widthAnchor),
             dial.heightAnchor.constraint(equalToConstant: 190),
+            // NEGATIVE, and that sign is the whole subtlety. `draw` puts the
+            // arc's centre six points ABOVE the frame's, to balance the gap at
+            // the bottom of the ring — but Auto Layout's `centerY` constant runs
+            // top-down here regardless of the view being unflipped, so a positive
+            // constant moves the button down. Written the other way first, which
+            // put it twelve points off the middle of its own arc.
+            button.centerXAnchor.constraint(equalTo: dial.centerXAnchor),
+            button.centerYAnchor.constraint(equalTo: dial.centerYAnchor,
+                                            constant: -SpeedometerView.centreLift),
             tiles.widthAnchor.constraint(equalTo: stack.widthAnchor),
             tiles.heightAnchor.constraint(equalToConstant: 56),
             divider.widthAnchor.constraint(equalToConstant: 1),

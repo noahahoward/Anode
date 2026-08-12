@@ -318,3 +318,77 @@ final class WindowWorthDrawingTests: XCTestCase {
         XCTAssertFalse(AppPresence.windowIsWorthDrawing(isOpen: false, isOnScreen: false))
     }
 }
+
+/// The button sits INSIDE the dial now, so its label has to fit inside the ring.
+///
+/// This was worked out once with a ruler: "Test Internet Speed" measures about
+/// 135 points with its bezel against an opening of about 126, so it crossed the
+/// arc on both sides and had to be shortened. That is exactly the kind of fact
+/// that gets undone by someone lengthening a title or shrinking the dial, with
+/// nothing failing to tell them — the button would simply start overlapping the
+/// arc, which reads as a rendering bug rather than a layout one.
+final class SpeedDialOpeningTests: XCTestCase {
+
+    /// Matches the height `SpeedTestStrip` constrains the dial to.
+    private let dialFrame = NSRect(x: 0, y: 0, width: 260, height: 190)
+
+    /// Every title the button can carry, at the font it carries them in.
+    private let titles = ["Test Speed", "Again in 52s", "Again in 120s", "Testing…"]
+
+    /// A rounded NSButton adds roughly this much padding around its title.
+    private let bezelPadding: CGFloat = 24
+
+    func testEveryButtonTitleFitsInsideTheRing() {
+        let opening = SpeedometerView.openingWidth(in: dialFrame)
+        XCTAssertGreaterThan(opening, 0, "the dial has no usable middle")
+        let font = NSFont.systemFont(ofSize: 12)
+        for title in titles {
+            let width = (title as NSString).size(withAttributes: [.font: font]).width
+                      + bezelPadding
+            XCTAssertLessThanOrEqual(
+                width, opening,
+                "\"\(title)\" is \(Int(width))pt wide against a \(Int(opening))pt "
+                + "opening — it will cross the arc")
+        }
+    }
+
+    /// The button sits on the ARC's middle, not the frame's.
+    ///
+    /// `draw` lifts the arc six points to balance the gap at the bottom of the
+    /// ring, and Auto Layout's centerY constant runs the other way — so the
+    /// obvious constant puts the button twelve points off centre inside its own
+    /// arc, which reads as sloppy rather than as broken and would ship.
+    func testTheButtonIsCentredOnTheArcAndNotOnTheFrame() {
+        let strip = SpeedTestStrip(frame: NSRect(x: 0, y: 0, width: 330, height: 268))
+        strip.layoutSubtreeIfNeeded()
+
+        guard let dial = strip.firstDescendant(of: SpeedometerView.self),
+              let button = dial.subviews.compactMap({ $0 as? NSButton }).first
+        else { return XCTFail("the button is not inside the dial") }
+
+        let wanted = SpeedometerView.centre(in: dial.bounds)
+        XCTAssertEqual(button.frame.midX, wanted.x, accuracy: 0.5,
+                       "the button is off the arc's horizontal centre")
+        XCTAssertEqual(button.frame.midY, wanted.y, accuracy: 0.5,
+                       "the button is off the arc's vertical centre — check the sign")
+    }
+
+    /// The height governs the dial at any width the pane realistically gets, so
+    /// a narrow window shrinks the arc no further than a wide one does.
+    func testTheOpeningDoesNotDependOnPaneWidth() {
+        let narrow = SpeedometerView.openingWidth(in: NSRect(x: 0, y: 0, width: 240, height: 190))
+        let wide = SpeedometerView.openingWidth(in: NSRect(x: 0, y: 0, width: 900, height: 190))
+        XCTAssertEqual(narrow, wide, accuracy: 0.01)
+    }
+}
+
+private extension NSView {
+    /// First descendant of a type, for tests that need to reach into a built view.
+    func firstDescendant<T: NSView>(of type: T.Type) -> T? {
+        for sub in subviews {
+            if let hit = sub as? T { return hit }
+            if let deeper = sub.firstDescendant(of: type) { return deeper }
+        }
+        return nil
+    }
+}
