@@ -139,6 +139,13 @@ final class FanControlPanel: NSView {
     /// only by counting what was actually built — asserting that the source
     /// contains the line meant to hide them proved exactly nothing the last time.
     var controlRowCount: Int { fanRows.arrangedSubviews.count }
+
+    /// Is this app holding a fan right now?
+    ///
+    /// Read by the sampler, which re-reads fan speed every tick while it is true
+    /// — a held fan's rpm is the feedback for a control the user has hold of, not
+    /// a reading that can wait five seconds.
+    var isDriving: Bool { session.isDriving }
     private let buttonRow = NSStackView()
     /// Shown only on a machine where one knob could drive every fan.
     private let syncToggle = NSButton()

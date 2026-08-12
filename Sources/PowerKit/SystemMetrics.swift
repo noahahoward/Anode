@@ -693,6 +693,21 @@ public final class SystemMetrics {
     private var lastSensors: (cpu: Double?, gpu: Double?, fans: [FanInfo], at: Date)?
     private let sensorInterval: TimeInterval = 5
 
+    /// This app is holding a fan, so its speed is FEEDBACK rather than telemetry.
+    ///
+    /// The five-second sensor cache is right for temperatures — they move slowly
+    /// and a sweep is ~540 IOKit round trips. It is wrong for a number the user
+    /// is at that moment changing with a slider: reported as dragging to full
+    /// speed and watching the rpm arrive four seconds later, which reads as the
+    /// control not working rather than as a stale reading.
+    ///
+    /// The fans alone cost four keys each — measured 1.5 ms wall / 0.16 ms CPU
+    /// against 80.6 ms / 9.48 ms for the full sweep — so they can be re-read on
+    /// every tick while this is set without going near the cache's reason for
+    /// existing. Everything else on the tab stays on the five seconds it is happy
+    /// with.
+    public var fansAreDriven = false
+
     public init() {}
 
     /// Which subsystems a caller actually needs this tick.
@@ -720,7 +735,10 @@ public final class SystemMetrics {
 
         if needs.contains(.sensors) {
             if let last = lastSensors, Date().timeIntervalSince(last.at) < sensorInterval {
-                cpuTemp = last.cpu; gpuTemp = last.gpu; fans = last.fans
+                cpuTemp = last.cpu; gpuTemp = last.gpu
+                // The temperatures keep the cached value; the fans do not, while
+                // the user is driving them. See `fansAreDriven`.
+                fans = fansAreDriven ? Sensors.fansNow() : last.fans
             } else {
                 // ONE sweep, three figures. These used to be three separate
                 // calls, and each one re-reads every classified SMC key and
@@ -758,7 +776,10 @@ public final class SystemMetrics {
 
         if includeSensors {
             if let last = lastSensors, Date().timeIntervalSince(last.at) < sensorInterval {
-                cpuTemp = last.cpu; gpuTemp = last.gpu; fans = last.fans
+                cpuTemp = last.cpu; gpuTemp = last.gpu
+                // The temperatures keep the cached value; the fans do not, while
+                // the user is driving them. See `fansAreDriven`.
+                fans = fansAreDriven ? Sensors.fansNow() : last.fans
             } else {
                 // ONE sweep, three figures. These used to be three separate
                 // calls, and each one re-reads every classified SMC key and

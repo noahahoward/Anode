@@ -924,6 +924,9 @@ final class FansPane: SystemPane {
     }
     required init?(coder: NSCoder) { fatalError() }
 
+    /// Is the strip holding a fan? See `SystemMetrics.fansAreDriven`.
+    var isDrivingFans: Bool { control.isDriving }
+
     /// The app is quitting. See `FanControlPanel.teardown` — closing the socket
     /// is what hands the fans back.
     func teardown() { control.teardown() }
