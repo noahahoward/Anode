@@ -371,13 +371,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
             Settings.shared.observe(Settings.Key.sampleInterval) { [weak self] in
                 DispatchQueue.main.async {
                     guard let self else { return }
-                    self.restartTimer(hidden: !self.main.window.isVisible)
+                    self.restartTimer(hidden: !self.windowIsWorthDrawing)
                 }
             })
         settingsTokens.append(
             Settings.shared.observe(Settings.Key.menuBarWidgetsEnabled) { [weak self] in
                 self?.applyMenuBarSwitch()
             })
+
+        // Uncovering the window has to wake the sampler NOW, not up to eight
+        // seconds later. AppKit posts this the moment a window is covered or
+        // revealed, so the cadence follows the window rather than a poll — and
+        // the immediate refresh means a window brought forward is already
+        // current when it lands rather than showing the last background tick.
+        NotificationCenter.default.addObserver(
+            forName: NSWindow.didChangeOcclusionStateNotification,
+            object: main.window, queue: .main) { [weak self] _ in
+                guard let self else { return }
+                let awake = self.windowIsWorthDrawing
+                self.restartTimer(hidden: !awake)
+                if awake { self.refresh() }
+            }
         // The trailing-window column is TITLED from this setting, so a change has to
         // reach the header. Without it the column would keep saying "10 HR POWER"
         // over a two-hour figure.
@@ -416,6 +430,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         widgets.setEnabled(on)
         guard !main.window.isVisible else { return }
         NSApp.setActivationPolicy(AppPresence.policyWithWindowHidden(widgetsEnabled: on))
+    }
+
+    /// Whether the window is open AND actually on screen — see `AppPresence`.
+    /// A window covered by another app is worth exactly as much work as a closed
+    /// one, which is the light tick and the menu bar.
+    var windowIsWorthDrawing: Bool {
+        AppPresence.windowIsWorthDrawing(
+            isOpen: main.window.isVisible,
+            isOnScreen: main.window.occlusionState.contains(.visible))
     }
 
     /// Tick cadence while the window is hidden.
@@ -459,7 +482,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
     func refresh() {
         guard let m = monitor else { return }
         // Read visibility on the main thread; AppKit state is not thread-safe.
-        let visible = main.window.isVisible
+        let visible = windowIsWorthDrawing
         // Read beside it, for the same reason the interval is: one value used by
         // the whole tick, so logging cannot be on for the sweep and off for the
         // write within a single sample.
