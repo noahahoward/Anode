@@ -228,6 +228,53 @@ public class HistoryGraphView: NSView {
     /// depends on one series being "above" another for the whole span.
     private var filledSoFar = NSBezierPath()
 
+    /// When the machine was not observed, decided ONCE for the whole chart.
+    ///
+    /// A gap is a fact about the MACHINE — was anything watching? — and not about
+    /// a particular line. Every series here comes from one sampler on one tick, so
+    /// they are absent together and present together.
+    ///
+    /// They used to decide separately, each from its own spacing, and the drain
+    /// line has by far the patchier record: it is dropped whenever a reading is
+    /// missing, where the charge level is available on every tick that happens at
+    /// all. So during a sleep the drain line found gaps the charge line did not,
+    /// broke into short runs between them, and those runs drew in the series
+    /// colour — which is what "the dashed lines occasionally turn green" was.
+    /// Reported with the diagnosis attached: it never happened to the battery
+    /// level, only the drain.
+    ///
+    /// Taken from the UNION of every series' samples: if anything was recorded at
+    /// an instant, the machine was awake at that instant, whatever one line had to
+    /// say about it.
+    private var observedGaps: [(start: Date, end: Date)] = []
+
+    /// The union of every series' sample times, sorted — the record of when this
+    /// machine was being watched.
+    private func recomputeObservedGaps() {
+        var times: [Date] = sanitized.flatMap { $0.points.map(\.time) }
+        if let r = rightSeries { times += Self.sanitize(r.points).map(\.time) }
+        times.sort()
+        // One point per instant: two series sampling together would otherwise
+        // halve every delta and make the cadence look twice as fast as it is.
+        var merged: [Point] = []
+        for t in times where merged.last.map({ t.timeIntervalSince($0.time) > 0.001 }) ?? true {
+            merged.append(Point(time: t, value: 0))
+        }
+        observedGaps = Self.gapSpans(in: merged)
+    }
+
+    /// The gaps this chart decided on, for tests. Recomputed on draw, so a test
+    /// asks after setting the series rather than after rendering.
+    var observedGapsForTesting: [(start: Date, end: Date)] {
+        recomputeObservedGaps()
+        return observedGaps
+    }
+
+    /// Whether the machine went unobserved between two instants.
+    private func wasUnobserved(between a: Date, and b: Date) -> Bool {
+        observedGaps.contains { $0.start >= a && $0.start < b }
+    }
+
     public var rightAxisUnit: String = "%" {
         didSet { if rightAxisUnit != oldValue { needsDisplay = true } }
     }
@@ -473,6 +520,7 @@ public class HistoryGraphView: NSView {
         // Cleared per pass: this records what has been filled during THIS draw,
         // and a path kept across frames would clip against last frame's shapes.
         filledSoFar = NSBezierPath()
+        recomputeObservedGaps()
         guard let ctx = NSGraphicsContext.current?.cgContext else { return }
         ctx.setShouldAntialias(true)
 
@@ -884,7 +932,7 @@ public class HistoryGraphView: NSView {
             // HOISTED. This was `Self.gapLimit(for: pts)` INSIDE the loop below,
             // so a 700-bucket draw sorted 700 deltas 700 times — on every frame,
             // in an app whose premise is not costing what it measures.
-            let gaps = Self.gapSpans(in: pts)
+            let gaps = observedGaps
             var lastFilled = -1
             var lastFilledTime = t0
             for (i, b) in buckets.enumerated() where b.n > 0 {
@@ -915,9 +963,9 @@ public class HistoryGraphView: NSView {
             // either blind on one and trigger-happy on the other. Four times the
             // median tolerates ordinary jitter and a dropped tick; the 90 s floor
             // stops a dense live series breaking on a single slow frame.
-            let breaks = Self.breaks(in: pts)
             for (i, p) in pts.enumerated() {
-                if i > 0, breaks[i - 1], !runs[runs.count - 1].isEmpty {
+                if i > 0, wasUnobserved(between: pts[i - 1].time, and: p.time),
+                   !runs[runs.count - 1].isEmpty {
                     runs.append([])
                 }
                 runs[runs.count - 1].append((xFor(p.time), yFor(p.value)))
@@ -1240,7 +1288,6 @@ public class HistoryGraphView: NSView {
             // its own inline version of the old global-median rule, so the charge
             // line broke wherever the rate line did — including at all 25 of the
             // phantom holes.
-            let breaks = Self.breaks(in: pts)
 
             // The gradient, before the line so the stroke sits on top of its own
             // wash — and in the SAME ink as the segment above it, which is why
@@ -1304,6 +1351,22 @@ public class HistoryGraphView: NSView {
                 func flush() {
                     defer { span.removeAll() }
                     guard span.count >= 2 else { return }
+                    // A WASH NEEDS SOMETHING TO BE A WASH OVER.
+                    //
+                    // A fill says "across this period". A period one or two
+                    // samples wide has no extent, and filling it draws a narrow
+                    // vertical block from the line to the floor — which is what a
+                    // machine asleep produces, since it wakes briefly every few
+                    // minutes and each wake is an island between two gaps. The
+                    // result was a row of green columns standing in the middle of
+                    // an hour the machine spent asleep, reading as data where
+                    // there is almost none.
+                    //
+                    // The line and its endpoints still draw. The reading is not
+                    // being hidden; it is being drawn as the point it is rather
+                    // than as a span it is not.
+                    let width = (span.map(\.x).max() ?? 0) - (span.map(\.x).min() ?? 0)
+                    guard width >= 6 else { return }
                     let area = NSBezierPath()
                     area.move(to: span[0])
                     for pt in span.dropFirst() { area.line(to: pt) }
@@ -1331,7 +1394,9 @@ public class HistoryGraphView: NSView {
                     // A break is a span the machine was not observed across, and a
                     // wash drawn over it claims a level nobody measured — the same
                     // reason the line itself stops there.
-                    if breaks[i] { flush(); continue }
+                    if wasUnobserved(between: pts[i].time, and: pts[i + 1].time) {
+                        flush(); continue
+                    }
                     let isCharging = charging[i] && charging[i + 1]
                     if span.isEmpty {
                         spanCharging = isCharging
@@ -1360,7 +1425,7 @@ public class HistoryGraphView: NSView {
             for i in 0..<(pts.count - 1) {
                 // Skip the segment entirely across a gap, and force the next
                 // segment to start a fresh path rather than continuing this one.
-                if breaks[i] {
+                if wasUnobserved(between: pts[i].time, and: pts[i + 1].time) {
                     gapBridges.append((
                         NSPoint(x: xFor(pts[i].time), y: yForRight(pts[i].value)),
                         NSPoint(x: xFor(pts[i + 1].time), y: yForRight(pts[i + 1].value))))

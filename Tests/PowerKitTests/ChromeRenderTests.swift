@@ -1598,6 +1598,57 @@ final class RightSeriesFillTests: XCTestCase {
         return render(g, size: NSSize(width: 420, height: 220))
     }
 
+    /// TWO SERIES, ONE ANSWER ABOUT WHEN THE MACHINE WAS AWAKE.
+    ///
+    /// THE REPORTED CASE, with the user's own diagnosis: the dashed line
+    /// occasionally turned green, and it never happened to the battery level —
+    /// only to the drain.
+    ///
+    /// The reason is that the drain line has the patchier record. It is dropped
+    /// whenever a reading is missing, where the charge level is there on every
+    /// tick that happens at all. Deciding gaps per series, the drain found breaks
+    /// the charge did not, split into short runs between them, and those runs
+    /// drew in the series colour — green segments in the middle of a span that
+    /// was supposed to read as unobserved.
+    ///
+    /// A gap is a fact about the MACHINE. Both lines come from one sampler on one
+    /// tick, so they are absent together, and the decision is taken once from
+    /// every sample either of them has.
+    func testBothSeriesBreakInTheSamePlaces() {
+        let end = Date()
+        // The charge line: sampled steadily right across the window.
+        let charge = (0..<60).map {
+            HistoryGraphView.Point(time: end.addingTimeInterval(-3600 + Double($0) * 60),
+                                   value: 80, onPower: true)
+        }
+        // The drain line: the same window, but missing a stretch in the middle —
+        // readings it could not produce, not time the machine was away.
+        let drain = charge.enumerated()
+            .filter { $0.offset < 20 || $0.offset > 32 }
+            .map { HistoryGraphView.Point(time: $0.element.time, value: 30) }
+
+        let g = HistoryGraphView(frame: NSRect(x: 0, y: 0, width: 420, height: 220))
+        g.yMax = 100
+        g.series = [.init(name: "drain", color: Palette.accent, points: drain, filled: true)]
+        g.rightSeries = .init(name: "charge", color: Palette.chargeLine,
+                              points: charge, filled: true)
+
+        // The union says the machine was observed throughout — the charge line
+        // covers the drain's missing stretch — so NOTHING breaks.
+        XCTAssertTrue(g.observedGapsForTesting.isEmpty,
+                      "a stretch one series covered was still called an absence")
+
+        // And when the machine really is away, both lose the same span.
+        let asleep = charge.filter { $0.time < end.addingTimeInterval(-1800)
+                                  || $0.time > end.addingTimeInterval(-600) }
+        g.series = [.init(name: "drain", color: Palette.accent,
+                          points: asleep.map { .init(time: $0.time, value: 30) }, filled: true)]
+        g.rightSeries = .init(name: "charge", color: Palette.chargeLine,
+                              points: asleep, filled: true)
+        XCTAssertEqual(g.observedGapsForTesting.count, 1,
+                       "a real twenty-minute absence was not found")
+    }
+
     /// The BATTERY's exact configuration: a shared 0-100 scale and an autoscaled
     /// left axis. The plain case above passes, so if this one does not, the
     /// difference is in how a shared-scale graph reaches its right series.
