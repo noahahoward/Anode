@@ -376,9 +376,22 @@ final class FanControlPanel: NSView {
         // five-second reconnect tick, which is a long time to hold a slider and
         // watch a fan not move.
         if installed {
-            session.helperBecame(.absent)
+            // STAY IN `.starting`. This used to drop to `.absent` first, to get
+            // out of a state the reconnect poll owns — and `helperBecame` clears
+            // the pending request for anything that is not `.starting`, which is
+            // correct for it and fatal here. The knob showed the asked-for speed,
+            // the connect round-tripped in about a tenth of a second, and by the
+            // time the helper answered there was nothing left to send. Reported
+            // as: it goes there, stays a moment, then snaps back.
+            //
+            // Nothing needs the intermediate state. `attemptConnect` is called
+            // directly rather than through the poll, a successful connect flushes
+            // what is pending, and the deadline below is what gives up if the
+            // socket is dead despite the daemon being installed.
             say(FanDaemon.summary(daemonState))
             lastConnectAttempt = .distantPast
+            startDeadline = Date().addingTimeInterval(Self.startTimeout)
+            beginPolling()
             return attemptConnect()
         }
         let command = Self.startCommand()

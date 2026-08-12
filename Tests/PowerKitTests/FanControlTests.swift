@@ -1474,3 +1474,53 @@ final class FanDisclosureTests: XCTestCase {
                       "switching the feature off made the app forget it had explained itself")
     }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// What survives a change of helper state, which is where a queued request can
+/// quietly go missing.
+final class FanPendingSurvivalTests: XCTestCase {
+
+    private let limits = FanPolicy.Limits(minRPM: 2317, maxRPM: 7826)
+
+    /// A request survives the wait and is SENT when the helper answers.
+    ///
+    /// This is the contract the panel leaned on and then broke: it dropped to
+    /// `.absent` on its way to reconnecting, which is exactly the transition that
+    /// throws a queued request away.
+    func testAQueuedRequestIsSentWhenTheHelperConnects() {
+        var s = FanSession(enabled: true)
+        _ = s.apply(.setSpeed(index: 0, rpm: 5000, limits: limits))
+        XCTAssertEqual(s.asked(0), 5000, "the request was not queued")
+
+        let commands = s.helperBecame(.connected(fanCount: 2))
+        XCTAssertEqual(commands.count, 1, "the queued request was never sent")
+        if case .setTarget(let t)? = commands.first {
+            XCTAssertEqual(t.rpm, 5000)
+            XCTAssertEqual(t.index, 0)
+        } else {
+            XCTFail("expected a setTarget, got \(String(describing: commands.first))")
+        }
+    }
+
+    /// And going to `.absent` DOES drop it — which is right, and is why the panel
+    /// must not pass through that state on its way somewhere else.
+    ///
+    /// A request nothing was ever told about should not sit on a knob claiming to
+    /// be in effect. The rule is sound; the misuse was routing through it.
+    func testGoingAbsentDropsTheRequestOnPurpose() {
+        var s = FanSession(enabled: true)
+        _ = s.apply(.setSpeed(index: 0, rpm: 5000, limits: limits))
+        _ = s.helperBecame(.absent)
+        XCTAssertNil(s.asked(0), "a request survived a helper that never started")
+    }
+
+    /// Staying in `.starting` keeps it, which is what makes reconnecting safe.
+    func testStayingInStartingKeepsTheRequest() {
+        var s = FanSession(enabled: true)
+        _ = s.apply(.setSpeed(index: 0, rpm: 5000, limits: limits))
+        _ = s.helperBecame(.starting)
+        XCTAssertEqual(s.asked(0), 5000,
+                       "waiting longer for the helper threw away what was queued")
+    }
+}
