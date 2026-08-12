@@ -492,6 +492,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         let needs = visible ? visibleNeeds : hiddenNeeds
         // Match the cadence to who is actually reading.
         restartTimer(hidden: !visible)
+        // The two animations that are not a response to the user keep running on
+        // their layers until told otherwise, and a covered window still has its
+        // layers. Idempotent, so it can sit on the tick rather than needing every
+        // path that can hide a window to remember it.
+        if !visible { main.sidebar.pauseSelfRunningAnimations() }
 
         // One tick at a time, on one queue. A tick arriving while the previous one
         // is still running is dropped, not queued and not run beside it.

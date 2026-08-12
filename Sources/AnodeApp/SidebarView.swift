@@ -353,6 +353,25 @@ final class SidebarView: NSView {
         rows[.network]?.setSymbol(kind?.symbolName ?? Lens.network.symbolName)
     }
 
+    /// Stop the two animations that run on their own.
+    ///
+    /// Everything else in this app moves because the pointer moved, and stops on
+    /// its own within ~120 ms — see `Motion`. These two do not: the fan glyph
+    /// turns for as long as the fans turn, and the sensors glyph pulses for as
+    /// long as something is hot. Both are installed on a layer and keep running
+    /// until removed, so a window that stops being drawn has to say so.
+    ///
+    /// Closing the window used to be enough on its own, because the layer tree
+    /// went with it. A COVERED window still has its layers, so this is the case
+    /// that needed saying out loud.
+    ///
+    /// There is no matching resume: the next `apply` sets both from live
+    /// readings, and revealing the window refreshes immediately.
+    func pauseSelfRunningAnimations() {
+        rows[.fans]?.setSpinning(false)
+        rows[.sensors]?.setTemperature(nil)
+    }
+
     /// Test seams for the two glyphs that change.
     var isTemperatureAlarming: Bool { rows[.sensors]?.alarmAnimation != nil }
 
