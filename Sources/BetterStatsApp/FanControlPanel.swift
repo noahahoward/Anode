@@ -873,7 +873,10 @@ final class FanControlPanel: NSView {
         // drag under sync sets them all, but a fan can be refused on its own — and
         // a knob showing one of two different numbers would be a claim the strip
         // cannot back up.
-        let asked = usable.map { session.asked($0.index) }
+        // `pendingWish` first, for the same reason the per-fan reading does it:
+        // while the consent sheet is up it is the only record of the drag, and the
+        // session has none yet by design.
+        let asked = usable.map { pendingWish[$0.index] ?? session.asked($0.index) }
         let agreed: Double? = {
             guard let first = asked.first ?? nil, asked.allSatisfy({ $0 == first }) else { return nil }
             return first
@@ -927,7 +930,16 @@ final class FanControlPanel: NSView {
     private func applyToEveryFan(_ make: (FanInfo) -> FanSession.Gesture) {
         let usable = drivable(fans).fans
         guard !usable.isEmpty else { return }
-        guard ensureFanControlIsOn() else { return render() }
+        // THE SAME HOLD THE PER-FAN PATH DOES, and this is the path a two-fan
+        // machine actually uses: sync is on by default, so its knob is the one
+        // most people drag. The first fix patched `gesture` and this route never
+        // goes through it — reported as the knob still returning to the old rpm.
+        for f in usable {
+            wanted(from: make(f)).map { pendingWish[$0.index] = $0.rpm }
+        }
+        let agreed = ensureFanControlIsOn()
+        pendingWish.removeAll()
+        guard agreed else { return render() }
         for f in usable { perform(session.apply(make(f))) }
     }
 
