@@ -350,6 +350,8 @@ public final class PowerMonitor {
 
     public let scale: BatteryScale
     private var lastSweep: ProcessSampler.Sweep?
+    /// Confined to the sampling queue, which is serial — see `IdentityCache`.
+    private let identities = ProcessSampler.IdentityCache()
     /// Awake-clock reading taken with `lastSweep`. Stored alongside it because a
     /// wall-clock interval on its own cannot tell nine hours of work from nine
     /// hours of sleep — see `straddlesGap`.
@@ -498,7 +500,7 @@ public final class PowerMonitor {
     ///   consumer of idle CPU in the whole app, by roughly forty to one over the
     ///   next item.
     public func tick(full: Bool = true, attribution: Bool = true) -> Snapshot? {
-        let sweep = full ? ProcessSampler.sweep() : nil
+        let sweep = full ? ProcessSampler.sweep(reusing: identities) : nil
         // Skipped on light ticks: the menu bar shows the whole-system total from
         // PSTR and never the GPU rail, so differencing 314 channels would be work
         // done for a number nobody reads.
@@ -644,7 +646,8 @@ public final class PowerMonitor {
             // id alone lets exactly the overlapping population through twice.
             // Names of every process that currently exists, so a quit app cannot
             // be handed present-tense power from an hour-old rollup.
-            let living = Set(ProcessSampler.runningNames().map { $0.lowercased() })
+            let living = ProcessSampler.LivingNames(
+                ProcessSampler.runningNames().lazy.map { $0.lowercased() })
             let known = SystemAttribution.Attributed(
                 bundleIDs: Set(apps.compactMap { $0.identity.bundleID }),
                 names: Set(apps.map { $0.name }))

@@ -287,7 +287,7 @@ final class SystemAttributionTests: XCTestCase {
     func testALiveDaemonIsNotStruckFromTheLedger() {
         let all = padded([usage("com.apple.WindowServer", cpu: 6295),
                           usage("com.apple.Batteries.BatteriesAvocadoWidgetExtension", cpu: 17)])
-        let living: Set<String> = ["windowserver", "batteriesavocado"]
+        let living: ProcessSampler.LivingNames = ["windowserver", "batteriesavocado"]
 
         let rows = SystemAttribution.apportion(
             watts: 10, among: all, by: .cpuTime,
@@ -332,5 +332,64 @@ final class SystemAttributionTests: XCTestCase {
         try XCTSkipIf(running.isEmpty, "cannot enumerate processes here")
         XCTAssertTrue(running.contains("windowserver"),
                       "root-owned daemons must be visible; got \(running.count) names")
+    }
+}
+
+/// `LivingNames` replaced a linear scan over every living process because that
+/// scan was a third of the sampling queue's CPU. It is an optimisation, so the
+/// only thing worth testing is that it did not change a single answer — a false
+/// "dead" here deletes a live process's power and redistributes it, silently.
+final class LivingNamesEquivalenceTests: XCTestCase {
+
+    /// The exact expression `LivingNames` replaced, kept verbatim as the oracle.
+    private func scan(_ displayName: String, in running: Set<String>) -> Bool {
+        let n = displayName.lowercased()
+        if running.contains(n) { return true }
+        return running.contains { $0.count >= 15 && n.hasPrefix($0) }
+    }
+
+    /// Names chosen to sit on every boundary the floor creates: 14, 15 and 16
+    /// characters, shared prefixes either side of it, case differences, an empty
+    /// string, and multi-byte graphemes where `count` and byte length disagree.
+    private let names = [
+        "", "secd", "secdiagnosticd", "WindowServer", "windowserver",
+        "com.apple.Wind", "com.apple.Windo", "com.apple.Window",
+        "com.apple.WindowServer", "com.apple.WindowManager",
+        "BatteriesAvocado", "BatteriesAvocadoWidgetExtension",
+        "abcdefghijklmn", "abcdefghijklmno", "abcdefghijklmnop",
+        "café-très-longue-name", "café-très-long", "🧑‍🚀astronautd-daemon",
+    ]
+
+    func testTheIndexAgreesWithTheScanOnEveryPair() {
+        let population = Set(names.map { $0.lowercased() })
+        // Every subset would be 2^18; sample structurally instead — singletons,
+        // the whole population, and each name paired with every other.
+        var sets: [Set<String>] = [[], population]
+        for a in population {
+            sets.append([a])
+            for b in population { sets.append([a, b]) }
+        }
+        for running in sets {
+            let index = ProcessSampler.LivingNames(running)
+            for candidate in names {
+                XCTAssertEqual(index.matches(candidate), scan(candidate, in: running),
+                               "disagreed on \"\(candidate)\" against \(running.sorted())")
+            }
+        }
+    }
+
+    func testEmptinessMatchesTheSetItWasBuiltFrom() {
+        XCTAssertTrue(ProcessSampler.LivingNames([]).isEmpty)
+        XCTAssertFalse(ProcessSampler.LivingNames([""]).isEmpty)
+        XCTAssertFalse(ProcessSampler.LivingNames(["secd"]).isEmpty)
+    }
+
+    /// A name at exactly the floor is the case the bucketing has to get right:
+    /// it is long enough to be a truncation, so it must match longer names.
+    func testTheTruncationFloorStillGoverns() {
+        let atFloor = String(repeating: "a", count: ProcessSampler.LivingNames.truncationFloor)
+        let below = String(atFloor.dropLast())
+        XCTAssertTrue(ProcessSampler.LivingNames([atFloor]).matches(atFloor + "Extension"))
+        XCTAssertFalse(ProcessSampler.LivingNames([below]).matches(below + "Extension"))
     }
 }

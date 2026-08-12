@@ -20,6 +20,9 @@ import Foundation
 /// time, each by the quantity it actually is.
 public final class SystemAttribution {
 
+    /// The set of currently-running process names, prepared for repeated matching.
+    public typealias LivingNames = ProcessSampler.LivingNames
+
     /// One named share of a measured bucket. `isModeled` is always true: the
     /// total is measured, this row's slice of it is apportioned, and the
     /// distinction has to survive all the way to the UI.
@@ -190,7 +193,7 @@ public final class SystemAttribution {
     public func apportion(watts: Double,
                           by weight: Weight,
                           excluding attributed: Attributed,
-                          living: Set<String> = [],
+                          living: LivingNames = [],
                           scale: BatteryScale,
                           minimumShare: Double = 0.01) -> [Row] {
         Self.apportion(watts: watts, among: latest, by: weight,
@@ -217,7 +220,7 @@ public final class SystemAttribution {
                                  among all: [CoalitionUsage],
                                  by weight: Weight,
                                  excluding attributed: Attributed,
-                                 living: Set<String> = [],
+                                 living: LivingNames = [],
                                  scale: BatteryScale,
                                  minimumShare: Double = 0.01) -> [Row] {
         guard watts > 0, all.count >= minimumCoalitions else { return [] }
@@ -238,8 +241,8 @@ public final class SystemAttribution {
             guard !living.isEmpty else { return true }
             // Prefix-aware, because the names come from `p_comm`, truncated at
             // 16 characters. Comparing for equality silently dropped every
-            // long-named process — see `ProcessSampler.nameMatches`.
-            return ProcessSampler.nameMatches($0.displayName, in: living)
+            // long-named process — see `ProcessSampler.LivingNames`.
+            return living.matches($0.displayName)
         }
         // The weight is a RATE, not the window's total.
         //

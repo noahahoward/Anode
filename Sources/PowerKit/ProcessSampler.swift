@@ -123,12 +123,60 @@ public enum ProcessSampler {
     /// slightly. A false "dead" deletes a live process's power and redistributes
     /// it, which is what actually went wrong.
     public static func nameMatches(_ displayName: String, in running: Set<String>) -> Bool {
-        let n = displayName.lowercased()
-        if running.contains(n) { return true }
-        // A truncated comm is a prefix of the full name. Only names long enough
-        // to have BEEN truncated are treated this way, so short names still
-        // require an exact match and `secd` cannot match `secdiagnosticd`.
-        return running.contains { $0.count >= 15 && n.hasPrefix($0) }
+        LivingNames(running).matches(displayName)
+    }
+
+    /// A set of living process names, prepared once for repeated matching.
+    ///
+    /// The naive form of `matches` is a linear scan of every living name, with an
+    /// O(name) `String.count` inside it — and it is asked once per coalition, for
+    /// each of the two apportionments in a tick. Profiled under `sample`, that
+    /// scan was a THIRD of the entire sampling queue's CPU: roughly 500 living
+    /// names against 300 coalitions, six times over, every refresh.
+    ///
+    /// Bucketing by the first `truncationFloor` characters makes it a hash lookup
+    /// into a bucket that is almost always empty. The semantics are unchanged, and
+    /// exactly so: a name long enough to have been truncated can only be a prefix
+    /// of `n` if it agrees with `n` on those first characters.
+    public struct LivingNames: ExpressibleByArrayLiteral {
+        /// `p_comm` truncates at 16 characters, so anything at least this long may
+        /// be a truncation of something longer. Shorter names must match exactly,
+        /// which is what stops `secd` from matching `secdiagnosticd`.
+        public static let truncationFloor = 15
+
+        private let exact: Set<String>
+        private let longByPrefix: [String: [String]]
+
+        public var isEmpty: Bool { exact.isEmpty }
+
+        public init(_ names: some Sequence<String>) {
+            var all = Set<String>()
+            var buckets: [String: [String]] = [:]
+            for name in names {
+                all.insert(name)
+                guard name.count >= Self.truncationFloor else { continue }
+                buckets[String(name.prefix(Self.truncationFloor)), default: []].append(name)
+            }
+            exact = all
+            longByPrefix = buckets
+        }
+
+        public init(arrayLiteral elements: String...) { self.init(elements) }
+
+        /// Matching is deliberately generous: a false "alive" leaves a dead
+        /// coalition in the rollup for up to an hour, which understates other rows
+        /// slightly. A false "dead" deletes a live process's power and
+        /// redistributes it, which is what actually went wrong.
+        public func matches(_ displayName: String) -> Bool {
+            let n = displayName.lowercased()
+            if exact.contains(n) { return true }
+            // A prefix cannot be longer than the string it prefixes, so a name
+            // shorter than the floor can never be matched by a truncated one.
+            guard n.count >= Self.truncationFloor,
+                  let bucket = longByPrefix[String(n.prefix(Self.truncationFloor))]
+            else { return false }
+            return bucket.contains { n.hasPrefix($0) }
+        }
     }
 
     public static func allPIDs() -> [pid_t] {
@@ -161,7 +209,7 @@ public enum ProcessSampler {
     }
 
     /// Returns nil on EPERM (cross-uid) or if the process exited mid-sweep.
-    public static func energy(of pid: pid_t) -> ProcessEnergy? {
+    public static func energy(of pid: pid_t, reusing cache: IdentityCache? = nil) -> ProcessEnergy? {
         var info = rusage_info_v6()
         let rc = withUnsafeMutablePointer(to: &info) { ptr -> Int32 in
             ptr.withMemoryRebound(to: rusage_info_t?.self, capacity: 1) {
@@ -170,10 +218,12 @@ public enum ProcessSampler {
         }
         guard rc == 0 else { return nil }
 
-        let p = path(of: pid)
+        let identity = cache?.identity(for: pid, start: info.ri_proc_start_abstime)
+            ?? { let p = path(of: pid); return (p, name(fromPath: p, pid: pid)) }()
+        let p = identity.path
         return ProcessEnergy(
             pid: pid,
-            name: name(fromPath: p, pid: pid),
+            name: identity.name,
             energy_nJ: info.ri_energy_nj,
             pEnergy_nJ: info.ri_penergy_nj,
             cycles: info.ri_cycles,
@@ -199,13 +249,47 @@ public enum ProcessSampler {
         }
     }
 
-    public static func sweep() -> Sweep {
+    /// Executable path and display name for a pid, reused across sweeps.
+    ///
+    /// `path(of:)` is a syscall and `name(fromPath:pid:)` bridges to `NSString`,
+    /// and both were paid for every process on the machine on every tick. A
+    /// process's executable path is fixed for its lifetime, so the only thing that
+    /// can invalidate an entry is the pid being reused — which `startAbsTime`
+    /// detects exactly, the same identity the ledger already keys on.
+    ///
+    /// Not thread-safe, and deliberately so: it is owned by whoever runs the
+    /// sweep, which is a serial queue. Pass one per sampler, never a shared global.
+    public final class IdentityCache {
+        private var entries: [pid_t: (start: UInt64, path: String, name: String)] = [:]
+
+        public init() {}
+
+        public var count: Int { entries.count }
+
+        fileprivate func identity(for pid: pid_t, start: UInt64) -> (path: String, name: String) {
+            if let hit = entries[pid], hit.start == start { return (hit.path, hit.name) }
+            let path = ProcessSampler.path(of: pid)
+            let name = ProcessSampler.name(fromPath: path, pid: pid)
+            entries[pid] = (start, path, name)
+            return (path, name)
+        }
+
+        /// Drops processes that no longer exist, so the cache tracks the machine
+        /// rather than growing for the life of the app.
+        fileprivate func keep(_ live: Set<pid_t>) {
+            guard entries.count != live.count else { return }
+            entries = entries.filter { live.contains($0.key) }
+        }
+    }
+
+    public static func sweep(reusing cache: IdentityCache? = nil) -> Sweep {
         let pids = allPIDs()
         var out: [ProcessKey: ProcessEnergy] = [:]
         var denied = 0
         for pid in pids {
-            if let e = energy(of: pid) { out[e.key] = e } else { denied += 1 }
+            if let e = energy(of: pid, reusing: cache) { out[e.key] = e } else { denied += 1 }
         }
+        cache?.keep(Set(pids))
         return Sweep(processes: out, timestamp: Date(), attempted: pids.count, denied: denied)
     }
 }
