@@ -71,7 +71,7 @@ final class SpeedTestStrip: NSView {
                 self?.render()
             }
         }
-        pathMonitor.start(queue: DispatchQueue(label: "dev.noah.anode.speedtest.path"))
+        pathMonitor.start(queue: DispatchQueue(label: "dev.anode.app.speedtest.path"))
         render()
     }
     required init?(coder: NSCoder) { fatalError() }

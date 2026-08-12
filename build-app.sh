@@ -82,7 +82,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 <dict>
   <key>CFBundleName</key>              <string>Anode</string>
   <key>CFBundleDisplayName</key>       <string>Anode</string>
-  <key>CFBundleIdentifier</key>        <string>dev.noah.anode</string>
+  <key>CFBundleIdentifier</key>        <string>dev.anode.app</string>
   <key>CFBundleExecutable</key>        <string>AnodeApp</string>
   <key>CFBundlePackageType</key>       <string>APPL</string>
   <key>CFBundleShortVersionString</key><string>${VERSION}</string>

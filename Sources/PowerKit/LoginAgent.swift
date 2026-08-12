@@ -35,7 +35,36 @@ public enum LoginAgent {
 
     /// Reverse-DNS plus a suffix, so it cannot collide with the bundle id that
     /// SMAppService uses for the same app.
-    public static let label = "dev.noah.anode.loginagent"
+    public static let label = "dev.anode.app.loginagent"
+
+    /// Every label this agent has been registered under before, newest first.
+    ///
+    /// UNLIKE the fan daemon's, these are removable: the plist is in the user's
+    /// own `~/Library/LaunchAgents`, so the app can clean up after itself instead
+    /// of printing a sudo command. It must, too — an agent left under an old
+    /// label still points at the app's path and would go on launching it at
+    /// login, so a rename without this leaves the user with two registrations and
+    /// a "start at login" switch that cannot turn one of them off.
+    public static let previousLabels = [
+        "dev.noah.anode.loginagent",        // before the identifier was neutralised
+        "dev.noah.betterstats.loginagent",  // before the app was renamed
+    ]
+
+    private static func plistURL(for label: String) -> URL {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/LaunchAgents/\(label).plist")
+    }
+
+    /// Boot out and delete any agent registered under a name this app used to
+    /// use. Safe to call at any time: a label with no plist is a no-op.
+    public static func removeStaleRegistrations() {
+        for old in previousLabels {
+            let url = plistURL(for: old)
+            guard FileManager.default.fileExists(atPath: url.path) else { continue }
+            _ = launchctl(["bootout", "gui/\(getuid())/\(old)"])
+            try? FileManager.default.removeItem(at: url)
+        }
+    }
 
     /// Passed to the app by the agent, so a launch AT LOGIN can be told apart
     /// from a user opening the app.
@@ -46,7 +75,7 @@ public enum LoginAgent {
     ///
     /// AN ARGUMENT, not an environment variable. Measured: launchd sets
     /// `XPC_SERVICE_NAME` to this agent's Label for a job it starts, while a
-    /// manual launch gets `application.dev.noah.anode.<hash>` from
+    /// manual launch gets `application.dev.anode.app.<hash>` from
     /// LaunchServices — so the two ARE distinguishable that way. It is still the
     /// wrong mechanism, because `SMAppService` (the other registrar this app
     /// tries first) starts the app through LaunchServices too, and its login
@@ -138,12 +167,17 @@ public enum LoginAgent {
         // what the setting promises; bootstrapping now only saves a reboot, and
         // failing to do so must not report the setting as broken.
         _ = launchctl(["bootstrap", "gui/\(getuid())", plistURL.path])
+        // After the new one is in place, never before: a failure above leaves the
+        // old registration doing its job rather than leaving nothing at all.
+        removeStaleRegistrations()
     }
 
     /// Remove it, and tell launchd to forget it now rather than at logout.
     public static func uninstall() {
         _ = launchctl(["bootout", "gui/\(getuid())/\(label)"])
         try? FileManager.default.removeItem(at: plistURL)
+        // "Off" has to mean off, including for names this app used to answer to.
+        removeStaleRegistrations()
     }
 
     @discardableResult

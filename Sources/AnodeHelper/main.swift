@@ -79,7 +79,7 @@ machine at boot or while Anode is closed.
 It is weaker than the session helper in one specific way you should know before
 you type a password: the daemon outlives your rebuilds, so it cannot pin a hash
 that changes on every rebuild. It pins the signing identifier instead, and anyone
-who can run `codesign -s - -i dev.noah.anode` on their own binary satisfies
+who can run `codesign -s - -i dev.anode.app` on their own binary satisfies
 that. So while it is up, ANYTHING RUNNING AS YOU can set your fan speeds, within
 the range the fan itself reports. Nothing else can: other users are refused by
 the kernel, and the daemon's whole vocabulary is "set fan N to R rpm" and
@@ -324,7 +324,7 @@ let server = FanHelperServer(
     // failure has left no trace. The unified log survives it, which is the only
     // way to diagnose a path that cannot be exercised without root:
     //
-    //     log show --predicate 'subsystem == "dev.noah.anode"' --last 10m
+    //     log show --predicate 'subsystem == "dev.anode.app"' --last 10m
     log: {
         printErr("anode-helper: \($0)")
         fanLog.info("helper: \($0, privacy: .public)")

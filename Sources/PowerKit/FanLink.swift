@@ -6,13 +6,13 @@ import os
 /// root, so it is the one path where a failure has to explain itself after the
 /// fact. Every connect, refusal and command lands here.
 ///
-///     log show --predicate 'subsystem == "dev.noah.anode"' --last 10m
+///     log show --predicate 'subsystem == "dev.anode.app"' --last 10m
 ///
 /// Written after the first real privileged run did nothing visible and left no
 /// trace to diagnose: the fans read 0 rpm, `F0Tg` read 0, and there was no way
 /// to tell whether the app never connected, was refused, or wrote and was
 /// ignored by the SMC. Those are three different bugs.
-public let fanLog = Logger(subsystem: "dev.noah.anode", category: "fan")
+public let fanLog = Logger(subsystem: "dev.anode.app", category: "fan")
 
 // The channel between Anode and the one privileged thing it does.
 //
@@ -99,7 +99,7 @@ public let fanLog = Logger(subsystem: "dev.noah.anode", category: "fan")
 //   * still enforced: the caller must have a signature that VERIFIES. A tampered
 //     or unsigned program produces no identity and is refused.
 //   * NOT enforced any more: that the caller is the Anode you built. Anyone
-//     who can run `codesign -s - -i dev.noah.anode` on their own binary
+//     who can run `codesign -s - -i dev.anode.app` on their own binary
 //     satisfies it. That is one command, and anything running as you can run it.
 //
 // So, in plain words, WHAT INSTALLING GIVES UP: from the moment you install,
@@ -208,13 +208,13 @@ public struct FanPeer: Equatable {
     /// The caller's cdhash, or nil when it has no valid signature. nil is a
     /// refusal, never a pass — see `FanAccess`.
     public let cdhash: String?
-    /// The caller's signing identifier — `dev.noah.anode` for this app,
+    /// The caller's signing identifier — `dev.anode.app` for this app,
     /// taken from `CFBundleIdentifier` when the bundle was signed.
     ///
     /// It is here because it is the one part of an ad-hoc code identity that
     /// SURVIVES A REBUILD, and the installed daemon has to. It is also, unlike
     /// the cdhash, a string anyone can choose: `codesign -s - -i
-    /// dev.noah.anode` on any binary at all produces a valid signature
+    /// dev.anode.app` on any binary at all produces a valid signature
     /// claiming this identifier. `FanAccess` says what that does and does not
     /// buy.
     public let signingIdentifier: String?
@@ -362,8 +362,8 @@ public enum FanClientPin: Equatable {
     /// WHAT IT DOES NOT STOP, said plainly: a program already running as you that
     /// signs itself ad-hoc under our identifier. Measured, not guessed —
     ///
-    ///     cc -o notmine t.c && codesign -s - -i dev.noah.anode notmine
-    ///     Identifier=dev.noah.anode   Signature=adhoc   valid on disk
+    ///     cc -o notmine t.c && codesign -s - -i dev.anode.app notmine
+    ///     Identifier=dev.anode.app   Signature=adhoc   valid on disk
     ///
     /// An ad-hoc signature has no key an attacker cannot also use, so there is no
     /// version of this check that a same-user attacker cannot satisfy. Naming a

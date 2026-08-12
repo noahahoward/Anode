@@ -139,12 +139,37 @@ final class RenameMigrationTests: XCTestCase {
 /// The one thing the rename CANNOT migrate.
 final class OrphanedDaemonTests: XCTestCase {
 
-    /// The two labels differ, which is the whole reason an old install goes
-    /// unseen — and the reason it has to be looked for by name.
-    func testTheOldDaemonHasADifferentLabel() {
-        XCTAssertNotEqual(FanDaemon.label, FanDaemon.previousLabel)
-        XCTAssertTrue(FanDaemon.previousLabel.contains("betterstats"))
+    /// Every old label differs from the current one, which is the whole reason an
+    /// old install goes unseen — and the reason each has to be looked for by name.
+    func testEveryOldDaemonLabelDiffersFromTheCurrentOne() {
+        for old in FanDaemon.previousLabels {
+            XCTAssertNotEqual(FanDaemon.label, old)
+        }
         XCTAssertTrue(FanDaemon.label.contains("anode"))
+    }
+
+    /// Both renames are remembered, not just the most recent.
+    ///
+    /// This is the case a single `previousLabel` got wrong: rename twice and the
+    /// first old daemon stops being looked for, silently, on exactly the machines
+    /// that have been running this longest.
+    func testBothRenamesAreStillLookedFor() {
+        XCTAssertTrue(FanDaemon.previousLabels.contains { $0.contains("betterstats") },
+                      "the pre-rename daemon is no longer detected")
+        XCTAssertTrue(FanDaemon.previousLabels.contains { $0.contains("noah") },
+                      "the pre-identifier-change daemon is no longer detected")
+        XCTAssertEqual(Set(FanDaemon.previousLabels).count, FanDaemon.previousLabels.count,
+                       "a label is listed twice")
+    }
+
+    /// The same, for the login agent — which CAN clean up after itself, because
+    /// its plist is the user's own.
+    func testTheLoginAgentRemembersItsOldLabelsToo() {
+        for old in LoginAgent.previousLabels {
+            XCTAssertNotEqual(LoginAgent.label, old)
+        }
+        XCTAssertTrue(LoginAgent.previousLabels.contains { $0.contains("betterstats") })
+        XCTAssertTrue(LoginAgent.previousLabels.contains { $0.contains("noah") })
     }
 
     /// The uninstall command names BOTH root-owned paths.
@@ -153,10 +178,13 @@ final class OrphanedDaemonTests: XCTestCase {
     /// removing only the binary leaves launchd with a job it cannot start. A
     /// half-uninstall is worse than none, because it looks finished.
     func testTheUninstallCommandRemovesEverythingItInstalled() {
-        let command = FanDaemon.previousUninstallCommand
-        XCTAssertTrue(command.contains("/Library/LaunchDaemons/\(FanDaemon.previousLabel).plist"))
+        // Asked about specific labels, NOT about this machine — the command has
+        // to read the same on a machine with no old daemon on it.
+        let label = FanDaemon.previousLabels[0]
+        let command = FanDaemon.uninstallCommand(for: [label])
+        XCTAssertTrue(command.contains("/Library/LaunchDaemons/\(label).plist"))
         XCTAssertTrue(command.contains(
-            "/Library/PrivilegedHelperTools/\(FanDaemon.previousLabel)"))
+            "/Library/PrivilegedHelperTools/\(label)"))
         // And unloads it first: deleting a plist under a running job leaves the
         // job running with nothing on disk describing it.
         XCTAssertTrue(command.contains("bootout"),

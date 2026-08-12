@@ -888,7 +888,7 @@ public enum FanHelperInstall {
 
     /// The label the retired LaunchDaemon was loaded under. Kept so `--uninstall`
     /// can boot it out of launchd, which removing the plist alone does not do.
-    public static let retiredDaemonLabel = "dev.noah.anode.helper"
+    public static let retiredDaemonLabel = "dev.anode.app.helper"
 
     /// Every launchd label this project has ever loaded, oldest first. Booted out
     /// before their plists are removed: removing a plist does not unload a job

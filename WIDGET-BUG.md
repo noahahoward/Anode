@@ -5,7 +5,7 @@
 **Accumulated LaunchServices registrations for the build directory path.**
 
 Rebuilding an ad-hoc-signed bundle repeatedly at one path piles up
-registrations for that path — 29 of them for `dev.noah.anode` by the time
+registrations for that path — 29 of them for `dev.anode.app` by the time
 this was found. Past some point macOS stops laying out that app's
 `NSStatusItem`s. They are still created, still hold correctly sized buttons and
 valid template images, and still report `isVisible == true`; their status

@@ -156,8 +156,8 @@ It installs exactly two files, both owned by root and neither of them writable b
 you:
 
 ```
-/Library/PrivilegedHelperTools/dev.noah.anode.fanhelper
-/Library/LaunchDaemons/dev.noah.anode.fanhelper.plist
+/Library/PrivilegedHelperTools/dev.anode.app.fanhelper
+/Library/LaunchDaemons/dev.anode.app.fanhelper.plist
 ```
 
 The equivalent by hand, if you would rather read it than click it, is the same
@@ -204,7 +204,7 @@ stale after the next `./build-app.sh`, which would turn the button into
 anybody can claim that identifier with one command:
 
 ```sh
-codesign --force --sign - -i dev.noah.anode some-other-binary
+codesign --force --sign - -i dev.anode.app some-other-binary
 ```
 
 So after you install, **anything running as your user can set your fan speeds**,
