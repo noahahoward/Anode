@@ -916,7 +916,23 @@ final class FanControlPanel: NSView {
     /// per-fan it would put a confirmation sheet on screen for each fan the
     /// machine has, and a cancel would then be asked again for the next one.
     @objc private func syncSliderChanged(_ sender: NSSlider) {
-        applyToEveryFan { FanSession.Gesture.setSpeed(index: $0.index, rpm: sender.doubleValue,
+        // READ NOW, not inside the closure. THE BUG, and it explains the shape of
+        // the report exactly: one drag to turn fan control on, a second to
+        // actually set a speed.
+        //
+        // `applyToEveryFan` asks for consent and only then builds a gesture per
+        // fan. Reading `sender.doubleValue` in that closure reads it AFTERWARDS —
+        // and turning the setting on notifies the app, which refreshes the pane,
+        // which re-renders this strip from a session that has no request in it
+        // yet, which puts the knob back to the live reading. The closure then
+        // faithfully carried that reading. The first drag really did set the fans:
+        // to the speed they were already at.
+        //
+        // The per-fan slider never had this — it evaluates the value at the call
+        // site — which is why the bug tracked the synced knob and survived the two
+        // fixes aimed at holding the value across the sheet.
+        let rpm = sender.doubleValue
+        applyToEveryFan { FanSession.Gesture.setSpeed(index: $0.index, rpm: rpm,
                                                       limits: .init(minRPM: $0.minRPM,
                                                                     maxRPM: $0.maxRPM)) }
     }
