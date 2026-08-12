@@ -38,6 +38,7 @@ public final class Settings {
         public static let batteryLogging = "batteryLogging"
         public static let menuBarWidgetsEnabled = "menuBarWidgetsEnabled"
         public static let fanControlEnabled = "fanControlEnabled"
+        public static let fanDisclosureSeen = "fanDisclosureSeen"
         public static let fanSyncEnabled = "fanSyncEnabled"
         public static let speedTestAgreed = "speedTestAgreed"
         /// Wildcard — an observer registered on this key fires for every change.
@@ -80,6 +81,7 @@ public final class Settings {
         /// someone who never read it, and `FanMode.native`'s contract is that a
         /// user who has not opted in is on a machine this code has never touched.
         static let fanControlEnabled = false
+        static let fanDisclosureSeen = false
         /// One slider for every fan, on by default.
         ///
         /// Two fans in one chassis cool one shared thermal mass, and a machine
@@ -118,6 +120,7 @@ public final class Settings {
             minimumDisplayPercentPerHour: Double
         var showDaemons, startInMenuBarOnly, batteryLogging, menuBarWidgetsEnabled,
             fanControlEnabled, fanSyncEnabled, speedTestAgreed: Bool
+        var fanDisclosureSeen: Bool
         var menuBarWidgets: [String]
     }
     private var snapshot: Values
@@ -219,6 +222,23 @@ public final class Settings {
     /// write — not "asks and is refused". A user who leaves this alone is on a
     /// machine BetterStats has never written to, which is `FanMode.native`'s
     /// whole contract.
+    /// Has the user read the fan disclosure and asked not to see it again?
+    ///
+    /// It suppresses an EXPLANATION, never a safeguard. The disclosure describes
+    /// what the helper is and what running it as root means; the thing that
+    /// actually stops anything happening is the Terminal window and the password,
+    /// and neither is affected by this. Someone who has read it once and is now
+    /// adjusting fans daily should not have to read it daily.
+    ///
+    /// Separate from `fanControlEnabled` because they answer different questions.
+    /// Turning the feature off does not un-read the disclosure, so switching back
+    /// on should not re-explain it.
+    public var fanDisclosureSeen: Bool {
+        get { Settings.readBool(defaults, Key.fanDisclosureSeen, Default.fanDisclosureSeen) }
+        set { writeBool(Key.fanDisclosureSeen, \.fanDisclosureSeen, newValue,
+                        Default.fanDisclosureSeen) }
+    }
+
     public var fanControlEnabled: Bool {
         get { Settings.readBool(defaults, Key.fanControlEnabled, Default.fanControlEnabled) }
         set { writeBool(Key.fanControlEnabled, \.fanControlEnabled, newValue,
@@ -430,6 +450,7 @@ public final class Settings {
             notify(Key.menuBarWidgetsEnabled)
         }
         if old.fanControlEnabled != now.fanControlEnabled { notify(Key.fanControlEnabled) }
+        if old.fanDisclosureSeen != now.fanDisclosureSeen { notify(Key.fanDisclosureSeen) }
         if old.fanSyncEnabled != now.fanSyncEnabled { notify(Key.fanSyncEnabled) }
         if old.speedTestAgreed != now.speedTestAgreed { notify(Key.speedTestAgreed) }
         if old.menuBarWidgets != now.menuBarWidgets { notify(Key.menuBarWidgets) }
@@ -516,6 +537,8 @@ public final class Settings {
                                            Default.fanControlEnabled),
                fanSyncEnabled: readBool(d, Key.fanSyncEnabled, Default.fanSyncEnabled),
                speedTestAgreed: readBool(d, Key.speedTestAgreed, Default.speedTestAgreed),
+               fanDisclosureSeen: readBool(d, Key.fanDisclosureSeen,
+                                           Default.fanDisclosureSeen),
                menuBarWidgets: readWidgets(d, Default.menuBarWidgets))
     }
 }

@@ -1447,3 +1447,30 @@ final class FanReadbackTests: XCTestCase {
             mode: nil, target: 1200, wanted: 2675))
     }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// The disclosure is read once, not every time.
+final class FanDisclosureTests: XCTestCase {
+
+    /// It defaults to unread, so a fresh install always explains itself.
+    func testAFreshInstallHasNotSeenTheDisclosure() throws {
+        let (defaults, name) = try TestDefaults.make(owner: "FanDisclosure")
+        defer { TestDefaults.destroy(defaults, name) }
+        XCTAssertFalse(Settings(defaults: defaults).fanDisclosureSeen)
+    }
+
+    /// And it is SEPARATE from the feature being on, because they answer
+    /// different questions: turning fan control off does not un-read the
+    /// explanation, so switching it back on should not re-explain it.
+    func testTurningTheFeatureOffDoesNotUnreadTheDisclosure() throws {
+        let (defaults, name) = try TestDefaults.make(owner: "FanDisclosure")
+        defer { TestDefaults.destroy(defaults, name) }
+        let s = Settings(defaults: defaults)
+        s.fanDisclosureSeen = true
+        s.fanControlEnabled = true
+        s.fanControlEnabled = false
+        XCTAssertTrue(s.fanDisclosureSeen,
+                      "switching the feature off made the app forget it had explained itself")
+    }
+}
