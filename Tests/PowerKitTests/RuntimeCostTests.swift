@@ -1,5 +1,5 @@
 import XCTest
-@testable import BetterStatsApp
+@testable import AnodeApp
 @testable import PowerKit
 
 /// The Runtime cost column showed "—" for every row, on every machine, always.

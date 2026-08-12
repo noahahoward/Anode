@@ -98,7 +98,7 @@ public final class HistoryStore {
     /// All SQLite access is serialized here. record() arrives from the sampler's
     /// background queue; windowPower() from wherever the UI asks. One connection,
     /// one queue — no cross-thread SQLite, no locking subtleties.
-    private let queue = DispatchQueue(label: "BetterStats.HistoryStore")
+    private let queue = DispatchQueue(label: "Anode.HistoryStore")
     private let fileURL: URL
     /// Raw ticks older than this get merged into buckets. Configurable so tests
     /// can force compaction; 1 h default keeps the live hour at full resolution.
@@ -116,7 +116,7 @@ public final class HistoryStore {
     /// Maintenance runs HERE, never on `queue` directly and never on main.
     /// Chunks hop onto `queue` one at a time and let go in between; the gap is
     /// what keeps record() off the back of a long delete.
-    private let maintenanceQueue = DispatchQueue(label: "BetterStats.HistoryStore.maintenance",
+    private let maintenanceQueue = DispatchQueue(label: "Anode.HistoryStore.maintenance",
                                                  qos: .utility)
     /// Timer and generation are touched ONLY from `maintenanceQueue`.
     private var maintenanceTimer: DispatchSourceTimer?
@@ -173,6 +173,47 @@ public final class HistoryStore {
         static let original: Set<Column> = [.measured_j, .attributed_j, .residual_j]
     }
 
+    /// Take over the history the app kept when it was called BetterStats.
+    ///
+    /// The rename moved this file. Left alone, the app would open a new empty
+    /// store beside a full one and the graphs would say the machine had no past —
+    /// which is not a small loss here, since the whole point of this store is that
+    /// it goes back further than the session does.
+    ///
+    /// MOVED, not copied, and only when there is nothing at the new path. Copying
+    /// would duplicate a store that is already hundreds of megabytes, and moving
+    /// is safe because the old build is gone by the time this runs. The guard
+    /// means running it twice does nothing and it can never overwrite history
+    /// recorded since the rename.
+    ///
+    /// SQLite's sidecars come too. A `-wal` holds committed transactions that are
+    /// not yet in the main file, so moving the database and leaving them behind
+    /// silently drops the most recent writes — the exact rows a user would look
+    /// for first.
+    static func adoptPreviousName(at destination: URL, under base: URL) {
+        let fm = FileManager.default
+        guard !fm.fileExists(atPath: destination.path) else { return }
+        let old = base.appendingPathComponent("BetterStats/history.sqlite")
+        guard fm.fileExists(atPath: old.path) else { return }
+        try? fm.createDirectory(at: destination.deletingLastPathComponent(),
+                                withIntermediateDirectories: true)
+        for suffix in ["", "-wal", "-shm"] {
+            let from = URL(fileURLWithPath: old.path + suffix)
+            let to = URL(fileURLWithPath: destination.path + suffix)
+            guard fm.fileExists(atPath: from.path) else { continue }
+            try? fm.moveItem(at: from, to: to)
+        }
+        // Anything else the old directory held — the discharge trend, for one —
+        // moves with it rather than being left for nobody to read.
+        let oldDir = old.deletingLastPathComponent()
+        let newDir = destination.deletingLastPathComponent()
+        for name in (try? fm.contentsOfDirectory(atPath: oldDir.path)) ?? [] {
+            let to = newDir.appendingPathComponent(name)
+            guard !fm.fileExists(atPath: to.path) else { continue }
+            try? fm.moveItem(at: oldDir.appendingPathComponent(name), to: to)
+        }
+    }
+
     /// A duration-weighted mean of `col` over only the rows that measured it.
     /// Used by the fold and by every read that buckets rows, so the value the
     /// graph draws is computed the same way whether it came from raw ticks or
@@ -226,7 +267,8 @@ public final class HistoryStore {
         } else {
             guard let base = FileManager.default.urls(for: .applicationSupportDirectory,
                                                       in: .userDomainMask).first else { return nil }
-            url = base.appendingPathComponent("BetterStats/history.sqlite")
+            url = base.appendingPathComponent("Anode/history.sqlite")
+            HistoryStore.adoptPreviousName(at: url, under: base)
         }
         self.fileURL = url
         self.bucketWidth = max(1, bucketWidth)

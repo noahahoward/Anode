@@ -6,15 +6,15 @@ import os
 /// root, so it is the one path where a failure has to explain itself after the
 /// fact. Every connect, refusal and command lands here.
 ///
-///     log show --predicate 'subsystem == "dev.noah.betterstats"' --last 10m
+///     log show --predicate 'subsystem == "dev.noah.anode"' --last 10m
 ///
 /// Written after the first real privileged run did nothing visible and left no
 /// trace to diagnose: the fans read 0 rpm, `F0Tg` read 0, and there was no way
 /// to tell whether the app never connected, was refused, or wrote and was
 /// ignored by the SMC. Those are three different bugs.
-public let fanLog = Logger(subsystem: "dev.noah.betterstats", category: "fan")
+public let fanLog = Logger(subsystem: "dev.noah.anode", category: "fan")
 
-// The channel between BetterStats and the one privileged thing it does.
+// The channel between Anode and the one privileged thing it does.
 //
 // ─────────────────────────────────────────────────────────────────────────────
 // THE TRUST MODEL, IN PLAIN WORDS. Read this before changing anything here.
@@ -64,7 +64,7 @@ public let fanLog = Logger(subsystem: "dev.noah.betterstats", category: "fan")
 // root process on the machine that will write fan targets on request. If an
 // attacker can already run code as root they can do this and everything else
 // anyway; if they can run code as you, they must ALSO be running from a binary
-// whose cdhash matches your BetterStats build to be heard at all. The helper's
+// whose cdhash matches your Anode build to be heard at all. The helper's
 // entire vocabulary is "set fan N to R rpm" and "release the fans", R is
 // re-clamped against limits read fresh from the hardware, and it can read and
 // write nothing else.
@@ -98,8 +98,8 @@ public let fanLog = Logger(subsystem: "dev.noah.betterstats", category: "fan")
 //     uid that installed it. Another user on this machine is refused.
 //   * still enforced: the caller must have a signature that VERIFIES. A tampered
 //     or unsigned program produces no identity and is refused.
-//   * NOT enforced any more: that the caller is the BetterStats you built. Anyone
-//     who can run `codesign -s - -i dev.noah.betterstats` on their own binary
+//   * NOT enforced any more: that the caller is the Anode you built. Anyone
+//     who can run `codesign -s - -i dev.noah.anode` on their own binary
 //     satisfies it. That is one command, and anything running as you can run it.
 //
 // So, in plain words, WHAT INSTALLING GIVES UP: from the moment you install,
@@ -119,7 +119,7 @@ public let fanLog = Logger(subsystem: "dev.noah.betterstats", category: "fan")
 // UPWARD. It is a nuisance, not a foothold.
 //
 // If that trade is not worth it — and for a developer rebuilding all day it is
-// not — do not install. `sudo BetterStatsHelper` still works exactly as it always
+// not — do not install. `sudo AnodeHelper` still works exactly as it always
 // did, still pins one build, and still stops with ⌃C.
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -129,7 +129,7 @@ public let fanLog = Logger(subsystem: "dev.noah.betterstats", category: "fan")
 /// other user can substitute a socket at this path and impersonate the helper,
 /// and a socket file left behind by a hard kill never survives a restart.
 public enum FanSocket {
-    public static let path = "/var/run/betterstats-fan.sock"
+    public static let path = "/var/run/anode-fan.sock"
 }
 
 // ── Wire format ─────────────────────────────────────────────────────────────
@@ -208,13 +208,13 @@ public struct FanPeer: Equatable {
     /// The caller's cdhash, or nil when it has no valid signature. nil is a
     /// refusal, never a pass — see `FanAccess`.
     public let cdhash: String?
-    /// The caller's signing identifier — `dev.noah.betterstats` for this app,
+    /// The caller's signing identifier — `dev.noah.anode` for this app,
     /// taken from `CFBundleIdentifier` when the bundle was signed.
     ///
     /// It is here because it is the one part of an ad-hoc code identity that
     /// SURVIVES A REBUILD, and the installed daemon has to. It is also, unlike
     /// the cdhash, a string anyone can choose: `codesign -s - -i
-    /// dev.noah.betterstats` on any binary at all produces a valid signature
+    /// dev.noah.anode` on any binary at all produces a valid signature
     /// claiming this identifier. `FanAccess` says what that does and does not
     /// buy.
     public let signingIdentifier: String?
@@ -356,14 +356,14 @@ public enum FanClientPin: Equatable {
     ///
     /// WHAT IT STOPS: another user on this machine (that check is the kernel's,
     /// and it runs first); any program with no valid signature; any program
-    /// signed under a different identifier; a tampered copy of BetterStats,
+    /// signed under a different identifier; a tampered copy of Anode,
     /// whose signature no longer verifies at all.
     ///
     /// WHAT IT DOES NOT STOP, said plainly: a program already running as you that
     /// signs itself ad-hoc under our identifier. Measured, not guessed —
     ///
-    ///     cc -o notmine t.c && codesign -s - -i dev.noah.betterstats notmine
-    ///     Identifier=dev.noah.betterstats   Signature=adhoc   valid on disk
+    ///     cc -o notmine t.c && codesign -s - -i dev.noah.anode notmine
+    ///     Identifier=dev.noah.anode   Signature=adhoc   valid on disk
     ///
     /// An ad-hoc signature has no key an attacker cannot also use, so there is no
     /// version of this check that a same-user attacker cannot satisfy. Naming a
@@ -463,7 +463,7 @@ enum FanSocketIO {
     /// whose default disposition TERMINATES the process. The peer closing is not
     /// an exceptional case here — it is what the helper does to a caller it
     /// refuses, and what a stopped helper does to the app — so without this a
-    /// perfectly ordinary refusal would take BetterStats down with it.
+    /// perfectly ordinary refusal would take Anode down with it.
     static func configure(_ fd: Int32, timeout seconds: TimeInterval) {
         var tv = timeval(tv_sec: Int(seconds),
                          tv_usec: Int32((seconds - seconds.rounded(.down)) * 1_000_000))
@@ -535,7 +535,7 @@ public final class FanControlLink {
     }
 
     private let socketPath: String
-    private let queue = DispatchQueue(label: "com.betterstats.fanlink", qos: .userInitiated)
+    private let queue = DispatchQueue(label: "com.anode.fanlink", qos: .userInitiated)
     private var fd: Int32 = -1
     private var buffer = Data()
 

@@ -685,7 +685,7 @@ final class NetworkPane: SystemPane {
             MetricUnit.bytesPerSecond.format(n.bytesInPerSec),
             MetricUnit.bytesPerSecond.format(n.bytesOutPerSec),
             // Said while it is happening, not afterwards. The spike below is ours.
-            testingNow ? " · BETTERSTATS IS RUNNING A SPEED TEST — this traffic is its own"
+            testingNow ? " · ANODE IS RUNNING A SPEED TEST — this traffic is its own"
                        : "")
 
         var items: [BodyItem] = [
@@ -749,7 +749,7 @@ final class SensorsPane: SystemPane {
     /// tick, so simply having it open put 90 ms of blocked IOKit and 10 ms of CPU
     /// on the main thread every 2 s.
     private let sensors = SensorCache()
-    private let queue = DispatchQueue(label: "com.betterstats.sensorspane", qos: .utility)
+    private let queue = DispatchQueue(label: "com.anode.sensorspane", qos: .utility)
     private var sweeping = false
 
     /// Held so a sweep landing between ticks can repaint the whole pane without
@@ -982,7 +982,7 @@ final class FansPane: SystemPane {
         items.append(.row("❄︎", "that fan flat out, at its own reported maximum", dim: true))
         items.append(.row("✕", "every fan back to automatic control", dim: true))
         items.append(.row("Safety floor", "each fan's own reported minimum", dim: true))
-        items.append(.row("If BetterStats quits or crashes",
+        items.append(.row("If Anode quits or crashes",
                           "fans return to automatic", dim: true))
         setBody(items)
     }

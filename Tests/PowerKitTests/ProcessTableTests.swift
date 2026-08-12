@@ -1,6 +1,6 @@
 import AppKit
 import XCTest
-@testable import BetterStatsApp
+@testable import AnodeApp
 @testable import PowerKit
 
 // The Processes tab. Five lenses that each re-columned one table became one table

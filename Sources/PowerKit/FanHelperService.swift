@@ -628,7 +628,7 @@ public final class FanHelperServer {
         // left waiting on a socket nobody is reading.
         guard clientFD < 0 else {
             log("refused a second client while one is connected")
-            refuse(fd, "another BetterStats window already has fan control")
+            refuse(fd, "another Anode window already has fan control")
             return
         }
         clientFD = fd
@@ -863,7 +863,7 @@ public enum FanHelperInstall {
 
     /// The label the retired LaunchDaemon was loaded under. Kept so `--uninstall`
     /// can boot it out of launchd, which removing the plist alone does not do.
-    public static let retiredDaemonLabel = "dev.noah.betterstats.helper"
+    public static let retiredDaemonLabel = "dev.noah.anode.helper"
 
     /// Every launchd label this project has ever loaded, oldest first. Booted out
     /// before their plists are removed: removing a plist does not unload a job
@@ -891,7 +891,7 @@ public enum FanHelperInstall {
                 // The retired design's three pieces.
                 root.appendingPathComponent("Library/LaunchDaemons/\(retiredDaemonLabel).plist"),
                 root.appendingPathComponent("Library/PrivilegedHelperTools/\(retiredDaemonLabel)"),
-                root.appendingPathComponent("Library/Application Support/BetterStats/client.cdhash"),
+                root.appendingPathComponent("Library/Application Support/Anode/client.cdhash"),
                 // The current optional install: a plist and a root-owned copy of
                 // the helper. Absent unless the user pressed Install Fan Helper.
                 root.appendingPathComponent(String(FanDaemon.plistPath.dropFirst())),
@@ -900,7 +900,7 @@ public enum FanHelperInstall {
                 root.appendingPathComponent(String(FanSocket.path.dropFirst())),
             ],
             directoriesIfEmpty: [
-                root.appendingPathComponent("Library/Application Support/BetterStats"),
+                root.appendingPathComponent("Library/Application Support/Anode"),
             ])
     }
 

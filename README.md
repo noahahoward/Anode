@@ -1,4 +1,4 @@
-# BetterStats
+# Anode
 
 A macOS power monitor that reports per-app battery cost in **real, absolute units** —
 not Activity Monitor's unitless, relative "Energy Impact" score.
@@ -17,7 +17,7 @@ compared across machines, and Apple's own developer support declines to give it 
 It is also relative: quit a heavy app and every other app's number changes, though
 nothing about their behaviour did.
 
-BetterStats measures joules instead.
+Anode measures joules instead.
 
 ## How
 
@@ -62,17 +62,17 @@ across load, 2.25 W from the brightness-sweep intercept.
 ## Build
 
 ```
-./build-app.sh          # produces BetterStats.app
-open BetterStats.app
+./build-app.sh          # produces Anode.app
+open Anode.app
 ```
 
 CLI, for diagnostics:
 
 ```
 swift build
-./.build/debug/betterstats -w 5 -n 15     # one-shot report
-./.build/debug/betterstats --watch -w 2   # live
-./.build/debug/betterstats --smc          # SMC power sensor discovery
+./.build/debug/anode -w 5 -n 15     # one-shot report
+./.build/debug/anode --watch -w 2   # live
+./.build/debug/anode --smc          # SMC power sensor discovery
 ```
 
 Handing it to someone else to test: see [TESTING.md](TESTING.md). Short version —

@@ -3,9 +3,9 @@
 Built with `./make-release.sh`, which produces three files per version:
 
 ```
-BetterStats-<version>.app     the bundle
-BetterStats-<version>.zip     the same bundle, packed with ditto
-BetterStats-<version>.txt     version, source commit, build time, sha256
+Anode-<version>.app     the bundle
+Anode-<version>.zip     the same bundle, packed with ditto
+Anode-<version>.txt     version, source commit, build time, sha256
 ```
 
 The `.txt` matters more than it looks. There is **no update mechanism**, so a
@@ -14,7 +14,7 @@ from in `BSSourceCommit`, and a report of "it does X" can be tied to source
 rather than guessed at. Read it back off any bundle with:
 
 ```
-defaults read /path/to/BetterStats.app/Contents/Info.plist BSSourceCommit
+defaults read /path/to/Anode.app/Contents/Info.plist BSSourceCommit
 ```
 
 ## Before you send this to anyone
@@ -26,7 +26,7 @@ A `.app` that arrives over the internet — AirDrop, email, a download — gets 
 quarantine attribute, and macOS will refuse to open this one. The usual advice
 is `xattr -dr com.apple.quarantine`, and for this app that means asking someone
 to disable the one check standing between "a binary a friend sent me" and "a
-binary running with my full user privileges". BetterStats is deliberately
+binary running with my full user privileges". Anode is deliberately
 **unsandboxed** and enumerates every process on the machine. That is necessary
 for what it does and it is exactly why the check exists.
 

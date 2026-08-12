@@ -1,5 +1,5 @@
 import XCTest
-@testable import BetterStatsApp
+@testable import AnodeApp
 @testable import PowerKit
 
 /// "What is this process?" is the same kind of claim as a sensor name, and it
@@ -430,11 +430,11 @@ final class QuitSafetyTests: XCTestCase {
                    plistPath: "/System/Library/LaunchDaemons/\(label).plist")
     }
 
-    func testBetterStatsNeverOffersToQuitItself() {
+    func testAnodeNeverOffersToQuitItself() {
         let s = safety(pid: selfPID)
         XCTAssertEqual(s.verdict, .isSelf)
         XCTAssertEqual(s.answer, "No")
-        XCTAssertTrue(s.detail.contains("BetterStats"), s.detail)
+        XCTAssertTrue(s.detail.contains("Anode"), s.detail)
     }
 
     /// A root-owned process fails with EPERM, so the honest answer is that no

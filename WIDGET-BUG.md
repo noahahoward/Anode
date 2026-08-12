@@ -5,7 +5,7 @@
 **Accumulated LaunchServices registrations for the build directory path.**
 
 Rebuilding an ad-hoc-signed bundle repeatedly at one path piles up
-registrations for that path — 29 of them for `dev.noah.betterstats` by the time
+registrations for that path — 29 of them for `dev.noah.anode` by the time
 this was found. Past some point macOS stops laying out that app's
 `NSStatusItem`s. They are still created, still hold correctly sized buttons and
 valid template images, and still report `isVisible == true`; their status
@@ -19,9 +19,9 @@ Byte-identical bundles (`diff -r` clean), same signature, same binary, same
 minute:
 
     /tmp/verify.app                      first item at (1399, 7)     renders
-    <build dir>/BetterStats.app          first item at (-1, 1157)    invisible
+    <build dir>/Anode.app          first item at (-1, 1157)    invisible
 
-`~/Applications/BetterStats.app` also renders. So does every fresh path tried.
+`~/Applications/Anode.app` also renders. So does every fresh path tried.
 Only paths the build had churned were affected.
 
 ## Fix

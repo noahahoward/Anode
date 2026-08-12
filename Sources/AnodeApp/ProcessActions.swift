@@ -23,11 +23,11 @@ enum ProcessActions {
 
     /// What a button will do, worked out before it is drawn.
     struct Plan {
-        /// Pids this app can actually signal: same uid, and not BetterStats itself.
+        /// Pids this app can actually signal: same uid, and not Anode itself.
         let signalable: [pid_t]
         /// Pids that would fail with EPERM, and who owns them. Never offered.
         let refused: [(pid: pid_t, owner: String)]
-        /// True when the user clicked on BetterStats' own row.
+        /// True when the user clicked on Anode' own row.
         let includesSelf: Bool
 
         var canAct: Bool { !signalable.isEmpty }
@@ -40,14 +40,14 @@ enum ProcessActions {
         /// signal it — is both simple and worth knowing.
         var explanation: String {
             if includesSelf, signalable.isEmpty, refused.isEmpty {
-                return "This is BetterStats"
+                return "This is Anode"
             }
             guard !refused.isEmpty else { return "" }
             let owners = Set(refused.map(\.owner)).sorted().joined(separator: ", ")
             if signalable.isEmpty {
                 return refused.count == 1
-                    ? "Owned by \(owners) — BetterStats cannot signal it"
-                    : "Owned by \(owners) — BetterStats cannot signal these"
+                    ? "Owned by \(owners) — Anode cannot signal it"
+                    : "Owned by \(owners) — Anode cannot signal these"
             }
             return "\(refused.count) of \(refused.count + signalable.count) owned by "
                  + "\(owners) and cannot be signalled"
@@ -69,7 +69,7 @@ enum ProcessActions {
 
     /// - Parameters:
     ///   - currentUID: the uid this app runs as.
-    ///   - selfPID: BetterStats' own pid, which is never offered — quitting the
+    ///   - selfPID: Anode' own pid, which is never offered — quitting the
     ///     monitor from inside its own process list is almost certainly a misclick,
     ///     and the app cannot report the outcome of its own death.
     static func plan(for candidates: [Candidate],

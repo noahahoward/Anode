@@ -448,15 +448,15 @@ final class FanControlPanel: NSView {
         alert.messageText = "Turn on fan control?"
         alert.informativeText = """
         While you run the fan helper, one program can set your fan speeds: this \
-        exact build of BetterStats, running as you, within the minimum and maximum \
+        exact build of Anode, running as you, within the minimum and maximum \
         the fan itself reports.
 
         The helper is not installed and does not run in the background. Taking a \
         slider opens a Terminal window with the command below; you read it, \
         authenticate, and stop it with ⌃C. The fans go back to automatic control \
-        when you do — or if BetterStats quits or crashes.
+        when you do — or if Anode quits or crashes.
 
-        BetterStats is not signed with an Apple Developer ID, so nothing verifies \
+        Anode is not signed with an Apple Developer ID, so nothing verifies \
         the helper before it runs as root except you, when you read the path.
         """
         let command = NSTextField(labelWithString: Self.startCommand())
@@ -505,14 +505,14 @@ final class FanControlPanel: NSView {
     private static func bundledHelper() -> String? {
         let bundle = Bundle.main.bundleURL
         guard bundle.pathExtension == "app" else { return nil }
-        return bundle.appendingPathComponent("Contents/MacOS/BetterStatsHelper").path
+        return bundle.appendingPathComponent("Contents/MacOS/AnodeHelper").path
     }
 
     @objc private func installTapped() {
         guard !elevating else { return say("Finish the authorisation already on screen.") }
         guard let helper = Self.bundledHelper() else {
             return say("Only a bundled build can be installed. Run ./build-app.sh "
-                     + "and open ~/Applications/BetterStats.app.")
+                     + "and open ~/Applications/Anode.app.")
         }
         guard confirmInstall(helper: helper) else { return }
         elevate(command: FanElevation.installCommand(helper: helper, ownerUID: getuid()),
@@ -537,13 +537,13 @@ final class FanControlPanel: NSView {
         guard !elevating else { return say("Finish the authorisation already on screen.") }
         guard let helper = Self.bundledHelper() else {
             return say("Only a bundled build can uninstall. Run "
-                     + "`sudo <BetterStats.app>/Contents/MacOS/BetterStatsHelper --uninstall`.")
+                     + "`sudo <Anode.app>/Contents/MacOS/AnodeHelper --uninstall`.")
         }
         elevate(command: FanElevation.uninstallCommand(helper: helper),
                 prompt: FanElevation.uninstallPrompt,
                 waiting: "Waiting for authorisation…",
                 done: "Removed. The fans are back on automatic and nothing of "
-                    + "BetterStats runs as root.")
+                    + "Anode runs as root.")
     }
 
     /// One authorisation dialog, off the main thread.
@@ -594,20 +594,20 @@ final class FanControlPanel: NSView {
         alert.messageText = "Install the fan helper?"
         alert.informativeText = """
         This asks for your password ONCE and then never again — fan control keeps \
-        working after you rebuild BetterStats and after you restart the Mac.
+        working after you rebuild Anode and after you restart the Mac.
 
         It installs two files, both owned by root:
           \(FanDaemon.helperPath)
           \(FanDaemon.plistPath)
 
         Nothing runs until you use fan control. launchd holds the socket and \
-        starts the helper when BetterStats asks for a fan; it stops again a \
-        minute or so after you are done. Not at boot, not while BetterStats is \
+        starts the helper when Anode asks for a fan; it stops again a \
+        minute or so after you are done. Not at boot, not while Anode is \
         closed, not while fan control is off.
 
         What you are giving up, plainly: while that helper is up it will set a \
         fan speed on request from your user account, within the minimum and \
-        maximum the fan itself reports. BetterStats has no Apple Developer ID, \
+        maximum the fan itself reports. Anode has no Apple Developer ID, \
         so it cannot prove to that process which program is asking — anything \
         running as you can. Another user on this Mac cannot, and neither can \
         anything at all before you install this.
@@ -674,7 +674,14 @@ final class FanControlPanel: NSView {
             } else if installed {
                 // The plist is there and nothing answered. launchd should have
                 // started it, so this is a fault and not a state to wait in.
-                statusLabel.stringValue = FanDaemon.summary(daemonState)
+                // The orphan note rides WITH the status rather than replacing it:
+                // "not installed" is still true and still the thing being
+                // reported; the leftover root daemon is an extra fact about the
+                // machine, and this is the one place a user is about to install a
+                // second one.
+                statusLabel.stringValue = [FanDaemon.summary(daemonState),
+                                           FanDaemon.orphanNote]
+                    .compactMap { $0 }.joined(separator: " ")
                 hintField.stringValue = ""
                 setButtons([("Turn Off", #selector(disableTapped))])
             } else {
@@ -1114,11 +1121,11 @@ final class FanControlPanel: NSView {
     static func startCommand() -> String {
         let bundle = Bundle.main.bundleURL
         if bundle.pathExtension == "app" {
-            return "sudo " + quoted(bundle.appendingPathComponent("Contents/MacOS/BetterStatsHelper").path)
+            return "sudo " + quoted(bundle.appendingPathComponent("Contents/MacOS/AnodeHelper").path)
         }
         let exe = URL(fileURLWithPath: Bundle.main.executablePath ?? CommandLine.arguments[0])
             .resolvingSymlinksInPath()
-        let helper = exe.deletingLastPathComponent().appendingPathComponent("BetterStatsHelper")
+        let helper = exe.deletingLastPathComponent().appendingPathComponent("AnodeHelper")
         return "sudo " + quoted(helper.path) + " --client " + quoted(exe.path)
     }
 
@@ -1205,7 +1212,7 @@ enum FanHelperLaunch {
         let support = FileManager.default.urls(for: .applicationSupportDirectory,
                                                in: .userDomainMask).first
             ?? URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library/Application Support")
-        return support.appendingPathComponent("BetterStats/start-fan-helper.command")
+        return support.appendingPathComponent("Anode/start-fan-helper.command")
     }
 
     /// The script, as text. Pure, so what the user is about to be shown can be
@@ -1216,24 +1223,24 @@ enum FanHelperLaunch {
     static func script(command: String) -> String {
         """
         #!/bin/sh
-        # Written by BetterStats immediately before this window opened, and
+        # Written by Anode immediately before this window opened, and
         # rewritten every time. Running it by hand does exactly what the app does.
 
-        cat <<'BETTERSTATS_END'
+        cat <<'ANODE_END'
         ────────────────────────────────────────────────────────────────────────
-         BetterStats fan control
+         Anode fan control
 
-         The command below runs as ROOT. BetterStats is not signed with an Apple
+         The command below runs as ROOT. Anode is not signed with an Apple
          Developer ID, so nothing verifies it before it runs — except you, now,
          reading the path:
-        BETTERSTATS_END
+        ANODE_END
         printf '\\n   %s\\n\\n' \(FanControlPanel.quoted(command))
-        cat <<'BETTERSTATS_END'
+        cat <<'ANODE_END'
          It stays in this window. Press ⌃C to stop fan control at any time and
-         the fans go back to automatic — as they also do if BetterStats quits or
+         the fans go back to automatic — as they also do if Anode quits or
          crashes. Press ⌃C now to back out instead.
         ────────────────────────────────────────────────────────────────────────
-        BETTERSTATS_END
+        ANODE_END
 
         exec \(command)
         """

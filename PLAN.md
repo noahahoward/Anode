@@ -1,4 +1,4 @@
-# BetterStats — reviewed implementation plan
+# Anode — reviewed implementation plan
 
 A research pass produced 39 proposals; two independent reviewers (claude-opus-5,
 claude-sonnet-5) then went at it adversarially against the live tree. This file

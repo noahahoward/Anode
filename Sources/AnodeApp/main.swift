@@ -1,7 +1,7 @@
 import AppKit
 import PowerKit
 
-// BetterStats — milestone 1.
+// Anode — milestone 1.
 //
 // One sampling loop feeds everything: the table, the history graph, the ledger,
 // the metric registry (and through it the menu bar widgets), and the SQLite
@@ -89,7 +89,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
     ///
     /// `.utility` is the same QoS the concurrent dispatch asked for, so the change
     /// is to the ordering guarantee and not to the priority.
-    let sampling = DispatchQueue(label: "com.betterstats.sampling", qos: .utility)
+    let sampling = DispatchQueue(label: "com.anode.sampling", qos: .utility)
     /// Admits one tick at a time and counts the rest. The serial queue alone would
     /// let a late tick queue up and run immediately behind the slow one; the gate
     /// drops it instead, because a tick that could not run did not happen.
@@ -1721,7 +1721,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
     /// window it did not create from a nib.
     ///
     /// This is also the second way back that "Start in the menu bar only" relies
-    /// on and its caption promises: opening an already-running BetterStats from
+    /// on and its caption promises: opening an already-running Anode from
     /// Finder does not start a second copy, it arrives here — so a user who
     /// launched headless and expected a window gets one by doing the obvious
     /// thing again. LaunchServices sends the reopen event whatever the activation
@@ -1733,7 +1733,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
 
     // ── Table ───────────────────────────────────────────────────────────────
     func tableView(_ tv: NSTableView, rowViewForRow row: Int) -> NSTableRowView? {
-        BetterStatsRowView()
+        AnodeRowView()
     }
 
     func numberOfRows(in tableView: NSTableView) -> Int { rows.count }
@@ -1817,10 +1817,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
     /// make the whole table twitch sideways every two seconds while a number drops a
     /// digit, which is far more distracting than a few points of slack.
     /// Header attributes for measurement — the same font, case and kerning
-    /// `BetterStatsHeaderCell` draws with, so a column is never sized to a string
+    /// `AnodeHeaderCell` draws with, so a column is never sized to a string
     /// nobody renders.
     private static let headerAttributes: [NSAttributedString.Key: Any] = [
-        .font: BetterStatsHeaderCell.font, .kern: 0.4,
+        .font: AnodeHeaderCell.font, .kern: 0.4,
     ]
 
     /// Widen columns to fit, measuring only the rows actually on screen.

@@ -35,7 +35,7 @@ public enum LoginAgent {
 
     /// Reverse-DNS plus a suffix, so it cannot collide with the bundle id that
     /// SMAppService uses for the same app.
-    public static let label = "dev.noah.betterstats.loginagent"
+    public static let label = "dev.noah.anode.loginagent"
 
     /// Passed to the app by the agent, so a launch AT LOGIN can be told apart
     /// from a user opening the app.
@@ -46,7 +46,7 @@ public enum LoginAgent {
     ///
     /// AN ARGUMENT, not an environment variable. Measured: launchd sets
     /// `XPC_SERVICE_NAME` to this agent's Label for a job it starts, while a
-    /// manual launch gets `application.dev.noah.betterstats.<hash>` from
+    /// manual launch gets `application.dev.noah.anode.<hash>` from
     /// LaunchServices — so the two ARE distinguishable that way. It is still the
     /// wrong mechanism, because `SMAppService` (the other registrar this app
     /// tries first) starts the app through LaunchServices too, and its login

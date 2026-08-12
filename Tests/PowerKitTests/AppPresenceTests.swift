@@ -1,9 +1,9 @@
 import AppKit
 import XCTest
-@testable import BetterStatsApp
+@testable import AnodeApp
 import PowerKit
 
-/// The rule that keeps BetterStats reachable.
+/// The rule that keeps Anode reachable.
 ///
 /// `MainWindowController.hide()` drops the app to `.accessory`, which removes the
 /// Dock tile AND the application menu — `AppMenu.showMainWindow` documents that

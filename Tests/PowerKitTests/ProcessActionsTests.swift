@@ -1,5 +1,5 @@
 import XCTest
-@testable import BetterStatsApp
+@testable import AnodeApp
 @testable import PowerKit
 
 /// Deciding what a Quit button may do, without signalling anything.
@@ -56,15 +56,15 @@ final class ProcessActionsTests: XCTestCase {
 
     /// Quitting the monitor from inside its own process list is almost certainly a
     /// misclick, and the app cannot report the outcome of its own death.
-    func testBetterStatsNeverOffersToQuitItself() {
+    func testAnodeNeverOffersToQuitItself() {
         let p = plan([candidate(selfPID, uid: me, owner: "noah")])
         XCTAssertTrue(p.signalable.isEmpty)
         XCTAssertTrue(p.refused.isEmpty, "our own pid is not an EPERM case")
         XCTAssertTrue(p.includesSelf)
-        XCTAssertEqual(p.explanation, "This is BetterStats")
+        XCTAssertEqual(p.explanation, "This is Anode")
     }
 
-    /// Selecting BetterStats in a list that also contains our other processes must
+    /// Selecting Anode in a list that also contains our other processes must
     /// still skip only our own pid.
     func testOnlyOurOwnPIDIsSkipped() {
         let p = plan([candidate(selfPID, uid: me, owner: "noah"),

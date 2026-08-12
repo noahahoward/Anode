@@ -1,4 +1,4 @@
-# Giving BetterStats to someone else
+# Giving Anode to someone else
 
 Written for the first person other than the author to run this. It says what to
 expect, what will be wrong on their machine, and what to send back.
@@ -8,8 +8,8 @@ expect, what will be wrong on their machine, and what to send back.
 ```
 git clone <this repo>
 cd better-stats-app
-./build-app.sh                    # installs to ~/Applications/BetterStats.app
-open ~/Applications/BetterStats.app
+./build-app.sh                    # installs to ~/Applications/Anode.app
+open ~/Applications/Anode.app
 ```
 
 **Do not send a built `.app`.** Not out of caution theatre — the reason is
@@ -69,7 +69,7 @@ Ranked by how much they would tell us:
    remaining and the graph must not show a reading of the sleep.
 4. **Cost of the app itself.** Idle should sit near 0.2% of one core with the
    window closed. If it is materially higher, that matters more than any feature.
-5. **A crash.** `~/Library/Logs/DiagnosticReports/BetterStats*`.
+5. **A crash.** `~/Library/Logs/DiagnosticReports/Anode*`.
 
 Less useful: absolute agreement with Activity Monitor. Rank correlation is
 expected, value agreement is not — Energy Impact is unitless and this is joules.
@@ -86,7 +86,7 @@ Worth being able to answer honestly, since it is unsandboxed:
   files under `/var/db/systemstats`.
 - Attached USB device names, to attribute charging draw.
 
-It writes one SQLite file, `~/Library/Application Support/BetterStats/history.sqlite`.
+It writes one SQLite file, `~/Library/Application Support/Anode/history.sqlite`.
 
 **Network egress: exactly one thing, and only when you ask for it.** The speed
 test contacts `speed.cloudflare.com` and both downloads and uploads real data
@@ -114,16 +114,16 @@ say you want control — it asks you to confirm, then shows you a command to run
 Terminal:
 
 ```sh
-sudo ~/Applications/BetterStats.app/Contents/MacOS/BetterStatsHelper
+sudo ~/Applications/Anode.app/Contents/MacOS/AnodeHelper
 ```
 
 It prints what it will accept and then waits. The app picks it up within a few
 seconds and the sliders come alive. Press ⌃C to stop it; the fans go back to
-automatic control when you do, and also if BetterStats quits or crashes — the
+automatic control when you do, and also if Anode quits or crashes — the
 helper hands them back the moment its client disappears.
 
 While it runs, exactly one program can set a fan speed: that build of
-BetterStats, run by you, within the minimum and maximum the fan itself reports.
+Anode, run by you, within the minimum and maximum the fan itself reports.
 Another user cannot reach it (the socket is 0600 in a root-owned directory) and
 another program of yours cannot either (its cdhash will not match).
 
@@ -138,7 +138,7 @@ There is one gap and it is worth knowing: if the helper is killed with `kill -9`
 nothing runs, so a fan left at a manual speed stays there. The way out is:
 
 ```sh
-sudo ~/Applications/BetterStats.app/Contents/MacOS/BetterStatsHelper --uninstall
+sudo ~/Applications/Anode.app/Contents/MacOS/AnodeHelper --uninstall
 ```
 
 which hands every fan back unconditionally and removes everything this project
@@ -147,7 +147,7 @@ binary and pinned-hash file that an earlier draft of this feature installed.
 
 ### Installing it instead, and what that costs
 
-Typing a `sudo` line every session is fine while you are working on BetterStats
+Typing a `sudo` line every session is fine while you are working on Anode
 and tiresome otherwise, so there is an **Install Fan Helper…** button. It asks
 for your password once and then fan control works with no prompt of any kind —
 after a rebuild, after a reboot, forever, until you uninstall.
@@ -156,15 +156,15 @@ It installs exactly two files, both owned by root and neither of them writable b
 you:
 
 ```
-/Library/PrivilegedHelperTools/dev.noah.betterstats.fanhelper
-/Library/LaunchDaemons/dev.noah.betterstats.fanhelper.plist
+/Library/PrivilegedHelperTools/dev.noah.anode.fanhelper
+/Library/LaunchDaemons/dev.noah.anode.fanhelper.plist
 ```
 
 The equivalent by hand, if you would rather read it than click it, is the same
 command the button runs:
 
 ```sh
-sudo ~/Applications/BetterStats.app/Contents/MacOS/BetterStatsHelper --install
+sudo ~/Applications/Anode.app/Contents/MacOS/AnodeHelper --install
 ```
 
 It works without an Apple Developer ID because launchd does not check signatures
@@ -175,9 +175,9 @@ containing LaunchDaemons must be notarised.
 
 **Nothing is resident.** Installing does not put a root process on your machine.
 The job has no `RunAtLoad` and no `KeepAlive`; it declares a `Sockets` entry, so
-launchd holds `/var/run/betterstats-fan.sock` itself and starts the helper only
+launchd holds `/var/run/anode-fan.sock` itself and starts the helper only
 when something connects. The helper exits again after 90 seconds with no client
-and no fan held. So: nothing at boot, nothing while BetterStats is closed,
+and no fan held. So: nothing at boot, nothing while Anode is closed,
 nothing while fan control is off.
 
 The socket launchd creates has the same owner and mode the session helper sets
@@ -204,7 +204,7 @@ stale after the next `./build-app.sh`, which would turn the button into
 anybody can claim that identifier with one command:
 
 ```sh
-codesign --force --sign - -i dev.noah.betterstats some-other-binary
+codesign --force --sign - -i dev.noah.anode some-other-binary
 ```
 
 So after you install, **anything running as your user can set your fan speeds**,

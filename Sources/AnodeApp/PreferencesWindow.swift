@@ -61,7 +61,7 @@ public final class PreferencesWindowController: NSWindowController {
             // from the SELECTED PANE, overwriting whatever the window was given.
             // With no title on the pane it substitutes a placeholder, and the
             // Settings window read "Untitled" on screen despite line 71 setting
-            // "BetterStats Settings" — the assignment happens first and is then
+            // "Anode Settings" — the assignment happens first and is then
             // replaced. Titling the panes is what actually reaches the titlebar,
             // and it gives the macOS-standard behaviour of the title naming the
             // pane you are looking at.
@@ -79,7 +79,7 @@ public final class PreferencesWindowController: NSWindowController {
         tabs.addTabViewItem(item(MenuBarPane(), "Menu Bar", "menubar.rectangle"))
 
         let window = NSWindow(contentViewController: tabs)
-        window.title = "BetterStats Settings"
+        window.title = "Anode Settings"
         window.toolbarStyle = .preference
         // Resizable stays on (grids stretch sanely); a floor stops the toolbar
         // tabs from clipping.
@@ -239,7 +239,7 @@ private final class GeneralPane: Pane {
         intervalRow.orientation = .horizontal
         intervalRow.spacing = 10
 
-        loginCheckbox = NSButton(checkboxWithTitle: "Launch BetterStats at login",
+        loginCheckbox = NSButton(checkboxWithTitle: "Launch Anode at login",
                                  target: self, action: #selector(loginToggled))
         loginNote = caption("")
         loginButton = NSButton(title: "Open Login Items Settings…",
@@ -326,7 +326,7 @@ private final class GeneralPane: Pane {
         let widgetsOn = settings.menuBarWidgetsEnabled
         menuBarOnlyCheckbox.isEnabled = widgetsOn
         menuBarOnlyNote.stringValue = widgetsOn
-            ? "Applies to every launch, including opening BetterStats by hand — macOS gives an "
+            ? "Applies to every launch, including opening Anode by hand — macOS gives an "
               + "app no way to tell a login launch from a double-click, so this is one switch and "
               + "not two. Click any menu bar widget, or open the app again, to get the window."
             : "Ignored while menu bar widgets are off (Menu Bar tab): starting with no window and "
@@ -368,7 +368,7 @@ private final class GeneralPane: Pane {
         let a = NSAlert()
         switch status {
         case .enabled, .enabledViaAgent:
-            a.messageText = "BetterStats will open at login"
+            a.messageText = "Anode will open at login"
             a.informativeText = settings.startInMenuBarOnly
                 ? "It will start in the menu bar with no window, as configured below.\n\n"
                   + "If macOS asks you to approve it, that switch lives in "
@@ -382,16 +382,16 @@ private final class GeneralPane: Pane {
             // The important case, and the one with no in-app remedy.
             a.alertStyle = .informational
             a.messageText = "One more step in System Settings"
-            a.informativeText = "macOS needs you to approve BetterStats before it "
+            a.informativeText = "macOS needs you to approve Anode before it "
                 + "can open at login.\n\nOpen System Settings → General → Login Items "
-                + "and switch BetterStats on. Until you do, nothing will start "
+                + "and switch Anode on. Until you do, nothing will start "
                 + "automatically — the checkbox here stays off on purpose, because "
                 + "it reports what the system will actually do."
             a.addButton(withTitle: "Open Login Items…")
             a.addButton(withTitle: "Later")
         default:
             a.alertStyle = .warning
-            a.messageText = "Could not set BetterStats to open at login"
+            a.messageText = "Could not set Anode to open at login"
             a.informativeText = settings.lastLaunchAtLoginError?.localizedDescription
                 ?? "The system did not accept the request, and gave no reason."
             a.addButton(withTitle: "OK")
@@ -541,7 +541,7 @@ private final class MenuBarPane: Pane {
 
         install(rows: [
             [rowLabel("Menu bar:"), masterCheckbox],
-            [spacer, caption("When off, BetterStats keeps its Dock icon so the window is still one "
+            [spacer, caption("When off, Anode keeps its Dock icon so the window is still one "
                              + "click away, and the sampler stops reading anything only a widget "
                              + "was showing. Which widgets are checked below is remembered.")],
             [rowLabel("Show in menu bar:"), list],

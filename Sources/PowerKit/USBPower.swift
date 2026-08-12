@@ -83,7 +83,7 @@ public final class USBPowerTracker {
     /// changes between plugs, so it cannot carry knowledge across them.
     private var remembered: [String: Double] = [:]
     private let defaults: UserDefaults
-    private static let storeKey = "com.betterstats.usb.deviceWatts.v1"
+    private static let storeKey = "com.anode.usb.deviceWatts.v1"
 
     public init(defaults: UserDefaults = .standard) {
         self.defaults = defaults

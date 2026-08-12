@@ -178,7 +178,7 @@ public final class ChargeLimitLearner {
 
     private let lock = NSLock()
     private let defaults: UserDefaults
-    private static let storeKey = "com.betterstats.charge.limitPercent.v1"
+    private static let storeKey = "com.anode.charge.limitPercent.v1"
 
     /// The remembered limit, or nil until one has ever been confirmed.
     private var learned: Double?

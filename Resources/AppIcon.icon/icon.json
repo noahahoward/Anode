@@ -8,8 +8,8 @@
           "blend-mode" : "normal",
           "glass" : true,
           "hidden" : false,
-          "image-name" : "betterstatsicon-nobg.png",
-          "name" : "betterstatsicon-nobg",
+          "image-name" : "anodeicon-nobg.png",
+          "name" : "anodeicon-nobg",
           "opacity" : 0.9,
           "position" : {
             "scale" : 5,

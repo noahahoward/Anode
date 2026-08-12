@@ -286,7 +286,7 @@ enum DisplayExperiment {
         // would arrive as a brightness step this tool did not ask for.
         IOPMAssertionCreateWithName("PreventUserIdleDisplaySleep" as CFString,
                                     IOPMAssertionLevel(kIOPMAssertionLevelOn),
-                                    "BetterStats display sweep" as CFString,
+                                    "Anode display sweep" as CFString,
                                     &sleepAssertion)
         defer { if sleepAssertion != 0 { IOPMAssertionRelease(sleepAssertion) } }
 

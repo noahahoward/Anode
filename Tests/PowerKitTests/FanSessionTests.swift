@@ -1,5 +1,5 @@
 import XCTest
-@testable import BetterStatsApp
+@testable import AnodeApp
 @testable import PowerKit
 
 // The Fans tab's control strip, tested as arithmetic.
@@ -411,7 +411,7 @@ final class FanGaugeTests: XCTestCase {
 /// discovered in a Terminal window.
 final class FanHelperLaunchTests: XCTestCase {
 
-    private let command = "sudo '/Users/x/Applications/BetterStats.app/Contents/MacOS/BetterStatsHelper'"
+    private let command = "sudo '/Users/x/Applications/Anode.app/Contents/MacOS/AnodeHelper'"
 
     func testTheScriptIsAShellScriptThatExecsTheCommand() {
         let script = FanHelperLaunch.script(command: command)
@@ -469,8 +469,8 @@ final class FanHelperLaunchTests: XCTestCase {
     /// itself.
     func testTheDisplayedCommandSurvivesQuotesAndSpacesVerbatim() throws {
         for original in [command,
-                         "sudo '/tmp/it'\\''s here/BetterStatsHelper'",
-                         "sudo '/a b/BetterStatsHelper' --client '/a b/BetterStats.app'"] {
+                         "sudo '/tmp/it'\\''s here/AnodeHelper'",
+                         "sudo '/a b/AnodeHelper' --client '/a b/Anode.app'"] {
             let script = FanHelperLaunch.script(command: original)
             let line = try XCTUnwrap(script.split(separator: "\n")
                                            .first { $0.hasPrefix("printf") })

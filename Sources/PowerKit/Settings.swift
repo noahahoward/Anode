@@ -7,7 +7,7 @@ import ServiceManagement
 /// helper) share these settings, and an unbundled binary's `.standard` domain is
 /// keyed by *process name* — each target would get its own orphan plist and the
 /// CLI would never see what the app configured. One suite file
-/// (`~/Library/Preferences/com.betterstats.settings.plist`) is the single truth
+/// (`~/Library/Preferences/com.anode.settings.plist`) is the single truth
 /// for all of them. Works because we are not sandboxed.
 ///
 /// Why clamp on write AND on read: values arrive from three untrusted directions —
@@ -25,7 +25,7 @@ public final class Settings {
 
     // ── Keys ────────────────────────────────────────────────────────────────
     /// Observation keys. These are the *logical* names; storage keys carry a
-    /// "betterstats." prefix so a shared defaults domain can't collide with us.
+    /// "anode." prefix so a shared defaults domain can't collide with us.
     public enum Key {
         public static let sampleInterval = "sampleInterval"
         public static let powerWindowHours = "powerWindowHours"
@@ -106,7 +106,19 @@ public final class Settings {
     }
 
     // ── Storage ─────────────────────────────────────────────────────────────
-    public static let suiteName = "com.betterstats.settings"
+    public static let suiteName = "com.anode.settings"
+
+    /// What this app used to be called, and where it used to keep things.
+    ///
+    /// The rename from BetterStats moved the settings domain, the history store
+    /// and the login agent's label. None of that is a problem for a machine that
+    /// has never run the old build and all of it is a problem for one that has:
+    /// preferences silently back to defaults, a 240 MB history the app can no
+    /// longer see, and a login item registered under a name nothing looks for.
+    ///
+    /// Migration runs ONCE and only into an untouched destination, so it can never
+    /// overwrite settings someone has since changed. See `migrateFromPreviousName`.
+    static let previousSuiteName = "com.betterstats.settings"
     public static let shared = Settings()
 
     private let defaults: UserDefaults
@@ -130,6 +142,7 @@ public final class Settings {
     /// same suite reads the same data — used by tests to prove persistence.
     public init(defaults: UserDefaults? = nil) {
         self.defaults = defaults ?? UserDefaults(suiteName: Settings.suiteName) ?? .standard
+        Settings.migrateFromPreviousName(into: self.defaults)
         self.snapshot = Settings.readAll(self.defaults)
         // UserDefaults posts didChange synchronously, in-process only. Out-of-
         // process edits (defaults write) are still *read* correctly because
@@ -220,7 +233,7 @@ public final class Settings {
     ///
     /// Off means the app never opens the helper's socket and never asks for a
     /// write — not "asks and is refused". A user who leaves this alone is on a
-    /// machine BetterStats has never written to, which is `FanMode.native`'s
+    /// machine Anode has never written to, which is `FanMode.native`'s
     /// whole contract.
     /// Has the user read the fan disclosure and asked not to see it again?
     ///
@@ -458,7 +471,7 @@ public final class Settings {
 
     // ── Plumbing ────────────────────────────────────────────────────────────
 
-    private static func storageKey(_ key: String) -> String { "betterstats." + key }
+    private static func storageKey(_ key: String) -> String { "anode." + key }
 
     private func writeDouble(_ key: String, _ path: WritableKeyPath<Values, Double>,
                              _ value: Double, _ def: Double, _ range: ClosedRange<Double>) {
@@ -540,5 +553,59 @@ public final class Settings {
                fanDisclosureSeen: readBool(d, Key.fanDisclosureSeen,
                                            Default.fanDisclosureSeen),
                menuBarWidgets: readWidgets(d, Default.menuBarWidgets))
+    }
+}
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+
+extension Settings {
+
+    /// Carry settings across the rename from BetterStats to Anode.
+    ///
+    /// COPIES rather than moves, and only into a domain that has nothing in it.
+    /// A move would make going back to the old build a data loss, and this is
+    /// exactly the kind of change someone reverts; leaving the old domain alone
+    /// costs a few kilobytes and keeps that door open. Writing only into an empty
+    /// destination means running it twice is harmless and it can never overwrite a
+    /// preference set since the rename.
+    ///
+    /// Keys are unchanged by the rename — only the DOMAIN moved — so this is a
+    /// straight copy rather than a mapping, and a key added later needs nothing
+    /// here.
+    /// `from` is injectable ONLY so a test can point it at a domain of its own.
+    ///
+    /// It has no other caller and no other reason to exist. The test that needed
+    /// it wrote to the real `com.betterstats.settings` instead — and cleared it in
+    /// its teardown, which destroyed a live machine's preferences. A migration
+    /// test is precisely the test most likely to reach for a production domain,
+    /// because the domain name is the thing under test, so the seam belongs here
+    /// rather than in the discipline of whoever writes the next one.
+    static func migrateFromPreviousName(into defaults: UserDefaults,
+                                        from source: String = previousSuiteName) {
+        guard let old = UserDefaults(suiteName: source),
+              let values = old.persistentDomain(forName: source),
+              !values.isEmpty
+        else { return }
+        // THE KEYS ARE RENAMED TOO, not just the domain.
+        //
+        // Every key is namespaced — `storageKey` prefixes them — and the rename
+        // moved that prefix along with everything else. Copying keys verbatim put
+        // the old values in the new domain under names the app no longer reads:
+        // present, correct, and invisible. Caught by looking at the migrated
+        // domain rather than by trusting that a copy is a copy.
+        //
+        // PER KEY, and only where the destination has nothing. That carries
+        // everything the old build set, skips anything already answered under the
+        // new name, and needs no marker to be safe to run twice.
+        let oldPrefix = "betterstats."
+        let newPrefix = "anode."
+        for (key, value) in values {
+            let renamed = key.hasPrefix(oldPrefix)
+                ? newPrefix + key.dropFirst(oldPrefix.count)
+                : key
+            guard defaults.object(forKey: renamed) == nil else { continue }
+            defaults.set(value, forKey: renamed)
+        }
     }
 }

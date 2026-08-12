@@ -820,7 +820,7 @@ final class ResourcesContent: NSView, PaneContentView {
         // empty string. `system_profiler SPAirPortDataType` does return it and
         // takes 14.3 SECONDS, which is not a thing to do on a pane refresh.
         //
-        // So this asks for a permission BetterStats does not otherwise need, and
+        // So this asks for a permission Anode does not otherwise need, and
         // the row is dropped instead of a location prompt being added to a system
         // monitor. On Ethernet and Thunderbolt the name is a real port name and
         // still earns its place.

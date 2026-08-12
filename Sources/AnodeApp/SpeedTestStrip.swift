@@ -28,9 +28,9 @@ final class SpeedTestStrip: NSView {
 
     /// Told when a test starts and stops, with the bytes it is about to move.
     ///
-    /// The Network tab's own graph is about to show a spike that BetterStats
+    /// The Network tab's own graph is about to show a spike that Anode
     /// caused, and the battery ledger is about to attribute the energy for it to
-    /// BetterStats — correctly, and confusingly. A monitor that makes a mess of
+    /// Anode — correctly, and confusingly. A monitor that makes a mess of
     /// its own readings without saying so is the kind of quiet dishonesty this
     /// project exists to avoid.
     var onActivity: ((Bool) -> Void)?
@@ -71,7 +71,7 @@ final class SpeedTestStrip: NSView {
                 self?.render()
             }
         }
-        pathMonitor.start(queue: DispatchQueue(label: "dev.noah.betterstats.speedtest.path"))
+        pathMonitor.start(queue: DispatchQueue(label: "dev.noah.anode.speedtest.path"))
         render()
     }
     required init?(coder: NSCoder) { fatalError() }

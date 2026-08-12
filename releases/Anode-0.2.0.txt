@@ -1,4 +1,4 @@
-BetterStats 0.2.0 (build 58)
+Anode 0.2.0 (build 58)
 source commit  702974f
 built          2026-08-09 02:24:26 UTC
 sha256         ca2b1c670d907f712f8bb12fcb49c47f5b4c323f687c51dbff7ffcd7994ec091

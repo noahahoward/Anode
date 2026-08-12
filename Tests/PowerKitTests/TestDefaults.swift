@@ -1,4 +1,5 @@
 import Foundation
+@testable import PowerKit
 import XCTest
 
 /// A throwaway `UserDefaults` suite that actually goes away.
@@ -8,7 +9,7 @@ import XCTest
 /// the file, and clearing a domain does not ask for it to be unlinked. Both suites
 /// that use throwaway defaults called it and both looked correct.
 ///
-/// MEASURED: 2468 files named `com.betterstats.tests.<UUID>.plist` in the real
+/// MEASURED: 2468 files named `com.anode.tests.<UUID>.plist` in the real
 /// `~/Library/Preferences`, one per test run per suite, accumulated over this
 /// project's life. Nothing broke, which is why it went unnoticed — a test suite
 /// quietly littering a developer's actual preferences is the kind of mess that is
@@ -32,7 +33,7 @@ enum TestDefaults {
     static func make(owner: String,
                      file: StaticString = #filePath, line: UInt = #line)
         throws -> (defaults: UserDefaults, name: String) {
-        let name = "com.betterstats.tests.\(owner)"
+        let name = "com.anode.tests.\(owner)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: name), file: file, line: line)
         // A previous run may have died before its teardown.
         defaults.removePersistentDomain(forName: name)
@@ -111,7 +112,7 @@ final class TestDefaultsTests: XCTestCase {
                                      "one name produced more than one file")
             TestDefaults.destroy(d, n)
         }
-        XCTAssertTrue(TestDefaults.plistURLs(named: "com.betterstats.tests.SelfCheckLoop").isEmpty,
+        XCTAssertTrue(TestDefaults.plistURLs(named: "com.anode.tests.SelfCheckLoop").isEmpty,
                       "the last teardown left its file behind")
     }
 }
@@ -125,6 +126,54 @@ extension TestDefaults {
                 at: library.appendingPathComponent("Preferences"),
                 includingPropertiesForKeys: nil)
         else { return 0 }
-        return files.filter { $0.lastPathComponent.hasPrefix("com.betterstats.tests.") }.count
+        return files.filter { $0.lastPathComponent.hasPrefix("com.anode.tests.") }.count
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// No test writes to a domain a real machine uses.
+///
+/// Added after one did. A migration test seeded the live
+/// `com.betterstats.settings` domain and cleared it in its teardown, which wiped
+/// a working machine's preferences — and it did so hours after this very file was
+/// written to stop test suites touching real preferences. Discipline did not
+/// catch it; a test does.
+final class NoProductionDomainsInTestsTests: XCTestCase {
+
+    /// Every domain this suite is allowed to write to.
+    ///
+    /// The prefix is the contract: `TestDefaults.make` is the only way to get a
+    /// suite, and everything it hands out is under `com.anode.tests.`. Anything
+    /// else in Preferences with our name on it was written by a test that went
+    /// around the helper.
+    func testEveryDomainThisSuiteTouchesIsAThrowawayOne() throws {
+        let (defaults, name) = try TestDefaults.make(owner: "ContractCheck")
+        defer { TestDefaults.destroy(defaults, name) }
+        XCTAssertTrue(name.hasPrefix("com.anode.tests."),
+                      "the helper handed out a domain outside the test namespace")
+
+        // And the names a real machine uses are NOT in that namespace, so the
+        // check above is a real constraint rather than a tautology.
+        for live in [Settings.suiteName, Settings.previousSuiteName] {
+            XCTAssertFalse(live.hasPrefix("com.anode.tests."),
+                           "\(live) is a domain a real machine keeps settings in")
+        }
+    }
+
+    /// The source of a migration is injectable, which is what lets the test above
+    /// be true. Without the seam the only way to test a migration is to seed the
+    /// domain it migrates FROM — and that domain belongs to the user.
+    func testTheMigrationSourceCanBePointedSomewhereHarmless() throws {
+        let (source, sourceName) = try TestDefaults.make(owner: "ContractSource")
+        defer { TestDefaults.destroy(source, sourceName) }
+        source.set(3.0, forKey: "betterstats.sampleInterval")
+
+        let (into, intoName) = try TestDefaults.make(owner: "ContractInto")
+        defer { TestDefaults.destroy(into, intoName) }
+        Settings.migrateFromPreviousName(into: into, from: sourceName)
+
+        XCTAssertEqual(into.double(forKey: "anode.sampleInterval"), 3.0,
+                       "the seam does not actually work, so tests will reach for the real one")
     }
 }

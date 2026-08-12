@@ -601,7 +601,7 @@ final class LaunchdIndex: @unchecked Sendable {
 public struct QuitSafety: Equatable, Sendable {
 
     public enum Verdict: Equatable, Sendable {
-        /// BetterStats itself.
+        /// Anode itself.
         case isSelf
         /// Another user's — `kill(2)` returns EPERM and no button is offered.
         case notPermitted
@@ -643,7 +643,7 @@ public struct QuitSafety: Equatable, Sendable {
 
         if pid == selfPID {
             return QuitSafety(verdict: .isSelf, answer: "No",
-                              detail: "This is BetterStats. It does not offer to quit itself — "
+                              detail: "This is Anode. It does not offer to quit itself — "
                                     + "it could not report what happened.")
         }
         // Before the uid test, because pid 0 is `kernel_task` and its uid says
@@ -660,7 +660,7 @@ public struct QuitSafety: Equatable, Sendable {
             let who = owner ?? "uid \(uid)"
             return QuitSafety(verdict: .notPermitted, answer: "Not possible",
                               detail: "Owned by \(who). An unprivileged process cannot signal it, "
-                                    + "so BetterStats does not offer a button that could only fail.")
+                                    + "so Anode does not offer a button that could only fail.")
         }
         if let container = containerName {
             return QuitSafety(verdict: .partOfSomethingElse, answer: "Not on its own",

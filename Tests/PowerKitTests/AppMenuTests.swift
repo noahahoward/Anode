@@ -1,6 +1,6 @@
 import AppKit
 import XCTest
-@testable import BetterStatsApp
+@testable import AnodeApp
 @testable import PowerKit
 
 // The View menu numbers the sidebar. Nothing at runtime notices if the two lists
@@ -265,7 +265,7 @@ final class DocumentationLocatorTests: XCTestCase {
     /// app — ~/Applications may well contain someone else's.
     func testIgnoresADocThatIsNotBesideTheManifest() throws {
         _ = try write("README.md")
-        let deep = root.appendingPathComponent("BetterStats.app/Contents/MacOS")
+        let deep = root.appendingPathComponent("Anode.app/Contents/MacOS")
         try FileManager.default.createDirectory(at: deep, withIntermediateDirectories: true)
 
         XCTAssertNil(Documentation.checkoutURL(for: "README.md", near: deep))
@@ -373,7 +373,7 @@ final class FanControlPanelTests: XCTestCase {
     func testTheStartCommandNamesTheHelperAndAsksForRoot() {
         let command = FanControlPanel.startCommand()
         XCTAssertTrue(command.hasPrefix("sudo '"), command)
-        XCTAssertTrue(command.contains("BetterStatsHelper"), command)
+        XCTAssertTrue(command.contains("AnodeHelper"), command)
     }
 
     /// The strip renders in the state a fresh install is in — control off — and

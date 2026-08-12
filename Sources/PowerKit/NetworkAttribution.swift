@@ -44,7 +44,7 @@ public final class NetworkAttribution {
     }
 
     private let refreshInterval: TimeInterval
-    private let queue = DispatchQueue(label: "com.betterstats.networkattribution",
+    private let queue = DispatchQueue(label: "com.anode.networkattribution",
                                       qos: .utility)
 
     public init(refreshInterval: TimeInterval = 15) {

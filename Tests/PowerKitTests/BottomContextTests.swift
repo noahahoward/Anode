@@ -1,5 +1,5 @@
 import XCTest
-@testable import BetterStatsApp
+@testable import AnodeApp
 @testable import PowerKit
 
 /// The bottom of the window follows the SORT.

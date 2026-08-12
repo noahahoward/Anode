@@ -610,7 +610,7 @@ final class InspectorView: NSView {
     /// A caption with a wrapping sentence under it.
     ///
     /// The explainer's three most important outputs are sentences, not values —
-    /// "Owned by root. An unprivileged process cannot signal it, so BetterStats
+    /// "Owned by root. An unprivileged process cannot signal it, so Anode
     /// does not offer a button that could only fail." A `DetailLine` would
     /// truncate that in the middle and throw away the reason, which is the whole
     /// point of showing it.
