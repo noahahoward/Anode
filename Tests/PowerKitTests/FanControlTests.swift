@@ -264,7 +264,7 @@ final class FanWireTests: XCTestCase {
     /// A path too long for `sun_path` is refused rather than silently truncated
     /// to a different socket.
     func testAnOversizedSocketPathIsRefused() {
-        XCTAssertNotNil(FanSocketIO.address("/var/run/betterstats-fan.sock"))
+        XCTAssertNotNil(FanSocketIO.address("/var/run/anode-fan.sock"))
         XCTAssertNil(FanSocketIO.address("/" + String(repeating: "x", count: 200)))
     }
 }
@@ -1138,7 +1138,7 @@ final class FanOnDemandTests: XCTestCase {
 
     /// The hash the server will compute for a connection from this process,
     /// obtained the same way it obtains it. Lets a test actually connect, rather
-    /// than skipping — `xctest` has no `dev.noah.betterstats` signing identifier,
+    /// than skipping — `xctest` has no `dev.noah.anode` signing identifier,
     /// so the daemon's own pin would refuse it.
     private func ownCDHash() -> String? {
         var pair: [Int32] = [0, 0]
@@ -1334,10 +1334,10 @@ final class FanUninstallTests: XCTestCase {
     /// only after its replacement would leave a root daemon loaded.
     func testEveryPrivilegedArtifactIsOnTheList() {
         let paths = FanHelperInstall.artifacts().all.map(\.path)
-        for expected in ["/Library/LaunchDaemons/dev.noah.betterstats.helper.plist",
-                         "/Library/PrivilegedHelperTools/dev.noah.betterstats.helper",
-                         "/Library/Application Support/BetterStats/client.cdhash",
-                         "/Library/Application Support/BetterStats",
+        for expected in ["/Library/LaunchDaemons/dev.noah.anode.helper.plist",
+                         "/Library/PrivilegedHelperTools/dev.noah.anode.helper",
+                         "/Library/Application Support/Anode/client.cdhash",
+                         "/Library/Application Support/Anode",
                          FanSocket.path] {
             XCTAssertTrue(paths.contains(expected), "\(expected) would be left behind")
         }
@@ -1349,9 +1349,9 @@ final class FanUninstallTests: XCTestCase {
     func testThePinIsRemovedBeforeTheDirectoryThatHoldsIt() {
         let files = FanHelperInstall.artifacts().files.map(\.path)
         let dirs = FanHelperInstall.artifacts().directoriesIfEmpty.map(\.path)
-        let pin = "/Library/Application Support/BetterStats/client.cdhash"
+        let pin = "/Library/Application Support/Anode/client.cdhash"
         XCTAssertTrue(files.contains(pin))
-        XCTAssertTrue(dirs.contains("/Library/Application Support/BetterStats"))
+        XCTAssertTrue(dirs.contains("/Library/Application Support/Anode"))
     }
 
     func testEverythingIsActuallyRemoved() throws {

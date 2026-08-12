@@ -20,7 +20,7 @@ import Foundation
 // signature the designated requirement is a bare cdhash. Measured on this
 // machine's own installed bundle:
 //
-//     $ codesign -d --requirements - ~/Applications/BetterStats.app
+//     $ codesign -d --requirements - ~/Applications/Anode.app
 //     designated => cdhash H"3a4c876a97cf1770714f3ee3276592ee523a1f7d"
 //     Signature=adhoc   TeamIdentifier=not set
 //
@@ -84,16 +84,16 @@ import Foundation
 //      an explicit reinstall, with its own authorisation, replaces it.
 //
 //   2. WHAT IT LISTENS TO IS PINNED BY SIGNING IDENTIFIER, not by hash.
-//      `dev.noah.betterstats` comes from CFBundleIdentifier and is the same in
+//      `dev.noah.anode` comes from CFBundleIdentifier and is the same in
 //      every build. `FanClientPin.signingIdentifier` states in full what that
 //      stops and what it does not, and the short version is repeated here
 //      because it is the price of the button: ANYONE WHO CAN RUN `codesign -s -
-//      -i dev.noah.betterstats` ON THEIR OWN BINARY SATISFIES IT. Verified:
+//      -i dev.noah.anode` ON THEIR OWN BINARY SATISFIES IT. Verified:
 //
 //          $ cc -o notmine t.c
-//          $ codesign --force --sign - -i dev.noah.betterstats notmine
+//          $ codesign --force --sign - -i dev.noah.anode notmine
 //          $ codesign -dvv notmine
-//          Identifier=dev.noah.betterstats   Signature=adhoc   valid on disk
+//          Identifier=dev.noah.anode   Signature=adhoc   valid on disk
 //
 //      So the installed daemon's real boundary is the uid check, which is the
 //      kernel's and cannot be forged, plus a vocabulary of two commands whose
@@ -132,7 +132,52 @@ public enum FanDaemon {
     /// Distinct from `FanHelperInstall.retiredDaemonLabel`, which named the first
     /// draft's daemon. A user may still have that one loaded; they are not the
     /// same job and must not share a label.
-    public static let label = "dev.noah.betterstats.fanhelper"
+    public static let label = "dev.noah.anode.fanhelper"
+
+    /// What this daemon was called before the app was renamed.
+    ///
+    /// A rename cannot migrate this one. The plist is in `/Library/LaunchDaemons`
+    /// and the binary in `/Library/PrivilegedHelperTools`, both root-owned, and
+    /// this app has no way to move them — which is the correct arrangement and
+    /// also means an upgrade leaves a root daemon installed under a name nothing
+    /// looks for any more.
+    ///
+    /// Detected rather than ignored, because the failure is bad in a specific
+    /// way: `isInstalled` would report false, the app would offer to install, and
+    /// the machine would end up with TWO root fan daemons — one of them orphaned,
+    /// still holding a socket, and answering to a build that no longer exists.
+    public static let previousLabel = "dev.noah.betterstats.fanhelper"
+
+    /// Is a daemon from before the rename still installed?
+    ///
+    /// Only ever reported, never acted on. Removing it needs root and it is
+    /// exactly the kind of thing that must be done deliberately, with the command
+    /// visible — the same rule the install follows.
+    public static var previousInstallIsPresent: Bool {
+        FileManager.default.fileExists(
+            atPath: "/Library/LaunchDaemons/\(previousLabel).plist")
+    }
+
+    /// Said alongside `summary`, never folded into it.
+    ///
+    /// The first version put this inside `summary(.notInstalled)`, which made a
+    /// pure function depend on what happens to be installed on the machine — a
+    /// test asserting its wording started failing on the one developer machine
+    /// that HAD an old daemon, which is precisely the environment it needs to keep
+    /// working on. Kept apart, `summary` stays a function of its argument and this
+    /// stays a fact about the disk.
+    public static var orphanNote: String? {
+        guard previousInstallIsPresent else { return nil }
+        return "A fan helper from the old BetterStats name is still installed as root. "
+             + "Remove it before installing this one, or the machine runs two."
+    }
+
+    /// What to run to be rid of it, for the app to show and the user to read.
+    public static var previousUninstallCommand: String {
+        "sudo launchctl bootout system/\(previousLabel); "
+        + "sudo rm -f /Library/LaunchDaemons/\(previousLabel).plist "
+        + "/Library/PrivilegedHelperTools/\(previousLabel)"
+    }
 
     /// Root-owned, root-writable-only. The point of copying the helper here is
     /// that neither a rebuild nor anything running as the user can change what
@@ -146,7 +191,7 @@ public enum FanDaemon {
     /// CFBundleIdentifier, so it is identical in every build of this app — which
     /// is the only reason the install survives a rebuild. See
     /// `FanClientPin.signingIdentifier` for what that costs.
-    public static let clientSigningIdentifier = "dev.noah.betterstats"
+    public static let clientSigningIdentifier = "dev.noah.anode"
 
     /// Bumped when the socket protocol changes in a way an older daemon cannot
     /// serve.
@@ -309,7 +354,7 @@ public enum FanDaemon {
     public static func summary(_ state: State) -> String {
         switch state {
         case .notInstalled:
-            return "The fan helper is not installed. Nothing of BetterStats runs as root."
+            return "The fan helper is not installed. Nothing of Anode runs as root."
         case .running:
             return "The fan helper is installed and running."
         case .installedAndIdle:
@@ -382,9 +427,9 @@ public enum FanDaemonInstall {
             case .noSuchHelper(let p):
                 return "There is no fan helper at \(p) to install."
             case .notInsideAnAppBundle(let p):
-                return "\(p) is not inside a BetterStats.app. Only a bundled build "
+                return "\(p) is not inside a Anode.app. Only a bundled build "
                      + "can be installed — run ./build-app.sh and install from "
-                     + "~/Applications/BetterStats.app."
+                     + "~/Applications/Anode.app."
             case .ownerWouldBeRoot:
                 return "The fan helper serves one ordinary user and would serve "
                      + "nobody if installed for root. Run the app as yourself."
@@ -412,13 +457,13 @@ public enum FanDaemonInstall {
 
         guard fileExists(sourceHelper) else { return .failure(.noSuchHelper(sourceHelper)) }
         // A `swift build` binary has no bundle and is signed by the linker under
-        // an identifier like `BetterStatsHelper-3f2a…`, so a daemon installed from
+        // an identifier like `AnodeHelper-3f2a…`, so a daemon installed from
         // one would refuse the app it was installed for. Refused here, where the
         // message can say what to do.
         let bundle = URL(fileURLWithPath: sourceHelper)
             .deletingLastPathComponent()    // MacOS
             .deletingLastPathComponent()    // Contents
-            .deletingLastPathComponent()    // BetterStats.app
+            .deletingLastPathComponent()    // Anode.app
         guard bundle.pathExtension == "app" else {
             return .failure(.notInsideAnAppBundle(sourceHelper))
         }
@@ -469,7 +514,7 @@ public enum FanDaemonInstall {
     /// `Sockets` makes launchd hold the listening socket itself and start this
     /// program only when a connection arrives.
     ///
-    /// So: no process at boot. No process while BetterStats is closed. No
+    /// So: no process at boot. No process while Anode is closed. No
     /// process while fan control is off. The helper appears when the app asks a
     /// fan for something and leaves again when it is done (`FanDaemon.idleExit`).
     ///
@@ -600,7 +645,7 @@ public enum FanDaemonInstall {
         return Report(outcomes: outcomes, ok: true)
     }
 
-    /// The real thing. Used only by `BetterStatsHelper --install`, which is
+    /// The real thing. Used only by `AnodeHelper --install`, which is
     /// already running as root by the time it gets here.
     public struct SystemOperations: Operations {
         private let fm = FileManager.default
@@ -721,12 +766,12 @@ public enum FanElevation {
     /// The prompt the system dialog carries. Names the two paths, because the
     /// objection to this mechanism is that it names none.
     public static let installPrompt =
-        "BetterStats will install a fan helper that runs as root: "
+        "Anode will install a fan helper that runs as root: "
         + "\(FanDaemon.helperPath) and \(FanDaemon.plistPath). "
         + "Uninstalling from the Fans tab removes both."
 
     public static let uninstallPrompt =
-        "BetterStats will hand the fans back to macOS and remove everything it "
+        "Anode will hand the fans back to macOS and remove everything it "
         + "has installed as root."
 
     public static func osascriptArguments(command: String, prompt: String) -> [String] {

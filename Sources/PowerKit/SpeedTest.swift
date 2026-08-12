@@ -517,7 +517,7 @@ public enum SpeedTestGate {
         }
         guard !hasAgreedBefore else { return .run }
         return .ask("""
-        This is the only thing BetterStats ever sends anywhere.
+        This is the only thing Anode ever sends anywhere.
 
         It transfers for about \(seconds) seconds to and from \(host), as fast as \
         your connection will go — so the amount of data depends on your speed: \

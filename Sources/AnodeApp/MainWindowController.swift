@@ -74,11 +74,11 @@ final class MainWindowController: NSObject {
         // A menu bar app outlives its windows by design.
         window.isReleasedWhenClosed = false
         window.delegate = self
-        window.title = "BetterStats"
+        window.title = "Anode"
         window.backgroundColor = Palette.background
         window.center()
         window.minSize = NSSize(width: 760, height: 500)
-        window.setFrameAutosaveName("BetterStatsMain")
+        window.setFrameAutosaveName("AnodeMain")
 
 
         let content = NSView()
@@ -101,7 +101,7 @@ final class MainWindowController: NSObject {
         table.allowsColumnResizing = false
         table.allowsColumnReordering = false
         table.allowsEmptySelection = true
-        table.selectionHighlightStyle = .none   // drawn by BetterStatsRowView
+        table.selectionHighlightStyle = .none   // drawn by AnodeRowView
         table.intercellSpacing = NSSize(width: 0, height: 0)
         // Spare width goes to the app name, not spread across every column. Spreading
         // pushes the numbers to opposite ends of a wide window, so a row can no longer
@@ -215,7 +215,7 @@ final class MainWindowController: NSObject {
         while let c = table.tableColumns.last { table.removeTableColumn(c) }
         for spec in columns {
             let c = NSTableColumn(identifier: .init(spec.id))
-            c.headerCell = BetterStatsHeaderCell(textCell: spec.title)
+            c.headerCell = AnodeHeaderCell(textCell: spec.title)
             c.title = spec.title
             c.headerToolTip = spec.tooltip
             c.width = spec.width
@@ -228,7 +228,7 @@ final class MainWindowController: NSObject {
         // Trailing slack absorber, always last. Not part of the column list because
         // it holds no data and must never be sortable.
         let spacer = NSTableColumn(identifier: .init(ProcessColumns.spacerID))
-        spacer.headerCell = BetterStatsHeaderCell(textCell: "")
+        spacer.headerCell = AnodeHeaderCell(textCell: "")
         spacer.title = ""
         spacer.width = 16
         spacer.minWidth = 0
@@ -251,7 +251,7 @@ final class MainWindowController: NSObject {
     func refreshSortIndicators() {
         let sorted = table.sortDescriptors.first
         for column in table.tableColumns {
-            guard let cell = column.headerCell as? BetterStatsHeaderCell else { continue }
+            guard let cell = column.headerCell as? AnodeHeaderCell else { continue }
             cell.sortIndicator = column.identifier.rawValue == sorted?.key
                 ? (sorted?.ascending == true ? .ascending : .descending)
                 : .none
@@ -473,7 +473,7 @@ final class HoverTableView: NSTableView {
 /// correctly and said nothing about it, which with a bottom section that follows
 /// the sort means three panels change subject with nothing on screen naming the
 /// subject they changed to.
-final class BetterStatsHeaderCell: NSTableHeaderCell {
+final class AnodeHeaderCell: NSTableHeaderCell {
 
     /// Which way this column is sorted, or that it is not the sorted one.
     ///
@@ -578,7 +578,7 @@ final class BetterStatsHeaderCell: NSTableHeaderCell {
 /// separator's ENDS are inset by the same radius so the hairline stops exactly where
 /// the pill's straight edge begins — a full-width border overhangs the curve at both
 /// corners, which is visible the moment a row is selected.
-final class BetterStatsRowView: NSTableRowView {
+final class AnodeRowView: NSTableRowView {
 
     /// FULL BLEED, and square. Every ground this row draws is the same rectangle.
     ///

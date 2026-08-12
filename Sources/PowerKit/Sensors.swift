@@ -35,7 +35,7 @@ import Foundation
 /// write-bytes command against `F0Md`/`F0Tg` — and it is deliberately absent.
 /// Forcing a fan target while the SoC is hot can cook the machine, and writes
 /// require entitlements/root the unprivileged read connection does not have.
-/// If control is ever built, it belongs in BetterStatsHelper behind an
+/// If control is ever built, it belongs in AnodeHelper behind an
 /// explicit user gesture, never in this file.
 
 public enum SensorKind {

@@ -247,7 +247,7 @@ This machine: 6197 mAh full charge → **1% ≈ 2,588 J**, **1 W ≈ 1.39 %/hr**
 
 The instrument must not be a significant entry in its own ledger. It briefly was —
 `proc_pidpath` was being called twice per process per tick, once for the name and once
-for the app rollup, which put `BetterStats` at the top of its own table. The path is
+for the app rollup, which put `Anode` at the top of its own table. The path is
 now captured once per sweep and reused.
 
 For scale, `top` has been measured at 6.9–18.1% of its own denominator.

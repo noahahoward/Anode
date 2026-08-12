@@ -98,7 +98,7 @@ if args.contains("--fankeys") {
 // Exact CPU time over a fixed window, from the process's own rusage counters.
 // `ps %cpu` is a decaying average and cannot A/B a 0.5 point change.
 if let i = args.firstIndex(of: "--cpuwatch") {
-    let name = args.count > i + 1 ? args[i + 1] : "BetterStatsApp"
+    let name = args.count > i + 1 ? args[i + 1] : "AnodeApp"
     let secs = args.count > i + 2 ? Double(args[i + 2]) ?? 30 : 30
     let pg = Process()
     pg.executableURL = URL(fileURLWithPath: "/usr/bin/pgrep")
@@ -142,7 +142,7 @@ if let i = args.firstIndex(of: "--cpuwatch") {
 // macOS killed the app for dirtying 2.1 GB in 40 minutes. This measures the
 // real rate for a named process so a fix can be verified rather than assumed.
 if let i = args.firstIndex(of: "--diskwatch") {
-    let target = args.count > i + 1 ? args[i + 1] : "BetterStatsApp"
+    let target = args.count > i + 1 ? args[i + 1] : "AnodeApp"
     let secs = args.count > i + 2 ? Double(args[i + 2]) ?? 30 : 30
 
     // A PID is accepted as well as a name, because `pgrep -f` matches the
@@ -558,7 +558,7 @@ if args.contains("--watch") || args.contains("-f") {
         print("\u{001B}[H\u{001B}[2J", terminator: "")  // home + clear
         let st = s.state
         let charge = st.map { "\($0.percent)%\($0.onAC ? " AC" : " batt")" } ?? "—"
-        print("BetterStats — battery \(charge)   window \(String(format: "%.1f", s.interval))s   "
+        print("Anode — battery \(charge)   window \(String(format: "%.1f", s.interval))s   "
               + String(format: "%d readable of %d, %d denied, %d active",
                        s.readable, s.attempted, s.denied, s.active))
         print(String(repeating: "─", count: 68))

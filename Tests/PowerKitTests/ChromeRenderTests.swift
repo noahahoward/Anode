@@ -1,6 +1,6 @@
 import AppKit
 import XCTest
-@testable import BetterStatsApp
+@testable import AnodeApp
 @testable import PowerKit
 
 // Offscreen rendering of the chrome — the graph, the table header, the row
@@ -392,7 +392,7 @@ final class TableChromeRenderTests: XCTestCase {
         let ctx = NSGraphicsContext(bitmapImageRep: rep)!
         NSGraphicsContext.saveGraphicsState()
         NSGraphicsContext.current = ctx
-        let cell = BetterStatsHeaderCell(textCell: title)
+        let cell = AnodeHeaderCell(textCell: title)
         cell.draw(withFrame: NSRect(origin: .zero, size: size), in: host)
         NSGraphicsContext.restoreGraphicsState()
         return Frame(rep: rep, viewSize: size)
@@ -410,17 +410,17 @@ final class TableChromeRenderTests: XCTestCase {
     /// `NSTableHeaderView` is flipped, and the chevron's direction is the whole
     /// point here, so the test has to render through the same path.
     private final class FlippedHost: NSView {
-        var cell: BetterStatsHeaderCell?
+        var cell: AnodeHeaderCell?
         override var isFlipped: Bool { true }
         override func draw(_ dirtyRect: NSRect) { cell?.draw(withFrame: bounds, in: self) }
     }
 
     private func sortedHeader(title: String, size: NSSize,
-                              _ indicator: BetterStatsHeaderCell.SortIndicator,
+                              _ indicator: AnodeHeaderCell.SortIndicator,
                               alignment: NSTextAlignment = .right)
-        -> (frame: Frame, cell: BetterStatsHeaderCell) {
+        -> (frame: Frame, cell: AnodeHeaderCell) {
         let host = FlippedHost(frame: NSRect(origin: .zero, size: size))
-        let cell = BetterStatsHeaderCell(textCell: title)
+        let cell = AnodeHeaderCell(textCell: title)
         cell.alignment = alignment
         cell.sortIndicator = indicator
         host.cell = cell
@@ -530,7 +530,7 @@ final class TableChromeRenderTests: XCTestCase {
         inTheme(.darkAqua) {
             let title = "% CPU"
             let titleW = (title.uppercased() as NSString)
-                .size(withAttributes: [.font: BetterStatsHeaderCell.font, .kern: 0.4]).width
+                .size(withAttributes: [.font: AnodeHeaderCell.font, .kern: 0.4]).width
             let size = NSSize(width: ceil(titleW + 12) + 16, height: 24)
             let h = sortedHeader(title: title, size: size, .descending)
             let r = try! XCTUnwrap(h.cell.lastIndicatorRect)
@@ -594,7 +594,7 @@ final class TableChromeRenderTests: XCTestCase {
             let sample = NSRect(x: 120, y: 2, width: 80, height: 16)
 
             func brightness(selected: Bool, hovered: Bool, alternate: Bool) -> CGFloat {
-                let row = BetterStatsRowView(frame: NSRect(origin: .zero, size: size))
+                let row = AnodeRowView(frame: NSRect(origin: .zero, size: size))
                 row.isSelected = selected
                 row.hoverForTesting = hovered
                 row.alternateForTesting = alternate
@@ -646,7 +646,7 @@ final class TableChromeRenderTests: XCTestCase {
             let size = NSSize(width: 320, height: 20)
             let sample = NSRect(x: 120, y: 2, width: 80, height: 16)
             func shade(selected: Bool, hovered: Bool, alternate: Bool) -> CGFloat {
-                let v = BetterStatsRowView(frame: NSRect(origin: .zero, size: size))
+                let v = AnodeRowView(frame: NSRect(origin: .zero, size: size))
                 v.isSelected = selected
                 v.hoverForTesting = hovered
                 v.alternateForTesting = alternate
@@ -684,7 +684,7 @@ final class TableChromeRenderTests: XCTestCase {
         inTheme(.darkAqua) {
             let size = NSSize(width: 320, height: 20)
             func row(_ alternate: Bool) -> Frame {
-                let v = BetterStatsRowView(frame: NSRect(origin: .zero, size: size))
+                let v = AnodeRowView(frame: NSRect(origin: .zero, size: size))
                 v.alternateForTesting = alternate
                 return render(v, size: size)
             }
@@ -712,8 +712,8 @@ final class TableChromeRenderTests: XCTestCase {
     func testTheRowGroundsReachBothEdges() {
         inTheme(.darkAqua) {
             let size = NSSize(width: 320, height: 20)
-            func edges(_ configure: (BetterStatsRowView) -> Void) -> (CGFloat, CGFloat) {
-                let v = BetterStatsRowView(frame: NSRect(origin: .zero, size: size))
+            func edges(_ configure: (AnodeRowView) -> Void) -> (CGFloat, CGFloat) {
+                let v = AnodeRowView(frame: NSRect(origin: .zero, size: size))
                 configure(v)
                 let f = render(v, size: size)
                 let mid = NSRect(x: 0, y: 8, width: 1, height: 4)
@@ -722,9 +722,9 @@ final class TableChromeRenderTests: XCTestCase {
             }
             let plain = edges { _ in }
             for (name, configure) in [
-                ("stripe", { (v: BetterStatsRowView) in v.alternateForTesting = true }),
-                ("selection", { (v: BetterStatsRowView) in v.isSelected = true }),
-                ("hover", { (v: BetterStatsRowView) in v.hoverForTesting = true }),
+                ("stripe", { (v: AnodeRowView) in v.alternateForTesting = true }),
+                ("selection", { (v: AnodeRowView) in v.isSelected = true }),
+                ("hover", { (v: AnodeRowView) in v.hoverForTesting = true }),
             ] {
                 let (leading, trailing) = edges(configure)
                 XCTAssertGreaterThan(leading, plain.0 + 0.01,
@@ -743,8 +743,8 @@ final class TableChromeRenderTests: XCTestCase {
     func testTheSeparatorIsRuledOnEveryRow() {
         inTheme(.darkAqua) {
             let size = NSSize(width: 320, height: 20)
-            func hasRule(_ configure: (BetterStatsRowView) -> Void) -> CGFloat {
-                let v = BetterStatsRowView(frame: NSRect(origin: .zero, size: size))
+            func hasRule(_ configure: (AnodeRowView) -> Void) -> CGFloat {
+                let v = AnodeRowView(frame: NSRect(origin: .zero, size: size))
                 configure(v)
                 let f = render(v, size: size)
                 // The last row of pixels against the row just above it.
@@ -764,7 +764,7 @@ final class TableChromeRenderTests: XCTestCase {
     /// as a second selection idiom.
     func testNoRowDrawsALeadingAccentEdge() {
         inTheme(.darkAqua) {
-            let row = BetterStatsRowView(frame: .zero)
+            let row = AnodeRowView(frame: .zero)
             row.isSelected = true
             let size = NSSize(width: 320, height: 20)
             let frame = render(row, size: size)
@@ -805,7 +805,7 @@ final class ResourcesCardRenderTests: XCTestCase {
             contentsOf: URL(fileURLWithPath: #filePath)
                 .deletingLastPathComponent().deletingLastPathComponent()
                 .deletingLastPathComponent()
-                .appendingPathComponent("Sources/BetterStatsApp/ResourcesPane.swift"),
+                .appendingPathComponent("Sources/AnodeApp/ResourcesPane.swift"),
             encoding: .utf8)
         for line in sources.split(separator: "\n") {
             let code = line.trimmingCharacters(in: .whitespaces)
@@ -956,7 +956,7 @@ final class PaletteThemeTests: XCTestCase {
         let attrs = Palette.labelAttributes(Palette.faint)
         XCTAssertEqual(attrs[.font] as? NSFont, Palette.Font.label())
         XCTAssertEqual(attrs[.kern] as? CGFloat, Palette.Font.labelKern)
-        XCTAssertEqual(BetterStatsHeaderCell.font, Palette.Font.label(),
+        XCTAssertEqual(AnodeHeaderCell.font, Palette.Font.label(),
                        "the table header stopped sharing the label voice")
     }
 }
@@ -1296,7 +1296,7 @@ final class PaletteConsistencyTests: XCTestCase {
             .deletingLastPathComponent()   // PowerKitTests
             .deletingLastPathComponent()   // Tests
             .deletingLastPathComponent()   // package root
-        let url = dir.appendingPathComponent("Sources/BetterStatsApp/\(name)")
+        let url = dir.appendingPathComponent("Sources/AnodeApp/\(name)")
         return try String(contentsOf: url, encoding: .utf8)
     }
 

@@ -14,13 +14,13 @@ cd "$(dirname "$0")"
 
 ./build-app.sh release
 
-SRC="$HOME/Applications/BetterStats.app"
+SRC="$HOME/Applications/Anode.app"
 [ -d "$SRC" ] || { echo "! build-app.sh did not produce $SRC"; exit 1; }
 
 VERSION="$(defaults read "$SRC/Contents/Info.plist" CFBundleShortVersionString)"
 BUILD="$(defaults read "$SRC/Contents/Info.plist" CFBundleVersion)"
 COMMIT="$(defaults read "$SRC/Contents/Info.plist" BSSourceCommit 2>/dev/null || echo unknown)"
-NAME="BetterStats-${VERSION}"
+NAME="Anode-${VERSION}"
 
 mkdir -p releases
 rm -rf "releases/${NAME}.app" "releases/${NAME}.zip"
@@ -36,7 +36,7 @@ SHA="$(shasum -a 256 "releases/${NAME}.zip" | cut -d' ' -f1)"
 SIZE="$(du -h "releases/${NAME}.zip" | cut -f1)"
 
 cat > "releases/${NAME}.txt" <<EOF
-BetterStats ${VERSION} (build ${BUILD})
+Anode ${VERSION} (build ${BUILD})
 source commit  ${COMMIT}
 built          $(date -u '+%Y-%m-%d %H:%M:%S UTC')
 sha256         ${SHA}

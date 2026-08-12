@@ -440,7 +440,7 @@ enum NetworkInventory {
     }
 
     private static var store: SCDynamicStore? = SCDynamicStoreCreate(
-        nil, "BetterStats.NetworkInventory" as CFString, nil, nil)
+        nil, "Anode.NetworkInventory" as CFString, nil, nil)
 
     /// BSD name → what SystemConfiguration knows about it.
     ///

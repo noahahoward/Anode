@@ -41,8 +41,8 @@ extension AppDelegate {
     // ── App ─────────────────────────────────────────────────────────────────
 
     private func appMenuItem() -> NSMenuItem {
-        submenu("BetterStats") { m in
-            let about = NSMenuItem(title: "About BetterStats",
+        submenu("Anode") { m in
+            let about = NSMenuItem(title: "About Anode",
                                    action: #selector(showAbout(_:)), keyEquivalent: "")
             about.target = self
             m.addItem(about)
@@ -60,7 +60,7 @@ extension AppDelegate {
             // do not leave one in both places. Two Settings entries is worse
             // than either position, because the user then has to learn which
             // one is real.
-            m.addItem(withTitle: "Hide BetterStats",
+            m.addItem(withTitle: "Hide Anode",
                       action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
             let hideOthers = NSMenuItem(title: "Hide Others",
                                         action: #selector(NSApplication.hideOtherApplications(_:)),
@@ -71,7 +71,7 @@ extension AppDelegate {
                       action: #selector(NSApplication.unhideAllApplications(_:)), keyEquivalent: "")
             m.addItem(.separator())
 
-            m.addItem(withTitle: "Quit BetterStats",
+            m.addItem(withTitle: "Quit Anode",
                       action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         }
     }
@@ -162,7 +162,7 @@ extension AppDelegate {
             // bar (`applicationShouldTerminateAfterLastWindowClosed` is false) and
             // AppKit removes a closed window from the list below, so without this
             // the Window menu would be the one place that could not get it back.
-            let reopen = NSMenuItem(title: "BetterStats Window",
+            let reopen = NSMenuItem(title: "Anode Window",
                                     action: #selector(showMainWindow(_:)), keyEquivalent: "0")
             reopen.target = self
             m.addItem(reopen)
@@ -180,7 +180,7 @@ extension AppDelegate {
     /// application's menu bar, so there is no menu for the key equivalent to
     /// reach. The keystroke goes to whatever app is frontmost instead.
     ///
-    /// So this item is useful only while ANOTHER BetterStats window is open, in
+    /// So this item is useful only while ANOTHER Anode window is open, in
     /// practice Settings. The route back from menu-bar-only is clicking a menu
     /// bar widget, which opens the window at the lens that widget names.
     ///
@@ -331,8 +331,8 @@ enum ViewMenu {
 /// Where the project's own docs can be found AT RUNTIME.
 ///
 /// README.md and TESTING.md live in the repo. `build-app.sh` copies only the
-/// binary and the icon into the bundle, so a shipped BetterStats.app contains
-/// neither, and the GitHub remote (noahahoward/betterstats) is PRIVATE — checked:
+/// binary and the icon into the bundle, so a shipped Anode.app contains
+/// neither, and the GitHub remote (noahahoward/anode) is PRIVATE — checked:
 /// an unauthenticated GET of the repo and of the raw README both return 404. A
 /// Help item pointing there would open a "not found" page for every tester who is
 /// not the author, which is the silent failure this app's rules exist to prevent.
@@ -347,7 +347,7 @@ enum Documentation {
 
     /// Offered in this order.
     static let pages: [(title: String, file: String)] = [
-        ("BetterStats README", "README.md"),
+        ("Anode README", "README.md"),
         ("Testing Notes", "TESTING.md"),
     ]
 

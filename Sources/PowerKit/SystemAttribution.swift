@@ -57,7 +57,7 @@ public final class SystemAttribution {
     private var lastRefresh: Date?
     private var refreshing = false
 
-    private let queue = DispatchQueue(label: "com.betterstats.systemattribution",
+    private let queue = DispatchQueue(label: "com.anode.systemattribution",
                                       qos: .utility)
 
     /// An hour, and the length is load-bearing rather than a round number.

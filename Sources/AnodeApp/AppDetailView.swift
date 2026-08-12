@@ -154,7 +154,7 @@ public final class AppDetailView: NSView, NSTableViewDataSource, NSTableViewDele
             // which against this window's black is a band of the wrong colour —
             // and it put two differently-styled headers in one window, four
             // inches apart.
-            c.headerCell = BetterStatsHeaderCell(textCell: title)
+            c.headerCell = AnodeHeaderCell(textCell: title)
             c.title = title
             c.width = width
             c.minWidth = 40

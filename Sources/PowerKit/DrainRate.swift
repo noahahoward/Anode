@@ -643,7 +643,7 @@ extension BatteryDischargeTrend.Persisted {
     public static func fileURL(fileManager fm: FileManager = .default) -> URL? {
         guard let base = fm.urls(for: .applicationSupportDirectory,
                                  in: .userDomainMask).first else { return nil }
-        return base.appendingPathComponent("BetterStats/discharge-trend.json")
+        return base.appendingPathComponent("Anode/discharge-trend.json")
     }
 
     /// nil when there is nothing saved, when it cannot be read, or when it is

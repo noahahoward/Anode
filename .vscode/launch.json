@@ -5,60 +5,60 @@
             "request": "launch",
             "args": [],
             "cwd": "${workspaceFolder:better stats app}",
-            "name": "Debug betterstats",
-            "target": "betterstats",
+            "name": "Debug anode",
+            "target": "anode",
             "configuration": "debug",
-            "preLaunchTask": "swift: Build Debug betterstats"
+            "preLaunchTask": "swift: Build Debug anode"
         },
         {
             "type": "swift",
             "request": "launch",
             "args": [],
             "cwd": "${workspaceFolder:better stats app}",
-            "name": "Release betterstats",
-            "target": "betterstats",
+            "name": "Release anode",
+            "target": "anode",
             "configuration": "release",
-            "preLaunchTask": "swift: Build Release betterstats"
+            "preLaunchTask": "swift: Build Release anode"
         },
         {
             "type": "swift",
             "request": "launch",
             "args": [],
             "cwd": "${workspaceFolder:better stats app}",
-            "name": "Debug BetterStatsApp",
-            "target": "BetterStatsApp",
+            "name": "Debug AnodeApp",
+            "target": "AnodeApp",
             "configuration": "debug",
-            "preLaunchTask": "swift: Build Debug BetterStatsApp"
+            "preLaunchTask": "swift: Build Debug AnodeApp"
         },
         {
             "type": "swift",
             "request": "launch",
             "args": [],
             "cwd": "${workspaceFolder:better stats app}",
-            "name": "Release BetterStatsApp",
-            "target": "BetterStatsApp",
+            "name": "Release AnodeApp",
+            "target": "AnodeApp",
             "configuration": "release",
-            "preLaunchTask": "swift: Build Release BetterStatsApp"
+            "preLaunchTask": "swift: Build Release AnodeApp"
         },
         {
             "type": "swift",
             "request": "launch",
             "args": [],
             "cwd": "${workspaceFolder:better stats app}",
-            "name": "Debug BetterStatsHelper",
-            "target": "BetterStatsHelper",
+            "name": "Debug AnodeHelper",
+            "target": "AnodeHelper",
             "configuration": "debug",
-            "preLaunchTask": "swift: Build Debug BetterStatsHelper"
+            "preLaunchTask": "swift: Build Debug AnodeHelper"
         },
         {
             "type": "swift",
             "request": "launch",
             "args": [],
             "cwd": "${workspaceFolder:better stats app}",
-            "name": "Release BetterStatsHelper",
-            "target": "BetterStatsHelper",
+            "name": "Release AnodeHelper",
+            "target": "AnodeHelper",
             "configuration": "release",
-            "preLaunchTask": "swift: Build Release BetterStatsHelper"
+            "preLaunchTask": "swift: Build Release AnodeHelper"
         },
         {
             "type": "swift",

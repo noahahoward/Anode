@@ -1,6 +1,6 @@
 import AppKit
 import XCTest
-@testable import BetterStatsApp
+@testable import AnodeApp
 @testable import PowerKit
 
 /// The rail became icons, which costs two things unless they are asserted: the

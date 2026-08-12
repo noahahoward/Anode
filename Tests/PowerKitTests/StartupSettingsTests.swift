@@ -1,7 +1,7 @@
 import XCTest
 @testable import PowerKit
 
-/// The three switches that decide what BetterStats is when it comes up: a
+/// The three switches that decide what Anode is when it comes up: a
 /// windowed app, a menu bar tool, or a recorder.
 ///
 /// Booleans are where a defaults bug hides best. `bool(forKey:)` returns false
@@ -89,15 +89,15 @@ final class StartupSettingsTests: XCTestCase {
     /// The storage keys are a contract with `defaults write`, which the file's own
     /// design notes call out as one of the three directions values arrive from.
     /// Pinned here so a rename cannot silently orphan a user's configuration.
-    func testStorageKeysCarryTheBetterstatsPrefix() {
+    func testStorageKeysCarryTheAnodePrefix() {
         let s = Settings(defaults: defaults)
         s.startInMenuBarOnly = true
         s.batteryLogging = false
         s.menuBarWidgetsEnabled = false
 
-        XCTAssertEqual(defaults.object(forKey: "betterstats.startInMenuBarOnly") as? Bool, true)
-        XCTAssertEqual(defaults.object(forKey: "betterstats.batteryLogging") as? Bool, false)
-        XCTAssertEqual(defaults.object(forKey: "betterstats.menuBarWidgetsEnabled") as? Bool, false)
+        XCTAssertEqual(defaults.object(forKey: "anode.startInMenuBarOnly") as? Bool, true)
+        XCTAssertEqual(defaults.object(forKey: "anode.batteryLogging") as? Bool, false)
+        XCTAssertEqual(defaults.object(forKey: "anode.menuBarWidgetsEnabled") as? Bool, false)
     }
 
     /// Setting a value that happens to equal the default must still be RECORDED,
@@ -106,9 +106,9 @@ final class StartupSettingsTests: XCTestCase {
     /// the user already made.
     func testWritingTheDefaultValueStillPersistsIt() {
         let s = Settings(defaults: defaults)
-        XCTAssertNil(defaults.object(forKey: "betterstats.batteryLogging"))
+        XCTAssertNil(defaults.object(forKey: "anode.batteryLogging"))
         s.batteryLogging = true   // already the default
-        XCTAssertEqual(defaults.object(forKey: "betterstats.batteryLogging") as? Bool, true)
+        XCTAssertEqual(defaults.object(forKey: "anode.batteryLogging") as? Bool, true)
     }
 
     // ── Observation ─────────────────────────────────────────────────────────

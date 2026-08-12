@@ -19,7 +19,7 @@ import XCTest
 final class FanDaemonPlanTests: XCTestCase {
 
     private let bundledHelper =
-        "/Users/someone/Applications/BetterStats.app/Contents/MacOS/BetterStatsHelper"
+        "/Users/someone/Applications/Anode.app/Contents/MacOS/AnodeHelper"
 
     private func plan(helper: String? = nil,
                       uid: uid_t = 501,
@@ -207,13 +207,13 @@ final class FanDaemonPlanTests: XCTestCase {
     // ── What it refuses ─────────────────────────────────────────────────────
 
     /// A `swift build` binary has no bundle and is signed by the linker under an
-    /// identifier like `BetterStatsHelper-3f2a…`, so a daemon installed from one
+    /// identifier like `AnodeHelper-3f2a…`, so a daemon installed from one
     /// would refuse the very app it was installed for. Caught here, where the
     /// message can say to run ./build-app.sh.
     func testABuildDirectoryBinaryIsRefused() {
-        guard case .failure(let why) = plan(helper: "/Users/someone/proj/.build/debug/BetterStatsHelper")
+        guard case .failure(let why) = plan(helper: "/Users/someone/proj/.build/debug/AnodeHelper")
         else { return XCTFail("an unbundled build was accepted") }
-        XCTAssertEqual(why, .notInsideAnAppBundle("/Users/someone/proj/.build/debug/BetterStatsHelper"))
+        XCTAssertEqual(why, .notInsideAnAppBundle("/Users/someone/proj/.build/debug/AnodeHelper"))
         XCTAssertTrue(why.localizedDescription.contains("build-app.sh"),
                       why.localizedDescription)
     }
@@ -311,7 +311,7 @@ final class FanDaemonPerformTests: XCTestCase {
 
     private func plan() throws -> FanDaemonInstall.Plan {
         try FanDaemonInstall.plan(
-            sourceHelper: "/Users/someone/Applications/BetterStats.app/Contents/MacOS/BetterStatsHelper",
+            sourceHelper: "/Users/someone/Applications/Anode.app/Contents/MacOS/AnodeHelper",
             ownerUID: 501,
             clientIdentifier: FanDaemon.clientSigningIdentifier,
             fileExists: { _ in true }).get()
@@ -324,7 +324,7 @@ final class FanDaemonPerformTests: XCTestCase {
         XCTAssertEqual(ops.calls, [
             .makeDirectory(FanDaemon.helperDirectory, 0o755),
             .chownRoot(FanDaemon.helperDirectory),
-            .copy(from: "/Users/someone/Applications/BetterStats.app/Contents/MacOS/BetterStatsHelper",
+            .copy(from: "/Users/someone/Applications/Anode.app/Contents/MacOS/AnodeHelper",
                   to: FanDaemon.helperPath, 0o755),
             .chownRoot(FanDaemon.helperPath),
             .write(to: FanDaemon.plistPath, 0o644),
@@ -463,11 +463,11 @@ final class FanClientPinTests: XCTestCase {
     /// The identifier is a string anyone can choose. Measured, not argued:
     ///
     ///     cc -o notmine t.c
-    ///     codesign --force --sign - -i dev.noah.betterstats notmine
+    ///     codesign --force --sign - -i dev.noah.anode notmine
     ///     codesign -dvv notmine
-    ///     Identifier=dev.noah.betterstats   Signature=adhoc   valid on disk
+    ///     Identifier=dev.noah.anode   Signature=adhoc   valid on disk
     ///
-    /// So a program that is not BetterStats, signed ad-hoc under our identifier
+    /// So a program that is not Anode, signed ad-hoc under our identifier
     /// by anyone who can run codesign, IS ACCEPTED by the installed daemon. That
     /// is the price of an install that survives rebuilds without a Developer ID,
     /// it is stated in FanLink.swift, FanDaemon.swift, the helper's usage text
@@ -579,7 +579,7 @@ final class FanElevationTests: XCTestCase {
 
     func testAPathWithSpacesSurvivesAsOneArgument() {
         let command = FanElevation.installCommand(
-            helper: "/Users/n/Downloads/better stats app/BetterStats.app/Contents/MacOS/BetterStatsHelper",
+            helper: "/Users/n/Downloads/better stats app/Anode.app/Contents/MacOS/AnodeHelper",
             ownerUID: 501)
         XCTAssertTrue(command.hasPrefix("'/Users/n/Downloads/better stats app/"), command)
         XCTAssertTrue(command.hasSuffix("' --install --uid 501"), command)
@@ -598,8 +598,8 @@ final class FanElevationTests: XCTestCase {
     /// correct way to put one back, and getting it wrong here means running a
     /// different command as root than the one that was displayed.
     func testAnApostropheInThePathCannotEndTheQuoting() {
-        let quoted = FanElevation.shellQuoted("/Users/noah's mac/BetterStats.app")
-        XCTAssertEqual(quoted, "'/Users/noah'\\''s mac/BetterStats.app'")
+        let quoted = FanElevation.shellQuoted("/Users/noah's mac/Anode.app")
+        XCTAssertEqual(quoted, "'/Users/noah'\\''s mac/Anode.app'")
     }
 
     /// The same string then goes inside an AppleScript literal, where `"` and `\`

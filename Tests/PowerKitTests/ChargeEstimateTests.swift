@@ -1,6 +1,6 @@
 import XCTest
 @testable import PowerKit
-@testable import BetterStatsApp
+@testable import AnodeApp
 
 /// Time-to-full must count toward a level the machine will actually reach, and
 /// must not pretend charging is constant-current right up to it.

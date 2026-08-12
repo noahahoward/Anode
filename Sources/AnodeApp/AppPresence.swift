@@ -1,7 +1,7 @@
 import AppKit
 import PowerKit
 
-/// Where BetterStats is allowed to be invisible, and where it is not.
+/// Where Anode is allowed to be invisible, and where it is not.
 ///
 /// ── Why there is no "headless at login, windowed by hand" ────────────────────
 ///
@@ -14,13 +14,13 @@ import PowerKit
 /// login item, started 32 s after boot with ppid 1 — versus a hand-launched app:
 ///
 ///   argv           login:  /Applications/Rectangle.app/Contents/MacOS/Rectangle
-///                  manual: /…/BetterStats.app/Contents/MacOS/BetterStatsApp
+///                  manual: /…/Anode.app/Contents/MacOS/AnodeApp
 ///                  Identical shape. No flag, no extra argument.
 ///   ppid           1 (launchd) in BOTH cases — Finder launches go through
 ///                  LaunchServices to launchd too, so the parent says nothing.
 ///   XPC_SERVICE_NAME
 ///                  login:  application.com.knollsoft.Rectangle.533133.533332
-///                  manual: application.dev.noah.betterstats.60075201.60075206
+///                  manual: application.dev.noah.anode.60075201.60075206
 ///                  Same `application.<bundle-id>.<n>.<n>` form either way.
 ///
 /// So the login launch is indistinguishable from a manual one by every signal the
@@ -63,7 +63,7 @@ enum AppPresence {
     ///
     /// AND ONLY AT LOGIN. The setting says "start in menu bar only", and starting
     /// is what a machine does at login; opening an app is what a person does on
-    /// purpose. Applying it to both meant double-clicking BetterStats put nothing
+    /// purpose. Applying it to both meant double-clicking Anode put nothing
     /// on screen — indistinguishable, from the user's side, from a launch that
     /// failed.
     ///

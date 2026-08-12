@@ -62,7 +62,7 @@ public struct WidgetConfig: Codable, Equatable {
 
 public final class MenuBarWidgetController: NSObject, NSMenuDelegate {
 
-    public static let defaultsKey = "com.betterstats.menubar.widgets.v1"
+    public static let defaultsKey = "com.anode.menubar.widgets.v1"
 
     /// The out-of-the-box menu bar, used whenever persistence is empty or
     /// unreadable. It must always contain at least one clickable item or the main
@@ -184,7 +184,7 @@ public final class MenuBarWidgetController: NSObject, NSMenuDelegate {
                 NSStatusBar.system.removeStatusItem(item)
                 continue
             }
-            item.autosaveName = "BetterStatsWidget.\(index).\(config.metricID)"
+            item.autosaveName = "AnodeWidget.\(index).\(config.metricID)"
             button.target = self
             button.action = #selector(widgetClicked)
             // Right-click has to be requested explicitly. Without it the app is
@@ -206,14 +206,14 @@ public final class MenuBarWidgetController: NSObject, NSMenuDelegate {
         let metric = metricID(of: sender)
         if NSApp.currentEvent?.type == .rightMouseUp {
             let menu = NSMenu()
-            let open = menu.addItem(withTitle: "Open BetterStats",
+            let open = menu.addItem(withTitle: "Open Anode",
                                     action: #selector(openFromMenu), keyEquivalent: "")
             open.target = self
             // The menu outlives this call, so the identity of the widget it was
             // raised from has to travel with the item — by then `sender` is gone.
             open.representedObject = metric
             menu.addItem(.separator())
-            menu.addItem(withTitle: "Quit BetterStats",
+            menu.addItem(withTitle: "Quit Anode",
                          action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
             // popUp(positioning:at:in:) — NOT assigning item.menu and calling
             // performClick. That re-enters this very action handler from inside
@@ -437,7 +437,7 @@ enum WidgetRenderer {
     static func toolTip(metricID: String, descriptor: MetricDescriptor?,
                         value: MetricValue?) -> String {
         guard let d = descriptor else {
-            return "Unknown metric “\(metricID)” — it may belong to another version of BetterStats"
+            return "Unknown metric “\(metricID)” — it may belong to another version of Anode"
         }
         guard let v = value else { return "\(d.title): no data" }
         return "\(d.title): \(v.text)\(v.isEstimate ? " (estimate)" : "")"

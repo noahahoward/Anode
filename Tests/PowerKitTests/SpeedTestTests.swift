@@ -3,7 +3,7 @@ import XCTest
 
 /// The arithmetic and the ramp rules. Deliberately NO network: a test that needs
 /// the internet fails on a plane, in CI, and in a hotel, and then gets deleted.
-/// The transfer itself is exercised by `betterstats --speedtest`, which a person
+/// The transfer itself is exercised by `anode --speedtest`, which a person
 /// runs on purpose.
 final class SpeedTestTests: XCTestCase {
 

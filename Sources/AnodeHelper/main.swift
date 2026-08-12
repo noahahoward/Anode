@@ -1,10 +1,10 @@
 import Foundation
 import PowerKit
 
-// BetterStatsHelper — the only part of this project that runs as root.
+// AnodeHelper — the only part of this project that runs as root.
 //
 // It exists for exactly one reason: SMC writes require root, and fan control is
-// an SMC write. Everything else in BetterStats is deliberately unprivileged.
+// an SMC write. Everything else in Anode is deliberately unprivileged.
 //
 // The whole privileged surface is two operations: set one fan to one speed, and
 // stop controlling the fans. It is small enough to audit in one sitting, and
@@ -13,7 +13,7 @@ import PowerKit
 //
 // IT RUNS TWO WAYS, and the default installs nothing.
 //
-//   sudo BetterStatsHelper            a SESSION helper. Nothing is installed, no
+//   sudo AnodeHelper            a SESSION helper. Nothing is installed, no
 //                                     plist, no root process on this machine
 //                                     when you are not using fan control. Started
 //                                     by hand, stopped with ⌃C. It pins ONE BUILD
@@ -47,19 +47,19 @@ func printErr(_ s: String) {
 }
 
 let usage = """
-BetterStatsHelper — fan control for BetterStats. Runs as root.
+AnodeHelper — fan control for Anode. Runs as root.
 
-  sudo BetterStatsHelper                start fan control for this session only.
+  sudo AnodeHelper                start fan control for this session only.
                                         Nothing is installed. ⌃C stops it.
-  sudo BetterStatsHelper --install      install it as a LaunchDaemon: one
+  sudo AnodeHelper --install      install it as a LaunchDaemon: one
                                         authorisation, then it works across
                                         rebuilds and reboots with no more prompts
-  sudo BetterStatsHelper --uninstall    hand the fans back and remove everything
+  sudo AnodeHelper --uninstall    hand the fans back and remove everything
                                         this project has ever installed as root
-       BetterStatsHelper --help
+       AnodeHelper --help
 
 Options
-  --client <path>   the BetterStats.app allowed to connect. Defaults to the
+  --client <path>   the Anode.app allowed to connect. Defaults to the
                     bundle this helper is inside, which is what you want.
   --uid <n>         the user allowed to connect. Defaults to $SUDO_UID, i.e.
                     whoever typed sudo.
@@ -67,19 +67,19 @@ Options
                     not.
 
 SESSION (the default) is the stronger of the two. While it runs, one program can
-drive your fans: the exact BetterStats build this helper shipped beside, running
+drive your fans: the exact Anode build this helper shipped beside, running
 as you. Not another user, not another program of yours, not a rebuilt
-BetterStats. Stop it with ⌃C and the fans go back to automatic.
+Anode. Stop it with ⌃C and the fans go back to automatic.
 
 INSTALLED is the convenient one. It is started ON DEMAND — launchd holds the
 socket and runs it when the app connects, and it exits again once it has been
 idle and holds no fan — so installing it does not put a root process on your
-machine at boot or while BetterStats is closed.
+machine at boot or while Anode is closed.
 
 It is weaker than the session helper in one specific way you should know before
 you type a password: the daemon outlives your rebuilds, so it cannot pin a hash
 that changes on every rebuild. It pins the signing identifier instead, and anyone
-who can run `codesign -s - -i dev.noah.betterstats` on their own binary satisfies
+who can run `codesign -s - -i dev.noah.anode` on their own binary satisfies
 that. So while it is up, ANYTHING RUNNING AS YOU can set your fan speeds, within
 the range the fan itself reports. Nothing else can: other users are refused by
 the kernel, and the daemon's whole vocabulary is "set fan N to R rpm" and
@@ -100,7 +100,7 @@ if arguments.contains("--help") || arguments.contains("-h") {
 // a user who forgets `sudo` gets a sentence instead of a permission error from
 // somewhere in the middle of a teardown.
 guard geteuid() == 0 else {
-    printErr("BetterStatsHelper must run as root — try `sudo \(CommandLine.arguments[0])`.")
+    printErr("AnodeHelper must run as root — try `sudo \(CommandLine.arguments[0])`.")
     exit(1)
 }
 
@@ -191,7 +191,7 @@ if arguments.contains(FanDaemon.installArgument) {
     }
 
     print("""
-    Installing the BetterStats fan helper as a launch daemon.
+    Installing the Anode fan helper as a launch daemon.
 
       helper   \(FanDaemon.helperPath)   (root:wheel 0755, copied from this build)
       plist    \(FanDaemon.plistPath)    (root:wheel 0644)
@@ -200,11 +200,11 @@ if arguments.contains(FanDaemon.installArgument) {
 
     It is started ON DEMAND. launchd holds the socket and runs the helper when
     something connects; it exits again after \(Int(FanDaemon.idleExit))s with no client and no
-    fan held. Nothing of this runs at boot, or while BetterStats is closed.
+    fan held. Nothing of this runs at boot, or while Anode is closed.
 
     While it is up it will set a fan target on request from uid \(installFor), within
     the range the fan itself reports. Anything running as that user can ask —
-    this build has no Apple Developer ID, so nothing can tell your BetterStats
+    this build has no Apple Developer ID, so nothing can tell your Anode
     from another program that signs itself with the same identifier. Undo it all
     with --uninstall.
     """)
@@ -228,7 +228,7 @@ if arguments.contains(FanDaemon.installArgument) {
 /// The app bundle allowed to talk to us.
 ///
 /// Defaults to the bundle this executable sits inside
-/// (`BetterStats.app/Contents/MacOS/BetterStatsHelper`), which means the user
+/// (`Anode.app/Contents/MacOS/AnodeHelper`), which means the user
 /// authorises one specific pair of binaries by typing one path after `sudo`.
 /// `--client` overrides it for development; that gives nothing away, because
 /// anyone who can pass it is already root.
@@ -236,7 +236,7 @@ func defaultClientBundle() -> String? {
     let exe = URL(fileURLWithPath: CommandLine.arguments[0]).resolvingSymlinksInPath()
     let bundle = exe.deletingLastPathComponent()   // MacOS
         .deletingLastPathComponent()               // Contents
-        .deletingLastPathComponent()               // BetterStats.app
+        .deletingLastPathComponent()               // Anode.app
     return bundle.pathExtension == "app" ? bundle.path : nil
 }
 
@@ -277,12 +277,12 @@ if isInstalledDaemon {
 } else {
     guard let clientPath = value(after: "--client") ?? defaultClientBundle() else {
         printErr("""
-        This helper is not inside a BetterStats.app, so it cannot tell which app to \
+        This helper is not inside a Anode.app, so it cannot tell which app to \
         trust. Run the copy inside the bundle:
 
-          sudo ~/Applications/BetterStats.app/Contents/MacOS/BetterStatsHelper
+          sudo ~/Applications/Anode.app/Contents/MacOS/AnodeHelper
 
-        or name the bundle explicitly with --client <path to BetterStats.app>.
+        or name the bundle explicitly with --client <path to Anode.app>.
         """)
         exit(1)
     }
@@ -291,7 +291,7 @@ if isInstalledDaemon {
     // "I cannot tell who I am supposed to be talking to".
     guard let pinned = FanIdentity.cdhash(atPath: clientPath) else {
         printErr("Could not read a code signature for \(clientPath). "
-               + "Fan control needs one to tell your BetterStats from anything else, "
+               + "Fan control needs one to tell your Anode from anything else, "
                + "so this helper will not start.")
         exit(1)
     }
@@ -324,9 +324,9 @@ let server = FanHelperServer(
     // failure has left no trace. The unified log survives it, which is the only
     // way to diagnose a path that cannot be exercised without root:
     //
-    //     log show --predicate 'subsystem == "dev.noah.betterstats"' --last 10m
+    //     log show --predicate 'subsystem == "dev.noah.anode"' --last 10m
     log: {
-        printErr("betterstats-helper: \($0)")
+        printErr("anode-helper: \($0)")
         fanLog.info("helper: \($0, privacy: .public)")
     })
 
@@ -344,10 +344,10 @@ do {
 } catch let failure as FanDaemon.ActivationFailure {
     // These are worth more than an errno: two of the four mean someone ran
     // `--serve` by hand, and the sentence says so instead of printing a number.
-    printErr("betterstats-helper: \(failure.message)")
+    printErr("anode-helper: \(failure.message)")
     exit(1)
 } catch {
-    printErr("betterstats-helper: \(error.localizedDescription)")
+    printErr("anode-helper: \(error.localizedDescription)")
     exit(1)
 }
 
@@ -366,18 +366,18 @@ if isInstalledDaemon {
     """)
 } else {
     print("""
-    BetterStats fan control is running as root.
+    Anode fan control is running as root.
 
       client   \(clientDescription)
       user     uid \(ownerUID)
       socket   \(FanSocket.path)
 
     Only that exact build, run by that user, can set a fan speed — and only within
-    the min/max the fan itself reports. Rebuild BetterStats and this helper will stop
+    the min/max the fan itself reports. Rebuild Anode and this helper will stop
     recognising it; stop and start it again if you still want fan control.
 
     Press ⌃C to stop. The fans return to automatic control when you do, and also if
-    BetterStats quits or crashes.
+    Anode quits or crashes.
     """)
 }
 

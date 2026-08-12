@@ -94,7 +94,7 @@ final class LedgerBarView: NSView {
     // looks plausible and the segments still sum to the total. A badge in the
     // legend is therefore the only visible trace, and a badge is only observable
     // by someone who happens to be looking at the window at the time. Log it too.
-    private static let log = Logger(subsystem: "dev.noah.betterstats", category: "ledger")
+    private static let log = Logger(subsystem: "dev.noah.anode", category: "ledger")
 
     /// True while the current model is in overflow, so the log fires once per
     /// ENTRY rather than once per sample. The model is replaced on every tick; an

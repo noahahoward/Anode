@@ -1,13 +1,13 @@
 #!/bin/bash
-# Assemble BetterStats.app from the SPM build product.
+# Assemble Anode.app from the SPM build product.
 # Usage: ./build-app.sh [release|debug]
 set -euo pipefail
 cd "$(dirname "$0")"
 
 CONFIG="${1:-release}"
-APP="BetterStats.app"
-BIN="BetterStatsApp"
-HELPER="BetterStatsHelper"
+APP="Anode.app"
+BIN="AnodeApp"
+HELPER="AnodeHelper"
 ICON="Resources/AppIcon.icon"
 
 # ── Version ─────────────────────────────────────────────────────────────────
@@ -80,10 +80,10 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-  <key>CFBundleName</key>              <string>BetterStats</string>
-  <key>CFBundleDisplayName</key>       <string>BetterStats</string>
-  <key>CFBundleIdentifier</key>        <string>dev.noah.betterstats</string>
-  <key>CFBundleExecutable</key>        <string>BetterStatsApp</string>
+  <key>CFBundleName</key>              <string>Anode</string>
+  <key>CFBundleDisplayName</key>       <string>Anode</string>
+  <key>CFBundleIdentifier</key>        <string>dev.noah.anode</string>
+  <key>CFBundleExecutable</key>        <string>AnodeApp</string>
   <key>CFBundlePackageType</key>       <string>APPL</string>
   <key>CFBundleShortVersionString</key><string>${VERSION}</string>
   <key>CFBundleVersion</key>           <string>${BUILD}</string>
@@ -139,11 +139,11 @@ touch "$APP"
 # has anyway.
 INSTALL_DIR="$HOME/Applications"
 mkdir -p "$INSTALL_DIR"
-if [ -d "$INSTALL_DIR/BetterStats.app" ]; then
+if [ -d "$INSTALL_DIR/Anode.app" ]; then
   # Quit a running copy first so the bundle is not swapped under it.
-  osascript -e 'tell application "BetterStats" to quit' >/dev/null 2>&1 || true
+  osascript -e 'tell application "Anode" to quit' >/dev/null 2>&1 || true
   sleep 1
-  rm -rf "$INSTALL_DIR/BetterStats.app"
+  rm -rf "$INSTALL_DIR/Anode.app"
 fi
 cp -R "$APP" "$INSTALL_DIR/"
 
@@ -153,22 +153,22 @@ cp -R "$APP" "$INSTALL_DIR/"
 # LaunchServices registrations are poisoned, and launching that copy produces an
 # app whose menu bar widgets are silently placed off-screen at (-1, 1157) while
 # every health check reports them present. That has now happened twice, both
-# times because something ran `open BetterStats.app` from the repo out of habit.
+# times because something ran `open Anode.app` from the repo out of habit.
 #
 # The install is the artifact. Deleting the intermediate makes the failure
 # unreachable rather than merely documented.
 rm -rf "$APP"
 
-echo "› installed: $INSTALL_DIR/BetterStats.app"
+echo "› installed: $INSTALL_DIR/Anode.app"
 # Printed every build because the pin is per-build: this helper only recognises
 # the app it was just built beside, and a helper left running from before this
 # build will refuse the new one until it is restarted. Nothing is installed and
 # nothing runs as root unless the user runs this line themselves.
 echo "›"
 echo "› fan control (optional, nothing is installed):"
-echo "›   sudo '$INSTALL_DIR/BetterStats.app/Contents/MacOS/BetterStatsHelper'"
+echo "›   sudo '$INSTALL_DIR/Anode.app/Contents/MacOS/AnodeHelper'"
 echo "› to undo everything this project has ever done as root:"
-echo "›   sudo '$INSTALL_DIR/BetterStats.app/Contents/MacOS/BetterStatsHelper' --uninstall"
+echo "›   sudo '$INSTALL_DIR/Anode.app/Contents/MacOS/AnodeHelper' --uninstall"
 echo "› (the build-directory copy is removed on purpose — that path's"
 echo "›  LaunchServices state hides the menu bar widgets. See WIDGET-BUG.md.)"
 
@@ -190,14 +190,14 @@ echo "›  LaunchServices state hides the menu bar widgets. See WIDGET-BUG.md.)"
 # launch reports true as well. Measured here, not assumed.
 #
 # So this is the dev workflow papering over a product bug, deliberately and in
-# one place. Skip it with BETTERSTATS_NO_LAUNCH=1 — for CI, or for a build made
+# one place. Skip it with ANODE_NO_LAUNCH=1 — for CI, or for a build made
 # while the app is deliberately not running.
-if [ "${BETTERSTATS_NO_LAUNCH:-0}" != "1" ]; then
+if [ "${ANODE_NO_LAUNCH:-0}" != "1" ]; then
     echo "›"
     echo "› launching…"
-    open -a "$INSTALL_DIR/BetterStats.app"
+    open -a "$INSTALL_DIR/Anode.app"
     # Long enough for the first launch to finish registering; a reopen that lands
     # while the app is still starting is swallowed and the window never appears.
     sleep 2
-    open -a "$INSTALL_DIR/BetterStats.app"
+    open -a "$INSTALL_DIR/Anode.app"
 fi

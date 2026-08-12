@@ -2,7 +2,7 @@
 import PackageDescription
 
 let package = Package(
-    name: "BetterStats",
+    name: "Anode",
     platforms: [.macOS(.v13)],
     targets: [
         // Three lines of C so Swift can see `launch_activate_socket`, which is
@@ -10,12 +10,12 @@ let package = Package(
         // header for why it is a wrapper rather than a re-export.
         .target(name: "CLaunchActivate"),
         .target(name: "PowerKit", dependencies: ["CLaunchActivate"]),
-        .executableTarget(name: "betterstats", dependencies: ["PowerKit"]),
-        .executableTarget(name: "BetterStatsApp", dependencies: ["PowerKit"]),
-        .executableTarget(name: "BetterStatsHelper", dependencies: ["PowerKit"]),
-        // BetterStatsApp is here so the rail/menu ordering can be tested against
+        .executableTarget(name: "anode", dependencies: ["PowerKit"]),
+        .executableTarget(name: "AnodeApp", dependencies: ["PowerKit"]),
+        .executableTarget(name: "AnodeHelper", dependencies: ["PowerKit"]),
+        // AnodeApp is here so the rail/menu ordering can be tested against
         // the real SidebarView rather than a copy of it — a duplicated list is
         // exactly the desync the tests exist to catch.
-        .testTarget(name: "PowerKitTests", dependencies: ["PowerKit", "BetterStatsApp"]),
+        .testTarget(name: "PowerKitTests", dependencies: ["PowerKit", "AnodeApp"]),
     ]
 )
