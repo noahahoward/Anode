@@ -654,29 +654,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
 
         case .cpu:
             guard let total = sys.cpu?.total else { return false }
-            // DIVIDED BY THE CORE COUNT, and everything about this bar was wrong
-            // without it.
+            // No divisor here any more, and that is the fix rather than an
+            // omission. `AppDrain.cpuPercent` used to be percent of ONE core, so
+            // summing it against a device total that is 0-100 across ALL cores
+            // mixed two scales by the core count: this bar read "CPU 129.0% in
+            // use" on a machine sitting at 17.3%. The divisor patched it here
+            // while the table's own column went on showing the other unit.
             //
-            // `AppDrain.cpuPercent` is percent of ONE core — Activity Monitor's
-            // convention, where a fully busy four-thread process reads 400%. The
-            // device total from `CPUUsage` is 0-100 across ALL cores. Summing the
-            // first and comparing it to the second mixes two scales by a factor of
-            // the core count: on this 15-core machine the bar read "CPU 129.0% in
-            // use" while the device was at 17.3%, and the caption said so out loud.
-            //
-            // `activeProcessorCount` is the right divisor because it is what the
-            // host statistics behind `total` average over.
-            let cores = Double(max(1, ProcessInfo.processInfo.activeProcessorCount))
+            // The unit is now settled at the source — `MachTime.machinePercent`,
+            // percent of the whole machine — so every number in this window is on
+            // one scale and nothing needs converting on the way to the screen.
             main.ledger.utilization = .attributed(
                 "CPU",
                 UtilizationSlices(total: total,
-                                  apps: sum({ $0.cpuPercent }, apps: true) / cores,
-                                  systemProcesses: sum({ $0.cpuPercent }, apps: false) / cores),
+                                  apps: sum({ $0.cpuPercent }, apps: true),
+                                  systemProcesses: sum({ $0.cpuPercent }, apps: false)),
                 idle: max(0, 100 - total),
-                // The one place the two conventions meet, so it is said here: the
-                // table's own % CPU column is per-core and these are not, and a
-                // user adding the column up will not get this number.
-                note: "of all \(Int(cores)) cores")
+                note: "of all \(MachTime.activeCores) cores")
 
         case .gpu:
             guard let total = sys.gpu?.utilization else { return false }

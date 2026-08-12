@@ -59,7 +59,11 @@ public final class DrainTracker {
     private var history: [ProcessKey: [Sample]] = [:]
     private var meta: [ProcessKey: (name: String, path: String, pid: pid_t)] = [:]
 
-    public init(window: TimeInterval = 10) {
+    /// Pinned rather than looked up so tests can state the machine they mean.
+    private let cores: Int
+
+    public init(window: TimeInterval = 10, cores: Int = MachTime.activeCores) {
+        self.cores = cores
         self.window = window
     }
 
@@ -122,11 +126,13 @@ public final class DrainTracker {
             // daemons are held to a display floor.
             let joules = Double(newest.energy_nJ &- oldest.energy_nJ) / 1e9
             let watts = joules / dt
-            // Percent of ONE core-second per wall-second, matching Activity Monitor:
-            // a fully busy four-thread process reads 400%, not 100%.
+            // Percent of the WHOLE machine, not of one core: this number is read
+            // beside a utilisation figure that is already 0-100 across every core,
+            // and two different "%" in one window is a bug in the units.
             // MachTime, not /1e9: these are mach absolute time units, not
             // nanoseconds, and the difference is a factor of 41.667.
-            let cpuPct = MachTime.corePercent(units: newest.cpu_ns &- oldest.cpu_ns, over: dt)
+            let cpuPct = MachTime.machinePercent(units: newest.cpu_ns &- oldest.cpu_ns,
+                                                 over: dt, cores: cores)
             let readRate = Double(newest.diskRead &- oldest.diskRead) / dt
             let writeRate = Double(newest.diskWritten &- oldest.diskWritten) / dt
 

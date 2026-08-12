@@ -304,17 +304,18 @@ public struct ProcessDrain {
     /// The headline unit: percent of battery consumed per hour.
     public let percentPerHour: Double
 
-    /// Percent of ONE core-second per wall-second, the same convention Activity
-    /// Monitor uses — so a fully busy 4-thread process reads 400%, not 100%.
-    /// Percent of ONE core — a busy four-thread process reads 400%. Activity
-    /// Monitor's convention, and the right one for a per-process column.
+    /// Percent of the WHOLE machine's CPU: 0-100, whatever the thread count.
     ///
-    /// IT IS NOT COMPARABLE TO `CPUUsage.total`, which is 0-100 across every
-    /// core, and the two are spelled almost identically: `HistoryStore`'s
-    /// utilisation point calls the whole-machine figure `cpuPercent` as well.
-    /// Summing these and measuring the sum against that total overstates by the
-    /// core count — it printed "CPU 129.0% in use" on a machine sitting at 17.3%.
-    /// Divide by `activeProcessorCount` before the two ever meet.
+    /// NOT Activity Monitor's convention, deliberately. Activity Monitor reports
+    /// percent of one core, so a busy four-thread process reads 400% there. That
+    /// number cannot be read against anything else this app shows: a row saying
+    /// "30%" next to a utilisation bar saying "9%" reads as a contradiction, when
+    /// 30% of one core out of fifteen is 2% of the machine and the two agree.
+    ///
+    /// It is therefore directly comparable to `CPUUsage.total` and to
+    /// `HistoryStore`'s identically-named utilisation figure, which is the point:
+    /// the mismatch is what once printed "CPU 129.0% in use" on a machine sitting
+    /// at 17.3%. These now sum to something that belongs on the same axis.
     public let cpuPercent: Double
     /// Physical footprint right now. Instantaneous, so it is not differenced.
     public let memoryBytes: UInt64
@@ -335,7 +336,8 @@ public struct ProcessDrain {
 public enum DrainCalculator {
     public static func between(_ a: ProcessSampler.Sweep,
                                _ b: ProcessSampler.Sweep,
-                               scale: BatteryScale) -> [ProcessDrain] {
+                               scale: BatteryScale,
+                               cores: Int = MachTime.activeCores) -> [ProcessDrain] {
         let dt = b.timestamp.timeIntervalSince(a.timestamp)
         guard dt > 0 else { return [] }
 
@@ -367,8 +369,9 @@ public enum DrainCalculator {
                 joules: joules,
                 watts: watts,
                 percentPerHour: 3600.0 * watts / scale.joulesPerPercent,
+                // Percent of the whole machine — the unit the table displays.
                 // MachTime, not /1e9 — see MachTime for why this was 41.667x low.
-                cpuPercent: MachTime.corePercent(units: cpuDeltaUnits, over: dt),
+                cpuPercent: MachTime.machinePercent(units: cpuDeltaUnits, over: dt, cores: cores),
                 memoryBytes: now.footprint,
                 diskReadPerSec: 0,
                 diskWrittenPerSec: 0

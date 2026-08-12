@@ -38,8 +38,33 @@ public enum MachTime {
 
     /// Percent of ONE core, Activity Monitor's convention: a fully busy
     /// four-thread process reads 400%, not 100%.
+    ///
+    /// Rarely what you want to SHOW — see `machinePercent`. It is the honest
+    /// intermediate, kept separate so the two units cannot be confused for each
+    /// other by anyone reading a call site.
     public static func corePercent(units: UInt64, over dt: TimeInterval) -> Double {
         guard dt > 0 else { return 0 }
         return seconds(units: units) / dt * 100
     }
+
+    /// Percent of the WHOLE machine's CPU: everything busy reads 100, and
+    /// nothing can exceed it.
+    ///
+    /// This is the unit the app displays, because the other one cannot be read
+    /// against anything else on screen. A process at "30%" beside a utilisation
+    /// figure of 9% invites exactly one conclusion — that the two disagree —
+    /// when in fact 30% of one core out of fifteen IS 2% of the machine. Two
+    /// units with the same "%" sign, in the same window, is a bug in the units
+    /// rather than in the arithmetic.
+    ///
+    /// `cores` is a parameter rather than a lookup so it can be pinned in tests;
+    /// with `cores: 1` this is exactly `corePercent`.
+    public static func machinePercent(units: UInt64, over dt: TimeInterval, cores: Int) -> Double {
+        guard cores > 0 else { return 0 }
+        return corePercent(units: units, over: dt) / Double(cores)
+    }
+
+    /// The divisor `machinePercent` needs, for callers that have no reason to
+    /// care where it comes from.
+    public static var activeCores: Int { ProcessInfo.processInfo.activeProcessorCount }
 }

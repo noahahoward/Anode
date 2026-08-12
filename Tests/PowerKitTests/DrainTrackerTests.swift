@@ -34,7 +34,7 @@ final class DrainTrackerTests: XCTestCase {
     /// One full core for the whole window must read 100%, matching Activity
     /// Monitor's convention — percent of ONE core, not of the whole machine.
     func testCPUPercentIsPercentOfOneCore() {
-        let tracker = DrainTracker(window: 10)
+        let tracker = DrainTracker(window: 10, cores: 1)
         let t0 = Date()
         _ = tracker.update(with: sweep([proc(1, energy: 0, cpu: 0)], at: t0), scale: scale)
 
@@ -48,20 +48,45 @@ final class DrainTrackerTests: XCTestCase {
         XCTAssertEqual(out[0].cpuPercent, 100, accuracy: 0.01)
     }
 
-    /// A process using four cores flat out reads 400%, not clamped to 100.
-    func testMultithreadedProcessExceedsOneHundredPercent() {
-        let tracker = DrainTracker(window: 10)
+    /// Four cores flat out is 100% of a four-core machine and a quarter of a
+    /// sixteen-core one — the same work, reported against what is actually there.
+    ///
+    /// This is the assertion the old per-core unit could not make. It reported
+    /// 400% for both machines, which is why a row could read "30%" beside a
+    /// utilisation bar reading 9% and look like a contradiction.
+    func testCPUIsAShareOfTheWholeMachine() {
+        // 8 core-seconds of CPU burned over 2 seconds of wall clock = 4 cores.
+        func fourCoresFlatOut(on cores: Int) -> Double {
+            let tracker = DrainTracker(window: 10, cores: cores)
+            let t0 = Date()
+            _ = tracker.update(with: sweep([proc(1, energy: 0, cpu: 0)], at: t0), scale: scale)
+            return tracker.update(
+                with: sweep([proc(1, energy: 1, cpu: 8_000_000_000)], at: t0.addingTimeInterval(2)),
+                scale: scale)[0].cpuPercent
+        }
+        XCTAssertEqual(fourCoresFlatOut(on: 4), 100, accuracy: 0.01)
+        XCTAssertEqual(fourCoresFlatOut(on: 16), 25, accuracy: 0.01)
+        XCTAssertEqual(fourCoresFlatOut(on: 1), 400, accuracy: 0.01,
+                       "on a single core the two units coincide")
+    }
+
+    /// Nothing the table can show may exceed the machine it runs on.
+    func testNoProcessCanExceedTheWholeMachine() {
+        let cores = 8
+        let tracker = DrainTracker(window: 10, cores: cores)
         let t0 = Date()
         _ = tracker.update(with: sweep([proc(1, energy: 0, cpu: 0)], at: t0), scale: scale)
+        // Every core pinned for the whole interval, which is the ceiling.
         let out = tracker.update(
-            with: sweep([proc(1, energy: 1, cpu: 8_000_000_000)], at: t0.addingTimeInterval(2)),
+            with: sweep([proc(1, energy: 1, cpu: UInt64(cores) * 2_000_000_000)],
+                        at: t0.addingTimeInterval(2)),
             scale: scale)
-        XCTAssertEqual(out[0].cpuPercent, 400, accuracy: 0.01)
+        XCTAssertEqual(out[0].cpuPercent, 100, accuracy: 0.01)
     }
 
     /// Energy is watts; the joules/second conversion must not drift.
     func testEnergyBecomesWattsAndPercentPerHour() {
-        let tracker = DrainTracker(window: 10)
+        let tracker = DrainTracker(window: 10, cores: 1)
         let t0 = Date()
         _ = tracker.update(with: sweep([proc(1, energy: 0, cpu: 0)], at: t0), scale: scale)
         // 10 J over 5 s = 2 W.
@@ -76,7 +101,7 @@ final class DrainTrackerTests: XCTestCase {
     /// Memory is instantaneous, so it is reported as-is rather than differenced —
     /// differencing a footprint would report growth, not usage.
     func testMemoryIsNotDifferenced() {
-        let tracker = DrainTracker(window: 10)
+        let tracker = DrainTracker(window: 10, cores: 1)
         let t0 = Date()
         _ = tracker.update(with: sweep([proc(1, energy: 0, cpu: 0, footprint: 100)], at: t0),
                            scale: scale)
@@ -89,7 +114,7 @@ final class DrainTrackerTests: XCTestCase {
     /// A process whose energy counter has not flushed can still be burning CPU.
     /// Recording only on energy change would hide it from the CPU lens entirely.
     func testCPUTrackedEvenWhenEnergyCounterIsStale() {
-        let tracker = DrainTracker(window: 10)
+        let tracker = DrainTracker(window: 10, cores: 1)
         let t0 = Date()
         _ = tracker.update(with: sweep([proc(1, energy: 500, cpu: 0)], at: t0), scale: scale)
         let out = tracker.update(
@@ -103,7 +128,7 @@ final class DrainTrackerTests: XCTestCase {
     /// The regression that made rows flicker: a process is not dropped just because
     /// it was idle across the window.
     func testIdleProcessIsReportedAsZeroNotDropped() {
-        let tracker = DrainTracker(window: 10)
+        let tracker = DrainTracker(window: 10, cores: 1)
         let t0 = Date()
         _ = tracker.update(with: sweep([proc(1, energy: 7, cpu: 7)], at: t0), scale: scale)
         _ = tracker.update(with: sweep([proc(1, energy: 9, cpu: 9)], at: t0.addingTimeInterval(1)),
@@ -115,7 +140,7 @@ final class DrainTrackerTests: XCTestCase {
 
     /// A counter going backwards means pid reuse or a reset, never negative usage.
     func testCounterResetNeverYieldsNegativeRates() {
-        let tracker = DrainTracker(window: 10)
+        let tracker = DrainTracker(window: 10, cores: 1)
         let t0 = Date()
         _ = tracker.update(with: sweep([proc(1, energy: 10_000_000_000, cpu: 5_000_000_000)], at: t0),
                            scale: scale)

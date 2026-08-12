@@ -290,17 +290,25 @@ enum ProcessColumns {
 
             ProcessColumn(
                 id: "cpu", title: "% CPU", width: 66,
-                tooltip: "Percent of ONE core, Activity Monitor's convention: a busy "
-                       + "four-thread process reads 400%.",
+                tooltip: "Percent of the whole CPU, across every core — so this "
+                       + "column and the bar below it are on one scale, and the "
+                       + "rows add up to it. Activity Monitor instead reports "
+                       + "percent of ONE core, where a busy four-thread process "
+                       + "reads 400%, so its numbers run higher than these.",
                 // An idle app is MEASURED at nothing; a coalition row has no CPU
                 // reading at all. Both used to print "—", which is the one thing
                 // this table's own rule says that glyph may not mean. A process we
                 // sampled and found asleep now says so.
+                // Two decimals, not one. As a share of the whole machine every
+                // figure is smaller by the core count, and at one decimal most of
+                // this column collapsed into a wall of "<0.1" — fifteen processes
+                // reading the same non-answer. The resolution has to follow the
+                // unit, or the change costs more than it fixes.
                 text: { r in
                     guard let a = r.app else { return ("—", true) }
                     if a.cpuPercent <= 0 { return ("0", true) }
-                    return a.cpuPercent < 0.1 ? ("<0.1", true)
-                                              : (String(format: "%.1f", a.cpuPercent), false)
+                    return a.cpuPercent < 0.01 ? ("<0.01", true)
+                                               : (String(format: "%.2f", a.cpuPercent), false)
                 },
                 value: { $0.app?.cpuPercent }),
 
@@ -548,9 +556,12 @@ enum ProcessRowBuilder {
         if r.isApp { return true }
         if let v = r.pctHr, v >= floor_pctHr { return true }
         if let a = r.app {
-            // 2.0% of one core, the threshold the CPU lens used. Below it a daemon
-            // has executed but has not done anything.
-            if a.cpuPercent >= 2.0 { return true }
+            // 2% of ONE core, which is the threshold this has always used — but
+            // `cpuPercent` is now percent of the whole machine, so the constant
+            // has to be divided down to keep meaning the same amount of work.
+            // Left as the per-core figure it would be a core-count times stricter
+            // and would silently empty the table of daemons on a big machine.
+            if a.cpuPercent >= 2.0 / Double(max(1, MachTime.activeCores)) { return true }
             if a.memoryBytes >= notableMemoryBytes { return true }
             if a.diskBytesPerSec >= 1 { return true }
         }
