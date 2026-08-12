@@ -212,8 +212,15 @@ final class ResourcesContent: NSView, PaneContentView {
     /// drawn behind it, and where the live figures start underneath. Derived from
     /// the card count rather than typed as 378, so adding a resource moves all
     /// three together.
-    static let cardHeight: CGFloat = 58
-    private static let cardGap: CGFloat = 6
+    /// Taller, by exactly what the gaps used to take. Six cards reclaim 30 pt
+    /// between them and the graphs inside them get it.
+    static let cardHeight: CGFloat = 63
+    /// TOUCHING. The cards are a chooser, and a chooser reads as one control with
+    /// divisions rather than six separate buttons resting near each other — which
+    /// is the same reasoning that put a ground behind them in the first place.
+    /// Their own rounding still separates them; the space between was doing no
+    /// work that the shapes were not already doing.
+    private static let cardGap: CGFloat = 0
     private static var railContentHeight: CGFloat {
         CGFloat(Resource.allCases.count) * cardHeight
             + CGFloat(Resource.allCases.count - 1) * cardGap
@@ -503,9 +510,13 @@ final class ResourcesContent: NSView, PaneContentView {
         // so the line's height is how much memory is in use rather than a fraction
         // whose denominator is off screen.
         memory.push(sys.memory.map { Double($0.used) / 1_073_741_824 }, at: now, before: cutoff)
+        // "17.2 GB / 24.0 GB (71%)" did not fit the card and truncated to
+        // "17.2 GB / 24.0 GB (7…", which loses the percentage entirely — the one
+        // figure that needed no unit. The unit is stated once: both numbers are
+        // gigabytes and saying so twice cost the thing it was crowding out.
         memory.summary = sys.memory.map {
-            String(format: "%@ / %@ (%.0f%%)",
-                   MetricUnit.bytes.format(Double($0.used)),
+            String(format: "%.1f / %@ · %.0f%%",
+                   Double($0.used) / 1_073_741_824,
                    MetricUnit.bytes.format(Double($0.total)), $0.usedPercent)
         } ?? "—"
         memory.hardware = MetricUnit.bytes.format(Double(MachineInfo.facts.memoryBytes))

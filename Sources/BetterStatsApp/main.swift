@@ -845,7 +845,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
     /// animation in this app that is not a response to the user is also the one
     /// that cannot run while nobody is looking.
     func updateFanSpin() {
-        main.sidebar.setFanSpin(rpm: lastSystem?.fans.averageRPM ?? 0)
+        // The fans' own range as well as their speed: a glyph turning in
+        // proportion to absolute rpm cannot show the difference between idling
+        // and idling slightly harder, because that difference is eight percent.
+        let fans = lastSystem?.fans ?? []
+        main.sidebar.setFanSpin(
+            rpm: fans.averageRPM,
+            limits: fans.isEmpty ? nil
+                : .init(minRPM: fans.map(\.minRPM).min() ?? 0,
+                        maxRPM: fans.map(\.maxRPM).max() ?? 0))
         // The HOTTEST reading, not the average: the rail is an alarm here, and an
         // average hides one component cooking behind five that are fine.
         let temps = [lastSystem?.cpuTemperature, lastSystem?.gpuTemperature].compactMap { $0 }

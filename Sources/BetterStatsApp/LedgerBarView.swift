@@ -563,6 +563,21 @@ final class LedgerBarView: NSView {
         let barRect = NSRect(x: 0, y: 0, width: bounds.width, height: barHeight)
         let used = max(u.used, 0.0001)
 
+        // ONE ROUNDED SHAPE, filled with square segments — the same way the
+        // battery bar has always drawn, and the reason it looked different from
+        // every other bar in the app. Rounding each segment puts a curve on both
+        // sides of every internal join, so a five-part bar reads as five pills
+        // resting against each other rather than as one bar divided up.
+        //
+        // Clipped rather than composed: the segments stay simple rectangles and
+        // the outline decides the silhouette, so the corner radius is stated once
+        // and the joins cannot disagree with it.
+        NSGraphicsContext.saveGraphicsState()
+        NSBezierPath(roundedRect: barRect,
+                     xRadius: Palette.Radius.chip,
+                     yRadius: Palette.Radius.chip).addClip()
+        defer { NSGraphicsContext.restoreGraphicsState() }
+
         var x: CGFloat = 0
         for (i, part) in u.parts.enumerated() where part.value > 0 {
             // The last drawn slice takes the remaining width rather than its own
@@ -577,8 +592,7 @@ final class LedgerBarView: NSView {
                 drawHatch(in: r)
             } else {
                 part.color.setFill()
-                NSBezierPath(roundedRect: r, xRadius: Palette.Radius.bar,
-                             yRadius: Palette.Radius.bar).fill()
+                r.fill()
             }
             // `onAccent` is dark ink, for text sitting ON a bright fill. Idle's
             // fill is `surfaceAlt`, which is nearly the window's own black, so
@@ -617,12 +631,20 @@ final class LedgerBarView: NSView {
     /// mark at the mean.
     private func drawSpread(_ s: SpreadBar) {
         let barRect = NSRect(x: 0, y: 0, width: bounds.width, height: barHeight)
-        let radius = Palette.Radius.bar
+
+        // Same silhouette as every other bar: one rounded outline, square shapes
+        // inside it. The span is a position ON the scale, so it takes the scale's
+        // corners where it reaches them and none where it does not.
+        NSGraphicsContext.saveGraphicsState()
+        NSBezierPath(roundedRect: barRect,
+                     xRadius: Palette.Radius.chip,
+                     yRadius: Palette.Radius.chip).addClip()
+        defer { NSGraphicsContext.restoreGraphicsState() }
 
         // The unoccupied scale, so the span reads as a position on something
         // rather than as a bar that happens to start late.
         Palette.surfaceAlt.setFill()
-        NSBezierPath(roundedRect: barRect, xRadius: radius, yRadius: radius).fill()
+        barRect.fill()
 
         let x0 = barRect.width * CGFloat(s.fraction(s.low))
         let x1 = barRect.width * CGFloat(s.fraction(s.high))
@@ -630,7 +652,7 @@ final class LedgerBarView: NSView {
         // interesting state, and a zero-width span would draw it as nothing.
         let span = NSRect(x: x0, y: 0, width: max(3, x1 - x0), height: barHeight)
         LedgerBarView.temperatureInk(s.high).setFill()
-        NSBezierPath(roundedRect: span, xRadius: radius, yRadius: radius).fill()
+        span.fill()
 
         // The mean, as a rule across the span rather than a third colour.
         let mid = barRect.width * CGFloat(s.fraction(s.average))
