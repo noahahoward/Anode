@@ -111,3 +111,51 @@ final class LensSamplingNeedsTests: XCTestCase {
         XCTAssertNil(AppDelegate.lens(forWidget: .groupPlaceholder))
     }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// The rail's motion, which is the one animation in this app that is not a
+/// response to the user — so it is the one with rules.
+final class FanSpinTests: XCTestCase {
+
+    override func setUp() { _ = NSApplication.shared }
+
+    /// A parked fan does not spin the glyph.
+    ///
+    /// Fans on this hardware rest at 0 rpm when cool, and that is a reading worth
+    /// seeing at a glance. A glyph that turned regardless would be decoration, and
+    /// decoration that never stops is a heartbeat.
+    func testAParkedFanLeavesTheGlyphStill() {
+        let rail = SidebarView()
+        rail.setFanSpin(rpm: 0)
+        XCTAssertFalse(rail.isFanGlyphSpinning)
+    }
+
+    /// And a turning fan turns it.
+    func testATurningFanSpinsTheGlyph() {
+        let rail = SidebarView()
+        rail.setFanSpin(rpm: 2400)
+        XCTAssertTrue(rail.isFanGlyphSpinning)
+        // Stopping puts it back.
+        rail.setFanSpin(rpm: 0)
+        XCTAssertFalse(rail.isFanGlyphSpinning)
+    }
+
+    /// Faster fans turn the glyph faster, and a barely-turning one still turns.
+    ///
+    /// The scale is deliberately not real: 2500 rpm is 42 turns a second, which at
+    /// any frame rate is a blur that reads as broken. This is a needle, not a
+    /// simulation — but the ORDER has to survive, or the motion says nothing.
+    func testTheGlyphTurnsFasterWhenTheFansDo() throws {
+        let rail = SidebarView()
+        rail.setFanSpin(rpm: 1200)
+        let slow = try XCTUnwrap(rail.fanGlyphTurnSeconds)
+        rail.setFanSpin(rpm: 4800)
+        let fast = try XCTUnwrap(rail.fanGlyphTurnSeconds)
+        XCTAssertLessThan(fast, slow, "a faster fan did not turn the glyph faster")
+        // The floor, so a fan barely above zero is still visibly moving rather
+        // than taking a minute per turn.
+        rail.setFanSpin(rpm: 1)
+        XCTAssertLessThanOrEqual(try XCTUnwrap(rail.fanGlyphTurnSeconds), 60)
+    }
+}

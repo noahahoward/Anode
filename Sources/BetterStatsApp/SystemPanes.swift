@@ -82,7 +82,10 @@ extension SystemPane {
         private let name = NSTextField(labelWithString: "")
         private let summary = NSTextField(labelWithString: "")
         private var expanded = false
-        private var hovered = false
+        /// 0 shut, 1 open. The chevron reads this rather than `expanded`, so it
+        /// turns rather than jumping between two drawings of itself.
+        private var openness = Eased()
+        private var hover = Eased()
         var onToggle: (() -> Void)?
 
         init(_ item: BodyItem) {
@@ -108,7 +111,21 @@ extension SystemPane {
         override var isFlipped: Bool { true }
 
         func apply(_ item: BodyItem) {
+            let wasExpanded = expanded
             expanded = item.expanded
+            // Straight there on the FIRST application: a group already open when
+            // the pane is built has not just been opened, and animating it would
+            // play every group's chevron on every tab switch.
+            if openness.value == 0 && openness.target == 0 && expanded && !wasExpanded {
+                openness.set(1)
+            } else if expanded != wasExpanded {
+                openness.aim(expanded ? 1 : 0)
+                Motion.shared.start(self) { [weak self] dt in
+                    self?.openness.advance(dt) ?? false
+                }
+            } else {
+                openness.set(expanded ? 1 : 0)
+            }
             name.attributedStringValue = NSAttributedString(
                 string: item.label.uppercased(),
                 attributes: Palette.labelAttributes(Palette.dim))
@@ -128,16 +145,21 @@ extension SystemPane {
                 rect: bounds, options: [.mouseEnteredAndExited, .activeInKeyWindow],
                 owner: self))
         }
-        override func mouseEntered(with e: NSEvent) { hovered = true; needsDisplay = true }
-        override func mouseExited(with e: NSEvent) { hovered = false; needsDisplay = true }
+        override func mouseEntered(with e: NSEvent) { aimHover(1) }
+        override func mouseExited(with e: NSEvent) { aimHover(0) }
         override func mouseDown(with e: NSEvent) { onToggle?() }
+
+        private func aimHover(_ to: CGFloat) {
+            hover.aim(to)
+            Motion.shared.start(self) { [weak self] dt in self?.hover.advance(dt) ?? false }
+        }
         override func resetCursorRects() {
             addCursorRect(bounds, cursor: .pointingHand)
         }
 
         override func draw(_ dirtyRect: NSRect) {
-            if hovered {
-                Palette.surfaceAlt.setFill()
+            if hover.value > 0.001 {
+                Palette.surfaceAlt.withAlphaComponent(hover.value).setFill()
                 NSBezierPath(roundedRect: bounds.insetBy(dx: -4, dy: 1),
                              xRadius: Palette.Radius.row,
                              yRadius: Palette.Radius.row).fill()
@@ -146,13 +168,23 @@ extension SystemPane {
             // from the same drawer — so "this is the one, and this is which way"
             // is one mark in the app rather than two that happen to match.
             //
-            // Down when open and right when shut, the usual disclosure idiom.
-            // `Palette.Chevron` swaps its axes for a sideways one, so the shut
-            // form is the open one rotated rather than a longer, flatter version.
+            // Down when open and right when shut, the usual disclosure idiom —
+            // and it TURNS between them rather than swapping drawings, which is
+            // only possible because the two forms are one shape rotated. That was
+            // already true for a static reason (a sideways chevron drawn at the
+            // same width would have longer legs than a downward one), and it pays
+            // for itself twice here.
+            let centre = NSPoint(x: 1 + Palette.Chevron.down.size.width / 2, y: bounds.midY)
+            let turn = NSAffineTransform()
+            turn.translateX(by: centre.x, yBy: centre.y)
+            // Shut points right, open points down: a quarter turn, and the view is
+            // flipped so positive rotation goes the way it looks like it should.
+            turn.rotate(byDegrees: 90 * Double(openness.value))
+            turn.translateX(by: -centre.x, yBy: -centre.y)
+            let mark = Palette.chevron(.right, at: centre)
+            mark.transform(using: turn as AffineTransform)
             Palette.accent.setStroke()
-            Palette.chevron(expanded ? .down : .right,
-                            at: NSPoint(x: 1 + Palette.Chevron.down.size.width / 2,
-                                        y: bounds.midY)).stroke()
+            mark.stroke()
         }
     }
 }
@@ -425,7 +457,7 @@ class SystemPane: NSView {
         var onSelect: (() -> Void)?
         /// Drawn as picked. The pane owns which row that is.
         var isPicked = false { didSet { if isPicked != oldValue { needsDisplay = true } } }
-        private var hovered = false
+        private var hover = Eased()
 
         override func updateTrackingAreas() {
             super.updateTrackingAreas()
@@ -435,9 +467,14 @@ class SystemPane: NSView {
                 rect: bounds, options: [.mouseEnteredAndExited, .activeInKeyWindow],
                 owner: self))
         }
-        override func mouseEntered(with e: NSEvent) { hovered = true; needsDisplay = true }
-        override func mouseExited(with e: NSEvent) { hovered = false; needsDisplay = true }
+        override func mouseEntered(with e: NSEvent) { aimHover(1) }
+        override func mouseExited(with e: NSEvent) { aimHover(0) }
         override func mouseDown(with e: NSEvent) { onSelect?() }
+
+        private func aimHover(_ to: CGFloat) {
+            hover.aim(to)
+            Motion.shared.start(self) { [weak self] dt in self?.hover.advance(dt) ?? false }
+        }
         override func resetCursorRects() {
             if onSelect != nil { addCursorRect(bounds, cursor: .pointingHand) }
         }
@@ -446,13 +483,22 @@ class SystemPane: NSView {
         /// 0.45 for hovered — in the same shape. A third selection idiom in one
         /// app is a third thing to learn.
         func drawSelection() {
-            guard isPicked || hovered else { return }
+            guard isPicked || hover.value > 0.001 else { return }
             let shape = NSBezierPath(roundedRect: bounds.insetBy(dx: -4, dy: 1),
                                      xRadius: Palette.Radius.row,
                                      yRadius: Palette.Radius.row)
-            (isPicked ? Palette.selection
-                      : Palette.selection.withAlphaComponent(0.45)).setFill()
-            shape.fill()
+            // Stacked, like the process table's rows: picked is a step, hovering
+            // is another on top of it, and the row under the pointer is always the
+            // brightest. The hover step FADES; the picked one does not, because a
+            // click is a decision and a decision should land.
+            if isPicked {
+                Palette.selection.setFill()
+                shape.fill()
+            }
+            if hover.value > 0.001 {
+                Palette.selection.withAlphaComponent(0.45 * hover.value).setFill()
+                shape.fill()
+            }
         }
 
         init(_ item: BodyItem) {

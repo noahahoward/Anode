@@ -609,6 +609,28 @@ final class BetterStatsRowView: NSTableRowView {
         return myRow >= 0 && myRow == table.hoveredRow
     }
 
+    /// The hover wash's strength, eased rather than switched.
+    ///
+    /// Driven from `drawBackground` rather than from a mouse event, because this
+    /// row does not receive one: the TABLE tracks the pointer and rows only ever
+    /// ask whether they are the hovered index. So each draw compares where the
+    /// wash is against where it should be, and starts easing when they differ.
+    /// That also covers the cases a mouse event would miss — rows moving under a
+    /// stationary pointer as the table re-sorts, which happens every two seconds.
+    private var hover = Eased()
+
+    private func aimHover() {
+        let wanted: CGFloat = isHovered ? 1 : 0
+        guard hover.target != wanted else { return }
+        // A forced state is a question about the RESTING appearance — "what does a
+        // hovered row look like" — not about the transition into it. Easing there
+        // would make a single rendered frame catch the wash at whatever fraction
+        // one tick had reached, which is a value nothing in the app ever shows.
+        guard hoverForTesting == nil else { hover.set(wanted); return }
+        hover.aim(wanted)
+        Motion.shared.start(self) { [weak self] dt in self?.hover.advance(dt) ?? false }
+    }
+
     /// Whether this row gets the alternating tint.
     ///
     /// Zebra striping, in the app's OWN ink rather than macOS's — the system pair
@@ -654,8 +676,9 @@ final class BetterStatsRowView: NSTableRowView {
             Palette.selection.setFill()
             shape.fill()
         }
-        if isHovered {
-            Palette.selection.withAlphaComponent(0.45).setFill()
+        aimHover()
+        if hover.value > 0.001 {
+            Palette.selection.withAlphaComponent(0.45 * hover.value).setFill()
             shape.fill()
         }
     }

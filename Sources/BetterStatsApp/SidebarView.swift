@@ -51,11 +51,19 @@ final class SidebarView: NSView {
         /// is now the only way to navigate.
         var symbolName: String {
             switch self {
-            case .processes: return "list.bullet"
-            case .resources: return "speedometer"
+            // NOT `list.bullet`, which is a checklist — a row of ticks reads as
+            // things to do rather than things running. A stack of rectangles is
+            // what this tab actually shows: many of something, one per row.
+            case .processes: return "rectangle.stack"
+            // NOT `speedometer`, which on a rail next to a network icon reads as a
+            // speed test. A line chart with axes is what the tab is — the same
+            // thing Task Manager puts on its Performance tab, for the same reason.
+            case .resources: return "chart.line.uptrend.xyaxis"
             case .network:   return "network"
             case .sensors:   return "thermometer"
-            case .fans:      return "wind"
+            // NOT `wind`, which is moving air rather than the thing moving it.
+            // Blades also give the icon somewhere to turn — see `FanIconSpin`.
+            case .fans:      return "fanblades"
             }
         }
 
@@ -282,6 +290,21 @@ final class SidebarView: NSView {
         }
     }
 
+    /// Turn the fan glyph at the speed the fans are actually turning, or stop it.
+    ///
+    /// Called from the sampling tick, so it follows the machine rather than a
+    /// clock. Zero rpm stops it: a parked fan is a reading worth being able to see
+    /// at a glance, and a glyph that spins regardless would be decoration.
+    func setFanSpin(rpm: Double) {
+        rows[.fans]?.setSpinning(rpm > 0, rpm: rpm)
+    }
+
+    /// Whether the fan glyph is turning, and how fast. Test seams: the animation
+    /// lives on the render server, so there is nothing to observe from here
+    /// without asking the layer what it was given.
+    var isFanGlyphSpinning: Bool { rows[.fans]?.spinAnimation != nil }
+    var fanGlyphTurnSeconds: TimeInterval? { rows[.fans]?.spinAnimation?.duration }
+
     // ── Row ─────────────────────────────────────────────────────────────────
 
     private final class RowView: NSView {
@@ -295,6 +318,55 @@ final class SidebarView: NSView {
                 guard value != oldValue else { return }   // toolTip assignment is not free
                 updateTooltip()
             }
+        }
+
+        /// Turn the fan glyph while the machine's fans are turning.
+        ///
+        /// CORE ANIMATION, not the app's own driver. This is the one motion in the
+        /// app that is not a response to the user, so it is the one that must not
+        /// cost the app anything to keep going: a `CABasicAnimation` runs on the
+        /// window server, which turns the layer without waking this process at
+        /// all. The alternative — ticking a redraw at 60 Hz for as long as the
+        /// window is open — is exactly the heartbeat `Motion` exists to avoid.
+        ///
+        /// It stops when the fans stop, so a machine sitting with its fans parked
+        /// is still and the icon means something: motion here is a reading, not
+        /// decoration.
+        var spinAnimation: CABasicAnimation? {
+            icon.layer?.animation(forKey: "spin") as? CABasicAnimation
+        }
+
+        func setSpinning(_ spinning: Bool, rpm: Double = 0) {
+            guard lens == .fans else { return }
+            icon.wantsLayer = true
+            guard let layer = icon.layer else { return }
+            let key = "spin"
+            guard spinning else { return layer.removeAnimation(forKey: key) }
+
+            // Scaled hard, and CLAMPED AT BOTH ENDS. A fan at 2500 rpm is 42
+            // turns a second, which at any frame rate is a blur that reads as
+            // broken — this is a needle, not a simulation.
+            //
+            // The chosen scale spans the speeds this hardware actually uses: its
+            // fans idle near 2300 rpm and top out near 7800, which maps to about
+            // 2.6 s and 0.8 s a turn. Both limits are real cases: without the
+            // ceiling a fan reporting 1 rpm took twenty-four minutes to come round
+            // (caught by a test), and without the floor a fast fan is a blur
+            // again.
+            let seconds = min(6, max(0.5, 6000 / max(rpm, 1)))
+            if let existing = layer.animation(forKey: key) as? CABasicAnimation,
+               abs(existing.duration - seconds) < 0.05 { return }   // already right
+
+            layer.anchorPoint = CGPoint(x: 0.5, y: 0.5)
+            layer.frame = icon.bounds
+            let turn = CABasicAnimation(keyPath: "transform.rotation.z")
+            turn.fromValue = 0
+            turn.toValue = -Double.pi * 2   // clockwise on screen
+            turn.duration = seconds
+            turn.repeatCount = .infinity
+            // Linear: a fan does not ease.
+            turn.timingFunction = CAMediaTimingFunction(name: .linear)
+            layer.add(turn, forKey: key)
         }
 
         init(lens: Lens, onClick: @escaping (Lens) -> Void) {

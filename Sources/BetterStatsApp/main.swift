@@ -629,6 +629,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
 
         updateLedger(s)
         updateGlance(s)
+        updateFanSpin()
         updateGraph(s)
         refreshPane()
     }
@@ -837,6 +838,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
     ///
     /// Falls back to the battery when the subject has no reading yet, rather than
     /// leaving the previous subject's numbers under a new heading.
+    /// The rail's fan glyph, turning at the speed the fans are.
+    ///
+    /// Only while the window is up: this is called from `apply`, which a hidden
+    /// window never reaches (see the visibility check in the sampler). So the one
+    /// animation in this app that is not a response to the user is also the one
+    /// that cannot run while nobody is looking.
+    func updateFanSpin() {
+        main.sidebar.setFanSpin(rpm: lastSystem?.fans.averageRPM ?? 0)
+    }
+
     func updateGlance(_ s: PowerMonitor.Snapshot) {
         lastCensus = bottomContext == .cpu ? MachineInfo.census() : nil
         main.glance.model = lastSystem.flatMap {
