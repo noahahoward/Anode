@@ -277,6 +277,26 @@ final class RailGlyphStateTests: XCTestCase {
         rail.setTemperature(45)
         XCTAssertFalse(rail.isTemperatureAlarming, "the alarm did not clear when it cooled")
     }
+
+    /// Both self-running animations stop when the window stops being drawn.
+    ///
+    /// Everything else in this app moves only while the pointer does, and stops
+    /// on its own. These two run for as long as the fans turn and the machine is
+    /// hot — on layers, which a COVERED window still has. Closing the window took
+    /// the layer tree with it and hid the problem; occlusion does not.
+    func testTheSelfRunningAnimationsStopWhenNothingIsDrawn() {
+        let rail = SidebarView()
+        rail.select(.fans)                       // the fan glyph only spins on its own tab
+        rail.setFanSpin(rpm: 3000, limits: .init(minRPM: 2000, maxRPM: 8000))
+        rail.setTemperature(95)
+        XCTAssertTrue(rail.isFanGlyphSpinning, "precondition: the fan glyph is turning")
+        XCTAssertTrue(rail.isTemperatureAlarming, "precondition: the thermometer is pulsing")
+
+        rail.pauseSelfRunningAnimations()
+
+        XCTAssertFalse(rail.isFanGlyphSpinning, "the fan kept turning behind a covered window")
+        XCTAssertFalse(rail.isTemperatureAlarming, "the thermometer kept pulsing unseen")
+    }
 }
 
 /// A window covered by another app is worth exactly as much work as a closed
