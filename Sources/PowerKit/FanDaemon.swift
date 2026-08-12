@@ -158,6 +158,56 @@ public enum FanDaemon {
             atPath: "/Library/LaunchDaemons/\(previousLabel).plist")
     }
 
+    /// Is the daemon on disk the same build as the app asking it for things?
+    ///
+    /// IT IS NOT UPDATED BY REBUILDING THE APP. The helper is copied into
+    /// `/Library/PrivilegedHelperTools` at install time and stays exactly as it
+    /// was; a new app bundle beside it changes nothing. So every fix to the helper
+    /// is invisible until someone reinstalls, and the app goes on talking to a
+    /// binary from whenever the last install happened.
+    ///
+    /// That cost a whole debugging round: a fix to the readback was built, run,
+    /// and reported as having changed nothing — correctly, because the daemon
+    /// answering was half an hour older than the fix. The tell was the error
+    /// message being word-for-word the old one, which the new binary does not
+    /// contain.
+    ///
+    /// Compared by CONTENT rather than by version number. A protocol version only
+    /// moves when the protocol does, and this needs to notice any change at all —
+    /// including the ones that are pure bug fixes, which are exactly the ones
+    /// someone is in the middle of testing.
+    /// `installed` is injectable ONLY so a test can point it at a fixture.
+    ///
+    /// Reading the real `/Library` path made this a function of the developer's
+    /// machine: a test asserting "nothing installed says nothing" failed on the
+    /// one machine that HAD an install, which is the machine it needs to work on.
+    /// The same seam the settings migration needed, for the same reason — a
+    /// function whose whole job is to look at a fixed path cannot be tested
+    /// without being told which path.
+    public static func installedBuildMatchesBundle(bundled: URL?,
+                                                   installed: String = helperPath) -> Bool? {
+        let fm = FileManager.default
+        guard let bundled, fm.fileExists(atPath: installed),
+              fm.fileExists(atPath: bundled.path) else { return nil }
+        // Size first: it is a stat, and two different builds of a two-megabyte
+        // binary almost never match on it. The hash is the answer when they do.
+        let installedSize = (try? fm.attributesOfItem(atPath: installed)[.size]) as? Int
+        let bundledSize = (try? fm.attributesOfItem(atPath: bundled.path)[.size]) as? Int
+        if let a = installedSize, let b = bundledSize, a != b { return false }
+        guard let a = try? Data(contentsOf: URL(fileURLWithPath: installed)),
+              let b = try? Data(contentsOf: bundled) else { return nil }
+        return a == b
+    }
+
+    /// Said when the installed helper is not the one this app ships.
+    public static func staleInstallNote(bundled: URL?,
+                                        installed: String = helperPath) -> String? {
+        guard installedBuildMatchesBundle(bundled: bundled,
+                                          installed: installed) == false else { return nil }
+        return "The installed fan helper is from a different build of Anode. "
+             + "Reinstall it — rebuilding the app does not replace the copy running as root."
+    }
+
     /// Said alongside `summary`, never folded into it.
     ///
     /// The first version put this inside `summary(.notInstalled)`, which made a

@@ -502,6 +502,12 @@ final class FanControlPanel: NSView {
     /// nil for a bare `swift build` binary, which has no bundle and signs under
     /// an identifier the daemon would not accept. The install refuses those too,
     /// with a message; this just keeps the button off the strip.
+    /// The helper this app SHIPS, as a URL — for comparing against the one
+    /// installed as root. See `FanDaemon.installedBuildMatchesBundle`.
+    private func bundledHelperURL() -> URL? {
+        Self.bundledHelper().map { URL(fileURLWithPath: $0) }
+    }
+
     private static func bundledHelper() -> String? {
         let bundle = Bundle.main.bundleURL
         guard bundle.pathExtension == "app" else { return nil }
@@ -674,7 +680,9 @@ final class FanControlPanel: NSView {
                     ? "Fan helper connected, but it found no fan it can control."
                     : "Fan helper connected. No fan is held — macOS is still deciding. "
                     + "Take a slider or press ❄︎ to change that."
-                hintField.stringValue = installed ? FanDaemon.summary(daemonState) : ""
+                hintField.stringValue = [installed ? FanDaemon.summary(daemonState) : nil,
+                                         FanDaemon.staleInstallNote(bundled: bundledHelperURL())]
+                    .compactMap { $0 }.joined(separator: " ")
                 setButtons([("Turn Off", #selector(disableTapped))])
             } else if installed {
                 // The plist is there and nothing answered. launchd should have
@@ -685,7 +693,8 @@ final class FanControlPanel: NSView {
                 // machine, and this is the one place a user is about to install a
                 // second one.
                 statusLabel.stringValue = [FanDaemon.summary(daemonState),
-                                           FanDaemon.orphanNote]
+                                           FanDaemon.orphanNote,
+                                           FanDaemon.staleInstallNote(bundled: bundledHelperURL())]
                     .compactMap { $0 }.joined(separator: " ")
                 hintField.stringValue = ""
                 setButtons([("Turn Off", #selector(disableTapped))])
