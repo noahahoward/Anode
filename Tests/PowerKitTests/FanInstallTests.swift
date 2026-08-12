@@ -653,3 +653,66 @@ final class FanElevationTests: XCTestCase {
                        "'/x/H' --install --uid 501")
     }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Noticing that the daemon running as root is not the build the app ships.
+///
+/// The failure this prevents is expensive and completely silent: a fix to the
+/// helper is written, built, run, and appears to change nothing — because the
+/// binary answering was copied into `/Library/PrivilegedHelperTools` at install
+/// time and a new app bundle beside it changes nothing at all. It cost a full
+/// debugging round, and the only tell was an error message being word-for-word
+/// the old one.
+final class StaleHelperInstallTests: XCTestCase {
+
+    private var dir: URL!
+
+    override func setUpWithError() throws {
+        dir = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("anode-stale-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    }
+    override func tearDownWithError() throws { try? FileManager.default.removeItem(at: dir) }
+
+    /// Nothing installed is not a mismatch — there is nothing to mismatch with.
+    func testNoInstallIsNotReportedAsStale() throws {
+        let bundled = dir.appendingPathComponent("AnodeHelper")
+        try Data("build A".utf8).write(to: bundled)
+        // Pointed at a path that does not exist, rather than at whatever this
+        // machine happens to have installed.
+        XCTAssertNil(FanDaemon.staleInstallNote(
+            bundled: bundled, installed: dir.appendingPathComponent("nothing").path),
+            "a machine with no helper was told its helper is out of date")
+    }
+
+    /// And an app with no bundle — a bare `swift build` binary — cannot compare,
+    /// so it says nothing rather than guessing.
+    func testNoBundledHelperMeansNoClaim() {
+        XCTAssertNil(FanDaemon.installedBuildMatchesBundle(bundled: nil))
+        XCTAssertNil(FanDaemon.staleInstallNote(bundled: nil))
+    }
+
+    /// The comparison is by CONTENT, not by a version number.
+    ///
+    /// A protocol version only moves when the protocol does, and this has to
+    /// notice any change at all — including pure bug fixes, which are precisely
+    /// the changes someone is in the middle of testing when it matters.
+    func testTheComparisonIsByContent() throws {
+        let a = dir.appendingPathComponent("a")
+        let b = dir.appendingPathComponent("b")
+        let sameAsA = dir.appendingPathComponent("c")
+        try Data("build A".utf8).write(to: a)
+        try Data("build B".utf8).write(to: b)
+        try Data("build A".utf8).write(to: sameAsA)
+
+        // Different builds are caught...
+        XCTAssertEqual(FanDaemon.installedBuildMatchesBundle(bundled: a,
+                                                             installed: b.path), false)
+        XCTAssertNotNil(FanDaemon.staleInstallNote(bundled: a, installed: b.path))
+        // ...and identical ones do not nag, whatever their path or timestamp.
+        XCTAssertEqual(FanDaemon.installedBuildMatchesBundle(bundled: a,
+                                                             installed: sameAsA.path), true)
+        XCTAssertNil(FanDaemon.staleInstallNote(bundled: a, installed: sameAsA.path))
+    }
+}
