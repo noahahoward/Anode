@@ -1,4 +1,6 @@
+import AppKit
 import XCTest
+@testable import AnodeApp
 @testable import PowerKit
 
 /// Carrying a machine's history and settings across the rename from BetterStats
@@ -236,48 +238,43 @@ final class OrphanNoticePlacementTests: XCTestCase {
 /// Nothing installs a root daemon because a user touched a control.
 ///
 /// Reported as: you do not know the process, you drag what looks like a volume
-/// slider, and a Terminal window opens. The affordance was making a promise the
-/// app should not make — dragging a knob is how you ask for CONTROL, and that
-/// argument only holds when the thing on the other side is a consent sheet
-/// rather than an installation.
+/// slider, and a Terminal window opens.
 ///
-/// Asserted against the source, like the orphan-placement test above and for the
-/// same reason: the states involved need a live helper connection to reach, and
-/// the claim here is about which code guards which road.
+/// The first fix hid the knob and left the bar as a reading. It did not work —
+/// the cell subclass that was supposed to skip drawing the knob was never used,
+/// so the knob stayed and only a source-text test said otherwise. The second is
+/// simpler and has nothing to silently not-happen: with no helper there is no
+/// control surface at all. The fan speeds are reported above this strip either
+/// way, so nothing readable was lost with them.
 final class InstallIsDeliberateTests: XCTestCase {
 
-    private func panelSource() throws -> String {
-        try String(contentsOfFile: FileManager.default.currentDirectoryPath
-            + "/Sources/AnodeApp/FanControlPanel.swift")
+    private let fans = [
+        FanInfo(index: 0, currentRPM: 2318, minRPM: 2317, maxRPM: 7826, targetRPM: nil),
+        FanInfo(index: 1, currentRPM: 2500, minRPM: 2317, maxRPM: 7826, targetRPM: nil),
+    ]
+
+    /// The behavioural assertion, and the one that would have caught the first
+    /// attempt: COUNT the controls rather than reading the code meant to remove
+    /// them. This runs on a machine with no helper installed — which is every
+    /// machine running the suite, since installing one needs root.
+    func testThereIsNoControlSurfaceWithoutTheHelper() throws {
+        try XCTSkipIf(FanDaemon.isInstalled(),
+                      "this machine has the helper installed; the state under test is the other one")
+        let panel = FanControlPanel(frame: NSRect(x: 0, y: 0, width: 420, height: 200))
+        panel.update(fans: fans)
+        XCTAssertEqual(panel.controlRowCount, 0,
+                       "the fan control interface is on screen with no helper behind it")
     }
 
-    /// Every gesture route funnels through `gesture(_:)`, so the guard belongs
-    /// there — one place, rather than one per control, so a control added later
-    /// cannot quietly reopen the road.
+    /// And the guard behind it: every gesture route funnels through `gesture(_:)`,
+    /// so it belongs there once rather than on each control, where a control
+    /// added later would quietly reopen the road.
     func testGesturesDoNothingWithoutTheHelperInstalled() throws {
-        let source = try panelSource()
+        let source = try String(contentsOfFile: FileManager.default.currentDirectoryPath
+            + "/Sources/AnodeApp/FanControlPanel.swift")
         let fn = try XCTUnwrap(source.range(of: "private func gesture(_ g: FanSession.Gesture) {"))
         let body = String(source[fn.upperBound...].prefix(600))
         XCTAssertTrue(body.contains("guard installed else"),
                       "a gesture can still reach the install path")
-    }
-
-    /// And the controls say so before they are touched: no knob, and ❄︎ off.
-    func testTheControlsLookInertWithoutTheHelper() throws {
-        let source = try panelSource()
-        XCTAssertTrue(source.contains("slider.isReadOnly = !installed"),
-                      "the slider still shows a grabbable knob with no helper")
-        XCTAssertTrue(source.contains("boost.isEnabled = installed"),
-                      "❄︎ is still live with no helper — the surprise just moved")
-    }
-
-    /// A read-only gauge refuses the mouse outright rather than accepting the
-    /// drag and doing nothing, which would read as the app being broken.
-    func testTheReadOnlyGaugeIgnoresTheMouse() throws {
-        let source = try panelSource()
-        let cls = try XCTUnwrap(source.range(of: "final class GaugeSlider: NSSlider {"))
-        let body = String(source[cls.upperBound...].prefix(1600))
-        XCTAssertTrue(body.contains("guard !isReadOnly else { return }"),
-                      "the gauge still tracks the mouse when it has no knob")
     }
 }
