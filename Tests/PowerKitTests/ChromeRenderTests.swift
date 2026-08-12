@@ -631,6 +631,44 @@ final class TableChromeRenderTests: XCTestCase {
         }
     }
 
+    /// A HOVERED ROW LOOKS THE SAME WHATEVER IT IS SITTING ON.
+    ///
+    /// THE REPORTED CASE. Hover and selection were `selection` at two alphas,
+    /// painted over whatever ground the row had — and a tint of two different
+    /// grounds is two different colours, so the same hover read one way on a
+    /// striped row and another on a plain one.
+    ///
+    /// They are finished colours now, which is what makes the claim testable at
+    /// all: "the same" is a measurable thing to say about two opaque fills and a
+    /// vague one about two translucent ones.
+    func testAStateLooksTheSameOnBothGrounds() {
+        inTheme(.darkAqua) {
+            let size = NSSize(width: 320, height: 20)
+            let sample = NSRect(x: 120, y: 2, width: 80, height: 16)
+            func shade(selected: Bool, hovered: Bool, alternate: Bool) -> CGFloat {
+                let v = BetterStatsRowView(frame: NSRect(origin: .zero, size: size))
+                v.isSelected = selected
+                v.hoverForTesting = hovered
+                v.alternateForTesting = alternate
+                return render(v, size: size).meanLuminance(in: sample)
+            }
+            for (name, selected, hovered) in [
+                ("hovered", false, true),
+                ("selected", true, false),
+                ("selected and hovered", true, true),
+            ] {
+                XCTAssertEqual(shade(selected: selected, hovered: hovered, alternate: false),
+                               shade(selected: selected, hovered: hovered, alternate: true),
+                               accuracy: 0.002,
+                               "a \(name) row looks different on the striped ground")
+            }
+            // And the plain rows still differ, or the stripe would be pointless.
+            XCTAssertNotEqual(shade(selected: false, hovered: false, alternate: false),
+                              shade(selected: false, hovered: false, alternate: true),
+                              accuracy: 0.002)
+        }
+    }
+
     /// The stripe reaches the row's own top and bottom edge.
     ///
     /// It was drawn with the selection pill's geometry, which insets a point

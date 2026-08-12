@@ -667,20 +667,37 @@ final class BetterStatsRowView: NSTableRowView {
     /// steps of the same wash, and the brightest row is always the one about to
     /// be clicked.
     private func fillBackground() {
-        let shape = band
-        if isAlternate {
-            Palette.rowAlternate.setFill()
-            shape.fill()
-        }
-        if isSelected {
-            Palette.selection.setFill()
-            shape.fill()
-        }
+        // The table tracks the pointer, not this row, so each draw is where the
+        // hover state is noticed and the ease is started. See `aimHover`.
         aimHover()
-        if hover.value > 0.001 {
-            Palette.selection.withAlphaComponent(0.45 * hover.value).setFill()
-            shape.fill()
+
+        // ONE opaque fill, chosen by state — not a stack of translucent washes.
+        //
+        // Stacked, each wash TINTED whatever ground the row happened to have, and
+        // a tint of two different grounds is two different colours: the same hover
+        // read one way on an alternating row and another on a plain one, and the
+        // same for selection. Reported as the hover differing with the grey
+        // background.
+        //
+        // Finished colours also make the claim testable. "These two look the same"
+        // is a measurable statement about two opaque fills and a vague one about
+        // two translucent ones.
+        let resting: NSColor? = isAlternate ? Palette.rowAlternate : nil
+        let active: NSColor? = isSelected
+            ? (hover.value > 0.001 ? Palette.rowSelectedHover : Palette.rowSelected)
+            : (hover.value > 0.001 ? Palette.rowHover : nil)
+
+        let shape = band
+        guard let active else {
+            resting.map { $0.setFill(); shape.fill() }
+            return
         }
+        // Mid-fade, mix towards it from where this row rests. A selected row
+        // already rests at `rowSelected`, so hovering it eases only the last step
+        // — which is what keeps the three levels ordered while they move.
+        let from = isSelected ? Palette.rowSelected : (resting ?? Palette.background)
+        (from.blended(withFraction: hover.value, of: active) ?? active).setFill()
+        shape.fill()
     }
 
     override func drawSelection(in dirtyRect: NSRect) {
