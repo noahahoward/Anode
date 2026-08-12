@@ -762,8 +762,30 @@ public final class FanHelperServer {
             // The TARGET key is safe to check immediately: `F<n>Tg` is the
             // commanded value, not the measured one. The actual speed `F<n>Ac`
             // ramps over seconds and is deliberately not what this compares.
-            let afterMode = hardware.readMode(index: target.index)
-            let afterTarget = hardware.readTarget(index: target.index)
+            // RETRIED, because the SMC is a microcontroller and not memory.
+            //
+            // The first version read once, immediately, on the assumption that
+            // `F<n>Tg` is a register that reads back what was just written. That
+            // assumption is contradicted a few lines up in this very file:
+            // "`F<n>Tg` reads back as whatever the firmware wants rather than what
+            // was written". A write has to be taken up before it is visible, and
+            // reading in the same breath sees the state before it.
+            //
+            // Every write was rejected and rolled back to automatic as a result —
+            // fan control worked, then did not, and said "the SMC accepted the
+            // write and did not keep it" about writes it had kept.
+            //
+            // Half a second in five looks, giving up as soon as it agrees. A fan
+            // ramps over seconds; this is only waiting for the COMMANDED value to
+            // appear, not for the blades to move.
+            var afterMode = hardware.readMode(index: target.index)
+            var afterTarget = hardware.readTarget(index: target.index)
+            for _ in 0..<4 where !FanHelperServer.readbackHolds(
+                mode: afterMode, target: afterTarget, wanted: safe) {
+                usleep(120_000)
+                afterMode = hardware.readMode(index: target.index)
+                afterTarget = hardware.readTarget(index: target.index)
+            }
             guard FanHelperServer.readbackHolds(mode: afterMode,
                                                  target: afterTarget,
                                                  wanted: safe) else {
@@ -781,9 +803,12 @@ public final class FanHelperServer {
                 let targetText = afterTarget.map { String($0) } ?? "unreadable"
                 log("readback disagreed on F\(target.index): mode \(modeText), "
                     + "target \(targetText), wanted \(safe)")
+                let sawMode = afterMode.map { String(format: "%.0f", $0) } ?? "unreadable"
+                let sawTarget = afterTarget.map { String(format: "%.0f", $0) } ?? "unreadable"
                 return FanReply(ok: false,
-                                message: "the SMC accepted the write and did not keep it "
-                                       + "— fan \(target.index + 1) is back on automatic")
+                                message: "Fan \(target.index + 1) did not keep the write "
+                                       + "(mode \(sawMode), target \(sawTarget), asked "
+                                       + "\(Int(safe))) — it is back on automatic.")
             }
 
             // Recorded only once the write actually landed AND read back. A

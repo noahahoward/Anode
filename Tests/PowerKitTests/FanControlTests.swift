@@ -1524,3 +1524,77 @@ final class FanPendingSurvivalTests: XCTestCase {
                        "waiting longer for the helper threw away what was queued")
     }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// The readback waits for the SMC before calling a write lost.
+final class FanReadbackTimingTests: XCTestCase {
+
+    /// Hardware that takes a moment to take a write up — which is what an SMC is.
+    private final class SlowHardware: FanHardware {
+        var writesSeenBeforeItSettles: Int
+        private var target: Double = 0
+        private var mode: Double = SMCFanMode.automatic
+        private var reads = 0
+        init(settlingAfter: Int) { writesSeenBeforeItSettles = settlingAfter }
+
+        func controllableFanCount() -> Int { 1 }
+        func limits(index: Int) -> FanPolicy.Limits? { .init(minRPM: 2317, maxRPM: 7826) }
+        func writeTarget(index: Int, rpm: Double) -> Bool { target = rpm; return true }
+        func writeMode(index: Int, value: Double) -> Bool { mode = value; return true }
+        /// Reads the OLD value until it has settled, exactly as the firmware does.
+        func readTarget(index: Int) -> Double? {
+            reads += 1
+            return reads > writesSeenBeforeItSettles ? target : 0
+        }
+        func readMode(index: Int) -> Double? {
+            reads > writesSeenBeforeItSettles ? mode : SMCFanMode.automatic
+        }
+    }
+
+    /// A write that lands a moment later is KEPT, not rolled back.
+    ///
+    /// The first readback looked once, immediately, and rejected everything —
+    /// every write was reverted to automatic and reported as "the SMC accepted the
+    /// write and did not keep it", about writes it had in fact kept. Fan control
+    /// worked, then did not.
+    func testAWriteThatSettlesLateIsStillAccepted() {
+        // Settles on the third look, well inside the retry budget.
+        let hw = SlowHardware(settlingAfter: 2)
+        var settled = false
+        for attempt in 0..<5 {
+            if FanHelperServer.readbackHolds(mode: hw.readMode(index: 0),
+                                             target: hw.readTarget(index: 0),
+                                             wanted: 0) { settled = true; break }
+            _ = attempt
+        }
+        // With nothing written, the resting state reads as automatic and 0 — which
+        // is exactly what a rolled-back fan looks like, so the interesting case is
+        // the one below.
+        _ = settled
+
+        let held = SlowHardware(settlingAfter: 2)
+        _ = held.writeMode(index: 0, value: SMCFanMode.forced)
+        _ = held.writeTarget(index: 0, rpm: 5000)
+        var accepted = false
+        for _ in 0..<5 where !accepted {
+            accepted = FanHelperServer.readbackHolds(mode: held.readMode(index: 0),
+                                                     target: held.readTarget(index: 0),
+                                                     wanted: 5000)
+        }
+        XCTAssertTrue(accepted, "a write the hardware took up a moment later was thrown away")
+    }
+
+    /// And hardware that NEVER takes it is still caught, however long we look.
+    func testAWriteTheHardwareNeverKeepsIsStillCaught() {
+        let hw = SlowHardware(settlingAfter: .max)
+        _ = hw.writeMode(index: 0, value: SMCFanMode.forced)
+        _ = hw.writeTarget(index: 0, rpm: 5000)
+        for _ in 0..<5 {
+            XCTAssertFalse(FanHelperServer.readbackHolds(mode: hw.readMode(index: 0),
+                                                         target: hw.readTarget(index: 0),
+                                                         wanted: 5000),
+                           "a write that never landed was accepted")
+        }
+    }
+}
