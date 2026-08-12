@@ -215,12 +215,69 @@ final class OrphanNoticePlacementTests: XCTestCase {
         let source = try String(contentsOfFile: FileManager.default.currentDirectoryPath
             + "/Sources/AnodeApp/FanControlPanel.swift")
         // The `.off` state — a machine that has never turned fan control on.
+        //
+        // Bounded by the NEXT case rather than by a character count. It was the
+        // first 900 characters, which is a stand-in for "this branch" that stops
+        // being one the moment the branch grows — it broke on a comment being
+        // added above the line it was looking for, which says nothing about
+        // whether the warning is still wired in.
         let offState = try XCTUnwrap(source.range(of: "case .off:"))
-        let afterOff = String(source[offState.upperBound...].prefix(900))
-        XCTAssertTrue(afterOff.contains("orphanNote"),
+        let rest = source[offState.upperBound...]
+        let nextCase = rest.range(of: "\n        case ")?.lowerBound ?? rest.endIndex
+        let offBranch = String(rest[..<nextCase])
+        XCTAssertTrue(offBranch.contains("orphanNote"),
                       "the state that offers the install does not mention the old daemon")
         // And the one that leads to starting a helper by hand.
         XCTAssertTrue(source.contains("FanDaemon.orphanNote ?? Self.startCommand()"),
                       "the start-by-hand hint does not mention the old daemon")
+    }
+}
+
+/// Nothing installs a root daemon because a user touched a control.
+///
+/// Reported as: you do not know the process, you drag what looks like a volume
+/// slider, and a Terminal window opens. The affordance was making a promise the
+/// app should not make — dragging a knob is how you ask for CONTROL, and that
+/// argument only holds when the thing on the other side is a consent sheet
+/// rather than an installation.
+///
+/// Asserted against the source, like the orphan-placement test above and for the
+/// same reason: the states involved need a live helper connection to reach, and
+/// the claim here is about which code guards which road.
+final class InstallIsDeliberateTests: XCTestCase {
+
+    private func panelSource() throws -> String {
+        try String(contentsOfFile: FileManager.default.currentDirectoryPath
+            + "/Sources/AnodeApp/FanControlPanel.swift")
+    }
+
+    /// Every gesture route funnels through `gesture(_:)`, so the guard belongs
+    /// there — one place, rather than one per control, so a control added later
+    /// cannot quietly reopen the road.
+    func testGesturesDoNothingWithoutTheHelperInstalled() throws {
+        let source = try panelSource()
+        let fn = try XCTUnwrap(source.range(of: "private func gesture(_ g: FanSession.Gesture) {"))
+        let body = String(source[fn.upperBound...].prefix(600))
+        XCTAssertTrue(body.contains("guard installed else"),
+                      "a gesture can still reach the install path")
+    }
+
+    /// And the controls say so before they are touched: no knob, and ❄︎ off.
+    func testTheControlsLookInertWithoutTheHelper() throws {
+        let source = try panelSource()
+        XCTAssertTrue(source.contains("slider.isReadOnly = !installed"),
+                      "the slider still shows a grabbable knob with no helper")
+        XCTAssertTrue(source.contains("boost.isEnabled = installed"),
+                      "❄︎ is still live with no helper — the surprise just moved")
+    }
+
+    /// A read-only gauge refuses the mouse outright rather than accepting the
+    /// drag and doing nothing, which would read as the app being broken.
+    func testTheReadOnlyGaugeIgnoresTheMouse() throws {
+        let source = try panelSource()
+        let cls = try XCTUnwrap(source.range(of: "final class GaugeSlider: NSSlider {"))
+        let body = String(source[cls.upperBound...].prefix(1600))
+        XCTAssertTrue(body.contains("guard !isReadOnly else { return }"),
+                      "the gauge still tracks the mouse when it has no knob")
     }
 }

@@ -51,6 +51,14 @@ final class ResourcesPane: SystemPane {
     /// one subject is the same mistake as answering five tabs with one sort.
     var selectedResource: Resource { layout.selectedResource }
 
+    /// Point the rail at a resource from outside.
+    ///
+    /// For menu bar widgets: a widget names one number, so clicking it has to
+    /// land on that number and not merely on the tab that contains it. Six
+    /// resources sit behind this tab, and arriving on whichever was last looked
+    /// at is the same click-did-nothing feeling as arriving on the wrong tab.
+    func select(_ resource: Resource) { layout.select(resource) }
+
     /// Fired when the rail's selection changes, so the bottom can retarget at
     /// once rather than on the next tick — the lesson this pane taught in the
     /// first place.
