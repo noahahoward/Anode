@@ -42,6 +42,41 @@ final class SpeedTestStrip: NSView {
     private let statusLabel = NSTextField(labelWithString: "")
     private let stack = NSStackView()
 
+    /// The two shapes this strip has, held so `render` can switch between them.
+    ///
+    /// BEFORE a result: a dial with the button in its middle. AFTER one: no dial
+    /// at all, the button tucked under two large figures — which is what a
+    /// finished speed test is actually for.
+    private var dialHeight: NSLayoutConstraint!
+    private var tilesHeight: NSLayoutConstraint!
+    private var buttonLift: NSLayoutConstraint!
+
+    private static let dialExpanded: CGFloat = 190
+    private static let dialCollapsed: CGFloat = 42
+    private static let tilesResting: CGFloat = 56
+    private static let tilesProminent: CGFloat = 86
+
+    /// A result is on screen and nothing is running.
+    private var showingResult: Bool { !running && lastResult != nil }
+
+    /// Put a finished result on the strip without touching the network.
+    ///
+    /// The strip's whole shape depends on whether a result exists, and the only
+    /// other way to reach that state is to move a few hundred megabytes — which
+    /// a test must never do. Same seam as `hoverForTesting` on the ledger rows,
+    /// for the same reason: the interesting states are the ones an automated run
+    /// cannot otherwise get into.
+    func presentForTesting(_ result: SpeedTest.Result) {
+        running = false
+        lastError = nil
+        lastResult = result
+        downTile.mbps = result.downloadMbps
+        upTile.mbps = result.uploadMbps
+        dial.mbps = result.downloadMbps
+        render()
+        layoutSubtreeIfNeeded()
+    }
+
     private var running = false
     /// Last result, kept only for as long as the app runs. Nothing is persisted:
     /// a speed test is a reading of one moment on one path, and a stale one
@@ -208,6 +243,16 @@ final class SpeedTestStrip: NSView {
         button.isHidden = running
         dial.showsReadout = running
 
+        // The dial is worth its height while it is the only thing moving. Once
+        // there is a result it steps aside entirely and the figures take over.
+        let done = showingResult
+        dial.showsArc = !done
+        dialHeight.constant = done ? Self.dialCollapsed : Self.dialExpanded
+        tilesHeight.constant = done ? Self.tilesProminent : Self.tilesResting
+        buttonLift.constant = done ? 0 : -SpeedometerView.centreLift
+        downTile.prominent = done
+        upTile.prominent = done
+
         if running {
             statusLabel.stringValue = ""
         } else if let why = lastError {
@@ -236,7 +281,14 @@ final class SpeedTestStrip: NSView {
     /// tiles. It does not any more, so the tiles move up by that row and its
     /// spacing — which is height given back to the graph above on a small
     /// window, where this strip and the chart are competing for the same inches.
-    var preferredHeight: CGFloat { 268 }
+    var preferredHeight: CGFloat {
+        // Computed, because the strip has two shapes now and a hard-coded number
+        // would be right for one of them. Six points of spacing either side of
+        // the line under the dial, and about thirteen for the line itself.
+        (showingResult ? Self.dialCollapsed : Self.dialExpanded)
+            + 6 + 13 + 6
+            + (showingResult ? Self.tilesProminent : Self.tilesResting)
+    }
 
     private func build() {
         button.bezelStyle = .rounded
@@ -285,21 +337,26 @@ final class SpeedTestStrip: NSView {
             stack.trailingAnchor.constraint(equalTo: trailingAnchor),
             stack.topAnchor.constraint(equalTo: topAnchor),
             dial.widthAnchor.constraint(equalTo: stack.widthAnchor),
-            dial.heightAnchor.constraint(equalToConstant: 190),
-            // NEGATIVE, and that sign is the whole subtlety. `draw` puts the
-            // arc's centre six points ABOVE the frame's, to balance the gap at
-            // the bottom of the ring — but Auto Layout's `centerY` constant runs
-            // top-down here regardless of the view being unflipped, so a positive
-            // constant moves the button down. Written the other way first, which
-            // put it twelve points off the middle of its own arc.
             button.centerXAnchor.constraint(equalTo: dial.centerXAnchor),
-            button.centerYAnchor.constraint(equalTo: dial.centerYAnchor,
-                                            constant: -SpeedometerView.centreLift),
             tiles.widthAnchor.constraint(equalTo: stack.widthAnchor),
-            tiles.heightAnchor.constraint(equalToConstant: 56),
             divider.widthAnchor.constraint(equalToConstant: 1),
             downTile.widthAnchor.constraint(equalTo: upTile.widthAnchor),
             statusLabel.widthAnchor.constraint(equalTo: stack.widthAnchor),
         ])
+
+        // The three that MOVE, kept as properties. `render` retunes them rather
+        // than rebuilding the view, so switching shapes cannot leave a stale
+        // constraint behind and the button never changes superview.
+        dialHeight = dial.heightAnchor.constraint(equalToConstant: Self.dialExpanded)
+        tilesHeight = tiles.heightAnchor.constraint(equalToConstant: Self.tilesResting)
+        // NEGATIVE, and that sign is the whole subtlety. `draw` puts the arc's
+        // centre six points ABOVE the frame's, to balance the gap at the bottom
+        // of the ring — but Auto Layout's `centerY` constant runs top-down here
+        // regardless of the view being unflipped, so a positive constant moves
+        // the button down. Written the other way first, which put it twelve
+        // points off the middle of its own arc. Zero when there is no arc.
+        buttonLift = button.centerYAnchor.constraint(
+            equalTo: dial.centerYAnchor, constant: -SpeedometerView.centreLift)
+        NSLayoutConstraint.activate([dialHeight, tilesHeight, buttonLift])
     }
 }

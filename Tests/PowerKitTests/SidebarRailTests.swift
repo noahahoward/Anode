@@ -373,6 +373,38 @@ final class SpeedDialOpeningTests: XCTestCase {
                        "the button is off the arc's vertical centre — check the sign")
     }
 
+    /// A finished test puts the dial away and hands its inches to the figures.
+    ///
+    /// The arc earns its height while it is the only thing moving and while the
+    /// number is still arriving. Afterwards the answer is two numbers, and a
+    /// ring drawn around them is decoration charging rent on a short window.
+    func testAFinishedTestCollapsesTheDialAndEnlargesTheFigures() {
+        let strip = SpeedTestStrip(frame: NSRect(x: 0, y: 0, width: 330, height: 268))
+        strip.layoutSubtreeIfNeeded()
+        let idleHeight = strip.preferredHeight
+
+        guard let dial = strip.firstDescendant(of: SpeedometerView.self)
+        else { return XCTFail("no dial") }
+        XCTAssertTrue(dial.showsArc, "precondition: the dial is drawn before a run")
+        let idleDial = dial.frame.height
+
+        strip.presentForTesting(.init(downloadMbps: 256.7, uploadMbps: 125.8,
+                                      latencyMs: 45, downloadBytes: 200_000_000,
+                                      uploadBytes: 60_000_000,
+                                      host: "speed.cloudflare.com"))
+
+        XCTAssertFalse(dial.showsArc, "the arc is still drawn after a result")
+        XCTAssertLessThan(dial.frame.height, idleDial / 2,
+                          "the dial did not collapse")
+        XCTAssertLessThan(strip.preferredHeight, idleHeight - 100,
+                          "the strip gave back no meaningful height")
+
+        // And the figures grew to carry the answer on their own.
+        let tiles = strip.allDescendants(of: SpeedTileView.self)
+        XCTAssertEqual(tiles.count, 2)
+        XCTAssertTrue(tiles.allSatisfy(\.prominent), "the figures stayed small")
+    }
+
     /// The height governs the dial at any width the pane realistically gets, so
     /// a narrow window shrinks the arc no further than a wide one does.
     func testTheOpeningDoesNotDependOnPaneWidth() {
@@ -382,8 +414,64 @@ final class SpeedDialOpeningTests: XCTestCase {
     }
 }
 
+/// The group widget's glyph is the app's own mark, and the two ways it can fail
+/// are both silent.
+final class GroupWidgetGlyphTests: XCTestCase {
+
+    /// Not a template means macOS does not tint it, and it is drawn in black —
+    /// which on a dark menu bar is an item you cannot see. Nothing throws; the
+    /// icon is simply gone.
+    func testTheGlyphIsATemplateSoMacOSTintsIt() {
+        XCTAssertTrue(WidgetRenderer.groupImage().isTemplate)
+    }
+
+    /// And it has to actually draw something. A glyph built from rectangles can
+    /// be laid out entirely outside its own bounds by a bad offset and still
+    /// produce a perfectly valid, perfectly empty image.
+    func testTheGlyphDrawsInk() {
+        let img = WidgetRenderer.groupImage()
+        XCTAssertGreaterThan(img.size.width, 0)
+        XCTAssertGreaterThan(img.size.height, 0)
+
+        let scale = 4
+        let rep = NSBitmapImageRep(
+            bitmapDataPlanes: nil,
+            pixelsWide: Int(img.size.width) * scale, pixelsHigh: Int(img.size.height) * scale,
+            bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+            colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
+        NSColor.white.setFill()
+        NSRect(x: 0, y: 0, width: rep.pixelsWide, height: rep.pixelsHigh).fill()
+        img.draw(in: NSRect(x: 0, y: 0, width: rep.pixelsWide, height: rep.pixelsHigh))
+        NSGraphicsContext.restoreGraphicsState()
+
+        var inked = 0
+        for x in stride(from: 0, to: rep.pixelsWide, by: 2) {
+            for y in stride(from: 0, to: rep.pixelsHigh, by: 2) {
+                if let c = rep.colorAt(x: x, y: y), c.brightnessComponent < 0.5 { inked += 1 }
+            }
+        }
+        let sampled = (rep.pixelsWide / 2) * (rep.pixelsHigh / 2)
+        let coverage = Double(inked) / Double(sampled)
+        // Bars on a plinth cover a good fraction of their box, but nothing like
+        // all of it — a solid block would mean the shapes collapsed into one.
+        XCTAssertGreaterThan(coverage, 0.10, "the glyph drew (almost) nothing")
+        XCTAssertLessThan(coverage, 0.75, "the glyph is a solid block")
+    }
+}
+
 private extension NSView {
     /// First descendant of a type, for tests that need to reach into a built view.
+    func allDescendants<T: NSView>(of type: T.Type) -> [T] {
+        // Parenthesised deliberately: `??` binds looser than `+`, so without
+        // them this reads as "matched ?? (empty + descendants)" and stops
+        // recursing the moment it finds a match.
+        subviews.flatMap { sub -> [T] in
+            ((sub as? T).map { [$0] } ?? []) + sub.allDescendants(of: type)
+        }
+    }
+
     func firstDescendant<T: NSView>(of type: T.Type) -> T? {
         for sub in subviews {
             if let hit = sub as? T { return hit }
