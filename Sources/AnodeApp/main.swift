@@ -263,7 +263,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         sensorsPane.onPickSensor = { [weak self] _ in
             guard let self else { return }
             pickedSensorSeries.removeAll()
-            updateGraph(lastSnapshot, appending: false)
+            updateGraph(lastSnapshot)
         }
         // 20, not 22. Twelve columns is a table you scan down as much as across, and
         // two points a row is three more rows on screen at this window height.
@@ -605,6 +605,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
                                      needs: needs, since: mainStartCPU) }
                 self.lastSystem = sysSnap
                 self.lastDrain = est
+                // BEFORE the visibility branch, and outside it. The live graph
+                // buffers back the 1H view, and a window that is closed or covered
+                // is still a machine worth having a record of — see
+                // `recordGraphSample`. Appending a few numbers costs nothing; the
+                // drawing is what was expensive, and that stays below.
+                self.recordGraphSample(snap)
                 if let p = pcts { self.windowPercents = p; self.lastWindowQuery = Date() }
                 // Hidden: refresh only the menu bar. Reloading a table, re-sorting
                 // rows and redrawing the graph for an off-screen window is pure cost.
@@ -1002,7 +1008,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         // yet". Reached by clicking beside the range pill, which lands on the
         // graph and zooms it — and a zoomed graph is a historical one.
         guard !bottomContext.isSessionOnly else {
-            return updateGraph(lastSnapshot, appending: false)
+            return updateGraph(lastSnapshot)
         }
         guard let store else { return }
         // A change of subject changes the query, not just the label. The store has
@@ -1286,40 +1292,54 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
     /// it would be strange for one of those to come with a graph and the other not.
     var graphHidden: Bool { lens == .resources }
 
-    /// `appending: false` redraws from the buffers WITHOUT adding a sample.
+    /// Redrawing is now free of side effects, so anything may call it at any time.
     ///
     /// Changing the sort has to redraw the bottom at once — the same lesson the
     /// Resources rail taught, where a click changed the highlight and left the
-    /// readings describing the thing you clicked away from. But this function also
-    /// records a tick, and calling it out of band to force a redraw would push a
-    /// duplicate sample into the history for every click.
-    func updateGraph(_ s: PowerMonitor.Snapshot?, appending: Bool = true) {
-        guard let s else { return }
+    /// readings describing the thing you clicked away from. This used to be a
+    /// hazard, because the same function also recorded a tick and an out-of-band
+    /// redraw pushed a duplicate sample in for every click; `appending: false`
+    /// existed to suppress that. Recording lives in `recordGraphSample` now, and
+    /// the parameter with it.
+    /// Append this tick's values to the live buffers, and trim them to the span.
+    ///
+    /// Called from the TICK, not from `apply`, and therefore on every tick
+    /// whether or not anything is on screen. That placement is the whole point:
+    /// what the app records cannot depend on what it happens to be showing.
+    ///
+    /// It was inside `updateGraph` until a covered window stopped reaching it.
+    /// The 1H view is this in-memory buffer — the longer spans come from SQLite —
+    /// so a window left behind another app grew a hole here and the graph drew it
+    /// as a sleep break, on a machine that had not slept. Reported as a dotted
+    /// line five to ten minutes wide, which was exactly the stretch spent covered.
+    ///
+    /// Nothing here fabricates a reading: `appendUtilization` guards every field,
+    /// so a hidden tick that never sampled the GPU appends nothing for it rather
+    /// than a zero.
+    func recordGraphSample(_ s: PowerMonitor.Snapshot) {
         let now = Date()
-        if appending {
-            totalSeries.append(.init(time: now, value: s.smoothed_pctHr))
-            if let pct = s.state?.percent {
-                // `onPower` is what paints the charging spans green, and the LIVE
-                // series forgot it while the store-backed one (loadHistorySeries)
-                // has always set it. That is why 1H drew a charging span in the
-                // ordinary colour while 6H/24H/7D drew the same span green: the
-                // 1H view is this in-memory buffer, the rest come from SQLite.
-                //
-                // `onPower` means ON THE ADAPTER, so this is `onAC` and NOT its
-                // negation. The store path builds the same flag from the opposite
-                // column — `onPower: !p.onBattery` — and negating `onAC` to match the
-                // SHAPE of that line is a double negative: it made the 1H view claim
-                // the machine was charging while it was running the battery down, and
-                // the comment that used to sit here asserted the two paths agreed.
-                //
-                // Only 1H was affected, because only 1H comes from this buffer, which
-                // is exactly why it survived the fix that was supposed to address it.
-                chargeSeries.append(.charge(time: now, percent: Double(pct),
-                                            onAC: s.state?.onAC ?? false))
-            }
-            if let sys = lastSystem {
-                appendUtilization(sys, at: now)
-            }
+        totalSeries.append(.init(time: now, value: s.smoothed_pctHr))
+        if let pct = s.state?.percent {
+            // `onPower` is what paints the charging spans green, and the LIVE
+            // series forgot it while the store-backed one (loadHistorySeries)
+            // has always set it. That is why 1H drew a charging span in the
+            // ordinary colour while 6H/24H/7D drew the same span green: the
+            // 1H view is this in-memory buffer, the rest come from SQLite.
+            //
+            // `onPower` means ON THE ADAPTER, so this is `onAC` and NOT its
+            // negation. The store path builds the same flag from the opposite
+            // column — `onPower: !p.onBattery` — and negating `onAC` to match the
+            // SHAPE of that line is a double negative: it made the 1H view claim
+            // the machine was charging while it was running the battery down, and
+            // the comment that used to sit here asserted the two paths agreed.
+            //
+            // Only 1H was affected, because only 1H comes from this buffer, which
+            // is exactly why it survived the fix that was supposed to address it.
+            chargeSeries.append(.charge(time: now, percent: Double(pct),
+                                        onAC: s.state?.onAC ?? false))
+        }
+        if let sys = lastSystem {
+            appendUtilization(sys, at: now)
         }
 
         let cutoff = now.addingTimeInterval(-graphSpan)
@@ -1331,6 +1351,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         for series in Self.sessionSeries {
             self[keyPath: series].removeAll { $0.time < cutoff }
         }
+    }
+
+    /// Draws. Recording is `recordGraphSample`, and the two are separate so that
+    /// hiding, covering or zooming the graph can never stop the app collecting.
+    func updateGraph(_ s: PowerMonitor.Snapshot?) {
+        guard let s else { return }
+        let now = Date()
+        let cutoff = now.addingTimeInterval(-graphSpan)
 
         // RECORDING IS DONE. Everything above this line happens on every tick;
         // everything below draws.
@@ -1839,7 +1867,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
             let end = Date()
             loadHistorySeries(start: end.addingTimeInterval(-graphRange), end: end)
         } else {
-            updateGraph(lastSnapshot, appending: false)
+            updateGraph(lastSnapshot)
         }
     }
 
