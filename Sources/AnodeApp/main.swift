@@ -463,14 +463,43 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
     /// the rate.
     static let hiddenInterval: TimeInterval = 8
 
+    /// Tick cadence while this app is holding a fan.
+    ///
+    /// A control the user has hold of needs a feedback loop, and the ordinary two
+    /// seconds is not one — reported as dragging to full speed and seeing the rpm
+    /// four seconds later. Faster sampling only helps if the tick that consumes it
+    /// is faster too, so this is the other half of `SystemMetrics.fansAreDriven`.
+    ///
+    /// Affordable because the reading it accelerates is the cheap one: the fans
+    /// alone are 0.16 ms of CPU, against 9.48 ms for the sweep it does not
+    /// trigger. And it applies only while a fan is HELD — the moment the user
+    /// hands them back, the cadence goes with it.
+    static let drivingFansInterval: TimeInterval = 1
+
     /// Interval the timer is currently scheduled at, so visibility changes only
     /// rebuild the timer when the rate actually needs to change.
     private var timerInterval: TimeInterval = 0
 
     func restartTimer(hidden: Bool = false) {
-        let interval = hidden
-            ? max(Settings.shared.sampleInterval, Self.hiddenInterval)
-            : Settings.shared.sampleInterval
+        restartTimer(at: Self.cadence(hidden: hidden,
+                                      setting: Settings.shared.sampleInterval,
+                                      drivingFans: fansPane.isDrivingFans))
+    }
+
+    /// What the tick rate should be, as arithmetic — so the three rules that
+    /// decide it can be read, and tested, without a window or a fan.
+    static func cadence(hidden: Bool, setting: TimeInterval,
+                        drivingFans: Bool) -> TimeInterval {
+        // Hidden wins outright: nothing on screen is waiting on a fan, and the
+        // whole point of the hidden rate is that nobody is reading.
+        if hidden { return max(setting, hiddenInterval) }
+        // A held fan outranks the setting, but only downwards — someone who has
+        // asked for a faster tick than this keeps it.
+        if drivingFans { return min(setting, drivingFansInterval) }
+        return setting
+    }
+
+    private func restartTimer(at interval: TimeInterval) {
         guard interval != timerInterval else { return }
         timer?.invalidate()
         timerInterval = interval
@@ -502,6 +531,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         // The tab on screen, read on main because that is where it is written. It
         // decides which subsystems this tick pays for — see `visibleNeeds`.
         let needs = visible ? visibleNeeds : hiddenNeeds
+        // Read here, on the main thread, where the panel's state lives — and
+        // BEFORE the tick uses it. While a fan is held its speed is the feedback
+        // for a control the user has hold of, so the sampler re-reads the fans
+        // (and only the fans) every tick instead of every five seconds.
+        sysMetrics.fansAreDriven = visible && fansPane.isDrivingFans
         // Match the cadence to who is actually reading.
         restartTimer(hidden: !visible)
         // The two animations that are not a response to the user keep running on

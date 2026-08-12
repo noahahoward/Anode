@@ -286,6 +286,13 @@ public enum Sensors {
 
     public static func fans() -> [FanInfo] { store.snapshot().fans }
 
+    /// Fan speeds without the full sweep — see `Store.fansOnly`.
+    ///
+    /// For the one caller that needs them promptly rather than eventually: the
+    /// fan strip while this app is driving the fans, where the delay between
+    /// moving a slider and seeing the rpm follow is the whole feedback loop.
+    public static func fansNow() -> [FanInfo] { store.fansOnly() }
+
     public static func hottest() -> SensorReading? { store.snapshot().hottest }
 
     /// The number worth putting in a menu bar widget.
@@ -362,6 +369,24 @@ public enum Sensors {
             var classified: [(key: String, name: String, kind: SensorKind,
                               confidence: SensorNaming.Confidence)] = []
             var fanIndices: [Int] = []
+        }
+
+        /// The fans, and nothing else.
+        ///
+        /// A full `snapshot()` re-reads every classified key — ~540 IOKit round
+        /// trips, 88 ms wall — which is why it is cached for five seconds. That
+        /// cache is invisible until you drag a fan to full speed and watch the
+        /// number arrive four seconds later.
+        ///
+        /// This reads four keys per fan off the discovery the store already has,
+        /// so two fans cost eight round trips instead of five hundred. It is what
+        /// makes it affordable to ask once a second while a user is actually
+        /// holding the control — and it is deliberately NOT a general-purpose
+        /// accessor: everything else on the tab is happy at five seconds.
+        func fansOnly() -> [FanInfo] {
+            lock.lock(); defer { lock.unlock() }
+            guard let smc = connection(), let d = discover(smc) else { return [] }
+            return d.fanIndices.compactMap { readFan(smc, index: $0) }
         }
 
         func snapshot() -> Inventory {

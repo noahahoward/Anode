@@ -531,3 +531,37 @@ private extension NSView {
         return nil
     }
 }
+
+/// What decides the tick rate.
+///
+/// Three rules that used to be a nested ternary inside `restartTimer`, pulled
+/// out because a held fan added a third and the ordering between them is the
+/// whole content: a hidden window must win over a held fan, and a held fan must
+/// not override someone who asked for something faster still.
+final class TickCadenceTests: XCTestCase {
+
+    func testHiddenWinsOverEverything() {
+        // Nothing on screen is waiting on a fan.
+        XCTAssertEqual(AppDelegate.cadence(hidden: true, setting: 2, drivingFans: true),
+                       AppDelegate.hiddenInterval)
+    }
+
+    func testAHeldFanSpeedsTheTickUp() {
+        XCTAssertEqual(AppDelegate.cadence(hidden: false, setting: 2, drivingFans: true),
+                       AppDelegate.drivingFansInterval)
+        XCTAssertEqual(AppDelegate.cadence(hidden: false, setting: 2, drivingFans: false), 2)
+    }
+
+    /// Only downwards. A user who set a faster interval than the fan rate keeps
+    /// it — the rule is "fast enough to feel", not "exactly one second".
+    func testAHeldFanNeverSlowsTheTickDown() {
+        XCTAssertEqual(AppDelegate.cadence(hidden: false, setting: 0.5, drivingFans: true), 0.5)
+    }
+
+    /// And the cost argument behind it: the fan rate is affordable only because
+    /// the reading it accelerates is the cheap one.
+    func testTheDrivingRateIsFastEnoughToFeelLikeFeedback() {
+        XCTAssertLessThanOrEqual(AppDelegate.drivingFansInterval, 1,
+                                 "a control's feedback loop is not a second and a half")
+    }
+}
