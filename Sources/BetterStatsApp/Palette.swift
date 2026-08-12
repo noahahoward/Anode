@@ -66,6 +66,32 @@ enum Palette {
     /// runs the other way — the stripe darkens rather than lifts.
     static var rowAlternate: NSColor { pick(hex(0x1B222A), hex(0xE9EFF3)) }
 
+    /// The three states a row can be IN, as finished colours rather than washes.
+    ///
+    /// They used to be `selection` at two alphas, painted over whatever ground the
+    /// row happened to have. That is a tint, and a tint of two different grounds
+    /// is two different colours: the same hover read one way on a striped row and
+    /// another on a plain one, and the same for selection. Reported as the hover
+    /// differing with the grey background.
+    ///
+    /// Opaque, so a hovered row looks like a hovered row wherever it lands. The
+    /// values are what the old washes RESOLVED TO over the plain ground, so a
+    /// plain row is unchanged and the striped ones come into line with it.
+    ///
+    /// Three levels, in order, because that ordering is the thing being said:
+    /// hovering is a step up from selected rather than a replacement for it, and
+    /// the row under the pointer is always the brightest.
+    static var rowHover: NSColor { blend(background, accent, 0.072) }
+    static var rowSelected: NSColor { blend(background, accent, 0.16) }
+    static var rowSelectedHover: NSColor { blend(background, accent, 0.24) }
+
+    /// `a` with `fraction` of `b` mixed in, resolved now rather than composited at
+    /// draw time — which is the whole point: the result cannot depend on what is
+    /// underneath it.
+    private static func blend(_ a: NSColor, _ b: NSColor, _ fraction: CGFloat) -> NSColor {
+        a.blended(withFraction: fraction, of: b) ?? a
+    }
+
     // ── Ink ─────────────────────────────────────────────────────────────────
     static var text:  NSColor { pick(hex(0xFFFFFF), hex(0x000000)) }
     static var dim:   NSColor { pick(hex(0xA6BCC8), hex(0x41535E)) }
