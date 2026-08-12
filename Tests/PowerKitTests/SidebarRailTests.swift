@@ -100,6 +100,57 @@ final class LensSamplingNeedsTests: XCTestCase {
         }
     }
 
+    /// A widget that opens Resources must also name the CARD it means.
+    ///
+    /// Six resources sit behind that one tab, so stopping at the lens lands on
+    /// whichever card was last looked at — reported as the CPU and RAM widgets
+    /// opening Resources and showing the previous selection. This is the general
+    /// form of that bug: any metric routed to `.resources` without a card in
+    /// `resource(forWidget:)` reintroduces it, silently, for that metric only.
+    /// `MetricID` is a struct rather than an enum — deliberately, so the app can
+    /// gain metrics without touching it — which means there is no `allCases` and
+    /// a hand-written list would cover exactly the metrics someone remembered.
+    /// That is the weakness this test exists to close, so the list is read from
+    /// the declarations instead and the IDs rebuilt from their raw values.
+    func testEveryWidgetOpeningResourcesNamesItsCard() throws {
+        let source = try String(contentsOfFile: FileManager.default.currentDirectoryPath
+            + "/Sources/PowerKit/MetricRegistry.swift")
+        var ids: [MetricID] = []
+        for line in source.split(separator: "\n") where line.contains("static let")
+                                                      && line.contains("MetricID(\"") {
+            guard let open = line.range(of: "MetricID(\""),
+                  let close = line[open.upperBound...].firstIndex(of: "\"") else { continue }
+            ids.append(MetricID(rawValue: String(line[open.upperBound..<close])))
+        }
+        XCTAssertGreaterThan(ids.count, 10, "the declaration scrape found almost nothing")
+
+        for metric in ids where AppDelegate.lens(forWidget: metric) == .resources {
+            XCTAssertNotNil(AppDelegate.resource(forWidget: metric),
+                            "\(metric.rawValue) opens Resources but names no card, so it "
+                          + "lands on whichever one was selected last")
+        }
+    }
+
+    /// And the cards it names are the right ones.
+    func testWidgetsLandOnTheCardShowingTheirOwnNumber() {
+        XCTAssertEqual(AppDelegate.resource(forWidget: .cpuUsage), .cpu)
+        XCTAssertEqual(AppDelegate.resource(forWidget: .memoryUsage), .memory)
+        XCTAssertEqual(AppDelegate.resource(forWidget: .gpuUsage), .gpu)
+        for d in [MetricID.diskRead, .diskWrite, .diskActivity] {
+            XCTAssertEqual(AppDelegate.resource(forWidget: d), .disk)
+        }
+    }
+
+    /// A metric whose LENS is the whole answer names no card — there is nothing
+    /// to pick underneath Sensors or Network.
+    func testWidgetsWithTheirOwnTabNameNoCard() {
+        for metric in [MetricID.cpuTemperature, .gpuTemperature, .fanSpeed,
+                       .networkDown, .networkUp, .networkThroughput, .batteryDrain] {
+            XCTAssertNil(AppDelegate.resource(forWidget: metric),
+                         "\(metric.rawValue) names a Resources card but does not open Resources")
+        }
+    }
+
     /// The battery family has no whole-machine utilisation behind it — it is served
     /// by the monitor, not by SystemMetrics — so it goes to the table that itemises
     /// it, and the ledger, glance card and graph beneath every tab do the rest.

@@ -1608,6 +1608,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
     /// that quietly stops navigating. nil means "this widget names no
     /// destination" — the group widget, or an ID written by another build — and
     /// the caller must then leave the lens alone rather than invent one.
+    /// Which CARD inside the Resources tab a widget names, if any.
+    ///
+    /// The lens alone is not a destination: six resources sit behind that one
+    /// tab, so sending a RAM widget to `.resources` and stopping there lands on
+    /// whichever card happened to be selected last. Reported exactly that way —
+    /// the CPU and RAM widgets opened Resources and showed the previous card.
+    ///
+    /// nil for every metric whose lens IS the whole answer: a temperature widget
+    /// opens Sensors, a network widget opens Network, and neither has a card to
+    /// pick underneath.
+    static func resource(forWidget metric: MetricID) -> Resource? {
+        switch metric {
+        case .cpuUsage:                                return .cpu
+        case .memoryUsage:                             return .memory
+        case .gpuUsage:                                return .gpu
+        case .diskRead, .diskWrite, .diskActivity:     return .disk
+        default:                                       return nil
+        }
+    }
+
     static func lens(forWidget metric: MetricID) -> SidebarView.Lens? {
         switch metric {
         // Every whole-machine utilisation is now one tab. The old rail sent each of
@@ -1655,8 +1675,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
               // destination that is not there. Opening the window is what a
               // widget with no destination already does, and it beats navigating
               // to a tab the rail cannot show the user how to leave.
-              SidebarView.Lens.displayOrder.contains(lens),
-              lens != main.sidebar.selected else {
+              SidebarView.Lens.displayOrder.contains(lens) else {
+            main.toggle()
+            return
+        }
+        // "Already there" has to mean the CARD too, not just the tab. Testing the
+        // lens alone made a RAM click while sitting on Resources/CPU do nothing
+        // but toggle the window — the destination was reported as reached when
+        // the number asked for was not on screen.
+        let card = Self.resource(forWidget: metric)
+        let alreadyThere = lens == main.sidebar.selected
+            && (card == nil || card == resourcesPane.selectedResource)
+        guard !alreadyThere else {
             main.toggle()
             return
         }
@@ -1664,6 +1694,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         // `selected` and the highlight, so switching around it would leave the
         // old row lit beside the new content. Its select() calls back into ours.
         main.sidebar.select(lens)
+        // After the lens, because selecting a card retargets the bottom of the
+        // window and the lens is what decides whether there is one.
+        if let card { resourcesPane.select(card) }
         // After the lens, so the window never appears on the outgoing one first.
         main.show()
         // The window was most likely hidden, where the sampler deliberately runs

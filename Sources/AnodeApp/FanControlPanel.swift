@@ -136,7 +136,7 @@ final class FanControlPanel: NSView {
     private let buttonRow = NSStackView()
     /// Shown only on a machine where one knob could drive every fan.
     private let syncToggle = NSButton()
-    private var sliders: [Int: NSSlider] = [:]
+    private var sliders: [Int: GaugeSlider] = [:]
     private var valueLabels: [Int: NSTextField] = [:]
     private var boostButtons: [Int: NSButton] = [:]
     private var releaseButtons: [Int: NSButton] = [:]
@@ -286,6 +286,12 @@ final class FanControlPanel: NSView {
     }
 
     private func gesture(_ g: FanSession.Gesture) {
+        // NOTHING implicitly installs a root daemon. The controls that could
+        // reach here are already inert without the helper — this is the
+        // invariant behind that, in one place, so a control added later cannot
+        // quietly reopen the road. Installing is the button's job, and only the
+        // button's: it is the one place a user has said the word.
+        guard installed else { return render() }
         // Grabbing a knob is the first thing most people will try, and it must
         // not silently do nothing just because the feature ships off. The sheet
         // is the same one the "Turn On" button shows, because it is the same
@@ -654,8 +660,15 @@ final class FanControlPanel: NSView {
 
         switch session.mode {
         case .off:
-            statusLabel.stringValue = "Fan control is off — macOS is deciding. "
-                                    + "The sliders are live readings; take one to turn it on."
+            // What the sliders ARE depends on whether the helper exists, so the
+            // sentence has to follow. "Take one to turn it on" was an instruction
+            // that did nothing on a machine with no helper — which is the machine
+            // most likely to be reading it.
+            statusLabel.stringValue = installed
+                ? "Fan control is off — macOS is deciding. "
+                + "The sliders are live readings; take one to turn it on."
+                : "Fan control is off — macOS is deciding. The bars are live "
+                + "readings. Install the fan helper below to take control."
             // The orphan warning belongs HERE, in the state that offers to
             // install. The first version put it in a branch that requires the new
             // daemon to be installed already — which is precisely the machine that
@@ -700,7 +713,7 @@ final class FanControlPanel: NSView {
                 setButtons([("Turn Off", #selector(disableTapped))])
             } else {
                 statusLabel.stringValue = "Fan control is on and macOS is deciding. "
-                                        + "Take a slider or press ❄︎ and you will be asked to start the helper."
+                                        + "Install the fan helper to take control of a fan."
                 // Same reason: this is the other state that leads to an install.
                 hintField.stringValue = FanDaemon.orphanNote ?? Self.startCommand()
                 setButtons([("Copy Start Command", #selector(copyCommandTapped)),
@@ -930,6 +943,8 @@ final class FanControlPanel: NSView {
 
         let driving = usable.contains { session.asked($0.index) != nil }
         let held = usable.contains { session.held[$0.index] != nil }
+        // No helper on disk means no knob: see `GaugeSlider.isReadOnly`.
+        slider.isReadOnly = !installed
         slider.alphaValue = !driving ? 0.45 : (held ? 1 : 0.7)
         label.textColor = driving ? Palette.text : Palette.dim
 
@@ -1011,7 +1026,9 @@ final class FanControlPanel: NSView {
         label.stringValue = FanGauge.readout(current: f.currentRPM, asked: asked)
 
         // Faded, not disabled. A disabled slider cannot be grabbed, and grabbing
-        // it is how a user asks for control in the first place.
+        // it is how a user asks for control in the first place — but only once
+        // the helper exists. Until then there is no knob at all.
+        slider.isReadOnly = !installed
         slider.alphaValue = asked == nil ? 0.45 : (session.held[f.index] == nil ? 0.7 : 1)
         label.textColor = asked == nil ? Palette.dim : Palette.text
 
@@ -1020,7 +1037,14 @@ final class FanControlPanel: NSView {
             stop.isEnabled = canRelease
             stop.alphaValue = canRelease ? 1 : 0.25
         }
-        boostButtons[f.index]?.alphaValue = session.held[f.index] == nil ? 0.85 : 1
+        if let boost = boostButtons[f.index] {
+            // The same rule as the slider. Leaving ❄︎ live would move the
+            // surprise rather than remove it: it reaches `gesture` by exactly
+            // the same road and opens exactly the same Terminal.
+            boost.isEnabled = installed
+            boost.alphaValue = !installed ? 0.25
+                : (session.held[f.index] == nil ? 0.85 : 1)
+        }
     }
 
     private func symbolButton(_ symbol: String, fallback: String, action: Selector) -> NSButton {
@@ -1158,9 +1182,46 @@ final class FanControlPanel: NSView {
     /// under a hand that is dragging it would make the control fight the user.
     /// `super.mouseDown` runs AppKit's own tracking loop and returns when the
     /// mouse is let go, so the flag is exact rather than guessed from event state.
+    /// Draws nothing where the knob goes, when told to.
+    private final class GaugeSliderCell: NSSliderCell {
+        var showsKnob = true
+        override func drawKnob(_ knobRect: NSRect) {
+            guard showsKnob else { return }
+            super.drawKnob(knobRect)
+        }
+    }
+
     private final class GaugeSlider: NSSlider {
         private(set) var isTracking = false
+
+        override class var cellClass: AnyClass? {
+            get { GaugeSliderCell.self }
+            set { super.cellClass = newValue }
+        }
+
+        /// A READING, not a control: no knob, and it ignores the mouse.
+        ///
+        /// Set while the helper is not installed. The rest of the time this
+        /// slider is deliberately grabbable-though-faded, because grabbing it is
+        /// how a user asks for control — but that argument only holds when the
+        /// thing on the other side of the grab is a consent sheet. When it is an
+        /// installation, a knob is a promise the app should not be making: it
+        /// looks like a volume control and it opens a Terminal.
+        ///
+        /// Hiding the knob rather than disabling the slider, because a disabled
+        /// slider is greyed out and reads as broken. What is wanted is a bar that
+        /// shows how fast the fan is going, which is exactly what is left.
+        var isReadOnly = false {
+            didSet {
+                guard isReadOnly != oldValue else { return }
+                (cell as? GaugeSliderCell)?.showsKnob = !isReadOnly
+                needsDisplay = true
+            }
+        }
+
         override func mouseDown(with event: NSEvent) {
+            // Not "do the gesture anyway": there is nothing here to grab.
+            guard !isReadOnly else { return }
             isTracking = true
             super.mouseDown(with: event)
             isTracking = false
