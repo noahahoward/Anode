@@ -42,6 +42,15 @@ final class SpeedometerView: NSView {
     /// What the dial keeps saying is the part a number cannot — where that speed
     /// falls on a scale from a tethered phone to a fibre line.
     var showsReadout: Bool = false { didSet { needsDisplay = true } }
+
+    /// Whether there is a dial here at all.
+    ///
+    /// False once a test has finished, when this view collapses to nothing but a
+    /// host for the button in its middle. An arc is worth its inches while it is
+    /// the only thing moving and while the number is still arriving; afterwards
+    /// the answer is two figures, and a ring drawn around them is decoration
+    /// charging rent on a short window.
+    var showsArc: Bool = true { didSet { needsDisplay = true } }
     /// Shown under the number: "Testing download…", or nothing when idle.
     var phase: String? { didSet { needsDisplay = true } }
 
@@ -84,6 +93,7 @@ final class SpeedometerView: NSView {
     }
 
     override func draw(_ dirtyRect: NSRect) {
+        guard showsArc else { return }
         let box = bounds.insetBy(dx: 18, dy: 12)
         guard box.width > 40, box.height > 40 else { return }
         let radius = Self.radius(in: bounds)
@@ -230,7 +240,7 @@ final class SpeedTileView: NSView {
         super.init(frame: .zero)
         translatesAutoresizingMaskIntoConstraints = false
         captionLabel.stringValue = caption
-        valueLabel.font = Palette.Font.sans(24, .medium)
+        valueLabel.font = Palette.Font.sans(Self.restingSize, .medium)
         valueLabel.alignment = .center
         captionLabel.font = Palette.Font.sans(10.5)
         captionLabel.alignment = .center
@@ -249,6 +259,23 @@ final class SpeedTileView: NSView {
         restyle()
     }
     required init?(coder: NSCoder) { fatalError() }
+
+    /// The two sizes this tile has: reading-under-a-dial, and being the answer.
+    private static let restingSize: CGFloat = 24
+    private static let prominentSize: CGFloat = 42
+
+    /// Big, for when the dial has stepped aside and these figures ARE the result.
+    ///
+    /// The number does not move or change meaning — only its size does, which is
+    /// the whole idea: what was a caption under a chart becomes the headline the
+    /// moment the chart is gone.
+    var prominent: Bool = false {
+        didSet {
+            guard prominent != oldValue else { return }
+            valueLabel.font = Palette.Font.sans(
+                prominent ? Self.prominentSize : Self.restingSize, .medium)
+        }
+    }
 
     /// nil is a dash, never a zero. An unmeasured connection is not a stopped
     /// one, and this app says so everywhere else.

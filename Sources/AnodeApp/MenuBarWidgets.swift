@@ -298,13 +298,13 @@ public final class MenuBarWidgetController: NSObject, NSMenuDelegate {
                 menu.delegate = self
                 entry.item.menu = menu
             }
-            // The chevron is constant, so it is drawn once. The MENU is rebuilt
+            // The glyph is constant, so it is drawn once. The MENU is rebuilt
             // every tick because its contents are the live values.
             if lastRendered[entry.config.metricID] == nil {
                 lastRendered[entry.config.metricID] = "group"
                 button.attributedTitle = NSAttributedString()
                 button.imagePosition = .imageOnly
-                button.image = WidgetRenderer.textImage(label: nil, value: "\u{2304}")
+                button.image = WidgetRenderer.groupImage()
             }
             return
         }
@@ -496,6 +496,52 @@ enum WidgetRenderer {
             }
             return true
         }
+        img.isTemplate = true
+        return img
+    }
+
+    /// The group widget's glyph: the app's own icon, three ascending bars on a
+    /// plinth, drawn small enough to read at menu bar size.
+    ///
+    /// It was `⌄` — a lone down-arrowhead, which said "this opens" and nothing
+    /// else. Sitting in a row of other apps' marks with no mark of its own, it
+    /// read as a floating caret rather than as anything belonging to Anode. A
+    /// menu bar item is the only part of this app most people see most of the
+    /// time, so it should say whose it is.
+    ///
+    /// Drawn rather than shipped as an asset: it is nine rectangles, it has to be
+    /// a template so macOS can tint it for the wallpaper and the appearance, and
+    /// at this size a scaled-down PNG of the real icon is mud.
+    static func groupImage() -> NSImage {
+        let h = NSStatusBar.system.thickness
+        let w: CGFloat = 18
+        let img = NSImage(size: NSSize(width: w, height: h), flipped: false) { _ in
+            NSColor.black.setFill()
+
+            // Proportions taken from the app icon: bars a third of their own
+            // width apart, each step up about a third taller than the last, and
+            // a base they all stand on.
+            let barW: CGFloat = 3
+            let gap: CGFloat = 1.5
+            let heights: [CGFloat] = [5, 8, 11]
+            let baseH: CGFloat = 1.5
+            let totalW = barW * 3 + gap * 2
+            let x0 = (w - totalW) / 2
+            // Centred on the bar group INCLUDING its base, so the glyph sits on
+            // the same optical line as the text widgets beside it.
+            let y0 = (h - (heights.max()! + baseH)) / 2
+
+            for (i, barH) in heights.enumerated() {
+                let r = NSRect(x: x0 + CGFloat(i) * (barW + gap), y: y0 + baseH,
+                               width: barW, height: barH)
+                NSBezierPath(roundedRect: r, xRadius: 0.75, yRadius: 0.75).fill()
+            }
+            let base = NSRect(x: x0 - 0.75, y: y0, width: totalW + 1.5, height: baseH)
+            NSBezierPath(roundedRect: base, xRadius: 0.75, yRadius: 0.75).fill()
+            return true
+        }
+        // Template, so macOS tints it like every other menu bar item and it stays
+        // legible on any wallpaper in either appearance.
         img.isTemplate = true
         return img
     }
