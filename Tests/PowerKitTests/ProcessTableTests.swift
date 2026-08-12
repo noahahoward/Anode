@@ -203,7 +203,7 @@ final class ProcessCellHonestyTests: XCTestCase {
     func testAMeasuredZeroIsNotADash() {
         let row = makeRow(app: makeApp(name: "Idle", pctHr: 0, cpu: 0.4, disk: 0))
         XCTAssertEqual(column("pctHr").text(row).text, "<0.01")
-        XCTAssertEqual(column("cpu").text(row).text, "0.4")
+        XCTAssertEqual(column("cpu").text(row).text, "0.40")
     }
 
     /// The other end of the same rule, and the end this table got wrong in five
@@ -226,9 +226,21 @@ final class ProcessCellHonestyTests: XCTestCase {
     /// %/hr and % Mem already use. Not "—", which would claim it was never read,
     /// and not a rounded "0.0", which would claim a precision it does not have.
     func testAReadingBelowTheColumnsResolutionSaysSoRatherThanVanishing() {
-        let (text, dim) = column("cpu").text(makeRow(app: makeApp(name: "Quiet", cpu: 0.05)))
-        XCTAssertEqual(text, "<0.1")
+        let (text, dim) = column("cpu").text(makeRow(app: makeApp(name: "Quiet", cpu: 0.005)))
+        XCTAssertEqual(text, "<0.01")
         XCTAssertTrue(dim)
+    }
+
+    /// The resolution has to match the unit. % CPU is a share of the WHOLE
+    /// machine, so every figure is smaller by the core count — and at the one
+    /// decimal this column used to carry, a fifteen-core machine printed "<0.1"
+    /// for anything under 1.5% of a core, which is most of a process table.
+    /// These are the readings that were being thrown away.
+    func testTheColumnResolvesSharesOfALargeMachine() {
+        for (cpu, expected) in [(0.05, "0.05"), (0.09, "0.09"), (0.13, "0.13"), (1.71, "1.71")] {
+            XCTAssertEqual(column("cpu").text(makeRow(app: makeApp(name: "P", cpu: cpu))).text,
+                           expected, "\(cpu) lost resolution")
+        }
     }
 
     /// A count of one is not drawn — the tooltip says as much, and a column of
