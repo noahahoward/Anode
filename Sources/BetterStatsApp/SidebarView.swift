@@ -371,7 +371,7 @@ final class SidebarView: NSView {
         /// is still and the icon means something: motion here is a reading, not
         /// decoration.
         var spinAnimation: CABasicAnimation? {
-            icon.layer?.animation(forKey: "spin") as? CABasicAnimation
+            blades.animation(forKey: "spin") as? CABasicAnimation
         }
 
         var alarmAnimation: CABasicAnimation? {
@@ -424,35 +424,89 @@ final class SidebarView: NSView {
                 .withSymbolConfiguration(.init(pointSize: 15, weight: .medium))
         }
 
+        /// The turning glyph, on a layer this row OWNS.
+        ///
+        /// Not the image view's own backing layer, which is where two attempts
+        /// went wrong. AppKit manages that layer's geometry and its anchor is NOT
+        /// in the middle — the glyph turned about its top-right corner — while
+        /// setting `anchorPoint` and `position` by hand fought AppKit's layout and
+        /// slid the icon 17 pt sideways, because a view layer's `position` lives
+        /// in its SUPERLAYER's coordinate space and it was being handed the icon's
+        /// own.
+        ///
+        /// A sublayer has neither problem. Its position is in the icon's
+        /// coordinate space, which is where the centre obviously is; nothing else
+        /// writes to it; and it turns about whatever anchor it is given. The image
+        /// view still draws every other tab's glyph — for this one it hands over.
+        private let blades = CALayer()
+
         func setSpinning(_ spinning: Bool, rpm: Double = 0) {
             guard lens == .fans else { return }
-            icon.wantsLayer = true
-            guard let layer = icon.layer else { return }
             let key = "spin"
-            guard spinning else { return layer.removeAnimation(forKey: key) }
+            guard spinning else {
+                blades.removeAnimation(forKey: key)
+                blades.isHidden = true
+                icon.isHidden = false
+                return
+            }
+            icon.wantsLayer = true
+            guard let host = icon.layer else { return }
+            if blades.superlayer == nil { host.addSublayer(blades) }
+            // GEOMETRY needs bounds; the animation does not. An earlier version
+            // guarded the whole function on non-zero bounds and returned, so a
+            // spin asked for before the first layout never started and was never
+            // retried — `layout` re-runs the geometry, and the animation is
+            // already on the layer waiting for it.
+            layoutBlades()
+            blades.isHidden = false
+            // Or the image view draws the same glyph underneath, stationary, and
+            // the two smear into each other.
+            icon.isHidden = true
 
             let seconds = SidebarView.glyphTurnSeconds(rpm: rpm)
-            if let existing = layer.animation(forKey: key) as? CABasicAnimation,
+            if let existing = blades.animation(forKey: key) as? CABasicAnimation,
                abs(existing.duration - seconds) < 0.05 { return }   // already right
-
-            // NOTHING TO CENTRE. A layer-backed NSView already has its anchor in
-            // the middle and its position set from its frame, so
-            // `transform.rotation.z` turns about the centre for free.
-            //
-            // An earlier version set both by hand and moved the glyph 17 pt left,
-            // because `position` is in the SUPERLAYER's coordinate space and it
-            // was being given `icon.bounds.midX` — the icon's own. The icon sits
-            // 17 pt into the rail, so that is exactly how far it slid. Reported as
-            // the fan not being centred, and it was centred before this feature
-            // touched it.
             let turn = CABasicAnimation(keyPath: "transform.rotation.z")
             turn.fromValue = 0
             turn.toValue = -Double.pi * 2   // clockwise on screen
             turn.duration = seconds
             turn.repeatCount = .infinity
-            // Linear: a fan does not ease.
-            turn.timingFunction = CAMediaTimingFunction(name: .linear)
-            layer.add(turn, forKey: key)
+            turn.timingFunction = CAMediaTimingFunction(name: .linear)  // a fan does not ease
+            blades.add(turn, forKey: key)
+        }
+
+        /// Keep the blade layer over the icon, centred, and in the current ink.
+        ///
+        /// On every layout, because it is derived from the icon's bounds and a
+        /// one-time setup drifts the moment the rail changes size.
+        private func layoutBlades() {
+            guard lens == .fans, icon.bounds.width > 0 else { return }
+            blades.bounds = icon.bounds
+            blades.anchorPoint = CGPoint(x: 0.5, y: 0.5)
+            blades.position = CGPoint(x: icon.bounds.midX, y: icon.bounds.midY)
+            blades.contentsScale = window?.backingScaleFactor ?? 2
+            blades.contents = tintedGlyph()
+        }
+
+        /// The symbol, rendered in the ink the rail would have drawn it in.
+        ///
+        /// A raw layer's `contents` is an image, and an image does not pick up
+        /// `contentTintColor` the way a template does inside an NSImageView — so
+        /// the tint is baked in here, and re-baked whenever `restyle` runs.
+        private func tintedGlyph() -> NSImage? {
+            guard let base = icon.image else { return nil }
+            let colour = icon.contentTintColor ?? Palette.dim
+            return NSImage(size: base.size, flipped: false) { rect in
+                base.draw(in: rect)
+                colour.set()
+                rect.fill(using: .sourceAtop)
+                return true
+            }
+        }
+
+        override func layout() {
+            super.layout()
+            layoutBlades()
         }
 
         init(lens: Lens, onClick: @escaping (Lens) -> Void) {
@@ -503,6 +557,7 @@ final class SidebarView: NSView {
         }
 
         private func restyle() {
+            defer { layoutBlades() }   // the blades carry a baked-in tint
             // A hot machine outranks selection. The rail's accent says "this is
             // the tab you are on", which is a fact the user already knows; the
             // temperature ink says something they may not.
