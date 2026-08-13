@@ -8,6 +8,43 @@ absolute units** — not Activity Monitor's unitless, relative "Energy Impact"
 score. Everything below argues that case, because it is the part that was hard
 and the part nothing else does.
 
+## Install
+
+**There is no download, and no Releases page with a `.app` in it** — see below
+for why. One line does everything:
+
+```
+curl -fsSL https://raw.githubusercontent.com/noahahoward/Anode/main/install.sh | bash
+```
+
+Clones to `~/Developer/Anode`, builds, and installs to `~/Applications/Anode.app`.
+Needs git and a Swift toolchain — `xcode-select --install` gets you both. Nothing
+runs as root and nothing is installed outside your home directory.
+
+Piping a script from the internet into a shell deserves a look first:
+[install.sh](install.sh) is 70 lines and mostly comments.
+
+### Why there is no download button
+
+Anode is ad-hoc signed and not notarised, because notarising needs a paid Apple
+Developer ID and this is a hobby project. Measured on the shipped bundle:
+
+```
+codesign -dvv   →  Signature=adhoc, TeamIdentifier=not set
+spctl --assess  →  rejected
+```
+
+A `.app` that arrives through a browser is quarantined, and that rejection then
+stops it opening. The usual workaround is `xattr -dr com.apple.quarantine`, and
+for this app that is a bad trade: it is deliberately **unsandboxed** and
+enumerates every process on the machine, which is precisely the case Gatekeeper
+exists for. Teaching a stranger to switch it off is not worth saving them a
+paste.
+
+Nothing the install script fetches passes through a browser, so nothing is
+quarantined and there is no check to disable — the app is compiled on your
+machine from source you can read.
+
 ## Why
 
 Activity Monitor's Energy Impact is a heuristic weighted sum, not a measurement. Its
@@ -64,52 +101,6 @@ inside the measured total but in no load-side rail and therefore irreducible by
 construction. Two independent estimates of the floor agree: 2.34 W by regression
 across load, 2.25 W from the brightness-sweep intercept.
 
-## Install
-
-```
-curl -fsSL https://raw.githubusercontent.com/noahahoward/Anode/main/install.sh | bash
-```
-
-Clones to `~/Developer/Anode`, builds, and installs to `~/Applications/Anode.app`.
-Needs git and a Swift toolchain — `xcode-select --install` gets you both. Nothing
-runs as root and nothing is installed outside your home directory.
-
-Piping a script from the internet into a shell deserves a look first:
-[install.sh](install.sh) is 70 lines and mostly comments.
-
-### Why there is no download button
-
-Anode is ad-hoc signed and not notarised, because notarising needs a paid Apple
-Developer ID and this is a hobby project. Measured on the shipped bundle:
-
-```
-codesign -dvv   →  Signature=adhoc, TeamIdentifier=not set
-spctl --assess  →  rejected
-```
-
-A `.app` that arrives through a browser is quarantined, and that rejection then
-stops it opening. The usual workaround is `xattr -dr com.apple.quarantine`, and
-for this app that is a bad trade: it is deliberately **unsandboxed** and
-enumerates every process on the machine, which is precisely the case Gatekeeper
-exists for. Teaching a stranger to switch it off is not worth saving them a
-paste.
-
-Nothing the install script fetches passes through a browser, so nothing is
-quarantined and there is no check to disable — the app is compiled on your
-machine from source you can read.
-
-## Updating
-
-Press **Update and Rebuild** in Anode's settings, or:
-
-```
-~/Developer/Anode/update.sh
-```
-
-Both do the same thing: `git pull --ff-only` then rebuild. The settings button
-opens a visible Terminal rather than working silently, because the update quits
-the running app and replaces it — you should be able to watch that happen. A
-checkout with uncommitted changes is refused rather than stashed.
 
 ## Build
 
@@ -129,6 +120,20 @@ swift build
 Handing it to someone else to test: see [TESTING.md](TESTING.md). Short version —
 send the repo, not a `.app`, and expect a larger unattributed share on hardware
 this was not calibrated on.
+
+## Updating
+
+Press **Update and Rebuild** in Anode's settings, or:
+
+```
+~/Developer/Anode/update.sh
+```
+
+Both do the same thing: `git pull --ff-only` then rebuild. The settings button
+opens a visible Terminal rather than working silently, because the update quits
+the running app and replaces it — you should be able to watch that happen. A
+checkout with uncommitted changes is refused rather than stashed.
+
 
 ## Requirements
 

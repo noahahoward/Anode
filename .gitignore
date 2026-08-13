@@ -13,7 +13,15 @@ DerivedData/
 *.sqlite-wal
 *.sqlite-shm
 
-# Release bundles: ~10 MB each and unremovable from history once committed.
-# The .txt manifests ARE tracked. See releases/README.md.
-releases/*.app/
-releases/*.zip
+# Release bundles, and the whole directory.
+#
+# It used to track the .txt manifests. That made `releases/` a folder named
+# exactly where a download lives, containing no download and a manifest for a
+# build that no longer existed — reported by someone who went looking there to
+# install the app, which is the one place it is reasonable to look. Nothing in
+# it was worth the misdirection: the reasoning it held is in README's Install
+# section, and the install path is a command rather than a file.
+#
+# make-release.sh still writes here for local archiving; it is simply not part
+# of the repository any more.
+releases/
