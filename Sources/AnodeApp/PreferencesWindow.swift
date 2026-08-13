@@ -223,6 +223,7 @@ private final class GeneralPane: Pane {
     private var updateNote: NSTextField!
     private var updateButton: NSButton!
     private var checkButton: NSButton!
+    private var uninstallButton: NSButton!
 
     /// Last answer from the checkout, so `refresh()` — which fires on ANY
     /// settings write — redraws the row without re-running git each time.
@@ -270,7 +271,13 @@ private final class GeneralPane: Pane {
                                 target: self, action: #selector(runUpdate))
         updateButton.controlSize = .small
         updateButton.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
-        let updateButtons = NSStackView(views: [checkButton, updateButton])
+        uninstallButton = NSButton(title: "Uninstall Anode…",
+                                   target: self, action: #selector(uninstall))
+        uninstallButton.controlSize = .small
+        uninstallButton.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+
+        let updateButtons = NSStackView(views: [checkButton, updateButton,
+                                                NSView(), uninstallButton])
         updateButtons.orientation = .horizontal
         updateButtons.spacing = 8
 
@@ -339,6 +346,42 @@ private final class GeneralPane: Pane {
                 self.checkoutState = state
                 self.refresh()
             }
+        }
+    }
+
+    /// Remove Anode from the machine.
+    ///
+    /// Every path is listed before anything happens, and the checkbox decides
+    /// the one question that actually matters — whether a month of measurements
+    /// goes with it. An uninstaller that says "and associated files" is asking
+    /// for trust it has not earned, and this one is deleting things it cannot
+    /// put back.
+    @objc private func uninstall() {
+        let alert = NSAlert()
+        alert.messageText = "Remove Anode from this Mac?"
+        alert.alertStyle = .warning
+
+        let wipe = NSButton(checkboxWithTitle: "Also remove settings and measurement history",
+                            target: nil, action: nil)
+        wipe.state = .off
+        wipe.sizeToFit()
+        alert.accessoryView = wipe
+
+        alert.informativeText = Uninstall.summary(Uninstall.plan(removingData: false),
+                                                  removingData: false)
+        alert.addButton(withTitle: "Uninstall")
+        alert.addButton(withTitle: "Cancel")
+        // Cancel is the default: the destructive button should never be the one
+        // a stray Return press hits.
+        alert.buttons.last?.keyEquivalent = "\r"
+        alert.buttons.first?.keyEquivalent = ""
+
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        switch UpdateLauncher.launchUninstall(removingData: wipe.state == .on) {
+        case .openedTerminal:
+            updateNote.stringValue = "Uninstalling in Terminal…"
+        case .failed(let why):
+            updateNote.stringValue = why
         }
     }
 

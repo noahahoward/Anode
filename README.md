@@ -134,6 +134,18 @@ opens a visible Terminal rather than working silently, because the update quits
 the running app and replaces it — you should be able to watch that happen. A
 checkout with uncommitted changes is refused rather than stashed.
 
+## Uninstalling
+
+**Settings → General → Uninstall Anode…**, or:
+
+```
+~/Developer/Anode/uninstall.sh          # the app, login agents, its scripts
+~/Developer/Anode/uninstall.sh --data   # …and settings and measurement history
+```
+
+It lists every path before deleting anything, keeps your history unless you ask,
+and never touches your source checkout. The fan helper runs as root, so it is not
+removed for you — the command to remove it is printed at the end.
 
 ## Requirements
 
