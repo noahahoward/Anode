@@ -400,7 +400,7 @@ private final class GeneralPane: Pane {
             // Unbundled dev builds report notFound, yet register() on the bare
             // executable still succeeds (measured on this machine) — keep the
             // checkbox usable and let the OS answer.
-            loginNote.stringValue = "Not registered. This build is not an .app bundle; registering may still work."
+            loginNote.stringValue = Settings.notFoundNote(isBundled: Settings.isBundled())
             loginNote.isHidden = false
             loginButton.isHidden = true
         case .notRegistered, .unknown:

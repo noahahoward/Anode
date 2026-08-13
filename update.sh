@@ -59,3 +59,42 @@ fi
 
 echo
 echo "✓ Anode is now at $(git rev-parse --short HEAD)."
+
+# ── Close the window, on SUCCESS only ───────────────────────────────────────
+#
+# Terminal's default profile is "Don't close the window when the shell exits",
+# so a clean run otherwise leaves a finished window sitting there. Only on
+# success: a failure has to stay on screen, because being able to read what went
+# wrong is the entire reason this runs where you can see it.
+#
+# Apple events are used here and NOT for opening the window, and the asymmetry is
+# deliberate. A silently denied event on the way IN would break the feature with
+# no way to tell; denied on the way OUT it does nothing, and "nothing" is the
+# behaviour we already had. So this is allowed to fail and says nothing when it
+# does.
+#
+# It closes the window running THIS script, matched on the tty, rather than the
+# frontmost one — closing whatever happened to be in front is how a tool eats
+# someone's other work. Backgrounded with a delay so the shell has exited by the
+# time it lands, or Terminal asks whether to terminate a running process.
+#
+# ANODE_KEEP_TERMINAL=1 to keep it open.
+if [ "${ANODE_KEEP_TERMINAL:-0}" != "1" ] && [ -t 1 ]; then
+  MY_TTY="$(tty 2>/dev/null || true)"
+  if [ -n "$MY_TTY" ]; then
+    (
+      sleep 1
+      osascript >/dev/null 2>&1 <<APPLESCRIPT || true
+        tell application "Terminal"
+          repeat with w in windows
+            repeat with t in tabs of w
+              if tty of t is "$MY_TTY" then
+                close w saving no
+              end if
+            end repeat
+          end repeat
+        end tell
+APPLESCRIPT
+    ) &
+  fi
+fi

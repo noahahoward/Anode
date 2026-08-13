@@ -307,10 +307,12 @@ public final class Settings {
         /// show "on" in this state — nothing will actually launch.
         case requiresApproval
         case notRegistered
-        /// SMAppService can't find us — the normal state for an unbundled dev
-        /// binary (`swift run`). MEASURED on this machine: `register()` on the
-        /// bare executable still succeeds and flips status to `.enabled`, so
-        /// don't treat this state as terminally broken.
+        /// SMAppService can't find us. TWO different situations reach this, and
+        /// the UI used to report only one of them — see `notFoundNote`.
+        ///
+        /// MEASURED on this machine: `register()` on the bare executable still
+        /// succeeds and flips status to `.enabled`, so don't treat this state as
+        /// terminally broken.
         case notFound
         /// Running from a `~/Library/LaunchAgents` plist because SMAppService
         /// would not hold a registration on this ad-hoc signed build. It WILL
@@ -390,6 +392,37 @@ public final class Settings {
         @unknown default:
             return LoginAgent.isInstalled ? .enabledViaAgent : .unknown
         }
+    }
+
+    /// What to say for `.notFound`, which has two quite different causes.
+    ///
+    /// The UI asserted one of them: "this build is not an .app bundle". That is
+    /// true for a `swift run` binary and false for every user of this project,
+    /// because everyone builds from source and gets an ad-hoc signature —
+    /// reported from a screenshot of Settings taken while running from
+    /// ~/Applications/Anode.app, which is unambiguously a bundle.
+    ///
+    /// The real cause when bundled is that `SMAppService` identifies a login item
+    /// by its CODE IDENTITY, and an ad-hoc signature has none to identify — no
+    /// Team ID, nothing stable across rebuilds. Verified on the shipped bundle:
+    /// `codesign -dvv` reports `Signature=adhoc`, `TeamIdentifier=not set`.
+    ///
+    /// Neither case is terminal, and the sentence has to say so: ticking the box
+    /// installs a launch agent, which does not depend on a code identity and does
+    /// work. Telling someone their app "is not a bundle" while they look at it in
+    /// ~/Applications teaches them to distrust the rest of the window.
+    public static func notFoundNote(isBundled: Bool) -> String {
+        isBundled
+            ? "Not registered. macOS registers login items by code identity, and "
+            + "this build is ad-hoc signed — it has none. Ticking the box installs "
+            + "a launch agent instead, which does not need one and does work."
+            : "Not registered. This build is not an .app bundle; registering may "
+            + "still work."
+    }
+
+    /// Is this running from a real `.app`, or from a bare `swift build` product?
+    public static func isBundled(_ bundle: Bundle = .main) -> Bool {
+        bundle.bundleURL.pathExtension == "app"
     }
 
     /// Deep-links to System Settings → General → Login Items, for the
