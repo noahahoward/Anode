@@ -405,8 +405,20 @@ enum Documentation {
 /// build is that?" answerable without a terminal.
 enum AboutPanel {
 
+    /// The licence line, shown in the About box.
+    ///
+    /// GPL §5 asks that an interactive program carry its notice somewhere the
+    /// user can reach, and for a GUI app the About box is the convention the
+    /// licence itself names. It rides in the CREDITS rather than in the
+    /// copyright field, because AppKit takes the copyright line from
+    /// `NSHumanReadableCopyright` in Info.plist and there is no option key for
+    /// it — `build-app.sh` sets that one.
+    static let licenceNotice = "GPL-3.0-or-later. Comes with ABSOLUTELY NO WARRANTY.\n"
+                             + "Source: github.com/noahahoward/Anode"
+
     static func options(info: [String: Any]) -> [NSApplication.AboutPanelOptionKey: Any] {
-        guard let text = creditsText(info: info) else { return [:] }
+        let text = [creditsText(info: info), licenceNotice]
+            .compactMap { $0 }.joined(separator: "\n\n")
         let credits = NSAttributedString(string: text, attributes: [
             .font: NSFont.systemFont(ofSize: NSFont.smallSystemFontSize),
             .foregroundColor: Palette.dim,
