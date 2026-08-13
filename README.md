@@ -59,11 +59,57 @@ inside the measured total but in no load-side rail and therefore irreducible by
 construction. Two independent estimates of the floor agree: 2.34 W by regression
 across load, 2.25 W from the brightness-sweep intercept.
 
+## Install
+
+```
+curl -fsSL https://raw.githubusercontent.com/noahahoward/Anode/main/install.sh | bash
+```
+
+Clones to `~/Developer/Anode`, builds, and installs to `~/Applications/Anode.app`.
+Needs git and a Swift toolchain — `xcode-select --install` gets you both. Nothing
+runs as root and nothing is installed outside your home directory.
+
+Piping a script from the internet into a shell deserves a look first:
+[install.sh](install.sh) is 70 lines and mostly comments.
+
+### Why there is no download button
+
+Anode is ad-hoc signed and not notarised, because notarising needs a paid Apple
+Developer ID and this is a hobby project. Measured on the shipped bundle:
+
+```
+codesign -dvv   →  Signature=adhoc, TeamIdentifier=not set
+spctl --assess  →  rejected
+```
+
+A `.app` that arrives through a browser is quarantined, and that rejection then
+stops it opening. The usual workaround is `xattr -dr com.apple.quarantine`, and
+for this app that is a bad trade: it is deliberately **unsandboxed** and
+enumerates every process on the machine, which is precisely the case Gatekeeper
+exists for. Teaching a stranger to switch it off is not worth saving them a
+paste.
+
+Nothing the install script fetches passes through a browser, so nothing is
+quarantined and there is no check to disable — the app is compiled on your
+machine from source you can read.
+
+## Updating
+
+Press **Update and Rebuild** in Anode's settings, or:
+
+```
+~/Developer/Anode/update.sh
+```
+
+Both do the same thing: `git pull --ff-only` then rebuild. The settings button
+opens a visible Terminal rather than working silently, because the update quits
+the running app and replaces it — you should be able to watch that happen. A
+checkout with uncommitted changes is refused rather than stashed.
+
 ## Build
 
 ```
-./build-app.sh          # produces Anode.app
-open Anode.app
+./build-app.sh          # builds and installs to ~/Applications
 ```
 
 CLI, for diagnostics:
@@ -94,12 +140,17 @@ the three kinds of evidence `SensorNaming.swift` accepts for a sensor's name.
 
 ## Licence
 
-[Apache License 2.0](LICENSE). Permissive: build it, change it, ship it, sell it.
+[GNU General Public License v3.0 or later](LICENSE). Copyright 2026 noahahoward.
 
-Apache rather than MIT for one reason — it carries an explicit patent grant.
-MIT is silent on patents, which is unsettled law and enough to get it flagged by
-some corporate policies; Apache-2.0 answers the question in the licence itself.
-The practical difference for a fan-speed reader is nil, but a tester whose
-employer runs a licence review should not have to argue about it.
+You can use it, read it, change it, share it and charge for it. What you cannot
+do is take it closed: anything you distribute that is built on Anode has to come
+with its source under the same licence.
 
-If you redistribute a modified copy, §4(b) asks that changed files say so.
+That is the whole reason for the choice. No open-source licence forbids selling —
+the Open Source Definition requires that it not be forbidden, and MIT even says
+"and/or sell" in its text. What copyleft prevents is someone building a
+proprietary product on this work and giving nothing back, which is a different
+worry and the one worth acting on.
+
+If you are behind a corporate licence review and GPL is blocked there, open an
+issue — a project this small can be pragmatic about it.

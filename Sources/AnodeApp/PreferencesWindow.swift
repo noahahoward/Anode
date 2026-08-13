@@ -219,6 +219,15 @@ private final class GeneralPane: Pane {
     private var loginButton: NSButton!
     private var menuBarOnlyCheckbox: NSButton!
     private var menuBarOnlyNote: NSTextField!
+    private var updateStatus: NSTextField!
+    private var updateNote: NSTextField!
+    private var updateButton: NSButton!
+    private var checkButton: NSButton!
+
+    /// Last answer from the checkout, so `refresh()` — which fires on ANY
+    /// settings write — redraws the row without re-running git each time.
+    private var checkoutState: SourceCheckout.State?
+    private var checking = false
 
     override func loadView() {
         let r = Settings.sampleIntervalRange
@@ -251,6 +260,20 @@ private final class GeneralPane: Pane {
                                        target: self, action: #selector(menuBarOnlyToggled))
         menuBarOnlyNote = caption("")
 
+        updateStatus = NSTextField(labelWithString: "")
+        updateNote = caption("")
+        checkButton = NSButton(title: "Check for Updates",
+                               target: self, action: #selector(checkForUpdates))
+        checkButton.controlSize = .small
+        checkButton.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        updateButton = NSButton(title: "Update and Rebuild…",
+                                target: self, action: #selector(runUpdate))
+        updateButton.controlSize = .small
+        updateButton.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        let updateButtons = NSStackView(views: [checkButton, updateButton])
+        updateButtons.orientation = .horizontal
+        updateButtons.spacing = 8
+
         install(rows: [
             [rowLabel("Sample every:"), intervalRow],
             [spacer, caption("How often per-process energy is read. Shorter is more responsive "
@@ -260,7 +283,83 @@ private final class GeneralPane: Pane {
             [spacer, loginButton],
             [spacer, menuBarOnlyCheckbox],
             [spacer, menuBarOnlyNote],
+            [rowLabel("Version:"), updateStatus],
+            [spacer, updateNote],
+            [spacer, updateButtons],
         ])
+    }
+
+    // ── Updates ─────────────────────────────────────────────────────────────
+    //
+    // Anode is built from source rather than downloaded — it is ad-hoc signed,
+    // so a bundle that arrives through a browser is quarantined and refused, and
+    // the honest fix is to build it rather than to teach people to switch
+    // Gatekeeper off. So "update" here means pull and rebuild the checkout this
+    // bundle was built from, and the checkout's state is the thing this row
+    // reports. `SourceCheckout` owns every state it can be in.
+
+    /// What this build is, independent of any checkout — true even when the
+    /// source has since been moved or deleted.
+    private var buildDescription: String {
+        let info = Bundle.main.infoDictionary
+        let version = info?["CFBundleShortVersionString"] as? String ?? "?"
+        let build = info?["CFBundleVersion"] as? String ?? "?"
+        let commit = info?["BSSourceCommit"] as? String ?? "unknown"
+        return "\(version) (build \(build)) · \(commit)"
+    }
+
+    private func checkout() -> SourceCheckout? {
+        SourceCheckout.recordedPath(in: .main).map(SourceCheckout.atPath)
+    }
+
+    /// Reads the checkout WITHOUT fetching, so opening this window never blocks
+    /// on the network. The answer is still true, only older — pressing Check is
+    /// what goes and looks.
+    private func refreshCheckoutState() {
+        guard let c = checkout() else { return checkoutState = .missing }
+        checkoutState = c.state()
+    }
+
+    @objc private func checkForUpdates() {
+        guard !checking, let c = checkout() else {
+            checkoutState = .missing
+            return refresh()
+        }
+        checking = true
+        refresh()
+        // Off the main thread: a fetch talks to a server, and a settings window
+        // that freezes while someone's Wi-Fi times out is a worse bug than a
+        // stale count.
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            c.fetch()
+            let state = c.state()
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.checking = false
+                self.checkoutState = state
+                self.refresh()
+            }
+        }
+    }
+
+    /// Runs `update.sh` in a VISIBLE Terminal window.
+    ///
+    /// The same rule the fan helper's install follows, for a stronger reason: this
+    /// one quits the running app, rebuilds it and launches the replacement. An app
+    /// that silently replaces itself while you are looking at it is not something
+    /// to ship to be tidy. Opened through LaunchServices rather than Apple events,
+    /// so it needs no Automation permission and cannot be denied by TCC.
+    @objc private func runUpdate() {
+        guard let path = SourceCheckout.recordedPath(in: .main) else { return }
+        let script = (path as NSString).appendingPathComponent("update.sh")
+        guard FileManager.default.isExecutableFile(atPath: script) else {
+            updateNote.stringValue = "update.sh is missing from \(path). "
+                                   + "Pull the checkout by hand."
+            return
+        }
+        NSWorkspace.shared.open([URL(fileURLWithPath: script)],
+                                withApplicationAt: URL(fileURLWithPath: "/System/Applications/Utilities/Terminal.app"),
+                                configuration: NSWorkspace.OpenConfiguration())
     }
 
     override func refresh() {
@@ -331,6 +430,19 @@ private final class GeneralPane: Pane {
               + "not two. Click any menu bar widget, or open the app again, to get the window."
             : "Ignored while menu bar widgets are off (Menu Bar tab): starting with no window and "
               + "no widgets would leave nothing to click."
+
+        // The version is always true; the checkout's state may not have been
+        // looked at yet, and "unknown" is said rather than implied.
+        updateStatus.stringValue = buildDescription
+        if checkoutState == nil { refreshCheckoutState() }
+        let state = checkoutState ?? .missing
+        updateNote.stringValue = checking ? "Checking…" : SourceCheckout.summary(state)
+        checkButton.isEnabled = !checking && state != .missing && state != .notARepository
+        updateButton.isEnabled = !checking && state.isUpdatable
+        // Hidden rather than permanently greyed: on a machine whose checkout is
+        // gone there is no update path at all, and a dead button is a worse
+        // answer than none. The sentence above already explains why.
+        updateButton.isHidden = state == .missing || state == .notARepository
     }
 
     @objc private func intervalChanged() {

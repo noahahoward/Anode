@@ -19,6 +19,9 @@ ICON="Resources/AppIcon.icon"
 VERSION="0.2.0"
 BUILD="$(git rev-list --count HEAD 2>/dev/null || echo 1)"
 COMMIT="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
+# Absolute, and resolved through any symlink, because it is written into a
+# bundle that will be launched from somewhere else entirely.
+SOURCE_PATH="$(cd "$(dirname "$0")" && pwd -P)"
 DIRTY=""
 if ! git diff --quiet HEAD 2>/dev/null; then DIRTY="+"; fi
 
@@ -87,10 +90,19 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>CFBundlePackageType</key>       <string>APPL</string>
   <key>CFBundleShortVersionString</key><string>${VERSION}</string>
   <key>CFBundleVersion</key>           <string>${BUILD}</string>
-  <!-- The exact source this bundle was built from. There is no update
-       mechanism, so a tester may be running anything; this makes "which build
-       is that" answerable rather than guessed. -->
+  <!-- The exact source this bundle was built from, so "which build is that"
+       is answerable rather than guessed. -->
   <key>BSSourceCommit</key>            <string>${COMMIT}${DIRTY}</string>
+  <!-- And WHERE that source is, which is how the Update button in settings
+       finds the checkout to pull. Recorded rather than searched for: hunting
+       the disk for something that looks like the right repo is how an updater
+       ends up rebuilding a stranger's clone. An app with no such key, or whose
+       checkout has since moved, simply says so instead. -->
+  <key>BSSourcePath</key>              <string>${SOURCE_PATH}</string>
+  <!-- Shown under the version in the About box. GPL §5 asks an interactive
+       program to carry its notice where a user can reach it; AppKit takes this
+       key for that line and offers no API to set it. -->
+  <key>NSHumanReadableCopyright</key>  <string>Copyright 2026 noahahoward. Licensed under the GNU General Public License v3.0 or later.</string>
   <key>LSMinimumSystemVersion</key>    <string>13.0</string>
   <key>NSHighResolutionCapable</key>   <true/>
   <!-- Every bundled AppKit app declares this; ours did not. It did NOT fix the

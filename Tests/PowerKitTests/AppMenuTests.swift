@@ -340,8 +340,30 @@ final class AboutPanelTests: XCTestCase {
         XCTAssertTrue(credits.string.contains("d09e75a"))
     }
 
-    func testOptionsAreEmptyWhenThereIsNothingToAdd() {
-        XCTAssertTrue(AboutPanel.options(info: [:]).isEmpty)
+    /// The licence shows even when the build says nothing about itself.
+    ///
+    /// This used to assert the opposite — no build info, no options at all —
+    /// which was right when the panel's only job was reporting a commit. GPL §5
+    /// asks an interactive program to carry its notice where a user can reach
+    /// it, and "unless it was built oddly" is not a licence condition. A `swift
+    /// run` binary with no Info.plist is exactly the build most likely to be
+    /// someone else's copy.
+    func testTheLicenceIsShownEvenWithNoBuildInformation() throws {
+        let options = AboutPanel.options(info: [:])
+        let credits = try XCTUnwrap(options[.credits] as? NSAttributedString)
+        XCTAssertTrue(credits.string.contains("GPL-3.0"),
+                      "the About box does not say what licence this is under")
+        XCTAssertTrue(credits.string.contains("NO WARRANTY"))
+        XCTAssertFalse(credits.string.contains("Source commit"),
+                       "invented a commit for a build that has none")
+    }
+
+    /// And when there IS build information, both appear.
+    func testCommitAndLicenceAppearTogether() throws {
+        let options = AboutPanel.options(info: ["BSSourceCommit": "d09e75a"])
+        let credits = try XCTUnwrap(options[.credits] as? NSAttributedString)
+        XCTAssertTrue(credits.string.contains("d09e75a"))
+        XCTAssertTrue(credits.string.contains("GPL-3.0"))
     }
 }
 
