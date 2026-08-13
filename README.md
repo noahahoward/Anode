@@ -1,7 +1,12 @@
 # Anode
 
-A macOS power monitor that reports per-app battery cost in **real, absolute units** —
-not Activity Monitor's unitless, relative "Energy Impact" score.
+A macOS system monitor: processes, CPU, memory, GPU, disk, network, temperatures
+and fan control, in one window with a menu bar you can bind any of it to.
+
+Its reason for existing is the battery tab, which reports per-app cost in **real,
+absolute units** — not Activity Monitor's unitless, relative "Energy Impact"
+score. Everything below argues that case, because it is the part that was hard
+and the part nothing else does.
 
 ## Why
 
