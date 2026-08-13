@@ -107,8 +107,11 @@ What is left is release work and the deferred items below.
 
 - **38 — no update mechanism.** The one distribution item still open. Parked
   until the repo is public, since an updater needs somewhere to update from.
-- **Publication** — rename the remote from `betterstats` to `anode`, and turn on
-  GitHub's "keep my email address private" so the scrub cannot regress.
+- **Publication** — the remote is renamed and the history is scrubbed. What is
+  left before it goes public: a LICENSE (there is none, so the default is all
+  rights reserved, which contradicts the two places the source calls this project
+  open source), a repo description, and GitHub's "keep my email address private"
+  so the scrub cannot regress.
 - The **deferred** items below, unchanged and still deliberate. Item 9 is the one
   with teeth: the battery scale is a seeded constant under every displayed
   number, and until it is measured, absolute %/hr should not be compared across
