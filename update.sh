@@ -9,7 +9,18 @@
 # than one extra window. The same reasoning as the fan helper's install: if the
 # app is going to run a command on your behalf, you get to watch it.
 set -euo pipefail
-cd "$(dirname "$0")"
+
+# The checkout to update. Defaults to this script's own directory, which is the
+# right answer when it is run from the repo — and is the WRONG answer for the
+# copy that ships inside Anode.app, which is why it can be overridden.
+#
+# That copy exists because of a real failure: the settings button used to run
+# the script out of the checkout, so moving the checkout to any commit from
+# before the updater existed took the updater with it. `git reset --hard HEAD~1`
+# and the Update button reports itself missing. A tool that repairs a thing
+# cannot live inside the thing it repairs.
+REPO="${1:-$(cd "$(dirname "$0")" && pwd -P)}"
+cd "$REPO" 
 
 say() { printf '› %s\n' "$1"; }
 

@@ -351,15 +351,12 @@ private final class GeneralPane: Pane {
     /// so it needs no Automation permission and cannot be denied by TCC.
     @objc private func runUpdate() {
         guard let path = SourceCheckout.recordedPath(in: .main) else { return }
-        let script = (path as NSString).appendingPathComponent("update.sh")
-        guard FileManager.default.isExecutableFile(atPath: script) else {
-            updateNote.stringValue = "update.sh is missing from \(path). "
-                                   + "Pull the checkout by hand."
-            return
+        switch UpdateLauncher.launch(checkout: path) {
+        case .openedTerminal:
+            updateNote.stringValue = "Updating in Terminal…"
+        case .failed(let why):
+            updateNote.stringValue = why
         }
-        NSWorkspace.shared.open([URL(fileURLWithPath: script)],
-                                withApplicationAt: URL(fileURLWithPath: "/System/Applications/Utilities/Terminal.app"),
-                                configuration: NSWorkspace.OpenConfiguration())
     }
 
     override func refresh() {
