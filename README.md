@@ -89,3 +89,17 @@ ship on the Mac App Store.
 
 Battery IORegistry key semantics and SMC decoding informed by
 [exelban/stats](https://github.com/exelban/stats) (MIT, © 2019 Serhiy Mytrovtsiy).
+No code was copied from it — the debt is to its sensor tables, which are one of
+the three kinds of evidence `SensorNaming.swift` accepts for a sensor's name.
+
+## Licence
+
+[Apache License 2.0](LICENSE). Permissive: build it, change it, ship it, sell it.
+
+Apache rather than MIT for one reason — it carries an explicit patent grant.
+MIT is silent on patents, which is unsettled law and enough to get it flagged by
+some corporate policies; Apache-2.0 answers the question in the licence itself.
+The practical difference for a fan-speed reader is nil, but a tester whose
+employer runs a licence review should not have to argue about it.
+
+If you redistribute a modified copy, §4(b) asks that changed files say so.
