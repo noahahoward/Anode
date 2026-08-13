@@ -85,8 +85,10 @@ done
 # needs it. A tool that repairs a checkout cannot be stored in the checkout at
 # the version it is repairing. The bundled copy always matches the build that is
 # running, and takes the checkout path as an argument.
-[ -f update.sh ] && cp update.sh "$APP/Contents/Resources/update.sh" \
-                 && chmod +x "$APP/Contents/Resources/update.sh"
+for script in update.sh uninstall.sh; do
+  [ -f "$script" ] && cp "$script" "$APP/Contents/Resources/$script" \
+                   && chmod +x "$APP/Contents/Resources/$script"
+done
 
 # ── Info.plist ──────────────────────────────────────────────────────────────
 cat > "$APP/Contents/Info.plist" <<PLIST

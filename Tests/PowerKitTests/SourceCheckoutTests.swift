@@ -324,3 +324,98 @@ final class ShellScriptLintTests: XCTestCase {
         }
     }
 }
+
+/// Uninstalling, as a plan that can be read before it is run.
+///
+/// It deletes things it cannot put back, so the awkward cases are decided here
+/// rather than discovered halfway through a shell script: the root daemon that
+/// needs a password, the source checkout that must never be touched, and the
+/// measurement history that must not vanish because someone wanted the app gone.
+final class UninstallPlanTests: XCTestCase {
+
+    private let home = "/Users/someone"
+
+    /// Everything, present.
+    private func allExist(_ path: String) -> Bool { true }
+    private func noneExist(_ path: String) -> Bool { false }
+
+    func testTheAppBundleIsFoundInEitherLocation() {
+        let plan = Uninstall.plan(removingData: false, home: home) {
+            $0 == "/Applications/Anode.app"
+        }
+        XCTAssertEqual(plan.appBundle, "/Applications/Anode.app",
+                       "a bundle dragged to /Applications was missed")
+    }
+
+    /// History and settings survive an ordinary uninstall. A reinstall that
+    /// silently lost a month of measurements would be its own bug report.
+    func testDataIsKeptUnlessAskedFor() {
+        let kept = Uninstall.plan(removingData: false, home: home, exists: allExist)
+        XCTAssertTrue(kept.data.isEmpty)
+        XCTAssertTrue(kept.defaultsDomains.isEmpty)
+
+        let wiped = Uninstall.plan(removingData: true, home: home, exists: allExist)
+        XCTAssertFalse(wiped.data.isEmpty)
+        XCTAssertTrue(wiped.data.contains { $0.hasSuffix("history.sqlite") })
+        // The WAL and shm too: deleting the database and leaving its journal is
+        // how a "clean" reinstall comes back with the old data attached.
+        XCTAssertTrue(wiped.data.contains { $0.hasSuffix("history.sqlite-wal") })
+        XCTAssertTrue(wiped.data.contains { $0.hasSuffix("history.sqlite-shm") })
+    }
+
+    /// Both settings domains, or a reinstall inherits preferences from an app
+    /// the user believes they removed.
+    func testBothSettingsDomainsGo() {
+        let plan = Uninstall.plan(removingData: true, home: home, exists: allExist)
+        XCTAssertTrue(plan.defaultsDomains.contains(Settings.suiteName))
+        XCTAssertTrue(plan.defaultsDomains.contains(Settings.previousSuiteName))
+    }
+
+    /// Every login agent label this app has ever used — one left behind still
+    /// launches something at login.
+    func testEveryHistoricalLoginAgentIsRemoved() {
+        let plan = Uninstall.plan(removingData: false, home: home, exists: allExist)
+        for label in [LoginAgent.label] + LoginAgent.previousLabels {
+            XCTAssertTrue(plan.loginAgents.contains { $0.contains(label) },
+                          "\(label) would be left behind, still launching at login")
+        }
+    }
+
+    /// The root daemon is REPORTED, never removed: it needs a password, and this
+    /// project's rule is that anything needing root is a command you read.
+    func testTheRootDaemonIsReportedAndNotRemoved() {
+        let plan = Uninstall.plan(removingData: true, home: home) {
+            $0.hasPrefix("/Library/LaunchDaemons/")
+        }
+        let command = try? XCTUnwrap(plan.rootDaemonCommand)
+        XCTAssertTrue(command?.contains("sudo") ?? false,
+                      "the root daemon command does not tell the user to use sudo")
+        XCTAssertFalse(plan.data.contains { $0.hasPrefix("/Library") },
+                       "a root-owned path ended up on the delete list")
+    }
+
+    /// Nothing found says so, rather than claiming to have removed things.
+    func testACleanMachineSaysNothingWasFound() {
+        let plan = Uninstall.plan(removingData: true, home: home, exists: noneExist)
+        XCTAssertTrue(plan.isEmpty)
+        XCTAssertTrue(Uninstall.summary(plan, removingData: true).contains("Nothing"))
+    }
+
+    /// The summary names paths, and promises the checkout is safe.
+    func testTheSummaryNamesEveryPathAndProtectsTheCheckout() {
+        let plan = Uninstall.plan(removingData: false, home: home, exists: allExist)
+        let text = Uninstall.summary(plan, removingData: false)
+        XCTAssertTrue(text.contains("\(home)/Applications/Anode.app"))
+        XCTAssertTrue(text.contains("source checkout is never touched"))
+        XCTAssertTrue(text.contains("KEPT"), "does not say history survives")
+    }
+
+    /// The wrapper passes the flags the dialog agreed to, and no others.
+    func testTheUninstallWrapperCarriesTheRightFlags() {
+        let withData = UpdateLauncher.wrapper(script: "/u.sh", arguments: ["--yes", "--data"])
+        XCTAssertTrue(withData.contains("'--yes' '--data'"))
+        let without = UpdateLauncher.wrapper(script: "/u.sh", arguments: ["--yes"])
+        XCTAssertFalse(without.contains("--data"),
+                       "would have deleted history the user did not agree to")
+    }
+}
