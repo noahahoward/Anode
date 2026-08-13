@@ -61,7 +61,7 @@ esac
 
 # ── Source ──────────────────────────────────────────────────────────────────
 if [ -d "$SRC/.git" ]; then
-  say "updating $SRC…"
+  say "updating ${SRC}…"
   # --ff-only, so a checkout someone has been editing is never clobbered. If it
   # refuses, that is the correct outcome and the message says what to do.
   git -C "$SRC" fetch --quiet
@@ -70,7 +70,7 @@ if [ -d "$SRC/.git" ]; then
 Sort it out there, or set ANODE_SRC to a different directory and re-run."
 else
   [ -e "$SRC" ] && die "$SRC exists and is not a git checkout. Move it, or set ANODE_SRC."
-  say "cloning into $SRC…"
+  say "cloning into ${SRC}…"
   mkdir -p "$(dirname "$SRC")"
   git clone --quiet "$REPO" "$SRC"
 fi
