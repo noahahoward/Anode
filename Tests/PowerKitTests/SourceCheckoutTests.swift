@@ -1,4 +1,5 @@
 import XCTest
+@testable import AnodeApp
 @testable import PowerKit
 
 /// Update-availability, tested against REAL git repositories built in a temp
@@ -180,5 +181,55 @@ final class SourceCheckoutTests: XCTestCase {
                                         .dirty(changed: 1), .noUpstream, .upToDate] {
             XCTAssertFalse(s.isUpdatable, "\(s) offered an update it cannot perform")
         }
+    }
+}
+
+/// The updater must survive the checkout being moved, because moving the
+/// checkout is what an update DOES.
+///
+/// Found the hard way: the button ran `update.sh` out of the working tree, so
+/// `git reset --hard HEAD~1` onto a commit from before the updater existed left
+/// the button reporting its own script missing — at exactly the moment someone
+/// would want it. A tool that repairs a checkout cannot live in the checkout at
+/// the version it is repairing.
+final class UpdateLauncherTests: XCTestCase {
+
+    /// A path with a space in it, which is not a hypothetical: this project's
+    /// own checkout is "better stats app".
+    private let awkward = "/Users/someone/Downloads/better stats app"
+
+    func testTheWrapperQuotesPathsWithSpaces() {
+        let text = UpdateLauncher.wrapper(script: "/App/Contents/Resources/update.sh",
+                                          checkout: awkward)
+        XCTAssertTrue(text.contains("'\(awkward)'"),
+                      "an unquoted path with spaces would split into arguments")
+        XCTAssertTrue(text.contains("'/App/Contents/Resources/update.sh'"))
+    }
+
+    /// An apostrophe closes the quoting and reopens it; a path containing one
+    /// otherwise ends the string early and the rest becomes shell code.
+    func testTheWrapperSurvivesAnApostrophe() {
+        let quoted = UpdateLauncher.shellQuoted("/Users/sam's mac/Anode")
+        XCTAssertEqual(quoted, "'/Users/sam'\\''s mac/Anode'")
+    }
+
+    /// It runs the BUNDLED script and passes the checkout, rather than running
+    /// something out of the checkout.
+    func testTheWrapperRunsTheBundledScriptAgainstTheCheckout() {
+        let text = UpdateLauncher.wrapper(script: "/A.app/Contents/Resources/update.sh",
+                                          checkout: "/src/Anode")
+        let exec = try? XCTUnwrap(text.split(separator: "\n").last.map(String.init))
+        XCTAssertEqual(exec, "exec '/A.app/Contents/Resources/update.sh' '/src/Anode'")
+    }
+
+    /// A build with no bundled updater says so instead of opening a Terminal
+    /// that would immediately fail.
+    func testABuildWithNoUpdaterRefusesRatherThanOpeningTerminal() {
+        // The test bundle carries no update.sh, which is the case being tested.
+        let outcome = UpdateLauncher.launch(checkout: "/tmp/whatever", bundle: Bundle(for: Self.self))
+        guard case .failed(let why) = outcome else {
+            return XCTFail("opened a Terminal for a build with no updater")
+        }
+        XCTAssertTrue(why.contains("./update.sh"), "the fallback does not say what to run by hand")
     }
 }

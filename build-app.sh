@@ -77,6 +77,17 @@ for doc in README.md TESTING.md; do
   [ -f "$doc" ] && cp "$doc" "$APP/Contents/Resources/$doc"
 done
 
+# The updater ships INSIDE the bundle, and that is not tidiness.
+#
+# The Update button used to run update.sh out of the checkout. Move the checkout
+# to any commit older than the updater — `git reset --hard HEAD~1` will do it —
+# and the button reports its own script missing, which is precisely when someone
+# needs it. A tool that repairs a checkout cannot be stored in the checkout at
+# the version it is repairing. The bundled copy always matches the build that is
+# running, and takes the checkout path as an argument.
+[ -f update.sh ] && cp update.sh "$APP/Contents/Resources/update.sh" \
+                 && chmod +x "$APP/Contents/Resources/update.sh"
+
 # ── Info.plist ──────────────────────────────────────────────────────────────
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
