@@ -3,31 +3,29 @@
 A macOS system monitor: processes, CPU, memory, GPU, disk, network, temperatures
 and fan control, in one window with a menu bar you can bind any of it to.
 
-Its reason for existing is the battery tab, which reports per-app cost in **real,
-absolute units** — not Activity Monitor's unitless, relative "Energy Impact"
-score. Everything below argues that case, because it is the part that was hard
-and the part nothing else does.
+## INSTALLATION
 
-## Install
+**Run this script to install.** Paste it into Terminal and press Return:
 
-**There is no download, and no Releases page with a `.app` in it** — see below
-for why. One line does everything:
-
-```
+```sh
 curl -fsSL https://raw.githubusercontent.com/noahahoward/Anode/main/install.sh | bash
 ```
 
-Clones to `~/Developer/Anode`, builds, and installs to `~/Applications/Anode.app`.
-Needs git and a Swift toolchain — `xcode-select --install` gets you both. Nothing
-runs as root and nothing is installed outside your home directory.
+That is the whole installation. It clones the source to `~/Developer/Anode`,
+builds it, installs `~/Applications/Anode.app`, and opens it. It takes a few
+minutes the first time, needs no password, and nothing runs as root.
 
-Piping a script from the internet into a shell deserves a look first:
-[install.sh](install.sh) is 70 lines and mostly comments.
+**Requirements:** an Apple Silicon Mac on macOS 13+, and Apple's command line
+tools. If you do not have those, run `xcode-select --install` first.
 
-### Why there is no download button
+To update later: **Settings → General → Update and Rebuild**, or `~/Developer/Anode/update.sh`.
+To remove it: **Settings → General → Uninstall Anode…**, or `~/Developer/Anode/uninstall.sh`.
 
-Anode is ad-hoc signed and not notarised, because notarising needs a paid Apple
-Developer ID and this is a hobby project. Measured on the shipped bundle:
+<details>
+<summary><b>Why there is no download button</b></summary>
+
+Anode is ad-hoc signed and not notarised, because notarising requires a paid
+Apple Developer ID and this is a hobby project. Measured on the shipped bundle:
 
 ```
 codesign -dvv   →  Signature=adhoc, TeamIdentifier=not set
@@ -43,7 +41,17 @@ paste.
 
 Nothing the install script fetches passes through a browser, so nothing is
 quarantined and there is no check to disable — the app is compiled on your
-machine from source you can read.
+machine from source you can read. [install.sh](install.sh) is 70 lines and
+mostly comments.
+
+</details>
+
+---
+
+Its reason for existing is the battery tab, which reports per-app cost in **real,
+absolute units** — not Activity Monitor's unitless, relative "Energy Impact"
+score. Everything below argues that case, because it is the part that was hard
+and the part nothing else does.
 
 ## Why
 
@@ -120,32 +128,6 @@ swift build
 Handing it to someone else to test: see [TESTING.md](TESTING.md). Short version —
 send the repo, not a `.app`, and expect a larger unattributed share on hardware
 this was not calibrated on.
-
-## Updating
-
-Press **Update and Rebuild** in Anode's settings, or:
-
-```
-~/Developer/Anode/update.sh
-```
-
-Both do the same thing: `git pull --ff-only` then rebuild. The settings button
-opens a visible Terminal rather than working silently, because the update quits
-the running app and replaces it — you should be able to watch that happen. A
-checkout with uncommitted changes is refused rather than stashed.
-
-## Uninstalling
-
-**Settings → General → Uninstall Anode…**, or:
-
-```
-~/Developer/Anode/uninstall.sh          # the app, login agents, its scripts
-~/Developer/Anode/uninstall.sh --data   # …and settings and measurement history
-```
-
-It lists every path before deleting anything, keeps your history unless you ask,
-and never touches your source checkout. The fan helper runs as root, so it is not
-removed for you — the command to remove it is printed at the end.
 
 ## Requirements
 
