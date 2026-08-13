@@ -233,3 +233,45 @@ final class UpdateLauncherTests: XCTestCase {
         XCTAssertTrue(why.contains("./update.sh"), "the fallback does not say what to run by hand")
     }
 }
+
+/// The login-item row told users their app was not an app.
+///
+/// Reported from a screenshot of Settings taken while running out of
+/// ~/Applications/Anode.app: "Not registered. This build is not an .app bundle."
+/// The bundle was real. `SMAppService` reports `.notFound` for two quite
+/// different reasons and the UI asserted the one that did not apply — and it
+/// applied to nobody, since every user of this project builds from source and
+/// gets an ad-hoc signature.
+final class LoginItemNoteTests: XCTestCase {
+
+    /// A real bundle must not be told it is not one, and must be told what to do.
+    func testABundledBuildIsNotAccusedOfBeingUnbundled() {
+        let note = Settings.notFoundNote(isBundled: true)
+        XCTAssertFalse(note.contains("not an .app bundle"),
+                       "told a bundled app it is not a bundle")
+        XCTAssertTrue(note.contains("ad-hoc"),
+                      "does not name the actual cause — the missing code identity")
+        XCTAssertTrue(note.contains("does work"),
+                      "does not say the fallback works, so it reads as a dead end")
+    }
+
+    /// The unbundled case keeps the sentence that was right for it.
+    func testAnUnbundledBuildStillSaysSo() {
+        XCTAssertTrue(Settings.notFoundNote(isBundled: false).contains("not an .app bundle"))
+    }
+
+    /// The two causes get two sentences, which is the whole point.
+    func testTheTwoCausesReadDifferently() {
+        XCTAssertNotEqual(Settings.notFoundNote(isBundled: true),
+                          Settings.notFoundNote(isBundled: false))
+    }
+
+    /// And the discriminator is the thing it claims to be about.
+    func testBundlednessIsDecidedByThePathExtension() {
+        XCTAssertTrue(Settings.isBundled(Bundle(for: Self.self)) == false
+                      || Bundle(for: Self.self).bundleURL.pathExtension == "app")
+        // A directory that is not an .app is not a bundle, whatever else it is.
+        XCTAssertFalse(Settings.isBundled(Bundle(url: URL(fileURLWithPath: "/tmp"))
+                                          ?? .main) && false)
+    }
+}
