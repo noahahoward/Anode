@@ -1,6 +1,11 @@
 #!/bin/bash
-# Cut a versioned release bundle into releases/.
+# Cut a versioned bundle into releases/, for local archiving.
 # Usage: ./make-release.sh
+#
+# NOT a distribution channel. `releases/` is gitignored in full, and the app is
+# handed to people as a one-line install that builds from source — see README.
+# A .app that arrives through a browser is quarantined and Gatekeeper refuses it,
+# which is the whole reason there is no download.
 #
 # WHY THIS IS SEPARATE FROM build-app.sh: that script deliberately DELETES the
 # bundle it assembles once it has installed it to ~/Applications, because a
