@@ -16,7 +16,7 @@ ICON="Resources/AppIcon.icon"
 # tester reporting a bug can be asked "what does About say" and the answer maps
 # to an exact commit — which matters more than usual here, because there is no
 # update mechanism and a tester may be running something weeks old.
-VERSION="0.2.0"
+VERSION="1.0.0"
 BUILD="$(git rev-list --count HEAD 2>/dev/null || echo 1)"
 COMMIT="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
 # Absolute, and resolved through any symlink, because it is written into a
