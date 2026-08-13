@@ -275,3 +275,52 @@ final class LoginItemNoteTests: XCTestCase {
                                           ?? .main) && false)
     }
 }
+
+/// The shipped shell scripts, linted for the one mistake this project's prose
+/// style makes easy.
+///
+/// `install.sh` shipped broken: `say "cloning into $SRC…"`. The ellipsis is
+/// UTF-8 (E2 80 A6) and bash pulled those bytes into the variable NAME, so under
+/// `set -u` it died with `SRC?: unbound variable` on the first line that
+/// mattered. Every comment header in these files is full of em-dashes and
+/// ellipses, so a variable landing next to one is a matter of time — and the
+/// failure appears only when the script runs, which for the install path means
+/// on a stranger's machine.
+final class ShellScriptLintTests: XCTestCase {
+
+    private var scripts: [(name: String, text: String)] {
+        ["install.sh", "update.sh", "build-app.sh", "make-release.sh"].compactMap { name in
+            let path = FileManager.default.currentDirectoryPath + "/" + name
+            guard let text = try? String(contentsOfFile: path) else { return nil }
+            return (name, text)
+        }
+    }
+
+    func testTheScriptsAreThere() {
+        XCTAssertGreaterThanOrEqual(scripts.count, 3, "the shipped scripts moved or vanished")
+    }
+
+    /// `$VAR` immediately followed by a non-ASCII byte: brace it, or bash eats
+    /// the byte as part of the name.
+    func testNoVariableRunsIntoANonASCIICharacter() throws {
+        let pattern = try NSRegularExpression(pattern: #"\$[A-Za-z_][A-Za-z0-9_]*[^\x00-\x7F]"#)
+        for (name, text) in scripts {
+            let range = NSRange(text.startIndex..., in: text)
+            let hits = pattern.matches(in: text, range: range)
+            for hit in hits {
+                let snippet = String(text[Range(hit.range, in: text)!])
+                XCTFail("\(name): \(snippet) — brace it as ${…} or bash takes the "
+                      + "following bytes as part of the variable name")
+            }
+        }
+    }
+
+    /// They all run under `set -u`, which is what turns the above from a typo
+    /// into an abort — and is worth keeping for exactly that reason.
+    func testTheScriptsFailFast() {
+        for (name, text) in scripts where name != "make-release.sh" {
+            XCTAssertTrue(text.contains("set -euo pipefail") || text.contains("set -eu"),
+                          "\(name) does not fail on an unset variable or a failed command")
+        }
+    }
+}
