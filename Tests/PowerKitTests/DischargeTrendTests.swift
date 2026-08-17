@@ -175,20 +175,54 @@ final class DischargeTrendTests: XCTestCase {
         XCTAssertLessThan(abs(minutes(trend)! - before) / before, 0.08)
     }
 
+    /// The 2026-08-16 field report, replayed end to end: unplugged at 14:05,
+    /// built until 14:21 (measured 8.39 W mean), then settled to a measured
+    /// 4.95 W — a 41 % sustained drop — and the display held "6:50" while the
+    /// machine was on an 11-hour pace.
+    ///
+    /// The subtle part is WHEN the drop lands: sixteen minutes into the window's
+    /// life. The detector's warm-up gate held it inert until the window filled at
+    /// minute 30, and by then the running mean had blended down to within ~25 %
+    /// of the new load — inside any band that survives the bursty score — so no
+    /// band alone can catch this. The reference has to be the PRE-change mean,
+    /// frozen when the disagreement starts, not the mean the change is drifting.
+    ///
+    /// The requirement: within ten minutes of settling, the trend describes the
+    /// settled load, not the build. Ten minutes is the confirmation plus a
+    /// publish or two of slack — and a third of the roll-off this replaces.
+    func testASustainedSubBandDropMidWarmupIsFollowedWithinTenMinutes() {
+        let trend = BatteryDischargeTrend()
+        var acc: Int64 = -1_000_000, count: UInt64 = 500_000
+        var at = t0, awake = 10_000.0
+        run(trend, minutes: 16, watts: { _ in 8.39 },
+            acc: &acc, count: &count, at: &at, awake: &awake)
+        run(trend, minutes: 10, watts: { _ in 4.95 }, from: 16,
+            acc: &acc, count: &count, at: &at, awake: &awake)
+        let mW = trend.trend?.power_mW ?? 0
+        XCTAssertEqual(mW, 4950, accuracy: 4950 * 0.12,
+                       "ten minutes after a sustained 41% drop the trend still reads "
+                       + "\(mW) mW — the display is describing the build, not the machine")
+    }
+
     // ── Warm-up: the detector may not fire against its own reflection ───────
     //
-    // `detectRegimeChange` compares a new window against `trend`, and `trend`
-    // CONTAINS that window. While the window is short the two are nearly the same
-    // data — at five minutes one publish is a fifth of its own reference — so the
-    // comparison is a hypothesis tested against itself. Measured over 6 h traces,
-    // it collapsed the window inside the first fifteen minutes on 0.53 bursty runs
-    // and 0.45 build-like ones.
+    // `detectRegimeChange` once compared a new window against `trend`, which
+    // CONTAINS that window: at five minutes one publish is a fifth of its own
+    // reference, a hypothesis tested against itself. Measured over 6 h traces, it
+    // collapsed the window inside the first fifteen minutes on 0.53 bursty runs
+    // and 0.45 build-like ones. The full-window gate that fixed it also held the
+    // detector inert through the 2026-08-16 mid-warm-up settle, so the
+    // protection is now a ten-minute reference floor plus a band scaled to the
+    // reference's own noise — same 0.00 measured collapse rate, without the
+    // half-hour blind spot. These tests pin both halves.
 
-    /// Five quiet minutes, then six minutes at four times the load. That is well
-    /// past the 50 % band and well past the 300-tick confirmation, so before this
-    /// gate the window collapsed onto the burst and the trend became a reading of
-    /// the last six minutes. It must not: the reference was never a full window.
-    func testTheDetectorDoesNotFireWhileItsReferenceIsShortOfAFullWindow() {
+    /// Five quiet minutes, then six minutes at four times the load — well past
+    /// band and confirmation, but the reference is five minutes short of the
+    /// ten-minute floor when the burst begins, and by the time the floor is met
+    /// the reference CONTAINS the burst: its own publishes disagree by ~60 %, so
+    /// the noise term raises the bar past the disagreement. Nothing may be
+    /// thrown away; the answer is the mean of what actually happened.
+    func testTheDetectorDoesNotFireOnAShortOrSelfContaminatedReference() {
         let trend = BatteryDischargeTrend()
         var acc: Int64 = -1_000_000, count: UInt64 = 500_000
         var at = t0, awake = 10_000.0
@@ -204,9 +238,10 @@ final class DischargeTrendTests: XCTestCase {
         XCTAssertEqual(trend.trend?.power_mW ?? 0, 15_818, accuracy: 100)
     }
 
-    /// The same excursion after the window is full DOES collapse it — the gate
-    /// removes warm-up firings and nothing else. Without this the test above would
-    /// pass for a class that had simply deleted the detector.
+    /// The same excursion against a long QUIET reference DOES collapse the
+    /// window — the floor and the noise term remove warm-up firings and nothing
+    /// else. Without this the test above would pass for a class that had simply
+    /// deleted the detector.
     func testTheSameExcursionStillFiresOnceTheWindowIsFull() {
         let (trend, a, c, d, w) = steady(6.0, minutes: 35)
         var acc = a, count = c, at = d, awake = w
@@ -217,24 +252,77 @@ final class DischargeTrendTests: XCTestCase {
                                  "a confirmed regime change must still collapse the window")
     }
 
-    /// A run built up out of warm-up noise must not be banked and cashed in the
-    /// instant the window matures — that is the same bug arriving half an hour
-    /// later. The load here is out of band for the five minutes either side of the
-    /// 30-minute mark, and the window must survive the boundary.
-    func testAWarmUpRunIsNotBankedUntilTheWindowMatures() {
+    /// The warm-up failure the full-window gate was built for, pinned on the
+    /// INVARIANT rather than the mechanism. The gate's bug was self-comparison:
+    /// an immature window testing a burst against a reference the burst itself
+    /// dominated, collapsing 0.53 of bursty cold starts inside fifteen minutes.
+    /// The gate is gone — replaced by the ten-minute reference floor and the
+    /// noise-scaled band — so the protection is now: a reference whose own
+    /// publishes disagree with each other (a machine alternating base and burst)
+    /// raises the bar until its base stretches stop looking like regime changes.
+    /// Re-measured in `TrendSweepHarness` at 0.00 collapses over 40 cold starts.
+    func testABurstyColdStartDoesNotCollapseTheImmatureWindow() {
+        let trend = BatteryDischargeTrend()
+        var acc: Int64 = -1_000_000, count: UInt64 = 500_000
+        var at = t0, awake = 10_000.0
+        // The bursty shape from the tables — 4 min at 20 W every 20 min over a
+        // 5 W base — driven from cold. Base stretches sit ~40 % below the
+        // running mean, which a QUIET reference would rightly read as a regime
+        // change; a reference this noisy must not.
+        run(trend, minutes: 28, watts: { m in m % 20 < 4 ? 20.0 : 5.0 },
+            acc: &acc, count: &count, at: &at, awake: &awake)
+        XCTAssertGreaterThan(trend.trend?.ticks ?? 0, 1500,
+                             "a bursty warm-up collapsed the window: the noise "
+                             + "term is not raising the bar")
+    }
+
+    /// A reference whose noise is UNKNOWABLE must not fire the detector at all.
+    ///
+    /// Found in adversarial review of the noise-scaled band and reproduced
+    /// through this class: after any reset, ONE long publish-gap window (the
+    /// gauge has been seen 156 s between publishes, and a suspended process can
+    /// stretch that to the full window) can satisfy the ten-minute floor as a
+    /// single 600-tick sample. Two samples yield one publish rate — no relative
+    /// sd — and treating "no sd" as "sd zero" armed the detector at the 0.30
+    /// floor against a reference that was secretly a burst-and-base BLEND. The
+    /// 5 W base stretches then confirmed against the 8 W blend and the window
+    /// collapsed onto them: the exact base-adoption failure the noise term
+    /// exists to bar, scored in the harness at 27–59 death-time minutes of
+    /// error against 16 for holding.
+    func testASingleGapWindowReferenceCannotFireTheDetector() {
+        let trend = BatteryDischargeTrend()
+        var acc: Int64 = -1_000_000, count: UInt64 = 500_000
+        var at = t0, awake = 10_000.0
+        // One 10-minute publish carrying an 8 W blend (bursts + base, invisible
+        // inside a single window)…
+        trend.record(sample(acc: acc, count: count, at: at, awake: awake), onBattery: true)
+        at = at.addingTimeInterval(600); awake += 600
+        acc &-= Int64(8.0 * 1000 * 600); count &+= 600
+        trend.record(sample(acc: acc, count: count, at: at, awake: awake), onBattery: true)
+        // …then six minutes of the 5 W base, 37.5 % below the blend: out of the
+        // floor band, past the confirmation, and it must NOT collapse the window.
+        run(trend, minutes: 6, watts: { _ in 5.0 }, from: 10,
+            acc: &acc, count: &count, at: &at, awake: &awake)
+        XCTAssertGreaterThan(trend.trend?.ticks ?? 0, 900,
+                             "a two-sample reference fired the detector: nil relSD "
+                             + "is being read as zero noise")
+    }
+
+    /// The counterpart the old full-window gate got wrong: a genuine multiple-x
+    /// change against 26 minutes of QUIET reference is not warm-up noise, and
+    /// waiting four extra minutes for the window to "mature" served nobody. A
+    /// sound reference is sound at ten minutes.
+    func testAQuietImmatureReferenceStillFollowsARealChange() {
         let trend = BatteryDischargeTrend()
         var acc: Int64 = -1_000_000, count: UInt64 = 500_000
         var at = t0, awake = 10_000.0
         run(trend, minutes: 26, watts: { _ in 6.0 },
             acc: &acc, count: &count, at: &at, awake: &awake)
-        // Six minutes out of band, starting while the window is still immature and
-        // running past the point where it fills. Counted from the first out-of-band
-        // publish that is more than the 300-tick confirmation, so a detector that
-        // banked the warm-up ticks would have collapsed the window by now.
         run(trend, minutes: 6, watts: { _ in 24.0 }, from: 26,
             acc: &acc, count: &count, at: &at, awake: &awake)
-        XCTAssertGreaterThan(trend.trend?.ticks ?? 0, 1500,
-                             "the pre-maturity run was cashed the moment the window filled")
+        XCTAssertEqual(trend.trend?.power_mW ?? 0, 24_000, accuracy: 1000,
+                       "a confirmed 4x change against a quiet reference must be "
+                       + "adopted, maturity boundary or not")
     }
 
     // ── Counters: wrap, reset, direction ────────────────────────────────────

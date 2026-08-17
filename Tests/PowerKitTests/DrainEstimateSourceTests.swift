@@ -416,11 +416,16 @@ final class SettleGateTests: XCTestCase {
                                                  windowSpan: DrainEstimate.settleSeconds))
     }
 
-    /// The settle threshold is the same bar the trend itself sets before it will
-    /// speak, so the two cannot disagree about when there is enough.
-    func testTheThresholdMatchesTheTrendsOwnMinimum() {
-        // `minTicks` is 120 ticks at 1 Hz.
+    /// The settle threshold is deliberately BELOW the trend's own five-minute
+    /// minimum: the power tier carries the display between two and five minutes
+    /// after a reset, labelled as the power tier, rather than blanking while the
+    /// trend accumulates. This pins both the value and the ordering so a change
+    /// to either bar has to come back here and argue.
+    func testTheThresholdSitsBelowTheTrendsOwnMinimum() {
         XCTAssertEqual(DrainEstimate.settleSeconds, 120)
+        XCTAssertLessThan(DrainEstimate.settleSeconds, 300,
+                          "the power tier is supposed to carry the gap before "
+                          + "the trend's five-minute floor, not match it")
     }
 }
 
