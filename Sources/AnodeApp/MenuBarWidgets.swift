@@ -356,11 +356,16 @@ public final class MenuBarWidgetController: NSObject, NSMenuDelegate {
     /// announcing the same break. The registry's category ORDER still groups
     /// related rows next to each other; the grouping is in the sequence, not in
     /// chrome.
-    static func buildGroupMenu() -> NSMenu {
+    static func buildGroupMenu(settings: Settings = .shared) -> NSMenu {
         let menu = NSMenu()
         let registry = MetricRegistry.shared
+        let byID = Dictionary(registry.descriptors().map { ($0.id.rawValue, $0) },
+                              uniquingKeysWith: { a, _ in a })
+        let ids = PanelOrder.visible(saved: settings.panelOrder,
+                                     hidden: settings.panelHidden,
+                                     available: registry.descriptors().map(\.id))
 
-        for d in registry.descriptors() {
+        for d in ids.compactMap({ byID[$0] }) {
             let value = registry.value(for: d.id)
             let shown = value.map { $0.text + ($0.isEstimate ? "*" : "") } ?? "\u{2014}"
             // The title is redundant beside the view, but it is what VoiceOver

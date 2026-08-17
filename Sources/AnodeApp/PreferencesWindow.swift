@@ -683,7 +683,22 @@ private final class MenuBarPane: Pane {
             NSButton(checkboxWithTitle: $0.label, target: self, action: #selector(toggled))
         }
 
-        let list = NSStackView(views: boxes)
+        // The group widget's checkbox gets an Edit… beside it: what that widget
+        // CONTAINS is a property of that widget, so its editor belongs on its
+        // own row rather than in a section of its own further down the pane.
+        let rowsForList: [NSView] = zip(choices, boxes).map { choice, box in
+            guard choice.id == MetricID.groupPlaceholder.rawValue else { return box }
+            let edit = NSButton(title: "Edit\u{2026}", target: self,
+                                action: #selector(editPanel))
+            edit.bezelStyle = .rounded
+            edit.controlSize = .small
+            let row = NSStackView(views: [box, edit])
+            row.orientation = .horizontal
+            row.spacing = 8
+            return row
+        }
+
+        let list = NSStackView(views: rowsForList)
         list.orientation = .vertical
         list.alignment = .leading
         list.spacing = 6
@@ -697,6 +712,8 @@ private final class MenuBarPane: Pane {
                              + "click away, and the sampler stops reading anything only a widget "
                              + "was showing. Which widgets are checked below is remembered.")],
             [rowLabel("Show in menu bar:"), list],
+            [spacer, caption("\u{201C}All metrics\u{201D} is the expandable panel; Edit\u{2026} chooses "
+                             + "which readings it shows and their order.")],
             [spacer, caption("Each checked metric becomes a menu bar widget. Widgets bind to any "
                              + "metric; clicking one opens the main window.")],
         ])
@@ -720,6 +737,19 @@ private final class MenuBarPane: Pane {
         for (choice, box) in zip(choices, boxes) {
             box.state = current.contains(choice.id) ? .on : .off
         }
+    }
+
+    /// Held for the sheet's lifetime — an NSWindowController with no owner is
+    /// deallocated the moment this method returns, taking its table's data
+    /// source with it.
+    private var panelEditor: PanelEditorController?
+
+    @objc private func editPanel() {
+        guard let host = view.window else { return }
+        let editor = PanelEditorController()
+        panelEditor = editor
+        guard let sheet = editor.window else { return }
+        host.beginSheet(sheet) { [weak self] _ in self?.panelEditor = nil }
     }
 
     @objc private func masterToggled() {
