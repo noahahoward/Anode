@@ -4,7 +4,7 @@ import XCTest
 @testable import PowerKit
 
 /// The expandable menu-bar panel: every metric with its reading, built by
-/// `MenuBarWidgetController.buildGroupMenu`.
+/// `MenuBarWidgets.buildGroupMenu`.
 ///
 /// Its rows are deliberately disabled — they are readings, not commands, and must
 /// not highlight as clickable. Two rendering routes were tried before this one:
@@ -110,4 +110,43 @@ final class GroupMenuTests: XCTestCase {
             XCTAssertFalse(item.isEnabled, "\"\(item.title)\" became enabled")
         }
     }
+
+    /// The panel renders what the editor saved: the user's order, minus their
+    /// hidden rows. Rebuilt on every open (`menuNeedsUpdate`), so an edit shows
+    /// up the next time the menu is pulled down without any invalidation
+    /// plumbing.
+    func testThePanelHonoursTheSavedArrangement() throws {
+        let made = try TestDefaults.make(owner: "GroupMenuArrangement")
+        defer { TestDefaults.destroy(made.defaults, made.name) }
+        let settings = Settings(defaults: made.defaults)
+
+        settings.panelOrder = [MetricID.cpuUsage.rawValue,
+                               MetricID.batteryDrain.rawValue]
+        settings.panelHidden = [MetricID.batteryDrain.rawValue]
+
+        let titles = rows(MenuBarWidgetController.buildGroupMenu(settings: settings))
+            .map { $0.title.components(separatedBy: "\t")[0] }
+        XCTAssertEqual(titles.first, "CPU usage", "the saved order was ignored")
+        XCTAssertFalse(titles.contains("Battery rate"), "a hidden row was rendered")
+    }
+
+    /// The default arrangement is the subject-grouped one: each temperature
+    /// directly under the load it belongs to, which is the whole reason
+    /// `PanelOrder` exists rather than reading registration order.
+    func testTheDefaultPanelGroupsTemperaturesWithTheirLoads() throws {
+        let made = try TestDefaults.make(owner: "GroupMenuDefaultOrder")
+        defer { TestDefaults.destroy(made.defaults, made.name) }
+        let titles = rows(MenuBarWidgetController
+            .buildGroupMenu(settings: Settings(defaults: made.defaults)))
+            .map { $0.title.components(separatedBy: "\t")[0] }
+        guard let cpu = titles.firstIndex(of: "CPU usage") else {
+            return XCTFail("no CPU usage row: \(titles)")
+        }
+        XCTAssertEqual(titles[safe: cpu + 1], "CPU temperature",
+                       "CPU temperature is not directly under CPU usage: \(titles)")
+    }
+}
+
+private extension Array {
+    subscript(safe i: Int) -> Element? { indices.contains(i) ? self[i] : nil }
 }

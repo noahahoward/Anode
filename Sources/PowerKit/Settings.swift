@@ -41,6 +41,10 @@ public final class Settings {
         public static let fanDisclosureSeen = "fanDisclosureSeen"
         public static let fanSyncEnabled = "fanSyncEnabled"
         public static let speedTestAgreed = "speedTestAgreed"
+        /// The stats panel's arrangement. Empty until the user edits it — see
+        /// `panelOrder` for why the default is not materialized here.
+        public static let panelOrder = "panelOrder"
+        public static let panelHidden = "panelHidden"
         /// Wildcard — an observer registered on this key fires for every change.
         public static let any = "*"
     }
@@ -134,6 +138,8 @@ public final class Settings {
             fanControlEnabled, fanSyncEnabled, speedTestAgreed: Bool
         var fanDisclosureSeen: Bool
         var menuBarWidgets: [String]
+        var panelOrder: [String]
+        var panelHidden: [String]
     }
     private var snapshot: Values
     private var defaultsObserver: NSObjectProtocol?
@@ -295,6 +301,42 @@ public final class Settings {
             defaults.set(clean, forKey: Settings.storageKey(Key.menuBarWidgets))
             if clean != old { notify(Key.menuBarWidgets) }
         }
+    }
+
+    /// The stats panel's row order, hidden rows included, as the user arranged
+    /// it. EMPTY until they touch the editor, and that emptiness is meaningful:
+    /// it is how `PanelOrder` knows to speak for itself. Materializing today's
+    /// default into the plist on first launch would freeze it there and make
+    /// every future improvement to the default invisible to everyone who had
+    /// ever run the app.
+    ///
+    /// Not capped at `maxMenuBarWidgets`: that cap stops a corrupt plist
+    /// flooding the MENU BAR with status items, and this is one scrollable menu
+    /// with no such cost. Capping it would mean hiding one metric could evict
+    /// another.
+    public var panelOrder: [String] {
+        get { Settings.readIDList(defaults, Key.panelOrder) }
+        set { writeIDList(newValue, key: Key.panelOrder, keyPath: \.panelOrder) }
+    }
+
+    /// Metric IDs the user has unchecked in the panel editor. They keep their
+    /// place in `panelOrder` — hiding a row must not cost it its position — and
+    /// are filtered out only at render time.
+    public var panelHidden: [String] {
+        get { Settings.readIDList(defaults, Key.panelHidden) }
+        set { writeIDList(newValue, key: Key.panelHidden, keyPath: \.panelHidden) }
+    }
+
+    /// Shared write path for both panel lists: sanitize, skip no-op writes,
+    /// keep the snapshot in step, notify once.
+    private func writeIDList(_ newValue: [String], key: String,
+                             keyPath: WritableKeyPath<Values, [String]>) {
+        let clean = Settings.sanitizeIDs(newValue)
+        let old = Settings.readIDList(defaults, key)
+        guard clean != old else { return }
+        lock.lock(); snapshot[keyPath: keyPath] = clean; lock.unlock()
+        defaults.set(clean, forKey: Settings.storageKey(key))
+        notify(key)
     }
 
     // ── Launch at login (SMAppService, macOS 13+) ───────────────────────────
@@ -554,14 +596,27 @@ public final class Settings {
     }
 
     private static func sanitizeWidgets(_ ids: [String]) -> [String] {
+        Array(sanitizeIDs(ids).prefix(maxMenuBarWidgets))
+    }
+
+    /// Trim, drop empties, dedupe, preserve order — and preserve UNKNOWN ids,
+    /// which is the whole point: an id belonging to a module that isn't loaded
+    /// right now must survive a round trip rather than be quietly forgotten.
+    /// No cap; `sanitizeWidgets` applies the menu bar's own.
+    private static func sanitizeIDs(_ ids: [String]) -> [String] {
         var seen = Set<String>(), out: [String] = []
         for raw in ids {
             let id = raw.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !id.isEmpty, seen.insert(id).inserted else { continue }
             out.append(id)
-            if out.count == maxMenuBarWidgets { break }
         }
         return out
+    }
+
+    /// An id list that is ABSENT rather than defaulted: no stored value means
+    /// the empty list, which callers read as "the user has never said".
+    private static func readIDList(_ d: UserDefaults, _ key: String) -> [String] {
+        sanitizeIDs(d.stringArray(forKey: storageKey(key)) ?? [])
     }
 
     private static func readAll(_ d: UserDefaults) -> Values {
@@ -585,7 +640,9 @@ public final class Settings {
                speedTestAgreed: readBool(d, Key.speedTestAgreed, Default.speedTestAgreed),
                fanDisclosureSeen: readBool(d, Key.fanDisclosureSeen,
                                            Default.fanDisclosureSeen),
-               menuBarWidgets: readWidgets(d, Default.menuBarWidgets))
+               menuBarWidgets: readWidgets(d, Default.menuBarWidgets),
+               panelOrder: readIDList(d, Key.panelOrder),
+               panelHidden: readIDList(d, Key.panelHidden))
     }
 }
 
