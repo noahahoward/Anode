@@ -207,6 +207,13 @@ public final class DrainRateEstimator {
     /// reported failure): 1.8x of headroom over any load profile measured here, and
     /// 1.8x of margin under the fault it has to catch. Chosen in log space because
     /// the quantity is a ratio and the two errors are symmetric in it.
+    ///
+    /// (The table above was measured against the trend's original fixed-band
+    /// detector. The detector has since been redesigned — noise-scaled band,
+    /// frozen reference; see `DischargeTrend` — which only makes the trend's
+    /// window-matched mean steadier, so the worst-legitimate side of the midpoint
+    /// can only have shrunk and the margin here can only have grown. Re-measure
+    /// the table if this constant is ever revisited.)
     private static let crossCheckFactor = 3.0
 
     public init(fastWindow: TimeInterval = 600, slowWindow: TimeInterval = 3600,
@@ -581,9 +588,16 @@ extension DrainEstimate {
 
     /// How much measured history a TIME-to-empty needs behind it.
     ///
-    /// Two minutes, which is the same bar `DischargeTrend.minTicks` sets before it
-    /// will speak at all — so this covers exactly the gap between "the trend was
-    /// just reset" and "the trend has something to say".
+    /// Two minutes. This used to be the same bar `DischargeTrend.minTicks` set,
+    /// and the two were documented as one; they have since deliberately diverged.
+    /// The trend now waits FIVE minutes before speaking (one publish must not
+    /// dominate its window — see `minTicks`), but this gate answers a smaller
+    /// question: is the power tier's time-quote past the just-unplugged
+    /// transient, where the instant it extrapolates is whatever the machine
+    /// happened to be doing? Two minutes of watching clears that transient, and
+    /// blanking the display for five instead would hide an honest, labelled
+    /// figure for the three minutes in between — the gap the power tier exists
+    /// to carry.
     public static let settleSeconds: TimeInterval = 120
 
     /// Is there enough behind this estimate to put a TIME on it?

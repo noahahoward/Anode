@@ -48,10 +48,10 @@ import Foundation
 /// ## Why the window can still move quickly
 /// A window this long would take half an hour to crawl to a genuine sustained load
 /// change, which is too slow to be honest about a real one. So the trend also
-/// watches each incoming window against itself: five unbroken MINUTES of windows
-/// that all disagree with the running trend by more than half, all in the same
-/// direction, are a regime change rather than noise — the accumulator has no
-/// estimation noise for them to be — and the window collapses onto them.
+/// watches each incoming window against a reference: five unbroken MINUTES of
+/// windows that all disagree with it, all in the same direction, are a regime
+/// change rather than noise — the accumulator has no estimation noise for them to
+/// be — and the window collapses onto them.
 ///
 /// A one- or two-minute spike cannot reach that, which is the whole point, and it
 /// does not need to: the mean already holds a 60 s spike to a thirtieth of its
@@ -66,6 +66,35 @@ import Foundation
 ///
 /// A FIVE-minute burst does move it, by design: five minutes at three times the
 /// trend is not a swing, it is what the machine is doing now.
+///
+/// ## How much disagreement counts: scaled by the reference's own noise
+/// How big that disagreement must be cannot be one number. Reported from the
+/// field (2026-08-16): sixteen minutes of build at a measured 8.39 W, then the
+/// machine settled to a measured 4.95 W — a 41 % sustained drop — and the display
+/// held the build's time-to-empty for the whole half-hour roll-off. But the sweep
+/// (`TrendSweepHarness`, committed beside the tests) shows a fixed band low
+/// enough to catch that drop is catastrophic on a bursty load: the base stretches
+/// between build bursts sit 35–45 % below the running mean, indistinguishable
+/// from a settle by magnitude and duration, and adopting them scores 27–59
+/// death-time minutes of error against 16 for leaving them alone. No fixed band
+/// separates the two cases.
+///
+/// What separates them is the reference itself. Before a real settle the window
+/// is QUIET — publish after publish of the same load, relative sd near zero.
+/// A bursty window's own publishes disagree with each other by ~70 %. So the band
+/// scales with the reference's tick-weighted relative standard deviation:
+/// max(0.30, 3·relSD). On the settle that is 0.30 and the drop confirms in five
+/// minutes; on the bursty load it is ~2 and the detector is silent, where the
+/// old fixed 0.50 band was NOT: scored over a full hour rather than the original
+/// fifteen minutes, the fixed band collapsed spuriously on 0.50 of build-like
+/// traces — a 3-minute 54 W burst pushes a half-hour mean past 9 W, which puts
+/// the 4.5 W base more than 50 % below it — a latent defect the shorter horizon
+/// never saw. Swept over 234 configurations: this configuration scores
+/// IDENTICALLY to the fixed band on every accuracy metric (wander, bursty,
+/// spike, swing), zeroes the spurious-collapse rate the fixed band failed, and
+/// follows the field-reported settle in 300 s where the fixed band took 1560.
+/// (3·relSD, not 2: at 2 one build-like trace in forty still collapsed; at 3
+/// none do, and nothing else moves.)
 
 public final class BatteryDischargeTrend {
 
@@ -198,20 +227,27 @@ public final class BatteryDischargeTrend {
     /// one-minute spike to a twelfth of the answer, and still notices a 25 % change
     /// in a quarter of an hour rather than half of one.
     private let window: TimeInterval
-    /// Below two published windows there is not yet a trend to speak of, only a
-    /// minute of history; the caller falls back to the power-based figure and says
-    /// so, and the UI marks it. Measured from a cold start on battery: the fallback
-    /// carries the first 120 s (reading 289-457 min against a truth of 439-444),
-    /// after which this takes over and sits within 5 min of the truth.
+    /// Below five published windows there is not yet a trend to speak of; the
+    /// caller falls back to the power-based figure and says so, and the UI marks
+    /// it. (The cold-start measurement that sized the original two-minute floor:
+    /// the fallback carried the first 120 s reading 289-457 min against a truth
+    /// of 439-444, after which the trend took over and sat within 5 min of the
+    /// truth. The floor has since been raised to 300 — see the initializer's
+    /// comment for the 25-hour headline that forced it — so the fallback now
+    /// carries five minutes.)
     ///
-    /// 120 TICKS rather than 120 seconds because the counter, not the clock, is what
-    /// the mean is over — a window is only as long as the discharge it accumulated.
+    /// TICKS rather than seconds because the counter, not the clock, is what the
+    /// mean is over — a window is only as long as the discharge it accumulated.
     private let minTicks: UInt64
-    /// Fractional disagreement with the running trend that counts as evidence of a
-    /// regime change. There is no measurement noise for this to clear — the counter
-    /// is an integral — so it is chosen purely on how much real change is worth
-    /// restarting the window for, jointly with `confirmTicks` below. Same two loads,
-    /// same death-time scoring:
+    /// The FLOOR of the fractional disagreement that counts as evidence of a
+    /// regime change; the effective band is max(this, `noiseScaledBand`·relSD of
+    /// the reference). There is no measurement noise for this to clear — the
+    /// counter is an integral — so the pair is chosen purely on how much real
+    /// change is worth restarting the window for, jointly with `confirmTicks`.
+    ///
+    /// It was a fixed 0.50 for the reasons the original table records (its
+    /// scoring harness was never committed; the numbers are kept because the
+    /// ORDERINGS were re-verified in `TrendSweepHarness`, which is):
     ///
     ///     confirm  band    MAE wander   MAE bursty   mean|Δ|/tick   worst swing in 2 min
     ///      180 s   0.25        6.0         19.3          0.09              58
@@ -221,13 +257,16 @@ public final class BatteryDischargeTrend {
     ///      600 s   0.50        4.5          5.0          0.04              14
     ///     (pre-change path:   10.5         13.6          0.29              85)
     ///
-    /// A three-minute confirmation is WORSE than the code it replaces on a bursty
-    /// load: a four-minute burst trips it, the window collapses onto the burst, and
-    /// four minutes later it collapses back — the display ends up tracking whichever
-    /// phase the machine is in instead of the trend, which is precisely the
-    /// complaint. Five minutes at half again the trend is the threshold that stops
-    /// treating a burst as a new regime while still being twice as responsive as the
-    /// 600 s setting that scores identically.
+    /// — i.e. on a bursty load, lowering a FIXED band is a measured regression:
+    /// the base stretches between bursts sit 35–45 % below the mean and a low
+    /// fixed band adopts them. But 0.50 could not see the 2026-08-16 settle
+    /// (a 41 % sustained drop after a build; see the class comment), and no fixed
+    /// value separates the two — the magnitudes overlap. The committed sweep
+    /// (234 configurations, `ANODE_TREND_SWEEP=1 swift test --filter TrendSweep`)
+    /// found the separation in the reference's own noise instead: 0.30 with the
+    /// 3·relSD term scores identically to 0.50 on every column above and follows
+    /// the settle in 300 s where 0.50 took 1560. 0.30 rather than 0.35 for margin
+    /// under the 0.41 drop the field actually reported.
     private let changeBand: Double
     /// How long the disagreement must persist, in accumulator TICKS, before the
     /// trend is restarted on it. 300 = five minutes of measured discharge, and it is
@@ -243,12 +282,37 @@ public final class BatteryDischargeTrend {
     /// a 60 s spike moved the answer 246 minutes.
     private let confirmTicks: UInt64
 
+    /// Band for a disagreement BELOW the trend, when it differs from `changeBand`.
+    /// nil = symmetric (the historical behaviour). Internal, settable only through
+    /// the sweep initializer below, so the shipped asymmetry is whatever the
+    /// harness scored, not whatever a caller felt like.
+    private let downBand: Double?
+    /// Compare candidate windows against the trend FROZEN at the start of the
+    /// disagreement run, instead of the live trend the run itself is dragging.
+    /// See `detectRegimeChange` for what the drift does to long confirmations.
+    private let referenceExcludesRun: Bool
+    /// Substance the reference needs before the detector may fire, in ticks.
+    /// nil = the historical gate, a FULL window.
+    private let referenceFloorTicks: UInt64?
+    /// Scale the band by the reference's own publish-to-publish noise:
+    /// effective band = max(changeBand, k·relSD), where relSD is the
+    /// tick-weighted relative standard deviation of the window's publish rates.
+    /// A quiet window (a machine holding one load) may be left on a moderate
+    /// sustained change; a window full of build bursts must not be — its base
+    /// stretches LOOK like regime changes and are not. nil = fixed band.
+    private let noiseScaledBand: Double?
+
     private var samples: [Sample] = []
     /// Ticks accumulated in the current run of same-direction disagreement, and
     /// where that run started — the trend is rebuilt from there when it confirms.
     private var outOfBandTicks: UInt64 = 0
     private var outOfBandSign = 0
     private var runStart: Date?
+    /// The reference power banked when the current run began (`referenceExcludesRun`).
+    private var runReference_mW: Double?
+    /// The effective band banked at the same moment (`noiseScaledBand`): the run's
+    /// own publishes joining the window must not inflate the bar mid-run.
+    private var runBand: Double?
 
     /// 300 ticks — five minutes of measured discharge before ANY figure is
     /// published, up from 120.
@@ -272,12 +336,71 @@ public final class BatteryDischargeTrend {
     /// It does not make the early estimate accurate — a machine still settling
     /// after boot has no stable answer to give — it stops the app from asserting
     /// one it cannot support.
-    public init(window: TimeInterval = 1800, minTicks: UInt64 = 300,
-                changeBand: Double = 0.50, confirmTicks: UInt64 = 300) {
+    public convenience init(window: TimeInterval = 1800, minTicks: UInt64 = 300,
+                            changeBand: Double = 0.30, confirmTicks: UInt64 = 300) {
+        // The structural knobs are fixed here, not exposed: the shipped detector
+        // judges runs against a reference FROZEN at run start, may fire once ten
+        // minutes of reference exist, and scales its band by the reference's own
+        // noise. The values are the winners of the committed sweep
+        // (`TrendSweepHarness`); the sweep initializer below is how they were
+        // chosen and how a successor should change them.
+        self.init(window: window, minTicks: minTicks, changeBand: changeBand,
+                  confirmTicks: confirmTicks, downBand: nil,
+                  referenceExcludesRun: true, referenceFloorTicks: 600,
+                  noiseScaledBand: 3.0)
+    }
+
+    /// The sweep initializer: every structural knob of the regime detector,
+    /// so the scoring harness can drive the whole design space through the REAL
+    /// class rather than a copy that would drift from it. Internal on purpose —
+    /// the public initializer above pins the shipped configuration.
+    init(window: TimeInterval, minTicks: UInt64,
+         changeBand: Double, confirmTicks: UInt64,
+         downBand: Double?, referenceExcludesRun: Bool,
+         referenceFloorTicks: UInt64?, noiseScaledBand: Double? = nil) {
         self.window = max(60, window)
         self.minTicks = max(1, minTicks)
         self.changeBand = changeBand
         self.confirmTicks = max(1, confirmTicks)
+        self.downBand = downBand
+        self.referenceExcludesRun = referenceExcludesRun
+        self.referenceFloorTicks = referenceFloorTicks
+        self.noiseScaledBand = noiseScaledBand
+    }
+
+    /// Tick-weighted relative standard deviation of the window's publish rates —
+    /// how much the machine's own minutes disagree with each other. ~0 for a
+    /// machine holding one load; large for one alternating base and bursts.
+    ///
+    /// nil when the question cannot be answered, and the caller must then treat
+    /// the reference as unassessable rather than as quiet. Two ways it cannot:
+    /// fewer than two measurable publish rates (nothing to disagree), or ANY
+    /// single window longer than `maxAssessableTicks`. The second is the subtle
+    /// one, found in adversarial review: a 600-tick gap window (a stopped
+    /// process, or a long gauge silence) averaging a burst-and-base load reads
+    /// as ONE rate — its internal variance is laundered by its own length — so
+    /// a tick-weighted sd over [one long blend, a few base publishes] comes out
+    /// near zero for a load whose visible publishes disagree by 70 %. A window
+    /// as long as the whole confirmation could hide a full burst cycle inside;
+    /// it cannot testify to quietness.
+    private static let maxAssessableTicks: UInt64 = 300
+    private func referenceRelSD() -> Double? {
+        guard samples.count >= 3 else { return nil }
+        var wSum = 0.0, wTicks = 0.0
+        var rates: [(mW: Double, ticks: Double)] = []
+        for i in 1..<samples.count {
+            guard let w = Window.between(samples[i - 1], samples[i]) else { continue }
+            guard w.ticks <= Self.maxAssessableTicks else { return nil }
+            rates.append((w.power_mW, Double(w.ticks)))
+            wSum += w.power_mW * Double(w.ticks)
+            wTicks += Double(w.ticks)
+        }
+        guard wTicks > 0, rates.count >= 2 else { return nil }
+        let mean = wSum / wTicks
+        guard mean > 0 else { return nil }
+        var varSum = 0.0
+        for r in rates { varSum += r.ticks * (r.mW - mean) * (r.mW - mean) }
+        return (varSum / wTicks).squareRoot() / mean
     }
 
     /// Feed every tick. The trend itself only advances when the gauge publishes a
@@ -381,7 +504,7 @@ public final class BatteryDischargeTrend {
     // ── Internals ───────────────────────────────────────────────────────────
 
     /// One 60 s window that disagrees with the trend is a minute of unusual load and
-    /// belongs IN the average. Three minutes of it, all the same way, is a new
+    /// belongs IN the average. Five minutes of it, all the same way, is a new
     /// regime: keep only those windows, so the trend restarts from the new load
     /// rather than spending half an hour crawling to it.
     ///
@@ -389,45 +512,113 @@ public final class BatteryDischargeTrend {
     /// of the trend never confirms — it is noise about a mean, which is what the
     /// mean is for.
     ///
-    /// ## Why it may not fire until the window is FULL
-    /// The detector asks "does this window disagree with the trend?", and the trend
-    /// it asks about is `trend`, which CONTAINS the window being tested. While the
-    /// window is short the two are nearly the same data: at five minutes of history
-    /// one 60 s publish is a fifth of its own reference, so a single burst drags the
-    /// reference toward itself and the comparison is a hypothesis tested against
-    /// itself. Measured on a 6 h trace, the detector collapsed the window inside the
-    /// first fifteen minutes on 0.53 bursty runs and 0.45 build-like runs — a
-    /// "regime change" detected out of warm-up, not out of the load.
+    /// ## Warm-up: the ten-minute floor, and why it replaced the full-window gate
+    /// The detector once refused to fire until the window was FULL, because its
+    /// reference was `trend`, which CONTAINS the window being tested: at five
+    /// minutes of history one 60 s publish is a fifth of its own reference, so a
+    /// burst dragged the reference toward itself and the comparison was a
+    /// hypothesis tested against itself. Measured then on 6 h traces: the window
+    /// collapsed inside the first fifteen minutes on 0.53 of bursty cold starts.
     ///
-    /// Requiring a full reference removes 100 % of those firings and costs nothing
-    /// elsewhere, because an immature window does not NEED the detector: the whole
-    /// purpose of collapsing the window is to stop a 30-minute mean crawling to a
-    /// new load, and a five-minute mean is already there. The one real cost is a run
-    /// that begins just before the window matures — `endRun` discards it, so
-    /// confirmation restarts at the 30-minute mark and a change straddling that
-    /// boundary is followed up to five minutes later than it otherwise would be.
-    /// Carrying the run across instead would let a run accumulated entirely out of
-    /// warm-up noise confirm the instant the window matured, which is the same bug
-    /// arriving half an hour later.
+    /// The gate stopped those firings, but it also held the detector inert
+    /// through the one case the field actually reported (2026-08-16): a 41 %
+    /// settle arriving SIXTEEN minutes into the window's life. By the time the
+    /// window filled at minute 30, the mean had blended to within ~25 % of the
+    /// new load and no band could see the change — so the gate turned a
+    /// five-minute confirmation into a thirty-minute roll-off precisely when the
+    /// window was old enough to be sound. Ten minutes of reference
+    /// (`referenceFloorTicks` = 600) plus the noise-scaled band now carry the
+    /// same protection: the frozen reference removes the self-comparison, and a
+    /// reference noisy enough to be mid-warm-up-burst raises its own bar.
+    /// Re-measured in `TrendSweepHarness` over 40 bursty and build-like cold
+    /// starts: 0.00 collapse inside fifteen minutes, the same as the gate.
     ///
-    /// ## What is deliberately NOT fixed here
-    /// The nominal 50 % band behaves as 62.5 %, because `running` already contains
-    /// `published` and so drifts toward it. Removing that drift — comparing against
-    /// the window with the candidate excluded — was tried and WITHDRAWN: it fires
-    /// MORE often, and bursty MAE went 30.0 -> 109.0 death-time minutes. The drift
-    /// is acting as accidental hysteresis and the measured behaviour of the pair is
-    /// what the sizing table above was scored on. Known, measured, and left alone.
+    /// ## The reference drift, now fixed rather than left alone
+    /// `running` contains every prior window of the run being confirmed, so it
+    /// drifts toward the very change it is measuring — under the old fixed band
+    /// the nominal 50 % behaved as 62.5 %. An earlier attempt to remove the
+    /// drift was withdrawn because it fired MORE (bursty MAE 30.0 -> 109.0):
+    /// the drift was accidental hysteresis, and with a FIXED band that
+    /// hysteresis was load-bearing. With the band scaled to the reference's
+    /// noise the hysteresis is redundant — the noisy loads it protected raise
+    /// their own bar — so the reference is banked at run start
+    /// (`runReference_mW`) and the run is judged end to end against what the
+    /// load USED to be. That is also what lets a near-band change confirm at
+    /// all: judged against a drifting mean, a 41 % drop falls back inside any
+    /// usable band before a long confirmation completes.
     private func detectRegimeChange(_ published: Window, from left: Sample) {
         guard let running = trend, running.power_mW > 0 else { endRun(); return }
-        guard running.isFull else { endRun(); return }
-        let delta = published.power_mW - running.power_mW
-        guard abs(delta) > changeBand * running.power_mW else { endRun(); return }
+        // The substance gate: how much reference the detector needs before it may
+        // fire. Historically a FULL window; `referenceFloorTicks` swaps that for a
+        // fixed floor, which only makes sense together with a frozen reference —
+        // an immature INCLUSIVE reference is the self-comparison the full-window
+        // gate was built to stop.
+        if let floor = referenceFloorTicks {
+            guard running.ticks >= floor else { endRun(); return }
+        } else {
+            guard running.isFull else { endRun(); return }
+        }
+        // `running` is computed BEFORE the candidate is appended, so the first
+        // window of a run is always judged against a clean reference. On the
+        // SECOND and later windows `running` contains the run so far, and drifts
+        // toward it — which shrinks the measured disagreement while the run is
+        // being confirmed. `referenceExcludesRun` banks the clean reference at
+        // run start and judges the whole run against it instead.
+        let reference = (referenceExcludesRun ? runReference_mW : nil)
+            ?? running.power_mW
+        let delta = published.power_mW - reference
+        let directionalBand = delta < 0 ? (downBand ?? changeBand) : changeBand
+        let band: Double
+        if let k = noiseScaledBand {
+            if let banked = runBand {
+                // Mid-run: the bar was banked at run start so the run's own
+                // out-of-band publishes joining the window cannot raise it
+                // against themselves.
+                band = banked
+            } else if let rel = referenceRelSD() {
+                band = max(directionalBand, k * rel)
+            } else {
+                // Fewer than two measurable publish rates in the reference — a
+                // single long gap window after a reset, or the two samples a
+                // confirm-trim leaves behind. Its internal noise is UNKNOWABLE,
+                // and "unknowable" fired the floor band on exactly the bursty
+                // blends the noise term exists to bar (found in adversarial
+                // review, reproduced through this class: a 600-tick gap window
+                // averaging base and burst read as a quiet 8 W reference and the
+                // 5 W base stretches collapsed it). No reference noise, no
+                // detector — the same shape as the old full-window gate.
+                endRun()
+                return
+            }
+        } else {
+            band = directionalBand
+        }
+        guard abs(delta) > band * reference else { endRun(); return }
 
         let sign = delta > 0 ? 1 : -1
         if sign != outOfBandSign {
             outOfBandSign = sign
             outOfBandTicks = 0
             runStart = left.timestamp
+            // Frozen from the pre-candidate trend, so the run is judged end to
+            // end against what the load USED to be. (On a direction flip this is
+            // the live trend, which still holds the abandoned run — imperfect,
+            // but a flip means the "run" was oscillation, and oscillation is what
+            // the mean is for.)
+            runReference_mW = running.power_mW
+            // Banked FRESH from the NEW direction's base band and the reference
+            // as it stands now: on a flip the band tested above was the
+            // abandoned run's, and carrying it forward would floor the new run
+            // at a bar computed for a reference that may have pruned away. The
+            // reference here includes the abandoned run's publishes, so on an
+            // oscillating load the recomputed bar is higher — the right
+            // direction, since oscillation is what the mean is for.
+            if let k = noiseScaledBand {
+                guard let rel = referenceRelSD() else { endRun(); return }
+                runBand = max(directionalBand, k * rel)
+            } else {
+                runBand = directionalBand
+            }
         }
         outOfBandTicks &+= published.ticks
         guard outOfBandTicks >= confirmTicks, let from = runStart else { return }
@@ -442,6 +633,8 @@ public final class BatteryDischargeTrend {
         outOfBandTicks = 0
         outOfBandSign = 0
         runStart = nil
+        runReference_mW = nil
+        runBand = nil
     }
 
     private func prune() {
