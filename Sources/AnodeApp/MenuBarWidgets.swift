@@ -368,86 +368,93 @@ public final class MenuBarWidgetController: NSObject, NSMenuDelegate {
 
             let value = registry.value(for: d.id)
             let shown = value.map { $0.text + ($0.isEstimate ? "*" : "") } ?? "\u{2014}"
-            let row = NSMenuItem(title: "", action: nil, keyEquivalent: "")
-
-            // Name left, value right, in one attributed string with a right-aligned
-            // tab stop so the numbers form a column instead of ragging.
-            let para = NSMutableParagraphStyle()
-            para.tabStops = [NSTextTab(textAlignment: .right, location: 190)]
-            let line = NSMutableAttributedString(
-                string: d.title + "\t", attributes: [
-                    .font: NSFont.systemFont(ofSize: 12),
-                    .paragraphStyle: para])
-            line.append(NSAttributedString(string: shown, attributes: [
-                .font: NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .medium),
-                .foregroundColor: value == nil ? NSColor.tertiaryLabelColor : NSColor.labelColor,
-                .paragraphStyle: para]))
-            row.attributedTitle = line
+            // The title is redundant beside the view, but it is what VoiceOver
+            // reads, and it is how the tests tell a row from a header.
+            let row = NSMenuItem(title: d.title + "\t" + shown,
+                                 action: nil, keyEquivalent: "")
+            row.view = MetricRowView(name: d.title, value: shown,
+                                     hasReading: value != nil)
             row.isEnabled = false
             menu.addItem(row)
         }
         return menu
     }
 
+    /// The ink for a metric row: STRAIGHT white on a dark menu, straight black on
+    /// a light one — deliberately not `labelColor`, which is ~85 % opacity and
+    /// reads as gray against the vibrant menu material. Requested from the field
+    /// after two rounds of gray.
+    static let rowInk = NSColor(name: nil) { appearance in
+        appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua ? .white : .black
+    }
+    /// A value with no reading stays de-emphasised — the em-dash is a
+    /// placeholder, not a measurement — but at 45 % of the SAME straight ink, so
+    /// it dims relative to its row and not into the menu material.
+    static let placeholderInk = NSColor(name: nil) { appearance in
+        (appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+            ? NSColor.white : NSColor.black).withAlphaComponent(0.45)
+    }
+
     /// Test seam: materialized buttons in config order. Internal on purpose.
     var _buttons: [NSStatusBarButton] { items.compactMap { $0.item.button } }
+}
+
+/// One reading row of the group menu, drawn by US and not by NSMenu.
+///
+/// A VIEW, not an attributed title, because the attributed-title route was tried
+/// and defeated: these items are disabled (readings, not commands), and on this
+/// machine's macOS the menu dims a disabled item's ENTIRE title — explicit
+/// `.foregroundColor` attributes included — so the panel stayed gray through a
+/// fix that named its colors. A custom view is the one surface AppKit renders
+/// untouched: no disabled-state recolor, no hover highlight, and the ink below
+/// is exactly the ink on screen.
+final class MetricRowView: NSView {
+
+    let nameField: NSTextField
+    let valueField: NSTextField
+
+    /// Matches the old attributed layout: name at the menu's standard content
+    /// inset, value right-aligned so the numbers form a column.
+    private static let width: CGFloat = 240
+    private static let height: CGFloat = 22
+    private static let inset: CGFloat = 14
+
+    init(name: String, value: String, hasReading: Bool) {
+        nameField = NSTextField(labelWithString: name)
+        nameField.font = .systemFont(ofSize: 12)
+        nameField.textColor = MenuBarWidgetController.rowInk
+
+        valueField = NSTextField(labelWithString: value)
+        valueField.font = .monospacedDigitSystemFont(ofSize: 12, weight: .medium)
+        valueField.textColor = hasReading
+            ? MenuBarWidgetController.rowInk
+            : MenuBarWidgetController.placeholderInk
+
+        super.init(frame: NSRect(x: 0, y: 0, width: Self.width, height: Self.height))
+
+        for field in [nameField, valueField] {
+            field.drawsBackground = false
+            field.sizeToFit()
+            addSubview(field)
+        }
+        nameField.setFrameOrigin(NSPoint(
+            x: Self.inset,
+            y: (Self.height - nameField.frame.height) / 2))
+        valueField.setFrameOrigin(NSPoint(
+            x: Self.width - Self.inset - valueField.frame.width,
+            y: (Self.height - valueField.frame.height) / 2))
+    }
+
+    required init?(coder: NSCoder) { fatalError("not from a nib") }
+
+    /// The menu material desaturates vibrant content; this row opts out so the
+    /// straight ink stays straight.
+    override var allowsVibrancy: Bool { false }
 }
 
 /// Pure rendering — (style, descriptor, value) → attributed string / image — kept
 /// free of NSStatusItem so it can be exercised headlessly.
 enum WidgetRenderer {
-
-    static func attributedTitle(style: WidgetStyle, descriptor: MetricDescriptor?,
-                                value: MetricValue?) -> NSAttributedString {
-        // Stacked label-over-value, matching the density convention menu bar
-        // monitors use. Two small lines occupy less horizontal space than one
-        // medium line plus a separator, and horizontal space is the scarce
-        // resource up there.
-        //
-        // Both lines use labelColor. secondaryLabelColor is a low-contrast grey
-        // that is legible against a plain desktop and effectively invisible against
-        // a busy or light wallpaper — every other menu bar element uses full-weight
-        // label colour for exactly this reason.
-        let valueFont = NSFont.monospacedDigitSystemFont(ofSize: 10, weight: .semibold)
-        let labelFont = NSFont.systemFont(ofSize: 8, weight: .medium)
-
-        let para = NSMutableParagraphStyle()
-        para.alignment = .center
-        // The menu bar is only ~22pt tall, so the two lines have to be pulled
-        // tight or the second one is clipped.
-        para.maximumLineHeight = 10
-        para.minimumLineHeight = 10
-        para.lineSpacing = 0
-
-        let out = NSMutableAttributedString()
-
-        let stacked = (style == .textWithLabel)
-        if stacked {
-            // "?" for an unknown metric: neutral, and the tooltip carries the detail.
-            // A per-reading label wins over the descriptor's: see MetricValue.label.
-            let label = value?.label ?? descriptor?.shortTitle ?? "?"
-            out.append(NSAttributedString(string: label + "\n", attributes: [
-                .font: labelFont,
-                .foregroundColor: NSColor.labelColor,
-                .paragraphStyle: para]))
-        }
-
-        let valueAttrs: [NSAttributedString.Key: Any] = [
-            .font: valueFont,
-            .foregroundColor: NSColor.labelColor,
-            .paragraphStyle: para,
-        ]
-        if let v = value {
-            out.append(NSAttributedString(string: v.text, attributes: valueAttrs))
-            if v.isEstimate {
-                // Same marker the app uses for an uncalibrated total. Never hidden.
-                out.append(NSAttributedString(string: "*", attributes: valueAttrs))
-            }
-        } else {
-            out.append(NSAttributedString(string: "\u{2014}", attributes: valueAttrs))
-        }
-        return out
-    }
 
     static func toolTip(metricID: String, descriptor: MetricDescriptor?,
                         value: MetricValue?) -> String {
