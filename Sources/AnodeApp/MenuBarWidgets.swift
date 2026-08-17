@@ -345,27 +345,22 @@ public final class MenuBarWidgetController: NSObject, NSMenuDelegate {
         }
     }
 
-    /// Every metric with its current reading, grouped by category. Rebuilt on each
-    /// refresh so the panel is current the moment it opens — a stale popover is
-    /// worse than none, and building ~15 rows is far cheaper than the sampling that
-    /// produced them.
+    /// Every metric with its current reading, one uninterrupted column. Rebuilt on
+    /// each refresh so the panel is current the moment it opens — a stale popover
+    /// is worse than none, and building ~15 rows is far cheaper than the sampling
+    /// that produced them.
+    ///
+    /// No category headers and no separators, on request: the rows are
+    /// self-labelling ("CPU usage", "Network down"), and the headers and dividers
+    /// were each other's redundancy — every header sat on a divider, both
+    /// announcing the same break. The registry's category ORDER still groups
+    /// related rows next to each other; the grouping is in the sequence, not in
+    /// chrome.
     static func buildGroupMenu() -> NSMenu {
         let menu = NSMenu()
         let registry = MetricRegistry.shared
-        var category = ""
 
         for d in registry.descriptors() {
-            if d.category != category {
-                if !menu.items.isEmpty { menu.addItem(.separator()) }
-                category = d.category
-                let header = NSMenuItem(title: category.uppercased(), action: nil, keyEquivalent: "")
-                header.attributedTitle = NSAttributedString(string: category.uppercased(), attributes: [
-                    .font: NSFont.systemFont(ofSize: 10, weight: .semibold),
-                    .foregroundColor: NSColor.secondaryLabelColor])
-                header.isEnabled = false
-                menu.addItem(header)
-            }
-
             let value = registry.value(for: d.id)
             let shown = value.map { $0.text + ($0.isEstimate ? "*" : "") } ?? "\u{2014}"
             // The title is redundant beside the view, but it is what VoiceOver

@@ -23,14 +23,10 @@ final class GroupMenuTests: XCTestCase {
 
     private func buildMenu() -> NSMenu { MenuBarWidgetController.buildGroupMenu() }
 
-    /// Rows are the items with a tab in the title (name TAB value — also what
-    /// VoiceOver reads); headers are bare category words.
+    /// Every item is a row (name TAB value in the title — also what VoiceOver
+    /// reads); the panel has no headers and no separators, by decision below.
     private func rows(_ menu: NSMenu) -> [NSMenuItem] {
         menu.items.filter { !$0.isSeparatorItem && $0.title.contains("\t") }
-    }
-
-    private func headers(_ menu: NSMenu) -> [NSMenuItem] {
-        menu.items.filter { !$0.isSeparatorItem && !$0.title.contains("\t") }
     }
 
     private func resolved(_ color: NSColor, in appearanceName: NSAppearance.Name) -> NSColor? {
@@ -93,20 +89,17 @@ final class GroupMenuTests: XCTestCase {
         }
     }
 
-    /// Section headers stay on the system convention (`secondaryLabelColor`
-    /// attributed titles): they are labels for structure, not readings, and the
-    /// field complaint was about the rows.
-    func testHeadersKeepTheSystemConvention() {
-        let headers = headers(buildMenu())
-        XCTAssertGreaterThan(headers.count, 3)
-        for header in headers {
-            guard let a = header.attributedTitle, a.length > 0 else {
-                XCTFail("header \"\(header.title)\" has no attributed title"); continue
-            }
-            let c = a.attribute(.foregroundColor, at: 0, effectiveRange: nil) as? NSColor
-            XCTAssertEqual(c, NSColor.secondaryLabelColor,
-                           "header \"\(header.title)\" lost its section-header color")
-        }
+    /// The panel is ONE uninterrupted column: no category headers, no
+    /// separators. Decided in review of the first white-ink build — the rows are
+    /// self-labelling, and the headers and dividers were each other's redundancy
+    /// (every header sat on a divider, both announcing the same break). Grouping
+    /// survives in the registry's category ORDER, not in chrome.
+    func testPanelIsASingleUngroupedColumn() {
+        let menu = buildMenu()
+        XCTAssertFalse(menu.items.contains { $0.isSeparatorItem },
+                       "a separator crept back into the panel")
+        XCTAssertEqual(rows(menu).count, menu.items.count,
+                       "a non-row item (a header?) crept back into the panel")
     }
 
     /// Rows stay disabled: they are readings, not commands. The view carries the
