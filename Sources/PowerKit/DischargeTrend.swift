@@ -302,6 +302,52 @@ public final class BatteryDischargeTrend {
     /// stretches LOOK like regime changes and are not. nil = fixed band.
     private let noiseScaledBand: Double?
 
+    /// Ceiling on the effective band for a DOWNWARD change only.
+    ///
+    /// A drop is bounded by the reference itself — power does not go below zero —
+    /// so `abs(delta) > band * reference` is unsatisfiable downward whenever
+    /// `band >= 1`, at ANY magnitude, including a machine falling to a dead stop.
+    /// `max(changeBand, k * relSD)` crosses 1 at `relSD = 1/3`, and a window holding
+    /// a burst is far noisier than that: 0.70 measured in the field. So the noise
+    /// term was blinded by precisely the event it exists to detect — it protects
+    /// against firing on a bursty reference by making it impossible to notice the
+    /// burst ENDING.
+    ///
+    /// Upward is deliberately left uncapped. A rise has no such bound, so a large
+    /// band is satisfiable there and still does its job; the asymmetry is a
+    /// property of the direction, not a tuning preference.
+    ///
+    /// MEASURED (`TrendSweepHarness.testDownwardCeilingSweep`, the field shape:
+    /// 20 min quiet, 6 min at 25 W, quiet again) — settle is minutes from the drop
+    /// until the trend is within 20 % of the truth, warm-up is the spurious
+    /// cold-start collapse rate the floor and noise term exist to hold at zero:
+    ///
+    ///     ceiling   settle   warm-up   maeBursty   swing2m
+    ///     none        29        0.00       16.0        45.6   <- ships today
+    ///     0.80        29        0.00       16.0        45.6
+    ///     0.70        29        0.25       16.0        45.6
+    ///     0.60         8        0.50       16.0        45.6
+    ///     0.50         8        0.50       15.8        42.7
+    ///     0.40         8        1.00       38.3       176.5
+    ///     0.30         8        1.00       55.2       148.4
+    ///
+    /// **SO THIS SHIPS AS nil, AND THE KNOB EXISTS TO RECORD THAT.** No ceiling
+    /// separates the two failures: every value that settles faster than the
+    /// window's own roll-off collapses between a quarter and all bursty cold
+    /// starts, which is the exact regression the floor and the noise term were
+    /// added to remove (0.53 -> 0.00, and this would undo it). A ceiling is
+    /// therefore the WRONG SHAPE of fix, not a mis-tuned one.
+    ///
+    /// What the table says the real fix needs: a band cannot tell "the load was
+    /// bursty and has now stopped" from "the load is bursty and continues",
+    /// because at the moment of the test both have the same heterogeneous
+    /// reference. The discriminator is not in the reference at all — it is that
+    /// the publishes SINCE the drop are homogeneous in the first case and not in
+    /// the second. `confirmTicks` already requires persistence, but of the
+    /// out-of-band condition, which never begins when the band cannot be crossed.
+    /// Whatever lands here has to be measured against both columns at once.
+    private let downBandCeiling: Double?
+
     private var samples: [Sample] = []
     /// Ticks accumulated in the current run of same-direction disagreement, and
     /// where that run started — the trend is rebuilt from there when it confirms.
@@ -357,7 +403,8 @@ public final class BatteryDischargeTrend {
     init(window: TimeInterval, minTicks: UInt64,
          changeBand: Double, confirmTicks: UInt64,
          downBand: Double?, referenceExcludesRun: Bool,
-         referenceFloorTicks: UInt64?, noiseScaledBand: Double? = nil) {
+         referenceFloorTicks: UInt64?, noiseScaledBand: Double? = nil,
+         downBandCeiling: Double? = nil) {
         self.window = max(60, window)
         self.minTicks = max(1, minTicks)
         self.changeBand = changeBand
@@ -366,6 +413,7 @@ public final class BatteryDischargeTrend {
         self.referenceExcludesRun = referenceExcludesRun
         self.referenceFloorTicks = referenceFloorTicks
         self.noiseScaledBand = noiseScaledBand
+        self.downBandCeiling = downBandCeiling
     }
 
     /// Tick-weighted relative standard deviation of the window's publish rates —
@@ -593,7 +641,10 @@ public final class BatteryDischargeTrend {
         } else {
             band = directionalBand
         }
-        guard abs(delta) > band * reference else { endRun(); return }
+        // Downward only, and see `downBandCeiling` for why the direction matters.
+        let effective = (delta < 0 && downBandCeiling != nil)
+            ? min(band, downBandCeiling!) : band
+        guard abs(delta) > effective * reference else { endRun(); return }
 
         let sign = delta > 0 ? 1 : -1
         if sign != outOfBandSign {
