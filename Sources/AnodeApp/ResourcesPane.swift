@@ -941,8 +941,14 @@ final class ResourcesContent: NSView, PaneContentView {
                             color: sys.cpuTemperature.map(Self.heatTint)))
         live.append(.figure("GPU", sys.gpuTemperature.map { String(format: "%.0f °C", $0) } ?? "—",
                             color: sys.gpuTemperature.map(Self.heatTint)))
+        // Silent on a machine that has none. "Fans — none reported" is still a
+        // sentence about this machine's fans, and it is the same claim the hidden
+        // Fans tab already declines to make. `.unknown` keeps the row, because
+        // there the reading genuinely is missing rather than absent.
         if sys.fans.isEmpty {
-            live.append(.row("Fans", "none reported", dim: true))
+            if FanPresence.showsFanTab(FanPresence.onThisMac) {
+                live.append(.row("Fans", "none reported", dim: true))
+            }
         } else {
             live.append(.heading("Fans"))
             for f in sys.fans {
@@ -957,7 +963,10 @@ final class ResourcesContent: NSView, PaneContentView {
         specs.append(.row("CPU temperature", "mean of the Tp/Te core diodes", dim: true))
         specs.append(.row("GPU temperature", "mean of the Tg cluster sensors", dim: true))
         specs.append(.row("Every sensor on this machine", "Sensors tab", dim: true))
-        specs.append(.row("Fan control", "Fans tab", dim: true))
+        // Pointing at a tab that is not on the rail is worse than saying nothing.
+        if FanPresence.showsFanTab(FanPresence.onThisMac) {
+            specs.append(.row("Fan control", "Fans tab", dim: true))
+        }
         specs.append(.heading("Graph"))
         specs.append(.row("Plotted here", "CPU temperature", dim: true))
         return (live, specs)

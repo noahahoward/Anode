@@ -330,3 +330,43 @@ final class OpenPanelSamplingTests: XCTestCase {
         XCTAssertGreaterThan(AppDelegate.hiddenInterval, 2)
     }
 }
+
+// ── Saying nothing about fans a machine does not have ───────────────────────
+
+/// Hiding the tab was only part of it. "Fan speed  —" in a column of live
+/// figures is still a claim that this machine has a fan whose speed is unknown.
+final class FanlessSilenceTests: XCTestCase {
+
+    func testFanSpeedIsNotOfferedOnAFanlessMachine() {
+        XCTAssertFalse(MetricRegistry.offered(.fanSpeed, fans: .fanless))
+    }
+
+    /// Same asymmetry as the tab: `.unknown` KEEPS it, because withdrawing a real
+    /// reading from a machine that has fans is the worse of the two errors.
+    func testEveryOtherFanStateKeepsIt() {
+        XCTAssertTrue(MetricRegistry.offered(.fanSpeed, fans: .unknown))
+        XCTAssertTrue(MetricRegistry.offered(.fanSpeed, fans: .fans(1)))
+        XCTAssertTrue(MetricRegistry.offered(.fanSpeed, fans: .fans(2)))
+    }
+
+    /// Only the fan metric is touched — the filter must not quietly withdraw
+    /// anything else.
+    func testNoOtherMetricIsWithheldOnAFanlessMachine() {
+        for d in MetricRegistry.shared.allDescriptors() where d.id != .fanSpeed {
+            XCTAssertTrue(MetricRegistry.offered(d.id, fans: .fanless), "\(d.id.rawValue)")
+        }
+    }
+
+    /// The panel, the widget picker and the panel editor all build from
+    /// `descriptors()`, so dropping it there is what makes them all follow.
+    func testTheOrderedPanelDropsItWhenItIsNotOffered() {
+        let all = MetricRegistry.shared.allDescriptors().map(\.id)
+        let withFans = PanelOrder.visible(saved: [], hidden: [], available: all)
+        let withoutFans = PanelOrder.visible(
+            saved: [], hidden: [],
+            available: all.filter { MetricRegistry.offered($0, fans: .fanless) })
+        XCTAssertTrue(withFans.contains(MetricID.fanSpeed.rawValue))
+        XCTAssertFalse(withoutFans.contains(MetricID.fanSpeed.rawValue))
+        XCTAssertEqual(withFans.count - 1, withoutFans.count)
+    }
+}
