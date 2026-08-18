@@ -148,12 +148,41 @@ shipped; see `## Done`.
   reference itself (power cannot go below zero), so downward detection requires
   `band < 1` — **every reference with relSD >= 1/3 is structurally undetectable
   downward, at any magnitude.** The noise term is blinded by exactly the event
-  it exists to catch. Fix the band; leave `referenceFloorTicks` alone, as it is
-  already the product of one full tuning cycle (0.53 -> 0.00 collapse rate) and
-  one incident is not grounds to re-open it. Reproduce in
-  `DischargeTrendSweepHarness` BEFORE changing anything, and re-run the
-  cold-start sweeps after — this file's own history is a record of a fix that
-  repaired one case and broke another.
+  it exists to catch.
+
+  REPRODUCED AND MEASURED in `DischargeTrendSweepHarness`
+  (`testBurstThenQuietSettlesWithoutWaitingOutTheWindow`,
+  `testDownwardCeilingSweep`): the shipped config takes **29 minutes** to come
+  within 20 % of the truth after the drop — it waits out the window, as
+  diagnosed.
+
+  **The obvious fix was tried and REJECTED on the measurement.** Capping the
+  downward band below 1 does let the detector fire, and trades the bug for a
+  worse one — settle time and the spurious cold-start collapse rate move
+  together and cannot be separated:
+
+      ceiling  settle  warm-up  maeBursty  swing2m
+      none       29     0.00      16.0       45.6   <- ships today
+      0.70       29     0.25      16.0       45.6
+      0.60        8     0.50      16.0       45.6
+      0.40        8     1.00      38.3      176.5
+
+  Every ceiling that beats the window's own roll-off collapses a quarter to all
+  bursty cold starts, undoing the 0.53 -> 0.00 the floor and the noise term were
+  added for. So a ceiling is the wrong SHAPE of fix, not a mis-tuned one. The
+  knob ships as nil with that table in its doc comment and an assertion that
+  fails if a plain ceiling ever does work.
+
+  What the measurement says is actually needed: at the moment of the test, "the
+  load was bursty and has stopped" and "the load is bursty and continues"
+  present the SAME heterogeneous reference, so no band computed over that
+  reference can separate them. The discriminator is that the publishes SINCE the
+  drop are homogeneous in the first case and not in the second — `confirmTicks`
+  already demands persistence, but of an out-of-band condition that never begins
+  when the band cannot be crossed. Whatever lands must move both columns at once.
+
+  Leave `referenceFloorTicks` alone regardless: it is already the product of one
+  full tuning cycle, and one incident is not grounds to re-open it.
 - **38 — no update mechanism.** The one distribution item still open. Parked
   until the repo is public, since an updater needs somewhere to update from.
 - **Publication** — the remote is renamed and the history is scrubbed. What is
