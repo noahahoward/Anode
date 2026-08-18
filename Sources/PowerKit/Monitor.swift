@@ -321,9 +321,17 @@ public final class PowerMonitor {
         }
 
         /// Projected runtime at the smoothed draw — independent of macOS's estimate.
+        ///
+        /// On the mAh basis, like every other time-to-empty in this app. It used to
+        /// divide the integer `CurrentCapacity`, which is the quantisation the whole
+        /// `BatteryScale.chargePercent` argument exists to avoid: one integer step is
+        /// 13.4 min of displayed runtime at 4.49 %/hr, against 13.5 s for the 1 mAh
+        /// step the gauge actually publishes. Worse where this function is actually
+        /// reached — it is the menu bar's fallback only when the shared pair quotes
+        /// no time, i.e. drain under 0.1 %/hr, where one integer step is ten hours.
         public func projectedRuntime_hr() -> Double? {
             guard smoothed_W > 0, let s = state, !s.onAC else { return nil }
-            return Double(s.percent) * scale.joulesPerPercent / smoothed_W / 3600
+            return scale.chargePercent(s) * scale.joulesPerPercent / smoothed_W / 3600
         }
 
         /// Energy left in the pack, in joules.

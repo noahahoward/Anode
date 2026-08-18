@@ -54,9 +54,13 @@ public enum FanPresence {
     /// of a fan, while `FNum` is a claim about them. They should never disagree;
     /// if they do, believing the one backed by a live reading is the honest way
     /// round.
+    /// `smcAnswering` is evidence the connection is live rather than merely open —
+    /// `detect` passes `#KEY > 0`. It defaults to false so a caller that cannot
+    /// establish it gets the old, cautious `.unknown`.
     public static func decide(smcReachable: Bool,
                               reportedCount: Double?,
-                              respondingFans: Int) -> State {
+                              respondingFans: Int,
+                              smcAnswering: Bool = false) -> State {
         // Not measured. Never "none".
         guard smcReachable else { return .unknown }
 
@@ -65,12 +69,23 @@ public enum FanPresence {
             return respondingFans > 0 ? .fans(respondingFans) : .fanless
         }
 
-        // No usable FNum. A responding fan key still proves fans exist; nothing
-        // responding proves NOTHING, and in particular does not prove absence —
-        // on Intel `F<n>Ac` is `fpe2`, a type this app's decoder skips, so an
-        // Intel Mac with two fans reaches exactly this branch. Absence of the
-        // key we count with is absence of evidence, not evidence of absence.
-        return respondingFans > 0 ? .fans(respondingFans) : .unknown
+        // No usable FNum. A responding fan key still proves fans exist.
+        if respondingFans > 0 { return .fans(respondingFans) }
+
+        // Neither a count nor a fan key. This used to return `.unknown`
+        // unconditionally, because `respondingFans` meant "how many `F<n>Ac` keys
+        // DECODED" and on Intel `F<n>Ac` is `fpe2`, a type this app's decoder skips
+        // — so an Intel Mac with two fans landed here and hiding the tab would have
+        // been wrong. `detect` now counts keys that EXIST rather than keys that
+        // decode (see `SMC.exists`), which removes that case entirely: an Intel fan
+        // key is present whether or not its type can be read.
+        //
+        // What is left is a genuine absence, and it is worth distinguishing from a
+        // dead connection. MEASURED on `Mac17,5` (A18 Pro): the SMC opens, publishes
+        // 2334 keys, and **not one of them begins with `F`**. A connection answering
+        // for thousands of keys and holding no fan key at all is evidence of
+        // fanless, not evidence of nothing.
+        return smcAnswering ? .fanless : .unknown
     }
 
     /// `FNum` is a `ui8`, so a fractional or enormous value is a misdecoded key
@@ -92,8 +107,14 @@ public enum FanPresence {
         guard let smc = SMC() else { return .unknown }
         let reported = smc.read("FNum")?.value
         if let n = plausibleCount(reported), n > 0 { return .fans(n) }
-        let responding = (0..<10).filter { smc.read("F\($0)Ac") != nil }.count
-        return decide(smcReachable: true, reportedCount: reported, respondingFans: responding)
+        // EXISTS, not decodes — see `SMC.exists`. A fan key of a type this app
+        // cannot read is still a fan.
+        let responding = (0..<10).filter { smc.exists("F\($0)Ac") }.count
+        // One more read, and only on the path that is about to conclude an absence:
+        // a machine with fans answered `FNum` above and never reaches here.
+        let answering = responding > 0 || smc.keyCount() > 0
+        return decide(smcReachable: true, reportedCount: reported,
+                      respondingFans: responding, smcAnswering: answering)
     }
 
     /// Read once, at first use, and held for the life of the process — a Mac does
