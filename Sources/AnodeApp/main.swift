@@ -491,6 +491,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
                                       drivingFans: fansPane.isDrivingFans))
     }
 
+    /// Does this tick need the expensive half — the per-process sweep and the GPU
+    /// rail — as arithmetic, so it can be read and tested without a window.
+    ///
+    /// `panelOpen` is here for the same reason `visible` is, and it is the second
+    /// half of the defect that left three sensor rows dashed. `gpu_W`,
+    /// `attributed_W`, `residual_W` and `coverage` are all documented ABSENT on a
+    /// light tick rather than zero — deliberately, because a light tick did not
+    /// look — so GPU drain, Unattributed power and Process coverage render "—" for
+    /// as long as the panel is open unless opening it asks for a full sample.
+    /// Reported from the field on a machine where they had never shown a number.
+    static func wantsFullSample(visible: Bool, panelOpen: Bool, logging: Bool,
+                                sinceLastFull: TimeInterval,
+                                backgroundInterval: TimeInterval) -> Bool {
+        if visible || panelOpen { return true }
+        return logging && sinceLastFull >= backgroundInterval
+    }
+
     /// What the tick rate should be, as arithmetic — so the three rules that
     /// decide it can be read, and tested, without a window or a fan.
     static func cadence(hidden: Bool, setting: TimeInterval,
@@ -599,9 +616,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
             // IOReport channel diff and the rollup behind it are not paid for. The
             // whole-machine figures the menu bar shows come from every tick, light
             // or full, so the widgets do not go quiet.
-            let wantFull = visible
-                || (logging
-                    && Date().timeIntervalSince(self.lastFullTick) >= self.backgroundFullInterval)
+            // `panelOpen` for the same reason `visible` is here, and it is the
+            // second half of the same defect: the panel lists metrics that ONLY a
+            // full tick produces. `gpu_W`, `attributed_W`, `residual_W` and
+            // `coverage` are all documented ABSENT on a light tick — not zero —
+            // so GPU drain, Unattributed power and Process coverage rendered as
+            // "—" for as long as the panel was open, exactly as the three sensor
+            // rows did before the run-loop fix. Reported from the field on a
+            // machine where they had never once shown a number.
+            //
+            // Attribution stays gated on `visible` below: the per-app rollup feeds
+            // the process table and the drill-down, and the panel shows none of it.
+            let wantFull = Self.wantsFullSample(
+                visible: visible, panelOpen: panelOpen, logging: logging,
+                sinceLastFull: Date().timeIntervalSince(self.lastFullTick),
+                backgroundInterval: self.backgroundFullInterval)
             // Attribution only when someone can see it. The rollup feeds the
             // process table and the drill-down, both of which are off screen.
             guard let snap = m.tick(full: wantFull, attribution: visible) else { return }
