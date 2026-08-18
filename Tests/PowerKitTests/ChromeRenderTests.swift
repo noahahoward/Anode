@@ -628,6 +628,29 @@ final class TableChromeRenderTests: XCTestCase {
                                  brightness(selected: false, hovered: false, alternate: false)
                                      + 0.02,
                                  "the alternating stripe is invisible")
+
+            // THE WHOLE LADDER, IN ORDER, which is what was missing.
+            //
+            // Every assertion above compares a state against the SAME stripe
+            // state, so all of them held while the stripe was brighter than the
+            // hover that lands on top of it: measured 0.130 against 0.059, so a
+            // hovered striped row was visibly DARKER than an untouched one and a
+            // selected one barely moved. A ground brighter than its own signals is
+            // not a ground, and no test said so.
+            let ground = brightness(selected: false, hovered: false, alternate: false)
+            let stripe = brightness(selected: false, hovered: false, alternate: true)
+            let hover = brightness(selected: false, hovered: true, alternate: false)
+            let sel = brightness(selected: true, hovered: false, alternate: false)
+            let both = brightness(selected: true, hovered: true, alternate: false)
+            for (lo, hi, what) in [(ground, stripe, "ground → stripe"),
+                                   (stripe, hover, "stripe → hover"),
+                                   (hover, sel, "hover → selected"),
+                                   (sel, both, "selected → hovered-selected")] {
+                XCTAssertGreaterThan(hi, lo + 0.02,
+                                     "\(what) is not a step up — the row states must be "
+                                     + "ordered, and the stripe must be quieter than every "
+                                     + "signal that lands on it")
+            }
         }
     }
 

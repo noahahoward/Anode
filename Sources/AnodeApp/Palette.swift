@@ -64,7 +64,18 @@ enum Palette {
     /// afford to be quiet because they are large continuous areas, and a 20 pt
     /// stripe alternating down a list cannot. In light mode the same reasoning
     /// runs the other way — the stripe darkens rather than lifts.
-    static var rowAlternate: NSColor { pick(hex(0x1B222A), hex(0xE9EFF3)) }
+    /// MEASURED, because "a step above `surfaceAlt`" was set by eye and overshot
+    /// badly. At `0x1B222A` the stripe rendered at 0.130 luminance against a hover
+    /// of 0.059 and a selection of 0.143 — more than TWICE the hover and 91 % of
+    /// the selection, so hovering a striped row made it visibly DARKER and
+    /// selecting one barely changed it. A ground brighter than the signals that
+    /// land on it is not a ground.
+    ///
+    /// This is the quietest value that still clears the visibility floor the test
+    /// asserts, once `rowHover` was lifted to leave room for it — see the ladder
+    /// recorded on `rowHover`. It is still a step above the `(9, 12, 14)` that was
+    /// reported as "can barely see it".
+    static var rowAlternate: NSColor { pick(hex(0x0B0E12), hex(0xE9EFF3)) }
 
     /// The three states a row can be IN, as finished colours rather than washes.
     ///
@@ -81,7 +92,21 @@ enum Palette {
     /// Three levels, in order, because that ordering is the thing being said:
     /// hovering is a step up from selected rather than a replacement for it, and
     /// the row under the pointer is always the brightest.
-    static var rowHover: NSColor { blend(background, accent, 0.072) }
+    /// THE LADDER, measured in sRGB luminance on the dark ground, because the
+    /// ordering is the whole claim and it had never been pinned as one:
+    ///
+    ///     background   0.000
+    ///     rowAlternate 0.054   <- ground
+    ///     rowHover     0.091   <- signals, each clear of the one below
+    ///     rowSelected  0.143
+    ///     rowSelHover  0.208
+    ///
+    /// `rowHover` was 0.072, which put it BELOW the stripe and made a hovered
+    /// striped row darker than an untouched one. Raising it is what buys the
+    /// stripe room to be visible while staying quieter than every signal — the
+    /// two constraints could not both hold at the old value, which is why moving
+    /// the stripe alone kept trading one complaint for the other.
+    static var rowHover: NSColor { blend(background, accent, 0.11) }
     static var rowSelected: NSColor { blend(background, accent, 0.16) }
     static var rowSelectedHover: NSColor { blend(background, accent, 0.24) }
 
