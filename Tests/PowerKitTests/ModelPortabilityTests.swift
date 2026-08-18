@@ -208,3 +208,64 @@ final class FanPresenceOnFanlessHardwareTests: XCTestCase {
                           .filter { $0 != SidebarView.Lens.fans })
     }
 }
+
+// ── The open panel ──────────────────────────────────────────────────────────
+
+/// Reported from a screenshot: with the group panel open, CPU temperature, GPU
+/// temperature and Fan speed all read "—" while every other row carried a live
+/// figure — on a machine with two working fans. One cause under that and under
+/// the panel updating on the 8 s hidden clock: an open panel was neither
+/// window-visible nor "nobody is reading", and the app modelled only those two.
+final class OpenPanelSamplingTests: XCTestCase {
+
+    /// The three rows that were dashed are exactly the ones needing `.sensors`.
+    func testAnOpenPanelAsksForSensors() {
+        let needs = AppDelegate.hiddenNeeds(configs: [], panelOpen: true)
+        XCTAssertTrue(needs.contains(.sensors))
+        for other: SystemMetrics.Needs in [.cpu, .memory, .gpu, .network, .disk] {
+            XCTAssertTrue(needs.contains(other))
+        }
+    }
+
+    /// The panel lists EVERY metric, so its needs cannot depend on which widgets
+    /// happen to be bound — that was the old rule and the reason a temperature row
+    /// could only ever show a figure by coincidence.
+    func testAnOpenPanelsNeedsDoNotDependOnBoundWidgets() {
+        let bare = AppDelegate.hiddenNeeds(configs: [], panelOpen: true)
+        let loaded = AppDelegate.hiddenNeeds(
+            configs: [WidgetConfig(metricID: MetricID.cpuUsage.rawValue, style: .text)],
+            panelOpen: true)
+        XCTAssertEqual(bare, loaded)
+    }
+
+    /// COLLAPSED, the exclusion stands. Paying the SMC sweep every tick for a group
+    /// that is usually collapsed measurably doubled idle CPU (0.375% -> 0.727%),
+    /// which is why this is a separate branch and not a change to that rule.
+    func testACollapsedGroupStillDoesNotPayForSensors() {
+        let needs = AppDelegate.hiddenNeeds(
+            configs: [WidgetConfig(metricID: MetricID.groupPlaceholder.rawValue,
+                                   style: .group)],
+            panelOpen: false)
+        XCTAssertFalse(needs.contains(.sensors))
+        XCTAssertTrue(needs.contains(.cpu))
+    }
+
+    /// A bound sensor widget is the one way the old rule reached the SMC, and it
+    /// still does.
+    func testABoundSensorWidgetStillAsksForSensorsWhileCollapsed() {
+        let needs = AppDelegate.hiddenNeeds(
+            configs: [WidgetConfig(metricID: MetricID.cpuTemperature.rawValue,
+                                   style: .text)],
+            panelOpen: false)
+        XCTAssertTrue(needs.contains(.sensors))
+    }
+
+    /// An open panel is a reader, so it gets the reader's cadence, not the 8 s
+    /// hidden one whose own justification is that nobody is looking.
+    func testAnOpenPanelIsPacedForAReader() {
+        XCTAssertEqual(AppDelegate.cadence(hidden: false, setting: 2, drivingFans: false), 2)
+        XCTAssertEqual(AppDelegate.cadence(hidden: true, setting: 2, drivingFans: false),
+                       AppDelegate.hiddenInterval)
+        XCTAssertGreaterThan(AppDelegate.hiddenInterval, 2)
+    }
+}

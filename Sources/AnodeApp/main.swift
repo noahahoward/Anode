@@ -323,6 +323,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         widgets = MenuBarWidgetController(onClick: { [weak self] metric in
             self?.openFromWidget(metric)
         }, enabled: Settings.shared.menuBarWidgetsEnabled)
+        // Sample at the panel's needs the moment it opens, rather than showing
+        // whatever the last hidden tick happened to collect and correcting it up to
+        // eight seconds later. `refresh` re-reads the needs and re-paces the timer,
+        // so both halves follow from this one call.
+        widgets.onPanelVisibilityChange = { [weak self] _ in self?.refresh() }
         PreferencesWindowController.metricProvider = {
             var choices = MetricRegistry.shared.descriptors()
                 .map { MetricChoice(id: $0.id.rawValue, label: $0.title) }
@@ -530,14 +535,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         let logging = Settings.shared.batteryLogging
         // The tab on screen, read on main because that is where it is written. It
         // decides which subsystems this tick pays for — see `visibleNeeds`.
+        // An open panel is a reader too — see `MenuBarWidgetController.isPanelOpen`.
+        let panelOpen = widgets?.isPanelOpen ?? false
         let needs = visible ? visibleNeeds : hiddenNeeds
         // Read here, on the main thread, where the panel's state lives — and
         // BEFORE the tick uses it. While a fan is held its speed is the feedback
         // for a control the user has hold of, so the sampler re-reads the fans
         // (and only the fans) every tick instead of every five seconds.
         sysMetrics.fansAreDriven = visible && fansPane.isDrivingFans
-        // Match the cadence to who is actually reading.
-        restartTimer(hidden: !visible)
+        // Match the cadence to who is actually reading. The hidden rate states its
+        // own assumption — "the whole point of the hidden rate is that nobody is
+        // reading" — so someone holding the panel open is exactly the case it must
+        // not apply to. Eight seconds is visibly stale on CPU, network and disk.
+        restartTimer(hidden: !visible && !panelOpen)
         // The two animations that are not a response to the user keep running on
         // their layers until told otherwise, and a covered window still has its
         // layers. Idempotent, so it can sit on the tick rather than needing every
@@ -1812,8 +1822,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         // from the controller because this runs on the sampling queue and the
         // controller's flag is main-thread state.
         guard Settings.shared.menuBarWidgetsEnabled else { return [] }
+        return Self.hiddenNeeds(configs: widgets.configs,
+                                panelOpen: widgets?.isPanelOpen ?? false)
+    }
+
+    /// The same decision as arithmetic over what is enabled and what is on screen,
+    /// so it can be read and tested without a menu bar. `panelOpen` is the half
+    /// that was missing: the group's collapsed needs are correct for a collapsed
+    /// group and wrong for an open one.
+    static func hiddenNeeds(configs: [WidgetConfig], panelOpen: Bool)
+        -> SystemMetrics.Needs {
+        // An OPEN panel lists every metric there is, sensors included, and three of
+        // its rows can otherwise only ever be dashes. Sampling them is what the
+        // group's own exclusion below deliberately refuses to do on every tick —
+        // correct while collapsed, and the reason this is a separate branch rather
+        // than a change to that line. The sweep is cached behind
+        // `SystemMetrics.sensorInterval`, so an open panel pays it once and not
+        // per tick.
+        if panelOpen { return [.cpu, .memory, .gpu, .network, .disk, .sensors] }
         var needs: SystemMetrics.Needs = []
-        for c in widgets.configs where c.enabled {
+        for c in configs where c.enabled {
             if c.metricID == MetricID.groupPlaceholder.rawValue {
                 // Everything EXCEPT sensors. The group can expand to show any
                 // metric, but sensors mean walking thousands of SMC keys, and

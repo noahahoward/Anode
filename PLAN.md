@@ -24,6 +24,30 @@ independently. That is real agreement: neither saw the other's output.
 
 ---
 
+- **Model portability — three defects, one mistake** *(shipped)* Found by
+  probing `Mac17,5` (A18 Pro, fanless, 1S pack) against `Mac17,9`, which is where
+  every number in this repo was measured. `Battery.state()` read one field name
+  with no fallback while `Battery.scale()` above it tried three across two dicts,
+  so a machine publishing no `RemainingCapacity` read 0 and took the whole drain
+  estimator down — "measuring…" forever with the rate still correct, which is why
+  it needed a second machine to surface. The halves are now resolved as a PAIR,
+  because crossing them is silent and worth 1.6 points. `seedNominalVoltage_V` was
+  a 3S constant applied to a 1S pack, overstating `joulesPerPercent` by 3.01x and
+  every %/hr under it; the terminal voltage now supplies only the cell COUNT and
+  `nominalCellVoltage_V` is the seed over three, so `Mac17,9` moves by nothing.
+  `FanPresence` could not conclude `.fanless` without an affirmative `FNum`,
+  because "no key decoded" could not be told from "the decoder skips this type" —
+  `SMC.exists()` asks key info instead and removes the conflation, Intel `fpe2`
+  included. `projectedRuntime_hr()` moved off the integer percent.
+- **The open menu bar panel is now sampled and paced for a reader** *(shipped)*
+  Its three sensor rows could only ever be dashes, and it updated on the 8 s
+  hidden clock whose own justification is that nobody is reading. The app modelled
+  only window-visible vs hidden; an open panel is neither. The collapsed group's
+  exclusion is untouched — that measured 0.375% -> 0.727% idle CPU and is correct
+  while collapsed.
+
+---
+
 ## Corrections the review made to the original plan
 
 Three items would have introduced bugs if implemented as written. Recorded here
@@ -107,66 +131,8 @@ below, then release work and the deferred items.
 
 ### Field-reported — 2026-08-17
 
-Ordered as the reporter asked: the Neo first.
-
-- **Neo — "measuring…" forever, and a Fans tab on a fanless Mac.** *(blocking,
-  CONFIRMED on hardware 2026-08-17: `Mac17,5` / Apple A18 Pro / macOS 26.6)*
-  Probed live over SSH. `BatteryData` on that machine is a different key set
-  entirely — gauge-algorithm internals (`DOD0`, `Qmax`, `Ra00`..`Ra14`,
-  `ChemID`) and **no `RemainingCapacity` at all**. The charge IS published, under
-  other names: `AppleRawCurrentCapacity` = 7528 (top level) and
-  `BatteryData.TrueRemainingCapacity` = 7399. `Battery.scale()` survives because
-  it tries several names across both dicts (`DesignCapacity` 9516,
-  `NominalChargeCapacity` 9340, `AppleRawMaxCapacity` 9530); `Battery.state()`
-  does not, so `remainingCapacity_mAh` reads 0 and the predicted chain fires end
-  to end. WHEN FIXING, pair the two consistently — AppleRaw 7528/9530 = 79.0%,
-  True/Nominal 7399/9340 = 79.2%, but MIXING them gives 80.6% or 77.6%, up to
-  1.6 points, the same order of error as the integer-vs-mAh gap the app already
-  cares about. Also reorder `estimate()`: it gates on `samples.last` before it
-  ever consults the discharge trend, so on this machine a complete
-  `PowerTelemetryData` (both `AccumulatedBatteryDischarge` and
-  `BatteryDischargeAccumulatorCount` present) is discarded unread. For the tab:
-  SMC opens, publishes **2334 keys, and not one begins with `F`** — no `FNum`,
-  no `F<n>Ac`. That is affirmative evidence of fanless and needs no decoding, so
-  it answers the Intel `fpe2` objection that forced `.unknown` to show the tab.
-
-- **Neo — the nominal voltage seed is ~3x wrong on a 1S pack.** *(found while
-  probing the above)* `BatteryScale.seedNominalVoltage_V` = 11.58 V is applied
-  unconditionally. MEASURED: the Neo reports `Voltage` = 4186 mV against this
-  machine's 12111 mV — a single-cell pack, not 3S. So `energyFull_J` computes
-  9340 mAh x 11.58 V = 108.2 Wh for a 36.0 Wh pack, a **3.01x** overstatement;
-  `joulesPerPercent` inherits it and `pctHr(W) = 3600W/joulesPerPercent` makes
-  every %/hr from the power tier 3x too SMALL. MEASURED on the Neo on battery
-  (5 min, `AccumulatedBatteryDischarge` and `AccumulatedSystemLoad` agreeing to
-  the digit at 2.821 W, 677 mA at 4167 mV):
-
-      truth  7.25 %/hr -> 10.9 h   (macOS pmset the same minute: 10:11)
-      app    2.61 %/hr -> 30.2 h
-
-  So the Neo does not merely fail to quote a time — the drain figure it DOES
-  show is understating by 3x, and would read as a 30-hour laptop if the item
-  above ever let it print an hours figure. The discharge-trend path is immune (it divides the MEASURED mV and the
-  mAh capacity), but the Neo cannot reach that path until the item above is
-  fixed. Deferred item 9 already warned the seeded scale sits "under every
-  displayed number"; this is that risk arriving as a ~3x absolute error on one
-  machine, not merely a cross-machine comparability caveat. Two symptoms, one shape: model-specific IOKit/SMC
-  fields this app has only ever seen on `Mac17,9`. `Battery.state()` reads
-  `remainingCapacity_mAh` from `BatteryData.RemainingCapacity` alone with no
-  fallback, where `Battery.scale()` three functions above it tries three key
-  names across two dicts. A zero there makes `DrainRateEstimator.record` drop
-  every sample on `guard mAh > 0`, so `estimate()` returns nil,
-  `reconciledRate` publishes `windowSpan: 0`, and `canQuoteTime` never opens —
-  "measuring…" for as long as the app runs, with the RATE still reading fine
-  off the power tier, which is the tell. For the tab, `FanPresence.detect()`
-  can only conclude `.fanless` when the SMC affirmatively answers zero; a
-  machine publishing no `FNum` and no decodable `F<n>Ac` lands in `.unknown`,
-  which deliberately shows the tab. MEASURED on `Mac17,9`: a missing SMC key
-  returns `kIOReturnSuccess` with `dataSize == 0`, so key EXISTENCE is testable
-  without decoding it — which answers the Intel `fpe2` objection that forced
-  `.unknown` to show the tab in the first place, and lets `.fanless` be
-  concluded on evidence. Do NOT key the tab off the model name; it is a proxy
-  that breaks on hardware the naming does not predict. Probe written and
-  validated against this machine's known-good answers; not yet run on the Neo.
+Everything here came off two machines in one session. All but the last has
+shipped; see `## Done`.
 
 - **Discharge trend holds a stale burst for the full 30-minute window.**
   MEASURED 2026-08-17: a six-minute 20–27 W burst left the window reading
@@ -188,40 +154,6 @@ Ordered as the reporter asked: the Neo first.
   `DischargeTrendSweepHarness` BEFORE changing anything, and re-run the
   cold-start sweeps after — this file's own history is a record of a fix that
   repaired one case and broke another.
-
-- **The open menu bar panel is neither sampled nor paced for a reader.**
-  Reported from a screenshot 2026-08-17: with the group panel open, CPU
-  temperature, GPU temperature and Fan speed all read "—" while every other row
-  carried a live figure. One root cause under both halves — **the app has no
-  "the panel is open" state.** It knows only window-visible vs hidden, and an
-  open panel is a reader that looks like neither.
-  (a) `hiddenNeeds` has the group widget ask for
-  `[.cpu, .memory, .gpu, .network, .disk]` and deliberately NOT `.sensors`,
-  because paying the sweep every tick for a usually-collapsed group measurably
-  doubled idle CPU (0.375% -> 0.727%). Correct while collapsed, wrong while
-  open — those three rows can only ever be dashes unless a sensor widget
-  happens to be bound.
-  (b) `cadence(hidden:)` returns `hiddenInterval` = 8 s, on reasoning that
-  states its own assumption outright: "the whole point of the hidden rate is
-  that nobody is reading." Someone with the panel open IS reading, and 8 s is
-  visibly stale on CPU, network and disk.
-  Do NOT fix by adding `.sensors` to the group's needs — that is exactly the
-  regression the exclusion was measured to prevent. Sample on demand while the
-  panel is open, and drop to the visible cadence for that span, which is the
-  same shape `fansAreDriven`/`drivingFansInterval` already uses for a fan the
-  user is holding. Costs are known: the full sweep is 88 ms wall / 9.1 ms CPU
-  and is already cached behind `sensorInterval`, so an open panel pays it once,
-  not per tick; and `Sensors.fansNow()` is 0.16 ms against 9.48 ms for the
-  sweep it skips, so the fan row can be live without the temperatures.
-
-- **`projectedRuntime_hr()` is on the integer percent.** `Monitor.swift:326`
-  computes `Double(s.percent) * joulesPerPercent / smoothed_W`, where every
-  other time-to-empty in the app divides `scale.chargePercent`. MEASURED: one
-  integer step is 13.4 min of displayed runtime at 4.49 %/hr, against 13.5 s
-  for one mAh step — and this is the menu bar's fallback precisely when the
-  shared pair quotes no time, i.e. drain under 0.1 %/hr, where one step is ten
-  hours. Small and isolated; the figure is already available in the right basis.
-
 - **38 — no update mechanism.** The one distribution item still open. Parked
   until the repo is public, since an updater needs somewhere to update from.
 - **Publication** — the remote is renamed and the history is scrubbed. What is
