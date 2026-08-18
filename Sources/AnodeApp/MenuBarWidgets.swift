@@ -81,6 +81,10 @@ public final class MenuBarWidgetController: NSObject, NSMenuDelegate {
     /// re-pace itself without waiting out the 8 s hidden interval.
     public var onPanelVisibilityChange: ((Bool) -> Void)?
 
+    /// The panel currently on screen, so its rows can be updated in place. Weak:
+    /// NSMenu owns itself while shown and this must not keep it alive after.
+    private weak var openPanel: NSMenu?
+
     /// The out-of-the-box menu bar, used whenever persistence is empty or
     /// unreadable. It must always contain at least one clickable item or the main
     /// window becomes unreachable.
@@ -156,6 +160,29 @@ public final class MenuBarWidgetController: NSObject, NSMenuDelegate {
     public func refresh() {
         onMain {
             for entry in self.items { self.render(entry) }
+            self.refreshOpenPanel()
+        }
+    }
+
+    /// Push current readings into the panel's existing rows.
+    ///
+    /// `refresh()` used to redraw the status item images and nothing else, so a
+    /// panel that was open showed whatever the registry held at the instant it was
+    /// built and never moved again. Combined with the tick not running at all
+    /// during menu tracking, that is why three rows could sit at "—" for as long
+    /// as anyone cared to look at them.
+    private func refreshOpenPanel() {
+        guard let panel = openPanel else { return }
+        let registry = MetricRegistry.shared
+        for item in panel.items {
+            guard let id = item.representedObject as? MetricID,
+                  let row = item.view as? MetricRowView else { continue }
+            let value = registry.value(for: id)
+            let shown = value.map { $0.text + ($0.isEstimate ? "*" : "") } ?? "\u{2014}"
+            row.update(value: shown, hasReading: value != nil)
+            item.title = registry.descriptors().first { $0.id == id }.map {
+                $0.title + "\t" + shown
+            } ?? item.title
         }
     }
 
@@ -391,6 +418,8 @@ public final class MenuBarWidgetController: NSObject, NSMenuDelegate {
                                  action: nil, keyEquivalent: "")
             row.view = MetricRowView(name: d.title, value: shown,
                                      hasReading: value != nil)
+            // So an open panel can find the row for a metric without rebuilding.
+            row.representedObject = d.id
             row.isEnabled = false
             menu.addItem(row)
         }
@@ -463,6 +492,28 @@ final class MetricRowView: NSView {
     }
 
     required init?(coder: NSCoder) { fatalError("not from a nib") }
+
+    /// Re-point an EXISTING row at a new reading, rather than rebuilding the menu.
+    ///
+    /// An open NSMenu cannot have its items swapped out from under it, and the
+    /// panel has to keep moving while someone is looking at it — that is the whole
+    /// complaint. Updating the field in place is the one thing that is safe to do
+    /// to a menu that is currently on screen.
+    func update(value: String, hasReading: Bool) {
+        guard valueField.stringValue != value
+            || (valueField.textColor == MenuBarWidgetController.placeholderInk) == hasReading
+        else { return }
+        valueField.stringValue = value
+        valueField.textColor = hasReading
+            ? MenuBarWidgetController.rowInk
+            : MenuBarWidgetController.placeholderInk
+        valueField.sizeToFit()
+        // Right-aligned, so the origin moves whenever the width does.
+        valueField.setFrameOrigin(NSPoint(
+            x: Self.width - Self.inset - valueField.frame.width,
+            y: (Self.height - valueField.frame.height) / 2))
+        needsDisplay = true
+    }
 
     /// The menu material desaturates vibrant content; this row opts out so the
     /// straight ink stays straight.
@@ -686,11 +737,13 @@ enum WidgetRenderer {
 extension MenuBarWidgetController {
 
     public func menuWillOpen(_ menu: NSMenu) {
+        openPanel = menu
         isPanelOpen = true
         onPanelVisibilityChange?(true)
     }
 
     public func menuDidClose(_ menu: NSMenu) {
+        openPanel = nil
         isPanelOpen = false
         onPanelVisibilityChange?(false)
     }

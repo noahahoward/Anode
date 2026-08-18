@@ -508,9 +508,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         guard interval != timerInterval else { return }
         timer?.invalidate()
         timerInterval = interval
-        timer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
+        // NOT `Timer.scheduledTimer`, which schedules in `.default` mode ONLY.
+        //
+        // AppKit runs an open menu in `NSEventTrackingRunLoopMode`, and a
+        // default-mode timer does not fire there — so for the entire time the menu
+        // bar panel was on screen, THE TICK DID NOT RUN AT ALL. Not slowly: not at
+        // once. The panel showed whatever the registry happened to hold when it was
+        // built and could never move, and the three sensor rows could never fill,
+        // because the state that asks for sensors is the same state that suspended
+        // the sampling which would collect them. Reported as "the menu still has —"
+        // after the needs and the cadence were both already fixed, which is what
+        // sent us looking here.
+        //
+        // `.common` carries this in a running app: it is a SET, not a mode, and
+        // AppKit registers `NSEventTrackingRunLoopMode` into it once NSApplication
+        // is up. MEASURED both ways — in a bare process `CFRunLoopCopyAllModes`
+        // returns only `kCFRunLoopDefaultMode` and a `.common` timer does NOT fire
+        // during tracking (0 ticks); in a process where AppKit has initialised, the
+        // same timer fires normally (30 ticks).
+        //
+        // `.eventTracking` is named anyway, because the guarantee then does not
+        // depend on AppKit having registered the mode before this timer was built.
+        // It is one line and it removes an ordering assumption — which is the same
+        // class of assumption that produced the bug above.
+        let t = Timer(timeInterval: interval, repeats: true) { [weak self] _ in
             self?.refresh()
         }
+        RunLoop.main.add(t, forMode: .common)
+        RunLoop.main.add(t, forMode: .eventTracking)
+        timer = t
         // Let the OS coalesce this wakeup with whatever else it was going to wake
         // for. Idle cost here is dominated by waking the CPU at all rather than by
         // the work done once awake — the whole tick measures 0.19% of one core —
