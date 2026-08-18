@@ -499,11 +499,23 @@ public final class MetricRegistry {
             unit: .minutes, category: "Battery", higherIsWorse: false
         )) { [weak self] in
             guard let s = self?.latestSnapshot() else { return nil }
-            // Our projection beats macOS's SBS figure (which is nil on AC anyway —
-            // sentinel 65535 is already scrubbed by Battery.state()). On AC there is
-            // no honest number: return nil and let the widget show "—". Shared
-            // first, so the widget and the card cannot disagree about how long the
-            // battery has left.
+            // On AC, SAY SO. There is no honest number here — time-to-empty is
+            // meaningless while plugged in, which is why the SBS gauge returns its
+            // 65535 sentinel — but "—" is the placeholder for a reading that is
+            // missing, and this one is not missing. It is inapplicable, and the
+            // machine knows exactly why. `batteryRate` already draws this
+            // distinction the same way a few lines up.
+            //
+            // NaN rather than that metric's 0, and the difference is not cosmetic:
+            // a sparkline history skips non-finite values (see `render`), while 0
+            // would plot as "no time remaining" — alarming, and false. 0 %/hr on AC
+            // is TRUE and belongs in a graph; 0 minutes left is not.
+            if let st = s.state, st.onAC {
+                return MetricValue(value: .nan, text: "AC", isEstimate: false,
+                                   label: "Power")
+            }
+            // Shared first, so the widget and the card cannot disagree about how
+            // long the battery has left.
             //
             // EVERY line below is a projection, and all of them are marked as one.
             //
