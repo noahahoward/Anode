@@ -218,6 +218,31 @@ final class FanPresenceOnFanlessHardwareTests: XCTestCase {
 /// window-visible nor "nobody is reading", and the app modelled only those two.
 final class OpenPanelSamplingTests: XCTestCase {
 
+    /// Rows carry their metric so an OPEN panel can be updated in place — an
+    /// NSMenu cannot have its items swapped while it is on screen, and the panel
+    /// has to keep moving while someone is looking at it.
+    func testEveryPanelRowKnowsWhichMetricItIs() {
+        let menu = MenuBarWidgetController.buildGroupMenu()
+        XCTAssertFalse(menu.items.isEmpty)
+        for item in menu.items {
+            XCTAssertNotNil(item.representedObject as? MetricID, "row '\(item.title)'")
+            XCTAssertNotNil(item.view as? MetricRowView, "row '\(item.title)'")
+        }
+    }
+
+    /// Re-pointing a row at a new reading changes what it shows, and takes it out
+    /// of the placeholder ink it was drawn in while it had nothing.
+    func testARowCanBeRepointedAtANewReadingInPlace() {
+        let row = MetricRowView(name: "CPU temperature", value: "\u{2014}", hasReading: false)
+        XCTAssertEqual(row.valueField.textColor, MenuBarWidgetController.placeholderInk)
+        row.update(value: "48 °C", hasReading: true)
+        XCTAssertEqual(row.valueField.stringValue, "48 °C")
+        XCTAssertEqual(row.valueField.textColor, MenuBarWidgetController.rowInk)
+        row.update(value: "\u{2014}", hasReading: false)
+        XCTAssertEqual(row.valueField.textColor, MenuBarWidgetController.placeholderInk)
+    }
+
+
     /// The three rows that were dashed are exactly the ones needing `.sensors`.
     func testAnOpenPanelAsksForSensors() {
         let needs = AppDelegate.hiddenNeeds(configs: [], panelOpen: true)
@@ -258,6 +283,42 @@ final class OpenPanelSamplingTests: XCTestCase {
                                    style: .text)],
             panelOpen: false)
         XCTAssertTrue(needs.contains(.sensors))
+    }
+
+    /// THE ROOT CAUSE, as a run-loop fact rather than a claim.
+    ///
+    /// `Timer.scheduledTimer` schedules in `.default` mode only, and AppKit runs an
+    /// open menu in `NSEventTrackingRunLoopMode`. So while the panel was on screen
+    /// the tick did not run at all — the state that asks for sensors was the same
+    /// state that suspended the sampling which would collect them, and no amount of
+    /// fixing `needs` or `cadence` could reach it.
+    /// `run(mode:before:)` returns after ONE pass, not at the deadline — alone it
+    /// passed in isolation and failed in the full suite, which is a flaky test
+    /// rather than a finding. Driven to a deadline instead.
+    private func ticks(addingTo modes: [RunLoop.Mode], within: TimeInterval) -> Int {
+        var fired = 0
+        let t = Timer(timeInterval: 0.01, repeats: true) { _ in fired += 1 }
+        for m in modes { RunLoop.current.add(t, forMode: m) }
+        defer { t.invalidate() }
+        let deadline = Date().addingTimeInterval(within)
+        while fired == 0, Date() < deadline {
+            RunLoop.current.run(mode: .eventTracking, before: deadline)
+        }
+        return fired
+    }
+
+    func testTheTickSurvivesMenuTracking() {
+        // Exactly the modes `restartTimer` adds.
+        XCTAssertGreaterThan(ticks(addingTo: [.common, .eventTracking], within: 1.0), 0,
+                             "the tick must keep running while a menu is open")
+    }
+
+    /// The negative control, so the test above is known to be measuring the mode
+    /// and not merely that timers fire.
+    func testADefaultModeTickIsDeadDuringMenuTracking() {
+        let fired = ticks(addingTo: [.default], within: 0.3)
+        XCTAssertEqual(fired, 0, "if this fires, .default now runs during tracking and the "
+                     + "comment in restartTimer is wrong")
     }
 
     /// An open panel is a reader, so it gets the reader's cadence, not the 8 s
