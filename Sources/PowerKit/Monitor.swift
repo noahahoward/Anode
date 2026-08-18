@@ -150,7 +150,29 @@ public final class PowerMonitor {
         /// to display. See the construction note at the assignment site.
         public let rawResidual_W: Double
         /// True when attribution exceeded measurement this tick.
-        public var hasAttributionOverflow: Bool { rawResidual_W < -0.05 }
+        ///
+        /// TWO conditions, because the first one alone was blind to most of the
+        /// ledger. `rawResidual_W` subtracts only `attributed` and `gpu`, so an
+        /// overclaim in memory, storage, USB or display could stretch the bar
+        /// without tripping any alarm. Reported from the field: a USB bucket
+        /// claiming 22.7 %/hr inside a bar whose printed total was 5.0 %/hr, drawn
+        /// across nine tenths of its width, with no badge — apps and GPU were small
+        /// that tick, so the only check being made passed.
+        ///
+        /// The second condition asks the question the bar actually acts on: did
+        /// `ledgerSpan_W` have to grow past the measured total to fit the claims?
+        /// That expansion is deliberate and is what keeps the bar from clipping
+        /// (see `ledgerSpan_W`), but it is exactly the state worth reporting, and
+        /// it must not be silent — a bar labelled 5.0 %/hr that is laid out against
+        /// 16 W is asserting a scale it never shows.
+        ///
+        /// Same 0.05 W tolerance as the original, so ordinary rounding does not
+        /// raise it, and the transient after a load step still reports as it did.
+        public var hasAttributionOverflow: Bool {
+            if rawResidual_W < -0.05 { return true }
+            guard let claimed = claimed_W else { return false }
+            return claimed - smoothed_W > 0.05
+        }
 
         /// Every named claim the ledger draws, added up.
         ///

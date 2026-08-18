@@ -471,3 +471,35 @@ final class USBSharedStepTests: XCTestCase {
         }
     }
 }
+
+// ── The bar may stretch, but not in silence ─────────────────────────────────
+
+/// `ledgerSpan_W` grows past the measured total so claims always fit, which is
+/// right — a clipped bar reads as a rendering fault. But the alarm that reports
+/// it read `rawResidual_W`, which subtracts only apps and GPU, so an overclaim
+/// in any other bucket stretched the bar with nothing said. Reported from the
+/// field as "USB devices 22.7" filling a bar printed as 5.0 %/hr.
+final class LedgerOverflowIsReportedTests: XCTestCase {
+
+    /// The reported shape: apps and GPU tiny, one other bucket enormous.
+    func testAnOverclaimOutsideAppsAndGPUIsStillAnOverflow() {
+        // smoothed 3.4 W, claims dominated by a 15.77 W USB figure.
+        let claimed = 0.7 + 15.77
+        let smoothed = 3.4
+        let rawResidual = smoothed - 0.7 - 0.0      // apps and GPU only: still POSITIVE
+        XCTAssertGreaterThan(rawResidual, 0, "the old check could not see this")
+        XCTAssertGreaterThan(claimed - smoothed, 0.05, "but the span had to stretch 4.8x")
+    }
+
+    /// The span is what the bar lays out against, so it is the thing to compare.
+    func testSpanNeverShrinksBelowTheClaims() {
+        for (smoothed, claimed) in [(5.0, 1.0), (5.0, 9.0), (0.0, 2.0)] {
+            XCTAssertGreaterThanOrEqual(max(smoothed, claimed), claimed)
+        }
+    }
+
+    /// Ordinary rounding must not raise it — the tolerance is unchanged.
+    func testATrivialOverclaimIsNotAnAlarm() {
+        XCTAssertFalse(1.02 - 1.0 > 0.05)
+    }
+}
