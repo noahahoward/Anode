@@ -403,3 +403,29 @@ final class OpenPanelNeedsAFullTickTests: XCTestCase {
         XCTAssertTrue(wants(logging: true, since: 120))
     }
 }
+
+// ── "AC" is a state, not a missing reading ──────────────────────────────────
+
+/// "—" is what this app shows for a reading it does not have. Time-to-empty on
+/// AC is not missing, it is inapplicable, and the machine knows which.
+final class TimeRemainingOnACTests: XCTestCase {
+
+    /// NaN, not zero. A sparkline skips non-finite values but would plot a 0 as
+    /// "no time remaining" — alarming and false. The neighbouring `batteryRate`
+    /// metric uses 0 for "AC" correctly, because 0 %/hr on AC is TRUE.
+    func testTheACValueIsNonFiniteSoNoGraphPlotsZeroMinutesLeft() {
+        let v = MetricValue(value: .nan, text: "AC", isEstimate: false, label: "Power")
+        XCTAssertFalse(v.value.isFinite)
+        XCTAssertEqual(v.text, "AC")
+        XCTAssertFalse(v.isEstimate, "'AC*' would mark a fact as a projection")
+        XCTAssertNil(WidgetRenderer.normalizedFraction(MetricUnit.minutes, v.value),
+                     "a non-finite value must not colour the widget by severity")
+    }
+
+    /// The panel renders text verbatim and only appends "*" for an estimate, so
+    /// this is what the row will read.
+    func testThePanelWouldRenderItAsPlainAC() {
+        let v = MetricValue(value: .nan, text: "AC", isEstimate: false)
+        XCTAssertEqual(v.text + (v.isEstimate ? "*" : ""), "AC")
+    }
+}
