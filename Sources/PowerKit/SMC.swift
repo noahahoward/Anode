@@ -129,6 +129,27 @@ public final class SMC {
         return (Array(out[Off.bytes..<(Off.bytes + size)]), type)
     }
 
+    /// Does this key EXIST, whatever its type?
+    ///
+    /// A strictly smaller question than `read`, which answers "is there a value I
+    /// can decode". The decoder below handles nine numeric types and returns nil for
+    /// everything else, so on Intel — where `F<n>Ac` is `fpe2` — a machine with two
+    /// fans reads as having none. Key info carries the SMC's own declared size and
+    /// type and needs no decoder at all, which makes this the honest test for
+    /// "is this hardware present".
+    ///
+    /// MEASURED on `Mac17,9`: a key that does not exist still returns
+    /// `kIOReturnSuccess`, with `dataSize` 0 and an empty type — `F0Ac`/`F1Ac` come
+    /// back size 4 type `flt` while `F2Ac`..`F9Ac` come back size 0. **The size is
+    /// the existence test; the return code is not.**
+    public func exists(_ key: String) -> Bool {
+        var i = [UInt8](repeating: 0, count: Off.total)
+        Self.setU32(&i, Off.key, Self.code(key))
+        i[Off.data8] = Cmd.readKeyInfo.rawValue
+        guard let o = call(i) else { return false }
+        return Self.u32(o, Off.dataSize) > 0
+    }
+
     /// Decodes the SMC numeric types we care about. `flt` is the one that matters on
     /// Apple Silicon — power sensors report IEEE-754 watts directly.
     public func read(_ key: String) -> Sensor? {

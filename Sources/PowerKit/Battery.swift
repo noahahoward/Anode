@@ -25,8 +25,44 @@ public struct BatteryScale {
     /// True once `joulesPerPercent` came from a measured discharge rather than the seed.
     public let isCalibrated: Bool
 
-    /// 3S Li-ion pack nominal. Seed only — superseded by self-calibration.
+    /// 3S Li-ion pack nominal. Seed only — superseded by self-calibration, and
+    /// the fallback for `nominalVoltage(measured_mV:)` below.
     public static let seedNominalVoltage_V = 11.58
+
+    /// Per-cell Li-ion nominal. Deliberately `seedNominalVoltage_V / 3`, so a 3S
+    /// pack resolves to exactly the old constant — see `nominalVoltage`.
+    public static let nominalCellVoltage_V = 11.58 / 3
+
+    /// Nominal pack voltage, inferred from the SERIES CELL COUNT rather than read
+    /// off the terminals.
+    ///
+    /// The instantaneous `Voltage` must NOT be used as the nominal directly, for the
+    /// reason this type's own header gives: it moves with state of charge and load
+    /// (~12.5 V at 80 % on a 3S pack) and overstates full-charge energy by ~8 %.
+    /// That is why the nominal was a constant.
+    ///
+    /// But a constant 3S nominal is wrong by a WHOLE FACTOR on a pack that is not
+    /// 3S, and the seed's error is unbounded in a way the ~8 % it was protecting
+    /// against is not. MEASURED on `Mac17,5` (Apple A18 Pro): `Voltage` reads
+    /// 4186 mV against `Mac17,9`'s 12111 mV — one cell, not three. The 11.58 V seed
+    /// computed 108.2 Wh for a 36.0 Wh pack, a **3.01x** overstatement of
+    /// `joulesPerPercent`, which is the denominator under every displayed %/hr. A
+    /// measured 2.821 W draw printed as 2.61 %/hr where the truth was 7.25 %/hr,
+    /// and implied 30.2 h of runtime where macOS said 10:11 the same minute.
+    ///
+    /// So the terminal reading is used for the one thing it is reliable for — how
+    /// many cells are in series, which no charge level can change — and the per-cell
+    /// figure stays a constant. Because `nominalCellVoltage_V` is defined as the
+    /// seed over three, a 3S machine resolves to exactly 11.58 V: this change moves
+    /// no number on the hardware every measurement in this repo was taken on.
+    public static func nominalVoltage(measured_mV: Double?) -> Double {
+        guard let mV = measured_mV, mV.isFinite, mV > 0 else { return seedNominalVoltage_V }
+        let cells = (mV / 1000 / nominalCellVoltage_V).rounded()
+        // Outside this range the field was misread, not attached to a 7S laptop.
+        // Fall back to the seed rather than scale by a wrong integer.
+        guard cells >= 1, cells <= 4 else { return seedNominalVoltage_V }
+        return cells * nominalCellVoltage_V
+    }
 
     public var energyFull_J: Double {
         (fullChargeCapacity_mAh / 1000.0) * nominalVoltage_V * 3600.0
@@ -119,6 +155,53 @@ public enum Battery {
         return dict
     }
 
+    /// The (remaining, full) field pair a machine publishes its charge in.
+    ///
+    /// PAIRED, never resolved independently, and that is the entire point of this
+    /// table. MEASURED on `Mac17,5` (A18 Pro), whose `BatteryData` carries no
+    /// `RemainingCapacity` at all — its dict is gauge-algorithm internals (`DOD0`,
+    /// `Qmax`, `Ra00`..`Ra14`, `ChemID`) and the charge lives under other names:
+    ///
+    ///     AppleRawCurrentCapacity / AppleRawMaxCapacity   7528 / 9530 = 79.0 %
+    ///     TrueRemainingCapacity   / NominalChargeCapacity 7399 / 9340 = 79.2 %
+    ///     ... but CROSSING them                                        80.6 % / 77.6 %
+    ///
+    /// That 1.6-point spread is the same order of error as the integer
+    /// `CurrentCapacity` basis this app already refuses to use — and unlike a
+    /// missing field it would be silent, because both halves are real fields
+    /// holding plausible numbers.
+    ///
+    /// Order is priority. The first pair is what `Mac17,9` publishes, and reading
+    /// it is what this app already did before the table existed, so no number moves
+    /// on that hardware.
+    static let capacityPairs: [(remaining: String, full: String)] = [
+        ("RemainingCapacity",       "FullChargeCapacity"),
+        ("TrueRemainingCapacity",   "NominalChargeCapacity"),
+        ("AppleRawCurrentCapacity", "AppleRawMaxCapacity"),
+    ]
+
+    /// First pair this machine answers BOTH halves of.
+    ///
+    /// Both or neither: a pair answering only one half is not a basis, and falling
+    /// through for just the missing half is precisely the crossing above.
+    ///
+    /// Each half is looked for in `BatteryData` and then at the top level, because
+    /// which dict holds a given field is itself model-specific — on `Mac17,5`
+    /// `TrueRemainingCapacity` is nested and `NominalChargeCapacity` is not.
+    static func resolveCapacity(_ props: [String: Any])
+        -> (remaining_mAh: Double, full_mAh: Double)? {
+        let data = props["BatteryData"] as? [String: Any] ?? [:]
+        func look(_ k: String) -> Double? {
+            if let v = data[k] as? NSNumber, v.doubleValue > 0 { return v.doubleValue }
+            if let v = props[k] as? NSNumber, v.doubleValue > 0 { return v.doubleValue }
+            return nil
+        }
+        for pair in capacityPairs {
+            if let r = look(pair.remaining), let f = look(pair.full) { return (r, f) }
+        }
+        return nil
+    }
+
     /// TRAP: on Apple Silicon the top-level `MaxCapacity`/`CurrentCapacity` are PERCENT,
     /// not mAh. The real mAh values live only in the nested `BatteryData` dict.
     public static func scale() -> BatteryScale? {
@@ -134,12 +217,19 @@ public enum Battery {
         }
 
         guard let design = mAh(["DesignCapacity"]) else { return nil }
-        let full = mAh(["FullChargeCapacity", "NominalChargeCapacity", "AppleRawMaxCapacity"]) ?? design
+        // The PAIR's full half whenever a pair resolves, so this and `state()` are
+        // never on different bases. The independent lookup survives as a fallback:
+        // a machine publishing a capacity but no readable remaining charge still
+        // gets a usable energy scale, which is strictly what it had before.
+        let full = resolveCapacity(props)?.full_mAh
+            ?? mAh(["FullChargeCapacity", "NominalChargeCapacity", "AppleRawMaxCapacity"])
+            ?? design
 
         return BatteryScale(
             fullChargeCapacity_mAh: full,
             designCapacity_mAh: design,
-            nominalVoltage_V: BatteryScale.seedNominalVoltage_V,
+            nominalVoltage_V: BatteryScale.nominalVoltage(
+                measured_mV: (props["Voltage"] as? NSNumber)?.doubleValue),
             isCalibrated: false
         )
     }
@@ -197,7 +287,16 @@ public enum Battery {
             cycleCount: int("CycleCount") != 0 ? int("CycleCount") : int("CycleCount", data),
             voltage_mV: int("Voltage"),
             amperage_mA: int("InstantAmperage") != 0 ? int("InstantAmperage") : int("Amperage"),
-            remainingCapacity_mAh: (data["RemainingCapacity"] as? NSNumber)?.doubleValue ?? 0,
+            // The pair `scale()` resolved, not `BatteryData.RemainingCapacity`
+            // alone. Reading that one field with no fallback — while `scale()` three
+            // functions up tried three names across two dicts — is what made this
+            // read 0 on `Mac17,5` and take the whole drain estimator down with it:
+            // `DrainRateEstimator.record` drops every sample on `guard mAh > 0`, so
+            // `estimate()` returns nil, `reconciledRate` publishes `windowSpan: 0`,
+            // and `canQuoteTime` never opens. The UI said "measuring…" for as long
+            // as the app ran, with the RATE still reading fine off the power tier —
+            // which is the tell, and why it took a second machine to find.
+            remainingCapacity_mAh: Self.resolveCapacity(props)?.remaining_mAh ?? 0,
             timeRemaining_min: sane,
             notChargingReason: int("NotChargingReason", charger),
             fullyCharged: props["FullyCharged"] as? Bool ?? false
