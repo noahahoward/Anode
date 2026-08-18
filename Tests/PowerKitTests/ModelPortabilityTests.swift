@@ -370,3 +370,36 @@ final class FanlessSilenceTests: XCTestCase {
         XCTAssertEqual(withFans.count - 1, withoutFans.count)
     }
 }
+
+// ── The panel needs a FULL tick, not just the right subsystems ──────────────
+
+/// Second half of the same defect as the sensor rows. `gpu_W`, `attributed_W`,
+/// `residual_W` and `coverage` are documented ABSENT on a light tick rather than
+/// zero — `LightTickTests` pins that — so the three panel metrics built on them
+/// can only ever read "—" unless opening the panel asks for a full sample.
+final class OpenPanelNeedsAFullTickTests: XCTestCase {
+
+    private func wants(visible: Bool = false, panelOpen: Bool = false,
+                       logging: Bool = false, since: TimeInterval = 0) -> Bool {
+        AppDelegate.wantsFullSample(visible: visible, panelOpen: panelOpen,
+                                    logging: logging, sinceLastFull: since,
+                                    backgroundInterval: 60)
+    }
+
+    func testAnOpenPanelForcesAFullSample() {
+        XCTAssertTrue(wants(panelOpen: true))
+    }
+
+    /// Closed panel, closed window, no logging: still nothing to pay for. The
+    /// expensive half is a per-process sweep, and this is the guard that keeps it
+    /// off an idle machine.
+    func testNobodyLookingStillCostsNothing() {
+        XCTAssertFalse(wants())
+        XCTAssertFalse(wants(logging: true, since: 10))
+    }
+
+    func testTheExistingRulesAreUnchanged() {
+        XCTAssertTrue(wants(visible: true))
+        XCTAssertTrue(wants(logging: true, since: 120))
+    }
+}
