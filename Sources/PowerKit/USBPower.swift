@@ -68,9 +68,9 @@ public final class USBPowerTracker {
     private let lock = NSLock()
     private var devices: [UInt64: Device] = [:]
     /// Power sampled just before a pending attach, awaiting its settled pair.
-    private var pending: [UInt64: (name: String, before: Double, at: Date)] = [:]
+    private var pending: [UInt64: (name: String, before: Double, at: Date, onAC: Bool)] = [:]
     /// A departure whose settled after-level is still being waited for.
-    private var departing: [(name: String, before: Double, at: Date)] = []
+    private var departing: [(name: String, before: Double, at: Date, onAC: Bool)] = []
 
     /// What each device cost last time a step was observed for it, by name.
     ///
@@ -83,7 +83,14 @@ public final class USBPowerTracker {
     /// changes between plugs, so it cannot carry knowledge across them.
     private var remembered: [String: Double] = [:]
     private let defaults: UserDefaults
-    private static let storeKey = "com.anode.usb.deviceWatts.v1"
+    /// v2: v1 was written by a version that credited a SHARED step to every device
+    /// in a simultaneous attach, so a dock's figures are multiples of the truth and
+    /// cannot be corrected by averaging — measured live, a CalDigit dock stored
+    /// "Thunderbolt 3 Audio" and "Card Reader" at 7.885062932608093 W each, equal
+    /// to fifteen decimal places because they are one step counted twice. Starting
+    /// a new key abandons them; `remember` averages, so keeping them would drag
+    /// every future observation halfway back to a number that was never measured.
+    private static let storeKey = "com.anode.usb.deviceWatts.v2"
 
     public init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
@@ -159,7 +166,8 @@ public final class USBPowerTracker {
     /// `systemQuiet` should be false when the machine is doing something that
     /// could itself move power by watts — a step measured through a compile is
     /// not a measurement of the device.
-    public func update(systemWatts: Double, systemQuiet: Bool, now: Date = Date()) {
+    public func update(systemWatts: Double, systemQuiet: Bool, onAC: Bool = false,
+                       now: Date = Date()) {
         let present = Dictionary(uniqueKeysWithValues: Self.enumerate().map { ($0.id, $0.name) })
 
         lock.lock(); defer { lock.unlock() }
@@ -169,7 +177,29 @@ public final class USBPowerTracker {
             pending.removeValue(forKey: id)
             guard present[id] != nil else { continue }        // unplugged mid-window
             let step = systemWatts - p.before
-            if systemQuiet, step >= minimumStep, step <= maximumStep {
+            // ALONE, or the step is not this device's.
+            //
+            // `step` is `systemWatts - p.before`, computed per device against a
+            // shared before-level, so two devices arriving on one tick each
+            // claimed the WHOLE step. A dock is exactly that: plugging in a
+            // CalDigit enumerated audio and a card reader together, and both were
+            // billed 7.885062932608093 W — the same number to fifteen places,
+            // because it is one measurement counted twice. The ledger then carried
+            // their sum, 15.77 W, which at 1.45 %/hr per watt drew a "USB devices
+            // 22.7" segment across a bar whose printed total was 5.0 %/hr.
+            //
+            // Splitting the step evenly would be a guess about which device drew
+            // what, and this file does not guess — an unmeasured device is
+            // reported as unmeasured. So an overlapping arrival makes the step
+            // unattributable to any of them.
+            let alone = !overlapsAnother(id: id, at: p.at)
+            // A step measured across a power-source change is the CHARGER's, not
+            // the device's: the pack starts drawing amps the instant the adapter
+            // is recognised, and that lands in the same whole-system figure this
+            // differences. A dock that charges the Mac is the common case, and it
+            // is the one where being wrong is guaranteed rather than possible.
+            let sameSource = (onAC == p.onAC)
+            if systemQuiet, alone, sameSource, step >= minimumStep, step <= maximumStep {
                 remember(p.name, step)
                 devices[id] = Device(id: id, name: p.name, watts: step, provenance: .measured)
             } else if let known = remembered[p.name] {
@@ -187,11 +217,16 @@ public final class USBPowerTracker {
         // the time anyone opens a battery monitor. Unplugging it finally supplies
         // the step, and remembering that means the NEXT time it appears the app
         // can say what it costs immediately.
-        var stillDeparting: [(name: String, before: Double, at: Date)] = []
+        var stillDeparting: [(name: String, before: Double, at: Date, onAC: Bool)] = []
         for d in departing {
             guard now.timeIntervalSince(d.at) >= settle else { stillDeparting.append(d); continue }
             let drop = d.before - systemWatts        // power fell when it left
-            if systemQuiet, drop >= minimumStep, drop <= maximumStep {
+            // Same two conditions as an arrival, and for the same reasons: pulling
+            // a dock removes several devices at once, and pulling one that was
+            // charging the machine moves the power source with it.
+            let alone = departing.count == 1 && pending.isEmpty
+            if systemQuiet, alone, onAC == d.onAC,
+               drop >= minimumStep, drop <= maximumStep {
                 remember(d.name, drop)
             }
         }
@@ -199,15 +234,26 @@ public final class USBPowerTracker {
 
         // ── new arrivals ───────────────────────────────────────────────────
         for (id, name) in present where devices[id] == nil && pending[id] == nil {
-            pending[id] = (name, systemWatts, now)
+            pending[id] = (name, systemWatts, now, onAC)
         }
 
         // ── departures ─────────────────────────────────────────────────────
         for (id, dev) in devices where present[id] == nil {
             devices.removeValue(forKey: id)
-            departing.append((dev.name, systemWatts, now))
+            departing.append((dev.name, systemWatts, now, onAC))
         }
         for id in pending.keys where present[id] == nil { pending.removeValue(forKey: id) }
+    }
+
+    /// Did anything else arrive or leave close enough to share this step?
+    ///
+    /// Two windows overlap when their starts are less than `settle` apart, because
+    /// that is exactly the span the before/after difference is taken across.
+    private func overlapsAnother(id: UInt64, at: Date) -> Bool {
+        for (otherID, q) in pending
+        where otherID != id && abs(q.at.timeIntervalSince(at)) < settle { return true }
+        for d in departing where abs(d.at.timeIntervalSince(at)) < settle { return true }
+        return false
     }
 
     /// Adopt devices that were already attached when the tracker started, using

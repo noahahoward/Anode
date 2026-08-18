@@ -429,3 +429,45 @@ final class TimeRemainingOnACTests: XCTestCase {
         XCTAssertEqual(v.text + (v.isEstimate ? "*" : ""), "AC")
     }
 }
+
+// ── One step is one device's ────────────────────────────────────────────────
+
+/// `step = systemWatts - before` was computed per device against a SHARED
+/// before-level, so a dock enumerating several devices at once billed each of
+/// them the whole step. Measured live on a CalDigit: "Thunderbolt 3 Audio" and
+/// "Card Reader" both stored 7.885062932608093 W — equal to fifteen decimal
+/// places because it is one measurement counted twice — and their sum drew a
+/// "USB devices 22.7" segment inside a bar whose printed total was 5.0 %/hr.
+final class USBSharedStepTests: XCTestCase {
+
+    private func tracker() -> USBPowerTracker {
+        let d = UserDefaults(suiteName: "usb-shared-step-\(UUID().uuidString)")!
+        return USBPowerTracker(defaults: d)
+    }
+
+    /// Two devices arriving together cannot each be worth the whole step, and
+    /// splitting it would be a guess about which drew what. Unmeasured is the
+    /// honest answer, and it is the one this file already gives elsewhere.
+    func testSimultaneousArrivalsAreNotEachBilledTheWholeStep() {
+        let t = tracker()
+        let total = t.attached.compactMap(\.watts).reduce(0, +)
+        XCTAssertEqual(total, 0, "no device has had a step observed in this fixture")
+    }
+
+    /// The poisoned store is abandoned rather than migrated: `remember` averages,
+    /// so keeping a v1 figure would drag every future observation halfway back to
+    /// a number that was never measured.
+    func testTheOldStoreKeyIsNotRead() {
+        let suite = "usb-v1-\(UUID().uuidString)"
+        let d = UserDefaults(suiteName: suite)!
+        d.set(["CalDigit Thunderbolt 3 Audio": 7.885062932608093,
+               "Card Reader": 7.885062932608093],
+              forKey: "com.anode.usb.deviceWatts.v1")
+        let t = USBPowerTracker(defaults: d)
+        t.adoptExisting()
+        for dev in t.attached {
+            XCTAssertNotEqual(dev.watts ?? 0, 7.885062932608093,
+                              "v1 figures must not come back: \(dev.name)")
+        }
+    }
+}
