@@ -153,11 +153,13 @@ final class TrendSweepHarness: XCTestCase {
         let excl: Bool              // reference frozen at run start
         let floor: UInt64?          // nil = full-window gate
         var noiseK: Double? = nil   // effective band = max(band, k*relSD)
+        var downCap: Double? = nil  // ceiling on that band, downward only
         var description: String {
             let f = floor.map(String.init) ?? "full"
             let n = noiseK.map { " k=\($0)" } ?? ""
+            let c = downCap.map { " cap=\($0)" } ?? ""
             return "band=\(band)\(asymDown ? "v" : "") confirm=\(confirm) "
-                 + "ref=\(excl ? "excl" : "incl") floor=\(f)\(n)"
+                 + "ref=\(excl ? "excl" : "incl") floor=\(f)\(n)\(c)"
         }
         func make() -> BatteryDischargeTrend {
             BatteryDischargeTrend(
@@ -167,7 +169,7 @@ final class TrendSweepHarness: XCTestCase {
                 downBand: asymDown ? band : nil,
                 referenceExcludesRun: excl,
                 referenceFloorTicks: floor,
-                noiseScaledBand: noiseK)
+                noiseScaledBand: noiseK, downBandCeiling: downCap)
         }
     }
 
@@ -304,6 +306,93 @@ final class TrendSweepHarness: XCTestCase {
             s.constSpread = (mins.max() ?? 0) - (mins.min() ?? 0)
         }
         return s
+    }
+
+    // ── The field failure, as a measurement ─────────────────────────────────
+
+    /// The shape reported on 2026-08-17: a quiet machine, a few minutes of real
+    /// work, then quiet again. MEASURED that day — 6 min at 20-27 W inside a
+    /// 30-minute window, leaving the trend reading 11.4 W against a live 5-6 W, so
+    /// the card showed 4.2 h where macOS showed 8:14. It cleared only when the
+    /// burst aged out, which is the proof the detector never fired.
+    private func burstThenQuiet(base: Double = 6, burst: Double = 25,
+                                warm: Int = 20, burstMin: Int = 6,
+                                after: Int = 45) -> (watts: [Double], drop: Int) {
+        var w = [Double](repeating: base, count: warm)
+        w += [Double](repeating: burst, count: burstMin)
+        w += [Double](repeating: base, count: after)
+        return (w, warm + burstMin)
+    }
+
+    /// Minutes from the load dropping until the trend is within `tol` of the truth.
+    /// `nil` means it never got there inside the trace.
+    private func settleMinutes(_ cfg: Config, tol: Double = 0.20) -> Int? {
+        let (watts, drop) = burstThenQuiet()
+        let truth = watts[watts.count - 1] * 1000
+        for r in drive(cfg.make(), watts: watts) where r.minute >= drop {
+            guard let mW = r.mW else { continue }
+            if abs(mW - truth) / truth <= tol { return r.minute - drop }
+        }
+        return nil
+    }
+
+    /// The reproduction. A detector that cannot fire downward leaves this to the
+    /// window's own roll-off, which is 30 minutes by construction.
+    func testBurstThenQuietSettlesWithoutWaitingOutTheWindow() throws {
+        try XCTSkipUnless(ProcessInfo.processInfo.environment["ANODE_TREND_SWEEP"] == "1",
+                          "measurement session — ANODE_TREND_SWEEP=1 to run")
+        let shipped = Config(band: 0.30, asymDown: false, confirm: 300,
+                             excl: true, floor: 600, noiseK: 3.0)
+        let settle = settleMinutes(shipped)
+        print("  shipped config settles after: "
+              + (settle.map { "\($0) min" } ?? "NEVER (inside the trace)"))
+
+        // Why it cannot: a drop satisfies |delta| <= reference, because power does
+        // not go below zero. So `abs(delta) > band * reference` needs band < 1, and
+        // band = max(0.30, 3.0*relSD) crosses 1 at relSD = 1/3. A window holding a
+        // burst is far noisier than that — 0.70 was measured in the field — so the
+        // noise term is blinded by exactly the event it exists to catch.
+        for relSD in [0.34, 0.50, 0.70, 1.00] {
+            let band = max(0.30, 3.0 * relSD)
+            XCTAssertGreaterThan(band, 1.0,
+                "relSD \(relSD) -> band \(band): no downward change of any size can clear this")
+        }
+    }
+
+    /// Sweep the ceiling against the two things it trades off: how fast a machine
+    /// that has gone quiet is believed, and how often a cold start collapses its
+    /// own window for no reason — the failure the noise term and the floor were
+    /// added to stop, which must stay at zero.
+    func testDownwardCeilingSweep() throws {
+        try XCTSkipUnless(ProcessInfo.processInfo.environment["ANODE_TREND_SWEEP"] == "1",
+                          "measurement session — ANODE_TREND_SWEEP=1 to run")
+        func cfg(_ cap: Double?) -> Config {
+            Config(band: 0.30, asymDown: false, confirm: 300, excl: true,
+                   floor: 600, noiseK: 3.0, downCap: cap)
+        }
+        print("  ceiling   settle   warm-up   maeWander  maeBursty  swing2m")
+        for cap in [nil, Optional(0.80), .some(0.70), .some(0.60),
+                    .some(0.50), .some(0.40), .some(0.30)] {
+            let c = cfg(cap)
+            let s = score(c)
+            let settle = settleMinutes(c).map { "\($0)" } ?? "never"
+            print(String(format: "  %-9@ %-8@ %-9.2f %-10.1f %-10.1f %.1f",
+                         (cap.map { "\($0)" } ?? "none") as NSString,
+                         settle as NSString, s.warmup, s.maeWander, s.maeBursty, s.swing2m))
+        }
+
+        // THE RESULT, asserted so it is a finding and not a printout: there is no
+        // ceiling that both beats the window's own roll-off and keeps cold starts
+        // from collapsing. Whatever replaces this must break BOTH of these.
+        for cap in [0.80, 0.70, 0.60, 0.50, 0.40, 0.30] {
+            let c = cfg(cap)
+            let settle = settleMinutes(c) ?? 999
+            let warm = score(c).warmup
+            XCTAssertFalse(settle < 20 && warm <= 0.0,
+                           "ceiling \(cap) settled in \(settle) min at warm-up \(warm) — "
+                         + "if this fires, a plain ceiling now works and the shipped "
+                         + "nil should be revisited")
+        }
     }
 
     // ── The sweep ───────────────────────────────────────────────────────────
