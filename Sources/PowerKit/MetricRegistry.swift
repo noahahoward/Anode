@@ -228,7 +228,25 @@ public final class MetricRegistry {
     /// still serves them, so a window surface that wants one is unaffected;
     /// only the offer to put it in the menu bar is withdrawn.
     public func descriptors() -> [MetricDescriptor] {
-        allDescriptors().filter(\.bindable)
+        allDescriptors().filter(\.bindable).filter { Self.offered($0.id) }
+    }
+
+    /// Metrics this MACHINE can answer at all.
+    ///
+    /// A fanless Mac has no fan speed, and the app should say nothing about fans
+    /// rather than say "—" about them. Hiding the Fans tab already followed that
+    /// rule; the panel, the widget picker and the panel editor all read
+    /// `descriptors()`, so filtering here is what makes them follow it too —
+    /// "Fan speed  —" in a list of live figures is still a claim that this machine
+    /// has a fan whose speed is currently unknown.
+    ///
+    /// Same asymmetry as `FanPresence.showsFanTab`, and for the same reason:
+    /// `.unknown` KEEPS the row. Withdrawing a real reading on a machine that has
+    /// fans is the worse error, and only `.fanless` is evidence.
+    static func offered(_ id: MetricID, fans: FanPresence.State = FanPresence.onThisMac)
+        -> Bool {
+        guard id == .fanSpeed else { return true }
+        return FanPresence.showsFanTab(fans)
     }
 
     /// Every registered metric, bindable or not. For diagnostics that need to
