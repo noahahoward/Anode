@@ -64,6 +64,23 @@ public final class MenuBarWidgetController: NSObject, NSMenuDelegate {
 
     public static let defaultsKey = "com.anode.menubar.widgets.v1"
 
+    /// Is the group panel on screen right now?
+    ///
+    /// The app knew only window-visible vs hidden, and an open panel is neither: it
+    /// is a reader looking at a surface the hidden path is explicitly built for
+    /// nobody to be looking at. Both halves of that cost showed up in one
+    /// screenshot — CPU temperature, GPU temperature and Fan speed reading "—"
+    /// while every other row carried a figure, on a machine with two working fans.
+    ///
+    /// Written on the main thread by the delegate callbacks and read on the main
+    /// thread by `AppDelegate.refresh`, which is where visibility is already read
+    /// for the same reason.
+    public internal(set) var isPanelOpen = false
+
+    /// Called when that changes, so the tick can resample at the panel's needs and
+    /// re-pace itself without waiting out the 8 s hidden interval.
+    public var onPanelVisibilityChange: ((Bool) -> Void)?
+
     /// The out-of-the-box menu bar, used whenever persistence is empty or
     /// unreadable. It must always contain at least one clickable item or the main
     /// window becomes unreachable.
@@ -667,6 +684,17 @@ enum WidgetRenderer {
 }
 
 extension MenuBarWidgetController {
+
+    public func menuWillOpen(_ menu: NSMenu) {
+        isPanelOpen = true
+        onPanelVisibilityChange?(true)
+    }
+
+    public func menuDidClose(_ menu: NSMenu) {
+        isPanelOpen = false
+        onPanelVisibilityChange?(false)
+    }
+
     /// Fill the group menu only when it is about to be shown.
     public func menuNeedsUpdate(_ menu: NSMenu) {
         menu.removeAllItems()
