@@ -689,7 +689,8 @@ public final class PowerMonitor {
         // to move by watts on its own, so a plug measured through a build is
         // rejected rather than credited to the device.
         let quiet = (ppmcRaw ?? 0) < 3.0
-        usbTracker.update(systemWatts: smoothed, systemQuiet: quiet)
+        usbTracker.update(systemWatts: smoothed, systemQuiet: quiet,
+                          onAC: Battery.state()?.onAC ?? false)
 
         // One battery read, fed to the limit learner and then handed to the
         // snapshot. Read twice it could straddle the cache TTL and teach the
