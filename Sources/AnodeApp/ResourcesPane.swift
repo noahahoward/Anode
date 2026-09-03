@@ -255,6 +255,27 @@ final class ResourcesContent: NSView, PaneContentView {
     /// what is on screen. See the cost note on `ResourcesPane`.
     private var census: MachineInfo.Census?
 
+    /// The last health sample and the rows built from it.
+    ///
+    /// `NVMeHealth.read()` self-caches for an hour, so the READ is already free on
+    /// a 2 s tick. This caches the ROWS, so an unchanged sample also costs no
+    /// string formatting and no allocation. `Sample` is `Equatable` precisely so
+    /// the comparison can be exact rather than a heuristic on one field.
+    ///
+    /// WHAT A TICK COSTS with the sample unchanged: one `Date()` and one date
+    /// compare inside `read()`, one `==` over fifteen integers, and two array
+    /// copies — after which `BodyStack.setItems` finds the shape unchanged and
+    /// `BarRow.apply` returns early on every row without setting `needsDisplay`.
+    /// Nothing is measured, nothing is formatted, nothing is repainted. That is
+    /// the bar ARCHITECTURE §7 sets and this is how it is met.
+    ///
+    /// Only `diskDetail` builds these, so the hourly re-read is paid only while
+    /// someone is looking at the Disk card — the same bargain `census` makes for
+    /// the CPU census. NOT cleared on `select`, unlike `census`: it is fifteen
+    /// integers and nine rows, and keeping it makes coming back to the Disk card
+    /// free instead of costing an IOKit round trip on a click a person just made.
+    private var health: (sample: NVMeHealth.Sample, block: [BodyItem], notes: [BodyItem])?
+
     /// The last tick's readings, kept so a CLICK can redraw from them.
     ///
     /// Selecting a card changed the highlight at once and left the readings
@@ -917,12 +938,306 @@ final class ResourcesContent: NSView, PaneContentView {
                                   dim: true))
             }
         }
+
+        // ── DRIVE HEALTH ─────────────────────────────────────────────────────
+        //
+        // ROWS, NOT A LENS. Everything that survived review is a label and a
+        // value, and the `Devices` heading directly above already names the drive
+        // these are about — so this is a block on a card that exists rather than a
+        // sixth thing on the rail. (A lens is gated on whether a four-column byte
+        // ledger can be rendered, which is a separate ticket and not this one.)
+        //
+        // BETWEEN Devices AND Note, on purpose. Above it, `Devices` establishes
+        // the subject: the first row's LABEL is the internal drive's product name,
+        // which is also how `Devices` and `By device` write their label column, so
+        // the antecedent is one row up and needs no repeating. That also settles
+        // the ambiguity when a USB disk is plugged in — `Devices` lists every
+        // block device, the log page comes from the internal SSD only, and naming
+        // it says which of them this is. Below it, `Note` is where this card
+        // already keeps its one-line "here is why that number is not what you
+        // think" statements, and it gains two more.
+        //
+        // NOTHING AT ALL when the drive vends no log page — Intel Macs, VMs, an
+        // external boot. Not zeros, not dashes, not the heading. Same call the
+        // Fans tab makes on a fanless Mac and the Wi-Fi Name row makes when the
+        // SSID is redacted: a row of dashes is a promise the hardware cannot keep.
+        let (healthBlock, healthNotes) = healthSpecs(sys)
+        specs.append(contentsOf: healthBlock)
+
         specs.append(.heading("Note"))
         // The long-form evidence is on `DiskActivity`; this is the one-line version,
         // said where someone looking for a percentage will look for it.
         specs.append(.row("Why bytes and not a percentage",
                           "queue depth, not occupancy — it reaches 1394%", dim: true))
+        specs.append(contentsOf: healthNotes)
         return (live, specs)
+    }
+
+    /// The `Drive health` block, and the footnotes it needs in `Note`.
+    ///
+    /// Two lists rather than one because the footnotes land BELOW a note this card
+    /// already carries, and a single list would have to reach past it.
+    ///
+    /// Empty on a machine whose drive vends no SMART user client. `nil` from
+    /// `read()` is an ABSENT MEASUREMENT, and the whole block goes with it —
+    /// which is only safe to key on because `NVMeHealth` never returns nil for a
+    /// drive it CAN read, however bad the reading is. See the note on
+    /// `percentageUsed` below.
+    private func healthSpecs(_ sys: SystemMetrics.Snapshot)
+        -> (block: [BodyItem], notes: [BodyItem]) {
+        guard let s = NVMeHealth.read() else {
+            health = nil
+            return ([], [])
+        }
+        if let cached = health, cached.sample == s { return (cached.block, cached.notes) }
+
+        let alarms = NVMeHealth.alarms(for: s)
+        // Named in the label column the way `Devices` above names its own. Falls
+        // back rather than going blank: `DiskActivity.Identity` only exists for a
+        // device that published a product name, so there may be no internal entry
+        // in that list even though the log page read fine.
+        let name = sys.disk?.devices.first(where: { $0.identity.isInternal })?
+            .identity.product ?? "Internal SSD"
+
+        // THE VERDICT IS MEASURED COUNTERS AGAINST THRESHOLDS THE DRIVE ITSELF
+        // PUBLISHES — available spare against its own floor, media errors, and the
+        // critical-warning byte. It is not a badge, and it never states a
+        // projection.
+        //
+        // `criticalWarning` gets no row of its own. A row reading "Critical
+        // warning  0x00" is a hex dump of a byte that is zero on every healthy
+        // drive ever made; the sentence below IS its rendering, and when a bit
+        // lights the sentence changes and goes red.
+        var verdict = "Healthy — \(s.availableSpare) % spare, no media errors"
+        var verdictInk: NSColor?
+        switch alarms.first {
+        case .some(.criticalWarning(let bits)):
+            verdict = String(format: "Fault reported — warning 0x%02X", Int(bits))
+            verdictInk = Palette.critical
+        case .some(.spareBelowThreshold(let have, threshold: let floor)):
+            verdict = "Spare \(have) %, below its \(floor) % floor"
+            verdictInk = Palette.critical
+        case .some(.mediaErrors(let n)):
+            verdict = "\(Self.grouped(Int(n))) media errors — unrecovered data loss"
+            verdictInk = Palette.critical
+
+        // PAST RATED ENDURANCE — the one wear reading that reaches the verdict,
+        // and the boundary is the spec's own rather than a number picked here.
+        //
+        // Wear is otherwise kept OUT of the verdict because `percentageUsed` may
+        // not be implemented at all (see the Life used row below), and a verdict
+        // must not rest on a figure this app will not vouch for. Above 100 that
+        // objection evaporates in both directions. No unimplemented field reads
+        // 150, so the value is itself proof the counter is real; and it is no
+        // longer "50 % of a denominator nobody published", it is the drive saying
+        // it has passed the one line the spec defines. That is a claim about
+        // itself that needs no denominator — the test every other row here has to
+        // pass, and the reason there is still no projection anywhere on this card.
+        //
+        // WARN, NOT CRITICAL. Spare is full and there are no media errors, so this
+        // drive has not failed; it is outside the life its maker warranted, which
+        // is a different sentence and takes a different colour. `Palette.warn` is
+        // used nowhere else in this block.
+        //
+        // The point of touching the verdict at all: "Healthy — 100 % spare, no
+        // media errors" is LITERALLY TRUE of a drive at 150 % and still reads as a
+        // clean bill, leaving the only bad news in a dim grey row four lines down.
+        // That is the same failure `NVMeHealth.read()` avoids by refusing to
+        // return nil for a worn drive — an alarming measurement must never look
+        // like an unremarkable one, or like an absent one.
+        case .some(.wearStarted(let used)) where used > 100:
+            verdict = "Past rated endurance, \(s.availableSpare) % spare"
+            verdictInk = Palette.warn
+
+        // WEAR STARTING IS NOT A FAULT. A drive at 1 % used with full spare and no
+        // media errors is a healthy drive whose counter has finally moved, and
+        // colouring the verdict for it would make the first tick of ordinary
+        // ageing look like a failure. At 1...100 this alarm renders as the ABSENCE
+        // of the star on the Life used row — its entire content there is that the
+        // qualifier is no longer warranted.
+        case .some(.wearStarted), .none:
+            break
+        }
+
+        var block: [BodyItem] = [.heading("Drive health")]
+        // Bright, and normally the only bright row in this column: `BarRow` draws
+        // `dim` rows in `Palette.dim` and everything else in `Palette.text`, so
+        // leaving `dim` off IS the emphasis, with no new ink and no new row type.
+        // In an alarm state it ALSO takes a full-width wash, because `color`
+        // reaches the bar and never the text — an alarm has to be both or it is
+        // neither.
+        block.append(.row(name, verdict,
+                          fill: verdictInk == nil ? nil : Double(1),
+                          color: verdictInk))
+
+        // THE TRIPWIRE THAT STATES ITS OWN TRIP POINT, and the most useful row
+        // here. 100 % is an endpoint, and an endpoint on its own says nothing
+        // about how far it is from trouble — a gauge pinned at the top is
+        // indistinguishable from a gauge that is stuck. The floor is published by
+        // the drive in the same log page, so the row carries its own failure
+        // criterion instead of leaving the reader to look one up. This is the row
+        // that answers "is my SSD dying", and the answer is a comparison rather
+        // than a colour.
+        let spareTripped = s.availableSpare < s.availableSpareThreshold
+        block.append(.row("Spare blocks",
+                          "\(s.availableSpare) % · fails below \(s.availableSpareThreshold) %",
+                          fill: spareTripped ? Double(1) : nil,
+                          color: spareTripped ? Palette.critical : nil,
+                          dim: !spareTripped))
+
+        // The other half of the verdict, given its own row so the verdict can be
+        // checked against something. "none" rather than "0": this counter is
+        // maintained by every controller and is one of the two the contract raises
+        // an alarm on, so its zero is a MEASURED zero and can be stated as a fact
+        // about the drive rather than as a digit.
+        block.append(.row("Media errors",
+                          s.mediaErrors == 0
+                            ? "none · any is unrecovered data loss"
+                            : "\(Self.grouped(Int(s.mediaErrors))) · unrecovered data loss",
+                          fill: s.mediaErrors == 0 ? nil : Double(1),
+                          color: s.mediaErrors == 0 ? nil : Palette.critical,
+                          dim: s.mediaErrors == 0))
+
+        // DECIMAL, through `MetricUnit.siBytes` and never through
+        // `MetricUnit.bytes`. The latter divides by 1024 and labels the result TB,
+        // which is right for a capacity and wrong for these: DATA_UNITS_READ and
+        // DATA_UNITS_WRITTEN are counts of 512,000-byte DECIMAL units by the NVMe
+        // spec, so 7.31 TB comes out of `.bytes` as "6.6 TB" — 7.31e12 / 1024^4 =
+        // 6.648, a 10 % disagreement with the same quantity in the same glyphs.
+        // It lives in PowerKit rather than here because the `--metrics` dump
+        // formats the same two counters and two formatters is the same desync one
+        // step further out of sight.
+        //
+        // Written before read because reads do not wear NAND — the pair is not
+        // symmetric and the order says so.
+        block.append(.row("Lifetime written", MetricUnit.siBytes(s.bytesWritten), dim: true))
+        block.append(.row("Lifetime read", MetricUnit.siBytes(s.bytesRead), dim: true))
+
+        // "LIFE USED 0 %" IS NOT A CLEAN BILL, and this is the honest rendering of
+        // that fact without turning the card into a disclaimer.
+        //
+        // `percentageUsed == 0` is INDISTINGUISHABLE from an unimplemented field,
+        // and two things on this same log page argue it is the latter.
+        // `controllerBusyTime` also reads 0, which after 7.31 TB of host writes is
+        // not a plausible measurement — so at least one field on this page is a
+        // stub and this is the likeliest second. And 0 % at 7.31 TB written bounds
+        // the vendor's endurance basis ABOVE 731 TB, which no consumer NVMe part
+        // claims.
+        //
+        // So at zero the row is a WATCH rather than a gauge. Its value says the
+        // counter has not moved, which is true whether the field is a stub or the
+        // drive is genuinely unworn, and it does not reassure — it says the
+        // interesting thing has not happened. It carries the app's existing "*",
+        // the mark for a figure this app will not vouch for, and one footnote in
+        // `Note` says which of the two it might be.
+        //
+        // THREE STATES, because the field has three meanings and no one string
+        // carries them:
+        //
+        //   0         never moved. Starred, footnoted, dim.
+        //   1...100   a real vendor wear integrator. Plain, dim, no qualifier —
+        //             the star and the footnote both VANISH here, which is the
+        //             whole rendering of `Alarm.wearStarted` in its ordinary
+        //             range: the caveat is simply no longer warranted.
+        //   101...255 past the endurance the maker rated it for. Bright, amber
+        //             wash, and it moves the verdict above. 255 SATURATES per the
+        //             spec, so it prints "255 %+" rather than as a precise reading
+        //             of a pinned counter — the same refusal of false precision
+        //             the star makes at the other end of the range.
+        //
+        // NO FRACTION IS EVER TAKEN OF THIS. `percentageUsed / 100` is 1.5 at
+        // 150 %, and a `fill:` of 1.5 draws a bar past the end of its own row and
+        // over whatever is beside it. Every `fill` in this block is a literal 1 or
+        // nil — a STATE, never a proportion — and this note is here so that stays
+        // true. (The proportional fills on this card are the `Volumes` rows, which
+        // take `StorageInfo.Volume.usedFraction`, already clamped at its source.)
+        //
+        // ARCHITECTURE §6 keeps "an absent measurement" and "a measured zero"
+        // apart for the battery floor. This is the same distinction one log page
+        // down, drawn with the same two tools this app already owns: `dim` for a
+        // fact rather than a reading, and "*" for a figure with a caveat.
+        let unmoved = s.percentageUsed == 0
+        let worn = s.percentageUsed > 100
+        let usedText = s.percentageUsed == 255 ? "255 %+" : "\(s.percentageUsed) %"
+        block.append(.row("Life used",
+                          unmoved ? "0 %* · has never moved"
+                            : worn ? "\(usedText) · past its rated endurance"
+                                   : "\(usedText) · the drive's own wear counter",
+                          fill: worn ? Double(1) : nil,
+                          color: worn ? Palette.warn : nil,
+                          dim: !worn))
+
+        // 11 OF 164, AND THIS IS THE ONLY DIVISION IN THE FEATURE.
+        //
+        // It is safe because both sides are event counts from the same log page in
+        // the same units, so the ratio means what it looks like it means. That is
+        // exactly what POWER_ON_HOURS is not, and is why there is no row for it.
+        //
+        // Below the wear rows rather than beside media errors, which demotes it
+        // from where it was first ranked: an unsafe shutdown is HISTORY, not
+        // health. It raises no alarm in the contract, it says nothing about the
+        // NAND, and 11 in 164 cycles is what a machine that has been force-
+        // restarted a few times looks like. Putting it next to media errors would
+        // have implied a parity that does not exist.
+        block.append(.row("Unsafe shutdowns",
+                          "\(Self.grouped(Int(s.unsafeShutdowns))) of "
+                            + "\(Self.grouped(Int(s.powerCycles))) power cycles",
+                          dim: true))
+
+        // NO POWER-ON HOURS ROW, and this is the note instead of the row.
+        //
+        // MEASURED: the counter advanced 203 → 204 h over 21.9 h of wall clock,
+        // during which this machine was awake 99.5 % of the time. It is NVMe
+        // controller ACTIVE-STATE residency, about 4.6 % of calendar — so "204
+        // power-on hours" on a 140-day-old daily driver understates the machine's
+        // life by roughly 22x, and every reader draws the same wrong conclusion.
+        //
+        // Labelling it was considered and rejected. The label plus the exclusions
+        // it would need is longer than the value it qualifies, and a row that
+        // survives only by disclaiming itself still invites the division it must
+        // never be part of: 7.31 TB over 204 h prints as a throughput and will be
+        // read as a duty cycle. Nothing is decided differently by knowing it, and
+        // the honest answer to the question people ask it of is the power-cycle
+        // count above, which counts EVENTS rather than residency.
+        //
+        // Same call as `memoryDetail`'s missing speed/slot/form-factor rows and
+        // the missing Wi-Fi Name row: a fact with no honest rendering is not
+        // rendered.
+
+        // NO PROJECTION, NO TBW, NO YEARS REMAINING, NO PERCENT-OF-ENDURANCE, NO
+        // BAR TOWARD DEATH. All were planned and all were killed on this drive's
+        // own numbers: `percentageUsed` is 0 at 7.31 TB written, which bounds the
+        // manufacturer's basis above 731 TB and falsifies the 612 TB figure the
+        // projection was going to divide by. There is no denominator on this page.
+        // Wanting one is the trap — every row above is either a counter or a
+        // threshold the drive publishes about itself, and "past rated endurance"
+        // is the drive's own crossing rather than a fraction of anything.
+
+        if let c = s.temperatureC {
+            // The drive's OWN composite sensor, not an SMC diode. The Sensors card
+            // reads the Tp/Te/Tg core sensors and names them as such; this is a
+            // different thermometer in a different package, and saying so is what
+            // stops the two cards looking like they disagree. Omitted entirely at
+            // 0 K, which `Sample.temperatureC` already reports as "no sensor"
+            // rather than as absolute zero.
+            block.append(.row("Temperature",
+                              String(format: "%.0f °C · the drive's own sensor", c),
+                              dim: true))
+        }
+
+        var notes: [BodyItem] = [
+            // The contradiction this feature would otherwise create, said once, in
+            // the section that exists for exactly this. See `MetricUnit.siBytes`.
+            .row("TB above are decimal", "10¹² bytes — volume sizes are 1024-based",
+                 dim: true),
+        ]
+        if unmoved {
+            notes.append(.row("* Life used", "0 % may be unimplemented, not unworn",
+                              dim: true))
+        }
+
+        health = (s, block, notes)
+        return (block, notes)
     }
 
     private func sensorsDetail(_ sys: SystemMetrics.Snapshot)

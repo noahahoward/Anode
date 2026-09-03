@@ -254,7 +254,297 @@ For scale, `top` has been measured at 6.9–18.1% of its own denominator.
 
 ---
 
-## 8. Distribution
+## 8. SSD health, and the endurance model that had to be deleted
+
+### SMART is on the child node, not the controller
+
+"SMART is unavailable on Apple Silicon" is widely believed and wrong. The log
+page is one node lower in the registry than everybody looks. Measured, opening
+`kIONVMeSMARTUserClientTypeID` on each candidate:
+
+| Node | Class | `IOCreatePlugInInterfaceForService` |
+|---|---|---|
+| controller | `AppleANS3CGv2Controller` | `0xe00002c7` `kIOReturnUnsupported` |
+| namespace | `IOEmbeddedNVMeBlockDevice` | `0x00000000` |
+| namespace | `IONVMeBlockStorageDevice` | `0x00000000` |
+
+**Apple documented this in the public header the whole time.** `kIOPropertyNVMe`
+`SMARTCapableKey`, in `NVMeSMARTLibExternal.h`, exists — in the header's own
+words — to find NVMe SMART capable devices *"without hardcoding the search to a
+particular device class"*. That sentence is the answer to the myth, shipped in
+the SDK. Measured: exactly **one** node in the entire IORegistry publishes the
+key, the namespace node, where it reads `Yes`; it is absent from
+`AppleANS3CGv2Controller` entirely, which is the same story the return codes
+tell from the other end.
+
+```
++-o NS_01@1  <class IOEmbeddedNVMeBlockDevice>
+    "NVMe SMART Capable" = Yes
+    "IOCFPlugInTypes" = {"AA0FA6F9-C2D6-457F-B10B-59A13253292F"="NVMeSMARTLib.plugin"}
+```
+
+It is used as a **precondition**, never as the measurement: the property is the
+device's claim about itself, the 512 bytes are the fact.
+
+> **The two class names are one device.** `IOEmbeddedNVMeBlockDevice` is a
+> *subclass* of `IONVMeBlockStorageDevice`, and `IOServiceMatching` matches
+> subclasses, so matching both names returns registry entry `0x100000d3a`
+> **twice** — one node, one drive, found from two directions.
+> `ioreg -c IONVMeBlockStorageDevice` and `ioreg -c IOEmbeddedNVMeBlockDevice`
+> print the identical node. Candidates are therefore deduplicated by registry
+> entry ID and sorted by it, so device selection is deterministic. Both names
+> are still matched, because hardware that publishes only the base class exists.
+> Skip the dedupe and the drive appears twice, which is how this is rediscovered.
+
+Unprivileged, uid 501, no entitlement, no helper, no `sudo`.
+
+`diskutil info -plist disk0` publishes the same fields under
+`SMARTDeviceSpecificKeysMayVaryNotGuaranteed`, which is how the binary field
+mapping here was checked against an independent decoder rather than against the
+spec alone.
+
+### Cost, and why the read is outside the lock
+
+| | |
+|---|---|
+| open the user client | 2.46 ms |
+| `SMARTReadData`, median, idle | **0.076 ms** |
+| `SMARTReadData`, tail, idle | 2.83 ms |
+| `SMARTReadData`, ten concurrent `dd` writers | **12.95 ms** |
+
+The open is 33x the median read, so the client is opened once and held. The last
+row is the one that shaped the design: 12.95 ms is most of a 16.7 ms frame, and
+the latency is **load-dependent** — it is worst exactly when the machine is
+busiest, which is when a stalled UI is most visible. So the read happens
+**outside the cache's lock**, and §7's rule applies unchanged: the instrument
+must not be a significant entry in its own ledger, and a lock held across a
+12.95 ms IOKit round trip would make it one.
+
+Robustness, measured rather than assumed: **378,100 `SMARTReadData` calls across
+7,562 open/close cycles, half of them under ten concurrent writers, zero
+failures**. 1,000 full probe cycles leak **zero** mach ports.
+
+### The cross-check
+
+The single strongest piece of evidence in this section: the drive's own counter
+and the kernel's driver counter, which share no code path, agree to within the
+quantisation of the drive's counter.
+
+```
+DATA_UNITS_WRITTEN  vs  IOBlockStorageDriver "Bytes (Write)"
+
+passive, 21.7 h window
+  Δ DATA_UNITS_WRITTEN         44,291,072,000 B
+  Δ driver Bytes (Write)       44,290,940,928 B
+  difference                          131,072 B    0.26 of one 512,000 B unit
+
+injected 2 GiB with dd + sync
+  Δ DATA_UNITS_WRITTEN          2,157,056,000 B
+  Δ driver Bytes (Write)        2,156,703,744 B
+  difference                          352,256 B    0.69 of one 512,000 B unit
+
+command counts, same passive window
+  Δ HOST_WRITE_COMMANDS             2,292,636
+  Δ driver Operations (Write)       2,292,636
+  difference                                0    exact
+```
+
+Both byte deltas land inside one DUW quantum, which is the closest agreement the
+counter's own resolution permits. The command counts are not quantised and are
+**exactly** equal.
+
+The obvious deflation is that the two are one accumulator read twice. Ruled out
+three ways:
+
+| Ruled out | Evidence |
+|---|---|
+| Different epochs | SMART is lifetime; the driver counter is per boot. They did not reset together at the Aug 31 boot — the driver went to zero and SMART did not. |
+| Live hardware behind it | The temperature field in the same log page moved 307 → 309 → 307 K during the window. A mirror of a software counter has no thermistor in it. |
+| Mean I/O size | 21,461 B/command before the boot, 21,073 B/command after: the same physical workload straddling an epoch boundary that only one of the two counters survives. |
+
+### The falsified model
+
+Recorded the way §3 records the multiplicative-fusion mistake, because the
+failure here is more seductive than that one: it produced the *right answer*.
+
+The original design derived endurance from NAND geometry, all of it read from
+the controller's own `Controller Characteristics`:
+
+```
+blocks-per-cau                303
+cau-per-die                     4
+dies  (num-bus × dies-per-bus)  8
+pages-per-block-mlc          7704
+page-size                   16384 B
+────────────────────────────────────────────────────────────
+303 × 4 × 8 × 7704 × 16384  =  1,223,851,769,856 B  =  1.2239 TB raw
+
+self-validating:
+  32 CAU × 7704 pages × 4 sec-per-page  =  986,112
+  = the controller's own "sec-per-full-band" key, exactly
+
+then, the part that was wrong:
+  1.2239 TB × 1000 P/E cycles ÷ 2.0 write amplification  =  612 TB
+  conventional vendor rating, 1 TB TLC drive             =  600 TBW
+```
+
+Two percent from the industry figure, off a geometry that validates against a
+key the controller publishes for a different purpose. It was believed for
+several days.
+
+**The agreement was numerology.** Vendor TBW is *itself* computed as
+capacity × P/E ÷ WAF. Reproducing it from the same three constants is not a
+confirmation; it is the same arithmetic run twice. The tell is that the same
+constants, applied to other cell types, miss in **opposite directions** —
+1.53x high on MLC, 0.51x low on QLC — which is what a formula does when it is
+being fitted rather than measured.
+
+**And it is now falsified outright, by this drive.** `percentageUsed` is still
+0 at **7.31 TB written** (14,285,870 data units). If the manufacturer's basis
+were 612 TB, the integrator would have passed 1 % at 6.12 TB and would read 1.
+It reads 0, which bounds the manufacturer's own basis **above 731 TB** — 20 %
+higher than the model, from a single reading, with no assumption about P/E or
+WAF at all.
+
+So the number was wrong, the method was circular, and the correct value was
+sitting in a field the drive already publishes. Nothing in this project
+projects endurance any more.
+
+### `percentageUsed` is not fenced to 0–100, and that is deliberate
+
+Every other percent on the page is fenced: `AVAILABLE_SPARE` and its threshold
+are integer percents of a quantity that cannot exceed itself, so 101–255 there
+is a decode error and the whole page is rejected.
+
+`percentageUsed` is the exception. The spec permits **101–255**, meaning "past
+the manufacturer's rated endurance", saturating at 255. An earlier version
+rejected the page above 100 — and rejecting returns `nil`, which every caller
+renders as *"this machine has no SMART"*. A worn-out drive would therefore have
+presented **exactly like an Intel Mac or a VM**.
+
+> An absent measurement and an alarming one must never be the same pixel.
+
+That is the general rule; this is just where it bit. Consumers downstream take a
+"percent" that can exceed 100, which is correct, and `alarms(for:)` carries the
+raw value through, so a drive at 150 % reports 150.
+
+### POWER_ON_HOURS is not calendar time, and is not a denominator
+
+Same class of trap as §2's IOReport unit labels — a plausible number, in the
+right units, meaning something other than what it says.
+
+```
+POWER_ON_HOURS                                203 → 204 h      Δ 1 h
+wall clock across the same window                              21.9 h
+machine awake across it (pmset -g log)                         99.5 %
+──────────────────────────────────────────────────────────────────────
+controller active-state residency  =  1 ÷ 21.9  =  4.6 % of calendar
+```
+
+It is the NVMe controller's own active-state residency, not machine uptime and
+not wall clock. Shown unlabelled it reads about **22x low**, and every
+derived-per-hour figure built on it inherits that factor silently — exactly the
+10³–10⁶ hardcoded-divisor failure §2 describes, only smaller and therefore
+harder to spot. It is either labelled precisely or omitted. It is never a
+denominator.
+
+### Over-provisioning is against the exposed LBA capacity
+
+An error that was made and caught, worth recording because the wrong
+denominator is the one the controller hands you first:
+
+```
+raw NAND         1,223,851,769,856 B   geometry above
+exposed LBA      1,000,555,581,440 B   IOMedia "Size" = diskutil Size  = 1.00 TB
+"capacity" key   1,024,000,000,000 B   Controller Characteristics
+
+OP vs exposed LBA    223,296,188,416 ÷ 1,000,555,581,440  =  22.3 %   CORRECT
+OP vs "capacity"     199,851,769,856 ÷ 1,024,000,000,000  =  19.5 %   WRONG
+```
+
+`capacity` is a controller-internal figure and is 2.3 % larger than anything the
+host can address. Using it understates over-provisioning by nearly three points,
+and describing the drive as "1.024 TB usable" — which the first draft of this
+feature did — is the same error worn as a label.
+
+### Swap is the wrong headline; the compressor is the right one
+
+Measured on this machine:
+
+| | |
+|---|---|
+| swapfiles in `/private/var/vm` | **none** — the directory holds only `sleepimage` |
+| `sleepimage` | 2 GiB, `hibernatemode 3` |
+| `vm.swapusage` total | 1024.00M — a **reservation**, not an allocation |
+| swapouts | 16 pages × 16,384 B = 262,144 B since boot |
+| compressions | 1,557,253 pages = **25.51 GB absorbed** |
+| decompressions | 680,007 pages = 11.14 GB returned |
+| compressor pool | 2.42 GB holding 5.88 GB of anonymous memory = **2.427:1** |
+
+The compressor does roughly **97,000x** the byte traffic swap does. A
+swap-centric memory display therefore reads as a column of zeros on a healthy
+Mac and only starts moving once the machine is already thrashing — an
+instrument that is indistinguishable from broken exactly when it is working.
+
+Three further things this measurement settled:
+
+- **The 1024 MB in `vm.swapusage` is a reservation.** No swapfile exists on
+  disk. Reporting it as swap in use would be reporting a number with no bytes
+  behind it.
+- **The 2 GiB `sleepimage` is the largest write in the whole swap family, and no
+  swap counter ever sees it.** It is written on sleep, by a different path.
+  Anything claiming to total "what the memory system writes to the disk" that
+  omits it is wrong by more than everything it includes.
+- **Pageins were 58 % of all reads this boot, and they are FILE-BACKED.**
+  `swapins` is **0**. Labelling pageins as memory pressure is not wrong by a
+  percentage; with a zero denominator it is wrong by an infinite factor.
+
+### Filesystem write amplification is measurable; NAND write amplification is not
+
+APFS publishes both halves per volume, in `AppleAPFSVolume`'s `Statistics`
+dictionary:
+
+```
+"Bytes written by user"          user-visible writes
+"Bytes written to block device"  what actually left the filesystem
+
+window A   ratio 1.234
+window B   ratio 1.260
+```
+
+That is a **measured** filesystem write amplification, and it **drifts with
+workload** — those two windows are the same machine hours apart. It has to be
+recomputed live and must never be baked in as a constant; a fixed 1.25 would be
+a fitted parameter wearing a measurement's clothes.
+
+**This is not the FTL/NAND write amplification the falsified model used.** That
+one is inside the controller: NAND program bytes are not exposed by any
+interface reachable from the host, and no amount of filesystem instrumentation
+gets at them. It is also now unnecessary — `percentageUsed` is the
+manufacturer's own integrator and already has NAND-level amplification baked
+into it. The unreachable number is the one we no longer need.
+
+### This is a reassurance surface, not a monitor
+
+Stated plainly, because without it the next person to touch this file will add a
+projection and reinvent the 612 TB:
+
+At the **~50 GB/day** measured on this machine, against a manufacturer basis
+bounded **above 731 TB**, this drive outlives the machine by a wide margin. More
+importantly, neither counter predicts the failure mode Apple silicon SSDs
+actually exhibit — controller and logic-board failure, not wear-out. A wear
+projection would be a precise answer to a question that is not the one that
+kills these drives.
+
+So the section reports state and reports transitions, and it projects nothing.
+The alarms it raises are all measured events: a critical-warning bit set,
+available spare falling below the drive's own threshold, a media error, or
+`percentageUsed` leaving 0 for the first time. Every one of those is something
+that **happened**.
+
+---
+
+## 9. Distribution
 
 The app **cannot be sandboxed**: App Sandbox denies `process-info-listpids`, and Apple
 DTS confirms no entitlement lifts it. That permanently closes the Mac App Store

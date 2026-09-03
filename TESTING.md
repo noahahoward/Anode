@@ -40,6 +40,7 @@ number:
 | Backlight response curve (span 8.19 W, dead zone 0.20, exponent 1.75) | No display segment from the curve. The `PDBR` rail is still used if present — it is a sensor, not a fit. |
 | Memory rails `P3F2`+`PZD1`, storage rail `PN00` | No memory or storage segment. Those watts stay in the unattributed bucket. |
 | CPU rail→battery factor 1.27 | 1.0, i.e. no correction applied. Not a claim the factor is 1.0 there. |
+| NVMe SMART log page 0x02, read from the *namespace* node | No SSD section at all. Intel Macs, VMs and external USB bridges vend no SMART user client, and the section prints **nothing** rather than a table of zeros. A blank SSD section is the gate working. |
 
 So on other hardware the ledger is **smaller but still true**: fewer named rows,
 a larger honest "unidentified" remainder. That is the intended behaviour. A
@@ -48,6 +49,19 @@ project exists to avoid.
 
 Expect the unattributed share to be noticeably larger than on the author's
 machine. That is not a bug report — it is the gate working.
+
+The SSD section is deliberately **not** a health monitor and does not project
+anything. There is no lifespan estimate, no TBW and no percent-of-endurance,
+because on this drive every one of those was built and then disproved by the
+drive's own counters — `ARCHITECTURE.md`, "SSD health", records what killed
+them. "It does not tell me how long the SSD will last" is therefore not a gap to
+report; it is the finding.
+
+What *is* worth reporting there: an SSD section that prints a table of zeros
+rather than printing nothing, or a `percentage used` above 100. The first means
+an absent measurement is being rendered as a measured one. The second is real,
+legal and alarming — the drive is past its rated endurance — and it is exactly
+the state the decoder was loosened to let through.
 
 ## What is genuinely worth reporting
 

@@ -32,16 +32,34 @@ if args.contains("--metrics") {
     Thread.sleep(forTimeInterval: 2.0)
     if let snap = monitor.tick() { MetricRegistry.shared.update(with: snap) }
     MetricRegistry.shared.update(system: sys.sample())
+    // The same anchoring a launch of the app does, into the same store: this is the
+    // product looking at the same drive, so an earlier anchor is strictly more
+    // history. `storage.write.perDay` prints "—" for the first 30 days after it.
+    if let ssd = NVMeHealth.read() {
+        SSDWriteAnchor.shared.observe(bytesWritten: ssd.bytesWritten)
+    }
 
+    // allDescriptors(), NOT descriptors(). The latter is the widget picker's
+    // menu of choices and drops everything marked `bindable: false` — several
+    // storage metrics are deliberately non-bindable (window rows, not menu bar
+    // candidates, the same call `system.disk.bytesPerSec` already makes), and a
+    // registry dump that omits them is a diagnostic that lies about what is
+    // registered. Non-bindable rows are marked rather than hidden.
+    //
+    // One caveat this dump cannot express: descriptors() applies a SECOND
+    // filter, `MetricRegistry.offered`, which withdraws metrics this machine
+    // cannot answer at all (fan speed on a fanless Mac). That is internal to
+    // PowerKit, so a row appearing here is not a promise it is offerable.
     rule("REGISTERED METRICS")
     var cat = ""
-    for d in MetricRegistry.shared.descriptors() {
+    for d in MetricRegistry.shared.allDescriptors() {
         if d.category != cat { cat = d.category; print("\n  [\(cat)]") }
         let v = MetricRegistry.shared.value(for: d.id)
         let shown = v.map { $0.text + ($0.isEstimate ? " *" : "") } ?? "— (no data)"
         let lbl = v?.label ?? d.shortTitle
-        print(String(format: "    %-26@ %-14@ %@", d.id.rawValue as NSString,
-                     lbl as NSString, shown as NSString))
+        let bind = d.bindable ? "" : "   [not bindable]"
+        print(String(format: "    %-26@ %-14@ %@%@", d.id.rawValue as NSString,
+                     lbl as NSString, shown as NSString, bind as NSString))
     }
     print("")
     exit(0)
@@ -184,6 +202,201 @@ if let i = args.firstIndex(of: "--diskwatch") {
     print(String(format: "wrote %.1f MB in %.0fs = %.1f KB/s", Double(b &- a)/1048576, secs, kbs))
     print(String(format: "macOS sustained limit is 24.9 KB/s -> %@",
                  kbs > 24.9 ? "OVER by \(Int(kbs/24.9))x" : "within budget"))
+    exit(0)
+}
+
+// ── SSD health ──────────────────────────────────────────────────────────────
+// NVMe Health Information log page 0x02, plus what the memory system actually
+// costs the drive. Every figure below is read. Nothing here is projected, and
+// that is a decision rather than an omission: ARCHITECTURE.md, "SSD health",
+// records the endurance model that was built from this drive's own NAND
+// geometry, agreed with the conventional 600 TBW rating to within 2 %, and was
+// deleted anyway because the agreement was circular.
+if args.contains("--ssd") {
+    // An absent measurement prints NOTHING. Intel Macs, VMs and external USB
+    // bridges vend no SMART user client, and a table of zeros there is a claim
+    // about a drive nobody read — the same rule as the Fans tab on a fanless
+    // Mac. stderr, so a pipeline sees an empty section rather than prose.
+    guard let s = NVMeHealth.read() else {
+        FileHandle.standardError.write(Data(
+            "no NVMe SMART user client on this machine — nothing was measured\n".utf8))
+        exit(1)
+    }
+    let id = SSDIdentity.read()
+
+    let grp = NumberFormatter()
+    grp.numberStyle = .decimal
+    func n(_ v: UInt64) -> String { grp.string(from: NSNumber(value: v)) ?? "\(v)" }
+
+    // DECIMAL, deliberately. `MetricUnit.bytes` is 1024-based and right for
+    // memory, but the NVMe data unit is 512,000 bytes and every figure derived
+    // from it has to stay on that base or the two disagree by 10 % in silence.
+    // The header line says which base is in force; this is what enforces it.
+    func dec(_ b: UInt64) -> String {
+        let u = ["B", "kB", "MB", "GB", "TB", "PB"]
+        var v = Double(b), i = 0
+        while v >= 1000, i < u.count - 1 { v /= 1000; i += 1 }
+        return String(format: i == 0 ? "%.0f %@" : "%.2f %@", v, u[i])
+    }
+    func gib(_ b: UInt64) -> String {
+        String(format: "%.2f GiB", Double(b) / 1_073_741_824)
+    }
+
+    // Local, and NON-TRUNCATING, unlike the file-scope pad/rpad further down:
+    // those clip with `String(prefix:)`, which would silently shorten a byte
+    // count into a different number. Same local-helper shape as --watch.
+    func p(_ s: String, _ w: Int) -> String {
+        s.count >= w ? s : s + String(repeating: " ", count: w - s.count)
+    }
+    func rp(_ s: String, _ w: Int) -> String {
+        s.count >= w ? s : String(repeating: " ", count: w - s.count) + s
+    }
+    let noteCol = 2 + 18 + 11 + 3          // where the note column starts
+    func row(_ label: String, _ value: String, _ note: String = "") {
+        print("  " + p(label, 18) + rp(value, 11) + (note.isEmpty ? "" : "   " + note))
+    }
+    func cont(_ note: String) { print(String(repeating: " ", count: noteCol) + note) }
+
+    rule("SSD HEALTH  — NVMe health log page 0x02, read from the block device node")
+    print("  Byte figures are DECIMAL (kB = 10^3 B) unless a figure is marked GiB or MiB.")
+    print("")
+    if let m = id.model {
+        let extras = [id.nandDescription, id.firmware.map { "firmware \($0)" }]
+            .compactMap { $0 }
+        print("  " + p("drive", 13) + ([m] + extras).joined(separator: " · "))
+    }
+    if let cap = id.exposedCapacityBytes {
+        print("  " + p("usable", 13) + dec(cap) + "   (exposed LBA \(n(cap)) B)")
+    }
+    if let c = s.temperatureC {
+        print("  " + p("temperature", 13)
+              + String(format: "%.1f °C   (%u K, as the controller reports it)",
+                       c, s.temperatureK))
+    }
+
+    print("\n  WEAR")
+    row("critical warning", "\(s.criticalWarning)",
+        s.criticalWarning == 0 ? "no bit set" : "SET — see NVMe 1.4 figure 194")
+    row("available spare", "\(s.availableSpare)",
+        "%, end-of-life threshold \(s.availableSpareThreshold) %")
+    // percentageUsed is NOT fenced to 0...100 by the decoder, and deliberately:
+    // the spec permits 101-255, meaning "past the manufacturer's rated
+    // endurance", saturating at 255. Rejecting it would return nil, and nil
+    // renders here as "no SMART on this machine" — so a worn-out drive would
+    // print identically to an Intel Mac. An absent measurement and an alarming
+    // one must never be the same pixel, so >100 gets its own words.
+    row("percentage used", "\(s.percentageUsed)",
+        s.percentageUsed > 100
+            ? "%, PAST the rated endurance basis"
+            : "%, vendor wear integrator — see the note")
+    if s.percentageUsed > 100 {
+        cont(s.percentageUsed == 255 ? "(255 is the saturation value, not a maximum)"
+                                     : "(the spec permits 101-255 here)")
+    }
+    row("media errors", "\(s.mediaErrors)", "lifetime uncorrected data errors")
+
+    print("\n  LIFETIME TRANSFER  DATA_UNITS_* are 512,000-byte DECIMAL units per the spec")
+    row("written", dec(s.bytesWritten), "\(n(s.dataUnitsWritten)) data units")
+    row("read", dec(s.bytesRead), "\(n(s.dataUnitsRead)) data units")
+
+    print("\n  COUNTERS")
+    row("power cycles", n(s.powerCycles))
+    row("unsafe shutdowns", n(s.unsafeShutdowns), "lifetime")
+    // Labelled on the row, and then explained below it. Unlabelled this figure
+    // reads as uptime and is wrong by ~22x — the measurement is in the prose.
+    row("controller awake", n(s.powerOnHours),
+        "hours of ACTIVE-STATE RESIDENCY, not uptime")
+
+    print("")
+    if s.percentageUsed == 0 {
+        print("  percentage used reads 0, and 0 is also what an UNIMPLEMENTED field")
+        print("  reads. CONTROLLER_BUSY_TIME on this same page reads \(s.controllerBusyTimeMinutes) too, on a")
+        print("  drive that has written \(dec(s.bytesWritten)), so at least one field here is a stub.")
+        print("  Read the 0 as \"no wear reported\", never as \"wear measured at zero\".")
+        print("")
+    }
+    print("  Controller awake time is NOT machine uptime and NOT calendar time.")
+    print("  Measured on this machine it advanced 203 -> 204 h across 21.9 h of wall")
+    print("  clock while the machine was awake for 99.5 % of that, i.e. 4.6 % of")
+    print("  calendar. Taken as uptime it reads about 22x low. Nothing in this")
+    print("  output divides by it.")
+    print("")
+    print("  There is no projected lifespan, no years-remaining, no TBW and no")
+    print("  percent-of-endurance here. Each was built, and each was disproved on")
+    print("  this drive; ARCHITECTURE.md, \"SSD health\", records what killed them.")
+    print("  This is a reassurance surface, not a monitor.")
+
+    // Measured transitions, never projections. Printed only when there are any,
+    // so a healthy drive says nothing rather than saying "no alarms" — which is
+    // a sentence that stops being read long before it stops being printed.
+    let alarms = NVMeHealth.alarms(for: s)
+    if !alarms.isEmpty {
+        print("\n  ALARMS  — measured transitions, in severity order")
+        for a in alarms {
+            switch a {
+            case .criticalWarning(let bits):
+                row("critical warning", String(format: "0x%02X", bits),
+                    "the drive raised this itself")
+            case .spareBelowThreshold(let spare, let threshold):
+                row("spare", "\(spare) %", "below the drive's own \(threshold) % threshold")
+            case .mediaErrors(let count):
+                row("media errors", n(count), "uncorrected — this is data loss")
+            case .wearStarted(let used):
+                row("wear", "\(used) %", "percentage used has left 0")
+            }
+        }
+    }
+
+    // ── What the memory system costs the drive ──────────────────────────────
+    // Swap first would be the conventional layout and it is the wrong one: on a
+    // healthy Mac every swap figure is zero, so a swap-led display reads as an
+    // instrument that is broken. The compressor is doing the work and is the
+    // number that moves, so it goes first.
+    if let m = SwapFacts.read() {
+        rule("MEMORY PRESSURE ON THIS DRIVE  — swap is not the story, the compressor is")
+        print("  COMPRESSOR")
+        row("compressions", n(m.compressions),
+            "pages = \(dec(m.compressedBytes)) absorbed")
+        row("decompressions", n(m.decompressions),
+            "pages = \(dec(m.decompressedBytes)) returned")
+        row("pool", dec(m.poolBytes), "holding \(dec(m.heldAnonBytes)) of anonymous memory")
+        if let r = m.compressionRatio {
+            row("measured ratio", String(format: "%.3f", r),
+                ": 1, this machine right now — not a constant")
+        }
+
+        print("\n  SWAP")
+        row("swapfile", m.swapFiles.isEmpty ? "none" : "\(m.swapFiles.count)",
+            m.swapFiles.isEmpty ? "/private/var/vm holds no swapfile at all"
+                                : "in /private/var/vm")
+        if let sleep = m.sleepImageBytes {
+            row("sleepimage", gib(sleep),
+                m.hibernateMode.map { "hibernatemode \($0); written on sleep, and no" }
+                    ?? "written on sleep, and no")
+            cont("swap counter ever sees it")
+        }
+        if let t = m.swapusageTotal {
+            row("vm.swapusage", t, "a RESERVATION the kernel prints, not an")
+            cont("allocation — nothing is backing it")
+        }
+        row("swapouts", n(m.swapouts),
+            "pages x \(n(m.pageSize)) B = \(n(m.swappedOutBytes)) B since boot")
+        row("swapins", n(m.swapins), "pages")
+        row("in swap now", n(m.pagesInSwap), "pages")
+
+        print("")
+        if let x = m.compressorToSwapRatio {
+            print("  The compressor has moved \(n(UInt64(x)))x the bytes swap has on this")
+            print("  machine. A swap-centric memory display therefore reads as a column of")
+            print("  zeros on a healthy Mac, and stays silent until one is already")
+            print("  thrashing. The compressor figures move first, and move continuously.")
+        } else {
+            print("  Swap has moved no bytes at all since boot, so there is no ratio to")
+            print("  report. The compressor absorbed \(dec(m.compressedBytes)) over the same")
+            print("  period. A swap-centric memory display would show nothing but zeros.")
+        }
+    }
+    print("")
     exit(0)
 }
 

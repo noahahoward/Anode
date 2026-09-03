@@ -78,6 +78,7 @@ Anode measures joules instead.
 | `AppleSmartBattery.PowerTelemetryData` | Authoritative 60 s mean, used to correct PSTR's gain | none |
 | IOReport `Energy Model` | Per-rail energy (on this M5, GPU only) | none |
 | `systemstats` `CoalitionUsage` | Root-owned processes, per-app GPU, history | none |
+| NVMe SMART log page 0x02 | SSD wear, lifetime bytes, error counters | none (the *namespace* node vends it, not the controller) |
 
 Units displayed: **%/hour**, **10 hr power** (% of battery over a trailing on-battery
 window), and **minutes of runtime cost**. Watts are measured internally and never shown.
@@ -123,6 +124,7 @@ swift build
 ./.build/debug/anode -w 5 -n 15     # one-shot report
 ./.build/debug/anode --watch -w 2   # live
 ./.build/debug/anode --smc          # SMC power sensor discovery
+./.build/debug/anode --ssd          # NVMe SSD health, and what writes to it
 ```
 
 Handing it to someone else to test: see [TESTING.md](TESTING.md). Short version —
