@@ -53,6 +53,28 @@ extension MetricID {
     public static let gpuTemperature     = MetricID("sensors.gpu.celsius")
     public static let fanSpeed           = MetricID("sensors.fan.rpm")
 
+    // Storage. Swap is under Memory because that is the question it answers —
+    // swap is where memory pressure spills, not a property of the disk it lands
+    // on — and the rest come off the NVMe health log page.
+    //
+    // These strings are the persistence format, exactly like the ones above. A
+    // widget config and a saved panel order both store the raw string, so
+    // renaming a shipped one silently unbinds every widget bound to it.
+    public static let swapUsed           = MetricID("storage.swap.used")
+    public static let writePerDay        = MetricID("storage.write.perDay")
+    public static let ssdHealth          = MetricID("storage.ssd.health")
+    public static let ssdLifeUsed        = MetricID("storage.ssd.lifeUsed")
+    public static let ssdWritten         = MetricID("storage.ssd.written")
+    public static let ssdRead            = MetricID("storage.ssd.read")
+    public static let ssdSpare           = MetricID("storage.ssd.spare")
+
+    // THERE IS NO POWER-ON HOURS METRIC, and that is deliberate. The NVMe field
+    // is controller ACTIVE-STATE residency, measured at 4.6 % of calendar time
+    // on this machine — the obvious use for it, dividing a lifetime total to get
+    // a rate, is wrong by ~22x. A metric makes that division available to every
+    // present and future surface with nothing to stop it, so the figure stays in
+    // the storage pane as a row LABELLED for what it is. Do not add it here.
+
     /// Health of the sampling loop itself, not of the machine. A tick dropped
     /// because the previous one was still running is time this app measured
     /// nothing over, and that has to be visible somewhere.
@@ -68,7 +90,8 @@ extension MetricID {
 /// upstream signal is undocumented and can hand us NaN, and a menu bar that says
 /// "nan %/hr" is exactly the startup breakage this app exists to avoid.
 public enum MetricUnit: CaseIterable {
-    case percentPerHour, percent, minutes, celsius, rpm, count, ratio, bytes, bytesPerSecond
+    case percentPerHour, percent, minutes, celsius, rpm, count, ratio, bytes,
+         bytesPerSecond, bytesPerDay
 
     public func format(_ value: Double) -> String {
         guard value.isFinite else { return "—" }
@@ -121,7 +144,70 @@ public enum MetricUnit: CaseIterable {
             var i = -1
             repeat { v /= 1024; i += 1 } while v >= 1024 && i < units.count - 1
             return sign + String(format: v >= 100 ? "%.0f %@" : "%.1f %@", v, units[i])
+        case .bytesPerDay:
+            // DECIMAL divisors — the opposite of `.bytes` directly above, and
+            // this is the paragraph to read before "fixing" that.
+            //
+            // The numerator of this rate comes from exactly one place:
+            // `NVMeHealth.Sample.bytesWritten`, which is DATA_UNITS_WRITTEN times
+            // 512,000 — decimal units, by the NVMe spec. The storage pane prints
+            // that same counter through the same decimal formatter and captions
+            // the block "TB above are decimal". A binary rate beside a decimal
+            // total is a 1024⁴/1000⁴ = 9.95 % contradiction between two figures a
+            // reader divides into each other: "7.31 TB written" spread over the
+            // days since the anchor has to come out as the number in the menu
+            // bar, or one of them is wrong. It was caught in review once.
+            //
+            // `.bytes` stays binary and must: it prints memory, caches and volume
+            // capacities, where 1024 is what macOS itself shows. The rule is that
+            // THE BASIS FOLLOWS THE SOURCE, not the app — and the only source
+            // that feeds this unit counts in thousands.
+            //
+            // One decimal below 10, none above: the `.percentPerHour` rule, not
+            // `.bytesPerSecond`'s 100. This figure is a mean over thirty days or
+            // more, and "50.0GB/d" spends two of the menu bar's scarce columns
+            // asserting a tenth of a gigabyte the measurement does not have.
+            //
+            // The sign is KEPT (`.bytes` keeps it; `.bytesPerSecond` formats the
+            // absolute value). `SSDWriteAnchor` can never publish a negative rate
+            // — it re-anchors instead — so a negative arriving here means a
+            // caller bypassed it, and printing that as a positive would hide the
+            // bug behind a plausible number.
+            let sign = value < 0 ? "-" : ""
+            var v = abs(value)
+            if v < 1000 { return sign + String(format: "%.0fB/d", v) }
+            let units = ["KB", "MB", "GB", "TB", "PB"]
+            var i = -1
+            repeat { v /= 1000; i += 1 } while v >= 1000 && i < units.count - 1
+            return sign + String(format: v >= 10 ? "%.0f%@/d" : "%.1f%@/d", v, units[i])
         }
+    }
+}
+
+extension MetricUnit {
+
+    /// Decimal bytes, for the one source that counts them that way.
+    ///
+    /// A STATIC FUNCTION AND NOT A CASE: a `MetricUnit` case is offerable to a
+    /// menu bar widget, and this is not a display unit anyone chooses — it is the
+    /// unit ONE source uses, and only that source's two counters go through it.
+    /// (`.bytesPerDay` IS a case, because a per-day rate is something a user picks
+    /// off a list; it carries this same basis for the same reason, and the two sit
+    /// next to each other so they cannot drift apart.)
+    ///
+    /// It lives here rather than in the storage pane so that the pane's row, the
+    /// `storage.ssd.written` / `storage.ssd.read` metrics and the `anode --metrics`
+    /// dump are ONE implementation. Two decimal formatters is the same desync as
+    /// one decimal and one binary, only harder to see.
+    ///
+    /// Two decimals at TB so 7.31 and 14.00 line up in a right-aligned column, and
+    /// so the hundredth of a terabyte the drive actually reports survives.
+    public static func siBytes(_ bytes: UInt64) -> String {
+        let v = Double(bytes)
+        if v >= 1e12 { return String(format: "%.2f TB", v / 1e12) }
+        if v >= 1e9  { return String(format: "%.1f GB", v / 1e9) }
+        if v >= 1e6  { return String(format: "%.1f MB", v / 1e6) }
+        return String(format: "%.0f B", v)
     }
 }
 
@@ -199,6 +285,7 @@ public final class MetricRegistry {
         r.registerBatteryMetrics()
         r.registerSystemMetrics()
         r.registerSamplerMetrics()
+        r.registerStorageMetrics()
         return r
     }()
 
@@ -228,7 +315,12 @@ public final class MetricRegistry {
     /// still serves them, so a window surface that wants one is unaffected;
     /// only the offer to put it in the menu bar is withdrawn.
     public func descriptors() -> [MetricDescriptor] {
-        allDescriptors().filter(\.bindable).filter { Self.offered($0.id) }
+        // Probed once per call rather than once per descriptor. `NVMeHealth.read()`
+        // is cached, so the difference is small, but the answer cannot change
+        // halfway down a list either.
+        let smart = NVMeHealth.read() != nil
+        return allDescriptors().filter(\.bindable)
+            .filter { Self.offered($0.id, smart: smart) }
     }
 
     /// Metrics this MACHINE can answer at all.
@@ -243,10 +335,23 @@ public final class MetricRegistry {
     /// Same asymmetry as `FanPresence.showsFanTab`, and for the same reason:
     /// `.unknown` KEEPS the row. Withdrawing a real reading on a machine that has
     /// fans is the worse error, and only `.fanless` is evidence.
-    static func offered(_ id: MetricID, fans: FanPresence.State = FanPresence.onThisMac)
-        -> Bool {
-        guard id == .fanSpeed else { return true }
-        return FanPresence.showsFanTab(fans)
+    static func offered(_ id: MetricID, fans: FanPresence.State = FanPresence.onThisMac,
+                        smart: Bool = NVMeHealth.read() != nil) -> Bool {
+        if id == .fanSpeed { return FanPresence.showsFanTab(fans) }
+        // The same rule as the fan, about drives. No device vends the NVMe SMART
+        // user client on an Intel Mac, in a VM, or behind an external bridge, so
+        // both of these are permanently unanswerable there — two dashes in a
+        // column of live figures, each one a claim that this machine has a drive
+        // whose wear is currently unknown.
+        //
+        // Only the two BINDABLE storage metrics are listed. The four lifetime
+        // readings never reach `descriptors()` anyway, and naming them here would
+        // make `FanlessSilenceTests.testNoOtherMetricIsWithheldOnAFanlessMachine`
+        // — which walks `allDescriptors()` — fail on such a machine for nothing.
+        //
+        // `storage.swap.used` is NOT here: it is a sysctl every Mac answers.
+        if id == .writePerDay || id == .ssdHealth { return smart }
+        return true
     }
 
     /// Every registered metric, bindable or not. For diagnostics that need to
@@ -635,5 +740,197 @@ public final class MetricRegistry {
     public func update(droppedSamples: Int) {
         lock.lock(); defer { lock.unlock() }
         self.droppedSamples = droppedSamples
+    }
+
+    // ── Storage ─────────────────────────────────────────────────────────────────
+
+    /// Swap, SSD wear, lifetime traffic, and the write rate.
+    ///
+    /// PULLED, not pushed, which is the one place this family departs from the
+    /// battery and utilisation metrics. Those read a snapshot a sampler pushed in,
+    /// because they change every tick and cost real work to produce. These do not:
+    /// `NVMeHealth.read()` is cached and re-reads at most once an hour by contract,
+    /// and `SwapUsage.read()` was measured at 0.97 µs. Pushing them would mean a
+    /// snapshot type, an `update(storage:)` and a sampler wired into three
+    /// executables, to move two readings that are already as fresh as they get.
+    ///
+    /// Every input is injected, so tests never touch this machine's drive and the
+    /// storage pane can be exercised against a drive nobody owns.
+    ///
+    /// NO POWER-ON HOURS — see the note beside the IDs at the top of this file.
+    public func registerStorageMetrics(
+        anchor: SSDWriteAnchor = .shared,
+        readHealth: @escaping () -> NVMeHealth.Sample? = { NVMeHealth.read() },
+        readSwap: @escaping () -> SwapUsage.Sample? = { SwapUsage.read() }
+    ) {
+        // ── Swap ────────────────────────────────────────────────────────────
+        // The one storage figure that genuinely moves within a session, and the
+        // menu-bar reading that was asked for by name. Filed under Memory, not
+        // Storage: swap is what memory pressure spills into, and the Resources
+        // pane already prints it inside the Memory detail.
+        register(MetricDescriptor(
+            id: .swapUsed, title: "Swap used", shortTitle: "Swap",
+            unit: .bytes, category: "Memory", higherIsWorse: true
+        )) {
+            // A machine that has never swapped reports 0, and 0 is the
+            // measurement. nil is the sysctl failing — the only case that means
+            // we could not look.
+            guard let s = readSwap() else { return nil }
+            return MetricValue(Double(s.usedBytes), unit: .bytes, isEstimate: false)
+        }
+
+        // ── Drive health ────────────────────────────────────────────────────
+        register(MetricDescriptor(
+            id: .ssdHealth, title: "Drive health", shortTitle: "SSD",
+            unit: .ratio, category: "Storage",
+            // 1.0 IS HEALTHY AND HIGHER IS BETTER. Do not invert this.
+            //
+            // The first draft ran the other way — 0.0 healthy, `higherIsWorse:
+            // true` — which reads naturally as "zero alarms" right up until
+            // something renders the VALUE. `MetricUnit.ratio.format(0.0)` is
+            // "0%", and "Drive health  0%" is the exact opposite of the truth,
+            // printed under a title that makes it sound authoritative.
+            //
+            // "But `text` is always overridden" is NOT a safety net. It is a
+            // property of the two providers below, not of the descriptor, and
+            // nothing stops the next consumer — a graph axis, a tooltip, a
+            // future pane row, a CSV export — from formatting `value` through
+            // `unit` the way every other metric here is formatted. This app's
+            // rule is that a renderer must never be able to invert a meaning,
+            // and the only way to hold that is for the number itself to be
+            // right side up.
+            //
+            // The dot is unchanged by the flip. `severityColor` computes
+            // `badness = higherIsWorse ? f : 1 - f`, so healthy 1.0 gives
+            // badness 0.0 (green) exactly as healthy 0.0 did under the old
+            // polarity, and every alarm below lands on the same badness it had.
+            higherIsWorse: false
+        )) {
+            // MEASURED TRANSITIONS ONLY. This does not model remaining life and
+            // does not extrapolate a wear curve from an integrator that has never
+            // left 0. It reports things that have happened, and 1.0 with the text
+            // "OK" when none have — a fact about the drive, not a missing
+            // reading, so it draws a green dot rather than a grey one.
+            //
+            // `text` is a free string rather than `MetricUnit.ratio`'s formatting
+            // of the value, because the dot has to say WHICH alarm. "40%" beside
+            // a yellow dot says nothing anyone can act on.
+            guard let s = readHealth() else { return nil }
+            guard let worst = NVMeHealth.alarms(for: s).first else {
+                return MetricValue(value: 1, text: "OK", isEstimate: false)
+            }
+            return MetricValue(value: Self.alarmHealth(worst),
+                               text: Self.alarmText(worst), isEstimate: false)
+        }
+
+        // ── Writes per day ──────────────────────────────────────────────────
+        register(MetricDescriptor(
+            id: .writePerDay, title: "Writes per day", shortTitle: "Writes",
+            unit: .bytesPerDay, category: "Storage", higherIsWorse: true
+        )) {
+            // nil for the first 30 days after the anchor is set — see
+            // `SSDWriteAnchor` for the measurements behind that gate. A
+            // placeholder for a month is the correct behaviour: the alternative
+            // is a number that is 2.14x wrong on day one and converges over weeks
+            // while looking exactly as confident throughout.
+            //
+            // NOT an estimate. It is a difference of two measured counters over a
+            // measured interval, never extrapolated beyond the window it was
+            // measured over. Contrast `battery.timeRemaining.min`, which IS
+            // marked, because it projects a rate across a future nobody measured.
+            guard let s = readHealth(),
+                  let perDay = anchor.rate(bytesWritten: s.bytesWritten) else { return nil }
+            return MetricValue(perDay, unit: .bytesPerDay, isEstimate: false)
+        }
+
+        // ── Not bindable: the lifetime readings ─────────────────────────────
+        register(MetricDescriptor(
+            id: .ssdLifeUsed, title: "Drive life used", shortTitle: "Life",
+            unit: .percent, category: "Storage", higherIsWorse: true,
+            // Pane and CLI only, for the same reason as `system.disk.bytesPerSec`
+            // above: a widget that cannot say anything. PERCENTAGE_USED is the
+            // vendor's wear integrator and it reads 0 — at 7.31 TB written it has
+            // not yet reached 1 — so all four widget styles are degenerate at
+            // once. Text is a constant "0%", the bar is empty, the dot is green,
+            // the sparkline is flat: four ways to render a constant. In the pane
+            // it is a row, where "0%" is an answer.
+            bindable: false
+        )) {
+            guard let s = readHealth() else { return nil }
+            return MetricValue(Double(s.percentageUsed), unit: .percent, isEstimate: false)
+        }
+
+        // Lifetime totals. Real readings and the pane's headline figures — but a
+        // menu bar redraws every second and these move by about a percent a
+        // month. Withdrawn from the picker for moving too slowly to watch, not
+        // for being uninteresting.
+        func lifetime(_ id: MetricID, _ title: String, _ short: String,
+                      worse: Bool, _ get: @escaping (NVMeHealth.Sample) -> UInt64) {
+            register(MetricDescriptor(id: id, title: title, shortTitle: short,
+                                      unit: .bytes, category: "Storage",
+                                      higherIsWorse: worse, bindable: false)) {
+                guard let s = readHealth() else { return nil }
+                let bytes = get(s)
+                // `value` is raw bytes; `text` is DECIMAL, through the shared
+                // `MetricUnit.siBytes` and never through `.bytes`, because this
+                // counter is DATA_UNITS × 512,000. The pane prints the same
+                // field, and "7.31 TB" there against "6.6 TB" in the CLI dump is
+                // the same quantity in the same glyphs 10 % apart.
+                //
+                // The descriptor still says `.bytes`. The unit governs the
+                // severity scale (nil for bytes either way) and nothing
+                // re-formats a value whose text is already set — the same shape
+                // as `system.disk.bytesPerSec`, whose text is composed rather
+                // than taken from its unit.
+                return MetricValue(value: Double(bytes),
+                                   text: MetricUnit.siBytes(bytes), isEstimate: false)
+            }
+        }
+        // Writes wear the drive; reads do not, and the two must not carry the
+        // same badness direction just because they carry the same unit.
+        lifetime(.ssdWritten, "Lifetime written", "Written", worse: true) { $0.bytesWritten }
+        lifetime(.ssdRead, "Lifetime read", "Read", worse: false) { $0.bytesRead }
+
+        register(MetricDescriptor(
+            id: .ssdSpare, title: "Spare blocks", shortTitle: "Spare",
+            unit: .percent, category: "Storage",
+            // The one lifetime reading where higher is BETTER: this is the reserve
+            // the drive has left to retire failing blocks into, and falling below
+            // `availableSpareThreshold` is end of life. That crossing is what
+            // `storage.ssd.health` alarms on; this is the level behind it.
+            higherIsWorse: false, bindable: false
+        )) {
+            guard let s = readHealth() else { return nil }
+            return MetricValue(Double(s.availableSpare), unit: .percent, isEstimate: false)
+        }
+    }
+
+    /// Where an alarm lands on the 0…1 HEALTH scale — 1.0 healthy, 0.0 worst.
+    ///
+    /// `WidgetRenderer.severityColor` reads it as `badness = 1 - health` (the
+    /// descriptor says `higherIsWorse: false`), then green below 0.5, yellow below
+    /// 0.8, red at or above.
+    ///
+    /// Wear leaving 0 is a real transition and worth a yellow dot, but it is not a
+    /// fault — a drive at 1 % used is working exactly as designed — so it sits at
+    /// 0.4, which is badness 0.6. The other three are states the drive itself
+    /// calls wrong, and they go to 0.0.
+    static func alarmHealth(_ alarm: NVMeHealth.Alarm) -> Double {
+        switch alarm {
+        case .wearStarted:          return 0.4
+        case .criticalWarning,
+             .spareBelowThreshold,
+             .mediaErrors:          return 0
+        }
+    }
+
+    /// Menu-bar width, so: what happened, and the one number saying how much.
+    static func alarmText(_ alarm: NVMeHealth.Alarm) -> String {
+        switch alarm {
+        case .criticalWarning(let bits):         return String(format: "WARN 0x%02X", bits)
+        case .spareBelowThreshold(let spare, _): return "SPARE \(spare)%"
+        case .mediaErrors(let count):            return "\(count) ERRORS"
+        case .wearStarted(let used):             return "WEAR \(used)%"
+        }
     }
 }

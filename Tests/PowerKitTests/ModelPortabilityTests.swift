@@ -353,7 +353,14 @@ final class FanlessSilenceTests: XCTestCase {
     /// anything else.
     func testNoOtherMetricIsWithheldOnAFanlessMachine() {
         for d in MetricRegistry.shared.allDescriptors() where d.id != .fanSpeed {
-            XCTAssertTrue(MetricRegistry.offered(d.id, fans: .fanless), "\(d.id.rawValue)")
+            // `smart: true` is pinned rather than probed. The storage metrics are
+            // withheld on a machine with no NVMe SMART user client, which is
+            // correct behaviour and would make this assertion machine-dependent —
+            // green here, red on an Intel Mac or in a VM. This test is about the
+            // FAN filter not withdrawing anything else, so the drive probe is
+            // held fixed.
+            XCTAssertTrue(MetricRegistry.offered(d.id, fans: .fanless, smart: true),
+                          "\(d.id.rawValue)")
         }
     }
 

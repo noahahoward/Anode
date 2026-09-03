@@ -241,6 +241,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         // `BatteryDischargeTrend.Persisted`.
         if let saved = BatteryDischargeTrend.Persisted.load() { drain.restoreTrend(saved) }
 
+        // The write-rate basis: (bytes written, wall clock) captured the first time
+        // this app ever saw this drive, then left alone for a month. It is a LAUNCH
+        // that anchors and deliberately not a metric provider — a provider that wrote
+        // would anchor the machine merely because something drew a menu, including
+        // the menus GroupMenuTests and PanelEditorTests draw. See `SSDWriteAnchor`.
+        //
+        // Off the main thread: this is the one storage reading that comes from an
+        // IOKit user client rather than a sysctl, and it was measured at 12.95 ms
+        // while the drive is busy — most of a frame. Nothing waits on the result.
+        DispatchQueue.global(qos: .utility).async {
+            if let s = NVMeHealth.read() {
+                SSDWriteAnchor.shared.observe(bytesWritten: s.bytesWritten)
+            }
+        }
+
         buildMenu()
 
         main = MainWindowController()

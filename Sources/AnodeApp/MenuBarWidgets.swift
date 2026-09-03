@@ -634,8 +634,8 @@ enum WidgetRenderer {
     // ── Severity ────────────────────────────────────────────────────────────────
 
     /// 0…1 "how full is this reading" against a per-unit scale. nil where no
-    /// universal bound exists (count, bytes) — those stay neutral rather than
-    /// pretending a threshold we don't have.
+    /// universal bound exists (count, bytes, either rate) — those stay neutral
+    /// rather than pretending a threshold we don't have.
     static func normalizedFraction(_ unit: MetricUnit, _ v: Double) -> Double? {
         guard v.isFinite else { return nil }
         func clamp(_ x: Double) -> Double { min(max(x, 0), 1) }
@@ -649,7 +649,18 @@ enum WidgetRenderer {
         // No universal bound exists for these, so they stay neutral rather than
         // implying a threshold we cannot justify. Throughput in particular depends
         // entirely on the link — 12 MB/s is saturation on Wi-Fi and idle on Thunderbolt.
-        case .count, .bytes, .bytesPerSecond: return nil
+        //
+        // `.bytesPerDay` is here on different grounds, worth writing down because a
+        // write rate LOOKS like it has a bound. The only bound available would be a
+        // claim about every machine, and the only measurement behind it is one
+        // machine's habit — 52.2 GB/day lifetime against 47.2 GB/day over a fresh
+        // window is two views of the same drive, n = 1. Scaled to that, a bar
+        // colours a developer's laptop yellow and a video editor's red having
+        // measured neither. And no scale may be derived from endurance: the 612 TB
+        // figure is falsified, not merely uncertain (ARCHITECTURE.md section 8), and
+        // a lower bound is not a scale — it can say a rate is safer than assumed,
+        // never how much of anything it uses.
+        case .count, .bytes, .bytesPerSecond, .bytesPerDay: return nil
         }
     }
 
