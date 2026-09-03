@@ -541,7 +541,11 @@ final class NVMeHealthTests: XCTestCase {
     /// misbehaves fails.
     func testEveryDeviceClaimingSMARTCapabilityDeliversAPage() throws {
         let probed = NVMeHealth.probeInternalDevices()
-        let claimed = probed.filter { $0.outcome != .notCapable }
+        // `.unclaimed` is excluded alongside `.notCapable`: it means the node never
+        // advertised the key, so its refusal is absence rather than contradiction.
+        let claimed = probed.filter {
+            $0.outcome != .notCapable && $0.outcome != .unclaimed
+        }
         guard !claimed.isEmpty else {
             throw XCTSkip("no internal device advertises \"NVMe SMART Capable\" here")
         }
@@ -555,6 +559,36 @@ final class NVMeHealthTests: XCTestCase {
                     """)
             }
         }
+    }
+
+    /// An ABSENT capability key must not short-circuit the probe.
+    ///
+    /// This is the one decision in the file that cannot be checked on the only
+    /// hardware available, so it is pinned as pure logic instead. `NVMe SMART
+    /// Capable` was measured present on this drive and on one other machine, and
+    /// that is not evidence about every Apple Silicon Mac since 2020 or every
+    /// macOS since 13. If absence were a verdict, such a machine would render a
+    /// blank card with a working log page one unasked open away — the silent blank
+    /// this whole file exists to have stopped happening.
+    func testAnAbsentCapabilityKeyIsAskedAnywayAndOnlyFalseDeclines() {
+        XCTAssertTrue(NVMeHealth.attemptsOpen(claim: nil),
+                      "no key published: ask anyway, absence is not denial")
+        XCTAssertTrue(NVMeHealth.attemptsOpen(claim: true))
+        XCTAssertFalse(NVMeHealth.attemptsOpen(claim: false),
+                       "an explicit false is the device declining, and is believed")
+    }
+
+    /// The same refusal is a bug or a shrug depending on what was claimed first.
+    ///
+    /// Flattening these is exactly how an empty card became indistinguishable from
+    /// a broken one the first time round.
+    func testARefusalIsLoudOnlyIfTheNodeClaimedCapability() {
+        let rc = kIOReturnUnsupported
+        XCTAssertEqual(NVMeHealth.openFailure(claim: true, rc), .openFailed(rc),
+                       "claimed, then refused: a contradiction, and loud")
+        XCTAssertEqual(NVMeHealth.openFailure(claim: nil, rc), .unclaimed,
+                       "never claimed: ordinary absent hardware, and quiet")
+        XCTAssertEqual(NVMeHealth.openFailure(claim: false, rc), .unclaimed)
     }
 
     /// The same node must be chosen every time. `IOIteratorNext` promises no order
