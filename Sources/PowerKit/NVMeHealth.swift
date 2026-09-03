@@ -509,9 +509,11 @@ public enum NVMeHealth {
     /// absent from `AppleANS3CGv2Controller` entirely, which is the same story the
     /// return codes tell, from the other end.
     ///
-    /// Used as a PRECONDITION, never as the measurement. The property is the
-    /// device's claim about itself; the 512 bytes are the fact. See `Outcome` for
-    /// why keeping those two apart is the point.
+    /// Used as a FAST PATH, never as the measurement and never as a gate. The
+    /// property is the device's claim about itself; the 512 bytes are the fact. An
+    /// explicit false is taken at its word; an ABSENT key is not, because absence
+    /// is what an OS or a controller generation we have never seen looks like. See
+    /// `Outcome` and `attemptsOpen(claim:)`.
     private static let smartCapableKey = "NVMe SMART Capable"
 
     /// What one candidate node had to say. Three failures that a bare `nil` would
@@ -526,9 +528,20 @@ public enum NVMeHealth {
     /// how this feature got designed wrong once, so the states are kept apart here
     /// and `NVMeHealthTests` asserts on them.
     enum Outcome: Equatable {
-        /// The node does not publish `NVMe SMART Capable`, or publishes it false.
-        /// The device is telling us it has no health page. Not an error.
+        /// The node publishes `NVMe SMART Capable` and it reads false. The device
+        /// is telling us it has no health page. Not an error, and not asked.
         case notCapable
+        /// The node publishes no capability key AT ALL, was asked anyway, and would
+        /// not open. Quiet, deliberately.
+        ///
+        /// The key was measured present on this hardware, but "present on the two
+        /// machines anyone tried" is not "emitted by every Apple Silicon Mac since
+        /// 2020, on every macOS since 13". Treating its ABSENCE as a verdict would
+        /// make an older Mac render a blank card while a perfectly good log page sat
+        /// one unasked open away — the same silent-blank this file exists to have
+        /// stopped happening. So absence buys a 2.7 ms question, not a conclusion,
+        /// and only an explicit false closes the door.
+        case unclaimed
         /// The node claims SMART capability and the user client would not open, or
         /// would not vend the interface. A LOUD failure: something we believe is
         /// wrong.
@@ -613,19 +626,34 @@ public enum NVMeHealth {
         case read(IOReturn)
     }
 
-    /// The property gate, then the trial open, then the decode.
+    /// Is a node carrying this claim worth asking? PURE, and the whole portability
+    /// decision in this file lives in this one line.
+    ///
+    /// nil (no key published) attempts, because absence is not denial. Only an
+    /// explicit false declines. Costs a 2.7 ms open, once an hour, on hardware that
+    /// will usually answer.
+    static func attemptsOpen(claim: Bool?) -> Bool { claim != false }
+
+    /// How to read a refusal to open, given what the node claimed. PURE.
+    ///
+    /// A node that CLAIMED capability and then refused is a contradiction — a bug
+    /// here, in the vtable offsets, or in an OS change — and is loud. A node that
+    /// claimed nothing and refused is ordinary absent hardware and is quiet. Same
+    /// return code, different events, and flattening them is how an empty card
+    /// stops being distinguishable from a broken one.
+    static func openFailure(claim: Bool?, _ rc: IOReturn) -> Outcome {
+        claim == true ? .openFailed(rc) : .unclaimed
+    }
+
+    /// The claim, then the trial open, then the decode.
     private static func outcome(for service: io_object_t) -> Outcome {
-        // The claim, checked before the 2.7 ms open so that a node which says it
-        // cannot serve this is never asked to. It is a gate and not a verdict: the
-        // read below is still the measurement, because a property is what a driver
-        // says about itself and 512 bytes are what it does.
-        guard let raw = IORegistryEntryCreateCFProperty(
-                service, smartCapableKey as CFString, kCFAllocatorDefault, 0),
-              let capable = raw.takeRetainedValue() as? Bool, capable
-        else { return .notCapable }
+        let claim = IORegistryEntryCreateCFProperty(
+            service, smartCapableKey as CFString, kCFAllocatorDefault, 0)?
+            .takeRetainedValue() as? Bool
+        guard attemptsOpen(claim: claim) else { return .notCapable }
 
         switch openPage(service) {
-        case .failure(.open(let rc)): return .openFailed(rc)
+        case .failure(.open(let rc)): return openFailure(claim: claim, rc)
         case .failure(.read(let rc)): return .readFailed(rc)
         case .success(let page):      return decode(page).map(Outcome.sample) ?? .undecodable
         }
