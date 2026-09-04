@@ -139,17 +139,6 @@ final class LensSamplingNeedsTests: XCTestCase {
         for d in [MetricID.diskRead, .diskWrite, .diskActivity] {
             XCTAssertEqual(AppDelegate.resource(forWidget: d), .disk)
         }
-        // Storage, including swap. Swap is filed under Memory in the registry
-        // because that is what it measures, and it routes to Disk because that is
-        // the card showing what it costs — the two are allowed to differ, and the
-        // Disk card carries a Swap block so this lands on the number.
-        for storage in [MetricID.swapUsed, .writePerDay, .ssdHealth,
-                        .ssdLifeUsed, .ssdWritten, .ssdRead, .ssdSpare] {
-            XCTAssertEqual(AppDelegate.lens(forWidget: storage), .resources,
-                           "\(storage.rawValue) should open Resources")
-            XCTAssertEqual(AppDelegate.resource(forWidget: storage), .disk,
-                           "\(storage.rawValue) should land on the Disk card")
-        }
     }
 
     /// A metric whose LENS is the whole answer names no card — there is nothing

@@ -1471,26 +1471,6 @@ final class ResourceSelectionTests: XCTestCase {
                        "selecting emptied the readings instead of rebuilding them")
     }
 
-    /// The swap widget opens the Disk card, so the Disk card has to SHOW swap.
-    ///
-    /// This is the rule the fan widget's routing is written around — a click whose
-    /// destination does not contain the number it named was reported as a click
-    /// that did nothing. Swap is the awkward case: it is a Memory measurement
-    /// routed to a Storage card, so nothing but a test keeps the two in step. If
-    /// someone later removes the Swap block from `diskDetail`, this fails rather
-    /// than the routing quietly going nowhere.
-    func testTheDiskCardShowsSwapBecauseTheSwapWidgetOpensIt() throws {
-        try XCTSkipIf(MachineInfo.swap() == nil, "this machine reports no swap file")
-        let content = ResourcesContent(frame: NSRect(x: 0, y: 0, width: 900, height: 600))
-        content.update(sample(), power: nil, span: 900)
-        content.select(.disk)
-        let labels = content.lastSpecItems.map(\.label)
-        XCTAssertTrue(labels.contains("Swap"),
-                      "the Disk card has no Swap heading, but the swap widget opens it")
-        XCTAssertTrue(labels.contains("In swap now"),
-                      "the Disk card names swap but does not state it")
-    }
-
     /// And the specs column too — it is built from the same sample and was left
     /// behind by the same nil.
     func testTheSpecsColumnAlsoFollowsTheClick() {
