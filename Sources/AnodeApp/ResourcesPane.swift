@@ -964,40 +964,11 @@ final class ResourcesContent: NSView, PaneContentView {
         let (healthBlock, healthNotes) = healthSpecs(sys)
         specs.append(contentsOf: healthBlock)
 
-        // Swap, on the card about the drive it is written to.
-        //
-        // It is ALSO on the Memory card, and the duplication is deliberate — the
-        // same call the Volumes rows already make. One number answering two
-        // questions: Memory asks whether the machine is under pressure, this asks
-        // what that pressure is doing to the SSD. The swap widget's click lands
-        // here, and a destination has to contain the number it was asked for —
-        // the rule the fan widget's routing is written around.
-        if let swap = MachineInfo.swap() {
-            specs.append(.heading("Swap"))
-            // "In swap now", NOT "written": `vm.swapusage used` is OCCUPANCY. Pages
-            // stay in the file until something faults them back or their process
-            // exits, so this figure falls only for those two reasons and is not a
-            // running total of anything. Measured here: 16 pages out, 0 ever back,
-            // giving a 256 KiB floor that never moves — which reads as a stuck
-            // number unless the row says which quantity it is.
-            specs.append(.row("In swap now",
-                              String(format: "%@ of %@",
-                                     MetricUnit.bytes.format(Double(swap.usedBytes)),
-                                     MetricUnit.bytes.format(Double(swap.totalBytes))),
-                              dim: true))
-            specs.append(.row("Encrypted", swap.isEncrypted ? "yes" : "no", dim: true))
-        }
-
         specs.append(.heading("Note"))
         // The long-form evidence is on `DiskActivity`; this is the one-line version,
         // said where someone looking for a percentage will look for it.
         specs.append(.row("Why bytes and not a percentage",
                           "queue depth, not occupancy — it reaches 1394%", dim: true))
-        if MachineInfo.swap() != nil {
-            specs.append(.row("Why swap sits still",
-                              "occupancy, not a total — it falls only on a swap-in",
-                              dim: true))
-        }
         specs.append(contentsOf: healthNotes)
         return (live, specs)
     }
