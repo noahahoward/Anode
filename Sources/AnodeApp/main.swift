@@ -309,18 +309,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
             self?.updateGraph(self?.lastSnapshot)
         }
         main.graphRanges.onSelect = { [weak self] seconds in
-            guard let self else { return }
-            self.graphRange = seconds
-            self.graphDomainOverride = nil          // back to following "now"
-            self.graph.earliestAvailable = self.store?.earliestSample()
-            if seconds <= 3600 {
-                self.graph.timeDomain = nil          // live strip chart
-                self.updateGraph(self.lastSnapshot)
-            } else {
-                let end = Date()
-                self.graph.timeDomain = (end.addingTimeInterval(-seconds), end)
-                self.loadHistorySeries(start: end.addingTimeInterval(-seconds), end: end)
-            }
+            self?.applyGraphRange(seconds)
         }
 
         inspector = InspectorView(frame: .zero)
@@ -736,7 +725,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
                     // whatever pair was current when the window was last closed and
                     // showed it for as long as the app stayed in the background —
                     // which is most of its life.
-                    MetricRegistry.shared.update(displayedRate: Self.reconciledRate(snap, est))
+                    MetricRegistry.shared.update(displayedRate: Self.reconciledRate(
+                        snap, est, previous: MetricRegistry.shared.displayedRate))
                     self.widgets.refresh()
                 }
             }
@@ -754,7 +744,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         // figures behind these — total, charge, time left — are measured on every
         // tick, light or full.
         MetricRegistry.shared.update(with: s)
-        MetricRegistry.shared.update(displayedRate: Self.reconciledRate(s, lastDrain))
+        MetricRegistry.shared.update(displayedRate: Self.reconciledRate(
+            s, lastDrain, previous: MetricRegistry.shared.displayedRate))
         widgets.refresh()
 
         // Everything below reads what only a full sweep produces: the app rows,
@@ -1038,7 +1029,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         main.glance.model = lastSystem.flatMap {
             GlanceCardView.model(for: bottomContext, system: $0,
                                  facts: MachineInfo.facts, census: lastCensus)
-        } ?? GlanceCardView.model(from: s, drain: lastDrain)
+        } ?? GlanceCardView.model(from: s, drain: lastDrain,
+                                  shared: MetricRegistry.shared.displayedRate)
     }
 
     /// The same range, for a subject that is a utilisation rather than a drain.
@@ -1151,9 +1143,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
                 guard let soc = p.socPercent else { return nil }
                 return .charge(time: p.time, percent: soc, onBattery: p.onBattery)
             }
+            let trend = Self.trailingMean(series, window: Self.drainTrendWindow,
+                                          minimumSpan: Self.drainTrendMinimumSpan)
             DispatchQueue.main.async {
                 self.graph.sharesRightAxisScale = true
-                self.graph.series = [.init(name: Self.drainSeriesName, color: Palette.accent, points: series)]
+                self.graph.series = [
+                    .init(name: Self.drainSeriesName, color: Palette.accent, points: series),
+                ] + Self.trendOverlay(trend)
                 self.graph.rightSeries = charge.count >= 2
                     ? .init(name: "battery", color: Palette.chargeLine,
                             points: charge, filled: true)
@@ -1219,15 +1215,54 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
     ///    disagree by more than a factor of two.
     /// 3. instantaneous power, when there is no history at all.
     ///
-    /// TIME comes from `DrainEstimate.timeToEmpty` in every branch, against the
-    /// charge on the mAh basis — so the rate published here and the hours published
-    /// here always multiply back to the charge, whichever tier answered.
-    static func reconciledRate(_ s: PowerMonitor.Snapshot, _ est: DrainEstimate?)
-        -> (pctHr: Double, timeRemaining_hr: Double?, source: DrainEstimate.Source,
-            windowSpan: TimeInterval) {
+    /// TIME is not published as a number at all. What goes out is the CHARGE and
+    /// the instant it was read, and the renderers divide — see `DisplayedRate`.
+    /// The rate published here and the charge published here still multiply back
+    /// to the time, whichever tier answered.
+    ///
+    /// ## The anchor instant, and the one rule that governs it
+    /// `anchorAwake` is re-stamped WHEN THE CHARGE CHANGES, and at no other time.
+    /// That is the whole of it, and both halves matter:
+    ///
+    /// Re-stamping every call would undo the change entirely. This function runs
+    /// every tick — every 2 s visible, 8 s hidden — while the gauge publishes a
+    /// new charge about once a minute. An anchor re-stamped each tick always has
+    /// ~0 elapsed against it, so the projection would be a no-op and the headline
+    /// would sit still exactly as it did before.
+    ///
+    /// NOT re-stamping on a rate change is deliberate rather than an omission.
+    /// On the power tier the rate moves every tick while the charge does not, and
+    /// applying the new rate from the old charge reading — `projected(charge,
+    /// newRate, elapsed)` — is the more correct answer: it charges the elapsed
+    /// seconds at what the machine is doing now, rather than pretending the
+    /// gauge spoke again.
+    ///
+    /// Equality on `chargePercent` is the same test the estimator already makes
+    /// on the same value (`isNewPublish = mAh != lastMAh`), so the two agree
+    /// about what a publish is.
+    static func reconciledRate(_ s: PowerMonitor.Snapshot, _ est: DrainEstimate?,
+                               previous: DisplayedRate?,
+                               awake: TimeInterval = PowerMonitor.awakeSeconds())
+        -> DisplayedRate {
+        func anchored(pctHr: Double, charge: Double?,
+                      source: DrainEstimate.Source, span: TimeInterval) -> DisplayedRate {
+            let held = previous.flatMap { p -> TimeInterval? in
+                guard let c = charge, let pc = p.chargePercent, c == pc else { return nil }
+                // A backwards awake clock cannot happen (CLOCK_UPTIME_RAW is
+                // monotonic), but a restored/never-set anchor can be in the
+                // future relative to this process. Re-stamp rather than project
+                // a negative interval.
+                return p.anchorAwake <= awake ? p.anchorAwake : nil
+            }
+            return DisplayedRate(pctHr: pctHr, chargePercent: charge,
+                                 anchorAwake: held ?? awake,
+                                 source: source, windowSpan: span)
+        }
+
         let draining = s.direction == .draining
         if let e = est, e.source == .discharge, draining {
-            return (e.percentPerHour, e.timeRemaining.map { $0 / 3600 }, .discharge, e.windowSpan)
+            return anchored(pctHr: e.percentPerHour, charge: e.chargePercent,
+                            source: .discharge, span: e.windowSpan)
         }
         let measured = s.smoothed_pctHr
         let inferred = est?.percentPerHour
@@ -1238,10 +1273,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
             return ratio >= 0.5 && ratio <= 2.0
         }()
         let shown = trustInferred ? (inferred ?? measured) : measured
-        let hours: Double? = {
+        // The charge the renderers will divide. nil off battery, where a
+        // time-to-empty is not a missing reading but an inapplicable one.
+        let charge: Double? = {
             guard draining, let st = s.state else { return nil }
-            return DrainEstimate.timeToEmpty(chargePercent: s.scale.chargePercent(st),
-                                             ratePctHr: shown).map { $0 / 3600 }
+            return s.scale.chargePercent(st)
         }()
         // The label follows the number that was actually taken: overriding the
         // estimator with the power figure and still reporting the estimator's
@@ -1263,7 +1299,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         // disagree it holds forever, so the estimate would have said "measuring"
         // for as long as the app ran.
         let span = est?.windowSpan ?? 0
-        return (shown, hours, source, span)
+        return anchored(pctHr: shown, charge: charge, source: source, span: span)
+    }
+
+    /// Adopt a graph range: the domain, the data behind it, and the redraw.
+    ///
+    /// Both callers go through here — the range picker, and the subject switch
+    /// that has to fall back when the new subject cannot draw the current range.
+    /// The switch used to do two thirds of this inline and skip the domain,
+    /// which is the fan-graph defect; see `graphDomain`.
+    func applyGraphRange(_ seconds: TimeInterval) {
+        graphRange = seconds
+        graphDomainOverride = nil          // back to following "now"
+        graph.earliestAvailable = store?.earliestSample()
+        let domain = Self.graphDomain(for: seconds)
+        graph.timeDomain = domain
+        if let domain {
+            loadHistorySeries(start: domain.start, end: domain.end)
+        } else {
+            updateGraph(lastSnapshot)
+        }
     }
 
     /// One tick of device load, for each subject the bottom can be about.
@@ -1379,6 +1434,151 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
     /// and a legend that renames itself when you press 6H is the same class of
     /// drift as the charge line that was the wrong colour for only one range.
     static let drainSeriesName = "%/hr"
+    /// The name the trend overlay draws under, in the legend and the hover.
+    static let drainTrendSeriesName = "30 min mean"
+    /// The overlay's window. The same half hour `BatteryDischargeTrend` averages
+    /// over, so the line is the readout's own window drawn at the readout's own
+    /// length — not a second opinion with a second horizon.
+    static let drainTrendWindow: TimeInterval = 1800
+    /// And the same substance floor, for the same reason `minTicks` has one: a
+    /// mean over the first few seconds is the instantaneous value wearing a
+    /// different colour.
+    static let drainTrendMinimumSpan: TimeInterval = 300
+
+    /// Trailing mean of a plotted series, one output point per input point that
+    /// has `minimumSpan` of history behind it.
+    ///
+    /// ## What this is for
+    /// Reported from the field: the graph read ~4.5 %/hr while the readout beside
+    /// it read ~7.5. Both were right. The graph plots one value per tick and the
+    /// eye reads where that line SITS; the readout is a mean over half an hour,
+    /// and a mean is pulled up by spikes the line only touches. Measured on the
+    /// reporting machine over 24 minutes: base 2.97 W, mean 6.11 W, peak 28.97 W
+    /// — the base 51 % below the mean, worse than the 35-45 % `DischargeTrend`
+    /// records for bursty loads.
+    ///
+    /// No number was wrong and none could be changed, because a pack is drained
+    /// by the AREA under that line rather than by where it rests. What was
+    /// missing was the connection, so this draws the mean over the line it is
+    /// the mean OF.
+    ///
+    /// ## Derived, never buffered
+    /// A stored second series would need seeding at launch, a cutoff of its own,
+    /// and some definition for the store-backed ranges, where the published rate
+    /// was never persisted. Deriving it from the points being drawn gives ONE
+    /// definition on every range and makes the drawn claim self-evidently true
+    /// of the drawn data.
+    ///
+    /// ## Time-weighted, and that is not a detail
+    /// The live buffer ticks every 2 s while the window is visible and every 8 s
+    /// while it is hidden (`cadence`), and the store-backed ranges mix raw rows
+    /// with 60 s buckets. A mean over SAMPLES would count a visible minute four
+    /// times as heavily as a hidden one and quietly redefine the window — the
+    /// same trap `DischargeTrend` documents for its own accumulator ("a mean over
+    /// SAMPLES rather than over TICKS would silently misweight them"), and the
+    /// same fix. Each point is weighted by the gap it stands for.
+    ///
+    /// TRAILING, so a point sees only what came before it. A centred mean would
+    /// let the future move the past, and the graph would redraw its own history
+    /// on every tick.
+    /// The range to fall back to when the subject being switched to cannot draw
+    /// the one currently chosen. nil = the current range is fine, leave it.
+    ///
+    /// nil rather than "return the current range" so the caller can tell "no
+    /// change needed" from "changed to the same value", and skip the reset work
+    /// on every ordinary tab change.
+    static func snappedRange(for context: BottomContext,
+                             current: TimeInterval) -> TimeInterval? {
+        guard !context.ranges.contains(current) else { return nil }
+        return context.ranges.first
+    }
+
+    /// The domain a chosen range implies, and THE one place that decides it.
+    ///
+    /// nil means a live strip chart: no explicit domain, so the axis follows the
+    /// data's own extent. Anything longer than the live window pins an explicit
+    /// window instead, because a store-backed range must draw the hours it asked
+    /// for even where they are empty — "an empty stretch of history stays empty
+    /// on screen instead of silently rescaling the axis to whatever few points
+    /// happen to exist."
+    ///
+    /// This existed only inside the range picker's `onSelect`, and the subject
+    /// switch could not reach it: `GraphRanges.select(seconds:)` moves the
+    /// highlight and deliberately does not fire `onSelect`. So switching to a
+    /// subject with no stored history snapped the RANGE to 1 h, lit the 1 h chip,
+    /// and left the graph holding the previous subject's six-hour domain — which
+    /// it then correctly honoured, drawing a six-hour axis over a buffer holding
+    /// minutes. Reported as a broken fan graph; it was a correct axis over the
+    /// wrong window.
+    static func graphDomain(for seconds: TimeInterval,
+                            now: Date = Date()) -> (start: Date, end: Date)? {
+        seconds <= 3600 ? nil : (now.addingTimeInterval(-seconds), now)
+    }
+
+    /// The overlay as a series, or nothing at all.
+    ///
+    /// Empty rather than an empty series: a named series with no points still
+    /// occupies the legend, and a legend entry for a line that is not on screen
+    /// is worse than no overlay — it asks the reader to look for something that
+    /// is not there.
+    ///
+    /// UNFILLED, and drawn after the drain line so it sits on top of it. The
+    /// comment beside the drain series records why this graph carries one filled
+    /// series and not two: "drawing it twice turned a glanceable trend into
+    /// something you had to decode." That objection was to a DECOMPOSITION —
+    /// attributed versus unaccounted, two parts of one total, both wanting the
+    /// same area. This is not one: it is the same quantity over a longer window,
+    /// and a bare line over a fill is exactly how that reads without competing
+    /// for the area.
+    static func trendOverlay(_ points: [HistoryGraphView.Point]) -> [HistoryGraphView.Series] {
+        guard points.count >= 2 else { return [] }
+        return [.init(name: drainTrendSeriesName, color: Palette.drainTrendLine,
+                      points: points, filled: false)]
+    }
+
+    static func trailingMean(_ points: [HistoryGraphView.Point],
+                             window: TimeInterval,
+                             minimumSpan: TimeInterval) -> [HistoryGraphView.Point] {
+        // The view sanitises before drawing; this runs before that, so it cannot
+        // assume either order or finiteness.
+        let clean = points.filter { $0.value.isFinite }
+            .sorted { $0.time < $1.time }
+        guard clean.count > 1 else { return [] }
+
+        // Weight for each point: the gap it stands for, which is the interval
+        // BACK to its predecessor. The first point has no predecessor and so no
+        // duration — it is an instant, not a span, and contributes nothing.
+        var weight = [Double](repeating: 0, count: clean.count)
+        for i in 1..<clean.count {
+            let dt = clean[i].time.timeIntervalSince(clean[i - 1].time)
+            // A gap wider than the window is not a span this mean can carry: it
+            // would be one sample speaking for more time than the whole average
+            // covers. Zero-weighted, and the window below then starts after it.
+            weight[i] = (dt > 0 && dt <= window) ? dt : 0
+        }
+
+        var out: [HistoryGraphView.Point] = []
+        out.reserveCapacity(clean.count)
+        var lo = 0
+        var wSum = 0.0, vSum = 0.0
+        for i in 1..<clean.count {
+            wSum += weight[i]
+            vSum += weight[i] * clean[i].value
+            // Drop everything that has fallen out of the trailing window.
+            while lo + 1 <= i,
+                  clean[i].time.timeIntervalSince(clean[lo + 1].time) > window {
+                lo += 1
+                wSum -= weight[lo]
+                vSum -= weight[lo] * clean[lo].value
+            }
+            let span = clean[i].time.timeIntervalSince(clean[lo].time)
+            guard span >= minimumSpan, wSum > 0 else { continue }
+            let mean = vSum / wSum
+            guard mean.isFinite else { continue }
+            out.append(.init(time: clean[i].time, value: mean))
+        }
+        return out
+    }
 
     /// MB, meaning 1024², to match `MetricUnit.bytesPerSecond` and the Disk and
     /// Network columns. Shared by both rate subjects so they cannot drift.
@@ -1569,7 +1769,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
             graph.series = [
                 .init(name: Self.drainSeriesName, color: Palette.accent,
                       points: totalSeries, filled: true)
-            ]
+            ] + Self.trendOverlay(
+                Self.trailingMean(totalSeries, window: Self.drainTrendWindow,
+                                  minimumSpan: Self.drainTrendMinimumSpan))
             graph.yAxisLabel = "%/hr"
         }
         // BOTH OF THESE ARE ABOUT THE BATTERY and neither survives a change of
@@ -1738,6 +1940,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         case .memoryUsage:                             return .memory
         case .gpuUsage:                                return .gpu
         case .diskRead, .diskWrite, .diskActivity:     return .disk
+        // Every storage reading, swap included, is on the Disk card. Swap is
+        // filed under Memory in the registry — it is memory pressure — but the
+        // card that shows what that pressure DOES is this one, and it carries
+        // its own Swap block precisely so this routing lands on the number.
+        case .swapUsed, .writePerDay, .ssdHealth, .ssdLifeUsed,
+             .ssdWritten, .ssdRead, .ssdSpare:          return .disk
         default:                                       return nil
         }
     }
@@ -1749,7 +1957,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         // a different column — so a CPU widget click landed on a list of processes
         // rather than on the CPU. Resources is where that number actually lives.
         case .cpuUsage, .memoryUsage, .gpuUsage,
-             .diskRead, .diskWrite, .diskActivity: return .resources
+             .diskRead, .diskWrite, .diskActivity,
+             // Storage is not its own lens. A Storage tab was designed and cut:
+             // what survived fits the Disk card, and a sixth rail entry for it
+             // would be navigation nobody had earned. So these route to the same
+             // tab as the other utilisations and pick their card underneath.
+             .swapUsed, .writePerDay, .ssdHealth, .ssdLifeUsed,
+             .ssdWritten, .ssdRead, .ssdSpare: return .resources
         case .networkDown, .networkUp, .networkThroughput: return .network
         case .cpuTemperature, .gpuTemperature: return .sensors
         // Fans, not Sensors. The Sensors pane shows temperatures and nothing
@@ -2018,10 +2232,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         // subject with a single range — and both are decided here rather than
         // half here and half in the window controller.
         main.graphRanges.isHidden = graphHidden || !main.graphRanges.isWorthShowing
-        if !context.ranges.contains(graphRange), let first = context.ranges.first {
-            graphRange = first
+        // The chip and the domain both have to move, and only the chip used to.
+        // `select(seconds:)` moves the highlight and does NOT fire `onSelect`,
+        // so the domain reset that lives there was never reached from here.
+        let snapped = Self.snappedRange(for: context, current: graphRange)
+        if let snapped {
+            main.graphRanges.select(seconds: snapped)
+            graphRange = snapped
             graphDomainOverride = nil
-            main.graphRanges.select(seconds: first)
+            graph.timeDomain = Self.graphDomain(for: snapped)
         }
 
         if let s = lastSnapshot {
