@@ -1738,6 +1738,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         case .memoryUsage:                             return .memory
         case .gpuUsage:                                return .gpu
         case .diskRead, .diskWrite, .diskActivity:     return .disk
+        // Every storage reading, swap included, is on the Disk card. Swap is
+        // filed under Memory in the registry — it is memory pressure — but the
+        // card that shows what that pressure DOES is this one, and it carries
+        // its own Swap block precisely so this routing lands on the number.
+        case .swapUsed, .writePerDay, .ssdHealth, .ssdLifeUsed,
+             .ssdWritten, .ssdRead, .ssdSpare:          return .disk
         default:                                       return nil
         }
     }
@@ -1749,7 +1755,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         // a different column — so a CPU widget click landed on a list of processes
         // rather than on the CPU. Resources is where that number actually lives.
         case .cpuUsage, .memoryUsage, .gpuUsage,
-             .diskRead, .diskWrite, .diskActivity: return .resources
+             .diskRead, .diskWrite, .diskActivity,
+             // Storage is not its own lens. A Storage tab was designed and cut:
+             // what survived fits the Disk card, and a sixth rail entry for it
+             // would be navigation nobody had earned. So these route to the same
+             // tab as the other utilisations and pick their card underneath.
+             .swapUsed, .writePerDay, .ssdHealth, .ssdLifeUsed,
+             .ssdWritten, .ssdRead, .ssdSpare: return .resources
         case .networkDown, .networkUp, .networkThroughput: return .network
         case .cpuTemperature, .gpuTemperature: return .sensors
         // Fans, not Sensors. The Sensors pane shows temperatures and nothing
