@@ -239,6 +239,51 @@ public final class MenuBarWidgetController: NSObject, NSMenuDelegate {
         }
         items.reverse()   // back to config order for renders and test seams
         for entry in items { render(entry) }
+        Self.debugDump(items)
+    }
+
+    /// One-shot dump of what the menu bar ACTUALLY holds, gated behind
+    /// ANODE_WIDGET_DEBUG=1 so it costs a getenv on rebuild and nothing else.
+    ///
+    /// It exists because a widget reported as "empty space that still highlights"
+    /// cannot be diagnosed from source: every render path in this file draws
+    /// something, and a bitmap of `textImage` proved it draws for a 0 B swap value
+    /// too. So the failure is not in what we draw, it is in what happens to the
+    /// item AFTER we draw it — length, visibility, or a frame the window never
+    /// gave it. Those are AppKit's answers, not ours, and only the affected
+    /// machine can be asked.
+    ///
+    /// `isVisible` is the specific suspicion. It is persisted by macOS PER
+    /// `autosaveName`, and this file sets an autosaveName and never sets
+    /// isVisible — so an item a user once cmd-dragged off the bar stays off,
+    /// permanently, with the config still saying enabled.
+    static func debugDump(_ items: [(config: WidgetConfig, item: NSStatusItem)]) {
+        guard ProcessInfo.processInfo.environment["ANODE_WIDGET_DEBUG"] == "1" else { return }
+        let bar = NSStatusBar.system
+        // stderr, not stdout: stdout is block-buffered when redirected to a file,
+        // so a dump taken from a menu bar app that is then quit arrives empty —
+        // which is exactly how this was first tested, and it looked like the dump
+        // had never run.
+        func print(_ s: String) { fputs(s + "\n", stderr) }
+        print("── ANODE WIDGET DUMP ─────────────────────────────────────────────")
+        print(String(format: "thickness %.1f   screen %.0f wide   items %d",
+                     bar.thickness, NSScreen.main?.frame.width ?? -1, items.count))
+        var total: CGFloat = 0
+        for (i, e) in items.enumerated() {
+            let b = e.item.button
+            let img = b?.image
+            let w = b?.frame.width ?? -1
+            total += max(w, 0)
+            print(String(format: "%2d %-28s style=%-13s visible=%@ len=%6.1f btnW=%6.1f img=%@ win=%@",
+                         i, (e.config.metricID as NSString).utf8String!,
+                         (e.config.style.rawValue as NSString).utf8String!,
+                         e.item.isVisible ? "YES" : "NO ",
+                         e.item.length, w,
+                         img.map { String(format: "%.0fx%.0f", $0.size.width, $0.size.height) } ?? "NIL",
+                         b?.window == nil ? "NIL" : "ok"))
+        }
+        print(String(format: "total widget width %.0f pt", total))
+        print("──────────────────────────────────────────────────────────────────")
     }
 
     /// Every widget opens the main window — the widgets ARE the app's front door.
