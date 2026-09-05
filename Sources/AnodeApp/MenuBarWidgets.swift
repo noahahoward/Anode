@@ -100,6 +100,24 @@ public final class MenuBarWidgetController: NSObject, NSMenuDelegate {
         WidgetConfig(metricID: MetricID.groupPlaceholder.rawValue, style: .group),
     ]
 
+    /// The key macOS files an item's remembered position and visibility under.
+    ///
+    /// DELIBERATELY NO INDEX. It used to be "AnodeWidget.\(index).\(metricID)",
+    /// and the index meant every add or remove renamed every item after it — so a
+    /// user's cmd-dragged positions were silently discarded whenever the widget
+    /// list changed, and an item inherited whatever state the previous occupant of
+    /// its index had left behind.
+    ///
+    /// That renaming was also this bug's camouflage: removing a widget and adding
+    /// it back gave it a fresh name, which dodged a stuck hidden state and made
+    /// the problem look like it had been fixed while it moved to another item.
+    /// Dropping the index without setting `isVisible` would remove the escape
+    /// hatch and make things worse; the two changes belong together.
+    ///
+    /// Changing the format retires the old names once, so positions reset a single
+    /// time on upgrade. That is the cost of them being stable from then on.
+    static func autosaveName(for metricID: String) -> String { "AnodeWidget.\(metricID)" }
+
     static let historyCap = 60   // sparkline samples kept per metric
 
     private let onClick: (MetricID?) -> Void
@@ -219,7 +237,7 @@ public final class MenuBarWidgetController: NSObject, NSMenuDelegate {
         // New status items are inserted to the LEFT of existing ones, so create in
         // reverse for configs[0] to land leftmost. autosaveName additionally lets
         // macOS remember a position the user cmd-dragged to.
-        for (index, config) in storedConfigs.enumerated().reversed() where config.enabled {
+        for config in storedConfigs.reversed() where config.enabled {
             let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
             // A dying WindowServer connection (or a headless agent context) hands back
             // an item with no button. Drop that ONE widget and keep going — one bad
@@ -228,7 +246,20 @@ public final class MenuBarWidgetController: NSObject, NSMenuDelegate {
                 NSStatusBar.system.removeStatusItem(item)
                 continue
             }
-            item.autosaveName = "AnodeWidget.\(index).\(config.metricID)"
+            item.autosaveName = Self.autosaveName(for: config.metricID)
+            // EXPLICITLY VISIBLE, every rebuild, and this is not redundant.
+            //
+            // macOS persists isVisible PER autosaveName, in its own store rather
+            // than in this app's defaults — so it survives a relaunch, a rebuild,
+            // and a reinstall, and nothing in `dev.anode.app` records it. An item
+            // a user once cmd-dragged off the bar therefore comes back HIDDEN
+            // forever, while its WidgetConfig still says enabled: a widget that
+            // cannot be recovered through any control this app offers.
+            //
+            // Measured, not assumed: create an item with an autosaveName, set
+            // isVisible = false, destroy it, recreate it with the same name, and
+            // it reads back false. See the probe in the commit that added this.
+            item.isVisible = true
             button.target = self
             button.action = #selector(widgetClicked)
             // Right-click has to be requested explicitly. Without it the app is
