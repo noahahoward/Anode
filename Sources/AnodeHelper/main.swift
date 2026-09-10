@@ -46,6 +46,29 @@ func printErr(_ s: String) {
     FileHandle.standardError.write((s + "\n").data(using: .utf8)!)
 }
 
+/// Give up before the server is running, and leave a trace someone can find.
+///
+/// STDERR IS NOT A TRACE WHEN LAUNCHD IS THE PARENT. The plist sets no
+/// `StandardErrorPath` — on purpose, so the install leaves no file to rotate —
+/// which means launchd routes this process's stderr to /dev/null. A daemon that
+/// died at startup with only a `printErr` behind it exits in complete silence:
+/// the app sees a connection launchd accepted and nobody answered, and there is
+/// nothing anywhere that says why. That is exactly how the socket-path check
+/// below stayed broken, and finding it needed a throwaway LaunchAgent rather
+/// than a log line, which is not a debugging story worth repeating.
+///
+/// So both sinks, on every startup failure. stderr for the person who typed
+/// `sudo` and is watching, and the unified log for the daemon, where
+///
+///     log show --predicate 'subsystem == "dev.anode.app"' --last 10m
+///
+/// finds it afterwards.
+func failedToStart(_ why: String) -> Never {
+    printErr("anode-helper: \(why)")
+    fanLog.error("helper failed to start: \(why, privacy: .public)")
+    exit(1)
+}
+
 let usage = """
 AnodeHelper — fan control for Anode. Runs as root.
 
@@ -344,11 +367,9 @@ do {
 } catch let failure as FanDaemon.ActivationFailure {
     // These are worth more than an errno: two of the four mean someone ran
     // `--serve` by hand, and the sentence says so instead of printing a number.
-    printErr("anode-helper: \(failure.message)")
-    exit(1)
+    failedToStart(failure.message)
 } catch {
-    printErr("anode-helper: \(error.localizedDescription)")
-    exit(1)
+    failedToStart(error.localizedDescription)
 }
 
 // Said out loud at the moment the user authorises it, because this is the only

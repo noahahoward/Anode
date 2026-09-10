@@ -939,22 +939,46 @@ final class FanOnDemandTests: XCTestCase {
 
     // ── Adopting a socket ───────────────────────────────────────────────────
 
-    /// A socket bound somewhere else is the dangerous one: it would work, and it
-    /// would serve fan control on a path the app is not talking to — or, worse,
-    /// on one something else is.
+    /// THE SOCKET LAUNCHD HANDS OVER IS NOT BOUND AT `SockPathName`, and this is
+    /// the test standing where the check that assumed it used to be.
     ///
+    /// launchd binds the listener inside a private directory of its own, named
+    /// after the socket KEY — `/var/run/com.apple.launchd.<random>/FanControl`,
+    /// measured on macOS 27 — and `SockPathName` is what clients connect to,
+    /// not what `getsockname` reads back. An earlier draft compared the two and
+    /// threw, so every helper launchd started exited 20 ms in, before it could
+    /// log a word, and the app sat on a connection launchd had accepted and
+    /// nobody would answer.
+    ///
+    /// The path in this test is therefore deliberately NOT the one the server is
+    /// configured to serve. That is the real shape of the thing, and a version
+    /// of this suite that only ever adopts a socket bound at `config.socketPath`
+    /// is a suite that agrees with the bug.
+    func testASocketBoundWhereLaunchdBindsThemIsAdopted() throws {
+        let (server, path) = try makeServer()
+        let asLaunchdNamesIt = NSTemporaryDirectory()
+            + "com.apple.launchd.\(UUID().uuidString.prefix(8))-FanControl.sock"
+        let fd = try XCTUnwrap(makeListeningSocket(at: asLaunchdNamesIt))
+        defer { close(fd); unlink(asLaunchdNamesIt) }
+        XCTAssertNotEqual(asLaunchdNamesIt, path, "the test lost the thing it is testing")
+        XCTAssertNoThrow(try server.start(adopting: fd),
+                         "refused the socket launchd actually hands over")
+        server.stop()
+    }
+
     /// There is deliberately no "refuses a socket that is not listening" test.
     /// macOS cannot answer that question about a unix socket: `SO_ACCEPTCONN`
     /// fails with ENOPROTOOPT on AF_UNIX both before and after `listen()`. An
     /// earlier draft checked it anyway and refused every socket launchd offered,
     /// which would have made fan control impossible for anyone who installed.
-    func testASocketBoundToAnotherPathIsRefused() throws {
+    /// What is left checkable — that it is a unix socket, and a stream one — is
+    /// what the next two tests pin.
+    func testANonUnixSocketIsRefused() throws {
         let (server, _) = try makeServer()
-        let elsewhere = NSTemporaryDirectory() + "bs-other-\(UUID().uuidString.prefix(8)).sock"
-        let fd = try XCTUnwrap(makeListeningSocket(at: elsewhere))
-        defer { close(fd); unlink(elsewhere) }
+        let fd = socket(AF_INET, SOCK_STREAM, 0)
+        defer { close(fd) }
         XCTAssertThrowsError(try server.start(adopting: fd),
-                             "adopted a socket bound to a path this helper does not serve")
+                             "adopted a TCP socket as the fan helper's listener")
     }
 
     func testADatagramSocketIsRefused() throws {
