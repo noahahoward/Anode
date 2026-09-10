@@ -768,9 +768,33 @@ final class FanControlPanel: NSView {
 
         case .blocked(let why):
             statusLabel.stringValue = "The fan helper refused this app: \(why)"
-            hintField.stringValue = Self.startCommand()
-            setButtons([("Copy Start Command", #selector(copyCommandTapped)),
-                        ("Turn Off", #selector(disableTapped))])
+            // THE SESSION-HELPER COMMAND IS WRONG ADVICE ON AN INSTALLED
+            // MACHINE. `AnodeHelper` with no arguments refuses to start at all
+            // while a daemon is installed — it would unlink launchd's socket and
+            // bind its own, so it exits instead — which made this the one state
+            // that printed a line guaranteed not to work for the user reading
+            // it. Installed, the way out of a blocked daemon is to replace it
+            // with this build, which is the button `withInstall` already offers.
+            //
+            // "Reinstall" rather than `withInstall`'s button, which offers only
+            // Uninstall once something is installed. Two other places already
+            // tell the user to install it again — `staleInstallNote` and the
+            // `installedButOlder` summary — and until now neither of them had a
+            // button anywhere behind the instruction. It runs the same
+            // authorisation as Install; the installer boots the job out and
+            // bootstraps it again, so it is the one action that replaces a
+            // daemon that will not serve.
+            if installed {
+                hintField.stringValue = "The daemon running as root is not serving this "
+                                      + "app. Reinstall it to replace it with this build."
+                setButtons([("Reinstall Fan Helper…", #selector(installTapped)),
+                            ("Turn Off", #selector(disableTapped))],
+                           offeringInstall: false)
+            } else {
+                hintField.stringValue = Self.startCommand()
+                setButtons([("Copy Start Command", #selector(copyCommandTapped)),
+                            ("Turn Off", #selector(disableTapped))])
+            }
         }
 
         if let note, !note.isEmpty { hintField.stringValue = note }

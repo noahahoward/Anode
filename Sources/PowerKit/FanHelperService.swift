@@ -489,16 +489,37 @@ public final class FanHelperServer {
     public func start(adopting fd: Int32) throws {
         guard fd >= 0 else { throw Failure.socketFailed("launchd offered no descriptor") }
 
-        // It must be a stream socket, and it must be bound to the path this
-        // helper was configured to serve.
+        // It must be a unix stream socket. That is the whole of what this side
+        // can check, and the two things it cannot check are worth naming because
+        // each one has already been coded as a refusal that broke the daemon.
         //
         // NOT "and it must be listening": macOS has no way to ask that about a
         // unix socket. `SO_ACCEPTCONN` fails with ENOPROTOOPT on AF_UNIX both
         // before and after `listen()` — measured, not assumed, and an earlier
         // draft of this check used it and rejected every socket launchd offered.
-        // Whether it is listening is launchd's side of the contract; what is
-        // checkable here is that it is the right KIND of socket at the right
-        // PATH, which is the part that would silently serve the wrong thing.
+        //
+        // NOT "and it must be bound to `config.socketPath`" either, for the same
+        // reason with a different mechanism. LAUNCHD DOES NOT BIND THE SOCKET AT
+        // `SockPathName`. It binds one inside a private directory of its own and
+        // names it after the SOCKET KEY, so `getsockname` on the descriptor it
+        // hands over reads
+        //
+        //     /var/run/com.apple.launchd.<random>/FanControl
+        //
+        // and never /var/run/anode-fan.sock — measured on macOS 27 with a
+        // throwaway LaunchAgent, for a `SockPathName` both under a symlinked
+        // directory and not. A draft of this check compared the two and threw,
+        // so every helper launchd started exited(1) about 20 ms in, before it
+        // could log anything, and the app got a connection that was accepted by
+        // launchd and then answered by nobody. That is the bug this comment is
+        // standing in the way of a third time.
+        //
+        // What replaces it is not a weaker version of the same check: there is
+        // no path here to compare against. `launch_activate_socket` is keyed by
+        // the socket NAME out of our own job's plist, and being handed the
+        // descriptor for that key is the identity guarantee — the path is
+        // launchd's private business, and asserting anything about its shape
+        // would only re-break this the next time Apple changes it.
         var type: Int32 = 0
         var length = socklen_t(MemoryLayout<Int32>.size)
         guard getsockopt(fd, SOL_SOCKET, SO_TYPE, &type, &length) == 0 else {
@@ -526,10 +547,6 @@ public final class FanHelperServer {
         guard let boundPath else {
             throw Failure.socketFailed("launchd's socket is not a unix socket")
         }
-        guard boundPath == config.socketPath else {
-            throw Failure.socketFailed("launchd's socket is bound to \(boundPath), "
-                                     + "but this helper serves \(config.socketPath)")
-        }
 
         var pipeFDs: [Int32] = [-1, -1]
         guard pipe(&pipeFDs) == 0 else {
@@ -540,7 +557,11 @@ public final class FanHelperServer {
         wakePipe = pipeFDs
         listenFD = fd
         ownsSocketPath = false
-        log("serving launchd's socket at \(config.socketPath) for uid \(config.ownerUID)")
+        // The bound path is logged rather than checked. It is the one piece of
+        // evidence that says which descriptor was actually adopted, and the
+        // reason it is worth a line is that a wrong one is otherwise silent.
+        log("serving launchd's socket for uid \(config.ownerUID) — clients reach it "
+          + "at \(config.socketPath), launchd holds it as \(boundPath)")
     }
 
     /// Serve until `stop()`, or — for the on-demand daemon — until there has been
