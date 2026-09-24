@@ -298,6 +298,43 @@ figure in this document with a capacity in it is a snapshot, not a constant.
 
 ---
 
+### Time to empty looks further ahead than the last hour
+
+Every tier above measures what the machine has been doing: the mean drain since
+the lid opened, a regression, or the draw right now. That is honest, but it is
+a claim that the next ten hours will look like the last one. A render drags the
+mean up for the rest of the session, a quiet stretch makes an evening look
+endless, and just after unplugging there is nothing to go on at all.
+
+`LifetimeDrainModel` (`Sources/PowerKit/LifetimeDrain.swift`) learns two things
+over the machine's life on battery, and `forecastTimeToEmpty` combines them with
+the load now:
+
+- **Where this machine settles.** A time-weighted mean of battery-side watts,
+  stored in watts (not %/hr, which drifts as the pack ages). Old data fades with
+  a 30-day half-life, and every macOS update starts a new baseline; the previous
+  one answers until the new one has two hours behind it. Within a session, the
+  target is pulled toward the session's own non-heavy level, halfway after an
+  hour, so a long evening that is consistently lighter or heavier than usual
+  gets to speak for itself.
+- **How long a departure lasts.** Stretches above or below normal are timed:
+  one learned length per side, plus one per app when an app dominated at the
+  start. An unlearned heavy load is assumed to continue, and one that has
+  outlasted its history is expected to go on at least as long again, so a long
+  render converges to "the current load continues".
+
+The forecast is `rate(t) = b + (c − b)·e^(−t/τ)`, solved for the moment the %·hr
+spent equals the charge. The constant-power factor is applied once, to that
+budget. With no excursion it is exactly `timeToEmpty`. Replayed against a
+simulated pack on the measured curve (`LifetimeReplayHarness`), mean error drops
+from 3.1 to 0.2 min for a sustained render, from 13.6 to 8.8 for bursty use,
+and from 69 to 46 for idle → render → idle. It ties (21 min) for a typical day.
+
+It persists to `lifetime-drain.json` beside the discharge trend, on the same
+120 s cadence and on quit. A file from a different Mac (by `hw.model` and design
+capacity) is refused, because Migration Assistant copies Application Support
+wholesale.
+
 ## 7. Observer effect
 
 The instrument must not be a significant entry in its own ledger. It briefly was —

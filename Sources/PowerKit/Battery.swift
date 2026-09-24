@@ -73,6 +73,16 @@ public struct BatteryScale {
     /// Joules per 1% of battery. This is the denominator every displayed unit divides by.
     public var joulesPerPercent: Double { energyFull_J / 100.0 }
 
+    /// %/hr that `watts` costs at the pack's LIVE voltage — current as a share of
+    /// full-charge capacity. The discharge tier's rates are on this basis (it
+    /// divides a measured current by capacity), and `timeToEmpty` assumes it.
+    /// `joulesPerPercent` is on the NOMINAL-voltage basis instead, which is up to
+    /// ~7 % away at a full pack; two rates that are compared or mixed have to be
+    /// converted the same way, and this is the way that matches the gauge.
+    public func pctHrAtVoltage(watts: Double, voltage_mV: Double) -> Double {
+        watts * 1e8 / (voltage_mV * fullChargeCapacity_mAh)
+    }
+
     /// Health as a fraction of design capacity.
     public var health: Double { fullChargeCapacity_mAh / designCapacity_mAh }
 
