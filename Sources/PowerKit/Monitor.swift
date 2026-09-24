@@ -351,9 +351,31 @@ public final class PowerMonitor {
         /// step the gauge actually publishes. Worse where this function is actually
         /// reached — it is the menu bar's fallback only when the shared pair quotes
         /// no time, i.e. drain under 0.1 %/hr, where one integer step is ten hours.
+        /// Routed through `DrainEstimate.timeToEmpty` rather than doing its own
+        /// division, which is what it used to do.
+        ///
+        /// It was `chargePercent * joulesPerPercent / W / 3600` — algebraically
+        /// the same charge-over-rate, and therefore a SECOND definition of
+        /// time-to-empty living outside the one that calls itself "THE ONE
+        /// definition ... because the last time this arithmetic existed twice
+        /// the menu bar and the glance card printed different answers to the
+        /// same question three inches apart."
+        ///
+        /// It had drifted exactly that way. When the constant-power correction
+        /// landed inside `timeToEmpty`, this path did not inherit it: caught by
+        /// hand-checking the CLI, which printed 6h 18m where the corrected
+        /// arithmetic said 5h 50m — a 28-minute disagreement between two
+        /// surfaces of the same app. It also skipped the plausibility guards,
+        /// so it could answer where `timeToEmpty` refuses.
+        ///
+        /// The rate below is the same one the ledger publishes: `pctHr(W)` is
+        /// `3600 * W / joulesPerPercent`, so this is charge over that rate, now
+        /// with the curve and the guards that every other tier gets.
         public func projectedRuntime_hr() -> Double? {
             guard smoothed_W > 0, let s = state, !s.onAC else { return nil }
-            return scale.chargePercent(s) * scale.joulesPerPercent / smoothed_W / 3600
+            let rate = 3600 * smoothed_W / scale.joulesPerPercent
+            return DrainEstimate.timeToEmpty(chargePercent: scale.chargePercent(s),
+                                             ratePctHr: rate).map { $0 / 3600 }
         }
 
         /// Energy left in the pack, in joules.
@@ -482,7 +504,11 @@ public final class PowerMonitor {
     /// seconds); `Date` runs straight through a sleep. So wall elapsed minus awake
     /// elapsed IS the sleep, to the second — no notification to subscribe to, none
     /// to miss, and no AppKit dependency in a library the CLI also links.
-    static func awakeSeconds() -> TimeInterval {
+    ///
+    /// Public because the display layer projects time-to-empty forward on this
+    /// clock and must not use any other — see `DisplayedRate`. Wall time there
+    /// would bill a sleeping machine for the night.
+    public static func awakeSeconds() -> TimeInterval {
         Double(clock_gettime_nsec_np(CLOCK_UPTIME_RAW)) / 1e9
     }
 

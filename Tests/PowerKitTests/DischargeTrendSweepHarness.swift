@@ -36,7 +36,84 @@ final class TrendSweepHarness: XCTestCase {
 
     // ── Simulation ──────────────────────────────────────────────────────────
 
-    private let volts = 11_878.0
+    /// THE PACK'S MEASURED DISCHARGE CURVE, and why a constant was a defect.
+    ///
+    /// This was `private let volts = 11_878.0` — one number, held fixed from full
+    /// to empty. `deathTruth` divides watts by it to get mAh per minute, so a
+    /// constant here does not merely simplify the simulation: it BAKES IN the
+    /// assumption that the pack delivers the same current for the same power all
+    /// the way down. That assumption is exactly what the constant-power
+    /// correction exists to remove, so the harness's "truth" WAS the hypothesis
+    /// under test, and no configuration could ever have scored against it.
+    ///
+    /// Replaced with the real thing. Measured on this machine 2026-08-21 over a
+    /// 6504-sample run-down from 77.8 % to 12.0 % (`anode-rundown-*.csv`): each
+    /// bin is the LIGHTEST-LOAD sample in it, so the table is close to open
+    /// circuit rather than a record of that day's load — currents in these bins
+    /// run 0.15-0.6 A against a pack that sags ~65 mOhm.
+    ///
+    /// Pooled monotonically (pool-adjacent-violators): the raw bins wobble a few
+    /// mV, 65.0 % reading 2 mV above 67.5 %, and a truth curve that runs backwards
+    /// would make `deathTruth` non-monotone in a way no estimator could match.
+    ///
+    /// THE SHAPE IS THE FINDING. Slopes are 26.8 mV per SoC point above 45 %,
+    /// 12.8 across the 20-45 % plateau, and 19.7 into the knee below 22 % — so a
+    /// straight line, which is what two data points would have suggested, is
+    /// wrong by more than a factor of two depending on where you stand.
+    ///
+    /// > OUTSIDE 12.5-77.5 % THIS IS EXTRAPOLATION, NOT MEASUREMENT. The run
+    /// > stopped at 12 % (plugged in), and the pack was charge-limited to 80 %,
+    /// > so neither end was reached. The bottom matters most and is least known:
+    /// > a real cell falls off a cliff below ~10 %, and a linear run-out from the
+    /// > knee slope will UNDERSTATE how fast the last few percent go.
+    private static let measuredCurve: [(soc: Double, volts: Double)] = [
+        (12.5, 11.0860), (15.0, 11.1400), (17.5, 11.1850), (20.0, 11.2315),
+        (22.5, 11.2315), (25.0, 11.2980), (27.5, 11.3220), (30.0, 11.3250),
+        (32.5, 11.3600), (35.0, 11.3900), (37.5, 11.4330), (40.0, 11.4830),
+        (42.5, 11.5040), (45.0, 11.5500), (47.5, 11.5570), (50.0, 11.6220),
+        (52.5, 11.6860), (55.0, 11.6980), (57.5, 11.7990), (60.0, 11.8580),
+        (62.5, 11.9690), (65.0, 12.0460), (67.5, 12.0480), (70.0, 12.1450),
+        (72.5, 12.2010), (75.0, 12.3400), (77.5, 12.3850),
+    ]
+
+    /// Pack volts at a state of charge, linear between measured bins and along
+    /// the end slopes beyond them. Millivolts, to match what the gauge reports.
+    static func mV(atSoC soc: Double) -> Double {
+        let c = measuredCurve
+        if soc <= c[0].soc {
+            let m = (c[1].volts - c[0].volts) / (c[1].soc - c[0].soc)
+            // Never let the extrapolation reach zero or go negative: a pack at
+            // 0 V is not a discharge curve, it is a division by zero in
+            // `deathTruth`. 3.0 V/cell on a 3S pack is the conventional floor.
+            return 1000 * max(9.0, c[0].volts + m * (soc - c[0].soc))
+        }
+        if soc >= c[c.count - 1].soc {
+            let n = c.count - 1
+            let m = (c[n].volts - c[n - 1].volts) / (c[n].soc - c[n - 1].soc)
+            return 1000 * (c[n].volts + m * (soc - c[n].soc))
+        }
+        var i = 0
+        while i + 1 < c.count && c[i + 1].soc < soc { i += 1 }
+        let f = (soc - c[i].soc) / (c[i + 1].soc - c[i].soc)
+        return 1000 * (c[i].volts + f * (c[i + 1].volts - c[i].volts))
+    }
+
+    /// Charge the machine cannot actually use, as a fraction of full.
+    ///
+    /// ZERO, and that is a measurement's absence rather than a measurement. The
+    /// run-down was stopped at 12 % rather than run to shutdown, so the state of
+    /// charge at which this machine actually sleeps has never been observed.
+    /// Shipping a guessed floor would be precisely the "systematic scale error,
+    /// not noise" ARCHITECTURE.md section 6 already apologises for once. The knob
+    /// exists so the next run-down has somewhere to put its answer.
+    private let floorFraction = 0.0
+    /// A representative pack voltage, for the two scores that measure how far
+    /// the answer MOVES between adjacent minutes (`spike60`, `constSpread`)
+    /// rather than how right it is. The pack's state of charge is unchanged
+    /// across such a pair, so the curve would contribute nothing but noise, and
+    /// holding the old constant keeps those columns comparable with the numbers
+    /// recorded in `DischargeTrend`'s tables.
+    private let nominal_mV = 11_878.0
     private let pack_mAh = 3667.0
     private let t0 = Date(timeIntervalSince1970: 1_700_000_000)
 
@@ -104,14 +181,22 @@ final class TrendSweepHarness: XCTestCase {
         var acc: Int64 = -1_000_000, count: UInt64 = 500_000
         var at = t0, awake = 10_000.0
         var out: [(Int, Double?, UInt64)] = []
+        // The gauge reports the pack's ACTUAL terminal voltage, which falls as it
+        // empties, and `BatteryDischargeTrend` divides its energy integral by
+        // exactly that to get current. Feeding a constant here would hand the
+        // estimator a voltage the pack never had.
+        var charge = pack_mAh
         trend.record(.init(accumulatedDischarge: acc, accumulatorCount: count,
-                           voltage_mV: volts, timestamp: at, awake: awake),
+                           voltage_mV: Self.mV(atSoC: charge / pack_mAh * 100),
+                           timestamp: at, awake: awake),
                      onBattery: true)
         for (m, w) in watts.enumerated() {
             at = at.addingTimeInterval(60); awake += 60
             acc &-= Int64(w * 1000 * 60); count &+= 60
+            let mV = Self.mV(atSoC: max(0, charge) / pack_mAh * 100)
+            charge -= w * 1000 / mV * 1000 / 60
             trend.record(.init(accumulatedDischarge: acc, accumulatorCount: count,
-                               voltage_mV: volts, timestamp: at, awake: awake),
+                               voltage_mV: mV, timestamp: at, awake: awake),
                          onBattery: true)
             out.append((m, trend.trend?.power_mW, trend.trend?.ticks ?? 0))
         }
@@ -123,13 +208,21 @@ final class TrendSweepHarness: XCTestCase {
     /// enough to reach death — a truncated future would silently understate
     /// every truth value near the end, so it fails loudly instead.
     private func deathTruth(watts: [Double]) -> (truth: [Double], death: Int) {
-        let perMin = watts.map { $0 * 1000 / volts * 1000 / 60 }   // mAh per minute
+        // Current, not charge, is what a constant power draws — and current rises
+        // as the pack sags, so the draw per minute must be evaluated AT the state
+        // of charge the pack is in. Computed inside the walk for that reason;
+        // mapping it up front is what the constant `volts` allowed.
+        let floor_mAh = pack_mAh * floorFraction
         var remaining = pack_mAh, death = -1
         var used: [Double] = []
-        for (m, d) in perMin.enumerated() {
+        var perMin: [Double] = []
+        for (m, w) in watts.enumerated() {
             used.append(remaining)
+            let v = Self.mV(atSoC: remaining / pack_mAh * 100)
+            let d = w * 1000 / v * 1000 / 60          // mAh this minute
+            perMin.append(d)
             remaining -= d
-            if remaining <= 0 { death = m; break }
+            if remaining <= floor_mAh { death = m; break }
         }
         XCTAssert(death >= 0, "trace ends at \(watts.count) min with \(remaining) mAh "
                   + "left — every truth value would be understated")
@@ -137,8 +230,9 @@ final class TrendSweepHarness: XCTestCase {
         for m in 0..<used.count {
             var left = used[m], t = 0.0
             var i = m
+            left -= floor_mAh
             while i < perMin.count, left > perMin[i] { left -= perMin[i]; t += 1; i += 1 }
-            if i < perMin.count { t += left / perMin[i] }
+            if i < perMin.count, perMin[i] > 0 { t += left / perMin[i] }
             truth.append(t)
         }
         return (truth, death)
@@ -190,17 +284,18 @@ final class TrendSweepHarness: XCTestCase {
         let (truth, death) = deathTruth(watts: watts)
         let est = drive(cfg.make(), watts: Array(watts.prefix(death)))
         var errs: [Double] = [], etds: [(Int, Double)] = []
-        let perMin = watts.map { $0 * 1000 / volts * 1000 / 60 }
         var remaining = pack_mAh
         for (m, mW, _) in est {
-            remaining -= perMin[m]
+            remaining -= watts[m] * 1000 / Self.mV(atSoC: max(0, remaining) / pack_mAh * 100)
+                * 1000 / 60
             // The estimate exists at the END of minute m, which is the START of
             // minute m+1 — so it is judged against truth[m+1]. Judging against
             // truth[m] skewed every error by one minute, in a direction that
             // depended on the load's slope (found in adversarial review).
             guard m >= 35, m + 1 < truth.count, let mW, mW > 0, remaining > 0
             else { continue }
-            let etd = remaining / (mW / volts * 1000) * 60
+            let etd = remaining
+                / (mW / Self.mV(atSoC: remaining / pack_mAh * 100) * 1000) * 60
             errs.append(abs(etd - truth[m + 1]))
             etds.append((m, etd))
         }
@@ -251,7 +346,7 @@ final class TrendSweepHarness: XCTestCase {
             watts.append(18)
             watts += [Double](repeating: 6, count: 2)
             let est = drive(cfg.make(), watts: watts)
-            let mA = { (mW: Double) in mW / self.volts * 1000 }
+            let mA = { (mW: Double) in mW / self.nominal_mV * 1000 }
             let before = est.first { $0.minute == 39 }?.mW
             let after = est.first { $0.minute == 41 }?.mW
             if let b = before, let a = after {
@@ -301,11 +396,75 @@ final class TrendSweepHarness: XCTestCase {
             let est = drive(cfg.make(), watts: [Double](repeating: 6, count: 120))
             let mins = est.compactMap { (m, mW, _) -> Double? in
                 guard m >= 35, let mW else { return nil }
-                return pack_mAh / (mW / volts * 1000) * 60
+                return pack_mAh / (mW / nominal_mV * 1000) * 60
             }
             s.constSpread = (mins.max() ?? 0) - (mins.min() ?? 0)
         }
         return s
+    }
+
+    /// THE SIGNED ERROR, which every other column in this file destroys.
+    ///
+    /// Every accuracy metric here is a MEAN ABSOLUTE error, and absolute is
+    /// exactly the wrong operation for the question "is this estimate biased?".
+    /// A 5 % optimistic estimate and a 5 % pessimistic one score identically on
+    /// `maeWander`, and only one of them strands you.
+    ///
+    /// This measures the direction. On a steady load, against a truth that now
+    /// carries the pack's real discharge curve, `charge / rate` reads LONG —
+    /// because the rails hold power, so as the pack sags the current rises and
+    /// the charge runs out sooner than a constant-current projection says.
+    ///
+    /// The size is state-dependent and that is the finding, not a caveat: at a
+    /// high state of charge most of the steep upper curve still lies ahead, so
+    /// the error is large; near empty only the flat plateau remains and it very
+    /// nearly vanishes. Measured on the 2026-08-21 curve by integrating it:
+    /// 5.9 % at 70 %, 3.1 % at 50 %, 1.6 % at 20 %. So no single constant can
+    /// correct it — it needs the curve.
+    /// > **WHAT THIS DOES NOT PROVE.** The truth walk here and the shipped
+    /// > correction are both built from the same 2026-08-21 run-down, so a
+    /// > residual near zero says the ARITHMETIC applies the curve correctly —
+    /// > not that the curve is right. The curve's standing rests on the
+    /// > measurement itself, and on the stretch below 12 % it rests on nothing
+    /// > at all yet. A second machine, or a run to actual shutdown, is what
+    /// > would test the curve; this tests the algebra that uses it.
+    func testTheEstimateIsBiasedOptimisticAndTheHarnessCanNowSeeIt() {
+        let watts = [Double](repeating: 6, count: 900)
+        let (truth, death) = deathTruth(watts: watts)
+        let est = drive(BatteryDischargeTrend(), watts: Array(watts.prefix(death)))
+        var signed: [Double] = [], corrected: [Double] = []
+        var remaining = pack_mAh
+        for (m, mW, _) in est {
+            remaining -= watts[m] * 1000
+                / Self.mV(atSoC: max(0, remaining) / pack_mAh * 100) * 1000 / 60
+            guard m >= 35, m + 1 < truth.count, let mW, mW > 0, remaining > 0 else { continue }
+            let soc = remaining / pack_mAh * 100
+            let mA = mW / Self.mV(atSoC: soc) * 1000
+            // What the OLD arithmetic said: charge divided by the rate now.
+            let plain = remaining / mA * 60
+            // What SHIPS: the same division through the one definition, which
+            // carries the constant-power correction.
+            guard let shipped = DrainEstimate.timeToEmpty(
+                chargePercent: soc, ratePctHr: mA / pack_mAh * 100) else { continue }
+            signed.append(plain - truth[m + 1])            // POSITIVE = reads too long
+            corrected.append(shipped / 60 - truth[m + 1])
+        }
+        XCTAssertFalse(signed.isEmpty)
+        func mean(_ v: [Double]) -> Double { v.reduce(0, +) / Double(v.count) }
+        let before = mean(signed), after = mean(corrected)
+        print("SIGNED-ERROR  uncorrected \(String(format: "%+.1f", before)) min"
+              + "   corrected \(String(format: "%+.1f", after)) min"
+              + "   over \(signed.count) publishes")
+        // DIRECTION first: a constant-current projection must read LONG against a
+        // pack whose voltage falls. If this inverts, the curve or the truth walk
+        // has been flipped and every number below is meaningless.
+        XCTAssertGreaterThan(before, 0)
+        XCTAssertLessThan(mean(signed.map(abs)) * 0 + abs(after), abs(before),
+                          "the correction must move the bias TOWARD zero — that is "
+                          + "the entire claim of the constant-power work")
+        // And it must not overshoot into pessimism by more than it removed.
+        XCTAssertGreaterThan(after, -abs(before),
+                             "correcting past zero would be a new bias, not a fix")
     }
 
     // ── The field failure, as a measurement ─────────────────────────────────

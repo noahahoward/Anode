@@ -121,16 +121,30 @@ final class DrainEstimateSourceTests: XCTestCase {
 
     // ── One basis, one arithmetic ───────────────────────────────────────────
 
-    /// The published rate and the published time are the same claim. Whatever else
-    /// changes, charge ÷ rate must be the time printed beside it: they used to be
-    /// computed twice and disagreed by a factor of two on screen.
-    func testTheRateAndTheTimeMultiplyOut() {
+    /// The published rate and the published time are the same claim, computed
+    /// once. They used to be computed twice and disagreed by a factor of two on
+    /// screen, and that is what this guards.
+    ///
+    /// It used to assert the stronger form — that rate x time IS the charge. That
+    /// stopped being true when the constant-power correction landed, and
+    /// deliberately: the displayed rate is a rate NOW, while the displayed time
+    /// projects across a falling voltage, so the two genuinely should not
+    /// multiply out. See `BatteryScale.constantPowerFactor`.
+    ///
+    /// What survives is the thing actually worth protecting: one charge, one
+    /// rate, one published time, related by one function. So the check now
+    /// carries the factor rather than being deleted — if the time is ever
+    /// computed from some other charge or rate again, this still fails.
+    func testTheRateAndTheTimeMultiplyOutThroughTheCorrection() {
         let est = DrainRateEstimator()
         let endMAh = drive(est, minutes: 40, watts: 6.0, mAhPerMinute: 12)
         let e = est.estimate()!
         let chargePct = endMAh / scale.fullChargeCapacity_mAh * 100
-        XCTAssertEqual((e.timeRemaining ?? 0) / 3600 * e.percentPerHour, chargePct,
+        let f = BatteryScale.constantPowerFactor(atSoCPercent: chargePct)
+        XCTAssertEqual((e.timeRemaining ?? 0) / 3600 * e.percentPerHour, chargePct * f,
                        accuracy: 0.01)
+        XCTAssertLessThan((e.timeRemaining ?? 0) / 3600 * e.percentPerHour, chargePct,
+                          "the correction only ever shortens")
     }
 
     /// The basis change, stated as a test. The gauge publishes two answers to "how
@@ -145,15 +159,35 @@ final class DrainEstimateSourceTests: XCTestCase {
         XCTAssertLessThan(scale.chargePercent(st), Double(st.percent),
                           "the integer field is the optimistic one — that is the point")
         // Live on this machine: one 60 s window read 4104.8 mW mean at 11878 mV,
-        // which is 345.6 mA. On the mAh basis that projects 637 minutes and the
-        // pack's own TimeRemaining said 636; on the integer basis, 656.
+        // which is 345.6 mA.
         let rate = 345.6 / 6193 * 100
         let mAhMin = DrainEstimate.timeToEmpty(chargePercent: scale.chargePercent(st),
                                                ratePctHr: rate)! / 60
         let intMin = DrainEstimate.timeToEmpty(chargePercent: Double(st.percent),
                                                ratePctHr: rate)! / 60
-        XCTAssertEqual(mAhMin, 636, accuracy: 3)
-        XCTAssertEqual(intMin - mAhMin, 19, accuracy: 3)
+        // The integer basis still reads LONGER, which is the whole point of this
+        // test and is unaffected by anything below: both go through one function.
+        XCTAssertGreaterThan(intMin, mAhMin)
+        XCTAssertEqual(intMin - mAhMin, 16, accuracy: 4)
+
+        // THIS USED TO ASSERT AGREEMENT WITH THE GAUGE (636 min), AND NOW
+        // ASSERTS DELIBERATE DISAGREEMENT.
+        //
+        // The gauge's `TimeRemaining` is `RemainingCapacity / AvgCurrent` to
+        // within 1 % — verified live on 2026-08-21, 3953 mAh over 325 min
+        // implying 729.8 mA against a measured 739. So it makes exactly the
+        // constant-current assumption this app now corrects for, and agreeing
+        // with it would mean reproducing its error. Two instruments that share
+        // an assumption are not a cross-check.
+        //
+        // We therefore read SHORTER than the pack's own estimate, by the
+        // constant-power correction at this state of charge, and that gap is the
+        // claim being made rather than a discrepancy to explain away.
+        XCTAssertLessThan(mAhMin, 636, "we now correct an error the gauge still makes")
+        XCTAssertEqual(mAhMin,
+                       636 * BatteryScale.constantPowerFactor(
+                           atSoCPercent: scale.chargePercent(st)),
+                       accuracy: 4)
     }
 
     /// Hardware whose `BatteryData` this app has never seen publishes no mAh at
@@ -175,8 +209,11 @@ final class DrainEstimateSourceTests: XCTestCase {
         // A fit through noise, not a runtime a laptop has.
         XCTAssertNil(DrainEstimate.timeToEmpty(chargePercent: 60, ratePctHr: 0.55))
         XCTAssertNil(DrainEstimate.timeToEmpty(chargePercent: 0, ratePctHr: 8))
+        // 60 % at 6 %/hr is ten hours before the pack's own voltage curve is
+        // taken into account, and 4.4 % less after it.
         XCTAssertEqual(DrainEstimate.timeToEmpty(chargePercent: 60, ratePctHr: 6)! / 3600,
-                       10, accuracy: 1e-9)
+                       10 * BatteryScale.constantPowerFactor(atSoCPercent: 60),
+                       accuracy: 1e-9)
     }
 
     // ── Provenance reaching the screen ──────────────────────────────────────
@@ -185,6 +222,10 @@ final class DrainEstimateSourceTests: XCTestCase {
     /// cases keep asking what they were asking: whether the MARKER is right. The
     /// separate question — whether there is enough history to quote a time at all
     /// — is `canQuoteTime`, and it has its own tests.
+    /// `timeRemaining_hr` is expressed as a charge and a rate now, because that
+    /// is what the app publishes — see `DisplayedRate`. The cases below still
+    /// name the hours they mean; this turns them back into the charge that
+    /// yields them, so the assertions read as they always did.
     private func registry(_ shared: (pctHr: Double, timeRemaining_hr: Double?,
                                      source: DrainEstimate.Source)?,
                           windowSpan: TimeInterval = 1800) -> MetricRegistry {
@@ -203,8 +244,12 @@ final class DrainEstimateSourceTests: XCTestCase {
             displayIsMeasured: false, baseline_W: nil, didJump: false,
             residual_W: 0, rawResidual_W: 0, scale: scale, state: st,
             coverage: 1, denied: 0, readable: 1, attempted: 1, interval: 2))
-        r.update(displayedRate: shared.map { ($0.pctHr, $0.timeRemaining_hr,
-                                              $0.source, windowSpan) })
+        r.update(displayedRate: shared.map { sh in
+            DisplayedRate(pctHr: sh.pctHr,
+                          chargePercent: sh.timeRemaining_hr.map { $0 * sh.pctHr },
+                          anchorAwake: PowerMonitor.awakeSeconds(),
+                          source: sh.source, windowSpan: windowSpan)
+        })
         return r
     }
 
@@ -227,15 +272,21 @@ final class DrainEstimateSourceTests: XCTestCase {
     /// menu bar keeps the marker on `batteryDrain`, which is a rate, and that is
     /// what still makes the two tiers distinguishable there.
     func testTimeRemainingIsAlwaysAnEstimateButTheRateNeedNotBe() {
+        // 7.25 h of charge at 8.16 %/hr, less the constant-power correction at
+        // that state of charge — the input is the charge, so the rendered time
+        // is shorter than the 7h 15m this pinned before the correction landed.
         let measured = registry((8.16, 7.25, .discharge))
-        XCTAssertEqual(measured.value(for: .batteryTimeLeft)?.text, "7h 15m")
+        XCTAssertEqual(measured.value(for: .batteryTimeLeft)?.text, "6h 56m")
         XCTAssertTrue(measured.value(for: .batteryTimeLeft)?.isEstimate ?? false,
                       "a time remaining is a projection however well measured its rate")
         XCTAssertFalse(measured.value(for: .batteryDrain)?.isEstimate ?? true,
                        "the RATE is measured end to end, and still says so")
 
         let modelled = registry((8.16, 7.25, .power))
-        XCTAssertEqual(modelled.value(for: .batteryTimeLeft)?.text, "7h 15m")
+        // Same charge and rate as the measured case above, so the same corrected
+        // time: the "*" is about PROVENANCE, and the correction is physics that
+        // applies to every tier equally.
+        XCTAssertEqual(modelled.value(for: .batteryTimeLeft)?.text, "6h 56m")
         XCTAssertTrue(modelled.value(for: .batteryTimeLeft)?.isEstimate ?? false)
         XCTAssertTrue(modelled.value(for: .batteryDrain)?.isEstimate ?? false,
                       "a rate inferred from instantaneous draw is an estimate")

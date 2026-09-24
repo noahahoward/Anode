@@ -207,7 +207,48 @@ stored internally and **never shown**.
 %/hr          = 3600 × W / joulesPerPercent
 10 hr power   = Σ_window(joules) / joulesPerPercent      over ON-BATTERY time only
 runtime cost  = 60 × E_remaining × (1/(P_sys − P_app) − 1/P_sys)
+time to empty = (charge% / rate%hr) × V̄_remaining / V_now
 ```
+
+### Time to empty projects constant POWER, not constant current
+
+The SoC rails are buck converters, so a load holds watts. As the pack empties
+its voltage falls, so the current rises to hold that power, so the charge runs
+out **sooner** than `charge ÷ rate` predicts. The honest form is
+`T = (1/P)∫V dQ`, which is that division scaled by `V̄_remaining / V_now` —
+implemented as `BatteryScale.constantPowerFactor`.
+
+That factor is a **ratio of two points on one curve**, so every absolute scale
+cancels — cell count, nominal voltage, capacity, units. It needs the discharge
+curve's SHAPE and nothing else, which is why it ports where the voltage seed
+below does not.
+
+It is state-dependent, and no single constant can replace it:
+
+| state of charge | estimate reads |
+|---|---|
+| 78 % | 7.1 % long |
+| 50 % | 3.2 % long |
+| 20 % | 1.8 % long |
+
+Measured on this machine 2026-08-21 over a 6504-sample run-down from 77.8 % to
+12.0 % (`measurements/2026-08-21-rundown.csv.gz`). Slopes: 26.8 mV per SoC point
+above 45 %, 12.8 across the 20-45 % plateau, 19.7 into the knee below 22 % — so
+a straight line, which two data points would have suggested, is wrong by more
+than a factor of two depending on where you stand.
+
+> **The bottom is extrapolated.** The run stopped at 12 % and the pack is
+> charge-limited to 80 %, so neither end was reached. A usable-capacity floor —
+> the charge at which this machine actually sleeps — has **never been observed**:
+> `BatteryShutdownReason.ShutDownTimestamp` reads 0 and `pmset` has no
+> low-battery event on record. The floor therefore ships as **0**, which is an
+> absent measurement rather than a measured zero.
+
+> **The gauge is not a cross-check on any of this.** `TimeRemaining` is
+> `RemainingCapacity / AvgCurrent` to within 1 % — verified live: 3953 mAh over
+> 325 min implies 729.8 mA against a measured 739. It makes exactly the constant
+> current assumption corrected above, so agreeing with it would mean reproducing
+> its error. Anode now reads deliberately shorter than the pack's own estimate.
 
 The battery scale is seeded from `FullChargeCapacity` (not `DesignCapacity`, so an
 aged pack reports honestly) times an **assumed nominal voltage of 11.58 V**
@@ -219,11 +260,20 @@ aged pack reports honestly) times an **assumed nominal voltage of 11.58 V**
 > Every `BatteryScale` in the code is constructed with `isCalibrated: false`, and
 > that flag is currently the only trace of the idea.
 >
-> This matters more than a missing feature usually would, because the seed sits
-> underneath **every displayed number**: %/hr, 10 hr power, runtime cost, and time
-> to empty all divide by it. A pack whose true nominal voltage differs from 11.58 V
-> is wrong by that ratio, uniformly and invisibly — nothing on screen would look
-> odd. It is a systematic scale error, not noise, so it does not average out.
+> It sits underneath %/hr, 10 hr power and runtime cost. A pack whose true
+> nominal voltage differs from 11.58 V is wrong by that ratio, uniformly and
+> invisibly — nothing on screen would look odd. It is a systematic scale error,
+> not noise, so it does not average out.
+>
+> **THIS DOC USED TO ADD "and time to empty" TO THAT LIST, AND THAT WAS WRONG.**
+> Trace the shipping `.discharge` path: `remainingPct = mAh / full × 100` and
+> `trendRate = current_mA / full × 100`, so `full` cancels exactly, and
+> `current_mA` divides by the **measured** window-mean voltage rather than the
+> seed. Time to empty is independent of both `nominalVoltage_V` and
+> `FullChargeCapacity`. Implementing the calibration above would move most of the
+> app's numbers and would not move that one at all — so it is the wrong lever for
+> any complaint about time remaining, and the constant-power correction above is
+> the right one.
 >
 > On this machine the seed is close to right (the gauge's own time-to-empty agrees
 > with the mAh basis to a few percent). On a different pack — a tester's machine,
@@ -239,7 +289,12 @@ aged pack reports honestly) times an **assumed nominal voltage of 11.58 V**
 > anchored to the gas gauge yet. That one does work. Do not read a "calibrated:
 > yes" anywhere as evidence that the pack voltage has been measured.
 
-This machine: 6197 mAh full charge → **1% ≈ 2,588 J**, **1 W ≈ 1.39 %/hr**.
+This machine, as first written: 6197 mAh full charge → 1% ≈ 2,588 J, 1 W ≈ 1.39 %/hr.
+Re-read 2026-08-22 at 25 cycles: **5,972 mAh** → **1% ≈ 2,489 J**, **1 W ≈ 1.45 %/hr**.
+The pack has aged 3.6 % since, which is also why the gap between the mAh basis and
+the integer `CurrentCapacity` has widened from the "1-2 points" quoted above to
+**3.5-5 points** (measured: 77 % integer against 73.2 % on the mAh basis). Any
+figure in this document with a capacity in it is a snapshot, not a constant.
 
 ---
 

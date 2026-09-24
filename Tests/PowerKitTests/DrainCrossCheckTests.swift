@@ -152,3 +152,84 @@ final class DrainCrossCheckTests: XCTestCase {
         XCTAssertEqual(est.estimate()?.source, .discharge)
     }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// The arbitration must not disagree with itself.
+extension DrainCrossCheckTests {
+
+    /// Drives the estimator against a scale whose nominal voltage is deliberately
+    /// wrong, exactly as the `Mac17,5` class of pack was before the cell-count
+    /// fix — `joulesPerPercent` overstated by 3.01x.
+    private func driveWithScale(_ est: DrainRateEstimator, _ sc: BatteryScale,
+                                minutes: Int, accumulator_W: Double, live_W: Double) {
+        var acc: Int64 = -1_000_000, count: UInt64 = 500_000
+        var mAh = 3667.0, at = t0, awake = 10_000.0
+        let live_pctHr = live_W * 3600 / sc.joulesPerPercent
+        for m in 0..<minutes {
+            for tick in 0..<30 {
+                if tick == 0, m > 0 {
+                    acc &-= Int64(accumulator_W * 1000 * 60); count &+= 60; mAh -= 4
+                }
+                est.record(remainingCapacity_mAh: mAh, onAC: false, isCharging: false,
+                           scale: sc, powerBased_pctHr: live_pctHr,
+                           discharge: BatteryDischargeTrend.Sample(
+                               accumulatedDischarge: acc, accumulatorCount: count,
+                               voltage_mV: volts, timestamp: at, awake: awake),
+                           at: at)
+                at = at.addingTimeInterval(2); awake += 2
+            }
+        }
+    }
+
+    /// THE LATENT FAILURE, pinned.
+    ///
+    /// The check used to compare the trend's %/hr (measured voltage) against the
+    /// power tier's %/hr (the 11.58 V SEED), so the ratio carried `V_nom/V_meas`
+    /// as a multiplicative factor. A pack whose seed was 3.01x out therefore
+    /// tripped a threshold of 3.0 on a machine where the two instruments agreed
+    /// perfectly — and `estimate()` does not merely demote on that, it publishes
+    /// the figure the check believed. Comparing watts to watts removes it: no
+    /// voltage enters either side.
+    func testAWrongNominalVoltageNoLongerChangesTheArbitration() {
+        let honest = BatteryScale(fullChargeCapacity_mAh: 6193, designCapacity_mAh: 6249,
+                                  nominalVoltage_V: BatteryScale.seedNominalVoltage_V,
+                                  isCalibrated: true)
+        // The same pack, described with a nominal voltage 3.01x too large.
+        let wrong = BatteryScale(fullChargeCapacity_mAh: 6193, designCapacity_mAh: 6249,
+                                 nominalVoltage_V: BatteryScale.seedNominalVoltage_V * 3.01,
+                                 isCalibrated: true)
+        // Two instruments in perfect agreement at 6 W. Nothing here is a
+        // disagreement, so nothing may be demoted, whatever the seed says.
+        let a = DrainRateEstimator(), b = DrainRateEstimator()
+        driveWithScale(a, honest, minutes: 14, accumulator_W: 6, live_W: 6)
+        driveWithScale(b, wrong, minutes: 14, accumulator_W: 6, live_W: 6)
+        XCTAssertEqual(a.estimate()?.source, .discharge,
+                       "agreeing instruments must publish the measured trend")
+        XCTAssertEqual(b.estimate()?.source, .discharge,
+                       "a wrong nominal voltage must not demote a trend that agrees "
+                       + "with the measurement — the check would be disagreeing with "
+                       + "itself, and would publish a rate 3x wrong on the strength of it")
+    }
+
+    /// Hysteresis: once demoted, the trend is not believed again the instant the
+    /// ratio dips under 3.0, because a ratio wandering across the threshold would
+    /// step the displayed time by the whole size of the disagreement and back.
+    func testTheDemotionIsStickyBelowTheThreshold() {
+        let est = DrainRateEstimator()
+        // Well past the threshold: 1.5 W integrated against 9 W measured, 6x.
+        drive(est, minutes: 14, accumulatorWatts: { _ in 1.5 }, livePower_W: { _ in 9.0 })
+        XCTAssertEqual(est.estimate()?.source, .power, "6x must demote")
+
+        // Now bring them to 2.5x — under the 3.0 that demoted, over the 2.2 that
+        // restores. A cliff would flip back here; the latch must not.
+        drive(est, minutes: 40, accumulatorWatts: { _ in 3.6 }, livePower_W: { _ in 9.0 })
+        XCTAssertEqual(est.estimate()?.source, .power,
+                       "between restore and demote the previous verdict stands")
+
+        // Comfortably agreeing again: believed.
+        drive(est, minutes: 40, accumulatorWatts: { _ in 8.4 }, livePower_W: { _ in 9.0 })
+        XCTAssertEqual(est.estimate()?.source, .discharge,
+                       "below the restore threshold the trend is believed again")
+    }
+}

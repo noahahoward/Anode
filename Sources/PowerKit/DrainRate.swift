@@ -77,7 +77,23 @@ public struct DrainEstimate {
     public let percentPerHour: Double
     /// Time to empty — THE value to display. nil when unknowable (on AC, rate ≈ 0,
     /// or no data): show "—" or "estimating…", never a substitute number.
+    ///
+    /// This is the value AT THE INSTANT THE ESTIMATE WAS MADE. A renderer that
+    /// holds it across ticks must project it forward — see `projected` below and
+    /// `DisplayedRate`, which is what the app actually publishes.
     public let timeRemaining: TimeInterval?
+    /// The charge, on the mAh basis, that `timeRemaining` was divided out of.
+    /// nil on `.insufficient`, where the rate is a placeholder and there is
+    /// nothing to divide.
+    ///
+    /// Published rather than kept private for two reasons, both load-bearing.
+    /// A renderer cannot count the time down without it — it is the only thing
+    /// that changes between gauge publishes. And `MetricUnit.minutes`' own
+    /// comment defends the property "that charge / rate and the displayed time
+    /// can be checked against each other by hand", which "has caught several
+    /// real bugs here"; a projection that did not say which charge it started
+    /// from would end that.
+    public let chargePercent: Double?
     /// 0…1: how much of `percentPerHour` is measured rather than inferred. 1 for
     /// `.discharge`, which is measurement end to end.
     public let confidence: Double
@@ -103,11 +119,88 @@ public struct DrainEstimate {
         // Below this the division blows up toward the cap below; treat as "not
         // meaningfully draining" and answer nothing.
         guard ratePctHr >= 0.1, ratePctHr.isFinite, chargePercent > 0 else { return nil }
+        // Constant POWER, not constant current. The rails are buck converters,
+        // so a load holds watts; as the pack sags the current rises and the
+        // charge runs out sooner than `charge / rate` says. The true time is
+        // `(1/P)∫V dQ` over the charge that remains, which is this division
+        // scaled by `V̄_remaining / V_now` — see `BatteryScale.constantPowerFactor`.
+        //
+        // Applied HERE, inside the one definition, so every tier and every
+        // renderer inherits it and none of them can disagree about it. It needs
+        // no new argument: `chargePercent` is already the state of charge on the
+        // mAh basis, which is exactly what indexes the curve.
+        //
+        // Worth 7.1 % at a full pack and 1.8 % near empty — about 20 minutes of
+        // an eight-hour estimate, always in the optimistic direction, and
+        // previously invisible to every metric in the sweep harness because that
+        // harness held the pack at one voltage from full to empty.
         let t = chargePercent / ratePctHr * 3600
+            * BatteryScale.constantPowerFactor(atSoCPercent: chargePercent)
         // A displayed time above this is a fit through noise, not a runtime a laptop
         // has. nil (the UI shows "—") rather than "412 hr".
         guard t.isFinite, t > 0, t <= 99 * 3600 else { return nil }
         return t
+    }
+
+    /// The same time-to-empty, `elapsedAwake` seconds after the estimate was made.
+    ///
+    /// ## Why this asserts nothing new
+    /// The gauge publishes in ~60-tick batches about once a minute, and both
+    /// inputs above come from it, so between publishes the quoted time cannot
+    /// move — reported from the field as a headline sitting at "7h 03m" for over
+    /// a minute. But at an unchanged rate `r` from a charge `p0`,
+    ///
+    ///     t(tau) = (p0 - r*tau/3600) / r * 3600 = t0 - tau
+    ///
+    /// EXACTLY, at every rate and every charge (pinned in
+    /// `TimeLeftContinuityTests`). So counting the display down is not an
+    /// approximation of the model, and not a second estimator laid over it — it
+    /// is the model's own prediction, delivered continuously instead of in one
+    /// lump per publish. The rate never moves without new information, which is
+    /// the rule `DischargeTrend.record` states and this does not touch; the
+    /// CLOCK moves, and it always did.
+    ///
+    /// ## Why AWAKE seconds
+    /// Wall time would bill a sleeping machine for the whole night: the pack
+    /// draws ~0.2 W asleep, so subtracting eight hours of runtime from it and
+    /// showing that at the moment the lid opens is the exact shape of error
+    /// `DischargeTrend` already resets the whole window to avoid. `CLOCK_UPTIME_RAW`
+    /// does not advance while asleep, so awake elapsed is what was really spent.
+    ///
+    /// ## What it refuses
+    /// Everything `timeToEmpty` refuses, because it IS `timeToEmpty` — one
+    /// definition, for the reason that function's own comment gives. Plus a
+    /// projection past the anchor's own death, which falls out of the
+    /// `chargePercent > 0` guard rather than being clamped: an anchor whose
+    /// charge has run out has no opinion left, and "—" is the honest answer.
+    /// A negative or non-finite interval means the two clocks disagreed, and
+    /// answers the anchor unchanged rather than adding time to the battery.
+    public static func projected(chargePercent: Double, ratePctHr: Double,
+                                 elapsedAwake: TimeInterval) -> TimeInterval? {
+        guard let t0 = timeToEmpty(chargePercent: chargePercent, ratePctHr: ratePctHr)
+        else { return nil }
+        guard elapsedAwake.isFinite, elapsedAwake > 0 else { return t0 }
+        // SUBTRACT, rather than re-evaluate against a reduced charge.
+        //
+        // This did re-evaluate, which was right while time-to-empty was
+        // `charge / rate` and became WRONG the moment the constant-power
+        // correction landed. Re-evaluating decrements the charge at a constant
+        // %/hr — a constant-CURRENT assumption — and then applies a correction
+        // derived for constant POWER. Two models, one expression: measured on
+        // the shipped curve, the display counted down at 0.89 s per second.
+        //
+        // Under the corrected model the answer is a fixed instant: the pack dies
+        // when the integral of its voltage over the remaining charge runs out,
+        // and nothing about waiting changes that. So the remaining time falls at
+        // exactly one second per second, and subtracting is not an approximation
+        // of the arithmetic — it IS the arithmetic, with the curve evaluated
+        // once at the anchor where the charge was actually read.
+        //
+        // nil past the anchor's own death, for the reason the guard below gives:
+        // an anchor whose time has run out has no opinion left, and "—" is the
+        // honest answer rather than a negative duration.
+        let t = t0 - elapsedAwake
+        return t > 0 ? t : nil
     }
 }
 
@@ -172,7 +265,14 @@ public final class DrainRateEstimator {
     /// Every power-based figure recorded, for the cross-check below. Pruned to the
     /// same horizon as `samples`, which is always longer than the trend window the
     /// check averages over.
-    private var powerHistory: [(t: Date, pctHr: Double)] = []
+    private var powerHistory: [(t: Date, watts: Double)] = []
+    /// `joulesPerPercent` from the last scale seen, so the %/hr the caller hands
+    /// in can be turned back into the watts it was made from. See
+    /// `agreesWithMeasuredPower` for why the comparison must happen in watts.
+    private var joulesPerPercent: Double?
+    /// Latched, so the tier does not flip every time the ratio grazes the
+    /// threshold. See `crossCheckRestore`.
+    private var demoted = false
 
     /// How far the discharge accumulator and the whole-system power measurement may
     /// disagree ABOUT THE SAME INTERVAL before the accumulator is disbelieved.
@@ -216,6 +316,17 @@ public final class DrainRateEstimator {
     /// the table if this constant is ever revisited.)
     private static let crossCheckFactor = 3.0
 
+    /// Where a demoted trend is BELIEVED AGAIN, below the 3.0 that demoted it.
+    ///
+    /// Without a gap the threshold is a cliff: at 2.99 the app publishes the
+    /// trend and at 3.01 it publishes something up to three times different, so
+    /// a ratio wandering across 3.0 steps the displayed time by the full size of
+    /// the disagreement and back. The failure this check exists for is a 5.35x
+    /// blowout — nothing near the boundary — so the boundary can afford to be
+    /// sticky, and the only cost is holding a genuinely wrong trend for about
+    /// one extra publish.
+    private static let crossCheckRestore = 2.2
+
     public init(fastWindow: TimeInterval = 600, slowWindow: TimeInterval = 3600,
                 trend: BatteryDischargeTrend = BatteryDischargeTrend()) {
         self.fastWindow = max(60, fastWindow)
@@ -251,13 +362,17 @@ public final class DrainRateEstimator {
                        discharge: BatteryDischargeTrend.Sample? = nil,
                        at now: Date = Date()) {
         if scale.fullChargeCapacity_mAh > 0 { fullCharge_mAh = scale.fullChargeCapacity_mAh }
+        if scale.joulesPerPercent > 0 { joulesPerPercent = scale.joulesPerPercent }
         if let p = powerBased_pctHr, p.isFinite, p >= 0 {
             lastPower = (p, now)
             // Recorded before the AC guard below and never on a clock that went
             // backwards, so the buffer is always in order and always covers the
             // trend's window whenever the trend has one.
             if let lastT = powerHistory.last?.t, now < lastT { powerHistory.removeAll() }
-            powerHistory.append((now, p))
+            // Stored as WATTS. `p` is `3600 * W / joulesPerPercent`, so this
+            // multiplication recovers the measurement exactly and cancels the
+            // assumed nominal voltage that the division introduced.
+            powerHistory.append((now, p * (joulesPerPercent ?? 0) / 3600))
             let cutoff = now.addingTimeInterval(-slowWindow * 1.05)
             var drop = 0
             while drop < powerHistory.count && powerHistory[drop].t < cutoff { drop += 1 }
@@ -425,25 +540,51 @@ public final class DrainRateEstimator {
     /// same number. Coverage is required to be 80 % of the span so that a buffer
     /// still refilling cannot pass itself off as the mean of a window it only
     /// partly saw.
-    private func agreesWithMeasuredPower(_ rate_pctHr: Double,
-                                         over span: TimeInterval,
-                                         at now: Date) -> Bool {
-        guard span > 0, rate_pctHr > 0 else { return true }
+    /// How far the two instruments disagree about the same seconds, as a ratio
+    /// ≥ 1. nil when the question cannot be asked, which is never a disagreement.
+    ///
+    /// ## IN WATTS, and that is a correctness fix rather than a tidy-up
+    /// This compared `trendRate` against a mean of the power tier's %/hr. Expand
+    /// the two:
+    ///
+    ///     trendRate   = 10^5 · P_batt / (V_measured · full_mAh)
+    ///     power_pctHr = 10^5 · P_sys  / (V_nominal  · full_mAh)   <- the 11.58 V SEED
+    ///     ratio       = (P_batt/P_sys) · (V_nom / V_meas)
+    ///
+    /// So the arbitration ratio carried the seed error as a multiplicative
+    /// factor. On this machine that is 0.96 and harmless against a threshold of
+    /// 3.0. On the `Mac17,5` class of pack this project has already met — where
+    /// the seed overstated `joulesPerPercent` by 3.01x (see `Battery.swift`) —
+    /// the factor IS 3.01, the check fires on every window, and `estimate()`
+    /// does not merely demote: by its own comment it "publishes the figure the
+    /// check believed". The app would have published a rate and a time wrong by
+    /// three times, on the strength of a check whose only disagreement was with
+    /// itself.
+    ///
+    /// Comparing watts to watts removes the coupling entirely: `full_mAh`
+    /// cancels because neither side has it, and no voltage enters either side.
+    /// The cell-count fix makes that particular pack unreachable; it does not
+    /// make the coupling correct.
+    private func crossCheckRatio(_ trend_mW: Double,
+                                 over span: TimeInterval,
+                                 at now: Date) -> Double? {
+        guard span > 0, trend_mW > 0 else { return nil }
         let cutoff = now.addingTimeInterval(-span)
         var lo = powerHistory.count
         while lo > 0 && powerHistory[lo - 1].t >= cutoff { lo -= 1 }
         let n = powerHistory.count - lo
-        guard n >= 2 else { return true }
-        guard now.timeIntervalSince(powerHistory[lo].t) >= 0.8 * span else { return true }
+        guard n >= 2 else { return nil }
+        guard now.timeIntervalSince(powerHistory[lo].t) >= 0.8 * span else { return nil }
 
         var sum = 0.0
-        for i in lo..<powerHistory.count { sum += powerHistory[i].pctHr }
+        for i in lo..<powerHistory.count { sum += powerHistory[i].watts }
         let mean = sum / Double(n)
         // Below this the ratio is dominated by the resolution of the power figure
-        // itself, not by any disagreement — a machine drawing a tenth of a percent
-        // an hour has nothing to cross-check.
-        guard mean > 0.1 else { return true }
-        return max(rate_pctHr / mean, mean / rate_pctHr) <= Self.crossCheckFactor
+        // itself, not by any disagreement — a machine drawing a fraction of a watt
+        // has nothing to cross-check. (0.1 %/hr on this pack is ~0.07 W.)
+        guard mean > 0.07 else { return nil }
+        let w = trend_mW / 1000
+        return max(w / mean, mean / w)
     }
 
     // ── Estimation ──────────────────────────────────────────────────────────
@@ -492,11 +633,22 @@ public final class DrainRateEstimator {
             // figure the check believed: the power-based rate is the corroborated
             // one, and falling through to the mAh regression would answer with a
             // third number that nothing had checked.
-            if let p = power, !agreesWithMeasuredPower(trendRate, over: t.span, at: last.t) {
+            // Latched with hysteresis: demote above `crossCheckFactor`, believe
+            // again only below `crossCheckRestore`. An unassessable window
+            // (nil) clears the latch rather than holding it — the historical
+            // behaviour there was "agrees", and a latch that survives a gap
+            // would carry a verdict across history it never saw.
+            if let ratio = crossCheckRatio(t.power_mW, over: t.span, at: last.t) {
+                demoted = ratio > (demoted ? Self.crossCheckRestore : Self.crossCheckFactor)
+            } else {
+                demoted = false
+            }
+            if let p = power, demoted {
                 return DrainEstimate(
                     percentPerHour: p,
                     timeRemaining: DrainEstimate.timeToEmpty(chargePercent: remainingPct,
                                                              ratePctHr: p),
+                    chargePercent: remainingPct,
                     confidence: 0,
                     source: .power,
                     // How much history has ACCUMULATED — and the trend's span is
@@ -520,6 +672,7 @@ public final class DrainRateEstimator {
                 percentPerHour: trendRate,
                 timeRemaining: DrainEstimate.timeToEmpty(chargePercent: remainingPct,
                                                          ratePctHr: trendRate),
+                chargePercent: remainingPct,
                 confidence: 1,
                 source: .discharge,
                 windowSpan: t.span,
@@ -559,7 +712,8 @@ public final class DrainRateEstimator {
             count = samples.count
         } else {
             // History too short/flat AND no power figure: claim nothing.
-            return DrainEstimate(percentPerHour: 0, timeRemaining: nil, confidence: 0,
+            return DrainEstimate(percentPerHour: 0, timeRemaining: nil,
+                                 chargePercent: nil, confidence: 0,
                                  source: .insufficient,
                                  windowSpan: slowFit?.span ?? 0,
                                  sampleCount: samples.count)
@@ -575,6 +729,7 @@ public final class DrainRateEstimator {
         return DrainEstimate(percentPerHour: max(0, rate),
                              timeRemaining: DrainEstimate.timeToEmpty(
                                  chargePercent: remainingPct, ratePctHr: max(0, rate)),
+                             chargePercent: remainingPct,
                              confidence: confidence,
                              source: source,
                              windowSpan: span,
@@ -681,5 +836,77 @@ extension BatteryDischargeTrend.Persisted {
         try? fm.createDirectory(at: url.deletingLastPathComponent(),
                                 withIntermediateDirectories: true)
         return (try? data.write(to: url, options: .atomic)) != nil
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// The one figure the app has DECIDED to display, published once per tick and
+/// read by every surface that shows a drain or a time left.
+///
+/// ## Why this is an ANCHOR and not a number
+/// It used to carry `timeRemaining_hr` — a scalar, computed at publish time and
+/// then held. Both of that scalar's inputs come from the gas gauge, which
+/// publishes in ~60-tick batches about once a minute, so the displayed time
+/// could not move between publishes and was reported from the field sitting at
+/// "7h 03m" for over a minute.
+///
+/// Worse, one renderer added that frozen duration to a LIVE `Date()` to say when
+/// the pack would die. So the headline stood still while the wall clock beside
+/// it slid one second later per second, and the two halves of one row disagreed
+/// about whether time was passing.
+///
+/// Carrying the charge and the instant it was taken instead fixes both, and adds
+/// no claim: `projected` is the anchor's own arithmetic, and at the anchor it is
+/// a no-op. See `DrainEstimate.projected`.
+///
+/// ## What it does NOT do
+/// It does not feed back into `DrainRateEstimator`, whose `estimate()` is
+/// documented as a pure read of accumulated state "so a UI re-render cannot
+/// creep the number". That promise still holds where it matters. This type is
+/// display-layer only, and a re-render is exactly when the clock should be
+/// re-read.
+public struct DisplayedRate {
+    /// %/hr. NOT a function of the clock — only the charge is.
+    public let pctHr: Double
+    /// Charge on the mAh basis at `anchorAwake`. nil when nothing is known yet,
+    /// and then no time is quoted at all.
+    public let chargePercent: Double?
+    /// `PowerMonitor.awakeSeconds()` when this anchor was taken.
+    public let anchorAwake: TimeInterval
+    /// Which tier answered. Carried because a figure measured from the pack's
+    /// own discharge integral and one inferred from this instant's draw are not
+    /// the same claim, and the renderer is where that has to become visible.
+    public let source: DrainEstimate.Source
+    /// How much measured history stands behind it, so the TIME can be withheld
+    /// while the RATE is still shown. See `DrainEstimate.canQuoteTime`.
+    public let windowSpan: TimeInterval
+
+    public init(pctHr: Double, chargePercent: Double?, anchorAwake: TimeInterval,
+                source: DrainEstimate.Source, windowSpan: TimeInterval) {
+        self.pctHr = pctHr
+        self.chargePercent = chargePercent
+        self.anchorAwake = anchorAwake
+        self.source = source
+        self.windowSpan = windowSpan
+    }
+
+    /// Hours left as of `now`, on the awake clock. Defaulted so every renderer
+    /// reads the same clock without each one remembering to.
+    public func timeRemaining_hr(now awake: TimeInterval = PowerMonitor.awakeSeconds())
+        -> Double? {
+        guard let charge = chargePercent else { return nil }
+        return DrainEstimate.projected(chargePercent: charge, ratePctHr: pctHr,
+                                       elapsedAwake: awake - anchorAwake)
+            .map { $0 / 3600 }
+    }
+
+    /// The instant the pack is predicted to die, given the same `now` the caller
+    /// projected with. A FIXED point while the anchor stands — which is what a
+    /// prediction about when something happens has to be, and what the previous
+    /// `Date() + frozenHours` shape could not be.
+    public func deathInstant(now: Date = Date(),
+                             awake: TimeInterval = PowerMonitor.awakeSeconds()) -> Date? {
+        timeRemaining_hr(now: awake).map { now.addingTimeInterval($0 * 3600) }
     }
 }

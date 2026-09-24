@@ -416,8 +416,15 @@ final class GlanceCardView: NSView {
         return f
     }()
 
+    /// `shared` is the ONE published anchor (`MetricRegistry.displayedRate`),
+    /// passed in rather than recomputed here. It used to be recomputed, which
+    /// was harmless while it was a scalar and is not now: this function also
+    /// runs on re-renders that carry a held snapshot (a bottom-context change,
+    /// for one), and recomputing would re-stamp the anchor's instant against an
+    /// unchanged charge and freeze the countdown.
     static func model(from s: PowerMonitor.Snapshot,
-                      drain: DrainEstimate?) -> Model? {
+                      drain: DrainEstimate?,
+                      shared: DisplayedRate?) -> Model? {
         guard let st = s.state else { return nil }
         let full_Wh = s.scale.energyFull_Wh
         // mAh basis, like every other projection in the app — see
@@ -480,22 +487,39 @@ final class GlanceCardView: NSView {
             // computed twice and disagreed on screen: 80% at 11.2 %/hr was showing
             // 3h46m when the arithmetic says 7h08m.
             //
-            // They still multiply out, but against the mAh charge rather than the
-            // integer percent printed below them: `reconciledRate` divides
-            // `BatteryScale.chargePercent`, which on this machine reads 59.2 % where
-            // `CurrentCapacity` says 61 %. That gap is the deliberate basis change —
-            // the integer field is optimistic by ~5 % and the pack's own
-            // `TimeRemaining` agrees with the mAh figure — so "61 % ÷ 5.6 %/hr"
-            // no longer lands exactly on the headline. It is off by the same 1-2
-            // points the gauge is off by, and rounding the projection to agree with
-            // the rounder of the two inputs would be the wrong repair.
-            let shared = AppDelegate.reconciledRate(s, drain)
+            // THEY NO LONGER MULTIPLY OUT, and that is now correct rather than a
+            // defect. Two separate reasons stack, both deliberate:
+            //
+            // The BASIS: the anchor carries `BatteryScale.chargePercent`, which
+            // on this machine reads ~75 % where `CurrentCapacity` says 80 %. The
+            // integer field is the optimistic one, so "80 % ÷ 5.6 %/hr" was never
+            // going to land on the headline, and rounding the projection to agree
+            // with the rounder of its two inputs would be the wrong repair.
+            //
+            // The PHYSICS: time-to-empty now carries the constant-power
+            // correction (`BatteryScale.constantPowerFactor`), which shortens it
+            // by 7 % at a full pack and 2 % near empty. The displayed rate is a
+            // rate NOW; the displayed time projects across a voltage that falls
+            // as the pack empties. Those are different claims about different
+            // spans, and a division that related them exactly would mean one of
+            // the two was wrong.
+            // Falling back to a fresh anchor rather than blanking the card: on
+            // the very first render after launch the tick may not have published
+            // one yet, and "measuring…" is the right thing to say then. A
+            // one-off anchor cannot freeze anything — it is replaced by the
+            // published one on the next tick, and `previous: nil` is exactly
+            // what the first publish passes anyway.
+            let shared = shared ?? AppDelegate.reconciledRate(s, drain, previous: nil)
             // Withheld until there is history behind it — the same rule the menu
             // bar metric follows, so the two cannot print different answers to one
             // question three inches apart. See `DrainEstimate.canQuoteTime`.
             let settled = DrainEstimate.canQuoteTime(source: shared.source,
                                                      windowSpan: shared.windowSpan)
-            let hrs = settled ? shared.timeRemaining_hr : nil
+            // ONE read of the clock for the whole card. The headline and the
+            // wall-clock death time below must be two views of a single
+            // projection; reading the clock twice is how they came apart.
+            let awake = PowerMonitor.awakeSeconds()
+            let hrs = settled ? shared.timeRemaining_hr(now: awake) : nil
 
             return Model(
                 source: .battery,
@@ -508,7 +532,8 @@ final class GlanceCardView: NSView {
                 rows: [
                     ("Drain", String(format: "%.1f %%/hr", shared.pctHr), nil),
                     ("Draw", String(format: "%.1f W", s.smoothed_W), nil),
-                    ("Remaining", String(format: "%.1f Wh", remaining_Wh), hrs.flatMap { at($0) }),
+                    ("Remaining", String(format: "%.1f Wh", remaining_Wh),
+                     hrs.flatMap { _ in at(shared, awake: awake) }),
                     ("Health", health(s), nil),
                 ])
         }
@@ -555,7 +580,7 @@ final class GlanceCardView: NSView {
     /// Where the headline came from, in the user's words rather than the enum's.
     ///
     /// The distinction is not decoration: "measured drain" is charge integrated out
-    /// of the pack by the battery itself over the last half hour, while the others
+    /// of the pack by the battery itself since the lid was opened, while the others
     /// are inferred from what the machine is drawing at this instant and will move
     /// with it. A user deciding whether to trust "3h 40m" needs to know which they
     /// are looking at.
@@ -600,9 +625,33 @@ final class GlanceCardView: NSView {
         return MetricUnit.minutes.format((hours * 60).rounded())
     }
 
+    /// WHEN the pack is predicted to die.
+    ///
+    /// This took a live `Date()` and a HELD `hours`, and was re-rendered every
+    /// 2 s — so the instant it named slid one second later per second of real
+    /// time, beside a headline that was not moving at all. The two halves of one
+    /// row disagreed about whether time was passing, and the sliding half was
+    /// drawn at full weight because "when it dies" is the more actionable one.
+    ///
+    /// Anchored, it is a fixed instant while the prediction behind it stands,
+    /// which is what a claim about when something happens has to be. Pinned in
+    /// `TimeLeftContinuityTests.testTheProjectedDeathInstantDoesNotSlide`.
+    /// The CHARGING path's version, which still takes a duration.
+    ///
+    /// Left alone deliberately rather than overlooked. Its input is
+    /// `s.chargeEstimate`, a different estimator on a different cadence, and
+    /// whether it has the same staleness is a question about `ChargeTarget`
+    /// that this change did not measure. Anchoring it on the strength of the
+    /// discharge finding would be asserting a result nobody has.
     private static func at(_ hours: Double) -> String? {
         guard hours.isFinite, hours >= 0, hours < 240 else { return nil }
         return clock.string(from: Date().addingTimeInterval(hours * 3600))
+    }
+
+    private static func at(_ shared: DisplayedRate, awake: TimeInterval) -> String? {
+        guard let hours = shared.timeRemaining_hr(now: awake),
+              hours.isFinite, hours >= 0, hours < 240 else { return nil }
+        return clock.string(from: shared.deathInstant(awake: awake) ?? Date())
     }
 
     private static func health(_ s: PowerMonitor.Snapshot) -> String {
