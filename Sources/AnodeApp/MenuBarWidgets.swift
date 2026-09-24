@@ -602,6 +602,11 @@ enum WidgetRenderer {
 
     static func toolTip(metricID: String, descriptor: MetricDescriptor?,
                         value: MetricValue?) -> String {
+        // Before the descriptor check: the group binds to no metric, so it never
+        // has one, and "no descriptor" would otherwise call it a stale metric.
+        if metricID == MetricID.groupPlaceholder.rawValue {
+            return "All readings — click for the list"
+        }
         guard let d = descriptor else {
             return "Unknown metric “\(metricID)” — it may belong to another version of Anode"
         }
