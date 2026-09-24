@@ -547,13 +547,15 @@ public final class MetricRegistry {
     /// `DrainEstimate.canQuoteTime`: `source` alone cannot tell "the trend was
     /// reset ten seconds ago" from "this machine's history is simply flat", and
     /// only the first should read as still measuring.
-    public private(set) var displayedRate: (pctHr: Double, timeRemaining_hr: Double?,
-                                            source: DrainEstimate.Source,
-                                            windowSpan: TimeInterval)?
+    ///
+    /// An ANCHOR rather than a finished time: it carries the charge and the
+    /// instant that charge was read, so a renderer reading it thirty seconds
+    /// later gets thirty seconds less. Held as a scalar it could not move
+    /// between gauge publishes — about once a minute — and the headline was
+    /// reported stuck at "7h 03m". See `DisplayedRate`.
+    public private(set) var displayedRate: DisplayedRate?
 
-    public func update(displayedRate: (pctHr: Double, timeRemaining_hr: Double?,
-                                       source: DrainEstimate.Source,
-                                       windowSpan: TimeInterval)?) {
+    public func update(displayedRate: DisplayedRate?) {
         lock.lock(); defer { lock.unlock() }
         self.displayedRate = displayedRate
     }
@@ -628,7 +630,7 @@ public final class MetricRegistry {
             // discharge accumulator, on the grounds that such a rate is measured
             // end to end. The rate is. The TIME is not: it extrapolates that rate
             // across a future nobody has measured, and the future is where all the
-            // error lives — the same 30-minute window that makes this figure
+            // error lives — the session-long window that makes this figure
             // stable is exactly what makes it lag a real change by minutes.
             //
             // So an unmarked time-to-empty asserted, in the one place this app has
@@ -652,7 +654,12 @@ public final class MetricRegistry {
                                            windowSpan: shared.windowSpan) {
                 return nil
             }
-            if let shared = self?.displayedRate, let hr = shared.timeRemaining_hr,
+            // Projected to NOW, not held. The rate below is the anchor's and does
+            // not move; the charge it divides has been decremented by the awake
+            // seconds since the gauge last spoke. That is the anchor's own
+            // arithmetic — `t(tau) = t0 - tau` exactly — so this adds no claim
+            // and is a no-op at the anchor itself.
+            if let shared = self?.displayedRate, let hr = shared.timeRemaining_hr(),
                hr.isFinite, hr > 0 {
                 return MetricValue(hr * 60, unit: .minutes, isEstimate: true)
             }

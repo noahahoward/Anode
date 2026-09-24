@@ -303,3 +303,101 @@ public enum Battery {
         )
     }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+
+extension BatteryScale {
+
+    /// THE PACK'S DISCHARGE CURVE, as a SHAPE.
+    ///
+    /// Voltage relative to its own value at 50 % state of charge. Normalised on
+    /// purpose: the only thing anything here asks of this table is the RATIO of
+    /// two points on it, so every absolute scale — cell count, nominal voltage,
+    /// capacity, units — cancels out. That is what makes this portable where
+    /// `seedNominalVoltage_V` is not. A different pack has a different scale and
+    /// very nearly the same shape; it does not have a different 11.58 V.
+    ///
+    /// Measured on this machine on 2026-08-21 over a 6504-sample run-down from
+    /// 77.8 % to 12.0 %, taking the lightest-load sample in each 2.5-point bin so
+    /// the table sits near open circuit rather than recording that day's load,
+    /// then pooled monotonically. Slopes: 26.8 mV per point above 45 %, 12.8
+    /// across the 20-45 % plateau, 19.7 into the knee below 22 %.
+    ///
+    /// > **The bottom is extrapolated, and it is the weak point.** The run
+    /// > stopped at 12 % (plugged in), so 0-12.5 % is a straight run-out along
+    /// > the knee slope, clamped at 3.0 V per cell. A real cell falls faster
+    /// > than that, so this UNDERSTATES the correction. It is bounded: the
+    /// > unmeasured stretch is 17 % of the integral at 70 % SoC and 24 % at
+    /// > 50 %, so a 3 % error down there moves the correction by 0.5-0.7 %.
+    /// > It grows to 62 % of the integral at 20 % SoC — where the correction
+    /// > itself has shrunk to under 2 %, so the absolute error stays small
+    /// > either way. A run to actual shutdown replaces this paragraph.
+    static let dischargeShape: [(soc: Double, v: Double)] = [
+        (12.5, 0.95388), (15.0, 0.95853), (17.5, 0.96240), (20.0, 0.96640),
+        (22.5, 0.96640), (25.0, 0.97212), (27.5, 0.97419), (30.0, 0.97445),
+        (32.5, 0.97746), (35.0, 0.98004), (37.5, 0.98374), (40.0, 0.98804),
+        (42.5, 0.98985), (45.0, 0.99380), (47.5, 0.99441), (50.0, 1.00000),
+        (52.5, 1.00551), (55.0, 1.00654), (57.5, 1.01523), (60.0, 1.02031),
+        (62.5, 1.02986), (65.0, 1.03648), (67.5, 1.03665), (70.0, 1.04500),
+        (72.5, 1.04982), (75.0, 1.06178), (77.5, 1.06565),
+    ]
+
+    /// Relative voltage at a state of charge; linear between bins and along the
+    /// end slopes outside them, floored so the extrapolation can never reach
+    /// zero and turn the integral below into a division by nothing.
+    static func relativeVoltage(atSoCPercent soc: Double) -> Double {
+        let c = dischargeShape
+        let s = min(100, max(0, soc))
+        if s <= c[0].soc {
+            let m = (c[1].v - c[0].v) / (c[1].soc - c[0].soc)
+            // 3.0 V/cell against this pack's 3.86 V/cell nominal — the
+            // conventional lithium cutoff, as a fraction of the 50 % anchor.
+            return max(0.774, c[0].v + m * (s - c[0].soc))
+        }
+        let n = c.count - 1
+        if s >= c[n].soc {
+            let m = (c[n].v - c[n - 1].v) / (c[n].soc - c[n - 1].soc)
+            return c[n].v + m * (s - c[n].soc)
+        }
+        var i = 0
+        while i + 1 < c.count && c[i + 1].soc < s { i += 1 }
+        let f = (s - c[i].soc) / (c[i + 1].soc - c[i].soc)
+        return c[i].v + f * (c[i + 1].v - c[i].v)
+    }
+
+    /// How much shorter the honest projection is than `charge / rate`.
+    ///
+    /// `V̄_remaining / V_now`, which is the whole correction: the true time is
+    /// `(1/P)∫V dQ` over the charge that remains, and `charge / rate` is
+    /// `Q·V_now/P`. Always ≤ 1 — a pack whose voltage falls cannot outlast a
+    /// constant-current projection of itself.
+    ///
+    /// STATE-DEPENDENT, and that is the result rather than an inconvenience.
+    /// Integrating the measured curve: 7.1 % at 78 %, 5.9 % at 70 %, 3.2 % at
+    /// 50 %, 1.8 % at 20 %. At a high state of charge most of the steep upper
+    /// curve still lies ahead; near empty only the flat plateau does. So a
+    /// single constant cannot express this, which is why the table above exists
+    /// rather than one more number.
+    ///
+    /// Clamped to 1 at the top: the correction is a physical statement about
+    /// what the pack will do, and a value above 1 would be this arithmetic
+    /// disagreeing with itself rather than a pack that gains voltage.
+    public static func constantPowerFactor(atSoCPercent soc: Double) -> Double {
+        let s = min(100, max(0, soc))
+        guard s > 0 else { return 1 }
+        let vNow = relativeVoltage(atSoCPercent: s)
+        guard vNow > 0 else { return 1 }
+        // Trapezoid over the charge that remains. 64 steps: the curve is
+        // piecewise linear over 27 bins, so this resolves it and costs nothing
+        // at the 2 s cadence a renderer calls it.
+        let n = 64
+        var sum = 0.0
+        for j in 0...n {
+            let w = (j == 0 || j == n) ? 0.5 : 1.0
+            sum += w * relativeVoltage(atSoCPercent: s * Double(j) / Double(n))
+        }
+        let mean = sum / Double(n)
+        let f = mean / vNow
+        return f.isFinite ? min(1, max(0.5, f)) : 1
+    }
+}

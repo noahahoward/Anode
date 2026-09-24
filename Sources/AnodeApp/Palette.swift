@@ -148,6 +148,15 @@ enum Palette {
     /// mint: the drain line on the other axis wears that, and two greens on one
     /// chart must still be tellable apart at a glance.
     static var chargingLine: NSColor { pick(hex(0x36E85C), hex(0x0E8F35)) }
+    /// The since-lid-opened mean drawn OVER the drain line.
+    ///
+    /// Amber, and neither green: it is the same quantity as the mint line
+    /// beneath it, so it must not read as a third subject — but it is the one
+    /// the READOUT shows, so it must not be lost in the fill either. The two
+    /// greens on this chart are already spoken for (drain, and the charge line
+    /// where the pack was filling), and a third would need a legend to tell
+    /// apart, which is the failure this overlay exists to remove.
+    static var drainTrendLine: NSColor { pick(hex(0xFFC24D), hex(0xB8730A)) }
     /// The two categorical hues that were `NSColor.systemPurple` and
     /// `.systemTeal` — the only inks in the app that came from macOS rather than
     /// from here.

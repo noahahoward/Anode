@@ -356,6 +356,18 @@ final class MainWindowController: NSObject {
         if NSApp.activationPolicy() != .regular {
             NSApp.setActivationPolicy(.regular)
         }
+        // A MINIATURIZED window is not restored by orderFront — that is what
+        // `deminiaturize` is for, and the two are not interchangeable. Without
+        // this, clicking a widget set the policy, took focus and put the app's
+        // name in the menu bar while the window stayed in the Dock: the app
+        // looked frontmost with nothing on screen, and stayed that way for the
+        // rest of the session because every later click did the same thing.
+        //
+        // Worse than an ordinary un-restored window, because going `.accessory`
+        // when the window hid took the Dock tile away too — so the one control
+        // macOS leaves for a minimised window was gone as well, and relaunching
+        // was the only way back. Reported as the app being "broken all day".
+        if window.isMiniaturized { window.deminiaturize(nil) }
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
     }

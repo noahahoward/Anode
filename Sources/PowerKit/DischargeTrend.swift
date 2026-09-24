@@ -347,6 +347,9 @@ public final class BatteryDischargeTrend {
     /// out-of-band condition, which never begins when the band cannot be crossed.
     /// Whatever lands here has to be measured against both columns at once.
     private let downBandCeiling: Double?
+    /// True for `sinceLidOpened()`: the window is the whole awake session on
+    /// battery, never pruned and never collapsed by the regime detector.
+    private let wholeSession: Bool
 
     private var samples: [Sample] = []
     /// Ticks accumulated in the current run of same-direction disagreement, and
@@ -396,6 +399,28 @@ public final class BatteryDischargeTrend {
                   noiseScaledBand: 3.0)
     }
 
+    /// The mean over everything drained since the lid was last opened — the
+    /// user's requested definition of time-to-empty, which is what the app ships.
+    ///
+    /// "Lid opened" is detected as the end of a sleep, by the same wall-vs-awake
+    /// clock rule `record` already uses to reset, so it also covers a wake from
+    /// idle sleep with the lid up. The session ALSO restarts on unplugging,
+    /// because nothing drains while on AC; the mean then runs from the unplug.
+    ///
+    /// Two things the rolling trend does are deliberately OFF here, because each
+    /// would make the figure stop being "the average since the lid opened":
+    /// - no pruning, so the window grows for the whole session;
+    /// - no regime-change collapse, so a sustained load change moves the answer
+    ///   only in proportion to how much of the session it has occupied.
+    /// The five-minute `minTicks` gate is kept: below it there is not yet a mean
+    /// worth quoting, and the regression / power tiers carry the display.
+    public static func sinceLidOpened(minTicks: UInt64 = 300) -> BatteryDischargeTrend {
+        BatteryDischargeTrend(window: 1800, minTicks: minTicks, changeBand: 0.30,
+                              confirmTicks: 300, downBand: nil,
+                              referenceExcludesRun: true, referenceFloorTicks: 600,
+                              noiseScaledBand: 3.0, wholeSession: true)
+    }
+
     /// The sweep initializer: every structural knob of the regime detector,
     /// so the scoring harness can drive the whole design space through the REAL
     /// class rather than a copy that would drift from it. Internal on purpose —
@@ -404,7 +429,8 @@ public final class BatteryDischargeTrend {
          changeBand: Double, confirmTicks: UInt64,
          downBand: Double?, referenceExcludesRun: Bool,
          referenceFloorTicks: UInt64?, noiseScaledBand: Double? = nil,
-         downBandCeiling: Double? = nil) {
+         downBandCeiling: Double? = nil, wholeSession: Bool = false) {
+        self.wholeSession = wholeSession
         self.window = max(60, window)
         self.minTicks = max(1, minTicks)
         self.changeBand = changeBand
@@ -455,6 +481,18 @@ public final class BatteryDischargeTrend {
     /// new batch — between publishes there is no new information, and a display that
     /// moves without new information is the bug this replaces.
     ///
+    /// THAT RULE IS ABOUT THE RATE, and it is easy to misread as being about the
+    /// screen. The display does move between publishes, and must: the app
+    /// publishes a charge and the instant it was read (`DisplayedRate`), and the
+    /// renderers subtract the awake seconds since. That is not new information —
+    /// it is this trend's own prediction, since at an unchanged rate
+    /// `t(tau) = t0 - tau` exactly, and it is a no-op at the anchor. Held as a
+    /// finished number instead, the headline sat at "7h 03m" for over a minute
+    /// while the wall-clock death time beside it slid one second per second.
+    ///
+    /// So: the RATE may not move without a new batch, and nothing here does.
+    /// The CLOCK moves, and always did.
+    ///
     /// - Returns: true when this sample carried a new accumulator batch.
     @discardableResult
     public func record(_ s: Sample, onBattery: Bool) -> Bool {
@@ -499,12 +537,20 @@ public final class BatteryDischargeTrend {
         // there are no intermediate samples to prune TO — so keeping it would quietly
         // turn the half-hour trend into a mean over however long the process was
         // stopped. Start the window again rather than claim a length it does not have.
-        guard published.ticks <= UInt64(window) else {
+        //
+        // A whole-session mean has no length to overclaim: a long awake gap (a
+        // suspended process) is still inside the session, and the counter kept
+        // integrating across it, so the difference is exactly right.
+        guard wholeSession || published.ticks <= UInt64(window) else {
             reset()
             samples.append(s)
             return false
         }
 
+        if wholeSession {
+            samples.append(s)
+            return true
+        }
         detectRegimeChange(published, from: last)
         samples.append(s)
         prune()
@@ -546,7 +592,7 @@ public final class BatteryDischargeTrend {
                      ticks: w.ticks,
                      span: w.span,
                      publishes: samples.count,
-                     isFull: w.span >= window * 0.95)
+                     isFull: wholeSession || w.span >= window * 0.95)
     }
 
     // ── Internals ───────────────────────────────────────────────────────────

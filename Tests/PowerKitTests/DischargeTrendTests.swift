@@ -555,4 +555,64 @@ final class DischargeTrendTests: XCTestCase {
         XCTAssertFalse(t.trend?.isFull ?? true,
                        "five minutes of a thirty minute window is not full")
     }
+
+    // ── Since the lid opened: the shipped definition ────────────────────────
+
+    /// The session mean covers every minute since wake, not the last 30.
+    func testLidSessionAveragesTheWholeSession() {
+        let trend = BatteryDischargeTrend.sinceLidOpened()
+        var acc: Int64 = -1_000_000, count: UInt64 = 500_000
+        var at = t0, awake = 10_000.0
+        // 60 min at 4 W, then 60 min at 10 W: the session mean is 7 W. A rolling
+        // half hour would say 10 W, and the regime detector would collapse to it.
+        run(trend, minutes: 120, watts: { $0 < 60 ? 4.0 : 10.0 },
+            acc: &acc, count: &count, at: &at, awake: &awake)
+        let t = trend.trend!
+        XCTAssertEqual(t.power_mW, 7000, accuracy: 1)
+        XCTAssertEqual(Double(t.ticks), 7200, accuracy: 1)
+        XCTAssertTrue(t.isFull)
+    }
+
+    /// Closing the lid ends the session: after wake only the new session counts.
+    func testLidSessionRestartsAfterSleep() {
+        let trend = BatteryDischargeTrend.sinceLidOpened()
+        var acc: Int64 = -1_000_000, count: UInt64 = 500_000
+        var at = t0, awake = 10_000.0
+        run(trend, minutes: 60, watts: { _ in 12.0 },
+            acc: &acc, count: &count, at: &at, awake: &awake)
+        // Asleep for two hours, then 20 awake minutes at 5 W.
+        run(trend, minutes: 20, watts: { _ in 5.0 }, from: 60,
+            acc: &acc, count: &count, at: &at, awake: &awake,
+            sleepBefore: 60, sleepSeconds: 7200)
+        let t = trend.trend!
+        XCTAssertEqual(t.power_mW, 5000, accuracy: 1)
+        XCTAssertLessThanOrEqual(Double(t.ticks), 1200)
+    }
+
+    /// Nothing is published until the session has five minutes of drain in it.
+    func testLidSessionNeedsFiveMinutesBeforeSpeaking() {
+        let trend = BatteryDischargeTrend.sinceLidOpened()
+        var acc: Int64 = -1_000_000, count: UInt64 = 500_000
+        var at = t0, awake = 10_000.0
+        run(trend, minutes: 4, watts: { _ in 6.0 },
+            acc: &acc, count: &count, at: &at, awake: &awake)
+        XCTAssertNil(trend.trend)
+        run(trend, minutes: 1, watts: { _ in 6.0 }, from: 4,
+            acc: &acc, count: &count, at: &at, awake: &awake)
+        XCTAssertNotNil(trend.trend)
+    }
+
+    /// Unplugging starts a fresh session; AC time is never averaged in.
+    func testLidSessionRestartsOnUnplug() {
+        let trend = BatteryDischargeTrend.sinceLidOpened()
+        var acc: Int64 = -1_000_000, count: UInt64 = 500_000
+        var at = t0, awake = 10_000.0
+        run(trend, minutes: 30, watts: { _ in 12.0 },
+            acc: &acc, count: &count, at: &at, awake: &awake)
+        trend.record(sample(acc: acc, count: count, at: at, awake: awake), onBattery: false)
+        XCTAssertNil(trend.trend)
+        run(trend, minutes: 10, watts: { _ in 3.0 },
+            acc: &acc, count: &count, at: &at, awake: &awake)
+        XCTAssertEqual(trend.trend!.power_mW, 3000, accuracy: 1)
+    }
 }

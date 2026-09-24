@@ -339,7 +339,7 @@ final class ChargeEstimateTests: XCTestCase {
         let toLimit = GlanceCardView.model(
             from: snapshot(charging(at: 60, mA: 3600, scale: scale), scale: scale,
                            target: ChargeTarget.Level(percent: 80, isLearnedLimit: true)),
-            drain: nil)
+            drain: nil, shared: nil)
         XCTAssertEqual(toLimit?.sourceLabel, "charging to 80% · estimated")
         // 20 points at 58.05 %/hr plus the taper is 21.5 min. The same headline
         // built against 100% reads 41m — the defect, in the one place it shows.
@@ -348,7 +348,7 @@ final class ChargeEstimateTests: XCTestCase {
         let toFull = GlanceCardView.model(
             from: snapshot(charging(at: 60, mA: 3600, scale: scale), scale: scale,
                            target: ChargeTarget.Level(percent: 100, isLearnedLimit: false)),
-            drain: nil)
+            drain: nil, shared: nil)
         XCTAssertEqual(toFull?.sourceLabel, "charging to full · estimated",
                        "no limit is known, so no percentage may be named")
 
@@ -356,13 +356,13 @@ final class ChargeEstimateTests: XCTestCase {
         let held = GlanceCardView.model(
             from: snapshot(holding(at: 80, scale: scale), scale: scale,
                            target: ChargeTarget.Level(percent: 80, isLearnedLimit: true)),
-            drain: nil)
+            drain: nil, shared: nil)
         XCTAssertEqual(held?.sourceLabel, "held at 80% limit")
 
         let idle = GlanceCardView.model(
             from: snapshot(holding(at: 55, scale: scale), scale: scale,
                            target: ChargeTarget.Level(percent: 80, isLearnedLimit: true)),
-            drain: nil)
+            drain: nil, shared: nil)
         XCTAssertEqual(idle?.sourceLabel, "not charging")
     }
 }
