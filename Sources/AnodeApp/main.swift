@@ -51,6 +51,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
     /// so calling `estimate()` from a UI path was reading a buffer while the
     /// sampler mutated it.
     var lastDrain: DrainEstimate?
+    /// What this machine usually draws and how long heavy stretches last, learned
+    /// over its whole life on battery. Owned by the SAMPLING queue — read and
+    /// written only there, and handed to main as a `DrainPrior` value. nil on a
+    /// Mac with no battery. See `LifetimeDrainModel`.
+    var lifetime: LifetimeDrainModel?
+    /// The prior that came with `lastDrain`, for `apply`.
+    var lastPrior: DrainPrior?
     /// CPU, memory, GPU, network and sensors. Cheap enough to run even while
     /// hidden — unlike the per-process sweep, these are a handful of syscalls.
     let sysMetrics = SystemMetrics()
@@ -241,6 +248,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         // on an absence longer than the window. See
         // `BatteryDischargeTrend.Persisted`.
         if let saved = BatteryDischargeTrend.Persisted.load() { drain.restoreTrend(saved) }
+        // The lifetime model: this Mac's, or a cold start. A macOS update since
+        // it was saved starts a new baseline — see `adopt(osBuild:)`.
+        if let design = Battery.scale()?.designCapacity_mAh {
+            sampling.async { [weak self] in
+                let machine = LifetimeDrainModel.hostModel()
+                var m = LifetimeDrainModel.fileURL().flatMap {
+                    LifetimeDrainModel.load(from: $0, machineModel: machine,
+                                            designCapacity_mAh: design)
+                } ?? LifetimeDrainModel(machineModel: machine, designCapacity_mAh: design,
+                                        osBuild: LifetimeDrainModel.hostOSBuild())
+                m.adopt(osBuild: LifetimeDrainModel.hostOSBuild())
+                self?.lifetime = m
+            }
+        }
 
         // The write-rate basis: (bytes written, wall clock) captured the first time
         // this app ever saw this drive, then left alone for a month. It is a LAUNCH
@@ -666,10 +687,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
                                    interval: snap.interval)
             }
             var est: DrainEstimate?
+            var prior: DrainPrior?
             if let st = snap.state {
                 self.drain.record(state: st, scale: snap.scale,
                                   powerBased_pctHr: snap.smoothed_pctHr)
                 est = self.drain.estimate()
+
+                // Every tick, light or full: the baseline needs only the pack's
+                // own watts. The dominant app only rides along on full ticks,
+                // which is why the model treats it as opportunistic.
+                if var lt = self.lifetime {
+                    let awakeNow = PowerMonitor.awakeSeconds()
+                    lt.observe(batteryWatts: LifetimeDrainModel.batteryWatts(
+                                   state: st, measured_W: snap.measured_W,
+                                   smoothed_W: snap.smoothed_W),
+                               onBattery: !st.onAC, interval: snap.interval,
+                               awake: awakeNow, now: Date(),
+                               topApp: wantFull ? .dominant(in: snap.apps) : nil)
+                    prior = lt.prior(awake: awakeNow)
+                    self.lifetime = lt
+                }
 
                 // Insurance against the exits that skip `applicationWillTerminate`
                 // — a crash, a force quit, a logout that does not wait. Every two
@@ -680,7 +717,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
                 if Date().timeIntervalSince(self.lastTrendSave) > 120 {
                     self.lastTrendSave = Date()
                     let snapshot = self.drain.persistedTrend()
-                    DispatchQueue.global(qos: .utility).async { snapshot.save() }
+                    let learned = self.lifetime
+                    DispatchQueue.global(qos: .utility).async {
+                        snapshot.save()
+                        if let m = learned, let url = LifetimeDrainModel.fileURL() { m.save(to: url) }
+                    }
                 }
             }
 
@@ -709,6 +750,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
                                      needs: needs, since: mainStartCPU) }
                 self.lastSystem = sysSnap
                 self.lastDrain = est
+                self.lastPrior = prior
                 // BEFORE the visibility branch, and outside it. The live graph
                 // buffers back the 1H view, and a window that is closed or covered
                 // is still a machine worth having a record of — see
@@ -727,7 +769,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
                     // showed it for as long as the app stayed in the background —
                     // which is most of its life.
                     MetricRegistry.shared.update(displayedRate: Self.reconciledRate(
-                        snap, est, previous: MetricRegistry.shared.displayedRate))
+                        snap, est, previous: MetricRegistry.shared.displayedRate,
+                        prior: prior))
                     self.widgets.refresh()
                 }
             }
@@ -746,7 +789,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         // tick, light or full.
         MetricRegistry.shared.update(with: s)
         MetricRegistry.shared.update(displayedRate: Self.reconciledRate(
-            s, lastDrain, previous: MetricRegistry.shared.displayedRate))
+            s, lastDrain, previous: MetricRegistry.shared.displayedRate, prior: lastPrior))
         widgets.refresh()
 
         // Everything below reads what only a full sweep produces: the app rows,
@@ -1243,8 +1286,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
     /// about what a publish is.
     static func reconciledRate(_ s: PowerMonitor.Snapshot, _ est: DrainEstimate?,
                                previous: DisplayedRate?,
-                               awake: TimeInterval = PowerMonitor.awakeSeconds())
+                               awake: TimeInterval = PowerMonitor.awakeSeconds(),
+                               prior: DrainPrior? = nil)
         -> DisplayedRate {
+        // The lifetime forecast, converted at the LIVE voltage so its two rates
+        // are on the basis `timeToEmpty` assumes — see `pctHrAtVoltage`. Only
+        // while draining: a time-to-empty on AC is inapplicable, not missing.
+        let lifetime: DisplayedRate.Prior? = {
+            guard let p = prior, s.direction == .draining,
+                  let raw = s.state?.voltage_mV, raw > 0 else { return nil }
+            let mV = Double(raw)
+            return DisplayedRate.Prior(
+                baselinePctHr: s.scale.pctHrAtVoltage(watts: p.baseline_W, voltage_mV: mV),
+                currentPctHr: s.scale.pctHrAtVoltage(watts: p.current_W, voltage_mV: mV),
+                tau_s: p.tau_s, band: p.band, appName: p.appName)
+        }()
         func anchored(pctHr: Double, charge: Double?,
                       source: DrainEstimate.Source, span: TimeInterval) -> DisplayedRate {
             let held = previous.flatMap { p -> TimeInterval? in
@@ -1257,7 +1313,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
             }
             return DisplayedRate(pctHr: pctHr, chargePercent: charge,
                                  anchorAwake: held ?? awake,
-                                 source: source, windowSpan: span)
+                                 source: source, windowSpan: span,
+                                 prior: charge == nil ? nil : lifetime)
         }
 
         let draining = s.direction == .draining
@@ -2208,7 +2265,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
     /// which is exactly why the release cannot live only here.
     func applicationWillTerminate(_ note: Notification) {
         fansPane.teardown()
-        drain.persistedTrend().save()
+        // Read on the sampling queue, which owns both — reading them here on
+        // main raced the tick that mutates them. Safe to wait on: the sampling
+        // queue only ever hands work to main asynchronously.
+        let (trend, learned) = sampling.sync { (drain.persistedTrend(), lifetime) }
+        trend.save()
+        if let m = learned, let url = LifetimeDrainModel.fileURL() { m.save(to: url) }
     }
 
     /// Closing the window leaves the app alive in the menu bar, so activating it

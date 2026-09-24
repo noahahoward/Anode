@@ -180,3 +180,75 @@ final class TimeLeftAnchorTests: XCTestCase {
                        est.timeRemaining! / 3600, accuracy: 1e-12)
     }
 }
+
+// ── the lifetime prior ──────────────────────────────────────────────────────
+
+extension TimeLeftAnchorTests {
+
+    private func prior(baseline: Double = 8, current: Double = 8,
+                       tau: Double = 600, band: LoadBand = .normal,
+                       app: String? = nil) -> DrainPrior {
+        DrainPrior(baseline_W: baseline, current_W: current, tau_s: tau, band: band, appName: app)
+    }
+
+    /// With the load steady the forecast is a fixed instant, like the plain
+    /// anchor's: a silent gauge still counts down one second per second.
+    func testAForecastCountsDownWhileTheGaugeIsSilent() throws {
+        let snap = snapshot(draining(mAh: 3667))
+        let p = prior(baseline: 8, current: 20, tau: 1800, band: .heavy)
+        var anchor: DisplayedRate?
+        var first: Double?, last: Double?
+        for tick in 0...30 {
+            let awake = 1000 + Double(tick) * 2
+            anchor = AppDelegate.reconciledRate(snap, estimate(59.2, rate: 8.16),
+                                                previous: anchor, awake: awake, prior: p)
+            let t = try XCTUnwrap(anchor?.timeRemaining_hr(now: awake))
+            if first == nil { first = t }
+            last = t
+        }
+        XCTAssertEqual(try XCTUnwrap(first) - XCTUnwrap(last), 60.0 / 3600, accuracy: 1e-9)
+    }
+
+    /// The forecast is on the gauge's basis: at the live voltage, and with the
+    /// constant-power factor applied once. With no excursion it is exactly the
+    /// plain time-to-empty at the baseline's rate.
+    func testWithNoExcursionTheForecastIsTheBaselinesTimeToEmpty() throws {
+        let snap = snapshot(draining(mAh: 3667))
+        let r = AppDelegate.reconciledRate(snap, estimate(59.2, rate: 8.16),
+                                           previous: nil, awake: 1000, prior: prior())
+        let charge = try XCTUnwrap(r.chargePercent)
+        let pct = pack().pctHrAtVoltage(watts: 8, voltage_mV: 11878)
+        let expected = try XCTUnwrap(DrainEstimate.timeToEmpty(chargePercent: charge, ratePctHr: pct))
+        XCTAssertEqual(try XCTUnwrap(r.timeRemaining_hr(now: 1000)), expected / 3600, accuracy: 1e-9)
+    }
+
+    /// A learned machine can say how long the battery lasts the moment it is
+    /// unplugged — no two minutes of "—" while a window fills.
+    func testAWarmModelQuotesATimeImmediately() {
+        let snap = snapshot(draining(mAh: 3667))
+        let bare = DrainEstimate(percentPerHour: 8, timeRemaining: nil, chargePercent: 59.2,
+                                 confidence: 0.2, source: .power, windowSpan: 0, sampleCount: 1)
+        XCTAssertFalse(AppDelegate.reconciledRate(snap, bare, previous: nil, awake: 1000).canQuoteTime)
+        XCTAssertTrue(AppDelegate.reconciledRate(snap, bare, previous: nil, awake: 1000,
+                                                 prior: prior()).canQuoteTime)
+    }
+
+    func testWithoutAPriorNothingChanges() throws {
+        let snap = snapshot(draining(mAh: 3667))
+        let r = AppDelegate.reconciledRate(snap, estimate(59.2, rate: 8.16), previous: nil, awake: 1000)
+        XCTAssertNil(r.prior)
+        let expected = try XCTUnwrap(DrainEstimate.timeToEmpty(chargePercent: 59.2, ratePctHr: 8.16))
+        XCTAssertEqual(try XCTUnwrap(r.timeRemaining_hr(now: 1000)), expected / 3600, accuracy: 1e-9)
+    }
+
+    func testTheLabelSaysWhichCaseApplies() {
+        XCTAssertEqual(DisplayedRate.Prior.label(band: .normal, tau_s: 600, appName: nil), "typical use")
+        XCTAssertEqual(DisplayedRate.Prior.label(band: .quiet, tau_s: 600, appName: nil), "typical use")
+        XCTAssertEqual(DisplayedRate.Prior.label(band: .heavy, tau_s: 2400, appName: "Final Cut Pro"),
+                       "heavy load, ~40 min (Final Cut Pro)")
+        XCTAssertEqual(DisplayedRate.Prior.label(band: .elevated, tau_s: 1500, appName: nil),
+                       "heavy load, ~25 min")
+        XCTAssertEqual(DisplayedRate.Prior.label(band: .heavy, tau_s: .infinity, appName: nil),
+                       "heavy load")
+    }
+}

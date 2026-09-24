@@ -50,6 +50,7 @@ if [ "$REMOVE_DATA" = "1" ]; then
     "$SUPPORT/history.sqlite-wal"
     "$SUPPORT/history.sqlite-shm"
     "$SUPPORT/discharge-trend.json"
+    "$SUPPORT/lifetime-drain.json"
   )
 fi
 

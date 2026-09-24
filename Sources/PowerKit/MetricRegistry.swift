@@ -648,10 +648,10 @@ public final class MetricRegistry {
             // Nothing quoted until there is history behind it. A time extrapolated
             // from the first seconds after an unplug is a claim about the next ten
             // hours built on whatever the machine was doing in one of them — see
-            // `DrainEstimate.canQuoteTime`.
-            if let shared = self?.displayedRate,
-               !DrainEstimate.canQuoteTime(source: shared.source,
-                                           windowSpan: shared.windowSpan) {
+            // `DrainEstimate.canQuoteTime`. Unless the lifetime model has learned
+            // this machine, in which case the history IS there — see
+            // `DisplayedRate.canQuoteTime`.
+            if let shared = self?.displayedRate, !shared.canQuoteTime {
                 return nil
             }
             // Projected to NOW, not held. The rate below is the anchor's and does

@@ -513,8 +513,7 @@ final class GlanceCardView: NSView {
             // Withheld until there is history behind it — the same rule the menu
             // bar metric follows, so the two cannot print different answers to one
             // question three inches apart. See `DrainEstimate.canQuoteTime`.
-            let settled = DrainEstimate.canQuoteTime(source: shared.source,
-                                                     windowSpan: shared.windowSpan)
+            let settled = shared.canQuoteTime
             // ONE read of the clock for the whole card. The headline and the
             // wall-clock death time below must be two views of a single
             // projection; reading the clock twice is how they came apart.
@@ -528,7 +527,10 @@ final class GlanceCardView: NSView {
                 // not-yet-known.
                 headline: hrs.map(hm) ?? (settled ? "—" : "measuring…"),
                 pill: "\(st.percent)%",
-                sourceLabel: "on battery · " + provenance(shared.source, settled: settled),
+                // The lifetime forecast says which case it is answering —
+                // typical use, or a heavy stretch and how long those last here.
+                sourceLabel: "on battery · "
+                    + (shared.prior?.label ?? provenance(shared.source, settled: settled)),
                 rows: [
                     ("Drain", String(format: "%.1f %%/hr", shared.pctHr), nil),
                     ("Draw", String(format: "%.1f W", s.smoothed_W), nil),

@@ -68,7 +68,8 @@ public enum Uninstall {
 
         if removingData {
             plan.data = ["\(support)/history.sqlite", "\(support)/history.sqlite-wal",
-                         "\(support)/history.sqlite-shm", "\(support)/discharge-trend.json"]
+                         "\(support)/history.sqlite-shm", "\(support)/discharge-trend.json",
+                         "\(support)/lifetime-drain.json"]
                 .filter(exists)
             // Both domains: a machine that predates the rename still has the old
             // one, and leaving it means a reinstall silently inherits settings

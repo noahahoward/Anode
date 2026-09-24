@@ -202,6 +202,45 @@ public struct DrainEstimate {
         let t = t0 - elapsedAwake
         return t > 0 ? t : nil
     }
+
+    /// Time-to-empty when the load now is expected to fade back to what this
+    /// machine usually draws: rate(t) = b + (c − b)·e^(−t/τ). See
+    /// `LifetimeDrainModel` for where `b` and `τ` are learned.
+    ///
+    /// The pack is empty when the %·hr spent reaches the charge that remains,
+    /// scaled ONCE by the constant-power factor — the same budget `timeToEmpty`
+    /// divides, integrated against a rate that moves instead of one that holds.
+    /// So wherever the two models describe the same load they are the same
+    /// number: no excursion, or one that never ends, IS `timeToEmpty` at the
+    /// current rate (pinned in `LifetimeForecastTests`). The result must never be
+    /// passed through `timeToEmpty` again, which would apply the factor twice.
+    public static func forecastTimeToEmpty(chargePercent: Double, currentPctHr c: Double,
+                                           baselinePctHr b: Double,
+                                           tau: TimeInterval) -> TimeInterval? {
+        guard c.isFinite, b.isFinite, !tau.isNaN, chargePercent.isFinite else { return nil }
+        if abs(c - b) < 1e-9 || tau == .infinity {
+            return timeToEmpty(chargePercent: chargePercent, ratePctHr: c)
+        }
+        // Both ends of the curve must be a real drain, for the reason
+        // `timeToEmpty` gives for its own floor.
+        guard chargePercent > 0, min(b, c) > 0, max(b, c) >= 0.1, tau > 0 else { return nil }
+        let budget = chargePercent * BatteryScale.constantPowerFactor(atSoCPercent: chargePercent)
+        let tauH = tau / 3600
+        func spent(_ hours: Double) -> Double {
+            b * hours + (c - b) * tauH * (1 - exp(-hours / tauH))
+        }
+        // `spent` rises monotonically (the rate is positive throughout), so
+        // bisection converges; beyond the cap there is no runtime worth quoting.
+        let cap = 99.0
+        guard spent(cap) >= budget else { return nil }
+        var lo = 0.0, hi = cap
+        for _ in 0..<100 {
+            let mid = (lo + hi) / 2
+            if spent(mid) < budget { lo = mid } else { hi = mid }
+        }
+        let t = (lo + hi) / 2 * 3600
+        return t > 0 ? t : nil
+    }
 }
 
 public final class DrainRateEstimator {
@@ -882,20 +921,78 @@ public struct DisplayedRate {
     /// while the RATE is still shown. See `DrainEstimate.canQuoteTime`.
     public let windowSpan: TimeInterval
 
+    /// What the lifetime model expects of the next few hours, already on the
+    /// gauge's basis. nil until the model has learned this machine — the time
+    /// is then the anchor's plain projection, exactly as before it existed.
+    public let prior: Prior?
+
+    /// The lifetime forecast's inputs in %/hr at the live voltage. See
+    /// `LifetimeDrainModel` and `DrainEstimate.forecastTimeToEmpty`.
+    public struct Prior: Equatable {
+        public let baselinePctHr: Double
+        public let currentPctHr: Double
+        public let tau_s: Double
+        public let band: LoadBand
+        public let appName: String?
+
+        public init(baselinePctHr: Double, currentPctHr: Double, tau_s: Double,
+                    band: LoadBand, appName: String?) {
+            self.baselinePctHr = baselinePctHr
+            self.currentPctHr = currentPctHr
+            self.tau_s = tau_s
+            self.band = band
+            self.appName = appName
+        }
+
+        /// Which case the time is answering, in words — the provenance line
+        /// under the headline.
+        public var label: String { Self.label(band: band, tau_s: tau_s, appName: appName) }
+
+        public static func label(band: LoadBand, tau_s: Double, appName: String?) -> String {
+            guard band.isHigh else { return "typical use" }
+            var s = "heavy load"
+            if tau_s.isFinite { s += ", ~\(Int((tau_s / 60).rounded())) min" }
+            if let app = appName { s += " (\(app))" }
+            return s
+        }
+    }
+
     public init(pctHr: Double, chargePercent: Double?, anchorAwake: TimeInterval,
-                source: DrainEstimate.Source, windowSpan: TimeInterval) {
+                source: DrainEstimate.Source, windowSpan: TimeInterval,
+                prior: Prior? = nil) {
         self.pctHr = pctHr
         self.chargePercent = chargePercent
         self.anchorAwake = anchorAwake
         self.source = source
         self.windowSpan = windowSpan
+        self.prior = prior
+    }
+
+    /// Whether a time may be shown at all. A learned machine may quote one from
+    /// the first tick, because the forecast rests on its history rather than on
+    /// the seconds since unplugging.
+    public var canQuoteTime: Bool {
+        prior != nil || DrainEstimate.canQuoteTime(source: source, windowSpan: windowSpan)
     }
 
     /// Hours left as of `now`, on the awake clock. Defaulted so every renderer
     /// reads the same clock without each one remembering to.
+    ///
+    /// With a prior, the forecast is re-evaluated from the anchor's charge on
+    /// every read and the awake seconds since are subtracted — the same shape as
+    /// `projected`, so it counts down one second per second while the load
+    /// holds, and follows the load when it moves.
     public func timeRemaining_hr(now awake: TimeInterval = PowerMonitor.awakeSeconds())
         -> Double? {
         guard let charge = chargePercent else { return nil }
+        if let p = prior {
+            guard let t0 = DrainEstimate.forecastTimeToEmpty(
+                    chargePercent: charge, currentPctHr: p.currentPctHr,
+                    baselinePctHr: p.baselinePctHr, tau: p.tau_s) else { return nil }
+            let elapsed = awake - anchorAwake
+            let t = elapsed.isFinite && elapsed > 0 ? t0 - elapsed : t0
+            return t > 0 ? t / 3600 : nil
+        }
         return DrainEstimate.projected(chargePercent: charge, ratePctHr: pctHr,
                                        elapsedAwake: awake - anchorAwake)
             .map { $0 / 3600 }
