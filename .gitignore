@@ -25,3 +25,11 @@ DerivedData/
 # make-release.sh still writes here for local archiving; it is simply not part
 # of the repository any more.
 releases/
+
+# Stress harness output and its compiled tools. The runs are screenshots of
+# whoever's desktop the harness ran on, and the binaries rebuild from the .swift
+# beside them (`swiftc -O stress/<name>.swift -o stress/<name>`).
+stress/runs/
+stress/click
+stress/probe
+stress/dmode
