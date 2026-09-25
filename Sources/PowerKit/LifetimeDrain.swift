@@ -230,10 +230,18 @@ public struct LifetimeDrainModel: Codable {
 
     /// One tick. `interval` is the tick's own span (0 after a gap), `awake` the
     /// awake clock, `now` the calendar clock the half-life runs on.
+    ///
+    /// `displayOn` false is treated as a gap. The awake clock runs through dark
+    /// wakes — the display off, the machine doing maintenance, hundreds of times
+    /// a night — and a watt or two of that is not anyone using the Mac. Measured
+    /// on this machine: 292 dark wakes on battery in one day, 2.4 h of them,
+    /// against 68 min of real use.
     public mutating func observe(batteryWatts watts: Double, onBattery: Bool,
+                                 displayOn: Bool = true,
                                  interval: TimeInterval, awake: TimeInterval,
                                  now: Date, topApp: TopApp?) {
         guard onBattery else { resetTransient(); unplugAwake = nil; return }
+        guard displayOn else { resetTransient(); return }
         guard interval > 0, interval <= Self.maxInterval, watts.isFinite, watts > 0 else {
             resetTransient(); return
         }
