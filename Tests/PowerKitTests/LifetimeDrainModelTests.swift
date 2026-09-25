@@ -63,6 +63,20 @@ final class LifetimeDrainModelTests: XCTestCase {
         XCTAssertEqual(try XCTUnwrap(m.baseline_W), before, accuracy: 1e-9)
     }
 
+    /// A dark wake — awake, on battery, display off, doing maintenance — is not
+    /// anyone using the machine. A night holds hundreds of them, and at a watt
+    /// or two each they would drag "typical use" down toward idle.
+    func testDisplayOffTimeTeachesNothing() throws {
+        var m = fresh()
+        warm(&m, watts: 10)
+        for _ in 0..<(3600 / 2) {
+            awake += 2; now += 2
+            m.observe(batteryWatts: 1.5, onBattery: true, displayOn: false, interval: 2,
+                      awake: awake, now: now, topApp: nil)
+        }
+        XCTAssertEqual(try XCTUnwrap(m.baseline_W), 10, accuracy: 0.01)
+    }
+
     func testThirtyDaysHalvesTheOldWeight() throws {
         var m = fresh()
         warm(&m, watts: 10)

@@ -701,7 +701,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
                     lt.observe(batteryWatts: LifetimeDrainModel.batteryWatts(
                                    state: st, measured_W: snap.measured_W,
                                    smoothed_W: snap.smoothed_W),
-                               onBattery: !st.onAC, interval: snap.interval,
+                               onBattery: !st.onAC,
+                               displayOn: CGDisplayIsAsleep(CGMainDisplayID()) == 0,
+                               interval: snap.interval,
                                awake: awakeNow, now: Date(),
                                topApp: wantFull ? .dominant(in: snap.apps) : nil)
                     prior = lt.prior(awake: awakeNow)
