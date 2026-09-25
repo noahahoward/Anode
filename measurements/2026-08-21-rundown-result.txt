@@ -1,0 +1,49 @@
+RUN-DOWN RESULT  —  6504 samples, SoC 77.8% -> 12.0%
+================================================================
+
+MEASURED DISCHARGE CURVE (lightest-load sample per bin ~ open circuit)
+  SoC%     V       I        dV/dSoC
+   77.5  12.385   0.21 A           —
+   75.0  12.340   0.26 A     18.0 mV/pt
+   72.5  12.201   0.22 A     55.6 mV/pt
+   70.0  12.145   0.18 A     22.4 mV/pt
+   67.5  12.048   0.15 A     38.8 mV/pt
+   65.0  12.046   0.16 A      0.8 mV/pt
+   62.5  11.969   0.40 A     30.8 mV/pt
+   60.0  11.858   0.28 A     44.4 mV/pt
+   57.5  11.799   0.44 A     23.6 mV/pt
+   55.0  11.698   0.20 A     40.4 mV/pt
+   52.5  11.686   0.20 A      4.8 mV/pt
+   50.0  11.622   0.20 A     25.6 mV/pt
+   47.5  11.557   0.20 A     26.0 mV/pt
+   45.0  11.550   0.20 A      2.8 mV/pt
+   42.5  11.504   0.20 A     18.4 mV/pt
+   40.0  11.483   0.22 A      8.4 mV/pt
+   37.5  11.433   0.33 A     20.0 mV/pt
+   35.0  11.390   0.49 A     17.2 mV/pt
+   32.5  11.360   0.50 A     12.0 mV/pt
+   30.0  11.325   0.35 A     14.0 mV/pt
+   27.5  11.322   0.27 A      1.2 mV/pt
+   25.0  11.298   0.21 A      9.6 mV/pt
+   22.5  11.228   0.23 A     28.0 mV/pt
+   20.0  11.235   0.30 A     -2.8 mV/pt
+   17.5  11.185   0.31 A     20.0 mV/pt
+   15.0  11.140   0.55 A     18.0 mV/pt
+   12.5  11.086   0.59 A     21.6 mV/pt
+
+SLOPE BY REGION
+  upper  45-78%:   26.81 mV per SoC point   (n=14 bins)
+  plateau 20-45%:   12.80 mV per SoC point   (n=11 bins)
+  knee   12-22%:   19.68 mV per SoC point   (n=4 bins)
+
+CONSTANT-POWER CORRECTION  (integrating the measured curve)
+  from SoC   V_now   mean V remaining   estimate reads
+     70%     12.156      11.439         5.9% HIGH
+     60%     11.888      11.341         4.6% HIGH
+     50%     11.620      11.258         3.1% HIGH
+     40%     11.471      11.191         2.4% HIGH
+     30%     11.343      11.119         2.0% HIGH
+     20%     11.215      11.038         1.6% HIGH
+     15%     11.137      10.989         1.3% HIGH
+
+  (below 12% the curve is EXTRAPOLATED, not measured — the run stopped there)
