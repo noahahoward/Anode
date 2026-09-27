@@ -82,6 +82,7 @@ final class LifetimePersistenceTests: XCTestCase {
         let json = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: file)) as? [String: Any])
         XCTAssertEqual(Set(json.keys), ["version", "machineModel", "designCapacity_mAh", "osBuild",
                                         "weightedJoules", "weightSeconds", "totalSeconds",
-                                        "lastDecay", "bands", "apps"])
+                                        "lastDecay", "bands", "apps",
+                                        "allTimeJoules", "allTimeSeconds"])
     }
 }

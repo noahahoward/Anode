@@ -58,6 +58,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
     var lifetime: LifetimeDrainModel?
     /// The prior that came with `lastDrain`, for `apply`.
     var lastPrior: DrainPrior?
+    /// `LifetimeDrainModel.allTimeMean_W` as of `lastDrain`, for `apply`.
+    var lastAllTime_W: Double?
     /// CPU, memory, GPU, network and sensors. Cheap enough to run even while
     /// hidden — unlike the per-process sweep, these are a handful of syscalls.
     let sysMetrics = SystemMetrics()
@@ -688,6 +690,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
             }
             var est: DrainEstimate?
             var prior: DrainPrior?
+            var allTime_W: Double?
             if let st = snap.state {
                 self.drain.record(state: st, scale: snap.scale,
                                   powerBased_pctHr: snap.smoothed_pctHr)
@@ -707,6 +710,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
                                awake: awakeNow, now: Date(),
                                topApp: wantFull ? .dominant(in: snap.apps) : nil)
                     prior = lt.prior(awake: awakeNow)
+                    allTime_W = lt.allTimeMean_W
                     self.lifetime = lt
                 }
 
@@ -753,6 +757,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
                 self.lastSystem = sysSnap
                 self.lastDrain = est
                 self.lastPrior = prior
+                self.lastAllTime_W = allTime_W
                 // BEFORE the visibility branch, and outside it. The live graph
                 // buffers back the 1H view, and a window that is closed or covered
                 // is still a machine worth having a record of — see
@@ -772,7 +777,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
                     // which is most of its life.
                     MetricRegistry.shared.update(displayedRate: Self.reconciledRate(
                         snap, est, previous: MetricRegistry.shared.displayedRate,
-                        prior: prior))
+                        prior: prior, allTime_W: allTime_W))
                     self.widgets.refresh()
                 }
             }
@@ -791,7 +796,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         // tick, light or full.
         MetricRegistry.shared.update(with: s)
         MetricRegistry.shared.update(displayedRate: Self.reconciledRate(
-            s, lastDrain, previous: MetricRegistry.shared.displayedRate, prior: lastPrior))
+            s, lastDrain, previous: MetricRegistry.shared.displayedRate, prior: lastPrior,
+            allTime_W: lastAllTime_W))
         widgets.refresh()
 
         // Everything below reads what only a full sweep produces: the app rows,
@@ -1289,7 +1295,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
     static func reconciledRate(_ s: PowerMonitor.Snapshot, _ est: DrainEstimate?,
                                previous: DisplayedRate?,
                                awake: TimeInterval = PowerMonitor.awakeSeconds(),
-                               prior: DrainPrior? = nil)
+                               prior: DrainPrior? = nil,
+                               allTime_W: Double? = nil)
         -> DisplayedRate {
         // The lifetime forecast, converted at the LIVE voltage so its two rates
         // are on the basis `timeToEmpty` assumes — see `pctHrAtVoltage`. Only
@@ -1320,6 +1327,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         }
 
         let draining = s.direction == .draining
+        // Time left = charge ÷ the average drain over all the display-on battery
+        // time ever recorded, once there are two hours of it. Outranks the session
+        // mean and the lifetime forecast: it is the definition the user chose.
+        if draining, let w = allTime_W, w > 0, let st = s.state, st.voltage_mV > 0 {
+            let charge = s.scale.chargePercent(st)
+            // Converted at the live voltage, which sags with every change in
+            // load; re-converting each tick would move the time with it. So the
+            // rate, like the anchor, changes only when the gauge publishes.
+            let pctHr: Double
+            if let p = previous, p.source == .allTime, p.chargePercent == charge {
+                pctHr = p.pctHr
+            } else {
+                pctHr = s.scale.pctHrAtVoltage(watts: w, voltage_mV: Double(st.voltage_mV))
+            }
+            let r = anchored(pctHr: pctHr, charge: charge,
+                             source: .allTime, span: est?.windowSpan ?? 0)
+            return DisplayedRate(pctHr: r.pctHr, chargePercent: r.chargePercent,
+                                 anchorAwake: r.anchorAwake, source: .allTime,
+                                 windowSpan: r.windowSpan, prior: nil)
+        }
         if let e = est, e.source == .discharge, draining {
             return anchored(pctHr: e.percentPerHour, charge: e.chargePercent,
                             source: .discharge, span: e.windowSpan)

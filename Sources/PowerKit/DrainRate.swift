@@ -60,6 +60,9 @@ public struct DrainEstimate {
         /// Mean of the battery's own discharge accumulator over the trend window —
         /// measured charge that has already left the pack, not an inference.
         case discharge
+        /// Mean battery drain over every display-on minute on battery since the
+        /// app began keeping `LifetimeDrainModel.allTimeMean_W`. Never decays.
+        case allTime
         /// Regression over observed history; confidence is high enough that
         /// the power-based figure is ignored entirely.
         case observed
@@ -820,7 +823,7 @@ extension DrainEstimate {
             // The instantaneous tier. Fine once it has been watching a while,
             // misleading in the first seconds after a reset.
             return windowSpan >= settleSeconds
-        case .discharge, .observed, .blended:
+        case .discharge, .allTime, .observed, .blended:
             // All of these are backed by an accumulated window by construction.
             return true
         }

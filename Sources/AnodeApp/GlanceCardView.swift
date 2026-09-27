@@ -602,6 +602,7 @@ final class GlanceCardView: NSView {
     private static func provenanceWord(_ source: DrainEstimate.Source) -> String {
         switch source {
         case .discharge:    return "measured drain"
+        case .allTime:      return "all-time average"
         case .observed:     return "observed drain"
         case .blended:      return "estimated drain"
         case .power:        return "estimated from draw"

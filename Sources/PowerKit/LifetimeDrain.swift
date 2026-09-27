@@ -127,6 +127,13 @@ public struct LifetimeDrainModel: Codable {
     /// Keyed "high" / "quiet" — see `excursionStat(high:)`.
     var bands: [String: DurationStat] = [:]
     var apps: [String: AppStat] = [:]
+    /// Every display-on second on battery since the model first ran, and the
+    /// joules drawn in them. Unlike the baseline: no half-life, and no restart on
+    /// a macOS update. Optional so a file saved before these existed still loads;
+    /// such a file seeds them from its baseline, which is the same data barely
+    /// decayed.
+    var allTimeJoules: Double?
+    var allTimeSeconds: Double?
 
     // ── transient ───────────────────────────────────────────────────────────
     private var ring: [(awake: TimeInterval, watts: Double)] = []
@@ -139,7 +146,8 @@ public struct LifetimeDrainModel: Codable {
 
     enum CodingKeys: String, CodingKey {
         case version, machineModel, designCapacity_mAh, osBuild, weightedJoules,
-             weightSeconds, totalSeconds, lastDecay, previousBaseline_W, bands, apps
+             weightSeconds, totalSeconds, lastDecay, previousBaseline_W, bands, apps,
+             allTimeJoules, allTimeSeconds
     }
 
     public init(machineModel: String, designCapacity_mAh: Double, osBuild: String) {
@@ -153,6 +161,15 @@ public struct LifetimeDrainModel: Codable {
     /// This build's learned mean, warm or not. nil before any data.
     public var baseline_W: Double? {
         weightSeconds > 0 ? weightedJoules / weightSeconds : nil
+    }
+
+    /// Mean battery watts over all the display-on time on battery the app has
+    /// ever recorded — what time left is divided by. nil until there are
+    /// `warmSeconds` of it, when one session would still be most of the mean.
+    public var allTimeMean_W: Double? {
+        guard let s = allTimeSeconds, s >= Self.warmSeconds,
+              let j = allTimeJoules, j > 0 else { return nil }
+        return j / s
     }
 
     /// The lifetime baseline to forecast against: this build's once warm, else
@@ -248,6 +265,13 @@ public struct LifetimeDrainModel: Codable {
         if unplugAwake == nil { unplugAwake = awake }
         if let app = topApp, app.share >= Self.appShare { lastTopApp = (app, awake) }
         guard let unplug = unplugAwake, awake - unplug >= Self.settleAfterUnplug else { return }
+
+        if allTimeSeconds == nil {
+            allTimeJoules = weightedJoules
+            allTimeSeconds = weightSeconds
+        }
+        allTimeJoules! += watts * interval
+        allTimeSeconds! += interval
 
         decay(to: now)
         weightedJoules += watts * interval
