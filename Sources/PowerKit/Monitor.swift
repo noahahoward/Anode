@@ -665,7 +665,8 @@ public final class PowerMonitor {
         //   1. SMC PSTR, gain-corrected  — measured, whole machine, every tick
         //   2. baseline + fast           — inferred, when SMC is unavailable
         //   3. the gauge itself          — accurate but 60 s stale
-        //   4. raw fast                  — partial, last resort
+        //   4. pack current × voltage    — measured, on battery only
+        //   5. raw fast                  — partial, last resort
         // The MEDIAN raw rail, not this tick's read. PSTR is as spiky as PPMC —
         // it swung 1.5 to 18 W on an idle-to-active machine within one minute —
         // and feeding that to an adaptive smoother whose jump detector exists to
@@ -674,7 +675,22 @@ public final class PowerMonitor {
         // is left. Falls back to this tick's value until the window fills.
         let smcTotal = (Self.median(pstrWindow) ?? pstrRaw).map { gain.corrected($0) }
 
-        let target = smcTotal ?? calibrator.estimate(fast: fast) ?? currentMeasured_W ?? fast
+        // One battery read per tick, fed to the anchor, the limit learner and the
+        // snapshot. Read twice it could straddle the cache TTL and teach the
+        // learner about a charge level the snapshot does not report.
+        let battery = Battery.state()
+        // 4. The pack's own current × voltage, on battery only. Measured, whole
+        //    machine and live, so it beats the partial `fast` sum by a wide margin
+        //    on hardware that publishes neither PSTR nor a telemetry window —
+        //    where the chain used to fall straight through to "our processes plus
+        //    the GPU", a fraction of the real draw.
+        let packWatts: Double? = battery.flatMap { s in
+            guard !s.onAC, s.amperage_mA < 0, s.voltage_mV > 0 else { return nil }
+            let w = Double(-s.amperage_mA) * Double(s.voltage_mV) / 1e6
+            return w.isFinite && w > 0 && w < 200 ? w : nil
+        }
+        let target = smcTotal ?? calibrator.estimate(fast: fast) ?? currentMeasured_W
+            ?? packWatts ?? fast
         let smoothed = smoother.update(target)
 
         let apps = DrainCalculator.group(drains, scale: scale)
@@ -738,12 +754,8 @@ public final class PowerMonitor {
         // rejected rather than credited to the device.
         let quiet = (ppmcRaw ?? 0) < 3.0
         usbTracker.update(systemWatts: smoothed, systemQuiet: quiet,
-                          onAC: Battery.state()?.onAC ?? false)
+                          onAC: battery?.onAC ?? false)
 
-        // One battery read, fed to the limit learner and then handed to the
-        // snapshot. Read twice it could straddle the cache TTL and teach the
-        // learner about a charge level the snapshot does not report.
-        let battery = Battery.state()
         if let b = battery { chargeLimits.observe(b, percent: scale.chargePercent(b)) }
 
         let usbMeasured = usbTracker.measuredWatts

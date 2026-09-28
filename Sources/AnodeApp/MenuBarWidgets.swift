@@ -120,6 +120,152 @@ public final class MenuBarWidgetController: NSObject, NSMenuDelegate {
 
     static let historyCap = 60   // sparkline samples kept per metric
 
+    // ── Placement ───────────────────────────────────────────────────────────────
+    //
+    // A status item that macOS declines to show is indistinguishable, from every
+    // property this app sets, from one that is showing: it has a button, an
+    // image, a length, and `isVisible == true`. The only witness is the window
+    // AppKit gives the button — which is either never placed (zero height, see
+    // WIDGET-BUG.md), parked off every screen, or sitting behind a notch.
+    //
+    // That is the everyday case on a narrow menu bar, not an edge case. On a
+    // MacBook Neo (Mac17,5: 13", no notch, a far shorter bar than the 16" this
+    // was built on) the system's own items plus a few third-party ones fill the
+    // bar, and macOS packs right to left and silently drops whatever reaches the
+    // left end — which is where a freshly launched app's items land. No overflow
+    // menu, no error. The widgets simply never appear.
+    //
+    // So the controller now LOOKS after it builds, and squeezes when it must:
+    // labels go first, then everything folds into one item that still carries
+    // the headline reading and opens the full panel. If even one item cannot be
+    // placed, it says so, so the app can keep a Dock tile rather than leave the
+    // user with nothing to click.
+
+    /// How far the bar has had to squeeze to be seen. Only ever tightens within a
+    /// screen configuration; a screen change or a new arrangement starts over.
+    enum Density: Int, Comparable {
+        /// As configured.
+        case full
+        /// Labels dropped, padding trimmed: roughly 40 % narrower.
+        case compact
+        /// One item: the app's glyph plus the first widget's reading.
+        case single
+
+        var tighter: Density? { Density(rawValue: rawValue + 1) }
+        static func < (a: Density, b: Density) -> Bool { a.rawValue < b.rawValue }
+    }
+
+    /// What macOS actually did with the items, as far as can be seen from here.
+    public enum Placement: Equatable {
+        /// Not looked yet, or nothing to look at (switched off).
+        case unknown
+        case allShown
+        case partlyHidden(shown: Int, total: Int)
+        /// Nothing this app put in the menu bar is on screen.
+        case noneShown
+    }
+
+    /// One screen, reduced to what placement needs: its frame, and the span of
+    /// its camera housing if it has one. Plain values so the rule is testable
+    /// without a display.
+    struct ScreenGeometry: Equatable {
+        var frame: NSRect
+        /// The x-range hidden behind the notch, in the same coordinates as `frame`.
+        var notch: ClosedRange<CGFloat>?
+
+        init(frame: NSRect, notch: ClosedRange<CGFloat>? = nil) {
+            self.frame = frame
+            self.notch = notch
+        }
+
+        /// Built from widths only. The auxiliary areas' origins are documented
+        /// loosely enough that their coordinate space is a guess; their widths
+        /// are not, and the notch is whatever lies between them.
+        init(_ screen: NSScreen) {
+            frame = screen.frame
+            if let l = screen.auxiliaryTopLeftArea, let r = screen.auxiliaryTopRightArea {
+                let lo = frame.minX + l.width, hi = frame.maxX - r.width
+                notch = hi > lo ? lo...hi : nil
+            } else {
+                notch = nil
+            }
+        }
+    }
+
+    /// Is a status item whose window has `frame` actually visible on one of
+    /// `screens`? Zero height is the never-placed case; off every screen is the
+    /// overflow case; across a notch is the hidden-behind-the-camera case.
+    static func isPlaced(_ frame: NSRect?, on screens: [ScreenGeometry]) -> Bool {
+        guard let f = frame, f.width >= 1, f.height >= 1 else { return false }
+        return screens.contains { s in
+            let seen = s.frame.intersection(f)
+            // Wholly on this screen horizontally: an item half off the edge is
+            // an item macOS has pushed out of the bar.
+            guard !seen.isNull, seen.width >= f.width - 1, seen.height >= 1 else { return false }
+            if let n = s.notch, f.maxX > n.lowerBound + 1, f.minX < n.upperBound - 1 {
+                return false
+            }
+            return true
+        }
+    }
+
+    /// Classify a set of per-item verdicts.
+    static func placement(shown: Int, total: Int) -> Placement {
+        guard total > 0 else { return .unknown }
+        if shown >= total { return .allShown }
+        if shown == 0 { return .noneShown }
+        return .partlyHidden(shown: shown, total: total)
+    }
+
+    /// The arrangement actually put in the bar at `density`. Pure, for tests.
+    static func effectiveConfigs(_ stored: [WidgetConfig], density: Density) -> [WidgetConfig] {
+        let enabled = stored.filter(\.enabled)
+        switch density {
+        case .full:
+            return enabled
+        case .compact:
+            return enabled.map { c in
+                var c = c
+                if c.style == .textWithLabel { c.style = .text }
+                return c
+            }
+        case .single:
+            // One item. It carries the first real reading so the bar still says
+            // something at a glance, and opens the panel, which has everything.
+            let headline = enabled.first { $0.style != .group }?.metricID
+            return [WidgetConfig(metricID: headline ?? MetricID.groupPlaceholder.rawValue,
+                                 style: .group)]
+        }
+    }
+
+    /// Posted on the main thread whenever `placement` changes.
+    public static let placementDidChange = Notification.Name("AnodeWidgetPlacementDidChange")
+
+    /// The most recent verdict, for anything that decides whether the menu bar
+    /// can be relied on as the app's only door (the Dock tile, chiefly).
+    public private(set) static var lastPlacement: Placement = .unknown
+
+    /// True unless the widgets are known to be invisible. Unknown counts as
+    /// reachable: it is the state before the first look, and every launch passes
+    /// through it.
+    public static var menuBarIsReachable: Bool { lastPlacement != .noneShown }
+
+    public private(set) var placement: Placement = .unknown {
+        didSet {
+            guard placement != oldValue else { return }
+            Self.lastPlacement = placement
+            onPlacementChange?(placement)
+            NotificationCenter.default.post(name: Self.placementDidChange, object: self)
+        }
+    }
+
+    /// Told when macOS starts or stops showing the widgets.
+    public var onPlacementChange: ((Placement) -> Void)?
+
+    private(set) var density: Density = .full
+    private var placementCheck: DispatchWorkItem?
+    private var observers: [NSObjectProtocol] = []
+
     private let onClick: (MetricID?) -> Void
     private let defaults: UserDefaults
     private var storedConfigs: [WidgetConfig] = []
@@ -151,13 +297,38 @@ public final class MenuBarWidgetController: NSObject, NSMenuDelegate {
         self.isEnabled = enabled
         super.init()
         storedConfigs = Self.load(from: defaults) ?? Self.fallbackConfigs
+        let center = NotificationCenter.default
+        // A different screen is a different bar: start from the full layout and
+        // let the check squeeze again if it has to.
+        observers.append(center.addObserver(
+            forName: NSApplication.didChangeScreenParametersNotification,
+            object: nil, queue: .main) { [weak self] _ in
+                guard let self else { return }
+                self.density = .full
+                self.rebuild()
+            })
+        // While this app is frontmost its own menus hide whatever status items
+        // they reach, which says nothing about the bar. The moment another app
+        // takes over is the first moment a look means something.
+        observers.append(center.addObserver(
+            forName: NSApplication.didResignActiveNotification,
+            object: nil, queue: .main) { [weak self] _ in
+                self?.schedulePlacementCheck(after: 0.5)
+            })
         onMain { self.rebuild() }
+    }
+
+    deinit {
+        placementCheck?.cancel()
+        for token in observers { NotificationCenter.default.removeObserver(token) }
     }
 
     public func setConfigs(_ configs: [WidgetConfig]) {
         storedConfigs = configs
         persist()
         onMain {
+            // A new arrangement gets a fresh chance at full width.
+            self.density = .full
             self.rebuild()
             self.refresh()
         }
@@ -229,15 +400,19 @@ public final class MenuBarWidgetController: NSObject, NSMenuDelegate {
         lastRendered.removeAll()
         for entry in items { NSStatusBar.system.removeStatusItem(entry.item) }
         items.removeAll()
+        placementCheck?.cancel()
         // Master switch off: the teardown above IS the whole job. Everything below
         // creates status items, and `items` staying empty means render() and
         // refresh() have nothing to walk, so no cost is paid anywhere downstream.
-        guard isEnabled else { return }
+        guard isEnabled else {
+            placement = .unknown
+            return
+        }
 
         // New status items are inserted to the LEFT of existing ones, so create in
         // reverse for configs[0] to land leftmost. autosaveName additionally lets
         // macOS remember a position the user cmd-dragged to.
-        for config in storedConfigs.reversed() where config.enabled {
+        for config in Self.effectiveConfigs(storedConfigs, density: density).reversed() {
             let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
             // A dying WindowServer connection (or a headless agent context) hands back
             // an item with no button. Drop that ONE widget and keep going — one bad
@@ -246,7 +421,10 @@ public final class MenuBarWidgetController: NSObject, NSMenuDelegate {
                 NSStatusBar.system.removeStatusItem(item)
                 continue
             }
-            item.autosaveName = Self.autosaveName(for: config.metricID)
+            // The single item gets a name of its own: it is not the widget it
+            // borrows a reading from, and must not inherit that one's position.
+            item.autosaveName = density == .single
+                ? Self.autosaveName(for: "single") : Self.autosaveName(for: config.metricID)
             // EXPLICITLY VISIBLE, every rebuild, and this is not redundant.
             //
             // macOS persists isVisible PER autosaveName, in its own store rather
@@ -270,7 +448,49 @@ public final class MenuBarWidgetController: NSObject, NSMenuDelegate {
         }
         items.reverse()   // back to config order for renders and test seams
         for entry in items { render(entry) }
-        Self.debugDump(items)
+        Self.debugDump(items, density: density)
+        // AppKit lays status items out asynchronously, so a look taken now would
+        // see every one of them unplaced.
+        schedulePlacementCheck(after: 1.5)
+    }
+
+    private func schedulePlacementCheck(after delay: TimeInterval) {
+        placementCheck?.cancel()
+        let work = DispatchWorkItem { [weak self] in self?.checkPlacement() }
+        placementCheck = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
+    }
+
+    /// Look at where macOS put the items, and squeeze if it hid any.
+    private func checkPlacement() {
+        guard isEnabled, !items.isEmpty else { return }
+        // Never rebuild out from under an open panel; look once it has closed.
+        guard !isPanelOpen else {
+            schedulePlacementCheck(after: 2)
+            return
+        }
+        // Frontmost with a menu bar of our own: see the resign-active observer.
+        // An `.accessory` app has no menus to collide with, so it is looked at.
+        if NSApp.isActive && NSApp.activationPolicy() == .regular { return }
+        // An auto-hidden menu bar is off screen by design, items and all.
+        guard NSMenu.menuBarVisible() else {
+            schedulePlacementCheck(after: 5)
+            return
+        }
+        let screens = NSScreen.screens.map { ScreenGeometry($0) }
+        let shown = items.filter { entry in
+            guard let window = entry.item.button?.window, window.isVisible else { return false }
+            return Self.isPlaced(window.frame, on: screens)
+        }.count
+        if shown < items.count, let next = density.tighter {
+            density = next
+            rebuild()     // schedules the next look
+            return
+        }
+        placement = Self.placement(shown: shown, total: items.count)
+        // Space can come back without any notification saying so (another menu
+        // bar app quits). Looking again costs a few frame reads.
+        if placement != .allShown { schedulePlacementCheck(after: 30) }
     }
 
     /// One-shot dump of what the menu bar ACTUALLY holds, gated behind
@@ -288,7 +508,8 @@ public final class MenuBarWidgetController: NSObject, NSMenuDelegate {
     /// `autosaveName`, and this file sets an autosaveName and never sets
     /// isVisible — so an item a user once cmd-dragged off the bar stays off,
     /// permanently, with the config still saying enabled.
-    static func debugDump(_ items: [(config: WidgetConfig, item: NSStatusItem)]) {
+    static func debugDump(_ items: [(config: WidgetConfig, item: NSStatusItem)],
+                          density: Density = .full) {
         guard ProcessInfo.processInfo.environment["ANODE_WIDGET_DEBUG"] == "1" else { return }
         let bar = NSStatusBar.system
         // stderr, not stdout: stdout is block-buffered when redirected to a file,
@@ -305,15 +526,18 @@ public final class MenuBarWidgetController: NSObject, NSMenuDelegate {
             let img = b?.image
             let w = b?.frame.width ?? -1
             total += max(w, 0)
+            // The window frame is the line that matters: zero height means the
+            // item was never placed, whatever every other column says.
             print(String(format: "%2d %-28s style=%-13s visible=%@ len=%6.1f btnW=%6.1f img=%@ win=%@",
                          i, (e.config.metricID as NSString).utf8String!,
                          (e.config.style.rawValue as NSString).utf8String!,
                          e.item.isVisible ? "YES" : "NO ",
                          e.item.length, w,
                          img.map { String(format: "%.0fx%.0f", $0.size.width, $0.size.height) } ?? "NIL",
-                         b?.window == nil ? "NIL" : "ok"))
+                         b?.window.map { NSStringFromRect($0.frame) } ?? "NIL"))
         }
-        print(String(format: "total widget width %.0f pt", total))
+        print(String(format: "total widget width %.0f pt   density %@", total,
+                     String(describing: density)))
         print("──────────────────────────────────────────────────────────────────")
     }
 
@@ -401,7 +625,8 @@ public final class MenuBarWidgetController: NSObject, NSMenuDelegate {
         // sat above that guard and undid it, every eight seconds, for a tooltip
         // nobody was pointing at.
         let tip = WidgetRenderer.toolTip(
-            metricID: entry.config.metricID, descriptor: descriptor, value: value)
+            metricID: entry.config.metricID, descriptor: descriptor, value: value,
+            style: entry.config.style)
         if button.toolTip != tip { button.toolTip = tip }
 
         if entry.config.style == .group {
@@ -418,13 +643,16 @@ public final class MenuBarWidgetController: NSObject, NSMenuDelegate {
                 menu.delegate = self
                 entry.item.menu = menu
             }
-            // The glyph is constant, so it is drawn once. The MENU is rebuilt
-            // every tick because its contents are the live values.
-            if lastRendered[entry.config.metricID] == nil {
-                lastRendered[entry.config.metricID] = "group"
+            // A plain group's glyph is constant, so it is drawn once. A group
+            // bound to a real metric is the single-item fallback, which carries
+            // that metric's reading beside the glyph and redraws when it moves.
+            let headline = id == .groupPlaceholder ? nil : (value?.text ?? "\u{2014}")
+            let key = "group\u{1}\(headline ?? "")"
+            if lastRendered[entry.config.metricID] != key {
+                lastRendered[entry.config.metricID] = key
                 button.attributedTitle = NSAttributedString()
                 button.imagePosition = .imageOnly
-                button.image = WidgetRenderer.groupImage()
+                button.image = WidgetRenderer.groupImage(headline: headline)
             }
             return
         }
@@ -601,11 +829,18 @@ final class MetricRowView: NSView {
 enum WidgetRenderer {
 
     static func toolTip(metricID: String, descriptor: MetricDescriptor?,
-                        value: MetricValue?) -> String {
+                        value: MetricValue?, style: WidgetStyle? = nil) -> String {
         // Before the descriptor check: the group binds to no metric, so it never
         // has one, and "no descriptor" would otherwise call it a stale metric.
         if metricID == MetricID.groupPlaceholder.rawValue {
             return "All readings — click for the list"
+        }
+        // The single-item fallback binds a real metric to the group style.
+        if style == .group {
+            let reading = descriptor.map { d in
+                value.map { "\(d.title): \($0.text)" } ?? "\(d.title): no data"
+            }
+            return [reading, "Click for all readings"].compactMap { $0 }.joined(separator: "\n")
         }
         guard let d = descriptor else {
             return "Unknown metric “\(metricID)” — it may belong to another version of Anode"
@@ -668,10 +903,23 @@ enum WidgetRenderer {
     /// Drawn rather than shipped as an asset: it is nine rectangles, it has to be
     /// a template so macOS can tint it for the wallpaper and the appearance, and
     /// at this size a scaled-down PNG of the real icon is mud.
-    static func groupImage() -> NSImage {
+    static func groupImage(headline: String? = nil) -> NSImage {
         let h = NSStatusBar.system.thickness
-        let w: CGFloat = 18
+        let glyphW: CGFloat = 18
+        // The single-item fallback: the glyph says whose item it is, the reading
+        // says why it is worth the space.
+        let text = headline.map {
+            NSAttributedString(string: $0, attributes: [
+                .font: NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .semibold),
+                .foregroundColor: NSColor.black,
+            ])
+        }
+        let textW = text.map { ceil($0.size().width) + 3 } ?? 0
+        let w = glyphW + textW
         let img = NSImage(size: NSSize(width: w, height: h), flipped: false) { _ in
+            if let text {
+                text.draw(at: NSPoint(x: glyphW, y: (h - text.size().height) / 2))
+            }
             NSColor.black.setFill()
 
             // Proportions taken from the app icon: bars a third of their own
@@ -682,7 +930,7 @@ enum WidgetRenderer {
             let heights: [CGFloat] = [5, 8, 11]
             let baseH: CGFloat = 1.5
             let totalW = barW * 3 + gap * 2
-            let x0 = (w - totalW) / 2
+            let x0 = (glyphW - totalW) / 2
             // Centred on the bar group INCLUDING its base, so the glyph sits on
             // the same optical line as the text widgets beside it.
             let y0 = (h - (heights.max()! + baseH)) / 2
@@ -851,5 +1099,15 @@ extension MenuBarWidgetController {
             fresh.removeItem(item)
             menu.addItem(item)
         }
+        // The group item's click belongs to its menu, so without these a menu bar
+        // holding only the group — which is what the single-item fallback is —
+        // could neither open the window nor quit. Added here rather than in
+        // `buildGroupMenu`, which is the readings and nothing else.
+        menu.addItem(.separator())
+        let open = menu.addItem(withTitle: "Open Anode",
+                                action: #selector(openFromMenu), keyEquivalent: "")
+        open.target = self
+        menu.addItem(withTitle: "Quit Anode",
+                     action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
     }
 }

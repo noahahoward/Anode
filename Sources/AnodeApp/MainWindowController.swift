@@ -390,9 +390,12 @@ final class MainWindowController: NSObject {
     /// the window that still exists.
     func hide() {
         window.orderOut(nil)
+        // Widgets that macOS is not showing are no door at all, so they count
+        // as off here: dropping the Dock tile then would leave nothing to click.
         NSApp.setActivationPolicy(
             AppPresence.policyWithWindowHidden(
-                widgetsEnabled: Settings.shared.menuBarWidgetsEnabled))
+                widgetsEnabled: Settings.shared.menuBarWidgetsEnabled
+                    && MenuBarWidgetController.menuBarIsReachable))
     }
 }
 
