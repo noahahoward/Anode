@@ -356,6 +356,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         // eight seconds later. `refresh` re-reads the needs and re-paces the timer,
         // so both halves follow from this one call.
         widgets.onPanelVisibilityChange = { [weak self] _ in self?.refresh() }
+        widgets.onPlacementChange = { [weak self] placement in
+            self?.menuBarPlacementChanged(placement)
+        }
         PreferencesWindowController.metricProvider = {
             var choices = MetricRegistry.shared.descriptors()
                 .map { MetricChoice(id: $0.id.rawValue, label: $0.title) }
@@ -462,7 +465,52 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         let on = Settings.shared.menuBarWidgetsEnabled
         widgets.setEnabled(on)
         guard !main.window.isVisible else { return }
-        NSApp.setActivationPolicy(AppPresence.policyWithWindowHidden(widgetsEnabled: on))
+        NSApp.setActivationPolicy(AppPresence.policyWithWindowHidden(
+            widgetsEnabled: on && MenuBarWidgetController.menuBarIsReachable))
+    }
+
+    /// Whether the user has already been told, this session, that macOS is not
+    /// showing the widgets. Once is information; every screen change is nagging.
+    private var toldAboutHiddenMenuBar = false
+
+    /// macOS started or stopped showing the widgets.
+    ///
+    /// The invariant in `AppPresence` — always something to click — was kept by
+    /// assuming a created status item is a visible one. On a full menu bar it is
+    /// not, and an `.accessory` app whose widgets macOS dropped is an app with no
+    /// window, no Dock tile and no menu: running, and unreachable. So the moment
+    /// the controller reports that nothing is on screen, the Dock tile comes back
+    /// and the user is told why, once.
+    private func menuBarPlacementChanged(_ placement: MenuBarWidgetController.Placement) {
+        guard placement == .noneShown else { return }
+        if NSApp.activationPolicy() != .regular { NSApp.setActivationPolicy(.regular) }
+        guard !toldAboutHiddenMenuBar else { return }
+        toldAboutHiddenMenuBar = true
+        main.show()
+        let alert = NSAlert()
+        alert.messageText = "macOS isn\u{2019}t showing Anode in the menu bar"
+        alert.informativeText =
+            "Either the menu bar is full \u{2014} macOS drops the items that don\u{2019}t fit, "
+            + "without an overflow menu \u{2014} or Anode is switched off under System Settings "
+            + "\u{203A} Menu Bar \u{203A} Allow in the Menu Bar.\n\n"
+            + "Anode already shrank its widgets to a single item and that did not fit either. "
+            + "Quit a menu bar app you don\u{2019}t need, or choose \u{201C}More Space\u{201D} in "
+            + "System Settings \u{203A} Displays. Until then Anode keeps its Dock icon."
+        alert.addButton(withTitle: "Open Menu Bar Settings")
+        alert.addButton(withTitle: "OK")
+        if alert.runModal() == .alertFirstButtonReturn {
+            Self.openMenuBarSettings()
+        }
+    }
+
+    /// System Settings' menu bar pane. It has moved between releases (Control
+    /// Center until macOS 15, Menu Bar from 26); the extension ID has not, and if
+    /// it ever does, System Settings itself is the next best place to land.
+    static func openMenuBarSettings() {
+        let ws = NSWorkspace.shared
+        if let url = URL(string: "x-apple.systempreferences:com.apple.ControlCenter-Settings.extension"),
+           ws.open(url) { return }
+        ws.open(URL(fileURLWithPath: "/System/Applications/System Settings.app"))
     }
 
     /// Whether the window is open AND actually on screen — see `AppPresence`.

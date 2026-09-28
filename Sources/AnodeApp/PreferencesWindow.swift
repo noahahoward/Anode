@@ -675,6 +675,31 @@ private final class MenuBarPane: Pane {
     /// being ignored, and like unchecking one box re-checked others.
     private var isApplying = false
     private var masterCheckbox: NSButton!
+    /// What macOS actually did with the widgets. A checked box is a request; this
+    /// line is the answer, which on a full menu bar is not the same thing.
+    private var placementNote: NSTextField!
+    private var placementButton: NSButton!
+    private var placementToken: NSObjectProtocol?
+
+    deinit {
+        if let token = placementToken { NotificationCenter.default.removeObserver(token) }
+    }
+
+    /// The sentence for a placement, or nil when there is nothing worth saying.
+    static func placementText(_ p: MenuBarWidgetController.Placement) -> String? {
+        switch p {
+        case .unknown, .allShown:
+            return nil
+        case let .partlyHidden(shown, total):
+            return "\u{26A0}\u{FE0E} macOS is showing \(shown) of \(total) widgets \u{2014} the menu bar "
+                + "is full, so the rest were dropped. Anode has already shortened them; uncheck a "
+                + "few, or quit another menu bar app, to see them all."
+        case .noneShown:
+            return "\u{26A0}\u{FE0E} macOS is not showing any Anode widget. The menu bar is full, or "
+                + "Anode is off under System Settings \u{203A} Menu Bar \u{203A} Allow in the Menu Bar. "
+                + "Anode keeps its Dock icon until one is visible."
+        }
+    }
 
     override func loadView() {
         choices = PreferencesWindowController.metricProvider?()
@@ -706,8 +731,20 @@ private final class MenuBarPane: Pane {
         masterCheckbox = NSButton(checkboxWithTitle: "Show widgets in the menu bar",
                                   target: self, action: #selector(masterToggled))
 
+        placementNote = caption("")
+        placementNote.textColor = .systemOrange
+        placementButton = NSButton(title: "Open Menu Bar Settings\u{2026}", target: self,
+                                   action: #selector(openMenuBarSettings))
+        placementButton.bezelStyle = .rounded
+        placementButton.controlSize = .small
+        placementToken = NotificationCenter.default.addObserver(
+            forName: MenuBarWidgetController.placementDidChange, object: nil,
+            queue: .main) { [weak self] _ in self?.refreshPlacement() }
+
         install(rows: [
             [rowLabel("Menu bar:"), masterCheckbox],
+            [spacer, placementNote],
+            [spacer, placementButton],
             [spacer, caption("When off, Anode keeps its Dock icon so the window is still one "
                              + "click away, and the sampler stops reading anything only a widget "
                              + "was showing. Which widgets are checked below is remembered.")],
@@ -728,6 +765,7 @@ private final class MenuBarPane: Pane {
         let on = settings.menuBarWidgetsEnabled
         masterCheckbox.state = on ? .on : .off
         for box in boxes { box.isEnabled = on }
+        refreshPlacement()
 
         // Never fight the user mid-click: while applying, the boxes already show
         // the intended state and the controller is only just catching up.
@@ -750,6 +788,18 @@ private final class MenuBarPane: Pane {
         panelEditor = editor
         guard let sheet = editor.window else { return }
         host.beginSheet(sheet) { [weak self] _ in self?.panelEditor = nil }
+    }
+
+    private func refreshPlacement() {
+        let text = settings.menuBarWidgetsEnabled
+            ? Self.placementText(MenuBarWidgetController.lastPlacement) : nil
+        placementNote.stringValue = text ?? ""
+        placementNote.isHidden = text == nil
+        placementButton.isHidden = text == nil
+    }
+
+    @objc private func openMenuBarSettings() {
+        AppDelegate.openMenuBarSettings()
     }
 
     @objc private func masterToggled() {
