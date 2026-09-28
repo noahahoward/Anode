@@ -503,9 +503,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         }
     }
 
-    /// System Settings' menu bar pane. It has moved between releases (Control
-    /// Center until macOS 15, Menu Bar from 26); the extension ID has not, and if
-    /// it ever does, System Settings itself is the next best place to land.
+    /// System Settings' menu bar pane. Addressed by the Control Center extension
+    /// ID, which is where the menu bar settings lived through macOS 15 and is not
+    /// verified against the Menu Bar pane of 26 and later. If it does not resolve,
+    /// System Settings itself is the next best place to land.
     static func openMenuBarSettings() {
         let ws = NSWorkspace.shared
         if let url = URL(string: "x-apple.systempreferences:com.apple.ControlCenter-Settings.extension"),
