@@ -19,11 +19,26 @@ while true; do
     wid="$wid | ${help:0:28}@$x:$hs"
   done <<<"$(./probe items "$P")"
   win=$(./probe windows "$P" | awk -F'\t' '$9=="Anode"{print "win_on="$2" x="$5" y="$6}')
+  # Anode's WindowServer windows. Healthy: one menu-bar-height host window per
+  # widget, plus the main window. On Sep 26 a frozen instance was found owning
+  # only 2 at quit (every other quit: 5-7). Count them every line, and capture
+  # the moment the hosts fall short of the widgets.
+  allwin=$(./probe windows "$P" | wc -l | tr -d ' ')
+  hosts=$(./probe windows "$P" | awk -F'\t' '$9!="Anode" && $8<=60 && $7>=600' | wc -l | tr -d ' ')
+  items=$(./probe items "$P" | grep -c .)
+  win="$win windows=$allwin hosts=$hosts items=$items"
   locked=$(ioreg -n Root -d1 -a 2>/dev/null | grep -c CGSSessionScreenIsLocked)
   lastpm=$(pmset -g log | grep -E " (Sleep|Wake|DarkWake) " | tail -1 | cut -c12-19,27-40)
   echo "$(date +%T) $st $win lockkey=$locked last=[$lastpm]$wid" >> "$OUT"
   # The frozen signature (Sep 8: ~80 datagram samples / 10 s; healthy: 0). On the
   # first sighting per process, capture everything while it is still happening.
+  if [ "$items" -gt 0 ] && [ "$hosts" -lt "$items" ] && [ "$(cat runs/.captured-hosts 2>/dev/null)" != "$P" ]; then
+    echo "$P" > runs/.captured-hosts
+    echo "$(date +%T) WIDGET HOSTS LOST ($hosts of $items) - capturing" >> "$OUT"
+    ./probe windows "$P" >> "$OUT" 2>&1
+    ~/Library/Logs/AnodeWatchdog/capture-now.sh >> "$OUT" 2>&1
+    osascript -e 'display notification "Anode lost its widget windows. Captured. Tell Claude." with title "Anode monitor"' 2>/dev/null
+  fi
   dg=$(sed -E 's/.*datagrams=([0-9]+).*/\1/' <<<"$st")
   if [ "${dg:-0}" -ge 10 ] && [ "$(cat runs/.captured 2>/dev/null)" != "$P" ]; then
     echo "$P" > runs/.captured
