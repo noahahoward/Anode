@@ -224,6 +224,11 @@ public struct MetricValue {
     /// wrong while the pack is charging or sitting on AC, and a stale label beside a
     /// correct number is worse than no label.
     public let label: String?
+    /// How bad the reading is, 0 (fine) … 1 (bad), when the metric knows better
+    /// than a scale applied to `value` — memory PRESSURE behind a used-percent,
+    /// a fan against its own maximum rather than a guessed one. Renderers use it
+    /// in place of `WidgetRenderer.normalizedFraction` for colour.
+    public var severity: Double? = nil
 
     public init(value: Double, text: String, isEstimate: Bool, label: String? = nil) {
         self.label = label
@@ -426,7 +431,16 @@ public final class MetricRegistry {
             }
         }
         pct(.cpuUsage, "CPU usage", "CPU", "CPU") { $0.cpu?.total }
-        pct(.memoryUsage, "Memory used", "RAM", "Memory") { $0.memory?.usedPercent }
+        // The figure is occupancy; the COLOUR is the kernel's pressure verdict —
+        // see `MemoryUsage.Sample.pressureSeverity`.
+        register(MetricDescriptor(id: .memoryUsage, title: "Memory used", shortTitle: "RAM",
+                                  unit: .percent, category: "Memory",
+                                  higherIsWorse: true)) { [weak self] in
+            guard let m = self?.latestSystem()?.memory else { return nil }
+            var v = MetricValue(m.usedPercent, unit: .percent, isEstimate: false)
+            v.severity = m.pressureSeverity
+            return v
+        }
         pct(.gpuUsage, "GPU usage", "GPU", "GPU") { $0.gpu?.utilization }
 
         func net(_ id: MetricID, _ title: String, _ short: String,
@@ -525,7 +539,12 @@ public final class MetricRegistry {
             // different claims.
             guard let fans = self?.latestSystem()?.fans, !fans.isEmpty else { return nil }
             let mean = fans.averageRPM
-            return MetricValue(mean, unit: .rpm, isEstimate: false)
+            var v = MetricValue(mean, unit: .rpm, isEstimate: false)
+            // Coloured against the fans' OWN top speed, not a guessed 6000 rpm
+            // that is 7826 on one model and something else on the next.
+            let load = fans.averageLoad
+            if load.isFinite, load > 0 { v.severity = min(1, load) }
+            return v
         }
     }
 
@@ -828,7 +847,18 @@ public final class MetricRegistry {
             // of the value, because the dot has to say WHICH alarm. "40%" beside
             // a yellow dot says nothing anyone can act on.
             guard let s = readHealth() else { return nil }
-            guard let worst = NVMeHealth.alarms(for: s).first else {
+            // Wear is only an alarm once it is late in the drive's own rating.
+            // It used to go yellow at 1 % and, since the counter only climbs,
+            // stay yellow for the rest of the machine's life — on every M1/M2
+            // past its first year, and soon on a 256 GB Mac that swaps — while
+            // the Resources pane called the same drive "Healthy". The percentage
+            // is the DRIVE's statement of its rated life used, not this app's
+            // model; a drive at 5 % is working exactly as designed.
+            let alarms = NVMeHealth.alarms(for: s).filter {
+                if case .wearStarted(let used) = $0 { return used >= Self.wearWarnPercent }
+                return true
+            }
+            guard let worst = alarms.first else {
                 return MetricValue(value: 1, text: "OK", isEstimate: false)
             }
             return MetricValue(value: Self.alarmHealth(worst),
@@ -927,9 +957,13 @@ public final class MetricRegistry {
     /// fault — a drive at 1 % used is working exactly as designed — so it sits at
     /// 0.4, which is badness 0.6. The other three are states the drive itself
     /// calls wrong, and they go to 0.0.
+    /// Rated life used at which wear becomes worth a coloured dot. At 100 the
+    /// drive says its rated endurance is spent, which is a fault-level fact.
+    static let wearWarnPercent: UInt8 = 80
+
     static func alarmHealth(_ alarm: NVMeHealth.Alarm) -> Double {
         switch alarm {
-        case .wearStarted:          return 0.4
+        case .wearStarted(let used): return used >= 100 ? 0 : 0.4
         case .criticalWarning,
              .spareBelowThreshold,
              .mediaErrors:          return 0
@@ -942,7 +976,8 @@ public final class MetricRegistry {
         case .criticalWarning(let bits):         return String(format: "WARN 0x%02X", bits)
         case .spareBelowThreshold(let spare, _): return "SPARE \(spare)%"
         case .mediaErrors(let count):            return "\(count) ERRORS"
-        case .wearStarted(let used):             return "WEAR \(used)%"
+        case .wearStarted(let used):             return used >= 100 ? "WORN \(used)%"
+                                                                    : "WEAR \(used)%"
         }
     }
 }

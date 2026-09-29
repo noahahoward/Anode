@@ -310,13 +310,19 @@ if args.contains("--ssd") {
     print("")
     if s.percentageUsed == 0 {
         print("  percentage used reads 0, and 0 is also what an UNIMPLEMENTED field")
-        print("  reads. CONTROLLER_BUSY_TIME on this same page reads \(s.controllerBusyTimeMinutes) too, on a")
-        print("  drive that has written \(dec(s.bytesWritten)), so at least one field here is a stub.")
+        // Only claimed when it is true on THIS drive: a busy-time counter that
+        // moves is not a stub, and the sentence was printed regardless.
+        if s.controllerBusyTimeMinutes == 0 {
+            print("  reads. CONTROLLER_BUSY_TIME on this same page reads 0 too, on a")
+            print("  drive that has written \(dec(s.bytesWritten)), so at least one field here is a stub.")
+        } else {
+            print("  reads, so it cannot tell unmeasured wear from none.")
+        }
         print("  Read the 0 as \"no wear reported\", never as \"wear measured at zero\".")
         print("")
     }
     print("  Controller awake time is NOT machine uptime and NOT calendar time.")
-    print("  Measured on this machine it advanced 203 -> 204 h across 21.9 h of wall")
+    print("  Measured on one reference Mac it advanced 203 -> 204 h across 21.9 h of wall")
     print("  clock while the machine was awake for 99.5 % of that, i.e. 4.6 % of")
     print("  calendar. Taken as uptime it reads about 22x low. Nothing in this")
     print("  output divides by it.")

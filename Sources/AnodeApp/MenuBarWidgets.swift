@@ -1025,6 +1025,14 @@ enum WidgetRenderer {
     /// full battery and a low drain are both green. Neutral (secondaryLabel) when
     /// there is no value or no meaningful scale.
     static func severityColor(_ descriptor: MetricDescriptor?, _ value: MetricValue?) -> NSColor {
+        // The metric's own verdict first: it knows what "bad" is where a scale
+        // on the value cannot (memory pressure, a fan's own maximum).
+        if let sev = value?.severity, sev.isFinite {
+            let badness = min(max(sev, 0), 1)
+            if badness < 0.5 { return .systemGreen }
+            if badness < 0.8 { return .systemYellow }
+            return .systemRed
+        }
         guard let d = descriptor, let v = value,
               let f = normalizedFraction(d.unit, v.value) else {
             return .secondaryLabelColor

@@ -53,6 +53,18 @@ final class SensorNamingTests: XCTestCase {
         }
     }
 
+    /// The palm-rest names rest on one machine; other generations' dumps call
+    /// the same keys "SSD Controller". Off that machine they are not vouched for.
+    func testPalmRestIsOnlyClaimedOnTheMachineThatShowedIt() {
+        XCTAssertEqual(label("Ts0P", rails: true).text, "Palm rest 1")
+        let elsewhere = label("Ts0P", rails: false)
+        XCTAssertEqual(elsewhere.confidence, .unidentified)
+        XCTAssertFalse(elsewhere.text.contains("Palm"))
+        // Consensus names are unaffected.
+        XCTAssertEqual(label("TB0T", rails: false).text, "Battery sensor 1")
+        XCTAssertEqual(label("TH0x", rails: false).text, "NAND flash")
+    }
+
     func testFamiliesAreNumberedInTheOrderTheyAreDiscovered() {
         XCTAssertEqual(labels(["Tp00", "Tp04", "Tp08"]),
                        ["CPU core sensor 1", "CPU core sensor 2", "CPU core sensor 3"])
