@@ -1,0 +1,30 @@
+name: CI
+
+# Builds every product and runs the whole test suite on a real Mac, on every
+# push and pull request. The app cannot be built anywhere else — it is AppKit,
+# IOKit and private frameworks throughout — so this is the only check that a
+# change compiles and passes before someone installs it.
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build-and-test:
+    runs-on: macos-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - name: Toolchain
+        run: |
+          sw_vers
+          xcrun swift --version
+      - name: Build (release, every product)
+        run: |
+          swift build -c release --product AnodeApp
+          swift build -c release --product AnodeHelper
+          swift build -c release --product anode
+      - name: Test
+        # A runner has a window server but no user at it: tests that need a real
+        # menu bar skip themselves (XCTSkipIf) rather than fail.
+        run: swift test --parallel
