@@ -264,6 +264,7 @@ public final class MenuBarWidgetController: NSObject, NSMenuDelegate {
 
     private(set) var density: Density = .full
     private var placementCheck: DispatchWorkItem?
+    private var lastScreens = NSScreen.screens.map { ScreenGeometry($0) }
     private var observers: [NSObjectProtocol] = []
 
     private let onClick: (MetricID?) -> Void
@@ -304,6 +305,11 @@ public final class MenuBarWidgetController: NSObject, NSMenuDelegate {
             forName: NSApplication.didChangeScreenParametersNotification,
             object: nil, queue: .main) { [weak self] _ in
                 guard let self else { return }
+                // Posted on every wake and on changes that move no screen at all;
+                // only a real change is worth tearing the widgets down for.
+                let now = NSScreen.screens.map { ScreenGeometry($0) }
+                guard now != self.lastScreens else { return }
+                self.lastScreens = now
                 self.density = .full
                 self.rebuild()
             })
@@ -479,8 +485,11 @@ public final class MenuBarWidgetController: NSObject, NSMenuDelegate {
         }
         let screens = NSScreen.screens.map { ScreenGeometry($0) }
         let shown = items.filter { entry in
-            guard let window = entry.item.button?.window, window.isVisible else { return false }
-            return Self.isPlaced(window.frame, on: screens)
+            // Geometry only. The frame is the witness WIDGET-BUG.md measured;
+            // `NSWindow.isVisible` on a status bar window is not something this
+            // project has ever measured, and a wrong guess there would shrink
+            // healthy widgets and raise the alert on every machine.
+            Self.isPlaced(entry.item.button?.window?.frame, on: screens)
         }.count
         if shown < items.count, let next = density.tighter {
             density = next
