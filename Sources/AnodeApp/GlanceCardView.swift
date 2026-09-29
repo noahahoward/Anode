@@ -469,13 +469,20 @@ final class GlanceCardView: NSView {
             // the machine has stopped AT the limit, so the level being shown right
             // now IS the limit, in whatever basis it is being shown in.
             let held = s.isHeldAtChargeLimit ? Double(st.percent) : nil
+            // Plugged in and STILL losing charge: the adapter cannot keep up.
+            // "Not charging" there is true and badly incomplete.
+            let drain = s.isDischargingOnAC ? s.batteryRate_pctHr.map { -$0 } : nil
+            let drainRow: [(label: String, value: String, trailing: String?)] = drain.map {
+                [(label: "Drain", value: String(format: "%.1f %%/hr", $0), trailing: nil)]
+            } ?? []
             return Model(
                 source: .ac,
                 headline: "On AC",
                 pill: "\(st.percent)%",
-                sourceLabel: held.map { String(format: "held at %.0f%% limit", $0) }
+                sourceLabel: drain != nil ? "draining \u{2014} adapter can\u{2019}t keep up"
+                    : held.map { String(format: "held at %.0f%% limit", $0) }
                     ?? (st.percent >= 99 ? "fully charged" : "not charging"),
-                rows: [
+                rows: drainRow + [
                     ("Draw", String(format: "%.1f W", s.smoothed_W), nil),
                     ("Capacity", String(format: "%.1f Wh", full_Wh), nil),
                     ("Health", health(s), nil),
