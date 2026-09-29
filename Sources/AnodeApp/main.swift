@@ -484,7 +484,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
     private func menuBarPlacementChanged(_ placement: MenuBarWidgetController.Placement) {
         guard placement == .noneShown else { return }
         if NSApp.activationPolicy() != .regular { NSApp.setActivationPolicy(.regular) }
-        guard !toldAboutHiddenMenuBar else { return }
+        guard !toldAboutHiddenMenuBar,
+              !UserDefaults.standard.bool(forKey: Self.hiddenMenuBarAlertSuppressedKey)
+        else { return }
         toldAboutHiddenMenuBar = true
         main.show()
         let alert = NSAlert()
@@ -498,10 +500,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
             + "System Settings \u{203A} Displays. Until then Anode keeps its Dock icon."
         alert.addButton(withTitle: "Open Menu Bar Settings")
         alert.addButton(withTitle: "OK")
-        if alert.runModal() == .alertFirstButtonReturn {
+        // Settings › Menu Bar carries the same verdict permanently, so the
+        // alert can be declined for good without losing the information.
+        alert.showsSuppressionButton = true
+        let answer = alert.runModal()
+        if alert.suppressionButton?.state == .on {
+            UserDefaults.standard.set(true, forKey: Self.hiddenMenuBarAlertSuppressedKey)
+        }
+        if answer == .alertFirstButtonReturn {
             Self.openMenuBarSettings()
         }
     }
+
+    static let hiddenMenuBarAlertSuppressedKey = "com.anode.menubar.hiddenAlertSuppressed"
+
 
     /// System Settings' menu bar pane. Addressed by the Control Center extension
     /// ID, which is where the menu bar settings lived through macOS 15 and is not

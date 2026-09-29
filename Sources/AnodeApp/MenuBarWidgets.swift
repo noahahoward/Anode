@@ -209,6 +209,17 @@ public final class MenuBarWidgetController: NSObject, NSMenuDelegate {
         }
     }
 
+    /// Both witnesses. The frame catches an item never laid out, parked off
+    /// screen or behind a notch. `isVisible` catches the case a MacBook Neo
+    /// actually lives in: on a short bar the frontmost app's own menus (Finder's
+    /// included) run into the status items, and macOS takes the ones they reach
+    /// off screen without necessarily moving them. An item on screen is a window
+    /// ordered in, so this cannot fail for a widget that is showing.
+    static func isShown(window: NSWindow?, on screens: [ScreenGeometry]) -> Bool {
+        guard let window, window.isVisible else { return false }
+        return isPlaced(window.frame, on: screens)
+    }
+
     /// Classify a set of per-item verdicts.
     static func placement(shown: Int, total: Int) -> Placement {
         guard total > 0 else { return .unknown }
@@ -266,6 +277,7 @@ public final class MenuBarWidgetController: NSObject, NSMenuDelegate {
     private var placementCheck: DispatchWorkItem?
     private var lastScreens = NSScreen.screens.map { ScreenGeometry($0) }
     private var observers: [NSObjectProtocol] = []
+    private var workspaceObservers: [NSObjectProtocol] = []
 
     private let onClick: (MetricID?) -> Void
     private let defaults: UserDefaults
@@ -321,12 +333,23 @@ public final class MenuBarWidgetController: NSObject, NSMenuDelegate {
             object: nil, queue: .main) { [weak self] _ in
                 self?.schedulePlacementCheck(after: 0.5)
             })
+        // Whichever app is frontmost decides how much bar its menus leave, so a
+        // switch between two OTHER apps can hide or reveal widgets too.
+        let workspace = NSWorkspace.shared.notificationCenter
+        workspaceObservers.append(workspace.addObserver(
+            forName: NSWorkspace.didActivateApplicationNotification,
+            object: nil, queue: .main) { [weak self] _ in
+                self?.schedulePlacementCheck(after: 1)
+            })
         onMain { self.rebuild() }
     }
 
     deinit {
         placementCheck?.cancel()
         for token in observers { NotificationCenter.default.removeObserver(token) }
+        for token in workspaceObservers {
+            NSWorkspace.shared.notificationCenter.removeObserver(token)
+        }
     }
 
     public func setConfigs(_ configs: [WidgetConfig]) {
@@ -485,11 +508,7 @@ public final class MenuBarWidgetController: NSObject, NSMenuDelegate {
         }
         let screens = NSScreen.screens.map { ScreenGeometry($0) }
         let shown = items.filter { entry in
-            // Geometry only. The frame is the witness WIDGET-BUG.md measured;
-            // `NSWindow.isVisible` on a status bar window is not something this
-            // project has ever measured, and a wrong guess there would shrink
-            // healthy widgets and raise the alert on every machine.
-            Self.isPlaced(entry.item.button?.window?.frame, on: screens)
+            Self.isShown(window: entry.item.button?.window, on: screens)
         }.count
         if shown < items.count, let next = density.tighter {
             density = next
