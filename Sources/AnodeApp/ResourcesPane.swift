@@ -1414,6 +1414,15 @@ final class ResourceCard: NSView {
     private var isHovered = false { didSet { needsDisplay = true } }
     private var trackingAreaRef: NSTrackingArea?
 
+    /// Card and sparkline heights. Shorter on a short screen: six 58 pt cards
+    /// are 348 pt, which is the whole column a 13" MacBook Neo's window can give
+    /// the rail, so the live figures under the cards started below the fold.
+    /// Ten points a card gives a heading and the first figures back. Decided
+    /// once, from the screen the app starts on — a card that changed height
+    /// under the pointer would be worse than one that is merely roomy.
+    static let metrics: (card: CGFloat, spark: CGFloat) =
+        (NSScreen.main?.visibleFrame.height ?? 900) < 800 ? (48, 30) : (58, 36)
+
     init(resource: Resource, onClick: @escaping (Resource) -> Void) {
         self.resource = resource
         self.onClick = onClick
@@ -1439,11 +1448,11 @@ final class ResourceCard: NSView {
         addSubview(spark)
         addSubview(text)
         NSLayoutConstraint.activate([
-            heightAnchor.constraint(equalToConstant: 58),
+            heightAnchor.constraint(equalToConstant: Self.metrics.card),
             spark.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 10),
             spark.centerYAnchor.constraint(equalTo: centerYAnchor),
             spark.widthAnchor.constraint(equalToConstant: 74),
-            spark.heightAnchor.constraint(equalToConstant: 36),
+            spark.heightAnchor.constraint(equalToConstant: Self.metrics.spark),
             text.leadingAnchor.constraint(equalTo: spark.trailingAnchor, constant: 10),
             text.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
             text.centerYAnchor.constraint(equalTo: centerYAnchor),

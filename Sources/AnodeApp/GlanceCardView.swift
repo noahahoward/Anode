@@ -272,6 +272,11 @@ final class GlanceCardView: NSView {
 
         sub.font = Palette.Font.mono(11)
         sub.textColor = Palette.dim
+        // A label CLIPS by default. Under load the line grows ("64% · on battery
+        // · heavy load, ~25 min (Google Chrome)", ~300 pt) past the card's 236,
+        // and was cut mid-word with nothing to say more existed.
+        sub.lineBreakMode = .byTruncatingTail
+        sub.cell?.truncatesLastVisibleLine = true
 
         rowStack.orientation = .vertical
         rowStack.alignment = .leading
@@ -333,7 +338,15 @@ final class GlanceCardView: NSView {
         line.append(NSAttributedString(
             string: m.sourceLabel,
             attributes: [.font: Palette.Font.mono(11), .foregroundColor: Palette.dim]))
+        // An attributed value carries its own paragraph style, which overrides
+        // the field's line break mode — so the truncation has to ride in it.
+        let truncating = NSMutableParagraphStyle()
+        truncating.lineBreakMode = .byTruncatingTail
+        line.addAttribute(.paragraphStyle, value: truncating,
+                          range: NSRange(location: 0, length: line.length))
         sub.attributedStringValue = line
+        // The whole line stays reachable when it does not fit.
+        if sub.toolTip != line.string { sub.toolTip = line.string }
 
         rowStack.arrangedSubviews.forEach {
             rowStack.removeArrangedSubview($0); $0.removeFromSuperview()
