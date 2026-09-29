@@ -124,13 +124,44 @@ private class Pane: NSViewController {
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        tokens.append(settings.observe(Settings.Key.any) { [weak self] in self?.refresh() })
-        refresh()
+        tokens.append(settings.observe(Settings.Key.any) { [weak self] in self?.refreshLayout() })
+        refreshLayout()
     }
 
     override func viewWillAppear() {
         super.viewWillAppear()
+        refreshLayout()
+    }
+
+    /// `refresh()`, then collapse whatever it hid.
+    func refreshLayout() {
         refresh()
+        syncGridRows()
+    }
+
+    /// The pane's grid, kept so rows can collapse.
+    private var grid: NSGridView?
+
+    /// Hiding a VIEW inside an NSGridView does not hide its ROW: the row keeps
+    /// its height and spacing, so every note that is usually empty left a
+    /// blank band — under "Launch Anode at login" in the ordinary unregistered
+    /// state, and under the menu bar switch whenever every widget was showing.
+    /// A row whose every real view is hidden is collapsed here instead, which
+    /// keeps the panes' own code free to go on toggling `isHidden` as it did.
+    func syncGridRows() {
+        guard let grid else { return }
+        var changed = false
+        for r in 0..<grid.numberOfRows {
+            let row = grid.row(at: r)
+            let views = (0..<row.numberOfCells).compactMap { row.cell(at: $0).contentView }
+                .filter { $0 !== NSGridCell.emptyContentView }
+            let hide = !views.isEmpty && views.allSatisfy(\.isHidden)
+            if row.isHidden != hide { row.isHidden = hide; changed = true }
+        }
+        guard changed else { return }
+        view.layoutSubtreeIfNeeded()
+        preferredContentSize = NSSize(width: max(view.fittingSize.width, 560),
+                                      height: max(view.fittingSize.height, 120))
     }
 
     // Layout helpers -------------------------------------------------------
@@ -150,6 +181,7 @@ private class Pane: NSViewController {
 
     func install(rows: [[NSView]]) {
         let grid = NSGridView(views: rows)
+        self.grid = grid
         grid.rowSpacing = 8
         grid.columnSpacing = 12
         grid.rowAlignment = .firstBaseline
@@ -167,7 +199,8 @@ private class Pane: NSViewController {
         ])
         view = root
         root.layoutSubtreeIfNeeded()
-        preferredContentSize = NSSize(width: 560, height: max(root.fittingSize.height, 120))
+        preferredContentSize = NSSize(width: max(root.fittingSize.width, 560),
+                                      height: max(root.fittingSize.height, 120))
     }
 
     var spacer: NSView { NSGridCell.emptyContentView }
@@ -330,10 +363,10 @@ private final class GeneralPane: Pane {
     @objc private func checkForUpdates() {
         guard !checking, let c = checkout() else {
             checkoutState = .missing
-            return refresh()
+            return refreshLayout()
         }
         checking = true
-        refresh()
+        refreshLayout()
         // Off the main thread: a fetch talks to a server, and a settings window
         // that freezes while someone's Wi-Fi times out is a worse bug than a
         // stale count.
@@ -344,7 +377,7 @@ private final class GeneralPane: Pane {
                 guard let self else { return }
                 self.checking = false
                 self.checkoutState = state
-                self.refresh()
+                self.refreshLayout()
             }
         }
     }
@@ -494,7 +527,7 @@ private final class GeneralPane: Pane {
     @objc private func loginToggled() {
         let wanted = loginCheckbox.state == .on
         settings.launchAtLogin = wanted
-        refresh()  // register may fail or land in requiresApproval — show truth now
+        refreshLayout()  // register may fail or land in requiresApproval — show truth now
         guard wanted else { return }   // turning it OFF needs no explanation
         explainLoginResult(settings.launchAtLoginStatus)
     }
@@ -723,10 +756,24 @@ private final class MenuBarPane: Pane {
             return row
         }
 
-        let list = NSStackView(views: rowsForList)
-        list.orientation = .vertical
-        list.alignment = .leading
-        list.spacing = 6
+        // TWO columns. One checkbox per metric in a single column made this pane
+        // ~740 pt tall with its toolbar — taller than a 13" screen's visible
+        // height (a MacBook Neo has ~660 pt below the menu bar and above the
+        // Dock), so the last boxes and the captions under them sat off screen
+        // with nothing to scroll.
+        func column(_ views: [NSView]) -> NSStackView {
+            let c = NSStackView(views: views)
+            c.orientation = .vertical
+            c.alignment = .leading
+            c.spacing = 6
+            return c
+        }
+        let half = (rowsForList.count + 1) / 2
+        let list = NSStackView(views: [column(Array(rowsForList[..<half])),
+                                       column(Array(rowsForList[half...]))])
+        list.orientation = .horizontal
+        list.alignment = .top
+        list.spacing = 18
 
         masterCheckbox = NSButton(checkboxWithTitle: "Show widgets in the menu bar",
                                   target: self, action: #selector(masterToggled))
@@ -796,6 +843,7 @@ private final class MenuBarPane: Pane {
         placementNote.stringValue = text ?? ""
         placementNote.isHidden = text == nil
         placementButton.isHidden = text == nil
+        syncGridRows()
     }
 
     @objc private func openMenuBarSettings() {

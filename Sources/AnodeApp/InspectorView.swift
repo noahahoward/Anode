@@ -140,22 +140,36 @@ final class InspectorView: NSView {
         scroll.borderType = .noBorder
         scroll.drawsBackground = false
         scroll.contentView = FlippedClipView()
-        scroll.documentView = list
-        // A stack view used as a documentView has no width of its own, so without
-        // this it lays out at zero width and every row is invisible — the pane looked
-        // empty even though the rows were there.
-        list.translatesAutoresizingMaskIntoConstraints = false
-        NSLayoutConstraint.activate([
-            list.leadingAnchor.constraint(equalTo: scroll.contentView.leadingAnchor),
-            list.trailingAnchor.constraint(equalTo: scroll.contentView.trailingAnchor),
-            list.topAnchor.constraint(equalTo: scroll.contentView.topAnchor),
-            list.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor),
-        ])
 
         detailsBox.orientation = .vertical
         detailsBox.alignment = .leading
         detailsBox.spacing = 3
         detailsBox.isHidden = true
+
+        // The process list AND the selected process's details scroll together.
+        // The details used to sit outside the scroll view, pinned above the
+        // buttons; they run ~300 pt with a process selected (which is always —
+        // the busiest one is picked by default), so on a short screen the
+        // scroll view was what gave way, down to zero: a 13" MacBook Neo showed
+        // the details of a process from a list it could not see.
+        let document = NSStackView(views: [list, detailsBox])
+        document.orientation = .vertical
+        document.alignment = .leading
+        document.spacing = 10
+        document.edgeInsets = NSEdgeInsets(top: 0, left: 0, bottom: 8, right: 0)
+        scroll.documentView = document
+        // A stack view used as a documentView has no width of its own, so without
+        // this it lays out at zero width and every row is invisible — the pane looked
+        // empty even though the rows were there.
+        document.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            document.leadingAnchor.constraint(equalTo: scroll.contentView.leadingAnchor),
+            document.trailingAnchor.constraint(equalTo: scroll.contentView.trailingAnchor),
+            document.topAnchor.constraint(equalTo: scroll.contentView.topAnchor),
+            document.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor),
+            list.widthAnchor.constraint(equalTo: document.widthAnchor),
+            detailsBox.widthAnchor.constraint(equalTo: document.widthAnchor, constant: -4),
+        ])
 
         for b in [quitAppButton, forceQuitAppButton, killProcessButton] {
             b.bezelStyle = .rounded
@@ -198,7 +212,7 @@ final class InspectorView: NSView {
         self.buttonRow = buttons
 
         for v in [icon, title, subtitle, shares, closeButton, scroll,
-                  detailsBox, buttons] as [NSView] {
+                  buttons] as [NSView] {
             v.translatesAutoresizingMaskIntoConstraints = false
             addSubview(v)
         }
@@ -229,11 +243,7 @@ final class InspectorView: NSView {
             scroll.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 14),
             scroll.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
             scroll.topAnchor.constraint(equalTo: shares.bottomAnchor, constant: 10),
-            scroll.bottomAnchor.constraint(equalTo: detailsBox.topAnchor, constant: -10),
-
-            detailsBox.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 14),
-            detailsBox.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12),
-            detailsBox.bottomAnchor.constraint(equalTo: buttons.topAnchor, constant: -8),
+            scroll.bottomAnchor.constraint(equalTo: buttons.topAnchor, constant: -8),
 
             buttons.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 14),
             buttons.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -12),

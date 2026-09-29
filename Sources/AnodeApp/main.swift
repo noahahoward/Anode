@@ -2522,6 +2522,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
     /// scrolled into view widens its column at that point and it stays widened,
     /// so the layout converges to the same place the exhaustive version reached
     /// immediately — it just gets there by looking at what it was shown.
+    static let nameColumnCap: CGFloat = 240
+
     func autosizeColumns() {
         let visible = main.table.rows(in: main.table.visibleRect)
         // An empty range means the table has not been laid out yet (zero-height
@@ -2549,7 +2551,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
                 widest = max(widest, w)
             }
 
-            let target = ceil(widest) + (id == "name" ? 22 : 16)
+            // The name column is capped. Columns only ever grow, the name is the
+            // one with no natural bound ("com.apple.WebKit.WebContent (Safari)"),
+            // and the starting widths already total ~1070 of a ~1130 pt table at
+            // the default window — so one long name pushed the last column off
+            // the edge behind a horizontal scroller. Its cells truncate with an
+            // ellipsis and carry the full name as a tooltip.
+            let target = id == "name"
+                ? min(ceil(widest) + 22, Self.nameColumnCap)
+                : ceil(widest) + 16
             if target > column.width + 1 { column.width = target }
         }
     }

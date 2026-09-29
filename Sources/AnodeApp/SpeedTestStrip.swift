@@ -51,7 +51,19 @@ final class SpeedTestStrip: NSView {
     private var tilesHeight: NSLayoutConstraint!
     private var buttonLift: NSLayoutConstraint!
 
-    private static let dialExpanded: CGFloat = 190
+    private static let dialFull: CGFloat = 190
+    /// The dial on a short pane. At 190 pt the strip was ~270 pt tall before any
+    /// test, which on a 13" MacBook Neo left the pane's own list ~60 pt: the
+    /// totals and nothing else. 150 keeps the ring's opening (~100 pt) wide
+    /// enough for the "Test Speed" button, which is why it is not smaller.
+    private static let dialShort: CGFloat = 150
+    private var dialExpanded: CGFloat { isShort ? Self.dialShort : Self.dialFull }
+
+    /// Set by the host when it is short on height. Re-renders on change so the
+    /// strip and the host's accessory height move together.
+    var isShort = false {
+        didSet { if isShort != oldValue, dialHeight != nil { render() } }
+    }
     private static let dialCollapsed: CGFloat = 42
     private static let tilesResting: CGFloat = 56
     private static let tilesProminent: CGFloat = 86
@@ -247,7 +259,7 @@ final class SpeedTestStrip: NSView {
         // there is a result it steps aside entirely and the figures take over.
         let done = showingResult
         dial.showsArc = !done
-        dialHeight.constant = done ? Self.dialCollapsed : Self.dialExpanded
+        dialHeight.constant = done ? Self.dialCollapsed : dialExpanded
         tilesHeight.constant = done ? Self.tilesProminent : Self.tilesResting
         buttonLift.constant = done ? 0 : -SpeedometerView.centreLift
         downTile.prominent = done
@@ -285,7 +297,7 @@ final class SpeedTestStrip: NSView {
         // Computed, because the strip has two shapes now and a hard-coded number
         // would be right for one of them. Six points of spacing either side of
         // the line under the dial, and about thirteen for the line itself.
-        (showingResult ? Self.dialCollapsed : Self.dialExpanded)
+        (showingResult ? Self.dialCollapsed : dialExpanded)
             + 6 + 13 + 6
             + (showingResult ? Self.tilesProminent : Self.tilesResting)
     }
@@ -347,7 +359,7 @@ final class SpeedTestStrip: NSView {
         // The three that MOVE, kept as properties. `render` retunes them rather
         // than rebuilding the view, so switching shapes cannot leave a stale
         // constraint behind and the button never changes superview.
-        dialHeight = dial.heightAnchor.constraint(equalToConstant: Self.dialExpanded)
+        dialHeight = dial.heightAnchor.constraint(equalToConstant: dialExpanded)
         tilesHeight = tiles.heightAnchor.constraint(equalToConstant: Self.tilesResting)
         // NEGATIVE, and that sign is the whole subtlety. `draw` puts the arc's
         // centre six points ABOVE the frame's, to balance the gap at the bottom

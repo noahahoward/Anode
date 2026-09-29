@@ -75,7 +75,16 @@ final class MainWindowController: NSObject {
         window.isReleasedWhenClosed = false
         window.delegate = self
         window.title = "Anode"
-        window.backgroundColor = Palette.background
+        // DYNAMIC, not `Palette.background`. The palette resolves against the
+        // appearance at the moment it is read, and this is read once: after an
+        // Auto light/dark switch every view repainted from the palette while
+        // the window's own ground kept the old colour — white text on white,
+        // or black on black, under the table rows and the glance card.
+        window.backgroundColor = NSColor(name: nil) { appearance in
+            appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+                ? NSColor(srgbRed: 0, green: 0, blue: 0, alpha: 1)
+                : NSColor(srgbRed: 1, green: 1, blue: 1, alpha: 1)
+        }
         window.center()
         window.minSize = NSSize(width: 760, height: 500)
         window.setFrameAutosaveName("AnodeMain")
@@ -350,6 +359,18 @@ final class MainWindowController: NSObject {
                             display: false)
             window.center()
         }
+        // And never LARGER than the screen it is on. The 1180 x 660 default was
+        // sized on a 16" panel (1728 x 1117 pt); a MacBook Neo's 13" panel is
+        // 1204 x 753 pt at its default scaling, and after the menu bar and the
+        // Dock that leaves less height than the default window, so the glance
+        // card and graph — the battery half of the window — opened under the
+        // Dock. A frame saved on a big external display does the same when the
+        // laptop is used on its own.
+        if let fitted = Self.fitted(window.frame, into: (window.screen ?? NSScreen.main)?.visibleFrame,
+                                    minSize: window.minSize),
+           fitted != window.frame {
+            window.setFrame(fitted, display: false)
+        }
 
         // Back to a normal app before showing: an .accessory app cannot take key
         // focus properly and gets no application menu, so Cmd-Q would be dead.
@@ -370,6 +391,20 @@ final class MainWindowController: NSObject {
         if window.isMiniaturized { window.deminiaturize(nil) }
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
+    }
+
+    /// `frame` shrunk and moved as little as possible so it lies inside
+    /// `visible`, never below `minSize`. Nil when there is no screen to fit.
+    static func fitted(_ frame: NSRect, into visible: NSRect?, minSize: NSSize) -> NSRect? {
+        guard let v = visible, v.width > 0, v.height > 0 else { return nil }
+        var r = frame
+        r.size.width = max(minSize.width, min(r.width, v.width))
+        r.size.height = max(minSize.height, min(r.height, v.height))
+        // Slide back on screen; the top edge wins where the window is still
+        // taller than the space, so the title bar stays reachable.
+        r.origin.x = min(max(r.minX, v.minX), max(v.minX, v.maxX - r.width))
+        r.origin.y = min(max(r.minY, v.minY), v.maxY - r.height)
+        return r
     }
 
     func toggle() {

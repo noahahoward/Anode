@@ -669,6 +669,15 @@ final class NetworkPane: SystemPane {
     }
     required init?(coder: NSCoder) { fatalError() }
 
+    /// The dial gives up height on a short pane rather than leaving the list
+    /// below it no room at all. 560 is the pane height at which the full dial
+    /// still leaves the interface rows visible.
+    override func setFrameSize(_ newSize: NSSize) {
+        super.setFrameSize(newSize)
+        let short = newSize.height > 0 && newSize.height < 560
+        if speedTest.isShort != short { speedTest.isShort = short }
+    }
+
     func update(_ s: NetworkThroughput.Sample?,
                 perProcess: [NetworkAttribution.Row] = [],
                 age: TimeInterval? = nil) {
