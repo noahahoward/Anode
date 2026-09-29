@@ -98,8 +98,15 @@ window once and says why (menu bar full, or switched off under System
 Settings › Menu Bar › Allow in the Menu Bar). Settings › Menu Bar shows the
 same verdict live.
 
+An item counts as shown only if its window is ordered in (`isVisible`) AND
+its frame has height, lies on a screen and clears any notch. The first catches
+the Neo's usual case — on a short bar the frontmost app's own menus (Finder's
+included) run into the status items and macOS takes the ones they reach off
+screen — and the second catches the never-placed and parked-off-screen cases.
+
 The look is deferred while Anode itself is frontmost, because its own menus
 hide whatever status items they reach — which says nothing about the bar — and
-repeated on resign-active, on screen changes, and every 30 s while anything is
-hidden. The rule that reads a frame is pure and pinned in
-`WidgetPlacementTests`.
+repeated when any app becomes frontmost, on screen changes, and every 30 s
+while anything is hidden. The alert can be switched off for good; Settings ›
+Menu Bar keeps the same verdict. The rule that reads a frame is pure and pinned
+in `WidgetPlacementTests`.
