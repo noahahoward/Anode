@@ -178,7 +178,13 @@ public final class ChargeLimitLearner {
 
     private let lock = NSLock()
     private let defaults: UserDefaults
-    private static let storeKey = "com.anode.charge.limitPercent.v1"
+    /// Scoped to the MODEL, like `LifetimeDrainModel`. A limit is a fact about
+    /// one pack: Migration Assistant carries defaults to a new Mac, and a Mac17,9's
+    /// learned 80 % (76 on the mAh basis) would otherwise have a MacBook Neo that
+    /// charges to 100 % counting down to a level it never stops at. A model
+    /// change therefore relearns — which takes one five-minute hold.
+    private static let storeKey =
+        "com.anode.charge.limitPercent.v1.\(LifetimeDrainModel.hostModel())"
 
     /// The remembered limit, or nil until one has ever been confirmed.
     private var learned: Double?

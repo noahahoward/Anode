@@ -1400,7 +1400,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
             return anchored(pctHr: e.percentPerHour, charge: e.chargePercent,
                             source: .discharge, span: e.windowSpan)
         }
-        let measured = s.smoothed_pctHr
+        // Live-voltage basis, the one `timeToEmpty` divides — see
+        // `Snapshot.smoothedLive_pctHr`.
+        let measured = s.smoothedLive_pctHr
         let inferred = est?.percentPerHour
         let trustInferred: Bool = {
             guard let inferred, inferred > 0 else { return false }

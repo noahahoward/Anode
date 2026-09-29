@@ -391,6 +391,7 @@ public final class DrainRateEstimator {
         record(remainingCapacity_mAh: state.remainingCapacity_mAh,
                onAC: state.onAC, isCharging: state.isCharging,
                scale: scale, powerBased_pctHr: powerBased_pctHr,
+               voltage_mV: state.voltage_mV > 0 ? Double(state.voltage_mV) : nil,
                discharge: BatteryDischargeTrend.Sample.sample(at: at), at: at)
     }
 
@@ -401,12 +402,26 @@ public final class DrainRateEstimator {
     /// simply does not advance and the regression below carries the estimate.
     public func record(remainingCapacity_mAh: Double, onAC: Bool, isCharging: Bool,
                        scale: BatteryScale, powerBased_pctHr: Double?,
+                       voltage_mV: Double? = nil,
                        discharge: BatteryDischargeTrend.Sample? = nil,
                        at now: Date = Date()) {
         if scale.fullChargeCapacity_mAh > 0 { fullCharge_mAh = scale.fullChargeCapacity_mAh }
         if scale.joulesPerPercent > 0 { joulesPerPercent = scale.joulesPerPercent }
         if let p = powerBased_pctHr, p.isFinite, p >= 0 {
-            lastPower = (p, now)
+            // `p` arrives on the NOMINAL-voltage basis (it is `3600 W / J%`), but
+            // the power tier is published as a rate that `timeToEmpty` divides,
+            // and that assumes the LIVE-voltage basis the discharge tier is on.
+            // Converted here, with the pack voltage, so the power, blended and
+            // demoted tiers stop quoting times short by nominal / live — 7.8 %
+            // on a 1S pack at 4.19 V — and the handover to the discharge tier
+            // stops jumping. Without a voltage it stays as it was.
+            let watts = p * (joulesPerPercent ?? 0) / 3600
+            let live = voltage_mV.flatMap { v -> Double? in
+                guard v > 0, watts > 0, let full = fullCharge_mAh, full > 0 else { return nil }
+                let r = watts * 1e8 / (v * full)
+                return r.isFinite ? r : nil
+            }
+            lastPower = (live ?? p, now)
             // Recorded before the AC guard below and never on a clock that went
             // backwards, so the buffer is always in order and always covers the
             // trend's window whenever the trend has one.
@@ -414,7 +429,7 @@ public final class DrainRateEstimator {
             // Stored as WATTS. `p` is `3600 * W / joulesPerPercent`, so this
             // multiplication recovers the measurement exactly and cancels the
             // assumed nominal voltage that the division introduced.
-            powerHistory.append((now, p * (joulesPerPercent ?? 0) / 3600))
+            powerHistory.append((now, watts))
             let cutoff = now.addingTimeInterval(-slowWindow * 1.05)
             var drop = 0
             while drop < powerHistory.count && powerHistory[drop].t < cutoff { drop += 1 }

@@ -236,6 +236,29 @@ public final class PowerMonitor {
 
         public var attributed_pctHr: Double { pctHr(attributed_W) }
         public var smoothed_pctHr: Double { pctHr(smoothed_W) }
+
+        /// The same draw as a rate on the pack's LIVE-voltage basis — the basis
+        /// `DrainEstimate.timeToEmpty` assumes, and the one the discharge tier's
+        /// rates are already on. Anything a time-to-empty is divided from must
+        /// use this and not `smoothed_pctHr`.
+        ///
+        /// `smoothed_pctHr` divides by `joulesPerPercent`, which is on the
+        /// NOMINAL voltage (3.86 V a cell). `timeToEmpty` then applies the
+        /// constant-power factor V̄_remaining / V_now, which is only right for a
+        /// rate taken at V_now. Mixing the two shortened every power-based time
+        /// by nominal / live: 4.4 % on a 3S pack at 12.1 V, 7.8 % on the 1S
+        /// `Mac17,5` at 4.19 V — its 2.821 W fixture printed 9h24m where the pack
+        /// and macOS both said about 10h12m, and then jumped ~48 minutes the
+        /// moment the discharge tier took over from the power tier.
+        ///
+        /// The nominal figure stays right for what it is used for — per-app and
+        /// ledger costs, which are shares of an energy scale, not a countdown.
+        public var smoothedLive_pctHr: Double {
+            guard let v = state?.voltage_mV, v > 0, scale.fullChargeCapacity_mAh > 0
+            else { return smoothed_pctHr }
+            let r = scale.pctHrAtVoltage(watts: smoothed_W, voltage_mV: Double(v))
+            return r.isFinite ? r : smoothed_pctHr
+        }
         public var measured_pctHr: Double? { measured_W.map(pctHr) }
         public var residual_pctHr: Double? { residual_W.map(pctHr) }
         public var gpu_pctHr: Double? { gpu_W.map(pctHr) }
@@ -276,10 +299,24 @@ public final class PowerMonitor {
             case .charging:
                 return 100.0 * Double(s.amperage_mA) / scale.fullChargeCapacity_mAh
             case .draining:
-                return -smoothed_pctHr
+                return -smoothedLive_pctHr
             case .acIdle:
-                return 0
+                // Plugged in is not the same as not draining. An adapter too weak
+                // for the load (a 12 W brick under a 14 W load, a hub's
+                // pass-through) leaves the pack discharging with the cable in, and
+                // reporting 0 then hid a real ~5 %/hr drain behind "AC".
+                return isDischargingOnAC
+                    ? 100.0 * Double(s.amperage_mA) / scale.fullChargeCapacity_mAh
+                    : 0
             }
+        }
+
+        /// On AC and yet losing charge, by more than gauge noise: the adapter
+        /// cannot cover the load. 100 mA is 0.4 W on a 1S pack and 1.2 W on a
+        /// 3S one — above the few-mA wobble an idle, full pack reports.
+        public var isDischargingOnAC: Bool {
+            guard direction == .acIdle, let s = state else { return false }
+            return s.amperage_mA < -100
         }
 
         /// Where charging is heading — the learned limit when there is one, the
@@ -373,7 +410,8 @@ public final class PowerMonitor {
         /// with the curve and the guards that every other tier gets.
         public func projectedRuntime_hr() -> Double? {
             guard smoothed_W > 0, let s = state, !s.onAC else { return nil }
-            let rate = 3600 * smoothed_W / scale.joulesPerPercent
+            // Live-voltage basis: see `smoothedLive_pctHr`.
+            let rate = smoothedLive_pctHr
             return DrainEstimate.timeToEmpty(chargePercent: scale.chargePercent(s),
                                              ratePctHr: rate).map { $0 / 3600 }
         }

@@ -575,6 +575,11 @@ public final class MetricRegistry {
                                    text: "+" + MetricUnit.percentPerHour.format(rate),
                                    isEstimate: false, label: "Charge")
             }
+            if s.isDischargingOnAC, let r = s.batteryRate_pctHr, r < 0 {
+                // Measured straight off the pack's current, so no marker.
+                return MetricValue(-r, unit: .percentPerHour, isEstimate: false,
+                                   label: "Drain")
+            }
             if s.direction == .acIdle {
                 return MetricValue(value: 0, text: "AC", isEstimate: false, label: "Power")
             }
@@ -582,7 +587,7 @@ public final class MetricRegistry {
             // window shows — falling back to instantaneous power only before the
             // first one arrives.
             let shared = self?.displayedRate
-            let rate = shared?.pctHr ?? s.smoothed_pctHr
+            let rate = shared?.pctHr ?? s.smoothedLive_pctHr
             // The "*" means "this is inferred, not measured". A rate that came from
             // the battery's own discharge accumulator is measured end to end, and
             // no SMC gain enters it, so the marker drops. Everything else here is

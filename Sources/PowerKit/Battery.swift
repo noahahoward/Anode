@@ -355,6 +355,18 @@ extension BatteryScale {
     /// Relative voltage at a state of charge; linear between bins and along the
     /// end slopes outside them, floored so the extrapolation can never reach
     /// zero and turn the integral below into a division by nothing.
+    /// Least-squares slope of `dischargeShape` from 45 % to the top of the
+    /// table, per point of charge: the extrapolation above the measured range.
+    static let upperSlope: Double = {
+        let pts = dischargeShape.filter { $0.soc >= 45 }
+        let n = Double(pts.count)
+        let mx = pts.reduce(0) { $0 + $1.soc } / n
+        let my = pts.reduce(0) { $0 + $1.v } / n
+        let sxy = pts.reduce(0) { $0 + ($1.soc - mx) * ($1.v - my) }
+        let sxx = pts.reduce(0) { $0 + ($1.soc - mx) * ($1.soc - mx) }
+        return sxy / sxx
+    }()
+
     static func relativeVoltage(atSoCPercent soc: Double) -> Double {
         let c = dischargeShape
         let s = min(100, max(0, soc))
@@ -366,8 +378,14 @@ extension BatteryScale {
         }
         let n = c.count - 1
         if s >= c[n].soc {
-            let m = (c[n].v - c[n - 1].v) / (c[n].soc - c[n - 1].soc)
-            return c[n].v + m * (s - c[n].soc)
+            // The least-squares slope of the upper curve (45-77.5 %), not the
+            // last bin's. That final step is the flattest on the table (0.00155
+            // a point against 0.00231 fitted), so running it out to 100 % read
+            // the top of the pack as flatter than it is and left the correction
+            // ~1.4 % optimistic at a full charge — about 8 minutes of 10 hours.
+            // It never mattered on the machine the curve came from, which holds
+            // at an 80 % limit; a pack that charges to 100 % lives up here.
+            return c[n].v + Self.upperSlope * (s - c[n].soc)
         }
         var i = 0
         while i + 1 < c.count && c[i + 1].soc < s { i += 1 }
