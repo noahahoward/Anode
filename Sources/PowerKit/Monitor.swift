@@ -721,7 +721,11 @@ public final class PowerMonitor {
         //    machine and live, so it beats the partial `fast` sum by a wide margin
         //    on hardware that publishes neither PSTR nor a telemetry window —
         //    where the chain used to fall straight through to "our processes plus
-        //    the GPU", a fraction of the real draw.
+        //    the GPU", a fraction of the real draw. It reads HIGH: over the
+        //    2026-08-21 run-down `InstantAmperage` integrated to 4252 mAh against
+        //    the gauge's own 3918 mAh drop (+8.5 %), and V×I averaged 5.45 W
+        //    against the discharge accumulator's 5.00 W. That is why it ranks
+        //    below every tier the gauge calibrates.
         let packWatts: Double? = battery.flatMap { s in
             guard !s.onAC, s.amperage_mA < 0, s.voltage_mV > 0 else { return nil }
             let w = Double(-s.amperage_mA) * Double(s.voltage_mV) / 1e6
