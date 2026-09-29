@@ -89,9 +89,37 @@ public enum MemoryUsage {
         public let compressed: UInt64
         public let app: UInt64
         public let free: UInt64
+        /// The kernel's own verdict: 1 normal, 2 warning, 4 critical. nil when
+        /// unreadable. This, not `usedPercent`, is whether memory is a problem.
+        public var pressureLevel: Int32? = nil
         public var usedPercent: Double {
             total == 0 ? 0 : Double(used) / Double(total) * 100
         }
+
+        /// 0 (fine) … 1 (critical) from `pressureLevel`, or nil without one.
+        ///
+        /// Occupancy is not pressure. macOS keeps memory full on purpose and
+        /// compresses before it swaps, so an 8 GB Mac — an M1/M2/M3 Air, a
+        /// MacBook Neo — sits at 85-95 % used with pressure green, and colouring
+        /// by `usedPercent` painted its widget red for as long as it was on. A
+        /// 48 GB Pro sat near 50 %, which is how that went unnoticed.
+        public var pressureSeverity: Double? {
+            switch pressureLevel {
+            case 1?: return 0.2
+            case 2?: return 0.65
+            case 4?: return 0.95
+            default: return nil
+            }
+        }
+    }
+
+    /// `kern.memorystatus_vm_pressure_level`, readable without privilege.
+    public static var pressureLevel: Int32? {
+        var level: Int32 = 0
+        var len = MemoryLayout<Int32>.size
+        guard sysctlbyname("kern.memorystatus_vm_pressure_level", &level, &len, nil, 0) == 0,
+              [1, 2, 4].contains(level) else { return nil }
+        return level
     }
 
     public static var totalBytes: UInt64 {
@@ -126,7 +154,8 @@ public enum MemoryUsage {
                       wired: wired,
                       compressed: compressed,
                       app: app,
-                      free: UInt64(stats.free_count) * page)
+                      free: UInt64(stats.free_count) * page,
+                      pressureLevel: pressureLevel)
     }
 }
 
@@ -683,6 +712,12 @@ public final class SystemMetrics {
         /// claims, and every other unknown in this codebase is kept
         /// distinguishable from zero. This is that distinction for sensors.
         public var sensorsSampled: Bool = true
+
+        /// The hottest CPU or GPU die sensor, for anything that ALARMS on heat.
+        /// The two figures above are averages and belong in readouts; an alarm on
+        /// an average hides one core cooking behind the rest (see
+        /// `Sensors.Inventory.cpuPeak`). nil when not sampled.
+        public var peakTemperature: Double? = nil
     }
 
     private let cpu = CPUUsage()
@@ -690,7 +725,7 @@ public final class SystemMetrics {
     private let disk = DiskActivity()
     /// Sensor discovery walks 3,588 SMC keys on first use, so it is not something
     /// to do on every tick of a monitor that must stay near zero cost.
-    private var lastSensors: (cpu: Double?, gpu: Double?, fans: [FanInfo], at: Date)?
+    private var lastSensors: (cpu: Double?, gpu: Double?, peak: Double?, fans: [FanInfo], at: Date)?
     private let sensorInterval: TimeInterval = 5
 
     /// This app is holding a fan, so its speed is FEEDBACK rather than telemetry.
@@ -731,11 +766,12 @@ public final class SystemMetrics {
     public func sample(needs: Needs) -> Snapshot {
         var cpuTemp: Double?
         var gpuTemp: Double?
+        var peak: Double?
         var fans: [FanInfo] = []
 
         if needs.contains(.sensors) {
             if let last = lastSensors, Date().timeIntervalSince(last.at) < sensorInterval {
-                cpuTemp = last.cpu; gpuTemp = last.gpu
+                cpuTemp = last.cpu; gpuTemp = last.gpu; peak = last.peak
                 // The temperatures keep the cached value; the fans do not, while
                 // the user is driving them. See `fansAreDriven`.
                 fans = fansAreDriven ? Sensors.fansNow() : last.fans
@@ -750,8 +786,9 @@ public final class SystemMetrics {
                 let inv = Sensors.inventory()
                 cpuTemp = inv.cpuTemperature
                 gpuTemp = inv.gpuTemperature
+                peak = [inv.cpuPeak, inv.gpuPeak].compactMap { $0 }.max()
                 fans = inv.fans
-                lastSensors = (cpuTemp, gpuTemp, fans, Date())
+                lastSensors = (cpuTemp, gpuTemp, peak, fans, Date())
             }
         }
 
@@ -766,17 +803,19 @@ public final class SystemMetrics {
                         cpuTemperature: cpuTemp,
                         gpuTemperature: gpuTemp,
                         fans: fans,
-                        sensorsSampled: needs.contains(.sensors))
+                        sensorsSampled: needs.contains(.sensors),
+                        peakTemperature: peak)
     }
 
     public func sample(includeSensors: Bool = true) -> Snapshot {
         var cpuTemp: Double?
         var gpuTemp: Double?
+        var peak: Double?
         var fans: [FanInfo] = []
 
         if includeSensors {
             if let last = lastSensors, Date().timeIntervalSince(last.at) < sensorInterval {
-                cpuTemp = last.cpu; gpuTemp = last.gpu
+                cpuTemp = last.cpu; gpuTemp = last.gpu; peak = last.peak
                 // The temperatures keep the cached value; the fans do not, while
                 // the user is driving them. See `fansAreDriven`.
                 fans = fansAreDriven ? Sensors.fansNow() : last.fans
@@ -791,8 +830,9 @@ public final class SystemMetrics {
                 let inv = Sensors.inventory()
                 cpuTemp = inv.cpuTemperature
                 gpuTemp = inv.gpuTemperature
+                peak = [inv.cpuPeak, inv.gpuPeak].compactMap { $0 }.max()
                 fans = inv.fans
-                lastSensors = (cpuTemp, gpuTemp, fans, Date())
+                lastSensors = (cpuTemp, gpuTemp, peak, fans, Date())
             }
         }
 
@@ -803,6 +843,7 @@ public final class SystemMetrics {
                         disk: disk.sample(),
                         cpuTemperature: cpuTemp,
                         gpuTemperature: gpuTemp,
-                        fans: fans)
+                        fans: fans,
+                        peakTemperature: peak)
     }
 }

@@ -265,12 +265,39 @@ public enum Sensors {
         public var identified: [SensorReading] { readings.filter(\.isIdentified) }
         public var unidentified: [SensorReading] { readings.filter { !$0.isIdentified } }
 
-        private func mean(prefixes: [String]) -> Double? {
-            let vals = temperatures
-                .filter { r in prefixes.contains(where: { r.key.hasPrefix($0) }) }
+        /// The hottest CPU core sensor — what an overheating warning must look
+        /// at. The average above spans 20-40 keys (clusters, fabric probes,
+        /// efficiency cores), so one P-core at 102 °C under a single-threaded
+        /// load averages out near 65 °C and a threshold on the mean never
+        /// fires — on exactly the fanless Macs (Air, Neo) that get there.
+        public var cpuPeak: Double? { peak(prefixes: ["Tp", "Te"]) }
+
+        /// The hottest GPU sensor, for the same reason.
+        public var gpuPeak: Double? { peak(prefixes: ["Tg"]) }
+
+        /// Below this a core sensor is a dead slot, not a die: inactive slots on
+        /// binned chips (disabled cores keep their keys) and idle M4 P-cores
+        /// report fixed values up to ~8.4 °C, and a silicon die in a running
+        /// laptop is never under 15 °C. Averaged in, four such slots among
+        /// sixteen pulled a 45 °C GPU to ~36 °C. Applies to the CPU/GPU figures
+        /// only: a cold battery or ambient sensor still lists as it reads.
+        static let dieFloor = 15.0
+
+        private func dies(prefixes: [String]) -> [Double] {
+            temperatures
+                .filter { r in r.value >= Self.dieFloor
+                    && prefixes.contains(where: { r.key.hasPrefix($0) }) }
                 .map(\.value)
+        }
+
+        private func mean(prefixes: [String]) -> Double? {
+            let vals = dies(prefixes: prefixes)
             guard !vals.isEmpty else { return nil }
             return vals.reduce(0, +) / Double(vals.count)
+        }
+
+        private func peak(prefixes: [String]) -> Double? {
+            dies(prefixes: prefixes).max()
         }
     }
 

@@ -1156,7 +1156,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
                         maxRPM: fans.map(\.maxRPM).max() ?? 0))
         // The HOTTEST reading, not the average: the rail is an alarm here, and an
         // average hides one component cooking behind five that are fine.
-        let temps = [lastSystem?.cpuTemperature, lastSystem?.gpuTemperature].compactMap { $0 }
+        //
+        // It took the larger of two AVERAGES, which is not the hottest reading:
+        // each spans 20-40 sensors, so a single core at 102 °C read as ~65 °C and
+        // the ≥ 90 °C pulse never fired. The peak die sensor is what this means.
+        let temps = [lastSystem?.peakTemperature, lastSystem?.cpuTemperature,
+                     lastSystem?.gpuTemperature].compactMap { $0 }
         main.sidebar.setTemperature(temps.max())
         main.sidebar.setNetworkKind(NetworkInventory.snapshot().primary?.kind)
     }

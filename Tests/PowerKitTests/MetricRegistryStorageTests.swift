@@ -333,6 +333,31 @@ final class MetricRegistryStorageTests: XCTestCase {
         XCTAssertEqual(WidgetRenderer.severityColor(d, v), .systemGreen)
     }
 
+    /// Ordinary wear is not an alarm. The counter only climbs, so a yellow dot
+    /// at 1 % stayed yellow for the life of the machine on a drive the drive
+    /// itself rates as barely used.
+    func testOrdinaryWearReadsOKAndLateWearDoesNot() {
+        let d = MetricDescriptor(id: .ssdHealth, title: "Drive health",
+                                 shortTitle: "SSD", unit: .ratio,
+                                 category: "Storage", higherIsWorse: false)
+        let early = try! XCTUnwrap(registry(health: sample(percentageUsed: 5)).value(for: .ssdHealth))
+        XCTAssertEqual(early.text, "OK")
+        XCTAssertEqual(WidgetRenderer.severityColor(d, early), .systemGreen)
+
+        let late = try! XCTUnwrap(registry(health: sample(percentageUsed: 85)).value(for: .ssdHealth))
+        XCTAssertEqual(late.text, "WEAR 85%")
+        XCTAssertEqual(WidgetRenderer.severityColor(d, late), .systemYellow)
+
+        let spent = try! XCTUnwrap(registry(health: sample(percentageUsed: 100)).value(for: .ssdHealth))
+        XCTAssertEqual(spent.text, "WORN 100%")
+        XCTAssertEqual(WidgetRenderer.severityColor(d, spent), .systemRed)
+
+        // A real fault still wins over quiet wear.
+        let fault = try! XCTUnwrap(registry(health: sample(percentageUsed: 5, mediaErrors: 2))
+            .value(for: .ssdHealth))
+        XCTAssertEqual(fault.text, "2 ERRORS")
+    }
+
     /// THE POLARITY, pinned against the renderer that would invert it.
     ///
     /// The first draft made 0.0 healthy with `higherIsWorse: true`, which reads

@@ -100,6 +100,11 @@ public enum SensorNaming {
     /// `TH0*` — NAND. CONSENSUS (Stats maps `TH0x` to NAND on Apple Silicon).
     /// BEHAVIOUR: r(emaP) ≈ 0.29, decoupled from the SoC like storage should be,
     /// and all three read within 0.07 °C of each other.
+    /// Exact names that rest on ONE machine's measurements rather than on
+    /// consensus across generations. Only vouched for where `calibratedRails`
+    /// says the running machine is that one.
+    static let singleMachineTemperatureNames: Set<String> = ["Ts0P", "Ts1P"]
+
     static let exactTemperatures: [String: String] = [
         "TB0T": "Battery sensor 1", "TB1T": "Battery sensor 2",
         "TB2T": "Battery sensor 3", "TB3T": "Battery sensor 4",
@@ -314,7 +319,17 @@ public enum SensorNaming {
         // 1. Exact names win over families. `Ts0P` is a palm rest even though
         //    `Ts0*` siblings are on-die, and matching here means the family
         //    counter never advances for it.
-        if kind == .temperature, let name = exactTemperatures[key] { return identified(name) }
+        //
+        //    Except the palm rests off the machine they were identified on. Every
+        //    other exact name has cross-generation consensus; `Ts0P`/`Ts1P` were
+        //    placed by one machine's behaviour, and independent dumps of M1-M5
+        //    call the same keys "SSD Controller". A name nobody else agrees on
+        //    is a claim, so elsewhere they read as unidentified sensors — the
+        //    same rule the calibrated power rails follow.
+        if kind == .temperature, let name = exactTemperatures[key],
+           ratedRails || !Self.singleMachineTemperatureNames.contains(key) {
+            return identified(name)
+        }
 
         // 2. Rails.
         if kind == .power {
