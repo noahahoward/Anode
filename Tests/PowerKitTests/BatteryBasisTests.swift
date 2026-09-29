@@ -92,6 +92,41 @@ final class BatteryBasisTests: XCTestCase {
         }
     }
 
+    // ── Health and cell count ────────────────────────────────────────────────
+
+    /// System Settings' "Maximum Capacity" is NominalChargeCapacity / Design.
+    /// `Mac17,9`'s own numbers: 6124 / 6249 = 98.0 %, where full / design read
+    /// 95.6 %.
+    func testHealthIsNominalOverDesignLikeSystemSettings() {
+        let s = BatteryScale(fullChargeCapacity_mAh: 5972, designCapacity_mAh: 6249,
+                             nominalVoltage_V: BatteryScale.seedNominalVoltage_V,
+                             isCalibrated: false, healthCapacity_mAh: 6124)
+        XCTAssertEqual(s.health, 6124.0 / 6249.0, accuracy: 1e-12)
+    }
+
+    /// A new pack's nominal capacity reads over its design figure; macOS says 100 %.
+    func testHealthIsCappedAtFull() {
+        let s = BatteryScale(fullChargeCapacity_mAh: 6300, designCapacity_mAh: 6249,
+                             nominalVoltage_V: BatteryScale.seedNominalVoltage_V,
+                             isCalibrated: false, healthCapacity_mAh: 6420)
+        XCTAssertEqual(s.health, 1)
+    }
+
+    /// The per-cell array, when present, is the cell count — even when the
+    /// terminal voltage of a nearly empty 3S pack under load rounds to two.
+    func testTheCellArrayBeatsTheTerminalVoltage() {
+        XCTAssertEqual(BatteryScale.nominalVoltage(measured_mV: 9300),
+                       2 * BatteryScale.nominalCellVoltage_V, accuracy: 1e-9,
+                       "the failure the array exists to prevent")
+        XCTAssertEqual(BatteryScale.nominalVoltage(measured_mV: 9300, cellCount: 3),
+                       BatteryScale.seedNominalVoltage_V, accuracy: 1e-9)
+        XCTAssertEqual(BatteryScale.nominalVoltage(measured_mV: 4186, cellCount: 1),
+                       BatteryScale.nominalCellVoltage_V, accuracy: 1e-9)
+        XCTAssertEqual(BatteryScale.nominalVoltage(measured_mV: 12111, cellCount: 0),
+                       BatteryScale.seedNominalVoltage_V, accuracy: 1e-9,
+                       "an empty array falls back to the voltage")
+    }
+
     // ── The curve above the measured range ──────────────────────────────────
 
     /// A pack that charges to 100 % lives above the measured table. The run-out

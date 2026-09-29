@@ -314,6 +314,19 @@ final class LifetimeDrainInputsTests: XCTestCase {
         XCTAssertEqual(LifetimeDrainModel.batteryWatts(state: nil, measured_W: nil, smoothed_W: 8), 8)
     }
 
+    /// The gauge's 60 s window first, when it is fresh: on battery it IS the
+    /// pack's discharge, where instantaneous current × voltage read 9 % high
+    /// over the recorded run-down.
+    func testAFreshGaugeWindowBeatsThePacksInstantReading() {
+        XCTAssertEqual(LifetimeDrainModel.batteryWatts(state: state(mA: -1000, mV: 12_000),
+                                                       measured_W: 11, measuredAge: 30,
+                                                       smoothed_W: 8), 11)
+        // Stale: the gauge stopped publishing, so the live pack reading wins.
+        XCTAssertEqual(LifetimeDrainModel.batteryWatts(state: state(mA: -1000, mV: 12_000),
+                                                       measured_W: 11, measuredAge: 600,
+                                                       smoothed_W: 8), 12, accuracy: 1e-9)
+    }
+
     func testTheTopAppIsTheLargestShareOfAttributedPower() throws {
         func drain(_ name: String, _ id: String?, _ w: Double) -> AppDrain {
             AppDrain(identity: AppIdentity(name: name, bundleID: id, isApp: true), joules: w, over: 1)
