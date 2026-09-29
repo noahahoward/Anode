@@ -24,6 +24,10 @@ public struct BatteryScale {
     public let nominalVoltage_V: Double
     /// True once `joulesPerPercent` came from a measured discharge rather than the seed.
     public let isCalibrated: Bool
+    /// The capacity macOS rates health by: `NominalChargeCapacity`. Nil where
+    /// the gauge does not publish it, and then health falls back to
+    /// `fullChargeCapacity_mAh`. See `health`.
+    public var healthCapacity_mAh: Double? = nil
 
     /// 3S Li-ion pack nominal. Seed only — superseded by self-calibration, and
     /// the fallback for `nominalVoltage(measured_mV:)` below.
@@ -55,7 +59,12 @@ public struct BatteryScale {
     /// figure stays a constant. Because `nominalCellVoltage_V` is defined as the
     /// seed over three, a 3S machine resolves to exactly 11.58 V: this change moves
     /// no number on the hardware every measurement in this repo was taken on.
-    public static func nominalVoltage(measured_mV: Double?) -> Double {
+    public static func nominalVoltage(measured_mV: Double?, cellCount: Int? = nil) -> Double {
+        // The gauge's per-cell voltage array, when it publishes one, IS the cell
+        // count — no rounding of a terminal voltage that sags under load. A 3S
+        // pack near empty under a heavy load reads ~9.3 V, which rounds to TWO
+        // cells; the array still has three entries.
+        if let n = cellCount, (1...4).contains(n) { return Double(n) * nominalCellVoltage_V }
         guard let mV = measured_mV, mV.isFinite, mV > 0 else { return seedNominalVoltage_V }
         let cells = (mV / 1000 / nominalCellVoltage_V).rounded()
         // Outside this range the field was misread, not attached to a 7S laptop.
@@ -83,8 +92,19 @@ public struct BatteryScale {
         watts * 1e8 / (voltage_mV * fullChargeCapacity_mAh)
     }
 
-    /// Health as a fraction of design capacity.
-    public var health: Double { fullChargeCapacity_mAh / designCapacity_mAh }
+    /// Health as a fraction of design capacity — the number System Settings
+    /// calls "Maximum Capacity", which is `NominalChargeCapacity / DesignCapacity`.
+    ///
+    /// It divided whichever capacity pair the charge basis resolved to, so the
+    /// same question got different answers on different Macs: `Mac17,9`
+    /// resolves `FullChargeCapacity` (5972 / 6249 = 95.6 %) where macOS's own
+    /// figure is 6124 / 6249 = 98.0 %, while a MacBook Neo resolves the nominal
+    /// one. Capped at 100 %, as System Settings caps it: a new pack's nominal
+    /// capacity routinely reads a few percent over its design figure.
+    public var health: Double {
+        guard designCapacity_mAh > 0 else { return 0 }
+        return min(1, (healthCapacity_mAh ?? fullChargeCapacity_mAh) / designCapacity_mAh)
+    }
 
     /// Charge remaining as a percent of full, on the mAh BASIS — the one definition
     /// every time-to-empty divides.
@@ -239,8 +259,13 @@ public enum Battery {
             fullChargeCapacity_mAh: full,
             designCapacity_mAh: design,
             nominalVoltage_V: BatteryScale.nominalVoltage(
-                measured_mV: (props["Voltage"] as? NSNumber)?.doubleValue),
-            isCalibrated: false
+                measured_mV: (props["Voltage"] as? NSNumber)?.doubleValue,
+                // Live cells only, so a fixed-size array padded with zeros
+                // cannot claim a cell that is not there.
+                cellCount: (data["CellVoltage"] as? [NSNumber])?
+                    .filter { $0.doubleValue > 0 }.count),
+            isCalibrated: false,
+            healthCapacity_mAh: mAh(["NominalChargeCapacity"])
         )
     }
 

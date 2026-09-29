@@ -115,10 +115,13 @@ final class ChargeEstimateTests: XCTestCase {
 
         let s = snapshot(charging(at: 60, mA: 3600, scale: scale), scale: scale, target: target)
         guard let est = s.chargeEstimate else { return XCTFail("no estimate while charging") }
-        // Constant-current only. The taper constant was measured against an 80%
-        // limit and nothing has ever been observed above 92% on this machine, so
-        // spending it here would be inventing a number for an unsampled region.
-        XCTAssertEqual(est.hours * 60, 41.3, accuracy: 0.15)
+        // Flat current to the 92 % knee, then the constant-voltage decay to C/20.
+        // Constant current all the way would say 41.3 min and then vanish at
+        // 100 % while the pack was still charging.
+        let r = 40 / (41.3 / 60)   // the rate the fixture charges at
+        let expected = ChargeCurve.toFull(headroom_pct: 40, rate_pctHr: r) * 60
+        XCTAssertEqual(est.hours * 60, expected, accuracy: 0.2)
+        XCTAssertGreaterThan(est.hours * 60, 41.3, "the tail costs time")
     }
 
     /// The machine tops up past its limit sometimes — one recorded session ran
@@ -183,11 +186,30 @@ final class ChargeEstimateTests: XCTestCase {
     /// The taper is claimed only where it was measured. Nothing above 92% has ever
     /// been observed on this machine, so a projection to 100% gets the bare
     /// constant-current figure rather than a constant borrowed from an 80% limit.
-    func testNoTaperIsClaimedForATargetThatWasNeverObserved() {
-        let flat = ChargeCurve.hours(headroom_pct: 20, rate_pctHr: 60, tapers: false)!
+    /// Into a learned limit: the measured terminal step, nothing more.
+    func testALimitGetsOnlyTheMeasuredTerminalTaper() {
         let taper = ChargeCurve.hours(headroom_pct: 20, rate_pctHr: 60, tapers: true)!
-        XCTAssertEqual(flat, 20.0 / 60.0, accuracy: 1e-9)
-        XCTAssertEqual(taper - flat, ChargeCurve.terminalTaper_hr, accuracy: 1e-9)
+        XCTAssertEqual(taper, 20.0 / 60.0 + ChargeCurve.terminalTaper_hr, accuracy: 1e-9)
+    }
+
+    /// To full: flat to the knee, exponential decay to termination after it.
+    func testTheApproachToFullIsPricedByTheDecay() {
+        let r = 60.0, tail = 100 - ChargeCurve.constantVoltageKnee
+        let decay = log(r / ChargeCurve.terminationRate_pctHr)
+        // From 80 %: 12 points flat, then the 8-point tail.
+        XCTAssertEqual(ChargeCurve.hours(headroom_pct: 20, rate_pctHr: r, tapers: false)!,
+                       12 / r + tail / r * decay, accuracy: 1e-9)
+        // Continuous at the knee: approached from either side it is the same time.
+        let below = ChargeCurve.toFull(headroom_pct: tail + 1e-9, rate_pctHr: r)
+        let above = ChargeCurve.toFull(headroom_pct: tail, rate_pctHr: r)
+        XCTAssertEqual(below, above, accuracy: 1e-6)
+        // Longer than constant current, and never shorter.
+        for h in stride(from: 1.0, through: 90, by: 1) {
+            XCTAssertGreaterThanOrEqual(ChargeCurve.toFull(headroom_pct: h, rate_pctHr: r),
+                                        h / r - 1e-12)
+        }
+        // A current already at termination is the charger finishing.
+        XCTAssertEqual(ChargeCurve.toFull(headroom_pct: 1, rate_pctHr: 4), 0.25, accuracy: 1e-9)
     }
 
     /// nil, not zero and not a fallback, when there is nothing to project from.
@@ -277,6 +299,36 @@ final class ChargeEstimateTests: XCTestCase {
         let d = store()
         learn(ChargeLimitLearner(defaults: d), at: 80)
         XCTAssertEqual(ChargeLimitLearner(defaults: d).limit, 80)
+    }
+
+    /// Optimized Battery Charging holds at 80 % overnight and then charges on to
+    /// full. That hold looks exactly like a limit while it lasts, so it is
+    /// learned — and reaching FULL on the adapter is the proof that it was not
+    /// one. A real limit never lets the gauge say `FullyCharged`.
+    func testReachingFullOnTheAdapterForgetsALearnedLimit() {
+        let d = store()
+        let l = ChargeLimitLearner(defaults: d)
+        learn(l, at: 80)
+        XCTAssertEqual(l.limit, 80)
+
+        let scale = pack()
+        let full = Battery.State(percent: 100, isCharging: false, onAC: true,
+                                 cycleCount: 21, voltage_mV: 12900, amperage_mA: 0,
+                                 remainingCapacity_mAh: scale.fullChargeCapacity_mAh,
+                                 timeRemaining_min: nil,
+                                 notChargingReason: 0, fullyCharged: true)
+        l.observe(full, percent: 100, at: Date(timeIntervalSinceReferenceDate: 9000))
+        XCTAssertNil(l.limit, "a pack that reached full was never limited")
+        XCTAssertNil(ChargeLimitLearner(defaults: d).limit, "and the next launch agrees")
+        XCTAssertEqual(l.target(atPercent: 30, isCharging: true).percent, 100)
+    }
+
+    /// Holding at the limit is not full, so the limit survives it.
+    func testHoldingAtTheLimitDoesNotForgetIt() {
+        let l = ChargeLimitLearner(defaults: store())
+        learn(l, at: 80)
+        learn(l, at: 80)
+        XCTAssertEqual(l.limit, 80)
     }
 
     /// A limit is a setting, not a noisy measurement, so a new one REPLACES the

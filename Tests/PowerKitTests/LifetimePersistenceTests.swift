@@ -83,6 +83,6 @@ final class LifetimePersistenceTests: XCTestCase {
         XCTAssertEqual(Set(json.keys), ["version", "machineModel", "designCapacity_mAh", "osBuild",
                                         "weightedJoules", "weightSeconds", "totalSeconds",
                                         "lastDecay", "bands", "apps",
-                                        "allTimeJoules", "allTimeSeconds"])
+                                        "allTimeJoules", "allTimeSeconds", "wattsBasis"])
     }
 }

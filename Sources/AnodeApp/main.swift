@@ -787,6 +787,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
                     let awakeNow = PowerMonitor.awakeSeconds()
                     lt.observe(batteryWatts: LifetimeDrainModel.batteryWatts(
                                    state: st, measured_W: snap.measured_W,
+                                   measuredAge: snap.measuredAge,
                                    smoothed_W: snap.smoothed_W),
                                onBattery: !st.onAC,
                                displayOn: CGDisplayIsAsleep(CGMainDisplayID()) == 0,

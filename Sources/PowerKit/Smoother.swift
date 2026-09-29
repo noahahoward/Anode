@@ -159,9 +159,22 @@ public final class GainCalibrator {
     public var value: Double? { gain }
     public var isCalibrated: Bool { gain != nil }
 
+    /// Consecutive gauge windows whose raw ratio fell outside `range`.
+    private var outOfRange = 0
+
+    /// False once the fast signal has disagreed with the gauge by more than the
+    /// allowed range three windows running. The clamp alone HID that: a signal
+    /// reading a third of the machine pinned the gain at 2.0 and was then
+    /// shown, calibrated-looking, 30 % low for as long as the app ran — ahead
+    /// of the gauge that was saying so. One stray window (a load step between
+    /// two misaligned samples) is not enough; three in a row is not a gain.
+    public var isTrustworthy: Bool { outOfRange < 3 }
+
     public func observe(fast: Double, slow: Double) {
         guard fast > 0.05, slow > 0.05 else { return }
-        let g = min(max(slow / fast, range.lowerBound), range.upperBound)
+        let raw = slow / fast
+        outOfRange = range.contains(raw) ? 0 : outOfRange + 1
+        let g = min(max(raw, range.lowerBound), range.upperBound)
         gain = gain.map { $0 + alpha * (g - $0) } ?? g
     }
 

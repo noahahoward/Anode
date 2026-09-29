@@ -711,7 +711,12 @@ public final class PowerMonitor {
         // chase step changes made the headline number chase noise instead. The
         // median rejects the excursions; the smoother then only has to track what
         // is left. Falls back to this tick's value until the window fills.
-        let smcTotal = (Self.median(pstrWindow) ?? pstrRaw).map { gain.corrected($0) }
+        // Only while the gauge still agrees it is a gain away — see
+        // `GainCalibrator.isTrustworthy`. Otherwise the chain falls through to
+        // the tiers the gauge measures directly.
+        let smcTotal = gain.isTrustworthy
+            ? (Self.median(pstrWindow) ?? pstrRaw).map { gain.corrected($0) }
+            : nil
 
         // One battery read per tick, fed to the anchor, the limit learner and the
         // snapshot. Read twice it could straddle the cache TTL and teach the
@@ -731,8 +736,12 @@ public final class PowerMonitor {
             let w = Double(-s.amperage_mA) * Double(s.voltage_mV) / 1e6
             return w.isFinite && w > 0 && w < 200 ? w : nil
         }
-        let target = smcTotal ?? calibrator.estimate(fast: fast) ?? currentMeasured_W
-            ?? packWatts ?? fast
+        // Tier 2 on FULL ticks only. On a light tick `fast` is 0 because nothing
+        // was sampled, and the baseline alone — trained as gauge minus the
+        // full-tick fast mean — is the machine minus its processes: ~25 % low
+        // for as long as the window stays hidden.
+        let target = smcTotal ?? (full ? calibrator.estimate(fast: fast) : nil)
+            ?? currentMeasured_W ?? packWatts ?? fast
         let smoothed = smoother.update(target)
 
         let apps = DrainCalculator.group(drains, scale: scale)

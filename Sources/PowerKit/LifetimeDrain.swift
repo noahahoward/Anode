@@ -134,6 +134,13 @@ public struct LifetimeDrainModel: Codable {
     /// decayed.
     var allTimeJoules: Double?
     var allTimeSeconds: Double?
+    /// Which watts the joules above were learned in. nil is the old basis —
+    /// the pack's instantaneous current × voltage, which reads ~9 % high (see
+    /// `batteryWatts`) — and a file on it has its energy figures dropped on load
+    /// rather than mixed with correct ones forever: the all-time mean never
+    /// decays, so a biased hour learned once would bias time left for good.
+    var wattsBasis: String?
+    public static let currentWattsBasis = "gauge-window-v2"
 
     // ── transient ───────────────────────────────────────────────────────────
     private var ring: [(awake: TimeInterval, watts: Double)] = []
@@ -147,13 +154,25 @@ public struct LifetimeDrainModel: Codable {
     enum CodingKeys: String, CodingKey {
         case version, machineModel, designCapacity_mAh, osBuild, weightedJoules,
              weightSeconds, totalSeconds, lastDecay, previousBaseline_W, bands, apps,
-             allTimeJoules, allTimeSeconds
+             allTimeJoules, allTimeSeconds, wattsBasis
     }
 
     public init(machineModel: String, designCapacity_mAh: Double, osBuild: String) {
         self.machineModel = machineModel
         self.designCapacity_mAh = designCapacity_mAh
         self.osBuild = osBuild
+        self.wattsBasis = Self.currentWattsBasis
+    }
+
+    /// Drop every figure measured in watts, keep every figure measured in
+    /// seconds. How long a heavy stretch lasts is not changed by a constant
+    /// scale error in the watts it was detected in; the watts themselves are.
+    mutating func adoptCurrentWattsBasis() {
+        guard wattsBasis != Self.currentWattsBasis else { return }
+        weightedJoules = 0; weightSeconds = 0; totalSeconds = 0; lastDecay = nil
+        previousBaseline_W = nil
+        allTimeJoules = nil; allTimeSeconds = nil
+        wattsBasis = Self.currentWattsBasis
     }
 
     // ── reading ─────────────────────────────────────────────────────────────
@@ -384,10 +403,11 @@ extension LifetimeDrainModel {
     public static func load(from url: URL, machineModel: String,
                             designCapacity_mAh: Double) -> LifetimeDrainModel? {
         guard let data = try? Data(contentsOf: url),
-              let m = try? JSONDecoder().decode(LifetimeDrainModel.self, from: data),
+              var m = try? JSONDecoder().decode(LifetimeDrainModel.self, from: data),
               m.version == currentVersion,
               m.machineModel == machineModel,
               abs(m.designCapacity_mAh - designCapacity_mAh) < 1 else { return nil }
+        m.adoptCurrentWattsBasis()
         return m
     }
 
@@ -423,7 +443,27 @@ extension LifetimeDrainModel {
     /// and the rates it is compared with share a basis; the system-side figures
     /// only when the gauge reports no discharge current.
     public static func batteryWatts(state: Battery.State?, measured_W: Double?,
+                                    measuredAge: TimeInterval? = nil,
                                     smoothed_W: Double) -> Double {
+        // The gauge's own 60 s window FIRST. On battery the machine's load IS the
+        // pack's discharge, and the gauge counts both in one accumulator: over the
+        // 2026-08-21 run-down the system-load and battery-discharge accumulators
+        // agreed to the milliwatt (4998.4 mW each), and matched the capacity the
+        // gauge said was used to within 0.5 %.
+        //
+        // `InstantAmperage` × `Voltage` — which this used to prefer, calling it
+        // "the same quantity the discharge tier measures" — is NOT: over the same
+        // run it averaged 5452.6 mW, 9.1 % HIGH, and integrated to 8.5 % more
+        // charge than left the pack. Everything learned here divides time left,
+        // so that was a headline ~8 % short on every Mac. The gauge's scalar
+        // `BatteryPower` reads the same 9 % high, which is why neither is used.
+        //
+        // Stale beyond three minutes means the gauge has stopped publishing
+        // (sleep, a reset) and the live pack reading is the better of two evils.
+        if let m = measured_W, m.isFinite, m > 0,
+           let age = measuredAge, age >= 0, age <= 180 {
+            return m
+        }
         if let s = state, s.amperage_mA < 0, s.voltage_mV > 0 {
             return Double(-s.amperage_mA) * Double(s.voltage_mV) / 1e6
         }

@@ -97,6 +97,22 @@ final class CalibratorTests: XCTestCase {
         XCTAssertEqual(tight.value!, 1.1)
     }
 
+    /// A signal that is not a gain away from the gauge must stop being used,
+    /// not be clamped and shown as calibrated. One stray window is tolerated.
+    func testAGainThatKeepsHittingTheClampIsNotTrusted() {
+        let g = GainCalibrator(alpha: 0.3, range: 0.5...2.0)
+        g.observe(fast: 1, slow: 3)
+        XCTAssertTrue(g.isTrustworthy, "one window out of range is noise")
+        g.observe(fast: 1, slow: 1.1)
+        g.observe(fast: 1, slow: 3)
+        g.observe(fast: 1, slow: 3)
+        XCTAssertTrue(g.isTrustworthy, "an in-range window resets the count")
+        g.observe(fast: 1, slow: 3)
+        XCTAssertFalse(g.isTrustworthy, "three in a row is not a gain")
+        g.observe(fast: 1, slow: 1.2)
+        XCTAssertTrue(g.isTrustworthy, "and agreement restores it")
+    }
+
     func testGainEMASmoothsSuccessiveObservations() {
         let g = GainCalibrator(alpha: 0.3, range: 0.5...2.0)
         g.observe(fast: 10, slow: 5)                 // seeds at 0.5

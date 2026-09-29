@@ -69,7 +69,7 @@ final class AllTimeDrainTests: XCTestCase {
     /// A file saved before the all-time fields existed still loads, and its
     /// baseline seeds the total rather than being thrown away.
     func testAnOlderFileSeedsFromItsBaseline() throws {
-        let old = #"{"machineModel":"Mac17,9","apps":{},"bands":{},"weightSeconds":3600,"version":1,"totalSeconds":3600,"osBuild":"26A428","designCapacity_mAh":6251,"weightedJoules":36000}"#
+        let old = #"{"machineModel":"Mac17,9","apps":{},"bands":{},"weightSeconds":3600,"version":1,"totalSeconds":3600,"osBuild":"26A428","designCapacity_mAh":6251,"weightedJoules":36000,"wattsBasis":"gauge-window-v2"}"#
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("alltime-old-\(UUID()).json")
         defer { try? FileManager.default.removeItem(at: url) }
@@ -79,5 +79,24 @@ final class AllTimeDrainTests: XCTestCase {
         feed(&m, watts: 6, seconds: 120 + 3600)
         // 1 h at 10 W carried over + 1 h at 6 W = 8 W.
         XCTAssertEqual(m.allTimeMean_W!, 8, accuracy: 0.01)
+    }
+
+    /// A file learned in the old watts — the pack's instantaneous current ×
+    /// voltage, ~9 % high — loses its energy figures and keeps its durations.
+    /// The all-time mean never decays, so carrying a biased hour forward would
+    /// bias time left for as long as the app is installed.
+    func testAFileLearnedOnTheOldWattsKeepsDurationsAndDropsWatts() throws {
+        let old = #"{"machineModel":"Mac17,9","apps":{},"bands":{"high":{"count":4,"mean_s":900}},"weightSeconds":3600,"version":1,"totalSeconds":9000,"osBuild":"26A428","designCapacity_mAh":6251,"weightedJoules":36000,"allTimeJoules":90000,"allTimeSeconds":9000}"#
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("alltime-basis-\(UUID()).json")
+        defer { try? FileManager.default.removeItem(at: url) }
+        try Data(old.utf8).write(to: url)
+        let m = try XCTUnwrap(LifetimeDrainModel.load(from: url, machineModel: "Mac17,9",
+                                                      designCapacity_mAh: 6251))
+        XCTAssertEqual(m.excursionStat(high: true)?.count, 4, "durations are kept")
+        XCTAssertNil(m.allTimeMean_W, "biased all-time watts must not survive")
+        XCTAssertNil(m.baseline_W, "nor the biased baseline")
+        XCTAssertNil(m.lifetimeBaseline_W)
+        XCTAssertEqual(m.wattsBasis, LifetimeDrainModel.currentWattsBasis)
     }
 }

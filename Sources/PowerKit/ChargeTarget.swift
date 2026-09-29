@@ -124,17 +124,54 @@ public enum ChargeCurve {
 
     /// Hours to close `headroom` percentage points at a measured `rate_pctHr`.
     ///
-    /// `tapers` is false when the target is the pack's own 100%: the constant above
-    /// was measured against an 80% limit, and nothing has ever been observed above
-    /// 92% on this machine, so spending it on a target whose approach was never
-    /// sampled would be fabricating a number to fill a gap.
+    /// `tapers` is false when the target is the pack's own 100%. The constant
+    /// above was measured against an 80% limit and does not apply; the approach to
+    /// full is priced by `toFull` instead.
     ///
     /// Nil rather than a guess when there is no rate to project, or when the pack
     /// is already at or past the target.
     public static func hours(headroom_pct: Double, rate_pctHr: Double, tapers: Bool) -> Double? {
         guard rate_pctHr > 0, headroom_pct > 0 else { return nil }
-        let h = headroom_pct / rate_pctHr + (tapers ? terminalTaper_hr : 0)
+        let h = tapers
+            ? headroom_pct / rate_pctHr + terminalTaper_hr
+            : toFull(headroom_pct: headroom_pct, rate_pctHr: rate_pctHr)
         return h.isFinite ? h : nil
+    }
+
+    /// Where constant-current charging gives way to constant-voltage, in percent.
+    /// A BOUND, not a fit: the one session that ran past its limit was still
+    /// taking 60 %/hr at 91 % (see above), so on the measured pack the knee is at
+    /// or above 92. Taking the lowest value the data allows keeps the tail as
+    /// short as the evidence permits.
+    public static let constantVoltageKnee = 92.0
+
+    /// The current at which a charger terminates, as %/hr: C/20, the
+    /// conventional lithium-ion termination.
+    public static let terminationRate_pctHr = 5.0
+
+    /// Hours to FULL — the pack's own 100 %, no limit in the way.
+    ///
+    /// Counting the whole distance at today's current was wrong in the one place
+    /// the number is read hardest: at the end. Past the knee the charger holds
+    /// the voltage and the current decays roughly exponentially, so the
+    /// constant-current figure ran to zero and vanished while the Mac went on
+    /// charging for the better part of half an hour.
+    ///
+    /// Exponential decay makes the tail a closed form. With current I(t) = I₀e^(−t/τ)
+    /// the charge still to come is I·τ, so from any point in the constant-voltage
+    /// phase τ = headroom / rate, and charging ends when the current reaches the
+    /// termination rate: t = τ · ln(rate / termination). Below the knee the
+    /// current is flat up to it, and the tail is priced at that same current.
+    /// The two pieces meet exactly at the knee, so the countdown never jumps.
+    static func toFull(headroom_pct h: Double, rate_pctHr r: Double) -> Double {
+        let tailSpan = 100 - constantVoltageKnee
+        // Never faster than constant current. A slow charger (under e × C/20,
+        // ~13.6 %/hr) reaches the voltage limit later and spends less of the
+        // charge in decay, and a current at or under termination is the charger
+        // finishing — both are the plain division, not less.
+        let decay = max(1, log(r / terminationRate_pctHr))
+        if h <= tailSpan { return h / r * decay }
+        return (h - tailSpan) / r + tailSpan / r * decay
     }
 }
 
@@ -213,6 +250,19 @@ public final class ChargeLimitLearner {
         let holding = s.onAC && !s.isCharging && !s.fullyCharged
             && s.notChargingReason != 0
             && percent >= Self.plausibleFloor && percent <= Self.plausibleCeiling
+
+        // FULL, on the adapter, disproves any remembered limit. A real limit never
+        // lets the gauge say `FullyCharged` (see `Battery.State.fullyCharged`: it
+        // reads false while holding at 80 %), so reaching it means the hold that
+        // was learned was not a setting. Optimized Battery Charging is the usual
+        // culprit — on by default, it holds at 80 % overnight and releases before
+        // the machine is unplugged — and without this every later charge said
+        // "charging to 80 %", counted down to nothing at 80 and then changed its
+        // mind. It also forgets a limit the user has since switched off.
+        if s.onAC && s.fullyCharged && learned != nil {
+            learned = nil
+            defaults.removeObject(forKey: Self.storeKey)
+        }
 
         guard holding else {
             holdSince = nil
