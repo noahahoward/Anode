@@ -273,6 +273,9 @@ final class DiskActivityTests: XCTestCase {
                        KERN_SUCCESS)
         while case let s = IOIteratorNext(iterator), s != 0 { all += 1; IOObjectRelease(s) }
         IOObjectRelease(iterator)
+        // A Mac whose cryptexes are not block-storage drivers (a MacBook Neo on
+        // macOS 27 has exactly one, the SSD) has nothing here to filter.
+        try XCTSkipIf(all == 1 && physical.count == 1, "no disk images mounted as block storage")
 
         XCTAssertGreaterThan(all, physical.count,
                              "expected virtual disk-image drivers to be filtered out")

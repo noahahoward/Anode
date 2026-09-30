@@ -30,14 +30,28 @@ enum TestDefaults {
     /// instead of adding one. It is emptied on the way in as well as out, so a
     /// leftover from a crashed run cannot seed the next one. Two classes must not
     /// share an owner string; the tests each pass their own type name.
-    static func make(owner: String,
+    ///
+    /// Stable per TEST, not per class. `swift test --parallel` — what CI runs —
+    /// puts the tests of one class in separate processes at the same time, and a
+    /// per-class suite let one test's setup empty the domain under another's
+    /// writes: a stored `false` read back as the default `true`, and a retention
+    /// change was undone before the store saw it. `test` defaults to the caller's
+    /// function, which is the test itself when called from one; a `setUp` passes
+    /// the case's `name`.
+    static func make(owner: String, test: String = #function,
                      file: StaticString = #filePath, line: UInt = #line)
         throws -> (defaults: UserDefaults, name: String) {
-        let name = "com.anode.tests.\(owner)"
+        let name = "com.anode.tests.\(owner).\(suffix(test))"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: name), file: file, line: line)
         // A previous run may have died before its teardown.
         defaults.removePersistentDomain(forName: name)
         return (defaults, name)
+    }
+
+    /// "-[PowerKitTests.StartupSettingsTests testX]" or "testX()" -> "testX".
+    static func suffix(_ test: String) -> String {
+        let method = test.split(separator: " ").last.map(String.init) ?? test
+        return String(method.unicodeScalars.filter(CharacterSet.alphanumerics.contains))
     }
 
     /// Clear the domain AND unlink its file.
@@ -112,7 +126,8 @@ final class TestDefaultsTests: XCTestCase {
                                      "one name produced more than one file")
             TestDefaults.destroy(d, n)
         }
-        XCTAssertTrue(TestDefaults.plistURLs(named: "com.anode.tests.SelfCheckLoop").isEmpty,
+        let last = try TestDefaults.make(owner: "SelfCheckLoop").name
+        XCTAssertTrue(TestDefaults.plistURLs(named: last).isEmpty,
                       "the last teardown left its file behind")
     }
 }

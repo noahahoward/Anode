@@ -85,8 +85,13 @@ final class HardwareAvailabilityTests: XCTestCase {
         XCTAssertGreaterThan(scale.fullChargeCapacity_mAh, 1000,
                              "≈100 means the PERCENT field was parsed as mAh")
         XCTAssertGreaterThan(scale.designCapacity_mAh, 1000)
-        XCTAssertEqual(scale.nominalVoltage_V, BatteryScale.seedNominalVoltage_V,
-                       "uncalibrated scale must carry the seed voltage")
+        // The seed PER CELL, times however many cells this pack has: 11.58 V on a
+        // 3S MacBook Pro, 3.86 V on a 1S MacBook Neo. Anything else means the
+        // scale left the seed for a figure nothing measured.
+        let cells = (scale.nominalVoltage_V / BatteryScale.nominalCellVoltage_V).rounded()
+        XCTAssertTrue((1...4).contains(cells), "implausible cell count \(cells)")
+        XCTAssertEqual(scale.nominalVoltage_V, cells * BatteryScale.nominalCellVoltage_V,
+                       accuracy: 1e-9, "uncalibrated scale must carry the seed voltage")
         XCTAssertFalse(scale.isCalibrated)
         XCTAssertGreaterThan(scale.joulesPerPercent, 0)
         XCTAssertTrue((0.3...1.3).contains(scale.health),

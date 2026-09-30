@@ -194,7 +194,9 @@ final class FanSpinTests: XCTestCase {
     }
 
     /// And a turning fan turns it.
-    func testATurningFanSpinsTheGlyph() {
+    func testATurningFanSpinsTheGlyph() throws {
+        try XCTSkipUnless(SidebarView.Lens.displayOrder.contains(.fans),
+                          "fanless Mac: there is no Fans tab to carry a glyph")
         let rail = SidebarView()
         rail.setFanSpin(rpm: 2400)
         XCTAssertTrue(rail.isFanGlyphSpinning)
@@ -212,7 +214,9 @@ final class FanSpinTests: XCTestCase {
     ///
     /// Asserted as "something is drawing it", not as which of the two, because
     /// which one is an implementation detail and the user's complaint was not.
-    func testTheFanGlyphIsNeverLostInTheHandOff() {
+    func testTheFanGlyphIsNeverLostInTheHandOff() throws {
+        try XCTSkipUnless(SidebarView.Lens.displayOrder.contains(.fans),
+                          "fanless Mac: there is no Fans tab to carry a glyph")
         let rail = SidebarView()
         XCTAssertTrue(rail.hasVisibleFanGlyph, "no glyph before anything happened")
         rail.setFanSpin(rpm: 2400)
@@ -274,6 +278,8 @@ final class FanSpinTests: XCTestCase {
     /// any frame rate is a blur that reads as broken. This is a needle, not a
     /// simulation — but the ORDER has to survive, or the motion says nothing.
     func testTheGlyphTurnsFasterWhenTheFansDo() throws {
+        try XCTSkipUnless(SidebarView.Lens.displayOrder.contains(.fans),
+                          "fanless Mac: there is no Fans tab to carry a glyph")
         let rail = SidebarView()
         rail.setFanSpin(rpm: 1200)
         let slow = try XCTUnwrap(rail.fanGlyphTurnSeconds)
@@ -346,7 +352,9 @@ final class RailGlyphStateTests: XCTestCase {
     /// on its own. These two run for as long as the fans turn and the machine is
     /// hot — on layers, which a COVERED window still has. Closing the window took
     /// the layer tree with it and hid the problem; occlusion does not.
-    func testTheSelfRunningAnimationsStopWhenNothingIsDrawn() {
+    func testTheSelfRunningAnimationsStopWhenNothingIsDrawn() throws {
+        try XCTSkipUnless(SidebarView.Lens.displayOrder.contains(.fans),
+                          "fanless Mac: there is no Fans tab to carry a glyph")
         let rail = SidebarView()
         rail.select(.fans)                       // the fan glyph only spins on its own tab
         rail.setFanSpin(rpm: 3000, limits: .init(minRPM: 2000, maxRPM: 8000))

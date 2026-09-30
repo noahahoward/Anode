@@ -115,8 +115,9 @@ final class LightTickHonestyTests: XCTestCase {
     /// answer for a widget that says "—" whenever the window is closed.
     func testTheWholeMachineMetricsAreUnaffectedByALightTick() {
         let r = registry(makeLightTickSnapshot())
-        // 10 W against the exact scale (3600 J/%) is 10 %/hr.
-        XCTAssertEqual(r.value(for: .batteryDrain)?.value ?? 0, 10, accuracy: 1e-12)
+        // 10 W on the pack's LIVE-voltage basis (`smoothedLive_pctHr`): the scale
+        // is 10 V and the fixture's pack reads 11.58 V, so 10 × 10 / 11.58 %/hr.
+        XCTAssertEqual(r.value(for: .batteryDrain)?.value ?? 0, 10 * 10 / 11.58, accuracy: 1e-9)
         XCTAssertEqual(r.value(for: .batteryPercent)?.value ?? 0, 50, accuracy: 1e-12)
         XCTAssertNotNil(r.value(for: .batteryTimeLeft))
     }

@@ -17,7 +17,7 @@ final class StartupSettingsTests: XCTestCase {
     override func setUpWithError() throws {
         // A throwaway suite: these tests write settings, and the user's real
         // preferences are not a fixture.
-        (defaults, suiteName) = try TestDefaults.make(owner: "StartupSettings")
+        (defaults, suiteName) = try TestDefaults.make(owner: "StartupSettings", test: name)
     }
 
     override func tearDownWithError() throws {

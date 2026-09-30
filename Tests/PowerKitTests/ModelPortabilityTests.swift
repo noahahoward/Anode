@@ -371,7 +371,9 @@ final class FanlessSilenceTests: XCTestCase {
         let withFans = PanelOrder.visible(saved: [], hidden: [], available: all)
         let withoutFans = PanelOrder.visible(
             saved: [], hidden: [],
-            available: all.filter { MetricRegistry.offered($0, fans: .fanless) })
+            // The drive probe held fixed, as above: a VM with no SMART drive
+            // would withdraw two storage rows and blame the fan for them.
+            available: all.filter { MetricRegistry.offered($0, fans: .fanless, smart: true) })
         XCTAssertTrue(withFans.contains(MetricID.fanSpeed.rawValue))
         XCTAssertFalse(withoutFans.contains(MetricID.fanSpeed.rawValue))
         XCTAssertEqual(withFans.count - 1, withoutFans.count)
