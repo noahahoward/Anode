@@ -15,7 +15,7 @@ final class PanelSettingsTests: XCTestCase {
     private var settings: Settings!
 
     override func setUpWithError() throws {
-        let made = try TestDefaults.make(owner: "PanelSettings")
+        let made = try TestDefaults.make(owner: "PanelSettings", test: name)
         defaults = made.defaults
         suiteName = made.name
         settings = Settings(defaults: defaults)

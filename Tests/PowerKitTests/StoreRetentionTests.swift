@@ -22,7 +22,7 @@ final class StoreRetentionTests: XCTestCase {
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         // A throwaway suite: these tests write retention settings, and the user's
         // real preferences are not a fixture.
-        (defaults, suiteName) = try TestDefaults.make(owner: "StoreRetention")
+        (defaults, suiteName) = try TestDefaults.make(owner: "StoreRetention", test: name)
     }
 
     override func tearDownWithError() throws {

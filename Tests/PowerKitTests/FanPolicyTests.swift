@@ -158,7 +158,8 @@ final class DisplayModelHardwareGateTests: XCTestCase {
         // the very machine it was measured on — a silent regression, since the
         // only symptom is a display segment quietly disappearing.
         XCTAssertFalse(Hardware.model.isEmpty)
-        XCTAssertTrue(Hardware.model.hasPrefix("Mac"), "got \(Hardware.model)")
+        // "Mac17,5", or "VirtualMac2,1" on a CI runner.
+        XCTAssertTrue(Hardware.model.contains("Mac"), "got \(Hardware.model)")
     }
 
     /// The suite runs on the machine the sweep was performed on, so the gate

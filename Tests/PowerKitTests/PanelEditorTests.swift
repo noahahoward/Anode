@@ -18,7 +18,7 @@ final class PanelEditorTests: XCTestCase {
     private var table: NSTableView { editor.testTable }
 
     override func setUpWithError() throws {
-        let made = try TestDefaults.make(owner: "PanelEditor")
+        let made = try TestDefaults.make(owner: "PanelEditor", test: name)
         defaults = made.defaults
         suiteName = made.name
         settings = Settings(defaults: defaults)

@@ -129,8 +129,10 @@ final class MetricRegistryStorageTests: XCTestCase {
     /// that change on a timescale a menu bar can show.
     func testOnlySwapRateAndHealthAreOfferedAsWidgets() {
         let r = registry()
-        XCTAssertEqual(Set(r.descriptors().map(\.id)),
-                       [.swapUsed, .writePerDay, .ssdHealth])
+        // Swap is a sysctl every Mac answers; the drive rows need a SMART drive,
+        // which a VM or an Intel Mac does not have.
+        let drive: Set<MetricID> = NVMeHealth.read() != nil ? [.writePerDay, .ssdHealth] : []
+        XCTAssertEqual(Set(r.descriptors().map(\.id)), drive.union([.swapUsed]))
     }
 
     /// The four lifetime readings stay OUT of the picker and IN the registry:

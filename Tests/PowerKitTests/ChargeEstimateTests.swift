@@ -64,8 +64,8 @@ final class ChargeEstimateTests: XCTestCase {
     /// nobody thought to look for because it did not match the one the cleanup was
     /// written against. Every call now reuses one domain and empties it first, so
     /// the tests stay isolated from each other without leaving a trail.
-    private func store() -> UserDefaults {
-        (try? TestDefaults.make(owner: "ChargeEstimate").defaults) ?? .standard
+    private func store(_ test: String = #function) -> UserDefaults {
+        (try? TestDefaults.make(owner: "ChargeEstimate", test: test).defaults) ?? .standard
     }
 
     // ── The target ──────────────────────────────────────────────────────────
@@ -167,8 +167,10 @@ final class ChargeEstimateTests: XCTestCase {
                 let rate = (curve[i + 1] - curve[i]) * 60     // one-minute step -> %/hr
                 let headroom = 80.0 - curve[i]
                 let actual = Double(curve.count - 1 - i)      // minutes to arrival
-                let flat = ChargeCurve.hours(headroom_pct: headroom, rate_pctHr: rate,
-                                             tapers: false)!
+                // Constant current is the plain division. NOT `tapers: false`, which
+                // now prices the constant-voltage tail on the way to 100 % and so
+                // reads this 80 % headroom as the last points below full.
+                let flat = headroom / rate
                 let taper = ChargeCurve.hours(headroom_pct: headroom, rate_pctHr: rate,
                                               tapers: true)!
                 constantCurrent.append(abs(flat * 60 - actual))
