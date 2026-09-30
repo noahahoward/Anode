@@ -276,8 +276,8 @@ aged pack reports honestly) times an **assumed nominal voltage of 11.58 V**
 > the right one.
 >
 > On this machine the seed is close to right (the gauge's own time-to-empty agrees
-> with the mAh basis to a few percent). On a different pack — a tester's machine,
-> an older battery — nobody has checked. Until this lands, treat cross-machine
+> with the mAh basis to a few percent). On a different pack — another machine,
+> an older battery — this is unchecked. Until this lands, treat cross-machine
 > comparisons of absolute %/hr with suspicion; comparisons WITHIN one machine are
 > unaffected, since the same constant divides everything.
 >

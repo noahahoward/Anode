@@ -15,9 +15,9 @@ open ~/Applications/Anode.app
 **Do not send a built `.app`.** Not out of caution theatre — the reason is
 specific. This app is ad-hoc signed and not notarised, so a bundle that arrives
 over the internet is quarantined and will not open. The usual workaround is
-`xattr -dr com.apple.quarantine`, and telling someone to run that means telling
-them to disable the one check standing between "a binary a friend sent me" and
-"a binary running with my full user privileges" — on an app that is deliberately
+`xattr -dr com.apple.quarantine`, and running it means disabling
+the one check standing between "a downloaded binary" and
+"a binary running with full user privileges" — on an app that is deliberately
 **unsandboxed** and enumerates every process on the machine.
 
 A locally built bundle is never quarantined, so building from source removes the

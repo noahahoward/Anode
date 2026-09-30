@@ -368,8 +368,8 @@ enum ViewMenu {
 /// binary and the icon into the bundle, so a shipped Anode.app contains
 /// neither, and the GitHub remote (noahahoward/anode) is PRIVATE — checked:
 /// an unauthenticated GET of the repo and of the raw README both return 404. A
-/// Help item pointing there would open a "not found" page for every tester who is
-/// not the author, which is the silent failure this app's rules exist to prevent.
+/// Help item pointing there would open a "not found" page for every
+/// installed copy, which is the silent failure this app's rules exist to prevent.
 ///
 /// So the item is offered only where the file genuinely is:
 ///   1. the bundle's Resources — nothing puts it there today, but that is where
@@ -435,7 +435,7 @@ enum Documentation {
 /// CFBundleVersion out of Info.plist itself, so passing them back as options
 /// would change nothing. BSSourceCommit is ours and the panel has never heard of
 /// it — and that is the field that matters here, because there is no update
-/// mechanism and a tester may be running anything. The short hash makes "which
+/// mechanism and an installed copy may be any build. The short hash makes "which
 /// build is that?" answerable without a terminal.
 enum AboutPanel {
 

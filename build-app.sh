@@ -12,10 +12,10 @@ ICON="Resources/AppIcon.icon"
 
 # ── Version ─────────────────────────────────────────────────────────────────
 # The marketing version is edited by hand; the build number is the commit count,
-# so two bundles claiming the same version cannot contain different code. A
-# tester reporting a bug can be asked "what does About say" and the answer maps
-# to an exact commit — which matters more than usual here, because there is no
-# update mechanism and a tester may be running something weeks old.
+# so two bundles claiming the same version cannot contain different code. A bug
+# report can quote what About says and the answer maps to an exact commit —
+# which matters more than usual here, because there is no update mechanism and
+# an installed build may be weeks old.
 VERSION="1.0.0"
 BUILD="$(git rev-list --count HEAD 2>/dev/null || echo 1)"
 COMMIT="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
@@ -72,7 +72,7 @@ fi
 # to walking up to the source checkout, so a `swift build` binary finds them
 # either way — but an INSTALLED bundle has no checkout above it, and without
 # these two lines the shipped app would have no Help menu at all. That is the
-# build every tester actually runs.
+# build that actually gets run.
 for doc in README.md TESTING.md; do
   [ -f "$doc" ] && cp "$doc" "$APP/Contents/Resources/$doc"
 done

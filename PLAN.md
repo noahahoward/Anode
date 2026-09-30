@@ -219,15 +219,15 @@ signal whether that was deliberate. It is deliberate here:
 - **15 (discharge session report)** — the flagship feature, and it depends on the
   `soc` compaction fix that is now done. Worth doing properly rather than fast.
 
-## Distribution — blocking for "give it to friends"
+## Distribution — blocking for sharing builds
 
 - **37** — ad-hoc signed, no hardened runtime. The original's stated *minimum*
   was to document `xattr -dr com.apple.quarantine`, which teaches a recipient to
-  disable the one check between "a binary a friend sent me" and "a binary running
-  with my full privileges", on an app that is deliberately unsandboxed and
+  disable the one check between "a downloaded binary" and "a binary running
+  with full user privileges", on an app that is deliberately unsandboxed and
   enumerates every process. Better minimum: **do not distribute a binary** — ship
   source and `build-app.sh`, since a locally built bundle is never quarantined.
-- **38** — no update mechanism, so any bug shipped to a friend is permanent.
+- **38** — no update mechanism, so any shipped bug is permanent.
 - **39** — ~~the root helper accepts any process whose path ends in the right
   suffix~~ **CLOSED**, and not the way this entry expected. It has since been
   overtaken twice, so what follows is the state as of this reconciliation rather

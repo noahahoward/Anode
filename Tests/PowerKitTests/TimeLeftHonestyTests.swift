@@ -22,7 +22,7 @@ final class TimeLeftHonestyTests: XCTestCase {
 
     /// THE BASIS GAP, pinned so it cannot drift unnoticed.
     ///
-    /// A tester's menu bar read 53% / 15 %/hr / 3h 23m. Those do not multiply
+    /// A menu bar read 53% / 15 %/hr / 3h 23m. Those do not multiply
     /// out — 53/15 is 3h32m — and the reason is deliberate: the percentage shown
     /// is the gauge's integer `CurrentCapacity` (so it matches what macOS shows
     /// in its own menu bar), while the time is computed from
@@ -30,8 +30,8 @@ final class TimeLeftHonestyTests: XCTestCase {
     /// the gauge's own time-to-empty agrees with.
     ///
     /// So the displayed time is RIGHT and the displayed percentage is the one
-    /// macOS shows, and they cannot both also multiply out. TESTING.md tells a
-    /// tester the numbers multiply out; while this stands, that instruction is
+    /// macOS shows, and they cannot both also multiply out. TESTING.md says the
+    /// numbers multiply out; while this stands, that instruction is
     /// wrong, which is why this test exists rather than a comment.
     func testTheTwoChargeBasesDisagreeByAKnownAmount() {
         let gaugePercent = 53.0

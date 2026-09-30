@@ -509,7 +509,7 @@ public final class MetricRegistry {
             }
         }
         // "CPU°", not "Temp". The pair has to be read side by side in a menu bar,
-        // and a tester's screenshot showed exactly why the asymmetry fails:
+        // and this menu bar reading shows exactly why the asymmetry fails:
         //
         //     CPU 14%   RAM 54%   GPU 25%   Temp 49°C   GPU° 44°C
         //
