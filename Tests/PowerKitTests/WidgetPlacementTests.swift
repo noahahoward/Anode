@@ -53,18 +53,83 @@ final class WidgetPlacementTests: XCTestCase {
         XCTAssertTrue(C.isPlaced(NSRect(x: 900, y: 958, width: 40, height: 24), on: [notched]))
     }
 
+    /// Measured on macOS 27: an item that does not fit is parked below the
+    /// screen at (0, -h), full height. Horizontally that is on screen, so it is
+    /// the vertical rule that has to catch it.
+    func testAnItemParkedBelowTheScreenIsNotPlaced() {
+        XCTAssertFalse(C.isPlaced(NSRect(x: 0, y: -24, width: 40, height: 24), on: [laptop]))
+    }
+
+    /// An auto-hidden menu bar may slide its items up past the top edge while
+    /// they are still in the bar. They count; the old gate on
+    /// `NSMenu.menuBarVisible()` meant such a Mac was never looked at.
+    func testAnItemInASlidUpAutoHiddenBarIsPlaced() {
+        XCTAssertTrue(C.isPlaced(NSRect(x: 900, y: 800, width: 40, height: 24), on: [laptop]))
+    }
+
+    private func states(_ frames: [NSRect?], visible: Bool = true) -> [C.ItemState] {
+        C.states(frames: frames, windowsVisible: frames.map { _ in visible }, on: [laptop])
+    }
+
+    func testItemStates() {
+        XCTAssertEqual(states([item(x: 900)]), [.shown])
+        XCTAssertEqual(states([NSRect(x: 0, y: -24, width: 40, height: 24)]), [.parked])
+        XCTAssertEqual(states([NSRect(x: 0, y: 0, width: 40, height: 0)]), [.unplaced])
+        XCTAssertEqual(states([nil]), [.unplaced], "no window at all was never placed")
+        XCTAssertEqual(states([item(x: 900)], visible: false), [.parked],
+                       "a window that is ordered out is not showing, wherever it is")
+    }
+
+    /// Two items of one app stacked on one frame: the last slot before the
+    /// frontmost app's menus, fought over. Only one of them can be seen.
+    func testAnItemStackedOnItsNeighbourIsParked() {
+        XCTAssertEqual(states([item(x: 397), item(x: 397), item(x: 500)]),
+                       [.shown, .parked, .shown])
+        XCTAssertEqual(states([item(x: 400), item(x: 440)]), [.shown, .shown],
+                       "neighbours that merely touch are both in the bar")
+    }
+
     func testPlacementClassification() {
-        XCTAssertEqual(C.placement(shown: 4, total: 4), .allShown)
-        XCTAssertEqual(C.placement(shown: 0, total: 4), .noneShown)
-        XCTAssertEqual(C.placement(shown: 1, total: 4), .partlyHidden(shown: 1, total: 4))
-        XCTAssertEqual(C.placement(shown: 0, total: 0), .unknown,
+        XCTAssertEqual(C.placement([.shown, .shown]), .allShown)
+        XCTAssertEqual(C.placement([.shown, .parked, .unplaced]),
+                       .partlyHidden(shown: 1, total: 3))
+        XCTAssertEqual(C.placement([.parked, .parked]), .noneShown)
+        XCTAssertEqual(C.placement([.parked, .unplaced]), .noneShown,
+                       "any item laid out off screen means the bar is full")
+        XCTAssertEqual(C.placement([]), .unknown,
                        "nothing to show is not the same as nothing shown")
     }
 
-    /// Only `.noneShown` may take the menu bar away as the app's door: a
+    /// Every item zero-height is macOS withholding the app — System Settings ›
+    /// Menu Bar › Allow in the Menu Bar — which is what a MacBook Neo showed.
+    func testEveryItemUnplacedIsNotAllowed() {
+        XCTAssertEqual(C.placement([.unplaced, .unplaced, .unplaced]), .notAllowed)
+    }
+
+    /// Squeezing is for a full bar. A switched-off app squeezed to one item
+    /// would come back one item wide when switched on again.
+    func testOnlyAFullBarIsSqueezed() {
+        XCTAssertTrue(C.shouldSqueeze([.shown, .parked]))
+        XCTAssertFalse(C.shouldSqueeze([.unplaced, .unplaced]))
+        XCTAssertFalse(C.shouldSqueeze([.shown, .shown]))
+    }
+
+    /// Only nothing-visible takes the menu bar away as the app's door: a
     /// partial hide still leaves something to click.
     func testOnlyNothingShownMakesTheMenuBarUnreachable() {
-        XCTAssertNotEqual(C.Placement.partlyHidden(shown: 1, total: 3), .noneShown)
+        XCTAssertTrue(C.Placement.partlyHidden(shown: 1, total: 3).isReachable)
+        XCTAssertTrue(C.Placement.unknown.isReachable, "every launch passes through unknown")
+        XCTAssertFalse(C.Placement.noneShown.isReachable)
+        XCTAssertFalse(C.Placement.notAllowed.isReachable)
+    }
+
+    /// Each unreachable state names its own cause and its own remedy.
+    func testTheSettingsNoteNamesTheCause() {
+        let off = C.Placement.notAllowed.settingsNote ?? ""
+        let full = C.Placement.noneShown.settingsNote ?? ""
+        XCTAssertTrue(off.contains("Allow in the Menu Bar"))
+        XCTAssertFalse(full.contains("Allow in the Menu Bar"))
+        XCTAssertNil(C.Placement.allShown.settingsNote)
     }
 
     // ── The ladder ────────────────────────────────────────────────────────────
@@ -115,6 +180,19 @@ final class WidgetPlacementTests: XCTestCase {
                                          descriptor: nil, value: nil, style: .group)
         XCTAssertFalse(tip.contains("Unknown"))
         XCTAssertTrue(tip.contains("all readings"))
+    }
+
+    /// Compact exists to be narrower. The label is stacked above the value, so
+    /// dropping it alone narrowed nothing, and a 12 pt value made a squeezed bar
+    /// WIDER than the full one on a MacBook Neo.
+    func testCompactIsNarrowerThanTheLabelledWidget() {
+        for value in ["12.3%/h", "100%", "87\u{00B0}C", "1.9 GB", "2h 58m"] {
+            let full = WidgetRenderer.textImage(label: "CPU\u{00B0}", value: value).size.width
+                + 16   // AppKit's own padding on a variable-length item
+            let compact = WidgetRenderer.textImage(label: nil, value: value, compact: true)
+                .size.width + C.compactPadding
+            XCTAssertLessThan(compact, full - 8, "compact \(value) saves too little")
+        }
     }
 
     /// The single item carries its reading, so it has to be wider than the bare glyph.

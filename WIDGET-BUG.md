@@ -1,5 +1,16 @@
 # Menu bar widgets never appeared — RESOLVED
 
+> **Correction (MacBook Neo, macOS 27).** The cause below was misread. The
+> symptom — items created, `isVisible`, window at `(0, 0, w, 0)` forever — is
+> exactly what macOS does when the app is switched off under **System Settings ›
+> Menu Bar › Allow in the Menu Bar**. That switch is remembered per bundle path,
+> which is why a copy at any fresh path "fixed" it and why the lsregister count
+> looked guilty. Measured on `Mac17,5`: one LaunchServices registration, switch
+> off → every item zero-height; same bytes at another path → all nine placed.
+> The controller now tells this case (`.notAllowed`) apart from a full bar
+> (items parked at `(0, -h)`), says which it is, and keeps watching so the
+> widgets appear the moment the switch is turned on.
+
 ## Cause
 
 **Accumulated LaunchServices registrations for the build directory path.**

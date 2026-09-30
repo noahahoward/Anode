@@ -484,7 +484,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
     /// the controller reports that nothing is on screen, the Dock tile comes back
     /// and the user is told why, once.
     private func menuBarPlacementChanged(_ placement: MenuBarWidgetController.Placement) {
-        guard placement == .noneShown else { return }
+        guard !placement.isReachable else { return }
         if NSApp.activationPolicy() != .regular { NSApp.setActivationPolicy(.regular) }
         guard !toldAboutHiddenMenuBar,
               !UserDefaults.standard.bool(forKey: Self.hiddenMenuBarAlertSuppressedKey)
@@ -492,14 +492,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         toldAboutHiddenMenuBar = true
         main.show()
         let alert = NSAlert()
-        alert.messageText = "macOS isn\u{2019}t showing Anode in the menu bar"
-        alert.informativeText =
-            "Either the menu bar is full \u{2014} macOS drops the items that don\u{2019}t fit, "
-            + "without an overflow menu \u{2014} or Anode is switched off under System Settings "
-            + "\u{203A} Menu Bar \u{203A} Allow in the Menu Bar.\n\n"
-            + "Anode already shrank its widgets to a single item and that did not fit either. "
-            + "Quit a menu bar app you don\u{2019}t need, or choose \u{201C}More Space\u{201D} in "
-            + "System Settings \u{203A} Displays. Until then Anode keeps its Dock icon."
+        if placement == .notAllowed {
+            alert.messageText = "Anode is switched off in the menu bar"
+            alert.informativeText =
+                "macOS is hiding every Anode widget because Anode is turned off under "
+                + "System Settings \u{203A} Menu Bar \u{203A} Allow in the Menu Bar.\n\n"
+                + "Turn it on there and the widgets appear straight away. Until then "
+                + "Anode keeps its Dock icon."
+        } else {
+            alert.messageText = "The menu bar is too full for Anode"
+            alert.informativeText =
+                "macOS drops menu bar items that don\u{2019}t fit, without an overflow "
+                + "menu. Anode already shrank its widgets to a single item and even that "
+                + "did not fit.\n\n"
+                + "Quit a menu bar app you don\u{2019}t need, hide some system items under "
+                + "System Settings \u{203A} Menu Bar, or choose \u{201C}More Space\u{201D} "
+                + "in System Settings \u{203A} Displays. Until then Anode keeps its Dock icon."
+        }
         alert.addButton(withTitle: "Open Menu Bar Settings")
         alert.addButton(withTitle: "OK")
         // Settings › Menu Bar carries the same verdict permanently, so the
@@ -518,9 +527,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
 
 
     /// System Settings' menu bar pane. Addressed by the Control Center extension
-    /// ID, which is where the menu bar settings lived through macOS 15 and is not
-    /// verified against the Menu Bar pane of 26 and later. If it does not resolve,
-    /// System Settings itself is the next best place to land.
+    /// ID, which is where the menu bar settings lived through macOS 15 and still
+    /// opens the Menu Bar pane — "Allow in the Menu Bar" included — on macOS 27.
+    /// If it does not resolve, System Settings itself is the next best place.
     static func openMenuBarSettings() {
         let ws = NSWorkspace.shared
         if let url = URL(string: "x-apple.systempreferences:com.apple.ControlCenter-Settings.extension"),
