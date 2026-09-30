@@ -918,7 +918,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
             deviceGPUPercent: lastSystem?.gpu?.utilization)
             // The GPU rollup is fed in whatever the setting says, so an APP always
             // finds its GPU share; this is what drops the coalitions that matched
-            // no app — WindowServer and friends — when daemons are switched off.
+            // no app — WindowServer and the like — when daemons are switched off.
             .filter { showDaemons || $0.isApp }
             .filter { ProcessRowBuilder.isNotable($0, floor_pctHr: floor) }
         sortRows()

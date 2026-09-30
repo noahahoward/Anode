@@ -100,7 +100,7 @@ public final class PowerMonitor {
         ///
         /// Taken against `ledgerSpan_W` and against `claimed_W`, so this is exactly
         /// the width the bar has left over after drawing every other segment. It
-        /// used to be `smoothed_W` minus `cpuRail_W` and friends, which parted
+        /// used to be `smoothed_W` minus `cpuRail_W` and the other rails, which parted
         /// company with the drawn bar in the one case that matters: when
         /// `attributed_W` exceeds the CPU rail, the apps segment is wider than the
         /// rail this subtracted, and the printed remainder was watts the bar had
