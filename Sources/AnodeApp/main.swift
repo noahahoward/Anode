@@ -41,6 +41,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
 
     var monitor: PowerMonitor?
     var store: HistoryStore?
+    /// The Forecast Check window, created on first use from View → Developer Tools.
+    var forecastCheck: ForecastCheckWindowController?
     /// Time left = charge ÷ the mean drain since the lid was last opened.
     let drain = DrainRateEstimator(trend: .sinceLidOpened())
     /// Throttles the trend's crash-insurance write. See the call site.
@@ -705,6 +707,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
                                    residual_W: snap.residual_W,
                                    onBattery: onBattery,
                                    socPercent: snap.state.map { Double($0.percent) },
+                                   chargePercent: snap.state.map { snap.scale.chargePercent($0) },
+                                   forecast: Self.forecastForStore(),
                                    interval: snap.interval)
             }
             var est: DrainEstimate?
@@ -1260,6 +1264,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
                                   Palette.accentDim,
                                   Palette.violet, Palette.teal]
         return palette[i % palette.count]
+    }
+
+    /// What the app is showing right now, as the history stores it: the time
+    /// left and the rate behind it, only while draining. Read from the last
+    /// published rate, at most one tick old.
+    static func forecastForStore() -> HistoryStore.Forecast {
+        guard let r = MetricRegistry.shared.lockedDisplayedRate(),
+              r.chargePercent != nil, r.canQuoteTime,
+              let hr = r.timeRemaining_hr() else { return .none }
+        return .init(predictedSeconds: hr * 3600, shownPctHr: r.pctHr)
     }
 
     /// The one drain figure the whole app shows, the hours it implies, and where

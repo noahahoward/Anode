@@ -127,7 +127,33 @@ extension AppDelegate {
                 item.representedObject = lens
                 m.addItem(item)
             }
+            m.addItem(.separator())
+            m.addItem(developerToolsItem())
         }
+    }
+
+    // ── Developer Tools ─────────────────────────────────────────────────────
+
+    /// Every developer tool, in menu order. Adding a tool is one line here plus
+    /// the action that opens it.
+    private var developerTools: [(title: String, action: Selector)] {
+        [
+            ("Forecast Check", #selector(showForecastCheck(_:))),
+        ]
+    }
+
+    private func developerToolsItem() -> NSMenuItem {
+        let parent = submenu("Developer Tools") { m in
+            for tool in developerTools {
+                let item = NSMenuItem(title: tool.title, action: tool.action, keyEquivalent: "")
+                item.target = self
+                m.addItem(item)
+            }
+        }
+        // The menu bar names a top-level item from its submenu; a submenu nested
+        // in another menu shows the ITEM's title, which `submenu` leaves empty.
+        parent.title = "Developer Tools"
+        return parent
     }
 
     /// Switch lens from the keyboard. Ends with the window visible and showing it,
@@ -187,6 +213,14 @@ extension AppDelegate {
     /// Do not "fix" this by keeping the app `.regular` — that reinstates the Dock
     /// tile that made a closed window feel like a running app, which is the thing
     /// `hide()` exists to prevent.
+    /// Developer view comparing the time-left forecast with the battery's real
+    /// discharge. See `ForecastCheckWindowController`.
+    @objc func showForecastCheck(_ sender: Any?) {
+        guard let store else { return }
+        if forecastCheck == nil { forecastCheck = ForecastCheckWindowController(store: store) }
+        forecastCheck?.show()
+    }
+
     @objc func showMainWindow(_ sender: Any?) {
         main.show()
         restartTimer(hidden: false)   // same staleness argument as showLens

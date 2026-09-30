@@ -555,6 +555,12 @@ public final class MetricRegistry {
     /// reported stuck at "7h 03m". See `DisplayedRate`.
     public private(set) var displayedRate: DisplayedRate?
 
+    /// `displayedRate` read under the lock, for callers off the main thread.
+    public func lockedDisplayedRate() -> DisplayedRate? {
+        lock.lock(); defer { lock.unlock() }
+        return displayedRate
+    }
+
     public func update(displayedRate: DisplayedRate?) {
         lock.lock(); defer { lock.unlock() }
         self.displayedRate = displayedRate

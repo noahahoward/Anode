@@ -159,6 +159,14 @@ public final class HistoryStore {
         case cpu_pct, mem_pct, gpu_pct
         case net_in_bps, net_out_bps
         case disk_read_bps, disk_write_bps
+        /// The time left Anode was SHOWING, in seconds, and the drain rate it was
+        /// divided by (%/hr). Kept so a prediction can be checked against what
+        /// the battery really did afterwards — see `forecastSeries`.
+        case predicted_s, shown_pct_hr
+        /// Charge on the mAh basis (`BatteryScale.chargePercent`), resolved to
+        /// ~0.02 %. `soc` is the integer macOS shows, and a line drawn from it is
+        /// a staircase with a 6-minute tread at a 10 %/hr drain.
+        case charge_pct
 
         var fold: Fold {
             switch self {
@@ -492,7 +500,9 @@ public final class HistoryStore {
     public func record(apps: [AppDrain], measured_W: Double?, attributed_W: Double?,
                        residual_W: Double?, onBattery: Bool,
                        socPercent: Double? = nil,
+                       chargePercent: Double? = nil,
                        utilization: Utilization = .none,
+                       forecast: Forecast = .none,
                        interval: TimeInterval,
                        at date: Date = Date()) {
         guard interval > 0, interval <= Self.maxPlausibleInterval else { return }
@@ -526,7 +536,9 @@ public final class HistoryStore {
                                             attributed_W: attributed_W,
                                             residual_W: residual_W,
                                             socPercent: socPercent,
+                                            chargePercent: chargePercent,
                                             utilization: utilization,
+                                            forecast: forecast,
                                             interval: interval) {
                     sqlite3_bind_double(insI, idx, v)
                 } else {
@@ -565,7 +577,9 @@ public final class HistoryStore {
     private static func storedValue(_ c: Column,
                                     measured_W: Double?, attributed_W: Double?,
                                     residual_W: Double?, socPercent: Double?,
+                                    chargePercent: Double?,
                                     utilization: Utilization,
+                                    forecast: Forecast,
                                     interval: TimeInterval) -> Double? {
         // isFinite is not enough: a wrapped counter is a perfectly finite,
         // perfectly enormous number, and that is exactly what reached the disk.
@@ -589,6 +603,7 @@ public final class HistoryStore {
         case .attributed_j: return joules(attributed_W)
         case .residual_j:   return joules(residual_W)
         case .soc:          return percent(socPercent)
+        case .charge_pct:   return percent(chargePercent)
         case .cpu_pct:      return percent(utilization.cpuPercent)
         case .mem_pct:      return percent(utilization.memoryPercent)
         case .gpu_pct:      return percent(utilization.gpuPercent)
@@ -603,6 +618,99 @@ public final class HistoryStore {
                                           DiskActivity.maxPlausibleBytesPerSec)
         case .disk_write_bps: return rate(utilization.diskWriteBytesPerSec,
                                           DiskActivity.maxPlausibleBytesPerSec)
+        // A week is past anything this pack can do; beyond it is a rate near zero.
+        case .predicted_s:    return rate(forecast.predictedSeconds, 7 * 86_400)
+        case .shown_pct_hr:   return rate(forecast.shownPctHr, 1000)
+        }
+    }
+
+    /// What the app was predicting when an interval was recorded.
+    public struct Forecast {
+        public let predictedSeconds: Double?
+        public let shownPctHr: Double?
+        public init(predictedSeconds: Double?, shownPctHr: Double?) {
+            self.predictedSeconds = predictedSeconds
+            self.shownPctHr = shownPctHr
+        }
+        public static let none = Forecast(predictedSeconds: nil, shownPctHr: nil)
+    }
+
+    /// One bucket of a discharge, for checking the forecast against it.
+    public struct ForecastPoint {
+        public let time: Date
+        public let onBattery: Bool
+        /// Measured whole-system watts over the bucket.
+        public let watts: Double
+        /// The mAh-basis charge where it was recorded, else the integer `soc`.
+        public let socPercent: Double?
+        public let predictedSeconds: Double?
+        public let shownPctHr: Double?
+    }
+
+    /// Battery level, measured drain and the prediction shown, bucketed to at
+    /// most `maxPoints`. The same bucketing and weighting as `powerSeries`.
+    public func forecastSeries(since: Date, until: Date = Date(),
+                               maxPoints: Int = 600) -> [ForecastPoint] {
+        let from = since.timeIntervalSince1970
+        let to = until.timeIntervalSince1970
+        guard to > from, maxPoints > 0 else { return [] }
+        let width = max((to - from) / Double(maxPoints), 1)
+        return queue.sync {
+            guard let st = prepare("""
+                SELECT CAST((ts - ?) / ? AS INTEGER) AS b,
+                       MIN(ts), SUM(measured_j), SUM(dur), MIN(on_battery),
+                       \(Self.weightedMean("soc")),
+                       \(Self.weightedMean("predicted_s")),
+                       \(Self.weightedMean("shown_pct_hr")),
+                       \(Self.weightedMean("charge_pct"))
+                  FROM interval
+                 WHERE ts >= ? AND ts <= ? AND measured_j IS NOT NULL
+                   AND dur > 0 AND dur <= \(Self.maxPlausibleInterval)
+                   AND measured_j >= 0
+                   AND measured_j / dur <= 200.0
+                 GROUP BY b
+                 ORDER BY b
+                """) else { return [] }
+            defer { sqlite3_finalize(st) }
+            sqlite3_bind_double(st, 1, from)
+            sqlite3_bind_double(st, 2, width)
+            sqlite3_bind_double(st, 3, from)
+            sqlite3_bind_double(st, 4, to)
+            func opt(_ i: Int32) -> Double? {
+                sqlite3_column_type(st, i) == SQLITE_NULL ? nil : sqlite3_column_double(st, i)
+            }
+            var out: [ForecastPoint] = []
+            while sqlite3_step(st) == SQLITE_ROW {
+                let dur = sqlite3_column_double(st, 3)
+                guard dur > 0 else { continue }
+                out.append(ForecastPoint(
+                    time: Date(timeIntervalSince1970: sqlite3_column_double(st, 1)),
+                    onBattery: sqlite3_column_int(st, 4) == 1,
+                    watts: sqlite3_column_double(st, 2) / dur,
+                    socPercent: opt(8) ?? opt(5), predictedSeconds: opt(6),
+                    shownPctHr: opt(7)))
+            }
+            return out
+        }
+    }
+
+    /// When the most recent stretch on battery began: the first on-battery row
+    /// after the last on-AC one. nil when there is no battery history.
+    public func lastUnplug(before: Date = Date()) -> Date? {
+        queue.sync {
+            guard let st = prepare("""
+                SELECT MIN(ts) FROM interval
+                 WHERE on_battery = 1 AND ts <= ?
+                   AND ts > COALESCE((SELECT MAX(ts) FROM interval
+                                       WHERE on_battery = 0 AND ts <= ?), 0)
+                """) else { return nil }
+            defer { sqlite3_finalize(st) }
+            let t = before.timeIntervalSince1970
+            sqlite3_bind_double(st, 1, t)
+            sqlite3_bind_double(st, 2, t)
+            guard sqlite3_step(st) == SQLITE_ROW,
+                  sqlite3_column_type(st, 0) != SQLITE_NULL else { return nil }
+            return Date(timeIntervalSince1970: sqlite3_column_double(st, 0))
         }
     }
 
