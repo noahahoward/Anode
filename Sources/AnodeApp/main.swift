@@ -529,11 +529,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
     /// look — so GPU drain, Unattributed power and Process coverage render "—" for
     /// as long as the panel is open unless opening it asks for a full sample.
     /// Reported from the field on a machine where they had never shown a number.
-    static func wantsFullSample(visible: Bool, panelOpen: Bool, logging: Bool,
-                                sinceLastFull: TimeInterval,
+    ///
+    /// `widgetNeedsFull` is the third reader of the same metrics: a standalone
+    /// widget bound to one of them is on screen while the window is closed, and
+    /// with only light ticks it read "—" for as long as the app was hidden.
+    static func wantsFullSample(visible: Bool, panelOpen: Bool, widgetNeedsFull: Bool,
+                                logging: Bool, sinceLastFull: TimeInterval,
                                 backgroundInterval: TimeInterval) -> Bool {
-        if visible || panelOpen { return true }
+        if visible || panelOpen || widgetNeedsFull { return true }
         return logging && sinceLastFull >= backgroundInterval
+    }
+
+    /// Is an enabled widget bound to a metric that only a full tick produces?
+    ///
+    /// The collapsed group is not: it shows no value until opened, and opening it
+    /// already forces a full tick through `panelOpen`.
+    static func widgetsNeedFullSample(configs: [WidgetConfig]) -> Bool {
+        let fullOnly: Set<String> = [MetricID.gpuDrain.rawValue,
+                                     MetricID.unattributedShare.rawValue,
+                                     MetricID.processCoverage.rawValue]
+        return configs.contains { $0.enabled && fullOnly.contains($0.metricID) }
     }
 
     /// What the tick rate should be, as arithmetic — so the three rules that
@@ -609,6 +624,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         // An open panel is a reader too — see `MenuBarWidgetController.isPanelOpen`.
         let panelOpen = widgets?.isPanelOpen ?? false
         let needs = visible ? visibleNeeds : hiddenNeeds
+        // Main-thread state for the same reason: the widget configs live here.
+        let widgetNeedsFull = Settings.shared.menuBarWidgetsEnabled
+            && Self.widgetsNeedFullSample(configs: widgets?.configs ?? [])
         // Read here, on the main thread, where the panel's state lives — and
         // BEFORE the tick uses it. While a fan is held its speed is the feedback
         // for a control the user has hold of, so the sampler re-reads the fans
@@ -656,7 +674,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
             // Attribution stays gated on `visible` below: the per-app rollup feeds
             // the process table and the drill-down, and the panel shows none of it.
             let wantFull = Self.wantsFullSample(
-                visible: visible, panelOpen: panelOpen, logging: logging,
+                visible: visible, panelOpen: panelOpen,
+                widgetNeedsFull: widgetNeedsFull, logging: logging,
                 sinceLastFull: Date().timeIntervalSince(self.lastFullTick),
                 backgroundInterval: self.backgroundFullInterval)
             // Attribution only when someone can see it. The rollup feeds the

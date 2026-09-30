@@ -387,10 +387,34 @@ final class FanlessSilenceTests: XCTestCase {
 final class OpenPanelNeedsAFullTickTests: XCTestCase {
 
     private func wants(visible: Bool = false, panelOpen: Bool = false,
+                       widgetNeedsFull: Bool = false,
                        logging: Bool = false, since: TimeInterval = 0) -> Bool {
         AppDelegate.wantsFullSample(visible: visible, panelOpen: panelOpen,
+                                    widgetNeedsFull: widgetNeedsFull,
                                     logging: logging, sinceLastFull: since,
                                     backgroundInterval: 60)
+    }
+
+    /// A menu bar widget is a reader too, and the window being closed is exactly
+    /// when it is the only one. GPU drain, Unattributed power and Process coverage
+    /// bound as standalone widgets read "—" on every hidden tick otherwise.
+    func testAWidgetBoundToAFullOnlyMetricForcesAFullSample() {
+        XCTAssertTrue(wants(widgetNeedsFull: true))
+    }
+
+    func testOnlyTheFullOnlyMetricsAskForAFullSample() {
+        func needs(_ ids: [MetricID], enabled: Bool = true) -> Bool {
+            AppDelegate.widgetsNeedFullSample(configs: ids.map {
+                WidgetConfig(metricID: $0.rawValue, style: .textWithLabel, enabled: enabled)
+            })
+        }
+        for id in [MetricID.gpuDrain, .unattributedShare, .processCoverage] {
+            XCTAssertTrue(needs([id]), "\(id.rawValue) is absent on a light tick")
+            XCTAssertFalse(needs([id], enabled: false), "a disabled widget reads nothing")
+        }
+        // The defaults, swap and the collapsed group are all served by light ticks.
+        XCTAssertFalse(needs([.batteryDrain, .cpuUsage, .memoryUsage, .swapUsed,
+                              .groupPlaceholder]))
     }
 
     func testAnOpenPanelForcesAFullSample() {
