@@ -487,7 +487,36 @@ public final class PowerMonitor {
     /// follow. A median discards them.
     private var ppmcWindow: [Double] = []
     private var pstrWindow: [Double] = []
+    /// The GPU rail on the same full ticks, so the overlap test below compares
+    /// medians of one period rather than a median against an instant.
+    private var gpuWindow: [Double] = []
     private let railWindow = 15
+
+    /// Whether PPMC has been seen carrying the GPU's watts too. Latched for the
+    /// session: it is a property of the chip, not of the moment.
+    private var cpuRailIncludesGPU = false
+
+    /// Does this window prove PPMC and the GPU rail overlap?
+    ///
+    /// Two disjoint rails cannot add up to more than the whole machine, and the
+    /// whole machine also feeds a display, memory and radios. On the M5 Pro this
+    /// app was calibrated on they never did: PPMC is the CPU package alone (all
+    /// cores: +13.3 W, pure Metal: +1.5 W), and the ledger never overflowed. On a
+    /// MacBook Neo (A18 Pro) PPMC read 7.4 W and the GPU 3.8 W against a 10.6 W
+    /// total that the gas gauge confirmed within 2 %, on every tick: the GPU was
+    /// being claimed twice, once as itself and again as "system processes".
+    ///
+    /// A full window and a margin over rail noise, so a single spike cannot latch.
+    static func railsOverlap(ppmc: Double, gpu: Double, total: Double, samples: Int,
+                             window: Int) -> Bool {
+        samples >= window && ppmc + gpu > total + 0.25
+    }
+
+    /// The CPU's own share of PPMC: all of it where the rails are disjoint, PPMC
+    /// less the GPU where they have been seen to overlap.
+    static func cpuOnlyRail(ppmc: Double, gpu: Double?, includesGPU: Bool) -> Double {
+        includesGPU ? max(0, ppmc - (gpu ?? 0)) : ppmc
+    }
 
     private static func median(_ xs: [Double]) -> Double? {
         guard !xs.isEmpty else { return nil }
@@ -751,9 +780,22 @@ public final class PowerMonitor {
         // The share of the two medians, applied to the displayed total, so the
         // buckets are consistent with the bar they are drawn in by construction.
         // Clamped at 1: the CPU cannot draw more than the whole machine.
+        if full, let g = gpu, g.isFinite, g >= 0 {
+            gpuWindow.append(g)
+            if gpuWindow.count > railWindow { gpuWindow.removeFirst() }
+        }
+        if !cpuRailIncludesGPU, let mc = Self.median(ppmcWindow),
+           let mg = Self.median(gpuWindow), let mp = Self.median(pstrWindow),
+           Self.railsOverlap(ppmc: mc, gpu: mg, total: mp,
+                             samples: min(ppmcWindow.count, gpuWindow.count, pstrWindow.count),
+                             window: railWindow) {
+            cpuRailIncludesGPU = true
+        }
         let smoothedCPURail: Double? = {
-            guard let mc = Self.median(ppmcWindow), let mp = Self.median(pstrWindow),
+            guard let raw = Self.median(ppmcWindow), let mp = Self.median(pstrWindow),
                   mp > 0.05 else { return nil }
+            let mc = Self.cpuOnlyRail(ppmc: raw, gpu: Self.median(gpuWindow),
+                                      includesGPU: cpuRailIncludesGPU)
             // Scaled by the measured cost of a PPMC watt at the battery. Taking
             // PPMC at face value filed 17-25% of CPU power as unattributed.
             return min(1, mc / mp) * smoothed * SubsystemRails.cpuRailToBattery
@@ -909,6 +951,7 @@ public final class PowerMonitor {
         smoother.reset()
         pstrWindow.removeAll()
         ppmcWindow.removeAll()
+        gpuWindow.removeAll()
         fastSincePublish.removeAll()
         pstrSincePublish.removeAll()
         lastSweep = nil
