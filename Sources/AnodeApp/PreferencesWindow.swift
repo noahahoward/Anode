@@ -718,22 +718,6 @@ private final class MenuBarPane: Pane {
         if let token = placementToken { NotificationCenter.default.removeObserver(token) }
     }
 
-    /// The sentence for a placement, or nil when there is nothing worth saying.
-    static func placementText(_ p: MenuBarWidgetController.Placement) -> String? {
-        switch p {
-        case .unknown, .allShown:
-            return nil
-        case let .partlyHidden(shown, total):
-            return "\u{26A0}\u{FE0E} macOS is showing \(shown) of \(total) widgets \u{2014} the menu bar "
-                + "is full, so the rest were dropped. Anode has already shortened them; uncheck a "
-                + "few, or quit another menu bar app, to see them all."
-        case .noneShown:
-            return "\u{26A0}\u{FE0E} macOS is not showing any Anode widget. The menu bar is full, or "
-                + "Anode is off under System Settings \u{203A} Menu Bar \u{203A} Allow in the Menu Bar. "
-                + "Anode keeps its Dock icon until one is visible."
-        }
-    }
-
     override func loadView() {
         choices = PreferencesWindowController.metricProvider?()
             ?? PreferencesWindowController.fallbackMetrics
@@ -839,7 +823,7 @@ private final class MenuBarPane: Pane {
 
     private func refreshPlacement() {
         let text = settings.menuBarWidgetsEnabled
-            ? Self.placementText(MenuBarWidgetController.lastPlacement) : nil
+            ? MenuBarWidgetController.lastPlacement.settingsNote : nil
         placementNote.stringValue = text ?? ""
         placementNote.isHidden = text == nil
         placementButton.isHidden = text == nil
@@ -874,5 +858,27 @@ private final class MenuBarPane: Pane {
         // below triggers refresh() which reads back from it.
         PreferencesWindowController.onWidgetsChanged?(final)
         settings.menuBarWidgets = final
+    }
+}
+
+extension MenuBarWidgetController.Placement {
+    /// The sentence for a placement, or nil when there is nothing worth saying.
+    var settingsNote: String? {
+        switch self {
+        case .unknown, .allShown:
+            return nil
+        case let .partlyHidden(shown, total):
+            return "\u{26A0}\u{FE0E} macOS is showing \(shown) of \(total) widgets \u{2014} the menu bar "
+                + "is full, so the rest were dropped. Anode has already shortened them; uncheck a "
+                + "few, or quit another menu bar app, to see them all."
+        case .noneShown:
+            return "\u{26A0}\u{FE0E} macOS is not showing any Anode widget \u{2014} the menu bar is "
+                + "full, even with Anode shrunk to one item. Quit another menu bar app to make room. "
+                + "Anode keeps its Dock icon until one is visible."
+        case .notAllowed:
+            return "\u{26A0}\u{FE0E} macOS is hiding Anode\u{2019}s widgets: Anode is switched off under "
+                + "System Settings \u{203A} Menu Bar \u{203A} Allow in the Menu Bar. Turn it on and "
+                + "they appear straight away."
+        }
     }
 }

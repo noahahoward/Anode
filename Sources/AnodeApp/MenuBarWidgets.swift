@@ -120,33 +120,42 @@ public final class MenuBarWidgetController: NSObject, NSMenuDelegate {
 
     static let historyCap = 60   // sparkline samples kept per metric
 
+    /// Total side padding of a compact text item, against AppKit's 16.
+    static let compactPadding: CGFloat = 6
+
     // ── Placement ───────────────────────────────────────────────────────────────
     //
     // A status item that macOS declines to show is indistinguishable, from every
     // property this app sets, from one that is showing: it has a button, an
     // image, a length, and `isVisible == true`. The only witness is the window
-    // AppKit gives the button — which is either never placed (zero height, see
-    // WIDGET-BUG.md), parked off every screen, or sitting behind a notch.
+    // AppKit gives the button, and it says one of two very different things.
     //
-    // That is the everyday case on a narrow menu bar, not an edge case. On a
-    // MacBook Neo (Mac17,5: 13", no notch, a far shorter bar than the 16" this
-    // was built on) the system's own items plus a few third-party ones fill the
-    // bar, and macOS packs right to left and silently drops whatever reaches the
-    // left end — which is where a freshly launched app's items land. No overflow
-    // menu, no error. The widgets simply never appear.
+    // MEASURED on a MacBook Neo (Mac17,5, macOS 27), with a bare probe and with
+    // this app, not inferred:
     //
-    // So the controller now LOOKS after it builds, and squeezes when it must:
-    // labels go first, then everything folds into one item that still carries
-    // the headline reading and opens the full panel. If even one item cannot be
-    // placed, it says so, so the app can keep a Dock tile rather than leave the
-    // user with nothing to click.
+    //   Not allowed   System Settings › Menu Bar › Allow in the Menu Bar has the
+    //                 app switched off. Every item sits at (0, 0, w, 0) — zero
+    //                 height, never laid out — for as long as the switch is off.
+    //                 This is what WIDGET-BUG.md first saw and put down to
+    //                 LaunchServices: the switch is remembered per bundle PATH, so
+    //                 a copy anywhere else "fixed" it.
+    //   Overflow      The bar is full. Items that do not fit are parked below the
+    //                 screen at (0, -h, w, h), full height; the last item to fit
+    //                 can also be stacked on the frame of its neighbour.
+    //
+    // Only overflow is helped by squeezing, so the two are kept apart: labels go
+    // first, then everything folds into one item that still carries the headline
+    // reading and opens the full panel. A switched-off app is told how to switch
+    // it back on instead, and is watched so the widgets appear the moment it is.
+    // Either way the app keeps a Dock tile while nothing is visible, so there is
+    // always something to click.
 
     /// How far the bar has had to squeeze to be seen. Only ever tightens within a
     /// screen configuration; a screen change or a new arrangement starts over.
     enum Density: Int, Comparable {
         /// As configured.
         case full
-        /// Labels dropped, padding trimmed: roughly 40 % narrower.
+        /// Labels dropped, value at the labelled size, AppKit padding trimmed.
         case compact
         /// One item: the app's glyph plus the first widget's reading.
         case single
@@ -161,8 +170,24 @@ public final class MenuBarWidgetController: NSObject, NSMenuDelegate {
         case unknown
         case allShown
         case partlyHidden(shown: Int, total: Int)
-        /// Nothing this app put in the menu bar is on screen.
+        /// Nothing this app put in the menu bar is on screen: the bar is full.
         case noneShown
+        /// macOS is withholding every item — Anode is switched off under
+        /// System Settings › Menu Bar › Allow in the Menu Bar.
+        case notAllowed
+
+        /// Whether the widgets can serve as the app's only door.
+        public var isReachable: Bool { self != .noneShown && self != .notAllowed }
+    }
+
+    /// What one item's window says about it.
+    enum ItemState: Equatable {
+        case shown
+        /// Laid out, but somewhere nobody can see it: the overflow case.
+        case parked
+        /// Never laid out at all: the not-allowed case, or a look taken before
+        /// AppKit got to it.
+        case unplaced
     }
 
     /// One screen, reduced to what placement needs: its frame, and the span of
@@ -192,16 +217,23 @@ public final class MenuBarWidgetController: NSObject, NSMenuDelegate {
         }
     }
 
-    /// Is a status item whose window has `frame` actually visible on one of
-    /// `screens`? Zero height is the never-placed case; off every screen is the
-    /// overflow case; across a notch is the hidden-behind-the-camera case.
+    /// Is a status item whose window has `frame` sitting in the menu bar of one
+    /// of `screens`? Zero height is the never-placed case; off every screen or
+    /// down in the bottom half is the overflow case; across a notch is the
+    /// hidden-behind-the-camera case.
+    ///
+    /// The bar is judged by the top HALF of a screen rather than by the screen
+    /// itself, because an auto-hidden menu bar is allowed to slide its items up
+    /// past the top edge while they are still very much in the bar — and a parked
+    /// overflow item at (0, -h) is horizontally on screen and must not pass.
     static func isPlaced(_ frame: NSRect?, on screens: [ScreenGeometry]) -> Bool {
         guard let f = frame, f.width >= 1, f.height >= 1 else { return false }
         return screens.contains { s in
-            let seen = s.frame.intersection(f)
             // Wholly on this screen horizontally: an item half off the edge is
             // an item macOS has pushed out of the bar.
-            guard !seen.isNull, seen.width >= f.width - 1, seen.height >= 1 else { return false }
+            guard f.minX >= s.frame.minX - 1, f.maxX <= s.frame.maxX + 1,
+                  f.minY >= s.frame.midY, f.minY <= s.frame.maxY + f.height
+            else { return false }
             if let n = s.notch, f.maxX > n.lowerBound + 1, f.minX < n.upperBound - 1 {
                 return false
             }
@@ -209,23 +241,37 @@ public final class MenuBarWidgetController: NSObject, NSMenuDelegate {
         }
     }
 
-    /// Both witnesses. The frame catches an item never laid out, parked off
-    /// screen or behind a notch. `isVisible` catches the case a MacBook Neo
-    /// actually lives in: on a short bar the frontmost app's own menus (Finder's
-    /// included) run into the status items, and macOS takes the ones they reach
-    /// off screen without necessarily moving them. An item on screen is a window
-    /// ordered in, so this cannot fail for a widget that is showing.
-    static func isShown(window: NSWindow?, on screens: [ScreenGeometry]) -> Bool {
-        guard let window, window.isVisible else { return false }
-        return isPlaced(window.frame, on: screens)
+    /// Every item's state, in the order given. Pure, for tests.
+    ///
+    /// Two items of ONE app never legitimately overlap, so an item stacked on a
+    /// neighbour that is already counted is parked too: that is how the last
+    /// slot before the frontmost app's menus looks when two items compete for it.
+    static func states(frames: [NSRect?], windowsVisible: [Bool],
+                       on screens: [ScreenGeometry]) -> [ItemState] {
+        var kept: [NSRect] = []
+        return zip(frames, windowsVisible).map { frame, visible in
+            guard let f = frame, f.width >= 1, f.height >= 1 else { return .unplaced }
+            guard visible, isPlaced(f, on: screens) else { return .parked }
+            if kept.contains(where: { $0.intersection(f).width > 1 }) { return .parked }
+            kept.append(f)
+            return .shown
+        }
     }
 
-    /// Classify a set of per-item verdicts.
-    static func placement(shown: Int, total: Int) -> Placement {
-        guard total > 0 else { return .unknown }
-        if shown >= total { return .allShown }
-        if shown == 0 { return .noneShown }
-        return .partlyHidden(shown: shown, total: total)
+    /// Classify a set of per-item states.
+    static func placement(_ states: [ItemState]) -> Placement {
+        guard !states.isEmpty else { return .unknown }
+        let shown = states.filter { $0 == .shown }.count
+        if shown == states.count { return .allShown }
+        if shown > 0 { return .partlyHidden(shown: shown, total: states.count) }
+        return states.allSatisfy { $0 == .unplaced } ? .notAllowed : .noneShown
+    }
+
+    /// Squeezing only helps a bar that is full, which is the one case with items
+    /// laid out where nobody can see them. Squeezing a switched-off app would
+    /// just leave it one item wide when the user switches it back on.
+    static func shouldSqueeze(_ states: [ItemState]) -> Bool {
+        states.contains(.parked)
     }
 
     /// The arrangement actually put in the bar at `density`. Pure, for tests.
@@ -259,7 +305,7 @@ public final class MenuBarWidgetController: NSObject, NSMenuDelegate {
     /// True unless the widgets are known to be invisible. Unknown counts as
     /// reachable: it is the state before the first look, and every launch passes
     /// through it.
-    public static var menuBarIsReachable: Bool { lastPlacement != .noneShown }
+    public static var menuBarIsReachable: Bool { lastPlacement.isReachable }
 
     public private(set) var placement: Placement = .unknown {
         didSet {
@@ -339,7 +385,15 @@ public final class MenuBarWidgetController: NSObject, NSMenuDelegate {
         workspaceObservers.append(workspace.addObserver(
             forName: NSWorkspace.didActivateApplicationNotification,
             object: nil, queue: .main) { [weak self] _ in
-                self?.schedulePlacementCheck(after: 1)
+                guard let self else { return }
+                // Leaving System Settings is the likeliest moment for a
+                // switched-off app to have been switched back on, and fresh items
+                // are placed whether or not macOS revisits the old ones.
+                if self.placement == .notAllowed {
+                    self.rebuild()
+                } else {
+                    self.schedulePlacementCheck(after: 1)
+                }
             })
         onMain { self.rebuild() }
     }
@@ -430,6 +484,8 @@ public final class MenuBarWidgetController: NSObject, NSMenuDelegate {
         for entry in items { NSStatusBar.system.removeStatusItem(entry.item) }
         items.removeAll()
         placementCheck?.cancel()
+        // New items slide in afresh; nothing seen of the old ones carries over.
+        unsettledLooks = 0
         // Master switch off: the teardown above IS the whole job. Everything below
         // creates status items, and `items` staying empty means render() and
         // refresh() have nothing to walk, so no cost is paid anywhere downstream.
@@ -490,7 +546,7 @@ public final class MenuBarWidgetController: NSObject, NSMenuDelegate {
         DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
     }
 
-    /// Look at where macOS put the items, and squeeze if it hid any.
+    /// Look at where macOS put the items, and squeeze if the bar is full.
     private func checkPlacement() {
         guard isEnabled, !items.isEmpty else { return }
         // Never rebuild out from under an open panel; look once it has closed.
@@ -498,28 +554,72 @@ public final class MenuBarWidgetController: NSObject, NSMenuDelegate {
             schedulePlacementCheck(after: 2)
             return
         }
-        // Frontmost with a menu bar of our own: see the resign-active observer.
-        // An `.accessory` app has no menus to collide with, so it is looked at.
-        if NSApp.isActive && NSApp.activationPolicy() == .regular { return }
-        // An auto-hidden menu bar is off screen by design, items and all.
-        guard NSMenu.menuBarVisible() else {
+        let screens = NSScreen.screens.map { ScreenGeometry($0) }
+        let windows = items.map { $0.item.button?.window }
+        let states = Self.states(frames: windows.map { $0?.frame },
+                                 windowsVisible: windows.map { $0?.isVisible ?? false },
+                                 on: screens)
+        let verdict = Self.placement(states)
+        Self.debugDump(items, density: density, verdict: "\(verdict)")
+
+        // Deliberately NOT gated on `NSMenu.menuBarVisible()`. It is false for the
+        // whole life of an auto-hidden menu bar, and gating on it meant a Mac set
+        // to hide the bar never looked at all: never squeezed, never said a word.
+        // Measured on macOS 27: the items keep their real frames while the bar is
+        // hidden, and `isPlaced` accepts a bar slid up past the top edge.
+
+        if verdict == .allShown {
+            unsettledLooks = 0
+            placement = .allShown
+            return
+        }
+
+        // Nothing but "all shown" is believed on one look. Items slide in: 1.5 s
+        // after a rebuild on a MacBook Neo, three were mid-flight and six still
+        // sat at (0, -30) — overflow, to a single look — and settled a moment
+        // later with all nine in the bar. Squeezing on that would have cost the
+        // labels for the rest of the session. The same goes for zero height,
+        // which is also what a look taken before AppKit's first layout sees.
+        unsettledLooks += 1
+        guard unsettledLooks >= 2 else {
+            schedulePlacementCheck(after: 2)
+            return
+        }
+
+        if verdict == .notAllowed {
+            // Zero height everywhere does not depend on whose menus are showing,
+            // so it is judged even while this app is frontmost.
+            placement = .notAllowed
             schedulePlacementCheck(after: 5)
             return
         }
-        let screens = NSScreen.screens.map { ScreenGeometry($0) }
-        let shown = items.filter { entry in
-            Self.isShown(window: entry.item.button?.window, on: screens)
-        }.count
-        if shown < items.count, let next = density.tighter {
+
+        // Frontmost with a menu bar of our own: our menus hide whatever items
+        // they reach, which says nothing about the bar. See the resign-active
+        // observer. An `.accessory` app has no menus to collide with. Anything
+        // laid out at all does mean the switch is on, though — the likeliest
+        // moment for that is the user coming straight back from turning it on.
+        if NSApp.isActive && NSApp.activationPolicy() == .regular {
+            if placement == .notAllowed { placement = .unknown }
+            unsettledLooks = 0
+            return
+        }
+
+        if Self.shouldSqueeze(states), let next = density.tighter {
             density = next
+            unsettledLooks = 0
             rebuild()     // schedules the next look
             return
         }
-        placement = Self.placement(shown: shown, total: items.count)
+        placement = verdict
+        unsettledLooks = 0
         // Space can come back without any notification saying so (another menu
         // bar app quits). Looking again costs a few frame reads.
-        if placement != .allShown { schedulePlacementCheck(after: 30) }
+        schedulePlacementCheck(after: 30)
     }
+
+    /// Consecutive looks that found something not shown. See `checkPlacement`.
+    private var unsettledLooks = 0
 
     /// One-shot dump of what the menu bar ACTUALLY holds, gated behind
     /// ANODE_WIDGET_DEBUG=1 so it costs a getenv on rebuild and nothing else.
@@ -537,7 +637,7 @@ public final class MenuBarWidgetController: NSObject, NSMenuDelegate {
     /// isVisible — so an item a user once cmd-dragged off the bar stays off,
     /// permanently, with the config still saying enabled.
     static func debugDump(_ items: [(config: WidgetConfig, item: NSStatusItem)],
-                          density: Density = .full) {
+                          density: Density = .full, verdict: String? = nil) {
         guard ProcessInfo.processInfo.environment["ANODE_WIDGET_DEBUG"] == "1" else { return }
         let bar = NSStatusBar.system
         // stderr, not stdout: stdout is block-buffered when redirected to a file,
@@ -556,16 +656,18 @@ public final class MenuBarWidgetController: NSObject, NSMenuDelegate {
             total += max(w, 0)
             // The window frame is the line that matters: zero height means the
             // item was never placed, whatever every other column says.
-            print(String(format: "%2d %-28s style=%-13s visible=%@ len=%6.1f btnW=%6.1f img=%@ win=%@",
+            print(String(format: "%2d %-28s style=%-13s visible=%@ winVisible=%@ len=%6.1f btnW=%6.1f img=%@ win=%@",
                          i, (e.config.metricID as NSString).utf8String!,
                          (e.config.style.rawValue as NSString).utf8String!,
                          e.item.isVisible ? "YES" : "NO ",
+                         (b?.window?.isVisible ?? false) ? "YES" : "NO ",
                          e.item.length, w,
                          img.map { String(format: "%.0fx%.0f", $0.size.width, $0.size.height) } ?? "NIL",
                          b?.window.map { NSStringFromRect($0.frame) } ?? "NIL"))
         }
         print(String(format: "total widget width %.0f pt   density %@", total,
                      String(describing: density)))
+        if let verdict { print("placement check: \(verdict)") }
         print("──────────────────────────────────────────────────────────────────")
     }
 
@@ -703,13 +805,20 @@ public final class MenuBarWidgetController: NSObject, NSMenuDelegate {
 
             button.attributedTitle = NSAttributedString()
             button.imagePosition = .imageOnly
-            button.image = WidgetRenderer.textImage(
+            let image = WidgetRenderer.textImage(
                 label: label,
                 // No "*" here. It means "gain not yet calibrated against the gas
                 // gauge", a condition that clears within ~60 s — but a bare asterisk
                 // beside a number in the menu bar is uninterpretable and reads as an
                 // error. The tooltip carries it, where there is room to say so.
-                value: text)
+                value: text, compact: density == .compact)
+            button.image = image
+            // AppKit pads every variable-length item by 8 pt a side — 16 pt per
+            // widget, more than a whole label saves. A squeezed bar sizes the item
+            // to its drawing instead, which is where compact's width comes from.
+            entry.item.length = density == .compact
+                ? ceil(image.size.width) + Self.compactPadding
+                : NSStatusItem.variableLength
         case .group:
             break   // handled above, before this switch
         case .bar, .sparkline, .dot:
@@ -884,10 +993,15 @@ enum WidgetRenderer {
     /// item's text would sit, and the label is stacked above it. Centring the pair
     /// as a block instead pushes the value up and it no longer lines up with its
     /// neighbours — which is exactly what the attributedTitle version did wrong.
-    static func textImage(label: String?, value: String) -> NSImage {
+    ///
+    /// `compact` is the squeezed bar's single line: the labelled value's own
+    /// 10.5 pt rather than 12, because the label sits ABOVE the value and so
+    /// dropping it narrows nothing — at 12 pt a "compact" bar measured wider than
+    /// the full one it replaced (474 pt against 447 on a MacBook Neo).
+    static func textImage(label: String?, value: String, compact: Bool = false) -> NSImage {
         let h = NSStatusBar.system.thickness          // 22pt today, but ask, do not assume
-        let valueFont = NSFont.monospacedDigitSystemFont(ofSize: label == nil ? 12 : 10.5,
-                                                         weight: .semibold)
+        let valueFont = NSFont.monospacedDigitSystemFont(
+            ofSize: label == nil && !compact ? 12 : 10.5, weight: .semibold)
         let labelFont = NSFont.systemFont(ofSize: 8, weight: .medium)
 
         let vAttrs: [NSAttributedString.Key: Any] = [.font: valueFont, .foregroundColor: NSColor.black]
@@ -898,7 +1012,7 @@ enum WidgetRenderer {
 
         let vSize = vStr.size()
         let lSize = lStr?.size() ?? .zero
-        let pad: CGFloat = 3
+        let pad: CGFloat = compact ? 0 : 3
         let w = max(vSize.width, lSize.width) + pad * 2
 
         let img = NSImage(size: NSSize(width: ceil(w), height: h), flipped: false) { _ in
