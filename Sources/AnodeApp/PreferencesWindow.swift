@@ -352,14 +352,13 @@ private final class GeneralPane: Pane {
         SourceCheckout.recordedPath(in: .main).map(SourceCheckout.atPath)
     }
 
-    /// Reads the checkout WITHOUT fetching, so opening this window never blocks
-    /// on the network. The answer is still true, only older — pressing Check is
-    /// what goes and looks.
-    private func refreshCheckoutState() {
-        guard let c = checkout() else { return checkoutState = .missing }
-        checkoutState = c.state()
-    }
-
+    /// Goes and looks: fetches, then reads the checkout's state.
+    ///
+    /// The ONLY thing that touches the source folder. Opening this window
+    /// deliberately does not — see `refreshLayout`, which explains what reading
+    /// it unasked cost. Both halves run off the main thread, because a fetch
+    /// talks to a server and a settings window that freezes while someone's
+    /// Wi-Fi times out is a worse bug than a stale count.
     @objc private func checkForUpdates() {
         guard !checking, let c = checkout() else {
             checkoutState = .missing
@@ -507,15 +506,30 @@ private final class GeneralPane: Pane {
         // The version is always true; the checkout's state may not have been
         // looked at yet, and "unknown" is said rather than implied.
         updateStatus.stringValue = buildDescription
-        if checkoutState == nil { refreshCheckoutState() }
-        let state = checkoutState ?? .missing
-        updateNote.stringValue = checking ? "Checking…" : SourceCheckout.summary(state)
-        checkButton.isEnabled = !checking && state != .missing && state != .notARepository
-        updateButton.isEnabled = !checking && state.isUpdatable
+        // The checkout is NOT read when this window opens.
+        //
+        // Reading it runs git in the source folder, and a checkout under
+        // Downloads, Desktop or Documents is behind a TCC consent dialog. Raising
+        // one unasked is how this app stranded itself: the prompt goes
+        // unanswered, and until it is answered the app cannot show ANY window —
+        // frontmost, menu bar drawn, nothing on screen, cleared only by
+        // relaunching. It also blocks the Dock from unhiding, so the machine
+        // looks broken rather than the app.
+        //
+        // Pressing Check is the user asking, with this window already up to host
+        // the dialog. `nil` means "not looked at", which is NOT `.missing` — one
+        // is a question nobody asked, the other is an answer.
+        let state = checkoutState
+        updateNote.stringValue = checking
+            ? "Checking…"
+            : state.map(SourceCheckout.summary) ?? "Not checked yet."
+        checkButton.isEnabled = !checking
+            && state != .missing && state != .notARepository
+        updateButton.isEnabled = !checking && (state?.isUpdatable ?? false)
         // Hidden rather than permanently greyed: on a machine whose checkout is
         // gone there is no update path at all, and a dead button is a worse
         // answer than none. The sentence above already explains why.
-        updateButton.isHidden = state == .missing || state == .notARepository
+        updateButton.isHidden = state == nil || state == .missing || state == .notARepository
     }
 
     @objc private func intervalChanged() {

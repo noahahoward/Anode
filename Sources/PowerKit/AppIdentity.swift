@@ -84,6 +84,14 @@ public enum AppResolver {
             // Finder shows the BUNDLE FILENAME, so that is what a person recognises.
             // FileManager.displayName honours localized bundle names too, and falls
             // back to the filename, so it is the closest match to what the user sees.
+            // Both reads below touch the bundle on disk. Under a gated folder
+            // that raises a consent prompt for a LABEL, so the bundle filename —
+            // already the fallback, and already what Finder shows for most apps —
+            // is used instead. See `ProtectedPath`.
+            guard !ProtectedPath.isGated(bundlePath) else {
+                return AppIdentity(name: fallback, bundlePath: bundlePath,
+                                   bundleID: nil, isApp: true)
+            }
             let display = FileManager.default.displayName(atPath: bundlePath)
             let name = display.hasSuffix(".app") ? String(display.dropLast(4)) : display
 

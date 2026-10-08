@@ -333,6 +333,9 @@ public struct BundleFacts: Equatable, Sendable {
     /// `Contents/`, and `Bundle` also caches instances process-wide, which is not
     /// wanted for a path we may be looking at once.
     static func read(bundlePath: String) -> BundleFacts {
+        // `.empty` rather than a consent prompt for someone else's bundle — the
+        // same answer an unreadable Info.plist already gives. See `ProtectedPath`.
+        guard !ProtectedPath.isGated(bundlePath) else { return .empty }
         let candidates = ["\(bundlePath)/Contents/Info.plist", "\(bundlePath)/Info.plist"]
         guard let data = candidates.lazy.compactMap({ FileManager.default.contents(atPath: $0) }).first,
               let plist = try? PropertyListSerialization.propertyList(from: data, format: nil),
@@ -420,6 +423,9 @@ enum CodeSignature {
 
     static func origin(ofExecutableAt path: String) -> CodeOrigin {
         guard !path.isEmpty else { return .unknown }
+        // Signing provenance is not worth a consent dialog — see `ProtectedPath`.
+        // `.unknown` is the honest answer: we did not look.
+        guard !ProtectedPath.isGated(path) else { return .unknown }
         var code: SecStaticCode?
         guard SecStaticCodeCreateWithPath(URL(fileURLWithPath: path) as CFURL, [], &code)
                 == errSecSuccess, let code else { return .unknown }
