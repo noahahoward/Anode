@@ -121,4 +121,50 @@ enum AppPresence {
     static func policyWithWindowHidden(widgetsEnabled: Bool) -> NSApplication.ActivationPolicy {
         widgetsEnabled ? .accessory : .regular
     }
+
+    /// Activation policy for the app as it stands right now.
+    ///
+    /// ANY window, not the main one: `.accessory` takes the application menu
+    /// with the Dock tile, so dropping to it while Settings is still up would
+    /// leave Settings without ⌘W, ⌘Q or a menu bar.
+    static func policy(anyWindowOpen: Bool, widgetsReachable: Bool)
+        -> NSApplication.ActivationPolicy {
+        anyWindowOpen ? .regular : policyWithWindowHidden(widgetsEnabled: widgetsReachable)
+    }
+
+    /// Whether one of the app's own windows is open.
+    ///
+    /// Titled only: the menu bar widgets are windows too, always visible, and
+    /// counting them would mean the tile never left. A miniaturized window
+    /// counts — it lives IN the Dock, and taking the tile away takes away the
+    /// one control macOS leaves for getting it back.
+    static var anyWindowOpen: Bool {
+        NSApp.windows.contains {
+            $0.styleMask.contains(.titled) && ($0.isVisible || $0.isMiniaturized)
+        }
+    }
+
+    /// Bring the activation policy in line with what is on screen.
+    ///
+    /// Called after a window closes or the widgets change, and ALWAYS applied
+    /// on a later runloop turn. Two reasons: a closing window still reports
+    /// itself visible while `willClose` is being delivered, and a policy change
+    /// is kept out of the turn that orders a window in or out — the pattern
+    /// `NSWindow.bringForward` exists to avoid from the other side.
+    ///
+    /// This only ever takes the tile away or hands it back for a windowless
+    /// app. Going `.regular` in order to SHOW a window is `bringForward`'s job,
+    /// because that is the direction where order matters.
+    static func settle() {
+        DispatchQueue.main.async {
+            // A window is on its way in under a policy just set for it;
+            // dropping to `.accessory` now would present it with no menu.
+            guard !WindowPresence.isPresenting else { return }
+            let wanted = policy(
+                anyWindowOpen: anyWindowOpen,
+                widgetsReachable: Settings.shared.menuBarWidgetsEnabled
+                    && MenuBarWidgetController.menuBarIsReachable)
+            if NSApp.activationPolicy() != wanted { NSApp.setActivationPolicy(wanted) }
+        }
+    }
 }

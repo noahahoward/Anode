@@ -464,11 +464,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
     /// point; switching them on again while the window is closed hands the tile
     /// back and returns the app to what it is — a menu bar tool.
     private func applyMenuBarSwitch() {
-        let on = Settings.shared.menuBarWidgetsEnabled
-        widgets.setEnabled(on)
-        guard !main.window.isVisible else { return }
-        NSApp.setActivationPolicy(AppPresence.policyWithWindowHidden(
-            widgetsEnabled: on && MenuBarWidgetController.menuBarIsReachable))
+        widgets.setEnabled(Settings.shared.menuBarWidgetsEnabled)
+        AppPresence.settle()
     }
 
     /// Whether the user has already been told, this session, that macOS is not
@@ -683,8 +680,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         timer?.tolerance = interval * 0.1
     }
 
+    /// See `StrandingLog`. Main-thread only, like the tick that feeds it.
+    private var strandingLog = StrandingLog()
+
     func refresh() {
         guard let m = monitor else { return }
+        // The cheap half first: a closed window cannot be stranded, and that is
+        // the state this app spends most of its life in, so the hidden tick pays
+        // one property read and never asks the window server anything.
+        if let event = strandingLog.observe(
+            stranded: main.window.isVisible && main.window.isStranded) {
+            let w = main.window
+            StrandingLog.append(StrandingLog.line(
+                for: event,
+                context: "occlusion=\(w.occlusionState.rawValue) active=\(NSApp.isActive) "
+                    + "screens=\(NSScreen.screens.count) screen=\(w.screen?.localizedName ?? "nil")"))
+        }
         // Read visibility on the main thread; AppKit state is not thread-safe.
         let visible = windowIsWorthDrawing
         // Read beside it, for the same reason the interval is: one value used by
@@ -2425,7 +2436,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
     /// thing again. LaunchServices sends the reopen event whatever the activation
     /// policy is, so this works while the app is `.accessory` and invisible.
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows: Bool) -> Bool {
-        if !hasVisibleWindows { main.show() }
+        // `hasVisibleWindows` is AppKit's opinion, and it is `true` for a window
+        // stranded on a Space that no longer exists — which made the Dock icon
+        // the third control that could not open the app. See `WindowPresence`.
+        if !hasVisibleWindows || main.window.isStranded { main.show() }
         return true
     }
 
@@ -2692,8 +2706,19 @@ app.delegate = delegate
 // Before run(), not inside applicationDidFinishLaunching: the policy set here is
 // the one the first frame is drawn under, so a menu-bar-only start never shows a
 // Dock tile at all rather than showing one and taking it away.
+//
+// From here on the policy follows the windows: `.regular` while one is open,
+// because an `.accessory` app gets NO application menu, and `.accessory` once
+// the last one closes and there is a menu bar widget to click instead. See
+// `AppPresence.settle` and `NSWindow.bringForward` for how the two directions
+// are kept out of each other's runloop turn.
 app.setActivationPolicy(
     AppPresence.launchActivationPolicy(
         startInMenuBarOnly: Settings.shared.startInMenuBarOnly,
         widgetsEnabled: Settings.shared.menuBarWidgetsEnabled))
+// Settings, the forecast check and anything else titled: when the last of them
+// closes with the main window already hidden, the tile goes with it.
+NotificationCenter.default.addObserver(
+    forName: NSWindow.willCloseNotification, object: nil, queue: .main
+) { _ in AppPresence.settle() }
 app.run()

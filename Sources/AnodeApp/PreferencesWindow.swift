@@ -104,8 +104,7 @@ public final class PreferencesWindowController: NSWindowController {
     public func show() {
         guard let w = window else { return }
         if !w.isVisible { w.center() }
-        NSApp.activate(ignoringOtherApps: true)
-        w.makeKeyAndOrderFront(nil)
+        w.bringForward()
     }
 }
 

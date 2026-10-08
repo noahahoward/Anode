@@ -108,6 +108,23 @@ final class AppPresenceTests: XCTestCase {
                        "the tile is the only affordance left once the widgets are gone")
     }
 
+    /// The tile follows the windows, ALL of them: closing the main window while
+    /// Settings is still up must not take the application menu out from under
+    /// Settings, which is what dropping to `.accessory` does.
+    func testAnyOpenWindowKeepsTheDockTile() {
+        for widgets in [false, true] {
+            XCTAssertEqual(AppPresence.policy(anyWindowOpen: true, widgetsReachable: widgets),
+                           .regular)
+        }
+    }
+
+    func testWithEveryWindowClosedTheTileFollowsTheWidgets() {
+        XCTAssertEqual(AppPresence.policy(anyWindowOpen: false, widgetsReachable: true),
+                       .accessory)
+        XCTAssertEqual(AppPresence.policy(anyWindowOpen: false, widgetsReachable: false),
+                       .regular, "no window and no widget leaves only the tile")
+    }
+
     /// Stated as one property over the whole input space rather than as four
     /// examples: for every combination, something is clickable.
     func testSomethingIsAlwaysClickableForEveryCombinationOfSettings() {

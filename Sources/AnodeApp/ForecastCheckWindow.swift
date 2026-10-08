@@ -88,8 +88,7 @@ final class ForecastCheckWindowController: NSWindowController {
 
     func show() {
         showWindow(nil)
-        window?.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
+        window?.bringForward()
         reload()
     }
 

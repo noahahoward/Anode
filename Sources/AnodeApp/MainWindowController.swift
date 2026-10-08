@@ -88,6 +88,8 @@ final class MainWindowController: NSObject {
         window.center()
         window.minSize = NSSize(width: 760, height: 500)
         window.setFrameAutosaveName("AnodeMain")
+        // See `WindowPresence` for what happened to a window without this.
+        window.followActiveSpace()
 
 
         let content = NSView()
@@ -372,11 +374,16 @@ final class MainWindowController: NSObject {
             window.setFrame(fitted, display: false)
         }
 
-        // Back to a normal app before showing: an .accessory app cannot take key
-        // focus properly and gets no application menu, so Cmd-Q would be dead.
-        if NSApp.activationPolicy() != .regular {
-            NSApp.setActivationPolicy(.regular)
-        }
+        // NO ACTIVATION POLICY CHANGE HERE. The app is `.accessory` while it has
+        // no window and has to be `.regular` to show one, and this used to set
+        // `.regular` and call `makeKeyAndOrderFront` in the SAME runloop turn.
+        // After days of that cycling the app was found unable to vend any window
+        // at all: frontmost, menu bar drawn, AX reporting zero windows, and
+        // WindowServer holding the real one at a valid frame and full alpha with
+        // onscreen=false. What was MEASURED in that process was a window on no
+        // Space (see `WindowPresence`); the same-turn flip was suspected and
+        // never shown. Both are covered in one place: `bringForward` sets the
+        // policy, then presents on the next turn.
         // A MINIATURIZED window is not restored by orderFront — that is what
         // `deminiaturize` is for, and the two are not interchangeable. Without
         // this, clicking a widget set the policy, took focus and put the app's
@@ -388,9 +395,11 @@ final class MainWindowController: NSObject {
         // when the window hid took the Dock tile away too — so the one control
         // macOS leaves for a minimised window was gone as well, and relaunching
         // was the only way back. Reported as the app being "broken all day".
-        if window.isMiniaturized { window.deminiaturize(nil) }
-        window.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
+        //
+        // And a window stranded on a Space that no longer exists is not restored
+        // by it either. Both recoveries live in `bringForward` — see
+        // `WindowPresence` for the measurements.
+        window.bringForward()
     }
 
     /// `frame` shrunk and moved as little as possible so it lies inside
@@ -408,7 +417,10 @@ final class MainWindowController: NSObject {
     }
 
     func toggle() {
-        if window.isVisible && NSApp.isActive { hide() } else { show() }
+        // `isPresented`, not `isVisible`: a stranded window is "visible" to
+        // AppKit, and hiding a window nobody can see is how a click on a widget
+        // came to do nothing at all. See `WindowPresence`.
+        if window.isPresented && NSApp.isActive { hide() } else { show() }
     }
 
     /// Put the app back in the menu bar and out of the Dock.
@@ -425,12 +437,10 @@ final class MainWindowController: NSObject {
     /// the window that still exists.
     func hide() {
         window.orderOut(nil)
-        // Widgets that macOS is not showing are no door at all, so they count
-        // as off here: dropping the Dock tile then would leave nothing to click.
-        NSApp.setActivationPolicy(
-            AppPresence.policyWithWindowHidden(
-                widgetsEnabled: Settings.shared.menuBarWidgetsEnabled
-                    && MenuBarWidgetController.menuBarIsReachable))
+        // Not set here directly: whether the tile goes depends on the other
+        // windows and on whether macOS is showing the widgets, and the change
+        // is made on a later runloop turn. See `AppPresence.settle`.
+        AppPresence.settle()
     }
 }
 
