@@ -552,7 +552,7 @@ final class GlanceCardView: NSView {
                 sourceLabel: "on battery · "
                     + (shared.prior?.label ?? provenance(shared.source, settled: settled)),
                 rows: [
-                    ("Drain", String(format: "%.1f %%/hr", shared.pctHr), nil),
+                    ("Drain", String(format: "%.1f %%/hr", shared.shownPctHr), nil),
                     ("Draw", String(format: "%.1f W", s.smoothed_W), nil),
                     ("Remaining", String(format: "%.1f Wh", remaining_Wh),
                      hrs.flatMap { _ in at(shared, awake: awake) }),

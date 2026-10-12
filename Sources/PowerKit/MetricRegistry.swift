@@ -612,7 +612,7 @@ public final class MetricRegistry {
             // window shows — falling back to instantaneous power only before the
             // first one arrives.
             let shared = self?.displayedRate
-            let rate = shared?.pctHr ?? s.smoothedLive_pctHr
+            let rate = shared?.shownPctHr ?? s.smoothedLive_pctHr
             // The "*" means "this is inferred, not measured". A rate that came from
             // the battery's own discharge accumulator is measured end to end, and
             // no SMC gain enters it, so the marker drops. Everything else here is

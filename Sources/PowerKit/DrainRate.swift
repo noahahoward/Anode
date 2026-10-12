@@ -944,6 +944,19 @@ public struct DisplayedRate {
     /// is then the anchor's plain projection, exactly as before it existed.
     public let prior: Prior?
 
+    /// The trailing few minutes' drain, for READING. nil until `RecentDrain`
+    /// has enough to average, and off battery.
+    ///
+    /// Deliberately not what the time is divided from: `pctHr` is, and on a
+    /// machine with history that is the all-time average — the definition of
+    /// time left the user chose, and a number that by design barely moves.
+    /// Shown as "Drain" it read as stuck, so the row and the widget show this
+    /// instead and the time keeps its own rate.
+    public let recentPctHr: Double?
+
+    /// The rate to put in front of a person. Never use it to project a time.
+    public var shownPctHr: Double { recentPctHr ?? pctHr }
+
     /// The lifetime forecast's inputs in %/hr at the live voltage. See
     /// `LifetimeDrainModel` and `DrainEstimate.forecastTimeToEmpty`.
     public struct Prior: Equatable {
@@ -977,7 +990,8 @@ public struct DisplayedRate {
 
     public init(pctHr: Double, chargePercent: Double?, anchorAwake: TimeInterval,
                 source: DrainEstimate.Source, windowSpan: TimeInterval,
-                prior: Prior? = nil) {
+                prior: Prior? = nil, recentPctHr: Double? = nil) {
+        self.recentPctHr = recentPctHr
         self.pctHr = pctHr
         self.chargePercent = chargePercent
         self.anchorAwake = anchorAwake
@@ -1023,5 +1037,83 @@ public struct DisplayedRate {
     public func deathInstant(now: Date = Date(),
                              awake: TimeInterval = PowerMonitor.awakeSeconds()) -> Date? {
         timeRemaining_hr(now: awake).map { now.addingTimeInterval($0 * 3600) }
+    }
+}
+
+// ── the rate that is shown ──────────────────────────────────────────────────
+
+/// Mean watts leaving the pack over the last few minutes awake on battery.
+///
+/// Fed the same `LifetimeDrainModel.batteryWatts` figure the all-time average
+/// is built from, so the two differ only in how far back they look.
+///
+/// Stamped on the AWAKE clock, which does not run while the lid is shut: ten
+/// minutes means ten minutes of use, and a night asleep neither empties the
+/// window nor counts as part of it.
+public struct RecentDrain {
+    /// How far back "current" looks. Short enough to follow a change in what
+    /// the machine is doing, long enough to span several of the gauge's
+    /// once-a-minute publishes.
+    public static let window: TimeInterval = 600
+    /// Below this the mean is an instant, and the caller falls back to the
+    /// rate it would have shown anyway.
+    public static let minimumSpan: TimeInterval = 60
+
+    /// How far one reading may sit from the last before it counts as a jump,
+    /// in %/hr. The caller converts it to watts at the live voltage.
+    public static let jumpPctHr: Double = 5
+
+    private var samples: [(awake: TimeInterval, watts: Double, dt: TimeInterval)] = []
+    private var lastAwake: TimeInterval?
+    private var lastWatts: Double?
+    /// The window was thrown away by a jump, so what is in it is quoted
+    /// however short it is. Cleared with everything else on AC.
+    private var droppedByJump = false
+
+    public init() {}
+
+    /// `interval` is only believed for the first sample after a reset. After
+    /// that each sample covers the awake time since the one before it.
+    ///
+    /// A snapshot's own interval cannot be used throughout: while the window is
+    /// closed a full sweep runs about once a minute between the 8 s light
+    /// ticks, and it reports the ~60 s since the previous SWEEP — time the
+    /// light ticks in between have already been counted for. Seen live:
+    /// intervals of 8, 8, 8, 59, 8, 8 … which gave one reading in eight
+    /// roughly half the weight of the window.
+    ///
+    /// `jump_W` is the step that drops the average. A mean answers a change in
+    /// load a whole window late — the machine had settled at 11 %/hr and the
+    /// row still read 28 — so a reading that far from the one before it empties
+    /// the window and stands on its own. While readings keep moving by that
+    /// much each is shown as it arrives; the first one that does not starts the
+    /// average again, from the new level. nil never drops anything.
+    public mutating func observe(batteryWatts: Double, onBattery: Bool,
+                                 interval: TimeInterval, awake: TimeInterval,
+                                 jump_W: Double? = nil) {
+        guard onBattery else {
+            lastAwake = nil; lastWatts = nil; droppedByJump = false
+            return samples.removeAll()
+        }
+        let dt = lastAwake.map { awake - $0 } ?? interval
+        lastAwake = awake
+        guard batteryWatts.isFinite, batteryWatts > 0, dt.isFinite, dt > 0 else { return }
+        if let last = lastWatts, let jump = jump_W, jump > 0,
+           abs(batteryWatts - last) >= jump {
+            samples.removeAll()
+            droppedByJump = true
+        }
+        lastWatts = batteryWatts
+        // Weighted by the time each sample covers: the tick is 2 s with the
+        // window open and 8 s without, and a mean of samples would let the
+        // faster cadence outvote the slower.
+        samples.append((awake, batteryWatts, min(dt, Self.window)))
+        samples.removeAll { $0.awake <= awake - Self.window }
+    }
+
+    public var mean_W: Double? {
+        let span = samples.reduce(0) { $0 + $1.dt }
+        guard span > 0, droppedByJump || span >= Self.minimumSpan else { return nil }
+        return samples.reduce(0) { $0 + $1.watts * $1.dt } / span
     }
 }
