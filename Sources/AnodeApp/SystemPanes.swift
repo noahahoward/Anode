@@ -144,12 +144,14 @@ extension SystemPane {
             addTrackingArea(NSTrackingArea(
                 rect: bounds, options: [.mouseEnteredAndExited, .activeInKeyWindow],
                 owner: self))
+            aimHover(isUnderPointer ? 1 : 0)
         }
         override func mouseEntered(with e: NSEvent) { aimHover(1) }
         override func mouseExited(with e: NSEvent) { aimHover(0) }
         override func mouseDown(with e: NSEvent) { onToggle?() }
 
         private func aimHover(_ to: CGFloat) {
+            guard hover.target != to else { return }
             hover.aim(to)
             Motion.shared.start(self) { [weak self] dt in self?.hover.advance(dt) ?? false }
         }
@@ -466,12 +468,16 @@ class SystemPane: NSView {
             addTrackingArea(NSTrackingArea(
                 rect: bounds, options: [.mouseEnteredAndExited, .activeInKeyWindow],
                 owner: self))
+            aimHover(isUnderPointer ? 1 : 0)
         }
+        /// Whether the row is, or is fading towards being, drawn as hovered.
+        var isHovering: Bool { hover.target > 0 }
         override func mouseEntered(with e: NSEvent) { aimHover(1) }
         override func mouseExited(with e: NSEvent) { aimHover(0) }
         override func mouseDown(with e: NSEvent) { onSelect?() }
 
         private func aimHover(_ to: CGFloat) {
+            guard hover.target != to else { return }
             hover.aim(to)
             Motion.shared.start(self) { [weak self] dt in self?.hover.advance(dt) ?? false }
         }

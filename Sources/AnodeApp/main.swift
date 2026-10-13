@@ -957,16 +957,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         refreshTable()
         autosizeColumns()
 
-        // Re-find the selected APP by name. If it is gone (quit, or fell below the
-        // display floor) the selection is dropped rather than silently transferred
-        // to whichever app inherited its row.
-        if let name = selectedAppName, let idx = rows.firstIndex(where: { $0.name == name }) {
-            isRestoringSelection = true
-            main.table.selectRowIndexes(IndexSet(integer: idx), byExtendingSelection: false)
-            isRestoringSelection = false
-        } else if selectedAppName != nil {
-            main.table.deselectAll(nil)
-        }
+        reselectByName()
         updateDetail()
 
         // Rows moved under a stationary pointer, so recompute what is hovered —
@@ -2138,6 +2129,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         main.setDetailVisible(true)
     }
 
+    /// Re-find the selected APP by name. If it is gone (quit, or fell below the
+    /// display floor) the selection is dropped rather than silently transferred
+    /// to whichever app inherited its row.
+    func reselectByName() {
+        if let name = selectedAppName, let idx = rows.firstIndex(where: { $0.name == name }) {
+            isRestoringSelection = true
+            main.table.selectRowIndexes(IndexSet(integer: idx), byExtendingSelection: false)
+            isRestoringSelection = false
+        } else if selectedAppName != nil {
+            main.table.deselectAll(nil)
+        }
+    }
+
     @objc func tableClicked() {}   // selection change does the work
 
     func tableViewSelectionDidChange(_ notification: Notification) {
@@ -2499,7 +2503,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         sortKey = k
         ascending = d.ascending
         sortRows()
-        tv.reloadData()
+        // In place, not `reloadData()`. A sort moves rows and changes nothing
+        // else, which is the case `refreshTable` exists for — and a reload here
+        // rebuilt every visible cell on the click itself: 85–190 ms of layout
+        // measured on a 44-row, 14-column table, before any drawing. Clicks
+        // queued behind it, so the order changed late and a second click undid
+        // the first before either was seen.
+        refreshTable()
+        // The selection is an index, and the app it meant has just moved.
+        reselectByName()
+        main.table.refreshHover()
         main.refreshSortIndicators()
 
         // The bottom follows the sort, so it redraws NOW rather than on the next
@@ -2632,7 +2645,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
             let target = id == "name"
                 ? min(ceil(widest) + 22, Self.nameColumnCap)
                 : ceil(widest) + 16
-            if target > column.width + 1 { column.width = target }
+            if target > column.width + 1 { main.widen(column, to: target) }
         }
     }
 

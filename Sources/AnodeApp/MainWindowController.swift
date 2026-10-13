@@ -106,7 +106,7 @@ final class MainWindowController: NSObject {
         table.rowSizeStyle = .custom
         table.rowHeight = 22
         table.gridStyleMask = []
-        table.headerView = NSTableHeaderView()
+        table.headerView = AnodeHeaderView()
         // Not user-resizable: a draggable divider can be pulled clean off the
         // window, and content-sized columns are already the width they should be.
         table.allowsColumnResizing = false
@@ -250,6 +250,18 @@ final class MainWindowController: NSObject {
             table.sortDescriptors = [sort]
         }
         refreshSortIndicators()
+    }
+
+    /// Widen a data column, taking the width out of the trailing spacer.
+    ///
+    /// AppKit re-fits the last column only when the TABLE is resized. Setting a
+    /// column's width is not that: the table grows by the difference and the
+    /// spacer keeps all the slack it had absorbed, so a table using half the
+    /// window scrolled sideways into blank space. The spacer stops at zero, so
+    /// columns that really do not fit still scroll.
+    func widen(_ column: NSTableColumn, to width: CGFloat) {
+        column.width = width
+        table.sizeLastColumnToFit()
     }
 
     /// Mark the sorted column, and unmark every other one.
@@ -515,6 +527,28 @@ final class HoverTableView: NSTableView {
         let count = numberOfRows
         for r in [old, newRow] where r >= 0 && r < count {
             rowView(atRow: r, makeIfNecessary: false)?.needsDisplay = true
+        }
+    }
+}
+
+/// A header where every click sorts, including the second of a fast pair.
+///
+/// AppKit sorts from a single-click gesture recognizer and installs a
+/// double-click one beside it, for fitting a column to its content from its
+/// divider. Two quick clicks belong to the second, so the sort flipped on every
+/// other click — measured, not guessed: the recognizers were read off the live
+/// header. Columns here are not resizable by hand, so the double click has
+/// nothing to do, and with it switched off the single click answers each time.
+///
+/// On a system that tracks header clicks in `mouseDown` there are no such
+/// recognizers and this does nothing.
+final class AnodeHeaderView: NSTableHeaderView {
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        for case let click as NSClickGestureRecognizer in gestureRecognizers
+        where click.numberOfClicksRequired > 1 {
+            click.isEnabled = false
         }
     }
 }

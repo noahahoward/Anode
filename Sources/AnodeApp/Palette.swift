@@ -300,4 +300,17 @@ extension NSView {
     /// Repaint on appearance change. Views that draw from `Palette` need this
     /// because the palette resolves at draw time rather than being observed.
     func redrawOnAppearanceChange() { needsDisplay = true }
+
+    /// Whether the pointer is over the visible part of this view right now.
+    ///
+    /// For a view that tracks hover with enter and exit events, asked whenever
+    /// its tracking area is rebuilt. Scrolling moves a view out from under a
+    /// stationary pointer without a `mouseExited`, and the rebuilt area never saw
+    /// the pointer inside it, so it will not send one later either — the view
+    /// stays hovered until it is entered and left again. Only a key window
+    /// counts, to match `.activeInKeyWindow`.
+    var isUnderPointer: Bool {
+        guard let window, window.isKeyWindow else { return false }
+        return visibleRect.contains(convert(window.mouseLocationOutsideOfEventStream, from: nil))
+    }
 }

@@ -1481,6 +1481,7 @@ final class ResourceCard: NSView {
                                owner: self, userInfo: nil)
         addTrackingArea(t)
         trackingAreaRef = t
+        if isHovered != isUnderPointer { isHovered = isUnderPointer }
     }
 
     override func mouseEntered(with event: NSEvent) { isHovered = true }
