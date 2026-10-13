@@ -360,6 +360,17 @@ final class MainWindowController: NSObject {
     }
 
     func show() {
+        // Only a window that is not up yet goes through the update check,
+        // which looks once per launch and passes straight through after that.
+        // One that is already open, minimised or stranded is being brought
+        // back, and there is nothing to put in its place.
+        guard window.isVisible || window.isMiniaturized else {
+            return AutoUpdater.shared.gate { [weak self] in self?.present() }
+        }
+        present()
+    }
+
+    private func present() {
         // Enforce the minimum HERE rather than at construction. The autosaved
         // frame is restored asynchronously, after init has returned, so clamping
         // in init reads the placeholder frame and does nothing. Observed live: a

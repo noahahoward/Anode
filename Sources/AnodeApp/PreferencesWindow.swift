@@ -255,6 +255,7 @@ private final class GeneralPane: Pane {
     private var updateNote: NSTextField!
     private var updateButton: NSButton!
     private var checkButton: NSButton!
+    private var autoUpdateCheckbox: NSButton!
     private var uninstallButton: NSButton!
 
     /// Last answer from the checkout, so `refresh()` — which fires on ANY
@@ -303,6 +304,11 @@ private final class GeneralPane: Pane {
                                 target: self, action: #selector(runUpdate))
         updateButton.controlSize = .small
         updateButton.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        autoUpdateCheckbox = NSButton(
+            checkboxWithTitle: "Check when Anode starts, and update automatically",
+            target: self, action: #selector(autoUpdateToggled))
+        autoUpdateCheckbox.controlSize = .small
+        autoUpdateCheckbox.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
         uninstallButton = NSButton(title: "Uninstall Anode…",
                                    target: self, action: #selector(uninstall))
         uninstallButton.controlSize = .small
@@ -324,6 +330,7 @@ private final class GeneralPane: Pane {
             [spacer, menuBarOnlyNote],
             [rowLabel("Version:"), updateStatus],
             [spacer, updateNote],
+            [spacer, autoUpdateCheckbox],
             [spacer, updateButtons],
         ])
     }
@@ -375,6 +382,9 @@ private final class GeneralPane: Pane {
                 guard let self else { return }
                 self.checking = false
                 self.checkoutState = state
+                // The user asked and this window is up, so a consent prompt
+                // has had somewhere to appear. See `AutoUpdate.mayCheckUnasked`.
+                AutoUpdater.shared.noteAsked(state)
                 self.refreshLayout()
             }
         }
@@ -416,6 +426,13 @@ private final class GeneralPane: Pane {
         }
     }
 
+    /// Turning it on checks straight away: the row then says where the checkout
+    /// stands, and the check is what lets later ones run with no window up.
+    @objc private func autoUpdateToggled() {
+        settings.autoUpdateEnabled = autoUpdateCheckbox.state == .on
+        if settings.autoUpdateEnabled { checkForUpdates() }
+    }
+
     /// Runs `update.sh` in a VISIBLE Terminal window.
     ///
     /// The same rule the fan helper's install follows, for a stronger reason: this
@@ -423,6 +440,9 @@ private final class GeneralPane: Pane {
     /// that silently replaces itself while you are looking at it is not something
     /// to ship to be tidy. Opened through LaunchServices rather than Apple events,
     /// so it needs no Automation permission and cannot be denied by TCC.
+    ///
+    /// The checkbox above is the one exception, and it is opt-in: `AutoUpdater`
+    /// runs the same script behind a progress window instead.
     @objc private func runUpdate() {
         guard let path = SourceCheckout.recordedPath(in: .main) else { return }
         switch UpdateLauncher.launch(checkout: path) {
@@ -529,6 +549,8 @@ private final class GeneralPane: Pane {
         // gone there is no update path at all, and a dead button is a worse
         // answer than none. The sentence above already explains why.
         updateButton.isHidden = state == nil || state == .missing || state == .notARepository
+        autoUpdateCheckbox.state = settings.autoUpdateEnabled ? .on : .off
+        autoUpdateCheckbox.isEnabled = AutoUpdater.shared.isAvailable
     }
 
     @objc private func intervalChanged() {

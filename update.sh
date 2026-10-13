@@ -8,6 +8,12 @@
 # quietly replaces itself while you are looking at it is a worse thing to ship
 # than one extra window. The same reasoning as the fan helper's install: if the
 # app is going to run a command on your behalf, you get to watch it.
+#
+# The one exception is opt-in: with "update automatically" switched on in
+# settings, Anode runs this same script itself when it starts, with
+# the output in ~/Library/Application Support/Anode/update.log and a progress
+# window in place of the Terminal. That window follows the "› " lines below and
+# in build-app.sh, so rewording one of them stalls its progress bar.
 set -euo pipefail
 
 # The checkout to update. Defaults to this script's own directory, which is the

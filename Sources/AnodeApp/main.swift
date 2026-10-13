@@ -396,6 +396,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
             startInMenuBarOnly: Settings.shared.startInMenuBarOnly,
             widgetsEnabled: Settings.shared.menuBarWidgetsEnabled) {
             main.show()
+            offerAutoUpdate()
         }
 
         monitor?.tick()   // prime; the first tick has no interval to diff against
@@ -470,6 +471,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
     private func applyMenuBarSwitch() {
         widgets.setEnabled(Settings.shared.menuBarWidgetsEnabled)
         AppPresence.settle()
+    }
+
+    /// Ask, once ever, whether Anode should keep itself up to date.
+    ///
+    /// Only on a launch that shows the window, and as a sheet on it: the
+    /// question needs somewhere to be, and saying yes reads the checkout, which
+    /// for one under Downloads raises a consent prompt that needs the same. A
+    /// launch that cannot host it leaves the question unasked for the next one.
+    /// A build with no checkout to pull into is never asked at all.
+    private func offerAutoUpdate() {
+        guard !Settings.shared.autoUpdatePromptSeen, AutoUpdater.shared.isAvailable else { return }
+        // After the window is up — `bringForward` presents on a later turn.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
+            guard let self, self.main.window.isVisible,
+                  !Settings.shared.autoUpdatePromptSeen else { return }
+            let alert = NSAlert()
+            alert.messageText = "Keep Anode up to date automatically?"
+            alert.informativeText =
+                "Each time Anode starts, it can check GitHub for changes. If "
+                + "there are any it rebuilds itself from your checkout first, showing a "
+                + "progress bar, then opens.\n\n"
+                + "You can change this under Settings \u{203A} General."
+            alert.addButton(withTitle: "Turn On")
+            alert.addButton(withTitle: "Not Now")
+            alert.beginSheetModal(for: self.main.window) { answer in
+                Settings.shared.autoUpdatePromptSeen = true
+                guard answer == .alertFirstButtonReturn else { return }
+                Settings.shared.autoUpdateEnabled = true
+                AutoUpdater.shared.confirmAccess()
+            }
+        }
     }
 
     /// Whether the user has already been told, this session, that macOS is not

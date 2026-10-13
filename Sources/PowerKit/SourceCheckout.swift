@@ -120,6 +120,17 @@ public struct SourceCheckout {
     @discardableResult
     public func fetch() -> Bool { run(["fetch", "--quiet"]) != nil }
 
+    /// The commit a fast-forward would land on, short form.
+    public func upstreamCommit() -> String? {
+        run(["rev-parse", "--short", "@{upstream}"])
+    }
+
+    /// The build number that commit would be given — `build-app.sh` uses the
+    /// commit count, so this is the number About will show after updating.
+    public func upstreamBuild() -> Int? {
+        run(["rev-list", "--count", "@{upstream}"]).flatMap { Int($0) }
+    }
+
     /// One line, for the row in Preferences.
     public static func summary(_ state: State) -> String {
         switch state {

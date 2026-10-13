@@ -41,6 +41,8 @@ public final class Settings {
         public static let fanDisclosureSeen = "fanDisclosureSeen"
         public static let fanSyncEnabled = "fanSyncEnabled"
         public static let speedTestAgreed = "speedTestAgreed"
+        public static let autoUpdateEnabled = "autoUpdateEnabled"
+        public static let autoUpdatePromptSeen = "autoUpdatePromptSeen"
         /// The stats panel's arrangement. Empty until the user edits it — see
         /// `panelOrder` for why the default is not materialized here.
         public static let panelOrder = "panelOrder"
@@ -100,6 +102,12 @@ public final class Settings {
         /// default, because the whole point of the disclosure is that egress from
         /// this app is a thing someone chose.
         static let speedTestAgreed = false
+        /// OFF. Turning it on lets the app pull and rebuild itself without a
+        /// Terminal window to watch, which is a thing someone chooses — the
+        /// first launch asks, once, and `autoUpdatePromptSeen` records that it
+        /// did.
+        static let autoUpdateEnabled = false
+        static let autoUpdatePromptSeen = false
         /// Matches what the status item shows today: smoothed drain + runtime.
         // Must be real, currently-registered metric IDs. Stale ones are invisible
         // in the picker and get preserved forever as "unknown" bindings.
@@ -135,7 +143,8 @@ public final class Settings {
         var sampleInterval, powerWindowHours, historyRetentionDays,
             minimumDisplayPercentPerHour: Double
         var showDaemons, startInMenuBarOnly, batteryLogging, menuBarWidgetsEnabled,
-            fanControlEnabled, fanSyncEnabled, speedTestAgreed: Bool
+            fanControlEnabled, fanSyncEnabled, speedTestAgreed,
+            autoUpdateEnabled, autoUpdatePromptSeen: Bool
         var fanDisclosureSeen: Bool
         var menuBarWidgets: [String]
         var panelOrder: [String]
@@ -212,6 +221,39 @@ public final class Settings {
         get { Settings.readBool(defaults, Key.startInMenuBarOnly, Default.startInMenuBarOnly) }
         set { writeBool(Key.startInMenuBarOnly, \.startInMenuBarOnly, newValue,
                         Default.startInMenuBarOnly) }
+    }
+
+    /// Check for new commits when the app starts, and rebuild if there are
+    /// any. See `AutoUpdate` for what that is allowed to do unasked.
+    public var autoUpdateEnabled: Bool {
+        get { Settings.readBool(defaults, Key.autoUpdateEnabled, Default.autoUpdateEnabled) }
+        set { writeBool(Key.autoUpdateEnabled, \.autoUpdateEnabled, newValue,
+                        Default.autoUpdateEnabled) }
+    }
+
+    /// Has the one-time "turn on automatic updates?" question been asked?
+    /// Separate from the answer: "Not Now" is an answer, and asking again at
+    /// every launch would make it not one.
+    public var autoUpdatePromptSeen: Bool {
+        get { Settings.readBool(defaults, Key.autoUpdatePromptSeen,
+                                Default.autoUpdatePromptSeen) }
+        set { writeBool(Key.autoUpdatePromptSeen, \.autoUpdatePromptSeen, newValue,
+                        Default.autoUpdatePromptSeen) }
+    }
+
+    /// The upstream commit whose automatic rebuild last failed, so a push that
+    /// does not build is tried once rather than at every launch. Bookkeeping
+    /// rather than a preference: nothing observes it.
+    public var autoUpdateFailedCommit: String? {
+        get { defaults.string(forKey: Settings.storageKey("autoUpdateFailedCommit")) }
+        set { defaults.set(newValue, forKey: Settings.storageKey("autoUpdateFailedCommit")) }
+    }
+
+    /// The checkout path git has been seen to read while a window was up.
+    /// `AutoUpdate.mayCheckUnasked` explains why that has to be known first.
+    public var autoUpdateConfirmedPath: String? {
+        get { defaults.string(forKey: Settings.storageKey("autoUpdateConfirmedPath")) }
+        set { defaults.set(newValue, forKey: Settings.storageKey("autoUpdateConfirmedPath")) }
     }
 
     /// Whether sampled history is written to the durable store at all.
@@ -541,6 +583,10 @@ public final class Settings {
         if old.fanDisclosureSeen != now.fanDisclosureSeen { notify(Key.fanDisclosureSeen) }
         if old.fanSyncEnabled != now.fanSyncEnabled { notify(Key.fanSyncEnabled) }
         if old.speedTestAgreed != now.speedTestAgreed { notify(Key.speedTestAgreed) }
+        if old.autoUpdateEnabled != now.autoUpdateEnabled { notify(Key.autoUpdateEnabled) }
+        if old.autoUpdatePromptSeen != now.autoUpdatePromptSeen {
+            notify(Key.autoUpdatePromptSeen)
+        }
         if old.menuBarWidgets != now.menuBarWidgets { notify(Key.menuBarWidgets) }
     }
 
@@ -638,6 +684,10 @@ public final class Settings {
                                            Default.fanControlEnabled),
                fanSyncEnabled: readBool(d, Key.fanSyncEnabled, Default.fanSyncEnabled),
                speedTestAgreed: readBool(d, Key.speedTestAgreed, Default.speedTestAgreed),
+               autoUpdateEnabled: readBool(d, Key.autoUpdateEnabled,
+                                           Default.autoUpdateEnabled),
+               autoUpdatePromptSeen: readBool(d, Key.autoUpdatePromptSeen,
+                                              Default.autoUpdatePromptSeen),
                fanDisclosureSeen: readBool(d, Key.fanDisclosureSeen,
                                            Default.fanDisclosureSeen),
                menuBarWidgets: readWidgets(d, Default.menuBarWidgets),
