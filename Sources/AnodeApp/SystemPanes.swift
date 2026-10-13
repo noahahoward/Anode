@@ -82,6 +82,9 @@ extension SystemPane {
         private let name = NSTextField(labelWithString: "")
         private let summary = NSTextField(labelWithString: "")
         private var expanded = false
+        /// The group this header stands for now, as the pane named it. The text
+        /// field holds it uppercased, which is not what a toggle has to report.
+        private(set) var groupLabel = ""
         /// 0 shut, 1 open. The chevron reads this rather than `expanded`, so it
         /// turns rather than jumping between two drawings of itself.
         private var openness = Eased()
@@ -113,6 +116,7 @@ extension SystemPane {
         func apply(_ item: BodyItem) {
             let wasExpanded = expanded
             expanded = item.expanded
+            groupLabel = item.label
             // Straight there on the FIRST application: a group already open when
             // the pane is built has not just been opened, and animating it would
             // play every group's chevron on every tab switch.
@@ -255,14 +259,21 @@ final class BodyStack: NSStackView {
             switch item.kind {
             case .row:
                 let row = SystemPane.BarRow(item)
-                row.onSelect = { [weak self] in self?.onSelectRow?(item.label) }
+                // The row's label when it is CLICKED, not `item.label`: `setItems`
+                // re-texts this view in place, and a list sorted by temperature
+                // puts a different sensor in it from one tick to the next.
+                row.onSelect = { [weak self, weak row] in
+                    if let row { self?.onSelectRow?(row.rowLabel) }
+                }
                 view = row
                 height = 22
             case .figure:  view = SystemPane.FigureView(item);  height = 42
             case .heading: view = SystemPane.HeadingView(item); height = nil
             case .group:
                 let header = SystemPane.GroupHeaderView(item)
-                header.onToggle = { [weak self] in self?.onToggleGroup?(item.label) }
+                header.onToggle = { [weak self, weak header] in
+                    if let header { self?.onToggleGroup?(header.groupLabel) }
+                }
                 view = header
                 height = 26
             }
