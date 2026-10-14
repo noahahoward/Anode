@@ -50,7 +50,7 @@ final class PanelEditorController: NSWindowController {
         self.settings = settings
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 360, height: 420),
                               styleMask: [.titled], backing: .buffered, defer: false)
-        window.title = "All metrics (expandable group)"
+        window.title = "Edit the All Metrics Widget"
         super.init(window: window)
         reload()
         buildContent()
@@ -114,6 +114,21 @@ final class PanelEditorController: NSWindowController {
         scroll.borderType = .bezelBorder
         scroll.translatesAutoresizingMaskIntoConstraints = false
 
+        // Says what this list is BEFORE the list. Seen beside the Menu Bar
+        // checkboxes, a second column of the same metric names with different
+        // ticks read as the two disagreeing — when one picks the widgets in the
+        // menu bar and this picks the rows inside one of them.
+        let heading = NSTextField(labelWithString: "Rows inside the All metrics widget")
+        heading.font = .boldSystemFont(ofSize: NSFont.systemFontSize)
+        heading.translatesAutoresizingMaskIntoConstraints = false
+        let explainer = NSTextField(wrappingLabelWithString:
+            "What you see when you click the All metrics widget open. Which widgets "
+            + "sit in the menu bar on their own is chosen separately, in the Menu Bar "
+            + "settings.")
+        explainer.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        explainer.textColor = .secondaryLabelColor
+        explainer.translatesAutoresizingMaskIntoConstraints = false
+
         let hint = NSTextField(wrappingLabelWithString:
             "Drag to reorder. Uncheck to hide a row — it keeps its place here, "
             + "so showing it again puts it back where it was.")
@@ -130,9 +145,15 @@ final class PanelEditorController: NSWindowController {
         buttons.translatesAutoresizingMaskIntoConstraints = false
 
         let content = NSView()
-        for v in [scroll, hint, buttons] { content.addSubview(v) }
+        for v in [heading, explainer, scroll, hint, buttons] { content.addSubview(v) }
         NSLayoutConstraint.activate([
-            scroll.topAnchor.constraint(equalTo: content.topAnchor, constant: 16),
+            heading.topAnchor.constraint(equalTo: content.topAnchor, constant: 16),
+            heading.leadingAnchor.constraint(equalTo: scroll.leadingAnchor),
+            heading.trailingAnchor.constraint(lessThanOrEqualTo: scroll.trailingAnchor),
+            explainer.topAnchor.constraint(equalTo: heading.bottomAnchor, constant: 4),
+            explainer.leadingAnchor.constraint(equalTo: scroll.leadingAnchor),
+            explainer.trailingAnchor.constraint(equalTo: scroll.trailingAnchor),
+            scroll.topAnchor.constraint(equalTo: explainer.bottomAnchor, constant: 10),
             scroll.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 16),
             scroll.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -16),
             hint.topAnchor.constraint(equalTo: scroll.bottomAnchor, constant: 8),

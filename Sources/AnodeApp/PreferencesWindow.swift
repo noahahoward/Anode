@@ -815,10 +815,11 @@ private final class MenuBarPane: Pane {
                              + "click away, and the sampler stops reading anything only a widget "
                              + "was showing. Which widgets are checked below is remembered.")],
             [rowLabel("Show in menu bar:"), list],
-            [spacer, caption("\u{201C}All metrics\u{201D} is the expandable panel; Edit\u{2026} chooses "
-                             + "which readings it shows and their order.")],
-            [spacer, caption("Each checked metric becomes a menu bar widget. Widgets bind to any "
-                             + "metric; clicking one opens the main window.")],
+            [spacer, caption("Each checked item is its own widget in the menu bar; clicking one "
+                             + "opens the main window.")],
+            [spacer, caption("\u{201C}All metrics\u{201D} is one widget that opens into a list of "
+                             + "readings. Edit\u{2026} chooses which readings that list shows and in "
+                             + "what order, separately from the checkboxes here.")],
         ])
     }
 
