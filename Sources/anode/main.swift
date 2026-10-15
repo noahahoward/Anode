@@ -481,6 +481,8 @@ if let i = args.firstIndex(of: "--overflow") {
     var ratios: [Double] = []
     var hatches: [Double] = []
     var over = 0
+    var alarmSmoothed = 0
+    var alarmWindow = 0
     print("  attributed   cpuRail    pstr   ratio")
     for _ in 0..<n {
         Thread.sleep(forTimeInterval: 2)
@@ -497,7 +499,17 @@ if let i = args.firstIndex(of: "--overflow") {
                      rawP > 0 ? rawC / rawP : 0,
                      100 * s.attributed_W / tot, 100 * sys / tot, 100 * plat / tot))
         hatches.append(100 * plat / tot)
+        // The alarm as it was (against the 30 s median) beside the alarm as it is
+        // (against the total over the parts' own window), on the same tick.
+        let claimed = s.claimed_W ?? 0
+        if s.rawResidual_W < -0.05 || claimed - s.smoothed_W > 0.05 { alarmSmoothed += 1 }
+        if s.hasAttributionOverflow { alarmWindow += 1 }
+        print(String(format: "      smoothed %5.2f  claimed %5.2f  minute overclaim %@  alarm %@",
+                     s.smoothed_W, claimed,
+                     s.overclaim_W.map { String(format: "%+.2f", $0) } ?? "  -  ",
+                     s.hasAttributionOverflow ? "YES" : "no"))
     }
+    print("alarm per tick: \(alarmSmoothed)  per minute: \(alarmWindow)")
     guard !ratios.isEmpty else { print("no samples"); exit(1) }
     let sorted = ratios.sorted()
     print(String(format: "\nn=%d  median ratio %.2f  min %.2f  max %.2f  overflowed %d/%d ticks",

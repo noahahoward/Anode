@@ -111,12 +111,19 @@ final class LedgerBarView: NSView {
         // bucket, their sum, the measurement they overran, and by how much. The
         // platform figure is included precisely because it is the clamped one —
         // seeing it at 0.0 alongside a positive excess is the signature.
+        //
+        // Every drawn claim, not just four of them. Memory, storage and USB were
+        // left out, so an overrun in those logged as "attributed 1.6 exceeds 4.5
+        // by -2.9" — an alarm whose own line said there was nothing wrong.
         let attributed = m.apps_pctHr + m.systemProcesses_pctHr + m.gpu_pctHr + m.display_pctHr
+            + m.memory_pctHr + m.storage_pctHr + m.usb_pctHr
         let detail = String(
-            format: "attributed %.3f %%/hr (apps %.3f + system %.3f + gpu %.3f + display %.3f) "
+            format: "attributed %.3f %%/hr (apps %.3f + system %.3f + gpu %.3f + display %.3f "
+                  + "+ memory %.3f + storage %.3f + usb %.3f) "
                   + "exceeds measured total %.3f by %.3f; platform bucket shown as %.3f; "
                   + "%d of %d processes readable; source %@",
             attributed, m.apps_pctHr, m.systemProcesses_pctHr, m.gpu_pctHr, m.display_pctHr,
+            m.memory_pctHr, m.storage_pctHr, m.usb_pctHr,
             m.total_pctHr, attributed - m.total_pctHr, m.unattributed_pctHr,
             m.readable, m.attempted, m.source)
         Self.log.error("attribution overflow — \(detail, privacy: .public)")

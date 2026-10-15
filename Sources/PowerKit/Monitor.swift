@@ -168,7 +168,13 @@ public final class PowerMonitor {
         ///
         /// Same 0.05 W tolerance as the original, so ordinary rounding does not
         /// raise it, and the transient after a load step still reports as it did.
+        ///
+        /// Both of those are per-TICK comparisons, and the monitor replaces them
+        /// with the per-MINUTE one in `overclaim_W` once it has a minute to judge.
+        /// What remains here is the rule for snapshots that carry none — the first
+        /// half-minute, and anything built by hand.
         public var hasAttributionOverflow: Bool {
+            if let o = overclaim_W { return o > Self.overclaimTolerance(smoothed_W) }
             if rawResidual_W < -0.05 { return true }
             guard let claimed = claimed_W else { return false }
             return claimed - smoothed_W > 0.05
@@ -327,6 +333,41 @@ public final class PowerMonitor {
         /// the synthetic fixtures describe a battery without having an opinion
         /// about a charge limit.
         public var chargeTarget: ChargeTarget.Level?
+
+        /// How far the ledger's claims exceeded the measured total over the last
+        /// minute, in mean watts: Σ claims minus Σ measured, over ticks. Negative
+        /// is the normal case — the always-on remainder — and nil until the
+        /// monitor has half a minute of full ticks to judge by.
+        ///
+        /// A tick is the wrong unit to decide "counted twice" in. The total the
+        /// claims are held against is a median of fifteen PSTR reads, and a median
+        /// does not move until a burst fills eight of them, while the claims carry
+        /// a burst on the tick it lands. Measured 2026-10-15: a script running
+        /// `pmset -g log` every 45 s drove PPMC from 0.5 to 9-13 W for ~7 s; apps
+        /// read 10.5 %/hr against a total still at 4.6, and the per-tick alarm
+        /// logged ~30 overflows in 15 minutes with nothing counted twice. Laying
+        /// the bar out against a 10 s MEAN of PSTR instead was tried and was
+        /// worse — 13 alarms to the median's 5 over the same 60 ticks — because
+        /// five single reads of a rail that swings 1.5-18 W are noisier than the
+        /// burst they were meant to catch.
+        ///
+        /// Over a minute both kinds of error average out and a double count does
+        /// not: claiming the GPU twice, or a USB device's 22.7 %/hr inside a
+        /// 5.0 %/hr bar, is an overclaim on every tick, so it survives the mean.
+        /// The measured side is gain-corrected RAW PSTR, not the median, because
+        /// energy adds and a median discards the burst's joules.
+        ///
+        /// Defaulted, and therefore `var`, so the synthetic fixtures keep the
+        /// per-tick rule they were written against.
+        public var overclaim_W: Double? = nil
+
+        /// Above this, a minute's overclaim is a double count rather than
+        /// sampling error: 5 % of the total, floored at the per-tick rule's
+        /// 0.05 W. A minute of single PSTR reads still carries a few percent of
+        /// noise, and every double count this alarm has caught was far larger.
+        public static func overclaimTolerance(_ total_W: Double) -> Double {
+            max(0.05, 0.05 * total_W)
+        }
 
         /// Hours until charging STOPS, and what it will stop at.
         ///
@@ -491,6 +532,26 @@ public final class PowerMonitor {
     /// medians of one period rather than a median against an instant.
     private var gpuWindow: [Double] = []
     private let railWindow = 15
+
+    /// One full tick's claims beside the whole machine's draw on that tick, for
+    /// the minute-long overflow test. See `Snapshot.overclaim_W`.
+    struct BalanceSample {
+        let t: TimeInterval
+        let claimed: Double
+        let measured: Double
+    }
+    private var balance: [BalanceSample] = []
+    static let balanceWindow: TimeInterval = 60
+
+    /// Mean claims minus mean measured over the samples in `window`, or nil when
+    /// they span less than half of it — too little to average a burst out.
+    static func overclaim(_ samples: [BalanceSample], now: TimeInterval,
+                          window: TimeInterval = balanceWindow) -> Double? {
+        let inside = samples.filter { $0.t >= now - window }
+        guard let first = inside.first, now - first.t >= window / 2 else { return nil }
+        let n = Double(inside.count)
+        return inside.reduce(0) { $0 + $1.claimed - $1.measured } / n
+    }
 
     /// Whether PPMC has been seen carrying the GPU's watts too. Latched for the
     /// session: it is a property of the chip, not of the moment.
@@ -869,7 +930,7 @@ public final class PowerMonitor {
             return min(c, headroom)
         }()
 
-        return Snapshot(
+        var snapshot = Snapshot(
             drains: drains,
             apps: apps,
             systemApps: systemApps,
@@ -931,6 +992,20 @@ public final class PowerMonitor {
                                     isCharging: $0.isCharging && $0.amperage_mA > 0)
             }
         )
+
+        // Full ticks only: a light tick claims nothing, and counting it would
+        // dilute a real overclaim with ticks that never looked.
+        if let claimed = snapshot.claimed_W {
+            let measured = gain.isTrustworthy
+                ? pstrRaw.flatMap { $0.isFinite && $0 > 0.05 ? gain.corrected($0) : nil }
+                : smoothed
+            if let m = measured {
+                balance.append(BalanceSample(t: awakeNow, claimed: claimed, measured: m))
+            }
+        }
+        balance.removeAll { $0.t < awakeNow - Self.balanceWindow }
+        snapshot.overclaim_W = Self.overclaim(balance, now: awakeNow)
+        return snapshot
     }
 
     /// Throw away every quantity that accumulated ACROSS a gap in observation.
@@ -951,6 +1026,7 @@ public final class PowerMonitor {
         smoother.reset()
         pstrWindow.removeAll()
         ppmcWindow.removeAll()
+        balance.removeAll()
         gpuWindow.removeAll()
         fastSincePublish.removeAll()
         pstrSincePublish.removeAll()
@@ -985,6 +1061,7 @@ public final class PowerMonitor {
         var hasLastPublished = false
         var measured_W: Double?
         var hasMeasuredAt = false
+        var balanceSamples = 0
     }
 
     /// The paired timestamps are OR-ed rather than reported separately so that
@@ -1000,7 +1077,8 @@ public final class PowerMonitor {
                      hasLastLightTick: lastLightTick != nil || lastLightTickAwake != nil,
                      hasLastPublished: lastPublished != nil,
                      measured_W: currentMeasured_W,
-                     hasMeasuredAt: measuredAt != nil)
+                     hasMeasuredAt: measuredAt != nil,
+                     balanceSamples: balance.count)
     }
 }
 

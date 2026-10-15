@@ -140,4 +140,49 @@ final class LedgerSpanTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(s.ledgerSpan_W, s.claimed_W ?? 0)
         XCTAssertLessThan(s.attributed_W / s.ledgerSpan_W, 1.0)
     }
+
+    // ── The alarm judges a minute, not a tick ───────────────────────────────
+
+    /// The 2026-10-15 field case: a 7 s `pmset -g log` burst. Apps already carry
+    /// it while the smoothed total, a 30 s median, has not moved — an overflow by
+    /// the per-tick rule, with nothing counted twice. Over the minute the burst's
+    /// joules are in the measured side too, and the claims sit well under it.
+    func testABurstIsNotAnOverflowOverTheMinute() {
+        var s = snapshot(attributed: 7.3, smoothed: 3.4, cpuRail: 0.8,
+                         gpu: 0.01, display: 0.76, memory: 1.1, storage: 0.4)
+        XCTAssertTrue(s.hasAttributionOverflow,
+                      "the fixture must reproduce the per-tick false alarm")
+        s.overclaim_W = -4.5    // the closest any minute came in a 90-tick burst run
+        XCTAssertFalse(s.hasAttributionOverflow)
+        XCTAssertEqual(s.ledgerSpan_W, s.claimed_W, "the bar still spans what it draws")
+    }
+
+    /// Quieter, not deaf: a double count overclaims on every tick, so it survives
+    /// the mean and still raises the alarm.
+    func testASustainedOverclaimStillFires() {
+        var s = snapshot(attributed: 0.5, smoothed: 5.0, cpuRail: 0.8, usb: 9.0)
+        s.overclaim_W = 6.0
+        XCTAssertTrue(s.hasAttributionOverflow)
+        s.overclaim_W = PowerMonitor.Snapshot.overclaimTolerance(5.0) - 0.01
+        XCTAssertFalse(s.hasAttributionOverflow, "inside the noise allowance")
+    }
+
+    /// The mean is over ticks inside the window, and withheld until they span
+    /// half of it — a burst cannot be averaged out of ten seconds.
+    func testTheOverclaimIsAMeanOverTheWindowAndWaitsForHalfOfIt() {
+        typealias B = PowerMonitor.BalanceSample
+        // A burst tick (claims 10 over a lagging 4) among quiet ones.
+        var xs = (0..<30).map { B(t: Double($0) * 2, claimed: 3, measured: 5) }
+        xs[15] = B(t: 30, claimed: 10, measured: 9)
+        XCTAssertEqual(PowerMonitor.overclaim(xs, now: 58) ?? .nan,
+                       (29 * -2.0 + 1) / 30, accuracy: 1e-9)
+
+        XCTAssertNil(PowerMonitor.overclaim(Array(xs.prefix(10)), now: 18),
+                     "18 s of samples is under half the window")
+
+        // Samples older than the window are excluded, not averaged in.
+        let old = [B(t: 0, claimed: 100, measured: 0)]
+            + (0..<20).map { B(t: 70 + Double($0) * 2, claimed: 3, measured: 5) }
+        XCTAssertEqual(PowerMonitor.overclaim(old, now: 108) ?? .nan, -2, accuracy: 1e-9)
+    }
 }
