@@ -77,6 +77,7 @@ public final class PreferencesWindowController: NSWindowController {
         tabs.addTabViewItem(item(GeneralPane(), "General", "gearshape"))
         tabs.addTabViewItem(item(BatteryPane(), "Battery", "battery.100"))
         tabs.addTabViewItem(item(MenuBarPane(), "Menu Bar", "menubar.rectangle"))
+        tabs.addTabViewItem(item(GraphPane(), "Graph", "chart.xyaxis.line"))
 
         let window = NSWindow(contentViewController: tabs)
         window.title = "Anode Settings"
@@ -726,6 +727,77 @@ private final class BatteryPane: Pane {
 
     @objc private func loggingToggled() {
         settings.batteryLogging = loggingCheckbox.state == .on
+    }
+}
+
+// ── Graph ───────────────────────────────────────────────────────────────────
+
+/// Which lines the ledger screen's bottom graph draws while it is about the
+/// battery. Same checkbox-list shape as the Menu Bar pane.
+private final class GraphPane: Pane {
+    private let lines = LedgerGraphLine.allCases
+    private var boxes: [NSButton] = []
+    /// See `MenuBarPane.isApplying`: the Pane base calls refresh() on every
+    /// Settings write, which would otherwise reset the box the user just clicked
+    /// before the write had landed.
+    private var isApplying = false
+
+    override func loadView() {
+        boxes = lines.map {
+            NSButton(checkboxWithTitle: $0.title + ($0.sessionOnly ? "  (current session only)" : ""),
+                     target: self, action: #selector(toggled))
+        }
+        func column(_ views: [NSView]) -> NSStackView {
+            let c = NSStackView(views: views)
+            c.orientation = .vertical
+            c.alignment = .leading
+            c.spacing = 6
+            return c
+        }
+        let half = (boxes.count + 1) / 2
+        let list = NSStackView(views: [column(Array(boxes[..<half])),
+                                       column(Array(boxes[half...]))])
+        list.orientation = .horizontal
+        list.alignment = .top
+        list.spacing = 18
+
+        let reset = NSButton(title: "Restore defaults", target: self, action: #selector(restoreDefaults))
+        reset.bezelStyle = .rounded
+        reset.controlSize = .small
+
+        install(rows: [
+            [rowLabel("Graph lines:"), list],
+            [spacer, caption("The graph at the bottom of the main window, while it is about the "
+                             + "battery. Every line is a percentage, so they all share one 0\u{2013}100 "
+                             + "scale. Battery level is drawn against the right-hand axis.")],
+            [spacer, caption("\u{201C}Current session only\u{201D} lines are not kept in history: they draw "
+                             + "on the live hour and are blank on 6H, 24H and 7D. Fan speed also "
+                             + "keeps the temperature sensors being read while the window is open.")],
+            [spacer, reset],
+        ])
+    }
+
+    override func refresh() {
+        guard !isApplying else { return }
+        let current = Set(settings.ledgerGraphLines)
+        for (line, box) in zip(lines, boxes) {
+            box.state = current.contains(line.rawValue) ? .on : .off
+        }
+    }
+
+    @objc private func toggled() {
+        isApplying = true
+        defer { isApplying = false }
+        let known = Set(lines.map(\.rawValue))
+        // Lines this build does not know are kept, so unticking never destroys them.
+        let unknown = settings.ledgerGraphLines.filter { !known.contains($0) }
+        settings.ledgerGraphLines = zip(lines, boxes).filter { $1.state == .on }
+            .map { $0.0.rawValue } + unknown
+    }
+
+    @objc private func restoreDefaults() {
+        settings.ledgerGraphLines = Settings.defaultLedgerGraphLines
+        refresh()
     }
 }
 

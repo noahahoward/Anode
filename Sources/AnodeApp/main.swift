@@ -153,7 +153,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
     static let sessionSeries: [ReferenceWritableKeyPath<AppDelegate, [HistoryGraphView.Point]>] = [
         \.diskReadSeries, \.diskWriteSeries, \.netInSeries, \.netOutSeries,
         \.fanLoadSeries, \.temperatureSeries, \.cpuTempSeries, \.gpuTempSeries,
-        \.pickedSensorSeries,
+        \.pickedSensorSeries, \.unattributedSeries, \.coverageSeries,
     ]
 
     /// Session-only, and unavoidably so: the SMC sweep is gated on a tab that
@@ -167,6 +167,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
     /// averages. Cleared when the pick changes: a line that kept its old points
     /// under a new name would be two sensors drawn as one.
     var pickedSensorSeries: [HistoryGraphView.Point] = []
+    /// Live buffers for the ledger graph's session-only lines that nothing else
+    /// already keeps (fan speed is `fanLoadSeries`). Percentages, 0-100.
+    var unattributedSeries: [HistoryGraphView.Point] = []
+    var coverageSeries: [HistoryGraphView.Point] = []
     let graphSpan: TimeInterval = 3600
 
     var lastSnapshot: PowerMonitor.Snapshot?
@@ -421,6 +425,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
             Settings.shared.observe(Settings.Key.menuBarWidgetsEnabled) { [weak self] in
                 self?.applyMenuBarSwitch()
             })
+        // Ticking a line in Settings → Graph has to show at once, not at the next
+        // tick or the next press of a range button.
+        settingsTokens.append(
+            Settings.shared.observe(Settings.Key.ledgerGraphLines) { [weak self] in
+                DispatchQueue.main.async { self?.redrawLedgerGraph() }
+            })
 
         // Uncovering the window has to wake the sampler NOW, not up to eight
         // seconds later. AppKit posts this the moment a window is covered or
@@ -442,6 +452,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
             Settings.shared.observe(Settings.Key.powerWindowHours) { [weak self] in
                 DispatchQueue.main.async { self?.rebuildColumnsIfNeeded() }
             })
+    }
+
+    /// Redraw the bottom graph after its line selection changed: from the store when
+    /// it is showing a longer or zoomed range, from the live buffers otherwise.
+    func redrawLedgerGraph() {
+        guard bottomContext == .battery else { return }
+        if graphRange > 3600 || graphDomainOverride != nil {
+            let d = graph.timeDomain
+                ?? (start: Date().addingTimeInterval(-graphRange), end: Date())
+            loadHistorySeries(start: d.start, end: d.end)
+        } else {
+            updateGraph(lastSnapshot)
+        }
     }
 
     /// Re-derive the column set when the setting its titles depend on has moved.
@@ -1307,6 +1330,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         }
     }
 
+    /// The battery graph for the live hour, built from the in-memory buffers and
+    /// whichever lines Settings → Graph has ticked.
+    func ledgerGraphDrawn() -> LedgerGraphLine.Drawn {
+        let selected = LedgerGraphLine.selected()
+        return LedgerGraphLine.build(
+            selected: selected,
+            drain: totalSeries,
+            mean: Self.sessionMean(totalSeries, charge: chargeSeries,
+                                   minimumSpan: Self.drainTrendMinimumSpan),
+            charge: chargeSeries,
+            extras: ledgerLiveExtras(selected),
+            drainFilled: true)
+    }
+
+    /// The live buffers behind the ledger graph's extra lines, as they stand now.
+    /// Copied (arrays are values) so the history path can read them off the main
+    /// thread without racing the sampler.
+    func ledgerLiveExtras(_ selected: Set<LedgerGraphLine>)
+        -> [LedgerGraphLine: [HistoryGraphView.Point]] {
+        var out: [LedgerGraphLine: [HistoryGraphView.Point]] = [:]
+        func pct(_ points: [HistoryGraphView.Point]) -> [HistoryGraphView.Point] {
+            points.map { LedgerGraphLine.percentPoint($0.time, $0.value) }
+        }
+        if selected.contains(.cpu) { out[.cpu] = pct(utilizationSeries[.cpu] ?? []) }
+        if selected.contains(.memory) { out[.memory] = pct(utilizationSeries[.memory] ?? []) }
+        if selected.contains(.gpu) { out[.gpu] = pct(utilizationSeries[.gpu] ?? []) }
+        if selected.contains(.fan) { out[.fan] = fanLoadSeries }
+        if selected.contains(.unattributed) { out[.unattributed] = unattributedSeries }
+        if selected.contains(.coverage) { out[.coverage] = coverageSeries }
+        return out
+    }
+
     /// Pull a historical range out of the store and hand it to the graph.
     ///
     /// Bucketed SQL-side to at most ~700 points, so a 7-day query costs the same
@@ -1330,6 +1385,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
             return loadUtilizationHistory(bottomContext, start: start, end: end)
         }
         let scale = lastSnapshot?.scale
+        let selected = LedgerGraphLine.selected()
+        // Read on the main thread, used on the background one.
+        let liveExtras = ledgerLiveExtras(selected)
         DispatchQueue.global(qos: .userInitiated).async {
             let pts = store.powerSeries(since: start, until: end, maxPoints: 700)
             let series = pts.map { p -> HistoryGraphView.Point in
@@ -1350,16 +1408,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
             }
             let trend = Self.sessionMean(series, charge: charge,
                                          minimumSpan: Self.drainTrendMinimumSpan)
+
+            // The store keeps CPU, memory and GPU. The session-only lines come from
+            // the live buffers, clipped to the range asked for: a zoom inside the
+            // live hour lands here too, and they must not vanish when it does.
+            var extras: [LedgerGraphLine: [HistoryGraphView.Point]] = [:]
+            if !selected.isDisjoint(with: [.cpu, .memory, .gpu]) {
+                let util = store.utilizationSeries(since: start, until: end, maxPoints: 700)
+                func line(_ get: (HistoryStore.UtilizationPoint) -> Double?)
+                    -> [HistoryGraphView.Point] {
+                    util.compactMap { p in
+                        get(p).map { LedgerGraphLine.percentPoint(p.time, $0) }
+                    }
+                }
+                if selected.contains(.cpu) { extras[.cpu] = line { $0.cpuPercent } }
+                if selected.contains(.memory) { extras[.memory] = line { $0.memoryPercent } }
+                if selected.contains(.gpu) { extras[.gpu] = line { $0.gpuPercent } }
+            }
+            for (line, pts) in liveExtras where line.sessionOnly {
+                extras[line] = pts.filter { $0.time >= start && $0.time <= end }
+            }
+            let drawn = LedgerGraphLine.build(selected: selected, drain: series, mean: trend,
+                                              charge: charge, extras: extras,
+                                              drainFilled: false)
             DispatchQueue.main.async {
                 self.graph.sharesRightAxisScale = true
-                self.graph.series = [
-                    .init(name: Self.drainSeriesName, color: Palette.accent, points: series),
-                ] + Self.trendOverlay(trend)
-                self.graph.rightSeries = charge.count >= 2
-                    ? .init(name: "battery", color: Palette.chargeLine,
-                            points: charge, filled: true)
-                    : nil
-                self.graph.rightAxisLabel = charge.count >= 2 ? "battery" : ""
+                self.graph.series = drawn.series
+                self.graph.rightSeries = drawn.right
+                self.graph.rightAxisLabel = drawn.rightAxisLabel
+                self.graph.yAxisLabel = drawn.axisLabel
             }
         }
     }
@@ -1963,6 +2040,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
             chargeSeries.append(.charge(time: now, percent: Double(pct),
                                         onAC: s.state?.onAC ?? false))
         }
+        // A light tick attempted no attribution, so these are absent rather than 0 —
+        // the registry's providers refuse the same ticks for the same reason.
+        if s.isFullSample {
+            if let share = s.residualShare {
+                unattributedSeries.append(LedgerGraphLine.percentPoint(now, share * 100))
+            }
+            coverageSeries.append(LedgerGraphLine.percentPoint(now, s.coverage * 100))
+        }
         if let sys = lastSystem {
             appendUtilization(sys, at: now)
         }
@@ -2077,13 +2162,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
             // One series: total drain. The attributed-versus-unaccounted split
             // already has a home in the ledger bar directly above, and drawing it
             // twice turned a glanceable trend into something you had to decode.
-            graph.series = [
-                .init(name: Self.drainSeriesName, color: Palette.accent,
-                      points: totalSeries, filled: true)
-            ] + Self.trendOverlay(
-                Self.sessionMean(totalSeries, charge: chargeSeries,
-                                 minimumSpan: Self.drainTrendMinimumSpan))
-            graph.yAxisLabel = "%/hr"
+            let drawn = ledgerGraphDrawn()
+            graph.series = drawn.series
+            graph.yAxisLabel = drawn.axisLabel
         }
         // BOTH OF THESE ARE ABOUT THE BATTERY and neither survives a change of
         // subject.
@@ -2105,13 +2186,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         if bottomContext == .battery {
             graph.sharesRightAxisScale = true
             graph.yMax = nil
-            graph.rightSeries = chargeSeries.isEmpty ? nil
-                // Filled, like every other line alone on its axis. It is cut by
-                // the drain fill below it, so the charge line's wash stops where
-                // that one starts instead of the two stacking.
-                : .init(name: "charge", color: Palette.chargeLine,
-                        points: chargeSeries, filled: true)
-            graph.rightAxisLabel = chargeSeries.count >= 2 ? "battery" : ""
+            // Filled, like every other line alone on its axis. It is cut by the drain
+            // fill below it, so the charge line's wash stops where that one starts
+            // instead of the two stacking.
+            let drawn = ledgerGraphDrawn()
+            graph.rightSeries = drawn.right
+            graph.rightAxisLabel = drawn.rightAxisLabel
             graph.rightAxisUnit = "%"
         } else if bottomContext == .fans {
             // Temperature on the right axis, fan speed on the left: the shape the
@@ -2411,6 +2491,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         // A widget bound to a temperature still has to be fed while the window is
         // open on a tab that does not show one.
         needs.formUnion(hiddenNeeds)
+        // A ticked fan-speed line is read off the SMC sweep, which is otherwise only
+        // taken on the tabs that show a sensor. Cached behind
+        // `SystemMetrics.sensorInterval`, so this is one sweep per interval.
+        if Settings.shared.ledgerGraphLines.contains(LedgerGraphLine.fan.rawValue) {
+            needs.insert(.sensors)
+        }
         return needs
     }
 

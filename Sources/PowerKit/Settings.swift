@@ -47,6 +47,8 @@ public final class Settings {
         /// `panelOrder` for why the default is not materialized here.
         public static let panelOrder = "panelOrder"
         public static let panelHidden = "panelHidden"
+        /// Which lines the ledger screen's bottom (battery) graph draws.
+        public static let ledgerGraphLines = "ledgerGraphLines"
         /// Wildcard — an observer registered on this key fires for every change.
         public static let any = "*"
     }
@@ -60,6 +62,11 @@ public final class Settings {
     public static let minimumDisplayRange: ClosedRange<Double> = 0...1
     /// Cap the widget list so a corrupt plist can't flood the menu bar.
     public static let maxMenuBarWidgets = 12
+
+    /// What the ledger graph drew before it was customizable: the drain line, its
+    /// mean since the lid opened, and the battery level. The strings are the
+    /// persistence format, like the metric IDs — never rename a shipped one.
+    public static let defaultLedgerGraphLines = ["graph.drain", "graph.mean", "battery.percent"]
 
     private enum Default {
         static let sampleInterval = 2.0
@@ -149,6 +156,7 @@ public final class Settings {
         var menuBarWidgets: [String]
         var panelOrder: [String]
         var panelHidden: [String]
+        var ledgerGraphLines: [String]
     }
     private var snapshot: Values
     private var defaultsObserver: NSObjectProtocol?
@@ -367,6 +375,30 @@ public final class Settings {
     public var panelHidden: [String] {
         get { Settings.readIDList(defaults, Key.panelHidden) }
         set { writeIDList(newValue, key: Key.panelHidden, keyPath: \.panelHidden) }
+    }
+
+    /// IDs of the lines the ledger graph draws. ABSENT means the default set; a
+    /// stored empty list means the user unticked everything, which is a different
+    /// answer and must stay one. Unknown IDs are kept, so a line from a build that
+    /// is not running right now survives a round trip.
+    public var ledgerGraphLines: [String] {
+        get { Settings.readLedgerLines(defaults) }
+        set {
+            let clean = Settings.sanitizeIDs(newValue)
+            let old = ledgerGraphLines
+            let neverStored = defaults.object(forKey: Settings.storageKey(Key.ledgerGraphLines)) == nil
+            guard clean != old || neverStored else { return }
+            lock.lock(); snapshot.ledgerGraphLines = clean; lock.unlock()
+            defaults.set(clean, forKey: Settings.storageKey(Key.ledgerGraphLines))
+            if clean != old { notify(Key.ledgerGraphLines) }
+        }
+    }
+
+    private static func readLedgerLines(_ d: UserDefaults) -> [String] {
+        guard let raw = d.stringArray(forKey: storageKey(Key.ledgerGraphLines)) else {
+            return defaultLedgerGraphLines
+        }
+        return sanitizeIDs(raw)
     }
 
     /// Shared write path for both panel lists: sanitize, skip no-op writes,
@@ -588,6 +620,7 @@ public final class Settings {
             notify(Key.autoUpdatePromptSeen)
         }
         if old.menuBarWidgets != now.menuBarWidgets { notify(Key.menuBarWidgets) }
+        if old.ledgerGraphLines != now.ledgerGraphLines { notify(Key.ledgerGraphLines) }
     }
 
     // ── Plumbing ────────────────────────────────────────────────────────────
@@ -692,7 +725,8 @@ public final class Settings {
                                            Default.fanDisclosureSeen),
                menuBarWidgets: readWidgets(d, Default.menuBarWidgets),
                panelOrder: readIDList(d, Key.panelOrder),
-               panelHidden: readIDList(d, Key.panelHidden))
+               panelHidden: readIDList(d, Key.panelHidden),
+               ledgerGraphLines: readLedgerLines(d))
     }
 }
 
