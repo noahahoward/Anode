@@ -1838,6 +1838,9 @@ extension HistoryGraphView {
                                   value: $0.2 as NSString) }
         let swatchW: CGFloat = 9, swatchGap: CGFloat = 6, colGap: CGFloat = 14
         let padX: CGFloat = 8, padY: CGFloat = 6, stampGap: CGFloat = 4
+        // Kept clear of the view's own edges: nothing is drawn outside `bounds`, so a
+        // box that reaches past them is simply cut off.
+        let edge: CGFloat = 6
         var nameW: CGFloat = 0, valueW: CGFloat = 0, rowH: CGFloat = 0
         for e in entries {
             let n = e.name.size(withAttributes: nameAttrs)
@@ -1847,13 +1850,26 @@ extension HistoryGraphView {
             rowH = max(rowH, ceil(max(n.height, v.height)))
         }
         let stampSize = stamp.size(withAttributes: stampAttrs)
-        let boxW = max(stampSize.width, swatchW + swatchGap + nameW + colGap + valueW) + padX * 2
-        let boxH = padY * 2 + ceil(stampSize.height) + stampGap + rowH * CGFloat(entries.count)
 
-        // Flip the box to the other side of the crosshair near the right edge so
-        // it never gets clipped by the plot bounds.
-        let left = h.x + 12 + boxW > plot.maxX ? h.x - 12 - boxW : h.x + 12
-        let bottom = min(max(h.y - boxH / 2, plot.minY), plot.maxY - boxH)
+        // One column while it fits. With many lines ticked a single column is taller
+        // than a short graph, so the rows wrap into more columns rather than running
+        // off the top and bottom.
+        let chromeH = padY * 2 + ceil(stampSize.height) + stampGap
+        let fit = Int(max(bounds.height - 2 * edge - chromeH, rowH) / rowH)
+        let rowsPerColumn = max(1, fit)
+        let columns = max(1, Int((Double(entries.count) / Double(rowsPerColumn)).rounded(.up)))
+        let perColumn = Int((Double(entries.count) / Double(columns)).rounded(.up))
+        let columnW = swatchW + swatchGap + nameW + colGap + valueW
+        let boxW = max(stampSize.width, columnW * CGFloat(columns) + colGap * CGFloat(columns - 1))
+            + padX * 2
+        let boxH = chromeH + rowH * CGFloat(perColumn)
+
+        // Beside the crosshair, flipped to the other side near the right edge, and
+        // then held inside the view on both axes.
+        var left = h.x + 12 + boxW > plot.maxX ? h.x - 12 - boxW : h.x + 12
+        left = min(max(left, bounds.minX + edge), max(bounds.maxX - edge - boxW, bounds.minX + edge))
+        let bottom = min(max(h.y - boxH / 2, bounds.minY + edge),
+                         max(bounds.maxY - edge - boxH, bounds.minY + edge))
         let box = NSRect(x: left, y: bottom, width: boxW, height: boxH)
 
         Palette.background.withAlphaComponent(0.96).setFill()
@@ -1863,24 +1879,25 @@ extension HistoryGraphView {
         Palette.line.setStroke()
         bp.stroke()
 
-        var y = box.maxY - padY - ceil(stampSize.height)
-        stamp.draw(at: NSPoint(x: box.minX + padX, y: y), withAttributes: stampAttrs)
-        y -= stampGap
-        for e in entries {
-            y -= rowH
+        let top = box.maxY - padY - ceil(stampSize.height)
+        stamp.draw(at: NSPoint(x: box.minX + padX, y: top), withAttributes: stampAttrs)
+        for (i, e) in entries.enumerated() {
+            let col = i / perColumn, row = i % perColumn
+            let x0 = box.minX + padX + CGFloat(col) * (columnW + colGap)
+            let y = top - stampGap - rowH * CGFloat(row + 1)
             e.color.setFill()
-            NSBezierPath(roundedRect: NSRect(x: box.minX + padX,
+            NSBezierPath(roundedRect: NSRect(x: x0,
                                              y: y + rowH / 2 - Self.swatchH / 2,
                                              width: swatchW, height: Self.swatchH),
                          xRadius: Self.swatchH / 2, yRadius: Self.swatchH / 2).fill()
             let n = e.name.size(withAttributes: nameAttrs)
-            e.name.draw(at: NSPoint(x: box.minX + padX + swatchW + swatchGap,
+            e.name.draw(at: NSPoint(x: x0 + swatchW + swatchGap,
                                     y: y + (rowH - n.height) / 2),
                         withAttributes: nameAttrs)
             // Values right-aligned to a common edge: this is a column of numbers,
             // and a ragged one cannot be compared down its own length.
             let v = e.value.size(withAttributes: valueAttrs)
-            e.value.draw(at: NSPoint(x: box.maxX - padX - v.width,
+            e.value.draw(at: NSPoint(x: x0 + columnW - v.width,
                                      y: y + (rowH - v.height) / 2),
                          withAttributes: valueAttrs)
         }
