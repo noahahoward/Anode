@@ -301,6 +301,42 @@ public enum Battery {
         /// from any limit. False while holding at 80%, which is what makes the
         /// two distinguishable at all.
         public var fullyCharged: Bool = false
+
+        /// What the adapter is putting in, `PowerTelemetryData.SystemPowerIn`, mW.
+        /// Steady while the adapter is at its limit (18.77 W for 25 samples on a
+        /// 20 W brick), so it is safe to read at the gauge's own pace.
+        ///
+        /// Not verified to clear on unplug, so `acPowerText` pairs it with `onAC`.
+        public var adapterInput_mW: Double? = nil
+
+        /// "used/supplied" in watts, e.g. "23/18W"; nil when the adapter is not
+        /// connected or its input was not read. One decimal below 10 W, where a
+        /// whole number would round a light load to something misleading.
+        ///
+        /// USED IS DERIVED, not read from `SystemLoad`: supplied minus the pack's
+        /// own power (signed V × I; negative while it discharges). Energy balance,
+        /// and `SystemLoad` obeys it exactly (23922 = 18764 + 5158 live). It is
+        /// derived because `SystemLoad` is a single point sample of a load that
+        /// swings 12-24 W between gauge batches, published on a different cadence
+        /// from the pack current — so the two disagreed, and the widget read
+        /// "12/19W" beside a measured 4.9 %/hr DRAIN. Built from the same current
+        /// the charge/drain rate uses, the pair cannot contradict it.
+        ///
+        /// A half that is 0 is "not measured yet", shown as "--": right after
+        /// plugging in, `SystemPowerIn` reads 0 until the next batch publishes
+        /// (verified live), and a machine on AC drawing nothing does not exist.
+        public var acPowerText: String? {
+            guard onAC, let input = adapterInput_mW, input.isFinite, input >= 0,
+                  voltage_mV > 0 else { return nil }
+            func w(_ mW: Double) -> String {
+                if mW <= 0 { return "--" }
+                let v = mW / 1000
+                return v < 10 ? String(format: "%.1f", v) : String(format: "%.0f", v)
+            }
+            guard input > 0 else { return "--/--W" }
+            let pack_mW = Double(amperage_mA) * Double(voltage_mV) / 1000
+            return "\(w(input - pack_mW))/\(w(input))W"
+        }
     }
 
     public static func state() -> State? {
@@ -314,8 +350,13 @@ public enum Battery {
         let raw = int("TimeRemaining")
         let sane = (raw > 0 && raw != 65535) ? raw : nil
         let charger = props["ChargerData"] as? [String: Any] ?? [:]
+        let telemetry = props["PowerTelemetryData"] as? [String: Any] ?? [:]
+        func mW(_ key: String) -> Double? {
+            (telemetry[key] as? NSNumber).map { Double($0.uint64Value) }
+        }
+        let input = mW("SystemPowerIn")
 
-        return State(
+        var state = State(
             percent: int("CurrentCapacity"),
             isCharging: props["IsCharging"] as? Bool ?? false,
             onAC: props["ExternalConnected"] as? Bool ?? false,
@@ -336,6 +377,8 @@ public enum Battery {
             notChargingReason: int("NotChargingReason", charger),
             fullyCharged: props["FullyCharged"] as? Bool ?? false
         )
+        state.adapterInput_mW = input
+        return state
     }
 }
 
