@@ -106,7 +106,8 @@ final class ForecastCheckWindowController: NSWindowController {
             let samples = pts.filter(\.onBattery).map {
                 ForecastCheck.Sample(time: $0.time, socPercent: $0.socPercent,
                                      predictedSeconds: $0.predictedSeconds,
-                                     shownPctHr: $0.shownPctHr)
+                                     shownPctHr: $0.shownPctHr,
+                                     paceSeconds: $0.paceSeconds)
             }
             let r = ForecastCheck.evaluate(samples, horizon: ahead,
                                            tolerance: max(150, 2 * width))
@@ -127,14 +128,26 @@ final class ForecastCheckWindowController: NSWindowController {
             .init(name: "predicted \(aheadText) earlier", color: Palette.drainTrendLine,
                   points: pts(r.predictedLevel)),
         ]
+        // The load-following forecast, once there is any stored: rows from before
+        // it was recorded have none, and an empty series would still claim a
+        // legend entry for a line that is not there.
+        if !r.paceLevel.isEmpty {
+            levelGraph.series.append(
+                .init(name: "at recent drain, \(aheadText) earlier", color: Palette.violet,
+                      points: pts(r.paceLevel)))
+        }
         drainGraph.series = [
             .init(name: "actual drain", color: Palette.accent, points: pts(r.actualDrain)),
             .init(name: "average drain used", color: Palette.violet, points: pts(r.shownDrain)),
         ]
         if let pct = r.meanErrorFraction, let points = r.meanErrorPoints {
             let direction = pct < 0 ? "too little time left" : "too much time left"
-            summary.stringValue = String(format: "Forecast gave %@ by %.0f%% on average (%+.1f points)",
-                                         direction, abs(pct) * 100, points)
+            var text = String(format: "Forecast gave %@ by %.0f%% on average (%+.1f points)",
+                              direction, abs(pct) * 100, points)
+            if let pace = r.paceErrorFraction {
+                text += String(format: " · at recent drain: %+.0f%%", pace * 100)
+            }
+            summary.stringValue = text
         } else {
             summary.stringValue = "No stored predictions in this range yet — "
                 + "they are recorded from this build on, while on battery."

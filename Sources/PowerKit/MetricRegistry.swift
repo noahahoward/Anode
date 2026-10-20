@@ -27,6 +27,9 @@ public struct MetricID: Hashable, RawRepresentable, Codable {
 extension MetricID {
     // Built-in battery metrics. The strings are the persistence format — frozen.
     public static let batteryDrain       = MetricID("battery.drain.pctHr")
+    /// The drain of the last few minutes, as its own metric. `batteryDrain` is the
+    /// rate the time left is divided by; this is what the machine is doing NOW.
+    public static let batteryDrainNow    = MetricID("battery.drainNow.pctHr")
     public static let batteryPercent     = MetricID("battery.percent")
     public static let batteryTimeLeft    = MetricID("battery.timeRemaining.min")
     public static let gpuDrain           = MetricID("battery.gpu.pctHr")
@@ -606,13 +609,20 @@ public final class MetricRegistry {
                                    label: "Drain")
             }
             if s.direction == .acIdle {
-                return MetricValue(value: 0, text: "AC", isEstimate: false, label: "Power")
+                return MetricValue(value: 0, text: s.state?.acPowerText ?? "AC",
+                                   isEstimate: false, label: "Power")
             }
             // The SHARED figure when one has been published — the same number the
             // window shows — falling back to instantaneous power only before the
             // first one arrives.
+            //
+            // The rate the TIME LEFT is divided by (`pctHr`), not the last few
+            // minutes' (`shownPctHr`). This used to show the recent rate beside a
+            // time divided from the all-time average, and the pair did not
+            // multiply out: "5.4 %/hr" beside "5h 42m" at 92 % charge, which is
+            // 17 hours at that rate. The recent rate is `batteryDrainNow`.
             let shared = self?.displayedRate
-            let rate = shared?.shownPctHr ?? s.smoothedLive_pctHr
+            let rate = shared?.pctHr ?? s.smoothedLive_pctHr
             // The "*" means "this is inferred, not measured". A rate that came from
             // the battery's own discharge accumulator is measured end to end, and
             // no SMC gain enters it, so the marker drops. Everything else here is
@@ -621,6 +631,17 @@ public final class MetricRegistry {
             // and not a reading of it.
             return MetricValue(rate, unit: .percentPerHour,
                                isEstimate: shared?.source != .discharge)
+        }
+
+        register(MetricDescriptor(
+            id: .batteryDrainNow, title: "Battery rate, recent", shortTitle: "Now",
+            unit: .percentPerHour, category: "Battery", higherIsWorse: true
+        )) { [weak self] in
+            // Only while draining: on AC there is no "recent drain" to speak of,
+            // and `batteryDrain` already says what is happening there.
+            guard let s = self?.latestSnapshot(), s.direction == .draining,
+                  let shared = self?.displayedRate else { return nil }
+            return MetricValue(shared.shownPctHr, unit: .percentPerHour, isEstimate: true)
         }
 
         register(MetricDescriptor(
@@ -648,8 +669,8 @@ public final class MetricRegistry {
             // would plot as "no time remaining" — alarming, and false. 0 %/hr on AC
             // is TRUE and belongs in a graph; 0 minutes left is not.
             if let st = s.state, st.onAC {
-                return MetricValue(value: .nan, text: "AC", isEstimate: false,
-                                   label: "Power")
+                return MetricValue(value: .nan, text: st.acPowerText ?? "AC",
+                                   isEstimate: false, label: "Power")
             }
             // Shared first, so the widget and the card cannot disagree about how
             // long the battery has left.

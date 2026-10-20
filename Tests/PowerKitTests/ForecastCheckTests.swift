@@ -47,6 +47,31 @@ final class ForecastCheckTests: XCTestCase {
         XCTAssertEqual(r.meanErrorFraction!, 0.25, accuracy: 1e-9)
     }
 
+    /// The load-following forecast is scored by the same rule as the headline,
+    /// and independently of it: a headline 25 % too long beside a pace figure
+    /// that is exactly right.
+    func testThePaceForecastIsScoredSeparatelyFromTheHeadline() {
+        let s = discharge(minutes: 300, factor: 1.25).map {
+            ForecastCheck.Sample(time: $0.time, socPercent: $0.socPercent,
+                                 predictedSeconds: $0.predictedSeconds,
+                                 shownPctHr: $0.shownPctHr,
+                                 paceSeconds: $0.predictedSeconds.map { $0 / 1.25 })
+        }
+        let r = ForecastCheck.evaluate(s, horizon: 3600, tolerance: 90)
+        XCTAssertEqual(r.meanErrorFraction!, 0.25, accuracy: 1e-9)
+        XCTAssertEqual(r.paceErrorFraction!, 0, accuracy: 1e-9)
+        XCTAssertFalse(r.paceLevel.isEmpty)
+    }
+
+    /// Rows recorded before the column existed have no pace; that draws nothing
+    /// rather than a line at the headline's values.
+    func testNoPaceStoredDrawsNoPaceLine() {
+        let r = ForecastCheck.evaluate(discharge(minutes: 300, factor: 1),
+                                       horizon: 3600, tolerance: 90)
+        XCTAssertTrue(r.paceLevel.isEmpty)
+        XCTAssertNil(r.paceErrorFraction)
+    }
+
     func testDrainIsTheLevelsOwnFall() {
         let r = ForecastCheck.evaluate(discharge(minutes: 120, factor: 1),
                                        horizon: 3600, tolerance: 90)
@@ -89,6 +114,20 @@ final class ForecastStoreTests: XCTestCase {
         XCTAssertEqual(p.socPercent!, 57.34, accuracy: 1e-9)
         XCTAssertEqual(p.predictedSeconds!, 18_000, accuracy: 1e-9)
         XCTAssertEqual(p.shownPctHr!, 11.2, accuracy: 1e-9)
+    }
+
+    func testPaceSecondsRoundTrip() throws {
+        let s = try XCTUnwrap(HistoryStore(path: dir.appendingPathComponent("h.sqlite")))
+        let t0 = Date().addingTimeInterval(-600)
+        s.record(apps: [], measured_W: 8, attributed_W: nil, residual_W: nil,
+                 onBattery: true, socPercent: 58, chargePercent: 57.34,
+                 forecast: .init(predictedSeconds: 18_000, shownPctHr: 11.2,
+                                 paceSeconds: 7_200),
+                 interval: 2, at: t0)
+        let p = try XCTUnwrap(s.forecastSeries(since: t0.addingTimeInterval(-1),
+                                               until: t0.addingTimeInterval(1)).first)
+        XCTAssertEqual(p.predictedSeconds!, 18_000, accuracy: 1e-9)
+        XCTAssertEqual(p.paceSeconds!, 7_200, accuracy: 1e-9)
     }
 
     /// Rows from before the column existed fall back to the integer level.

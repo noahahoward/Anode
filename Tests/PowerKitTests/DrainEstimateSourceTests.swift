@@ -228,7 +228,8 @@ final class DrainEstimateSourceTests: XCTestCase {
     /// yields them, so the assertions read as they always did.
     private func registry(_ shared: (pctHr: Double, timeRemaining_hr: Double?,
                                      source: DrainEstimate.Source)?,
-                          windowSpan: TimeInterval = 1800) -> MetricRegistry {
+                          windowSpan: TimeInterval = 1800,
+                          recent: Double? = nil) -> MetricRegistry {
         let st = Battery.State(percent: 61, isCharging: false, onAC: false,
                                cycleCount: 20, voltage_mV: 11878, amperage_mA: -347,
                                remainingCapacity_mAh: 3667, timeRemaining_min: nil)
@@ -248,7 +249,8 @@ final class DrainEstimateSourceTests: XCTestCase {
             DisplayedRate(pctHr: sh.pctHr,
                           chargePercent: sh.timeRemaining_hr.map { $0 * sh.pctHr },
                           anchorAwake: PowerMonitor.awakeSeconds(),
-                          source: sh.source, windowSpan: windowSpan)
+                          source: sh.source, windowSpan: windowSpan,
+                          recentPctHr: recent)
         })
         return r
     }
@@ -290,6 +292,22 @@ final class DrainEstimateSourceTests: XCTestCase {
         XCTAssertTrue(modelled.value(for: .batteryTimeLeft)?.isEstimate ?? false)
         XCTAssertTrue(modelled.value(for: .batteryDrain)?.isEstimate ?? false,
                       "a rate inferred from instantaneous draw is an estimate")
+    }
+
+    /// "5.4 %/hr" beside "5h 42m" at 92 % charge was reported as wrong, and was:
+    /// the rate was the last ten minutes' and the time was divided from the
+    /// all-time average. The widget's Drain is the rate the time is divided by,
+    /// so the pair multiply out; the recent rate has its own metric.
+    func testDrainIsTheRateTheTimeIsDividedByAndNowIsTheRecentOne() throws {
+        let r = registry((14.8, 6.0, .allTime), recent: 5.4)
+        XCTAssertEqual(try XCTUnwrap(r.value(for: .batteryDrain)).value, 14.8, accuracy: 1e-9)
+        XCTAssertEqual(try XCTUnwrap(r.value(for: .batteryDrainNow)).value, 5.4, accuracy: 1e-9)
+    }
+
+    /// Without a recent mean the "now" rate is the one the time uses, not blank.
+    func testNowFallsBackToTheTimesOwnRateWhenThereIsNoRecentMean() throws {
+        let r = registry((14.8, 6.0, .allTime))
+        XCTAssertEqual(try XCTUnwrap(r.value(for: .batteryDrainNow)).value, 14.8, accuracy: 1e-9)
     }
 
     /// Nothing published yet, and nothing else to fall back on: the widget shows

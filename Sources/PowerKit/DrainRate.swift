@@ -944,6 +944,18 @@ public struct DisplayedRate {
     /// is then the anchor's plain projection, exactly as before it existed.
     public let prior: Prior?
 
+    /// The drain of the last half hour, on the live-voltage basis — the rate
+    /// `timeToEmpty` divides when asked "how long at what it has just been
+    /// doing". nil unless the discharge accumulator is speaking and has a window.
+    ///
+    /// A SECOND answer beside the headline, never a replacement for it. The
+    /// headline divides the all-time average on purpose: it is steady, and the
+    /// definition of time left the user chose. That steadiness is also its cost
+    /// under a sustained heavy load, which it assumes is about to end — scored
+    /// over a week of this machine's history it promised twice the time the
+    /// pack gave while drain ran above 18 %/hr. This rate is that load, held.
+    public let pacePctHr: Double?
+
     /// The trailing few minutes' drain, for READING. nil until `RecentDrain`
     /// has enough to average, and off battery.
     ///
@@ -990,8 +1002,10 @@ public struct DisplayedRate {
 
     public init(pctHr: Double, chargePercent: Double?, anchorAwake: TimeInterval,
                 source: DrainEstimate.Source, windowSpan: TimeInterval,
-                prior: Prior? = nil, recentPctHr: Double? = nil) {
+                prior: Prior? = nil, recentPctHr: Double? = nil,
+                pacePctHr: Double? = nil) {
         self.recentPctHr = recentPctHr
+        self.pacePctHr = pacePctHr
         self.pctHr = pctHr
         self.chargePercent = chargePercent
         self.anchorAwake = anchorAwake
@@ -1028,6 +1042,33 @@ public struct DisplayedRate {
         return DrainEstimate.projected(chargePercent: charge, ratePctHr: pctHr,
                                        elapsedAwake: awake - anchorAwake)
             .map { $0 / 3600 }
+    }
+
+    /// Hours left if the drain of the last half hour simply continues, as of
+    /// `now`. The same anchor, the same `DrainEstimate.projected` and so the same
+    /// constant-power correction as the headline, so the two can only differ by
+    /// the RATE — which is the whole of what this figure is for.
+    public func paceRemaining_hr(now awake: TimeInterval = PowerMonitor.awakeSeconds())
+        -> Double? {
+        guard let charge = chargePercent, let rate = pacePctHr else { return nil }
+        return DrainEstimate.projected(chargePercent: charge, ratePctHr: rate,
+                                       elapsedAwake: awake - anchorAwake)
+            .map { $0 / 3600 }
+    }
+
+    /// How far the pace time must sit from the headline before it is worth a
+    /// second figure on the card. Within this, two times side by side read as a
+    /// disagreement when they are the same answer to the model's own accuracy
+    /// (the backtest's median error was ~20 % even for the better of them).
+    public static let paceMinDisagreement = 0.2
+
+    /// The pace time, only when it differs from `headline_hr` enough to say
+    /// something. For the card; the store records `paceRemaining_hr` unconditionally.
+    public func notablePaceRemaining_hr(headline_hr: Double?,
+                                        now awake: TimeInterval = PowerMonitor.awakeSeconds())
+        -> Double? {
+        guard let h = headline_hr, h > 0, let p = paceRemaining_hr(now: awake) else { return nil }
+        return abs(p - h) / h >= Self.paceMinDisagreement ? p : nil
     }
 
     /// The instant the pack is predicted to die, given the same `now` the caller

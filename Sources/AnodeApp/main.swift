@@ -1480,7 +1480,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         guard let r = MetricRegistry.shared.lockedDisplayedRate(),
               r.chargePercent != nil, r.canQuoteTime,
               let hr = r.timeRemaining_hr() else { return .none }
-        return .init(predictedSeconds: hr * 3600, shownPctHr: r.pctHr)
+        return .init(predictedSeconds: hr * 3600, shownPctHr: r.pctHr,
+                     paceSeconds: r.paceRemaining_hr().map { $0 * 3600 })
     }
 
     /// The one drain figure the whole app shows, the hours it implies, and where
@@ -1541,18 +1542,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         -> DisplayedRate {
         let r = rateForTimeLeft(s, est, previous: previous, awake: awake,
                                 prior: prior, allTime_W: allTime_W)
-        // The rate that is SHOWN rides along and decides nothing: everything
-        // above this line is what time left is divided from, and it is computed
-        // exactly as it was before there was a second rate. See
-        // `DisplayedRate.recentPctHr`.
-        guard s.direction == .draining, let w = recent_W, w > 0,
-              let mV = s.state?.voltage_mV, mV > 0 else { return r }
-        let recent = s.scale.pctHrAtVoltage(watts: w, voltage_mV: Double(mV))
-        guard recent.isFinite, recent > 0 else { return r }
+        // Both of these ride along and decide nothing: everything above this
+        // line is what time left is divided from, and it is computed exactly as
+        // it was before there was a second rate. See `DisplayedRate.recentPctHr`
+        // and `DisplayedRate.pacePctHr`.
+        //
+        // The pace rate is the estimator's own, because `rateForTimeLeft` returns
+        // at the all-time branch before it consults the estimator and so the
+        // discharge trend never reaches `r` on a machine with history. Gated by
+        // the same `canQuoteTime` the headline answers to: a half-hour mean of
+        // the first seconds after an unplug is not a trend.
+        let pace: Double? = {
+            guard s.direction == .draining, let e = est, e.source == .discharge,
+                  DrainEstimate.canQuoteTime(source: e.source, windowSpan: e.windowSpan),
+                  e.percentPerHour >= 0.1, e.percentPerHour.isFinite,
+                  r.chargePercent != nil else { return nil }
+            return e.percentPerHour
+        }()
+        let recent: Double? = {
+            guard s.direction == .draining, let w = recent_W, w > 0,
+                  let mV = s.state?.voltage_mV, mV > 0 else { return nil }
+            let v = s.scale.pctHrAtVoltage(watts: w, voltage_mV: Double(mV))
+            return v.isFinite && v > 0 ? v : nil
+        }()
+        guard pace != nil || recent != nil else { return r }
         return DisplayedRate(pctHr: r.pctHr, chargePercent: r.chargePercent,
                              anchorAwake: r.anchorAwake, source: r.source,
                              windowSpan: r.windowSpan, prior: r.prior,
-                             recentPctHr: recent)
+                             recentPctHr: recent, pacePctHr: pace)
     }
 
     private static func rateForTimeLeft(_ s: PowerMonitor.Snapshot, _ est: DrainEstimate?,

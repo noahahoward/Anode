@@ -552,7 +552,15 @@ final class GlanceCardView: NSView {
                 sourceLabel: "on battery · "
                     + (shared.prior?.label ?? provenance(shared.source, settled: settled)),
                 rows: [
-                    ("Drain", String(format: "%.1f %%/hr", shared.shownPctHr), nil),
+                    // The rate the headline is divided by, so the two multiply out.
+                    // The trailing time is what the last half hour's drain would
+                    // give if it simply continued, and appears only when it
+                    // disagrees with the headline by enough to matter — the
+                    // headline is steady by design and a sustained heavy or quiet
+                    // load is where that costs it. See `DisplayedRate.pacePctHr`.
+                    ("Drain", String(format: "%.1f %%/hr", shared.pctHr),
+                     shared.notablePaceRemaining_hr(headline_hr: hrs, now: awake)
+                        .map { hm($0) + " at recent" }),
                     ("Draw", String(format: "%.1f W", s.smoothed_W), nil),
                     ("Remaining", String(format: "%.1f Wh", remaining_Wh),
                      hrs.flatMap { _ in at(shared, awake: awake) }),

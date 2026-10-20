@@ -24,7 +24,7 @@ public enum PanelOrder {
     /// not a reading of load, and it answers "where is the charge going?"
     /// alongside the rest of the battery answers.
     public static let defaultOrder: [MetricID] = [
-        .batteryDrain, .batteryPercent, .batteryTimeLeft,
+        .batteryDrain, .batteryDrainNow, .batteryPercent, .batteryTimeLeft,
         .gpuDrain, .unattributedShare, .processCoverage,
         .cpuUsage, .cpuTemperature,
         .memoryUsage,

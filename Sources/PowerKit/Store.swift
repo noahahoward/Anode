@@ -167,6 +167,11 @@ public final class HistoryStore {
         /// ~0.02 %. `soc` is the integer macOS shows, and a line drawn from it is
         /// a staircase with a 6-minute tread at a 10 %/hr drain.
         case charge_pct
+        /// The time left at the drain of the last half hour, in seconds — what the
+        /// battery would last if it kept doing what it has just been doing. Stored
+        /// beside `predicted_s` (the headline, which is steadier by design) so the
+        /// two can be drawn against the same measured level.
+        case pace_s
 
         var fold: Fold {
             switch self {
@@ -620,6 +625,7 @@ public final class HistoryStore {
                                           DiskActivity.maxPlausibleBytesPerSec)
         // A week is past anything this pack can do; beyond it is a rate near zero.
         case .predicted_s:    return rate(forecast.predictedSeconds, 7 * 86_400)
+        case .pace_s:         return rate(forecast.paceSeconds, 7 * 86_400)
         case .shown_pct_hr:   return rate(forecast.shownPctHr, 1000)
         }
     }
@@ -628,9 +634,13 @@ public final class HistoryStore {
     public struct Forecast {
         public let predictedSeconds: Double?
         public let shownPctHr: Double?
-        public init(predictedSeconds: Double?, shownPctHr: Double?) {
+        /// The load-following time left, when there was one. See `Column.pace_s`.
+        public let paceSeconds: Double?
+        public init(predictedSeconds: Double?, shownPctHr: Double?,
+                    paceSeconds: Double? = nil) {
             self.predictedSeconds = predictedSeconds
             self.shownPctHr = shownPctHr
+            self.paceSeconds = paceSeconds
         }
         public static let none = Forecast(predictedSeconds: nil, shownPctHr: nil)
     }
@@ -645,6 +655,7 @@ public final class HistoryStore {
         public let socPercent: Double?
         public let predictedSeconds: Double?
         public let shownPctHr: Double?
+        public let paceSeconds: Double?
     }
 
     /// Battery level, measured drain and the prediction shown, bucketed to at
@@ -662,7 +673,8 @@ public final class HistoryStore {
                        \(Self.weightedMean("soc")),
                        \(Self.weightedMean("predicted_s")),
                        \(Self.weightedMean("shown_pct_hr")),
-                       \(Self.weightedMean("charge_pct"))
+                       \(Self.weightedMean("charge_pct")),
+                       \(Self.weightedMean("pace_s"))
                   FROM interval
                  WHERE ts >= ? AND ts <= ? AND measured_j IS NOT NULL
                    AND dur > 0 AND dur <= \(Self.maxPlausibleInterval)
@@ -688,7 +700,7 @@ public final class HistoryStore {
                     onBattery: sqlite3_column_int(st, 4) == 1,
                     watts: sqlite3_column_double(st, 2) / dur,
                     socPercent: opt(8) ?? opt(5), predictedSeconds: opt(6),
-                    shownPctHr: opt(7)))
+                    shownPctHr: opt(7), paceSeconds: opt(9)))
             }
             return out
         }
