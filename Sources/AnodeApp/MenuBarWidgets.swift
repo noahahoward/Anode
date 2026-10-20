@@ -930,6 +930,13 @@ final class MetricRowView: NSView {
         valueField.setFrameOrigin(NSPoint(
             x: Self.width - Self.inset - valueField.frame.width,
             y: (Self.height - valueField.frame.height) / 2))
+        // The menu is often WIDER than `width` — the "Quit Anode ⌘Q" row sets it —
+        // and NSMenu stretches a custom view to the menu only if it is allowed to.
+        // Without this the row stayed 240 pt wide and left-aligned, leaving a
+        // 40 pt dead strip to the right of the value column. Pinning the value to
+        // the right edge keeps its inset from the edge whatever the width.
+        autoresizingMask = [.width]
+        valueField.autoresizingMask = [.minXMargin]
     }
 
     required init?(coder: NSCoder) { fatalError("not from a nib") }
@@ -951,7 +958,7 @@ final class MetricRowView: NSView {
         valueField.sizeToFit()
         // Right-aligned, so the origin moves whenever the width does.
         valueField.setFrameOrigin(NSPoint(
-            x: Self.width - Self.inset - valueField.frame.width,
+            x: bounds.width - Self.inset - valueField.frame.width,
             y: (Self.height - valueField.frame.height) / 2))
         needsDisplay = true
     }
