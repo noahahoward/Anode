@@ -345,6 +345,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         main.graphRanges.onSelect = { [weak self] seconds in
             self?.applyGraphRange(seconds)
         }
+        main.graphSettings.onPress = { PreferencesWindowController.shared.showGraph() }
 
         inspector = InspectorView(frame: .zero)
         inspector.onClose = { [weak self] in
@@ -2676,6 +2677,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         // subject with a single range — and both are decided here rather than
         // half here and half in the window controller.
         main.graphRanges.isHidden = graphHidden || !main.graphRanges.isWorthShowing
+        main.graphSettings.isHidden = graphHidden
         // The chip and the domain both have to move, and only the chip used to.
         // `select(seconds:)` moves the highlight and does NOT fire `onSelect`,
         // so the domain reset that lives there was never reached from here.

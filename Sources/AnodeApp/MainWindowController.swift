@@ -34,6 +34,7 @@ final class MainWindowController: NSObject {
     /// graphContainer: install() clears that container's subviews, so anything
     /// parked there would vanish the moment the graph was installed.
     let graphRanges = RangePicker()
+    let graphSettings = GraphSettingsButton()
 
     /// The bottom row's height, held so Resources can collapse it. See
     /// `setBottomHidden`.
@@ -156,6 +157,8 @@ final class MainWindowController: NSObject {
         content.addSubview(graphContainer)
         graphRanges.translatesAutoresizingMaskIntoConstraints = false
         content.addSubview(graphRanges)
+        graphSettings.translatesAutoresizingMaskIntoConstraints = false
+        content.addSubview(graphSettings)
 
         let railWidth = SidebarView.width
         bottomRowHeight = glance.heightAnchor.constraint(equalToConstant: 128)
@@ -208,6 +211,9 @@ final class MainWindowController: NSObject {
             graphRanges.trailingAnchor.constraint(equalTo: graphContainer.trailingAnchor,
                                                   constant: -44),
             graphRanges.topAnchor.constraint(equalTo: graphContainer.topAnchor, constant: -3),
+            // Beside the range picker, in the same row.
+            graphSettings.leadingAnchor.constraint(equalTo: graphRanges.trailingAnchor, constant: 6),
+            graphSettings.centerYAnchor.constraint(equalTo: graphRanges.centerYAnchor),
         ])
 
         window.contentView = content
@@ -1015,5 +1021,65 @@ final class RangePicker: NSView {
             str.draw(at: NSPoint(x: cell.midX - sz.width / 2,
                                  y: cell.midY - sz.height / 2), withAttributes: attrs)
         }
+    }
+}
+
+
+/// Small icon button beside the range picker that opens Settings → Graph, where
+/// the plotted lines are chosen. Hand-drawn for the same reason the picker is:
+/// a stock NSButton brings its own bezel and metrics onto a black chart.
+final class GraphSettingsButton: NSView {
+
+    var onPress: (() -> Void)?
+    private var hovering = false
+    private var tracking: NSTrackingArea?
+
+    private let size = NSSize(width: 24, height: 19)
+
+    override var intrinsicContentSize: NSSize { size }
+    override var isFlipped: Bool { true }
+    override func viewDidChangeEffectiveAppearance() { needsDisplay = true }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let t = tracking { removeTrackingArea(t) }
+        let t = NSTrackingArea(rect: bounds,
+                               options: [.mouseEnteredAndExited, .activeInKeyWindow],
+                               owner: self, userInfo: nil)
+        addTrackingArea(t); tracking = t
+    }
+
+    override func mouseEntered(with e: NSEvent) { hovering = true; needsDisplay = true }
+    override func mouseExited(with e: NSEvent) { hovering = false; needsDisplay = true }
+    override func mouseDown(with e: NSEvent) { onPress?() }
+
+    override func isAccessibilityElement() -> Bool { true }
+    override func accessibilityRole() -> NSAccessibility.Role? { .button }
+    override func accessibilityLabel() -> String? { "Graph settings" }
+    override func accessibilityPerformPress() -> Bool { onPress?(); return onPress != nil }
+    override func accessibilityHelp() -> String? { "Choose which metrics the graph shows" }
+    override func accessibilityFrame() -> NSRect {
+        guard let win = window else { return .zero }
+        return win.convertToScreen(convert(bounds, to: nil))
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        let radius = Palette.Radius.chip
+        Palette.surfaceAlt.withAlphaComponent(0.55).setFill()
+        NSBezierPath(roundedRect: bounds, xRadius: radius, yRadius: radius).fill()
+        if hovering {
+            Palette.text.withAlphaComponent(0.06).setFill()
+            NSBezierPath(roundedRect: bounds.insetBy(dx: 1.5, dy: 1.5),
+                         xRadius: radius - 1, yRadius: radius - 1).fill()
+        }
+
+        guard let base = NSImage(systemSymbolName: "chart.xyaxis.line",
+                                 accessibilityDescription: "Graph settings") else { return }
+        let cfg = NSImage.SymbolConfiguration(pointSize: 10, weight: .medium)
+        let tint = hovering ? Palette.text : Palette.faint
+        let img = base.withSymbolConfiguration(cfg.applying(.init(paletteColors: [tint]))) ?? base
+        let sz = img.size
+        img.draw(in: NSRect(x: bounds.midX - sz.width / 2, y: bounds.midY - sz.height / 2,
+                            width: sz.width, height: sz.height))
     }
 }

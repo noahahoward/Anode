@@ -49,9 +49,9 @@ public final class PreferencesWindowController: NSWindowController {
     ]
 
     private var keyObserver: NSObjectProtocol?
+    private let tabs = NSTabViewController()
 
     private init() {
-        let tabs = NSTabViewController()
         tabs.tabStyle = .toolbar
 
         func item(_ vc: NSViewController, _ label: String, _ symbol: String) -> NSTabViewItem {
@@ -106,6 +106,15 @@ public final class PreferencesWindowController: NSWindowController {
         guard let w = window else { return }
         if !w.isVisible { w.center() }
         w.bringForward()
+    }
+
+    /// Open on the Graph pane, for the button over the main window's graph.
+    public func showGraph() {
+        // Select first: the tab's view loads lazily and `show()` brings it forward.
+        if let i = tabs.tabViewItems.firstIndex(where: { $0.viewController is GraphPane }) {
+            tabs.selectedTabViewItemIndex = i
+        }
+        show()
     }
 }
 
