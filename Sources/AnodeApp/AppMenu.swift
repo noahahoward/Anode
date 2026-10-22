@@ -22,7 +22,6 @@ extension AppDelegate {
         bar.addItem(appMenuItem())
         bar.addItem(editMenuItem())
         bar.addItem(viewMenuItem())
-        bar.addItem(betaMenuItem())
         bar.addItem(settingsMenuItem())
         let windows = windowMenuItem()
         bar.addItem(windows)
@@ -96,6 +95,8 @@ extension AppDelegate {
                                   action: #selector(openPrefs), keyEquivalent: ",")
             open.target = self
             m.addItem(open)
+            m.addItem(.separator())
+            m.addItem(betaMenuItem())
         }
     }
 
@@ -108,13 +109,15 @@ extension AppDelegate {
     /// are not worth a separate app, and the first of them has not landed.
     private var betaFeatures: [(title: String, action: Selector)] { [] }
 
-    /// A top-level menu for the same reason Settings is one: a feature that lives
-    /// behind View → Something is a feature nobody finds. It carries a submenu
-    /// because AppKit does not route clicks to a top-level item without one.
+    /// A submenu of Settings, not a bar menu of its own. Nested, so the item
+    /// carries the title (a nested submenu shows its item's title, which
+    /// `submenu` leaves empty) — the same fix Developer Tools needs.
     private func betaMenuItem() -> NSMenuItem {
-        submenu("Beta Features") { m in
+        let parent = submenu("Beta Features") { m in
             BetaMenu.fill(m, with: betaFeatures, target: self)
         }
+        parent.title = "Beta Features"
+        return parent
     }
 
     // ── Edit ────────────────────────────────────────────────────────────────
