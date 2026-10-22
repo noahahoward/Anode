@@ -408,3 +408,28 @@ final class FanControlPanelTests: XCTestCase {
         XCTAssertGreaterThan(panel.preferredHeight, 0)
     }
 }
+
+// An empty top-level menu is a title that opens onto nothing, so the Beta
+// Features menu must always have something to show.
+final class BetaMenuTests: XCTestCase {
+
+    @objc private func noop() {}
+
+    func testAnEmptyMenuShowsOneDisabledPlaceholder() {
+        _ = appKitForTests
+        let menu = NSMenu(title: "Beta Features")
+        BetaMenu.fill(menu, with: [], target: self)
+        XCTAssertEqual(menu.items.map(\.title), [BetaMenu.placeholderTitle])
+        menu.update()
+        XCTAssertFalse(menu.items[0].isEnabled, "the placeholder must not look clickable")
+    }
+
+    func testFeaturesReplaceThePlaceholderAndKeepTheirOrder() {
+        _ = appKitForTests
+        let menu = NSMenu(title: "Beta Features")
+        BetaMenu.fill(menu, with: [("One", #selector(noop)), ("Two", #selector(noop))],
+                      target: self)
+        XCTAssertEqual(menu.items.map(\.title), ["One", "Two"])
+        XCTAssertTrue(menu.items.allSatisfy { $0.target === self && $0.action == #selector(noop) })
+    }
+}

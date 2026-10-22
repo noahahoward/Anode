@@ -22,6 +22,7 @@ extension AppDelegate {
         bar.addItem(appMenuItem())
         bar.addItem(editMenuItem())
         bar.addItem(viewMenuItem())
+        bar.addItem(betaMenuItem())
         bar.addItem(settingsMenuItem())
         let windows = windowMenuItem()
         bar.addItem(windows)
@@ -95,6 +96,24 @@ extension AppDelegate {
                                   action: #selector(openPrefs), keyEquivalent: ",")
             open.target = self
             m.addItem(open)
+        }
+    }
+
+    // ── Beta Features ───────────────────────────────────────────────────────
+
+    /// Every beta feature, in menu order. Adding one is one line here plus the
+    /// action that opens it — the menu itself needs no change.
+    ///
+    /// Empty today: this menu is the home for things worth having in Anode that
+    /// are not worth a separate app, and the first of them has not landed.
+    private var betaFeatures: [(title: String, action: Selector)] { [] }
+
+    /// A top-level menu for the same reason Settings is one: a feature that lives
+    /// behind View → Something is a feature nobody finds. It carries a submenu
+    /// because AppKit does not route clicks to a top-level item without one.
+    private func betaMenuItem() -> NSMenuItem {
+        submenu("Beta Features") { m in
+            BetaMenu.fill(m, with: betaFeatures, target: self)
         }
     }
 
@@ -336,6 +355,32 @@ enum EditMenu {
         m.addItem(withTitle: "Select All",
                   action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
         return m
+    }
+}
+
+// ── Beta Features menu contents ─────────────────────────────────────────────
+
+enum BetaMenu {
+    static let placeholderTitle = "No Beta Features Yet"
+
+    /// Fills `menu` with one item per feature, or with a single greyed-out line
+    /// when there are none.
+    ///
+    /// The placeholder is not decoration. A top-level menu with nothing in it is a
+    /// title that opens onto a blank sliver, which reads as a bug; a disabled line
+    /// saying why it is empty reads as intended. It has no action, so AppKit's
+    /// auto-enabling leaves it grey without any validation code.
+    static func fill(_ menu: NSMenu, with features: [(title: String, action: Selector)],
+                     target: AnyObject) {
+        guard !features.isEmpty else {
+            menu.addItem(NSMenuItem(title: placeholderTitle, action: nil, keyEquivalent: ""))
+            return
+        }
+        for feature in features {
+            let item = NSMenuItem(title: feature.title, action: feature.action, keyEquivalent: "")
+            item.target = target
+            menu.addItem(item)
+        }
     }
 }
 
