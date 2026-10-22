@@ -33,6 +33,17 @@ enum MenuBarBackdropGeometry {
     }
 }
 
+extension MenuBarBackdropGeometry {
+    /// What to fill the strip with so the bar's text stays readable.
+    ///
+    /// The system chooses the menu bar's text colour from the brightness of the
+    /// WALLPAPER behind it and ignores every window, this one included. Measured
+    /// with a probe on a wallpaper that shuffles every minute: a bright photo flipped
+    /// the text to black, and black text on a black strip is invisible. So the strip
+    /// follows the text rather than the other way round.
+    static func fill(darkBar: Bool) -> NSColor { darkBar ? .black : .white }
+}
+
 /// Borderless and inert. A window is clamped below the menu bar unless it says
 /// otherwise, and this one has to sit in it.
 private final class BackdropWindow: NSWindow {
@@ -47,8 +58,19 @@ final class MenuBarBackdrop {
 
     private var windows: [BackdropWindow] = []
     private var observers: [NSObjectProtocol] = []
+    /// Zero-width, so nothing shows in the bar. It exists for its button: a status
+    /// item's `effectiveAppearance` is the one place an app can read the menu bar's
+    /// light/dark choice — `NSApp.effectiveAppearance` stays on the system setting.
+    private let probe = NSStatusBar.system.statusItem(withLength: 0)
+    private var appearanceWatch: NSKeyValueObservation?
+    private var darkBar = true
 
     init() {
+        appearanceWatch = probe.button?.observe(\.effectiveAppearance, options: [.initial, .new]) {
+            [weak self] button, _ in
+            let dark = button.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) != .aqua
+            DispatchQueue.main.async { self?.setDarkBar(dark) }
+        }
         refresh()
         // Posted on every wake and on changes that move no screen, so `refresh`
         // does its own comparing and a redundant call is a no-op.
@@ -62,7 +84,15 @@ final class MenuBarBackdrop {
             object: nil, queue: .main) { [weak self] _ in self?.refresh() })
     }
 
+    private func setDarkBar(_ dark: Bool) {
+        guard dark != darkBar else { return }
+        darkBar = dark
+        NSLog("anode.backdrop darkBar=\(dark)")
+        windows.forEach { $0.backgroundColor = MenuBarBackdropGeometry.fill(darkBar: dark) }
+    }
+
     deinit {
+        NSStatusBar.system.removeStatusItem(probe)
         for o in observers {
             NotificationCenter.default.removeObserver(o)
             NSWorkspace.shared.notificationCenter.removeObserver(o)
@@ -85,7 +115,7 @@ final class MenuBarBackdrop {
     private func makeWindow(_ frame: NSRect) -> BackdropWindow {
         let w = BackdropWindow(contentRect: frame, styleMask: .borderless,
                                backing: .buffered, defer: false)
-        w.backgroundColor = .black
+        w.backgroundColor = MenuBarBackdropGeometry.fill(darkBar: darkBar)
         w.isOpaque = true
         w.hasShadow = false
         // Click-through, and never part of the app's window bookkeeping — it must

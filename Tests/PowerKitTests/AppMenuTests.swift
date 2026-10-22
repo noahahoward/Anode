@@ -463,3 +463,10 @@ final class MenuBarBackdropGeometryTests: XCTestCase {
                        NSRect(x: 1512, y: 1156, width: 1920, height: 24))
     }
 }
+
+final class MenuBarBackdropFillTests: XCTestCase {
+    func testTheStripIsBlackBehindWhiteTextAndWhiteBehindBlackText() {
+        XCTAssertEqual(MenuBarBackdropGeometry.fill(darkBar: true), .black)
+        XCTAssertEqual(MenuBarBackdropGeometry.fill(darkBar: false), .white)
+    }
+}
