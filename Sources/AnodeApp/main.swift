@@ -944,7 +944,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
                 kind: wantFull ? .full : .light, startedAt: tickStartedAt,
                 cpu_ns: TickCost.cpuNow() &- ledgerStartCPU,
                 wall_ns: DispatchTime.now().uptimeNanoseconds &- ledgerStartWall,
-                machine_W: snap.measured_W,
+                // The same figure the drain estimate divides by. `measured_W`
+                // alone is nil whenever the pack's own reading is stale, which
+                // left "share of machine draw" blank on a machine that was
+                // plainly drawing power.
+                machine_W: LifetimeDrainModel.batteryWatts(
+                    state: snap.state, measured_W: snap.measured_W,
+                    measuredAge: snap.measuredAge, smoothed_W: snap.smoothed_W),
                 joulesPerPercent: snap.state == nil ? nil : snap.scale.joulesPerPercent)
 
             DispatchQueue.main.async {

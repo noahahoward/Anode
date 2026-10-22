@@ -28,6 +28,7 @@ final class AnodeStatsWindowController: NSWindowController, NSWindowDelegate {
     private var previous: SelfUsage.Sample?
     private var history: (cpu: [HistoryGraphView.Point], power: [HistoryGraphView.Point]) = ([], [])
     private var storeLine = "—"
+    private var storeRows = "—"
     private var storeReadAt = Date.distantPast
     private var peakFootprint: UInt64 = 0
 
@@ -106,7 +107,7 @@ final class AnodeStatsWindowController: NSWindowController, NSWindowDelegate {
                 ("lastFull", "Last full tick"),
                 ("fullCost", "Full tick cost"), ("lightCost", "Light tick cost"),
                 ("mainCost", "Main-thread half"), ("duty", "Tick work, all-time"),
-                ("history", "History database"),
+                ("history", "History database"), ("historyRows", "History rows"),
             ]),
         ])
         let right = NSStackView(views: [
@@ -158,7 +159,7 @@ final class AnodeStatsWindowController: NSWindowController, NSWindowDelegate {
 
     private func graphBlock() -> NSView {
         cpuGraph.yAxisLabel = "% of a core"
-        powerGraph.yAxisLabel = "mW"
+        powerGraph.yAxisLabel = "milliwatts"
         let stack = NSStackView(views: [cpuGraph, powerGraph])
         stack.orientation = .vertical
         stack.spacing = 8
@@ -200,7 +201,12 @@ final class AnodeStatsWindowController: NSWindowController, NSWindowDelegate {
                 let f = NSTextField(labelWithString: "—")
                 f.font = .monospacedDigitSystemFont(ofSize: 12, weight: .regular)
                 f.textColor = Palette.text
+                // One line, firmly: a wrapping label reserves the height of every
+                // line it might need, which opened a gap under the long path.
                 f.lineBreakMode = .byTruncatingMiddle
+                f.maximumNumberOfLines = 1
+                f.usesSingleLineMode = true
+                f.cell?.truncatesLastVisibleLine = true
                 f.alignment = columns.count > 1 ? .right : .left
                 f.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
                 return f
@@ -241,8 +247,9 @@ final class AnodeStatsWindowController: NSWindowController, NSWindowDelegate {
                 storeReadAt = Date()
                 let size = ByteCountFormatter.string(fromByteCount: store.sizeOnDisk, countStyle: .file)
                 let n = store.stats()
-                storeLine = "\(size) · \(n.rawIntervals.formatted()) raw, "
-                          + "\(n.intervals.formatted()) bucketed, \(n.appRows.formatted()) app rows"
+                storeLine = size
+                storeRows = "\(n.rawIntervals.formatted()) raw · \(n.intervals.formatted()) bucketed · "
+                          + "\(n.appRows.formatted()) app rows"
             }
             guard let sample else { return }
             let now = Date()
@@ -257,10 +264,11 @@ final class AnodeStatsWindowController: NSWindowController, NSWindowDelegate {
                 }
             }
             let lifetime = SelfUsage.lifetimeRates(sample)
-            let snapshot = (history.cpu, history.power, storeLine)
+            let snapshot = (history.cpu, history.power, storeLine, storeRows)
             DispatchQueue.main.async { [self] in
                 showProcess(sample: sample, now: rates, lifetime: lifetime, ledger: ledger)
                 set("history", snapshot.2)
+                set("historyRows", snapshot.3)
                 cpuGraph.timeDomain = (now.addingTimeInterval(-Double(Self.historyLimit)), now)
                 powerGraph.timeDomain = cpuGraph.timeDomain
                 cpuGraph.series = [.init(name: "Anode CPU", color: Palette.accent, points: snapshot.0)]
@@ -393,12 +401,15 @@ final class AnodeStatsWindowController: NSWindowController, NSWindowDelegate {
     }
 
     private static func rate(_ bytesPerSecond: Double) -> String {
-        ByteCountFormatter.string(fromByteCount: Int64(bytesPerSecond), countStyle: .file) + "/s"
+        bytes(UInt64(max(0, bytesPerSecond))) + "/s"
     }
 
+    /// Not `ByteCountFormatter`'s default, which spells nothing as "Zero KB".
     private static func bytes(_ n: UInt64, memory: Bool = false) -> String {
-        ByteCountFormatter.string(fromByteCount: Int64(clamping: n),
-                                  countStyle: memory ? .memory : .file)
+        let f = ByteCountFormatter()
+        f.countStyle = memory ? .memory : .file
+        f.allowsNonnumericFormatting = false
+        return f.string(fromByteCount: Int64(clamping: n))
     }
 
     private static func gpuTotal(_ ns: UInt64) -> String {
