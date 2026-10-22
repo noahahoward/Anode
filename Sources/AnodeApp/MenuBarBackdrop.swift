@@ -129,11 +129,19 @@ enum MenuBarBackdropGeometry {
         max(0, (screenFrame.maxY - visibleFrame.maxY) - strip.height)
     }
 
-    /// The notch's horizontal extent in a window starting at the screen's left edge,
-    /// from the screen's two auxiliary top areas, or nil without a notch.
+    /// How far the notch's black bottom edge reaches past the gap macOS reports
+    /// between the two auxiliary top areas, on each side. MEASURED on the 1800 pt
+    /// panel: the auxiliary gap is 790…1010 but the black on screen is 762…1037 at
+    /// its lowest row, because the notch flares and rounds its corners. A cover
+    /// sized to the gap alone sat under the notch as a narrow dangling strip.
+    static let notchFlare: CGFloat = 27
+
+    /// The notch's horizontal extent at its bottom edge, in a window starting at the
+    /// screen's left edge, from the screen's two auxiliary top areas, or nil
+    /// without a notch.
     static func notchSpan(left: NSRect?, right: NSRect?, screenFrame: NSRect) -> ClosedRange<CGFloat>? {
         guard let l = left, let r = right, !l.isEmpty, !r.isEmpty else { return nil }
-        let lo = l.maxX - screenFrame.minX, hi = r.minX - screenFrame.minX
+        let lo = l.maxX - screenFrame.minX - notchFlare, hi = r.minX - screenFrame.minX + notchFlare
         return lo < hi ? lo...hi : nil
     }
 

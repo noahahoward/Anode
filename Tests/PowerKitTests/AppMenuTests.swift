@@ -595,7 +595,8 @@ final class MenuBarBackdropSeamTests: XCTestCase {
         let span = MenuBarBackdropGeometry.notchSpan(
             left: NSRect(x: 0, y: 1131, width: 790, height: 38),
             right: NSRect(x: 1010, y: 1131, width: 790, height: 38), screenFrame: panel)
-        XCTAssertEqual(span, 790...1010)
+        XCTAssertEqual(span, (790 - MenuBarBackdropGeometry.notchFlare)...(1010 + MenuBarBackdropGeometry.notchFlare),
+                       "the gap widened by the flare the notch's black actually has")
         XCTAssertNil(MenuBarBackdropGeometry.notchSpan(left: nil, right: nil, screenFrame: panel))
     }
 
@@ -603,9 +604,10 @@ final class MenuBarBackdropSeamTests: XCTestCase {
     func testTheSeamIsCoveredExceptUnderTheNotch() {
         let r = MenuBarBackdropGeometry.cornerRadius
         let size = CGSize(width: 1800, height: 38 + 1 + r)
-        let path = MenuBarBackdropGeometry.shape(in: size, seam: 1, notch: 790...1010)
+        let path = MenuBarBackdropGeometry.shape(in: size, seam: 1, notch: 763...1037)
         XCTAssertTrue(path.contains(CGPoint(x: 400, y: r + 0.5)), "seam, away from the notch")
         XCTAssertFalse(path.contains(CGPoint(x: 900, y: r + 0.5)), "seam, under the notch")
+        XCTAssertFalse(path.contains(CGPoint(x: 770, y: r + 0.5)), "seam, under the notch's flared edge")
         XCTAssertTrue(path.contains(CGPoint(x: 900, y: r + 1.5)), "the bar itself, under the notch")
     }
 }
