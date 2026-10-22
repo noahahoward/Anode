@@ -478,9 +478,13 @@ final class MenuBarBackdrop {
         w.isExcludedFromWindowsMenu = true
         w.isReleasedWhenClosed = false
         w.hidesOnDeactivate = false
-        // One level under the menu bar: over every app window, under the bar's
-        // own items.
-        w.level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.mainMenuWindow)) - 1)
+        // Just above ordinary windows (level 0) and well UNDER everything the system
+        // draws on top of the screen. It was one under the menu bar (23), which put
+        // it above Mission Control, App Exposé and the Apps overlay — they sit at 14
+        // to 20 — and the strip covered their top rows, Spaces bar included. At 3
+        // those overlays simply draw over it, with nothing to detect and no polling,
+        // and the menu bar (24) still draws over it too.
+        w.level = .floating
         // On every Space, but not full-screen ones (no `.fullScreenAuxiliary`):
         // the bar is hidden there and the strip would be a black band over the
         // content. `.stationary` keeps it out of Mission Control's shuffling.
