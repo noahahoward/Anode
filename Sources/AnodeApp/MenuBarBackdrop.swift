@@ -23,6 +23,11 @@ enum MenuBarBackdropGeometry {
     /// backdrop and the curve read off a screenshot; 14 fits every sample.
     static let cornerRadius: CGFloat = 14
 
+    /// How far the wedges reach over a window's rim. Fitting the curve to this
+    /// screen's pixels gave about 13 pt, a point under the 14 pt measured against a
+    /// flat backdrop, so a point of overlap errs towards covering.
+    static let wedgeOverlap: CGFloat = 1
+
     /// The strip, the seam under it and its two corner wedges as one outline, in a
     /// window of `size` whose origin is bottom-left.
     ///
@@ -50,16 +55,21 @@ enum MenuBarBackdropGeometry {
             }
         }
         // Left wedge: the square under the window-top line's left end minus the
-        // quarter-disc the window's own corner occupies (centre (r, 0)).
+        // quarter-disc the window's own corner occupies. The disc is `wedgeOverlap`
+        // smaller than the window's measured radius, so the wedge reaches over the
+        // window's rim rather than meeting it: two anti-aliased edges that meet
+        // exactly leave a dotted fringe of wallpaper between them (seen, zoomed in,
+        // along the whole curve), and the rim is what gets hidden instead.
+        let rw = r - wedgeOverlap
         path.move(to: CGPoint(x: 0, y: r))
-        path.addLine(to: CGPoint(x: r, y: r))
-        path.addArc(center: CGPoint(x: r, y: 0), radius: r,
+        path.addLine(to: CGPoint(x: rw, y: r))
+        path.addArc(center: CGPoint(x: rw, y: r - rw), radius: rw,
                     startAngle: .pi / 2, endAngle: .pi, clockwise: false)
         path.closeSubpath()
         // Right wedge, mirrored.
         path.move(to: CGPoint(x: w, y: r))
-        path.addLine(to: CGPoint(x: w - r, y: r))
-        path.addArc(center: CGPoint(x: w - r, y: 0), radius: r,
+        path.addLine(to: CGPoint(x: w - rw, y: r))
+        path.addArc(center: CGPoint(x: w - rw, y: r - rw), radius: rw,
                     startAngle: .pi / 2, endAngle: 0, clockwise: true)
         path.closeSubpath()
         return path
