@@ -480,3 +480,52 @@ final class MenuBarBackdropWindowFrameTests: XCTestCase {
         XCTAssertEqual(frame.width, strip.width)
     }
 }
+
+final class MenuBarBackdropTintTests: XCTestCase {
+    private func grey(_ l: CGFloat) -> NSColor { NSColor(srgbRed: l, green: l, blue: l, alpha: 1) }
+
+    func testWithNoWindowTheTintIsThePlainFillAtGlassAlpha() {
+        let t = MenuBarBackdropGeometry.tint(darkBar: true, windowTop: nil).usingColorSpace(.sRGB)!
+        XCTAssertEqual(t.redComponent, 0, accuracy: 0.001)
+        XCTAssertEqual(t.alphaComponent, MenuBarBackdropGeometry.tintAlpha, accuracy: 0.001)
+    }
+
+    func testADarkWindowColourIsTakenUnderWhiteText() {
+        let t = MenuBarBackdropGeometry.tint(darkBar: true, windowTop: grey(0.16)).usingColorSpace(.sRGB)!
+        XCTAssertEqual(t.redComponent, 0.16, accuracy: 0.01)
+    }
+
+    /// The case the clamp exists for: a bright page under text the system has made
+    /// white would be white on white.
+    func testABrightWindowColourIsRefusedUnderWhiteText() {
+        let t = MenuBarBackdropGeometry.tint(darkBar: true, windowTop: grey(0.9)).usingColorSpace(.sRGB)!
+        XCTAssertEqual(t.redComponent, 0, accuracy: 0.001)
+    }
+
+    func testADarkWindowColourIsRefusedUnderBlackText() {
+        let t = MenuBarBackdropGeometry.tint(darkBar: false, windowTop: grey(0.1)).usingColorSpace(.sRGB)!
+        XCTAssertEqual(t.redComponent, 1, accuracy: 0.001)
+    }
+
+    func testAWindowMeetsTheBarOnlyAtItsEdgeAndNearlyFullWidth() {
+        let bar: CGFloat = 38
+        XCTAssertTrue(MenuBarBackdropGeometry.meetsBar(
+            bounds: CGRect(x: 0, y: 38, width: 1800, height: 900), barBottom: bar, screenWidth: 1800))
+        XCTAssertFalse(MenuBarBackdropGeometry.meetsBar(
+            bounds: CGRect(x: 100, y: 200, width: 1800, height: 700), barBottom: bar, screenWidth: 1800),
+            "a window lower down is not under the bar")
+        XCTAssertFalse(MenuBarBackdropGeometry.meetsBar(
+            bounds: CGRect(x: 0, y: 38, width: 900, height: 900), barBottom: bar, screenWidth: 1800),
+            "half a screen is not maximised")
+    }
+
+    func testTheShapeCoversTheBarAndStopsBelowItsWedges() {
+        let size = CGSize(width: 400, height: 38 + MenuBarBackdropGeometry.cornerRadius)
+        let path = MenuBarBackdropGeometry.shape(in: size)
+        let r = MenuBarBackdropGeometry.cornerRadius
+        XCTAssertTrue(path.contains(CGPoint(x: 200, y: size.height - 1)), "the bar")
+        XCTAssertFalse(path.contains(CGPoint(x: 200, y: r - 1)), "below the bar, mid-screen")
+        XCTAssertTrue(path.contains(CGPoint(x: 1, y: r - 1)), "the wedge hugging the left edge")
+        XCTAssertFalse(path.contains(CGPoint(x: r - 1, y: 1)), "inside the window's own corner")
+    }
+}

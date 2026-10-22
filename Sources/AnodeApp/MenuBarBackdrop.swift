@@ -22,6 +22,62 @@ enum MenuBarBackdropGeometry {
     /// backdrop and the curve read off a screenshot; 14 fits every sample.
     static let cornerRadius: CGFloat = 14
 
+    /// The strip and its two corner wedges as one outline, in a window of `size`
+    /// whose origin is bottom-left. The bar occupies everything above the bottom
+    /// `cornerRadius`; the wedges hang beneath its two ends.
+    ///
+    /// Built by hand because `NSBezierPath.cgPath` needs macOS 14 and the package
+    /// targets 13.
+    static func shape(in size: CGSize) -> CGPath {
+        let r = cornerRadius, w = size.width
+        let path = CGMutablePath()
+        path.addRect(CGRect(x: 0, y: r, width: w, height: size.height - r))
+        // Left wedge: the square under the bar's left end minus the quarter-disc
+        // the window's own corner occupies (centre (r, 0)).
+        path.move(to: CGPoint(x: 0, y: r))
+        path.addLine(to: CGPoint(x: r, y: r))
+        path.addArc(center: CGPoint(x: r, y: 0), radius: r,
+                    startAngle: .pi / 2, endAngle: .pi, clockwise: false)
+        path.closeSubpath()
+        // Right wedge, mirrored.
+        path.move(to: CGPoint(x: w, y: r))
+        path.addLine(to: CGPoint(x: w - r, y: r))
+        path.addArc(center: CGPoint(x: w - r, y: 0), radius: r,
+                    startAngle: .pi / 2, endAngle: 0, clockwise: true)
+        path.closeSubpath()
+        return path
+    }
+
+    /// How much of the glass is tint. The rest is the blur of what is behind it, so
+    /// the bar reads as frosted rather than painted while the wallpaper stays an
+    /// unrecognisable smear — the bar exists to stop it being a distraction.
+    static let tintAlpha: CGFloat = 0.78
+
+    /// The tint for a bar whose text is white (`darkBar`) or black, optionally
+    /// pulled toward the colour of the window under it.
+    ///
+    /// The system picks the text colour from the wallpaper and will not be told
+    /// otherwise, so a window colour is taken only if the text would still read on
+    /// it: a dark bar accepts a colour up to 0.40 luminance, a light one from 0.60.
+    /// A bright page under white text would be unreadable, so it is refused and the
+    /// plain fill stands.
+    static func tint(darkBar: Bool, windowTop: NSColor?) -> NSColor {
+        let base = fill(darkBar: darkBar)
+        guard let c = windowTop?.usingColorSpace(.sRGB) else {
+            return base.withAlphaComponent(tintAlpha)
+        }
+        let luminance = 0.299 * c.redComponent + 0.587 * c.greenComponent + 0.114 * c.blueComponent
+        let readable = darkBar ? luminance <= 0.40 : luminance >= 0.60
+        return (readable ? c : base).withAlphaComponent(tintAlpha)
+    }
+
+    /// Is a window with these bounds meeting the bar — top edge at the bar's
+    /// bottom, spanning nearly the screen's width? Same coordinate space for all
+    /// three arguments (the window server's: origin top-left, y down).
+    static func meetsBar(bounds: CGRect, barBottom: CGFloat, screenWidth: CGFloat) -> Bool {
+        abs(bounds.minY - barBottom) <= 3 && bounds.width >= screenWidth * 0.95
+    }
+
     /// The strip's window: the strip itself plus room below it for the corner
     /// fillets. The extra height is transparent and click-through.
     static func windowFrame(forStrip strip: NSRect) -> NSRect {
@@ -56,64 +112,104 @@ extension MenuBarBackdropGeometry {
     static func fill(darkBar: Bool) -> NSColor { darkBar ? .black : .white }
 }
 
-/// Draws the strip and, under its two ends, the little wedges a window's rounded
-/// top corners would otherwise leave open.
+/// A layer-backed view whose fill is one animatable shape.
+private final class TintView: NSView {
+    override func makeBackingLayer() -> CALayer { CAShapeLayer() }
+    private var shapeLayer: CAShapeLayer { layer as! CAShapeLayer }
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        wantsLayer = true
+        shapeLayer.path = MenuBarBackdropGeometry.shape(in: frame.size)
+    }
+    required init?(coder: NSCoder) { fatalError() }
+
+    func setFill(_ color: NSColor, animated: Bool) {
+        let new = color.cgColor
+        if animated {
+            let fade = CABasicAnimation(keyPath: "fillColor")
+            fade.fromValue = shapeLayer.presentation()?.fillColor ?? shapeLayer.fillColor
+            fade.toValue = new
+            fade.duration = 0.25
+            shapeLayer.add(fade, forKey: "fillColor")
+        }
+        shapeLayer.fillColor = new
+    }
+}
+
+/// The glass: a blur of whatever is behind the window, cut to the strip's shape,
+/// with a tint over it.
 ///
 /// A maximised window's top corners are curved, so just below a straight-edged
-/// strip a sliver of wallpaper shows in each corner. The wedge is the square of
-/// side `r` under the strip's end, minus the quarter-disc the window occupies; it
-/// takes the strip's colour, so the window reads as rounded against the bar the
-/// same way it does against the rest of the screen. A window that is NOT at the
-/// screen's edge gets the same two wedges, which then read as the screen's own
-/// rounded corners.
-private final class BackdropView: NSView {
-    var fill: NSColor = .black { didSet { needsDisplay = true } }
+/// strip a sliver of wallpaper shows in each corner; the shape's two wedges fill
+/// it (see `MenuBarBackdropGeometry.shape`). A window NOT at the screen's edge
+/// gets the same wedges, which then read as the screen's own rounded corners.
+fileprivate final class BackdropView: NSVisualEffectView {
+    private let tint: TintView
 
-    override func draw(_ dirtyRect: NSRect) {
-        let r = MenuBarBackdropGeometry.cornerRadius
-        let w = bounds.width
-        fill.setFill()
-        NSRect(x: 0, y: r, width: w, height: bounds.height - r).fill()
+    init(size: CGSize, darkBar: Bool, tint color: NSColor) {
+        tint = TintView(frame: CGRect(origin: .zero, size: size))
+        super.init(frame: CGRect(origin: .zero, size: size))
+        material = .hudWindow
+        blendingMode = .behindWindow
+        state = .active
+        appearance = NSAppearance(named: darkBar ? .darkAqua : .aqua)
+        let outline = MenuBarBackdropGeometry.shape(in: size)
+        maskImage = NSImage(size: size, flipped: false) { _ in
+            guard let ctx = NSGraphicsContext.current?.cgContext else { return false }
+            ctx.addPath(outline)
+            ctx.setFillColor(NSColor.black.cgColor)
+            ctx.fillPath()
+            return true
+        }
+        addSubview(tint)
+        tint.setFill(color, animated: false)
+    }
+    required init?(coder: NSCoder) { fatalError() }
 
-        let left = NSBezierPath()
-        left.move(to: NSPoint(x: 0, y: r))
-        left.line(to: NSPoint(x: r, y: r))
-        left.appendArc(withCenter: NSPoint(x: r, y: 0), radius: r,
-                       startAngle: 90, endAngle: 180, clockwise: false)
-        left.close()
-        left.fill()
-
-        let right = NSBezierPath()
-        right.move(to: NSPoint(x: w, y: r))
-        right.line(to: NSPoint(x: w - r, y: r))
-        right.appendArc(withCenter: NSPoint(x: w - r, y: 0), radius: r,
-                        startAngle: 90, endAngle: 0, clockwise: true)
-        right.close()
-        right.fill()
+    func update(darkBar: Bool, tint color: NSColor) {
+        appearance = NSAppearance(named: darkBar ? .darkAqua : .aqua)
+        tint.setFill(color, animated: true)
     }
 }
 
 /// Borderless and inert. A window is clamped below the menu bar unless it says
 /// otherwise, and this one has to sit in it.
-private final class BackdropWindow: NSWindow {
+fileprivate final class BackdropWindow: NSWindow {
     override var canBecomeKey: Bool { false }
     override var canBecomeMain: Bool { false }
     override func constrainFrameRect(_ frameRect: NSRect, to screen: NSScreen?) -> NSRect {
         frameRect
     }
-    let view = BackdropView()
+    /// This bar in the window server's coordinates (origin top-left, y down), for
+    /// asking what window is under it.
+    let screenLeft: CGFloat
+    let barBottom: CGFloat
+    let screenWidth: CGFloat
+    let view: BackdropView
+
+    fileprivate init(frame: NSRect, strip: NSRect, screenFrame: NSRect, primaryHeight: CGFloat,
+                     darkBar: Bool, tint: NSColor) {
+        screenLeft = screenFrame.minX
+        barBottom = primaryHeight - strip.minY
+        screenWidth = screenFrame.width
+        view = BackdropView(size: frame.size, darkBar: darkBar, tint: tint)
+        super.init(contentRect: frame, styleMask: .borderless, backing: .buffered, defer: false)
+    }
 }
 
 final class MenuBarBackdrop {
 
-    private var windows: [BackdropWindow] = []
+    fileprivate var windows: [BackdropWindow] = []
     private var observers: [NSObjectProtocol] = []
+    private var workspaceObservers: [NSObjectProtocol] = []
     /// Zero-width, so nothing shows in the bar. It exists for its button: a status
     /// item's `effectiveAppearance` is the one place an app can read the menu bar's
     /// light/dark choice — `NSApp.effectiveAppearance` stays on the system setting.
     private let probe = NSStatusBar.system.statusItem(withLength: 0)
     private var appearanceWatch: NSKeyValueObservation?
     private var darkBar = true
+    private var pendingRetint: DispatchWorkItem?
 
     init() {
         appearanceWatch = probe.button?.observe(\.effectiveAppearance, options: [.initial, .new]) {
@@ -122,52 +218,96 @@ final class MenuBarBackdrop {
             DispatchQueue.main.async { self?.setDarkBar(dark) }
         }
         refresh()
+        let center = NotificationCenter.default
         // Posted on every wake and on changes that move no screen, so `refresh`
         // does its own comparing and a redundant call is a no-op.
-        observers.append(NotificationCenter.default.addObserver(
+        observers.append(center.addObserver(
             forName: NSApplication.didChangeScreenParametersNotification,
             object: nil, queue: .main) { [weak self] _ in self?.refresh() })
+        // What is under the bar changes when one of OUR windows moves, resizes,
+        // appears or goes, so those are the only events that re-read it. Nothing
+        // polls: a window of another app moving is not announced to us, and Phase 2
+        // will have to decide how to notice that.
+        for name in [NSWindow.didMoveNotification, NSWindow.didResizeNotification,
+                     NSWindow.didChangeScreenNotification,
+                     NSWindow.didChangeOcclusionStateNotification,
+                     NSWindow.didBecomeKeyNotification, NSWindow.didMiniaturizeNotification,
+                     NSWindow.didDeminiaturizeNotification, NSWindow.willCloseNotification] {
+            observers.append(center.addObserver(forName: name, object: nil, queue: .main) {
+                [weak self] note in
+                // The strip's own windows and the status items' are in this stream
+                // too; none of them is what is being looked for.
+                guard let self, let w = note.object as? NSWindow, w.styleMask.contains(.titled)
+                else { return }
+                self.scheduleRetint()
+            })
+        }
+        let ws = NSWorkspace.shared.notificationCenter
         // A full-screen Space has no menu bar, and the visible frame says so only
         // once that Space is the one being looked at.
-        observers.append(NSWorkspace.shared.notificationCenter.addObserver(
+        workspaceObservers.append(ws.addObserver(
             forName: NSWorkspace.activeSpaceDidChangeNotification,
             object: nil, queue: .main) { [weak self] _ in self?.refresh() })
+        // Another app coming forward can cover our window's top edge.
+        workspaceObservers.append(ws.addObserver(
+            forName: NSWorkspace.didActivateApplicationNotification,
+            object: nil, queue: .main) { [weak self] _ in self?.scheduleRetint() })
+    }
+
+    deinit {
+        NSStatusBar.system.removeStatusItem(probe)
+        observers.forEach { NotificationCenter.default.removeObserver($0) }
+        workspaceObservers.forEach { NSWorkspace.shared.notificationCenter.removeObserver($0) }
     }
 
     private func setDarkBar(_ dark: Bool) {
         guard dark != darkBar else { return }
         darkBar = dark
         NSLog("anode.backdrop darkBar=\(dark)")
-        windows.forEach { $0.view.fill = MenuBarBackdropGeometry.fill(darkBar: dark) }
+        retint()
     }
 
-    deinit {
-        NSStatusBar.system.removeStatusItem(probe)
-        for o in observers {
-            NotificationCenter.default.removeObserver(o)
-            NSWorkspace.shared.notificationCenter.removeObserver(o)
+    /// A drag posts a move per frame; one read after it settles is enough.
+    private func scheduleRetint() {
+        pendingRetint?.cancel()
+        let work = DispatchWorkItem { [weak self] in self?.retint() }
+        pendingRetint = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: work)
+    }
+
+    private func retint() {
+        for w in windows {
+            w.view.update(darkBar: darkBar,
+                          tint: MenuBarBackdropGeometry.tint(darkBar: darkBar,
+                                                             windowTop: windowTopColor(under: w)))
         }
     }
 
     private func refresh() {
-        let strips = NSScreen.screens.compactMap {
-            MenuBarBackdropGeometry.strip(screenFrame: $0.frame, visibleFrame: $0.visibleFrame,
-                                          safeAreaTop: $0.safeAreaInsets.top)
-        }.map(MenuBarBackdropGeometry.windowFrame(forStrip:))
+        let primaryHeight = NSScreen.screens.first?.frame.height ?? 0
+        let planned: [(frame: NSRect, strip: NSRect, screen: NSRect)] = NSScreen.screens.compactMap {
+            guard let strip = MenuBarBackdropGeometry.strip(
+                screenFrame: $0.frame, visibleFrame: $0.visibleFrame,
+                safeAreaTop: $0.safeAreaInsets.top) else { return nil }
+            return (MenuBarBackdropGeometry.windowFrame(forStrip: strip), strip, $0.frame)
+        }
         // Same strips as already shown: leave the windows alone rather than
         // reordering them on every wake.
-        guard strips != windows.map(\.frame) else { return }
+        guard planned.map(\.frame) != windows.map(\.frame) else { return }
         windows.forEach { $0.orderOut(nil) }
-        windows = strips.map(makeWindow)
+        windows = planned.map { makeWindow(frame: $0.frame, strip: $0.strip, screen: $0.screen,
+                                           primaryHeight: primaryHeight) }
         windows.forEach { $0.orderFrontRegardless() }
+        retint()
     }
 
-    private func makeWindow(_ frame: NSRect) -> BackdropWindow {
-        let w = BackdropWindow(contentRect: frame, styleMask: .borderless,
-                               backing: .buffered, defer: false)
-        w.view.fill = MenuBarBackdropGeometry.fill(darkBar: darkBar)
+    private func makeWindow(frame: NSRect, strip: NSRect, screen: NSRect,
+                            primaryHeight: CGFloat) -> BackdropWindow {
+        let w = BackdropWindow(frame: frame, strip: strip, screenFrame: screen,
+                               primaryHeight: primaryHeight, darkBar: darkBar,
+                               tint: MenuBarBackdropGeometry.tint(darkBar: darkBar, windowTop: nil))
         w.contentView = w.view
-        // Clear, because the part below the strip is wedges and nothing else.
+        // Clear, because the glass is the view's own and the rest is nothing.
         w.backgroundColor = .clear
         w.isOpaque = false
         w.hasShadow = false
@@ -186,5 +326,48 @@ final class MenuBarBackdrop {
         w.collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle]
         w.setFrame(frame, display: false)
         return w
+    }
+
+    // ── What is under the bar ───────────────────────────────────────────────
+
+    /// The colour of the top edge of the window meeting this bar, when it is one of
+    /// Anode's own. nil for anything else — another app's pixels cannot be read
+    /// without Screen Recording permission, and this phase does not ask for it.
+    ///
+    /// The window server's list (front to back, with bounds and owner, none of
+    /// which is gated) answers "which window is under the middle of the bar". Its
+    /// colour then comes from asking that window to draw itself, which an app is
+    /// always allowed to do to its own windows.
+    private func windowTopColor(under bar: BackdropWindow) -> NSColor? {
+        let point = CGPoint(x: bar.screenLeft + bar.screenWidth / 2, y: bar.barBottom + 2)
+        guard let info = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements],
+                                                    kCGNullWindowID) as? [[String: Any]] else { return nil }
+        for entry in info {
+            guard (entry[kCGWindowLayer as String] as? Int) == 0,
+                  (entry[kCGWindowAlpha as String] as? Double ?? 1) > 0,
+                  let dict = entry[kCGWindowBounds as String] as? NSDictionary,
+                  let bounds = CGRect(dictionaryRepresentation: dict),
+                  bounds.contains(point) else { continue }
+            // The first window containing the point is the one in front there.
+            guard MenuBarBackdropGeometry.meetsBar(bounds: bounds, barBottom: bar.barBottom,
+                                                   screenWidth: bar.screenWidth),
+                  (entry[kCGWindowOwnerPID as String] as? Int32) == ProcessInfo.processInfo.processIdentifier,
+                  let number = entry[kCGWindowNumber as String] as? Int,
+                  let own = NSApp.windows.first(where: { $0.windowNumber == number })
+            else { return nil }
+            return Self.topEdgeColor(of: own)
+        }
+        return nil
+    }
+
+    /// A few points below the window's top edge, clear of the rim highlight and of
+    /// the traffic lights and title — the bar should pick up the titlebar, not the
+    /// text on it. Needs no permission: a window drawing itself is its own business.
+    static func topEdgeColor(of window: NSWindow) -> NSColor? {
+        guard let frameView = window.contentView?.superview,
+              let rep = frameView.bitmapImageRepForCachingDisplay(in: frameView.bounds) else { return nil }
+        frameView.cacheDisplay(in: frameView.bounds, to: rep)
+        let scale = Double(rep.pixelsWide) / Double(frameView.bounds.width)
+        return rep.colorAt(x: Int(Double(frameView.bounds.width) * 0.35 * scale), y: Int(4 * scale))
     }
 }
