@@ -233,7 +233,11 @@ fileprivate final class BackdropView: NSVisualEffectView {
         blendingMode = .behindWindow
         state = .active
         appearance = NSAppearance(named: darkBar ? .darkAqua : .aqua)
-        let outline = MenuBarBackdropGeometry.shape(in: size, seam: seam, notch: notch)
+        // The blur's mask has NO notch gap: it clips the view's subviews too, and
+        // with the gap in it the black cover below was cut off one pixel row short,
+        // leaving a hairline of wallpaper under the notch (measured: 0.49 0.35 0.24
+        // at 38.0 pt). The tint keeps the gap; the cover fills it.
+        let outline = MenuBarBackdropGeometry.shape(in: size, seam: seam, notch: nil)
         maskImage = NSImage(size: size, flipped: false) { _ in
             guard let ctx = NSGraphicsContext.current?.cgContext else { return false }
             ctx.addPath(outline)
