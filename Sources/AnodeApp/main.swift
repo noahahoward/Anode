@@ -45,6 +45,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
     var forecastCheck: ForecastCheckWindowController?
     /// The Anode Stats window, created on first use from View → Developer Tools.
     var anodeStats: AnodeStatsWindowController?
+    /// The black strip behind the menu bar. Lives as long as the app does.
+    var menuBarBackdrop: MenuBarBackdrop?
     /// Time left = charge ÷ the mean drain since the lid was last opened.
     let drain = DrainRateEstimator(trend: .sinceLidOpened())
     /// Throttles the trend's crash-insurance write. See the call site.
@@ -293,6 +295,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         }
 
         buildMenu()
+        menuBarBackdrop = MenuBarBackdrop()
 
         main = MainWindowController()
         main.table.dataSource = self

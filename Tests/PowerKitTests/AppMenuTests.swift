@@ -433,3 +433,33 @@ final class BetaMenuTests: XCTestCase {
         XCTAssertTrue(menu.items.allSatisfy { $0.target === self && $0.action == #selector(noop) })
     }
 }
+
+final class MenuBarBackdropGeometryTests: XCTestCase {
+    private let screen = NSRect(x: 0, y: 0, width: 1512, height: 982)
+
+    func testTheStripCoversTheGapAboveTheVisibleFrame() {
+        let visible = NSRect(x: 0, y: 0, width: 1512, height: 982 - 24)
+        XCTAssertEqual(MenuBarBackdropGeometry.strip(screenFrame: screen, visibleFrame: visible,
+                                                     safeAreaTop: 0),
+                       NSRect(x: 0, y: 958, width: 1512, height: 24))
+    }
+
+    func testANotchMakesTheStripNoShorterThanItsInset() {
+        let visible = NSRect(x: 0, y: 0, width: 1512, height: 982 - 24)
+        XCTAssertEqual(MenuBarBackdropGeometry.strip(screenFrame: screen, visibleFrame: visible,
+                                                     safeAreaTop: 37)?.height, 37)
+    }
+
+    func testNoMenuBarMeansNoStrip() {
+        XCTAssertNil(MenuBarBackdropGeometry.strip(screenFrame: screen, visibleFrame: screen,
+                                                   safeAreaTop: 0))
+    }
+
+    func testASecondDisplayKeepsItsOwnOrigin() {
+        let right = NSRect(x: 1512, y: 100, width: 1920, height: 1080)
+        let visible = NSRect(x: 1512, y: 100, width: 1920, height: 1080 - 24)
+        XCTAssertEqual(MenuBarBackdropGeometry.strip(screenFrame: right, visibleFrame: visible,
+                                                     safeAreaTop: 0),
+                       NSRect(x: 1512, y: 1156, width: 1920, height: 24))
+    }
+}
