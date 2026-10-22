@@ -102,19 +102,19 @@ extension AppDelegate {
 
     // ── Beta Features ───────────────────────────────────────────────────────
 
-    /// Every beta feature, in menu order. Adding one is one line here plus the
-    /// action that opens it — the menu itself needs no change.
+    /// Every beta feature, in menu order. Adding one is one line here: a menu item,
+    /// which may be a submenu with its own controls.
     ///
-    /// Empty today: this menu is the home for things worth having in Anode that
-    /// are not worth a separate app, and the first of them has not landed.
-    private var betaFeatures: [(title: String, action: Selector)] { [] }
+    /// This menu is the home for things worth having in Anode that are not worth a
+    /// separate app. The first is the menu bar backdrop.
+    private var betaFeatures: [NSMenuItem] { [backdropMenu.item] }
 
     /// A submenu of Settings, not a bar menu of its own. Nested, so the item
     /// carries the title (a nested submenu shows its item's title, which
     /// `submenu` leaves empty) — the same fix Developer Tools needs.
     private func betaMenuItem() -> NSMenuItem {
         let parent = submenu("Beta Features") { m in
-            BetaMenu.fill(m, with: betaFeatures, target: self)
+            BetaMenu.fill(m, with: betaFeatures)
         }
         parent.title = "Beta Features"
         return parent
@@ -366,24 +366,19 @@ enum EditMenu {
 enum BetaMenu {
     static let placeholderTitle = "No Beta Features Yet"
 
-    /// Fills `menu` with one item per feature, or with a single greyed-out line
-    /// when there are none.
+    /// Fills `menu` with the features' items, or with a single greyed-out line when
+    /// there are none.
     ///
     /// The placeholder is not decoration. A top-level menu with nothing in it is a
     /// title that opens onto a blank sliver, which reads as a bug; a disabled line
     /// saying why it is empty reads as intended. It has no action, so AppKit's
     /// auto-enabling leaves it grey without any validation code.
-    static func fill(_ menu: NSMenu, with features: [(title: String, action: Selector)],
-                     target: AnyObject) {
+    static func fill(_ menu: NSMenu, with features: [NSMenuItem]) {
         guard !features.isEmpty else {
             menu.addItem(NSMenuItem(title: placeholderTitle, action: nil, keyEquivalent: ""))
             return
         }
-        for feature in features {
-            let item = NSMenuItem(title: feature.title, action: feature.action, keyEquivalent: "")
-            item.target = target
-            menu.addItem(item)
-        }
+        features.forEach(menu.addItem)
     }
 }
 

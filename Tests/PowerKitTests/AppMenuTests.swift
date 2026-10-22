@@ -413,12 +413,10 @@ final class FanControlPanelTests: XCTestCase {
 // Features menu must always have something to show.
 final class BetaMenuTests: XCTestCase {
 
-    @objc private func noop() {}
-
     func testAnEmptyMenuShowsOneDisabledPlaceholder() {
         _ = appKitForTests
         let menu = NSMenu(title: "Beta Features")
-        BetaMenu.fill(menu, with: [], target: self)
+        BetaMenu.fill(menu, with: [])
         XCTAssertEqual(menu.items.map(\.title), [BetaMenu.placeholderTitle])
         menu.update()
         XCTAssertFalse(menu.items[0].isEnabled, "the placeholder must not look clickable")
@@ -427,10 +425,74 @@ final class BetaMenuTests: XCTestCase {
     func testFeaturesReplaceThePlaceholderAndKeepTheirOrder() {
         _ = appKitForTests
         let menu = NSMenu(title: "Beta Features")
-        BetaMenu.fill(menu, with: [("One", #selector(noop)), ("Two", #selector(noop))],
-                      target: self)
+        BetaMenu.fill(menu, with: [NSMenuItem(title: "One", action: nil, keyEquivalent: ""),
+                                   NSMenuItem(title: "Two", action: nil, keyEquivalent: "")])
         XCTAssertEqual(menu.items.map(\.title), ["One", "Two"])
-        XCTAssertTrue(menu.items.allSatisfy { $0.target === self && $0.action == #selector(noop) })
+    }
+}
+
+// The backdrop's controls: what the menu says must come from the stored settings
+// and the permission, because both change behind the menu's back.
+final class BackdropMenuTests: XCTestCase {
+    private func make(allowed: Bool = true) -> (BackdropMenu, Settings) {
+        _ = appKitForTests
+        let defaults = UserDefaults(suiteName: "backdrop-menu-\(UUID().uuidString)")!
+        let settings = Settings(defaults: defaults)
+        return (BackdropMenu(settings: settings, screenRecordingAllowed: { allowed }), settings)
+    }
+
+    private func checked(_ menu: BackdropMenu) -> [String] {
+        menu.refresh()
+        return (menu.item.submenu?.items ?? []).filter { $0.state == .on }.map(\.title)
+    }
+
+    func testTheModeInSettingsIsTheOneTicked() {
+        let (menu, settings) = make()
+        for mode in MenuBarBackdropMode.allCases {
+            settings.menuBarBackdropMode = mode
+            XCTAssertEqual(checked(menu), [mode.title])
+        }
+    }
+
+    func testEveryModeHasAnItemThatSetsIt() {
+        let (menu, settings) = make()
+        let items = menu.item.submenu?.items.filter { $0.representedObject is MenuBarBackdropMode } ?? []
+        XCTAssertEqual(items.map { $0.representedObject as? MenuBarBackdropMode }, MenuBarBackdropMode.allCases)
+        for entry in items {
+            _ = entry.target?.perform(entry.action, with: entry)
+            XCTAssertEqual(settings.menuBarBackdropMode, entry.representedObject as? MenuBarBackdropMode)
+        }
+    }
+
+    func testThePermissionLineAppearsOnlyInTheFollowMode() {
+        let (menu, settings) = make(allowed: false)
+        let status = { menu.item.submenu!.items.first { $0.title.hasPrefix("Screen Recording") }! }
+        settings.menuBarBackdropMode = .solid
+        menu.refresh()
+        XCTAssertTrue(status().isHidden)
+        settings.menuBarBackdropMode = .solidFollow
+        menu.refresh()
+        XCTAssertFalse(status().isHidden)
+        XCTAssertTrue(status().title.contains("not allowed"), "a refusal must be said, not hidden")
+    }
+
+    func testTheSliderIsLiveOnlyInTheBlur() throws {
+        let (menu, settings) = make()
+        let slider = try XCTUnwrap(menu.item.submenu?.items.compactMap { ($0.view as? NSStackView)?.views.last as? NSSlider }.first)
+        settings.menuBarBackdropMode = .blur
+        menu.refresh()
+        XCTAssertTrue(slider.isEnabled)
+        settings.menuBarBackdropMode = .solid
+        menu.refresh()
+        XCTAssertFalse(slider.isEnabled)
+    }
+
+    func testDraggingTheSliderWritesTheSetting() throws {
+        let (menu, settings) = make()
+        let slider = try XCTUnwrap(menu.item.submenu?.items.compactMap { ($0.view as? NSStackView)?.views.last as? NSSlider }.first)
+        slider.doubleValue = 0.9
+        _ = slider.target?.perform(slider.action, with: slider)
+        XCTAssertEqual(settings.menuBarBackdropTranslucency, 0.9, accuracy: 0.001)
     }
 }
 

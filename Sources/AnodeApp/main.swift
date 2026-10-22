@@ -47,6 +47,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
     var anodeStats: AnodeStatsWindowController?
     /// The black strip behind the menu bar. Lives as long as the app does.
     var menuBarBackdrop: MenuBarBackdrop?
+    /// Its controls, under Settings → Beta Features. Built once, with the menu.
+    lazy var backdropMenu = BackdropMenu()
     /// Time left = charge ÷ the mean drain since the lid was last opened.
     let drain = DrainRateEstimator(trend: .sinceLidOpened())
     /// Throttles the trend's crash-insurance write. See the call site.

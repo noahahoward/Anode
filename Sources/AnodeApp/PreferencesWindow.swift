@@ -826,19 +826,8 @@ private final class MenuBarPane: Pane {
     private var placementButton: NSButton!
     private var placementToken: NSObjectProtocol?
 
-    // The backdrop behind the bar — see `MenuBarBackdrop`.
-    private var backdropPopup: NSPopUpButton!
-    private var translucencySlider: NSSlider!
-    private var translucencyLabel: NSTextField!
-    private var translucencyNote: NSTextField!
-    private var accessStatus: NSTextField!
-    private var accessButton: NSButton!
-    private var backdropNote: NSTextField!
-    private var activeToken: NSObjectProtocol?
-
     deinit {
         if let token = placementToken { NotificationCenter.default.removeObserver(token) }
-        if let token = activeToken { NotificationCenter.default.removeObserver(token) }
     }
 
     override func loadView() {
@@ -895,29 +884,6 @@ private final class MenuBarPane: Pane {
             forName: MenuBarWidgetController.placementDidChange, object: nil,
             queue: .main) { [weak self] _ in self?.refreshPlacement() }
 
-        backdropPopup = NSPopUpButton(frame: .zero, pullsDown: false)
-        backdropPopup.addItems(withTitles: MenuBarBackdropMode.allCases.map(\.title))
-        backdropPopup.target = self
-        backdropPopup.action = #selector(backdropModeChanged)
-        translucencyLabel = rowLabel("See-through:")
-        translucencySlider = NSSlider(value: 0.3, minValue: 0, maxValue: 1,
-                                      target: self, action: #selector(translucencyChanged))
-        translucencySlider.isContinuous = true
-        translucencySlider.translatesAutoresizingMaskIntoConstraints = false
-        translucencySlider.widthAnchor.constraint(equalToConstant: 200).isActive = true
-        translucencyNote = caption("How much of the wallpaper shows through the blur.")
-        backdropNote = caption("")
-        accessStatus = caption("")
-        accessButton = NSButton(title: "Open Screen Recording Settings\u{2026}", target: self,
-                                action: #selector(openScreenRecording))
-        accessButton.bezelStyle = .rounded
-        accessButton.controlSize = .small
-        // macOS can be told to revoke this behind Anode's back, so the status is
-        // re-read whenever the app comes forward.
-        activeToken = NotificationCenter.default.addObserver(
-            forName: NSApplication.didBecomeActiveNotification, object: nil,
-            queue: .main) { [weak self] _ in self?.refreshLayout() }
-
         install(rows: [
             [rowLabel("Menu bar:"), masterCheckbox],
             [spacer, placementNote],
@@ -931,12 +897,6 @@ private final class MenuBarPane: Pane {
             [spacer, caption("\u{201C}All metrics\u{201D} is one widget that opens into a list of "
                              + "readings. Edit\u{2026} chooses which readings that list shows and in "
                              + "what order, separately from the checkboxes here.")],
-            [rowLabel("Bar backdrop:"), backdropPopup],
-            [spacer, backdropNote],
-            [translucencyLabel, translucencySlider],
-            [spacer, translucencyNote],
-            [spacer, accessStatus],
-            [spacer, accessButton],
         ])
     }
 
@@ -950,7 +910,6 @@ private final class MenuBarPane: Pane {
         masterCheckbox.state = on ? .on : .off
         for box in boxes { box.isEnabled = on }
         refreshPlacement()
-        refreshBackdrop()
 
         // Never fight the user mid-click: while applying, the boxes already show
         // the intended state and the controller is only just catching up.
@@ -973,53 +932,6 @@ private final class MenuBarPane: Pane {
         panelEditor = editor
         guard let sheet = editor.window else { return }
         host.beginSheet(sheet) { [weak self] _ in self?.panelEditor = nil }
-    }
-
-    private func refreshBackdrop() {
-        let mode = settings.menuBarBackdropMode
-        if let i = MenuBarBackdropMode.allCases.firstIndex(of: mode) { backdropPopup.selectItem(at: i) }
-        translucencySlider.doubleValue = settings.menuBarBackdropTranslucency
-        backdropNote.stringValue = {
-            switch mode {
-            case .off: return "The menu bar is left as macOS draws it, over the wallpaper."
-            case .blur: return "A frosted, tinted blur. The wallpaper stays as a smear."
-            case .solid: return "A solid block, so the wallpaper never shows behind the menu bar."
-            case .solidFollow:
-                return "A solid block that fades into the colour of the window under it. Anode's "
-                     + "own windows are matched freely; other apps' windows are read from the "
-                     + "screen, which needs Screen Recording permission."
-            }
-        }()
-        let blur = mode == .blur, follow = mode == .solidFollow
-        translucencyLabel.isHidden = !blur
-        translucencySlider.isHidden = !blur
-        translucencyNote.isHidden = !blur
-        accessStatus.isHidden = !follow
-        accessButton.isHidden = !follow
-        if follow {
-            accessStatus.stringValue = ScreenRecordingAccess.isGranted
-                ? "Screen Recording: allowed. Only a thin row of pixels just under the menu "
-                  + "bar is read, and never stored. Pick another mode above to stop it at once."
-                : "Screen Recording: not allowed, so only Anode's own windows are matched. "
-                  + "Other apps keep the plain solid block."
-            accessStatus.textColor = ScreenRecordingAccess.isGranted ? .secondaryLabelColor : .systemOrange
-        }
-        syncGridRows()
-    }
-
-    @objc private func backdropModeChanged() {
-        let modes = MenuBarBackdropMode.allCases
-        let i = backdropPopup.indexOfSelectedItem
-        guard modes.indices.contains(i) else { return }
-        settings.menuBarBackdropMode = modes[i]
-    }
-
-    @objc private func translucencyChanged() {
-        settings.menuBarBackdropTranslucency = translucencySlider.doubleValue
-    }
-
-    @objc private func openScreenRecording() {
-        ScreenRecordingAccess.openSettings()
     }
 
     private func refreshPlacement() {
