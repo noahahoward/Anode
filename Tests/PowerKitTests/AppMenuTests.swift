@@ -571,3 +571,41 @@ final class MenuBarBackdropModeTests: XCTestCase {
         XCTAssertEqual(s.menuBarBackdropTranslucency, 1)
     }
 }
+
+final class MenuBarBackdropSeamTests: XCTestCase {
+    private let panel = NSRect(x: 0, y: 0, width: 1800, height: 1169)
+
+    /// The measured panel: a 38 pt bar and a visible frame ending 39 pt down leave a
+    /// 1 pt margin, and that margin is what showed the wallpaper as a hairline.
+    func testTheSeamIsTheMarginBetweenTheBarAndTheVisibleFrame() {
+        let strip = NSRect(x: 0, y: 1131, width: 1800, height: 38)
+        let visible = NSRect(x: 0, y: 0, width: 1800, height: 1130)
+        XCTAssertEqual(MenuBarBackdropGeometry.seam(strip: strip, screenFrame: panel,
+                                                    visibleFrame: visible), 1)
+    }
+
+    func testTheWindowGrowsByTheSeamAndKeepsItsTop() {
+        let strip = NSRect(x: 0, y: 1131, width: 1800, height: 38)
+        let frame = MenuBarBackdropGeometry.windowFrame(forStrip: strip, seam: 1)
+        XCTAssertEqual(frame.maxY, strip.maxY)
+        XCTAssertEqual(frame.height, 38 + 1 + MenuBarBackdropGeometry.cornerRadius)
+    }
+
+    func testTheNotchSpanIsTheGapBetweenTheTwoAuxiliaryAreas() {
+        let span = MenuBarBackdropGeometry.notchSpan(
+            left: NSRect(x: 0, y: 1131, width: 790, height: 38),
+            right: NSRect(x: 1010, y: 1131, width: 790, height: 38), screenFrame: panel)
+        XCTAssertEqual(span, 790...1010)
+        XCTAssertNil(MenuBarBackdropGeometry.notchSpan(left: nil, right: nil, screenFrame: panel))
+    }
+
+    /// Covered across the bar, open under the notch: flush there, sealed elsewhere.
+    func testTheSeamIsCoveredExceptUnderTheNotch() {
+        let r = MenuBarBackdropGeometry.cornerRadius
+        let size = CGSize(width: 1800, height: 38 + 1 + r)
+        let path = MenuBarBackdropGeometry.shape(in: size, seam: 1, notch: 790...1010)
+        XCTAssertTrue(path.contains(CGPoint(x: 400, y: r + 0.5)), "seam, away from the notch")
+        XCTAssertFalse(path.contains(CGPoint(x: 900, y: r + 0.5)), "seam, under the notch")
+        XCTAssertTrue(path.contains(CGPoint(x: 900, y: r + 1.5)), "the bar itself, under the notch")
+    }
+}

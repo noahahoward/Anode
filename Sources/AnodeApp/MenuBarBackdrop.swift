@@ -23,18 +23,34 @@ enum MenuBarBackdropGeometry {
     /// backdrop and the curve read off a screenshot; 14 fits every sample.
     static let cornerRadius: CGFloat = 14
 
-    /// The strip and its two corner wedges as one outline, in a window of `size`
-    /// whose origin is bottom-left. The bar occupies everything above the bottom
-    /// `cornerRadius`; the wedges hang beneath its two ends.
+    /// The strip, the seam under it and its two corner wedges as one outline, in a
+    /// window of `size` whose origin is bottom-left.
+    ///
+    /// From the top: the bar (the notch's height), then the SEAM — the 1 pt margin
+    /// macOS leaves between the bar and the top of a maximised window, which shows
+    /// the wallpaper as a hairline unless something covers it — then, hanging from
+    /// the window-top line, the two wedges. The seam is left open under the notch
+    /// (`notch`, in the window's own x) so the strip's bottom edge stays flush with
+    /// the notch's there, which is where it was seen sticking out.
     ///
     /// Built by hand because `NSBezierPath.cgPath` needs macOS 14 and the package
     /// targets 13.
-    static func shape(in size: CGSize) -> CGPath {
+    static func shape(in size: CGSize, seam: CGFloat = 0,
+                      notch: ClosedRange<CGFloat>? = nil) -> CGPath {
         let r = cornerRadius, w = size.width
         let path = CGMutablePath()
-        path.addRect(CGRect(x: 0, y: r, width: w, height: size.height - r))
-        // Left wedge: the square under the bar's left end minus the quarter-disc
-        // the window's own corner occupies (centre (r, 0)).
+        // `r` is where a window's top edge sits: the seam is above it, the bar above that.
+        path.addRect(CGRect(x: 0, y: r + seam, width: w, height: size.height - r - seam))
+        if seam > 0 {
+            if let n = notch {
+                path.addRect(CGRect(x: 0, y: r, width: n.lowerBound, height: seam))
+                path.addRect(CGRect(x: n.upperBound, y: r, width: w - n.upperBound, height: seam))
+            } else {
+                path.addRect(CGRect(x: 0, y: r, width: w, height: seam))
+            }
+        }
+        // Left wedge: the square under the window-top line's left end minus the
+        // quarter-disc the window's own corner occupies (centre (r, 0)).
         path.move(to: CGPoint(x: 0, y: r))
         path.addLine(to: CGPoint(x: r, y: r))
         path.addArc(center: CGPoint(x: r, y: 0), radius: r,
@@ -99,11 +115,26 @@ enum MenuBarBackdropGeometry {
         abs(bounds.minY - barBottom) <= 3 && bounds.width >= screenWidth * 0.95
     }
 
-    /// The strip's window: the strip itself plus room below it for the corner
-    /// fillets. The extra height is transparent and click-through.
-    static func windowFrame(forStrip strip: NSRect) -> NSRect {
-        NSRect(x: strip.minX, y: strip.minY - cornerRadius,
-               width: strip.width, height: strip.height + cornerRadius)
+    /// The strip's window: the strip, the seam under it, and room below that for
+    /// the corner wedges. The extra height is transparent and click-through.
+    static func windowFrame(forStrip strip: NSRect, seam: CGFloat = 0) -> NSRect {
+        NSRect(x: strip.minX, y: strip.minY - seam - cornerRadius,
+               width: strip.width, height: strip.height + seam + cornerRadius)
+    }
+
+    /// The margin between the bar's bottom and the top of the visible frame: 1 pt
+    /// on the notched panel measured here (38 pt bar, visible frame ending 39 pt
+    /// down). Zero when there is no such gap.
+    static func seam(strip: NSRect, screenFrame: NSRect, visibleFrame: NSRect) -> CGFloat {
+        max(0, (screenFrame.maxY - visibleFrame.maxY) - strip.height)
+    }
+
+    /// The notch's horizontal extent in a window starting at the screen's left edge,
+    /// from the screen's two auxiliary top areas, or nil without a notch.
+    static func notchSpan(left: NSRect?, right: NSRect?, screenFrame: NSRect) -> ClosedRange<CGFloat>? {
+        guard let l = left, let r = right, !l.isEmpty, !r.isEmpty else { return nil }
+        let lo = l.maxX - screenFrame.minX, hi = r.minX - screenFrame.minX
+        return lo < hi ? lo...hi : nil
     }
 
     /// The strip for a screen, or nil when there is no menu bar to hide.
@@ -143,13 +174,13 @@ private final class TintView: NSView {
     private var gradient: CAGradientLayer { layer as! CAGradientLayer }
     private(set) var applied: [NSColor] = []
 
-    override init(frame: NSRect) {
+    init(frame: NSRect, seam: CGFloat, notch: ClosedRange<CGFloat>?) {
         super.init(frame: frame)
         wantsLayer = true
         gradient.startPoint = CGPoint(x: 0, y: 0.5)
         gradient.endPoint = CGPoint(x: 1, y: 0.5)
         let mask = CAShapeLayer()
-        mask.path = MenuBarBackdropGeometry.shape(in: frame.size)
+        mask.path = MenuBarBackdropGeometry.shape(in: frame.size, seam: seam, notch: notch)
         gradient.mask = mask
     }
     required init?(coder: NSCoder) { fatalError() }
@@ -195,14 +226,14 @@ private final class TintView: NSView {
 fileprivate final class BackdropView: NSVisualEffectView {
     private let tint: TintView
 
-    init(size: CGSize, darkBar: Bool, tints: [NSColor]) {
-        tint = TintView(frame: CGRect(origin: .zero, size: size))
+    init(size: CGSize, seam: CGFloat, notch: ClosedRange<CGFloat>?, darkBar: Bool, tints: [NSColor]) {
+        tint = TintView(frame: CGRect(origin: .zero, size: size), seam: seam, notch: notch)
         super.init(frame: CGRect(origin: .zero, size: size))
         material = .hudWindow
         blendingMode = .behindWindow
         state = .active
         appearance = NSAppearance(named: darkBar ? .darkAqua : .aqua)
-        let outline = MenuBarBackdropGeometry.shape(in: size)
+        let outline = MenuBarBackdropGeometry.shape(in: size, seam: seam, notch: notch)
         maskImage = NSImage(size: size, flipped: false) { _ in
             guard let ctx = NSGraphicsContext.current?.cgContext else { return false }
             ctx.addPath(outline)
@@ -245,8 +276,8 @@ fileprivate final class BackdropWindow: NSWindow {
     /// the window has moved.
     var ownKey = ""
 
-    fileprivate init(frame: NSRect, strip: NSRect, screen: NSScreen, primaryHeight: CGFloat,
-                     darkBar: Bool, tints: [NSColor]) {
+    fileprivate init(frame: NSRect, strip: NSRect, seam: CGFloat, notch: ClosedRange<CGFloat>?,
+                     screen: NSScreen, primaryHeight: CGFloat, darkBar: Bool, tints: [NSColor]) {
         screenLeft = screen.frame.minX
         screenTop = primaryHeight - screen.frame.maxY
         barBottom = primaryHeight - strip.minY
@@ -254,7 +285,7 @@ fileprivate final class BackdropWindow: NSWindow {
         screenWidth = screen.frame.width
         displayID = (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")]
                      as? NSNumber)?.uint32Value ?? CGMainDisplayID()
-        view = BackdropView(size: frame.size, darkBar: darkBar, tints: tints)
+        view = BackdropView(size: frame.size, seam: seam, notch: notch, darkBar: darkBar, tints: tints)
         super.init(contentRect: frame, styleMask: .borderless, backing: .buffered, defer: false)
     }
 }
@@ -447,26 +478,37 @@ final class MenuBarBackdrop {
             return
         }
         let primaryHeight = NSScreen.screens.first?.frame.height ?? 0
-        let planned: [(frame: NSRect, strip: NSRect, screen: NSScreen)] = NSScreen.screens.compactMap {
+        let planned: [Plan] = NSScreen.screens.compactMap {
             guard let strip = MenuBarBackdropGeometry.strip(
                 screenFrame: $0.frame, visibleFrame: $0.visibleFrame,
                 safeAreaTop: $0.safeAreaInsets.top) else { return nil }
-            return (MenuBarBackdropGeometry.windowFrame(forStrip: strip), strip, $0)
+            let seam = MenuBarBackdropGeometry.seam(strip: strip, screenFrame: $0.frame,
+                                                    visibleFrame: $0.visibleFrame)
+            let notch = MenuBarBackdropGeometry.notchSpan(
+                left: $0.auxiliaryTopLeftArea, right: $0.auxiliaryTopRightArea, screenFrame: $0.frame)
+            return Plan(frame: MenuBarBackdropGeometry.windowFrame(forStrip: strip, seam: seam),
+                        strip: strip, seam: seam, notch: notch, screen: $0)
         }
         // Same strips as already shown: leave the windows alone rather than
         // reordering them on every wake.
         guard force || planned.map(\.frame) != windows.map(\.frame) else { return }
         windows.forEach { $0.orderOut(nil) }
-        windows = planned.map { makeWindow(frame: $0.frame, strip: $0.strip, screen: $0.screen,
-                                           primaryHeight: primaryHeight) }
+        windows = planned.map { makeWindow($0, primaryHeight: primaryHeight) }
         windows.forEach { $0.orderFrontRegardless() }
         retint(force: true)
     }
 
-    private func makeWindow(frame: NSRect, strip: NSRect, screen: NSScreen,
-                            primaryHeight: CGFloat) -> BackdropWindow {
-        let w = BackdropWindow(frame: frame, strip: strip, screen: screen,
-                               primaryHeight: primaryHeight, darkBar: darkBar, tints: plain())
+    private struct Plan {
+        let frame: NSRect, strip: NSRect, seam: CGFloat
+        let notch: ClosedRange<CGFloat>?
+        let screen: NSScreen
+    }
+
+    private func makeWindow(_ plan: Plan, primaryHeight: CGFloat) -> BackdropWindow {
+        let frame = plan.frame
+        let w = BackdropWindow(frame: frame, strip: plan.strip, seam: plan.seam, notch: plan.notch,
+                               screen: plan.screen, primaryHeight: primaryHeight,
+                               darkBar: darkBar, tints: plain())
         w.contentView = w.view
         // Clear, because the glass is the view's own and the rest is nothing.
         w.backgroundColor = .clear
