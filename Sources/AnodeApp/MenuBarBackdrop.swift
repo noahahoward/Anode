@@ -137,19 +137,24 @@ enum MenuBarBackdropGeometry {
         max(0, (screenFrame.maxY - visibleFrame.maxY) - strip.height)
     }
 
-    /// How far the notch's black bottom edge reaches past the gap macOS reports
-    /// between the two auxiliary top areas, on each side. MEASURED on the 1800 pt
-    /// panel: the auxiliary gap is 790…1010 but the black on screen is 762…1037 at
-    /// its lowest row, because the notch flares and rounds its corners. A cover
-    /// sized to the gap alone sat under the notch as a narrow dangling strip.
-    static let notchFlare: CGFloat = 27
+    /// How far the notch's FLAT bottom is inset from the gap macOS reports between
+    /// the two auxiliary top areas, on each side. MEASURED against a grey bar: the
+    /// gap is 790…1010, the hardware notch's corners round off over its last ~10
+    /// pt, and its last row of black spans about 802…997.
+    ///
+    /// The cover under the notch has to match that last row, no wider: sized to the
+    /// gap it stuck out under the rounded corners as a long thin black bar (seen on
+    /// a grey bar). An earlier version went the other way and widened it by 27 pt,
+    /// from a measurement of the outline another app draws around the notch
+    /// (TheBoringNotch, a layer-27 window), which is not the notch.
+    static let notchInset: CGFloat = 12
 
-    /// The notch's horizontal extent at its bottom edge, in a window starting at the
+    /// The span of the notch's flat bottom edge, in a window starting at the
     /// screen's left edge, from the screen's two auxiliary top areas, or nil
     /// without a notch.
     static func notchSpan(left: NSRect?, right: NSRect?, screenFrame: NSRect) -> ClosedRange<CGFloat>? {
         guard let l = left, let r = right, !l.isEmpty, !r.isEmpty else { return nil }
-        let lo = l.maxX - screenFrame.minX - notchFlare, hi = r.minX - screenFrame.minX + notchFlare
+        let lo = l.maxX - screenFrame.minX + notchInset, hi = r.minX - screenFrame.minX - notchInset
         return lo < hi ? lo...hi : nil
     }
 
