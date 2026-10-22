@@ -18,15 +18,15 @@ import PowerKit
 /// Where the strip goes. Pure so the arithmetic is testable without a display.
 enum MenuBarBackdropGeometry {
 
-    /// macOS 27's window corner radius, in points. MEASURED rather than assumed:
-    /// a titled window and a unified-toolbar window were drawn over a solid
-    /// backdrop and the curve read off a screenshot; 14 fits every sample.
-    static let cornerRadius: CGFloat = 14
-
-    /// How far the wedges reach over a window's rim. Fitting the curve to this
-    /// screen's pixels gave about 13 pt, a point under the 14 pt measured against a
-    /// flat backdrop, so a point of overlap errs towards covering.
-    static let wedgeOverlap: CGFloat = 1
+    /// The wedge radius, in points: macOS 27's window corner radius, rounded UP.
+    ///
+    /// Two fits of the real curve disagreed — 14 against a flat backdrop, about 13
+    /// from this screen's own pixels — and a wedge that is too small leaves a dotted
+    /// fringe of wallpaper along the curve, while one that is a little too big only
+    /// hides a fraction of a point of the window's corner. A BIGGER radius is a
+    /// bigger wedge, so it errs the safe way; 14 left the fringe and 13 (tried, as
+    /// "overlap") made it worse.
+    static let cornerRadius: CGFloat = 15
 
     /// The strip, the seam under it and its two corner wedges as one outline, in a
     /// window of `size` whose origin is bottom-left.
@@ -55,12 +55,10 @@ enum MenuBarBackdropGeometry {
             }
         }
         // Left wedge: the square under the window-top line's left end minus the
-        // quarter-disc the window's own corner occupies. The disc is `wedgeOverlap`
-        // smaller than the window's measured radius, so the wedge reaches over the
-        // window's rim rather than meeting it: two anti-aliased edges that meet
-        // exactly leave a dotted fringe of wallpaper between them (seen, zoomed in,
-        // along the whole curve), and the rim is what gets hidden instead.
-        let rw = r - wedgeOverlap
+        // quarter-disc the window's own corner occupies. Two anti-aliased edges that
+        // meet exactly leave a dotted fringe of wallpaper between them (seen, zoomed
+        // in, along the whole curve), which is why `cornerRadius` rounds up.
+        let rw = r
         path.move(to: CGPoint(x: 0, y: r))
         path.addLine(to: CGPoint(x: rw, y: r))
         path.addArc(center: CGPoint(x: rw, y: r - rw), radius: rw,
