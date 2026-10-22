@@ -43,6 +43,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
     var store: HistoryStore?
     /// The Forecast Check window, created on first use from View → Developer Tools.
     var forecastCheck: ForecastCheckWindowController?
+    /// The Anode Stats window, created on first use from View → Developer Tools.
+    var anodeStats: AnodeStatsWindowController?
     /// Time left = charge ÷ the mean drain since the lid was last opened.
     let drain = DrainRateEstimator(trend: .sinceLidOpened())
     /// Throttles the trend's crash-insurance write. See the call site.
@@ -780,6 +782,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         // reading" — so someone holding the panel open is exactly the case it must
         // not apply to. Eight seconds is visibly stale on CPU, network and disk.
         restartTimer(hidden: !visible && !panelOpen)
+        TickLedger.shared.note(
+            mode: .init(effectiveInterval: timerInterval,
+                        settingInterval: Settings.shared.sampleInterval,
+                        windowVisible: visible, panelOpen: panelOpen,
+                        drivingFans: sysMetrics.fansAreDriven, historyLogging: logging,
+                        backgroundFullInterval: backgroundFullInterval),
+            dropped: sampleGate.dropped)
         // The two animations that are not a response to the user keep running on
         // their layers until told otherwise, and a covered window still has its
         // layers. Idempotent, so it can sit on the tick rather than needing every
@@ -799,6 +808,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
             // one an outside measurement cannot see. Thread CPU time, because this
             // queue is serial and a block stays on the thread it started on.
             let tickStartCPU = TickCost.now()
+            // Always on, unlike the line above: `TickLedger` keeps every tick's
+            // cost for Anode Stats. See `TickCost.cpuNow`.
+            let ledgerStartCPU = TickCost.cpuNow()
+            let ledgerStartWall = DispatchTime.now().uptimeNanoseconds
+            let tickStartedAt = Date()
             // The background full tick exists for ONE reason — keeping the trailing
             // power window accruing while the window is closed. With logging off
             // there is nothing to accrue into, so the per-process sweep, the
@@ -926,14 +940,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
 
             TickCost.log(kind: wantFull ? "FULL" : "light",
                          visible: visible, needs: needs, since: tickStartCPU)
+            TickLedger.shared.record(
+                kind: wantFull ? .full : .light, startedAt: tickStartedAt,
+                cpu_ns: TickCost.cpuNow() &- ledgerStartCPU,
+                wall_ns: DispatchTime.now().uptimeNanoseconds &- ledgerStartWall,
+                machine_W: snap.measured_W,
+                joulesPerPercent: snap.state == nil ? nil : snap.scale.joulesPerPercent)
 
             DispatchQueue.main.async {
                 // The sampling queue's cost is logged above; this is the OTHER
                 // half of a tick, and the half that was never measured — the
                 // menu bar widgets redraw here on every hidden tick.
                 let mainStartCPU = TickCost.now()
-                defer { TickCost.log(kind: "main-thread", visible: visible,
-                                     needs: needs, since: mainStartCPU) }
+                let ledgerMainCPU = TickCost.cpuNow()
+                defer {
+                    TickCost.log(kind: "main-thread", visible: visible,
+                                 needs: needs, since: mainStartCPU)
+                    TickLedger.shared.recordMain(cpu_ns: TickCost.cpuNow() &- ledgerMainCPU)
+                }
                 self.lastSystem = sysSnap
                 self.lastDrain = est
                 self.lastPrior = prior

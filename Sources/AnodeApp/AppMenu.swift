@@ -139,6 +139,7 @@ extension AppDelegate {
     private var developerTools: [(title: String, action: Selector)] {
         [
             ("Forecast Check", #selector(showForecastCheck(_:))),
+            ("Anode Stats", #selector(showAnodeStats(_:))),
         ]
     }
 
@@ -197,6 +198,21 @@ extension AppDelegate {
         }
     }
 
+    /// Developer view comparing the time-left forecast with the battery's real
+    /// discharge. See `ForecastCheckWindowController`.
+    @objc func showForecastCheck(_ sender: Any?) {
+        guard let store else { return }
+        if forecastCheck == nil { forecastCheck = ForecastCheckWindowController(store: store) }
+        forecastCheck?.show()
+    }
+
+    /// Developer view of Anode itself: build, how often it samples and what that
+    /// costs. See `AnodeStatsWindowController`.
+    @objc func showAnodeStats(_ sender: Any?) {
+        if anodeStats == nil { anodeStats = AnodeStatsWindowController(store: store) }
+        anodeStats?.show()
+    }
+
     /// Reopen the main window.
     ///
     /// IMPORTANT, because this reads as broken and is not: ⌘0 CANNOT bring the
@@ -213,14 +229,6 @@ extension AppDelegate {
     /// Do not "fix" this by keeping the app `.regular` — that reinstates the Dock
     /// tile that made a closed window feel like a running app, which is the thing
     /// `hide()` exists to prevent.
-    /// Developer view comparing the time-left forecast with the battery's real
-    /// discharge. See `ForecastCheckWindowController`.
-    @objc func showForecastCheck(_ sender: Any?) {
-        guard let store else { return }
-        if forecastCheck == nil { forecastCheck = ForecastCheckWindowController(store: store) }
-        forecastCheck?.show()
-    }
-
     @objc func showMainWindow(_ sender: Any?) {
         main.show()
         restartTimer(hidden: false)   // same staleness argument as showLens

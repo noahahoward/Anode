@@ -23,7 +23,15 @@ enum TickCost {
     /// own work — not the machine's, and not another queue's.
     static func now() -> UInt64 {
         guard enabled else { return 0 }
-        return clock_gettime_nsec_np(CLOCK_THREAD_CPUTIME_ID)
+        return cpuNow()
+    }
+
+    /// The same clock, read whether or not logging is on. `TickLedger` keeps
+    /// the cost of every tick for Developer Tools → Anode Stats, and one
+    /// `clock_gettime` at each end of a tick is nothing next to the tick; the
+    /// NSLog line stays behind `enabled`.
+    static func cpuNow() -> UInt64 {
+        clock_gettime_nsec_np(CLOCK_THREAD_CPUTIME_ID)
     }
 
     static func log(kind: String, visible: Bool,

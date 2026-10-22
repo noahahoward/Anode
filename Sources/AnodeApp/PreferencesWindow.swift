@@ -357,11 +357,7 @@ private final class GeneralPane: Pane {
     /// What this build is, independent of any checkout — true even when the
     /// source has since been moved or deleted.
     private var buildDescription: String {
-        let info = Bundle.main.infoDictionary
-        let version = info?["CFBundleShortVersionString"] as? String ?? "?"
-        let build = info?["CFBundleVersion"] as? String ?? "?"
-        let commit = info?["BSSourceCommit"] as? String ?? "unknown"
-        return "\(version) (build \(build)) · \(commit)"
+        BuildInfo(info: Bundle.main.infoDictionary).summary
     }
 
     private func checkout() -> SourceCheckout? {
