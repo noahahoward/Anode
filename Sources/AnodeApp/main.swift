@@ -2655,7 +2655,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         // `hasVisibleWindows` is AppKit's opinion, and it is `true` for a window
         // stranded on a Space that no longer exists — which made the Dock icon
         // the third control that could not open the app. See `WindowPresence`.
-        if !hasVisibleWindows || main.window.isStranded { main.show() }
+        //
+        // And `hasVisibleWindows` counts the menu bar backdrop, which is always up:
+        // with it in play the flag is never false and opening Anode again did
+        // nothing. `anyWindowOpen` counts titled windows only, so the backdrop and
+        // the widgets are not among them. Measured: with the flag, `open Anode.app`
+        // left the window hidden.
+        if !AppPresence.anyWindowOpen || main.window.isStranded { main.show() }
         return true
     }
 
