@@ -444,10 +444,22 @@ final class MenuBarBackdropGeometryTests: XCTestCase {
                        NSRect(x: 0, y: 958, width: 1512, height: 24))
     }
 
-    func testANotchMakesTheStripNoShorterThanItsInset() {
-        let visible = NSRect(x: 0, y: 0, width: 1512, height: 982 - 24)
-        XCTAssertEqual(MenuBarBackdropGeometry.strip(screenFrame: screen, visibleFrame: visible,
-                                                     safeAreaTop: 37)?.height, 37)
+    /// The measured case: a 1169 pt panel with a 38 pt notch whose visible frame
+    /// ends 39 pt down. The strip is the notch's height, not the gap's, or it sticks
+    /// out 1 pt below the notch.
+    func testANotchSetsTheStripHeightNotTheGap() {
+        let panel = NSRect(x: 0, y: 0, width: 1800, height: 1169)
+        let visible = NSRect(x: 0, y: 0, width: 1800, height: 1130)
+        let strip = MenuBarBackdropGeometry.strip(screenFrame: panel, visibleFrame: visible,
+                                                  safeAreaTop: 38)
+        XCTAssertEqual(strip?.height, 38)
+        XCTAssertEqual(strip?.maxY, panel.maxY)
+    }
+
+    func testANotchedScreenWithNoBarShowingGetsNoStrip() {
+        let panel = NSRect(x: 0, y: 0, width: 1800, height: 1169)
+        XCTAssertNil(MenuBarBackdropGeometry.strip(screenFrame: panel, visibleFrame: panel,
+                                                   safeAreaTop: 38))
     }
 
     func testNoMenuBarMeansNoStrip() {
@@ -485,25 +497,25 @@ final class MenuBarBackdropTintTests: XCTestCase {
     private func grey(_ l: CGFloat) -> NSColor { NSColor(srgbRed: l, green: l, blue: l, alpha: 1) }
 
     func testWithNoWindowTheTintIsThePlainFillAtGlassAlpha() {
-        let t = MenuBarBackdropGeometry.tint(darkBar: true, windowTop: nil).usingColorSpace(.sRGB)!
+        let t = MenuBarBackdropGeometry.tint(darkBar: true, windowTop: nil, alpha: 0.78).usingColorSpace(.sRGB)!
         XCTAssertEqual(t.redComponent, 0, accuracy: 0.001)
-        XCTAssertEqual(t.alphaComponent, MenuBarBackdropGeometry.tintAlpha, accuracy: 0.001)
+        XCTAssertEqual(t.alphaComponent, 0.78, accuracy: 0.001)
     }
 
     func testADarkWindowColourIsTakenUnderWhiteText() {
-        let t = MenuBarBackdropGeometry.tint(darkBar: true, windowTop: grey(0.16)).usingColorSpace(.sRGB)!
+        let t = MenuBarBackdropGeometry.tint(darkBar: true, windowTop: grey(0.16), alpha: 1).usingColorSpace(.sRGB)!
         XCTAssertEqual(t.redComponent, 0.16, accuracy: 0.01)
     }
 
     /// The case the clamp exists for: a bright page under text the system has made
     /// white would be white on white.
     func testABrightWindowColourIsRefusedUnderWhiteText() {
-        let t = MenuBarBackdropGeometry.tint(darkBar: true, windowTop: grey(0.9)).usingColorSpace(.sRGB)!
+        let t = MenuBarBackdropGeometry.tint(darkBar: true, windowTop: grey(0.9), alpha: 1).usingColorSpace(.sRGB)!
         XCTAssertEqual(t.redComponent, 0, accuracy: 0.001)
     }
 
     func testADarkWindowColourIsRefusedUnderBlackText() {
-        let t = MenuBarBackdropGeometry.tint(darkBar: false, windowTop: grey(0.1)).usingColorSpace(.sRGB)!
+        let t = MenuBarBackdropGeometry.tint(darkBar: false, windowTop: grey(0.1), alpha: 1).usingColorSpace(.sRGB)!
         XCTAssertEqual(t.redComponent, 1, accuracy: 0.001)
     }
 
@@ -527,5 +539,35 @@ final class MenuBarBackdropTintTests: XCTestCase {
         XCTAssertFalse(path.contains(CGPoint(x: 200, y: r - 1)), "below the bar, mid-screen")
         XCTAssertTrue(path.contains(CGPoint(x: 1, y: r - 1)), "the wedge hugging the left edge")
         XCTAssertFalse(path.contains(CGPoint(x: r - 1, y: 1)), "inside the window's own corner")
+    }
+}
+
+final class MenuBarBackdropModeTests: XCTestCase {
+    func testOffIsClearAndTheSolidModesAreOpaque() {
+        XCTAssertEqual(MenuBarBackdropGeometry.tintAlpha(mode: .off, translucency: 0.5), 0)
+        XCTAssertEqual(MenuBarBackdropGeometry.tintAlpha(mode: .solid, translucency: 0), 1)
+        XCTAssertEqual(MenuBarBackdropGeometry.tintAlpha(mode: .solidFollow, translucency: 1), 1,
+                       "translucency belongs to blur only")
+    }
+
+    func testBlurGrowsMoreSeeThroughAsTheSliderRises() {
+        let low = MenuBarBackdropGeometry.tintAlpha(mode: .blur, translucency: 0)
+        let high = MenuBarBackdropGeometry.tintAlpha(mode: .blur, translucency: 1)
+        XCTAssertGreaterThan(low, high)
+        XCTAssertLessThan(low, 1, "even the blur's most solid end must still be glass")
+        XCTAssertEqual(MenuBarBackdropGeometry.tintAlpha(mode: .blur, translucency: 9), high,
+                       "out of range is clamped")
+    }
+
+    func testTheModeRoundTripsThroughSettings() {
+        let defaults = UserDefaults(suiteName: "backdrop-mode-\(UUID().uuidString)")!
+        let s = Settings(defaults: defaults)
+        XCTAssertEqual(s.menuBarBackdropMode, .solidFollow, "the default")
+        for m in MenuBarBackdropMode.allCases {
+            s.menuBarBackdropMode = m
+            XCTAssertEqual(Settings(defaults: defaults).menuBarBackdropMode, m)
+        }
+        s.menuBarBackdropTranslucency = 7
+        XCTAssertEqual(s.menuBarBackdropTranslucency, 1)
     }
 }

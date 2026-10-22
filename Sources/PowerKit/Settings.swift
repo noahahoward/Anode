@@ -43,6 +43,8 @@ public final class Settings {
         public static let speedTestAgreed = "speedTestAgreed"
         public static let autoUpdateEnabled = "autoUpdateEnabled"
         public static let autoUpdatePromptSeen = "autoUpdatePromptSeen"
+        public static let menuBarBackdropMode = "menuBarBackdropMode"
+        public static let menuBarBackdropTranslucency = "menuBarBackdropTranslucency"
         /// The stats panel's arrangement. Empty until the user edits it — see
         /// `panelOrder` for why the default is not materialized here.
         public static let panelOrder = "panelOrder"
@@ -115,6 +117,12 @@ public final class Settings {
         /// did.
         static let autoUpdateEnabled = false
         static let autoUpdatePromptSeen = false
+        /// Solid, following the window beneath it: what the strip was built to be.
+        /// It reads nothing of another app until macOS has been asked and has said
+        /// yes — Anode's own windows need no permission — and any other mode stops
+        /// all reading at once, whatever macOS has granted.
+        static let menuBarBackdropMode = MenuBarBackdropMode.solidFollow
+        static let menuBarBackdropTranslucency = 0.3
         /// Matches what the status item shows today: smoothed drain + runtime.
         // Must be real, currently-registered metric IDs. Stale ones are invisible
         // in the picker and get preserved forever as "unknown" bindings.
@@ -152,6 +160,8 @@ public final class Settings {
         var showDaemons, startInMenuBarOnly, batteryLogging, menuBarWidgetsEnabled,
             fanControlEnabled, fanSyncEnabled, speedTestAgreed,
             autoUpdateEnabled, autoUpdatePromptSeen: Bool
+        var menuBarBackdropMode: MenuBarBackdropMode
+        var menuBarBackdropTranslucency: Double
         var fanDisclosureSeen: Bool
         var menuBarWidgets: [String]
         var panelOrder: [String]
@@ -247,6 +257,39 @@ public final class Settings {
                                 Default.autoUpdatePromptSeen) }
         set { writeBool(Key.autoUpdatePromptSeen, \.autoUpdatePromptSeen, newValue,
                         Default.autoUpdatePromptSeen) }
+    }
+
+    /// What sits behind the menu bar. See `MenuBarBackdropMode`.
+    public var menuBarBackdropMode: MenuBarBackdropMode {
+        get {
+            defaults.string(forKey: Settings.storageKey(Key.menuBarBackdropMode))
+                .flatMap(MenuBarBackdropMode.init(rawValue:)) ?? Default.menuBarBackdropMode
+        }
+        set {
+            guard newValue != menuBarBackdropMode else { return }
+            defaults.set(newValue.rawValue, forKey: Settings.storageKey(Key.menuBarBackdropMode))
+            reconcile()
+        }
+    }
+
+    /// How much of the wallpaper shows through the blur mode, 0 (barely) to 1.
+    public var menuBarBackdropTranslucency: Double {
+        get { Settings.readDouble(defaults, Key.menuBarBackdropTranslucency,
+                                  Default.menuBarBackdropTranslucency, 0...1) }
+        set {
+            let v = min(max(newValue, 0), 1)
+            guard v != menuBarBackdropTranslucency else { return }
+            defaults.set(v, forKey: Settings.storageKey(Key.menuBarBackdropTranslucency))
+            reconcile()
+        }
+    }
+
+    /// Has macOS's Screen Recording question been put to the user? Bookkeeping,
+    /// not a preference: asking again at every launch would turn one question
+    /// into a nag, and a "no" is an answer.
+    public var screenCaptureAsked: Bool {
+        get { defaults.bool(forKey: Settings.storageKey("screenCaptureAsked")) }
+        set { defaults.set(newValue, forKey: Settings.storageKey("screenCaptureAsked")) }
     }
 
     /// The upstream commit whose automatic rebuild last failed, so a push that
@@ -616,6 +659,10 @@ public final class Settings {
         if old.fanSyncEnabled != now.fanSyncEnabled { notify(Key.fanSyncEnabled) }
         if old.speedTestAgreed != now.speedTestAgreed { notify(Key.speedTestAgreed) }
         if old.autoUpdateEnabled != now.autoUpdateEnabled { notify(Key.autoUpdateEnabled) }
+        if old.menuBarBackdropMode != now.menuBarBackdropMode { notify(Key.menuBarBackdropMode) }
+        if old.menuBarBackdropTranslucency != now.menuBarBackdropTranslucency {
+            notify(Key.menuBarBackdropTranslucency)
+        }
         if old.autoUpdatePromptSeen != now.autoUpdatePromptSeen {
             notify(Key.autoUpdatePromptSeen)
         }
@@ -721,6 +768,10 @@ public final class Settings {
                                            Default.autoUpdateEnabled),
                autoUpdatePromptSeen: readBool(d, Key.autoUpdatePromptSeen,
                                               Default.autoUpdatePromptSeen),
+               menuBarBackdropMode: d.string(forKey: storageKey(Key.menuBarBackdropMode))
+                   .flatMap(MenuBarBackdropMode.init(rawValue:)) ?? Default.menuBarBackdropMode,
+               menuBarBackdropTranslucency: readDouble(d, Key.menuBarBackdropTranslucency,
+                                                       Default.menuBarBackdropTranslucency, 0...1),
                fanDisclosureSeen: readBool(d, Key.fanDisclosureSeen,
                                            Default.fanDisclosureSeen),
                menuBarWidgets: readWidgets(d, Default.menuBarWidgets),
@@ -780,6 +831,29 @@ extension Settings {
                 : key
             guard defaults.object(forKey: renamed) == nil else { continue }
             defaults.set(value, forKey: renamed)
+        }
+    }
+}
+
+
+/// What sits behind the menu bar.
+public enum MenuBarBackdropMode: String, CaseIterable {
+    /// Nothing: the system's own transparent bar over the wallpaper.
+    case off
+    /// A frosted, tinted blur; the wallpaper survives as a smear.
+    case blur
+    /// A full opaque block, so the wallpaper cannot show at all.
+    case solid
+    /// The same block, fading into the colour of the window beneath it. Reading
+    /// another app's window needs Screen Recording permission.
+    case solidFollow
+
+    public var title: String {
+        switch self {
+        case .off: return "Off"
+        case .blur: return "Blur"
+        case .solid: return "Solid"
+        case .solidFollow: return "Solid, following the window"
         }
     }
 }

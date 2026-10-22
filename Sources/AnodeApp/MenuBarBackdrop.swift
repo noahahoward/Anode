@@ -1,4 +1,5 @@
 import AppKit
+import PowerKit
 
 // ── Menu bar backdrop ───────────────────────────────────────────────────────
 //
@@ -48,10 +49,19 @@ enum MenuBarBackdropGeometry {
         return path
     }
 
-    /// How much of the glass is tint. The rest is the blur of what is behind it, so
-    /// the bar reads as frosted rather than painted while the wallpaper stays an
-    /// unrecognisable smear — the bar exists to stop it being a distraction.
-    static let tintAlpha: CGFloat = 0.78
+    /// How much of the strip is tint; the rest is the blur of what is behind it.
+    ///
+    /// The solid modes are fully opaque, so the wallpaper cannot show at all. Blur
+    /// runs from 0.95 (a smear) down to 0.40 (the wallpaper plainly there, softened)
+    /// as `translucency` goes 0 → 1; its default 0.3 is 0.785, which is what the
+    /// glass was tuned at before it was adjustable.
+    static func tintAlpha(mode: MenuBarBackdropMode, translucency: Double) -> CGFloat {
+        switch mode {
+        case .off: return 0
+        case .solid, .solidFollow: return 1
+        case .blur: return 0.95 - 0.55 * CGFloat(min(max(translucency, 0), 1))
+        }
+    }
 
     /// The tint for a bar whose text is white (`darkBar`) or black, optionally
     /// pulled toward the colour of the window under it.
@@ -61,14 +71,25 @@ enum MenuBarBackdropGeometry {
     /// it: a dark bar accepts a colour up to 0.40 luminance, a light one from 0.60.
     /// A bright page under white text would be unreadable, so it is refused and the
     /// plain fill stands.
-    static func tint(darkBar: Bool, windowTop: NSColor?) -> NSColor {
+    static func tint(darkBar: Bool, windowTop: NSColor?, alpha: CGFloat) -> NSColor {
         let base = fill(darkBar: darkBar)
         guard let c = windowTop?.usingColorSpace(.sRGB) else {
-            return base.withAlphaComponent(tintAlpha)
+            return base.withAlphaComponent(alpha)
         }
         let luminance = 0.299 * c.redComponent + 0.587 * c.greenComponent + 0.114 * c.blueComponent
         let readable = darkBar ? luminance <= 0.40 : luminance >= 0.60
-        return (readable ? c : base).withAlphaComponent(tintAlpha)
+        return (readable ? c : base).withAlphaComponent(alpha)
+    }
+
+    /// `tint` for each colour in a row, left to right: what a window's top edge
+    /// turns into across the bar. Each stop is clamped on its own, so a window
+    /// that is dark on the left and bright on the right fades in where the text
+    /// would still read and stays plain where it would not.
+    static func tints(darkBar: Bool, windowTop: [NSColor]?, alpha: CGFloat) -> [NSColor] {
+        guard let row = windowTop, !row.isEmpty else {
+            return [tint(darkBar: darkBar, windowTop: nil, alpha: alpha)]
+        }
+        return row.map { tint(darkBar: darkBar, windowTop: $0, alpha: alpha) }
     }
 
     /// Is a window with these bounds meeting the bar — top edge at the bar's
@@ -87,21 +108,24 @@ enum MenuBarBackdropGeometry {
 
     /// The strip for a screen, or nil when there is no menu bar to hide.
     ///
-    /// The bar's height is the gap between the screen's top and the top of its
-    /// visible frame — what the system reports as taken by the menu bar — and on a
-    /// notched display never less than the notch's safe-area inset, which is the
-    /// bar's real height there. Zero means the bar is hidden (auto-hide, or a
-    /// full-screen Space), and a strip then would sit on top of the content with no
-    /// bar to justify it.
+    /// The bar's height is the notch's where there is one (`safeAreaTop`, which
+    /// matches the screen's auxiliary top areas exactly: 38 pt on a 1169 pt panel),
+    /// so the strip's bottom edge is flush with the notch's. It was the gap between
+    /// the screen's top and its visible frame before, and that is one point TALLER:
+    /// macOS leaves a 1 pt margin under the bar, so the strip stuck out 1–2 px
+    /// below the notch. Without a notch the gap is all there is to go on.
+    ///
+    /// Zero means the bar is hidden (auto-hide, or a full-screen Space), and a strip
+    /// then would sit on top of the content with no bar to justify it.
     static func strip(screenFrame: NSRect, visibleFrame: NSRect, safeAreaTop: CGFloat) -> NSRect? {
-        let height = max(screenFrame.maxY - visibleFrame.maxY, safeAreaTop)
-        guard height > 0 else { return nil }
+        let height = safeAreaTop > 0 ? safeAreaTop : screenFrame.maxY - visibleFrame.maxY
+        // A notched screen in a full-screen Space still reports its inset but has no
+        // bar to cover; the visible frame says so by reaching the top.
+        guard height > 0, visibleFrame.maxY < screenFrame.maxY else { return nil }
         return NSRect(x: screenFrame.minX, y: screenFrame.maxY - height,
                       width: screenFrame.width, height: height)
     }
-}
 
-extension MenuBarBackdropGeometry {
     /// What to fill the strip with so the bar's text stays readable.
     ///
     /// The system chooses the menu bar's text colour from the brightness of the
@@ -112,28 +136,52 @@ extension MenuBarBackdropGeometry {
     static func fill(darkBar: Bool) -> NSColor { darkBar ? .black : .white }
 }
 
-/// A layer-backed view whose fill is one animatable shape.
+/// A layer-backed view whose fill is a row of colours blended left to right,
+/// cut to the strip's shape.
 private final class TintView: NSView {
-    override func makeBackingLayer() -> CALayer { CAShapeLayer() }
-    private var shapeLayer: CAShapeLayer { layer as! CAShapeLayer }
+    override func makeBackingLayer() -> CALayer { CAGradientLayer() }
+    private var gradient: CAGradientLayer { layer as! CAGradientLayer }
+    private(set) var applied: [NSColor] = []
 
     override init(frame: NSRect) {
         super.init(frame: frame)
         wantsLayer = true
-        shapeLayer.path = MenuBarBackdropGeometry.shape(in: frame.size)
+        gradient.startPoint = CGPoint(x: 0, y: 0.5)
+        gradient.endPoint = CGPoint(x: 1, y: 0.5)
+        let mask = CAShapeLayer()
+        mask.path = MenuBarBackdropGeometry.shape(in: frame.size)
+        gradient.mask = mask
     }
     required init?(coder: NSCoder) { fatalError() }
 
-    func setFill(_ color: NSColor, animated: Bool) {
-        let new = color.cgColor
+    func setFill(_ colors: [NSColor], animated: Bool) {
+        guard !Self.same(colors, applied) else { return }
+        applied = colors
+        // A gradient needs two stops; one colour is the same colour twice.
+        let cg = (colors.count == 1 ? colors + colors : colors).map { $0.cgColor }
         if animated {
-            let fade = CABasicAnimation(keyPath: "fillColor")
-            fade.fromValue = shapeLayer.presentation()?.fillColor ?? shapeLayer.fillColor
-            fade.toValue = new
-            fade.duration = 0.25
-            shapeLayer.add(fade, forKey: "fillColor")
+            let fade = CABasicAnimation(keyPath: "colors")
+            fade.fromValue = gradient.presentation()?.colors ?? gradient.colors
+            fade.toValue = cg
+            fade.duration = 0.4
+            fade.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            // A changed stop COUNT cannot be interpolated; the animation then
+            // snaps, which is the right fallback and not worth a special case.
+            gradient.add(fade, forKey: "colors")
         }
-        shapeLayer.fillColor = new
+        gradient.colors = cg
+    }
+
+    /// Within a hair is the same: a capture's noise must not restart the fade.
+    static func same(_ a: [NSColor], _ b: [NSColor]) -> Bool {
+        guard a.count == b.count else { return false }
+        return zip(a, b).allSatisfy { x, y in
+            guard let x = x.usingColorSpace(.sRGB), let y = y.usingColorSpace(.sRGB) else { return false }
+            return abs(x.redComponent - y.redComponent) < 0.012
+                && abs(x.greenComponent - y.greenComponent) < 0.012
+                && abs(x.blueComponent - y.blueComponent) < 0.012
+                && abs(x.alphaComponent - y.alphaComponent) < 0.012
+        }
     }
 }
 
@@ -147,7 +195,7 @@ private final class TintView: NSView {
 fileprivate final class BackdropView: NSVisualEffectView {
     private let tint: TintView
 
-    init(size: CGSize, darkBar: Bool, tint color: NSColor) {
+    init(size: CGSize, darkBar: Bool, tints: [NSColor]) {
         tint = TintView(frame: CGRect(origin: .zero, size: size))
         super.init(frame: CGRect(origin: .zero, size: size))
         material = .hudWindow
@@ -163,13 +211,13 @@ fileprivate final class BackdropView: NSVisualEffectView {
             return true
         }
         addSubview(tint)
-        tint.setFill(color, animated: false)
+        tint.setFill(tints, animated: false)
     }
     required init?(coder: NSCoder) { fatalError() }
 
-    func update(darkBar: Bool, tint color: NSColor) {
+    func update(darkBar: Bool, tints: [NSColor]) {
         appearance = NSAppearance(named: darkBar ? .darkAqua : .aqua)
-        tint.setFill(color, animated: true)
+        tint.setFill(tints, animated: true)
     }
 }
 
@@ -181,19 +229,32 @@ fileprivate final class BackdropWindow: NSWindow {
     override func constrainFrameRect(_ frameRect: NSRect, to screen: NSScreen?) -> NSRect {
         frameRect
     }
+
     /// This bar in the window server's coordinates (origin top-left, y down), for
     /// asking what window is under it.
     let screenLeft: CGFloat
+    let screenTop: CGFloat
     let barBottom: CGFloat
+    let barHeight: CGFloat
     let screenWidth: CGFloat
+    let displayID: CGDirectDisplayID
     let view: BackdropView
+    /// A capture is in flight; the next tick waits rather than stacking another.
+    var capturing = false
+    /// What was last read off Anode's own window, so a tick re-draws it only when
+    /// the window has moved.
+    var ownKey = ""
 
-    fileprivate init(frame: NSRect, strip: NSRect, screenFrame: NSRect, primaryHeight: CGFloat,
-                     darkBar: Bool, tint: NSColor) {
-        screenLeft = screenFrame.minX
+    fileprivate init(frame: NSRect, strip: NSRect, screen: NSScreen, primaryHeight: CGFloat,
+                     darkBar: Bool, tints: [NSColor]) {
+        screenLeft = screen.frame.minX
+        screenTop = primaryHeight - screen.frame.maxY
         barBottom = primaryHeight - strip.minY
-        screenWidth = screenFrame.width
-        view = BackdropView(size: frame.size, darkBar: darkBar, tint: tint)
+        barHeight = strip.height
+        screenWidth = screen.frame.width
+        displayID = (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")]
+                     as? NSNumber)?.uint32Value ?? CGMainDisplayID()
+        view = BackdropView(size: frame.size, darkBar: darkBar, tints: tints)
         super.init(contentRect: frame, styleMask: .borderless, backing: .buffered, defer: false)
     }
 }
@@ -203,6 +264,7 @@ final class MenuBarBackdrop {
     fileprivate var windows: [BackdropWindow] = []
     private var observers: [NSObjectProtocol] = []
     private var workspaceObservers: [NSObjectProtocol] = []
+    private var settingsTokens: [AnyObject] = []
     /// Zero-width, so nothing shows in the bar. It exists for its button: a status
     /// item's `effectiveAppearance` is the one place an app can read the menu bar's
     /// light/dark choice — `NSApp.effectiveAppearance` stays on the system setting.
@@ -210,6 +272,8 @@ final class MenuBarBackdrop {
     private var appearanceWatch: NSKeyValueObservation?
     private var darkBar = true
     private var pendingRetint: DispatchWorkItem?
+    private var poll: Timer?
+    private let settings = Settings.shared
 
     init() {
         appearanceWatch = probe.button?.observe(\.effectiveAppearance, options: [.initial, .new]) {
@@ -223,11 +287,11 @@ final class MenuBarBackdrop {
         // does its own comparing and a redundant call is a no-op.
         observers.append(center.addObserver(
             forName: NSApplication.didChangeScreenParametersNotification,
-            object: nil, queue: .main) { [weak self] _ in self?.refresh() })
-        // What is under the bar changes when one of OUR windows moves, resizes,
-        // appears or goes, so those are the only events that re-read it. Nothing
-        // polls: a window of another app moving is not announced to us, and Phase 2
-        // will have to decide how to notice that.
+            object: nil, queue: .main) { [weak self] _ in
+                WindowEdgeSampler.forgetDisplays()
+                self?.refresh()
+            })
+        // Anode's OWN windows announce themselves, so they are read on the event.
         for name in [NSWindow.didMoveNotification, NSWindow.didResizeNotification,
                      NSWindow.didChangeScreenNotification,
                      NSWindow.didChangeOcclusionStateNotification,
@@ -248,64 +312,161 @@ final class MenuBarBackdrop {
         workspaceObservers.append(ws.addObserver(
             forName: NSWorkspace.activeSpaceDidChangeNotification,
             object: nil, queue: .main) { [weak self] _ in self?.refresh() })
-        // Another app coming forward can cover our window's top edge.
         workspaceObservers.append(ws.addObserver(
             forName: NSWorkspace.didActivateApplicationNotification,
             object: nil, queue: .main) { [weak self] _ in self?.scheduleRetint() })
+        // The mode is live: leaving the follow mode stops every read at once, and
+        // Off takes the strip away without a relaunch.
+        for key in [Settings.Key.menuBarBackdropMode, Settings.Key.menuBarBackdropTranslucency] {
+            settingsTokens.append(settings.observe(key) { [weak self] in
+                self?.syncPolling()
+                self?.refresh(force: true)
+            })
+        }
+        syncPolling()
     }
 
     deinit {
+        poll?.invalidate()
         NSStatusBar.system.removeStatusItem(probe)
         observers.forEach { NotificationCenter.default.removeObserver($0) }
         workspaceObservers.forEach { NSWorkspace.shared.notificationCenter.removeObserver($0) }
+    }
+
+    private var mode: MenuBarBackdropMode { settings.menuBarBackdropMode }
+    private var follows: Bool { mode == .solidFollow }
+    private var alpha: CGFloat {
+        MenuBarBackdropGeometry.tintAlpha(mode: mode, translucency: settings.menuBarBackdropTranslucency)
+    }
+    private func plain() -> [NSColor] {
+        MenuBarBackdropGeometry.tints(darkBar: darkBar, windowTop: nil, alpha: alpha)
     }
 
     private func setDarkBar(_ dark: Bool) {
         guard dark != darkBar else { return }
         darkBar = dark
         NSLog("anode.backdrop darkBar=\(dark)")
-        retint()
+        retint(force: true)
+    }
+
+    // ── Reading ─────────────────────────────────────────────────────────────
+
+    /// Another app's window moving or changing its top edge is announced to
+    /// nobody, so while the setting is on the bar looks once a second. Cheap: the
+    /// window list is a system call that returns bounds and owners, and nothing is
+    /// captured unless another app's window is actually sitting under the bar.
+    private func syncPolling() {
+        poll?.invalidate()
+        poll = nil
+        guard follows else { return }
+        let t = Timer(timeInterval: 1, repeats: true) { [weak self] _ in self?.retint(force: false) }
+        t.tolerance = 0.5
+        RunLoop.main.add(t, forMode: .common)
+        poll = t
     }
 
     /// A drag posts a move per frame; one read after it settles is enough.
     private func scheduleRetint() {
         pendingRetint?.cancel()
-        let work = DispatchWorkItem { [weak self] in self?.retint() }
+        let work = DispatchWorkItem { [weak self] in self?.retint(force: true) }
         pendingRetint = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: work)
     }
 
-    private func retint() {
-        for w in windows {
-            w.view.update(darkBar: darkBar,
-                          tint: MenuBarBackdropGeometry.tint(darkBar: darkBar,
-                                                             windowTop: windowTopColor(under: w)))
+    private enum Under {
+        case nothing
+        case ownWindow(NSWindow, key: String)
+        case otherApp
+    }
+
+    private func retint(force: Bool) {
+        for bar in windows {
+            guard follows else {
+                bar.ownKey = ""
+                bar.view.update(darkBar: darkBar, tints: plain())
+                continue
+            }
+            switch under(bar) {
+            case .nothing:
+                bar.ownKey = ""
+                apply(nil, to: bar)
+            case .ownWindow(let window, let key):
+                // Anode's titlebar is the same until the window moves or the
+                // appearance flips, and drawing it is not free.
+                guard force || key != bar.ownKey else { continue }
+                bar.ownKey = key
+                apply(Self.topEdgeColor(of: window).map { [$0] }, to: bar)
+            case .otherApp:
+                bar.ownKey = ""
+                readOtherApp(under: bar)
+            }
         }
     }
 
-    private func refresh() {
+    private func apply(_ row: [NSColor]?, to bar: BackdropWindow) {
+        bar.view.update(darkBar: darkBar,
+                        tints: MenuBarBackdropGeometry.tints(darkBar: darkBar, windowTop: row, alpha: alpha))
+    }
+
+    /// Ask for Screen Recording the first time another app's window is found
+    /// under the bar, once, and read the edge only if it has been granted. Until
+    /// then the bar stays on the plain glass.
+    private func readOtherApp(under bar: BackdropWindow) {
+        guard ScreenRecordingAccess.isGranted else {
+            if !settings.screenCaptureAsked {
+                settings.screenCaptureAsked = true
+                ScreenRecordingAccess.request()
+            }
+            apply(nil, to: bar)
+            return
+        }
+        guard !bar.capturing else { return }
+        bar.capturing = true
+        let r = MenuBarBackdropGeometry.cornerRadius
+        // Just under the bar, clear of the corner wedges drawn over the ends.
+        let rect = CGRect(x: r, y: bar.barHeight + 3, width: bar.screenWidth - 2 * r, height: 6)
+        let id = bar.displayID
+        Task { [weak self, weak bar] in
+            let row = await WindowEdgeSampler.colors(onDisplay: id, rect: rect, columns: 48)
+            await MainActor.run {
+                guard let self, let bar else { return }
+                bar.capturing = false
+                // The window may have gone while the capture ran; a stale row
+                // would tint the bar to something no longer there.
+                guard self.follows,
+                      case .otherApp = self.under(bar) else { return }
+                self.apply(row, to: bar)
+            }
+        }
+    }
+
+    private func refresh(force: Bool = false) {
+        guard mode != .off else {
+            windows.forEach { $0.orderOut(nil) }
+            windows = []
+            return
+        }
         let primaryHeight = NSScreen.screens.first?.frame.height ?? 0
-        let planned: [(frame: NSRect, strip: NSRect, screen: NSRect)] = NSScreen.screens.compactMap {
+        let planned: [(frame: NSRect, strip: NSRect, screen: NSScreen)] = NSScreen.screens.compactMap {
             guard let strip = MenuBarBackdropGeometry.strip(
                 screenFrame: $0.frame, visibleFrame: $0.visibleFrame,
                 safeAreaTop: $0.safeAreaInsets.top) else { return nil }
-            return (MenuBarBackdropGeometry.windowFrame(forStrip: strip), strip, $0.frame)
+            return (MenuBarBackdropGeometry.windowFrame(forStrip: strip), strip, $0)
         }
         // Same strips as already shown: leave the windows alone rather than
         // reordering them on every wake.
-        guard planned.map(\.frame) != windows.map(\.frame) else { return }
+        guard force || planned.map(\.frame) != windows.map(\.frame) else { return }
         windows.forEach { $0.orderOut(nil) }
         windows = planned.map { makeWindow(frame: $0.frame, strip: $0.strip, screen: $0.screen,
                                            primaryHeight: primaryHeight) }
         windows.forEach { $0.orderFrontRegardless() }
-        retint()
+        retint(force: true)
     }
 
-    private func makeWindow(frame: NSRect, strip: NSRect, screen: NSRect,
+    private func makeWindow(frame: NSRect, strip: NSRect, screen: NSScreen,
                             primaryHeight: CGFloat) -> BackdropWindow {
-        let w = BackdropWindow(frame: frame, strip: strip, screenFrame: screen,
-                               primaryHeight: primaryHeight, darkBar: darkBar,
-                               tint: MenuBarBackdropGeometry.tint(darkBar: darkBar, windowTop: nil))
+        let w = BackdropWindow(frame: frame, strip: strip, screen: screen,
+                               primaryHeight: primaryHeight, darkBar: darkBar, tints: plain())
         w.contentView = w.view
         // Clear, because the glass is the view's own and the rest is nothing.
         w.backgroundColor = .clear
@@ -330,18 +491,14 @@ final class MenuBarBackdrop {
 
     // ── What is under the bar ───────────────────────────────────────────────
 
-    /// The colour of the top edge of the window meeting this bar, when it is one of
-    /// Anode's own. nil for anything else — another app's pixels cannot be read
-    /// without Screen Recording permission, and this phase does not ask for it.
+    /// The window meeting this bar, if any, and whose it is.
     ///
     /// The window server's list (front to back, with bounds and owner, none of
-    /// which is gated) answers "which window is under the middle of the bar". Its
-    /// colour then comes from asking that window to draw itself, which an app is
-    /// always allowed to do to its own windows.
-    private func windowTopColor(under bar: BackdropWindow) -> NSColor? {
+    /// which is gated) answers "which window is under the middle of the bar".
+    private func under(_ bar: BackdropWindow) -> Under {
         let point = CGPoint(x: bar.screenLeft + bar.screenWidth / 2, y: bar.barBottom + 2)
         guard let info = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements],
-                                                    kCGNullWindowID) as? [[String: Any]] else { return nil }
+                                                    kCGNullWindowID) as? [[String: Any]] else { return .nothing }
         for entry in info {
             guard (entry[kCGWindowLayer as String] as? Int) == 0,
                   (entry[kCGWindowAlpha as String] as? Double ?? 1) > 0,
@@ -350,14 +507,14 @@ final class MenuBarBackdrop {
                   bounds.contains(point) else { continue }
             // The first window containing the point is the one in front there.
             guard MenuBarBackdropGeometry.meetsBar(bounds: bounds, barBottom: bar.barBottom,
-                                                   screenWidth: bar.screenWidth),
-                  (entry[kCGWindowOwnerPID as String] as? Int32) == ProcessInfo.processInfo.processIdentifier,
-                  let number = entry[kCGWindowNumber as String] as? Int,
-                  let own = NSApp.windows.first(where: { $0.windowNumber == number })
-            else { return nil }
-            return Self.topEdgeColor(of: own)
+                                                   screenWidth: bar.screenWidth) else { return .nothing }
+            guard (entry[kCGWindowOwnerPID as String] as? Int32) == ProcessInfo.processInfo.processIdentifier
+            else { return .otherApp }
+            guard let number = entry[kCGWindowNumber as String] as? Int,
+                  let own = NSApp.windows.first(where: { $0.windowNumber == number }) else { return .nothing }
+            return .ownWindow(own, key: "\(number) \(bounds) \(darkBar)")
         }
-        return nil
+        return .nothing
     }
 
     /// A few points below the window's top edge, clear of the rim highlight and of
