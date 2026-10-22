@@ -243,6 +243,17 @@ fileprivate final class BackdropView: NSVisualEffectView {
         }
         addSubview(tint)
         tint.setFill(tints, animated: false)
+        // The margin under the notch is filled with the notch's own black, not the
+        // tint: left open it showed the wallpaper as a hairline exactly as wide as the
+        // notch, and tinted it would read as a lip hanging below the notch. Black on
+        // black is neither, and the bar stays flush with the notch's bottom edge.
+        if seam > 0, let n = notch {
+            let cover = NSView(frame: CGRect(x: n.lowerBound, y: MenuBarBackdropGeometry.cornerRadius,
+                                             width: n.upperBound - n.lowerBound, height: seam))
+            cover.wantsLayer = true
+            cover.layer?.backgroundColor = NSColor.black.cgColor
+            addSubview(cover)
+        }
     }
     required init?(coder: NSCoder) { fatalError() }
 
