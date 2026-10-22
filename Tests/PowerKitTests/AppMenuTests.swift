@@ -470,3 +470,13 @@ final class MenuBarBackdropFillTests: XCTestCase {
         XCTAssertEqual(MenuBarBackdropGeometry.fill(darkBar: false), .white)
     }
 }
+
+final class MenuBarBackdropWindowFrameTests: XCTestCase {
+    func testTheWindowReachesOneRadiusBelowTheStripAndKeepsItsTop() {
+        let strip = NSRect(x: 0, y: 958, width: 1512, height: 24)
+        let frame = MenuBarBackdropGeometry.windowFrame(forStrip: strip)
+        XCTAssertEqual(frame.maxY, strip.maxY, "the top edge must not move")
+        XCTAssertEqual(frame.minY, strip.minY - MenuBarBackdropGeometry.cornerRadius)
+        XCTAssertEqual(frame.width, strip.width)
+    }
+}

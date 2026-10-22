@@ -17,6 +17,18 @@ import AppKit
 /// Where the strip goes. Pure so the arithmetic is testable without a display.
 enum MenuBarBackdropGeometry {
 
+    /// macOS 27's window corner radius, in points. MEASURED rather than assumed:
+    /// a titled window and a unified-toolbar window were drawn over a solid
+    /// backdrop and the curve read off a screenshot; 14 fits every sample.
+    static let cornerRadius: CGFloat = 14
+
+    /// The strip's window: the strip itself plus room below it for the corner
+    /// fillets. The extra height is transparent and click-through.
+    static func windowFrame(forStrip strip: NSRect) -> NSRect {
+        NSRect(x: strip.minX, y: strip.minY - cornerRadius,
+               width: strip.width, height: strip.height + cornerRadius)
+    }
+
     /// The strip for a screen, or nil when there is no menu bar to hide.
     ///
     /// The bar's height is the gap between the screen's top and the top of its
@@ -44,6 +56,43 @@ extension MenuBarBackdropGeometry {
     static func fill(darkBar: Bool) -> NSColor { darkBar ? .black : .white }
 }
 
+/// Draws the strip and, under its two ends, the little wedges a window's rounded
+/// top corners would otherwise leave open.
+///
+/// A maximised window's top corners are curved, so just below a straight-edged
+/// strip a sliver of wallpaper shows in each corner. The wedge is the square of
+/// side `r` under the strip's end, minus the quarter-disc the window occupies; it
+/// takes the strip's colour, so the window reads as rounded against the bar the
+/// same way it does against the rest of the screen. A window that is NOT at the
+/// screen's edge gets the same two wedges, which then read as the screen's own
+/// rounded corners.
+private final class BackdropView: NSView {
+    var fill: NSColor = .black { didSet { needsDisplay = true } }
+
+    override func draw(_ dirtyRect: NSRect) {
+        let r = MenuBarBackdropGeometry.cornerRadius
+        let w = bounds.width
+        fill.setFill()
+        NSRect(x: 0, y: r, width: w, height: bounds.height - r).fill()
+
+        let left = NSBezierPath()
+        left.move(to: NSPoint(x: 0, y: r))
+        left.line(to: NSPoint(x: r, y: r))
+        left.appendArc(withCenter: NSPoint(x: r, y: 0), radius: r,
+                       startAngle: 90, endAngle: 180, clockwise: false)
+        left.close()
+        left.fill()
+
+        let right = NSBezierPath()
+        right.move(to: NSPoint(x: w, y: r))
+        right.line(to: NSPoint(x: w - r, y: r))
+        right.appendArc(withCenter: NSPoint(x: w - r, y: 0), radius: r,
+                        startAngle: 90, endAngle: 0, clockwise: true)
+        right.close()
+        right.fill()
+    }
+}
+
 /// Borderless and inert. A window is clamped below the menu bar unless it says
 /// otherwise, and this one has to sit in it.
 private final class BackdropWindow: NSWindow {
@@ -52,6 +101,7 @@ private final class BackdropWindow: NSWindow {
     override func constrainFrameRect(_ frameRect: NSRect, to screen: NSScreen?) -> NSRect {
         frameRect
     }
+    let view = BackdropView()
 }
 
 final class MenuBarBackdrop {
@@ -88,7 +138,7 @@ final class MenuBarBackdrop {
         guard dark != darkBar else { return }
         darkBar = dark
         NSLog("anode.backdrop darkBar=\(dark)")
-        windows.forEach { $0.backgroundColor = MenuBarBackdropGeometry.fill(darkBar: dark) }
+        windows.forEach { $0.view.fill = MenuBarBackdropGeometry.fill(darkBar: dark) }
     }
 
     deinit {
@@ -103,7 +153,7 @@ final class MenuBarBackdrop {
         let strips = NSScreen.screens.compactMap {
             MenuBarBackdropGeometry.strip(screenFrame: $0.frame, visibleFrame: $0.visibleFrame,
                                           safeAreaTop: $0.safeAreaInsets.top)
-        }
+        }.map(MenuBarBackdropGeometry.windowFrame(forStrip:))
         // Same strips as already shown: leave the windows alone rather than
         // reordering them on every wake.
         guard strips != windows.map(\.frame) else { return }
@@ -115,8 +165,11 @@ final class MenuBarBackdrop {
     private func makeWindow(_ frame: NSRect) -> BackdropWindow {
         let w = BackdropWindow(contentRect: frame, styleMask: .borderless,
                                backing: .buffered, defer: false)
-        w.backgroundColor = MenuBarBackdropGeometry.fill(darkBar: darkBar)
-        w.isOpaque = true
+        w.view.fill = MenuBarBackdropGeometry.fill(darkBar: darkBar)
+        w.contentView = w.view
+        // Clear, because the part below the strip is wedges and nothing else.
+        w.backgroundColor = .clear
+        w.isOpaque = false
         w.hasShadow = false
         // Click-through, and never part of the app's window bookkeeping — it must
         // not show in the Window menu or count as an open window.
