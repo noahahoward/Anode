@@ -29,8 +29,12 @@ enum MenuBarBackdropGeometry {
     /// wedge, so it errs the safe way.
     static let cornerRadius: CGFloat = 17
 
-    /// How far the strip reaches over the window's top edge, in points. See `shape`.
-    static let rimCover: CGFloat = 1
+    /// How far the strip reaches over a window's top edge, in points. ZERO: the bar
+    /// ends exactly where the window begins. It was 1 pt, to hide the window's lighter
+    /// top highlight row, and was reported as sitting 1–2 px too far down — a point
+    /// is two physical pixels. The rim code in `shape` stays, for the day a value
+    /// between the two is wanted.
+    static let rimCover: CGFloat = 0
 
     /// The strip, the seam under it, the rim and its two corner wedges as one outline,
     /// in a window of `size` whose origin is bottom-left.
