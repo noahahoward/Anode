@@ -449,6 +449,16 @@ final class MenuBarBackdrop {
                 bar.ownKey = ""
                 apply(nil, to: bar)
             case .ownWindow(let window, let key):
+                // With Screen Recording allowed, read Anode's own titlebar off the
+                // screen like any other window's: that is the colour actually shown.
+                // The off-screen drawing below is only an estimate and runs darker
+                // (measured on a titled window: 0.16 drawn against 0.22 on screen),
+                // which left the bar a visible shade off the titlebar it meets.
+                if ScreenRecordingAccess.isGranted {
+                    bar.ownKey = ""
+                    readOtherApp(under: bar)
+                    continue
+                }
                 // Anode's titlebar is the same until the window moves or the
                 // appearance flips, and drawing it is not free.
                 guard force || key != bar.ownKey else { continue }
@@ -467,9 +477,10 @@ final class MenuBarBackdrop {
                         showsBlur: showsBlur)
     }
 
-    /// Ask for Screen Recording the first time another app's window is found
-    /// under the bar, once, and read the edge only if it has been granted. Until
-    /// then the bar stays on the plain glass.
+    /// Read the edge of the window under the bar off the screen. Used for another
+    /// app's window, and for Anode's own once Screen Recording is allowed. Asks for
+    /// the permission the first time another app's window is found under the bar,
+    /// once; until it is granted the bar stays plain.
     private func readOtherApp(under bar: BackdropWindow) {
         guard ScreenRecordingAccess.isGranted else {
             if !settings.screenCaptureAsked {
@@ -492,8 +503,8 @@ final class MenuBarBackdrop {
                 bar.capturing = false
                 // The window may have gone while the capture ran; a stale row
                 // would tint the bar to something no longer there.
-                guard self.follows,
-                      case .otherApp = self.under(bar) else { return }
+                guard self.follows else { return }
+                if case .nothing = self.under(bar) { return }
                 self.apply(row, to: bar)
             }
         }
