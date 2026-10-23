@@ -244,28 +244,30 @@ private final class TintView: NSView {
 /// strip a sliver of wallpaper shows in each corner; the shape's two wedges fill
 /// it (see `MenuBarBackdropGeometry.shape`). A window NOT at the screen's edge
 /// gets the same wedges, which then read as the screen's own rounded corners.
-fileprivate final class BackdropView: NSVisualEffectView {
+fileprivate final class BackdropView: NSView {
+    private let blur = NSVisualEffectView()
     private let tint: TintView
 
-    init(size: CGSize, seam: CGFloat, notch: ClosedRange<CGFloat>?, darkBar: Bool, tints: [NSColor]) {
-        tint = TintView(frame: CGRect(origin: .zero, size: size), seam: seam, notch: notch)
-        super.init(frame: CGRect(origin: .zero, size: size))
-        material = .hudWindow
-        blendingMode = .behindWindow
-        state = .active
-        appearance = NSAppearance(named: darkBar ? .darkAqua : .aqua)
-        // The blur's mask has NO notch gap: it clips the view's subviews too, and
-        // with the gap in it the black cover below was cut off one pixel row short,
-        // leaving a hairline of wallpaper under the notch (measured: 0.49 0.35 0.24
-        // at 38.0 pt). The tint keeps the gap; the cover fills it.
+    init(size: CGSize, seam: CGFloat, notch: ClosedRange<CGFloat>?, darkBar: Bool,
+         tints: [NSColor], showsBlur: Bool) {
+        let frame = CGRect(origin: .zero, size: size)
+        tint = TintView(frame: frame, seam: seam, notch: notch)
+        super.init(frame: frame)
+        blur.frame = frame
+        blur.material = .hudWindow
+        blur.blendingMode = .behindWindow
+        blur.state = .active
+        blur.appearance = NSAppearance(named: darkBar ? .darkAqua : .aqua)
         let outline = MenuBarBackdropGeometry.shape(in: size, seam: seam, notch: nil)
-        maskImage = NSImage(size: size, flipped: false) { _ in
+        blur.maskImage = NSImage(size: size, flipped: false) { _ in
             guard let ctx = NSGraphicsContext.current?.cgContext else { return false }
             ctx.addPath(outline)
             ctx.setFillColor(NSColor.black.cgColor)
             ctx.fillPath()
             return true
         }
+        blur.isHidden = !showsBlur
+        addSubview(blur)
         addSubview(tint)
         tint.setFill(tints, animated: false)
         // The margin under the notch is filled with the notch's own black, not the
@@ -282,8 +284,14 @@ fileprivate final class BackdropView: NSVisualEffectView {
     }
     required init?(coder: NSCoder) { fatalError() }
 
-    func update(darkBar: Bool, tints: [NSColor]) {
-        appearance = NSAppearance(named: darkBar ? .darkAqua : .aqua)
+    /// `showsBlur` is false for the opaque modes. The blur is a SECOND layer cut to
+    /// the same shape as the tint over it, and their anti-aliased edges never agree
+    /// exactly, so under an opaque tint the darker blur peeked out as a dotted
+    /// one-pixel line along the corner curves (seen on a grey bar; invisible on
+    /// black). Where nothing shows through, it has no business being there.
+    func update(darkBar: Bool, tints: [NSColor], showsBlur: Bool) {
+        blur.appearance = NSAppearance(named: darkBar ? .darkAqua : .aqua)
+        blur.isHidden = !showsBlur
         tint.setFill(tints, animated: true)
     }
 }
@@ -313,7 +321,8 @@ fileprivate final class BackdropWindow: NSWindow {
     var ownKey = ""
 
     fileprivate init(frame: NSRect, strip: NSRect, seam: CGFloat, notch: ClosedRange<CGFloat>?,
-                     screen: NSScreen, primaryHeight: CGFloat, darkBar: Bool, tints: [NSColor]) {
+                     screen: NSScreen, primaryHeight: CGFloat, darkBar: Bool, tints: [NSColor],
+                     showsBlur: Bool) {
         screenLeft = screen.frame.minX
         screenTop = primaryHeight - screen.frame.maxY
         barBottom = primaryHeight - strip.minY
@@ -321,7 +330,8 @@ fileprivate final class BackdropWindow: NSWindow {
         screenWidth = screen.frame.width
         displayID = (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")]
                      as? NSNumber)?.uint32Value ?? CGMainDisplayID()
-        view = BackdropView(size: frame.size, seam: seam, notch: notch, darkBar: darkBar, tints: tints)
+        view = BackdropView(size: frame.size, seam: seam, notch: notch, darkBar: darkBar,
+                            tints: tints, showsBlur: showsBlur)
         super.init(contentRect: frame, styleMask: .borderless, backing: .buffered, defer: false)
     }
 }
@@ -405,6 +415,8 @@ final class MenuBarBackdrop {
     private var alpha: CGFloat {
         MenuBarBackdropGeometry.tintAlpha(mode: mode, translucency: settings.menuBarBackdropTranslucency)
     }
+    /// Only the blur mode lets anything through the tint.
+    private var showsBlur: Bool { mode == .blur }
     private func plain() -> [NSColor] {
         MenuBarBackdropGeometry.tints(darkBar: darkBar, windowTop: nil, alpha: alpha)
     }
@@ -450,7 +462,7 @@ final class MenuBarBackdrop {
         for bar in windows {
             guard follows else {
                 bar.ownKey = ""
-                bar.view.update(darkBar: darkBar, tints: plain())
+                bar.view.update(darkBar: darkBar, tints: plain(), showsBlur: showsBlur)
                 continue
             }
             switch under(bar) {
@@ -472,7 +484,8 @@ final class MenuBarBackdrop {
 
     private func apply(_ row: [NSColor]?, to bar: BackdropWindow) {
         bar.view.update(darkBar: darkBar,
-                        tints: MenuBarBackdropGeometry.tints(darkBar: darkBar, windowTop: row, alpha: alpha))
+                        tints: MenuBarBackdropGeometry.tints(darkBar: darkBar, windowTop: row, alpha: alpha),
+                        showsBlur: showsBlur)
     }
 
     /// Ask for Screen Recording the first time another app's window is found
@@ -544,7 +557,7 @@ final class MenuBarBackdrop {
         let frame = plan.frame
         let w = BackdropWindow(frame: frame, strip: plan.strip, seam: plan.seam, notch: plan.notch,
                                screen: plan.screen, primaryHeight: primaryHeight,
-                               darkBar: darkBar, tints: plain())
+                               darkBar: darkBar, tints: plain(), showsBlur: showsBlur)
         w.contentView = w.view
         // Clear, because the glass is the view's own and the rest is nothing.
         w.backgroundColor = .clear
