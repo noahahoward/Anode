@@ -18,15 +18,16 @@ import PowerKit
 /// Where the strip goes. Pure so the arithmetic is testable without a display.
 enum MenuBarBackdropGeometry {
 
-    /// The wedge radius, in points: macOS 27's window corner radius, rounded UP.
+    /// The wedge radius, in points: a little ABOVE macOS 27's window corner radius.
     ///
-    /// Two fits of the real curve disagreed — 14 against a flat backdrop, about 13
-    /// from this screen's own pixels — and a wedge that is too small leaves a dotted
-    /// fringe of wallpaper along the curve, while one that is a little too big only
-    /// hides a fraction of a point of the window's corner. A BIGGER radius is a
-    /// bigger wedge, so it errs the safe way; 14 left the fringe and 13 (tried, as
-    /// "overlap") made it worse.
-    static let cornerRadius: CGFloat = 15
+    /// Fits of the real curve kept coming out low, because a window's own dark
+    /// outline sits just outside its edge and reads as part of the wallpaper. A
+    /// wedge that is too small leaves that outline showing as a thin dark arc beside
+    /// the curve (measured on a grey bar: 14 left a purple fringe, 15 left the arc
+    /// exactly along the wedge's own edge), while one a little too big only hides a
+    /// fraction of a point of the window's corner. A BIGGER radius is a bigger
+    /// wedge, so it errs the safe way.
+    static let cornerRadius: CGFloat = 17
 
     /// The strip, the seam under it and its two corner wedges as one outline, in a
     /// window of `size` whose origin is bottom-left.
