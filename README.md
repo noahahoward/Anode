@@ -46,6 +46,21 @@ mostly comments.
 
 </details>
 
+<details>
+<summary><b>Keeping macOS permissions across rebuilds (optional)</b></summary>
+
+Because the signature is ad-hoc it is only a hash of the code, so every rebuild
+looks like a new program and macOS forgets what it was allowed to do. Features
+that need a permission (the menu bar backdrop reading other windows needs Screen
+Recording) then fall back until you approve them again. Running
+`./make-signing-identity.sh` once makes a certificate for this Mac, kept in its own
+keychain (your login keychain is untouched), and `build-app.sh` signs with it from
+then on, so an approval survives rebuilds. It is optional: without it, builds are
+ad-hoc exactly as before, and release bundles are always ad-hoc.
+`./make-signing-identity.sh --remove` undoes it.
+
+</details>
+
 ---
 
 Its reason for existing is the battery tab, which reports per-app cost in **real,

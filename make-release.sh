@@ -17,7 +17,7 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-./build-app.sh release
+ANODE_ADHOC=1 ./build-app.sh release
 
 SRC="$HOME/Applications/Anode.app"
 [ -d "$SRC" ] || { echo "! build-app.sh did not produce $SRC"; exit 1; }

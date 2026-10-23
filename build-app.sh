@@ -139,7 +139,39 @@ PLIST
 # every connection with an identity mismatch nobody can explain.
 codesign --force --sign - "$APP/Contents/MacOS/$HELPER" 2>/dev/null \
   || echo "  (ad-hoc signing of the fan helper skipped)"
-codesign --force --sign - "$APP" 2>/dev/null || echo "  (ad-hoc signing skipped)"
+
+# The APP is signed with the local identity when one exists, and ad-hoc when not.
+#
+# An ad-hoc signature is a hash of the code, so every rebuild looks like a
+# different program to macOS and its privacy permissions (Screen Recording, for
+# the menu bar backdrop) are silently forgotten — measured: cdhash cc285c4f was
+# allowed, the next build's ec28de2c was not. The identity made by
+# ./make-signing-identity.sh gives the app a designated requirement that names a
+# certificate instead — `identifier "dev.anode.app" and certificate leaf = H"…"` —
+# which does not change between builds.
+#
+# Only the app, not the helper: the helper's trust is a pin on the APP's cdhash
+# (see FanLink), unaffected by which kind of signature produces it, and leaving it
+# alone leaves fan control exactly as it was.
+#
+# Absent keychain, or ANODE_ADHOC=1 (make-release.sh sets it, because a release
+# bundle is described as ad-hoc and must be), means the old behaviour exactly.
+SIGN_KEYCHAIN="$HOME/Library/Keychains/anode-signing.keychain-db"
+SIGN_NAME="Anode Local Signing"
+SIGNED_LOCAL=0
+if [ "${ANODE_ADHOC:-0}" != "1" ] && [ -f "$SIGN_KEYCHAIN" ] \
+   && security unlock-keychain -p "anode-local-signing" "$SIGN_KEYCHAIN" 2>/dev/null \
+   && security find-identity -p codesigning "$SIGN_KEYCHAIN" 2>/dev/null | grep -q "$SIGN_NAME"; then
+  if codesign --force --keychain "$SIGN_KEYCHAIN" --sign "$SIGN_NAME" "$APP" 2>/dev/null; then
+    SIGNED_LOCAL=1
+    echo "  (signed with the local identity; permissions survive rebuilds)"
+  else
+    echo "  (local signing failed; falling back to ad-hoc)"
+  fi
+fi
+if [ "$SIGNED_LOCAL" != "1" ]; then
+  codesign --force --sign - "$APP" 2>/dev/null || echo "  (ad-hoc signing skipped)"
+fi
 
 # Nudge Finder/Dock to drop any cached icon for this bundle id.
 touch "$APP"
