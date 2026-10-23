@@ -21,16 +21,29 @@
 #   - build-app.sh uses the identity when that keychain exists and signs ad-hoc
 #     when it does not, so a machine that never ran this still builds exactly as
 #     before. Release builds always sign ad-hoc.
-#   - The certificate is not trusted by anything and proves nothing to anyone
-#     else. It exists only so one Mac can recognise its own successive builds.
-#   - The keychain password below is not a secret. The key signs local builds and
-#     has no other use; the password only lets the build unlock it unattended.
+#   - The certificate is trusted by nothing and proves nothing to anyone else.
+#
+# THE TRADE-OFF, STATED PLAINLY. An ad-hoc approval is pinned to one exact build,
+# so nothing else can borrow it. This identity is not: any program that can unlock
+# this keychain can sign ITSELF as `dev.anode.app`, and macOS will then treat it
+# as Anode and give it whatever Anode has been allowed — Screen Recording today.
+#
+# The keychain's password is the fixed string below, which is public (it is in this
+# repository), so the only thing between such a program and the key is that it must
+# be running as you, since the keychain file is in your home directory. That keeps
+# out other users and sandboxed apps; it does NOT keep out code already running as
+# you, and that code is exactly who this would help. build-app.sh has to unlock the
+# keychain unattended, so any scheme that lets it also lets them.
+#
+# If that matters more to you than re-approving a permission after each rebuild,
+# run `./make-signing-identity.sh --remove` and nothing else changes.
 #
 # To undo:  ./make-signing-identity.sh --remove
 set -euo pipefail
 
 NAME="Anode Local Signing"
 KC="$HOME/Library/Keychains/anode-signing.keychain-db"
+# Public, and not a secret — see the trade-off above.
 PASS="anode-local-signing"
 # The system's LibreSSL, by absolute path: a Homebrew OpenSSL 3+ earlier in PATH
 # writes a PKCS#12 format `security import` cannot read.

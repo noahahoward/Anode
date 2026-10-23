@@ -59,6 +59,13 @@ then on, so an approval survives rebuilds. It is optional: without it, builds ar
 ad-hoc exactly as before, and release bundles are always ad-hoc.
 `./make-signing-identity.sh --remove` undoes it.
 
+The trade-off: an ad-hoc approval is pinned to one exact build, so nothing else can
+borrow it, whereas this identity can be used by any program running as you to pass
+itself off as Anode and inherit what Anode was allowed (Screen Recording, for
+instance). Its keychain password is public, so only other users and sandboxed apps
+are kept out, not code already running as you. Skip it if that matters more to you
+than re-approving after each rebuild.
+
 </details>
 
 ---

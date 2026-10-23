@@ -150,6 +150,10 @@ codesign --force --sign - "$APP/Contents/MacOS/$HELPER" 2>/dev/null \
 # certificate instead — `identifier "dev.anode.app" and certificate leaf = H"…"` —
 # which does not change between builds.
 #
+# This trades some safety for convenience, stated in make-signing-identity.sh: the
+# identity can be used by any program running as this user to pass itself off as
+# Anode. Anode's own permissions stay narrow because of what it is allowed to do.
+#
 # Only the app, not the helper: the helper's trust is a pin on the APP's cdhash
 # (see FanLink), unaffected by which kind of signature produces it, and leaving it
 # alone leaves fan control exactly as it was.
