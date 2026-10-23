@@ -41,7 +41,7 @@ enum MenuBarBackdropGeometry {
     ///
     /// Built by hand because `NSBezierPath.cgPath` needs macOS 14 and the package
     /// targets 13.
-    static func shape(in size: CGSize, seam: CGFloat = 0,
+    static func shape(in size: CGSize, seam: CGFloat = 0, rim: CGFloat = 0,
                       notch: ClosedRange<CGFloat>? = nil) -> CGPath {
         let r = cornerRadius, w = size.width
         let path = CGMutablePath()
@@ -53,6 +53,19 @@ enum MenuBarBackdropGeometry {
                 path.addRect(CGRect(x: n.upperBound, y: r, width: w - n.upperBound, height: seam))
             } else {
                 path.addRect(CGRect(x: 0, y: r, width: w, height: seam))
+            }
+        }
+        // The RIM: the top `rim` points of the window itself, under the window-top
+        // line. A window's top edge carries a lighter one-pixel highlight (0.35
+        // against a black bar), and with the bar ending exactly above it that line
+        // reads as a gap between the two. Covering it lets the bar meet the titlebar
+        // directly, which is the point of fading the bar into the window.
+        if rim > 0 {
+            if let n = notch {
+                path.addRect(CGRect(x: 0, y: r - rim, width: n.lowerBound, height: rim))
+                path.addRect(CGRect(x: n.upperBound, y: r - rim, width: w - n.upperBound, height: rim))
+            } else {
+                path.addRect(CGRect(x: 0, y: r - rim, width: w, height: rim))
             }
         }
         // Left wedge: the square under the window-top line's left end minus the
@@ -150,6 +163,9 @@ enum MenuBarBackdropGeometry {
     /// (TheBoringNotch, a layer-27 window), which is not the notch.
     static let notchInset: CGFloat = 12
 
+    /// How far the strip reaches over the window's top edge, in points. See `shape`.
+    static let rimCover: CGFloat = 1
+
     /// The span of the notch's flat bottom edge, in a window starting at the
     /// screen's left edge, from the screen's two auxiliary top areas, or nil
     /// without a notch.
@@ -202,7 +218,8 @@ private final class TintView: NSView {
         gradient.startPoint = CGPoint(x: 0, y: 0.5)
         gradient.endPoint = CGPoint(x: 1, y: 0.5)
         let mask = CAShapeLayer()
-        mask.path = MenuBarBackdropGeometry.shape(in: frame.size, seam: seam, notch: notch)
+        mask.path = MenuBarBackdropGeometry.shape(in: frame.size, seam: seam,
+                                                  rim: MenuBarBackdropGeometry.rimCover, notch: notch)
         gradient.mask = mask
     }
     required init?(coder: NSCoder) { fatalError() }
@@ -259,7 +276,8 @@ fileprivate final class BackdropView: NSView {
         blur.blendingMode = .behindWindow
         blur.state = .active
         blur.appearance = NSAppearance(named: darkBar ? .darkAqua : .aqua)
-        let outline = MenuBarBackdropGeometry.shape(in: size, seam: seam, notch: nil)
+        let outline = MenuBarBackdropGeometry.shape(in: size, seam: seam,
+                                                    rim: MenuBarBackdropGeometry.rimCover, notch: nil)
         blur.maskImage = NSImage(size: size, flipped: false) { _ in
             guard let ctx = NSGraphicsContext.current?.cgContext else { return false }
             ctx.addPath(outline)
@@ -276,8 +294,9 @@ fileprivate final class BackdropView: NSView {
         // notch, and tinted it would read as a lip hanging below the notch. Black on
         // black is neither, and the bar stays flush with the notch's bottom edge.
         if seam > 0, let n = notch {
-            let cover = NSView(frame: CGRect(x: n.lowerBound, y: MenuBarBackdropGeometry.cornerRadius,
-                                             width: n.upperBound - n.lowerBound, height: seam))
+            let rim = MenuBarBackdropGeometry.rimCover
+            let cover = NSView(frame: CGRect(x: n.lowerBound, y: MenuBarBackdropGeometry.cornerRadius - rim,
+                                             width: n.upperBound - n.lowerBound, height: seam + rim))
             cover.wantsLayer = true
             cover.layer?.backgroundColor = NSColor.black.cgColor
             addSubview(cover)

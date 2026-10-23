@@ -675,3 +675,17 @@ final class MenuBarBackdropSeamTests: XCTestCase {
         XCTAssertTrue(path.contains(CGPoint(x: 900, y: r + 1.5)), "the bar itself, under the notch")
     }
 }
+
+final class MenuBarBackdropRimTests: XCTestCase {
+    /// The bar reaches one point over the window's own top edge, so the window's
+    /// lighter top highlight is covered and the bar meets the titlebar directly.
+    func testTheRimIsCoveredAndNothingBelowIt() {
+        let r = MenuBarBackdropGeometry.cornerRadius
+        let size = CGSize(width: 1800, height: 38 + 1 + r)
+        let path = MenuBarBackdropGeometry.shape(in: size, seam: 1, rim: 1, notch: 802...998)
+        XCTAssertTrue(path.contains(CGPoint(x: 400, y: r - 0.5)), "the window's top highlight row")
+        XCTAssertFalse(path.contains(CGPoint(x: 400, y: r - 1.5)), "the window itself, below the rim")
+        XCTAssertFalse(path.contains(CGPoint(x: 900, y: r - 0.5)),
+                       "the tint leaves the notch span to the black cover")
+    }
+}
