@@ -553,13 +553,13 @@ final class GlanceCardView: NSView {
                     + (shared.prior?.label ?? provenance(shared.source, settled: settled)),
                 rows: [
                     // The rate the headline is divided by, so the two multiply out.
-                    // The trailing time is what the last half hour's drain would
-                    // give if it simply continued, and appears only when it
-                    // disagrees with the headline by enough to matter — the
-                    // headline is steady by design and a sustained heavy or quiet
-                    // load is where that costs it. See `DisplayedRate.pacePctHr`.
+                    // The trailing time is what the drain of the last few minutes,
+                    // raw, would give if it simply continued, and appears only when
+                    // it disagrees with the headline by enough to matter. The
+                    // headline leans on the last half hour; this is the live read.
+                    // See `DisplayedRate.recentRemaining_hr`.
                     ("Drain", String(format: "%.1f %%/hr", shared.pctHr),
-                     shared.notablePaceRemaining_hr(headline_hr: hrs, now: awake)
+                     shared.notableRecentRemaining_hr(headline_hr: hrs, now: awake)
                         .map { hm($0) + " at recent" }),
                     ("Draw", String(format: "%.1f W", s.smoothed_W), nil),
                     ("Remaining", String(format: "%.1f Wh", remaining_Wh),

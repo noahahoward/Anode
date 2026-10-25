@@ -1056,6 +1056,41 @@ public struct DisplayedRate {
             .map { $0 / 3600 }
     }
 
+    /// How much of the headline rate is the last half hour's measured drain, the
+    /// rest being the all-time average. Backtested on this machine's history
+    /// against the drain of the NEXT hour: the all-time mean alone ran ~90% high,
+    /// 0.85 ran ~20% high, and the trailing rate alone ~50% off in either
+    /// direction — one percent of charge is too coarse a ruler for a short window
+    /// and a load change the average cannot see is what the weight is for.
+    public static let trailingWeight = 0.85
+
+    /// The rate the headline divides: `trailing` weighted by `trailingWeight`
+    /// against `allTime`, or `allTime` alone while there is no trend to quote.
+    public static func blended(allTime: Double, trailing: Double?) -> Double {
+        guard let t = trailing, t.isFinite, t > 0 else { return allTime }
+        return trailingWeight * t + (1 - trailingWeight) * allTime
+    }
+
+    /// Hours left if the drain of the last few minutes — `recentPctHr`, raw and
+    /// unaveraged — simply continues. What "at recent" on the card means: the
+    /// headline is the steady answer and this is the live one.
+    public func recentRemaining_hr(now awake: TimeInterval = PowerMonitor.awakeSeconds())
+        -> Double? {
+        guard let charge = chargePercent, let rate = recentPctHr, rate > 0 else { return nil }
+        return DrainEstimate.projected(chargePercent: charge, ratePctHr: rate,
+                                       elapsedAwake: awake - anchorAwake)
+            .map { $0 / 3600 }
+    }
+
+    /// The live time, only when it differs from `headline_hr` enough to say
+    /// something. For the card.
+    public func notableRecentRemaining_hr(headline_hr: Double?,
+                                          now awake: TimeInterval = PowerMonitor.awakeSeconds())
+        -> Double? {
+        guard let h = headline_hr, h > 0, let r = recentRemaining_hr(now: awake) else { return nil }
+        return abs(r - h) / h >= Self.paceMinDisagreement ? r : nil
+    }
+
     /// How far the pace time must sit from the headline before it is worth a
     /// second figure on the card. Within this, two times side by side read as a
     /// disagreement when they are the same answer to the model's own accuracy

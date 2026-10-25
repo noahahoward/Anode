@@ -48,4 +48,36 @@ final class PaceForecastTests: XCTestCase {
         XCTAssertNil(same.notablePaceRemaining_hr(headline_hr: h2, now: 1000))
         XCTAssertNil(same.notablePaceRemaining_hr(headline_hr: nil, now: 1000))
     }
+
+    // ── the headline leans on the last half hour ─────────────────────────────
+
+    func testBlendIsAllTimeAloneWithoutATrend() {
+        XCTAssertEqual(DisplayedRate.blended(allTime: 14.8, trailing: nil), 14.8)
+        XCTAssertEqual(DisplayedRate.blended(allTime: 14.8, trailing: .nan), 14.8)
+        XCTAssertEqual(DisplayedRate.blended(allTime: 14.8, trailing: 0), 14.8)
+    }
+
+    /// The afternoon this was written for: ~6.5 %/hr measured against a 14.8 %/hr
+    /// all-time mean must read near the measured rate, not near the mean.
+    func testBlendFollowsTheMeasuredRateOnALightLoad() {
+        let b = DisplayedRate.blended(allTime: 14.8, trailing: 6.5)
+        XCTAssertEqual(b, 0.85 * 6.5 + 0.15 * 14.8, accuracy: 1e-12)
+        XCTAssertLessThan(b, 8)
+    }
+
+    /// "At recent" is the raw last-few-minutes rate, not the half-hour trend.
+    func testRecentTimeUsesTheRawRateNotThePace() throws {
+        let r = DisplayedRate(pctHr: 10, chargePercent: 60, anchorAwake: 1000,
+                              source: .allTime, windowSpan: 3600,
+                              recentPctHr: 20, pacePctHr: 5)
+        let expected = try XCTUnwrap(DrainEstimate.timeToEmpty(chargePercent: 60,
+                                                               ratePctHr: 20))
+        XCTAssertEqual(try XCTUnwrap(r.recentRemaining_hr(now: 1000)) * 3600, expected,
+                       accuracy: 1e-6)
+        let headline = try XCTUnwrap(r.timeRemaining_hr(now: 1000))
+        XCTAssertNotNil(r.notableRecentRemaining_hr(headline_hr: headline, now: 1000))
+        XCTAssertNil(DisplayedRate(pctHr: 10, chargePercent: 60, anchorAwake: 1000,
+                                   source: .allTime, windowSpan: 3600)
+                        .recentRemaining_hr(now: 1000))
+    }
 }

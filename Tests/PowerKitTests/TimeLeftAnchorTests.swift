@@ -251,4 +251,20 @@ extension TimeLeftAnchorTests {
         XCTAssertEqual(DisplayedRate.Prior.label(band: .heavy, tau_s: .infinity, appName: nil),
                        "heavy load")
     }
+
+    /// On a machine with history the headline rate must follow the measured
+    /// trend, not sit on the all-time mean — 6.5 %/hr measured against a mean of
+    /// roughly 10 W-equivalent must not read as the mean.
+    func testAllTimeHeadlineLeansOnTheMeasuredTrend() {
+        let snap = snapshot(draining(mAh: 3667))
+        let allTimeOnly = AppDelegate.reconciledRate(snap, nil, previous: nil, awake: 1000,
+                                                     allTime_W: 10)
+        let withTrend = AppDelegate.reconciledRate(snap, estimate(59.2, rate: 6.5),
+                                                   previous: nil, awake: 1000, allTime_W: 10)
+        XCTAssertEqual(allTimeOnly.source, .allTime)
+        XCTAssertEqual(withTrend.pctHr,
+                       DisplayedRate.blended(allTime: allTimeOnly.pctHr, trailing: 6.5),
+                       accuracy: 1e-9)
+        XCTAssertLessThan(withTrend.pctHr, allTimeOnly.pctHr)
+    }
 }

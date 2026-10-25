@@ -47,8 +47,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
     var anodeStats: AnodeStatsWindowController?
     /// The black strip behind the menu bar. Lives as long as the app does.
     var menuBarBackdrop: MenuBarBackdrop?
-    /// Its controls, under Settings → Beta Features. Built once, with the menu.
-    lazy var backdropMenu = BackdropMenu()
+    /// The Beta Features window (Settings → Beta Features…), created on first use.
+    lazy var betaFeaturesWindow = BetaFeaturesWindowController()
     /// Time left = charge ÷ the mean drain since the lid was last opened.
     let drain = DrainRateEstimator(trend: .sinceLidOpened())
     /// Throttles the trend's crash-insurance write. See the call site.
@@ -1588,13 +1588,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         // discharge trend never reaches `r` on a machine with history. Gated by
         // the same `canQuoteTime` the headline answers to: a half-hour mean of
         // the first seconds after an unplug is not a trend.
-        let pace: Double? = {
-            guard s.direction == .draining, let e = est, e.source == .discharge,
-                  DrainEstimate.canQuoteTime(source: e.source, windowSpan: e.windowSpan),
-                  e.percentPerHour >= 0.1, e.percentPerHour.isFinite,
-                  r.chargePercent != nil else { return nil }
-            return e.percentPerHour
-        }()
+        let pace: Double? = r.chargePercent == nil ? nil : trailingPace(s, est)
         let recent: Double? = {
             guard s.direction == .draining, let w = recent_W, w > 0,
                   let mV = s.state?.voltage_mV, mV > 0 else { return nil }
@@ -1606,6 +1600,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
                              anchorAwake: r.anchorAwake, source: r.source,
                              windowSpan: r.windowSpan, prior: r.prior,
                              recentPctHr: recent, pacePctHr: pace)
+    }
+
+    /// The last half hour's measured drain, when it is fit to quote: the
+    /// estimator's own discharge trend, gated by the same `canQuoteTime` the
+    /// headline answers to — a half-hour mean of the first seconds after an
+    /// unplug is not a trend. nil otherwise.
+    ///
+    /// The estimator's, because `rateForTimeLeft` returns at the all-time branch
+    /// before it consults the estimator, so the trend never reaches `r` on a
+    /// machine with history.
+    static func trailingPace(_ s: PowerMonitor.Snapshot, _ est: DrainEstimate?) -> Double? {
+        guard s.direction == .draining, let e = est, e.source == .discharge,
+              DrainEstimate.canQuoteTime(source: e.source, windowSpan: e.windowSpan),
+              e.percentPerHour >= 0.1, e.percentPerHour.isFinite else { return nil }
+        return e.percentPerHour
     }
 
     private static func rateForTimeLeft(_ s: PowerMonitor.Snapshot, _ est: DrainEstimate?,
@@ -1655,7 +1664,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
             if let p = previous, p.source == .allTime, p.chargePercent == charge {
                 pctHr = p.pctHr
             } else {
-                pctHr = s.scale.pctHrAtVoltage(watts: w, voltage_mV: Double(st.voltage_mV))
+                let allTime = s.scale.pctHrAtVoltage(watts: w, voltage_mV: Double(st.voltage_mV))
+                // The all-time mean alone read ~15 %/hr through a light afternoon
+                // that really drained ~6: it assumes the present load is about to
+                // become the average one. Weight the last half hour's measured
+                // drain heavily and let the average only pull it back from the
+                // extremes. See `DisplayedRate.trailingWeight`.
+                pctHr = DisplayedRate.blended(allTime: allTime, trailing: trailingPace(s, est))
             }
             let r = anchored(pctHr: pctHr, charge: charge,
                              source: .allTime, span: est?.windowSpan ?? 0)

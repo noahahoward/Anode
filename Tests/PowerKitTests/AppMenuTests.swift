@@ -411,88 +411,139 @@ final class FanControlPanelTests: XCTestCase {
 
 // An empty top-level menu is a title that opens onto nothing, so the Beta
 // Features menu must always have something to show.
-final class BetaMenuTests: XCTestCase {
+/// A stand-in for a beta feature, so the window can be tested without a real one.
+private final class FakeFeature: BetaFeature {
+    let title: String
+    let summary = "A summary."
+    var layoutChanged: (() -> Void)?
+    var refreshed = 0
+    init(_ title: String) { self.title = title }
+    func makeView() -> NSView { NSTextField(labelWithString: "controls of \(title)") }
+    func refresh() { refreshed += 1 }
+}
 
-    func testAnEmptyMenuShowsOneDisabledPlaceholder() {
-        _ = appKitForTests
-        let menu = NSMenu(title: "Beta Features")
-        BetaMenu.fill(menu, with: [])
-        XCTAssertEqual(menu.items.map(\.title), [BetaMenu.placeholderTitle])
-        menu.update()
-        XCTAssertFalse(menu.items[0].isEnabled, "the placeholder must not look clickable")
+final class BetaFeaturesWindowTests: XCTestCase {
+
+    private func labels(in window: NSWindow) -> [String] {
+        func walk(_ v: NSView) -> [String] {
+            ((v as? NSTextField).map { [$0.stringValue] } ?? []) + v.subviews.flatMap(walk)
+        }
+        return walk(window.contentView!)
     }
 
-    func testFeaturesReplaceThePlaceholderAndKeepTheirOrder() {
+    func testItIsAWindowOfItsOwnCalledBetaFeatures() {
         _ = appKitForTests
-        let menu = NSMenu(title: "Beta Features")
-        BetaMenu.fill(menu, with: [NSMenuItem(title: "One", action: nil, keyEquivalent: ""),
-                                   NSMenuItem(title: "Two", action: nil, keyEquivalent: "")])
-        XCTAssertEqual(menu.items.map(\.title), ["One", "Two"])
+        let c = BetaFeaturesWindowController(features: [FakeFeature("One")])
+        XCTAssertEqual(c.window?.title, "Beta Features")
+        XCTAssertFalse(c.window!.isReleasedWhenClosed, "closing it must not free the controller's window")
+    }
+
+    func testWithNoFeaturesItSaysSo() {
+        _ = appKitForTests
+        let c = BetaFeaturesWindowController(features: [])
+        XCTAssertTrue(labels(in: c.window!).contains(BetaFeaturesWindowController.emptyText))
+    }
+
+    func testEachFeatureGetsASectionInOrder() {
+        _ = appKitForTests
+        let c = BetaFeaturesWindowController(features: [FakeFeature("Alpha"), FakeFeature("Beta")])
+        let all = labels(in: c.window!)
+        let a = all.firstIndex(of: "controls of Alpha"), b = all.firstIndex(of: "controls of Beta")
+        XCTAssertNotNil(a); XCTAssertNotNil(b)
+        XCTAssertLessThan(a!, b!)
+        XCTAssertTrue(all.contains("Alpha") && all.contains("Beta"), "each section carries its title")
+    }
+
+    func testShowingItRefreshesEveryFeature() {
+        _ = appKitForTests
+        let f = FakeFeature("One")
+        let c = BetaFeaturesWindowController(features: [f])
+        let before = f.refreshed
+        c.show()
+        XCTAssertGreaterThan(f.refreshed, before, "a setting or permission may have changed behind it")
+        c.window?.orderOut(nil)
+    }
+
+    func testTheSettingsMenuOpensItInsteadOfDroppingDown() {
+        // The bar menu must hold a plain item, not a submenu.
+        _ = appKitForTests
+        let delegate = AppDelegate()
+        NSApp.mainMenu = nil
+        delegate.buildMenu()
+        let settings = NSApp.mainMenu?.items.first { $0.submenu?.title == "Settings" }?.submenu
+        let item = settings?.items.first { $0.title == "Beta Features…" }
+        XCTAssertNotNil(item, "Settings → Beta Features…")
+        XCTAssertNil(item?.submenu, "it opens a window, it does not drop down")
+        XCTAssertNotNil(item?.action)
     }
 }
 
-// The backdrop's controls: what the menu says must come from the stored settings
-// and the permission, because both change behind the menu's back.
-final class BackdropMenuTests: XCTestCase {
-    private func make(allowed: Bool = true) -> (BackdropMenu, Settings) {
+// The backdrop's section: what it shows must come from the stored settings and the
+// permission, because both change behind it.
+final class BackdropFeatureTests: XCTestCase {
+    private func make(allowed: Bool = true) -> (BackdropFeature, Settings) {
         _ = appKitForTests
-        let defaults = UserDefaults(suiteName: "backdrop-menu-\(UUID().uuidString)")!
+        let defaults = UserDefaults(suiteName: "backdrop-feature-\(UUID().uuidString)")!
         let settings = Settings(defaults: defaults)
-        return (BackdropMenu(settings: settings, screenRecordingAllowed: { allowed }), settings)
+        let feature = BackdropFeature(settings: settings, screenRecordingAllowed: { allowed })
+        _ = feature.makeView()
+        return (feature, settings)
     }
 
-    private func checked(_ menu: BackdropMenu) -> [String] {
-        menu.refresh()
-        return (menu.item.submenu?.items ?? []).filter { $0.state == .on }.map(\.title)
-    }
-
-    func testTheModeInSettingsIsTheOneTicked() {
-        let (menu, settings) = make()
+    func testThePopupShowsTheModeInSettings() {
+        let (feature, settings) = make()
         for mode in MenuBarBackdropMode.allCases {
             settings.menuBarBackdropMode = mode
-            XCTAssertEqual(checked(menu), [mode.title])
+            feature.refresh()
+            XCTAssertEqual(feature.modePopup.titleOfSelectedItem, mode.title)
         }
     }
 
-    func testEveryModeHasAnItemThatSetsIt() {
-        let (menu, settings) = make()
-        let items = menu.item.submenu?.items.filter { $0.representedObject is MenuBarBackdropMode } ?? []
-        XCTAssertEqual(items.map { $0.representedObject as? MenuBarBackdropMode }, MenuBarBackdropMode.allCases)
-        for entry in items {
-            _ = entry.target?.perform(entry.action, with: entry)
-            XCTAssertEqual(settings.menuBarBackdropMode, entry.representedObject as? MenuBarBackdropMode)
+    func testChoosingFromThePopupSetsTheMode() {
+        let (feature, settings) = make()
+        XCTAssertEqual(feature.modePopup.itemTitles, MenuBarBackdropMode.allCases.map(\.title))
+        for (i, mode) in MenuBarBackdropMode.allCases.enumerated() {
+            feature.modePopup.selectItem(at: i)
+            _ = feature.modePopup.target?.perform(feature.modePopup.action, with: feature.modePopup)
+            XCTAssertEqual(settings.menuBarBackdropMode, mode)
         }
     }
 
     func testThePermissionLineAppearsOnlyInTheFollowMode() {
-        let (menu, settings) = make(allowed: false)
-        let status = { menu.item.submenu!.items.first { $0.title.hasPrefix("Screen Recording") }! }
+        let (feature, settings) = make(allowed: false)
         settings.menuBarBackdropMode = .solid
-        menu.refresh()
-        XCTAssertTrue(status().isHidden)
+        feature.refresh()
+        XCTAssertTrue(feature.accessStatus.isHidden)
+        XCTAssertTrue(feature.accessButton.isHidden)
         settings.menuBarBackdropMode = .solidFollow
-        menu.refresh()
-        XCTAssertFalse(status().isHidden)
-        XCTAssertTrue(status().title.contains("not allowed"), "a refusal must be said, not hidden")
+        feature.refresh()
+        XCTAssertFalse(feature.accessStatus.isHidden)
+        XCTAssertFalse(feature.accessButton.isHidden)
+        XCTAssertTrue(feature.accessStatus.stringValue.contains("not allowed"), "a refusal is said, not hidden")
     }
 
-    func testTheSliderIsLiveOnlyInTheBlur() throws {
-        let (menu, settings) = make()
-        let slider = try XCTUnwrap(menu.item.submenu?.items.compactMap { ($0.view as? NSStackView)?.views.last as? NSSlider }.first)
+    func testTheSliderIsLiveOnlyInTheBlur() {
+        let (feature, settings) = make()
         settings.menuBarBackdropMode = .blur
-        menu.refresh()
-        XCTAssertTrue(slider.isEnabled)
+        feature.refresh()
+        XCTAssertTrue(feature.slider.isEnabled)
         settings.menuBarBackdropMode = .solid
-        menu.refresh()
-        XCTAssertFalse(slider.isEnabled)
+        feature.refresh()
+        XCTAssertFalse(feature.slider.isEnabled)
     }
 
-    func testDraggingTheSliderWritesTheSetting() throws {
-        let (menu, settings) = make()
-        let slider = try XCTUnwrap(menu.item.submenu?.items.compactMap { ($0.view as? NSStackView)?.views.last as? NSSlider }.first)
-        slider.doubleValue = 0.9
-        _ = slider.target?.perform(slider.action, with: slider)
+    func testDraggingTheSliderWritesTheSetting() {
+        let (feature, settings) = make()
+        feature.slider.doubleValue = 0.9
+        _ = feature.slider.target?.perform(feature.slider.action, with: feature.slider)
         XCTAssertEqual(settings.menuBarBackdropTranslucency, 0.9, accuracy: 0.001)
+    }
+
+    /// Settings can change while the window is open (the menu, `defaults`): it must follow.
+    func testItFollowsAChangeMadeElsewhere() {
+        let (feature, settings) = make()
+        settings.menuBarBackdropMode = .blur
+        XCTAssertEqual(feature.modePopup.titleOfSelectedItem, MenuBarBackdropMode.blur.title)
     }
 }
 
