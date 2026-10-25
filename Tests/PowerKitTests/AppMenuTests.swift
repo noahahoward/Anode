@@ -678,3 +678,40 @@ final class MenuBarBackdropRimTests: XCTestCase {
                        "no rim across the top of the corner curve")
     }
 }
+
+// ScreenCaptureKit hands back premultiplied pixels, and some of them partly transparent.
+// Decoding them as if opaque read every colour darker by the image's own transparency, which
+// made the bar visibly darker than the window it was copying.
+final class WindowEdgeSamplerDecodeTests: XCTestCase {
+
+    private func image(red: CGFloat, green: CGFloat, blue: CGFloat, alpha: CGFloat,
+                       width: Int = 8, height: Int = 2) -> CGImage {
+        let ctx = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0,
+                            space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+        ctx.setFillColor(CGColor(srgbRed: red, green: green, blue: blue, alpha: alpha))
+        ctx.fill(CGRect(x: 0, y: 0, width: width, height: height))
+        return ctx.makeImage()!
+    }
+
+    private func luminance(_ c: NSColor) -> CGFloat {
+        let s = c.usingColorSpace(.sRGB)!
+        return (s.redComponent + s.greenComponent + s.blueComponent) / 3
+    }
+
+    func testAnOpaqueColourComesBackUnchanged() throws {
+        let row = try XCTUnwrap(WindowEdgeSampler.rowColors(of: image(red: 0.6, green: 0.3, blue: 0.2, alpha: 1), columns: 4))
+        XCTAssertEqual(row.count, 4)
+        XCTAssertEqual(row[0].usingColorSpace(.sRGB)!.redComponent, 0.6, accuracy: 0.02)
+    }
+
+    /// The bug: white at half transparency decoded as mid-grey.
+    func testAPartlyTransparentColourIsNotDarkened() throws {
+        let row = try XCTUnwrap(WindowEdgeSampler.rowColors(of: image(red: 1, green: 1, blue: 1, alpha: 0.5), columns: 4))
+        for c in row { XCTAssertEqual(luminance(c), 1, accuracy: 0.03, "white stayed white whatever its alpha") }
+    }
+
+    func testAFullyTransparentImageHasNoHonestColour() {
+        XCTAssertNil(WindowEdgeSampler.rowColors(of: image(red: 1, green: 1, blue: 1, alpha: 0), columns: 4))
+    }
+}

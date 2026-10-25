@@ -45,10 +45,13 @@ enum WindowEdgeSampler {
             let filter = SCContentFilter(display: display, excludingWindows: [])
             let config = SCStreamConfiguration()
             config.sourceRect = rect
-            // Scaled down by the system, which averages as it goes: a few hundred
-            // columns of pixels arrive as `columns` already-blended ones.
-            config.width = columns
-            config.height = 2
+            // At the strip's own resolution, NOT squeezed into `columns` x 2 pixels: the
+            // system keeps the aspect ratio when it scales, so a 1766 x 6 pt strip asked
+            // for as 48 x 2 arrived as a sliver of one row with the rest transparent,
+            // and the colours came back premultiplied by that coverage — about half as
+            // bright as the real screen. Averaging is done here instead.
+            config.width = max(1, Int(rect.width * 2))
+            config.height = max(1, Int(rect.height * 2))
             config.showsCursor = false
             config.pixelFormat = kCVPixelFormatType_32BGRA
             let image = try await SCScreenshotManager.captureImage(contentFilter: filter,
@@ -79,8 +82,15 @@ enum WindowEdgeSampler {
     /// Forget the cached display list, after a screen was added, removed or changed.
     static func forgetDisplays() { _cache = nil }
 
+    /// `columns` colours across the image, each the mean of its block of pixels.
+    ///
+    /// The captured pixels are premultiplied by alpha, so each mean is the summed
+    /// colour divided by the summed alpha, not by 255: dividing by 255 read every
+    /// colour darker by the image's own transparency, and the bar then came out
+    /// darker than the window it was meant to match (measured: 0.99 on screen, 0.31
+    /// decoded that way).
     static func rowColors(of image: CGImage, columns: Int) -> [NSColor]? {
-        guard image.width > 0, image.height > 0 else { return nil }
+        guard image.width > 0, image.height > 0, columns > 0 else { return nil }
         let w = image.width, h = image.height
         var bytes = [UInt8](repeating: 0, count: w * h * 4)
         let drawn = bytes.withUnsafeMutableBytes { raw -> Bool in
@@ -93,15 +103,22 @@ enum WindowEdgeSampler {
             return true
         }
         guard drawn else { return nil }
-        return (0..<columns).map { column in
-            let x = min(w - 1, column * w / columns)
-            var r = 0.0, g = 0.0, b = 0.0
+        var out: [NSColor] = []
+        for column in 0..<columns {
+            let x0 = column * w / columns
+            let x1 = max(x0 + 1, (column + 1) * w / columns)
+            var r = 0.0, g = 0.0, b = 0.0, a = 0.0
             for y in 0..<h {
-                let i = (y * w + x) * 4
-                r += Double(bytes[i]); g += Double(bytes[i + 1]); b += Double(bytes[i + 2])
+                for x in x0..<min(x1, w) {
+                    let i = (y * w + x) * 4
+                    r += Double(bytes[i]); g += Double(bytes[i + 1]); b += Double(bytes[i + 2])
+                    a += Double(bytes[i + 3])
+                }
             }
-            let n = Double(h) * 255
-            return NSColor(srgbRed: r / n, green: g / n, blue: b / n, alpha: 1)
+            // Nothing there at all: no honest colour to report for this column.
+            guard a > 0 else { return nil }
+            out.append(NSColor(srgbRed: min(1, r / a), green: min(1, g / a), blue: min(1, b / a), alpha: 1))
         }
+        return out
     }
 }
