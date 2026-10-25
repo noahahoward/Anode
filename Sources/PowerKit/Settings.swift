@@ -122,7 +122,7 @@ public final class Settings {
         /// yes — Anode's own windows need no permission — and any other mode stops
         /// all reading at once, whatever macOS has granted.
         static let menuBarBackdropMode = MenuBarBackdropMode.solidFollow
-        static let menuBarBackdropTranslucency = 0.3
+        static let menuBarBackdropTranslucency = 0.6
         /// Matches what the status item shows today: smoothed drain + runtime.
         // Must be real, currently-registered metric IDs. Stale ones are invisible
         // in the picker and get preserved forever as "unknown" bindings.

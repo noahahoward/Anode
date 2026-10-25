@@ -87,14 +87,17 @@ enum MenuBarBackdropGeometry {
     /// How much of the strip is tint; the rest is the blur of what is behind it.
     ///
     /// The solid modes are fully opaque, so the wallpaper cannot show at all. Blur
-    /// runs from 0.95 (a smear) down to 0.40 (the wallpaper plainly there, softened)
-    /// as `translucency` goes 0 → 1; its default 0.3 is 0.785, which is what the
-    /// glass was tuned at before it was adjustable.
+    /// runs from 0.90 (a smear) down to 0.05 (almost untinted glass) as
+    /// `translucency` goes 0 → 1. It used to stop at 0.40, and that was "the blur
+    /// does not work": the glass material is itself dark, so under 40% black on top
+    /// the most see-through setting still came out near black (measured over a
+    /// striped wallpaper: 0.24, against 0.47 for the wallpaper itself). The blur
+    /// itself was fine — the stripes were flattened to one even tone.
     static func tintAlpha(mode: MenuBarBackdropMode, translucency: Double) -> CGFloat {
         switch mode {
         case .off: return 0
         case .solid, .solidFollow: return 1
-        case .blur: return 0.95 - 0.55 * CGFloat(min(max(translucency, 0), 1))
+        case .blur: return 0.90 - 0.85 * CGFloat(min(max(translucency, 0), 1))
         }
     }
 
