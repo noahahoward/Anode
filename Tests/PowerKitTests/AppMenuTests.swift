@@ -569,16 +569,34 @@ final class MenuBarBackdropTintTests: XCTestCase {
         XCTAssertEqual(t.redComponent, 0.16, accuracy: 0.01)
     }
 
-    /// The case the clamp exists for: a bright page under text the system has made
-    /// white would be white on white.
-    func testABrightWindowColourIsRefusedUnderWhiteText() {
+    /// The case the limit exists for: a bright page under text the system has made white
+    /// would be white on white. It is brought DOWN to the limit now, not thrown away for
+    /// black — a bar that is black in patches and grey around them is what that looked like.
+    func testABrightWindowColourIsBroughtDownToTheLimitUnderWhiteText() {
         let t = MenuBarBackdropGeometry.tint(darkBar: true, windowTop: grey(0.9), alpha: 1).usingColorSpace(.sRGB)!
-        XCTAssertEqual(t.redComponent, 0, accuracy: 0.001)
+        XCTAssertEqual(t.redComponent, MenuBarBackdropGeometry.darkBarLimit, accuracy: 0.01)
     }
 
-    func testADarkWindowColourIsRefusedUnderBlackText() {
+    func testTheLimitKeepsTheHue() {
+        let green = NSColor(srgbRed: 0.2, green: 0.9, blue: 0.3, alpha: 1)
+        let t = MenuBarBackdropGeometry.tint(darkBar: true, windowTop: green, alpha: 1).usingColorSpace(.sRGB)!
+        XCTAssertGreaterThan(t.greenComponent, t.redComponent, "still green, only darker")
+        XCTAssertLessThanOrEqual(0.299 * t.redComponent + 0.587 * t.greenComponent + 0.114 * t.blueComponent,
+                                 MenuBarBackdropGeometry.darkBarLimit + 0.005)
+    }
+
+    func testADarkWindowColourIsBroughtUpToTheLimitUnderBlackText() {
         let t = MenuBarBackdropGeometry.tint(darkBar: false, windowTop: grey(0.1), alpha: 1).usingColorSpace(.sRGB)!
-        XCTAssertEqual(t.redComponent, 1, accuracy: 0.001)
+        XCTAssertEqual(t.redComponent, MenuBarBackdropGeometry.lightBarLimit, accuracy: 0.01)
+    }
+
+    /// One bright column in a dark row must not be a hard edge any more.
+    func testASharpEdgeInARowIsSoftened() {
+        let row = [grey(0.1), grey(0.1), grey(0.1), grey(0.9), grey(0.1), grey(0.1), grey(0.1)]
+        let out = MenuBarBackdropGeometry.smoothed(row).map { $0.usingColorSpace(.sRGB)!.redComponent }
+        XCTAssertLessThan(out[3], 0.9, "the peak is spread")
+        XCTAssertGreaterThan(out[2], 0.1, "its neighbours pick some of it up")
+        XCTAssertEqual(out.first!, 0.1, accuracy: 0.02, "the far ends are untouched")
     }
 
     func testAWindowMeetsTheBarOnlyAtItsEdgeAndNearlyFullWidth() {
@@ -713,5 +731,33 @@ final class WindowEdgeSamplerDecodeTests: XCTestCase {
 
     func testAFullyTransparentImageHasNoHonestColour() {
         XCTAssertNil(WindowEdgeSampler.rowColors(of: image(red: 1, green: 1, blue: 1, alpha: 0), columns: 4))
+    }
+}
+
+// Which stretches of the bar sit over a window, and which sit over wallpaper.
+final class MenuBarBackdropMaskTests: XCTestCase {
+    private func grey(_ l: CGFloat) -> NSColor { NSColor(srgbRed: l, green: l, blue: l, alpha: 1) }
+
+    func testColumnsOutsideEveryWindowGoBackToThePlainBar() {
+        // 10 columns across 0...1000 (no inset); one window covering 0...500.
+        let row = (0..<10).map { _ in grey(0.3) }
+        let out = MenuBarBackdropGeometry.masked(row, spans: [0...500], inset: 0, width: 1000, base: .black)
+        for (i, c) in out.enumerated() {
+            let l = c.usingColorSpace(.sRGB)!.redComponent
+            XCTAssertEqual(l, i < 5 ? 0.3 : 0, accuracy: 0.001, "column \(i)")
+        }
+    }
+
+    func testTwoSnappedWindowsBothCountAndTheGapBetweenThemDoesNot() {
+        // 10 columns centred at 50, 150 … 950; windows over 0…300 and 700…1000.
+        let row = (0..<10).map { _ in grey(0.3) }
+        let out = MenuBarBackdropGeometry.masked(row, spans: [0...300, 700...1000], inset: 0, width: 1000, base: .black)
+        XCTAssertEqual(out.map { $0.usingColorSpace(.sRGB)!.redComponent > 0.1 },
+                       [true, true, true, false, false, false, false, true, true, true])
+    }
+
+    func testNoWindowAtAllLeavesTheBarPlainEverywhere() {
+        let out = MenuBarBackdropGeometry.masked([grey(0.3), grey(0.3)], spans: [], inset: 0, width: 100, base: .black)
+        XCTAssertTrue(out.allSatisfy { $0.usingColorSpace(.sRGB)!.redComponent < 0.001 })
     }
 }

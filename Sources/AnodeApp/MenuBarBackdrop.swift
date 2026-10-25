@@ -102,18 +102,73 @@ enum MenuBarBackdropGeometry {
     /// pulled toward the colour of the window under it.
     ///
     /// The system picks the text colour from the wallpaper and will not be told
-    /// otherwise, so a window colour is taken only if the text would still read on
-    /// it: a dark bar accepts a colour up to 0.40 luminance, a light one from 0.60.
-    /// A bright page under white text would be unreadable, so it is refused and the
-    /// plain fill stands.
+    /// otherwise, so a window colour is only used as far as the text still reads on
+    /// it: a dark bar goes up to 0.40 luminance, a light one down to 0.60. A colour
+    /// past the limit is moved TO the limit, keeping its hue — it used to be thrown
+    /// away for plain black, and a translucent titlebar with bright content showing
+    /// through (Messages) then came out as black blotches inside a grey bar.
     static func tint(darkBar: Bool, windowTop: NSColor?, alpha: CGFloat) -> NSColor {
         let base = fill(darkBar: darkBar)
         guard let c = windowTop?.usingColorSpace(.sRGB) else {
             return base.withAlphaComponent(alpha)
         }
-        let luminance = 0.299 * c.redComponent + 0.587 * c.greenComponent + 0.114 * c.blueComponent
-        let readable = darkBar ? luminance <= 0.40 : luminance >= 0.60
-        return (readable ? c : base).withAlphaComponent(alpha)
+        return limited(c, darkBar: darkBar).withAlphaComponent(alpha)
+    }
+
+    static let darkBarLimit: CGFloat = 0.40
+    static let lightBarLimit: CGFloat = 0.60
+
+    private static func luminance(_ c: NSColor) -> CGFloat {
+        0.299 * c.redComponent + 0.587 * c.greenComponent + 0.114 * c.blueComponent
+    }
+
+    /// `c` moved, if it must be, to the nearest colour the text can be read on.
+    static func limited(_ c: NSColor, darkBar: Bool) -> NSColor {
+        let l = luminance(c)
+        if darkBar {
+            guard l > darkBarLimit else { return c }
+            let k = darkBarLimit / l                       // scale down: same hue, less light
+            return NSColor(srgbRed: c.redComponent * k, green: c.greenComponent * k,
+                           blue: c.blueComponent * k, alpha: 1)
+        }
+        guard l < lightBarLimit else { return c }
+        let k = (lightBarLimit - l) / max(1 - l, 0.0001)   // mix toward white
+        return NSColor(srgbRed: c.redComponent + (1 - c.redComponent) * k,
+                       green: c.greenComponent + (1 - c.greenComponent) * k,
+                       blue: c.blueComponent + (1 - c.blueComponent) * k, alpha: 1)
+    }
+
+    /// A captured row with every column that no window sits under put back to the
+    /// plain bar colour. The capture reads whatever is at the strip — a window's top
+    /// edge, or the wallpaper where there is no window — and the wallpaper is exactly
+    /// what the bar exists to hide. `spans` are the windows' horizontal extents in the
+    /// bar's own x; the row's columns are spread evenly across `width - 2 * inset`.
+    static func masked(_ row: [NSColor], spans: [ClosedRange<CGFloat>], inset: CGFloat,
+                       width: CGFloat, base: NSColor) -> [NSColor] {
+        guard !row.isEmpty else { return row }
+        let step = (width - 2 * inset) / CGFloat(row.count)
+        return row.enumerated().map { i, colour in
+            let centre = inset + (CGFloat(i) + 0.5) * step
+            return spans.contains { $0.contains(centre) } ? colour : base
+        }
+    }
+
+    /// A row softened sideways: two passes of a 1-2-1 kernel, ends held. A window's
+    /// top edge is not smooth — a sidebar, a tab, a bubble showing through — and a bar
+    /// that followed every column exactly showed each of those as a hard vertical
+    /// edge. This is the "diffusion", and costs the match only a few dozen points.
+    static func smoothed(_ row: [NSColor]) -> [NSColor] {
+        guard row.count > 2 else { return row }
+        func pass(_ r: [NSColor]) -> [NSColor] {
+            r.indices.map { i in
+                let a = r[max(0, i - 1)].usingColorSpace(.sRGB)!, b = r[i].usingColorSpace(.sRGB)!,
+                    c = r[min(r.count - 1, i + 1)].usingColorSpace(.sRGB)!
+                func m(_ f: (NSColor) -> CGFloat) -> CGFloat { (f(a) + 2 * f(b) + f(c)) / 4 }
+                return NSColor(srgbRed: m(\.redComponent), green: m(\.greenComponent),
+                               blue: m(\.blueComponent), alpha: 1)
+            }
+        }
+        return pass(pass(row))
     }
 
     /// `tint` for each colour in a row, left to right: what a window's top edge
@@ -124,7 +179,7 @@ enum MenuBarBackdropGeometry {
         guard let row = windowTop, !row.isEmpty else {
             return [tint(darkBar: darkBar, windowTop: nil, alpha: alpha)]
         }
-        return row.map { tint(darkBar: darkBar, windowTop: $0, alpha: alpha) }
+        return smoothed(row).map { tint(darkBar: darkBar, windowTop: $0, alpha: alpha) }
     }
 
     /// Is a window with these bounds meeting the bar — top edge at the bar's
@@ -431,10 +486,19 @@ final class MenuBarBackdrop {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: work)
     }
 
-    private enum Under {
-        case nothing
-        case ownWindow(NSWindow, key: String)
-        case otherApp
+    private struct Under {
+        enum Kind {
+            case nothing
+            /// `fullWidth`: spans the screen, so the off-screen estimate is fair for it.
+            case ownWindow(NSWindow, key: String, fullWidth: Bool)
+            case otherApp
+        }
+        var kind: Kind
+        /// The horizontal extent, in the bar's own x, of EVERY window whose top edge
+        /// meets the bar — a snapped half-width window counts, which the first version
+        /// (one window, at least 95% of the width) ignored.
+        var spans: [ClosedRange<CGFloat>]
+        static let none = Under(kind: .nothing, spans: [])
     }
 
     private func retint(force: Bool) {
@@ -444,11 +508,11 @@ final class MenuBarBackdrop {
                 bar.view.update(darkBar: darkBar, tints: plain(), showsBlur: showsBlur)
                 continue
             }
-            switch under(bar) {
+            switch under(bar).kind {
             case .nothing:
                 bar.ownKey = ""
                 apply(nil, to: bar)
-            case .ownWindow(let window, let key):
+            case .ownWindow(let window, let key, let fullWidth):
                 // With Screen Recording allowed, read Anode's own titlebar off the
                 // screen like any other window's: that is the colour actually shown.
                 // The off-screen drawing below is only an estimate and runs darker
@@ -459,6 +523,8 @@ final class MenuBarBackdrop {
                     readOtherApp(under: bar)
                     continue
                 }
+                // Without it, only a window the width of the screen can be estimated.
+                guard fullWidth else { bar.ownKey = ""; apply(nil, to: bar); continue }
                 // Anode's titlebar is the same until the window moves or the
                 // appearance flips, and drawing it is not free.
                 guard force || key != bar.ownKey else { continue }
@@ -504,8 +570,12 @@ final class MenuBarBackdrop {
                 // The window may have gone while the capture ran; a stale row
                 // would tint the bar to something no longer there.
                 guard self.follows else { return }
-                if case .nothing = self.under(bar) { return }
-                self.apply(row, to: bar)
+                let u = self.under(bar)
+                if case .nothing = u.kind { return }
+                self.apply(row.map {
+                    MenuBarBackdropGeometry.masked($0, spans: u.spans, inset: r, width: bar.screenWidth,
+                                                   base: MenuBarBackdropGeometry.fill(darkBar: self.darkBar))
+                }, to: bar)
             }
         }
     }
@@ -573,30 +643,40 @@ final class MenuBarBackdrop {
 
     // ── What is under the bar ───────────────────────────────────────────────
 
-    /// The window meeting this bar, if any, and whose it is.
+    /// The windows meeting this bar, and whose the frontmost one is.
     ///
     /// The window server's list (front to back, with bounds and owner, none of
-    /// which is gated) answers "which window is under the middle of the bar".
+    /// which is gated) answers it. A window meets the bar when its top edge is within
+    /// 3 pt of the bar's bottom, whatever its width.
     private func under(_ bar: BackdropWindow) -> Under {
-        let point = CGPoint(x: bar.screenLeft + bar.screenWidth / 2, y: bar.barBottom + 2)
         guard let info = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements],
-                                                    kCGNullWindowID) as? [[String: Any]] else { return .nothing }
+                                                    kCGNullWindowID) as? [[String: Any]] else { return .none }
+        var result = Under.none
         for entry in info {
             guard (entry[kCGWindowLayer as String] as? Int) == 0,
                   (entry[kCGWindowAlpha as String] as? Double ?? 1) > 0,
                   let dict = entry[kCGWindowBounds as String] as? NSDictionary,
                   let bounds = CGRect(dictionaryRepresentation: dict),
-                  bounds.contains(point) else { continue }
-            // The first window containing the point is the one in front there.
-            guard MenuBarBackdropGeometry.meetsBar(bounds: bounds, barBottom: bar.barBottom,
-                                                   screenWidth: bar.screenWidth) else { return .nothing }
-            guard (entry[kCGWindowOwnerPID as String] as? Int32) == ProcessInfo.processInfo.processIdentifier
-            else { return .otherApp }
-            guard let number = entry[kCGWindowNumber as String] as? Int,
-                  let own = NSApp.windows.first(where: { $0.windowNumber == number }) else { return .nothing }
-            return .ownWindow(own, key: "\(number) \(bounds) \(darkBar)")
+                  abs(bounds.minY - bar.barBottom) <= 3,
+                  bounds.maxX > bar.screenLeft, bounds.minX < bar.screenLeft + bar.screenWidth
+            else { continue }
+            let lo = max(0, bounds.minX - bar.screenLeft), hi = min(bar.screenWidth, bounds.maxX - bar.screenLeft)
+            result.spans.append(lo...hi)
+            // The first one found is the frontmost, and decides whose it is.
+            guard case .nothing = result.kind else { continue }
+            if (entry[kCGWindowOwnerPID as String] as? Int32) == ProcessInfo.processInfo.processIdentifier {
+                if let number = entry[kCGWindowNumber as String] as? Int,
+                   let own = NSApp.windows.first(where: { $0.windowNumber == number }) {
+                    result.kind = .ownWindow(own, key: "\(number) \(bounds) \(darkBar)",
+                                             fullWidth: MenuBarBackdropGeometry.meetsBar(
+                                                bounds: bounds, barBottom: bar.barBottom,
+                                                screenWidth: bar.screenWidth))
+                }
+            } else {
+                result.kind = .otherApp
+            }
         }
-        return .nothing
+        return result
     }
 
     /// A few points below the window's top edge, clear of the rim highlight and of
