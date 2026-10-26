@@ -478,6 +478,15 @@ final class MenuBarBackdrop {
     private var pendingRetint: DispatchWorkItem?
     private var poll: Timer?
     private var fullScreenWatch: Timer?
+    /// The window list for the tick in progress, so the several questions one tick asks of it
+    /// ("is anything full screen?", "what is under each bar?") share one query instead of each
+    /// making their own. Nil outside a tick, so an event-driven check always sees fresh windows.
+    private var tickWindows: [[String: Any]]?
+
+    private func windowList() -> [[String: Any]] {
+        tickWindows ?? (CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements],
+                                                   kCGNullWindowID) as? [[String: Any]] ?? [])
+    }
     private let settings = Settings.shared
 
     init() {
@@ -579,8 +588,12 @@ final class MenuBarBackdrop {
         poll = nil
         guard follows else { return }
         let t = Timer(timeInterval: 1, repeats: true) { [weak self] _ in
-            self?.refresh()
-            self?.retint(force: false)
+            guard let self else { return }
+            // One window query for the whole tick.
+            self.tickWindows = self.windowList()
+            defer { self.tickWindows = nil }
+            self.refresh()
+            self.retint(force: false)
         }
         t.tolerance = 0.5
         RunLoop.main.add(t, forMode: .common)
@@ -694,8 +707,7 @@ final class MenuBarBackdrop {
             return
         }
         let primaryHeight = NSScreen.screens.first?.frame.height ?? 0
-        let onScreen = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements],
-                                                  kCGNullWindowID) as? [[String: Any]] ?? []
+        let onScreen = windowList()
         var hiddenForFullScreen = 0
         let planned: [Plan] = NSScreen.screens.compactMap {
             // No strip on a screen showing a full-screen window: its menu bar is hidden.
@@ -807,8 +819,7 @@ final class MenuBarBackdrop {
     /// which is gated) answers it. A window meets the bar when its top edge is within
     /// 3 pt of the bar's bottom, whatever its width.
     private func under(_ bar: BackdropWindow) -> Under {
-        guard let info = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements],
-                                                    kCGNullWindowID) as? [[String: Any]] else { return .none }
+        let info = windowList()
         var result = Under.none
         for entry in info {
             guard (entry[kCGWindowLayer as String] as? Int) == 0,
