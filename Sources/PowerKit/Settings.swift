@@ -44,7 +44,7 @@ public final class Settings {
         public static let autoUpdateEnabled = "autoUpdateEnabled"
         public static let autoUpdatePromptSeen = "autoUpdatePromptSeen"
         public static let menuBarBackdropMode = "menuBarBackdropMode"
-        public static let menuBarBackdropTranslucency = "menuBarBackdropTranslucency"
+        public static let menuBarBackdropBlur = "menuBarBackdropBlur"
         /// The stats panel's arrangement. Empty until the user edits it — see
         /// `panelOrder` for why the default is not materialized here.
         public static let panelOrder = "panelOrder"
@@ -122,7 +122,7 @@ public final class Settings {
         /// yes — Anode's own windows need no permission — and any other mode stops
         /// all reading at once, whatever macOS has granted.
         static let menuBarBackdropMode = MenuBarBackdropMode.solidFollow
-        static let menuBarBackdropTranslucency = 0.6
+        static let menuBarBackdropBlur = 0.5
         /// Matches what the status item shows today: smoothed drain + runtime.
         // Must be real, currently-registered metric IDs. Stale ones are invisible
         // in the picker and get preserved forever as "unknown" bindings.
@@ -161,7 +161,7 @@ public final class Settings {
             fanControlEnabled, fanSyncEnabled, speedTestAgreed,
             autoUpdateEnabled, autoUpdatePromptSeen: Bool
         var menuBarBackdropMode: MenuBarBackdropMode
-        var menuBarBackdropTranslucency: Double
+        var menuBarBackdropBlur: Double
         var fanDisclosureSeen: Bool
         var menuBarWidgets: [String]
         var panelOrder: [String]
@@ -272,14 +272,14 @@ public final class Settings {
         }
     }
 
-    /// How much of the wallpaper shows through the blur mode, 0 (barely) to 1.
-    public var menuBarBackdropTranslucency: Double {
-        get { Settings.readDouble(defaults, Key.menuBarBackdropTranslucency,
-                                  Default.menuBarBackdropTranslucency, 0...1) }
+    /// How strong the blur mode's blur is: 0 is see-through (the least blur), 1 the most.
+    public var menuBarBackdropBlur: Double {
+        get { Settings.readDouble(defaults, Key.menuBarBackdropBlur,
+                                  Default.menuBarBackdropBlur, 0...1) }
         set {
             let v = min(max(newValue, 0), 1)
-            guard v != menuBarBackdropTranslucency else { return }
-            defaults.set(v, forKey: Settings.storageKey(Key.menuBarBackdropTranslucency))
+            guard v != menuBarBackdropBlur else { return }
+            defaults.set(v, forKey: Settings.storageKey(Key.menuBarBackdropBlur))
             reconcile()
         }
     }
@@ -660,8 +660,8 @@ public final class Settings {
         if old.speedTestAgreed != now.speedTestAgreed { notify(Key.speedTestAgreed) }
         if old.autoUpdateEnabled != now.autoUpdateEnabled { notify(Key.autoUpdateEnabled) }
         if old.menuBarBackdropMode != now.menuBarBackdropMode { notify(Key.menuBarBackdropMode) }
-        if old.menuBarBackdropTranslucency != now.menuBarBackdropTranslucency {
-            notify(Key.menuBarBackdropTranslucency)
+        if old.menuBarBackdropBlur != now.menuBarBackdropBlur {
+            notify(Key.menuBarBackdropBlur)
         }
         if old.autoUpdatePromptSeen != now.autoUpdatePromptSeen {
             notify(Key.autoUpdatePromptSeen)
@@ -770,8 +770,8 @@ public final class Settings {
                                               Default.autoUpdatePromptSeen),
                menuBarBackdropMode: d.string(forKey: storageKey(Key.menuBarBackdropMode))
                    .flatMap(MenuBarBackdropMode.init(rawValue:)) ?? Default.menuBarBackdropMode,
-               menuBarBackdropTranslucency: readDouble(d, Key.menuBarBackdropTranslucency,
-                                                       Default.menuBarBackdropTranslucency, 0...1),
+               menuBarBackdropBlur: readDouble(d, Key.menuBarBackdropBlur,
+                                                       Default.menuBarBackdropBlur, 0...1),
                fanDisclosureSeen: readBool(d, Key.fanDisclosureSeen,
                                            Default.fanDisclosureSeen),
                menuBarWidgets: readWidgets(d, Default.menuBarWidgets),

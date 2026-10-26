@@ -536,7 +536,7 @@ final class BackdropFeatureTests: XCTestCase {
         let (feature, settings) = make()
         feature.slider.doubleValue = 0.9
         _ = feature.slider.target?.perform(feature.slider.action, with: feature.slider)
-        XCTAssertEqual(settings.menuBarBackdropTranslucency, 0.9, accuracy: 0.001)
+        XCTAssertEqual(settings.menuBarBackdropBlur, 0.9, accuracy: 0.001)
     }
 
     /// Settings can change while the window is open (the menu, `defaults`): it must follow.
@@ -675,19 +675,57 @@ final class MenuBarBackdropTintTests: XCTestCase {
 
 final class MenuBarBackdropModeTests: XCTestCase {
     func testOffIsClearAndTheSolidModesAreOpaque() {
-        XCTAssertEqual(MenuBarBackdropGeometry.tintAlpha(mode: .off, translucency: 0.5), 0)
-        XCTAssertEqual(MenuBarBackdropGeometry.tintAlpha(mode: .solid, translucency: 0), 1)
-        XCTAssertEqual(MenuBarBackdropGeometry.tintAlpha(mode: .solidFollow, translucency: 1), 1,
-                       "translucency belongs to blur only")
+        XCTAssertEqual(MenuBarBackdropGeometry.tintAlpha(mode: .off), 0)
+        XCTAssertEqual(MenuBarBackdropGeometry.tintAlpha(mode: .solid), 1)
+        XCTAssertEqual(MenuBarBackdropGeometry.tintAlpha(mode: .solidFollow), 1)
     }
 
-    func testBlurGrowsMoreSeeThroughAsTheSliderRises() {
-        let low = MenuBarBackdropGeometry.tintAlpha(mode: .blur, translucency: 0)
-        let high = MenuBarBackdropGeometry.tintAlpha(mode: .blur, translucency: 1)
-        XCTAssertGreaterThan(low, high)
-        XCTAssertLessThan(low, 1, "even the blur's most solid end must still be glass")
-        XCTAssertEqual(MenuBarBackdropGeometry.tintAlpha(mode: .blur, translucency: 9), high,
-                       "out of range is clamped")
+    /// The blur's tint is light and constant: the slider is the blur, not the tint. When
+    /// it was the tint, one end of the slider was simply black.
+    func testTheBlurModeHasALightConstantTint() {
+        let alpha = MenuBarBackdropGeometry.tintAlpha(mode: .blur)
+        XCTAssertGreaterThan(alpha, 0)
+        XCTAssertLessThan(alpha, 0.5, "light enough that both ends of the slider stay glass")
+    }
+
+    func testTheSliderIsTheBlurAmountFromNoneToStrongest() {
+        XCTAssertEqual(MenuBarBackdropGeometry.blurRadius(mode: .blur, amount: 0), 0,
+                       "see-through is the least blur")
+        XCTAssertEqual(MenuBarBackdropGeometry.blurRadius(mode: .blur, amount: 1),
+                       Int32(MenuBarBackdropGeometry.blurMaxRadius))
+        let radii = stride(from: 0.0, through: 1.0, by: 0.25).map {
+            MenuBarBackdropGeometry.blurRadius(mode: .blur, amount: $0)
+        }
+        XCTAssertEqual(radii, radii.sorted(), "more slider, more blur — never less")
+        XCTAssertEqual(MenuBarBackdropGeometry.blurRadius(mode: .blur, amount: 9),
+                       MenuBarBackdropGeometry.blurRadius(mode: .blur, amount: 1), "out of range is clamped")
+    }
+
+    func testOnlyTheBlurModeBlursAnything() {
+        for mode in [MenuBarBackdropMode.off, .solid, .solidFollow] {
+            XCTAssertEqual(MenuBarBackdropGeometry.blurRadius(mode: mode, amount: 1), 0, "\(mode)")
+        }
+    }
+
+    /// The window server blurs a window's WHOLE frame, drawn or not, so the blur's window
+    /// is exactly the bar (plus the seam and half a point) and never the wedges' hang.
+    func testTheBlurWindowIsExactlyTheBarAndNothingBelowIt() {
+        let strip = NSRect(x: 0, y: 1131, width: 1800, height: 38)
+        let frame = MenuBarBackdropGeometry.blurFrame(forStrip: strip, seam: 1)
+        XCTAssertEqual(frame.maxY, strip.maxY, "the top edge must not move")
+        XCTAssertEqual(frame.height, 38 + 1 + MenuBarBackdropGeometry.blurExtra)
+        XCTAssertLessThan(frame.height, 38 + 1 + MenuBarBackdropGeometry.cornerRadius,
+                          "it must not reach into the corner wedges' hang over other windows")
+        XCTAssertEqual(MenuBarBackdropGeometry.blurExtra, 0.5, "one physical pixel on a 2x display")
+    }
+
+    /// A missing private call must not break the bar: it is looked up at run time and
+    /// reports failure instead of crashing.
+    func testBlurOnAWindowThatIsNotOnScreenReportsRatherThanCrashes() {
+        _ = appKitForTests
+        let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 10, height: 10), styleMask: .borderless,
+                         backing: .buffered, defer: false)
+        _ = WindowBlur.set(w, radius: 10)   // either answer is fine; it must simply return
     }
 
     func testTheModeRoundTripsThroughSettings() {
@@ -698,8 +736,8 @@ final class MenuBarBackdropModeTests: XCTestCase {
             s.menuBarBackdropMode = m
             XCTAssertEqual(Settings(defaults: defaults).menuBarBackdropMode, m)
         }
-        s.menuBarBackdropTranslucency = 7
-        XCTAssertEqual(s.menuBarBackdropTranslucency, 1)
+        s.menuBarBackdropBlur = 7
+        XCTAssertEqual(s.menuBarBackdropBlur, 1)
     }
 }
 

@@ -155,7 +155,9 @@ final class BackdropFeature: BetaFeature {
 
     // Internal, so the tests can drive them as a click would.
     let modePopup = NSPopUpButton(frame: .zero, pullsDown: false)
-    let slider = NSSlider(value: 0.6, minValue: 0, maxValue: 1, target: nil, action: nil)
+    let slider = NSSlider(value: 0.5, minValue: 0, maxValue: 1, target: nil, action: nil)
+    let seeThroughLabel = NSTextField(labelWithString: "See-through")
+    let maxBlurLabel = NSTextField(labelWithString: "Max blur")
     let sliderRow = NSStackView()
     let modeNote = BetaFeaturesWindowController.wrapping("")
     let accessStatus = BetaFeaturesWindowController.wrapping("")
@@ -180,7 +182,8 @@ final class BackdropFeature: BetaFeature {
         slider.isContinuous = true
         slider.translatesAutoresizingMaskIntoConstraints = false
         slider.widthAnchor.constraint(equalToConstant: 200).isActive = true
-        sliderRow.setViews([NSTextField(labelWithString: "See-through:"), slider], in: .leading)
+        // The left end is the least blur (the wallpaper plainly there), the right the most.
+        sliderRow.setViews([seeThroughLabel, slider, maxBlurLabel], in: .leading)
         sliderRow.spacing = 8
 
         accessButton.target = self
@@ -193,7 +196,7 @@ final class BackdropFeature: BetaFeature {
         column.alignment = .leading
         column.spacing = 8
 
-        tokens = [Settings.Key.menuBarBackdropMode, Settings.Key.menuBarBackdropTranslucency].map { key in
+        tokens = [Settings.Key.menuBarBackdropMode, Settings.Key.menuBarBackdropBlur].map { key in
             settings.observe(key) { [weak self] in self?.refresh() }
         }
         refresh()
@@ -210,7 +213,7 @@ final class BackdropFeature: BetaFeature {
     }
 
     @objc private func slid() {
-        settings.menuBarBackdropTranslucency = slider.doubleValue
+        settings.menuBarBackdropBlur = slider.doubleValue
     }
 
     @objc private func openScreenRecording() {
@@ -224,9 +227,9 @@ final class BackdropFeature: BetaFeature {
         if let i = MenuBarBackdropMode.allCases.firstIndex(of: mode) { modePopup.selectItem(at: i) }
         modeNote.stringValue = Self.note(for: mode)
 
-        // The slider belongs to the blur alone. In any other mode it would move
-        // nothing, so it is greyed out rather than hidden: the section keeps its shape.
-        slider.doubleValue = settings.menuBarBackdropTranslucency
+        // The slider is the blur amount, and belongs to the blur alone. In any other mode
+        // it would move nothing, so it is greyed out rather than hidden.
+        slider.doubleValue = settings.menuBarBackdropBlur
         slider.isEnabled = mode == .blur
         sliderRow.views.compactMap { $0 as? NSTextField }.forEach {
             $0.textColor = mode == .blur ? .labelColor : .disabledControlTextColor
@@ -248,7 +251,8 @@ final class BackdropFeature: BetaFeature {
     static func note(for mode: MenuBarBackdropMode) -> String {
         switch mode {
         case .off: return "The menu bar is left as macOS draws it, over the wallpaper."
-        case .blur: return "A frosted, tinted blur of the wallpaper. Nothing shows through a black wallpaper."
+        case .blur: return "A blur of the wallpaper under the bar. Slide toward See-through for the least blur, "
+                         + "toward Max blur for the most. A plain-colour wallpaper has nothing to blur."
         case .solid: return "A solid block, so the wallpaper never shows behind the menu bar."
         case .solidFollow:
             return "A solid block that fades into the colour of the window under it. Other apps' "

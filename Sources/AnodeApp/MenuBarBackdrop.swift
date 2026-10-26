@@ -84,21 +84,50 @@ enum MenuBarBackdropGeometry {
         return path
     }
 
-    /// How much of the strip is tint; the rest is the blur of what is behind it.
+    /// How much of the strip is tint. The solid modes are fully opaque, so the
+    /// wallpaper cannot show at all; the blur mode uses a constant light tint, and its
+    /// slider controls the BLUR, not this (see `blurRadius`).
     ///
-    /// The solid modes are fully opaque, so the wallpaper cannot show at all. Blur
-    /// runs from 0.90 (a smear) down to 0.05 (almost untinted glass) as
-    /// `translucency` goes 0 → 1. It used to stop at 0.40, and that was "the blur
-    /// does not work": the glass material is itself dark, so under 40% black on top
-    /// the most see-through setting still came out near black (measured over a
-    /// striped wallpaper: 0.24, against 0.47 for the wallpaper itself). The blur
-    /// itself was fine — the stripes were flattened to one even tone.
-    static func tintAlpha(mode: MenuBarBackdropMode, translucency: Double) -> CGFloat {
+    /// The slider used to set this tint's opacity over a fixed-strength blur, which
+    /// meant its far end was just black: the blur view has no adjustable strength, and
+    /// its dark glass material darkened whatever it covered (measured: 0.24 under a
+    /// 40% tint, against 0.47 for the wallpaper itself).
+    static func tintAlpha(mode: MenuBarBackdropMode) -> CGFloat {
         switch mode {
         case .off: return 0
         case .solid, .solidFollow: return 1
-        case .blur: return 0.90 - 0.85 * CGFloat(min(max(translucency, 0), 1))
+        case .blur: return blurTintAlpha
         }
+    }
+
+    /// Just enough tint to keep the menu text readable over a busy wallpaper.
+    static let blurTintAlpha: CGFloat = 0.30
+
+    /// The strongest blur, as the window server's radius. Measured over a striped
+    /// wallpaper, contrast fell 0.45 → 0.35 → 0.15 → 0.06 → 0.03 at radius 0, 10, 20, 40,
+    /// 80, with the average brightness unchanged at every radius — a real blur, not a
+    /// darkening — so 60 is well into "the stripes are gone".
+    static let blurMaxRadius: CGFloat = 60
+
+    /// The window server's blur radius for a blur `amount` of 0 (see-through: none)
+    /// to 1 (the strongest). Zero for every other mode.
+    static func blurRadius(mode: MenuBarBackdropMode, amount: Double) -> Int32 {
+        guard mode == .blur else { return 0 }
+        return Int32((blurMaxRadius * CGFloat(min(max(amount, 0), 1))).rounded())
+    }
+
+    /// How far the blur reaches below the bar and its seam, in points: half a point,
+    /// one physical pixel. The blur stopped a pixel short of the window beneath and
+    /// left a hairline of unblurred wallpaper there.
+    static let blurExtra: CGFloat = 0.5
+
+    /// The blur's window: exactly the bar, its seam and `blurExtra` — and NOTHING more.
+    /// The window server blurs a window's whole frame, drawn or not (measured: the clear
+    /// area of a taller window was blurred just the same), so the corner wedges, which
+    /// hang over the tops of other windows, must not share it.
+    static func blurFrame(forStrip strip: NSRect, seam: CGFloat) -> NSRect {
+        NSRect(x: strip.minX, y: strip.minY - seam - blurExtra,
+               width: strip.width, height: strip.height + seam + blurExtra)
     }
 
     /// The tint for a bar whose text is white (`darkBar`) or black, optionally
@@ -286,50 +315,26 @@ private final class TintView: NSView {
     }
 }
 
-/// The glass: a blur of whatever is behind the window, cut to the strip's shape,
-/// with a tint over it.
+/// The strip's face: the tint, cut to the strip's shape. The blur is a window of its
+/// own beneath this one (`BlurWindow`).
 ///
 /// A maximised window's top corners are curved, so just below a straight-edged
 /// strip a sliver of wallpaper shows in each corner; the shape's two wedges fill
 /// it (see `MenuBarBackdropGeometry.shape`). A window NOT at the screen's edge
 /// gets the same wedges, which then read as the screen's own rounded corners.
 fileprivate final class BackdropView: NSView {
-    private let blur = NSVisualEffectView()
     private let tint: TintView
 
-    init(size: CGSize, seam: CGFloat, darkBar: Bool, tints: [NSColor], showsBlur: Bool) {
+    init(size: CGSize, seam: CGFloat, tints: [NSColor]) {
         let frame = CGRect(origin: .zero, size: size)
         tint = TintView(frame: frame, seam: seam)
         super.init(frame: frame)
-        blur.frame = frame
-        blur.material = .hudWindow
-        blur.blendingMode = .behindWindow
-        blur.state = .active
-        blur.appearance = NSAppearance(named: darkBar ? .darkAqua : .aqua)
-        let outline = MenuBarBackdropGeometry.shape(in: size, seam: seam,
-                                                    rim: MenuBarBackdropGeometry.rimCover)
-        blur.maskImage = NSImage(size: size, flipped: false) { _ in
-            guard let ctx = NSGraphicsContext.current?.cgContext else { return false }
-            ctx.addPath(outline)
-            ctx.setFillColor(NSColor.black.cgColor)
-            ctx.fillPath()
-            return true
-        }
-        blur.isHidden = !showsBlur
-        addSubview(blur)
         addSubview(tint)
         tint.setFill(tints, animated: false)
     }
     required init?(coder: NSCoder) { fatalError() }
 
-    /// `showsBlur` is false for the opaque modes. The blur is a SECOND layer cut to
-    /// the same shape as the tint over it, and their anti-aliased edges never agree
-    /// exactly, so under an opaque tint the darker blur peeked out as a dotted
-    /// one-pixel line along the corner curves (seen on a grey bar; invisible on
-    /// black). Where nothing shows through, it has no business being there.
-    func update(darkBar: Bool, tints: [NSColor], showsBlur: Bool) {
-        blur.appearance = NSAppearance(named: darkBar ? .darkAqua : .aqua)
-        blur.isHidden = !showsBlur
+    func update(tints: [NSColor]) {
         tint.setFill(tints, animated: true)
     }
 }
@@ -358,8 +363,8 @@ fileprivate final class BackdropWindow: NSWindow {
     /// the window has moved.
     var ownKey = ""
 
-    fileprivate init(frame: NSRect, strip: NSRect, seam: CGFloat, screen: NSScreen, primaryHeight: CGFloat, darkBar: Bool, tints: [NSColor],
-                     showsBlur: Bool) {
+    fileprivate init(frame: NSRect, strip: NSRect, seam: CGFloat, screen: NSScreen,
+                     primaryHeight: CGFloat, tints: [NSColor]) {
         screenLeft = screen.frame.minX
         screenTop = primaryHeight - screen.frame.maxY
         barBottom = primaryHeight - strip.minY
@@ -367,15 +372,59 @@ fileprivate final class BackdropWindow: NSWindow {
         screenWidth = screen.frame.width
         displayID = (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")]
                      as? NSNumber)?.uint32Value ?? CGMainDisplayID()
-        view = BackdropView(size: frame.size, seam: seam, darkBar: darkBar,
-                            tints: tints, showsBlur: showsBlur)
+        view = BackdropView(size: frame.size, seam: seam, tints: tints)
         super.init(contentRect: frame, styleMask: .borderless, backing: .buffered, defer: false)
+    }
+}
+
+/// A window's background blur, with an adjustable radius.
+///
+/// PRIVATE API, and the only way: `NSVisualEffectView` has no adjustable strength, and
+/// its dark material darkened everything under it. `CGSSetWindowBackgroundBlurRadius` is
+/// the long-standing call terminal emulators use for their blur slider. It is looked up
+/// at run time rather than linked, so if a future macOS removes it the blur simply does
+/// nothing and the tint stays — the bar never breaks.
+enum WindowBlur {
+    private typealias MainConnection = @convention(c) () -> Int32
+    private typealias SetRadius = @convention(c) (Int32, Int, Int32) -> Int32
+    private static let handle = dlopen(nil, RTLD_LAZY)
+
+    /// False when the call is missing or the window server refused it.
+    @discardableResult
+    static func set(_ window: NSWindow, radius: Int32) -> Bool {
+        guard let c = dlsym(handle, "CGSMainConnectionID"),
+              let s = dlsym(handle, "CGSSetWindowBackgroundBlurRadius") else { return false }
+        let connection = unsafeBitCast(c, to: MainConnection.self)()
+        return unsafeBitCast(s, to: SetRadius.self)(connection, window.windowNumber, radius) == 0
+    }
+}
+
+/// Clear, click-through, and exactly the bar: its only job is to blur what is behind it.
+fileprivate final class BlurWindow: NSWindow {
+    override var canBecomeKey: Bool { false }
+    override var canBecomeMain: Bool { false }
+    override func constrainFrameRect(_ frameRect: NSRect, to screen: NSScreen?) -> NSRect { frameRect }
+
+    init(frame: NSRect) {
+        super.init(contentRect: frame, styleMask: .borderless, backing: .buffered, defer: false)
+        backgroundColor = .clear
+        isOpaque = false
+        hasShadow = false
+        ignoresMouseEvents = true
+        isExcludedFromWindowsMenu = true
+        isReleasedWhenClosed = false
+        hidesOnDeactivate = false
+        level = .floating
+        collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle]
+        setFrame(frame, display: false)
     }
 }
 
 final class MenuBarBackdrop {
 
     fileprivate var windows: [BackdropWindow] = []
+    /// The blur, one window per bar, beneath the tint's. Only in the blur mode.
+    fileprivate var blurWindows: [BlurWindow] = []
     private var observers: [NSObjectProtocol] = []
     private var workspaceObservers: [NSObjectProtocol] = []
     private var settingsTokens: [AnyObject] = []
@@ -431,12 +480,15 @@ final class MenuBarBackdrop {
             object: nil, queue: .main) { [weak self] _ in self?.scheduleRetint() })
         // The mode is live: leaving the follow mode stops every read at once, and
         // Off takes the strip away without a relaunch.
-        for key in [Settings.Key.menuBarBackdropMode, Settings.Key.menuBarBackdropTranslucency] {
-            settingsTokens.append(settings.observe(key) { [weak self] in
-                self?.syncPolling()
-                self?.refresh(force: true)
-            })
-        }
+        settingsTokens.append(settings.observe(Settings.Key.menuBarBackdropMode) { [weak self] in
+            self?.syncPolling()
+            self?.refresh(force: true)
+        })
+        // The blur amount only changes a radius, so it must not rebuild the windows:
+        // dragging the slider would then flicker the bar on every step.
+        settingsTokens.append(settings.observe(Settings.Key.menuBarBackdropBlur) { [weak self] in
+            self?.applyBlurRadius()
+        })
         syncPolling()
     }
 
@@ -449,11 +501,17 @@ final class MenuBarBackdrop {
 
     private var mode: MenuBarBackdropMode { settings.menuBarBackdropMode }
     private var follows: Bool { mode == .solidFollow }
-    private var alpha: CGFloat {
-        MenuBarBackdropGeometry.tintAlpha(mode: mode, translucency: settings.menuBarBackdropTranslucency)
+    private var alpha: CGFloat { MenuBarBackdropGeometry.tintAlpha(mode: mode) }
+    private var blurRadius: Int32 {
+        MenuBarBackdropGeometry.blurRadius(mode: mode, amount: settings.menuBarBackdropBlur)
     }
-    /// Only the blur mode lets anything through the tint.
-    private var showsBlur: Bool { mode == .blur }
+
+    /// Push the current blur amount to the blur windows. Cheap, and the only thing a
+    /// slider drag does.
+    private func applyBlurRadius() {
+        let radius = blurRadius
+        blurWindows.forEach { WindowBlur.set($0, radius: radius) }
+    }
     private func plain() -> [NSColor] {
         MenuBarBackdropGeometry.tints(darkBar: darkBar, windowTop: nil, alpha: alpha)
     }
@@ -508,7 +566,7 @@ final class MenuBarBackdrop {
         for bar in windows {
             guard follows else {
                 bar.ownKey = ""
-                bar.view.update(darkBar: darkBar, tints: plain(), showsBlur: showsBlur)
+                bar.view.update(tints: plain())
                 continue
             }
             switch under(bar).kind {
@@ -541,9 +599,7 @@ final class MenuBarBackdrop {
     }
 
     private func apply(_ row: [NSColor]?, to bar: BackdropWindow) {
-        bar.view.update(darkBar: darkBar,
-                        tints: MenuBarBackdropGeometry.tints(darkBar: darkBar, windowTop: row, alpha: alpha),
-                        showsBlur: showsBlur)
+        bar.view.update(tints: MenuBarBackdropGeometry.tints(darkBar: darkBar, windowTop: row, alpha: alpha))
     }
 
     /// Read the edge of the window under the bar off the screen. Used for another
@@ -587,6 +643,8 @@ final class MenuBarBackdrop {
         guard mode != .off else {
             windows.forEach { $0.orderOut(nil) }
             windows = []
+            blurWindows.forEach { $0.orderOut(nil) }
+            blurWindows = []
             return
         }
         let primaryHeight = NSScreen.screens.first?.frame.height ?? 0
@@ -604,6 +662,14 @@ final class MenuBarBackdrop {
         guard force || planned.map(\.frame) != windows.map(\.frame) else { return }
         windows.forEach { $0.orderOut(nil) }
         windows = planned.map { makeWindow($0, primaryHeight: primaryHeight) }
+        // The blur goes up FIRST, so the tint's windows, ordered after, are above it.
+        blurWindows.forEach { $0.orderOut(nil) }
+        blurWindows = mode == .blur
+            ? planned.map { BlurWindow(frame: MenuBarBackdropGeometry.blurFrame(forStrip: $0.strip, seam: $0.seam)) }
+            : []
+        // The radius can only be set once the window exists on screen.
+        blurWindows.forEach { $0.orderFrontRegardless() }
+        applyBlurRadius()
         windows.forEach { $0.orderFrontRegardless() }
         retint(force: true)
     }
@@ -616,8 +682,7 @@ final class MenuBarBackdrop {
     private func makeWindow(_ plan: Plan, primaryHeight: CGFloat) -> BackdropWindow {
         let frame = plan.frame
         let w = BackdropWindow(frame: frame, strip: plan.strip, seam: plan.seam,
-                               screen: plan.screen, primaryHeight: primaryHeight,
-                               darkBar: darkBar, tints: plain(), showsBlur: showsBlur)
+                               screen: plan.screen, primaryHeight: primaryHeight, tints: plain())
         w.contentView = w.view
         // Clear, because the glass is the view's own and the rest is nothing.
         w.backgroundColor = .clear
