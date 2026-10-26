@@ -477,6 +477,7 @@ final class MenuBarBackdrop {
     private var darkBar = true
     private var pendingRetint: DispatchWorkItem?
     private var poll: Timer?
+    private var fullScreenWatch: Timer?
     private let settings = Settings.shared
 
     init() {
@@ -538,6 +539,7 @@ final class MenuBarBackdrop {
 
     deinit {
         poll?.invalidate()
+        fullScreenWatch?.invalidate()
         NSStatusBar.system.removeStatusItem(probe)
         observers.forEach { NotificationCenter.default.removeObserver($0) }
         workspaceObservers.forEach { NSWorkspace.shared.notificationCenter.removeObserver($0) }
@@ -694,9 +696,13 @@ final class MenuBarBackdrop {
         let primaryHeight = NSScreen.screens.first?.frame.height ?? 0
         let onScreen = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements],
                                                   kCGNullWindowID) as? [[String: Any]] ?? []
+        var hiddenForFullScreen = 0
         let planned: [Plan] = NSScreen.screens.compactMap {
             // No strip on a screen showing a full-screen window: its menu bar is hidden.
-            guard !Self.showsFullScreenWindow($0, primaryHeight: primaryHeight, windowInfo: onScreen) else { return nil }
+            guard !Self.showsFullScreenWindow($0, primaryHeight: primaryHeight, windowInfo: onScreen) else {
+                hiddenForFullScreen += 1
+                return nil
+            }
             guard let strip = MenuBarBackdropGeometry.strip(
                 screenFrame: $0.frame, visibleFrame: $0.visibleFrame,
                 safeAreaTop: $0.safeAreaInsets.top) else { return nil }
@@ -705,6 +711,7 @@ final class MenuBarBackdrop {
             return Plan(frame: MenuBarBackdropGeometry.windowFrame(forStrip: strip, seam: seam),
                         strip: strip, seam: seam, screen: $0)
         }
+        watchFullScreen(hiddenForFullScreen > 0)
         // Same strips as already shown: leave the windows alone rather than
         // reordering them on every wake.
         guard force || planned.map(\.frame) != windows.map(\.frame) else { return }
@@ -732,6 +739,23 @@ final class MenuBarBackdrop {
     /// Re-check now and again as a full-screen transition settles: entering or leaving full
     /// screen is an animation of about a second, and the window list only shows the final
     /// size at the end of it.
+    /// While a strip is hidden for a full-screen window, look again every couple of seconds.
+    /// Leaving a real full-screen Space announces itself, but a borderless window covering the
+    /// screen simply goes away, and nothing else would bring the bar back. Not running the
+    /// rest of the time is the point: a timer for something that is not happening is a wakeup
+    /// for nothing.
+    private func watchFullScreen(_ needed: Bool) {
+        if needed, fullScreenWatch == nil {
+            let t = Timer(timeInterval: 2, repeats: true) { [weak self] _ in self?.refresh() }
+            t.tolerance = 0.5
+            RunLoop.main.add(t, forMode: .common)
+            fullScreenWatch = t
+        } else if !needed, let t = fullScreenWatch {
+            t.invalidate()
+            fullScreenWatch = nil
+        }
+    }
+
     private func scheduleRefresh() {
         refresh()
         for delay in [0.4, 1.0] {
