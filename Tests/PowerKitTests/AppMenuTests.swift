@@ -707,17 +707,36 @@ final class MenuBarBackdropModeTests: XCTestCase {
         }
     }
 
-    /// The window server blurs a window's WHOLE frame, drawn or not, so the blur's window
-    /// is exactly the bar (plus the seam and half a point) and never the wedges' hang.
-    func testTheBlurWindowIsExactlyTheBarAndNothingBelowIt() {
+    /// The window server blurs a window's WHOLE frame, drawn or not, so the blur is three
+    /// windows: the bar over the whole width, with the extra row only between the corner
+    /// zones. Never reaching into the corner wedges' hang over other windows.
+    func testTheBlurIsThreeWindowsWithTheExtraRowOnlyOverTheStraightEdge() {
         let strip = NSRect(x: 0, y: 1131, width: 1800, height: 38)
-        let frame = MenuBarBackdropGeometry.blurFrame(forStrip: strip, seam: 1)
-        XCTAssertEqual(frame.maxY, strip.maxY, "the top edge must not move")
-        XCTAssertEqual(frame.height, 38 + 1 + MenuBarBackdropGeometry.blurExtra)
-        XCTAssertLessThan(frame.height, 38 + 1 + MenuBarBackdropGeometry.cornerRadius,
-                          "it must not reach into the corner wedges' hang over other windows")
-        XCTAssertEqual(MenuBarBackdropGeometry.blurExtra, 1.0,
-                       "a full point: both pixel rows of a window's top highlight")
+        let r = MenuBarBackdropGeometry.cornerRadius
+        let frames = MenuBarBackdropGeometry.blurFrames(forStrip: strip, seam: 1)
+        XCTAssertEqual(frames.count, 3)
+        let (left, middle, right) = (frames[0], frames[1], frames[2])
+        XCTAssertEqual([left, middle, right].map(\.maxY), [strip.maxY, strip.maxY, strip.maxY], "tops do not move")
+        XCTAssertEqual(left.height, 38 + 1)
+        XCTAssertEqual(right.height, 38 + 1)
+        XCTAssertEqual(middle.height, 38 + 1 + MenuBarBackdropGeometry.blurExtra, "the extra row only here")
+        XCTAssertEqual(left.maxX, middle.minX); XCTAssertEqual(middle.maxX, right.minX)
+        XCTAssertEqual(left.minX, 0); XCTAssertEqual(right.maxX, 1800)
+        XCTAssertEqual(left.width, r); XCTAssertEqual(right.width, r)
+        XCTAssertTrue(frames.allSatisfy { $0.height < 38 + 1 + r }, "nothing reaches into the wedges' hang")
+        XCTAssertEqual(MenuBarBackdropGeometry.blurExtra, 1.0, "a full point: both pixel rows of the highlight")
+    }
+
+    func testOnlyTheBlurModeDropsTheCornerWedges() {
+        XCTAssertFalse(MenuBarBackdropGeometry.showsWedges(for: .blur))
+        for mode in [MenuBarBackdropMode.off, .solid, .solidFollow] {
+            XCTAssertTrue(MenuBarBackdropGeometry.showsWedges(for: mode), "\(mode)")
+        }
+        let r = MenuBarBackdropGeometry.cornerRadius
+        let size = CGSize(width: 400, height: 39 + r)
+        XCTAssertTrue(MenuBarBackdropGeometry.shape(in: size, seam: 1).contains(CGPoint(x: 1, y: r - 1)), "wedge present")
+        XCTAssertFalse(MenuBarBackdropGeometry.shape(in: size, seam: 1, wedges: false).contains(CGPoint(x: 1, y: r - 1)),
+                       "no wedge")
     }
 
     /// A missing private call must not break the bar: it is looked up at run time and
