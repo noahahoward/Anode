@@ -783,8 +783,8 @@ final class MenuBarBackdropRimTests: XCTestCase {
         XCTAssertTrue(path.contains(CGPoint(x: 900, y: r - 0.5)), "the window's top highlight row")
         XCTAssertFalse(path.contains(CGPoint(x: 900, y: r - 1.5)), "the window itself, below the rim")
         // In the corner zone the window's edge curves away; a rim there is the stripe.
-        XCTAssertFalse(path.contains(CGPoint(x: r - 3, y: r - 0.5)),
-                       "no rim across the top of the corner curve")
+        XCTAssertFalse(path.contains(CGPoint(x: r - MenuBarBackdropGeometry.rimCornerOverlap - 3, y: r - 0.5)),
+                       "no rim across the top of the corner curve beyond the small overlap with the wedge")
     }
 }
 
@@ -860,5 +860,19 @@ final class MenuBarBackdropRimModeTests: XCTestCase {
         for mode in [MenuBarBackdropMode.off, .solid, .solidFollow] {
             XCTAssertEqual(MenuBarBackdropGeometry.rim(for: mode), 0, "\(mode): the bar ends where the window begins")
         }
+    }
+}
+
+final class MenuBarBackdropRimOverlapTests: XCTestCase {
+    /// The rim must overlap the wedge, or a sliver of the window's top highlight shows where
+    /// they meet. A point a few units into the corner zone, on the rim's row, is covered.
+    func testTheRimRunsIntoTheCornerZonesSoItOverlapsTheWedges() {
+        let r = MenuBarBackdropGeometry.cornerRadius
+        let size = CGSize(width: 400, height: 39 + r)
+        let rim = MenuBarBackdropGeometry.shape(in: size, seam: 1, rim: 1)
+        let bare = MenuBarBackdropGeometry.shape(in: size, seam: 1, rim: 0)
+        let probe = CGPoint(x: r - 2, y: r - 0.5)      // 2 pt inside the corner zone, on the rim's row
+        XCTAssertTrue(rim.contains(probe))
+        XCTAssertFalse(bare.contains(probe), "this point is only covered because the rim reaches in")
     }
 }
