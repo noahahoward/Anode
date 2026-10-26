@@ -64,35 +64,39 @@ enum MenuBarBackdropGeometry {
     /// targets 13.
     static func shape(in size: CGSize, seam: CGFloat = 0, rim: CGFloat = 0) -> CGPath {
         let r = cornerRadius, w = size.width
-        let path = CGMutablePath()
         // `r` is where a window's top edge sits: the seam is above it, the bar above that.
-        path.addRect(CGRect(x: 0, y: r, width: w, height: size.height - r))
+        var shape = CGPath(rect: CGRect(x: 0, y: r, width: w, height: size.height - r), transform: nil)
         // Overlapping the wedges by `rimCornerOverlap` on each side, not just meeting them:
         // where a wedge begins it is thinner than the rim is tall (0.5 pt thick 4 pt along),
         // so a rim that stopped at the tangent point left a sliver of the window's own
-        // top highlight showing — one or two lighter pixels at x ≈ 15–18 and ≈ 1785. At 5 pt a single dark pixel of
-        // the window's outline was still left at x ≈ 12; 8 pt covers it.
+        // top highlight showing. The pieces are UNIONED, not drawn into one path: the two
+        // wedges run in opposite directions, and where such a piece overlapped the rim the
+        // windings cancelled under the nonzero rule and cut a HOLE — a dark streak along the
+        // left corner (measured at x ≈ 9–13, rows 39–40), while the right corner was fine.
         if rim > 0 {
             let inset = max(0, r - rimCornerOverlap)
-            path.addRect(CGRect(x: inset, y: r - rim, width: max(0, w - 2 * inset), height: rim))
+            shape = shape.union(CGPath(rect: CGRect(x: inset, y: r - rim, width: max(0, w - 2 * inset),
+                                                    height: rim), transform: nil))
         }
         // Left wedge: the square under the window-top line's left end minus the
         // quarter-disc the window's own corner occupies. Two anti-aliased edges that
         // meet exactly leave a dotted fringe of wallpaper between them (seen, zoomed
         // in, along the whole curve), which is why `cornerRadius` rounds up.
         let rw = r
-        path.move(to: CGPoint(x: 0, y: r))
-        path.addLine(to: CGPoint(x: rw, y: r))
-        path.addArc(center: CGPoint(x: rw, y: r - rw), radius: rw,
+        let left = CGMutablePath()
+        left.move(to: CGPoint(x: 0, y: r))
+        left.addLine(to: CGPoint(x: rw, y: r))
+        left.addArc(center: CGPoint(x: rw, y: r - rw), radius: rw,
                     startAngle: .pi / 2, endAngle: .pi, clockwise: false)
-        path.closeSubpath()
+        left.closeSubpath()
         // Right wedge, mirrored.
-        path.move(to: CGPoint(x: w, y: r))
-        path.addLine(to: CGPoint(x: w - rw, y: r))
-        path.addArc(center: CGPoint(x: w - rw, y: r - rw), radius: rw,
-                    startAngle: .pi / 2, endAngle: 0, clockwise: true)
-        path.closeSubpath()
-        return path
+        let right = CGMutablePath()
+        right.move(to: CGPoint(x: w, y: r))
+        right.addLine(to: CGPoint(x: w - rw, y: r))
+        right.addArc(center: CGPoint(x: w - rw, y: r - rw), radius: rw,
+                     startAngle: .pi / 2, endAngle: 0, clockwise: true)
+        right.closeSubpath()
+        return shape.union(left).union(right)
     }
 
     /// How much of the strip is tint. The solid modes are fully opaque, so the

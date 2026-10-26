@@ -878,3 +878,16 @@ final class MenuBarBackdropRimOverlapTests: XCTestCase {
         XCTAssertFalse(bare.contains(probe), "this point is only covered because the rim reaches in")
     }
 }
+
+final class MenuBarBackdropShapeUnionTests: XCTestCase {
+    /// Where the rim overlaps a wedge the shape must be FILLED, not holed: the two run in opposite
+    /// directions, and drawn into one path their windings cancel there. This point is inside both
+    /// the left wedge and the rim's reach into the corner zone.
+    func testTheRimAndWedgeOverlapIsFilledOnBothSides() {
+        let r = MenuBarBackdropGeometry.cornerRadius
+        let w: CGFloat = 400
+        let path = MenuBarBackdropGeometry.shape(in: CGSize(width: w, height: 39 + r), seam: 1, rim: 1)
+        XCTAssertTrue(path.contains(CGPoint(x: 10, y: r - 0.4)), "left overlap")
+        XCTAssertTrue(path.contains(CGPoint(x: w - 10, y: r - 0.4)), "right overlap")
+    }
+}
