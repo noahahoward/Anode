@@ -783,8 +783,10 @@ final class MenuBarBackdropRimTests: XCTestCase {
         XCTAssertTrue(path.contains(CGPoint(x: 900, y: r - 0.5)), "the window's top highlight row")
         XCTAssertFalse(path.contains(CGPoint(x: 900, y: r - 1.5)), "the window itself, below the rim")
         // In the corner zone the window's edge curves away; a rim there is the stripe.
-        XCTAssertFalse(path.contains(CGPoint(x: r - MenuBarBackdropGeometry.rimCornerOverlap - 3, y: r - 0.5)),
-                       "no rim across the top of the corner curve beyond the small overlap with the wedge")
+        // Inside the window's own corner (inside the disc the wedge is cut from), nothing is drawn:
+        // neither the wedge nor the rim may paint over the window's interior.
+        XCTAssertFalse(path.contains(CGPoint(x: r - 2, y: r - 6)), "the window's corner interior stays clear")
+        XCTAssertFalse(path.contains(CGPoint(x: 4, y: 4)), "and so does the deeper interior")
     }
 }
 

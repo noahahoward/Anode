@@ -37,7 +37,7 @@ enum MenuBarBackdropGeometry {
     static let rimCover: CGFloat = 0
 
     /// How far the rim runs into each corner zone, so it overlaps the wedge. See `shape`.
-    static let rimCornerOverlap: CGFloat = 5
+    static let rimCornerOverlap: CGFloat = 8
 
     /// The strip, the seam under it, the rim and its two corner wedges as one outline,
     /// in a window of `size` whose origin is bottom-left.
@@ -70,7 +70,8 @@ enum MenuBarBackdropGeometry {
         // Overlapping the wedges by `rimCornerOverlap` on each side, not just meeting them:
         // where a wedge begins it is thinner than the rim is tall (0.5 pt thick 4 pt along),
         // so a rim that stopped at the tangent point left a sliver of the window's own
-        // top highlight showing — one or two lighter pixels at x ≈ 15–18 and ≈ 1785.
+        // top highlight showing — one or two lighter pixels at x ≈ 15–18 and ≈ 1785. At 5 pt a single dark pixel of
+        // the window's outline was still left at x ≈ 12; 8 pt covers it.
         if rim > 0 {
             let inset = max(0, r - rimCornerOverlap)
             path.addRect(CGRect(x: inset, y: r - rim, width: max(0, w - 2 * inset), height: rim))
