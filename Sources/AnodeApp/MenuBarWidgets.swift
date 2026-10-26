@@ -298,6 +298,16 @@ public final class MenuBarWidgetController: NSObject, NSMenuDelegate {
     /// Posted on the main thread whenever `placement` changes.
     public static let placementDidChange = Notification.Name("AnodeWidgetPlacementDidChange")
 
+    /// Posted on the main thread each time the status items are torn down and made again, so
+    /// whoever holds one of their buttons knows to take a new one.
+    static let itemsDidRebuild = Notification.Name("AnodeWidgetItemsDidRebuild")
+
+    /// One of the real widgets' buttons, or nil when there are none. A status item's button
+    /// is the one place an app can read the menu bar's own light/dark choice, and the
+    /// backdrop reads it from here instead of keeping an item of its own: a zero-width one
+    /// still reserved spacing and showed as a blank gap between two widgets.
+    var appearanceButton: NSStatusBarButton? { items.first?.item.button }
+
     /// The most recent verdict, for anything that decides whether the menu bar
     /// can be relied on as the app's only door (the Dock tile, chiefly).
     public private(set) static var lastPlacement: Placement = .unknown
@@ -491,6 +501,7 @@ public final class MenuBarWidgetController: NSObject, NSMenuDelegate {
         // refresh() have nothing to walk, so no cost is paid anywhere downstream.
         guard isEnabled else {
             placement = .unknown
+            NotificationCenter.default.post(name: Self.itemsDidRebuild, object: self)
             return
         }
 
@@ -534,6 +545,7 @@ public final class MenuBarWidgetController: NSObject, NSMenuDelegate {
         items.reverse()   // back to config order for renders and test seams
         for entry in items { render(entry) }
         Self.debugDump(items, density: density)
+        NotificationCenter.default.post(name: Self.itemsDidRebuild, object: self)
         // AppKit lays status items out asynchronously, so a look taken now would
         // see every one of them unplaced.
         schedulePlacementCheck(after: 1.5)

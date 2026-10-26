@@ -912,3 +912,18 @@ final class MenuBarBackdropFullScreenTests: XCTestCase {
         XCTAssertFalse(MenuBarBackdropGeometry.coversWholeScreen(otherScreen, screen: screen))
     }
 }
+
+final class MenuBarBackdropAppearanceTests: XCTestCase {
+    func testTheBarIsDarkUnlessTheAppearanceIsLight() {
+        XCTAssertTrue(MenuBarBackdrop.isDark(NSAppearance(named: .darkAqua)!))
+        XCTAssertFalse(MenuBarBackdrop.isDark(NSAppearance(named: .aqua)!))
+    }
+
+    /// With no widget to read the appearance from, the backdrop must still come up (on the system
+    /// appearance) and must not need a status item of its own.
+    func testItComesUpWithNoWidgetButtonAtAll() {
+        _ = appKitForTests
+        let backdrop = MenuBarBackdrop(appearanceButton: { nil })
+        XCTAssertNotNil(backdrop)
+    }
+}

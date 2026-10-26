@@ -469,10 +469,11 @@ final class MenuBarBackdrop {
     private var observers: [NSObjectProtocol] = []
     private var workspaceObservers: [NSObjectProtocol] = []
     private var settingsTokens: [AnyObject] = []
-    /// Zero-width, so nothing shows in the bar. It exists for its button: a status
-    /// item's `effectiveAppearance` is the one place an app can read the menu bar's
-    /// light/dark choice — `NSApp.effectiveAppearance` stays on the system setting.
-    private let probe = NSStatusBar.system.statusItem(withLength: 0)
+    /// Where the menu bar's light/dark choice is read from: a real widget's status-item
+    /// button, whose `effectiveAppearance` follows the bar (`NSApp.effectiveAppearance` stays on
+    /// the system setting). It was a status item of its own, zero wide — and macOS still
+    /// reserved spacing around it, so it showed as a blank gap between two widgets.
+    private let appearanceButton: () -> NSStatusBarButton?
     private var appearanceWatch: NSKeyValueObservation?
     private var darkBar = true
     private var pendingRetint: DispatchWorkItem?
@@ -489,14 +490,14 @@ final class MenuBarBackdrop {
     }
     private let settings = Settings.shared
 
-    init() {
-        appearanceWatch = probe.button?.observe(\.effectiveAppearance, options: [.initial, .new]) {
-            [weak self] button, _ in
-            let dark = button.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) != .aqua
-            DispatchQueue.main.async { self?.setDarkBar(dark) }
-        }
+    init(appearanceButton: @escaping () -> NSStatusBarButton? = { nil }) {
+        self.appearanceButton = appearanceButton
+        bindAppearance()
         refresh()
         let center = NotificationCenter.default
+        // New widget buttons after every rebuild: the one being watched is gone.
+        observers.append(center.addObserver(forName: MenuBarWidgetController.itemsDidRebuild,
+                                            object: nil, queue: .main) { [weak self] _ in self?.bindAppearance() })
         // Posted on every wake and on changes that move no screen, so `refresh`
         // does its own comparing and a redundant call is a no-op.
         observers.append(center.addObserver(
@@ -549,7 +550,6 @@ final class MenuBarBackdrop {
     deinit {
         poll?.invalidate()
         fullScreenWatch?.invalidate()
-        NSStatusBar.system.removeStatusItem(probe)
         observers.forEach { NotificationCenter.default.removeObserver($0) }
         workspaceObservers.forEach { NSWorkspace.shared.notificationCenter.removeObserver($0) }
     }
@@ -568,6 +568,25 @@ final class MenuBarBackdrop {
     }
     private func plain() -> [NSColor] {
         MenuBarBackdropGeometry.tints(darkBar: darkBar, windowTop: nil, alpha: alpha)
+    }
+
+    static func isDark(_ appearance: NSAppearance) -> Bool {
+        appearance.bestMatch(from: [.darkAqua, .aqua]) != .aqua
+    }
+
+    /// Watch a real widget's button, or — with no widget to read (widgets off, or not built
+    /// yet) — the system's own appearance, which is right except while a shuffling wallpaper
+    /// flips the bar's text colour against the system setting.
+    private func bindAppearance() {
+        appearanceWatch = nil
+        guard let button = appearanceButton() else {
+            setDarkBar(Self.isDark(NSApp.effectiveAppearance))
+            return
+        }
+        appearanceWatch = button.observe(\.effectiveAppearance, options: [.initial, .new]) { [weak self] b, _ in
+            let dark = Self.isDark(b.effectiveAppearance)
+            DispatchQueue.main.async { self?.setDarkBar(dark) }
+        }
     }
 
     private func setDarkBar(_ dark: Bool) {

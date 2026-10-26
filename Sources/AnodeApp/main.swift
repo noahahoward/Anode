@@ -297,7 +297,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         }
 
         buildMenu()
-        menuBarBackdrop = MenuBarBackdrop()
+        menuBarBackdrop = MenuBarBackdrop(appearanceButton: { [weak self] in self?.widgets?.appearanceButton })
 
         main = MainWindowController()
         main.table.dataSource = self
