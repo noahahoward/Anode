@@ -116,10 +116,20 @@ enum MenuBarBackdropGeometry {
         return Int32((blurMaxRadius * CGFloat(min(max(amount, 0), 1))).rounded())
     }
 
-    /// How far the blur reaches below the bar and its seam, in points: half a point,
-    /// one physical pixel. The blur stopped a pixel short of the window beneath and
-    /// left a hairline of unblurred wallpaper there.
-    static let blurExtra: CGFloat = 0.5
+    /// How far the blur — and the tint over it — reach below the bar and its seam, in
+    /// points: a full point, two physical pixels. A window's top edge carries a lighter
+    /// highlight exactly that tall (rows reading 0.39 and 0.38 against a 0.29 bar and a
+    /// 0.25 window), and the blur stopping half way, one row short, left half of it
+    /// showing as a thin light line — "a 1 px gap". It was half a point, and its extra
+    /// row had no tint, so it also came out brighter than the bar around it.
+    static let blurExtra: CGFloat = 1.0
+
+    /// How far the strip reaches over a window's top edge in `mode`: the blur mode, whose
+    /// soft edge must meet the window with no line between, and nothing for the solid
+    /// modes, whose bar was reported 1–2 px too far down at a full point.
+    static func rim(for mode: MenuBarBackdropMode) -> CGFloat {
+        mode == .blur ? blurExtra : rimCover
+    }
 
     /// The blur's window: exactly the bar, its seam and `blurExtra` — and NOTHING more.
     /// The window server blurs a window's whole frame, drawn or not (measured: the clear
@@ -272,14 +282,13 @@ private final class TintView: NSView {
     private var gradient: CAGradientLayer { layer as! CAGradientLayer }
     private(set) var applied: [NSColor] = []
 
-    init(frame: NSRect, seam: CGFloat) {
+    init(frame: NSRect, seam: CGFloat, rim: CGFloat) {
         super.init(frame: frame)
         wantsLayer = true
         gradient.startPoint = CGPoint(x: 0, y: 0.5)
         gradient.endPoint = CGPoint(x: 1, y: 0.5)
         let mask = CAShapeLayer()
-        mask.path = MenuBarBackdropGeometry.shape(in: frame.size, seam: seam,
-                                                  rim: MenuBarBackdropGeometry.rimCover)
+        mask.path = MenuBarBackdropGeometry.shape(in: frame.size, seam: seam, rim: rim)
         gradient.mask = mask
     }
     required init?(coder: NSCoder) { fatalError() }
@@ -325,9 +334,9 @@ private final class TintView: NSView {
 fileprivate final class BackdropView: NSView {
     private let tint: TintView
 
-    init(size: CGSize, seam: CGFloat, tints: [NSColor]) {
+    init(size: CGSize, seam: CGFloat, rim: CGFloat, tints: [NSColor]) {
         let frame = CGRect(origin: .zero, size: size)
-        tint = TintView(frame: frame, seam: seam)
+        tint = TintView(frame: frame, seam: seam, rim: rim)
         super.init(frame: frame)
         addSubview(tint)
         tint.setFill(tints, animated: false)
@@ -363,7 +372,7 @@ fileprivate final class BackdropWindow: NSWindow {
     /// the window has moved.
     var ownKey = ""
 
-    fileprivate init(frame: NSRect, strip: NSRect, seam: CGFloat, screen: NSScreen,
+    fileprivate init(frame: NSRect, strip: NSRect, seam: CGFloat, rim: CGFloat, screen: NSScreen,
                      primaryHeight: CGFloat, tints: [NSColor]) {
         screenLeft = screen.frame.minX
         screenTop = primaryHeight - screen.frame.maxY
@@ -372,7 +381,7 @@ fileprivate final class BackdropWindow: NSWindow {
         screenWidth = screen.frame.width
         displayID = (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")]
                      as? NSNumber)?.uint32Value ?? CGMainDisplayID()
-        view = BackdropView(size: frame.size, seam: seam, tints: tints)
+        view = BackdropView(size: frame.size, seam: seam, rim: rim, tints: tints)
         super.init(contentRect: frame, styleMask: .borderless, backing: .buffered, defer: false)
     }
 }
@@ -687,6 +696,7 @@ final class MenuBarBackdrop {
     private func makeWindow(_ plan: Plan, primaryHeight: CGFloat) -> BackdropWindow {
         let frame = plan.frame
         let w = BackdropWindow(frame: frame, strip: plan.strip, seam: plan.seam,
+                               rim: MenuBarBackdropGeometry.rim(for: mode),
                                screen: plan.screen, primaryHeight: primaryHeight, tints: plain())
         w.contentView = w.view
         // Clear, because the glass is the view's own and the rest is nothing.

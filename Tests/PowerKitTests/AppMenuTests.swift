@@ -716,7 +716,8 @@ final class MenuBarBackdropModeTests: XCTestCase {
         XCTAssertEqual(frame.height, 38 + 1 + MenuBarBackdropGeometry.blurExtra)
         XCTAssertLessThan(frame.height, 38 + 1 + MenuBarBackdropGeometry.cornerRadius,
                           "it must not reach into the corner wedges' hang over other windows")
-        XCTAssertEqual(MenuBarBackdropGeometry.blurExtra, 0.5, "one physical pixel on a 2x display")
+        XCTAssertEqual(MenuBarBackdropGeometry.blurExtra, 1.0,
+                       "a full point: both pixel rows of a window's top highlight")
     }
 
     /// A missing private call must not break the bar: it is looked up at run time and
@@ -848,5 +849,15 @@ final class MenuBarBackdropMaskTests: XCTestCase {
     func testNoWindowAtAllLeavesTheBarPlainEverywhere() {
         let out = MenuBarBackdropGeometry.masked([grey(0.3), grey(0.3)], spans: [], inset: 0, width: 100, base: .black)
         XCTAssertTrue(out.allSatisfy { $0.usingColorSpace(.sRGB)!.redComponent < 0.001 })
+    }
+}
+
+final class MenuBarBackdropRimModeTests: XCTestCase {
+    /// The blur's tint reaches as far as the blur, or its extra row is brighter than the bar.
+    func testTheBlurModeCoversTheWindowTopHighlightAndTheSolidModesDoNot() {
+        XCTAssertEqual(MenuBarBackdropGeometry.rim(for: .blur), MenuBarBackdropGeometry.blurExtra)
+        for mode in [MenuBarBackdropMode.off, .solid, .solidFollow] {
+            XCTAssertEqual(MenuBarBackdropGeometry.rim(for: mode), 0, "\(mode): the bar ends where the window begins")
+        }
     }
 }
