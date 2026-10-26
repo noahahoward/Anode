@@ -891,3 +891,24 @@ final class MenuBarBackdropShapeUnionTests: XCTestCase {
         XCTAssertTrue(path.contains(CGPoint(x: w - 10, y: r - 0.4)), "right overlap")
     }
 }
+
+final class MenuBarBackdropFullScreenTests: XCTestCase {
+    private let screen = CGRect(x: 1180, y: 0, width: 1800, height: 1169)
+
+    func testAWindowCoveringTheWholeScreenIsFullScreen() {
+        XCTAssertTrue(MenuBarBackdropGeometry.coversWholeScreen(screen, screen: screen))
+        XCTAssertTrue(MenuBarBackdropGeometry.coversWholeScreen(screen.insetBy(dx: -1, dy: 1), screen: screen),
+                      "a point either way is rounding, not a different window")
+    }
+
+    /// A maximised window starts below the menu bar, so the strip must stay for it.
+    func testAMaximisedWindowIsNotFullScreen() {
+        let maximised = CGRect(x: 1180, y: 39, width: 1800, height: 1130)
+        XCTAssertFalse(MenuBarBackdropGeometry.coversWholeScreen(maximised, screen: screen))
+    }
+
+    func testAWindowOnAnotherDisplayDoesNotCount() {
+        let otherScreen = CGRect(x: 0, y: 0, width: 1180, height: 820)
+        XCTAssertFalse(MenuBarBackdropGeometry.coversWholeScreen(otherScreen, screen: screen))
+    }
+}

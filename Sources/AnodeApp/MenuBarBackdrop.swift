@@ -251,6 +251,19 @@ enum MenuBarBackdropGeometry {
         max(0, (screenFrame.maxY - visibleFrame.maxY) - strip.height)
     }
 
+    /// Is a window with these bounds covering the whole screen — a full-screen window, whose
+    /// menu bar is hidden, so a strip drawn there would be a black band over its content?
+    ///
+    /// Judged from the window list, not from `visibleFrame`: on a second display the visible
+    /// frame was not reliably updated when a window went full screen, and the strip stayed.
+    /// A maximised window starts BELOW the menu bar, so it never matches; a full-screen one,
+    /// or a borderless game window covering everything, does. Same coordinate space for both
+    /// (the window server's: origin top-left, y down).
+    static func coversWholeScreen(_ bounds: CGRect, screen: CGRect, tolerance: CGFloat = 2) -> Bool {
+        abs(bounds.minX - screen.minX) <= tolerance && abs(bounds.minY - screen.minY) <= tolerance
+            && abs(bounds.width - screen.width) <= tolerance && abs(bounds.height - screen.height) <= tolerance
+    }
+
     /// The strip for a screen, or nil when there is no menu bar to hide.
     ///
     /// The bar's height is the notch's where there is one (`safeAreaTop`, which
@@ -480,7 +493,7 @@ final class MenuBarBackdrop {
             forName: NSApplication.didChangeScreenParametersNotification,
             object: nil, queue: .main) { [weak self] _ in
                 WindowEdgeSampler.forgetDisplays()
-                self?.refresh()
+                self?.scheduleRefresh()
             })
         // Anode's OWN windows announce themselves, so they are read on the event.
         for name in [NSWindow.didMoveNotification, NSWindow.didResizeNotification,
@@ -502,10 +515,13 @@ final class MenuBarBackdrop {
         // once that Space is the one being looked at.
         workspaceObservers.append(ws.addObserver(
             forName: NSWorkspace.activeSpaceDidChangeNotification,
-            object: nil, queue: .main) { [weak self] _ in self?.refresh() })
+            object: nil, queue: .main) { [weak self] _ in self?.scheduleRefresh() })
         workspaceObservers.append(ws.addObserver(
             forName: NSWorkspace.didActivateApplicationNotification,
-            object: nil, queue: .main) { [weak self] _ in self?.scheduleRetint() })
+            object: nil, queue: .main) { [weak self] _ in
+                self?.scheduleRetint()
+                self?.scheduleRefresh()
+            })
         // The mode is live: leaving the follow mode stops every read at once, and
         // Off takes the strip away without a relaunch.
         settingsTokens.append(settings.observe(Settings.Key.menuBarBackdropMode) { [weak self] in
@@ -560,7 +576,10 @@ final class MenuBarBackdrop {
         poll?.invalidate()
         poll = nil
         guard follows else { return }
-        let t = Timer(timeInterval: 1, repeats: true) { [weak self] _ in self?.retint(force: false) }
+        let t = Timer(timeInterval: 1, repeats: true) { [weak self] _ in
+            self?.refresh()
+            self?.retint(force: false)
+        }
         t.tolerance = 0.5
         RunLoop.main.add(t, forMode: .common)
         poll = t
@@ -673,7 +692,11 @@ final class MenuBarBackdrop {
             return
         }
         let primaryHeight = NSScreen.screens.first?.frame.height ?? 0
+        let onScreen = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements],
+                                                  kCGNullWindowID) as? [[String: Any]] ?? []
         let planned: [Plan] = NSScreen.screens.compactMap {
+            // No strip on a screen showing a full-screen window: its menu bar is hidden.
+            guard !Self.showsFullScreenWindow($0, primaryHeight: primaryHeight, windowInfo: onScreen) else { return nil }
             guard let strip = MenuBarBackdropGeometry.strip(
                 screenFrame: $0.frame, visibleFrame: $0.visibleFrame,
                 safeAreaTop: $0.safeAreaInsets.top) else { return nil }
@@ -690,6 +713,30 @@ final class MenuBarBackdrop {
         windows.forEach { $0.orderFrontRegardless() }
         applyBlurRadius()
         retint(force: true)
+    }
+
+    /// Is some ordinary window on this screen covering all of it?
+    private static func showsFullScreenWindow(_ screen: NSScreen, primaryHeight: CGFloat,
+                                              windowInfo: [[String: Any]]) -> Bool {
+        let frame = CGRect(x: screen.frame.minX, y: primaryHeight - screen.frame.maxY,
+                           width: screen.frame.width, height: screen.frame.height)
+        return windowInfo.contains { entry in
+            guard (entry[kCGWindowLayer as String] as? Int) == 0,
+                  (entry[kCGWindowAlpha as String] as? Double ?? 1) > 0,
+                  let dict = entry[kCGWindowBounds as String] as? NSDictionary,
+                  let bounds = CGRect(dictionaryRepresentation: dict) else { return false }
+            return MenuBarBackdropGeometry.coversWholeScreen(bounds, screen: frame)
+        }
+    }
+
+    /// Re-check now and again as a full-screen transition settles: entering or leaving full
+    /// screen is an animation of about a second, and the window list only shows the final
+    /// size at the end of it.
+    private func scheduleRefresh() {
+        refresh()
+        for delay in [0.4, 1.0] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in self?.refresh() }
+        }
     }
 
     private struct Plan {
