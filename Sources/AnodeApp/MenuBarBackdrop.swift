@@ -399,7 +399,7 @@ enum WindowBlur {
     }
 }
 
-/// Clear, click-through, and exactly the bar: its only job is to blur what is behind it.
+/// Click-through, near-invisible, and exactly the bar: its only job is to blur what is behind it.
 fileprivate final class BlurWindow: NSWindow {
     override var canBecomeKey: Bool { false }
     override var canBecomeMain: Bool { false }
@@ -407,7 +407,12 @@ fileprivate final class BlurWindow: NSWindow {
 
     init(frame: NSRect) {
         super.init(contentRect: frame, styleMask: .borderless, backing: .buffered, defer: false)
-        backgroundColor = .clear
+        // NOT fully clear. In the menu bar zone the window server does not blur behind a
+        // window with no alpha at all (measured over a photo wallpaper: edge energy
+        // 0.0267 at radius 0 AND at radius 60, identical to the bare wallpaper), while
+        // one with the faintest alpha blurs. 5% black is invisible under the 30% tint
+        // that sits above it.
+        backgroundColor = NSColor(white: 0, alpha: 0.05)
         isOpaque = false
         hasShadow = false
         ignoresMouseEvents = true
