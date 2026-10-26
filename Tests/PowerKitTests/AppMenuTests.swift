@@ -692,7 +692,7 @@ final class MenuBarBackdropModeTests: XCTestCase {
         XCTAssertEqual(MenuBarBackdropGeometry.blurRadius(mode: .blur, amount: 0), 0,
                        "see-through is the least blur")
         XCTAssertEqual(MenuBarBackdropGeometry.blurRadius(mode: .blur, amount: 1),
-                       Int32(MenuBarBackdropGeometry.blurMaxRadius))
+                       MenuBarBackdropGeometry.blurMaxRadius)
         let radii = stride(from: 0.0, through: 1.0, by: 0.25).map {
             MenuBarBackdropGeometry.blurRadius(mode: .blur, amount: $0)
         }
@@ -707,51 +707,27 @@ final class MenuBarBackdropModeTests: XCTestCase {
         }
     }
 
-    /// One blur window across the whole width: split in three it showed a seam, because a
-    /// blur window only blurs what is inside its own bounds. Never reaching into the corner
-    /// wedges' hang over other windows.
-    func testTheBlurIsOneFullWidthWindowReachingOnePointBelowTheSeam() {
-        let strip = NSRect(x: 0, y: 1131, width: 1800, height: 38)
-        let frames = MenuBarBackdropGeometry.blurFrames(forStrip: strip, seam: 1)
-        XCTAssertEqual(frames.count, 1)
-        let f = frames[0]
-        XCTAssertEqual(f.maxY, strip.maxY, "the top does not move")
-        XCTAssertEqual(f.minX, 0); XCTAssertEqual(f.maxX, 1800)
-        XCTAssertEqual(f.height, 38 + 1 + MenuBarBackdropGeometry.blurExtra)
-        XCTAssertLessThan(f.height, 38 + 1 + MenuBarBackdropGeometry.cornerRadius,
-                          "nothing reaches into the wedges' hang")
+    /// The blur and the tint share one shape, so the corner wedges are blurred too and the
+    /// extra row under the bar is in it: the blur can never reach somewhere the tint does not.
+    func testTheBlurReachesAFullPointBelowTheSeamOnTheStraightEdgeOnly() {
         XCTAssertEqual(MenuBarBackdropGeometry.blurExtra, 1.0, "a full point: both pixel rows of the highlight")
-    }
-
-    /// In the blur mode the tint's extra row runs the full width, like the blur's.
-    func testTheBlurModesTintRimRunsTheFullWidth() {
         let r = MenuBarBackdropGeometry.cornerRadius
         let size = CGSize(width: 400, height: 39 + r)
-        let path = MenuBarBackdropGeometry.shape(in: size, seam: 1, rim: 1, wedges: false, fullWidthRim: true)
-        XCTAssertTrue(path.contains(CGPoint(x: 3, y: r - 0.5)), "the rim row, inside the corner zone")
-        let between = MenuBarBackdropGeometry.shape(in: size, seam: 1, rim: 1, wedges: false)
-        XCTAssertFalse(between.contains(CGPoint(x: 3, y: r - 0.5)), "by default the rim stays off the corner curve")
+        let path = MenuBarBackdropGeometry.shape(in: size, seam: 1, rim: MenuBarBackdropGeometry.rim(for: .blur))
+        XCTAssertTrue(path.contains(CGPoint(x: 200, y: r - 0.5)), "the extra row, along the straight edge")
+        XCTAssertFalse(path.contains(CGPoint(x: 200, y: r - 1.5)), "and no further")
+        XCTAssertTrue(path.contains(CGPoint(x: 1, y: r - 1)), "the corner wedge is there in the blur mode too")
     }
 
-    func testOnlyTheBlurModeDropsTheCornerWedges() {
-        XCTAssertFalse(MenuBarBackdropGeometry.showsWedges(for: .blur))
-        for mode in [MenuBarBackdropMode.off, .solid, .solidFollow] {
-            XCTAssertTrue(MenuBarBackdropGeometry.showsWedges(for: mode), "\(mode)")
-        }
-        let r = MenuBarBackdropGeometry.cornerRadius
-        let size = CGSize(width: 400, height: 39 + r)
-        XCTAssertTrue(MenuBarBackdropGeometry.shape(in: size, seam: 1).contains(CGPoint(x: 1, y: r - 1)), "wedge present")
-        XCTAssertFalse(MenuBarBackdropGeometry.shape(in: size, seam: 1, wedges: false).contains(CGPoint(x: 1, y: r - 1)),
-                       "no wedge")
-    }
-
-    /// A missing private call must not break the bar: it is looked up at run time and
-    /// reports failure instead of crashing.
-    func testBlurOnAWindowThatIsNotOnScreenReportsRatherThanCrashes() {
+    /// The private blur classes are looked up by name; when they are there the layer carries
+    /// a blur filter, and when they are not it is simply absent — never a crash.
+    func testTheBackdropBlurIsPresentOrAbsentNeverBroken() {
         _ = appKitForTests
-        let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 10, height: 10), styleMask: .borderless,
-                         backing: .buffered, defer: false)
-        _ = WindowBlur.set(w, radius: 10)   // either answer is fine; it must simply return
+        let frame = CGRect(x: 0, y: 0, width: 100, height: 20)
+        guard let layer = BackdropBlur.makeLayer(frame: frame, mask: CGPath(rect: frame, transform: nil)) else { return }
+        XCTAssertTrue(BackdropBlur.set(radius: 12, on: layer))
+        XCTAssertEqual((layer.value(forKey: "filters") as? [Any])?.count, 1)
+        XCTAssertNotNil(layer.mask, "cut to a shape")
     }
 
     func testTheModeRoundTripsThroughSettings() {
