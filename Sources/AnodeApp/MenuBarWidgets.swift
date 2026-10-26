@@ -274,6 +274,16 @@ public final class MenuBarWidgetController: NSObject, NSMenuDelegate {
         states.contains(.parked)
     }
 
+    /// Whether a look at the bar means anything right now. NOT while a screen is full screen —
+    /// its menu bar is hidden and the items are moved out of sight, which looks exactly like a
+    /// full bar — and not for a few seconds after a Space change, while they slide back. A
+    /// look taken then squeezed the layout, and a squeeze is never undone on its own: after
+    /// full screen on the external display the widgets were left as ONE item until a relaunch.
+    static let spaceSettleSeconds: TimeInterval = 8
+    static func lookIsMeaningful(fullScreen: Bool, secondsSinceSpaceChange: TimeInterval) -> Bool {
+        !fullScreen && secondsSinceSpaceChange >= spaceSettleSeconds
+    }
+
     /// The arrangement actually put in the bar at `density`. Pure, for tests.
     static func effectiveConfigs(_ stored: [WidgetConfig], density: Density) -> [WidgetConfig] {
         let enabled = stored.filter(\.enabled)
@@ -405,6 +415,9 @@ public final class MenuBarWidgetController: NSObject, NSMenuDelegate {
                     self.schedulePlacementCheck(after: 1)
                 }
             })
+        workspaceObservers.append(workspace.addObserver(
+            forName: NSWorkspace.activeSpaceDidChangeNotification,
+            object: nil, queue: .main) { [weak self] _ in self?.spaceChanged() })
         onMain { self.rebuild() }
     }
 
@@ -586,6 +599,17 @@ public final class MenuBarWidgetController: NSObject, NSMenuDelegate {
             return
         }
 
+        // A hidden menu bar and a full one look the same from here: do not judge either way
+        // while full screen is up or settling. See `lookIsMeaningful`.
+        let fullScreen = ScreenState.anyScreenShowsFullScreenWindow()
+        wasFullScreen = wasFullScreen || fullScreen
+        guard Self.lookIsMeaningful(fullScreen: fullScreen,
+                                    secondsSinceSpaceChange: Date().timeIntervalSince(lastSpaceChange)) else {
+            unsettledLooks = 0
+            schedulePlacementCheck(after: 3)
+            return
+        }
+
         // Nothing but "all shown" is believed on one look. Items slide in: 1.5 s
         // after a rebuild on a MacBook Neo, three were mid-flight and six still
         // sat at (0, -30) — overflow, to a single look — and settled a moment
@@ -632,6 +656,28 @@ public final class MenuBarWidgetController: NSObject, NSMenuDelegate {
 
     /// Consecutive looks that found something not shown. See `checkPlacement`.
     private var unsettledLooks = 0
+
+    /// Was a screen full screen at the last look, and when did the Space last change?
+    private var wasFullScreen = false
+    private var lastSpaceChange = Date.distantPast
+
+    /// A Space change is how entering and leaving full screen announces itself. Settle, then
+    /// compare: if full screen has just ended, whatever squeezing happened around it was a
+    /// misreading of a hidden bar, so start again from the full layout.
+    private func spaceChanged() {
+        lastSpaceChange = Date()
+        for delay in [0.6, 2.0, 4.0, 9.0] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in self?.reconcileFullScreen() }
+        }
+    }
+
+    private func reconcileFullScreen() {
+        let now = ScreenState.anyScreenShowsFullScreenWindow()
+        defer { wasFullScreen = now }
+        guard wasFullScreen, !now, density != .full else { return }
+        density = .full
+        rebuild()
+    }
 
     /// One-shot dump of what the menu bar ACTUALLY holds, gated behind
     /// ANODE_WIDGET_DEBUG=1 so it costs a getenv on rebuild and nothing else.

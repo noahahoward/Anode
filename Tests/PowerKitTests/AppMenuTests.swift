@@ -927,3 +927,18 @@ final class MenuBarBackdropAppearanceTests: XCTestCase {
         XCTAssertNotNil(backdrop)
     }
 }
+
+final class WidgetPlacementFullScreenTests: XCTestCase {
+    func testNoLookMeansAnythingWhileFullScreenIsUp() {
+        XCTAssertFalse(MenuBarWidgetController.lookIsMeaningful(fullScreen: true, secondsSinceSpaceChange: 600))
+    }
+
+    func testNoLookMeansAnythingWhileTheItemsAreStillSlidingBack() {
+        XCTAssertFalse(MenuBarWidgetController.lookIsMeaningful(fullScreen: false, secondsSinceSpaceChange: 2))
+    }
+
+    func testAnOrdinaryLookStillCounts() {
+        XCTAssertTrue(MenuBarWidgetController.lookIsMeaningful(
+            fullScreen: false, secondsSinceSpaceChange: MenuBarWidgetController.spaceSettleSeconds + 1))
+    }
+}

@@ -730,7 +730,7 @@ final class MenuBarBackdrop {
         var hiddenForFullScreen = 0
         let planned: [Plan] = NSScreen.screens.compactMap {
             // No strip on a screen showing a full-screen window: its menu bar is hidden.
-            guard !Self.showsFullScreenWindow($0, primaryHeight: primaryHeight, windowInfo: onScreen) else {
+            guard !ScreenState.showsFullScreenWindow($0, primaryHeight: primaryHeight, windowInfo: onScreen) else {
                 hiddenForFullScreen += 1
                 return nil
             }
@@ -753,23 +753,6 @@ final class MenuBarBackdrop {
         retint(force: true)
     }
 
-    /// Is some ordinary window on this screen covering all of it?
-    private static func showsFullScreenWindow(_ screen: NSScreen, primaryHeight: CGFloat,
-                                              windowInfo: [[String: Any]]) -> Bool {
-        let frame = CGRect(x: screen.frame.minX, y: primaryHeight - screen.frame.maxY,
-                           width: screen.frame.width, height: screen.frame.height)
-        return windowInfo.contains { entry in
-            guard (entry[kCGWindowLayer as String] as? Int) == 0,
-                  (entry[kCGWindowAlpha as String] as? Double ?? 1) > 0,
-                  let dict = entry[kCGWindowBounds as String] as? NSDictionary,
-                  let bounds = CGRect(dictionaryRepresentation: dict) else { return false }
-            return MenuBarBackdropGeometry.coversWholeScreen(bounds, screen: frame)
-        }
-    }
-
-    /// Re-check now and again as a full-screen transition settles: entering or leaving full
-    /// screen is an animation of about a second, and the window list only shows the final
-    /// size at the end of it.
     /// While a strip is hidden for a full-screen window, look again every couple of seconds.
     /// Leaving a real full-screen Space announces itself, but a borderless window covering the
     /// screen simply goes away, and nothing else would bring the bar back. Not running the
