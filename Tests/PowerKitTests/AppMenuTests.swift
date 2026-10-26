@@ -707,24 +707,30 @@ final class MenuBarBackdropModeTests: XCTestCase {
         }
     }
 
-    /// The window server blurs a window's WHOLE frame, drawn or not, so the blur is three
-    /// windows: the bar over the whole width, with the extra row only between the corner
-    /// zones. Never reaching into the corner wedges' hang over other windows.
-    func testTheBlurIsThreeWindowsWithTheExtraRowOnlyOverTheStraightEdge() {
+    /// One blur window across the whole width: split in three it showed a seam, because a
+    /// blur window only blurs what is inside its own bounds. Never reaching into the corner
+    /// wedges' hang over other windows.
+    func testTheBlurIsOneFullWidthWindowReachingOnePointBelowTheSeam() {
         let strip = NSRect(x: 0, y: 1131, width: 1800, height: 38)
-        let r = MenuBarBackdropGeometry.cornerRadius
         let frames = MenuBarBackdropGeometry.blurFrames(forStrip: strip, seam: 1)
-        XCTAssertEqual(frames.count, 3)
-        let (left, middle, right) = (frames[0], frames[1], frames[2])
-        XCTAssertEqual([left, middle, right].map(\.maxY), [strip.maxY, strip.maxY, strip.maxY], "tops do not move")
-        XCTAssertEqual(left.height, 38 + 1)
-        XCTAssertEqual(right.height, 38 + 1)
-        XCTAssertEqual(middle.height, 38 + 1 + MenuBarBackdropGeometry.blurExtra, "the extra row only here")
-        XCTAssertEqual(left.maxX, middle.minX); XCTAssertEqual(middle.maxX, right.minX)
-        XCTAssertEqual(left.minX, 0); XCTAssertEqual(right.maxX, 1800)
-        XCTAssertEqual(left.width, r); XCTAssertEqual(right.width, r)
-        XCTAssertTrue(frames.allSatisfy { $0.height < 38 + 1 + r }, "nothing reaches into the wedges' hang")
+        XCTAssertEqual(frames.count, 1)
+        let f = frames[0]
+        XCTAssertEqual(f.maxY, strip.maxY, "the top does not move")
+        XCTAssertEqual(f.minX, 0); XCTAssertEqual(f.maxX, 1800)
+        XCTAssertEqual(f.height, 38 + 1 + MenuBarBackdropGeometry.blurExtra)
+        XCTAssertLessThan(f.height, 38 + 1 + MenuBarBackdropGeometry.cornerRadius,
+                          "nothing reaches into the wedges' hang")
         XCTAssertEqual(MenuBarBackdropGeometry.blurExtra, 1.0, "a full point: both pixel rows of the highlight")
+    }
+
+    /// In the blur mode the tint's extra row runs the full width, like the blur's.
+    func testTheBlurModesTintRimRunsTheFullWidth() {
+        let r = MenuBarBackdropGeometry.cornerRadius
+        let size = CGSize(width: 400, height: 39 + r)
+        let path = MenuBarBackdropGeometry.shape(in: size, seam: 1, rim: 1, wedges: false, fullWidthRim: true)
+        XCTAssertTrue(path.contains(CGPoint(x: 3, y: r - 0.5)), "the rim row, inside the corner zone")
+        let between = MenuBarBackdropGeometry.shape(in: size, seam: 1, rim: 1, wedges: false)
+        XCTAssertFalse(between.contains(CGPoint(x: 3, y: r - 0.5)), "by default the rim stays off the corner curve")
     }
 
     func testOnlyTheBlurModeDropsTheCornerWedges() {

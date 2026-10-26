@@ -60,12 +60,19 @@ enum MenuBarBackdropGeometry {
     /// Built by hand because `NSBezierPath.cgPath` needs macOS 14 and the package
     /// targets 13.
     static func shape(in size: CGSize, seam: CGFloat = 0, rim: CGFloat = 0,
-                      wedges: Bool = true) -> CGPath {
+                      wedges: Bool = true, fullWidthRim: Bool = false) -> CGPath {
         let r = cornerRadius, w = size.width
         let path = CGMutablePath()
         // `r` is where a window's top edge sits: the seam is above it, the bar above that.
         path.addRect(CGRect(x: 0, y: r, width: w, height: size.height - r))
-        if rim > 0 { path.addRect(CGRect(x: r, y: r - rim, width: max(0, w - 2 * r), height: rim)) }
+        if rim > 0 {
+            // Between the wedges, or — in the blur mode, whose blur window reaches the extra
+            // row across the whole width — all the way: a rim that stopped at the corner
+            // zones left the blur's extra row untinted there, a lighter chip where the
+            // straight edge meets the corner.
+            path.addRect(fullWidthRim ? CGRect(x: 0, y: r - rim, width: w, height: rim)
+                                      : CGRect(x: r, y: r - rim, width: max(0, w - 2 * r), height: rim))
+        }
         guard wedges else { return path }
         // Left wedge: the square under the window-top line's left end minus the
         // quarter-disc the window's own corner occupies. Two anti-aliased edges that
@@ -139,23 +146,20 @@ enum MenuBarBackdropGeometry {
     /// corners are drawn the way macOS draws them, wallpaper and all.
     static func showsWedges(for mode: MenuBarBackdropMode) -> Bool { mode != .blur }
 
-    /// The blur's windows: the bar and its seam across the whole width, and `blurExtra`
-    /// more only over the STRAIGHT part of the top edge, between the two corner zones.
-    /// Three windows, because the window server blurs a window's whole frame, drawn or
-    /// not (measured: the clear area of a taller window was blurred just the same), so
-    /// the extra row cannot be limited to the middle any other way. Over the corner zones
-    /// the window's own edge curves away below the line, and a full-width extra row was
-    /// a small light chip where the straight edge meets the corner.
+    /// The blur's window: the bar, its seam and `blurExtra`, across the whole width, as
+    /// ONE window. It was three — the extra row only between the corner zones — and that
+    /// showed a seam where they met: a blur window blurs only what is inside its own
+    /// bounds, so a 17 pt wide one averaged a small patch and came out lighter than the
+    /// wide one beside it.
+    ///
+    /// The window server also blurs a window's whole frame, drawn or not (measured: the
+    /// clear area of a taller window was blurred just the same), so it can reach no further
+    /// than the bar plus the extra row, and the corner wedges, which hang over the tops of
+    /// other windows, stay in the separate tint window.
     static func blurFrames(forStrip strip: NSRect, seam: CGFloat) -> [NSRect] {
-        let r = cornerRadius
-        let capHeight = strip.height + seam
-        let left = NSRect(x: strip.minX, y: strip.minY - seam, width: r, height: capHeight)
-        let right = NSRect(x: strip.maxX - r, y: strip.minY - seam, width: r, height: capHeight)
-        let middle = NSRect(x: strip.minX + r, y: strip.minY - seam - blurExtra,
-                            width: max(0, strip.width - 2 * r), height: capHeight + blurExtra)
-        return [left, middle, right]
+        [NSRect(x: strip.minX, y: strip.minY - seam - blurExtra,
+                width: strip.width, height: strip.height + seam + blurExtra)]
     }
-
 
     /// The tint for a bar whose text is white (`darkBar`) or black, optionally
     /// pulled toward the colour of the window under it.
@@ -305,7 +309,8 @@ private final class TintView: NSView {
         gradient.startPoint = CGPoint(x: 0, y: 0.5)
         gradient.endPoint = CGPoint(x: 1, y: 0.5)
         let mask = CAShapeLayer()
-        mask.path = MenuBarBackdropGeometry.shape(in: frame.size, seam: seam, rim: rim, wedges: wedges)
+        mask.path = MenuBarBackdropGeometry.shape(in: frame.size, seam: seam, rim: rim, wedges: wedges,
+                                                  fullWidthRim: !wedges)
         gradient.mask = mask
     }
     required init?(coder: NSCoder) { fatalError() }
