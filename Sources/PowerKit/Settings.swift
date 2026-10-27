@@ -37,6 +37,7 @@ public final class Settings {
         public static let startInMenuBarOnly = "startInMenuBarOnly"
         public static let batteryLogging = "batteryLogging"
         public static let menuBarWidgetsEnabled = "menuBarWidgetsEnabled"
+        public static let menuBarBackdropShowOnDesktop = "menuBarBackdropShowOnDesktop"
         public static let fanControlEnabled = "fanControlEnabled"
         public static let fanDisclosureSeen = "fanDisclosureSeen"
         public static let fanSyncEnabled = "fanSyncEnabled"
@@ -88,6 +89,8 @@ public final class Settings {
         /// ON. Matches what every build so far has done, and the widgets are the
         /// app's front door once the window is closed.
         static let menuBarWidgetsEnabled = true
+        /// ON: the menu bar backdrop is drawn over the desktop as well, as it always was.
+        static let menuBarBackdropShowOnDesktop = true
         /// OFF, and it is the one setting in this file that must stay that way.
         ///
         /// Turning it on is a decision to let a root process on this machine
@@ -160,6 +163,7 @@ public final class Settings {
         var showDaemons, startInMenuBarOnly, batteryLogging, menuBarWidgetsEnabled,
             fanControlEnabled, fanSyncEnabled, speedTestAgreed,
             autoUpdateEnabled, autoUpdatePromptSeen: Bool
+        var menuBarBackdropShowOnDesktop: Bool
         var menuBarBackdropMode: MenuBarBackdropMode
         var menuBarBackdropBlur: Double
         var fanDisclosureSeen: Bool
@@ -321,6 +325,15 @@ public final class Settings {
     /// Master switch for the menu bar. `menuBarWidgets` still records WHICH
     /// widgets are bound, so turning this off and on again restores the same set
     /// rather than resetting to the defaults.
+    /// Whether the menu bar backdrop is drawn on a display that is showing nothing but the desktop —
+    /// no ordinary app window on it. Off hides the bar there and brings it back with the first window.
+    public var menuBarBackdropShowOnDesktop: Bool {
+        get { Settings.readBool(defaults, Key.menuBarBackdropShowOnDesktop,
+                                Default.menuBarBackdropShowOnDesktop) }
+        set { writeBool(Key.menuBarBackdropShowOnDesktop, \.menuBarBackdropShowOnDesktop, newValue,
+                        Default.menuBarBackdropShowOnDesktop) }
+    }
+
     public var menuBarWidgetsEnabled: Bool {
         get { Settings.readBool(defaults, Key.menuBarWidgetsEnabled,
                                 Default.menuBarWidgetsEnabled) }
@@ -651,6 +664,9 @@ public final class Settings {
         if old.showDaemons != now.showDaemons { notify(Key.showDaemons) }
         if old.startInMenuBarOnly != now.startInMenuBarOnly { notify(Key.startInMenuBarOnly) }
         if old.batteryLogging != now.batteryLogging { notify(Key.batteryLogging) }
+        if old.menuBarBackdropShowOnDesktop != now.menuBarBackdropShowOnDesktop {
+            notify(Key.menuBarBackdropShowOnDesktop)
+        }
         if old.menuBarWidgetsEnabled != now.menuBarWidgetsEnabled {
             notify(Key.menuBarWidgetsEnabled)
         }
@@ -768,6 +784,8 @@ public final class Settings {
                                            Default.autoUpdateEnabled),
                autoUpdatePromptSeen: readBool(d, Key.autoUpdatePromptSeen,
                                               Default.autoUpdatePromptSeen),
+               menuBarBackdropShowOnDesktop: readBool(d, Key.menuBarBackdropShowOnDesktop,
+                                                      Default.menuBarBackdropShowOnDesktop),
                menuBarBackdropMode: d.string(forKey: storageKey(Key.menuBarBackdropMode))
                    .flatMap(MenuBarBackdropMode.init(rawValue:)) ?? Default.menuBarBackdropMode,
                menuBarBackdropBlur: readDouble(d, Key.menuBarBackdropBlur,

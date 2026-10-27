@@ -994,3 +994,55 @@ final class WidgetRecoveryDecisionTests: XCTestCase {
                                   secondsSinceLastProbe: 999), .nothing)
     }
 }
+
+final class BackdropShowOnDesktopTests: XCTestCase {
+    private let screen = CGRect(x: 0, y: 0, width: 1800, height: 1169)
+
+    func testItDefaultsToOnAndRoundTrips() {
+        let defaults = UserDefaults(suiteName: "show-on-desktop-\(UUID().uuidString)")!
+        let s = Settings(defaults: defaults)
+        XCTAssertTrue(s.menuBarBackdropShowOnDesktop, "the bar has always been drawn over the desktop")
+        s.menuBarBackdropShowOnDesktop = false
+        XCTAssertFalse(Settings(defaults: defaults).menuBarBackdropShowOnDesktop)
+        s.menuBarBackdropShowOnDesktop = true
+        XCTAssertTrue(Settings(defaults: defaults).menuBarBackdropShowOnDesktop)
+    }
+
+    func testAHalfWidthEditorIsAnOrdinaryWindow() {
+        XCTAssertTrue(ScreenState.isOrdinaryWindow(CGRect(x: 0, y: 39, width: 900, height: 1130), on: screen))
+    }
+
+    /// A small floating panel must not stop a display counting as "showing the desktop".
+    func testASmallFloatingPanelIsNot() {
+        XCTAssertFalse(ScreenState.isOrdinaryWindow(CGRect(x: 764, y: 327, width: 270, height: 515), on: screen))
+    }
+
+    func testAWindowOnAnotherDisplayDoesNotCount() {
+        XCTAssertFalse(ScreenState.isOrdinaryWindow(CGRect(x: 1800, y: 0, width: 1180, height: 790), on: screen))
+    }
+
+    func testAWindowHalfOffTheScreenCountsByItsVisiblePart() {
+        XCTAssertTrue(ScreenState.isOrdinaryWindow(CGRect(x: -400, y: 100, width: 1000, height: 900), on: screen),
+                      "600 x 900 pt of it is on this screen")
+        XCTAssertFalse(ScreenState.isOrdinaryWindow(CGRect(x: -950, y: 100, width: 1000, height: 400), on: screen),
+                       "50 x 400 pt is a sliver")
+    }
+
+    func testTheCheckboxWritesTheSettingAndFollowsTheMode() {
+        _ = appKitForTests
+        let defaults = UserDefaults(suiteName: "show-on-desktop-ui-\(UUID().uuidString)")!
+        let settings = Settings(defaults: defaults)
+        let feature = BackdropFeature(settings: settings, screenRecordingAllowed: { true })
+        _ = feature.makeView()
+        settings.menuBarBackdropMode = .solid
+        feature.refresh()
+        XCTAssertEqual(feature.desktopCheckbox.state, .on)
+        XCTAssertTrue(feature.desktopCheckbox.isEnabled)
+        feature.desktopCheckbox.state = .off
+        _ = feature.desktopCheckbox.target?.perform(feature.desktopCheckbox.action, with: feature.desktopCheckbox)
+        XCTAssertFalse(settings.menuBarBackdropShowOnDesktop)
+        settings.menuBarBackdropMode = .off
+        feature.refresh()
+        XCTAssertFalse(feature.desktopCheckbox.isEnabled, "no bar, nothing to show or hide")
+    }
+}

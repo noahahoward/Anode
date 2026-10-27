@@ -479,6 +479,7 @@ final class MenuBarBackdrop {
     private var pendingRetint: DispatchWorkItem?
     private var poll: Timer?
     private var fullScreenWatch: Timer?
+    private var watchInterval: TimeInterval?
     /// The window list for the tick in progress, so the several questions one tick asks of it
     /// ("is anything full screen?", "what is under each bar?") share one query instead of each
     /// making their own. Nil outside a tick, so an event-driven check always sees fresh windows.
@@ -541,6 +542,9 @@ final class MenuBarBackdrop {
         })
         // The blur amount only changes a radius, so it must not rebuild the windows:
         // dragging the slider would then flicker the bar on every step.
+        settingsTokens.append(settings.observe(Settings.Key.menuBarBackdropShowOnDesktop) { [weak self] in
+            self?.refresh(force: true)
+        })
         settingsTokens.append(settings.observe(Settings.Key.menuBarBackdropBlur) { [weak self] in
             self?.applyBlurRadius()
         })
@@ -723,14 +727,25 @@ final class MenuBarBackdrop {
         guard mode != .off else {
             windows.forEach { $0.orderOut(nil) }
             windows = []
+            fullScreenWatch?.invalidate()
+            fullScreenWatch = nil
+            watchInterval = nil
             return
         }
         let primaryHeight = NSScreen.screens.first?.frame.height ?? 0
         let onScreen = windowList()
         var hiddenForFullScreen = 0
+        let hideOnDesktop = !settings.menuBarBackdropShowOnDesktop
         let planned: [Plan] = NSScreen.screens.compactMap {
             // No strip on a screen showing a full-screen window: its menu bar is hidden.
             guard !ScreenState.showsFullScreenWindow($0, primaryHeight: primaryHeight, windowInfo: onScreen) else {
+                hiddenForFullScreen += 1
+                return nil
+            }
+            // Nor, when "show on desktop" is off, on a screen showing nothing but the desktop.
+            if hideOnDesktop,
+               !ScreenState.hasOrdinaryWindow(on: ScreenState.cgFrame(of: $0, primaryHeight: primaryHeight),
+                                              windowInfo: onScreen) {
                 hiddenForFullScreen += 1
                 return nil
             }
@@ -742,7 +757,7 @@ final class MenuBarBackdrop {
             return Plan(frame: MenuBarBackdropGeometry.windowFrame(forStrip: strip, seam: seam),
                         strip: strip, seam: seam, screen: $0)
         }
-        watchFullScreen(hiddenForFullScreen > 0)
+        updateWatch(hiddenCount: hiddenForFullScreen)
         // Same strips as already shown: leave the windows alone rather than
         // reordering them on every wake.
         guard force || planned.map(\.frame) != windows.map(\.frame) else { return }
@@ -753,21 +768,22 @@ final class MenuBarBackdrop {
         retint(force: true)
     }
 
-    /// While a strip is hidden for a full-screen window, look again every couple of seconds.
-    /// Leaving a real full-screen Space announces itself, but a borderless window covering the
-    /// screen simply goes away, and nothing else would bring the bar back. Not running the
-    /// rest of the time is the point: a timer for something that is not happening is a wakeup
-    /// for nothing.
-    private func watchFullScreen(_ needed: Bool) {
-        if needed, fullScreenWatch == nil {
-            let t = Timer(timeInterval: 2, repeats: true) { [weak self] _ in self?.refresh() }
-            t.tolerance = 0.5
-            RunLoop.main.add(t, forMode: .common)
-            fullScreenWatch = t
-        } else if !needed, let t = fullScreenWatch {
-            t.invalidate()
-            fullScreenWatch = nil
-        }
+    /// Look again on a timer while something that nobody announces could change the answer:
+    /// every 2 s while a bar is hidden for a full-screen window (a borderless window leaving posts
+    /// nothing), and every second while "show on desktop" is off (an app opening a window anywhere
+    /// is not announced either). A query is 0.3 ms. Neither timer runs the rest of the time: a
+    /// timer for something that is not happening is a wakeup for nothing.
+    private func updateWatch(hiddenCount: Int) {
+        let wanted: TimeInterval? = settings.menuBarBackdropShowOnDesktop ? (hiddenCount > 0 ? 2 : nil) : 1
+        guard wanted != watchInterval else { return }
+        fullScreenWatch?.invalidate()
+        fullScreenWatch = nil
+        watchInterval = wanted
+        guard let wanted else { return }
+        let timer = Timer(timeInterval: wanted, repeats: true) { [weak self] _ in self?.refresh() }
+        timer.tolerance = wanted / 4
+        RunLoop.main.add(timer, forMode: .common)
+        fullScreenWatch = timer
     }
 
     private func scheduleRefresh() {

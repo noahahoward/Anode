@@ -156,6 +156,10 @@ final class BackdropFeature: BetaFeature {
     // Internal, so the tests can drive them as a click would.
     let modePopup = NSPopUpButton(frame: .zero, pullsDown: false)
     let slider = NSSlider(value: 0.5, minValue: 0, maxValue: 1, target: nil, action: nil)
+    let desktopCheckbox = NSButton(checkboxWithTitle: "Show on the desktop", target: nil, action: nil)
+    let desktopNote = BetaFeaturesWindowController.wrapping(
+        "Off hides the bar on a display while no app window is on it, and brings it back with the first window.",
+        color: .secondaryLabelColor)
     let seeThroughLabel = NSTextField(labelWithString: "See-through")
     let maxBlurLabel = NSTextField(labelWithString: "Max blur")
     let sliderRow = NSStackView()
@@ -191,12 +195,17 @@ final class BackdropFeature: BetaFeature {
         accessButton.bezelStyle = .rounded
         accessButton.controlSize = .small
 
-        let column = NSStackView(views: [modeRow, modeNote, sliderRow, accessStatus, accessButton])
+        desktopCheckbox.target = self
+        desktopCheckbox.action = #selector(desktopToggled)
+
+        let column = NSStackView(views: [modeRow, modeNote, sliderRow, desktopCheckbox, desktopNote,
+                                         accessStatus, accessButton])
         column.orientation = .vertical
         column.alignment = .leading
         column.spacing = 8
 
-        tokens = [Settings.Key.menuBarBackdropMode, Settings.Key.menuBarBackdropBlur].map { key in
+        tokens = [Settings.Key.menuBarBackdropMode, Settings.Key.menuBarBackdropBlur,
+                  Settings.Key.menuBarBackdropShowOnDesktop].map { key in
             settings.observe(key) { [weak self] in self?.refresh() }
         }
         refresh()
@@ -210,6 +219,10 @@ final class BackdropFeature: BetaFeature {
         let i = modePopup.indexOfSelectedItem
         guard modes.indices.contains(i) else { return }
         settings.menuBarBackdropMode = modes[i]
+    }
+
+    @objc private func desktopToggled() {
+        settings.menuBarBackdropShowOnDesktop = desktopCheckbox.state == .on
     }
 
     @objc private func slid() {
@@ -234,6 +247,11 @@ final class BackdropFeature: BetaFeature {
         sliderRow.views.compactMap { $0 as? NSTextField }.forEach {
             $0.textColor = mode == .blur ? .labelColor : .disabledControlTextColor
         }
+
+        // Nothing to show or hide when there is no bar.
+        desktopCheckbox.state = settings.menuBarBackdropShowOnDesktop ? .on : .off
+        desktopCheckbox.isEnabled = mode != .off
+        desktopNote.textColor = mode == .off ? .disabledControlTextColor : .secondaryLabelColor
 
         let follow = mode == .solidFollow
         let allowed = access()
