@@ -1046,3 +1046,52 @@ final class BackdropShowOnDesktopTests: XCTestCase {
         XCTAssertFalse(feature.desktopCheckbox.isEnabled, "no bar, nothing to show or hide")
     }
 }
+
+final class WidgetRememberKeyTests: XCTestCase {
+    private typealias C = MenuBarWidgetController
+    private let external = CGRect(x: 0, y: 0, width: 1180, height: 820)
+    private let builtIn = CGRect(x: 1180, y: -349, width: 1800, height: 1169)
+
+    private func window(pid: Int32, x: CGFloat, y: CGFloat, w: CGFloat, h: CGFloat, layer: Int = 0) -> [String: Any] {
+        [kCGWindowOwnerPID as String: pid, kCGWindowLayer as String: layer, kCGWindowAlpha as String: 1.0,
+         kCGWindowBounds as String: CGRect(x: x, y: y, width: w, height: h).dictionaryRepresentation as NSDictionary]
+    }
+    private func key(_ pid: Int32?, _ info: [[String: Any]]) -> String {
+        C.rememberKey(bundleID: "com.brave.Browser", pid: pid, windowInfo: info, screenFrames: [external, builtIn], layout: "L")
+    }
+
+    /// The reported failure: Brave on the external must not share a record with Brave on the built-in.
+    func testTheSameAppOnTwoDisplaysGetsTwoKeys() {
+        let onExternal = key(7, [window(pid: 7, x: 0, y: 30, w: 1180, h: 790)])
+        let onBuiltIn = key(7, [window(pid: 7, x: 1180, y: -310, w: 1800, h: 1130)])
+        XCTAssertNotEqual(onExternal, onBuiltIn)
+        XCTAssertTrue(onExternal.contains("display=0")); XCTAssertTrue(onBuiltIn.contains("display=1"))
+    }
+
+    func testTheSameAppOnTheSameDisplayGetsTheSameKey() {
+        let a = key(7, [window(pid: 7, x: 0, y: 30, w: 1180, h: 790)])
+        let b = key(7, [window(pid: 7, x: 20, y: 60, w: 900, h: 600)])
+        XCTAssertEqual(a, b)
+    }
+
+    /// Front to back: the app's FIRST window in the list is the one that decides.
+    func testTheFrontmostWindowOfTheAppDecides() {
+        let k = key(7, [window(pid: 9, x: 0, y: 30, w: 1180, h: 790),
+                        window(pid: 7, x: 1180, y: -310, w: 600, h: 900),
+                        window(pid: 7, x: 0, y: 30, w: 1180, h: 790)])
+        XCTAssertTrue(k.contains("display=1"))
+    }
+
+    func testAnAppWithNoWindowFallsBackAndNeverCrashes() {
+        XCTAssertTrue(key(7, []).contains("display=?"))
+        XCTAssertTrue(key(nil, [window(pid: 7, x: 0, y: 30, w: 1180, h: 790)]).contains("display=?"))
+        XCTAssertTrue(key(7, [window(pid: 7, x: 0, y: 30, w: 1180, h: 790, layer: 3)]).contains("display=?"),
+                      "only ordinary windows count")
+    }
+
+    func testASqueezedRecordExpiresButAFullOneDoesNot() {
+        XCTAssertEqual(C.believedDensity(.single, ageSeconds: 10), .single)
+        XCTAssertNil(C.believedDensity(.single, ageSeconds: C.squeezedMemorySeconds + 1))
+        XCTAssertEqual(C.believedDensity(.full, ageSeconds: 99999), .full)
+    }
+}

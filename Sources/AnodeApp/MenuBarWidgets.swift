@@ -306,6 +306,40 @@ public final class MenuBarWidgetController: NSObject, NSMenuDelegate {
 
     static let probeInterval: TimeInterval = 30
 
+    /// How long a layout tighter than full is believed. Room can come back with nothing announcing
+    /// it (another menu bar app quits), so a squeezed record is only trusted for a few minutes, after
+    /// which the app counts as unknown again and gets one rate-limited probe.
+    static let squeezedMemorySeconds: TimeInterval = 300
+
+    static func believedDensity(_ density: Density, ageSeconds: TimeInterval) -> Density? {
+        density == .full || ageSeconds < squeezedMemorySeconds ? density : nil
+    }
+
+    /// The key a layout is remembered under: the app, the DISPLAY its front window is on, and the
+    /// screen arrangement. The display matters because it decides which bar the widgets are laid
+    /// out in: Brave on the narrow external leaves them no room, Brave on the built-in leaves
+    /// plenty, and a record shared between the two restored the squeezed layout for the wrong
+    /// display for the rest of the session. `windowInfo` is the window server's list, front to back,
+    /// so the first window of the app's process is its frontmost; with no window it falls back to
+    /// "?". Pure, for tests (frames in the window server's coordinates).
+    static func rememberKey(bundleID: String?, pid: pid_t?, windowInfo: [[String: Any]],
+                            screenFrames: [CGRect], layout: String) -> String {
+        var display = "?"
+        if let pid {
+            for entry in windowInfo {
+                guard (entry[kCGWindowLayer as String] as? Int) == 0,
+                      (entry[kCGWindowAlpha as String] as? Double ?? 1) > 0,
+                      (entry[kCGWindowOwnerPID as String] as? Int32) == pid,
+                      let dict = entry[kCGWindowBounds as String] as? NSDictionary,
+                      let bounds = CGRect(dictionaryRepresentation: dict) else { continue }
+                let centre = CGPoint(x: bounds.midX, y: bounds.midY)
+                if let i = screenFrames.firstIndex(where: { $0.contains(centre) }) { display = "\(i)" }
+                break
+            }
+        }
+        return "\(bundleID ?? "?")|display=\(display)|\(layout)"
+    }
+
     static func recovery(current: Density, remembered: Density?, isSelfFrontmost: Bool,
                          secondsSinceLastProbe: TimeInterval) -> Recovery {
         // Our own menus hide whatever items they reach, which says nothing about the bar.
@@ -752,29 +786,38 @@ public final class MenuBarWidgetController: NSObject, NSMenuDelegate {
     /// The density that last settled with each app in front, per screen layout. In memory only:
     /// a relaunch should relearn it, and the screen layout is part of the key because the same
     /// app leaves a different amount of bar on a different display.
-    private var rememberedDensity: [String: Density] = [:]
+    private var rememberedDensity: [String: (density: Density, at: Date)] = [:]
     private var lastProbe = Date.distantPast
 
-    private func rememberKey(_ bundleID: String?) -> String {
-        "\(bundleID ?? "?")|" + lastScreens.map { "\($0.frame)" }.joined(separator: ";")
+    private func rememberKey(for app: NSRunningApplication?) -> String {
+        let info = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements],
+                                              kCGNullWindowID) as? [[String: Any]] ?? []
+        let primaryHeight = NSScreen.screens.first?.frame.height ?? 0
+        return Self.rememberKey(bundleID: app?.bundleIdentifier, pid: app?.processIdentifier, windowInfo: info,
+                                screenFrames: NSScreen.screens.map { ScreenState.cgFrame(of: $0, primaryHeight: primaryHeight) },
+                                layout: lastScreens.map { "\($0.frame)" }.joined(separator: ";"))
     }
 
     private func rememberDensity() {
-        rememberedDensity[rememberKey(NSWorkspace.shared.frontmostApplication?.bundleIdentifier)] = density
+        rememberedDensity[rememberKey(for: NSWorkspace.shared.frontmostApplication)] = (density, Date())
     }
 
     private func recoverLayout(forFrontmost app: NSRunningApplication?) {
         let id = app?.bundleIdentifier
+        let key = rememberKey(for: app)
+        let remembered = rememberedDensity[key].flatMap {
+            Self.believedDensity($0.density, ageSeconds: Date().timeIntervalSince($0.at))
+        }
         let action = Self.recovery(current: density,
-                                   remembered: rememberedDensity[rememberKey(id)],
+                                   remembered: remembered,
                                    isSelfFrontmost: id == Bundle.main.bundleIdentifier,
                                    secondsSinceLastProbe: Date().timeIntervalSince(lastProbe))
         switch action {
         case .nothing:
             return
-        case .restore(let remembered):
-            Self.logWidgetEvent("RESTORE cached density \(density) -> \(remembered)")
-            density = remembered
+        case .restore(let target):
+            Self.logWidgetEvent("RESTORE cached density \(density) -> \(target)")
+            density = target
             rebuild()
         case .probeFull:
             probeFull(reason: "frontmost app changed")
