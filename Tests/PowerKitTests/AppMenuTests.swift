@@ -956,3 +956,41 @@ final class WidgetSqueezeSettleTests: XCTestCase {
                              "the retry window must outlast the settle window, or it could never apply")
     }
 }
+
+final class WidgetRecoveryDecisionTests: XCTestCase {
+    private typealias C = MenuBarWidgetController
+
+    func testOurOwnMenusSayNothingAboutTheBar() {
+        XCTAssertEqual(C.recovery(current: .single, remembered: .full, isSelfFrontmost: true,
+                                  secondsSinceLastProbe: 999), .nothing)
+    }
+
+    /// An app seen to fit at a density goes straight there — no probing, so no churn.
+    func testAKnownAppGoesStraightToItsRememberedDensity() {
+        XCTAssertEqual(C.recovery(current: .single, remembered: .full, isSelfFrontmost: false,
+                                  secondsSinceLastProbe: 0), .restore(.full))
+        XCTAssertEqual(C.recovery(current: .full, remembered: .single, isSelfFrontmost: false,
+                                  secondsSinceLastProbe: 0), .restore(.single))
+    }
+
+    func testAKnownAppAlreadyAtItsDensityNeedsNothing() {
+        XCTAssertEqual(C.recovery(current: .compact, remembered: .compact, isSelfFrontmost: false,
+                                  secondsSinceLastProbe: 999), .nothing)
+    }
+
+    func testAnUnknownAppGetsOneProbeWhenSqueezed() {
+        XCTAssertEqual(C.recovery(current: .single, remembered: nil, isSelfFrontmost: false,
+                                  secondsSinceLastProbe: C.probeInterval), .probeFull)
+    }
+
+    /// The cap: a bar that really is full must not be rebuilt at every app switch.
+    func testProbesAreRateLimited() {
+        XCTAssertEqual(C.recovery(current: .single, remembered: nil, isSelfFrontmost: false,
+                                  secondsSinceLastProbe: C.probeInterval - 1), .nothing)
+    }
+
+    func testNothingToRecoverWhenAlreadyFull() {
+        XCTAssertEqual(C.recovery(current: .full, remembered: nil, isSelfFrontmost: false,
+                                  secondsSinceLastProbe: 999), .nothing)
+    }
+}

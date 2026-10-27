@@ -287,6 +287,34 @@ public final class MenuBarWidgetController: NSObject, NSMenuDelegate {
         !fullScreen && secondsSinceSpaceChange >= spaceSettleSeconds
     }
 
+    /// What to do about the layout when another app comes to the front. Pure, for tests.
+    ///
+    /// The frontmost app decides how much of the bar its menus leave, so a layout that was right
+    /// for Finder is wrong for Brave, and the reverse. A squeeze only ever tightened, so after
+    /// working in a long-menued app the widgets stayed folded into one item for the rest of the
+    /// session. Recovery needs care, though: retrying the full layout at every switch is several
+    /// seconds of rebuilds each time on a bar that really is full. So the density each app
+    /// ended at is remembered (in memory, per screen layout) and put straight back, and an app
+    /// with no record gets one probe, at most one every `probeInterval` seconds.
+    enum Recovery: Equatable {
+        case nothing
+        /// Go straight to a density already seen to fit with this app in front.
+        case restore(Density)
+        /// Try the full layout and see.
+        case probeFull
+    }
+
+    static let probeInterval: TimeInterval = 30
+
+    static func recovery(current: Density, remembered: Density?, isSelfFrontmost: Bool,
+                         secondsSinceLastProbe: TimeInterval) -> Recovery {
+        // Our own menus hide whatever items they reach, which says nothing about the bar.
+        if isSelfFrontmost { return .nothing }
+        if let remembered { return remembered == current ? .nothing : .restore(remembered) }
+        guard current != .full, secondsSinceLastProbe >= probeInterval else { return .nothing }
+        return .probeFull
+    }
+
     /// The arrangement actually put in the bar at `density`. Pure, for tests.
     static func effectiveConfigs(_ stored: [WidgetConfig], density: Density) -> [WidgetConfig] {
         let enabled = stored.filter(\.enabled)
@@ -395,6 +423,7 @@ public final class MenuBarWidgetController: NSObject, NSMenuDelegate {
                 let now = NSScreen.screens.map { ScreenGeometry($0) }
                 guard now != self.lastScreens else { return }
                 self.lastScreens = now
+                self.rememberedDensity.removeAll()
                 self.density = .full
                 self.rebuild()
             })
@@ -411,16 +440,18 @@ public final class MenuBarWidgetController: NSObject, NSMenuDelegate {
         let workspace = NSWorkspace.shared.notificationCenter
         workspaceObservers.append(workspace.addObserver(
             forName: NSWorkspace.didActivateApplicationNotification,
-            object: nil, queue: .main) { [weak self] _ in
+            object: nil, queue: .main) { [weak self] note in
                 guard let self else { return }
                 // Leaving System Settings is the likeliest moment for a
                 // switched-off app to have been switched back on, and fresh items
                 // are placed whether or not macOS revisits the old ones.
                 if self.placement == .notAllowed {
                     self.rebuild()
-                } else {
-                    self.schedulePlacementCheck(after: 1)
+                    return
                 }
+                let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
+                self.recoverLayout(forFrontmost: app)
+                self.schedulePlacementCheck(after: 1)
             })
         workspaceObservers.append(workspace.addObserver(
             forName: NSWorkspace.activeSpaceDidChangeNotification,
@@ -609,6 +640,7 @@ public final class MenuBarWidgetController: NSObject, NSMenuDelegate {
         if verdict == .allShown {
             unsettledLooks = 0
             placement = .allShown
+            rememberDensity()
             return
         }
 
@@ -667,8 +699,7 @@ public final class MenuBarWidgetController: NSObject, NSMenuDelegate {
                 retriedSqueeze = true
                 DispatchQueue.main.asyncAfter(deadline: .now() + Self.spaceSettleSeconds + 4) { [weak self] in
                     guard let self, self.density != .full else { return }
-                    self.density = .full
-                    self.rebuild()
+                    self.probeFull(reason: "after a squeeze soon after a layout change")
                 }
             }
             rebuild()     // schedules the next look
@@ -685,20 +716,23 @@ public final class MenuBarWidgetController: NSObject, NSMenuDelegate {
     /// diagnostics. A squeeze that the user sees as "my widgets collapsed to one" otherwise leaves no
     /// trace of WHY, and the same symptom has had more than one cause.
     private static func logSqueeze(from: Density, to: Density, states: [ItemState], sinceLayoutChange: TimeInterval) {
+        logWidgetEvent("SQUEEZE \(from) -> \(to) states=\(states.map { "\($0)" }.joined(separator: ",")) "
+            + "screens=\(NSScreen.screens.count) fullScreen=\(ScreenState.anyScreenShowsFullScreenWindow()) "
+            + "secondsSinceLayoutChange=\(Int(min(sinceLayoutChange, 99999)))")
+    }
+
+    /// One line in `widget-squeeze.log`: what the controller did to the layout and which app was in
+    /// front. The frontmost app is here on purpose — its menus take the bar's room, so it is the
+    /// main clue. It is a string from outside, so it is cleaned before it goes into a line-oriented
+    /// file (no control characters: a newline would forge a line; 64 at most). The file is append-only,
+    /// created readable by this user alone, and refuses to follow a symlink planted at its path.
+    static func logWidgetEvent(_ text: String) {
         let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?
             .appendingPathComponent("Anode")
         guard let url = dir?.appendingPathComponent("widget-squeeze.log") else { return }
-        let stamp = ISO8601DateFormatter().string(from: Date())
-        // The frontmost app is here on purpose: its menus take the bar's room, so it is the main
-        // clue to a squeeze. It is a string from outside, so it is cleaned before it goes into a
-        // line-oriented file — no control characters (a newline would forge a log line), 64 at most.
         let raw = NSWorkspace.shared.frontmostApplication?.localizedName ?? "?"
         let frontmost = String(String.UnicodeScalarView(raw.unicodeScalars.filter { $0.value >= 0x20 && $0.value != 0x7F }.prefix(64)))
-        let line = "\(stamp) SQUEEZE \(from) -> \(to) states=\(states.map { "\($0)" }.joined(separator: ",")) "
-            + "screens=\(NSScreen.screens.count) fullScreen=\(ScreenState.anyScreenShowsFullScreenWindow()) "
-            + "secondsSinceLayoutChange=\(Int(min(sinceLayoutChange, 99999))) frontmost=\(frontmost)\n"
-        // Append-only, created readable by this user alone, and refusing to follow a symlink
-        // planted at the path.
+        let line = "\(ISO8601DateFormatter().string(from: Date())) \(text) frontmost=\(frontmost)\n"
         let fd = open(url.path, O_WRONLY | O_APPEND | O_CREAT | O_NOFOLLOW, 0o600)
         guard fd >= 0 else { return }
         defer { close(fd) }
@@ -714,6 +748,46 @@ public final class MenuBarWidgetController: NSObject, NSMenuDelegate {
     /// The one automatic retry after a probably-transitional squeeze has been used.
     private var retriedSqueeze = false
     private var lastSpaceChange = Date.distantPast
+
+    /// The density that last settled with each app in front, per screen layout. In memory only:
+    /// a relaunch should relearn it, and the screen layout is part of the key because the same
+    /// app leaves a different amount of bar on a different display.
+    private var rememberedDensity: [String: Density] = [:]
+    private var lastProbe = Date.distantPast
+
+    private func rememberKey(_ bundleID: String?) -> String {
+        "\(bundleID ?? "?")|" + lastScreens.map { "\($0.frame)" }.joined(separator: ";")
+    }
+
+    private func rememberDensity() {
+        rememberedDensity[rememberKey(NSWorkspace.shared.frontmostApplication?.bundleIdentifier)] = density
+    }
+
+    private func recoverLayout(forFrontmost app: NSRunningApplication?) {
+        let id = app?.bundleIdentifier
+        let action = Self.recovery(current: density,
+                                   remembered: rememberedDensity[rememberKey(id)],
+                                   isSelfFrontmost: id == Bundle.main.bundleIdentifier,
+                                   secondsSinceLastProbe: Date().timeIntervalSince(lastProbe))
+        switch action {
+        case .nothing:
+            return
+        case .restore(let remembered):
+            Self.logWidgetEvent("RESTORE cached density \(density) -> \(remembered)")
+            density = remembered
+            rebuild()
+        case .probeFull:
+            probeFull(reason: "frontmost app changed")
+        }
+    }
+
+    /// Try the full layout; if the bar cannot hold it, the next look squeezes again.
+    private func probeFull(reason: String) {
+        lastProbe = Date()
+        Self.logWidgetEvent("RETRY full (was \(density)): \(reason)")
+        density = .full
+        rebuild()
+    }
 
     /// A Space change is how entering and leaving full screen announces itself. Settle, then
     /// compare: if full screen has just ended, whatever squeezing happened around it was a
