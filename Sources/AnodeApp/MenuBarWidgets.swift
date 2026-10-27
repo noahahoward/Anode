@@ -280,6 +280,9 @@ public final class MenuBarWidgetController: NSObject, NSMenuDelegate {
     /// look taken then squeezed the layout, and a squeeze is never undone on its own: after
     /// full screen on the external display the widgets were left as ONE item until a relaunch.
     static let spaceSettleSeconds: TimeInterval = 8
+
+    /// A squeeze this soon after a layout change is treated as probably transitional.
+    static let transitionalSqueezeSeconds: TimeInterval = 90
     static func lookIsMeaningful(fullScreen: Bool, secondsSinceSpaceChange: TimeInterval) -> Bool {
         !fullScreen && secondsSinceSpaceChange >= spaceSettleSeconds
     }
@@ -385,6 +388,10 @@ public final class MenuBarWidgetController: NSObject, NSMenuDelegate {
                 guard let self else { return }
                 // Posted on every wake and on changes that move no screen at all;
                 // only a real change is worth tearing the widgets down for.
+                // Every one of these notifications is macOS still rearranging things — a
+                // display attached, woken or reconnected posts several over a few seconds —
+                // so each restarts the settle window, whether or not any geometry changed.
+                self.lastSpaceChange = Date()
                 let now = NSScreen.screens.map { ScreenGeometry($0) }
                 guard now != self.lastScreens else { return }
                 self.lastScreens = now
@@ -418,6 +425,12 @@ public final class MenuBarWidgetController: NSObject, NSMenuDelegate {
         workspaceObservers.append(workspace.addObserver(
             forName: NSWorkspace.activeSpaceDidChangeNotification,
             object: nil, queue: .main) { [weak self] _ in self?.spaceChanged() })
+        // Waking from sleep reconnects the displays and re-lays the bar.
+        for name in [NSWorkspace.didWakeNotification, NSWorkspace.screensDidWakeNotification] {
+            workspaceObservers.append(workspace.addObserver(forName: name, object: nil, queue: .main) {
+                [weak self] _ in self?.spaceChanged()
+            })
+        }
         onMain { self.rebuild() }
     }
 
@@ -642,8 +655,22 @@ public final class MenuBarWidgetController: NSObject, NSMenuDelegate {
         }
 
         if Self.shouldSqueeze(states), let next = density.tighter {
+            let sinceLayoutChange = Date().timeIntervalSince(lastSpaceChange)
+            Self.logSqueeze(from: density, to: next, states: states, sinceLayoutChange: sinceLayoutChange)
             density = next
             unsettledLooks = 0
+            // A squeeze is never undone by itself, and one made soon after a layout change was
+            // probably a misreading of items still sliding into place (a display plugged in,
+            // woken or full-screened). Try the full layout once more when things have settled;
+            // if the bar really is full it simply squeezes again, outside the settle window.
+            if sinceLayoutChange < Self.transitionalSqueezeSeconds, !retriedSqueeze {
+                retriedSqueeze = true
+                DispatchQueue.main.asyncAfter(deadline: .now() + Self.spaceSettleSeconds + 4) { [weak self] in
+                    guard let self, self.density != .full else { return }
+                    self.density = .full
+                    self.rebuild()
+                }
+            }
             rebuild()     // schedules the next look
             return
         }
@@ -654,11 +681,34 @@ public final class MenuBarWidgetController: NSObject, NSMenuDelegate {
         schedulePlacementCheck(after: 30)
     }
 
+    /// Every squeeze, with what led to it, appended to `widget-squeeze.log` beside the app's other
+    /// diagnostics. A squeeze that the user sees as "my widgets collapsed to one" otherwise leaves no
+    /// trace of WHY, and the same symptom has had more than one cause.
+    private static func logSqueeze(from: Density, to: Density, states: [ItemState], sinceLayoutChange: TimeInterval) {
+        let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?
+            .appendingPathComponent("Anode")
+        guard let url = dir?.appendingPathComponent("widget-squeeze.log") else { return }
+        let stamp = ISO8601DateFormatter().string(from: Date())
+        let line = "\(stamp) SQUEEZE \(from) -> \(to) states=\(states.map { "\($0)" }.joined(separator: ",")) "
+            + "screens=\(NSScreen.screens.count) fullScreen=\(ScreenState.anyScreenShowsFullScreenWindow()) "
+            + "secondsSinceLayoutChange=\(Int(min(sinceLayoutChange, 99999))) "
+            + "frontmost=\(NSWorkspace.shared.frontmostApplication?.localizedName ?? "?")\n"
+        if let data = line.data(using: .utf8) {
+            if let handle = try? FileHandle(forWritingTo: url) {
+                handle.seekToEndOfFile(); handle.write(data); try? handle.close()
+            } else {
+                try? data.write(to: url)
+            }
+        }
+    }
+
     /// Consecutive looks that found something not shown. See `checkPlacement`.
     private var unsettledLooks = 0
 
     /// Was a screen full screen at the last look, and when did the Space last change?
     private var wasFullScreen = false
+    /// The one automatic retry after a probably-transitional squeeze has been used.
+    private var retriedSqueeze = false
     private var lastSpaceChange = Date.distantPast
 
     /// A Space change is how entering and leaving full screen announces itself. Settle, then
@@ -666,6 +716,7 @@ public final class MenuBarWidgetController: NSObject, NSMenuDelegate {
     /// misreading of a hidden bar, so start again from the full layout.
     private func spaceChanged() {
         lastSpaceChange = Date()
+        retriedSqueeze = false
         for delay in [0.6, 2.0, 4.0, 9.0] {
             DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in self?.reconcileFullScreen() }
         }

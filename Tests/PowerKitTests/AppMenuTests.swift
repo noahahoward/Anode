@@ -942,3 +942,17 @@ final class WidgetPlacementFullScreenTests: XCTestCase {
             fullScreen: false, secondsSinceSpaceChange: MenuBarWidgetController.spaceSettleSeconds + 1))
     }
 }
+
+final class WidgetSqueezeSettleTests: XCTestCase {
+    /// Display attach, wake and Space changes all restart the same settle window, so a look
+    /// taken a second after any of them is not believed.
+    func testALookRightAfterAnyLayoutChangeIsNotBelieved() {
+        XCTAssertFalse(MenuBarWidgetController.lookIsMeaningful(fullScreen: false, secondsSinceSpaceChange: 1))
+    }
+
+    func testASqueezeSoonAfterALayoutChangeIsTreatedAsTransitional() {
+        XCTAssertGreaterThan(MenuBarWidgetController.transitionalSqueezeSeconds,
+                             MenuBarWidgetController.spaceSettleSeconds,
+                             "the retry window must outlast the settle window, or it could never apply")
+    }
+}
