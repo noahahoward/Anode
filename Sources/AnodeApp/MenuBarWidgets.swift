@@ -689,17 +689,21 @@ public final class MenuBarWidgetController: NSObject, NSMenuDelegate {
             .appendingPathComponent("Anode")
         guard let url = dir?.appendingPathComponent("widget-squeeze.log") else { return }
         let stamp = ISO8601DateFormatter().string(from: Date())
+        // The frontmost app is here on purpose: its menus take the bar's room, so it is the main
+        // clue to a squeeze. It is a string from outside, so it is cleaned before it goes into a
+        // line-oriented file — no control characters (a newline would forge a log line), 64 at most.
+        let raw = NSWorkspace.shared.frontmostApplication?.localizedName ?? "?"
+        let frontmost = String(String.UnicodeScalarView(raw.unicodeScalars.filter { $0.value >= 0x20 && $0.value != 0x7F }.prefix(64)))
         let line = "\(stamp) SQUEEZE \(from) -> \(to) states=\(states.map { "\($0)" }.joined(separator: ",")) "
             + "screens=\(NSScreen.screens.count) fullScreen=\(ScreenState.anyScreenShowsFullScreenWindow()) "
-            + "secondsSinceLayoutChange=\(Int(min(sinceLayoutChange, 99999))) "
-            + "frontmost=\(NSWorkspace.shared.frontmostApplication?.localizedName ?? "?")\n"
-        if let data = line.data(using: .utf8) {
-            if let handle = try? FileHandle(forWritingTo: url) {
-                handle.seekToEndOfFile(); handle.write(data); try? handle.close()
-            } else {
-                try? data.write(to: url)
-            }
-        }
+            + "secondsSinceLayoutChange=\(Int(min(sinceLayoutChange, 99999))) frontmost=\(frontmost)\n"
+        // Append-only, created readable by this user alone, and refusing to follow a symlink
+        // planted at the path.
+        let fd = open(url.path, O_WRONLY | O_APPEND | O_CREAT | O_NOFOLLOW, 0o600)
+        guard fd >= 0 else { return }
+        defer { close(fd) }
+        let bytes = Array(line.utf8)
+        _ = bytes.withUnsafeBytes { write(fd, $0.baseAddress, $0.count) }
     }
 
     /// Consecutive looks that found something not shown. See `checkPlacement`.
