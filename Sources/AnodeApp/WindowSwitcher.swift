@@ -59,9 +59,8 @@ enum WindowCatalog {
         }
     }
 
-    /// One app's windows for its Dock preview: what is on screen on this Space (front to
-    /// back), then the ones the screen does not show because they are minimized or the app
-    /// is hidden. Any other window accessibility lists but the screen does not show is not
+    /// One app's windows for its Dock preview: what is on screen on this Space, and the ones
+    /// the screen does not show because they are minimized or the app is hidden. Any other window accessibility lists but the screen does not show is not
     /// one to offer: Finder's desktop is one, and it would have been a "minimized" tile. Pure.
     static func appWindows(onScreen: [SwitchableWindow], accessibility: [AXWindowInfo],
                            pid: pid_t, appName: String, appHidden: Bool = false) -> [SwitchableWindow] {
@@ -72,7 +71,11 @@ enum WindowCatalog {
             return SwitchableWindow(id: w.id, pid: pid, appName: appName, title: w.title,
                                     bounds: w.frame, isOffScreen: true)
         }
-        return onScreen.filter { $0.pid == pid } + rest
+        // In the order the windows were opened, oldest first, as a Windows taskbar group is,
+        // not front to back: an order that follows the front window reshuffles the tiles every
+        // time a different one is used. Window numbers are handed out counting up, so they are
+        // that order; minimized windows keep their place in it rather than going to the end.
+        return (onScreen.filter { $0.pid == pid } + rest).sorted { $0.id < $1.id }
     }
 
     static func windows(of app: NSRunningApplication) -> [SwitchableWindow] {

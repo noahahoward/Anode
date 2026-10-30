@@ -98,17 +98,18 @@ final class DockPreviewsTests: XCTestCase {
         SwitchableWindow(id: id, pid: pid, appName: "App", title: title, bounds: CGRect(x: 0, y: 40, width: 800, height: 600))
     }
 
-    func testOnScreenWindowsComeFirstThenMinimizedOnesMarked() {
+    func testWindowsAreInTheOrderTheyWereOpenedWithMinimizedOnesInPlace() {
         let list = WindowCatalog.appWindows(
-            onScreen: [win(2), win(9, pid: 8), win(1)],
+            onScreen: [win(6), win(9, pid: 8), win(1)],
             accessibility: [AXWindowInfo(id: 1, title: "", frame: CGRect(x: 0, y: 0, width: 800, height: 600)),
                             AXWindowInfo(id: 5, title: "Draft", frame: CGRect(x: 0, y: 0, width: 800, height: 600), minimized: true),
                             AXWindowInfo(id: 0, title: "no id", frame: CGRect(x: 0, y: 0, width: 800, height: 600), minimized: true),
-                            AXWindowInfo(id: 6, title: "palette", frame: CGRect(x: 0, y: 0, width: 30, height: 200), minimized: true)],
+                            AXWindowInfo(id: 3, title: "palette", frame: CGRect(x: 0, y: 0, width: 30, height: 200), minimized: true)],
             pid: 7, appName: "App")
-        XCTAssertEqual(list.map(\.id), [2, 1, 5], "this app's on-screen windows, then the minimized one")
-        XCTAssertEqual(list.map(\.isOffScreen), [false, false, true])
-        XCTAssertEqual(list.last?.title, "Draft")
+        // Front to back the screen has 6 then 1; opened order is 1, 5 (minimized), 6.
+        XCTAssertEqual(list.map(\.id), [1, 5, 6], "oldest first, the minimized one in its place")
+        XCTAssertEqual(list.map(\.isOffScreen), [false, true, false])
+        XCTAssertEqual(list[1].title, "Draft")
     }
 
     /// Finder lists its desktop as a window that is never on screen; it is not minimized and
