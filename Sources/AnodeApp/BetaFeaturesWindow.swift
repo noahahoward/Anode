@@ -464,9 +464,9 @@ final class DockPreviewFeature: BetaFeature {
 final class DesktopSwitcherFeature: BetaFeature {
 
     let title = "Desktop Switcher"
-    let summary = "Option-Tab opens a row of your desktops: hold ⌥ and press Tab to move (⇧ to go back, "
-                + "arrows and the number keys 1–9 work too), let go of ⌥ to go there, Esc to cancel. "
-                + "Jumps straight to any desktop, with none of the swipe's slide."
+    let summary = "Option-Tab opens a row of your desktops, the one you used last first: hold ⌥ and press "
+                + "Tab to move (⇧ to go back, arrows work too, and the number keys 1–9 pick Desktop N), let go "
+                + "of ⌥ to go there, Esc to cancel. It goes to any desktop in one slide, however far away."
     var layoutChanged: (() -> Void)?
 
     private let settings: Settings
@@ -518,12 +518,16 @@ final class DesktopSwitcherFeature: BetaFeature {
         accessButton.isHidden = !on || allowed
         accessStatus.stringValue = !SpaceCatalog.isAvailable
             ? "This version of macOS does not offer what the desktop switcher needs, so Option-Tab is left alone."
+            : !SpaceCatalog.keyboardSteppingEnabled()
+            ? "It moves between desktops with the system's Control-Arrow shortcuts, which are turned off. Turn on "
+              + "“Move left a space” and “Move right a space” in System Settings → Keyboard → Keyboard Shortcuts "
+              + "→ Mission Control."
             : allowed
                 ? "Accessibility: allowed. Only Option-Tab, and Tab, the arrows, the number keys and Esc while "
                   + "it is open, are taken; with a single desktop Option-Tab is left alone."
                 : "Accessibility: not allowed yet, so Option-Tab does nothing. Allow Anode in Accessibility "
                   + "and it starts within a couple of seconds."
-        accessStatus.textColor = allowed && SpaceCatalog.isAvailable ? .secondaryLabelColor : .systemOrange
+        accessStatus.textColor = allowed && SpaceCatalog.canSwitch ? .secondaryLabelColor : .systemOrange
         layoutChanged?()
     }
 }

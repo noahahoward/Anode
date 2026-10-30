@@ -8,14 +8,22 @@ import PowerKit
 // Option goes there. Unlike the four-finger swipe it jumps straight to any desktop, not one
 // step at a time, and it has no slide animation to wait for.
 //
-// How it works, measured before writing it:
+// How it works, measured:
 // - SkyLight lists every display's Spaces (`SLSCopyManagedDisplaySpaces`) and which is current,
 //   and says which Spaces a window is on (`SLSCopySpacesForWindows`), which is how each tile
-//   knows what is on its desktop. Three desktops here; the windows mapped correctly.
-// - `SLSManagedDisplaySetCurrentSpace` changed the screen to the other desktop's own content
-//   (screenshot), and focus followed: the front window and app became that desktop's.
-// All of it is private API, looked up by name: if any piece is missing nothing is taken over
-// and Option-Tab stays whatever it was.
+//   knows what is on its desktop. These calls only READ.
+// - The desktops are ordered by recency of use, most recent first, like the window switcher, so a
+//   quick Option-Tab goes back to the desktop you were just on.
+// - Going to a desktop is done by pressing the system's own "move a space left / right"
+//   shortcut (Control-Arrow) as many times as it takes, the same keys a user presses, which the
+//   system handles completely. It is NOT done with `SLSManagedDisplaySetCurrentSpace`, which
+//   does switch the screen instantly and was the first version: it left a second, stale menu
+//   bar on screen (two "Menubar" windows on screen at once; both apps' menus drawn on top of each
+//   other) that neither switching apps, Mission Control, nor restarting the Dock cleared, only a
+//   proper switch. So the price of doing it safely is the system's own slide, about a second.
+// All of it is private API or an undocumented key flag, looked up by name: if a piece is
+// missing, or the Control-Arrow shortcuts are turned off, nothing is taken over and Option-Tab
+// stays whatever it was.
 //
 // The keys are taken the way the window switcher takes Command-Tab: an active event tap, which
 // dies with the process, so a crash gives the key straight back. Needs Accessibility.
@@ -67,7 +75,6 @@ enum SpaceCatalog {
     private typealias ConnectionID = @convention(c) () -> Int32
     private typealias CopySpaces = @convention(c) (Int32) -> Unmanaged<CFArray>?
     private typealias SpacesForWindows = @convention(c) (Int32, Int32, CFArray) -> Unmanaged<CFArray>?
-    private typealias SetSpace = @convention(c) (Int32, CFString, Int) -> Void
 
     private static let handle = dlopen("/System/Library/PrivateFrameworks/SkyLight.framework/SkyLight", RTLD_NOW)
     private static func symbol<T>(_ name: String, _: T.Type) -> T? {
@@ -76,11 +83,35 @@ enum SpaceCatalog {
     private static let connection = symbol("SLSMainConnectionID", ConnectionID.self)
     private static let copySpaces = symbol("SLSCopyManagedDisplaySpaces", CopySpaces.self)
     private static let spacesForWindows = symbol("SLSCopySpacesForWindows", SpacesForWindows.self)
-    private static let setSpace = symbol("SLSManagedDisplaySetCurrentSpace", SetSpace.self)
 
-    /// Are all the private pieces there? Without them the switcher never starts.
+    /// Are the private pieces there to READ the desktops? Without them the switcher never starts.
     static var isAvailable: Bool {
-        connection != nil && copySpaces != nil && spacesForWindows != nil && setSpace != nil
+        connection != nil && copySpaces != nil && spacesForWindows != nil
+    }
+
+    /// Is the system's Control-Arrow ("move left / right a space") shortcut on? That is how the
+    /// switcher goes to a desktop. An entry that is simply absent means the system default, on.
+    static func keyboardSteppingEnabled(
+        hotKeys: [String: Any]? = UserDefaults(suiteName: "com.apple.symbolichotkeys")?
+            .dictionary(forKey: "AppleSymbolicHotKeys")) -> Bool {
+        // 79 = move left a space, 81 = move right a space.
+        ["79", "81"].allSatisfy { key in
+            guard let entry = hotKeys?[key] as? [String: Any], let enabled = entry["enabled"] else { return true }
+            if let flag = enabled as? Bool { return flag }
+            return ((enabled as? Int) ?? 1) != 0
+        }
+    }
+
+    /// Everything needed to start: the desktops can be read and can be stepped through.
+    static var canSwitch: Bool { isAvailable && keyboardSteppingEnabled() }
+
+    /// The current desktop of the display under the pointer, without reading the windows.
+    static func currentID() -> Int? {
+        guard let connection, let copySpaces,
+              let displays = copySpaces(connection())?.takeRetainedValue() as? [[String: Any]] else { return nil }
+        let wanted = displayUUID(under: NSEvent.mouseLocation)?.uppercased()
+        let display = displays.first { ($0["Display Identifier"] as? String)?.uppercased() == wanted } ?? displays.first
+        return (display?["Current Space"] as? [String: Any])?["ManagedSpaceID"] as? Int
     }
 
     /// The desktops of the display under the pointer, with what is on each. About one SkyLight call
@@ -108,10 +139,34 @@ enum SpaceCatalog {
                         windowsBySpace: bySpace)
     }
 
-    /// Go to `desktop` on `display`.
-    static func go(to desktop: DesktopInfo, on display: String) {
-        guard let connection, let setSpace else { return }
-        setSpace(connection(), display as CFString, desktop.id)
+    /// How many presses of the move-a-space key reach `target` from `current` in the natural
+    /// (left to right) order: negative is left. Pure, for tests.
+    static func steps(from current: Int, to target: Int, in natural: [DesktopInfo]) -> Int? {
+        guard let a = natural.firstIndex(where: { $0.id == current }),
+              let b = natural.firstIndex(where: { $0.id == target }) else { return nil }
+        return b - a
+    }
+
+    /// Go `steps` desktops along (negative = left) by pressing Control-Arrow that many times, a
+    /// few milliseconds apart, so the system combines them into one move. A real arrow key
+    /// carries the secondary-fn and numeric-pad flags; without them the system ignores the shortcut.
+    static func step(_ steps: Int) {
+        guard steps != 0 else { return }
+        let arrow: CGKeyCode = steps > 0 ? 124 : 123
+        let flags: CGEventFlags = [.maskControl, .maskSecondaryFn, .maskNumericPad]
+        let source = CGEventSource(stateID: .hidSystemState)
+        func post(_ key: CGKeyCode, _ down: Bool, _ f: CGEventFlags) {
+            let e = CGEvent(keyboardEventSource: source, virtualKey: key, keyDown: down)
+            e?.flags = f
+            e?.post(tap: .cghidEventTap)
+        }
+        post(59, true, .maskControl)
+        for i in 0..<abs(steps) {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.02 * Double(i)) {
+                post(arrow, true, flags); post(arrow, false, flags)
+            }
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.02 * Double(abs(steps)) + 0.01) { post(59, false, []) }
     }
 
     private static func displayUUID(under point: NSPoint) -> String? {
@@ -120,6 +175,35 @@ enum SpaceCatalog {
               let uuid = CGDisplayCreateUUIDFromDisplayID(number)?.takeRetainedValue(),
               let string = CFUUIDCreateString(nil, uuid) as String? else { return nil }
         return string
+    }
+}
+
+/// Which desktops were used most recently. Pure, for tests.
+struct DesktopRecency: Equatable {
+    private(set) var ids: [Int] = []
+
+    /// Note that `id` is now the desktop in use.
+    mutating func visit(_ id: Int) {
+        ids.removeAll { $0 == id }
+        ids.insert(id, at: 0)
+        if ids.count > 64 { ids.removeLast(ids.count - 64) }
+    }
+
+    /// `desktops` (natural order) as the switcher lists them: the current desktop, then the ones
+    /// used before it, most recent first, then any never visited since Anode started, in their
+    /// natural order.
+    func ordered(_ desktops: [DesktopInfo]) -> [DesktopInfo] {
+        let rank = Dictionary(ids.enumerated().map { ($1, $0) }, uniquingKeysWith: { a, _ in a })
+        let indexed = Array(desktops.enumerated())
+        return indexed.sorted { a, b in
+            if a.element.isCurrent != b.element.isCurrent { return a.element.isCurrent }
+            switch (rank[a.element.id], rank[b.element.id]) {
+            case let (x?, y?): return x < y
+            case (_?, nil): return true
+            case (nil, _?): return false
+            default: return a.offset < b.offset
+            }
+        }.map(\.element)
     }
 }
 
@@ -163,7 +247,11 @@ final class DesktopSwitcher {
 
     private(set) var isActive = false
     private var display = ""
+    /// As listed (most recent first) and in the system's own left-to-right order.
     private var desktops: [DesktopInfo] = []
+    private var natural: [DesktopInfo] = []
+    private var recency = DesktopRecency()
+    private var spaceToken: NSObjectProtocol?
     private var selection = DesktopSelection()
     private let panel = DesktopPanel()
 
@@ -176,10 +264,22 @@ final class DesktopSwitcher {
             self?.commit()
         }
         settingToken = settings.observe(Settings.Key.desktopSwitcherEnabled) { [weak self] in self?.apply() }
+        // Every change of desktop, by whatever means, is a visit; the list is in order of them.
+        spaceToken = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.activeSpaceDidChangeNotification, object: nil, queue: .main
+        ) { [weak self] _ in self?.noteCurrentDesktop() }
         apply()
     }
 
-    deinit { stop() }
+    deinit {
+        stop()
+        if let t = spaceToken { NSWorkspace.shared.notificationCenter.removeObserver(t) }
+    }
+
+    private func noteCurrentDesktop() {
+        guard settings.desktopSwitcherEnabled, let id = SpaceCatalog.currentID() else { return }
+        recency.visit(id)
+    }
 
     /// Start or stop to match the setting; while it is on but Accessibility is not granted, try
     /// again every two seconds so a grant works without a relaunch.
@@ -188,7 +288,10 @@ final class DesktopSwitcher {
             stop()
             return
         }
-        if tap == nil { start() }
+        if tap == nil {
+            start()
+            if tap != nil { noteCurrentDesktop() }
+        }
         if tap == nil {
             guard retryTimer == nil else { return }
             retryTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in self?.apply() }
@@ -258,7 +361,8 @@ final class DesktopSwitcher {
                 case Self.right: move(1)
                 case Self.escape: cancel()
                 default:
-                    if let i = Self.digits[key] {
+                    // A digit names a desktop by its number, whatever order they are listed in.
+                    if let n = Self.digits[key], let i = desktops.firstIndex(where: { $0.number == n + 1 }) {
                         selection.select(i)
                         panel.select(selection.index)
                     }
@@ -272,11 +376,14 @@ final class DesktopSwitcher {
 
     /// Open the switcher; false when there is nothing to switch to.
     private func begin(backward: Bool) -> Bool {
-        guard let read = SpaceCatalog.read(), read.desktops.count >= 2,
-              let current = read.desktops.firstIndex(where: \.isCurrent) else { return false }
+        guard SpaceCatalog.keyboardSteppingEnabled(), let read = SpaceCatalog.read(), read.desktops.count >= 2,
+              let current = read.desktops.first(where: \.isCurrent) else { return false }
         display = read.display
-        desktops = read.desktops
-        selection.start(count: desktops.count, current: current, backward: backward)
+        natural = read.desktops
+        recency.visit(current.id)
+        desktops = recency.ordered(read.desktops)
+        // The current desktop is first, so a quick tap lands on the one used before it.
+        selection.start(count: desktops.count, current: 0, backward: backward)
         isActive = true
         showTimer?.invalidate()
         // Built just after the tap returns, shown after the same short delay as the window switcher.
@@ -298,9 +405,14 @@ final class DesktopSwitcher {
 
     private func commit() {
         let chosen = selection.index.flatMap { desktops.indices.contains($0) ? desktops[$0] : nil }
-        let display = self.display
+        let current = natural.first(where: \.isCurrent)
+        let list = natural
         cancel()
-        if let chosen, !chosen.isCurrent { SpaceCatalog.go(to: chosen, on: display) }
+        if let chosen, let current, !chosen.isCurrent,
+           let steps = SpaceCatalog.steps(from: current.id, to: chosen.id, in: list) {
+            recency.visit(chosen.id)
+            SpaceCatalog.step(steps)
+        }
     }
 
     private func cancel() {
@@ -309,6 +421,7 @@ final class DesktopSwitcher {
         showTimer = nil
         panel.dismiss()
         desktops = []
+        natural = []
         selection = DesktopSelection()
     }
 }

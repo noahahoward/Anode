@@ -75,6 +75,62 @@ final class DesktopSwitcherTests: XCTestCase {
         XCTAssertEqual(Set(DesktopSwitcher.digits.values), Set(0..<9))
     }
 
+    // ── Recency ──
+
+    private func info(_ id: Int, current: Bool = false, number: Int? = nil) -> DesktopInfo {
+        DesktopInfo(id: id, number: number ?? id, isFullScreen: false, isCurrent: current, pids: [], windowCount: 0)
+    }
+
+    /// The asked-for order: the desktop in use, then the one before it, and so on.
+    func testDesktopsAreListedMostRecentlyUsedFirst() {
+        var r = DesktopRecency()
+        r.visit(1); r.visit(3); r.visit(2)             // used 1, then 3, then 2 (now here)
+        let list = r.ordered([info(1), info(2, current: true), info(3), info(4)])
+        XCTAssertEqual(list.map(\.id), [2, 3, 1, 4], "current, then 3, then 1, then the never-visited 4")
+    }
+
+    func testNeverVisitedDesktopsKeepTheirNaturalOrderAfterTheVisitedOnes() {
+        var r = DesktopRecency()
+        r.visit(5)
+        let list = r.ordered([info(4), info(5), info(6, current: true), info(7), info(8)])
+        XCTAssertEqual(list.map(\.id), [6, 5, 4, 7, 8])
+    }
+
+    func testVisitingMovesToTheFrontWithoutDuplicates() {
+        var r = DesktopRecency()
+        r.visit(1); r.visit(2); r.visit(1)
+        XCTAssertEqual(r.ids, [1, 2])
+        for i in 0..<100 { r.visit(i) }
+        XCTAssertEqual(r.ids.count, 64, "capped")
+    }
+
+    func testAQuickTapGoesToTheDesktopUsedBefore() {
+        var r = DesktopRecency()
+        r.visit(1); r.visit(3)                          // was on 1, now on 3
+        let list = r.ordered([info(1), info(2), info(3, current: true)])
+        var s = DesktopSelection()
+        s.start(count: list.count, current: 0, backward: false)
+        XCTAssertEqual(list[s.index!].id, 1)
+    }
+
+    // ── Stepping ──
+
+    func testStepsAreCountedAlongTheNaturalOrder() {
+        let natural = [info(10), info(20), info(30), info(40)]
+        XCTAssertEqual(SpaceCatalog.steps(from: 20, to: 40, in: natural), 2)
+        XCTAssertEqual(SpaceCatalog.steps(from: 40, to: 10, in: natural), -3)
+        XCTAssertEqual(SpaceCatalog.steps(from: 20, to: 20, in: natural), 0)
+        XCTAssertNil(SpaceCatalog.steps(from: 20, to: 99, in: natural))
+    }
+
+    func testTheControlArrowShortcutsAreRead() {
+        XCTAssertTrue(SpaceCatalog.keyboardSteppingEnabled(hotKeys: nil), "no entry = the system default, on")
+        XCTAssertTrue(SpaceCatalog.keyboardSteppingEnabled(hotKeys: ["79": ["enabled": 1], "81": ["enabled": 1]]))
+        XCTAssertTrue(SpaceCatalog.keyboardSteppingEnabled(hotKeys: ["79": ["enabled": true], "81": ["enabled": true]]))
+        XCTAssertFalse(SpaceCatalog.keyboardSteppingEnabled(hotKeys: ["79": ["enabled": 0], "81": ["enabled": 1]]))
+        XCTAssertFalse(SpaceCatalog.keyboardSteppingEnabled(hotKeys: ["79": ["enabled": 1], "81": ["enabled": false]]))
+    }
+
     // ── Layout and labels ──
 
     func testFewDesktopsAreOneRowAndManyWrap() {
