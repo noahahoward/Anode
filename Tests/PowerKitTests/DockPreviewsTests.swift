@@ -164,3 +164,90 @@ final class DockPreviewsTests: XCTestCase {
         XCTAssertTrue(BetaFeaturesWindowController().features.contains { $0 is DockPreviewFeature })
     }
 }
+
+final class DockHoldTests: XCTestCase {
+    private var defaults: UserDefaults!
+    private var autoHide: Bool? = true
+    private var calls: [Bool] = []
+
+    override func setUp() {
+        defaults = UserDefaults(suiteName: "dock-hold-\(UUID().uuidString)")!
+        autoHide = true
+        calls = []
+    }
+
+    private func make() -> DockHold {
+        DockHold(defaults: defaults, isEnabled: { self.autoHide },
+                 setEnabled: { self.calls.append($0); self.autoHide = $0; return true })
+    }
+
+    func testHoldTurnsAutoHideOffAndReleaseTurnsItBackOn() {
+        let h = make()
+        h.hold()
+        XCTAssertEqual(autoHide, false)
+        XCTAssertTrue(defaults.bool(forKey: DockHold.recordKey), "written down while holding")
+        h.releaseNow()
+        XCTAssertEqual(autoHide, true)
+        XCTAssertFalse(defaults.bool(forKey: DockHold.recordKey))
+    }
+
+    /// Someone who does not use auto-hide must never have it touched.
+    func testADockThatDoesNotAutoHideIsLeftAlone() {
+        autoHide = false
+        let h = make()
+        h.hold(); h.releaseNow()
+        XCTAssertEqual(calls, [])
+        XCTAssertFalse(defaults.bool(forKey: DockHold.recordKey))
+    }
+
+    func testWithoutThePrivateCallsNothingHappens() {
+        autoHide = nil
+        let h = make()
+        h.hold()
+        XCTAssertEqual(calls, []); XCTAssertFalse(h.isHolding)
+    }
+
+    func testHoldingTwiceChangesNothingMore() {
+        let h = make()
+        h.hold(); h.hold()
+        XCTAssertEqual(calls, [false])
+    }
+
+    /// Moving between icons closes one panel and opens the next; a hold in between keeps it.
+    func testAHoldBeforeTheDelayedReleaseCancelsIt() {
+        let h = make()
+        h.hold()
+        h.release(after: 0.05)
+        h.hold()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.15))
+        XCTAssertEqual(calls, [false], "never flipped back on in between")
+        XCTAssertTrue(h.isHolding)
+    }
+
+    func testTheDelayedReleaseHappens() {
+        let h = make()
+        h.hold()
+        h.release(after: 0.05)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.15))
+        XCTAssertEqual(calls, [false, true])
+    }
+
+    /// A crash while holding left auto-hide off; the next launch turns it back on.
+    func testRecoverUndoesAHoldLeftByACrash() {
+        defaults.set(true, forKey: DockHold.recordKey)
+        autoHide = false
+        make().recover()
+        XCTAssertEqual(autoHide, true)
+        XCTAssertFalse(defaults.bool(forKey: DockHold.recordKey))
+    }
+
+    func testRecoverWithNothingRecordedDoesNothing() {
+        autoHide = false   // the user's own choice
+        make().recover()
+        XCTAssertEqual(calls, [])
+    }
+
+    func testTheSettingDefaultsToOn() {
+        XCTAssertTrue(Settings(defaults: defaults).dockPreviewsHoldDock)
+    }
+}

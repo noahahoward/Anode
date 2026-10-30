@@ -27,6 +27,95 @@ enum DockEdge: String {
     }
 }
 
+/// The Dock's auto-hide switch, through the private CoreDock calls (looked up by name; absent
+/// means nothing is ever changed). Measured on macOS 27: switching it takes ~4 ms, needs no
+/// Dock restart and no permission, the Dock slides up and stays, and no window moved or
+/// resized either way. It IS the user's stored preference (`com.apple.dock autohide` read 0
+/// while off), which is why `DockHold` records every change it makes.
+enum DockAutoHide {
+    private typealias Set = @convention(c) (Bool) -> Void
+    private typealias Get = @convention(c) () -> Bool
+    private static let framework = dlopen(
+        "/System/Library/Frameworks/ApplicationServices.framework/ApplicationServices", RTLD_NOW)
+    private static let setter: Set? = dlsym(framework, "CoreDockSetAutoHideEnabled").map { unsafeBitCast($0, to: Set.self) }
+    private static let getter: Get? = dlsym(framework, "CoreDockGetAutoHideEnabled").map { unsafeBitCast($0, to: Get.self) }
+
+    /// nil when the calls are not there.
+    static var isEnabled: Bool? { getter?() }
+
+    @discardableResult
+    static func set(_ on: Bool) -> Bool {
+        guard let setter else { return false }
+        setter(on)
+        return true
+    }
+}
+
+/// Keeps an auto-hiding Dock up while a preview is open, so the preview is not left floating
+/// over the space the Dock slid out of. Turns auto-hide off on open and back on on close —
+/// only ever undoing its own change, and only for someone who uses auto-hide at all.
+///
+/// Because the switch is the user's stored preference, a crash while holding would leave
+/// their Dock pinned up. So the hold is written down BEFORE auto-hide is turned off, cleared
+/// after it is turned back on, and a hold still written down at launch is undone then.
+final class DockHold {
+    static let recordKey = "anode.dockHeldUp"
+
+    private let defaults: UserDefaults
+    private let isEnabled: () -> Bool?
+    private let setEnabled: (Bool) -> Bool
+    private var releaseTimer: Timer?
+    private(set) var isHolding = false
+
+    init(defaults: UserDefaults = .standard,
+         isEnabled: @escaping () -> Bool? = { DockAutoHide.isEnabled },
+         setEnabled: @escaping (Bool) -> Bool = { DockAutoHide.set($0) }) {
+        self.defaults = defaults
+        self.isEnabled = isEnabled
+        self.setEnabled = setEnabled
+    }
+
+    /// Undo a hold a crash (or a force-quit) left behind. Call once at launch.
+    func recover() {
+        guard defaults.bool(forKey: Self.recordKey) else { return }
+        _ = setEnabled(true)
+        defaults.removeObject(forKey: Self.recordKey)
+    }
+
+    func hold() {
+        releaseTimer?.invalidate()
+        releaseTimer = nil
+        guard !isHolding, isEnabled() == true else { return }
+        defaults.set(true, forKey: Self.recordKey)
+        defaults.synchronize()
+        guard setEnabled(false) else {
+            defaults.removeObject(forKey: Self.recordKey)
+            return
+        }
+        isHolding = true
+    }
+
+    /// Let go — after a moment, so moving from one app's icon to the next (the panel closes,
+    /// then the next opens) does not flip the preference twice.
+    func release(after delay: TimeInterval = 0.4) {
+        guard isHolding else { return }
+        releaseTimer?.invalidate()
+        if delay <= 0 { return releaseNow() }
+        releaseTimer = Timer.scheduledTimer(withTimeInterval: delay, repeats: false) { [weak self] _ in
+            self?.releaseNow()
+        }
+    }
+
+    func releaseNow() {
+        releaseTimer?.invalidate()
+        releaseTimer = nil
+        guard isHolding else { return }
+        _ = setEnabled(true)
+        isHolding = false
+        defaults.removeObject(forKey: Self.recordKey)
+    }
+}
+
 final class DockPreviews {
 
     /// How long the pointer rests on an icon before its panel opens — every icon, every time:
@@ -51,6 +140,7 @@ final class DockPreviews {
 
     private let settings: Settings
     private var settingToken: AnyObject?
+    private var holdToken: AnyObject?
     private var launchToken: NSObjectProtocol?
     private var retryTimer: Timer?
     private var observer: AXObserver?
@@ -73,11 +163,17 @@ final class DockPreviews {
     static let aimWindow: TimeInterval = 0.5
     private var clickMonitor: Any?
     private let panel = DockPreviewPanel()
+    private let dockHold = DockHold()
+    private var terminateToken: NSObjectProtocol?
 
     var isRunning: Bool { observer != nil }
 
     init(settings: Settings = .shared) {
         self.settings = settings
+        dockHold.recover()
+        terminateToken = NotificationCenter.default.addObserver(
+            forName: NSApplication.willTerminateNotification, object: nil, queue: .main
+        ) { [weak self] _ in self?.dockHold.releaseNow() }
         panel.onOpen = { [weak self] window in
             self?.hide()
             WindowActivator.bringForward(window)
@@ -88,6 +184,10 @@ final class DockPreviews {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { self?.reshow() }
         }
         settingToken = settings.observe(Settings.Key.dockPreviewsEnabled) { [weak self] in self?.apply() }
+        holdToken = settings.observe(Settings.Key.dockPreviewsHoldDock) { [weak self] in
+            guard let self, !self.settings.dockPreviewsHoldDock else { return }
+            self.dockHold.releaseNow()
+        }
         // The Dock is a process like any other and is restarted (by `killall Dock`, or a crash);
         // the observer dies with the old one.
         launchToken = NSWorkspace.shared.notificationCenter.addObserver(
@@ -105,7 +205,9 @@ final class DockPreviews {
 
     deinit {
         detach()
+        dockHold.releaseNow()
         if let t = launchToken { NSWorkspace.shared.notificationCenter.removeObserver(t) }
+        if let t = terminateToken { NotificationCenter.default.removeObserver(t) }
     }
 
     /// Attach or detach to match the setting; retry every two seconds while it is on but
@@ -228,6 +330,7 @@ final class DockPreviews {
         let windows = WindowCatalog.windows(of: app)
         guard !windows.isEmpty else { return hide() }
         shown = hover
+        if settings.dockPreviewsHoldDock { dockHold.hold() }
         panel.present(windows, iconInWindowServer: hover.icon, edge: DockEdge.current)
         // Fresh pictures of what is on screen; minimized windows keep their last one.
         WindowPreviews.shared.refresh(windows.filter { !$0.isOffScreen }.map(\.id)) { [weak self] id, image in
@@ -259,6 +362,7 @@ final class DockPreviews {
         pending = nil
         shown = nil
         panel.dismiss()
+        dockHold.release()
     }
 
     /// While the panel is up — and only then — follow the pointer, and close on a click

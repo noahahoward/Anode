@@ -373,9 +373,16 @@ final class DockPreviewFeature: BetaFeature {
     private let settings: Settings
     private let accessibility: () -> Bool
     private var token: AnyObject?
+    private var holdToken: AnyObject?
 
     // Internal, so the tests can drive them as a click would.
     let enableCheckbox = NSButton(checkboxWithTitle: "Show window previews on the Dock", target: nil, action: nil)
+    let holdCheckbox = NSButton(checkboxWithTitle: "Keep an auto-hiding Dock up while a preview is open",
+                                target: nil, action: nil)
+    let holdNote = BetaFeaturesWindowController.wrapping(
+        "Turns auto-hide off while a preview is open and back on when it closes. If Anode quits "
+        + "unexpectedly while holding, auto-hide is turned back on at the next launch.",
+        color: .secondaryLabelColor)
     let accessStatus = BetaFeaturesWindowController.wrapping("")
     let accessButton = NSButton(title: "Open Accessibility Settings…", target: nil, action: nil)
 
@@ -392,11 +399,14 @@ final class DockPreviewFeature: BetaFeature {
         accessButton.action = #selector(openAccessibility)
         accessButton.bezelStyle = .rounded
         accessButton.controlSize = .small
-        let column = NSStackView(views: [enableCheckbox, accessStatus, accessButton])
+        holdCheckbox.target = self
+        holdCheckbox.action = #selector(holdToggled)
+        let column = NSStackView(views: [enableCheckbox, holdCheckbox, holdNote, accessStatus, accessButton])
         column.orientation = .vertical
         column.alignment = .leading
         column.spacing = 8
         token = settings.observe(Settings.Key.dockPreviewsEnabled) { [weak self] in self?.refresh() }
+        holdToken = settings.observe(Settings.Key.dockPreviewsHoldDock) { [weak self] in self?.refresh() }
         refresh()
         return column
     }
@@ -407,12 +417,19 @@ final class DockPreviewFeature: BetaFeature {
         settings.dockPreviewsEnabled = on
     }
 
+    @objc private func holdToggled() {
+        settings.dockPreviewsHoldDock = holdCheckbox.state == .on
+    }
+
     @objc private func openAccessibility() {
         AccessibilityAccess.openSettings()
     }
 
     func refresh() {
         let on = settings.dockPreviewsEnabled
+        holdCheckbox.state = settings.dockPreviewsHoldDock ? .on : .off
+        holdCheckbox.isEnabled = on
+        holdNote.textColor = on ? .secondaryLabelColor : .disabledControlTextColor
         let allowed = accessibility()
         enableCheckbox.state = on ? .on : .off
         accessStatus.isHidden = !on

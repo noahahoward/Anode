@@ -40,6 +40,7 @@ public final class Settings {
         public static let menuBarBackdropShowOnDesktop = "menuBarBackdropShowOnDesktop"
         public static let windowSwitcherEnabled = "windowSwitcherEnabled"
         public static let dockPreviewsEnabled = "dockPreviewsEnabled"
+        public static let dockPreviewsHoldDock = "dockPreviewsHoldDock"
         public static let fanControlEnabled = "fanControlEnabled"
         public static let fanDisclosureSeen = "fanDisclosureSeen"
         public static let fanSyncEnabled = "fanSyncEnabled"
@@ -97,6 +98,8 @@ public final class Settings {
         static let windowSwitcherEnabled = false
         /// OFF, like every beta feature that watches the Dock or the keyboard.
         static let dockPreviewsEnabled = false
+        /// ON: with an auto-hiding Dock, the preview is otherwise left floating over nothing.
+        static let dockPreviewsHoldDock = true
         /// OFF, and it is the one setting in this file that must stay that way.
         ///
         /// Turning it on is a decision to let a root process on this machine
@@ -172,6 +175,7 @@ public final class Settings {
         var menuBarBackdropShowOnDesktop: Bool
         var windowSwitcherEnabled: Bool
         var dockPreviewsEnabled: Bool
+        var dockPreviewsHoldDock: Bool
         var menuBarBackdropMode: MenuBarBackdropMode
         var menuBarBackdropBlur: Double
         var fanDisclosureSeen: Bool
@@ -353,6 +357,12 @@ public final class Settings {
     public var dockPreviewsEnabled: Bool {
         get { Settings.readBool(defaults, Key.dockPreviewsEnabled, Default.dockPreviewsEnabled) }
         set { writeBool(Key.dockPreviewsEnabled, \.dockPreviewsEnabled, newValue, Default.dockPreviewsEnabled) }
+    }
+
+    /// Whether an auto-hiding Dock is kept up while a Dock preview is open (Beta Features).
+    public var dockPreviewsHoldDock: Bool {
+        get { Settings.readBool(defaults, Key.dockPreviewsHoldDock, Default.dockPreviewsHoldDock) }
+        set { writeBool(Key.dockPreviewsHoldDock, \.dockPreviewsHoldDock, newValue, Default.dockPreviewsHoldDock) }
     }
 
     public var menuBarWidgetsEnabled: Bool {
@@ -690,6 +700,7 @@ public final class Settings {
         }
         if old.windowSwitcherEnabled != now.windowSwitcherEnabled { notify(Key.windowSwitcherEnabled) }
         if old.dockPreviewsEnabled != now.dockPreviewsEnabled { notify(Key.dockPreviewsEnabled) }
+        if old.dockPreviewsHoldDock != now.dockPreviewsHoldDock { notify(Key.dockPreviewsHoldDock) }
         if old.menuBarWidgetsEnabled != now.menuBarWidgetsEnabled {
             notify(Key.menuBarWidgetsEnabled)
         }
@@ -811,6 +822,7 @@ public final class Settings {
                                                       Default.menuBarBackdropShowOnDesktop),
                windowSwitcherEnabled: readBool(d, Key.windowSwitcherEnabled, Default.windowSwitcherEnabled),
                dockPreviewsEnabled: readBool(d, Key.dockPreviewsEnabled, Default.dockPreviewsEnabled),
+               dockPreviewsHoldDock: readBool(d, Key.dockPreviewsHoldDock, Default.dockPreviewsHoldDock),
                menuBarBackdropMode: d.string(forKey: storageKey(Key.menuBarBackdropMode))
                    .flatMap(MenuBarBackdropMode.init(rawValue:)) ?? Default.menuBarBackdropMode,
                menuBarBackdropBlur: readDouble(d, Key.menuBarBackdropBlur,
