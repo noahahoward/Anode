@@ -18,6 +18,37 @@ func rule(_ s: String = "") {
     else { print("\n\(s)\n" + String(repeating: "─", count: 78)) }
 }
 
+// ── Temperature dump ────────────────────────────────────────────────────────
+// `anode --temps [-w seconds]`: every CPU and GPU core sensor, once a second, with the mean and
+// the peak as the app computes them, and the same figures after the app's steadying. For
+// finding out why a machine's temperatures swing, on a machine this was not written on.
+if args.contains("--temps") {
+    var cpuFilter = DieTemperatureFilter(), gpuFilter = DieTemperatureFilter()
+    let seconds = Int(window) < 1 ? 20 : Int(window)
+    func family(_ inv: Sensors.Inventory, _ prefixes: [String]) -> [(key: String, value: Double)] {
+        inv.temperatures.filter { r in prefixes.contains { r.key.hasPrefix($0) } }.map { ($0.key, $0.value) }
+    }
+    print("seconds  family  sensors  mean   peak | steadied mean  peak")
+    var lines: [String] = []
+    for t in 0..<seconds {
+        let inv = Sensors.inventory(), now = Date()
+        for (name, prefixes) in [("CPU", ["Tp", "Te"]), ("GPU", ["Tg"])] {
+            let readings = family(inv, prefixes)
+            let dies = readings.map(\.value).filter { $0 >= DieTemperatureFilter.dieFloor }
+            let steady = name == "CPU" ? cpuFilter.update(readings, now: now) : gpuFilter.update(readings, now: now)
+            print(String(format: "%5d    %@     %3d     %5.1f  %5.1f | %5.1f   %5.1f", t, name, dies.count,
+                         dies.isEmpty ? 0 : dies.reduce(0, +) / Double(dies.count), dies.max() ?? 0,
+                         steady?.mean ?? 0, steady?.peak ?? 0))
+        }
+        lines.append("\(t): " + inv.temperatures.filter { $0.key.hasPrefix("T") }
+            .sorted { $0.key < $1.key }.map { "\($0.key)=\(String(format: "%.1f", $0.value))" }.joined(separator: " "))
+        Thread.sleep(forTimeInterval: 1)
+    }
+    print("\nevery temperature key, per second:")
+    lines.forEach { print($0) }
+    exit(0)
+}
+
 // ── Battery scale ───────────────────────────────────────────────────────────
 guard let scale = Battery.scale(), let state = Battery.state() else {
     FileHandle.standardError.write(Data("no AppleSmartBattery found (desktop Mac?)\n".utf8))

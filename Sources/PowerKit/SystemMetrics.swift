@@ -726,6 +726,20 @@ public final class SystemMetrics {
     /// Sensor discovery walks 3,588 SMC keys on first use, so it is not something
     /// to do on every tick of a monitor that must stay near zero cost.
     private var lastSensors: (cpu: Double?, gpu: Double?, peak: Double?, fans: [FanInfo], at: Date)?
+    private var cpuDies = DieTemperatureFilter()
+    private var gpuDies = DieTemperatureFilter()
+
+    /// The CPU and GPU figures and the hottest die from one sweep, steadied (see
+    /// `DieTemperatureFilter`). The same families the inventory's own averages use.
+    private func steadiedTemperatures(_ inv: Sensors.Inventory, now: Date)
+        -> (cpu: Double?, gpu: Double?, peak: Double?) {
+        func family(_ prefixes: [String]) -> [(key: String, value: Double)] {
+            inv.temperatures.filter { r in prefixes.contains { r.key.hasPrefix($0) } }.map { ($0.key, $0.value) }
+        }
+        let cpu = cpuDies.update(family(["Tp", "Te"]), now: now)
+        let gpu = gpuDies.update(family(["Tg"]), now: now)
+        return (cpu?.mean, gpu?.mean, [cpu?.peak, gpu?.peak].compactMap { $0 }.max())
+    }
     private let sensorInterval: TimeInterval = 5
 
     /// This app is holding a fan, so its speed is FEEDBACK rather than telemetry.
@@ -784,9 +798,7 @@ public final class SystemMetrics {
                 // 0.56% of one core, larger than every other window-open cost
                 // in the app combined.
                 let inv = Sensors.inventory()
-                cpuTemp = inv.cpuTemperature
-                gpuTemp = inv.gpuTemperature
-                peak = [inv.cpuPeak, inv.gpuPeak].compactMap { $0 }.max()
+                (cpuTemp, gpuTemp, peak) = steadiedTemperatures(inv, now: Date())
                 fans = inv.fans
                 lastSensors = (cpuTemp, gpuTemp, peak, fans, Date())
             }
@@ -828,9 +840,7 @@ public final class SystemMetrics {
                 // 0.56% of one core, larger than every other window-open cost
                 // in the app combined.
                 let inv = Sensors.inventory()
-                cpuTemp = inv.cpuTemperature
-                gpuTemp = inv.gpuTemperature
-                peak = [inv.cpuPeak, inv.gpuPeak].compactMap { $0 }.max()
+                (cpuTemp, gpuTemp, peak) = steadiedTemperatures(inv, now: Date())
                 fans = inv.fans
                 lastSensors = (cpuTemp, gpuTemp, peak, fans, Date())
             }

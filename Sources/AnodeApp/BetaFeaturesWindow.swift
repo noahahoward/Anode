@@ -303,13 +303,17 @@ final class WindowSwitcherFeature: BetaFeature {
     let accessStatus = BetaFeaturesWindowController.wrapping("")
     let accessButton = NSButton(title: "Open Accessibility Settings…", target: nil, action: nil)
     let previewNote = BetaFeaturesWindowController.wrapping("", color: .secondaryLabelColor)
+    let previewButton = NSButton(title: "Open Screen Recording Settings…", target: nil, action: nil)
+    private let previewsFailing: () -> Bool
 
     init(settings: Settings = .shared,
          accessibilityAllowed: @escaping () -> Bool = { AccessibilityAccess.isTrusted },
-         screenRecordingAllowed: @escaping () -> Bool = { ScreenRecordingAccess.isGranted }) {
+         screenRecordingAllowed: @escaping () -> Bool = { ScreenRecordingAccess.isGranted },
+         previewsFailing: @escaping () -> Bool = { WindowThumbnails.grantedButFailing }) {
         self.settings = settings
         self.accessibility = accessibilityAllowed
         self.screenRecording = screenRecordingAllowed
+        self.previewsFailing = previewsFailing
     }
 
     func makeView() -> NSView {
@@ -320,7 +324,11 @@ final class WindowSwitcherFeature: BetaFeature {
         accessButton.bezelStyle = .rounded
         accessButton.controlSize = .small
 
-        let column = NSStackView(views: [enableCheckbox, accessStatus, accessButton, previewNote])
+        previewButton.target = self
+        previewButton.action = #selector(openScreenRecording)
+        previewButton.bezelStyle = .rounded
+        previewButton.controlSize = .small
+        let column = NSStackView(views: [enableCheckbox, accessStatus, accessButton, previewNote, previewButton])
         column.orientation = .vertical
         column.alignment = .leading
         column.spacing = 8
@@ -341,6 +349,11 @@ final class WindowSwitcherFeature: BetaFeature {
         AccessibilityAccess.openSettings()
     }
 
+    @objc private func openScreenRecording() {
+        ScreenRecordingAccess.request()
+        ScreenRecordingAccess.openSettings()
+    }
+
     func refresh() {
         let on = settings.windowSwitcherEnabled
         let allowed = accessibility()
@@ -354,9 +367,17 @@ final class WindowSwitcherFeature: BetaFeature {
               + "Accessibility and it takes over within a couple of seconds."
         accessStatus.textColor = allowed ? .secondaryLabelColor : .systemOrange
         previewNote.isHidden = !on
-        previewNote.stringValue = screenRecording()
-            ? "Previews use the Screen Recording permission the menu bar backdrop already has."
-            : "Without Screen Recording permission each window shows its app's icon instead of a preview."
+        let granted = screenRecording(), failing = granted && previewsFailing()
+        previewNote.stringValue = failing
+            ? "Screen Recording looks allowed, but macOS returned no window pictures, so tiles show app icons. "
+              + "That is what a stale approval looks like after an update: in System Settings → Privacy & Security → "
+              + "Screen Recording, switch Anode off and on again (or remove it with − and add it back), then reopen Anode."
+            : granted
+                ? "Previews use the Screen Recording permission the menu bar backdrop already has."
+                : "Without Screen Recording permission each window shows its app's icon instead of a preview. "
+                  + "Allow Anode under Privacy & Security → Screen Recording, then reopen Anode."
+        previewNote.textColor = granted && !failing ? .secondaryLabelColor : .systemOrange
+        previewButton.isHidden = !on || (granted && !failing)
         layoutChanged?()
     }
 }

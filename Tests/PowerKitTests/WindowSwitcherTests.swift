@@ -133,6 +133,26 @@ final class WindowSwitcherTests: XCTestCase {
         XCTAssertTrue(f.accessStatus.stringValue.contains("not allowed"))
     }
 
+    /// The reported ⌘Tab with only app icons: the section must say why and offer the fix.
+    func testThePreviewNoteAndButtonFollowThePermission() {
+        let defaults = UserDefaults(suiteName: "switcher-\(UUID().uuidString)")!
+        let s = Settings(defaults: defaults)
+        s.windowSwitcherEnabled = true
+        var granted = false, failing = false
+        let f = WindowSwitcherFeature(settings: s, accessibilityAllowed: { true },
+                                      screenRecordingAllowed: { granted }, previewsFailing: { failing })
+        _ = f.makeView()
+        XCTAssertFalse(f.previewButton.isHidden, "not granted: a way to the pane")
+        XCTAssertTrue(f.previewNote.stringValue.contains("icon"))
+
+        granted = true; f.refresh()
+        XCTAssertTrue(f.previewButton.isHidden, "granted and working: nothing to fix")
+
+        failing = true; f.refresh()
+        XCTAssertFalse(f.previewButton.isHidden, "granted but macOS returns nothing: a stale approval")
+        XCTAssertTrue(f.previewNote.stringValue.contains("stale"))
+    }
+
     func testTheBetaWindowListsTheSwitcher() {
         let c = BetaFeaturesWindowController()
         XCTAssertTrue(c.features.contains { $0 is WindowSwitcherFeature })

@@ -108,6 +108,12 @@ enum WindowCatalog {
 /// show the app's icon instead.
 enum WindowThumbnails {
 
+    /// Did the last round of captures fail outright although macOS says the permission is granted?
+    /// That is what a STALE grant looks like (after an app update the old approval can stay ticked
+    /// in System Settings while no longer applying), and the Beta Features section says so.
+    /// Main thread only.
+    private(set) static var grantedButFailing = false
+
     /// Capture each window no larger than `maxSide` points, calling `each` on the main
     /// thread as each arrives. Measured: four windows at ~480 px took 156 ms together.
     static func capture(_ ids: [CGWindowID], maxSide: CGFloat,
@@ -117,6 +123,14 @@ enum WindowThumbnails {
             guard let content = try? await SCShareableContent.excludingDesktopWindows(
                 true, onScreenWindowsOnly: true) else { return }
             let byID = Dictionary(content.windows.map { ($0.windowID, $0) }, uniquingKeysWith: { a, _ in a })
+            let attempted = ids.filter { byID[$0] != nil }.count
+            let succeeded = Counter()
+            defer {
+                let n = succeeded.count
+                Task { @MainActor in
+                    if attempted > 0 { Self.grantedButFailing = n == 0 }
+                }
+            }
             await withTaskGroup(of: Void.self) { group in
                 for id in ids {
                     guard let window = byID[id], window.frame.width > 0, window.frame.height > 0 else { continue }
@@ -130,6 +144,7 @@ enum WindowThumbnails {
                         guard let image = try? await SCScreenshotManager.captureImage(
                             contentFilter: SCContentFilter(desktopIndependentWindow: window),
                             configuration: config) else { return }
+                        succeeded.bump()
                         await MainActor.run { each(id, image) }
                     }
                 }
@@ -260,6 +275,14 @@ enum TileGroups {
             return CGRect(x: f.minX, y: primaryHeight - f.maxY + menuBar, width: f.width, height: f.height - menuBar)
         }
     }
+}
+
+/// A count several capture tasks add to at once.
+private final class Counter {
+    private let lock = NSLock()
+    private var value = 0
+    func bump() { lock.lock(); value += 1; lock.unlock() }
+    var count: Int { lock.lock(); defer { lock.unlock() }; return value }
 }
 
 /// Bring one particular window to the front, app and all; or close it.

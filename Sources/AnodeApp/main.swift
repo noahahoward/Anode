@@ -50,6 +50,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
     var windowSwitcher: WindowSwitcher?
     var dockPreviews: DockPreviews?
     var desktopSwitcher: DesktopSwitcher?
+    var temperatureAlarm = TemperatureAlarm()
     /// The Beta Features window (Settings → Beta Features…), created on first use.
     lazy var betaFeaturesWindow = BetaFeaturesWindowController()
     /// Time left = charge ÷ the mean drain since the lid was last opened.
@@ -1290,7 +1291,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         // the ≥ 90 °C pulse never fired. The peak die sensor is what this means.
         let temps = [lastSystem?.peakTemperature, lastSystem?.cpuTemperature,
                      lastSystem?.gpuTemperature].compactMap { $0 }
-        main.sidebar.setTemperature(temps.max())
+        // The glyph's alarm needs the (already smoothed) peak to stay hot for a while; see
+        // `TemperatureAlarm`. It used to pulse on the first reading that crossed 90 °C.
+        let hottest = temps.max()
+        main.sidebar.setTemperature(hottest, alarming: temperatureAlarm.update(hottest))
         main.sidebar.setNetworkKind(NetworkInventory.snapshot().primary?.kind)
     }
 

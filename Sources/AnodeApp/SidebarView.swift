@@ -344,8 +344,10 @@ final class SidebarView: NSView {
 
     /// Colour the Sensors glyph by the hottest thing on the machine, and pulse it
     /// once that is genuinely hot.
-    func setTemperature(_ celsius: Double?) {
-        rows[.sensors]?.setTemperature(celsius)
+    /// `alarming` is the verdict of a `TemperatureAlarm` (sustained, with a margin to clear). Left
+    /// nil, the glyph pulses the moment `celsius` is critical, which is what a single reading means.
+    func setTemperature(_ celsius: Double?, alarming: Bool? = nil) {
+        rows[.sensors]?.setTemperature(celsius, alarming: alarming)
     }
 
     /// Point the Network glyph at the link actually carrying the traffic.
@@ -441,13 +443,15 @@ final class SidebarView: NSView {
         /// does — Core Animation, so the window server pulses it and this process
         /// never wakes — and unlike the fan it is a state nobody should be in for
         /// long. A colour alone is easy to miss on a rail you are not looking at.
-        func setTemperature(_ celsius: Double?) {
+        func setTemperature(_ celsius: Double?, alarming: Bool? = nil) {
             guard lens == .sensors else { return }
-            temperature = celsius
+            // Red, like the pulse, only once the alarm says so: a reading at 90 for an instant (the
+            // first sweep after the app opens) is warm, not an alarm.
+            temperature = alarming == false ? celsius.map { min($0, 89.9) } : celsius
             restyle()
             icon.wantsLayer = true
             guard let layer = icon.layer else { return }
-            let critical = (celsius ?? 0) >= 90
+            let critical = alarming ?? ((celsius ?? 0) >= 90)
             guard critical else { return layer.removeAnimation(forKey: "alarm") }
             guard layer.animation(forKey: "alarm") == nil else { return }
             let pulse = CABasicAnimation(keyPath: "opacity")
