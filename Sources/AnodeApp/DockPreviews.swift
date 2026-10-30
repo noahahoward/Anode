@@ -27,6 +27,67 @@ enum DockEdge: String {
     }
 }
 
+/// How a row of window previews is laid out: each tile as tall as `previewHeight` and as wide as
+/// its window's shape asks (within limits), so a tall window is a narrow tile and a wide one a
+/// wide tile, never a fixed square with empty sides. Shared by the Dock popup and the ⌘Tab
+/// switcher, which differ only in these numbers.
+struct PreviewLayout {
+    var previewHeight: CGFloat
+    var minPreviewWidth: CGFloat
+    var maxPreviewWidth: CGFloat
+    /// Around the preview, and the title row under it.
+    var tileInset: CGFloat
+    var labelHeight: CGFloat
+    var spacing: CGFloat
+    var padding: CGFloat
+    /// How small tiles may get to fit a long list, before it simply wraps further.
+    var minScale: CGFloat
+
+    var tileHeight: CGFloat { previewHeight + labelHeight + 2 * tileInset }
+
+    /// Each tile's frame (origin top-left within the panel) and the panel's size, for windows
+    /// of the given width/height `aspects`: one row while it fits, then every tile smaller (down
+    /// to `minScale`), then more rows, shrinking again if the rows are taller than `limit`.
+    /// Pure, for tests.
+    func layout(aspects: [CGFloat], limit: CGSize) -> (frames: [CGRect], size: CGSize) {
+        guard !aspects.isEmpty else { return ([], .zero) }
+        let base = aspects.map { a -> CGFloat in
+            let width = previewHeight * (a.isFinite && a > 0 ? a : 1)
+            return min(max(width, minPreviewWidth), maxPreviewWidth) + 2 * tileInset
+        }
+        let room = limit.width - 2 * padding
+        let total = base.reduce(0, +)
+        let gaps = spacing * CGFloat(base.count - 1)
+
+        func place(_ scale: CGFloat) -> (frames: [CGRect], size: CGSize) {
+            let tileH = tileHeight * scale
+            var frames: [CGRect] = []
+            var x = padding, y = padding, widest: CGFloat = 0
+            for w in base.map({ $0 * scale }) {
+                if x > padding, x + w > padding + room {      // no room left in this row
+                    x = padding
+                    y += tileH + spacing
+                }
+                frames.append(CGRect(x: x, y: y, width: w, height: tileH))
+                x += w + spacing
+                widest = max(widest, x - spacing)
+            }
+            return (frames, CGSize(width: widest + padding, height: y + tileH + padding))
+        }
+
+        var scale: CGFloat = total + gaps > room ? max(minScale, (room - gaps) / total) : 1
+        var placed = place(scale)
+        // Whole steps of 5%: subtracting 0.05 repeatedly lands just under the floor.
+        var steps = 0
+        while placed.size.height > limit.height, scale > minScale, steps < 40 {
+            steps += 1
+            scale = max(minScale, scale - 0.05)
+            placed = place(scale)
+        }
+        return placed
+    }
+}
+
 /// The Dock's auto-hide switch, through the private CoreDock calls (looked up by name; absent
 /// means nothing is ever changed). Measured on macOS 27: switching it takes ~4 ms, needs no
 /// Dock restart and no permission, the Dock slides up and stays, and no window moved or
@@ -554,33 +615,15 @@ final class DockPreviewPanel {
         return CGRect(x: f.minX, y: primaryHeight - f.maxY, width: f.width, height: f.height)
     }
 
-    /// Each tile's frame (origin top-left within the panel) and the panel's size, for windows
-    /// of the given width/height `aspects`: one row while it fits, then every tile smaller (down
-    /// to half size), then more rows. Pure, for tests.
-    static func layout(aspects: [CGFloat], limit: CGSize) -> (frames: [CGRect], size: CGSize) {
-        guard !aspects.isEmpty else { return ([], .zero) }
-        let base = aspects.map { a -> CGFloat in
-            let width = previewHeight * (a.isFinite && a > 0 ? a : 1)
-            return min(max(width, minPreviewWidth), maxPreviewWidth) + 2 * tileInset
-        }
-        let gaps = spacing * CGFloat(base.count - 1)
-        let room = limit.width - 2 * padding
-        let total = base.reduce(0, +)
-        let scale = total + gaps > room ? max(0.5, (room - gaps) / total) : 1
-        let tileH = tileHeight * scale
+    /// The Dock popup's tile shape, as the shared layout takes it.
+    static var shape: PreviewLayout {
+        PreviewLayout(previewHeight: previewHeight, minPreviewWidth: minPreviewWidth,
+                      maxPreviewWidth: maxPreviewWidth, tileInset: tileInset, labelHeight: labelHeight,
+                      spacing: spacing, padding: padding, minScale: 0.5)
+    }
 
-        var frames: [CGRect] = []
-        var x = padding, y = padding, widest: CGFloat = 0
-        for w in base.map({ $0 * scale }) {
-            if x > padding, x + w > padding + room {      // no room left in this row
-                x = padding
-                y += tileH + spacing
-            }
-            frames.append(CGRect(x: x, y: y, width: w, height: tileH))
-            x += w + spacing
-            widest = max(widest, x - spacing)
-        }
-        return (frames, CGSize(width: widest + padding, height: y + tileH + padding))
+    static func layout(aspects: [CGFloat], limit: CGSize) -> (frames: [CGRect], size: CGSize) {
+        shape.layout(aspects: aspects, limit: limit)
     }
 
     /// Where the panel goes: beside the icon on the Dock's side, centred on it, and kept on

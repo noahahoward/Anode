@@ -616,33 +616,15 @@ private func switcherTapCallback(proxy: CGEventTapProxy, type: CGEventType, even
 
 final class SwitcherPanel {
 
-    static let tileWidth: CGFloat = 240
-    static let tileHeight: CGFloat = 190
-    static let spacing: CGFloat = 12
-    static let padding: CGFloat = 20
+    /// Bigger than the Dock popup's, with the same shape-following layout: a tall window gets a
+    /// narrow tile and a wide one a wide tile, not a fixed square.
+    static let shape = PreviewLayout(previewHeight: 150, minPreviewWidth: 70, maxPreviewWidth: 380,
+                                     tileInset: 8, labelHeight: 18, spacing: 8, padding: 14, minScale: 0.4)
 
     var onClick: ((Int) -> Void)?
 
     private var window: NSPanel?
     private var tiles: [SwitcherTile] = []
-
-    /// Columns and rows for `count` tiles in `width` points, and the scale that keeps them
-    /// inside `height`. Pure, for tests.
-    static func grid(count: Int, width: CGFloat, height: CGFloat) -> (columns: Int, rows: Int, scale: CGFloat) {
-        guard count > 0 else { return (0, 0, 1) }
-        func fit(_ scale: CGFloat) -> (Int, Int) {
-            let w = (tileWidth + spacing) * scale
-            let columns = max(1, min(count, Int((width - 2 * padding + spacing * scale) / w)))
-            return (columns, (count + columns - 1) / columns)
-        }
-        var scale: CGFloat = 1
-        var (columns, rows) = fit(scale)
-        while scale > 0.4, CGFloat(rows) * (tileHeight + spacing) * scale + 2 * padding > height {
-            scale -= 0.05
-            (columns, rows) = fit(scale)
-        }
-        return (columns, rows, scale)
-    }
 
     /// Lay the panel out, off screen until `reveal`.
     func prepare(_ windows: [SwitchableWindow], selected: Int?, previews: WindowPreviews) {
@@ -650,21 +632,18 @@ final class SwitcherPanel {
         guard let screen = NSScreen.screens.first(where: { $0.frame.contains(mouse) }) ?? NSScreen.main
         else { return }
         let area = screen.visibleFrame
-        let (columns, rows, scale) = Self.grid(count: windows.count, width: area.width * 0.9,
-                                              height: area.height * 0.8)
-        let tileW = Self.tileWidth * scale, tileH = Self.tileHeight * scale, gap = Self.spacing * scale
-        let size = NSSize(width: CGFloat(columns) * tileW + CGFloat(columns - 1) * gap + 2 * Self.padding,
-                          height: CGFloat(rows) * tileH + CGFloat(rows - 1) * gap + 2 * Self.padding)
+        let (frames, size) = Self.shape.layout(
+            aspects: windows.map { $0.bounds.width / max(1, $0.bounds.height) },
+            limit: CGSize(width: area.width * 0.9, height: area.height * 0.8))
 
         let panel = window ?? makePanel()
         window = panel
         let content = panel.contentView!
         tiles.forEach { $0.removeFromSuperview() }
-        tiles = windows.enumerated().map { i, w in
-            let row = i / columns, column = i % columns
-            let frame = NSRect(x: Self.padding + CGFloat(column) * (tileW + gap),
-                               y: size.height - Self.padding - CGFloat(row + 1) * tileH - CGFloat(row) * gap,
-                               width: tileW, height: tileH)
+        tiles = zip(windows.indices, zip(windows, frames)).map { i, pair in
+            let (w, f) = pair
+            // Flipped: the layout counts rows down from the top.
+            let frame = NSRect(x: f.minX, y: size.height - f.maxY, width: f.width, height: f.height)
             let tile = SwitcherTile(frame: frame, window: w, icon: Self.appIcon(for: w.pid))
             if let image = previews.image(for: w.id) { tile.setThumbnail(image) }
             tile.onClick = { [weak self] in self?.onClick?(i) }
@@ -741,8 +720,7 @@ final class SwitcherTile: NSView {
         target = window
         label = NSTextField(labelWithString: window.title.isEmpty ? window.appName : window.title)
         super.init(frame: frame)
-        let labelHeight: CGFloat = 18
-        let inset: CGFloat = 8
+        let labelHeight = SwitcherPanel.shape.labelHeight, inset = SwitcherPanel.shape.tileInset
 
         preview.frame = NSRect(x: inset, y: labelHeight + inset, width: frame.width - 2 * inset,
                                height: frame.height - labelHeight - 2 * inset)

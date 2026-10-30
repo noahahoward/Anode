@@ -79,18 +79,26 @@ final class WindowSwitcherTests: XCTestCase {
 
     // ── Layout ──
 
-    func testAFewWindowsGoInOneFullSizeRow() {
-        let g = SwitcherPanel.grid(count: 3, width: 1600, height: 900)
-        XCTAssertEqual(g.columns, 3); XCTAssertEqual(g.rows, 1); XCTAssertEqual(g.scale, 1)
+    func testATallAndAWideWindowGetTilesOfTheirOwnShape() {
+        let shape = SwitcherPanel.shape
+        let (frames, _) = shape.layout(aspects: [0.7, 1.6], limit: CGSize(width: 1600, height: 900))
+        XCTAssertEqual(frames[0].width, shape.previewHeight * 0.7 + 2 * shape.tileInset, accuracy: 0.01)
+        XCTAssertEqual(frames[1].width, shape.previewHeight * 1.6 + 2 * shape.tileInset, accuracy: 0.01)
+        XCTAssertEqual(frames[0].height, shape.tileHeight, "one height for all")
     }
 
-    func testManyWindowsWrapAndShrinkToFit() {
-        let height: CGFloat = 700
-        let g = SwitcherPanel.grid(count: 40, width: 1500, height: height)
-        XCTAssertGreaterThanOrEqual(g.columns * g.rows, 40)
-        XCTAssertLessThan(g.scale, 1)
-        let used = CGFloat(g.rows) * (SwitcherPanel.tileHeight + SwitcherPanel.spacing) * g.scale + 2 * SwitcherPanel.padding
-        XCTAssertLessThanOrEqual(used, height)
+    func testManyWindowsWrapAndShrinkToFitTheScreen() {
+        let shape = SwitcherPanel.shape
+        let limit = CGSize(width: 1500, height: 560)
+        let (frames, size) = shape.layout(aspects: Array(repeating: 1.4, count: 60), limit: limit)
+        XCTAssertEqual(frames.count, 60)
+        XCTAssertLessThanOrEqual(size.width, limit.width + 0.01)
+        XCTAssertLessThanOrEqual(size.height, limit.height + 0.01, "shrinks until the rows fit the height")
+        XCTAssertLessThan(frames[0].height, shape.tileHeight)
+    }
+
+    func testAnEmptyListLaysOutNothing() {
+        XCTAssertEqual(SwitcherPanel.shape.layout(aspects: [], limit: CGSize(width: 1000, height: 500)).size, .zero)
     }
 
     // ── Setting and section ──
