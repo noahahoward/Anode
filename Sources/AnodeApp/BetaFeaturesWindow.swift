@@ -40,7 +40,7 @@ final class BetaFeaturesWindowController: NSWindowController {
     private var activeToken: NSObjectProtocol?
 
     init(features: [BetaFeature] = [BackdropFeature(), WindowSwitcherFeature(), DesktopSwitcherFeature(),
-                                    DockPreviewFeature()]) {
+                                    DockPreviewFeature(), WindowActionsFeature()]) {
         self.features = features
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: Self.contentWidth, height: 200),
                               styleMask: [.titled, .closable], backing: .buffered, defer: false)
@@ -549,6 +549,93 @@ final class DesktopSwitcherFeature: BetaFeature {
                 : "Accessibility: not allowed yet, so Option-Tab does nothing. Allow Anode in Accessibility "
                   + "and it starts within a couple of seconds."
         accessStatus.textColor = allowed && SpaceCatalog.canSwitch ? .secondaryLabelColor : .systemOrange
+        layoutChanged?()
+    }
+}
+
+// ── Window Actions ──────────────────────────────────────────────────────────
+
+/// Halves, thirds, quarters, maximize, center and display moves from the keyboard (see `WindowSnapper`).
+final class WindowActionsFeature: BetaFeature {
+
+    let title = "Window Actions"
+    let summary = "Put the front window in a half, third or quarter of the screen, maximize or center it, "
+                + "or send it to the next display, with the same Control-Option shortcuts Rectangle uses. "
+                + "Windows are sized for a Dock that hides, even while Anode is holding the Dock up for a preview."
+    var layoutChanged: (() -> Void)?
+
+    private let settings: Settings
+    private let accessibility: () -> Bool
+    private let unavailable: () -> [WindowAction]
+    private var token: AnyObject?
+
+    let enableCheckbox = NSButton(checkboxWithTitle: "Use Anode's window actions", target: nil, action: nil)
+    let status = BetaFeaturesWindowController.wrapping("")
+    let accessButton = NSButton(title: "Open Accessibility Settings…", target: nil, action: nil)
+    let shortcuts = BetaFeaturesWindowController.wrapping("", color: .secondaryLabelColor)
+
+    init(settings: Settings = .shared,
+         accessibilityAllowed: @escaping () -> Bool = { AccessibilityAccess.isTrusted },
+         unavailable: @escaping () -> [WindowAction] = {
+             (NSApp.delegate as? AppDelegate)?.windowSnapper?.unavailable ?? []
+         }) {
+        self.settings = settings
+        self.accessibility = accessibilityAllowed
+        self.unavailable = unavailable
+    }
+
+    func makeView() -> NSView {
+        enableCheckbox.target = self
+        enableCheckbox.action = #selector(toggled)
+        accessButton.target = self
+        accessButton.action = #selector(openAccessibility)
+        accessButton.bezelStyle = .rounded
+        accessButton.controlSize = .small
+        let column = NSStackView(views: [enableCheckbox, status, accessButton, shortcuts])
+        column.orientation = .vertical
+        column.alignment = .leading
+        column.spacing = 8
+        token = settings.observe(Settings.Key.windowSnapperEnabled) { [weak self] in self?.refresh() }
+        refresh()
+        return column
+    }
+
+    @objc private func toggled() {
+        let on = enableCheckbox.state == .on
+        if on && !accessibility() { AccessibilityAccess.request() }
+        settings.windowSnapperEnabled = on
+        // The hot keys are registered as the setting changes; what they said is read a moment later.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in self?.refresh() }
+    }
+
+    @objc private func openAccessibility() { AccessibilityAccess.openSettings() }
+
+    /// The shortcuts as text, in the order they are listed.
+    static func shortcutList() -> String {
+        WindowAction.allCases.map { "\($0.title) \($0.shortcut.label)" }.joined(separator: "   ·   ")
+    }
+
+    func refresh() {
+        let on = settings.windowSnapperEnabled
+        let allowed = accessibility()
+        let taken = on ? unavailable() : []
+        enableCheckbox.state = on ? .on : .off
+        status.isHidden = !on
+        accessButton.isHidden = !on || allowed
+        shortcuts.isHidden = !on
+        shortcuts.stringValue = Self.shortcutList()
+        if !allowed {
+            status.stringValue = "Accessibility: not allowed yet, so windows cannot be moved. Allow Anode in Accessibility."
+            status.textColor = .systemOrange
+        } else if !taken.isEmpty {
+            status.stringValue = "\(taken.count) of these shortcuts belong to another app already (Rectangle, probably): "
+                + taken.prefix(4).map(\.title).joined(separator: ", ") + (taken.count > 4 ? ", …" : "")
+                + ". Quit it to use them here."
+            status.textColor = .systemOrange
+        } else {
+            status.stringValue = "Accessibility: allowed. These shortcuts are claimed while this is on."
+            status.textColor = .secondaryLabelColor
+        }
         layoutChanged?()
     }
 }

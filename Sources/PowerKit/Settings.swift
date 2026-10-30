@@ -40,6 +40,7 @@ public final class Settings {
         public static let menuBarBackdropShowOnDesktop = "menuBarBackdropShowOnDesktop"
         public static let windowSwitcherEnabled = "windowSwitcherEnabled"
         public static let desktopSwitcherEnabled = "desktopSwitcherEnabled"
+        public static let windowSnapperEnabled = "windowSnapperEnabled"
         public static let dockPreviewsEnabled = "dockPreviewsEnabled"
         public static let dockPreviewsHoldDock = "dockPreviewsHoldDock"
         public static let dockRaisesTileGroup = "dockRaisesTileGroup"
@@ -100,6 +101,8 @@ public final class Settings {
         static let windowSwitcherEnabled = false
         /// OFF: it takes over Option-Tab, so the user turns it on.
         static let desktopSwitcherEnabled = false
+        /// OFF: it claims a set of global shortcuts another window manager may already own.
+        static let windowSnapperEnabled = false
         /// OFF, like every beta feature that watches the Dock or the keyboard.
         static let dockPreviewsEnabled = false
         /// ON: with an auto-hiding Dock, the preview is otherwise left floating over nothing.
@@ -181,6 +184,7 @@ public final class Settings {
         var menuBarBackdropShowOnDesktop: Bool
         var windowSwitcherEnabled: Bool
         var desktopSwitcherEnabled: Bool
+        var windowSnapperEnabled: Bool
         var dockPreviewsEnabled: Bool
         var dockPreviewsHoldDock: Bool
         var dockRaisesTileGroup: Bool
@@ -359,6 +363,12 @@ public final class Settings {
         get { Settings.readBool(defaults, Key.windowSwitcherEnabled, Default.windowSwitcherEnabled) }
         set { writeBool(Key.windowSwitcherEnabled, \.windowSwitcherEnabled, newValue,
                         Default.windowSwitcherEnabled) }
+    }
+
+    /// Whether Anode's window actions (halves, thirds, maximize ...) answer their shortcuts (Beta Features).
+    public var windowSnapperEnabled: Bool {
+        get { Settings.readBool(defaults, Key.windowSnapperEnabled, Default.windowSnapperEnabled) }
+        set { writeBool(Key.windowSnapperEnabled, \.windowSnapperEnabled, newValue, Default.windowSnapperEnabled) }
     }
 
     /// Whether Anode's desktop (Spaces) switcher answers Option-Tab (Beta Features).
@@ -720,6 +730,7 @@ public final class Settings {
         }
         if old.windowSwitcherEnabled != now.windowSwitcherEnabled { notify(Key.windowSwitcherEnabled) }
         if old.desktopSwitcherEnabled != now.desktopSwitcherEnabled { notify(Key.desktopSwitcherEnabled) }
+        if old.windowSnapperEnabled != now.windowSnapperEnabled { notify(Key.windowSnapperEnabled) }
         if old.dockPreviewsEnabled != now.dockPreviewsEnabled { notify(Key.dockPreviewsEnabled) }
         if old.dockPreviewsHoldDock != now.dockPreviewsHoldDock { notify(Key.dockPreviewsHoldDock) }
         if old.dockRaisesTileGroup != now.dockRaisesTileGroup { notify(Key.dockRaisesTileGroup) }
@@ -844,6 +855,7 @@ public final class Settings {
                                                       Default.menuBarBackdropShowOnDesktop),
                windowSwitcherEnabled: readBool(d, Key.windowSwitcherEnabled, Default.windowSwitcherEnabled),
                desktopSwitcherEnabled: readBool(d, Key.desktopSwitcherEnabled, Default.desktopSwitcherEnabled),
+               windowSnapperEnabled: readBool(d, Key.windowSnapperEnabled, Default.windowSnapperEnabled),
                dockPreviewsEnabled: readBool(d, Key.dockPreviewsEnabled, Default.dockPreviewsEnabled),
                dockPreviewsHoldDock: readBool(d, Key.dockPreviewsHoldDock, Default.dockPreviewsHoldDock),
                dockRaisesTileGroup: readBool(d, Key.dockRaisesTileGroup, Default.dockRaisesTileGroup),

@@ -458,6 +458,15 @@ final class DockPreviews {
         }
     }
 
+    /// Run `action` with the Dock let go of: if a preview is holding the Dock up, close it, switch
+    /// auto-hide back on and wait for the Dock to be gone first (see `DockHold.releaseThen`). Used by
+    /// anything that sizes a window, since macOS will not make a window taller than the room above a
+    /// pinned Dock, and the window would stay short once the Dock went.
+    func runWithDockReleased(_ action: @escaping () -> Void) {
+        if dockHold.isHolding { hide() }
+        dockHold.releaseThen(action)
+    }
+
     // ── Hover ───────────────────────────────────────────────────────────────
 
     fileprivate func selectionChanged() {

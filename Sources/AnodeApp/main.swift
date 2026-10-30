@@ -51,6 +51,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
     var dockPreviews: DockPreviews?
     var desktopSwitcher: DesktopSwitcher?
     var temperatureAlarm = TemperatureAlarm()
+    var windowSnapper: WindowSnapper?
     /// The Beta Features window (Settings → Beta Features…), created on first use.
     lazy var betaFeaturesWindow = BetaFeaturesWindowController()
     /// Time left = charge ÷ the mean drain since the lid was last opened.
@@ -305,6 +306,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         windowSwitcher = WindowSwitcher()
         dockPreviews = DockPreviews()
         desktopSwitcher = DesktopSwitcher()
+        windowSnapper = WindowSnapper()
 
         main = MainWindowController()
         main.table.dataSource = self
