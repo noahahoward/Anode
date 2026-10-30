@@ -183,7 +183,10 @@ final class WindowDragSnapper {
     private let settings: Settings
     private weak var snapper: WindowSnapper?
     private var settingToken: AnyObject?
-    private var monitors: [Any] = []
+    // The mouse is watched with an event tap, not NSEvent monitors: a global monitor never sees events
+    // meant for the app's OWN windows, so dragging one of Anode's windows did nothing at all.
+    private var tap: CFMachPort?
+    private var tapSource: CFRunLoopSource?
     private let footprint = SnapFootprint()
     private let config = SnapZones.Config()
 
@@ -202,7 +205,7 @@ final class WindowDragSnapper {
     /// gives it its old size back.
     private var snappedWindows: [CGWindowID: (original: CGSize, placed: CGRect)] = [:]
 
-    var isRunning: Bool { !monitors.isEmpty }
+    var isRunning: Bool { tap != nil }
 
     init(settings: Settings = .shared, snapper: WindowSnapper?) {
         self.settings = settings
@@ -218,18 +221,60 @@ final class WindowDragSnapper {
     }
 
     private func start() {
-        guard monitors.isEmpty else { return }
-        let mask: [NSEvent.EventTypeMask] = [.leftMouseDown, .leftMouseDragged, .leftMouseUp, .keyDown]
-        monitors = mask.compactMap { m in
-            NSEvent.addGlobalMonitorForEvents(matching: m) { [weak self] e in self?.handle(e) }
-        }
+        guard tap == nil else { return }
+        let mask = (1 << CGEventType.leftMouseDown.rawValue) | (1 << CGEventType.leftMouseDragged.rawValue)
+            | (1 << CGEventType.leftMouseUp.rawValue) | (1 << CGEventType.keyDown.rawValue)
+        // An active tap that passes everything on untouched: it needs only Accessibility, which listening
+        // to keys would otherwise want a second permission for.
+        // The session tap, not the HID one: by then the system has worked out which window each mouse event is
+        // for, and stamped it on the event, which is how the dragged window is found.
+        guard let t = CGEvent.tapCreate(tap: .cgSessionEventTap, place: .headInsertEventTap, options: .defaultTap,
+                                        eventsOfInterest: CGEventMask(mask), callback: dragTapCallback,
+                                        userInfo: Unmanaged.passUnretained(self).toOpaque()) else { return }
+        let source = CFMachPortCreateRunLoopSource(nil, t, 0)
+        CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes)
+        CGEvent.tapEnable(tap: t, enable: true)
+        tap = t
+        tapSource = source
     }
 
     private func stop() {
-        monitors.forEach { NSEvent.removeMonitor($0) }
-        monitors = []
+        if let tap {
+            CGEvent.tapEnable(tap: tap, enable: false)
+            CFMachPortInvalidate(tap)
+        }
+        if let tapSource { CFRunLoopRemoveSource(CFRunLoopGetMain(), tapSource, .commonModes) }
+        tap = nil
+        tapSource = nil
         footprint.hide()
         reset()
+    }
+
+    /// Called from the tap, which must return at once: it only notes what happened and handles it a
+    /// moment later, so the mouse is never held up.
+    fileprivate func tapped(type: CGEventType, event: CGEvent) {
+        switch type {
+        case .tapDisabledByTimeout, .tapDisabledByUserInput:
+            if let tap { CGEvent.tapEnable(tap: tap, enable: true) }
+        case .leftMouseDown, .leftMouseDragged, .leftMouseUp:
+            let sample = Sample(type: type, point: event.location,
+                                windowUnder: CGWindowID(max(0, event.getIntegerValueField(.mouseEventWindowUnderMousePointerThatCanHandleThisEvent))),
+                                keyCode: 0)
+            DispatchQueue.main.async { [weak self] in self?.handle(sample) }
+        case .keyDown:
+            let sample = Sample(type: type, point: .zero, windowUnder: 0, keyCode: event.getIntegerValueField(.keyboardEventKeycode))
+            DispatchQueue.main.async { [weak self] in self?.handle(sample) }
+        default:
+            break
+        }
+    }
+
+    /// What the tap saw, cut down to what is used.
+    struct Sample {
+        let type: CGEventType
+        let point: CGPoint
+        let windowUnder: CGWindowID
+        let keyCode: Int64
     }
 
     private func reset() {
@@ -239,7 +284,7 @@ final class WindowDragSnapper {
 
     // ── Events ──────────────────────────────────────────────────────────────
 
-    private func handle(_ event: NSEvent) {
+    private func handle(_ event: Sample) {
         switch event.type {
         case .leftMouseDown: began(event)
         case .leftMouseDragged: dragged(event)
@@ -251,19 +296,14 @@ final class WindowDragSnapper {
         }
     }
 
-    /// The pointer, in the window server's coordinates.
-    private func point(of event: NSEvent) -> CGPoint {
-        event.cgEvent?.location ?? WindowGeometryPointer.now()
-    }
-
-    private func began(_ event: NSEvent) {
+    private func began(_ event: Sample) {
         reset()
         footprint.hide()
         guard AccessibilityAccess.isTrusted else { return }
-        let p = point(of: event)
+        let p = event.point
         // The window the system says is under the pointer: stamped on the event, so it is the window
         // that was there at the click, however long this handler is delayed.
-        var id = event.cgEvent.map { CGWindowID(max(0, $0.getIntegerValueField(.mouseEventWindowUnderMousePointerThatCanHandleThisEvent))) } ?? 0
+        var id = event.windowUnder
         if id == 0 { id = Self.windowID(at: p) ?? 0 }
         guard id != 0, let info = Self.windowInfo(id), info.layer == 0 else { return }
         guard let w = AccessibleWindow.find(id: id, pid: info.pid), w.isResizable, w.frame != nil else { return }
@@ -273,12 +313,12 @@ final class WindowDragSnapper {
         lastFrame = info.bounds
     }
 
-    private func dragged(_ event: NSEvent) {
+    private func dragged(_ event: Sample) {
         guard let window, !cancelled, let id = windowID, let start = startFrame else { return }
         // Throttled: a drag produces events far faster than the outline needs to follow.
         guard Date().timeIntervalSince(lastPoll) > 0.02 else { return }
         lastPoll = Date()
-        let p = point(of: event)
+        let p = event.point
 
         if !moving {
             guard let now = Self.windowInfo(id)?.bounds else { return }
@@ -315,11 +355,11 @@ final class WindowDragSnapper {
         }
     }
 
-    private func ended(_ event: NSEvent) {
+    private func ended(_ event: Sample) {
         defer { footprint.hide(); reset() }
         guard moving, !cancelled, let window, let id = windowID, let start = startFrame else { return }
         // The last drag event may have been coalesced: decide from where the pointer is now.
-        let p = point(of: event)
+        let p = event.point
         let screens = Self.screenFrames()
         let dwelt = topSince.map { Date().timeIntervalSince($0) >= config.topDwell } ?? false
         guard let finalZone = SnapZones.zone(at: p, screens: screens, dock: DockEdge.current, previous: zone,
@@ -366,10 +406,8 @@ final class WindowDragSnapper {
     }
 }
 
-/// The pointer in the window server's coordinates, for events that do not carry it.
-enum WindowGeometryPointer {
-    static func now() -> CGPoint {
-        let p = NSEvent.mouseLocation
-        return CGPoint(x: p.x, y: (NSScreen.screens.first?.frame.height ?? 0) - p.y)
-    }
+private func dragTapCallback(proxy: CGEventTapProxy, type: CGEventType, event: CGEvent,
+                             refcon: UnsafeMutableRawPointer?) -> Unmanaged<CGEvent>? {
+    if let refcon { Unmanaged<WindowDragSnapper>.fromOpaque(refcon).takeUnretainedValue().tapped(type: type, event: event) }
+    return Unmanaged.passUnretained(event)
 }
