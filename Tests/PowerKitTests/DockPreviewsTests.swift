@@ -92,6 +92,15 @@ final class DockPreviewsTests: XCTestCase {
         XCTAssertFalse(DockPreviews.keepsPanelOpen(pointer: CGPoint(x: 700, y: 1120), icon: icon, panel: nil, slack: 4))
     }
 
+    // ── When the panel opens ──
+
+    func testThePanelOpensOnlyForAnAppWithTwoOrMoreWindows() {
+        XCTAssertFalse(DockPreviews.shouldShowPanel(windowCount: 0))
+        XCTAssertFalse(DockPreviews.shouldShowPanel(windowCount: 1), "one window: nothing to choose between")
+        XCTAssertTrue(DockPreviews.shouldShowPanel(windowCount: 2))
+        XCTAssertTrue(DockPreviews.shouldShowPanel(windowCount: 9))
+    }
+
     // ── Holding the Dock ──
 
     private let holdIcon = CGRect(x: 400, y: 1064, width: 88, height: 100)

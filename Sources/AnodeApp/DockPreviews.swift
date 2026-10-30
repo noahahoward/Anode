@@ -529,7 +529,7 @@ final class DockPreviews {
     private func show(_ hover: Hover) {
         guard let app = NSRunningApplication(processIdentifier: hover.pid) else { return hide() }
         let windows = WindowCatalog.windows(of: app)
-        guard !windows.isEmpty else { return hide() }
+        guard Self.shouldShowPanel(windowCount: windows.count) else { return hide() }
         shown = hover
         // No hold yet: the pointer is on the icon, where the Dock is up anyway, and a click on
         // the icon must happen with auto-hide ON — with it off, macOS fitted the clicked app's
@@ -543,11 +543,16 @@ final class DockPreviews {
         startTracking()
     }
 
-    /// After a close: list the app's windows again, or go when there are none left.
+    /// A preview of one window is a picture of what the app already shows, and a hover that opens
+    /// something on every icon is noise, so the panel opens only for an app with two or more
+    /// windows (minimized and hidden ones count: they are what a preview is for). Pure, for tests.
+    static func shouldShowPanel(windowCount: Int) -> Bool { windowCount >= 2 }
+
+    /// After a close: list the app's windows again, or go when fewer than two are left.
     private func reshow() {
         guard let shown, let app = NSRunningApplication(processIdentifier: shown.pid) else { return }
         let windows = WindowCatalog.windows(of: app)
-        if windows.isEmpty { hide() } else {
+        if !Self.shouldShowPanel(windowCount: windows.count) { hide() } else {
             formerOutline = panel.frameInWindowServer
             panel.present(windows, iconInWindowServer: shown.icon, edge: DockEdge.current)
         }
