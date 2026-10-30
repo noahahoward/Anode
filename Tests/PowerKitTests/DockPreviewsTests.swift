@@ -116,18 +116,37 @@ final class DockPreviewsTests: XCTestCase {
         SwitchableWindow(id: id, pid: pid, appName: "App", title: title, bounds: CGRect(x: 0, y: 40, width: 800, height: 600))
     }
 
-    func testWindowsAreInTheOrderTheyWereOpenedWithMinimizedOnesInPlace() {
+    private func placed(_ id: CGWindowID, x: CGFloat, y: CGFloat = 40) -> SwitchableWindow {
+        SwitchableWindow(id: id, pid: 7, appName: "App", title: "", bounds: CGRect(x: x, y: y, width: 600, height: 1000))
+    }
+
+    /// The reported order: three windows in thirds, listed by position, not by id or title.
+    func testWindowsAreListedLeftToRightAsTheySitOnScreen() {
+        // Window numbers 3, 1, 2 sit left, middle, right; front to back the list says 2, 3, 1.
+        let list = WindowCatalog.appWindows(onScreen: [placed(2, x: 1200), placed(3, x: 0), placed(1, x: 600)],
+                                            accessibility: [], pid: 7, appName: "App")
+        XCTAssertEqual(list.map(\.id), [3, 1, 2])
+    }
+
+    func testWindowsSharingALeftEdgeGoTopToBottom() {
+        let list = WindowCatalog.appWindows(onScreen: [placed(1, x: 0, y: 600), placed(2, x: 0, y: 40), placed(3, x: 600)],
+                                            accessibility: [], pid: 7, appName: "App")
+        XCTAssertEqual(list.map(\.id), [2, 1, 3])
+    }
+
+    func testOtherAppsWindowsAreLeftOutAndOffScreenOnesFollowInOpenedOrder() {
         let list = WindowCatalog.appWindows(
-            onScreen: [win(6), win(9, pid: 8), win(1)],
+            onScreen: [placed(6, x: 900), SwitchableWindow(id: 9, pid: 8, appName: "Other", title: "", bounds: .zero),
+                       placed(1, x: 0)],
             accessibility: [AXWindowInfo(id: 1, title: "", frame: CGRect(x: 0, y: 0, width: 800, height: 600)),
                             AXWindowInfo(id: 5, title: "Draft", frame: CGRect(x: 0, y: 0, width: 800, height: 600), minimized: true),
+                            AXWindowInfo(id: 2, title: "Notes", frame: CGRect(x: 0, y: 0, width: 800, height: 600), minimized: true),
                             AXWindowInfo(id: 0, title: "no id", frame: CGRect(x: 0, y: 0, width: 800, height: 600), minimized: true),
                             AXWindowInfo(id: 3, title: "palette", frame: CGRect(x: 0, y: 0, width: 30, height: 200), minimized: true)],
             pid: 7, appName: "App")
-        // Front to back the screen has 6 then 1; opened order is 1, 5 (minimized), 6.
-        XCTAssertEqual(list.map(\.id), [1, 5, 6], "oldest first, the minimized one in its place")
-        XCTAssertEqual(list.map(\.isOffScreen), [false, true, false])
-        XCTAssertEqual(list[1].title, "Draft")
+        XCTAssertEqual(list.map(\.id), [1, 6, 2, 5], "on-screen by position, then minimized by when opened")
+        XCTAssertEqual(list.map(\.isOffScreen), [false, false, true, true])
+        XCTAssertEqual(list[3].title, "Draft")
     }
 
     /// Finder lists its desktop as a window that is never on screen; it is not minimized and

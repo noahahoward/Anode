@@ -71,11 +71,19 @@ enum WindowCatalog {
             return SwitchableWindow(id: w.id, pid: pid, appName: appName, title: w.title,
                                     bounds: w.frame, isOffScreen: true)
         }
-        // In the order the windows were opened, oldest first, as a Windows taskbar group is,
-        // not front to back: an order that follows the front window reshuffles the tiles every
-        // time a different one is used. Window numbers are handed out counting up, so they are
-        // that order; minimized windows keep their place in it rather than going to the end.
-        return (onScreen.filter { $0.pid == pid } + rest).sorted { $0.id < $1.id }
+        // Left to right as they sit on screen, then top to bottom for windows sharing a left
+        // edge, so a row of tiled windows reads the way it looks: neither alphabetical nor the
+        // order they were opened in (both tried and both wrong for a layout of thirds). Windows
+        // that are not on screen have no place to read, so they follow, in the order opened.
+        let (shownNow, away) = (onScreen.filter { $0.pid == pid } + rest).reduce(into: ([SwitchableWindow](), [SwitchableWindow]())) {
+            if $1.isOffScreen { $0.1.append($1) } else { $0.0.append($1) }
+        }
+        let byPosition = shownNow.sorted {
+            if abs($0.bounds.minX - $1.bounds.minX) > 1 { return $0.bounds.minX < $1.bounds.minX }
+            if abs($0.bounds.minY - $1.bounds.minY) > 1 { return $0.bounds.minY < $1.bounds.minY }
+            return $0.id < $1.id
+        }
+        return byPosition + away.sorted { $0.id < $1.id }
     }
 
     static func windows(of app: NSRunningApplication) -> [SwitchableWindow] {
