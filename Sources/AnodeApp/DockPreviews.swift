@@ -162,6 +162,9 @@ final class DockPreviews {
     /// its way to the panel.
     static let aimWindow: TimeInterval = 0.5
     private var clickMonitor: Any?
+    /// Every left click while attached, to see Dock icon clicks (`iconClicked`). A global
+    /// monitor only observes; the click goes on to the Dock untouched.
+    private var iconClickMonitor: Any?
     private let panel = DockPreviewPanel()
     private let dockHold = DockHold()
     private var terminateToken: NSObjectProtocol?
@@ -244,6 +247,9 @@ final class DockPreviews {
         CFRunLoopAddSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(made), .defaultMode)
         observer = made
         dockList = list
+        iconClickMonitor = NSEvent.addGlobalMonitorForEvents(matching: .leftMouseUp) { [weak self] _ in
+            self?.iconClicked()
+        }
     }
 
     private func detach() {
@@ -255,6 +261,34 @@ final class DockPreviews {
         }
         observer = nil
         dockList = nil
+        if let iconClickMonitor { NSEvent.removeMonitor(iconClickMonitor) }
+        iconClickMonitor = nil
+    }
+
+    // ── Clicking an icon: bring back the tiled layout ───────────────────────
+
+    /// How long after the click the layout is raised: the Dock has to have brought the app
+    /// forward first, so its window is on top and the others land just under it.
+    static let groupRaiseDelay: TimeInterval = 0.3
+
+    private func iconClicked() {
+        guard settings.dockRaisesTileGroup, let hover = currentHover(requirePointer: true) else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.groupRaiseDelay) {
+            Self.raiseTileGroup(of: hover.pid)
+        }
+    }
+
+    /// The clicked app's front window, and every window tiled with it, raised (others under it,
+    /// keeping their order). The app itself the Dock has already brought forward.
+    static func raiseTileGroup(of pid: pid_t) {
+        let windows = WindowCatalog.current()
+        guard let front = windows.first(where: { $0.pid == pid }),
+              let group = TileGroups.group(containing: front.id, windows: windows,
+                                           screens: TileGroups.usableAreas()) else { return }
+        // Back to front, so each raise lands over the ones before it and the order holds.
+        for member in group.dropFirst().reversed() where member.pid != pid {
+            WindowActivator.raiseWithoutActivating(member)
+        }
     }
 
     // ── Hover ───────────────────────────────────────────────────────────────

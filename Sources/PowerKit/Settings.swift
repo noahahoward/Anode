@@ -41,6 +41,7 @@ public final class Settings {
         public static let windowSwitcherEnabled = "windowSwitcherEnabled"
         public static let dockPreviewsEnabled = "dockPreviewsEnabled"
         public static let dockPreviewsHoldDock = "dockPreviewsHoldDock"
+        public static let dockRaisesTileGroup = "dockRaisesTileGroup"
         public static let fanControlEnabled = "fanControlEnabled"
         public static let fanDisclosureSeen = "fanDisclosureSeen"
         public static let fanSyncEnabled = "fanSyncEnabled"
@@ -100,6 +101,8 @@ public final class Settings {
         static let dockPreviewsEnabled = false
         /// ON: with an auto-hiding Dock, the preview is otherwise left floating over nothing.
         static let dockPreviewsHoldDock = true
+        /// ON: clicking an app's icon brings back the layout its window was tiled in.
+        static let dockRaisesTileGroup = true
         /// OFF, and it is the one setting in this file that must stay that way.
         ///
         /// Turning it on is a decision to let a root process on this machine
@@ -176,6 +179,7 @@ public final class Settings {
         var windowSwitcherEnabled: Bool
         var dockPreviewsEnabled: Bool
         var dockPreviewsHoldDock: Bool
+        var dockRaisesTileGroup: Bool
         var menuBarBackdropMode: MenuBarBackdropMode
         var menuBarBackdropBlur: Double
         var fanDisclosureSeen: Bool
@@ -363,6 +367,12 @@ public final class Settings {
     public var dockPreviewsHoldDock: Bool {
         get { Settings.readBool(defaults, Key.dockPreviewsHoldDock, Default.dockPreviewsHoldDock) }
         set { writeBool(Key.dockPreviewsHoldDock, \.dockPreviewsHoldDock, newValue, Default.dockPreviewsHoldDock) }
+    }
+
+    /// Whether clicking a Dock icon also brings forward the windows tiled with that app's window.
+    public var dockRaisesTileGroup: Bool {
+        get { Settings.readBool(defaults, Key.dockRaisesTileGroup, Default.dockRaisesTileGroup) }
+        set { writeBool(Key.dockRaisesTileGroup, \.dockRaisesTileGroup, newValue, Default.dockRaisesTileGroup) }
     }
 
     public var menuBarWidgetsEnabled: Bool {
@@ -701,6 +711,7 @@ public final class Settings {
         if old.windowSwitcherEnabled != now.windowSwitcherEnabled { notify(Key.windowSwitcherEnabled) }
         if old.dockPreviewsEnabled != now.dockPreviewsEnabled { notify(Key.dockPreviewsEnabled) }
         if old.dockPreviewsHoldDock != now.dockPreviewsHoldDock { notify(Key.dockPreviewsHoldDock) }
+        if old.dockRaisesTileGroup != now.dockRaisesTileGroup { notify(Key.dockRaisesTileGroup) }
         if old.menuBarWidgetsEnabled != now.menuBarWidgetsEnabled {
             notify(Key.menuBarWidgetsEnabled)
         }
@@ -823,6 +834,7 @@ public final class Settings {
                windowSwitcherEnabled: readBool(d, Key.windowSwitcherEnabled, Default.windowSwitcherEnabled),
                dockPreviewsEnabled: readBool(d, Key.dockPreviewsEnabled, Default.dockPreviewsEnabled),
                dockPreviewsHoldDock: readBool(d, Key.dockPreviewsHoldDock, Default.dockPreviewsHoldDock),
+               dockRaisesTileGroup: readBool(d, Key.dockRaisesTileGroup, Default.dockRaisesTileGroup),
                menuBarBackdropMode: d.string(forKey: storageKey(Key.menuBarBackdropMode))
                    .flatMap(MenuBarBackdropMode.init(rawValue:)) ?? Default.menuBarBackdropMode,
                menuBarBackdropBlur: readDouble(d, Key.menuBarBackdropBlur,

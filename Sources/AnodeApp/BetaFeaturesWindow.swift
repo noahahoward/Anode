@@ -374,11 +374,14 @@ final class DockPreviewFeature: BetaFeature {
     private let accessibility: () -> Bool
     private var token: AnyObject?
     private var holdToken: AnyObject?
+    private var groupToken: AnyObject?
 
     // Internal, so the tests can drive them as a click would.
     let enableCheckbox = NSButton(checkboxWithTitle: "Show window previews on the Dock", target: nil, action: nil)
     let holdCheckbox = NSButton(checkboxWithTitle: "Keep an auto-hiding Dock up while a preview is open",
                                 target: nil, action: nil)
+    let groupCheckbox = NSButton(checkboxWithTitle: "Clicking an icon brings back the layout its window is tiled in",
+                                 target: nil, action: nil)
     let holdNote = BetaFeaturesWindowController.wrapping(
         "Turns auto-hide off while a preview is open and back on when it closes. If Anode quits "
         + "unexpectedly while holding, auto-hide is turned back on at the next launch.",
@@ -401,12 +404,16 @@ final class DockPreviewFeature: BetaFeature {
         accessButton.controlSize = .small
         holdCheckbox.target = self
         holdCheckbox.action = #selector(holdToggled)
-        let column = NSStackView(views: [enableCheckbox, holdCheckbox, holdNote, accessStatus, accessButton])
+        groupCheckbox.target = self
+        groupCheckbox.action = #selector(groupToggled)
+        let column = NSStackView(views: [enableCheckbox, holdCheckbox, holdNote, groupCheckbox,
+                                         accessStatus, accessButton])
         column.orientation = .vertical
         column.alignment = .leading
         column.spacing = 8
         token = settings.observe(Settings.Key.dockPreviewsEnabled) { [weak self] in self?.refresh() }
         holdToken = settings.observe(Settings.Key.dockPreviewsHoldDock) { [weak self] in self?.refresh() }
+        groupToken = settings.observe(Settings.Key.dockRaisesTileGroup) { [weak self] in self?.refresh() }
         refresh()
         return column
     }
@@ -415,6 +422,10 @@ final class DockPreviewFeature: BetaFeature {
         let on = enableCheckbox.state == .on
         if on && !accessibility() { AccessibilityAccess.request() }
         settings.dockPreviewsEnabled = on
+    }
+
+    @objc private func groupToggled() {
+        settings.dockRaisesTileGroup = groupCheckbox.state == .on
     }
 
     @objc private func holdToggled() {
@@ -429,6 +440,8 @@ final class DockPreviewFeature: BetaFeature {
         let on = settings.dockPreviewsEnabled
         holdCheckbox.state = settings.dockPreviewsHoldDock ? .on : .off
         holdCheckbox.isEnabled = on
+        groupCheckbox.state = settings.dockRaisesTileGroup ? .on : .off
+        groupCheckbox.isEnabled = on
         holdNote.textColor = on ? .secondaryLabelColor : .disabledControlTextColor
         let allowed = accessibility()
         enableCheckbox.state = on ? .on : .off

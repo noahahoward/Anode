@@ -167,6 +167,93 @@ struct AXWindowInfo: Equatable {
     var minimized = false
 }
 
+/// Windows tiled together: side by side, not overlapping, and between them filling a screen,
+/// like three windows in thirds or two halves, whichever apps they belong to. macOS keeps no
+/// public record of which windows were tiled together, so this reads it from where they are.
+enum TileGroups {
+
+    /// A window this far outside the screen's usable area still counts as inside it (shadows,
+    /// a point of rounding).
+    static let edgeTolerance: CGFloat = 16
+    /// Overlap allowed between two members, as a share of the smaller one.
+    static let maxOverlap: CGFloat = 0.02
+    /// Members together must cover this much of the screen below the menu bar. Under 1 for
+    /// margins around tiles, and for a Dock that is always shown (tiles stop above it).
+    static let minCoverage: CGFloat = 0.85
+    /// A member is at least this share of the screen: a tile, not a palette in a gap.
+    static let minMemberShare: CGFloat = 0.08
+
+    /// At most this many candidate windows are searched (the frontmost ones); the search is
+    /// over combinations, and real layouts have a handful of tiles.
+    static let maxCandidates = 12
+
+    /// The tiled group `target` is part of, `target` first, then the others front to back; nil
+    /// when it is not in one. `windows` front to back; `screens` are usable areas (window-server
+    /// coordinates, menu bar and a fixed Dock left out). Pure, for tests.
+    ///
+    /// Of the windows on the same screen that do not overlap `target`, the combination that
+    /// overlaps nothing within itself and covers the most of the screen wins; on a tie, the one
+    /// nearer the front. Taking windows greedily front to back did not work: a third of another
+    /// layout lying behind (Code at 1200-1800, beside TextEdit's left half) was taken first and
+    /// then shut out the real partner (Finder's right half), leaving 83% and no group.
+    static func group(containing target: CGWindowID, windows: [SwitchableWindow],
+                      screens: [CGRect]) -> [SwitchableWindow]? {
+        guard let first = windows.first(where: { $0.id == target }), !first.isOffScreen,
+              let screen = screens.first(where: { $0.contains(CGPoint(x: first.bounds.midX, y: first.bounds.midY)) })
+        else { return nil }
+        let area = screen.width * screen.height
+        let zone = screen.insetBy(dx: -edgeTolerance, dy: -edgeTolerance)
+        func fits(_ w: SwitchableWindow) -> Bool {
+            !w.isOffScreen && zone.contains(w.bounds)
+                && w.bounds.width * w.bounds.height >= area * minMemberShare
+        }
+        func clear(_ a: SwitchableWindow, _ b: SwitchableWindow) -> Bool {
+            let o = a.bounds.intersection(b.bounds)
+            guard !o.isNull else { return true }
+            let smaller = min(a.bounds.width * a.bounds.height, b.bounds.width * b.bounds.height)
+            return o.width * o.height <= smaller * maxOverlap
+        }
+        func cover(_ w: SwitchableWindow) -> CGFloat {
+            let o = w.bounds.intersection(screen)
+            return o.isNull ? 0 : o.width * o.height
+        }
+        guard fits(first) else { return nil }
+        // Candidates keep their front-to-back position, which is the tie-break.
+        let candidates = Array(windows.enumerated()
+            .filter { $0.element.id != target && fits($0.element) && clear($0.element, first) }
+            .prefix(maxCandidates))
+
+        var best: (members: [Int], covered: CGFloat, depth: Int) = ([], cover(first), 0)
+        func search(_ from: Int, _ members: [Int], _ covered: CGFloat, _ depth: Int) {
+            if covered > best.covered + 0.5 || (abs(covered - best.covered) <= 0.5 && depth < best.depth) {
+                best = (members, covered, depth)
+            }
+            guard from < candidates.count else { return }
+            for i in from..<candidates.count {
+                let w = candidates[i].element
+                guard members.allSatisfy({ clear(candidates[$0].element, w) }) else { continue }
+                search(i + 1, members + [i], covered + cover(w), depth + candidates[i].offset)
+            }
+        }
+        search(0, [], cover(first), 0)
+        guard !best.members.isEmpty, best.covered >= area * minCoverage else { return nil }
+        return [first] + best.members.map { candidates[$0].element }
+    }
+
+    /// Every screen below its menu bar, in window-server coordinates. NOT `visibleFrame`: that
+    /// shrinks to make room for the Dock while the Dock is showing, even an auto-hiding one —
+    /// which it is at the moment of a Dock click (measured: 1023 pt high instead of 1130), and
+    /// full-height tiles then did not "fit" and no group was found.
+    static func usableAreas() -> [CGRect] {
+        let primaryHeight = NSScreen.screens.first?.frame.height ?? 0
+        return NSScreen.screens.map { s in
+            let f = s.frame
+            let menuBar = f.maxY - s.visibleFrame.maxY
+            return CGRect(x: f.minX, y: primaryHeight - f.maxY + menuBar, width: f.width, height: f.height - menuBar)
+        }
+    }
+}
+
 /// Bring one particular window to the front, app and all; or close it.
 enum WindowActivator {
 
@@ -207,6 +294,14 @@ enum WindowActivator {
             // 0x200: user-generated, the mode a click on the window would use.
             return setFront(p, window.id, 0x200) == 0
         }
+    }
+
+    /// Raise a window within the stack WITHOUT switching to its app. Measured: a raised window of
+    /// an app that is not active lands just under the active app's front window, above all else
+    /// — the place a tiled partner of the window just clicked belongs.
+    static func raiseWithoutActivating(_ window: SwitchableWindow) {
+        guard let element = axWindow(window) else { return }
+        AXUIElementPerformAction(element, kAXRaiseAction as CFString)
     }
 
     /// Press the window's own close button, as a click on it would: the app gets to ask
