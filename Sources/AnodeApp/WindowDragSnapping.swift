@@ -10,8 +10,8 @@ import PowerKit
 // pointer, and the drag counts as a window drag once THAT window's frame moves without resizing.
 //
 // Where this differs from Rectangle, on purpose:
-// - zones the Dock owns are dropped: with the Dock at the bottom the middle of the bottom edge is
-//   where the Dock appears, so it is not also a snap zone (its corners and the other edges are);
+// - the Dock's edge is a zone like any other (measured: dragging a window to the bottom edge does not
+//   make an auto-hiding Dock appear), so the bottom edge gives thirds on a Mac with a bottom Dock;
 // - an edge shared with another display is not a zone, so carrying a window across never snaps it;
 // - the top edge (maximize) needs the pointer to rest there for a moment, so a window dragged up to
 //   the menu bar on the way somewhere else is not maximized;
@@ -58,13 +58,12 @@ enum SnapZones {
     }
 
     /// The zone the pointer is in, or nil. `point` and the screen `frames` are in the window server's
-    /// coordinates (y down). `dock` is the edge the Dock is on; `previous` is the zone that was active
-    /// (for hysteresis); `topDwelt` says the pointer has rested at the top long enough. Pure, for tests.
+    /// coordinates (y down). `previous` is the zone that was active (for hysteresis); `topDwelt` says the pointer has rested at the top long enough. Pure, for tests.
     ///
     /// `topDepths` is how deep the top zone is on each screen, in step with `frames`: the height of its
     /// menu bar, so maximizing engages as soon as the pointer reaches the menu bar rather than only in its
     /// top few points. nil (or a screen with no menu bar, which reads 0) uses the ordinary edge depth.
-    static func zone(at point: CGPoint, screens frames: [CGRect], dock: DockEdge, previous: SnapZone?,
+    static func zone(at point: CGPoint, screens frames: [CGRect], previous: SnapZone?,
                      topDwelt: Bool, config: Config = Config(), topDepths: [CGFloat]? = nil) -> SnapZone? {
         // The screen the pointer is on; a point on the far edge counts (CGRect.contains leaves it out).
         guard let at = frames.firstIndex(where: { $0.insetBy(dx: -0.5, dy: -0.5).contains(point) }) else { return nil }
@@ -95,11 +94,13 @@ enum SnapZones {
         if nearLeft && nearBottom && leftOK && bottomOK { return .bottomLeft }
         if nearRight && nearBottom && rightOK && bottomOK { return .bottomRight }
 
-        // Edges, minus any the Dock owns.
-        if point.x - f.minX < t && leftOK && dock != .left { return .left }
-        if f.maxX - point.x < t && rightOK && dock != .right { return .right }
+        // Edges. The Dock's own edge is a zone like any other: a window being dragged does not make an
+        // auto-hiding Dock appear (so the pointer can rest on the bottom edge), and the outline is drawn
+        // above a Dock that is showing, from the usable area.
+        if point.x - f.minX < t && leftOK { return .left }
+        if f.maxX - point.x < t && rightOK { return .right }
         if point.y - f.minY < topT && topOK { return topDwelt || previous == .top ? .top : nil }
-        if f.maxY - point.y < t && bottomOK && dock != .bottom {
+        if f.maxY - point.y < t && bottomOK {
             let share = (point.x - f.minX) / f.width
             return share < 1.0 / 3 ? .bottomFirst : (share < 2.0 / 3 ? .bottomCenter : .bottomLast)
         }
@@ -356,7 +357,7 @@ final class WindowDragSnapper {
             topSince = nil
         }
         let dwelt = topSince.map { Date().timeIntervalSince($0) >= config.topDwell } ?? false
-        let found = SnapZones.zone(at: p, screens: screens, dock: DockEdge.current, previous: zone, topDwelt: dwelt,
+        let found = SnapZones.zone(at: p, screens: screens, previous: zone, topDwelt: dwelt,
                                    config: config, topDepths: depths)
         if found != zone {
             zone = found
@@ -378,7 +379,7 @@ final class WindowDragSnapper {
         let p = event.point
         let screens = Self.screenFrames()
         let dwelt = topSince.map { Date().timeIntervalSince($0) >= config.topDwell } ?? false
-        guard let finalZone = SnapZones.zone(at: p, screens: screens, dock: DockEdge.current, previous: zone,
+        guard let finalZone = SnapZones.zone(at: p, screens: screens, previous: zone,
                                              topDwelt: dwelt, config: config, topDepths: SnapZones.menuBarDepths()),
               let target = target(for: finalZone, pointer: p) else { return }
         let original = snappedWindows[id]?.original ?? start.size

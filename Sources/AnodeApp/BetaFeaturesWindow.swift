@@ -778,9 +778,9 @@ final class WindowActionsFeature: BetaFeature {
         dragNote.stringValue = nativeOn
             ? "macOS's own edge tiling is on, so both would act on the same drag. Turn it off in System Settings → "
               + "Desktop & Dock → Windows → “Tile by dragging windows to screen edges”."
-            : "Drag by the title bar to an edge or corner: left/right halves, corners quarters, the top maximizes "
-              + "(after a short pause), the bottom edge thirds. Edges the Dock or another display owns are skipped. "
-              + "Esc while dragging cancels."
+            : "Drag by the title bar to an edge or corner: left/right edges halves, corners quarters, the menu bar "
+              + "maximizes, and the bottom edge thirds (left, middle or right of the screen). Edges shared with "
+              + "another display are skipped. Esc while dragging cancels."
         dragNote.textColor = nativeOn ? .systemOrange : .secondaryLabelColor
         if !allowed {
             status.stringValue = "Accessibility: not allowed yet, so windows cannot be moved. Allow Anode in Accessibility."

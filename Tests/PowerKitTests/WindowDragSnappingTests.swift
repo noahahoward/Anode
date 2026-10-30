@@ -5,9 +5,9 @@ import AppKit
 
 final class WindowDragSnappingTests: XCTestCase {
     private let screen = CGRect(x: 0, y: 0, width: 1800, height: 1169)
-    private func zone(_ x: CGFloat, _ y: CGFloat, screens: [CGRect]? = nil, dock: DockEdge = .bottom,
+    private func zone(_ x: CGFloat, _ y: CGFloat, screens: [CGRect]? = nil,
                       previous: SnapZone? = nil, dwelt: Bool = true) -> SnapZone? {
-        SnapZones.zone(at: CGPoint(x: x, y: y), screens: screens ?? [screen], dock: dock, previous: previous, topDwelt: dwelt)
+        SnapZones.zone(at: CGPoint(x: x, y: y), screens: screens ?? [screen], previous: previous, topDwelt: dwelt)
     }
 
     // ── Zones ──
@@ -32,19 +32,27 @@ final class WindowDragSnappingTests: XCTestCase {
         XCTAssertNil(zone(900, 40), "below the top edge")
     }
 
-    func testTheBottomEdgeIsThirdsWhenTheDockIsNotThere() {
-        XCTAssertEqual(zone(100, 1166, dock: .left), .bottomFirst)     // x < 1/3, outside the corner
-        XCTAssertEqual(zone(900, 1166, dock: .left), .bottomCenter)
-        XCTAssertEqual(zone(1500, 1166, dock: .left), .bottomLast)
+    /// The reported gap: thirds by dragging. The bottom edge gives them, wherever the Dock is, because
+    /// dragging a window does not make an auto-hiding Dock appear.
+    func testTheBottomEdgeIsThirds() {
+        XCTAssertEqual(zone(100, 1166), .bottomFirst)        // left third of the width, outside the corner
+        XCTAssertEqual(zone(900, 1166), .bottomCenter)
+        XCTAssertEqual(zone(1500, 1166), .bottomLast)
+        XCTAssertEqual(zone(5, 1164), .bottomLeft, "the corners are still quarters")
+        XCTAssertEqual(zone(1795, 1164), .bottomRight)
     }
 
-    /// The Dock owns the bottom edge: its middle is where the Dock appears, so it is not also a zone.
-    func testZonesTheDockOwnsAreDropped() {
-        XCTAssertNil(zone(900, 1166, dock: .bottom), "the bottom edge with a bottom Dock")
-        XCTAssertEqual(zone(5, 1164, dock: .bottom), .bottomLeft, "its corners still work")
-        XCTAssertNil(zone(3, 600, dock: .left), "a left Dock owns the left edge")
-        XCTAssertEqual(zone(1797, 600, dock: .left), .right)
-        XCTAssertNil(zone(1797, 600, dock: .right))
+    func testTheThirdsBoundariesAreAtOneAndTwoThirdsOfTheWidth() {
+        XCTAssertEqual(zone(599, 1166), .bottomFirst)
+        XCTAssertEqual(zone(601, 1166), .bottomCenter)
+        XCTAssertEqual(zone(1199, 1166), .bottomCenter)
+        XCTAssertEqual(zone(1201, 1166), .bottomLast)
+    }
+
+    func testEveryEdgeIsAZoneWhateverTheDockDoes() {
+        XCTAssertEqual(zone(3, 600), .left)
+        XCTAssertEqual(zone(1797, 600), .right)
+        XCTAssertEqual(zone(900, 1166), .bottomCenter)
     }
 
     // ── Seams between displays ──
@@ -52,30 +60,30 @@ final class WindowDragSnappingTests: XCTestCase {
     private let two = [CGRect(x: 0, y: 0, width: 1800, height: 1169), CGRect(x: 1800, y: 0, width: 1280, height: 800)]
 
     func testTheEdgeSharedWithAnotherDisplayIsNotAZone() {
-        XCTAssertNil(zone(1797, 600, screens: two, dock: .left), "right edge of the left display, over the other display")
-        XCTAssertNil(zone(1803, 600, screens: two, dock: .left), "left edge of the right display")
-        XCTAssertEqual(zone(1797, 1000, screens: two, dock: .left), .right,
+        XCTAssertNil(zone(1797, 600, screens: two), "right edge of the left display, over the other display")
+        XCTAssertNil(zone(1803, 600, screens: two), "left edge of the right display")
+        XCTAssertEqual(zone(1797, 1000, screens: two), .right,
                        "below the other display's bottom (y 800) the edge is a real edge again")
     }
 
     func testACornerOnASeamIsNotACornerAndFallsBackToWhatIsLeft() {
         // Top right of the left display touches the other along its right side: no quarter there, but the
         // pointer is still at the very top, so it is the top zone (maximize), not nothing.
-        XCTAssertEqual(zone(1795, 5, screens: two, dock: .left), .top)
-        XCTAssertEqual(zone(1805, 5, screens: two, dock: .left), .top, "and the same on the other side of the seam")
-        XCTAssertNotEqual(zone(1795, 5, screens: two, dock: .left), .topRight)
-        XCTAssertEqual(zone(1795, 900, screens: two, dock: .left), .right, "below the other display, a real edge again")
+        XCTAssertEqual(zone(1795, 5, screens: two), .top)
+        XCTAssertEqual(zone(1805, 5, screens: two), .top, "and the same on the other side of the seam")
+        XCTAssertNotEqual(zone(1795, 5, screens: two), .topRight)
+        XCTAssertEqual(zone(1795, 900, screens: two), .right, "below the other display, a real edge again")
     }
 
     func testTheFarEdgesOfTheOutermostDisplaysStillWork() {
-        XCTAssertEqual(zone(3, 600, screens: two, dock: .bottom), .left)
-        XCTAssertEqual(zone(3075, 400, screens: two, dock: .bottom), .right)
+        XCTAssertEqual(zone(3, 600, screens: two), .left)
+        XCTAssertEqual(zone(3075, 400, screens: two), .right)
     }
 
     // ── The top is the whole menu bar ──
 
     private func top(_ y: CGFloat, depth: CGFloat = 39, previous: SnapZone? = nil, dwelt: Bool = true, x: CGFloat = 900) -> SnapZone? {
-        SnapZones.zone(at: CGPoint(x: x, y: y), screens: [screen], dock: .bottom, previous: previous, topDwelt: dwelt, topDepths: [depth])
+        SnapZones.zone(at: CGPoint(x: x, y: y), screens: [screen], previous: previous, topDwelt: dwelt, topDepths: [depth])
     }
 
     /// The report: maximizing had to be done in the top 14 points; it should engage in the menu bar.
