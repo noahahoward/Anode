@@ -568,8 +568,13 @@ final class WindowActionsFeature: BetaFeature {
     private let accessibility: () -> Bool
     private let unavailable: () -> [WindowAction]
     private var token: AnyObject?
+    private var dragToken: AnyObject?
 
     let enableCheckbox = NSButton(checkboxWithTitle: "Use Anode's window actions", target: nil, action: nil)
+    let dragCheckbox = NSButton(checkboxWithTitle: "Snap windows by dragging them to a screen edge or corner",
+                                target: nil, action: nil)
+    let dragNote = BetaFeaturesWindowController.wrapping("", color: .secondaryLabelColor)
+    private let nativeTiling: () -> Bool
     let status = BetaFeaturesWindowController.wrapping("")
     let accessButton = NSButton(title: "Open Accessibility Settings…", target: nil, action: nil)
     let shortcuts = BetaFeaturesWindowController.wrapping("", color: .secondaryLabelColor)
@@ -578,10 +583,18 @@ final class WindowActionsFeature: BetaFeature {
          accessibilityAllowed: @escaping () -> Bool = { AccessibilityAccess.isTrusted },
          unavailable: @escaping () -> [WindowAction] = {
              (NSApp.delegate as? AppDelegate)?.windowSnapper?.unavailable ?? []
-         }) {
+         },
+         nativeEdgeTiling: @escaping () -> Bool = { WindowActionsFeature.macOSEdgeTilingIsOn() }) {
         self.settings = settings
         self.accessibility = accessibilityAllowed
         self.unavailable = unavailable
+        self.nativeTiling = nativeEdgeTiling
+    }
+
+    /// Is macOS's own "tile by dragging to a screen edge" on? Then both it and this would act on one drag.
+    static func macOSEdgeTilingIsOn() -> Bool {
+        let d = UserDefaults(suiteName: "com.apple.WindowManager")
+        return d?.bool(forKey: "EnableTilingByEdgeDrag") == true || d?.bool(forKey: "EnableTopTilingByEdgeDrag") == true
     }
 
     func makeView() -> NSView {
@@ -591,11 +604,14 @@ final class WindowActionsFeature: BetaFeature {
         accessButton.action = #selector(openAccessibility)
         accessButton.bezelStyle = .rounded
         accessButton.controlSize = .small
-        let column = NSStackView(views: [enableCheckbox, status, accessButton, shortcuts])
+        dragCheckbox.target = self
+        dragCheckbox.action = #selector(dragToggled)
+        let column = NSStackView(views: [enableCheckbox, status, accessButton, dragCheckbox, dragNote, shortcuts])
         column.orientation = .vertical
         column.alignment = .leading
         column.spacing = 8
         token = settings.observe(Settings.Key.windowSnapperEnabled) { [weak self] in self?.refresh() }
+        dragToken = settings.observe(Settings.Key.windowDragSnapEnabled) { [weak self] in self?.refresh() }
         refresh()
         return column
     }
@@ -606,6 +622,12 @@ final class WindowActionsFeature: BetaFeature {
         settings.windowSnapperEnabled = on
         // The hot keys are registered as the setting changes; what they said is read a moment later.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in self?.refresh() }
+    }
+
+    @objc private func dragToggled() {
+        let on = dragCheckbox.state == .on
+        if on && !accessibility() { AccessibilityAccess.request() }
+        settings.windowDragSnapEnabled = on
     }
 
     @objc private func openAccessibility() { AccessibilityAccess.openSettings() }
@@ -624,6 +646,15 @@ final class WindowActionsFeature: BetaFeature {
         accessButton.isHidden = !on || allowed
         shortcuts.isHidden = !on
         shortcuts.stringValue = Self.shortcutList()
+        dragCheckbox.state = settings.windowDragSnapEnabled ? .on : .off
+        let nativeOn = settings.windowDragSnapEnabled && nativeTiling()
+        dragNote.stringValue = nativeOn
+            ? "macOS's own edge tiling is on, so both would act on the same drag. Turn it off in System Settings → "
+              + "Desktop & Dock → Windows → “Tile by dragging windows to screen edges”."
+            : "Drag by the title bar to an edge or corner: left/right halves, corners quarters, the top maximizes "
+              + "(after a short pause), the bottom edge thirds. Edges the Dock or another display owns are skipped. "
+              + "Esc while dragging cancels."
+        dragNote.textColor = nativeOn ? .systemOrange : .secondaryLabelColor
         if !allowed {
             status.stringValue = "Accessibility: not allowed yet, so windows cannot be moved. Allow Anode in Accessibility."
             status.textColor = .systemOrange

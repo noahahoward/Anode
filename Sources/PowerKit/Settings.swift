@@ -42,6 +42,7 @@ public final class Settings {
         public static let desktopSwitcherEnabled = "desktopSwitcherEnabled"
         public static let windowSnapperEnabled = "windowSnapperEnabled"
         public static let windowGroupsEnabled = "windowGroupsEnabled"
+        public static let windowDragSnapEnabled = "windowDragSnapEnabled"
         public static let dockPreviewsEnabled = "dockPreviewsEnabled"
         public static let dockPreviewsHoldDock = "dockPreviewsHoldDock"
         public static let dockRaisesTileGroup = "dockRaisesTileGroup"
@@ -106,6 +107,8 @@ public final class Settings {
         static let windowSnapperEnabled = false
         /// OFF: it raises windows on its own and claims a few global shortcuts.
         static let windowGroupsEnabled = false
+        /// OFF: it watches every drag, and macOS's own edge tiling would act on the same drags.
+        static let windowDragSnapEnabled = false
         /// OFF, like every beta feature that watches the Dock or the keyboard.
         static let dockPreviewsEnabled = false
         /// ON: with an auto-hiding Dock, the preview is otherwise left floating over nothing.
@@ -189,6 +192,7 @@ public final class Settings {
         var desktopSwitcherEnabled: Bool
         var windowSnapperEnabled: Bool
         var windowGroupsEnabled: Bool
+        var windowDragSnapEnabled: Bool
         var dockPreviewsEnabled: Bool
         var dockPreviewsHoldDock: Bool
         var dockRaisesTileGroup: Bool
@@ -373,6 +377,12 @@ public final class Settings {
     public var windowSnapperEnabled: Bool {
         get { Settings.readBool(defaults, Key.windowSnapperEnabled, Default.windowSnapperEnabled) }
         set { writeBool(Key.windowSnapperEnabled, \.windowSnapperEnabled, newValue, Default.windowSnapperEnabled) }
+    }
+
+    /// Whether dragging a window to a screen edge snaps it (Beta Features).
+    public var windowDragSnapEnabled: Bool {
+        get { Settings.readBool(defaults, Key.windowDragSnapEnabled, Default.windowDragSnapEnabled) }
+        set { writeBool(Key.windowDragSnapEnabled, \.windowDragSnapEnabled, newValue, Default.windowDragSnapEnabled) }
     }
 
     /// Whether window groups (windows that come forward together) are on (Beta Features).
@@ -742,6 +752,7 @@ public final class Settings {
         if old.desktopSwitcherEnabled != now.desktopSwitcherEnabled { notify(Key.desktopSwitcherEnabled) }
         if old.windowSnapperEnabled != now.windowSnapperEnabled { notify(Key.windowSnapperEnabled) }
         if old.windowGroupsEnabled != now.windowGroupsEnabled { notify(Key.windowGroupsEnabled) }
+        if old.windowDragSnapEnabled != now.windowDragSnapEnabled { notify(Key.windowDragSnapEnabled) }
         if old.dockPreviewsEnabled != now.dockPreviewsEnabled { notify(Key.dockPreviewsEnabled) }
         if old.dockPreviewsHoldDock != now.dockPreviewsHoldDock { notify(Key.dockPreviewsHoldDock) }
         if old.dockRaisesTileGroup != now.dockRaisesTileGroup { notify(Key.dockRaisesTileGroup) }
@@ -868,6 +879,7 @@ public final class Settings {
                desktopSwitcherEnabled: readBool(d, Key.desktopSwitcherEnabled, Default.desktopSwitcherEnabled),
                windowSnapperEnabled: readBool(d, Key.windowSnapperEnabled, Default.windowSnapperEnabled),
                windowGroupsEnabled: readBool(d, Key.windowGroupsEnabled, Default.windowGroupsEnabled),
+               windowDragSnapEnabled: readBool(d, Key.windowDragSnapEnabled, Default.windowDragSnapEnabled),
                dockPreviewsEnabled: readBool(d, Key.dockPreviewsEnabled, Default.dockPreviewsEnabled),
                dockPreviewsHoldDock: readBool(d, Key.dockPreviewsHoldDock, Default.dockPreviewsHoldDock),
                dockRaisesTileGroup: readBool(d, Key.dockRaisesTileGroup, Default.dockRaisesTileGroup),

@@ -409,13 +409,33 @@ final class WindowSnapper {
     }
 
     private func place(_ action: WindowAction) {
-        guard AccessibilityAccess.isTrusted, let window = AccessibleWindow.front(), let current = window.frame else {
+        guard AccessibilityAccess.isTrusted, let window = AccessibleWindow.front() else {
             NSSound.beep()
             return
         }
+        place(action, on: window, restoreFrame: nil, pointer: nil)
+    }
+
+    /// A window dropped on a snap zone: placed on the screen the POINTER is on (the window may still be
+    /// mostly on the one it came from), with the frame it was dragged from as what Restore returns to.
+    /// Lets go of a Dock held up for a preview first, like every placement.
+    func placeDragged(_ action: WindowAction, on window: AccessibleWindow, restoreFrame: CGRect, pointer: CGPoint) {
+        let go = { [weak self] in self?.place(action, on: window, restoreFrame: restoreFrame, pointer: pointer) }
+        if let previews = (NSApp.delegate as? AppDelegate)?.dockPreviews {
+            previews.runWithDockReleased { go() }
+        } else {
+            go()
+        }
+    }
+
+    func place(_ action: WindowAction, on window: AccessibleWindow, restoreFrame: CGRect?, pointer: CGPoint?) {
+        guard let current = window.frame else { return }
         let id = window.windowID
         let areas = Self.usableAreas()
-        guard let here = WindowGeometry.screenIndex(for: current, in: areas) else { return }
+        // The screen: under the pointer for a drop, otherwise where the window mostly is.
+        let pointerScreen = pointer.flatMap { p in WindowDragSnapper.screenFrames().firstIndex { $0.insetBy(dx: -0.5, dy: -0.5).contains(p) } }
+        guard let here = pointerScreen ?? WindowGeometry.screenIndex(for: current, in: areas) else { return }
+        if let restoreFrame { remember(id, restoreFrame) }
 
         var target: CGRect?
         switch action {
