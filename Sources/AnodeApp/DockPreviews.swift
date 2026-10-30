@@ -29,12 +29,17 @@ enum DockEdge: String {
 
 final class DockPreviews {
 
-    /// How long the pointer rests on an icon before the panel opens. Moving to another icon
-    /// while a panel is open switches at once.
+    /// How long the pointer rests on an icon before its panel opens — every icon, every time:
+    /// moving to another app closes the open panel and waits again (asked for; it used to
+    /// switch at once).
     static let hoverDelay: TimeInterval = 0.25
-    /// How long the pointer may be off the icon and the panel before the panel closes: room
-    /// to cross the gap between them.
-    static let leaveGrace: TimeInterval = 0.25
+    /// How long the pointer may be off the icon, the panel and the gap between them before
+    /// the panel closes. The gap counts as inside on its own (`keepsPanelOpen`), so this only
+    /// absorbs jitter; at 0.25 s the panel lingered ~335 ms after the pointer left (measured),
+    /// which read as not going away.
+    static let leaveGrace: TimeInterval = 0.08
+    /// How often the pointer is checked while a panel is open (and only then).
+    static let trackInterval: TimeInterval = 0.03
     /// The pointer counts as on an icon this far outside its frame.
     static let slack: CGFloat = 4
 
@@ -60,6 +65,12 @@ final class DockPreviews {
     /// with fewer tiles, which left the pointer — still where the ✕ was — outside it, and the
     /// panel closed itself. The old outline counts as inside until the pointer leaves it.
     private var formerOutline: CGRect?
+    /// Where the pointer was last seen on the shown app's icon, and when: the apex of the
+    /// "menu aim" triangle (`isAiming`).
+    private var lastOnIcon: (point: CGPoint, at: Date)?
+    /// How long after leaving the icon a pointer inside the aim triangle still counts as on
+    /// its way to the panel.
+    static let aimWindow: TimeInterval = 0.5
     private var clickMonitor: Any?
     private let panel = DockPreviewPanel()
 
@@ -160,9 +171,14 @@ final class DockPreviews {
             return
         }
         guard hover.pid != shown?.pid else { return }
+        // Already waiting on this icon: a repeat must not restart the wait.
+        if hover.pid == pending?.pid, showTimer?.isValid == true { return }
+        // Crossing a neighbouring icon on the way up to the open panel (a diagonal) is not a
+        // switch: keep the panel, and switch only if the pointer is still on the new icon when
+        // the delay is up. Anything else closes the panel at once.
+        if shown != nil, !aimingAtPanel() { hide() }
         pending = hover
-        // Already showing another app's windows: follow the pointer at once, as a taskbar does.
-        confirm(after: shown == nil ? Self.hoverDelay : 0.01, triesLeft: Self.confirmTries)
+        confirm(after: Self.hoverDelay, triesLeft: Self.confirmTries)
     }
 
     /// How many more times, 0.1 s apart, to wait for a sliding Dock to settle under the pointer.
@@ -173,6 +189,7 @@ final class DockPreviews {
         showTimer = Timer.scheduledTimer(withTimeInterval: delay, repeats: false) { [weak self] _ in
             guard let self, let pending = self.pending else { return }
             if let fresh = self.currentHover(requirePointer: true), fresh.pid == pending.pid {
+                if self.shown != nil { self.hide() }
                 self.show(fresh)
             } else if triesLeft > 0, self.currentHover(requirePointer: false)?.pid == pending.pid {
                 self.confirm(after: 0.1, triesLeft: triesLeft - 1)
@@ -238,6 +255,7 @@ final class DockPreviews {
         clickMonitor = nil
         outsideSince = nil
         formerOutline = nil
+        lastOnIcon = nil
         pending = nil
         shown = nil
         panel.dismiss()
@@ -249,7 +267,9 @@ final class DockPreviews {
     private func startTracking() {
         outsideSince = nil
         if trackTimer == nil {
-            trackTimer = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { [weak self] _ in self?.track() }
+            trackTimer = Timer.scheduledTimer(withTimeInterval: Self.trackInterval, repeats: true) { [weak self] _ in
+                self?.track()
+            }
         }
         if clickMonitor == nil {
             clickMonitor = NSEvent.addGlobalMonitorForEvents(
@@ -260,8 +280,10 @@ final class DockPreviews {
     private func track() {
         guard let shown else { return hide() }
         let pointer = Self.pointerInWindowServerCoordinates()
+        if shown.icon.insetBy(dx: -Self.slack, dy: -Self.slack).contains(pointer) { lastOnIcon = (pointer, Date()) }
         var inside = Self.keepsPanelOpen(pointer: pointer, icon: shown.icon,
                                          panel: panel.frameInWindowServer, slack: Self.slack)
+            || aimingAtPanel()
         if let former = formerOutline {
             if former.contains(pointer) { inside = true } else { formerOutline = nil }
         }
@@ -297,6 +319,31 @@ final class DockPreviews {
                            width: max(iconZone.maxX, panel.maxX) - min(iconZone.minX, panel.minX),
                            height: min(iconZone.maxY, panel.maxY) - max(iconZone.minY, panel.minY))
         return (across.width > 0 && across.contains(pointer)) || (along.height > 0 && along.contains(pointer))
+    }
+
+    private func aimingAtPanel() -> Bool {
+        guard let last = lastOnIcon, Date().timeIntervalSince(last.at) < Self.aimWindow,
+              let frame = panel.frameInWindowServer else { return false }
+        return Self.isAiming(pointer: Self.pointerInWindowServerCoordinates(), from: last.point,
+                             panel: frame, edge: DockEdge.current)
+    }
+
+    /// Is the pointer inside the triangle from where it left the icon (`from`) to the panel's
+    /// near edge — on its way to the panel, whatever it crosses? Window-server coordinates
+    /// (y down). Pure, for tests.
+    static func isAiming(pointer: CGPoint, from apex: CGPoint, panel: CGRect, edge: DockEdge) -> Bool {
+        let (a, b): (CGPoint, CGPoint)
+        switch edge {
+        case .bottom: (a, b) = (CGPoint(x: panel.minX, y: panel.maxY), CGPoint(x: panel.maxX, y: panel.maxY))
+        case .left: (a, b) = (CGPoint(x: panel.minX, y: panel.minY), CGPoint(x: panel.minX, y: panel.maxY))
+        case .right: (a, b) = (CGPoint(x: panel.maxX, y: panel.minY), CGPoint(x: panel.maxX, y: panel.maxY))
+        }
+        func side(_ p: CGPoint, _ q: CGPoint, _ r: CGPoint) -> CGFloat {
+            (p.x - r.x) * (q.y - r.y) - (q.x - r.x) * (p.y - r.y)
+        }
+        let d1 = side(pointer, apex, a), d2 = side(pointer, a, b), d3 = side(pointer, b, apex)
+        let negative = d1 < 0 || d2 < 0 || d3 < 0, positive = d1 > 0 || d2 > 0 || d3 > 0
+        return !(negative && positive)
     }
 
     // ── Helpers ─────────────────────────────────────────────────────────────

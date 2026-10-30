@@ -92,6 +92,24 @@ final class DockPreviewsTests: XCTestCase {
         XCTAssertFalse(DockPreviews.keepsPanelOpen(pointer: CGPoint(x: 700, y: 1120), icon: icon, panel: nil, slack: 4))
     }
 
+    // ── Menu aim (window-server coordinates) ──
+
+    /// Panel above a bottom Dock: 945…1257 wide, bottom edge at y 1054; pointer left the icon at
+    /// (1101, 1100).
+    private let aimPanel = CGRect(x: 945, y: 884, width: 312, height: 170)
+    private let apex = CGPoint(x: 1101, y: 1100)
+
+    func testADiagonalTowardThePanelIsAiming() {
+        // Up and to the right, over the neighbouring icon, still inside the triangle.
+        XCTAssertTrue(DockPreviews.isAiming(pointer: CGPoint(x: 1150, y: 1075), from: apex, panel: aimPanel, edge: .bottom))
+    }
+
+    func testSidewaysAlongTheDockIsNotAiming() {
+        XCTAssertFalse(DockPreviews.isAiming(pointer: CGPoint(x: 1200, y: 1100), from: apex, panel: aimPanel, edge: .bottom))
+        XCTAssertFalse(DockPreviews.isAiming(pointer: CGPoint(x: 1300, y: 1060), from: apex, panel: aimPanel, edge: .bottom),
+                       "past the panel's far corner")
+    }
+
     // ── Which windows ──
 
     private func win(_ id: CGWindowID, pid: pid_t = 7, title: String = "") -> SwitchableWindow {
