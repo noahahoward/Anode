@@ -39,7 +39,7 @@ final class BetaFeaturesWindowController: NSWindowController {
     private let stack = NSStackView()
     private var activeToken: NSObjectProtocol?
 
-    init(features: [BetaFeature] = [BackdropFeature()]) {
+    init(features: [BetaFeature] = [BackdropFeature(), WindowSwitcherFeature()]) {
         self.features = features
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: Self.contentWidth, height: 200),
                               styleMask: [.titled, .closable], backing: .buffered, defer: false)
@@ -276,5 +276,86 @@ final class BackdropFeature: BetaFeature {
             return "A solid block that fades into the colour of the window under it. Other apps' "
                  + "windows are read from the screen, which needs Screen Recording permission."
         }
+    }
+}
+
+// ── Window Switcher ─────────────────────────────────────────────────────────
+
+/// Command-Tab through windows with previews (see `WindowSwitcher`): one switch, and what
+/// it needs from macOS. Off until the user turns it on, because it takes over a system
+/// shortcut.
+final class WindowSwitcherFeature: BetaFeature {
+
+    let title = "Window Switcher"
+    let summary = "Replaces ⌘Tab with a switcher of windows, each with a preview. Hold ⌘ and press Tab "
+                + "to move (⇧ to go back, arrows work too), let go of ⌘ to switch, Esc to cancel. "
+                + "If Anode quits or crashes, ⌘Tab goes back to the system's at once."
+    var layoutChanged: (() -> Void)?
+
+    private let settings: Settings
+    private let accessibility: () -> Bool
+    private let screenRecording: () -> Bool
+    private var token: AnyObject?
+
+    // Internal, so the tests can drive them as a click would.
+    let enableCheckbox = NSButton(checkboxWithTitle: "Use Anode's window switcher for ⌘Tab", target: nil, action: nil)
+    let accessStatus = BetaFeaturesWindowController.wrapping("")
+    let accessButton = NSButton(title: "Open Accessibility Settings…", target: nil, action: nil)
+    let previewNote = BetaFeaturesWindowController.wrapping("", color: .secondaryLabelColor)
+
+    init(settings: Settings = .shared,
+         accessibilityAllowed: @escaping () -> Bool = { AccessibilityAccess.isTrusted },
+         screenRecordingAllowed: @escaping () -> Bool = { ScreenRecordingAccess.isGranted }) {
+        self.settings = settings
+        self.accessibility = accessibilityAllowed
+        self.screenRecording = screenRecordingAllowed
+    }
+
+    func makeView() -> NSView {
+        enableCheckbox.target = self
+        enableCheckbox.action = #selector(toggled)
+        accessButton.target = self
+        accessButton.action = #selector(openAccessibility)
+        accessButton.bezelStyle = .rounded
+        accessButton.controlSize = .small
+
+        let column = NSStackView(views: [enableCheckbox, accessStatus, accessButton, previewNote])
+        column.orientation = .vertical
+        column.alignment = .leading
+        column.spacing = 8
+        token = settings.observe(Settings.Key.windowSwitcherEnabled) { [weak self] in self?.refresh() }
+        refresh()
+        return column
+    }
+
+    @objc private func toggled() {
+        let on = enableCheckbox.state == .on
+        // Ask at the moment it is wanted, not before: the system dialog explains itself
+        // best right after the user has asked for the thing that needs it.
+        if on && !accessibility() { AccessibilityAccess.request() }
+        settings.windowSwitcherEnabled = on
+    }
+
+    @objc private func openAccessibility() {
+        AccessibilityAccess.openSettings()
+    }
+
+    func refresh() {
+        let on = settings.windowSwitcherEnabled
+        let allowed = accessibility()
+        enableCheckbox.state = on ? .on : .off
+        accessStatus.isHidden = !on
+        accessButton.isHidden = !on || allowed
+        accessStatus.stringValue = allowed
+            ? "Accessibility: allowed. Only ⌘Tab, and Tab, the arrows and Esc while the switcher is open, "
+              + "are taken; every other key goes on untouched."
+            : "Accessibility: not allowed yet, so ⌘Tab is still the system's. Allow Anode in "
+              + "Accessibility and it takes over within a couple of seconds."
+        accessStatus.textColor = allowed ? .secondaryLabelColor : .systemOrange
+        previewNote.isHidden = !on
+        previewNote.stringValue = screenRecording()
+            ? "Previews use the Screen Recording permission the menu bar backdrop already has."
+            : "Without Screen Recording permission each window shows its app's icon instead of a preview."
+        layoutChanged?()
     }
 }

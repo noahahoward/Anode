@@ -38,6 +38,7 @@ public final class Settings {
         public static let batteryLogging = "batteryLogging"
         public static let menuBarWidgetsEnabled = "menuBarWidgetsEnabled"
         public static let menuBarBackdropShowOnDesktop = "menuBarBackdropShowOnDesktop"
+        public static let windowSwitcherEnabled = "windowSwitcherEnabled"
         public static let fanControlEnabled = "fanControlEnabled"
         public static let fanDisclosureSeen = "fanDisclosureSeen"
         public static let fanSyncEnabled = "fanSyncEnabled"
@@ -91,6 +92,8 @@ public final class Settings {
         static let menuBarWidgetsEnabled = true
         /// ON: the menu bar backdrop is drawn over the desktop as well, as it always was.
         static let menuBarBackdropShowOnDesktop = true
+        /// OFF: a beta feature that takes over a system shortcut is something the user turns on.
+        static let windowSwitcherEnabled = false
         /// OFF, and it is the one setting in this file that must stay that way.
         ///
         /// Turning it on is a decision to let a root process on this machine
@@ -164,6 +167,7 @@ public final class Settings {
             fanControlEnabled, fanSyncEnabled, speedTestAgreed,
             autoUpdateEnabled, autoUpdatePromptSeen: Bool
         var menuBarBackdropShowOnDesktop: Bool
+        var windowSwitcherEnabled: Bool
         var menuBarBackdropMode: MenuBarBackdropMode
         var menuBarBackdropBlur: Double
         var fanDisclosureSeen: Bool
@@ -332,6 +336,13 @@ public final class Settings {
                                 Default.menuBarBackdropShowOnDesktop) }
         set { writeBool(Key.menuBarBackdropShowOnDesktop, \.menuBarBackdropShowOnDesktop, newValue,
                         Default.menuBarBackdropShowOnDesktop) }
+    }
+
+    /// Whether Anode's window switcher replaces the system's Command-Tab (Beta Features).
+    public var windowSwitcherEnabled: Bool {
+        get { Settings.readBool(defaults, Key.windowSwitcherEnabled, Default.windowSwitcherEnabled) }
+        set { writeBool(Key.windowSwitcherEnabled, \.windowSwitcherEnabled, newValue,
+                        Default.windowSwitcherEnabled) }
     }
 
     public var menuBarWidgetsEnabled: Bool {
@@ -667,6 +678,7 @@ public final class Settings {
         if old.menuBarBackdropShowOnDesktop != now.menuBarBackdropShowOnDesktop {
             notify(Key.menuBarBackdropShowOnDesktop)
         }
+        if old.windowSwitcherEnabled != now.windowSwitcherEnabled { notify(Key.windowSwitcherEnabled) }
         if old.menuBarWidgetsEnabled != now.menuBarWidgetsEnabled {
             notify(Key.menuBarWidgetsEnabled)
         }
@@ -786,6 +798,7 @@ public final class Settings {
                                               Default.autoUpdatePromptSeen),
                menuBarBackdropShowOnDesktop: readBool(d, Key.menuBarBackdropShowOnDesktop,
                                                       Default.menuBarBackdropShowOnDesktop),
+               windowSwitcherEnabled: readBool(d, Key.windowSwitcherEnabled, Default.windowSwitcherEnabled),
                menuBarBackdropMode: d.string(forKey: storageKey(Key.menuBarBackdropMode))
                    .flatMap(MenuBarBackdropMode.init(rawValue:)) ?? Default.menuBarBackdropMode,
                menuBarBackdropBlur: readDouble(d, Key.menuBarBackdropBlur,

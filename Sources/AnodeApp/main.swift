@@ -47,6 +47,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
     var anodeStats: AnodeStatsWindowController?
     /// The black strip behind the menu bar. Lives as long as the app does.
     var menuBarBackdrop: MenuBarBackdrop?
+    var windowSwitcher: WindowSwitcher?
     /// The Beta Features window (Settings → Beta Features…), created on first use.
     lazy var betaFeaturesWindow = BetaFeaturesWindowController()
     /// Time left = charge ÷ the mean drain since the lid was last opened.
@@ -298,6 +299,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
 
         buildMenu()
         menuBarBackdrop = MenuBarBackdrop(appearanceButton: { [weak self] in self?.widgets?.appearanceButton })
+        windowSwitcher = WindowSwitcher()
 
         main = MainWindowController()
         main.table.dataSource = self
