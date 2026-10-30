@@ -494,14 +494,14 @@ final class DockPreviewPanel {
     /// Every preview is this tall; its width follows its window's shape, so a portrait window
     /// is a narrow tile rather than a wide box with empty sides.
     static let previewHeight: CGFloat = 120
-    static let minPreviewWidth: CGFloat = 80
+    static let minPreviewWidth: CGFloat = 48
     static let maxPreviewWidth: CGFloat = 300
     /// Around the preview, and the title row under it (as `DockPreviewTile` lays them out).
-    static let tileInset: CGFloat = 6
+    static let tileInset: CGFloat = 3
     static let labelHeight: CGFloat = 18
     static var tileHeight: CGFloat { previewHeight + labelHeight + 2 * tileInset }
-    static let spacing: CGFloat = 8
-    static let padding: CGFloat = 10
+    static let spacing: CGFloat = 3
+    static let padding: CGFloat = 4
     /// Between the icon and the panel.
     static let gap: CGFloat = 6
     static let screenMargin: CGFloat = 8
@@ -620,7 +620,7 @@ final class DockPreviewPanel {
         background.blendingMode = .behindWindow
         background.state = .active
         background.wantsLayer = true
-        background.layer?.cornerRadius = 14
+        background.layer?.cornerRadius = 10
         background.layer?.masksToBounds = true
         panel.contentView = background
         return panel
@@ -658,7 +658,7 @@ final class DockPreviewTile: NSView {
         preview.alphaValue = window.isOffScreen ? 0.6 : 1
         addSubview(preview)
 
-        label.frame = NSRect(x: inset, y: 3, width: frame.width - 2 * inset, height: labelHeight - 2)
+        label.frame = NSRect(x: inset, y: 2, width: frame.width - 2 * inset, height: labelHeight - 2)
         label.font = .systemFont(ofSize: 11)
         label.textColor = .white
         label.alignment = .center
@@ -714,6 +714,6 @@ final class DockPreviewTile: NSView {
     override func draw(_ dirtyRect: NSRect) {
         guard hovering else { return }
         NSColor.white.withAlphaComponent(0.18).setFill()
-        NSBezierPath(roundedRect: bounds, xRadius: 10, yRadius: 10).fill()
+        NSBezierPath(roundedRect: bounds, xRadius: 7, yRadius: 7).fill()
     }
 }
