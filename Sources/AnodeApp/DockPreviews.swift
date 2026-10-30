@@ -121,6 +121,7 @@ enum DockAutoHide {
 /// after it is turned back on, and a hold still written down at launch is undone then.
 final class DockHold {
     static let recordKey = "anode.dockHeldUp"
+    static let extraDelayKey = "anode.dockSwitchExtraDelay"
 
     private let defaults: UserDefaults
     private let isEnabled: () -> Bool?
@@ -209,7 +210,17 @@ final class DockHold {
         func poll() {
             if isDockClear() || Date() >= deadline {
                 settleTimer = nil
-                action()
+                // A pause on top of the Dock being gone, for finding how long whatever resizes
+                // windows needs. Zero unless set: `defaults write dev.anode.app anode.dockSwitchExtraDelay 1.5`.
+                let extra = max(0, min(10, defaults.double(forKey: Self.extraDelayKey)))
+                if extra > 0 {
+                    settleTimer = Timer.scheduledTimer(withTimeInterval: extra, repeats: false) { [weak self] _ in
+                        self?.settleTimer = nil
+                        action()
+                    }
+                } else {
+                    action()
+                }
             } else {
                 settleTimer = Timer.scheduledTimer(withTimeInterval: Self.settlePoll, repeats: false) { _ in poll() }
             }
