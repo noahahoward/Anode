@@ -33,16 +33,24 @@ protocol BetaFeature: AnyObject {
 final class BetaFeaturesWindowController: NSWindowController {
 
     static let emptyText = "No beta features yet."
-    static let contentWidth: CGFloat = 480
+    /// One column of sections. The window is as many columns wide as it takes to fit the screen's
+    /// height (it used to be one column, and with six features it was taller than the screen).
+    static let columnWidth: CGFloat = 440
+    static let columnGap: CGFloat = 28
+    static let inset: CGFloat = 20
+    static let maxColumns = 3
 
     let features: [BetaFeature]
-    private let stack = NSStackView()
+    private var sections: [NSStackView] = []
+    private var columns: [NSStackView] = []
+    private let content = FlippedView()
+    private let scroll = NSScrollView()
     private var activeToken: NSObjectProtocol?
 
     init(features: [BetaFeature] = [BackdropFeature(), WindowSwitcherFeature(), DesktopSwitcherFeature(),
                                     DockPreviewFeature(), WindowActionsFeature(), WindowGroupsFeature()]) {
         self.features = features
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: Self.contentWidth, height: 200),
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: Self.columnWidth + 2 * Self.inset, height: 200),
                               styleMask: [.titled, .closable], backing: .buffered, defer: false)
         window.title = "Beta Features"
         // Closing must not deallocate it: the controller outlives the window.
@@ -75,48 +83,161 @@ final class BetaFeaturesWindowController: NSWindowController {
 
     // ── Layout ──────────────────────────────────────────────────────────────
 
+    /// Split `heights` (in order) into `count` runs of neighbours so that the tallest run is as short as
+    /// it can be: the sections stay in the order they were listed, read down each column and then
+    /// across. Pure, for tests.
+    static func partition(heights: [CGFloat], into count: Int, spacing: CGFloat) -> [[Int]] {
+        let n = heights.count
+        guard n > 0 else { return [] }
+        let k = max(1, min(count, n))
+        func run(_ from: Int, _ to: Int) -> CGFloat {   // sections [from, to)
+            heights[from..<to].reduce(0, +) + spacing * CGFloat(max(0, to - from - 1))
+        }
+        // best[j][i]: the smallest possible tallest run when the first i sections go into j columns.
+        var best = Array(repeating: Array(repeating: CGFloat.infinity, count: n + 1), count: k + 1)
+        var cut = Array(repeating: Array(repeating: 0, count: n + 1), count: k + 1)
+        best[0][0] = 0
+        for j in 1...k {
+            for i in j...n {
+                for m in (j - 1)..<i {
+                    let candidate = max(best[j - 1][m], run(m, i))
+                    if candidate < best[j][i] { best[j][i] = candidate; cut[j][i] = m }
+                }
+            }
+        }
+        var groups: [[Int]] = []
+        var i = n
+        for j in stride(from: k, through: 1, by: -1) {
+            let m = cut[j][i]
+            groups.insert(Array(m..<i), at: 0)
+            i = m
+        }
+        return groups
+    }
+
+    /// How many columns the window needs: the fewest that make the tallest fit `available`, as long as
+    /// the width fits `maxWidth`; otherwise as many as the width allows.
+    static func columnCount(heights: [CGFloat], available: CGFloat, maxWidth: CGFloat, spacing: CGFloat) -> Int {
+        let widthAllows = max(1, min(maxColumns, Int((maxWidth - 2 * inset + columnGap) / (columnWidth + columnGap))))
+        for count in 1...widthAllows {
+            let groups = partition(heights: heights, into: count, spacing: spacing)
+            let tallest = groups.map { g in g.map { heights[$0] }.reduce(0, +) + spacing * CGFloat(max(0, g.count - 1)) }.max() ?? 0
+            if tallest + 2 * inset <= available { return count }
+        }
+        return widthAllows
+    }
+
     private func buildLayout() {
-        stack.orientation = .vertical
-        stack.alignment = .leading
-        stack.spacing = 14
-        stack.edgeInsets = NSEdgeInsets(top: 20, left: 20, bottom: 20, right: 20)
-        stack.translatesAutoresizingMaskIntoConstraints = false
+        scroll.hasVerticalScroller = true
+        scroll.autohidesScrollers = true
+        scroll.drawsBackground = false
+        scroll.borderType = .noBorder
+        scroll.documentView = content
+        window?.contentView = scroll
 
         if features.isEmpty {
-            stack.addArrangedSubview(NSTextField(labelWithString: Self.emptyText))
+            let label = NSTextField(labelWithString: Self.emptyText)
+            label.frame.origin = NSPoint(x: Self.inset, y: Self.inset)
+            label.sizeToFit()
+            content.addSubview(label)
+            fit()
+            return
         }
-        for (i, feature) in features.enumerated() {
-            if i > 0 {
-                let rule = NSBox(); rule.boxType = .separator
-                stack.addArrangedSubview(rule)
-                rule.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -40).isActive = true
-            }
+
+        // Each feature is a section: its title, what it is, and its controls, one column wide.
+        sections = features.map { feature in
             let title = NSTextField(labelWithString: feature.title)
             title.font = .boldSystemFont(ofSize: NSFont.systemFontSize + 1)
             let summary = Self.wrapping(feature.summary, color: .secondaryLabelColor)
             let view = feature.makeView()
-            for v in [title, summary, view] { stack.addArrangedSubview(v) }
-            view.widthAnchor.constraint(lessThanOrEqualToConstant: Self.contentWidth - 40).isActive = true
+            let section = NSStackView(views: [title, summary, view])
+            section.orientation = .vertical
+            section.alignment = .leading
+            section.spacing = 8
+            section.translatesAutoresizingMaskIntoConstraints = false
+            section.widthAnchor.constraint(equalToConstant: Self.columnWidth).isActive = true
+            view.widthAnchor.constraint(lessThanOrEqualToConstant: Self.columnWidth).isActive = true
+            return section
         }
+        let heights = sections.map { section -> CGFloat in
+            section.layoutSubtreeIfNeeded()
+            return ceil(section.fittingSize.height)
+        }
+        let screen = NSScreen.main?.visibleFrame.size ?? NSSize(width: 1440, height: 900)
+        let count = Self.columnCount(heights: heights, available: screen.height - 60, maxWidth: screen.width - 40, spacing: 22)
+        let groups = Self.partition(heights: heights, into: count, spacing: 22)
 
-        let container = NSView()
-        container.addSubview(stack)
+        columns = groups.map { indices in
+            let column = NSStackView()
+            column.orientation = .vertical
+            column.alignment = .leading
+            column.spacing = 22
+            column.translatesAutoresizingMaskIntoConstraints = false
+            // As tall as its sections and no taller, even beside a taller column.
+            column.setHuggingPriority(.required, for: .vertical)
+            for (n, i) in indices.enumerated() {
+                if n > 0 {
+                    let rule = NSBox(); rule.boxType = .separator
+                    // A divider is a line, not a spring: left flexible it took all the spare height of a
+                    // shorter column and pushed its last section to the bottom.
+                    rule.setContentHuggingPriority(.required, for: .vertical)
+                    rule.setContentCompressionResistancePriority(.required, for: .vertical)
+                    column.addArrangedSubview(rule)
+                    rule.widthAnchor.constraint(equalToConstant: Self.columnWidth).isActive = true
+                }
+                column.addArrangedSubview(sections[i])
+            }
+            return column
+        }
+        // Each column sits in a plain holder pinned to its top. The side-by-side stack makes its items as
+        // tall as the tallest, and a column stretched like that spread its sections apart (a 671 pt column
+        // drawn 827 pt tall); in a holder it keeps the height its sections need.
+        let holders = columns.map { column -> NSView in
+            let holder = NSView()
+            holder.translatesAutoresizingMaskIntoConstraints = false
+            holder.addSubview(column)
+            NSLayoutConstraint.activate([
+                column.topAnchor.constraint(equalTo: holder.topAnchor),
+                column.leadingAnchor.constraint(equalTo: holder.leadingAnchor),
+                column.trailingAnchor.constraint(equalTo: holder.trailingAnchor),
+                column.bottomAnchor.constraint(lessThanOrEqualTo: holder.bottomAnchor),
+                holder.widthAnchor.constraint(equalToConstant: Self.columnWidth),
+            ])
+            return holder
+        }
+        let row = NSStackView(views: holders)
+        row.orientation = .horizontal
+        row.alignment = .top
+        row.spacing = Self.columnGap
+        row.translatesAutoresizingMaskIntoConstraints = false
+        content.addSubview(row)
         NSLayoutConstraint.activate([
-            stack.leadingAnchor.constraint(equalTo: container.leadingAnchor),
-            stack.topAnchor.constraint(equalTo: container.topAnchor),
-            stack.widthAnchor.constraint(equalToConstant: Self.contentWidth),
+            row.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: Self.inset),
+            row.topAnchor.constraint(equalTo: content.topAnchor, constant: Self.inset),
         ])
-        window?.contentView = container
+        rowView = row
         fit()
     }
 
-    /// Resize the window to what is in it, keeping its top edge where it was.
+    private var rowView: NSStackView?
+
+    /// Resize the window to what is in it (as tall as the screen allows, then it scrolls), keeping its top
+    /// edge where it was.
     private func fit() {
-        guard let window, let container = window.contentView else { return }
-        container.layoutSubtreeIfNeeded()
-        let size = NSSize(width: Self.contentWidth, height: ceil(stack.fittingSize.height))
+        guard let window else { return }
+        let contentSize: NSSize
+        if let rowView {
+            rowView.layoutSubtreeIfNeeded()
+            let fit = rowView.fittingSize
+            contentSize = NSSize(width: ceil(fit.width) + 2 * Self.inset, height: ceil(fit.height) + 2 * Self.inset)
+        } else {
+            contentSize = NSSize(width: Self.columnWidth + 2 * Self.inset, height: 80)
+        }
+        content.frame = NSRect(origin: .zero, size: contentSize)
+        let limit = (window.screen ?? NSScreen.main)?.visibleFrame.height ?? 900
+        let shown = NSSize(width: contentSize.width, height: min(contentSize.height, limit - 60))
         let top = window.frame.maxY
-        window.setContentSize(size)
+        window.setContentSize(shown)
         window.setFrameTopLeftPoint(NSPoint(x: window.frame.minX, y: top))
     }
 
@@ -126,9 +247,14 @@ final class BetaFeaturesWindowController: NSWindowController {
         let label = NSTextField(wrappingLabelWithString: text)
         label.font = .systemFont(ofSize: size)
         label.textColor = color
-        label.preferredMaxLayoutWidth = contentWidth - 40
+        label.preferredMaxLayoutWidth = columnWidth
         return label
     }
+}
+
+/// A view whose origin is at the top, so a scroll view shows its content from the top down.
+final class FlippedView: NSView {
+    override var isFlipped: Bool { true }
 }
 
 // ── Menu Bar Backdrop ───────────────────────────────────────────────────────
@@ -402,7 +528,7 @@ final class DockPreviewFeature: BetaFeature {
     let enableCheckbox = NSButton(checkboxWithTitle: "Show window previews on the Dock", target: nil, action: nil)
     let holdCheckbox = NSButton(checkboxWithTitle: "Keep an auto-hiding Dock up while a preview is open",
                                 target: nil, action: nil)
-    let groupCheckbox = NSButton(checkboxWithTitle: "Clicking an icon brings back the layout its window is tiled in (off while Window Groups is on)",
+    let groupCheckbox = NSButton(checkboxWithTitle: "Clicking an icon brings back its tiled layout",
                                  target: nil, action: nil)
     let holdNote = BetaFeaturesWindowController.wrapping(
         "Turns auto-hide off while a preview is open and back on when it closes. If Anode quits "
@@ -463,6 +589,7 @@ final class DockPreviewFeature: BetaFeature {
         holdCheckbox.state = settings.dockPreviewsHoldDock ? .on : .off
         holdCheckbox.isEnabled = on
         groupCheckbox.state = settings.dockRaisesTileGroup ? .on : .off
+        groupCheckbox.toolTip = "Guesses the layout from where windows sit. Off while Window Groups is on, which uses the groups you made instead."
         groupCheckbox.isEnabled = on
         holdNote.textColor = on ? .secondaryLabelColor : .disabledControlTextColor
         let allowed = accessibility()
