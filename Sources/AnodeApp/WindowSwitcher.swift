@@ -620,6 +620,22 @@ private func switcherTapCallback(proxy: CGEventTapProxy, type: CGEventType, even
     return Unmanaged<WindowSwitcher>.fromOpaque(refcon).takeUnretainedValue().handle(type: type, event: event)
 }
 
+/// The stretchable rounded-rectangle mask a glass panel needs for round corners that the window
+/// and its shadow follow as well.
+enum RoundedMask {
+    static func image(radius: CGFloat) -> NSImage {
+        let side = radius * 2 + 1
+        let image = NSImage(size: NSSize(width: side, height: side), flipped: false) { rect in
+            NSColor.black.setFill()
+            NSBezierPath(roundedRect: rect, xRadius: radius, yRadius: radius).fill()
+            return true
+        }
+        image.capInsets = NSEdgeInsets(top: radius, left: radius, bottom: radius, right: radius)
+        image.resizingMode = .stretch
+        return image
+    }
+}
+
 // ── The panel ───────────────────────────────────────────────────────────────
 
 final class SwitcherPanel {
@@ -663,6 +679,7 @@ final class SwitcherPanel {
                               width: size.width, height: size.height), display: false)
         content.layoutSubtreeIfNeeded()
         content.displayIfNeeded()
+        panel.invalidateShadow()
     }
 
     func reveal() {
@@ -706,9 +723,10 @@ final class SwitcherPanel {
         background.material = .hudWindow
         background.blendingMode = .behindWindow
         background.state = .active
-        background.wantsLayer = true
-        background.layer?.cornerRadius = 18
-        background.layer?.masksToBounds = true
+        // A mask image, not a rounded layer: a layer's corner clips what is drawn but the window
+        // itself, and the shadow the system derives from it, stay rectangular, which showed as a
+        // square outline behind the rounded glass.
+        background.maskImage = RoundedMask.image(radius: 18)
         panel.contentView = background
         return panel
     }

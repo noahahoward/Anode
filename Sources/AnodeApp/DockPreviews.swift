@@ -752,6 +752,7 @@ final class DockPreviewPanel {
             return tile
         }
         panel.setFrame(Self.placement(size: size, icon: iconRect, edge: edge, screen: area), display: true)
+        panel.invalidateShadow()
         panel.orderFrontRegardless()
     }
 
@@ -780,9 +781,7 @@ final class DockPreviewPanel {
         background.material = .hudWindow
         background.blendingMode = .behindWindow
         background.state = .active
-        background.wantsLayer = true
-        background.layer?.cornerRadius = 10
-        background.layer?.masksToBounds = true
+        background.maskImage = RoundedMask.image(radius: 10)
         panel.contentView = background
         return panel
     }
