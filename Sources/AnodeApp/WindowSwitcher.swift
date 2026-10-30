@@ -327,18 +327,21 @@ final class WindowSwitcher {
                 && !flags.contains(.maskControl) && !flags.contains(.maskAlternate)
             if !isActive {
                 guard commandTab else { return pass }
-                if type == .keyDown { begin(backward: flags.contains(.maskShift)) }
-                return nil
+                // With no window on this Space (all minimized or hidden) there is nothing
+                // to show, so the system's switcher, which lists apps, gets the key.
+                if type == .keyDown, !begin(backward: flags.contains(.maskShift)) { return pass }
+                return type == .keyDown ? nil : pass
             }
-            // While open, the switcher owns Tab, the arrows and Escape; anything else
-            // goes on to the app as usual.
-            guard [Self.tab, Self.escape, Self.left, Self.right].contains(key) else { return pass }
+            // While open, the switcher owns the keyboard. Command is held throughout, so a
+            // key let through arrives as a shortcut in the app in front: Command-Q, which
+            // in the system switcher quits the highlighted app, would quit THIS one.
             if type == .keyDown {
                 switch key {
                 case Self.tab: move(flags.contains(.maskShift) ? -1 : 1)
                 case Self.left: move(-1)
                 case Self.right: move(1)
-                default: cancel()
+                case Self.escape: cancel()
+                default: break
                 }
             }
             return nil
@@ -347,12 +350,13 @@ final class WindowSwitcher {
         }
     }
 
-    private func begin(backward: Bool) {
+    /// Open the switcher; false when there is nothing to switch to.
+    private func begin(backward: Bool) -> Bool {
         windows = WindowCatalog.current()
+        guard !windows.isEmpty else { return false }
         selection.start(count: windows.count)
         if backward { selection.step(-2) }   // start() already took one step forward
         isActive = true
-        guard !windows.isEmpty else { return }
         // Everything slow happens now, during the hold delay, so that showing the panel
         // when the delay ends is only putting it on screen (measured before: ~70 ms of
         // building AFTER the delay, ~190 ms from Tab to panel).
@@ -371,6 +375,7 @@ final class WindowSwitcher {
             guard let self, self.isActive else { return }
             self.panel.reveal()
         }
+        return true
     }
 
     private func move(_ by: Int) {
