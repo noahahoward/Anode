@@ -520,7 +520,10 @@ final class DockPreviews {
         let windows = WindowCatalog.windows(of: app)
         guard !windows.isEmpty else { return hide() }
         shown = hover
-        if settings.dockPreviewsHoldDock { dockHold.hold() }
+        // No hold yet: the pointer is on the icon, where the Dock is up anyway, and a click on
+        // the icon must happen with auto-hide ON — with it off, macOS fitted the clicked app's
+        // window to the room left above the pinned Dock and it stayed short (reproduced: Brave
+        // 1130 -> 1019 pt tall). `track` holds the Dock once the pointer heads for the panel.
         panel.present(windows, iconInWindowServer: hover.icon, edge: DockEdge.current)
         // Fresh pictures of what is on screen; minimized windows keep their last one.
         WindowPreviews.shared.refresh(windows.filter { !$0.isOffScreen }.map(\.id)) { [weak self] id, image in
@@ -587,6 +590,12 @@ final class DockPreviews {
         if !inside, let fresh = currentHover(), fresh.pid == shown.pid {
             self.shown = fresh
             inside = true
+        }
+        // The Dock is held up only while the pointer is in the panel or on its way there, and let go
+        // the moment it is back on the icon.
+        if settings.dockPreviewsHoldDock {
+            let onIcon = shown.icon.insetBy(dx: -Self.slack, dy: -Self.slack).contains(pointer)
+            if inside && !onIcon { dockHold.hold() } else if onIcon { dockHold.releaseNow() }
         }
         if inside {
             outsideSince = nil
