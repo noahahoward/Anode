@@ -31,6 +31,8 @@ struct SwitchableWindow: Equatable {
     let title: String
     /// In the window server's coordinates (origin top-left).
     let bounds: CGRect
+    /// Minimized into the Dock, or belonging to a hidden app: listed, but not on screen.
+    var isOffScreen = false
 }
 
 enum WindowCatalog {
@@ -55,6 +57,31 @@ enum WindowCatalog {
                                     title: entry[kCGWindowName as String] as? String ?? "",
                                     bounds: bounds)
         }
+    }
+
+    /// One app's windows for its Dock preview: what is on screen on this Space (front to
+    /// back), then the ones the screen does not show because they are minimized or the app
+    /// is hidden. Any other window accessibility lists but the screen does not show is not
+    /// one to offer: Finder's desktop is one, and it would have been a "minimized" tile. Pure.
+    static func appWindows(onScreen: [SwitchableWindow], accessibility: [AXWindowInfo],
+                           pid: pid_t, appName: String, appHidden: Bool = false) -> [SwitchableWindow] {
+        let shown = Set(onScreen.map(\.id))
+        let rest = accessibility.compactMap { w -> SwitchableWindow? in
+            guard w.id != 0, !shown.contains(w.id), w.minimized || appHidden,
+                  w.frame.width >= minSide, w.frame.height >= minSide else { return nil }
+            return SwitchableWindow(id: w.id, pid: pid, appName: appName, title: w.title,
+                                    bounds: w.frame, isOffScreen: true)
+        }
+        return onScreen.filter { $0.pid == pid } + rest
+    }
+
+    static func windows(of app: NSRunningApplication) -> [SwitchableWindow] {
+        let info = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements],
+                                              kCGNullWindowID) as? [[String: Any]] ?? []
+        let pid = app.processIdentifier
+        return appWindows(onScreen: switchable(windowInfo: info, regularPIDs: [pid]),
+                          accessibility: WindowActivator.accessibilityWindows(of: pid),
+                          pid: pid, appName: app.localizedName ?? "", appHidden: app.isHidden)
     }
 
     static func current() -> [SwitchableWindow] {
@@ -100,7 +127,44 @@ enum WindowThumbnails {
     }
 }
 
-/// Bring one particular window to the front, app and all.
+/// The last preview of every window, kept for whoever shows windows next (the switcher, the
+/// Dock previews), so a tile opens on a picture rather than an icon and is refreshed in place.
+/// A minimized window cannot be captured, so its last picture from when it was on screen is
+/// the only one there is. Main thread only.
+final class WindowPreviews {
+    static let shared = WindowPreviews()
+    static let maxSide: CGFloat = 220
+
+    private var images: [CGWindowID: CGImage] = [:]
+
+    func image(for id: CGWindowID) -> CGImage? { images[id] }
+
+    /// Capture `ids` again; `each` gets every fresh picture as it arrives.
+    func refresh(_ ids: [CGWindowID], each: ((CGWindowID, CGImage) -> Void)? = nil) {
+        WindowThumbnails.capture(ids, maxSide: Self.maxSide) { [weak self] id, image in
+            self?.images[id] = image
+            each?(id, image)
+        }
+    }
+
+    /// Drop pictures of windows that no longer exist anywhere (on any Space, minimized or not).
+    func pruneClosed() {
+        let all = CGWindowListCopyWindowInfo([.optionAll], kCGNullWindowID) as? [[String: Any]] ?? []
+        let alive = Set(all.compactMap { ($0[kCGWindowNumber as String] as? Int).map { CGWindowID($0) } })
+        images = images.filter { alive.contains($0.key) }
+    }
+}
+
+/// What accessibility says about one window of an app.
+struct AXWindowInfo: Equatable {
+    let id: CGWindowID
+    let title: String
+    /// Top-left origin, as the window server's coordinates.
+    let frame: CGRect
+    var minimized = false
+}
+
+/// Bring one particular window to the front, app and all; or close it.
 enum WindowActivator {
 
     private typealias GetWindow = @convention(c) (AXUIElement, UnsafeMutablePointer<CGWindowID>) -> AXError
@@ -116,11 +180,18 @@ enum WindowActivator {
         "_SLPSSetFrontProcessWithOptions").map { unsafeBitCast($0, to: SetFront.self) }
 
     static func bringForward(_ window: SwitchableWindow) {
+        let app = NSRunningApplication(processIdentifier: window.pid)
+        if app?.isHidden == true { app?.unhide() }
+        let element = axWindow(window)
+        // A minimized window has to be back on screen before it can be brought forward.
+        if let element, window.isOffScreen {
+            AXUIElementSetAttributeValue(element, kAXMinimizedAttribute as CFString, kCFBooleanFalse)
+        }
         if !frontViaSkyLight(window) {
             NSRunningApplication(processIdentifier: window.pid)?.activate(options: [])
         }
         // Within the app, the chosen window over its siblings.
-        guard let element = axWindow(window) else { return }
+        guard let element else { return }
         AXUIElementPerformAction(element, kAXRaiseAction as CFString)
         AXUIElementSetAttributeValue(element, kAXMainAttribute as CFString, kCFBooleanTrue)
     }
@@ -132,6 +203,50 @@ enum WindowActivator {
             guard let p = raw.baseAddress, getPSN(window.pid, p) == 0 else { return false }
             // 0x200: user-generated, the mode a click on the window would use.
             return setFront(p, window.id, 0x200) == 0
+        }
+    }
+
+    /// Press the window's own close button, as a click on it would: the app gets to ask
+    /// about unsaved changes. False when the window has no close button to press.
+    @discardableResult
+    static func close(_ window: SwitchableWindow) -> Bool {
+        guard let element = axWindow(window) else { return false }
+        var button: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, kAXCloseButtonAttribute as CFString, &button) == .success,
+              let button else { return false }
+        return AXUIElementPerformAction(button as! AXUIElement, kAXPressAction as CFString) == .success
+    }
+
+    /// Does the window have a close button to press? A dialog (TextEdit's Open panel, say) has
+    /// none, and an ✕ on its tile would do nothing.
+    static func canClose(_ window: SwitchableWindow) -> Bool {
+        guard let element = axWindow(window) else { return false }
+        var button: CFTypeRef?
+        return AXUIElementCopyAttributeValue(element, kAXCloseButtonAttribute as CFString, &button) == .success
+            && button != nil
+    }
+
+    /// Every window accessibility lists for `pid`, minimized ones included.
+    static func accessibilityWindows(of pid: pid_t) -> [AXWindowInfo] {
+        guard let getWindow else { return [] }
+        let app = AXUIElementCreateApplication(pid)
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(app, kAXWindowsAttribute as CFString, &value) == .success,
+              let windows = value as? [AXUIElement] else { return [] }
+        return windows.map { element in
+            var id: CGWindowID = 0
+            _ = getWindow(element, &id)
+            var title: CFTypeRef?, position: CFTypeRef?, size: CFTypeRef?
+            AXUIElementCopyAttributeValue(element, kAXTitleAttribute as CFString, &title)
+            AXUIElementCopyAttributeValue(element, kAXPositionAttribute as CFString, &position)
+            AXUIElementCopyAttributeValue(element, kAXSizeAttribute as CFString, &size)
+            var origin = CGPoint.zero, extent = CGSize.zero
+            if let position { AXValueGetValue(position as! AXValue, .cgPoint, &origin) }
+            if let size { AXValueGetValue(size as! AXValue, .cgSize, &extent) }
+            var minimized: CFTypeRef?
+            AXUIElementCopyAttributeValue(element, kAXMinimizedAttribute as CFString, &minimized)
+            return AXWindowInfo(id: id, title: title as? String ?? "", frame: CGRect(origin: origin, size: extent),
+                                minimized: minimized as? Bool ?? false)
         }
     }
 
@@ -190,9 +305,10 @@ struct SwitcherSelection: Equatable {
 
 final class WindowSwitcher {
 
-    /// How long Command must be held after Tab before the panel appears. A quicker
-    /// release switches without ever drawing it, as the system switcher does.
-    static let showDelay: TimeInterval = 0.12
+    /// How long Command must be held after Tab before the panel appears. 10 ms on request
+    /// (was 120): the panel should be there at once, and a tap quick enough to beat it only
+    /// shows it for a moment while switching to the previous window.
+    static let showDelay: TimeInterval = 0.01
 
     static let tab: Int64 = 48, escape: Int64 = 53, left: Int64 = 123, right: Int64 = 124
 
@@ -205,9 +321,7 @@ final class WindowSwitcher {
 
     private(set) var isActive = false
     private var windows: [SwitchableWindow] = []
-    /// The last preview of every window, so a tile opens on a picture rather than an icon
-    /// and is refreshed in place. Main thread only.
-    private var thumbnails: [CGWindowID: CGImage] = [:]
+    private let previews = WindowPreviews.shared
     private var lastPrewarm = Date.distantPast
     private var activationToken: NSObjectProtocol?
     private var selection = SwitcherSelection()
@@ -248,12 +362,8 @@ final class WindowSwitcher {
     private func prewarm() {
         guard isRunning, !isActive, Date().timeIntervalSince(lastPrewarm) >= Self.prewarmInterval else { return }
         lastPrewarm = Date()
-        let current = WindowCatalog.current()
-        let ids = Set(current.map(\.id))
-        thumbnails = thumbnails.filter { ids.contains($0.key) }
-        WindowThumbnails.capture(current.map(\.id), maxSide: SwitcherPanel.thumbnailSide) { [weak self] id, image in
-            self?.thumbnails[id] = image
-        }
+        previews.pruneClosed()
+        previews.refresh(WindowCatalog.current().map(\.id))
     }
 
     /// Start or stop to match the setting. While the setting is on but Accessibility has
@@ -363,11 +473,10 @@ final class WindowSwitcher {
         // Just after the tap returns, not inside it: keys queue behind a slow tap.
         DispatchQueue.main.async { [weak self] in
             guard let self, self.isActive else { return }
-            self.panel.prepare(self.windows, selected: self.selection.index, thumbnails: self.thumbnails)
-            WindowThumbnails.capture(self.windows.map(\.id), maxSide: SwitcherPanel.thumbnailSide) { [weak self] id, image in
-                guard let self else { return }
-                self.thumbnails[id] = image
-                if self.isActive { self.panel.setThumbnail(image, for: id) }
+            self.panel.prepare(self.windows, selected: self.selection.index, previews: self.previews)
+            self.previews.refresh(self.windows.map(\.id)) { [weak self] id, image in
+                guard let self, self.isActive else { return }
+                self.panel.setThumbnail(image, for: id)
             }
         }
         showTimer?.invalidate()
@@ -409,7 +518,6 @@ private func switcherTapCallback(proxy: CGEventTapProxy, type: CGEventType, even
 
 final class SwitcherPanel {
 
-    static let thumbnailSide: CGFloat = 220
     static let tileWidth: CGFloat = 240
     static let tileHeight: CGFloat = 190
     static let spacing: CGFloat = 12
@@ -439,7 +547,7 @@ final class SwitcherPanel {
     }
 
     /// Lay the panel out, off screen until `reveal`.
-    func prepare(_ windows: [SwitchableWindow], selected: Int?, thumbnails: [CGWindowID: CGImage]) {
+    func prepare(_ windows: [SwitchableWindow], selected: Int?, previews: WindowPreviews) {
         let mouse = NSEvent.mouseLocation
         guard let screen = NSScreen.screens.first(where: { $0.frame.contains(mouse) }) ?? NSScreen.main
         else { return }
@@ -459,8 +567,8 @@ final class SwitcherPanel {
             let frame = NSRect(x: Self.padding + CGFloat(column) * (tileW + gap),
                                y: size.height - Self.padding - CGFloat(row + 1) * tileH - CGFloat(row) * gap,
                                width: tileW, height: tileH)
-            let tile = SwitcherTile(frame: frame, window: w, icon: Self.icon(for: w.pid))
-            if let image = thumbnails[w.id] { tile.setThumbnail(image) }
+            let tile = SwitcherTile(frame: frame, window: w, icon: Self.appIcon(for: w.pid))
+            if let image = previews.image(for: w.id) { tile.setThumbnail(image) }
             tile.onClick = { [weak self] in self?.onClick?(i) }
             content.addSubview(tile)
             return tile
@@ -479,7 +587,7 @@ final class SwitcherPanel {
     /// App icons, kept: asking a running app for its icon each time the panel opens was part
     /// of the cost of opening it.
     private static var icons: [pid_t: NSImage] = [:]
-    private static func icon(for pid: pid_t) -> NSImage? {
+    static func appIcon(for pid: pid_t) -> NSImage? {
         if let hit = icons[pid] { return hit }
         let icon = NSRunningApplication(processIdentifier: pid)?.icon
         icons[pid] = icon

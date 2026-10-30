@@ -39,7 +39,7 @@ final class BetaFeaturesWindowController: NSWindowController {
     private let stack = NSStackView()
     private var activeToken: NSObjectProtocol?
 
-    init(features: [BetaFeature] = [BackdropFeature(), WindowSwitcherFeature()]) {
+    init(features: [BetaFeature] = [BackdropFeature(), WindowSwitcherFeature(), DockPreviewFeature()]) {
         self.features = features
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: Self.contentWidth, height: 200),
                               styleMask: [.titled, .closable], backing: .buffered, defer: false)
@@ -356,6 +356,73 @@ final class WindowSwitcherFeature: BetaFeature {
         previewNote.stringValue = screenRecording()
             ? "Previews use the Screen Recording permission the menu bar backdrop already has."
             : "Without Screen Recording permission each window shows its app's icon instead of a preview."
+        layoutChanged?()
+    }
+}
+
+// ── Dock Previews ───────────────────────────────────────────────────────────
+
+/// Resting on a Dock icon shows that app's windows (see `DockPreviews`).
+final class DockPreviewFeature: BetaFeature {
+
+    let title = "Dock Previews"
+    let summary = "Rest the pointer on a running app's Dock icon to see its windows, minimized ones "
+                + "included. Click one to bring it forward, or close it with its ✕."
+    var layoutChanged: (() -> Void)?
+
+    private let settings: Settings
+    private let accessibility: () -> Bool
+    private var token: AnyObject?
+
+    // Internal, so the tests can drive them as a click would.
+    let enableCheckbox = NSButton(checkboxWithTitle: "Show window previews on the Dock", target: nil, action: nil)
+    let accessStatus = BetaFeaturesWindowController.wrapping("")
+    let accessButton = NSButton(title: "Open Accessibility Settings…", target: nil, action: nil)
+
+    init(settings: Settings = .shared,
+         accessibilityAllowed: @escaping () -> Bool = { AccessibilityAccess.isTrusted }) {
+        self.settings = settings
+        self.accessibility = accessibilityAllowed
+    }
+
+    func makeView() -> NSView {
+        enableCheckbox.target = self
+        enableCheckbox.action = #selector(toggled)
+        accessButton.target = self
+        accessButton.action = #selector(openAccessibility)
+        accessButton.bezelStyle = .rounded
+        accessButton.controlSize = .small
+        let column = NSStackView(views: [enableCheckbox, accessStatus, accessButton])
+        column.orientation = .vertical
+        column.alignment = .leading
+        column.spacing = 8
+        token = settings.observe(Settings.Key.dockPreviewsEnabled) { [weak self] in self?.refresh() }
+        refresh()
+        return column
+    }
+
+    @objc private func toggled() {
+        let on = enableCheckbox.state == .on
+        if on && !accessibility() { AccessibilityAccess.request() }
+        settings.dockPreviewsEnabled = on
+    }
+
+    @objc private func openAccessibility() {
+        AccessibilityAccess.openSettings()
+    }
+
+    func refresh() {
+        let on = settings.dockPreviewsEnabled
+        let allowed = accessibility()
+        enableCheckbox.state = on ? .on : .off
+        accessStatus.isHidden = !on
+        accessButton.isHidden = !on || allowed
+        accessStatus.stringValue = allowed
+            ? "Accessibility: allowed. Anode is told which Dock icon the pointer is on; it watches the "
+              + "pointer only while a preview is open."
+            : "Accessibility: not allowed yet. Allow Anode in Accessibility and previews start within a "
+              + "couple of seconds."
+        accessStatus.textColor = allowed ? .secondaryLabelColor : .systemOrange
         layoutChanged?()
     }
 }

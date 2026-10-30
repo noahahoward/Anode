@@ -39,6 +39,7 @@ public final class Settings {
         public static let menuBarWidgetsEnabled = "menuBarWidgetsEnabled"
         public static let menuBarBackdropShowOnDesktop = "menuBarBackdropShowOnDesktop"
         public static let windowSwitcherEnabled = "windowSwitcherEnabled"
+        public static let dockPreviewsEnabled = "dockPreviewsEnabled"
         public static let fanControlEnabled = "fanControlEnabled"
         public static let fanDisclosureSeen = "fanDisclosureSeen"
         public static let fanSyncEnabled = "fanSyncEnabled"
@@ -94,6 +95,8 @@ public final class Settings {
         static let menuBarBackdropShowOnDesktop = true
         /// OFF: a beta feature that takes over a system shortcut is something the user turns on.
         static let windowSwitcherEnabled = false
+        /// OFF, like every beta feature that watches the Dock or the keyboard.
+        static let dockPreviewsEnabled = false
         /// OFF, and it is the one setting in this file that must stay that way.
         ///
         /// Turning it on is a decision to let a root process on this machine
@@ -168,6 +171,7 @@ public final class Settings {
             autoUpdateEnabled, autoUpdatePromptSeen: Bool
         var menuBarBackdropShowOnDesktop: Bool
         var windowSwitcherEnabled: Bool
+        var dockPreviewsEnabled: Bool
         var menuBarBackdropMode: MenuBarBackdropMode
         var menuBarBackdropBlur: Double
         var fanDisclosureSeen: Bool
@@ -343,6 +347,12 @@ public final class Settings {
         get { Settings.readBool(defaults, Key.windowSwitcherEnabled, Default.windowSwitcherEnabled) }
         set { writeBool(Key.windowSwitcherEnabled, \.windowSwitcherEnabled, newValue,
                         Default.windowSwitcherEnabled) }
+    }
+
+    /// Whether resting the pointer on a Dock icon shows that app's windows (Beta Features).
+    public var dockPreviewsEnabled: Bool {
+        get { Settings.readBool(defaults, Key.dockPreviewsEnabled, Default.dockPreviewsEnabled) }
+        set { writeBool(Key.dockPreviewsEnabled, \.dockPreviewsEnabled, newValue, Default.dockPreviewsEnabled) }
     }
 
     public var menuBarWidgetsEnabled: Bool {
@@ -679,6 +689,7 @@ public final class Settings {
             notify(Key.menuBarBackdropShowOnDesktop)
         }
         if old.windowSwitcherEnabled != now.windowSwitcherEnabled { notify(Key.windowSwitcherEnabled) }
+        if old.dockPreviewsEnabled != now.dockPreviewsEnabled { notify(Key.dockPreviewsEnabled) }
         if old.menuBarWidgetsEnabled != now.menuBarWidgetsEnabled {
             notify(Key.menuBarWidgetsEnabled)
         }
@@ -799,6 +810,7 @@ public final class Settings {
                menuBarBackdropShowOnDesktop: readBool(d, Key.menuBarBackdropShowOnDesktop,
                                                       Default.menuBarBackdropShowOnDesktop),
                windowSwitcherEnabled: readBool(d, Key.windowSwitcherEnabled, Default.windowSwitcherEnabled),
+               dockPreviewsEnabled: readBool(d, Key.dockPreviewsEnabled, Default.dockPreviewsEnabled),
                menuBarBackdropMode: d.string(forKey: storageKey(Key.menuBarBackdropMode))
                    .flatMap(MenuBarBackdropMode.init(rawValue:)) ?? Default.menuBarBackdropMode,
                menuBarBackdropBlur: readDouble(d, Key.menuBarBackdropBlur,
