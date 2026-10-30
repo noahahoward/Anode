@@ -39,6 +39,7 @@ public final class Settings {
         public static let menuBarWidgetsEnabled = "menuBarWidgetsEnabled"
         public static let menuBarBackdropShowOnDesktop = "menuBarBackdropShowOnDesktop"
         public static let windowSwitcherEnabled = "windowSwitcherEnabled"
+        public static let desktopSwitcherEnabled = "desktopSwitcherEnabled"
         public static let dockPreviewsEnabled = "dockPreviewsEnabled"
         public static let dockPreviewsHoldDock = "dockPreviewsHoldDock"
         public static let dockRaisesTileGroup = "dockRaisesTileGroup"
@@ -97,6 +98,8 @@ public final class Settings {
         static let menuBarBackdropShowOnDesktop = true
         /// OFF: a beta feature that takes over a system shortcut is something the user turns on.
         static let windowSwitcherEnabled = false
+        /// OFF: it takes over Option-Tab, so the user turns it on.
+        static let desktopSwitcherEnabled = false
         /// OFF, like every beta feature that watches the Dock or the keyboard.
         static let dockPreviewsEnabled = false
         /// ON: with an auto-hiding Dock, the preview is otherwise left floating over nothing.
@@ -177,6 +180,7 @@ public final class Settings {
             autoUpdateEnabled, autoUpdatePromptSeen: Bool
         var menuBarBackdropShowOnDesktop: Bool
         var windowSwitcherEnabled: Bool
+        var desktopSwitcherEnabled: Bool
         var dockPreviewsEnabled: Bool
         var dockPreviewsHoldDock: Bool
         var dockRaisesTileGroup: Bool
@@ -355,6 +359,12 @@ public final class Settings {
         get { Settings.readBool(defaults, Key.windowSwitcherEnabled, Default.windowSwitcherEnabled) }
         set { writeBool(Key.windowSwitcherEnabled, \.windowSwitcherEnabled, newValue,
                         Default.windowSwitcherEnabled) }
+    }
+
+    /// Whether Anode's desktop (Spaces) switcher answers Option-Tab (Beta Features).
+    public var desktopSwitcherEnabled: Bool {
+        get { Settings.readBool(defaults, Key.desktopSwitcherEnabled, Default.desktopSwitcherEnabled) }
+        set { writeBool(Key.desktopSwitcherEnabled, \.desktopSwitcherEnabled, newValue, Default.desktopSwitcherEnabled) }
     }
 
     /// Whether resting the pointer on a Dock icon shows that app's windows (Beta Features).
@@ -709,6 +719,7 @@ public final class Settings {
             notify(Key.menuBarBackdropShowOnDesktop)
         }
         if old.windowSwitcherEnabled != now.windowSwitcherEnabled { notify(Key.windowSwitcherEnabled) }
+        if old.desktopSwitcherEnabled != now.desktopSwitcherEnabled { notify(Key.desktopSwitcherEnabled) }
         if old.dockPreviewsEnabled != now.dockPreviewsEnabled { notify(Key.dockPreviewsEnabled) }
         if old.dockPreviewsHoldDock != now.dockPreviewsHoldDock { notify(Key.dockPreviewsHoldDock) }
         if old.dockRaisesTileGroup != now.dockRaisesTileGroup { notify(Key.dockRaisesTileGroup) }
@@ -832,6 +843,7 @@ public final class Settings {
                menuBarBackdropShowOnDesktop: readBool(d, Key.menuBarBackdropShowOnDesktop,
                                                       Default.menuBarBackdropShowOnDesktop),
                windowSwitcherEnabled: readBool(d, Key.windowSwitcherEnabled, Default.windowSwitcherEnabled),
+               desktopSwitcherEnabled: readBool(d, Key.desktopSwitcherEnabled, Default.desktopSwitcherEnabled),
                dockPreviewsEnabled: readBool(d, Key.dockPreviewsEnabled, Default.dockPreviewsEnabled),
                dockPreviewsHoldDock: readBool(d, Key.dockPreviewsHoldDock, Default.dockPreviewsHoldDock),
                dockRaisesTileGroup: readBool(d, Key.dockRaisesTileGroup, Default.dockRaisesTileGroup),

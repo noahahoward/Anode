@@ -39,7 +39,8 @@ final class BetaFeaturesWindowController: NSWindowController {
     private let stack = NSStackView()
     private var activeToken: NSObjectProtocol?
 
-    init(features: [BetaFeature] = [BackdropFeature(), WindowSwitcherFeature(), DockPreviewFeature()]) {
+    init(features: [BetaFeature] = [BackdropFeature(), WindowSwitcherFeature(), DesktopSwitcherFeature(),
+                                    DockPreviewFeature()]) {
         self.features = features
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: Self.contentWidth, height: 200),
                               styleMask: [.titled, .closable], backing: .buffered, defer: false)
@@ -453,6 +454,76 @@ final class DockPreviewFeature: BetaFeature {
             : "Accessibility: not allowed yet. Allow Anode in Accessibility and previews start within a "
               + "couple of seconds."
         accessStatus.textColor = allowed ? .secondaryLabelColor : .systemOrange
+        layoutChanged?()
+    }
+}
+
+// ── Desktop Switcher ────────────────────────────────────────────────────────
+
+/// Option-Tab through desktops (see `DesktopSwitcher`): one switch and what it needs from macOS.
+final class DesktopSwitcherFeature: BetaFeature {
+
+    let title = "Desktop Switcher"
+    let summary = "Option-Tab opens a row of your desktops: hold ⌥ and press Tab to move (⇧ to go back, "
+                + "arrows and the number keys 1–9 work too), let go of ⌥ to go there, Esc to cancel. "
+                + "Jumps straight to any desktop, with none of the swipe's slide."
+    var layoutChanged: (() -> Void)?
+
+    private let settings: Settings
+    private let accessibility: () -> Bool
+    private var token: AnyObject?
+
+    // Internal, so the tests can drive them as a click would.
+    let enableCheckbox = NSButton(checkboxWithTitle: "Use Option-Tab to switch desktops", target: nil, action: nil)
+    let accessStatus = BetaFeaturesWindowController.wrapping("")
+    let accessButton = NSButton(title: "Open Accessibility Settings…", target: nil, action: nil)
+
+    init(settings: Settings = .shared,
+         accessibilityAllowed: @escaping () -> Bool = { AccessibilityAccess.isTrusted }) {
+        self.settings = settings
+        self.accessibility = accessibilityAllowed
+    }
+
+    func makeView() -> NSView {
+        enableCheckbox.target = self
+        enableCheckbox.action = #selector(toggled)
+        accessButton.target = self
+        accessButton.action = #selector(openAccessibility)
+        accessButton.bezelStyle = .rounded
+        accessButton.controlSize = .small
+        let column = NSStackView(views: [enableCheckbox, accessStatus, accessButton])
+        column.orientation = .vertical
+        column.alignment = .leading
+        column.spacing = 8
+        token = settings.observe(Settings.Key.desktopSwitcherEnabled) { [weak self] in self?.refresh() }
+        refresh()
+        return column
+    }
+
+    @objc private func toggled() {
+        let on = enableCheckbox.state == .on
+        if on && !accessibility() { AccessibilityAccess.request() }
+        settings.desktopSwitcherEnabled = on
+    }
+
+    @objc private func openAccessibility() {
+        AccessibilityAccess.openSettings()
+    }
+
+    func refresh() {
+        let on = settings.desktopSwitcherEnabled
+        let allowed = accessibility()
+        enableCheckbox.state = on ? .on : .off
+        accessStatus.isHidden = !on
+        accessButton.isHidden = !on || allowed
+        accessStatus.stringValue = !SpaceCatalog.isAvailable
+            ? "This version of macOS does not offer what the desktop switcher needs, so Option-Tab is left alone."
+            : allowed
+                ? "Accessibility: allowed. Only Option-Tab, and Tab, the arrows, the number keys and Esc while "
+                  + "it is open, are taken; with a single desktop Option-Tab is left alone."
+                : "Accessibility: not allowed yet, so Option-Tab does nothing. Allow Anode in Accessibility "
+                  + "and it starts within a couple of seconds."
+        accessStatus.textColor = allowed && SpaceCatalog.isAvailable ? .secondaryLabelColor : .systemOrange
         layoutChanged?()
     }
 }
