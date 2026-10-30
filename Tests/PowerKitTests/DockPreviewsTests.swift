@@ -92,6 +92,35 @@ final class DockPreviewsTests: XCTestCase {
         XCTAssertFalse(DockPreviews.keepsPanelOpen(pointer: CGPoint(x: 700, y: 1120), icon: icon, panel: nil, slack: 4))
     }
 
+    // ── Holding the Dock ──
+
+    private let holdIcon = CGRect(x: 400, y: 1064, width: 88, height: 100)
+    private let holdPanel = CGRect(x: 250, y: 900, width: 400, height: 150)
+
+    /// The point of the fix: a still pointer on the icon, or a click there, never holds the Dock.
+    func testAStillPointerOnTheIconDoesNotHoldTheDock() {
+        for y in [1070, 1100, 1150] as [CGFloat] {
+            XCTAssertFalse(DockPreviews.wantsDockHeld(pointer: CGPoint(x: 444, y: y), icon: holdIcon, panel: holdPanel,
+                                                      rushingUp: false, slack: 4))
+        }
+    }
+
+    func testRushingUpFromTheTopHalfOfTheIconHoldsItButNotFromTheBottomHalf() {
+        XCTAssertTrue(DockPreviews.wantsDockHeld(pointer: CGPoint(x: 444, y: 1080), icon: holdIcon, panel: holdPanel,
+                                                 rushingUp: true, slack: 4))
+        XCTAssertFalse(DockPreviews.wantsDockHeld(pointer: CGPoint(x: 444, y: 1150), icon: holdIcon, panel: holdPanel,
+                                                  rushingUp: true, slack: 4), "bottom half: a click zone")
+    }
+
+    func testThePathAndThePanelHoldItWhetherOrNotRushing() {
+        XCTAssertTrue(DockPreviews.wantsDockHeld(pointer: CGPoint(x: 444, y: 1058), icon: holdIcon, panel: holdPanel,
+                                                 rushingUp: false, slack: 4), "the gap above the icon")
+        XCTAssertTrue(DockPreviews.wantsDockHeld(pointer: CGPoint(x: 300, y: 950), icon: holdIcon, panel: holdPanel,
+                                                 rushingUp: false, slack: 4), "in the panel")
+        XCTAssertFalse(DockPreviews.wantsDockHeld(pointer: CGPoint(x: 900, y: 600), icon: holdIcon, panel: holdPanel,
+                                                  rushingUp: true, slack: 4), "away from all of it")
+    }
+
     // ── Menu aim (window-server coordinates) ──
 
     /// Panel above a bottom Dock: 945…1257 wide, bottom edge at y 1054; pointer left the icon at

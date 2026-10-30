@@ -315,6 +315,17 @@ final class DockPreviews {
     /// its way to the panel.
     static let aimWindow: TimeInterval = 0.5
     private var clickMonitor: Any?
+    /// Every pointer move while a panel is open, so the Dock is held the instant the pointer heads
+    /// for the panel instead of on the next tick of the timer: a fast flick could cover the gap
+    /// and let the Dock start sliding away first.
+    private var moveMonitor: Any?
+    private var lastPointer: CGPoint?
+    /// The hold started from the icon by a rush for the panel is kept this long, so the timer does
+    /// not take it back in the instant before the pointer is clear of the icon.
+    private var rushHoldUntil = Date.distantPast
+    static let rushHoldSeconds: TimeInterval = 0.4
+    /// How far up, in points between two pointer events, counts as rushing for the panel.
+    static let rushPoints: CGFloat = 8
     /// Every left click while attached, to see Dock icon clicks (`iconClicked`). A global
     /// monitor only observes; the click goes on to the Dock untouched.
     private var iconClickMonitor: Any?
@@ -549,6 +560,10 @@ final class DockPreviews {
         trackTimer = nil
         if let clickMonitor { NSEvent.removeMonitor(clickMonitor) }
         clickMonitor = nil
+        if let moveMonitor { NSEvent.removeMonitor(moveMonitor) }
+        moveMonitor = nil
+        lastPointer = nil
+        rushHoldUntil = .distantPast
         outsideSince = nil
         formerOutline = nil
         lastOnIcon = nil
@@ -572,6 +587,40 @@ final class DockPreviews {
             clickMonitor = NSEvent.addGlobalMonitorForEvents(
                 matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown]) { [weak self] _ in self?.hide() }
         }
+        if moveMonitor == nil {
+            moveMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.mouseMoved, .leftMouseDragged]) { [weak self] _ in
+                self?.pointerMoved()
+            }
+        }
+    }
+
+    private func pointerMoved() {
+        guard let shown else { return }
+        let pointer = Self.pointerInWindowServerCoordinates()
+        let rushing = lastPointer.map { $0.y - pointer.y >= Self.rushPoints } ?? false
+        lastPointer = pointer
+        guard settings.dockPreviewsHoldDock else { return }
+        if Self.wantsDockHeld(pointer: pointer, icon: shown.icon, panel: panel.frameInWindowServer,
+                              rushingUp: rushing, slack: Self.slack) {
+            if shown.icon.insetBy(dx: -Self.slack, dy: -Self.slack).contains(pointer) {
+                rushHoldUntil = Date().addingTimeInterval(Self.rushHoldSeconds)
+            }
+            dockHold.hold()
+        }
+    }
+
+    /// Should the Dock be held up with the pointer here? Yes in the panel and on the way to it, and
+    /// — only while the pointer is rushing upward, which a click is not — from the top half of the
+    /// icon, so a fast flick cannot get past before the hold lands. Never on the lower part of the
+    /// icon, or on it while it is still: a click there must happen with auto-hide ON (with it off,
+    /// macOS cut the clicked app's window short). Window-server coordinates (y down). Pure, for tests.
+    static func wantsDockHeld(pointer: CGPoint, icon: CGRect, panel: CGRect?, rushingUp: Bool,
+                              slack: CGFloat) -> Bool {
+        let iconZone = icon.insetBy(dx: -slack, dy: -slack)
+        if iconZone.contains(pointer) {
+            return rushingUp && pointer.y < icon.minY + icon.height / 2
+        }
+        return keepsPanelOpen(pointer: pointer, icon: icon, panel: panel, slack: slack)
     }
 
     private func track() {
@@ -595,7 +644,7 @@ final class DockPreviews {
         // the moment it is back on the icon.
         if settings.dockPreviewsHoldDock {
             let onIcon = shown.icon.insetBy(dx: -Self.slack, dy: -Self.slack).contains(pointer)
-            if inside && !onIcon { dockHold.hold() } else if onIcon { dockHold.releaseNow() }
+            if inside && !onIcon { dockHold.hold() } else if onIcon && Date() >= rushHoldUntil { dockHold.releaseNow() }
         }
         if inside {
             outsideSince = nil
