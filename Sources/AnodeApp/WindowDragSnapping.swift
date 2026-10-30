@@ -52,19 +52,26 @@ enum SnapZones {
         var corner: CGFloat = 64
         /// How much further out an active zone reaches, so it does not flicker at its boundary.
         var hysteresis: CGFloat = 18
-        /// How long the pointer rests at the top before it means "maximize".
-        var topDwell: TimeInterval = 0.25
+        /// How long the pointer rests at the top before it means "maximize". Short: the zone is the whole
+        /// menu bar, and this only keeps a pointer passing through it from flashing the outline.
+        var topDwell: TimeInterval = 0.1
     }
 
     /// The zone the pointer is in, or nil. `point` and the screen `frames` are in the window server's
     /// coordinates (y down). `dock` is the edge the Dock is on; `previous` is the zone that was active
     /// (for hysteresis); `topDwelt` says the pointer has rested at the top long enough. Pure, for tests.
+    ///
+    /// `topDepths` is how deep the top zone is on each screen, in step with `frames`: the height of its
+    /// menu bar, so maximizing engages as soon as the pointer reaches the menu bar rather than only in its
+    /// top few points. nil (or a screen with no menu bar, which reads 0) uses the ordinary edge depth.
     static func zone(at point: CGPoint, screens frames: [CGRect], dock: DockEdge, previous: SnapZone?,
-                     topDwelt: Bool, config: Config = Config()) -> SnapZone? {
+                     topDwelt: Bool, config: Config = Config(), topDepths: [CGFloat]? = nil) -> SnapZone? {
         // The screen the pointer is on; a point on the far edge counts (CGRect.contains leaves it out).
-        guard let f = frames.first(where: { $0.insetBy(dx: -0.5, dy: -0.5).contains(point) }) else { return nil }
+        guard let at = frames.firstIndex(where: { $0.insetBy(dx: -0.5, dy: -0.5).contains(point) }) else { return nil }
+        let f = frames[at]
         let grow = previous == nil ? 0 : config.hysteresis
         let t = config.edge + grow, c = config.corner + grow
+        let topT = max(config.edge, topDepths.flatMap { $0.indices.contains(at) ? $0[at] : nil } ?? 0) + grow
 
         // An edge another display touches (over the pointer's span) is a seam, not an edge.
         func shared(_ side: Int) -> Bool {
@@ -91,7 +98,7 @@ enum SnapZones {
         // Edges, minus any the Dock owns.
         if point.x - f.minX < t && leftOK && dock != .left { return .left }
         if f.maxX - point.x < t && rightOK && dock != .right { return .right }
-        if point.y - f.minY < t && topOK { return topDwelt || previous == .top ? .top : nil }
+        if point.y - f.minY < topT && topOK { return topDwelt || previous == .top ? .top : nil }
         if f.maxY - point.y < t && bottomOK && dock != .bottom {
             let share = (point.x - f.minX) / f.width
             return share < 1.0 / 3 ? .bottomFirst : (share < 2.0 / 3 ? .bottomCenter : .bottomLast)
@@ -100,9 +107,16 @@ enum SnapZones {
     }
 
     /// Is the pointer in the top zone, whatever the dwell? The controller starts its dwell timer on this.
-    static func inTopEdge(_ point: CGPoint, screens frames: [CGRect], config: Config = Config()) -> Bool {
-        guard let f = frames.first(where: { $0.insetBy(dx: -0.5, dy: -0.5).contains(point) }) else { return false }
-        return point.y - f.minY < config.edge
+    static func inTopEdge(_ point: CGPoint, screens frames: [CGRect], config: Config = Config(),
+                          topDepths: [CGFloat]? = nil) -> Bool {
+        guard let at = frames.firstIndex(where: { $0.insetBy(dx: -0.5, dy: -0.5).contains(point) }) else { return false }
+        let depth = max(config.edge, topDepths.flatMap { $0.indices.contains(at) ? $0[at] : nil } ?? 0)
+        return point.y - frames[at].minY < depth
+    }
+
+    /// The menu bar's height on each screen, which is how deep its top zone is.
+    static func menuBarDepths() -> [CGFloat] {
+        NSScreen.screens.map { max(0, $0.frame.maxY - $0.visibleFrame.maxY) }
     }
 
     /// The window a drag started on, restored to the size it had before it was snapped: the same width
@@ -335,13 +349,15 @@ final class WindowDragSnapper {
         }
 
         let screens = Self.screenFrames()
-        if SnapZones.inTopEdge(p, screens: screens, config: config) {
+        let depths = SnapZones.menuBarDepths()
+        if SnapZones.inTopEdge(p, screens: screens, config: config, topDepths: depths) {
             if topSince == nil { topSince = Date() }
         } else {
             topSince = nil
         }
         let dwelt = topSince.map { Date().timeIntervalSince($0) >= config.topDwell } ?? false
-        let found = SnapZones.zone(at: p, screens: screens, dock: DockEdge.current, previous: zone, topDwelt: dwelt, config: config)
+        let found = SnapZones.zone(at: p, screens: screens, dock: DockEdge.current, previous: zone, topDwelt: dwelt,
+                                   config: config, topDepths: depths)
         if found != zone {
             zone = found
             if let found, let target = target(for: found, pointer: p) { footprint.show(target) } else { footprint.hide() }
@@ -363,7 +379,7 @@ final class WindowDragSnapper {
         let screens = Self.screenFrames()
         let dwelt = topSince.map { Date().timeIntervalSince($0) >= config.topDwell } ?? false
         guard let finalZone = SnapZones.zone(at: p, screens: screens, dock: DockEdge.current, previous: zone,
-                                             topDwelt: dwelt, config: config),
+                                             topDwelt: dwelt, config: config, topDepths: SnapZones.menuBarDepths()),
               let target = target(for: finalZone, pointer: p) else { return }
         let original = snappedWindows[id]?.original ?? start.size
         snapper?.placeDragged(finalZone.action, on: window, restoreFrame: start, pointer: p)

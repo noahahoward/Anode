@@ -72,6 +72,42 @@ final class WindowDragSnappingTests: XCTestCase {
         XCTAssertEqual(zone(3075, 400, screens: two, dock: .bottom), .right)
     }
 
+    // ── The top is the whole menu bar ──
+
+    private func top(_ y: CGFloat, depth: CGFloat = 39, previous: SnapZone? = nil, dwelt: Bool = true, x: CGFloat = 900) -> SnapZone? {
+        SnapZones.zone(at: CGPoint(x: x, y: y), screens: [screen], dock: .bottom, previous: previous, topDwelt: dwelt, topDepths: [depth])
+    }
+
+    /// The report: maximizing had to be done in the top 14 points; it should engage in the menu bar.
+    func testTheTopZoneIsAsDeepAsTheMenuBar() {
+        XCTAssertEqual(top(30), .top, "the middle of a 39 pt menu bar")
+        XCTAssertEqual(top(38), .top, "its bottom edge")
+        XCTAssertNil(top(45), "just below the menu bar: not the top zone")
+        XCTAssertNil(zone(900, 30), "with no depth given it is still the 14 pt edge")
+    }
+
+    func testAShallowMenuBarOnAnotherDisplayUsesItsOwnDepth() {
+        XCTAssertEqual(top(20, depth: 24), .top)
+        XCTAssertNil(top(30, depth: 24))
+        XCTAssertEqual(top(3, depth: 0), .top, "a screen with no menu bar keeps the edge depth")
+    }
+
+    func testTheCornersAreStillQuartersInsideTheMenuBar() {
+        XCTAssertEqual(top(30, x: 20), .topLeft)
+        XCTAssertEqual(top(30, x: 1780), .topRight)
+    }
+
+    func testTheMenuBarZoneStaysActiveLikeAnyOther() {
+        XCTAssertEqual(top(50, previous: .top, dwelt: false), .top, "39 + 18 hysteresis")
+        XCTAssertNil(top(70, previous: .top))
+        XCTAssertTrue(SnapZones.inTopEdge(CGPoint(x: 900, y: 30), screens: [screen], topDepths: [39]))
+        XCTAssertFalse(SnapZones.inTopEdge(CGPoint(x: 900, y: 30), screens: [screen]))
+    }
+
+    func testTheRestIsBrief() {
+        XCTAssertEqual(SnapZones.Config().topDwell, 0.1, accuracy: 0.001)
+    }
+
     // ── The top, and sticking ──
 
     func testTheTopWaitsForTheDwell() {
