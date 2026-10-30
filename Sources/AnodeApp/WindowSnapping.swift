@@ -287,20 +287,81 @@ enum DockIntent {
     }
 }
 
+/// A set of global shortcuts, through the system's hot key service (Carbon `RegisterEventHotKey`).
+/// Exclusive: a shortcut another app already owns fails to register, and is reported. Each registrar
+/// has its own signature, so several can listen at once without hearing each other's keys.
+final class HotKeyRegistrar {
+    struct Item {
+        let key: Int
+        let modifiers: Int
+    }
+
+    private let signature: OSType
+    private let handlerBlock: (Int) -> Void
+    private var refs: [EventHotKeyRef?] = []
+    private var handler: EventHandlerRef?
+
+    var isRegistered: Bool { handler != nil }
+
+    /// `signature` is four characters; `onPress` gets the index into the registered `items`.
+    init(signature: OSType, onPress: @escaping (Int) -> Void) {
+        self.signature = signature
+        self.handlerBlock = onPress
+    }
+
+    deinit { unregister() }
+
+    /// Register `items`; returns the indices that could not be (already owned elsewhere).
+    @discardableResult
+    func register(_ items: [Item]) -> [Int] {
+        guard handler == nil else { return [] }
+        var spec = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
+        let status = InstallEventHandler(GetApplicationEventTarget(), { _, event, refcon in
+            guard let event, let refcon else { return OSStatus(eventNotHandledErr) }
+            var id = EventHotKeyID()
+            GetEventParameter(event, EventParamName(kEventParamDirectObject), EventParamType(typeEventHotKeyID), nil,
+                              MemoryLayout<EventHotKeyID>.size, nil, &id)
+            let me = Unmanaged<HotKeyRegistrar>.fromOpaque(refcon).takeUnretainedValue()
+            // Another registrar's key: not ours, let the next handler have it.
+            guard id.signature == me.signature else { return OSStatus(eventNotHandledErr) }
+            let index = Int(id.id) - 1
+            DispatchQueue.main.async { me.handlerBlock(index) }
+            return noErr
+        }, 1, &spec, Unmanaged.passUnretained(self).toOpaque(), &handler)
+        guard status == noErr else { handler = nil; return Array(items.indices) }
+
+        var failed: [Int] = []
+        for (i, item) in items.enumerated() {
+            var ref: EventHotKeyRef?
+            let s = RegisterEventHotKey(UInt32(item.key), UInt32(item.modifiers),
+                                        EventHotKeyID(signature: signature, id: UInt32(i + 1)),
+                                        GetApplicationEventTarget(), 0, &ref)
+            if s == noErr { refs.append(ref) } else { failed.append(i) }
+        }
+        return failed
+    }
+
+    func unregister() {
+        refs.forEach { if let r = $0 { UnregisterEventHotKey(r) } }
+        refs = []
+        if let handler { RemoveEventHandler(handler) }
+        handler = nil
+    }
+}
+
 /// Carries out the actions and owns the hot keys.
 final class WindowSnapper {
 
     private let settings: Settings
     private var settingToken: AnyObject?
-    private var refs: [EventHotKeyRef?] = []
-    private var handler: EventHandlerRef?
-    private var actions: [UInt32: WindowAction] = [:]
+    private lazy var keys = HotKeyRegistrar(signature: 0x414E5352 /* "ANSR" */) { [weak self] index in
+        guard let self, WindowAction.allCases.indices.contains(index) else { return }
+        self.perform(WindowAction.allCases[index])
+    }
     /// The frame a window had before its first action here, for Restore. Keyed by window number.
     private var restoreFrames: [CGWindowID: CGRect] = [:]
     /// What this machine's registration said: shortcuts another app already owns.
     private(set) var unavailable: [WindowAction] = []
-
-    private static let signature: OSType = 0x414E5352   // "ANSR"
 
     init(settings: Settings = .shared) {
         self.settings = settings
@@ -308,50 +369,17 @@ final class WindowSnapper {
         apply()
     }
 
-    deinit { unregister() }
-
-    var isRunning: Bool { handler != nil }
+    var isRunning: Bool { keys.isRegistered }
 
     func apply() {
-        if settings.windowSnapperEnabled { if handler == nil { register() } } else { unregister() }
-    }
-
-    // ── Hot keys ────────────────────────────────────────────────────────────
-
-    private func register() {
-        var spec = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
-        let status = InstallEventHandler(GetApplicationEventTarget(), { _, event, refcon in
-            guard let event, let refcon else { return OSStatus(eventNotHandledErr) }
-            var id = EventHotKeyID()
-            GetEventParameter(event, EventParamName(kEventParamDirectObject), EventParamType(typeEventHotKeyID), nil,
-                              MemoryLayout<EventHotKeyID>.size, nil, &id)
-            Unmanaged<WindowSnapper>.fromOpaque(refcon).takeUnretainedValue().pressed(id.id)
-            return noErr
-        }, 1, &spec, Unmanaged.passUnretained(self).toOpaque(), &handler)
-        guard status == noErr else { handler = nil; return }
-
-        unavailable = []
-        for (i, action) in WindowAction.allCases.enumerated() {
-            let id = UInt32(i + 1)
-            var ref: EventHotKeyRef?
-            let s = RegisterEventHotKey(UInt32(action.shortcut.key), UInt32(action.shortcut.modifiers),
-                                        EventHotKeyID(signature: Self.signature, id: id),
-                                        GetApplicationEventTarget(), 0, &ref)
-            if s == noErr { refs.append(ref); actions[id] = action } else { unavailable.append(action) }
+        if settings.windowSnapperEnabled {
+            guard !keys.isRegistered else { return }
+            let failed = keys.register(WindowAction.allCases.map { .init(key: $0.shortcut.key, modifiers: $0.shortcut.modifiers) })
+            unavailable = failed.map { WindowAction.allCases[$0] }
+        } else {
+            keys.unregister()
+            unavailable = []
         }
-    }
-
-    private func unregister() {
-        refs.forEach { if let r = $0 { UnregisterEventHotKey(r) } }
-        refs = []
-        actions = [:]
-        if let handler { RemoveEventHandler(handler) }
-        handler = nil
-    }
-
-    private func pressed(_ id: UInt32) {
-        guard let action = actions[id] else { return }
-        DispatchQueue.main.async { [weak self] in self?.perform(action) }
     }
 
     // ── Doing it ────────────────────────────────────────────────────────────

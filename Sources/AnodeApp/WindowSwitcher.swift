@@ -315,6 +315,8 @@ enum WindowActivator {
         guard let element else { return }
         AXUIElementPerformAction(element, kAXRaiseAction as CFString)
         AXUIElementSetAttributeValue(element, kAXMainAttribute as CFString, kCFBooleanTrue)
+        // A window brought forward from inside Anode may be a group's: let the group follow.
+        (NSApp.delegate as? AppDelegate)?.windowGroups?.checkFrontSoon()
     }
 
     private static func frontViaSkyLight(_ window: SwitchableWindow) -> Bool {

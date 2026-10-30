@@ -439,7 +439,9 @@ final class DockPreviews {
     static let groupRaiseDelay: TimeInterval = 0.3
 
     private func iconClicked() {
-        guard settings.dockRaisesTileGroup, let hover = currentHover(requirePointer: true) else { return }
+        // With real window groups on, only groups bring windows together: the guess from positions stands down.
+        guard settings.dockRaisesTileGroup, !settings.windowGroupsEnabled,
+              let hover = currentHover(requirePointer: true) else { return }
         DispatchQueue.main.asyncAfter(deadline: .now() + Self.groupRaiseDelay) {
             Self.raiseTileGroup(of: hover.pid)
         }

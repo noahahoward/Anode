@@ -41,6 +41,7 @@ public final class Settings {
         public static let windowSwitcherEnabled = "windowSwitcherEnabled"
         public static let desktopSwitcherEnabled = "desktopSwitcherEnabled"
         public static let windowSnapperEnabled = "windowSnapperEnabled"
+        public static let windowGroupsEnabled = "windowGroupsEnabled"
         public static let dockPreviewsEnabled = "dockPreviewsEnabled"
         public static let dockPreviewsHoldDock = "dockPreviewsHoldDock"
         public static let dockRaisesTileGroup = "dockRaisesTileGroup"
@@ -103,6 +104,8 @@ public final class Settings {
         static let desktopSwitcherEnabled = false
         /// OFF: it claims a set of global shortcuts another window manager may already own.
         static let windowSnapperEnabled = false
+        /// OFF: it raises windows on its own and claims a few global shortcuts.
+        static let windowGroupsEnabled = false
         /// OFF, like every beta feature that watches the Dock or the keyboard.
         static let dockPreviewsEnabled = false
         /// ON: with an auto-hiding Dock, the preview is otherwise left floating over nothing.
@@ -185,6 +188,7 @@ public final class Settings {
         var windowSwitcherEnabled: Bool
         var desktopSwitcherEnabled: Bool
         var windowSnapperEnabled: Bool
+        var windowGroupsEnabled: Bool
         var dockPreviewsEnabled: Bool
         var dockPreviewsHoldDock: Bool
         var dockRaisesTileGroup: Bool
@@ -369,6 +373,12 @@ public final class Settings {
     public var windowSnapperEnabled: Bool {
         get { Settings.readBool(defaults, Key.windowSnapperEnabled, Default.windowSnapperEnabled) }
         set { writeBool(Key.windowSnapperEnabled, \.windowSnapperEnabled, newValue, Default.windowSnapperEnabled) }
+    }
+
+    /// Whether window groups (windows that come forward together) are on (Beta Features).
+    public var windowGroupsEnabled: Bool {
+        get { Settings.readBool(defaults, Key.windowGroupsEnabled, Default.windowGroupsEnabled) }
+        set { writeBool(Key.windowGroupsEnabled, \.windowGroupsEnabled, newValue, Default.windowGroupsEnabled) }
     }
 
     /// Whether Anode's desktop (Spaces) switcher answers Option-Tab (Beta Features).
@@ -731,6 +741,7 @@ public final class Settings {
         if old.windowSwitcherEnabled != now.windowSwitcherEnabled { notify(Key.windowSwitcherEnabled) }
         if old.desktopSwitcherEnabled != now.desktopSwitcherEnabled { notify(Key.desktopSwitcherEnabled) }
         if old.windowSnapperEnabled != now.windowSnapperEnabled { notify(Key.windowSnapperEnabled) }
+        if old.windowGroupsEnabled != now.windowGroupsEnabled { notify(Key.windowGroupsEnabled) }
         if old.dockPreviewsEnabled != now.dockPreviewsEnabled { notify(Key.dockPreviewsEnabled) }
         if old.dockPreviewsHoldDock != now.dockPreviewsHoldDock { notify(Key.dockPreviewsHoldDock) }
         if old.dockRaisesTileGroup != now.dockRaisesTileGroup { notify(Key.dockRaisesTileGroup) }
@@ -856,6 +867,7 @@ public final class Settings {
                windowSwitcherEnabled: readBool(d, Key.windowSwitcherEnabled, Default.windowSwitcherEnabled),
                desktopSwitcherEnabled: readBool(d, Key.desktopSwitcherEnabled, Default.desktopSwitcherEnabled),
                windowSnapperEnabled: readBool(d, Key.windowSnapperEnabled, Default.windowSnapperEnabled),
+               windowGroupsEnabled: readBool(d, Key.windowGroupsEnabled, Default.windowGroupsEnabled),
                dockPreviewsEnabled: readBool(d, Key.dockPreviewsEnabled, Default.dockPreviewsEnabled),
                dockPreviewsHoldDock: readBool(d, Key.dockPreviewsHoldDock, Default.dockPreviewsHoldDock),
                dockRaisesTileGroup: readBool(d, Key.dockRaisesTileGroup, Default.dockRaisesTileGroup),

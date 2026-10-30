@@ -40,7 +40,7 @@ final class BetaFeaturesWindowController: NSWindowController {
     private var activeToken: NSObjectProtocol?
 
     init(features: [BetaFeature] = [BackdropFeature(), WindowSwitcherFeature(), DesktopSwitcherFeature(),
-                                    DockPreviewFeature(), WindowActionsFeature()]) {
+                                    DockPreviewFeature(), WindowActionsFeature(), WindowGroupsFeature()]) {
         self.features = features
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: Self.contentWidth, height: 200),
                               styleMask: [.titled, .closable], backing: .buffered, defer: false)
@@ -402,7 +402,7 @@ final class DockPreviewFeature: BetaFeature {
     let enableCheckbox = NSButton(checkboxWithTitle: "Show window previews on the Dock", target: nil, action: nil)
     let holdCheckbox = NSButton(checkboxWithTitle: "Keep an auto-hiding Dock up while a preview is open",
                                 target: nil, action: nil)
-    let groupCheckbox = NSButton(checkboxWithTitle: "Clicking an icon brings back the layout its window is tiled in",
+    let groupCheckbox = NSButton(checkboxWithTitle: "Clicking an icon brings back the layout its window is tiled in (off while Window Groups is on)",
                                  target: nil, action: nil)
     let holdNote = BetaFeaturesWindowController.wrapping(
         "Turns auto-hide off while a preview is open and back on when it closes. If Anode quits "
@@ -636,6 +636,120 @@ final class WindowActionsFeature: BetaFeature {
             status.stringValue = "Accessibility: allowed. These shortcuts are claimed while this is on."
             status.textColor = .secondaryLabelColor
         }
+        layoutChanged?()
+    }
+}
+
+// ── Window Groups ───────────────────────────────────────────────────────────
+
+/// Windows that come forward together (see `WindowGroupController`).
+final class WindowGroupsFeature: BetaFeature {
+
+    let title = "Window Groups"
+    let summary = "Put windows from any apps in a group, and when one comes forward by any route — a click, ⌘Tab, "
+                + "the Dock — the others come forward right behind it. A group remembers where each window sat, "
+                + "so one shortcut puts the layout back. Groups last until Anode quits or the windows close."
+    var layoutChanged: (() -> Void)?
+
+    private let settings: Settings
+    private let accessibility: () -> Bool
+    private let controller: () -> WindowGroupController?
+    private var token: AnyObject?
+
+    let enableCheckbox = NSButton(checkboxWithTitle: "Use window groups", target: nil, action: nil)
+    let status = BetaFeaturesWindowController.wrapping("")
+    let accessButton = NSButton(title: "Open Accessibility Settings…", target: nil, action: nil)
+    let groupList = BetaFeaturesWindowController.wrapping("")
+    let tiledButton = NSButton(title: "Group the tiled windows", target: nil, action: nil)
+    let addButton = NSButton(title: "Add window to current group", target: nil, action: nil)
+    let removeButton = NSButton(title: "Take window out", target: nil, action: nil)
+    let restoreButton = NSButton(title: "Restore layout", target: nil, action: nil)
+    let rememberButton = NSButton(title: "Remember layout", target: nil, action: nil)
+    let dissolveButton = NSButton(title: "Dissolve all", target: nil, action: nil)
+    let shortcuts = BetaFeaturesWindowController.wrapping("", color: .secondaryLabelColor)
+    private let buttons: NSStackView
+
+    init(settings: Settings = .shared,
+         accessibilityAllowed: @escaping () -> Bool = { AccessibilityAccess.isTrusted },
+         controller: @escaping () -> WindowGroupController? = { (NSApp.delegate as? AppDelegate)?.windowGroups }) {
+        self.settings = settings
+        self.accessibility = accessibilityAllowed
+        self.controller = controller
+        buttons = NSStackView(views: [tiledButton, addButton, removeButton, restoreButton, rememberButton, dissolveButton])
+    }
+
+    func makeView() -> NSView {
+        enableCheckbox.target = self
+        enableCheckbox.action = #selector(toggled)
+        accessButton.target = self
+        accessButton.action = #selector(openAccessibility)
+        for (button, action) in [(tiledButton, #selector(group)), (addButton, #selector(add)), (removeButton, #selector(remove)),
+                                 (restoreButton, #selector(restore)), (rememberButton, #selector(remember)),
+                                 (dissolveButton, #selector(dissolve))] {
+            button.target = self
+            button.action = action
+            button.bezelStyle = .rounded
+            button.controlSize = .small
+        }
+        accessButton.bezelStyle = .rounded
+        accessButton.controlSize = .small
+        buttons.orientation = .vertical
+        buttons.alignment = .leading
+        buttons.spacing = 4
+        let column = NSStackView(views: [enableCheckbox, status, accessButton, groupList, buttons, shortcuts])
+        column.orientation = .vertical
+        column.alignment = .leading
+        column.spacing = 8
+        token = settings.observe(Settings.Key.windowGroupsEnabled) { [weak self] in self?.refresh() }
+        refresh()
+        return column
+    }
+
+    @objc private func toggled() {
+        let on = enableCheckbox.state == .on
+        if on && !accessibility() { AccessibilityAccess.request() }
+        settings.windowGroupsEnabled = on
+        controller()?.onChange = { [weak self] in self?.refresh() }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in self?.refresh() }
+    }
+
+    @objc private func openAccessibility() { AccessibilityAccess.openSettings() }
+    @objc private func group() { controller()?.toggleGroup(); refresh() }
+    @objc private func add() { controller()?.addToCurrentGroup(); refresh() }
+    @objc private func remove() { controller()?.removeFromGroup(); refresh() }
+    @objc private func restore() { controller()?.restoreLayout() }
+    @objc private func remember() { controller()?.rememberLayout(); refresh() }
+    @objc private func dissolve() { controller()?.dissolveAll(); refresh() }
+
+    static func shortcutList() -> String {
+        GroupAction.allCases.map { "\($0.title) \($0.shortcut.label)" }.joined(separator: "   ·   ")
+    }
+
+    func refresh() {
+        let on = settings.windowGroupsEnabled
+        let allowed = accessibility()
+        let c = controller()
+        c?.onChange = { [weak self] in self?.refresh() }
+        enableCheckbox.state = on ? .on : .off
+        status.isHidden = !on
+        accessButton.isHidden = !on || allowed
+        groupList.isHidden = !on
+        buttons.isHidden = !on
+        shortcuts.isHidden = !on
+        shortcuts.stringValue = Self.shortcutList()
+        let taken = on ? (c?.unavailable ?? []) : []
+        if !allowed {
+            status.stringValue = "Accessibility: not allowed yet, so windows cannot be raised. Allow Anode in Accessibility."
+            status.textColor = .systemOrange
+        } else if !taken.isEmpty {
+            status.stringValue = "\(taken.count) of these shortcuts belong to another app already."
+            status.textColor = .systemOrange
+        } else {
+            status.stringValue = "The buttons act on the last window you were in outside Anode."
+            status.textColor = .secondaryLabelColor
+        }
+        let lines = c?.summary() ?? []
+        groupList.stringValue = lines.isEmpty ? "No groups yet." : lines.joined(separator: "\n")
         layoutChanged?()
     }
 }
