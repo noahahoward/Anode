@@ -195,9 +195,48 @@ final class DockHoldTests: XCTestCase {
         calls = []
     }
 
+    private var clear = true
+    private var events: [String] = []
+
     private func make() -> DockHold {
         DockHold(defaults: defaults, isEnabled: { self.autoHide },
-                 setEnabled: { self.calls.append($0); self.autoHide = $0; return true })
+                 setEnabled: { self.calls.append($0); self.autoHide = $0; self.events.append("autohide=\($0)"); return true },
+                 isDockClear: { self.clear })
+    }
+
+    private func spin(_ seconds: TimeInterval) { RunLoop.main.run(until: Date().addingTimeInterval(seconds)) }
+
+    /// The order asked for: auto-hide goes back on, THEN the Dock must be gone, THEN the action.
+    func testTheActionWaitsForAutoHideAndForTheDockToBeGone() {
+        let h = make()
+        h.hold(); events = []
+        clear = false
+        h.releaseThen { self.events.append("action") }
+        XCTAssertEqual(events, ["autohide=true"], "auto-hide first; the action is waiting on the Dock")
+        spin(0.1)
+        XCTAssertEqual(events, ["autohide=true"], "still waiting while the Dock is in the way")
+        clear = true
+        spin(0.1)
+        XCTAssertEqual(events, ["autohide=true", "action"])
+        XCTAssertFalse(h.isHolding)
+    }
+
+    func testWithNoHoldTheActionRunsAtOnce() {
+        let h = make()
+        var ran = false
+        h.releaseThen { ran = true }
+        XCTAssertTrue(ran)
+        XCTAssertEqual(calls, [], "and auto-hide is not touched")
+    }
+
+    func testAStuckDockCannotMakeAClickDoNothing() {
+        let h = make()
+        h.hold()
+        clear = false
+        var ran = false
+        h.releaseThen { ran = true }
+        spin(DockHold.settleTimeout + 0.3)
+        XCTAssertTrue(ran, "goes ahead after the timeout")
     }
 
     func testHoldTurnsAutoHideOffAndReleaseTurnsItBackOn() {

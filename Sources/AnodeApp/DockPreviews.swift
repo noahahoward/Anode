@@ -125,15 +125,96 @@ final class DockHold {
     private let defaults: UserDefaults
     private let isEnabled: () -> Bool?
     private let setEnabled: (Bool) -> Bool
+    private let isDockClear: () -> Bool
     private var releaseTimer: Timer?
+    private var settleTimer: Timer?
     private(set) var isHolding = false
+
+    /// How long `releaseThen` waits for the Dock to be gone before going ahead anyway, so a
+    /// stuck state can never turn a click into nothing.
+    static let settleTimeout: TimeInterval = 3
+    static let settlePoll: TimeInterval = 0.02
 
     init(defaults: UserDefaults = .standard,
          isEnabled: @escaping () -> Bool? = { DockAutoHide.isEnabled },
-         setEnabled: @escaping (Bool) -> Bool = { DockAutoHide.set($0) }) {
+         setEnabled: @escaping (Bool) -> Bool = { DockAutoHide.set($0) },
+         isDockClear: @escaping () -> Bool = { DockHold.dockIsGone() }) {
         self.defaults = defaults
         self.isEnabled = isEnabled
         self.setEnabled = setEnabled
+        self.isDockClear = isDockClear
+    }
+
+    /// Has the Dock stopped taking room from every screen? This, not the auto-hide flag, is what a
+    /// window manager reads when it sizes a window: `visibleFrame` shrinks by the Dock's height
+    /// while the Dock is up (measured: 1130 -> 1023 pt) and returns when it has slid away, a moment
+    /// after auto-hide is switched back on. A few points are allowed for the strip that stays to
+    /// summon the Dock.
+    static func screensHaveNoDockInset(tolerance: CGFloat = 6) -> Bool {
+        NSScreen.screens.allSatisfy { s in
+            let f = s.frame, v = s.visibleFrame
+            return v.minX - f.minX <= tolerance && f.maxX - v.maxX <= tolerance && v.minY - f.minY <= tolerance
+        }
+    }
+
+    /// Is the Dock gone, by both of the two things that can say so: the screens' usable area has
+    /// its room back, and the Dock's own icon strip has left the screens. The second is there
+    /// because the first is only as current as the app asking (a plain command-line probe never
+    /// saw it change even with the Dock pinned up), while the strip's position is read from the
+    /// Dock itself. When the strip cannot be read, only the first is used.
+    static func dockIsGone() -> Bool {
+        screensHaveNoDockInset() && !dockStripOnScreen()
+    }
+
+    /// Is the Dock's icon strip (its list, from accessibility) showing on any screen? In the
+    /// window server's coordinates, where a hidden Dock's list sits below, or beside, the screen.
+    static func dockStripOnScreen(tolerance: CGFloat = 6) -> Bool {
+        guard let dock = NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.dock").first
+        else { return false }
+        let app = AXUIElementCreateApplication(dock.processIdentifier)
+        var children: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(app, kAXChildrenAttribute as CFString, &children) == .success,
+              let list = (children as? [AXUIElement])?.first(where: {
+                  var role: CFTypeRef?
+                  AXUIElementCopyAttributeValue($0, kAXRoleAttribute as CFString, &role)
+                  return (role as? String) == kAXListRole
+              }) else { return false }
+        var position: CFTypeRef?, size: CFTypeRef?
+        AXUIElementCopyAttributeValue(list, kAXPositionAttribute as CFString, &position)
+        AXUIElementCopyAttributeValue(list, kAXSizeAttribute as CFString, &size)
+        var origin = CGPoint.zero, extent = CGSize.zero
+        guard let position, let size,
+              AXValueGetValue(position as! AXValue, .cgPoint, &origin),
+              AXValueGetValue(size as! AXValue, .cgSize, &extent) else { return false }
+        let strip = CGRect(origin: origin, size: extent)
+        let primaryHeight = NSScreen.screens.first?.frame.height ?? 0
+        return NSScreen.screens.contains { s in
+            let frame = ScreenState.cgFrame(of: s, primaryHeight: primaryHeight)
+            let overlap = frame.intersection(strip)
+            return !overlap.isNull && overlap.width > tolerance && overlap.height > tolerance
+        }
+    }
+
+    /// Do `action` once the Dock is really gone. With no hold in force there is nothing to wait
+    /// for and it runs at once. Otherwise auto-hide is switched back on FIRST, and `action` waits
+    /// until the screens' usable area is back to full size (or `settleTimeout`): a window manager
+    /// that sizes windows from the usable area at the moment of the switch — Rectangle, as it was
+    /// reported — then sees the same area it would with the Dock hidden all along.
+    func releaseThen(_ action: @escaping () -> Void) {
+        settleTimer?.invalidate()
+        settleTimer = nil
+        guard isHolding else { return action() }
+        releaseNow()
+        let deadline = Date().addingTimeInterval(Self.settleTimeout)
+        func poll() {
+            if isDockClear() || Date() >= deadline {
+                settleTimer = nil
+                action()
+            } else {
+                settleTimer = Timer.scheduledTimer(withTimeInterval: Self.settlePoll, repeats: false) { _ in poll() }
+            }
+        }
+        poll()
     }
 
     /// Undo a hold a crash (or a force-quit) left behind. Call once at launch.
@@ -239,8 +320,11 @@ final class DockPreviews {
             forName: NSApplication.willTerminateNotification, object: nil, queue: .main
         ) { [weak self] _ in self?.dockHold.releaseNow() }
         panel.onOpen = { [weak self] window in
-            self?.hide()
-            WindowActivator.bringForward(window)
+            guard let self else { return }
+            self.hide()
+            // Order of operations: auto-hide back on, the Dock gone, THEN the window — so what
+            // sizes the window on the switch sees an auto-hidden Dock, as without this feature.
+            self.dockHold.releaseThen { WindowActivator.bringForward(window) }
         }
         panel.onClose = { [weak self] window in
             WindowActivator.close(window)
