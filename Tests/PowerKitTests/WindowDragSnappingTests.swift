@@ -155,9 +155,9 @@ final class WindowDragSnappingTests: XCTestCase {
 
     func testTheFootprintIsDrawnWhereTheWindowWillGo() {
         let area = CGRect(x: 0, y: 39, width: 1800, height: 1130)
-        XCTAssertEqual(WindowGeometry.frame(for: SnapZone.left.action, from: .zero, in: area), CGRect(x: 0, y: 39, width: 900, height: 1130))
-        XCTAssertEqual(WindowGeometry.frame(for: SnapZone.bottomLast.action, from: .zero, in: area)?.maxX, 1800)
-        XCTAssertEqual(SnapZone.top.action, .maximize)
+        XCTAssertEqual(WindowGeometry.frame(for: SnapZoneMap.defaultAction(for: .left), from: .zero, in: area), CGRect(x: 0, y: 39, width: 900, height: 1130))
+        XCTAssertEqual(WindowGeometry.frame(for: SnapZoneMap.defaultAction(for: .bottomLast), from: .zero, in: area)?.maxX, 1800)
+        XCTAssertEqual(SnapZoneMap.defaultAction(for: .top), .maximize)
     }
 
     func testTheSettingDefaultsToOffAndTheSectionWarnsAboutMacOSTiling() {

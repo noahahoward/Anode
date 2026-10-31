@@ -135,16 +135,22 @@ final class ShortcutsTests: XCTestCase {
 
     // ── The window ──
 
-    func testTheWindowListsEveryCommandAndShowsTheCurrentShortcut() {
+    func testTheWindowShowsTheSelectedCommandsShortcutAndOffersTheRest() {
         _ = NSApplication.shared
         let s = store()
         s.assign(Shortcut(key: kVK_ANSI_J, modifiers: Shortcut.control | Shortcut.command), to: left, among: all)
-        let c = ShortcutsWindowController(store: s, commands: all)
+        let c = ShortcutsWindowController(store: s, prefs: WindowPrefs(defaults: UserDefaults(suiteName: "t-\(UUID())")!), commands: all)
         func buttons(_ v: NSView) -> [NSButton] { ([v as? NSButton].compactMap { $0 }) + v.subviews.flatMap(buttons) }
-        let titles = buttons(c.window!.contentView!).map(\.title)
+        XCTAssertEqual(c.selectedID, all.first?.id, "the first command is shown")
+        var titles = buttons(c.window!.contentView!).map(\.title)
         XCTAssertTrue(titles.contains("⌃⌘J"), "the changed shortcut shows")
-        XCTAssertTrue(titles.contains("⌃⌥→"), "the others show their defaults")
+        XCTAssertTrue(titles.contains("Clear"))
         XCTAssertTrue(titles.contains("Reset all to defaults"))
-        XCTAssertEqual(titles.filter { $0 == "Clear" }.count, all.count)
+        c.select(commandID: WindowAction.rightHalf.commandID)
+        titles = buttons(c.window!.contentView!).map(\.title)
+        XCTAssertTrue(titles.contains("⌃⌥→"), "another command shows its default")
+        XCTAssertFalse(titles.contains("⌃⌘J"))
+        c.select(commandID: "options")
+        XCTAssertEqual(c.selectedID, "options")
     }
 }

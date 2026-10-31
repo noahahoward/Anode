@@ -723,7 +723,7 @@ final class WindowActionsFeature: BetaFeature {
     let status = BetaFeaturesWindowController.wrapping("")
     let accessButton = NSButton(title: "Open Accessibility Settings…", target: nil, action: nil)
     let shortcuts = BetaFeaturesWindowController.wrapping("", color: .secondaryLabelColor)
-    let customizeButton = NSButton(title: "Customize shortcuts…", target: nil, action: nil)
+    let customizeButton = NSButton(title: "Customize actions & shortcuts…", target: nil, action: nil)
 
     init(settings: Settings = .shared,
          accessibilityAllowed: @escaping () -> Bool = { AccessibilityAccess.isTrusted },
@@ -800,8 +800,9 @@ final class WindowActionsFeature: BetaFeature {
             ? "macOS's own edge tiling is on, so both would act on the same drag. Turn it off in System Settings → "
               + "Desktop & Dock → Windows → “Tile by dragging windows to screen edges”."
             : "Drag by the title bar to an edge or corner: left/right edges halves, corners quarters, the menu bar "
-              + "maximizes, and the bottom edge thirds (left, middle or right of the screen). Edges shared with "
-              + "another display are skipped. Esc while dragging cancels."
+              + "maximizes, and the bottom edge thirds (left, middle or right of the screen). Which edge does what, "
+              + "a gap around windows and a key to hold are in Customize. Edges shared with another display are "
+              + "skipped. Esc while dragging cancels."
         dragNote.textColor = nativeOn ? .systemOrange : .secondaryLabelColor
         if !allowed {
             status.stringValue = "Accessibility: not allowed yet, so windows cannot be moved. Allow Anode in Accessibility."
@@ -894,7 +895,7 @@ final class WindowGroupsFeature: BetaFeature {
     }
 
     @objc private func openAccessibility() { AccessibilityAccess.openSettings() }
-    @objc private func customize() { ShortcutsWindowController.shared.show() }
+    @objc private func customize() { ShortcutsWindowController.shared.show(selecting: GroupAction.toggleGroup.commandID) }
     @objc private func group() { controller()?.toggleGroup(); refresh() }
     @objc private func add() { controller()?.addToCurrentGroup(); refresh() }
     @objc private func remove() { controller()?.removeFromGroup(); refresh() }

@@ -26,21 +26,6 @@ enum SnapZone: Equatable {
     case topLeft, topRight, bottomLeft, bottomRight
     case left, right, top
     case bottomFirst, bottomCenter, bottomLast
-
-    var action: WindowAction {
-        switch self {
-        case .topLeft: return .topLeft
-        case .topRight: return .topRight
-        case .bottomLeft: return .bottomLeft
-        case .bottomRight: return .bottomRight
-        case .left: return .leftHalf
-        case .right: return .rightHalf
-        case .top: return .maximize
-        case .bottomFirst: return .firstThird
-        case .bottomCenter: return .centerThird
-        case .bottomLast: return .lastThird
-        }
-    }
 }
 
 enum SnapZones {
@@ -215,6 +200,9 @@ final class WindowDragSnapper {
     private var topSince: Date?
     private var lastPoll = Date.distantPast
     private var lastFrame: CGRect?
+    /// The modifiers held at the last drag event, for a snap that needs one (see `SnapModifier`).
+    private var lastFlags: CGEventFlags = []
+    private let prefs: WindowPrefs
 
     /// What a window was before a drag snapped it, and where it was put, so that dragging it away
     /// gives it its old size back.
@@ -222,8 +210,9 @@ final class WindowDragSnapper {
 
     var isRunning: Bool { tap != nil }
 
-    init(settings: Settings = .shared, snapper: WindowSnapper?) {
+    init(settings: Settings = .shared, snapper: WindowSnapper?, prefs: WindowPrefs = .shared) {
         self.settings = settings
+        self.prefs = prefs
         self.snapper = snapper
         settingToken = settings.observe(Settings.Key.windowDragSnapEnabled) { [weak self] in self?.apply() }
         apply()
@@ -274,7 +263,7 @@ final class WindowDragSnapper {
         case .leftMouseDown, .leftMouseDragged, .leftMouseUp:
             let sample = Sample(type: type, point: event.location,
                                 windowUnder: CGWindowID(max(0, event.getIntegerValueField(.mouseEventWindowUnderMousePointerThatCanHandleThisEvent))),
-                                keyCode: 0)
+                                keyCode: 0, flags: event.flags)
             DispatchQueue.main.async { [weak self] in self?.handle(sample) }
         case .keyDown:
             let sample = Sample(type: type, point: .zero, windowUnder: 0, keyCode: event.getIntegerValueField(.keyboardEventKeycode))
@@ -290,11 +279,12 @@ final class WindowDragSnapper {
         let point: CGPoint
         let windowUnder: CGWindowID
         let keyCode: Int64
+        var flags: CGEventFlags = []
     }
 
     private func reset() {
         window = nil; windowID = nil; startFrame = nil
-        moving = false; cancelled = false; zone = nil; topSince = nil; lastFrame = nil
+        moving = false; cancelled = false; zone = nil; topSince = nil; lastFrame = nil; lastFlags = []
     }
 
     // ── Events ──────────────────────────────────────────────────────────────
@@ -357,8 +347,9 @@ final class WindowDragSnapper {
             topSince = nil
         }
         let dwelt = topSince.map { Date().timeIntervalSince($0) >= config.topDwell } ?? false
-        let found = SnapZones.zone(at: p, screens: screens, previous: zone, topDwelt: dwelt,
-                                   config: config, topDepths: depths)
+        lastFlags = event.flags
+        let found = resolved(SnapZones.zone(at: p, screens: screens, previous: zone, topDwelt: dwelt,
+                                            config: config, topDepths: depths), flags: event.flags)
         if found != zone {
             zone = found
             if let found, let target = target(for: found, pointer: p) { footprint.show(target) } else { footprint.hide() }
@@ -379,11 +370,13 @@ final class WindowDragSnapper {
         let p = event.point
         let screens = Self.screenFrames()
         let dwelt = topSince.map { Date().timeIntervalSince($0) >= config.topDwell } ?? false
-        guard let finalZone = SnapZones.zone(at: p, screens: screens, previous: zone,
-                                             topDwelt: dwelt, config: config, topDepths: SnapZones.menuBarDepths()),
+        guard let finalZone = resolved(SnapZones.zone(at: p, screens: screens, previous: zone,
+                                                      topDwelt: dwelt, config: config, topDepths: SnapZones.menuBarDepths()),
+                                       flags: event.flags.union(lastFlags)),
+              let action = prefs.zoneMap.action(for: finalZone),
               let target = target(for: finalZone, pointer: p) else { return }
         let original = snappedWindows[id]?.original ?? start.size
-        snapper?.placeDragged(finalZone.action, on: window, restoreFrame: start, pointer: p)
+        snapper?.placeDragged(action, on: window, restoreFrame: start, pointer: p)
         snappedWindows[id] = (original, target)
         if snappedWindows.count > 50 { snappedWindows.removeValue(forKey: snappedWindows.keys.first!) }
     }
@@ -394,7 +387,15 @@ final class WindowDragSnapper {
         guard let index = frames.firstIndex(where: { $0.insetBy(dx: -0.5, dy: -0.5).contains(pointer) }),
               areas.indices.contains(index),
               let current = lastFrame ?? startFrame else { return nil }
-        return WindowGeometry.frame(for: zone.action, from: current, in: areas[index])
+        guard let action = prefs.zoneMap.action(for: zone) else { return nil }
+        return WindowGeometry.placement(for: action, from: current, in: areas[index], gap: CGFloat(prefs.gap))
+    }
+
+    /// The zone the pointer is in, if it does anything now: it has an action (the user can turn a zone off)
+    /// and the modifier the user asked for, if any, is held.
+    private func resolved(_ zone: SnapZone?, flags: CGEventFlags) -> SnapZone? {
+        guard let zone, prefs.snapModifier.isSatisfied(by: flags), prefs.zoneMap.action(for: zone) != nil else { return nil }
+        return zone
     }
 
     // ── Helpers ─────────────────────────────────────────────────────────────

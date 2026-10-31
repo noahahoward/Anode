@@ -293,14 +293,18 @@ enum DockIntent {
 final class WindowSnapper {
 
     private let settings: Settings
+    private let prefs: WindowPrefs
     private var settingToken: AnyObject?
+    /// What each window was last given by an action, for pressing the same one again (see `WindowGeometry.nextStep`).
+    private var lastPlacements: [CGWindowID: WindowGeometry.LastPlacement] = [:]
     /// The frame a window had before its first action here, for Restore. Keyed by window number.
     private var restoreFrames: [CGWindowID: CGRect] = [:]
     private(set) var isRunning = false
     private static let owner = "windowActions"
 
-    init(settings: Settings = .shared) {
+    init(settings: Settings = .shared, prefs: WindowPrefs = .shared) {
         self.settings = settings
+        self.prefs = prefs
         settingToken = settings.observe(Settings.Key.windowSnapperEnabled) { [weak self] in self?.apply() }
         apply()
     }
@@ -391,8 +395,20 @@ final class WindowSnapper {
             apply(target!, to: window, in: areas[there])
             return
         default:
-            target = WindowGeometry.frame(for: action, from: current, in: areas[here])
+            // Pressed again on a window still where it was put, a half steps to two thirds, then a third. A drop
+            // from a drag (which has a restore frame) never cycles.
+            var step = action
+            if prefs.cycles, restoreFrame == nil, let id {
+                step = WindowGeometry.nextStep(for: action, last: lastPlacements[id], current: current)
+            }
+            target = WindowGeometry.placement(for: step, from: current, in: areas[here], gap: CGFloat(prefs.gap))
             remember(id, current)
+            if let target {
+                apply(target, to: window, in: areas[here])
+                if let id { lastPlacements[id] = .init(pressed: action, step: step, frame: window.frame ?? target) }
+                if lastPlacements.count > 200 { lastPlacements.removeValue(forKey: lastPlacements.keys.first!) }
+            }
+            return
         }
         if let target { apply(target, to: window, in: areas[here]) }
     }
