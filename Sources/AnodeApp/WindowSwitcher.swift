@@ -447,6 +447,7 @@ final class WindowSwitcher {
     private var tap: CFMachPort?
     private var tapSource: CFRunLoopSource?
     private var settingToken: AnyObject?
+    private var triggerToken: AnyObject?
     private var retryTimer: Timer?
     private var showTimer: Timer?
 
@@ -458,11 +459,37 @@ final class WindowSwitcher {
     private var selection = SwitcherSelection()
     private let panel = SwitcherPanel()
 
+    /// The keys that open it, read once from the setting and kept current by an observer: the tap
+    /// runs on every key press and should not read preferences each time.
+    private(set) var trigger: WindowSwitcherTrigger
+
+    /// Are the modifiers `trigger` needs all held, with nothing extra (Shift aside, which only reverses)?
+    /// Pure, for tests.
+    static func matches(_ trigger: WindowSwitcherTrigger, _ flags: CGEventFlags) -> Bool {
+        guard holds(trigger, flags), !flags.contains(.maskControl) else { return false }
+        // Command-Tab must not also have Option down: that is Command-Option-Tab, which is not it.
+        return trigger == .commandOption || !flags.contains(.maskAlternate)
+    }
+
+    /// Are all the modifiers the trigger is made of still down?
+    static func holds(_ trigger: WindowSwitcherTrigger, _ flags: CGEventFlags) -> Bool {
+        switch trigger {
+        case .command: return flags.contains(.maskCommand)
+        case .commandOption: return flags.contains(.maskCommand) && flags.contains(.maskAlternate)
+        }
+    }
+
     /// Is the takeover live right now (setting on and the tap made)?
     var isRunning: Bool { tap != nil }
 
     init(settings: Settings = .shared) {
         self.settings = settings
+        self.trigger = settings.windowSwitcherTrigger
+        triggerToken = settings.observe(Settings.Key.windowSwitcherTrigger) { [weak self] in
+            guard let self else { return }
+            self.cancel()
+            self.trigger = self.settings.windowSwitcherTrigger
+        }
         panel.onClick = { [weak self] i in
             self?.selection.select(i)
             self?.commit()
@@ -559,13 +586,13 @@ final class WindowSwitcher {
             if let tap { CGEvent.tapEnable(tap: tap, enable: true) }
             return pass
         case .flagsChanged:
-            if isActive && !event.flags.contains(.maskCommand) { commit() }
+            // Let go of any of the keys that opened it, and it goes.
+            if isActive && !Self.holds(trigger, event.flags) { commit() }
             return pass
         case .keyDown, .keyUp:
             let key = event.getIntegerValueField(.keyboardEventKeycode)
             let flags = event.flags
-            let commandTab = key == Self.tab && flags.contains(.maskCommand)
-                && !flags.contains(.maskControl) && !flags.contains(.maskAlternate)
+            let commandTab = key == Self.tab && Self.matches(trigger, flags)
             if !isActive {
                 guard commandTab else { return pass }
                 // With no window on this Space (all minimized or hidden) there is nothing

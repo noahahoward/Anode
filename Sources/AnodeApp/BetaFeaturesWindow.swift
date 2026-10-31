@@ -414,18 +414,21 @@ final class BackdropFeature: BetaFeature {
 final class WindowSwitcherFeature: BetaFeature {
 
     let title = "Window Switcher"
-    let summary = "Replaces ⌘Tab with a switcher of windows, each with a preview. Hold ⌘ and press Tab "
-                + "to move (⇧ to go back, arrows work too), let go of ⌘ to switch, Esc to cancel. "
-                + "If Anode quits or crashes, ⌘Tab goes back to the system's at once."
+    let summary = "A switcher of windows, each with a preview. Hold the keys and press Tab to move (⇧ to go back, "
+                + "arrows work too), let go to switch, Esc to cancel. By default it opens on ⌘⌥Tab and the system's "
+                + "⌘Tab is left alone. If Anode quits or crashes, the keys go back to the system at once."
     var layoutChanged: (() -> Void)?
 
     private let settings: Settings
     private let accessibility: () -> Bool
     private let screenRecording: () -> Bool
     private var token: AnyObject?
+    private var triggerToken: AnyObject?
 
     // Internal, so the tests can drive them as a click would.
-    let enableCheckbox = NSButton(checkboxWithTitle: "Use Anode's window switcher for ⌘Tab", target: nil, action: nil)
+    let enableCheckbox = NSButton(checkboxWithTitle: "Use Anode's window switcher", target: nil, action: nil)
+    let triggerPopup = NSPopUpButton(frame: .zero, pullsDown: false)
+    let triggerLabel = NSTextField(labelWithString: "Open with:")
     let accessStatus = BetaFeaturesWindowController.wrapping("")
     let accessButton = NSButton(title: "Open Accessibility Settings…", target: nil, action: nil)
     let previewNote = BetaFeaturesWindowController.wrapping("", color: .secondaryLabelColor)
@@ -454,11 +457,17 @@ final class WindowSwitcherFeature: BetaFeature {
         previewButton.action = #selector(openScreenRecording)
         previewButton.bezelStyle = .rounded
         previewButton.controlSize = .small
-        let column = NSStackView(views: [enableCheckbox, accessStatus, accessButton, previewNote, previewButton])
+        triggerPopup.addItems(withTitles: WindowSwitcherTrigger.allCases.map(\.title))
+        triggerPopup.target = self
+        triggerPopup.action = #selector(triggerChanged)
+        let triggerRow = NSStackView(views: [triggerLabel, triggerPopup])
+        triggerRow.spacing = 8
+        let column = NSStackView(views: [enableCheckbox, triggerRow, accessStatus, accessButton, previewNote, previewButton])
         column.orientation = .vertical
         column.alignment = .leading
         column.spacing = 8
         token = settings.observe(Settings.Key.windowSwitcherEnabled) { [weak self] in self?.refresh() }
+        triggerToken = settings.observe(Settings.Key.windowSwitcherTrigger) { [weak self] in self?.refresh() }
         refresh()
         return column
     }
@@ -475,6 +484,12 @@ final class WindowSwitcherFeature: BetaFeature {
         AccessibilityAccess.openSettings()
     }
 
+    @objc private func triggerChanged() {
+        let all = WindowSwitcherTrigger.allCases, i = triggerPopup.indexOfSelectedItem
+        guard all.indices.contains(i) else { return }
+        settings.windowSwitcherTrigger = all[i]
+    }
+
     @objc private func openScreenRecording() {
         ScreenRecordingAccess.request()
         ScreenRecordingAccess.openSettings()
@@ -484,13 +499,17 @@ final class WindowSwitcherFeature: BetaFeature {
         let on = settings.windowSwitcherEnabled
         let allowed = accessibility()
         enableCheckbox.state = on ? .on : .off
+        let trigger = settings.windowSwitcherTrigger
+        if let i = WindowSwitcherTrigger.allCases.firstIndex(of: trigger) { triggerPopup.selectItem(at: i) }
+        triggerPopup.isEnabled = on
         accessStatus.isHidden = !on
         accessButton.isHidden = !on || allowed
         accessStatus.stringValue = allowed
-            ? "Accessibility: allowed. Only ⌘Tab, and Tab, the arrows and Esc while the switcher is open, "
-              + "are taken; every other key goes on untouched."
-            : "Accessibility: not allowed yet, so ⌘Tab is still the system's. Allow Anode in "
-              + "Accessibility and it takes over within a couple of seconds."
+            ? "Accessibility: allowed. Only \(trigger.label), and Tab, the arrows and Esc while the switcher is open, "
+              + "are taken; every other key goes on untouched"
+              + (trigger == .commandOption ? ", and ⌘Tab is still the system's." : ".")
+            : "Accessibility: not allowed yet, so \(trigger.label) does nothing. Allow Anode in "
+              + "Accessibility and it starts within a couple of seconds."
         accessStatus.textColor = allowed ? .secondaryLabelColor : .systemOrange
         previewNote.isHidden = !on
         let granted = screenRecording(), failing = granted && previewsFailing()

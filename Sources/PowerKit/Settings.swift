@@ -39,6 +39,7 @@ public final class Settings {
         public static let menuBarWidgetsEnabled = "menuBarWidgetsEnabled"
         public static let menuBarBackdropShowOnDesktop = "menuBarBackdropShowOnDesktop"
         public static let windowSwitcherEnabled = "windowSwitcherEnabled"
+        public static let windowSwitcherTrigger = "windowSwitcherTrigger"
         public static let desktopSwitcherEnabled = "desktopSwitcherEnabled"
         public static let windowSnapperEnabled = "windowSnapperEnabled"
         public static let windowGroupsEnabled = "windowGroupsEnabled"
@@ -101,6 +102,8 @@ public final class Settings {
         static let menuBarBackdropShowOnDesktop = true
         /// OFF: a beta feature that takes over a system shortcut is something the user turns on.
         static let windowSwitcherEnabled = false
+        /// Command-Option-Tab: the system's own Command-Tab is left alone unless the user chooses to replace it.
+        static let windowSwitcherTrigger = WindowSwitcherTrigger.commandOption
         /// OFF: it takes over Option-Tab, so the user turns it on.
         static let desktopSwitcherEnabled = false
         /// OFF: it claims a set of global shortcuts another window manager may already own.
@@ -189,6 +192,7 @@ public final class Settings {
             autoUpdateEnabled, autoUpdatePromptSeen: Bool
         var menuBarBackdropShowOnDesktop: Bool
         var windowSwitcherEnabled: Bool
+        var windowSwitcherTrigger: WindowSwitcherTrigger
         var desktopSwitcherEnabled: Bool
         var windowSnapperEnabled: Bool
         var windowGroupsEnabled: Bool
@@ -389,6 +393,19 @@ public final class Settings {
     public var windowGroupsEnabled: Bool {
         get { Settings.readBool(defaults, Key.windowGroupsEnabled, Default.windowGroupsEnabled) }
         set { writeBool(Key.windowGroupsEnabled, \.windowGroupsEnabled, newValue, Default.windowGroupsEnabled) }
+    }
+
+    /// The keys that open Anode's window switcher.
+    public var windowSwitcherTrigger: WindowSwitcherTrigger {
+        get {
+            defaults.string(forKey: Settings.storageKey(Key.windowSwitcherTrigger))
+                .flatMap(WindowSwitcherTrigger.init(rawValue:)) ?? Default.windowSwitcherTrigger
+        }
+        set {
+            guard newValue != windowSwitcherTrigger else { return }
+            defaults.set(newValue.rawValue, forKey: Settings.storageKey(Key.windowSwitcherTrigger))
+            reconcile()
+        }
     }
 
     /// Whether Anode's desktop (Spaces) switcher answers Option-Tab (Beta Features).
@@ -749,6 +766,7 @@ public final class Settings {
             notify(Key.menuBarBackdropShowOnDesktop)
         }
         if old.windowSwitcherEnabled != now.windowSwitcherEnabled { notify(Key.windowSwitcherEnabled) }
+        if old.windowSwitcherTrigger != now.windowSwitcherTrigger { notify(Key.windowSwitcherTrigger) }
         if old.desktopSwitcherEnabled != now.desktopSwitcherEnabled { notify(Key.desktopSwitcherEnabled) }
         if old.windowSnapperEnabled != now.windowSnapperEnabled { notify(Key.windowSnapperEnabled) }
         if old.windowGroupsEnabled != now.windowGroupsEnabled { notify(Key.windowGroupsEnabled) }
@@ -876,6 +894,8 @@ public final class Settings {
                menuBarBackdropShowOnDesktop: readBool(d, Key.menuBarBackdropShowOnDesktop,
                                                       Default.menuBarBackdropShowOnDesktop),
                windowSwitcherEnabled: readBool(d, Key.windowSwitcherEnabled, Default.windowSwitcherEnabled),
+               windowSwitcherTrigger: d.string(forKey: storageKey(Key.windowSwitcherTrigger))
+                   .flatMap(WindowSwitcherTrigger.init(rawValue:)) ?? Default.windowSwitcherTrigger,
                desktopSwitcherEnabled: readBool(d, Key.desktopSwitcherEnabled, Default.desktopSwitcherEnabled),
                windowSnapperEnabled: readBool(d, Key.windowSnapperEnabled, Default.windowSnapperEnabled),
                windowGroupsEnabled: readBool(d, Key.windowGroupsEnabled, Default.windowGroupsEnabled),
@@ -950,6 +970,24 @@ extension Settings {
     }
 }
 
+
+/// The keys that open Anode's window switcher.
+public enum WindowSwitcherTrigger: String, CaseIterable {
+    /// Command-Option-Tab, so the system's Command-Tab keeps working as it always did.
+    case commandOption
+    /// Command-Tab, which then belongs to Anode and no longer opens the system's switcher.
+    case command
+
+    public var title: String {
+        switch self {
+        case .commandOption: return "⌘⌥Tab (leaves the system's ⌘Tab alone)"
+        case .command: return "⌘Tab (replaces the system's switcher)"
+        }
+    }
+
+    /// The short form, for the section's text.
+    public var label: String { self == .commandOption ? "⌘⌥Tab" : "⌘Tab" }
+}
 
 /// What sits behind the menu bar.
 public enum MenuBarBackdropMode: String, CaseIterable {

@@ -153,6 +153,53 @@ final class WindowSwitcherTests: XCTestCase {
         XCTAssertTrue(f.previewNote.stringValue.contains("stale"))
     }
 
+    // ── The keys that open it ──
+
+    func testCommandOptionTabIsTheDefaultAndLeavesCommandTabToTheSystem() {
+        let defaults = UserDefaults(suiteName: "switcher-trigger-\(UUID().uuidString)")!
+        let s = Settings(defaults: defaults)
+        XCTAssertEqual(s.windowSwitcherTrigger, .commandOption)
+        let cmd: CGEventFlags = [.maskCommand], cmdOpt: CGEventFlags = [.maskCommand, .maskAlternate]
+        XCTAssertTrue(WindowSwitcher.matches(.commandOption, cmdOpt))
+        XCTAssertTrue(WindowSwitcher.matches(.commandOption, cmdOpt.union(.maskShift)), "Shift reverses")
+        XCTAssertFalse(WindowSwitcher.matches(.commandOption, cmd), "plain ⌘Tab is the system's")
+        XCTAssertFalse(WindowSwitcher.matches(.commandOption, cmdOpt.union(.maskControl)))
+        XCTAssertFalse(WindowSwitcher.matches(.commandOption, [.maskAlternate]), "Option-Tab is the desktop switcher's")
+    }
+
+    func testChoosingCommandTabReplacesTheSystemsAndIgnoresOptionVariants() {
+        let cmd: CGEventFlags = [.maskCommand], cmdOpt: CGEventFlags = [.maskCommand, .maskAlternate]
+        XCTAssertTrue(WindowSwitcher.matches(.command, cmd))
+        XCTAssertTrue(WindowSwitcher.matches(.command, cmd.union(.maskShift)))
+        XCTAssertFalse(WindowSwitcher.matches(.command, cmdOpt), "that is ⌘⌥Tab, not ⌘Tab")
+        XCTAssertFalse(WindowSwitcher.matches(.command, cmd.union(.maskControl)))
+    }
+
+    /// It goes when ANY of its keys is let go, so releasing ⌘ and ⌥ together, in whatever order, switches.
+    func testItIsHeldWhileEveryModifierIsDown() {
+        XCTAssertTrue(WindowSwitcher.holds(.commandOption, [.maskCommand, .maskAlternate]))
+        XCTAssertFalse(WindowSwitcher.holds(.commandOption, [.maskCommand]), "Option let go first")
+        XCTAssertFalse(WindowSwitcher.holds(.commandOption, [.maskAlternate]), "Command let go first")
+        XCTAssertTrue(WindowSwitcher.holds(.command, [.maskCommand]))
+        XCTAssertFalse(WindowSwitcher.holds(.command, []))
+    }
+
+    func testTheSectionOffersBothAndWritesTheChoice() {
+        let defaults = UserDefaults(suiteName: "switcher-trigger-\(UUID().uuidString)")!
+        let s = Settings(defaults: defaults)
+        let f = WindowSwitcherFeature(settings: s, accessibilityAllowed: { true }, screenRecordingAllowed: { true },
+                                      previewsFailing: { false })
+        _ = f.makeView()
+        XCTAssertEqual(f.triggerPopup.numberOfItems, 2)
+        XCTAssertEqual(f.triggerPopup.indexOfSelectedItem, 0, "⌘⌥Tab by default")
+        f.triggerPopup.selectItem(at: 1)
+        _ = f.triggerPopup.target?.perform(f.triggerPopup.action)
+        XCTAssertEqual(s.windowSwitcherTrigger, .command)
+        XCTAssertEqual(Settings(defaults: defaults).windowSwitcherTrigger, .command, "it persists")
+        s.windowSwitcherEnabled = true; f.refresh()
+        XCTAssertTrue(f.accessStatus.stringValue.contains("⌘Tab"))
+    }
+
     func testTheBetaWindowListsTheSwitcher() {
         let c = BetaFeaturesWindowController()
         XCTAssertTrue(c.features.contains { $0 is WindowSwitcherFeature })
