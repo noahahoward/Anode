@@ -147,11 +147,12 @@ public final class Settings {
         /// did.
         static let autoUpdateEnabled = false
         static let autoUpdatePromptSeen = false
-        /// Solid, following the window beneath it: what the strip was built to be.
-        /// It reads nothing of another app until macOS has been asked and has said
-        /// yes — Anode's own windows need no permission — and any other mode stops
-        /// all reading at once, whatever macOS has granted.
-        static let menuBarBackdropMode = MenuBarBackdropMode.solidFollow
+        /// OFF: the menu bar backdrop is a beta feature, and the system's own bar is
+        /// what a fresh install shows. The follow mode in particular needs Screen
+        /// Recording, which nothing may ask for until the user has chosen it. Any
+        /// mode other than the follow one stops all reading of other windows at
+        /// once, whatever macOS has granted.
+        static let menuBarBackdropMode = MenuBarBackdropMode.off
         static let menuBarBackdropBlur = 0.5
         /// Matches what the status item shows today: smoothed drain + runtime.
         // Must be real, currently-registered metric IDs. Stale ones are invisible
@@ -322,14 +323,6 @@ public final class Settings {
             defaults.set(v, forKey: Settings.storageKey(Key.menuBarBackdropBlur))
             reconcile()
         }
-    }
-
-    /// Has macOS's Screen Recording question been put to the user? Bookkeeping,
-    /// not a preference: asking again at every launch would turn one question
-    /// into a nag, and a "no" is an answer.
-    public var screenCaptureAsked: Bool {
-        get { defaults.bool(forKey: Settings.storageKey("screenCaptureAsked")) }
-        set { defaults.set(newValue, forKey: Settings.storageKey("screenCaptureAsked")) }
     }
 
     /// The upstream commit whose automatic rebuild last failed, so a push that

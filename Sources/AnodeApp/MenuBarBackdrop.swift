@@ -687,15 +687,12 @@ final class MenuBarBackdrop {
     }
 
     /// Read the edge of the window under the bar off the screen. Used for another
-    /// app's window, and for Anode's own once Screen Recording is allowed. Asks for
-    /// the permission the first time another app's window is found under the bar,
-    /// once; until it is granted the bar stays plain.
+    /// app's window, and for Anode's own once Screen Recording is allowed. Never
+    /// asks for the permission: the question belongs to the button in the Beta
+    /// Features section, pressed by someone who chose this mode. Until it is
+    /// granted the bar stays plain.
     private func readOtherApp(under bar: BackdropWindow) {
         guard ScreenRecordingAccess.isGranted else {
-            if !settings.screenCaptureAsked {
-                settings.screenCaptureAsked = true
-                ScreenRecordingAccess.request()
-            }
             apply(nil, to: bar)
             return
         }

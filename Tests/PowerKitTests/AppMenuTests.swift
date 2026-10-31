@@ -733,7 +733,7 @@ final class MenuBarBackdropModeTests: XCTestCase {
     func testTheModeRoundTripsThroughSettings() {
         let defaults = UserDefaults(suiteName: "backdrop-mode-\(UUID().uuidString)")!
         let s = Settings(defaults: defaults)
-        XCTAssertEqual(s.menuBarBackdropMode, .solidFollow, "the default")
+        XCTAssertEqual(s.menuBarBackdropMode, .off, "a beta feature is off until the user turns it on")
         for m in MenuBarBackdropMode.allCases {
             s.menuBarBackdropMode = m
             XCTAssertEqual(Settings(defaults: defaults).menuBarBackdropMode, m)
