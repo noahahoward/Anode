@@ -26,9 +26,11 @@ import PowerKit
 //   window stays short once the Dock goes. Here the area is the screen below the menu bar whenever
 //   the USER'S setting is auto-hide, which Anode knows even while it is holding the Dock up.
 //
-// The shortcuts are registered with the system's hot key service (Carbon `RegisterEventHotKey`),
-// which needs no permission and is exclusive: if Rectangle already owns a shortcut, registering it
-// fails, and the Beta Features section says so. Moving another app's window needs Accessibility.
+// The shortcuts are the user's to change (`ShortcutStore`) and are heard through one event tap
+// (`KeybindCenter`), which sees a key before the system or another app does, so a chosen shortcut
+// overrides macOS's own and Rectangle's. (The system's hot key service was tried first and does not:
+// it reports success for Control-Right and the system switches desktop anyway.) Moving another app's
+// window needs Accessibility, which the tap needs too.
 
 /// What can be done to a window.
 enum WindowAction: String, CaseIterable {
@@ -287,81 +289,15 @@ enum DockIntent {
     }
 }
 
-/// A set of global shortcuts, through the system's hot key service (Carbon `RegisterEventHotKey`).
-/// Exclusive: a shortcut another app already owns fails to register, and is reported. Each registrar
-/// has its own signature, so several can listen at once without hearing each other's keys.
-final class HotKeyRegistrar {
-    struct Item {
-        let key: Int
-        let modifiers: Int
-    }
-
-    private let signature: OSType
-    private let handlerBlock: (Int) -> Void
-    private var refs: [EventHotKeyRef?] = []
-    private var handler: EventHandlerRef?
-
-    var isRegistered: Bool { handler != nil }
-
-    /// `signature` is four characters; `onPress` gets the index into the registered `items`.
-    init(signature: OSType, onPress: @escaping (Int) -> Void) {
-        self.signature = signature
-        self.handlerBlock = onPress
-    }
-
-    deinit { unregister() }
-
-    /// Register `items`; returns the indices that could not be (already owned elsewhere).
-    @discardableResult
-    func register(_ items: [Item]) -> [Int] {
-        guard handler == nil else { return [] }
-        var spec = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
-        let status = InstallEventHandler(GetApplicationEventTarget(), { _, event, refcon in
-            guard let event, let refcon else { return OSStatus(eventNotHandledErr) }
-            var id = EventHotKeyID()
-            GetEventParameter(event, EventParamName(kEventParamDirectObject), EventParamType(typeEventHotKeyID), nil,
-                              MemoryLayout<EventHotKeyID>.size, nil, &id)
-            let me = Unmanaged<HotKeyRegistrar>.fromOpaque(refcon).takeUnretainedValue()
-            // Another registrar's key: not ours, let the next handler have it.
-            guard id.signature == me.signature else { return OSStatus(eventNotHandledErr) }
-            let index = Int(id.id) - 1
-            DispatchQueue.main.async { me.handlerBlock(index) }
-            return noErr
-        }, 1, &spec, Unmanaged.passUnretained(self).toOpaque(), &handler)
-        guard status == noErr else { handler = nil; return Array(items.indices) }
-
-        var failed: [Int] = []
-        for (i, item) in items.enumerated() {
-            var ref: EventHotKeyRef?
-            let s = RegisterEventHotKey(UInt32(item.key), UInt32(item.modifiers),
-                                        EventHotKeyID(signature: signature, id: UInt32(i + 1)),
-                                        GetApplicationEventTarget(), 0, &ref)
-            if s == noErr { refs.append(ref) } else { failed.append(i) }
-        }
-        return failed
-    }
-
-    func unregister() {
-        refs.forEach { if let r = $0 { UnregisterEventHotKey(r) } }
-        refs = []
-        if let handler { RemoveEventHandler(handler) }
-        handler = nil
-    }
-}
-
-/// Carries out the actions and owns the hot keys.
+/// Carries out the actions.
 final class WindowSnapper {
 
     private let settings: Settings
     private var settingToken: AnyObject?
-    private lazy var keys = HotKeyRegistrar(signature: 0x414E5352 /* "ANSR" */) { [weak self] index in
-        guard let self, WindowAction.allCases.indices.contains(index) else { return }
-        self.perform(WindowAction.allCases[index])
-    }
     /// The frame a window had before its first action here, for Restore. Keyed by window number.
     private var restoreFrames: [CGWindowID: CGRect] = [:]
-    /// What this machine's registration said: shortcuts another app already owns.
-    private(set) var unavailable: [WindowAction] = []
+    private(set) var isRunning = false
+    private static let owner = "windowActions"
 
     init(settings: Settings = .shared) {
         self.settings = settings
@@ -369,16 +305,18 @@ final class WindowSnapper {
         apply()
     }
 
-    var isRunning: Bool { keys.isRegistered }
-
+    /// Listen while the setting is on. The shortcuts are the user's (see `ShortcutStore`), and go through the
+    /// event tap in `KeybindCenter` rather than the system's hot key service, so they override macOS's own.
     func apply() {
         if settings.windowSnapperEnabled {
-            guard !keys.isRegistered else { return }
-            let failed = keys.register(WindowAction.allCases.map { .init(key: $0.shortcut.key, modifiers: $0.shortcut.modifiers) })
-            unavailable = failed.map { WindowAction.allCases[$0] }
+            guard !isRunning else { return }
+            KeybindCenter.shared.register(owner: Self.owner, commands: ShortcutCommands.window) { [weak self] id in
+                if let action = WindowAction.allCases.first(where: { $0.commandID == id }) { self?.perform(action) }
+            }
+            isRunning = true
         } else {
-            keys.unregister()
-            unavailable = []
+            KeybindCenter.shared.unregister(owner: Self.owner)
+            isRunning = false
         }
     }
 

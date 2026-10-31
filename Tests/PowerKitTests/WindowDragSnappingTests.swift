@@ -166,11 +166,11 @@ final class WindowDragSnappingTests: XCTestCase {
         XCTAssertFalse(s.windowDragSnapEnabled)
         s.windowDragSnapEnabled = true
         XCTAssertTrue(Settings(defaults: defaults).windowDragSnapEnabled)
-        let f = WindowActionsFeature(settings: s, accessibilityAllowed: { true }, unavailable: { [] }, nativeEdgeTiling: { true })
+        let f = WindowActionsFeature(settings: s, accessibilityAllowed: { true }, nativeEdgeTiling: { true })
         _ = f.makeView()
         XCTAssertTrue(f.dragNote.stringValue.contains("macOS's own edge tiling is on"))
         XCTAssertEqual(f.dragCheckbox.state, .on)
-        let g = WindowActionsFeature(settings: s, accessibilityAllowed: { true }, unavailable: { [] }, nativeEdgeTiling: { false })
+        let g = WindowActionsFeature(settings: s, accessibilityAllowed: { true }, nativeEdgeTiling: { false })
         _ = g.makeView()
         XCTAssertFalse(g.dragNote.stringValue.contains("macOS's own edge tiling"))
     }

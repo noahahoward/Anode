@@ -712,7 +712,6 @@ final class WindowActionsFeature: BetaFeature {
 
     private let settings: Settings
     private let accessibility: () -> Bool
-    private let unavailable: () -> [WindowAction]
     private var token: AnyObject?
     private var dragToken: AnyObject?
 
@@ -724,16 +723,13 @@ final class WindowActionsFeature: BetaFeature {
     let status = BetaFeaturesWindowController.wrapping("")
     let accessButton = NSButton(title: "Open Accessibility Settings…", target: nil, action: nil)
     let shortcuts = BetaFeaturesWindowController.wrapping("", color: .secondaryLabelColor)
+    let customizeButton = NSButton(title: "Customize shortcuts…", target: nil, action: nil)
 
     init(settings: Settings = .shared,
          accessibilityAllowed: @escaping () -> Bool = { AccessibilityAccess.isTrusted },
-         unavailable: @escaping () -> [WindowAction] = {
-             (NSApp.delegate as? AppDelegate)?.windowSnapper?.unavailable ?? []
-         },
          nativeEdgeTiling: @escaping () -> Bool = { WindowActionsFeature.macOSEdgeTilingIsOn() }) {
         self.settings = settings
         self.accessibility = accessibilityAllowed
-        self.unavailable = unavailable
         self.nativeTiling = nativeEdgeTiling
     }
 
@@ -752,7 +748,11 @@ final class WindowActionsFeature: BetaFeature {
         accessButton.controlSize = .small
         dragCheckbox.target = self
         dragCheckbox.action = #selector(dragToggled)
-        let column = NSStackView(views: [enableCheckbox, status, accessButton, dragCheckbox, dragNote, shortcuts])
+        customizeButton.target = self
+        customizeButton.action = #selector(customize)
+        customizeButton.bezelStyle = .rounded
+        customizeButton.controlSize = .small
+        let column = NSStackView(views: [enableCheckbox, status, accessButton, dragCheckbox, dragNote, shortcuts, customizeButton])
         column.orientation = .vertical
         column.alignment = .leading
         column.spacing = 8
@@ -770,6 +770,8 @@ final class WindowActionsFeature: BetaFeature {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in self?.refresh() }
     }
 
+    @objc private func customize() { ShortcutsWindowController.shared.show() }
+
     @objc private func dragToggled() {
         let on = dragCheckbox.state == .on
         if on && !accessibility() { AccessibilityAccess.request() }
@@ -779,18 +781,18 @@ final class WindowActionsFeature: BetaFeature {
     @objc private func openAccessibility() { AccessibilityAccess.openSettings() }
 
     /// The shortcuts as text, in the order they are listed.
-    static func shortcutList() -> String {
-        WindowAction.allCases.map { "\($0.title) \($0.shortcut.label)" }.joined(separator: "   ·   ")
+    static func shortcutList(store: ShortcutStore = .shared) -> String {
+        WindowAction.allCases.map { "\($0.title) \(store.shortcut(for: $0.command)?.label ?? "—")" }.joined(separator: "   ·   ")
     }
 
     func refresh() {
         let on = settings.windowSnapperEnabled
         let allowed = accessibility()
-        let taken = on ? unavailable() : []
         enableCheckbox.state = on ? .on : .off
         status.isHidden = !on
         accessButton.isHidden = !on || allowed
         shortcuts.isHidden = !on
+        customizeButton.isHidden = !on
         shortcuts.stringValue = Self.shortcutList()
         dragCheckbox.state = settings.windowDragSnapEnabled ? .on : .off
         let nativeOn = settings.windowDragSnapEnabled && nativeTiling()
@@ -804,13 +806,9 @@ final class WindowActionsFeature: BetaFeature {
         if !allowed {
             status.stringValue = "Accessibility: not allowed yet, so windows cannot be moved. Allow Anode in Accessibility."
             status.textColor = .systemOrange
-        } else if !taken.isEmpty {
-            status.stringValue = "\(taken.count) of these shortcuts belong to another app already (Rectangle, probably): "
-                + taken.prefix(4).map(\.title).joined(separator: ", ") + (taken.count > 4 ? ", …" : "")
-                + ". Quit it to use them here."
-            status.textColor = .systemOrange
         } else {
-            status.stringValue = "Accessibility: allowed. These shortcuts are claimed while this is on."
+            status.stringValue = "Accessibility: allowed. These shortcuts are yours to change, and they win over macOS's "
+                + "and other apps' shortcuts while this is on."
             status.textColor = .secondaryLabelColor
         }
         layoutChanged?()
@@ -844,6 +842,7 @@ final class WindowGroupsFeature: BetaFeature {
     let rememberButton = NSButton(title: "Remember layout", target: nil, action: nil)
     let dissolveButton = NSButton(title: "Dissolve all", target: nil, action: nil)
     let shortcuts = BetaFeaturesWindowController.wrapping("", color: .secondaryLabelColor)
+    let customizeButton = NSButton(title: "Customize shortcuts…", target: nil, action: nil)
     private let buttons: NSStackView
 
     init(settings: Settings = .shared,
@@ -873,7 +872,11 @@ final class WindowGroupsFeature: BetaFeature {
         buttons.orientation = .vertical
         buttons.alignment = .leading
         buttons.spacing = 4
-        let column = NSStackView(views: [enableCheckbox, status, accessButton, groupList, buttons, shortcuts])
+        customizeButton.target = self
+        customizeButton.action = #selector(customize)
+        customizeButton.bezelStyle = .rounded
+        customizeButton.controlSize = .small
+        let column = NSStackView(views: [enableCheckbox, status, accessButton, groupList, buttons, shortcuts, customizeButton])
         column.orientation = .vertical
         column.alignment = .leading
         column.spacing = 8
@@ -891,6 +894,7 @@ final class WindowGroupsFeature: BetaFeature {
     }
 
     @objc private func openAccessibility() { AccessibilityAccess.openSettings() }
+    @objc private func customize() { ShortcutsWindowController.shared.show() }
     @objc private func group() { controller()?.toggleGroup(); refresh() }
     @objc private func add() { controller()?.addToCurrentGroup(); refresh() }
     @objc private func remove() { controller()?.removeFromGroup(); refresh() }
@@ -898,8 +902,8 @@ final class WindowGroupsFeature: BetaFeature {
     @objc private func remember() { controller()?.rememberLayout(); refresh() }
     @objc private func dissolve() { controller()?.dissolveAll(); refresh() }
 
-    static func shortcutList() -> String {
-        GroupAction.allCases.map { "\($0.title) \($0.shortcut.label)" }.joined(separator: "   ·   ")
+    static func shortcutList(store: ShortcutStore = .shared) -> String {
+        GroupAction.allCases.map { "\($0.title) \(store.shortcut(for: $0.command)?.label ?? "—")" }.joined(separator: "   ·   ")
     }
 
     func refresh() {
@@ -913,13 +917,10 @@ final class WindowGroupsFeature: BetaFeature {
         groupList.isHidden = !on
         buttons.isHidden = !on
         shortcuts.isHidden = !on
+        customizeButton.isHidden = !on
         shortcuts.stringValue = Self.shortcutList()
-        let taken = on ? (c?.unavailable ?? []) : []
         if !allowed {
             status.stringValue = "Accessibility: not allowed yet, so windows cannot be raised. Allow Anode in Accessibility."
-            status.textColor = .systemOrange
-        } else if !taken.isEmpty {
-            status.stringValue = "\(taken.count) of these shortcuts belong to another app already."
             status.textColor = .systemOrange
         } else {
             status.stringValue = "The buttons act on the last window you were in outside Anode."

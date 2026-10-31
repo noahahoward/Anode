@@ -172,11 +172,6 @@ final class WindowGroupController {
     private var settingToken: AnyObject?
     private var activationToken: NSObjectProtocol?
     private var clickMonitor: Any?
-    private lazy var keys = HotKeyRegistrar(signature: 0x414E5347 /* "ANSG" */) { [weak self] index in
-        guard let self, GroupAction.allCases.indices.contains(index) else { return }
-        self.perform(GroupAction.allCases[index])
-    }
-
     private(set) var store = WindowGroupStore()
     private var lastFront: CGWindowID?
     /// The last window in front that was not Anode's own: what the Beta Features buttons act on, since
@@ -184,7 +179,8 @@ final class WindowGroupController {
     private(set) var lastOutsideFront: TrackedWindow?
     /// The group most recently made or brought forward: where "add to the current group" adds.
     private(set) var currentGroupID: Int?
-    private(set) var unavailable: [GroupAction] = []
+    private var keysOn = false
+    private static let owner = "windowGroups"
     /// Called when the groups change, so the Beta Features section can show them.
     var onChange: (() -> Void)?
 
@@ -200,16 +196,18 @@ final class WindowGroupController {
 
     deinit { stop() }
 
-    var isRunning: Bool { keys.isRegistered }
+    var isRunning: Bool { keysOn }
 
     func apply() {
         if settings.windowGroupsEnabled { start() } else { stop() }
     }
 
     private func start() {
-        guard !keys.isRegistered else { return }
-        let failed = keys.register(GroupAction.allCases.map { .init(key: $0.shortcut.key, modifiers: $0.shortcut.modifiers) })
-        unavailable = failed.map { GroupAction.allCases[$0] }
+        guard !keysOn else { return }
+        KeybindCenter.shared.register(owner: Self.owner, commands: ShortcutCommands.groups) { [weak self] id in
+            if let action = GroupAction.allCases.first(where: { $0.commandID == id }) { self?.perform(action) }
+        }
+        keysOn = true
         activationToken = NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main
         ) { [weak self] _ in self?.checkFrontSoon() }
@@ -218,8 +216,8 @@ final class WindowGroupController {
     }
 
     private func stop() {
-        keys.unregister()
-        unavailable = []
+        KeybindCenter.shared.unregister(owner: Self.owner)
+        keysOn = false
         if let activationToken { NSWorkspace.shared.notificationCenter.removeObserver(activationToken) }
         activationToken = nil
         if let clickMonitor { NSEvent.removeMonitor(clickMonitor) }
