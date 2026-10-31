@@ -65,7 +65,7 @@ final class ShortcutRecorderButton: NSButton {
 /// A mock screen: a rounded outline with a menu bar strip, drawn inside a view. Both pictures below sit on one.
 class MockScreenView: NSView {
     override var isFlipped: Bool { true }
-    override var intrinsicContentSize: NSSize { NSSize(width: NSView.noIntrinsicMetric, height: 170) }
+    override var intrinsicContentSize: NSSize { NSSize(width: NSView.noIntrinsicMetric, height: 200) }
 
     /// The screen, 16:10, as large as fits and centred.
     var screenRect: CGRect {
@@ -110,7 +110,7 @@ final class ScreenPreviewView: MockScreenView {
         let w = CGRect(x: usable.minX + lit.minX * usable.width, y: usable.minY + lit.minY * usable.height,
                        width: lit.width * usable.width, height: lit.height * usable.height).insetBy(dx: 3, dy: 3)
         let path = NSBezierPath(roundedRect: w, xRadius: 5, yRadius: 5)
-        NSColor.controlAccentColor.withAlphaComponent(0.85).setFill()
+        NSColor.systemBlue.withAlphaComponent(0.9).setFill()
         path.fill()
         // The window's title bar.
         NSColor.white.withAlphaComponent(0.35).setFill()
@@ -158,14 +158,14 @@ final class ZonePickerView: MockScreenView {
     var onClick: ((SnapZone) -> Void)?
     private var hovered: SnapZone? { didSet { if hovered != oldValue { needsDisplay = true; updateTip() } } }
 
-    override var intrinsicContentSize: NSSize { NSSize(width: NSView.noIntrinsicMetric, height: 190) }
+    override var intrinsicContentSize: NSSize { NSSize(width: NSView.noIntrinsicMetric, height: 220) }
 
     override func draw(_ dirtyRect: NSRect) {
         drawScreen()
         for (zone, rect) in ZoneShapes.rects(in: screenRect) {
             let owner = map.action(for: zone)
             var color: NSColor
-            if let action, owner == action { color = .controlAccentColor }
+            if let action, owner == action { color = .systemBlue }
             else if owner != nil { color = NSColor.labelColor.withAlphaComponent(0.35) }
             else { color = NSColor.labelColor.withAlphaComponent(0.12) }
             if zone == hovered { color = color.blended(withFraction: 0.3, of: .white) ?? color }
