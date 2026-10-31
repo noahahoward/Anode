@@ -385,6 +385,23 @@ final class UninstallPlanTests: XCTestCase {
             .contains("\(home)/Library/HTTPStorages/dev.anode.app"))
     }
 
+    /// The cache folder macOS keeps under /var/folders, and the lock files `swift build` leaves
+    /// there for the installer's clone, are listed — the latter only when the clone is.
+    func testThePerUserCacheAndBuildLocksAreListed() {
+        let plan = Uninstall.plan(removingData: false, home: home, cacheDirectory: "/var/C/",
+                                  tempDirectory: "/var/T/", exists: allExist)
+        XCTAssertTrue(plan.systemFiles.contains("/var/C/dev.anode.app"))
+        XCTAssertTrue(plan.systemFiles.contains(
+            "/var/T/_Users_someone_Developer_Anode_.build.lock"))
+        XCTAssertTrue(plan.systemFiles.contains(
+            "/var/T/_Users_someone_Developer_Anode_.build_workspace-state.json.lock"))
+
+        let noClone = Uninstall.plan(removingData: false, home: home, cacheDirectory: "/var/C/",
+                                     tempDirectory: "/var/T/") { !$0.hasSuffix(".git") }
+        XCTAssertFalse(noClone.systemFiles.contains { $0.hasSuffix(".build.lock") },
+                       "locks for a clone that is staying were listed")
+    }
+
     /// The clone the installer made is listed; a working copy elsewhere is not.
     func testOnlyTheInstallersCloneIsListed() {
         let plan = Uninstall.plan(removingData: false, home: home, exists: allExist)

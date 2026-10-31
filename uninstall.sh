@@ -39,6 +39,10 @@ INSTALLED_SRC="$HOME/Developer/Anode"
 # Settings domains: the named suite, the one before the rename, and the bundle
 # identifiers (now and before the rename) — the last is where the app's window
 # frame and menu bar widgets live. Kept in step with Uninstall.defaultsDomainNames.
+# macOS's per-user cache and temp folders (under /var/folders). Each ends in a
+# slash. Empty if getconf cannot say, which turns the entries below into nothing.
+USER_CACHE_DIR="$(getconf DARWIN_USER_CACHE_DIR 2>/dev/null || true)"
+USER_TEMP_DIR="$(getconf DARWIN_USER_TEMP_DIR 2>/dev/null || true)"
 DOMAINS=(com.anode.settings com.betterstats.settings dev.anode.app dev.noah.anode)
 
 # Candidates, existence-checked below. Quoted throughout: every one of these
@@ -61,6 +65,13 @@ CANDIDATES=(
   "$HOME/Library/Saved Application State/dev.anode.app.savedState"
   "$HOME/Library/Logs/dev.anode.app"
 )
+# The cache folder macOS keeps for the app, under its old identifiers too.
+# Kept in step with Uninstall.userCacheFolders.
+if [ -n "$USER_CACHE_DIR" ]; then
+  for id in dev.anode.app dev.noah.anode dev.noah.betterstats; do
+    CANDIDATES+=("${USER_CACHE_DIR}${id}")
+  done
+fi
 if [ "$REMOVE_DATA" = "1" ]; then
   CANDIDATES+=(
     "$SUPPORT/history.sqlite"
@@ -96,6 +107,13 @@ if [ -d "$INSTALLED_SRC/.git" ]; then
     KEPT_CHECKOUT="has commits that are not on its upstream (or no upstream to check)"
   else
     FOUND+=("$INSTALLED_SRC")
+    # `swift build` leaves lock files in the temp folder, named from the clone's
+    # path with the slashes turned into underscores. They go with the clone.
+    if [ -n "$USER_TEMP_DIR" ]; then
+      for lock in "${USER_TEMP_DIR}${INSTALLED_SRC//\//_}_.build"*.lock; do
+        [ -e "$lock" ] && FOUND+=("$lock")
+      done
+    fi
   fi
 fi
 

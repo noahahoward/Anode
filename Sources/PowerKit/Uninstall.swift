@@ -65,6 +65,29 @@ public enum Uninstall {
                 "Library/Logs/\(id)"].map { "\(home)/\($0)" }
     }
 
+    /// macOS's per-user cache folder for the app, which it keeps under /var/folders and which
+    /// the Library folder never shows. `cacheDirectory` ends in a slash, as `getconf` gives it.
+    public static func userCacheFolders(cacheDirectory: String) -> [String] {
+        ["dev.anode.app", "dev.noah.anode", "dev.noah.betterstats"].map { cacheDirectory + $0 }
+    }
+
+    /// The lock files `swift build` leaves in the per-user temp folder for the clone `install.sh`
+    /// made: its path with the slashes turned into underscores, then `_.build…lock`. The script
+    /// matches `_.build*.lock`; these are the names seen.
+    public static func buildLockFiles(checkout: String, tempDirectory: String) -> [String] {
+        let stem = tempDirectory + checkout.replacingOccurrences(of: "/", with: "_")
+        return ["_.build.lock", "_.build_workspace-state.json.lock",
+                "_.build_index-build.lock", "_.build_index-build_workspace-state.json.lock"]
+            .map { stem + $0 }
+    }
+
+    /// One of macOS's per-user folders (`_CS_DARWIN_USER_CACHE_DIR`, …), with its trailing slash.
+    public static func userDirectory(_ name: Int32) -> String {
+        var buffer = [Int8](repeating: 0, count: Int(PATH_MAX))
+        guard Foundation.confstr(name, &buffer, buffer.count) > 0 else { return "" }
+        return String(cString: buffer)
+    }
+
     /// Where `install.sh` clones to unless told otherwise.
     public static func installedCheckoutDirectory(home: String) -> String {
         "\(home)/Developer/Anode"
@@ -83,6 +106,8 @@ public enum Uninstall {
     /// the suite except one.
     public static func plan(removingData: Bool,
                             home: String = NSHomeDirectory(),
+                            cacheDirectory: String = userDirectory(_CS_DARWIN_USER_CACHE_DIR),
+                            tempDirectory: String = userDirectory(_CS_DARWIN_USER_TEMP_DIR),
                             exists: (String) -> Bool = { FileManager.default.fileExists(atPath: $0) })
     -> Plan {
         var plan = Plan()
@@ -101,6 +126,9 @@ public enum Uninstall {
             .filter(exists)
 
         plan.systemFiles = systemFileLocations(home: home).filter(exists)
+        if !cacheDirectory.isEmpty {
+            plan.systemFiles += userCacheFolders(cacheDirectory: cacheDirectory).filter(exists)
+        }
 
         if removingData {
             plan.data = ["\(support)/history.sqlite", "\(support)/history.sqlite-wal",
@@ -126,7 +154,13 @@ public enum Uninstall {
         }
 
         let checkout = installedCheckoutDirectory(home: home)
-        if exists("\(checkout)/.git") { plan.installedCheckout = checkout }
+        if exists("\(checkout)/.git") {
+            plan.installedCheckout = checkout
+            if !tempDirectory.isEmpty {
+                plan.systemFiles += buildLockFiles(checkout: checkout, tempDirectory: tempDirectory)
+                    .filter(exists)
+            }
+        }
 
         if exists("/Library/LaunchDaemons/\(FanDaemon.label).plist") {
             plan.rootDaemonCommand = FanDaemon.uninstallCommand(for: [FanDaemon.label])
