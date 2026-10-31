@@ -20,17 +20,26 @@ public enum Uninstall {
         public var loginAgents: [String] = []
         /// Scripts this app wrote into Application Support.
         public var scripts: [String] = []
+        /// What macOS itself keeps for this bundle identifier — caches, the
+        /// saved window state, WebKit and network storage. Not data: nothing in
+        /// it is the user's, so it goes whatever they decide about history.
+        public var systemFiles: [String] = []
         /// History and settings. Only with `removingData`, because a reinstall
         /// that lost a month of measurements would be its own bug report.
         public var data: [String] = []
         public var defaultsDomains: [String] = []
+        /// The clone `install.sh` made. Only that one: a checkout anywhere else
+        /// is somebody's working copy and is never listed. Even this one is
+        /// removed by the script only if it has no uncommitted or unpushed work,
+        /// which a plan built from file existence cannot know.
+        public var installedCheckout: String?
         /// SHOWN, never run. Removing it needs root, and this project's rule is
         /// that anything needing root is a command the user reads and types.
         public var rootDaemonCommand: String?
 
         public var isEmpty: Bool {
-            appBundle == nil && loginAgents.isEmpty && scripts.isEmpty
-                && data.isEmpty && defaultsDomains.isEmpty
+            appBundle == nil && loginAgents.isEmpty && scripts.isEmpty && systemFiles.isEmpty
+                && data.isEmpty && defaultsDomains.isEmpty && installedCheckout == nil
         }
     }
 
@@ -44,6 +53,30 @@ public enum Uninstall {
     public static func supportDirectory(home: String) -> String {
         "\(home)/Library/Application Support/Anode"
     }
+
+    /// Per-bundle-identifier folders macOS creates on an app's behalf, relative to
+    /// the home directory. Existence-checked, so listing one that this machine
+    /// never made costs nothing.
+    public static func systemFileLocations(home: String) -> [String] {
+        let id = "dev.anode.app"
+        return ["Library/Caches/\(id)", "Library/HTTPStorages/\(id)",
+                "Library/HTTPStorages/\(id).binarycookies", "Library/WebKit/\(id)",
+                "Library/Saved Application State/\(id).savedState",
+                "Library/Logs/\(id)"].map { "\(home)/\($0)" }
+    }
+
+    /// Where `install.sh` clones to unless told otherwise.
+    public static func installedCheckoutDirectory(home: String) -> String {
+        "\(home)/Developer/Anode"
+    }
+
+    /// Settings domains, newest first. `dev.anode.app` is the bundle identifier,
+    /// which is where the app's own `UserDefaults.standard` lands (the window
+    /// frame, the menu bar widgets, the charge limit). The other two are the
+    /// named suite and the one before the rename; `dev.noah.anode` is the
+    /// bundle identifier from before that.
+    public static let defaultsDomainNames = [Settings.suiteName, Settings.previousSuiteName,
+                                              "dev.anode.app", "dev.noah.anode"]
 
     /// Build the plan. `exists` is injected so this can be tested against a
     /// machine that does not have any of it — which is every machine running
@@ -63,25 +96,37 @@ public enum Uninstall {
         let support = supportDirectory(home: home)
         // The two scripts this app writes for Terminal to run. They go whatever
         // the user decides about data, because they are not data.
-        plan.scripts = ["\(support)/update.command", "\(support)/start-fan-helper.command"]
+        plan.scripts = ["\(support)/update.command", "\(support)/start-fan-helper.command",
+                        "\(support)/uninstall.command"]
             .filter(exists)
+
+        plan.systemFiles = systemFileLocations(home: home).filter(exists)
 
         if removingData {
             plan.data = ["\(support)/history.sqlite", "\(support)/history.sqlite-wal",
                          "\(support)/history.sqlite-shm", "\(support)/discharge-trend.json",
-                         "\(support)/lifetime-drain.json"]
+                         "\(support)/lifetime-drain.json",
+                         "\(support)/dock-previews.log", "\(support)/update.log",
+                         "\(support)/widget-squeeze.log", "\(support)/window-stranding.log"]
                 .filter(exists)
-            // Both domains: a machine that predates the rename still has the old
-            // one, and leaving it means a reinstall silently inherits settings
+            // The directory itself, last, with whatever else a version of the app
+            // put in it — a list of file names goes stale the day a feature adds
+            // one. It is Anode's own folder, so nothing in it is anyone else's.
+            if exists(support) { plan.data.append(support) }
+            // Every domain: a machine that predates the rename still has the old
+            // ones, and leaving them means a reinstall silently inherits settings
             // from an app the user thought they removed.
             //
             // Existence-checked like everything else. Listing a domain that is
             // not there made a clean machine report that it was about to remove
             // settings, which is both untrue and the exact impression an
             // uninstaller must not give.
-            plan.defaultsDomains = [Settings.suiteName, Settings.previousSuiteName]
+            plan.defaultsDomains = defaultsDomainNames
                 .filter { exists("\(home)/Library/Preferences/\($0).plist") }
         }
+
+        let checkout = installedCheckoutDirectory(home: home)
+        if exists("\(checkout)/.git") { plan.installedCheckout = checkout }
 
         if exists("/Library/LaunchDaemons/\(FanDaemon.label).plist") {
             plan.rootDaemonCommand = FanDaemon.uninstallCommand(for: [FanDaemon.label])
@@ -99,6 +144,7 @@ public enum Uninstall {
         if let app = plan.appBundle { lines.append("• \(app)") }
         for a in plan.loginAgents { lines.append("• \(a)") }
         for s in plan.scripts { lines.append("• \(s)") }
+        for f in plan.systemFiles { lines.append("• \(f)") }
         for d in plan.data { lines.append("• \(d)") }
         for d in plan.defaultsDomains { lines.append("• settings: \(d)") }
         if !removingData && plan.data.isEmpty {
@@ -109,8 +155,12 @@ public enum Uninstall {
             lines.append("\nThe fan helper runs as root and cannot be removed from here. "
                        + "The command to remove it is printed at the end.")
         }
-        lines.append("\nThe source checkout is never touched — delete it yourself "
-                   + "if you want it gone.")
+        if let checkout = plan.installedCheckout {
+            lines.append("• \(checkout)  (the copy the installer cloned — only if it has "
+                       + "no uncommitted or unpushed changes)")
+        }
+        lines.append("\nA source checkout anywhere else is never touched — delete it "
+                   + "yourself if you want it gone.")
         return lines.joined(separator: "\n")
     }
 }

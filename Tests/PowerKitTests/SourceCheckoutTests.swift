@@ -363,12 +363,34 @@ final class UninstallPlanTests: XCTestCase {
         XCTAssertTrue(wiped.data.contains { $0.hasSuffix("history.sqlite-shm") })
     }
 
-    /// Both settings domains, or a reinstall inherits preferences from an app
-    /// the user believes they removed.
-    func testBothSettingsDomainsGo() {
+    /// Every settings domain, or a reinstall inherits preferences from an app
+    /// the user believes they removed. `dev.anode.app` is the one the app's own
+    /// window frame and menu bar widgets are stored in, and was missing.
+    func testEverySettingsDomainGoes() {
         let plan = Uninstall.plan(removingData: true, home: home, exists: allExist)
         XCTAssertTrue(plan.defaultsDomains.contains(Settings.suiteName))
         XCTAssertTrue(plan.defaultsDomains.contains(Settings.previousSuiteName))
+        XCTAssertTrue(plan.defaultsDomains.contains("dev.anode.app"))
+        XCTAssertTrue(plan.defaultsDomains.contains("dev.noah.anode"))
+    }
+
+    /// What macOS keeps for the bundle identifier is not data, so it goes even
+    /// when history is kept — and it is spelled out in the summary.
+    func testSystemFilesGoWhateverHappensToData() {
+        let plan = Uninstall.plan(removingData: false, home: home, exists: allExist)
+        XCTAssertTrue(plan.systemFiles.contains("\(home)/Library/Caches/dev.anode.app"))
+        XCTAssertTrue(plan.systemFiles.contains(
+            "\(home)/Library/Saved Application State/dev.anode.app.savedState"))
+        XCTAssertTrue(Uninstall.summary(plan, removingData: false)
+            .contains("\(home)/Library/HTTPStorages/dev.anode.app"))
+    }
+
+    /// The clone the installer made is listed; a working copy elsewhere is not.
+    func testOnlyTheInstallersCloneIsListed() {
+        let plan = Uninstall.plan(removingData: false, home: home, exists: allExist)
+        XCTAssertEqual(plan.installedCheckout, "\(home)/Developer/Anode")
+        let elsewhere = Uninstall.plan(removingData: false, home: home) { $0 != "\(home)/Developer/Anode/.git" }
+        XCTAssertNil(elsewhere.installedCheckout)
     }
 
     /// Every login agent label this app has ever used — one left behind still
@@ -406,7 +428,8 @@ final class UninstallPlanTests: XCTestCase {
         let plan = Uninstall.plan(removingData: false, home: home, exists: allExist)
         let text = Uninstall.summary(plan, removingData: false)
         XCTAssertTrue(text.contains("\(home)/Applications/Anode.app"))
-        XCTAssertTrue(text.contains("source checkout is never touched"))
+        XCTAssertTrue(text.contains("\(home)/Developer/Anode"), "does not name the installer's clone")
+        XCTAssertTrue(text.contains("anywhere else is never touched"))
         XCTAssertTrue(text.contains("KEPT"), "does not say history survives")
     }
 

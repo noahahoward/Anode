@@ -48,23 +48,42 @@ cp "$BUILT_HELPER" "$APP/Contents/MacOS/$HELPER"
 #   AppIcon.icns  flattened classic icon, used by older macOS and by anything
 #                 reading the bundle directly (Finder on older systems, dock tiles)
 # Shipping both means the icon degrades gracefully instead of vanishing.
+#
+# actool only comes with full Xcode. The install one-liner is meant to work with
+# just the Command Line Tools, where `xcrun --find actool` fails — and the icon
+# used to silently become the generic one. So the same two files, compiled once
+# by ./make-icon.sh, are committed in Resources/PrebuiltIcon and copied when
+# actool is missing. ANODE_NO_ACTOOL=1 forces that path, to test it.
 ICON_OK=0
-if [ -d "$ICON" ]; then
+PREBUILT="Resources/PrebuiltIcon"
+if [ -d "$ICON" ] && [ "${ANODE_NO_ACTOOL:-0}" != "1" ] && xcrun --find actool >/dev/null 2>&1; then
   echo "› compiling icon…"
+  ACTOOL_LOG="$(mktemp)"
   if xcrun actool "$ICON" \
         --compile "$APP/Contents/Resources" \
         --platform macosx \
         --minimum-deployment-target 26.0 \
         --app-icon AppIcon \
         --output-partial-info-plist "$APP/Contents/Resources/.icon-partial.plist" \
-        --errors --warnings >/dev/null 2>&1; then
+        --errors --warnings >"$ACTOOL_LOG" 2>&1; then
     ICON_OK=1
     rm -f "$APP/Contents/Resources/.icon-partial.plist"
   else
-    echo "  ! actool failed — bundle will use the default icon"
+    echo "  ! actool failed:"
+    sed 's/^/    /' "$ACTOOL_LOG"
   fi
+  rm -f "$ACTOOL_LOG"
 else
-  echo "  ! $ICON not found — skipping icon"
+  [ "${ANODE_NO_ACTOOL:-0}" = "1" ] || echo "  (actool not found — it comes with full Xcode; using the prebuilt icon)"
+fi
+if [ "$ICON_OK" != "1" ]; then
+  if [ -f "$PREBUILT/AppIcon.icns" ] && [ -f "$PREBUILT/Assets.car" ]; then
+    echo "› using prebuilt icon…"
+    cp "$PREBUILT/AppIcon.icns" "$PREBUILT/Assets.car" "$APP/Contents/Resources/"
+    ICON_OK=1
+  else
+    echo "  ! no compiled icon and no $PREBUILT — bundle will use the default icon"
+  fi
 fi
 
 # ── Documentation ───────────────────────────────────────────────────────────
