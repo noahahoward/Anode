@@ -298,6 +298,13 @@ final class DockPreviews {
     private var retryTimer: Timer?
     private var observer: AXObserver?
     private var dockList: AXUIElement?
+    /// The Dock process the observer is attached to, and how many hover events it has delivered since.
+    private var attachedPID: pid_t?
+    private var eventsSinceAttach = 0
+    private var healthTimer: Timer?
+    private var lastUnmatched: String?
+    /// Looked at from time to time while attached: see `healthCheck`.
+    static let healthInterval: TimeInterval = 5
 
     private var pending: Hover?
     private var shown: Hover?
@@ -397,37 +404,82 @@ final class DockPreviews {
         }
     }
 
+    static func log(_ text: String) { FeatureLog.append("dock-previews.log", text) }
+
     private func attach() {
-        guard AccessibilityAccess.isTrusted,
-              let dock = NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.dock").first
-        else { return }
+        guard AccessibilityAccess.isTrusted else { return logOnce("attach: Accessibility not granted yet") }
+        guard let dock = NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.dock").first
+        else { return logOnce("attach: no Dock process") }
         let app = AXUIElementCreateApplication(dock.processIdentifier)
         var children: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(app, kAXChildrenAttribute as CFString, &children) == .success,
-              let list = (children as? [AXUIElement])?.first(where: { Self.role(of: $0) == kAXListRole })
-        else { return }
+        let read = AXUIElementCopyAttributeValue(app, kAXChildrenAttribute as CFString, &children)
+        guard read == .success, let list = (children as? [AXUIElement])?.first(where: { Self.role(of: $0) == kAXListRole })
+        else { return logOnce("attach: the Dock's icon list is not readable (AX error \(read.rawValue))") }
         var made: AXObserver?
-        guard AXObserverCreate(dock.processIdentifier, dockObserverCallback, &made) == .success, let made,
-              AXObserverAddNotification(made, list, kAXSelectedChildrenChangedNotification as CFString,
-                                        Unmanaged.passUnretained(self).toOpaque()) == .success
-        else { return }
-        CFRunLoopAddSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(made), .defaultMode)
+        let created = AXObserverCreate(dock.processIdentifier, dockObserverCallback, &made)
+        guard created == .success, let made else { return logOnce("attach: AXObserverCreate failed (\(created.rawValue))") }
+        let added = AXObserverAddNotification(made, list, kAXSelectedChildrenChangedNotification as CFString,
+                                              Unmanaged.passUnretained(self).toOpaque())
+        guard added == .success else { return logOnce("attach: AXObserverAddNotification failed (\(added.rawValue))") }
+        // Common modes, not just the default one: in a tracking mode (a menu open, a drag) a source that is
+        // only in the default mode is not serviced, and the hover events wait.
+        CFRunLoopAddSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(made), .commonModes)
         observer = made
         dockList = list
+        attachedPID = dock.processIdentifier
+        eventsSinceAttach = 0
+        lastAttachFailure = nil
         iconClickMonitor = NSEvent.addGlobalMonitorForEvents(matching: .leftMouseUp) { [weak self] _ in
             self?.iconClicked()
+        }
+        healthTimer?.invalidate()
+        healthTimer = Timer.scheduledTimer(withTimeInterval: Self.healthInterval, repeats: true) { [weak self] _ in
+            self?.healthCheck()
+        }
+        Self.log("attached to the Dock (pid \(dock.processIdentifier))")
+    }
+
+    /// A failure is written once, not every two seconds while it persists.
+    private var lastAttachFailure: String?
+    private func logOnce(_ text: String) {
+        guard lastAttachFailure != text else { return }
+        lastAttachFailure = text
+        Self.log(text)
+    }
+
+    /// Should the connection to the Dock be made again? When the Dock is a different process from the
+    /// one attached to (it was restarted and the launch was missed), or its icon list no longer answers
+    /// (the observer is listening to something that no longer exists). Pure, for tests.
+    static func shouldReattach(attachedPID: pid_t?, currentPID: pid_t?, listAnswers: Bool) -> Bool {
+        guard let attachedPID else { return false }
+        return currentPID != attachedPID || !listAnswers
+    }
+
+    private func healthCheck() {
+        guard observer != nil, let dockList else { return }
+        let currentPID = NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.dock").first?.processIdentifier
+        var role: CFTypeRef?
+        let answers = AXUIElementCopyAttributeValue(dockList, kAXRoleAttribute as CFString, &role) == .success
+        if Self.shouldReattach(attachedPID: attachedPID, currentPID: currentPID, listAnswers: answers) {
+            Self.log("health check: stale connection (attached pid \(attachedPID.map(String.init) ?? "?"), Dock pid "
+                     + "\(currentPID.map(String.init) ?? "none"), list answers: \(answers)); attaching again")
+            detach()
+            apply()
         }
     }
 
     private func detach() {
         retryTimer?.invalidate()
         retryTimer = nil
+        healthTimer?.invalidate()
+        healthTimer = nil
         hide()
         if let observer {
-            CFRunLoopRemoveSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(observer), .defaultMode)
+            CFRunLoopRemoveSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(observer), .commonModes)
         }
         observer = nil
         dockList = nil
+        attachedPID = nil
         if let iconClickMonitor { NSEvent.removeMonitor(iconClickMonitor) }
         iconClickMonitor = nil
     }
@@ -472,6 +524,8 @@ final class DockPreviews {
     // ── Hover ───────────────────────────────────────────────────────────────
 
     fileprivate func selectionChanged() {
+        eventsSinceAttach += 1
+        if eventsSinceAttach == 1 { Self.log("first hover event since attaching") }
         // Which app, NOT whether the pointer is on its icon yet. With an auto-hiding Dock this
         // arrives at the first touch of the screen edge, while the Dock still reports its icons
         // below the screen (measured: icon top 1174, pointer 1167), and no second notification
@@ -525,7 +579,14 @@ final class DockPreviews {
         guard let bundle = (url as? URL)?.standardizedFileURL,
               let app = NSWorkspace.shared.runningApplications.first(where: {
                   $0.bundleURL?.standardizedFileURL == bundle
-              }) else { return nil }
+              }) else {
+            // A running app's Dock icon that matches no running app: say so, once per distinct item.
+            if let url = url as? URL, url.path != lastUnmatched {
+                lastUnmatched = url.path
+                Self.log("hover: no running app matches the Dock item \(url.path)")
+            }
+            return nil
+        }
         let icon = Self.frame(of: item)
         guard !requirePointer || pointerIsOn(icon) else { return nil }
         return Hover(pid: app.processIdentifier, icon: icon)
