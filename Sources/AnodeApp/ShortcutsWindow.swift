@@ -62,118 +62,115 @@ final class ShortcutRecorderButton: NSButton {
 
 // ── Drawing ─────────────────────────────────────────────────────────────────
 
-/// A screen drawn as a grid of cells, with the part a window will take lit.
-final class RegionGridView: NSView {
-    static let cols = 18, rows = 12
-    /// The lit part, in cells (origin top-left); nil lights nothing.
+/// A mock screen: a rounded outline with a menu bar strip, drawn inside a view. Both pictures below sit on one.
+class MockScreenView: NSView {
+    override var isFlipped: Bool { true }
+    override var intrinsicContentSize: NSSize { NSSize(width: NSView.noIntrinsicMetric, height: 170) }
+
+    /// The screen, 16:10, as large as fits and centred.
+    var screenRect: CGRect {
+        let inset = bounds.insetBy(dx: 4, dy: 4)
+        let h = min(inset.height, inset.width / 1.6), w = h * 1.6
+        return CGRect(x: inset.midX - w / 2, y: inset.minY, width: w, height: h)
+    }
+
+    func drawScreen() {
+        let r = screenRect
+        let body = NSBezierPath(roundedRect: r, xRadius: 8, yRadius: 8)
+        NSColor.labelColor.withAlphaComponent(0.06).setFill()
+        body.fill()
+        NSColor.labelColor.withAlphaComponent(0.35).setStroke()
+        body.lineWidth = 1.5
+        body.stroke()
+        // The menu bar.
+        let bar = NSBezierPath(rect: CGRect(x: r.minX + 1, y: r.minY + 1, width: r.width - 2, height: max(5, r.height * 0.045)))
+        NSColor.labelColor.withAlphaComponent(0.18).setFill()
+        bar.fill()
+    }
+}
+
+/// Where an action puts a window, on a mock screen: the window is the lit rectangle.
+final class ScreenPreviewView: MockScreenView {
+    /// The window's share of the screen (0...1, origin top-left); nil draws an empty screen.
     var lit: CGRect? { didSet { needsDisplay = true } }
 
-    override var isFlipped: Bool { true }
-    override var intrinsicContentSize: NSSize { NSSize(width: NSView.noIntrinsicMetric, height: 190) }
-
-    /// The cells `action` takes on an empty screen of `cols` x `rows`: the same geometry that places real windows.
+    /// The part of an empty screen `action` takes, as shares of it: the same geometry that places real windows.
     static func region(for action: WindowAction) -> CGRect? {
-        let area = CGRect(x: 0, y: 0, width: cols, height: rows)
-        return WindowGeometry.frame(for: action, from: CGRect(x: 6, y: 3, width: 6, height: 6), in: area)
+        let area = CGRect(x: 0, y: 0, width: 1600, height: 1000)
+        guard let f = WindowGeometry.frame(for: action, from: CGRect(x: 500, y: 300, width: 600, height: 400), in: area) else { return nil }
+        return CGRect(x: f.minX / area.width, y: f.minY / area.height, width: f.width / area.width, height: f.height / area.height)
     }
 
     override func draw(_ dirtyRect: NSRect) {
-        let gap: CGFloat = 3
-        let cell = min((bounds.width - gap * CGFloat(Self.cols - 1)) / CGFloat(Self.cols),
-                       (bounds.height - gap * CGFloat(Self.rows - 1)) / CGFloat(Self.rows))
-        guard cell > 1 else { return }
-        let width = cell * CGFloat(Self.cols) + gap * CGFloat(Self.cols - 1)
-        let originX = (bounds.width - width) / 2
-        for r in 0..<Self.rows {
-            for c in 0..<Self.cols {
-                let on = lit.map { $0.contains(CGPoint(x: CGFloat(c) + 0.5, y: CGFloat(r) + 0.5)) } ?? false
-                (on ? NSColor.controlAccentColor : NSColor.labelColor.withAlphaComponent(0.16)).setFill()
-                let rect = NSRect(x: originX + CGFloat(c) * (cell + gap), y: CGFloat(r) * (cell + gap), width: cell, height: cell)
-                NSBezierPath(roundedRect: rect, xRadius: cell * 0.25, yRadius: cell * 0.25).fill()
-            }
-        }
+        drawScreen()
+        guard let lit else { return }
+        let s = screenRect
+        let bar = max(5, s.height * 0.045)
+        let usable = CGRect(x: s.minX, y: s.minY + bar, width: s.width, height: s.height - bar)
+        let w = CGRect(x: usable.minX + lit.minX * usable.width, y: usable.minY + lit.minY * usable.height,
+                       width: lit.width * usable.width, height: lit.height * usable.height).insetBy(dx: 3, dy: 3)
+        let path = NSBezierPath(roundedRect: w, xRadius: 5, yRadius: 5)
+        NSColor.controlAccentColor.withAlphaComponent(0.85).setFill()
+        path.fill()
+        // The window's title bar.
+        NSColor.white.withAlphaComponent(0.35).setFill()
+        NSBezierPath(roundedRect: CGRect(x: w.minX + 6, y: w.minY + 5, width: min(28, w.width - 12), height: 3), xRadius: 1.5, yRadius: 1.5).fill()
     }
 }
 
-/// Where a cell of the activation area's ring belongs. Pure, for tests.
-enum ZoneLayout {
-    static let cols = 18, rows = 10
+/// Where the edges and corners of a screen are, as shapes. Pure, for tests and for the picture.
+enum ZoneShapes {
+    /// The ten zones as rectangles inside `screen` (origin top-left): corners as squares, the left, right
+    /// and top edges between them, the bottom edge in three equal parts.
+    static func rects(in screen: CGRect, edge: CGFloat = 12, corner: CGFloat = 28) -> [(zone: SnapZone, rect: CGRect)] {
+        let inner = screen.insetBy(dx: 0, dy: 0)
+        let spanW = inner.width - 2 * corner, spanH = inner.height - 2 * corner
+        let third = spanW / 3
+        return [
+            (.topLeft, CGRect(x: inner.minX, y: inner.minY, width: corner, height: corner)),
+            (.topRight, CGRect(x: inner.maxX - corner, y: inner.minY, width: corner, height: corner)),
+            (.bottomLeft, CGRect(x: inner.minX, y: inner.maxY - corner, width: corner, height: corner)),
+            (.bottomRight, CGRect(x: inner.maxX - corner, y: inner.maxY - corner, width: corner, height: corner)),
+            (.top, CGRect(x: inner.minX + corner, y: inner.minY, width: spanW, height: edge)),
+            (.left, CGRect(x: inner.minX, y: inner.minY + corner, width: edge, height: spanH)),
+            (.right, CGRect(x: inner.maxX - edge, y: inner.minY + corner, width: edge, height: spanH)),
+            (.bottomFirst, CGRect(x: inner.minX + corner, y: inner.maxY - edge, width: third, height: edge)),
+            (.bottomCenter, CGRect(x: inner.minX + corner + third, y: inner.maxY - edge, width: third, height: edge)),
+            (.bottomLast, CGRect(x: inner.minX + corner + 2 * third, y: inner.maxY - edge, width: third, height: edge)),
+        ]
+    }
 
-    /// The zone the ring cell at `col`, `row` belongs to; nil for a cell inside the ring.
-    static func zone(col: Int, row: Int, cols: Int = ZoneLayout.cols, rows: Int = ZoneLayout.rows) -> SnapZone? {
-        guard col >= 0, col < cols, row >= 0, row < rows else { return nil }
-        let edgeCol = col == 0 || col == cols - 1, edgeRow = row == 0 || row == rows - 1
-        guard edgeCol || edgeRow else { return nil }
-        let nearL = col < 2, nearR = col >= cols - 2, nearT = row < 2, nearB = row >= rows - 2
-        if nearL && nearT { return .topLeft }
-        if nearR && nearT { return .topRight }
-        if nearL && nearB { return .bottomLeft }
-        if nearR && nearB { return .bottomRight }
-        if col == 0 { return .left }
-        if col == cols - 1 { return .right }
-        if row == 0 { return .top }
-        let third = col * 3 / cols
-        return third == 0 ? .bottomFirst : (third == 1 ? .bottomCenter : .bottomLast)
+    /// The zone under `point`; a little slack so the thin edges are easy to hit.
+    static func zone(at point: CGPoint, in screen: CGRect, slack: CGFloat = 4) -> SnapZone? {
+        let shapes = rects(in: screen)
+        // Corners first: they are the biggest targets and the edges stop short of them.
+        for (zone, rect) in shapes where rect.insetBy(dx: -slack, dy: -slack).contains(point) { return zone }
+        return nil
     }
 }
 
-/// The edges and corners of a screen, drawn as a ring of cells around dots: the ones that give the action
-/// being edited are lit, the ones that give another action are grey, the rest are dim. Click one to give it
-/// to the action, or take it away.
-final class ZoneGridView: NSView {
+/// A mock screen with its edges and corners drawn as shapes: the ones that give the action being edited
+/// are lit, the ones that give another action are grey, the rest are dim. Click one to give it to the
+/// action, or take it away.
+final class ZonePickerView: MockScreenView {
     var action: WindowAction? { didSet { needsDisplay = true } }
     var map = SnapZoneMap() { didSet { needsDisplay = true } }
     var onClick: ((SnapZone) -> Void)?
     private var hovered: SnapZone? { didSet { if hovered != oldValue { needsDisplay = true; updateTip() } } }
 
-    override var isFlipped: Bool { true }
-    override var intrinsicContentSize: NSSize { NSSize(width: NSView.noIntrinsicMetric, height: 150) }
-
-    private struct Metrics { let cell: CGFloat, gap: CGFloat, originX: CGFloat }
-
-    private var metrics: Metrics {
-        let gap: CGFloat = 3
-        let cell = min((bounds.width - gap * CGFloat(ZoneLayout.cols - 1)) / CGFloat(ZoneLayout.cols),
-                       (bounds.height - gap * CGFloat(ZoneLayout.rows - 1)) / CGFloat(ZoneLayout.rows))
-        let width = cell * CGFloat(ZoneLayout.cols) + gap * CGFloat(ZoneLayout.cols - 1)
-        return Metrics(cell: cell, gap: gap, originX: (bounds.width - width) / 2)
-    }
-
-    private func rect(_ c: Int, _ r: Int, _ m: Metrics) -> NSRect {
-        NSRect(x: m.originX + CGFloat(c) * (m.cell + m.gap), y: CGFloat(r) * (m.cell + m.gap), width: m.cell, height: m.cell)
-    }
-
-    /// The zone at a point of the view, or nil.
-    func zone(at point: NSPoint) -> SnapZone? {
-        let m = metrics
-        guard m.cell > 1 else { return nil }
-        for r in 0..<ZoneLayout.rows {
-            for c in 0..<ZoneLayout.cols where rect(c, r, m).insetBy(dx: -m.gap / 2, dy: -m.gap / 2).contains(point) {
-                return ZoneLayout.zone(col: c, row: r)
-            }
-        }
-        return nil
-    }
+    override var intrinsicContentSize: NSSize { NSSize(width: NSView.noIntrinsicMetric, height: 190) }
 
     override func draw(_ dirtyRect: NSRect) {
-        let m = metrics
-        guard m.cell > 1 else { return }
-        for r in 0..<ZoneLayout.rows {
-            for c in 0..<ZoneLayout.cols {
-                let box = rect(c, r, m)
-                guard let zone = ZoneLayout.zone(col: c, row: r) else {
-                    NSColor.labelColor.withAlphaComponent(0.35).setFill()
-                    NSBezierPath(ovalIn: NSRect(x: box.midX - 1.2, y: box.midY - 1.2, width: 2.4, height: 2.4)).fill()
-                    continue
-                }
-                let owner = map.action(for: zone)
-                let color: NSColor
-                if let action, owner == action { color = .controlAccentColor }
-                else if owner != nil { color = NSColor.labelColor.withAlphaComponent(0.30) }
-                else { color = NSColor.labelColor.withAlphaComponent(0.12) }
-                (zone == hovered ? color.blended(withFraction: 0.25, of: .white) ?? color : color).setFill()
-                NSBezierPath(roundedRect: box, xRadius: m.cell * 0.3, yRadius: m.cell * 0.3).fill()
-            }
+        drawScreen()
+        for (zone, rect) in ZoneShapes.rects(in: screenRect) {
+            let owner = map.action(for: zone)
+            var color: NSColor
+            if let action, owner == action { color = .controlAccentColor }
+            else if owner != nil { color = NSColor.labelColor.withAlphaComponent(0.35) }
+            else { color = NSColor.labelColor.withAlphaComponent(0.12) }
+            if zone == hovered { color = color.blended(withFraction: 0.3, of: .white) ?? color }
+            color.setFill()
+            NSBezierPath(roundedRect: rect.insetBy(dx: 1, dy: 1), xRadius: 4, yRadius: 4).fill()
         }
     }
 
@@ -183,6 +180,8 @@ final class ZoneGridView: NSView {
         addTrackingArea(NSTrackingArea(rect: bounds, options: [.mouseMoved, .mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect],
                                        owner: self, userInfo: nil))
     }
+
+    func zone(at point: NSPoint) -> SnapZone? { ZoneShapes.zone(at: point, in: screenRect) }
 
     override func mouseMoved(with event: NSEvent) { hovered = zone(at: convert(event.locationInWindow, from: nil)) }
     override func mouseExited(with event: NSEvent) { hovered = nil }
@@ -221,14 +220,14 @@ final class ShortcutsWindowController: NSWindowController, NSTableViewDataSource
     // The selected command's controls, so a change elsewhere can be shown without rebuilding them.
     private var recorder: ShortcutRecorderButton?
     private var note: NSTextField?
-    private var zoneGrid: ZoneGridView?
+    private var zoneGrid: ZonePickerView?
     private(set) var selectedID: String?
 
     init(store: ShortcutStore = .shared, prefs: WindowPrefs = .shared, commands: [ShortcutCommand] = ShortcutCommands.all) {
         self.store = store
         self.prefs = prefs
         self.commands = commands
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 760, height: 640),
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 760, height: min(760, (NSScreen.main?.visibleFrame.height ?? 800) - 60)),
                               styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
         window.title = "Window Actions & Shortcuts"
         window.isReleasedWhenClosed = false
@@ -446,8 +445,8 @@ final class ShortcutsWindowController: NSWindowController, NSTableViewDataSource
         let action = WindowAction.allCases.first { $0.commandID == command.id }
 
         if let action {
-            let grid = RegionGridView()
-            if let region = RegionGridView.region(for: action) { grid.lit = region }
+            let grid = ScreenPreviewView()
+            if let region = ScreenPreviewView.region(for: action) { grid.lit = region }
             var text = Self.describe(action)
             if prefs.cycles, let chain = WindowGeometry.cycle(for: action) {
                 text += " Press it again to step through " + chain.dropFirst().map { $0.title.lowercased() }.joined(separator: ", then ") + "."
@@ -472,9 +471,9 @@ final class ShortcutsWindowController: NSWindowController, NSTableViewDataSource
         buttons.spacing = 8
         views.append(CardView(title: "Keyboard shortcut", content: [buttons, note]))
 
-        var newZoneGrid: ZoneGridView?
+        var newZoneGrid: ZonePickerView?
         if let action, action.hasRegion {
-            let grid = ZoneGridView()
+            let grid = ZonePickerView()
             grid.action = action
             grid.map = prefs.zoneMap
             grid.onClick = { [weak self] zone in
@@ -554,7 +553,7 @@ final class ShortcutsWindowController: NSWindowController, NSTableViewDataSource
         case .previousDisplay: return "Sends the window to the previous display, keeping its place and share of the screen."
         case .center: return "Centers the window, keeping its size."
         case .maximizeHeight: return "Stretches the window to the full height of the screen, keeping its width."
-        default: return "The lit part of the screen is what the window takes."
+        default: return "The lit window is the part of the screen it takes."
         }
     }
 
@@ -613,7 +612,7 @@ final class CardView: NSView {
             stack.leadingAnchor.constraint(equalTo: leadingAnchor), stack.trailingAnchor.constraint(equalTo: trailingAnchor),
         ])
         // Wide things (the grids, the captions) fill the card.
-        for v in content where v is RegionGridView || v is ZoneGridView || v is NSTextField {
+        for v in content where v is MockScreenView || v is NSTextField {
             v.trailingAnchor.constraint(equalTo: stack.trailingAnchor, constant: -14).isActive = true
         }
         updateColors()

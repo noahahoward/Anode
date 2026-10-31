@@ -108,33 +108,34 @@ final class WindowLayoutPrefsTests: XCTestCase {
         XCTAssertEqual(SnapZone.allCases.count, 10)
     }
 
-    // ── The ring of cells ──
+    // ── The pictures ──
 
-    func testTheRingBelongsToTheZonesTheWayTheyAreLaidOut() {
-        let c = ZoneLayout.cols, r = ZoneLayout.rows
-        XCTAssertEqual(ZoneLayout.zone(col: 0, row: 0), .topLeft)
-        XCTAssertEqual(ZoneLayout.zone(col: 1, row: 0), .topLeft)
-        XCTAssertEqual(ZoneLayout.zone(col: 0, row: 1), .topLeft)
-        XCTAssertEqual(ZoneLayout.zone(col: c - 1, row: 0), .topRight)
-        XCTAssertEqual(ZoneLayout.zone(col: 0, row: r - 1), .bottomLeft)
-        XCTAssertEqual(ZoneLayout.zone(col: c - 1, row: r - 1), .bottomRight)
-        XCTAssertEqual(ZoneLayout.zone(col: 0, row: 5), .left)
-        XCTAssertEqual(ZoneLayout.zone(col: c - 1, row: 5), .right)
-        XCTAssertEqual(ZoneLayout.zone(col: 8, row: 0), .top)
-        XCTAssertEqual(ZoneLayout.zone(col: 3, row: r - 1), .bottomFirst)
-        XCTAssertEqual(ZoneLayout.zone(col: 9, row: r - 1), .bottomCenter)
-        XCTAssertEqual(ZoneLayout.zone(col: 15, row: r - 1), .bottomLast)
-        XCTAssertNil(ZoneLayout.zone(col: 5, row: 5), "inside the ring")
-        XCTAssertNil(ZoneLayout.zone(col: -1, row: 0))
-        let all = Set((0..<c).flatMap { col in (0..<r).compactMap { ZoneLayout.zone(col: col, row: $0) } })
-        XCTAssertEqual(all.count, 10, "every zone can be clicked")
+    func testEveryZoneHasItsOwnShapeAndTheShapesDoNotOverlap() {
+        let screen = CGRect(x: 0, y: 0, width: 320, height: 200)
+        let shapes = ZoneShapes.rects(in: screen)
+        XCTAssertEqual(Set(shapes.map(\.zone)).count, 10)
+        for (i, a) in shapes.enumerated() { for b in shapes[(i + 1)...] { XCTAssertFalse(a.rect.intersects(b.rect), "\(a.zone) overlaps \(b.zone)") } }
+        for s in shapes { XCTAssertTrue(screen.contains(s.rect), "\(s.zone) inside the screen") }
     }
 
-    func testTheRegionPreviewMatchesWhatTheActionDoes() {
-        XCTAssertEqual(RegionGridView.region(for: .leftHalf), CGRect(x: 0, y: 0, width: 9, height: 12))
-        XCTAssertEqual(RegionGridView.region(for: .topRight), CGRect(x: 9, y: 0, width: 9, height: 6))
-        XCTAssertEqual(RegionGridView.region(for: .firstTwoThirds), CGRect(x: 0, y: 0, width: 12, height: 12))
-        XCTAssertNil(RegionGridView.region(for: .restore))
+    func testAClickOnAShapeFindsItsZone() {
+        let screen = CGRect(x: 0, y: 0, width: 320, height: 200)
+        XCTAssertEqual(ZoneShapes.zone(at: CGPoint(x: 5, y: 5), in: screen), .topLeft)
+        XCTAssertEqual(ZoneShapes.zone(at: CGPoint(x: 315, y: 195), in: screen), .bottomRight)
+        XCTAssertEqual(ZoneShapes.zone(at: CGPoint(x: 160, y: 3), in: screen), .top)
+        XCTAssertEqual(ZoneShapes.zone(at: CGPoint(x: 3, y: 100), in: screen), .left)
+        XCTAssertEqual(ZoneShapes.zone(at: CGPoint(x: 317, y: 100), in: screen), .right)
+        XCTAssertEqual(ZoneShapes.zone(at: CGPoint(x: 60, y: 197), in: screen), .bottomFirst)
+        XCTAssertEqual(ZoneShapes.zone(at: CGPoint(x: 160, y: 197), in: screen), .bottomCenter)
+        XCTAssertEqual(ZoneShapes.zone(at: CGPoint(x: 270, y: 197), in: screen), .bottomLast)
+        XCTAssertNil(ZoneShapes.zone(at: CGPoint(x: 160, y: 100), in: screen), "the middle of the screen is not a zone")
+    }
+
+    func testThePreviewMatchesWhatTheActionDoes() {
+        XCTAssertEqual(ScreenPreviewView.region(for: .leftHalf), CGRect(x: 0, y: 0, width: 0.5, height: 1))
+        XCTAssertEqual(ScreenPreviewView.region(for: .topRight), CGRect(x: 0.5, y: 0, width: 0.5, height: 0.5))
+        XCTAssertEqual(ScreenPreviewView.region(for: .maximize), CGRect(x: 0, y: 0, width: 1, height: 1))
+        XCTAssertNil(ScreenPreviewView.region(for: .restore))
     }
 
     // ── The preferences ──
