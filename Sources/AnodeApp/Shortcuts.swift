@@ -249,12 +249,18 @@ final class KeybindCenter {
 
     private let store: ShortcutStore
     private var owners: [String: Owner] = [:]
+    // The tap runs on its own thread (`EventTapThread`) so a busy main thread cannot hold up every key press
+    // on the Mac. What it reads (the table, whether a shortcut is being recorded, the keys it swallowed) is
+    // behind `lock`; the owners and their handlers are only ever touched on the main thread.
+    private let lock = NSLock()
     private var table: [Shortcut: (owner: String, command: String)] = [:]
-    private var tap: CFMachPort?
-    private var tapSource: CFRunLoopSource?
+    private var recordingFlag = false
     /// Keys whose key-down was swallowed: their key-up is too, so no app sees half a press.
     private var swallowed = Set<Int>()
-    private var recorder: ((Recording) -> Void)?
+    private let tapPort = TapPortBox()
+    private var tap: CFMachPort? { tapPort.value }
+    private var tapSource: CFRunLoopSource?
+    private var recorder: ((Recording) -> Void)? { didSet { lock.lock(); recordingFlag = recorder != nil; lock.unlock() } }
     private var storeToken: NSObjectProtocol?
 
     init(store: ShortcutStore = .shared) {
@@ -279,10 +285,11 @@ final class KeybindCenter {
     }
 
     private func rebuild() {
-        table = [:]
+        var built: [Shortcut: (owner: String, command: String)] = [:]
         for (name, o) in owners {
-            for (shortcut, id) in store.table(for: o.commands) where table[shortcut] == nil { table[shortcut] = (name, id) }
+            for (shortcut, id) in store.table(for: o.commands) where built[shortcut] == nil { built[shortcut] = (name, id) }
         }
+        lock.lock(); table = built; lock.unlock()
         if (!owners.isEmpty || recorder != nil) { startTap() } else { stopTap() }
     }
 
@@ -321,10 +328,10 @@ final class KeybindCenter {
         guard let t = CGEvent.tapCreate(tap: .cghidEventTap, place: .headInsertEventTap, options: .defaultTap,
                                         eventsOfInterest: CGEventMask(mask), callback: keybindTapCallback,
                                         userInfo: Unmanaged.passUnretained(self).toOpaque()) else { return }
-        let source = CFMachPortCreateRunLoopSource(nil, t, 0)
-        CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes)
+        guard let source = CFMachPortCreateRunLoopSource(nil, t, 0) else { return }
+        EventTapThread.shared.add(source)
         CGEvent.tapEnable(tap: t, enable: true)
-        tap = t
+        tapPort.value = t
         tapSource = source
     }
 
@@ -333,13 +340,13 @@ final class KeybindCenter {
             CGEvent.tapEnable(tap: tap, enable: false)
             CFMachPortInvalidate(tap)
         }
-        if let tapSource { CFRunLoopRemoveSource(CFRunLoopGetMain(), tapSource, .commonModes) }
-        tap = nil
+        if let tapSource { EventTapThread.shared.remove(tapSource) }
+        tapPort.value = nil
         tapSource = nil
-        swallowed = []
+        lock.lock(); swallowed = []; lock.unlock()
     }
 
-    /// Runs on the main thread inside the tap, so it only decides, and hands the work on.
+    /// Runs on the tap thread, so it only decides, and hands the work on to the main thread.
     fileprivate func handle(type: CGEventType, event: CGEvent) -> Unmanaged<CGEvent>? {
         let pass = Unmanaged.passUnretained(event)
         switch type {
@@ -348,28 +355,34 @@ final class KeybindCenter {
             return pass
         case .keyUp:
             let key = Int(event.getIntegerValueField(.keyboardEventKeycode))
+            lock.lock(); defer { lock.unlock() }
             return swallowed.remove(key) != nil ? nil : pass
         case .keyDown:
             let key = Int(event.getIntegerValueField(.keyboardEventKeycode))
             let flags = event.flags
             let repeating = event.getIntegerValueField(.keyboardEventAutorepeat) != 0
-            if let recorder {
-                swallowed.insert(key)
+            lock.lock()
+            let recording = recordingFlag
+            let hit = recording ? nil : table[Shortcut(key: key, flags: flags)]
+            if recording || hit != nil { swallowed.insert(key) }
+            lock.unlock()
+            if recording {
                 if repeating { return nil }
                 let shortcut = Shortcut(key: key, flags: flags)
                 let result: Recording = key == kVK_Escape && shortcut.modifiers == 0 ? .cancelled
                     : (shortcut.isUsable ? .shortcut(shortcut) : .needsModifier)
                 DispatchQueue.main.async { [weak self] in
-                    guard let self else { return }
+                    guard let self, let recorder = self.recorder else { return }
                     if result != .needsModifier { self.recorder = nil; self.rebuild() }
                     recorder(result)
                 }
                 return nil
             }
-            guard let hit = table[Shortcut(key: key, flags: flags)], let owner = owners[hit.owner] else { return pass }
-            swallowed.insert(key)
+            guard let hit else { return pass }
             // Held down it repeats; the command runs once, and the rest are swallowed too.
-            if !repeating { DispatchQueue.main.async { owner.handler(hit.command) } }
+            if !repeating {
+                DispatchQueue.main.async { [weak self] in self?.owners[hit.owner]?.handler(hit.command) }
+            }
             return nil
         default:
             return pass

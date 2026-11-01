@@ -185,8 +185,16 @@ final class WindowDragSnapper {
     private var settingToken: AnyObject?
     // The mouse is watched with an event tap, not NSEvent monitors: a global monitor never sees events
     // meant for the app's OWN windows, so dragging one of Anode's windows did nothing at all.
-    private var tap: CFMachPort?
+    // The tap runs on its own thread (`EventTapThread`), never the main one: a busy main thread must not
+    // be able to hold up every mouse event on the Mac. What it sees goes to the main thread by mailbox.
+    private let tapPort = TapPortBox()
+    private var tap: CFMachPort? { tapPort.value }
     private var tapSource: CFRunLoopSource?
+    private let mailbox = SampleMailbox<Sample>()
+    /// Accessibility lookups for a drag happen here, not on the main thread (an app that does not answer
+    /// would hold the main thread for as long as the system waits).
+    private let axQueue = DispatchQueue(label: "anode.drag.accessibility", qos: .userInitiated)
+    private var generation = 0
     private let footprint = SnapFootprint()
     private let config = SnapZones.Config()
 
@@ -235,10 +243,10 @@ final class WindowDragSnapper {
         guard let t = CGEvent.tapCreate(tap: .cgSessionEventTap, place: .headInsertEventTap, options: .defaultTap,
                                         eventsOfInterest: CGEventMask(mask), callback: dragTapCallback,
                                         userInfo: Unmanaged.passUnretained(self).toOpaque()) else { return }
-        let source = CFMachPortCreateRunLoopSource(nil, t, 0)
-        CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes)
+        guard let source = CFMachPortCreateRunLoopSource(nil, t, 0) else { return }
+        EventTapThread.shared.add(source)
         CGEvent.tapEnable(tap: t, enable: true)
-        tap = t
+        tapPort.value = t
         tapSource = source
     }
 
@@ -247,8 +255,8 @@ final class WindowDragSnapper {
             CGEvent.tapEnable(tap: tap, enable: false)
             CFMachPortInvalidate(tap)
         }
-        if let tapSource { CFRunLoopRemoveSource(CFRunLoopGetMain(), tapSource, .commonModes) }
-        tap = nil
+        if let tapSource { EventTapThread.shared.remove(tapSource) }
+        tapPort.value = nil
         tapSource = nil
         footprint.hide()
         reset()
@@ -256,20 +264,28 @@ final class WindowDragSnapper {
 
     /// Called from the tap, which must return at once: it only notes what happened and handles it a
     /// moment later, so the mouse is never held up.
+    /// Runs on the tap thread, so it touches nothing but the mailbox and the port.
     fileprivate func tapped(type: CGEventType, event: CGEvent) {
         switch type {
         case .tapDisabledByTimeout, .tapDisabledByUserInput:
             if let tap { CGEvent.tapEnable(tap: tap, enable: true) }
         case .leftMouseDown, .leftMouseDragged, .leftMouseUp:
-            let sample = Sample(type: type, point: event.location,
-                                windowUnder: CGWindowID(max(0, event.getIntegerValueField(.mouseEventWindowUnderMousePointerThatCanHandleThisEvent))),
-                                keyCode: 0, flags: event.flags)
-            DispatchQueue.main.async { [weak self] in self?.handle(sample) }
+            post(Sample(type: type, point: event.location,
+                        windowUnder: CGWindowID(max(0, event.getIntegerValueField(.mouseEventWindowUnderMousePointerThatCanHandleThisEvent))),
+                        keyCode: 0, flags: event.flags), isMove: type == .leftMouseDragged)
         case .keyDown:
-            let sample = Sample(type: type, point: .zero, windowUnder: 0, keyCode: event.getIntegerValueField(.keyboardEventKeycode))
-            DispatchQueue.main.async { [weak self] in self?.handle(sample) }
+            post(Sample(type: type, point: .zero, windowUnder: 0, keyCode: event.getIntegerValueField(.keyboardEventKeycode)), isMove: false)
         default:
             break
+        }
+    }
+
+    private func post(_ sample: Sample, isMove: Bool) {
+        if mailbox.post(sample, isMove: isMove) {
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                for s in self.mailbox.drain() { self.handle(s) }
+            }
         }
     }
 
@@ -283,6 +299,7 @@ final class WindowDragSnapper {
     }
 
     private func reset() {
+        generation &+= 1
         window = nil; windowID = nil; startFrame = nil
         moving = false; cancelled = false; zone = nil; topSince = nil; lastFrame = nil; lastFlags = []
     }
@@ -296,7 +313,7 @@ final class WindowDragSnapper {
         case .leftMouseUp: ended(event)
         case .keyDown:
             // Escape while dragging: no snap for this drag.
-            if event.keyCode == 53, window != nil { cancelled = true; zone = nil; footprint.hide() }
+            if event.keyCode == 53, windowID != nil { cancelled = true; zone = nil; footprint.hide() }
         default: break
         }
     }
@@ -311,11 +328,20 @@ final class WindowDragSnapper {
         var id = event.windowUnder
         if id == 0 { id = Self.windowID(at: p) ?? 0 }
         guard id != 0, let info = Self.windowInfo(id), info.layer == 0 else { return }
-        guard let w = AccessibleWindow.find(id: id, pid: info.pid), w.isResizable, w.frame != nil else { return }
-        window = w
         windowID = id
         startFrame = info.bounds
         lastFrame = info.bounds
+        // The accessibility element is looked up off the main thread, and this drag simply does not snap
+        // if it is not found (or not resizable) by the time the window starts to move. Every click in any
+        // app comes through here, so nothing here may wait on another app.
+        let pid = info.pid, drag = generation
+        axQueue.async { [weak self] in
+            guard let w = AccessibleWindow.find(id: id, pid: pid), w.isResizable, w.frame != nil else { return }
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.generation == drag, self.windowID == id else { return }
+                self.window = w
+            }
+        }
     }
 
     private func dragged(_ event: Sample) {
@@ -334,7 +360,8 @@ final class WindowDragSnapper {
             // A snapped window dragged away gets its old size back, under the pointer.
             if let snapped = snappedWindows[id], abs(start.width - snapped.placed.width) < 3,
                abs(start.height - snapped.placed.height) < 3 {
-                window.setFrame(SnapZones.unsnapped(snapped: now, original: snapped.original, pointer: p))
+                let restored = SnapZones.unsnapped(snapped: now, original: snapped.original, pointer: p)
+                axQueue.async { window.setFrame(restored) }
                 snappedWindows[id] = nil
             }
         }

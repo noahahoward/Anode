@@ -1,4 +1,5 @@
 import AppKit
+import ApplicationServices
 import PowerKit
 
 // Anode — milestone 1.
@@ -263,6 +264,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
     }
 
     func applicationDidFinishLaunching(_ note: Notification) {
+        // Every accessibility call into another app waits for its answer, six seconds by default if the app
+        // is busy (FaceTime during a call, a hung app). Half a second is plenty for one that is well, and
+        // keeps a stuck one from holding this app for long. Set on the system-wide element, it is the default
+        // for every element made after.
+        AXUIElementSetMessagingTimeout(AXUIElementCreateSystemWide(), 0.5)
         monitor = PowerMonitor()
         store = HistoryStore()
         seedLiveGraphFromHistory()

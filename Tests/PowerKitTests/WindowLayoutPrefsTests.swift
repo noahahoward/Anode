@@ -161,3 +161,24 @@ final class WindowLayoutPrefsTests: XCTestCase {
         XCTAssertFalse(SnapModifier.command.isSatisfied(by: [.maskAlternate]))
     }
 }
+
+final class SampleMailboxTests: XCTestCase {
+    func testOnlyTheFirstPostNeedsTheMainThreadToBeTold() {
+        let m = SampleMailbox<Int>()
+        XCTAssertTrue(m.post(1, isMove: false))
+        XCTAssertFalse(m.post(2, isMove: false))
+        XCTAssertEqual(m.drain(), [1, 2], "in order")
+        XCTAssertTrue(m.post(3, isMove: false), "empty again, so it must be told again")
+    }
+
+    func testAMoveReplacesAMoveStillWaitingButNeverAClick() {
+        let m = SampleMailbox<String>()
+        _ = m.post("down", isMove: false)
+        _ = m.post("move1", isMove: true)
+        _ = m.post("move2", isMove: true)
+        _ = m.post("move3", isMove: true)
+        _ = m.post("up", isMove: false)
+        _ = m.post("move4", isMove: true)
+        XCTAssertEqual(m.drain(), ["down", "move3", "up", "move4"], "a flood of moves is one, the clicks all stay")
+    }
+}
