@@ -1,5 +1,6 @@
 import XCTest
 import AppKit
+import PowerKit
 @testable import AnodeApp
 
 final class WindowLayoutPrefsTests: XCTestCase {
@@ -180,5 +181,20 @@ final class SampleMailboxTests: XCTestCase {
         _ = m.post("up", isMove: false)
         _ = m.post("move4", isMove: true)
         XCTAssertEqual(m.drain(), ["down", "move3", "up", "move4"], "a flood of moves is one, the clicks all stay")
+    }
+}
+
+final class WidgetCollapseSettingTests: XCTestCase {
+    func testCollapsingIsOnUntilTheUserSwitchesItOffAndTheChoiceSurvives() {
+        let defaults = UserDefaults(suiteName: "collapse-\(UUID().uuidString)")!
+        let s = Settings(defaults: defaults)
+        XCTAssertTrue(s.menuBarWidgetsCollapse, "other Macs keep the existing behaviour")
+        var told = 0
+        let token = s.observe(Settings.Key.menuBarWidgetsCollapse) { told += 1 }
+        s.menuBarWidgetsCollapse = false
+        XCTAssertFalse(s.menuBarWidgetsCollapse)
+        XCTAssertFalse(Settings(defaults: defaults).menuBarWidgetsCollapse, "stored")
+        XCTAssertEqual(told, 1)
+        _ = token
     }
 }

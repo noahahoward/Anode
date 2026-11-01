@@ -336,6 +336,11 @@ final class DockPreviews {
     /// Every left click while attached, to see Dock icon clicks (`iconClicked`). A global
     /// monitor only observes; the click goes on to the Dock untouched.
     private var iconClickMonitor: Any?
+    /// Every left press while attached, to see that an icon was pressed (`iconPressed`).
+    private var pressMonitor: Any?
+    /// The icon that was just clicked. Its popup stays away until the pointer has left that icon and
+    /// come back: the click opens the app, which is what the popup was a preview of.
+    private var suppressed: Hover?
     private let panel = DockPreviewPanel()
     private let dockHold = DockHold()
     private var terminateToken: NSObjectProtocol?
@@ -432,6 +437,9 @@ final class DockPreviews {
         iconClickMonitor = NSEvent.addGlobalMonitorForEvents(matching: .leftMouseUp) { [weak self] _ in
             self?.iconClicked()
         }
+        pressMonitor = NSEvent.addGlobalMonitorForEvents(matching: .leftMouseDown) { [weak self] _ in
+            self?.iconPressed()
+        }
         healthTimer?.invalidate()
         healthTimer = Timer.scheduledTimer(withTimeInterval: Self.healthInterval, repeats: true) { [weak self] _ in
             self?.healthCheck()
@@ -482,6 +490,27 @@ final class DockPreviews {
         attachedPID = nil
         if let iconClickMonitor { NSEvent.removeMonitor(iconClickMonitor) }
         iconClickMonitor = nil
+        if let pressMonitor { NSEvent.removeMonitor(pressMonitor) }
+        pressMonitor = nil
+        suppressed = nil
+    }
+
+    /// A press on an app's icon, whether its popup is up, about to come up, or not: the popup goes (the
+    /// press also closes an open one) and does not come back while the pointer stays on that icon.
+    private func iconPressed() {
+        guard let hover = currentHover(requirePointer: true) else { return }
+        suppressed = hover
+        pending = nil
+        showTimer?.invalidate()
+        showTimer = nil
+        if shown != nil { hide() }
+    }
+
+    /// Is the popup for an icon held back? While the pointer is still on the icon that was clicked.
+    /// Pure, for tests.
+    static func holdsPopupBack(clicked icon: CGRect?, pointer: CGPoint, slack: CGFloat) -> Bool {
+        guard let icon else { return false }
+        return icon.insetBy(dx: -slack, dy: -slack).contains(pointer)
     }
 
     // ── Clicking an icon: bring back the tiled layout ───────────────────────
@@ -531,6 +560,12 @@ final class DockPreviews {
         // below the screen (measured: icon top 1174, pointer 1167), and no second notification
         // follows because the selected icon does not change. The pointer is checked when the
         // delay is up instead (`confirm`).
+        // The icon just clicked stays quiet while the pointer is on it, and is forgotten once the pointer
+        // has left it, so hovering it again brings the popup back.
+        if let held = suppressed {
+            if Self.holdsPopupBack(clicked: held.icon, pointer: Self.pointerInWindowServerCoordinates(), slack: Self.slack) { return }
+            suppressed = nil
+        }
         guard let hover = currentHover(requirePointer: false) else {
             // Off the apps (a gap, a folder, the Trash, or off the Dock): nothing to open. An open
             // panel is left to the tracking, which gives the pointer time to reach it.
@@ -557,6 +592,8 @@ final class DockPreviews {
         showTimer = Timer.scheduledTimer(withTimeInterval: delay, repeats: false) { [weak self] _ in
             guard let self, let pending = self.pending else { return }
             if let fresh = self.currentHover(requirePointer: true), fresh.pid == pending.pid {
+                if Self.holdsPopupBack(clicked: self.suppressed?.icon, pointer: Self.pointerInWindowServerCoordinates(),
+                                       slack: Self.slack) { return }
                 if self.shown != nil { self.hide() }
                 self.show(fresh)
             } else if triesLeft > 0, self.currentHover(requirePointer: false)?.pid == pending.pid {

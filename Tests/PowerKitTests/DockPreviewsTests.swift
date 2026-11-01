@@ -346,4 +346,12 @@ final class DockHoldTests: XCTestCase {
     func testTheSettingDefaultsToOn() {
         XCTAssertTrue(Settings(defaults: defaults).dockPreviewsHoldDock)
     }
+
+    func testAClickedIconsPopupStaysAwayWhilePointerIsOnItAndComesBackAfter() {
+        let icon = CGRect(x: 500, y: 1100, width: 60, height: 60)
+        XCTAssertTrue(DockPreviews.holdsPopupBack(clicked: icon, pointer: CGPoint(x: 530, y: 1130), slack: 4), "still on the icon")
+        XCTAssertTrue(DockPreviews.holdsPopupBack(clicked: icon, pointer: CGPoint(x: 498, y: 1130), slack: 4), "within the slack")
+        XCTAssertFalse(DockPreviews.holdsPopupBack(clicked: icon, pointer: CGPoint(x: 700, y: 1130), slack: 4), "left it: hovering again is allowed")
+        XCTAssertFalse(DockPreviews.holdsPopupBack(clicked: nil, pointer: CGPoint(x: 530, y: 1130), slack: 4), "nothing clicked")
+    }
 }

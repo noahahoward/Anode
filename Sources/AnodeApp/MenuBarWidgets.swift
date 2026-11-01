@@ -409,6 +409,7 @@ public final class MenuBarWidgetController: NSObject, NSMenuDelegate {
     private var lastScreens = NSScreen.screens.map { ScreenGeometry($0) }
     private var observers: [NSObjectProtocol] = []
     private var workspaceObservers: [NSObjectProtocol] = []
+    private var collapseToken: AnyObject?
 
     private let onClick: (MetricID?) -> Void
     private let defaults: UserDefaults
@@ -461,6 +462,13 @@ public final class MenuBarWidgetController: NSObject, NSMenuDelegate {
                 self.density = .full
                 self.rebuild()
             })
+        // Turning collapsing off puts the full layout back at once.
+        collapseToken = Settings.shared.observe(Settings.Key.menuBarWidgetsCollapse) { [weak self] in
+            guard let self, !Settings.shared.menuBarWidgetsCollapse, self.density != .full else { return }
+            self.density = .full
+            self.rememberedDensity.removeAll()
+            self.rebuild()
+        }
         // While this app is frontmost its own menus hide whatever status items
         // they reach, which says nothing about the bar. The moment another app
         // takes over is the first moment a look means something.
@@ -720,9 +728,13 @@ public final class MenuBarWidgetController: NSObject, NSMenuDelegate {
             return
         }
 
-        if Self.shouldSqueeze(states), let next = density.tighter {
+        if Self.shouldSqueeze(states), Settings.shared.menuBarWidgetsCollapse, let next = density.tighter {
             let sinceLayoutChange = Date().timeIntervalSince(lastSpaceChange)
             Self.logSqueeze(from: density, to: next, states: states, sinceLayoutChange: sinceLayoutChange)
+            Self.logWidgetEvent("  frames " + zip(windows, states).map { w, st in
+                let f = w?.frame ?? .zero
+                return "\(st)@\(Int(f.minX)),\(Int(f.minY)) \(Int(f.width))x\(Int(f.height)) visible=\(w?.isVisible ?? false)"
+            }.joined(separator: " | "))
             density = next
             unsettledLooks = 0
             // A squeeze is never undone by itself, and one made soon after a layout change was
@@ -803,6 +815,11 @@ public final class MenuBarWidgetController: NSObject, NSMenuDelegate {
     }
 
     private func recoverLayout(forFrontmost app: NSRunningApplication?) {
+        // Collapsing is switched off: never restore a squeezed layout, and go back to the full one.
+        guard Settings.shared.menuBarWidgetsCollapse else {
+            if density != .full { density = .full; rebuild() }
+            return
+        }
         let id = app?.bundleIdentifier
         let key = rememberKey(for: app)
         let remembered = rememberedDensity[key].flatMap {

@@ -825,6 +825,7 @@ private final class MenuBarPane: Pane {
     private var placementNote: NSTextField!
     private var placementButton: NSButton!
     private var placementToken: NSObjectProtocol?
+    private var collapseCheckbox: NSButton!
 
     deinit {
         if let token = placementToken { NotificationCenter.default.removeObserver(token) }
@@ -874,6 +875,8 @@ private final class MenuBarPane: Pane {
         masterCheckbox = NSButton(checkboxWithTitle: "Show widgets in the menu bar",
                                   target: self, action: #selector(masterToggled))
 
+        collapseCheckbox = NSButton(checkboxWithTitle: "Shrink the widgets when the menu bar looks full",
+                                    target: self, action: #selector(collapseToggled))
         placementNote = caption("")
         placementNote.textColor = .systemOrange
         placementButton = NSButton(title: "Open Menu Bar Settings\u{2026}", target: self,
@@ -886,6 +889,9 @@ private final class MenuBarPane: Pane {
 
         install(rows: [
             [rowLabel("Menu bar:"), masterCheckbox],
+            [spacer, collapseCheckbox],
+            [spacer, caption("Drops the labels, then folds the widgets into one, when macOS seems to be hiding some "
+                             + "for lack of room (a front app with long menus). Switch it off to keep them as configured.")],
             [spacer, placementNote],
             [spacer, placementButton],
             [spacer, caption("When off, Anode keeps its Dock icon so the window is still one "
@@ -908,6 +914,8 @@ private final class MenuBarPane: Pane {
         // must be re-read on every notification without exception.
         let on = settings.menuBarWidgetsEnabled
         masterCheckbox.state = on ? .on : .off
+        collapseCheckbox.state = settings.menuBarWidgetsCollapse ? .on : .off
+        collapseCheckbox.isEnabled = on
         for box in boxes { box.isEnabled = on }
         refreshPlacement()
 
@@ -945,6 +953,10 @@ private final class MenuBarPane: Pane {
 
     @objc private func openMenuBarSettings() {
         AppDelegate.openMenuBarSettings()
+    }
+
+    @objc private func collapseToggled() {
+        settings.menuBarWidgetsCollapse = collapseCheckbox.state == .on
     }
 
     @objc private func masterToggled() {

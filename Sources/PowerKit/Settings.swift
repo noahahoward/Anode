@@ -44,6 +44,7 @@ public final class Settings {
         public static let windowSnapperEnabled = "windowSnapperEnabled"
         public static let windowGroupsEnabled = "windowGroupsEnabled"
         public static let windowDragSnapEnabled = "windowDragSnapEnabled"
+        public static let menuBarWidgetsCollapse = "menuBarWidgetsCollapse"
         public static let dockPreviewsEnabled = "dockPreviewsEnabled"
         public static let dockPreviewsHoldDock = "dockPreviewsHoldDock"
         public static let dockRaisesTileGroup = "dockRaisesTileGroup"
@@ -112,6 +113,7 @@ public final class Settings {
         static let windowGroupsEnabled = false
         /// OFF: it watches every drag, and macOS's own edge tiling would act on the same drags.
         static let windowDragSnapEnabled = false
+        static let menuBarWidgetsCollapse = true
         /// OFF, like every beta feature that watches the Dock or the keyboard.
         static let dockPreviewsEnabled = false
         /// ON: with an auto-hiding Dock, the preview is otherwise left floating over nothing.
@@ -198,6 +200,7 @@ public final class Settings {
         var windowSnapperEnabled: Bool
         var windowGroupsEnabled: Bool
         var windowDragSnapEnabled: Bool
+        var menuBarWidgetsCollapse: Bool
         var dockPreviewsEnabled: Bool
         var dockPreviewsHoldDock: Bool
         var dockRaisesTileGroup: Bool
@@ -377,6 +380,13 @@ public final class Settings {
     }
 
     /// Whether dragging a window to a screen edge snaps it (Beta Features).
+    /// Shrink the menu bar widgets when macOS hides some of them for lack of room (the default). Off keeps
+    /// them as configured whatever the front app's menus do.
+    public var menuBarWidgetsCollapse: Bool {
+        get { Settings.readBool(defaults, Key.menuBarWidgetsCollapse, Default.menuBarWidgetsCollapse) }
+        set { writeBool(Key.menuBarWidgetsCollapse, \.menuBarWidgetsCollapse, newValue, Default.menuBarWidgetsCollapse) }
+    }
+
     public var windowDragSnapEnabled: Bool {
         get { Settings.readBool(defaults, Key.windowDragSnapEnabled, Default.windowDragSnapEnabled) }
         set { writeBool(Key.windowDragSnapEnabled, \.windowDragSnapEnabled, newValue, Default.windowDragSnapEnabled) }
@@ -764,6 +774,7 @@ public final class Settings {
         if old.windowSnapperEnabled != now.windowSnapperEnabled { notify(Key.windowSnapperEnabled) }
         if old.windowGroupsEnabled != now.windowGroupsEnabled { notify(Key.windowGroupsEnabled) }
         if old.windowDragSnapEnabled != now.windowDragSnapEnabled { notify(Key.windowDragSnapEnabled) }
+        if old.menuBarWidgetsCollapse != now.menuBarWidgetsCollapse { notify(Key.menuBarWidgetsCollapse) }
         if old.dockPreviewsEnabled != now.dockPreviewsEnabled { notify(Key.dockPreviewsEnabled) }
         if old.dockPreviewsHoldDock != now.dockPreviewsHoldDock { notify(Key.dockPreviewsHoldDock) }
         if old.dockRaisesTileGroup != now.dockRaisesTileGroup { notify(Key.dockRaisesTileGroup) }
@@ -893,6 +904,7 @@ public final class Settings {
                windowSnapperEnabled: readBool(d, Key.windowSnapperEnabled, Default.windowSnapperEnabled),
                windowGroupsEnabled: readBool(d, Key.windowGroupsEnabled, Default.windowGroupsEnabled),
                windowDragSnapEnabled: readBool(d, Key.windowDragSnapEnabled, Default.windowDragSnapEnabled),
+               menuBarWidgetsCollapse: readBool(d, Key.menuBarWidgetsCollapse, Default.menuBarWidgetsCollapse),
                dockPreviewsEnabled: readBool(d, Key.dockPreviewsEnabled, Default.dockPreviewsEnabled),
                dockPreviewsHoldDock: readBool(d, Key.dockPreviewsHoldDock, Default.dockPreviewsHoldDock),
                dockRaisesTileGroup: readBool(d, Key.dockRaisesTileGroup, Default.dockRaisesTileGroup),
