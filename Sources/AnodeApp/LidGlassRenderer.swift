@@ -106,7 +106,7 @@ final class LidGlassRenderer {
     }
     """
 
-    private let device: MTLDevice
+    let device: MTLDevice
     private let queue: MTLCommandQueue
     private let pipeline: MTLRenderPipelineState
     private var texture: MTLTexture?
