@@ -31,11 +31,13 @@ final class LidGlassRenderer {
     constant float kIOR            = 1.5;    // glass
     constant float kThickness      = 0.020;  // refraction reach, in uv, at full frost
     constant float kDome           = 0.9;    // how strongly the pane curves
-    constant float kMaxRadius      = 0.045;  // frost disc radius at full frost, as a share of the picture's height
+    constant float kMaxRadius      = 0.13;   // frost disc radius at full frost, as a share of the picture's height
+    constant float kBlurCurve      = 0.7;    // <1: the first degrees of closing already frost noticeably, as in the Blender reference
     constant float kHingeFrost     = 0.15;   // share of the frost that reaches the hinge edge
     constant float kDispersion     = 0.0016; // channel split, in uv, at full frost
     constant float kFresnelGain    = 0.10;   // how much sky the Fresnel term adds
-    constant float kTint           = 0.05;   // share of the cool tint at full frost
+    constant float kTint           = 0.03;   // share of the cool tint at full frost
+    constant float kMilk           = 0.20;   // frosted glass lifts blacks and dims whites: pull toward mid grey
     constant float kNoise          = 1.5 / 255.0;
     constant int   kTaps           = 10;
 
@@ -69,7 +71,7 @@ final class LidGlassRenderer {
 
         // How far this row is from the hinge: 0 at the bottom, 1 at the top.
         float awayFromHinge = clamp(1.0 - uv.y, 0.0, 1.0);
-        float mask = mix(kHingeFrost, 1.0, smoothstep(0.0, 0.85, awayFromHinge));
+        float mask = mix(kHingeFrost, 1.0, awayFromHinge);   // a pane's blur grows with distance from the hinge
 
         // A gently domed pane: the normal leans away from the middle, and the ray bends by Snell's law.
         float2 d = uv - 0.5;
@@ -79,7 +81,7 @@ final class LidGlassRenderer {
         float2 centre = clamp(uv + shift, 0.0, 1.0);
 
         // The frost: a Vogel disc of taps, each read from the mip level whose texels match the disc's spacing.
-        float radius = kMaxRadius * blur * mask * u.height;   // in pixels
+        float radius = kMaxRadius * pow(blur, kBlurCurve) * mask * u.height;   // in pixels
         float lod = clamp(log2(max(radius, 1.0)) - 1.0, 0.0, 9.0);
         float2 dir = normalize(float2(1.0, 0.35));
         float2 split = dir * kDispersion * blur;
@@ -101,6 +103,7 @@ final class LidGlassRenderer {
 
         // A thin cool tint, and noise so the smooth gradients do not band.
         color = mix(color, color * float3(0.94, 0.97, 1.0) + 0.02, kTint * blur * mask);
+        color = mix(color, float3(0.5), kMilk * blur * (0.5 + 0.5 * mask));
         color += (hash12(in.position.xy) - 0.5) * kNoise * blur;
         return float4(clamp(color, 0.0, 1.0), 1.0);
     }

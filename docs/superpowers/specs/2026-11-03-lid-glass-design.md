@@ -85,9 +85,11 @@ the lid is moving downward inside a zone above the trigger (never merely because
 dropping the held picture when the lid stops or rises. The prewarm margin is derived from the idle poll rate
 (angular speed x poll interval) so a fast close cannot skip past it.
 
-**Arming.** The effect starts only when the lid moves downward through the trigger angle with real speed. A
-lid resting below the trigger angle (people work at 100-120 degrees) never starts it, and the same stillness
-logic stops it re-triggering while the lid sits still. Reference apps solve this with a stillness check
+**Arming.** The effect starts only on a quick downward run (at least 15 degrees a second, covering at least 6
+degrees) that reaches the trigger angle. The run may begin above the trigger or below it, so someone whose lid
+rests at 105 degrees with a 110 degree trigger still gets the effect when closing; the frost is then measured
+from where the run began. A lid that merely rests or drifts below the trigger (people work at 100-120
+degrees) never starts it. Reference apps solve this with a stillness check
 (Mac Duo) or a resting reference angle (cladofold).
 
 **Active (angle at or below trigger).** Polling goes to 120 Hz. The overlay appears showing the held
@@ -174,3 +176,17 @@ is a reference only; nothing from it ships.
 - Details of the shader after tuning.
 - How to detect "this Mac has no sensor" cleanly.
 - Whether to log feature activity in `FeatureLog.swift`, following existing features.
+
+## Tuning record
+
+- Shader reference: a Blender (Cycles) scene with a frosted GGX glass slab in front of the picture, the picture
+  hinged at its bottom edge and tipping away so its top is farthest from the glass. The reference blur grows
+  roughly linearly with distance from the hinge, is much stronger than a first-guess blur (about 3x the radius
+  at the top at full frost), and is milky: whites fall to about 0.88 and blacks rise to about 0.2.
+- The shader constants (`LidGlassRenderer.shaderSource`) were set to match: disc radius 0.13 of the picture's
+  height at full frost, response exponent 0.7, linear fall-off toward the hinge (15% frost left at the hinge
+  edge), a pull toward mid grey of 0.20. Done on a synthetic desktop picture, headless; the owner has not yet
+  seen it on their own screen.
+- Still to measure on the owner's Mac (needs the lid): capture latency, trigger-to-overlay time, the angle at
+  which the built-in display goes dark, whether the swap from live screen to overlay is visibly seamless, and
+  whether the desktop is already showing when the unlock notification arrives.
