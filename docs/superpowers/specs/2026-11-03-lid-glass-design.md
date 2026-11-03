@@ -113,7 +113,7 @@ the timers.
 Target: realistic frosted glass, not a generic gaussian blur. Quality is the goal; cost is bounded because it
 runs for about a second. The author's starting model, to be tuned against reference renders:
 
-- Progressive blur: radius grows from zero at the top edge toward the hinge, and with closing angle.
+- Progressive blur: strongest at the top edge, far from the hinge (the hinge is at the bottom of the screen and stays sharpest, as the far edge of a tilting pane goes out of focus), and growing with closing angle.
 - Refraction: sample positions displaced following Snell's law across a gently curved pane.
 - Fresnel (Schlick) edge brightening, a faint chromatic dispersion between colour channels.
 - A slight thickness tint and fine noise to prevent banding.
