@@ -114,6 +114,27 @@ enum SpaceCatalog {
         return (display?["Current Space"] as? [String: Any])?["ManagedSpaceID"] as? Int
     }
 
+    /// The desktops of the display under the pointer, without what is on each: cheap enough for a hover.
+    static func desktopList() -> [DesktopInfo]? {
+        guard let connection, let copySpaces,
+              let displays = copySpaces(connection())?.takeRetainedValue() as? [[String: Any]] else { return nil }
+        return desktops(displays: displays, displayUUID: displayUUID(under: NSEvent.mouseLocation),
+                        windowsBySpace: [:])?.desktops
+    }
+
+    /// The desktops a window is on (none for a minimized window or a helper).
+    static func spaces(of window: CGWindowID) -> [Int] {
+        guard let connection, let spacesForWindows else { return [] }
+        return spacesForWindows(connection(), 7, [Int(window)] as CFArray)?.takeRetainedValue() as? [Int] ?? []
+    }
+
+    /// Presses of the move-a-space key from the desktop showing to `id`; nil when they cannot be pressed.
+    static func stepsToDesktop(_ id: Int) -> Int? {
+        guard keyboardSteppingEnabled(), let list = desktopList(), let current = list.first(where: \.isCurrent)
+        else { return nil }
+        return steps(from: current.id, to: id, in: list)
+    }
+
     /// The desktops of the display under the pointer, with what is on each. About one SkyLight call
     /// per window, and nothing heavier.
     static func read() -> (display: String, desktops: [DesktopInfo])? {
@@ -407,19 +428,21 @@ final class DesktopSwitcher {
         let chosen = selection.index.flatMap { desktops.indices.contains($0) ? desktops[$0] : nil }
         let current = natural.first(where: \.isCurrent)
         let list = natural
-        cancel()
-        if let chosen, let current, !chosen.isCurrent,
-           let steps = SpaceCatalog.steps(from: current.id, to: chosen.id, in: list) {
-            recency.visit(chosen.id)
+        guard let chosen, let current, !chosen.isCurrent,
+              let steps = SpaceCatalog.steps(from: current.id, to: chosen.id, in: list) else { return cancel() }
+        // The slide starts from a picture of the screen, so the panel has to be off it BEFORE the first
+        // key goes in; left up, it would ride along through the whole change.
+        cancel { [weak self] in
+            self?.recency.visit(chosen.id)
             SpaceCatalog.step(steps)
         }
     }
 
-    private func cancel() {
+    private func cancel(then done: (() -> Void)? = nil) {
         isActive = false
         showTimer?.invalidate()
         showTimer = nil
-        panel.dismiss()
+        panel.dismiss(then: done)
         desktops = []
         natural = []
         selection = DesktopSelection()
@@ -484,22 +507,44 @@ final class DesktopPanel {
         panel.invalidateShadow()
     }
 
-    func reveal() { window?.orderFrontRegardless() }
+    func reveal() {
+        window?.alphaValue = 1
+        window?.orderFrontRegardless()
+    }
 
     func select(_ index: Int?) {
         for (i, tile) in tiles.enumerated() { tile.isSelected = i == index }
     }
 
-    func dismiss() {
-        window?.orderOut(nil)
+    /// Take the panel off the screen. `done` runs once the window server no longer shows it (at once if
+    /// it never did), so that what must not carry the panel along, a change of desktop, can start.
+    func dismiss(then done: (() -> Void)? = nil) {
         tiles.forEach { $0.removeFromSuperview() }
         tiles = []
+        guard let window, window.isVisible else { window?.orderOut(nil); done?(); return }
+        // Transparent first, so even a frame still in flight shows nothing; no fade-out of its own.
+        window.alphaValue = 0
+        window.orderOut(nil)
+        let number = CGWindowID(window.windowNumber)
+        var tries = 0
+        func check() {
+            tries += 1
+            if tries > 20 || !Self.isOnScreen(number) { done?(); return }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.012, execute: check)
+        }
+        check()
+    }
+
+    private static func isOnScreen(_ id: CGWindowID) -> Bool {
+        let list = CGWindowListCopyWindowInfo([.optionIncludingWindow], id) as? [[String: Any]] ?? []
+        return list.first { ($0[kCGWindowNumber as String] as? Int) == Int(id) }?[kCGWindowIsOnscreen as String] as? Bool == true
     }
 
     private func makePanel() -> NSPanel {
         let panel = NSPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel],
                             backing: .buffered, defer: false)
         panel.level = .popUpMenu
+        panel.animationBehavior = .none
         panel.collectionBehavior = [.canJoinAllSpaces, .transient, .fullScreenAuxiliary, .ignoresCycle]
         panel.isOpaque = false
         panel.backgroundColor = .clear

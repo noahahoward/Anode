@@ -177,4 +177,11 @@ final class DesktopSwitcherTests: XCTestCase {
     func testTheBetaWindowListsIt() {
         XCTAssertTrue(BetaFeaturesWindowController().features.contains { $0 is DesktopSwitcherFeature })
     }
+
+    /// The reported bug: the panel was still up while the desktop slid. Nothing shown, nothing to wait for.
+    func testDismissingAPanelThatWasNeverShownDoesNotWait() {
+        var ran = false
+        DesktopPanel().dismiss { ran = true }
+        XCTAssertTrue(ran, "the change of desktop must not be held up when there is no panel to remove")
+    }
 }

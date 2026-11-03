@@ -33,6 +33,10 @@ struct SwitchableWindow: Equatable {
     let bounds: CGRect
     /// Minimized into the Dock, or belonging to a hidden app: listed, but not on screen.
     var isOffScreen = false
+    /// On a desktop other than the one showing ("Desktop 2"); nil for a window on this one. Such a
+    /// window is also `isOffScreen`, and `spaceID` says which desktop it is on.
+    var desktop: String? = nil
+    var spaceID: Int? = nil
 }
 
 enum WindowCatalog {
@@ -63,7 +67,8 @@ enum WindowCatalog {
     /// the screen does not show because they are minimized or the app is hidden. Any other window accessibility lists but the screen does not show is not
     /// one to offer: Finder's desktop is one, and it would have been a "minimized" tile. Pure.
     static func appWindows(onScreen: [SwitchableWindow], accessibility: [AXWindowInfo],
-                           pid: pid_t, appName: String, appHidden: Bool = false) -> [SwitchableWindow] {
+                           pid: pid_t, appName: String, appHidden: Bool = false,
+                           otherDesktops: [SwitchableWindow] = []) -> [SwitchableWindow] {
         let shown = Set(onScreen.map(\.id))
         let rest = accessibility.compactMap { w -> SwitchableWindow? in
             guard w.id != 0, !shown.contains(w.id), w.minimized || appHidden,
@@ -83,16 +88,59 @@ enum WindowCatalog {
             if abs($0.bounds.minY - $1.bounds.minY) > 1 { return $0.bounds.minY < $1.bounds.minY }
             return $0.id < $1.id
         }
-        return byPosition + away.sorted { $0.id < $1.id }
+        // Accessibility lists only the windows of the desktop showing, so anything it does list is not
+        // on another one; the other desktops' windows come last, in the order given.
+        let known = shown.union(accessibility.map(\.id))
+        return byPosition + away.sorted { $0.id < $1.id } + otherDesktops.filter { !known.contains($0.id) }
+    }
+
+    /// `pid`'s windows that sit on a desktop other than the one showing. Neither accessibility nor the
+    /// on-screen list can see them; the window server's list of every window can, and SkyLight says
+    /// which desktop each is on. A window on no desktop (a helper, or a minimized one) is not one to
+    /// offer. `windowInfo` is the list of every window, `desktops` the display's desktops in the order
+    /// macOS shows them, `spacesOf` the desktops a window is on. Ordered by desktop, then as opened. Pure.
+    static func otherDesktopWindows(windowInfo: [[String: Any]], pid: pid_t, appName: String,
+                                    desktops: [DesktopInfo],
+                                    spacesOf: (CGWindowID) -> [Int]) -> [SwitchableWindow] {
+        let order = Dictionary(desktops.enumerated().map { ($1.id, $0) }, uniquingKeysWith: { a, _ in a })
+        let away = desktops.filter { !$0.isCurrent }
+        guard !away.isEmpty else { return [] }
+        let candidates = windowInfo.compactMap { entry -> (SwitchableWindow, DesktopInfo)? in
+            guard (entry[kCGWindowLayer as String] as? Int) == 0,
+                  (entry[kCGWindowOwnerPID as String] as? Int32) == pid,
+                  (entry[kCGWindowIsOnscreen as String] as? Bool) != true,
+                  (entry[kCGWindowAlpha as String] as? Double ?? 1) > 0,
+                  let number = entry[kCGWindowNumber as String] as? Int,
+                  let dict = entry[kCGWindowBounds as String] as? NSDictionary,
+                  let bounds = CGRect(dictionaryRepresentation: dict),
+                  bounds.width >= minSide, bounds.height >= minSide else { return nil }
+            let id = CGWindowID(number)
+            guard let desktop = spacesOf(id).compactMap({ space in away.first { $0.id == space } }).first else { return nil }
+            let name = desktop.number.map { "Desktop \($0)" } ?? "Full screen"
+            return (SwitchableWindow(id: id, pid: pid, appName: appName,
+                                     title: entry[kCGWindowName as String] as? String ?? "", bounds: bounds,
+                                     isOffScreen: true, desktop: name, spaceID: desktop.id), desktop)
+        }
+        return candidates.sorted {
+            let (a, b) = (order[$0.1.id] ?? 0, order[$1.1.id] ?? 0)
+            return a != b ? a < b : $0.0.id < $1.0.id
+        }.map(\.0)
     }
 
     static func windows(of app: NSRunningApplication) -> [SwitchableWindow] {
         let info = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements],
                                               kCGNullWindowID) as? [[String: Any]] ?? []
         let pid = app.processIdentifier
+        var others: [SwitchableWindow] = []
+        if let desktops = SpaceCatalog.desktopList(), desktops.count >= 2 {
+            let every = CGWindowListCopyWindowInfo([.optionAll], kCGNullWindowID) as? [[String: Any]] ?? []
+            others = otherDesktopWindows(windowInfo: every, pid: pid, appName: app.localizedName ?? "",
+                                         desktops: desktops, spacesOf: SpaceCatalog.spaces(of:))
+        }
         return appWindows(onScreen: switchable(windowInfo: info, regularPIDs: [pid]),
                           accessibility: WindowActivator.accessibilityWindows(of: pid),
-                          pid: pid, appName: app.localizedName ?? "", appHidden: app.isHidden)
+                          pid: pid, appName: app.localizedName ?? "", appHidden: app.isHidden,
+                          otherDesktops: others)
     }
 
     static func current() -> [SwitchableWindow] {
@@ -301,6 +349,15 @@ enum WindowActivator {
         "_SLPSSetFrontProcessWithOptions").map { unsafeBitCast($0, to: SetFront.self) }
 
     static func bringForward(_ window: SwitchableWindow) {
+        // A window on another desktop: go there first, the way the desktop switcher does, and bring the
+        // window forward once the desktop has slid in (accessibility can see it only then).
+        if let space = window.spaceID, let steps = SpaceCatalog.stepsToDesktop(space), steps != 0 {
+            SpaceCatalog.step(steps)
+            var here = window
+            (here.desktop, here.spaceID, here.isOffScreen) = (nil, nil, false)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6 + 0.05 * Double(abs(steps))) { bringForward(here) }
+            return
+        }
         let app = NSRunningApplication(processIdentifier: window.pid)
         if app?.isHidden == true { app?.unhide() }
         let element = axWindow(window)

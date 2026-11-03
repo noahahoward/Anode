@@ -196,6 +196,52 @@ final class DockPreviewsTests: XCTestCase {
                                                 appHidden: true).map(\.id), [40], "a hidden app's windows are offered")
     }
 
+    // ── Windows on other desktops ──
+
+    private func entry(_ id: Int, pid: Int32 = 7, onScreen: Bool = false, layer: Int = 0, side: CGFloat = 600,
+                       title: String = "") -> [String: Any] {
+        [kCGWindowNumber as String: id, kCGWindowOwnerPID as String: pid, kCGWindowLayer as String: layer,
+         kCGWindowIsOnscreen as String: onScreen, kCGWindowAlpha as String: 1.0, kCGWindowName as String: title,
+         kCGWindowBounds as String: CGRect(x: 0, y: 0, width: side, height: side).dictionaryRepresentation]
+    }
+
+    private func desktop(_ id: Int, number: Int?, current: Bool = false) -> DesktopInfo {
+        DesktopInfo(id: id, number: number, isFullScreen: number == nil, isCurrent: current, pids: [], windowCount: 0)
+    }
+
+    /// The reported bug: an app with windows on two desktops showed only the ones on the desktop in use.
+    func testWindowsOnOtherDesktopsAreFoundAndNamedByDesktop() {
+        let desktops = [desktop(10, number: 1), desktop(11, number: 2, current: true), desktop(12, number: 3)]
+        let spaces: [CGWindowID: [Int]] = [1: [12], 2: [10], 3: [11], 4: [], 5: [12]]
+        let found = WindowCatalog.otherDesktopWindows(
+            windowInfo: [entry(1, title: "A"), entry(2, title: "B"), entry(3), entry(4), entry(5, pid: 9),
+                         entry(6, onScreen: true), entry(7, layer: 25), entry(8, side: 30)],
+            pid: 7, appName: "App", desktops: desktops, spacesOf: { spaces[$0] ?? [] })
+        XCTAssertEqual(found.map(\.id), [2, 1], "by desktop, in the order macOS shows them; this desktop's, helpers' and other apps' left out")
+        XCTAssertEqual(found.map { $0.desktop ?? "" }, ["Desktop 1", "Desktop 3"])
+        XCTAssertEqual(found.map { $0.spaceID ?? 0 }, [10, 12])
+        XCTAssertTrue(found.allSatisfy(\.isOffScreen))
+    }
+
+    func testAFullScreenAppsDesktopIsNamedAsSuch() {
+        let desktops = [desktop(10, number: 1, current: true), desktop(20, number: nil)]
+        let found = WindowCatalog.otherDesktopWindows(windowInfo: [entry(1)], pid: 7, appName: "App",
+                                                      desktops: desktops, spacesOf: { _ in [20] })
+        XCTAssertEqual(found.first?.desktop, "Full screen")
+    }
+
+    func testOtherDesktopWindowsFollowTheOnesHereAndNeverRepeatOne() {
+        var far = win(30)
+        (far.desktop, far.spaceID, far.isOffScreen) = ("Desktop 2", 11, true)
+        var dup = win(1)
+        (dup.desktop, dup.spaceID, dup.isOffScreen) = ("Desktop 2", 11, true)
+        let list = WindowCatalog.appWindows(onScreen: [placed(1, x: 0)], accessibility: [], pid: 7, appName: "App",
+                                            otherDesktops: [far, dup])
+        XCTAssertEqual(list.map(\.id), [1, 30])
+        XCTAssertTrue(DockPreviews.shouldShowPanel(windowCount: list.count),
+                       "one window here and one elsewhere is still a panel")
+    }
+
     // ── Setting and section ──
 
     func testTheSettingDefaultsToOffAndRoundTrips() {
