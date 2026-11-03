@@ -987,7 +987,7 @@ final class DockPreviewTile: NSView {
     init(frame: NSRect, window: SwitchableWindow, icon: NSImage?) {
         target = window
         let title = window.title.isEmpty ? window.appName : window.title
-        label = NSTextField(labelWithString: window.desktop.map { "\(title) — \($0)" }
+        label = NSTextField(labelWithString: window.desktop.map { "\($0) — \(title)" }
                             ?? (window.isOffScreen ? "\(title) — not on screen" : title))
         closeButton = NSButton(image: NSImage(systemSymbolName: "xmark.circle.fill",
                                               accessibilityDescription: "Close window") ?? NSImage(),
