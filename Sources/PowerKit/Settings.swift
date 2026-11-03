@@ -41,6 +41,9 @@ public final class Settings {
         public static let windowSwitcherEnabled = "windowSwitcherEnabled"
         public static let windowSwitcherTrigger = "windowSwitcherTrigger"
         public static let desktopSwitcherEnabled = "desktopSwitcherEnabled"
+        public static let lidGlassEnabled = "lidGlassEnabled"
+        public static let lidGlassIdleHz = "lidGlassIdleHz"
+        public static let lidGlassTriggerAngle = "lidGlassTriggerAngle"
         public static let windowSnapperEnabled = "windowSnapperEnabled"
         public static let windowGroupsEnabled = "windowGroupsEnabled"
         public static let windowDragSnapEnabled = "windowDragSnapEnabled"
@@ -107,6 +110,9 @@ public final class Settings {
         static let windowSwitcherTrigger = WindowSwitcherTrigger.commandOption
         /// OFF: it takes over Option-Tab, so the user turns it on.
         static let desktopSwitcherEnabled = false
+        static let lidGlassEnabled = false
+        static let lidGlassIdleHz = 8.0
+        static let lidGlassTriggerAngle = 110.0
         /// OFF: it claims a set of global shortcuts another window manager may already own.
         static let windowSnapperEnabled = false
         /// OFF: it raises windows on its own and claims a few global shortcuts.
@@ -211,6 +217,8 @@ public final class Settings {
         var panelOrder: [String]
         var panelHidden: [String]
         var ledgerGraphLines: [String]
+        var lidGlassEnabled: Bool
+        var lidGlassIdleHz, lidGlassTriggerAngle: Double
     }
     private var snapshot: Values
     private var defaultsObserver: NSObjectProtocol?
@@ -416,6 +424,26 @@ public final class Settings {
         get { Settings.readBool(defaults, Key.desktopSwitcherEnabled, Default.desktopSwitcherEnabled) }
         set { writeBool(Key.desktopSwitcherEnabled, \.desktopSwitcherEnabled, newValue, Default.desktopSwitcherEnabled) }
     }
+
+    /// Whether the lid-close glass effect runs (Beta Features). Off until asked for.
+    public var lidGlassEnabled: Bool {
+        get { Settings.readBool(defaults, Key.lidGlassEnabled, Default.lidGlassEnabled) }
+        set { writeBool(Key.lidGlassEnabled, \.lidGlassEnabled, newValue, Default.lidGlassEnabled) }
+    }
+
+    /// How often the lid angle is read while the lid is open and still, 4 to 30 times a second.
+    public var lidGlassIdleHz: Double {
+        get { Settings.readDouble(defaults, Key.lidGlassIdleHz, Default.lidGlassIdleHz, Self.lidGlassIdleHzRange) }
+        set { writeDouble(Key.lidGlassIdleHz, \.lidGlassIdleHz, newValue, Default.lidGlassIdleHz, Self.lidGlassIdleHzRange) }
+    }
+    public static let lidGlassIdleHzRange: ClosedRange<Double> = 4...30
+
+    /// The lid angle, in degrees, below which a closing lid starts the effect.
+    public var lidGlassTriggerAngle: Double {
+        get { Settings.readDouble(defaults, Key.lidGlassTriggerAngle, Default.lidGlassTriggerAngle, Self.lidGlassTriggerRange) }
+        set { writeDouble(Key.lidGlassTriggerAngle, \.lidGlassTriggerAngle, newValue, Default.lidGlassTriggerAngle, Self.lidGlassTriggerRange) }
+    }
+    public static let lidGlassTriggerRange: ClosedRange<Double> = 60...150
 
     /// Whether resting the pointer on a Dock icon shows that app's windows (Beta Features).
     public var dockPreviewsEnabled: Bool {
@@ -771,6 +799,9 @@ public final class Settings {
         if old.windowSwitcherEnabled != now.windowSwitcherEnabled { notify(Key.windowSwitcherEnabled) }
         if old.windowSwitcherTrigger != now.windowSwitcherTrigger { notify(Key.windowSwitcherTrigger) }
         if old.desktopSwitcherEnabled != now.desktopSwitcherEnabled { notify(Key.desktopSwitcherEnabled) }
+        if old.lidGlassEnabled != now.lidGlassEnabled { notify(Key.lidGlassEnabled) }
+        if old.lidGlassIdleHz != now.lidGlassIdleHz { notify(Key.lidGlassIdleHz) }
+        if old.lidGlassTriggerAngle != now.lidGlassTriggerAngle { notify(Key.lidGlassTriggerAngle) }
         if old.windowSnapperEnabled != now.windowSnapperEnabled { notify(Key.windowSnapperEnabled) }
         if old.windowGroupsEnabled != now.windowGroupsEnabled { notify(Key.windowGroupsEnabled) }
         if old.windowDragSnapEnabled != now.windowDragSnapEnabled { notify(Key.windowDragSnapEnabled) }
@@ -917,7 +948,11 @@ public final class Settings {
                menuBarWidgets: readWidgets(d, Default.menuBarWidgets),
                panelOrder: readIDList(d, Key.panelOrder),
                panelHidden: readIDList(d, Key.panelHidden),
-               ledgerGraphLines: readLedgerLines(d))
+               ledgerGraphLines: readLedgerLines(d),
+               lidGlassEnabled: readBool(d, Key.lidGlassEnabled, Default.lidGlassEnabled),
+               lidGlassIdleHz: readDouble(d, Key.lidGlassIdleHz, Default.lidGlassIdleHz, lidGlassIdleHzRange),
+               lidGlassTriggerAngle: readDouble(d, Key.lidGlassTriggerAngle, Default.lidGlassTriggerAngle,
+                                                lidGlassTriggerRange))
     }
 }
 
