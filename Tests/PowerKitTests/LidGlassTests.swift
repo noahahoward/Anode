@@ -180,6 +180,62 @@ final class LidGlassTests: XCTestCase {
         XCTAssertEqual(g.status, .active)
     }
 
+    // ── A lid that stops ──
+
+    /// Without this, nudging the lid down 6° and carrying on working would leave a frozen picture over the live screen.
+    func testALidThatStopsMidCloseSettlesBackToTheLiveScreen() {
+        let g = makeGlass()
+        closeFast(g)
+        waitUntil(overlays.first?.calls == ["show"])
+        g.handle(angle: 80, time: 0.5)
+        for i in 1...20 { g.handle(angle: 80, time: 0.5 + Double(i) * 0.1) }
+        XCTAssertEqual(overlays[0].calls, ["show", "clear", "hide"])
+        XCTAssertEqual(g.status, .idle)
+        XCTAssertEqual(sensor.lastRate, 8)
+    }
+
+    func testALidStillMovingDoesNotSettle() {
+        let g = makeGlass()
+        closeFast(g)
+        waitUntil(overlays.first?.calls == ["show"])
+        for i in 0..<40 { g.handle(angle: 95 - Double(i), time: 0.5 + Double(i) * 0.1) }
+        XCTAssertEqual(overlays[0].calls, ["show"])
+        XCTAssertEqual(g.status, .active)
+    }
+
+    /// A lid that is shut sits at about 0° until the Mac sleeps; that is not a pause to clear the frost for.
+    func testAShutLidDoesNotSettle() {
+        let g = makeGlass()
+        closeFast(g)
+        waitUntil(overlays.first?.calls == ["show"])
+        g.handle(angle: 2, time: 0.6)
+        for i in 1...30 { g.handle(angle: 2, time: 0.6 + Double(i) * 0.1) }
+        XCTAssertEqual(overlays[0].calls, ["show"])
+    }
+
+    func testAfterTheLidSettlesTheNextUnlockPlaysNothing() {
+        let g = makeGlass()
+        closeFast(g)
+        waitUntil(overlays.first?.calls == ["show"])
+        for i in 0...20 { g.handle(angle: 80, time: 0.5 + Double(i) * 0.1) }
+        g.screenUnlocked()
+        settle()
+        XCTAssertEqual(overlays.count, 1)
+        XCTAssertEqual(captures, 1)
+    }
+
+    func testAnotherCloseStartsAfterTheLidSettled() {
+        let g = makeGlass()
+        closeFast(g)
+        waitUntil(overlays.first?.calls == ["show"])
+        for i in 0...20 { g.handle(angle: 80, time: 0.5 + Double(i) * 0.1) }
+        g.handle(angle: 60, time: 2.7)
+        g.handle(angle: 40, time: 2.9)
+        waitUntil(overlays.count == 2)
+        XCTAssertEqual(overlays.count, 2)
+        XCTAssertEqual(g.status, .active)
+    }
+
     // ── The sensor going wrong ──
 
     func testALostSensorStopsEverythingAndSaysSo() {

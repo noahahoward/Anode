@@ -39,6 +39,10 @@ final class LidGlass {
     /// How long the frost takes to clear after unlock, and when a lid is reopened mid-close.
     static let openingClear: TimeInterval = 0.5
     static let reopenClear: TimeInterval = 0.25
+    /// A lid that has moved less than `stillTolerance` degrees for `stillSettle` seconds has stopped; the frozen
+    /// picture must not stay over a live screen the owner is working on.
+    static let stillTolerance = 2.0
+    static let stillSettle: TimeInterval = 1.5
 
     private let settings: Settings
     private let sensor: LidAngleSource
@@ -55,6 +59,7 @@ final class LidGlass {
     /// Set when a close began and not yet undone or followed by an unlock: the next unlock plays the opening.
     private var closeSeen = false
     private var lastAngle = 180.0
+    private var still: (angle: Double, since: TimeInterval)?
 
     private var settingTokens: [AnyObject] = []
     private var systemObservers: [(NotificationCenter, NSObjectProtocol)] = []
@@ -160,15 +165,18 @@ final class LidGlass {
         case .reopened:
             reopened()
         case .none:
-            if status == .active, let overlay, let from = detector.armedFrom {
+            guard status == .active else { return }
+            if let overlay, let from = detector.armedFrom {
                 overlay.setBlur(LidBlurCurve(trigger: from).amount(at: angle))
             }
+            watchForStillness(angle: angle, time: time)
         }
     }
 
     private func closingBegan() {
         guard !externalDisplayPresent() else { return }
         closeSeen = true
+        still = nil
         status = .active
         sensor.setRate(hz: LidPollPolicy.activeHz)
         log(String(format: "closing at %.0f", lastAngle))
@@ -195,12 +203,29 @@ final class LidGlass {
     private func reopened() {
         closeSeen = false
         guard status == .active else { return }
+        leaveTheEffect(why: "lid reopened")
+    }
+
+    /// The lid has stopped part way. A shut lid is not a pause: it sits near 0° until the Mac sleeps.
+    private func watchForStillness(angle: Double, time: TimeInterval) {
+        guard angle > LidBlurCurve.defaultDarkAngle else { still = nil; return }
+        guard let s = still, abs(angle - s.angle) <= Self.stillTolerance else { still = (angle, time); return }
+        if time - s.since >= Self.stillSettle {
+            detector.reset()
+            closeSeen = false
+            leaveTheEffect(why: "lid stopped")
+        }
+    }
+
+    /// Clear the frost away and go back to watching at the idle rate.
+    private func leaveTheEffect(why: String) {
         generation += 1
+        still = nil
         let leaving = overlay
         overlay = nil
         status = .idle
         sensor.setRate(hz: idleHz)
-        log("lid reopened")
+        log(why)
         if let leaving {
             leaving.animateClear(duration: Self.reopenClear) { leaving.hide() }
         }
@@ -208,6 +233,7 @@ final class LidGlass {
 
     private func backToIdle() {
         generation += 1
+        still = nil
         detector.reset()
         status = .idle
         sensor.setRate(hz: idleHz)
@@ -218,6 +244,7 @@ final class LidGlass {
     /// Remove whatever is on screen, forget any picture still on its way, and go back to the idle rate.
     private func teardown() {
         generation += 1
+        still = nil
         removeInputMonitor()
         overlay?.hide()
         overlay = nil

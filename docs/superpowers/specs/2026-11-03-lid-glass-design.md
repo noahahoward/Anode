@@ -97,6 +97,12 @@ picture, and a display link drives a spring that follows the sensor angle. The b
 the smoothed angle: none at the trigger, maximum at fully closed. The display link and the 120 Hz polling
 run only in this state.
 
+**Lid stops part way.** If, during an active close, the angle moves less than 2 degrees for 1.5 seconds (and
+is above the angle where the display goes dark), the lid has stopped: the frost clears as for a reopen, the
+rate returns to idle, and the next quick downward run starts a new close. Without this, a small quick nudge of
+the lid followed by ordinary work would leave a frozen picture over the live screen. A shut lid (near 0 degrees)
+is not a pause.
+
 **Reopen before closing.** If the angle rises back through the trigger, play the clearing animation back to
 the live screen, remove the overlay, and return to idle polling.
 
