@@ -48,7 +48,8 @@ final class BetaFeaturesWindowController: NSWindowController {
     private var activeToken: NSObjectProtocol?
 
     init(features: [BetaFeature] = [BackdropFeature(), WindowSwitcherFeature(), DesktopSwitcherFeature(),
-                                    DockPreviewFeature(), WindowActionsFeature(), WindowGroupsFeature()]) {
+                                    DockPreviewFeature(), WindowActionsFeature(), WindowGroupsFeature(),
+                                    LidGlassFeature()]) {
         self.features = features
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: Self.columnWidth + 2 * Self.inset, height: 200),
                               styleMask: [.titled, .closable], backing: .buffered, defer: false)
@@ -929,6 +930,127 @@ final class WindowGroupsFeature: BetaFeature {
         }
         let lines = c?.summary() ?? []
         groupList.stringValue = lines.isEmpty ? "No groups yet." : lines.joined(separator: "\n")
+        layoutChanged?()
+    }
+}
+
+// ── Lid Glass ───────────────────────────────────────────────────────────────
+
+/// The screen frosts over like glass as the lid closes, and clears after the next unlock (see `LidGlass`).
+final class LidGlassFeature: BetaFeature {
+
+    let title = "Lid Glass"
+    let summary = "As you close the lid the screen stays where it is and frosts over like glass, blurring from the top "
+                + "down toward the hinge; after the next unlock the desktop clears from the frost. Built-in screen "
+                + "only, and it needs Screen Recording to take the picture it frosts."
+    var layoutChanged: (() -> Void)?
+
+    private let settings: Settings
+    private let screenRecording: () -> Bool
+    private let status: () -> LidGlassStatus
+    private let macOS14: Bool
+    private var tokens: [AnyObject] = []
+
+    // Internal, so the tests can drive them as a click would.
+    let enableCheckbox = NSButton(checkboxWithTitle: "Frost the screen as the lid closes", target: nil, action: nil)
+    let idleRateLabel = NSTextField(labelWithString: "")
+    let idleRateSlider = NSSlider(value: 8, minValue: 4, maxValue: 30, target: nil, action: nil)
+    let triggerLabel = NSTextField(labelWithString: "")
+    let triggerSlider = NSSlider(value: 110, minValue: 60, maxValue: 150, target: nil, action: nil)
+    let accessStatus = BetaFeaturesWindowController.wrapping("")
+    let accessButton = NSButton(title: "Open Screen Recording Settings…", target: nil, action: nil)
+
+    init(settings: Settings = .shared,
+         screenRecordingAllowed: @escaping () -> Bool = { ScreenRecordingAccess.isGranted },
+         status: @escaping () -> LidGlassStatus = { LidGlass.current?.status ?? .off },
+         macOS14: Bool = { if #available(macOS 14.0, *) { return true } else { return false } }()) {
+        self.settings = settings
+        self.screenRecording = screenRecordingAllowed
+        self.status = status
+        self.macOS14 = macOS14
+    }
+
+    func makeView() -> NSView {
+        enableCheckbox.target = self
+        enableCheckbox.action = #selector(toggled)
+        idleRateSlider.target = self
+        idleRateSlider.action = #selector(idleRateMoved)
+        triggerSlider.target = self
+        triggerSlider.action = #selector(triggerMoved)
+        for slider in [idleRateSlider, triggerSlider] {
+            slider.translatesAutoresizingMaskIntoConstraints = false
+            slider.widthAnchor.constraint(equalToConstant: 200).isActive = true
+        }
+        accessButton.target = self
+        accessButton.action = #selector(openScreenRecording)
+        accessButton.bezelStyle = .rounded
+        accessButton.controlSize = .small
+        let idleRow = NSStackView(views: [idleRateLabel, idleRateSlider])
+        idleRow.spacing = 8
+        let triggerRow = NSStackView(views: [triggerLabel, triggerSlider])
+        triggerRow.spacing = 8
+        let column = NSStackView(views: [enableCheckbox, idleRow, triggerRow, accessStatus, accessButton])
+        column.orientation = .vertical
+        column.alignment = .leading
+        column.spacing = 8
+        tokens = [Settings.Key.lidGlassEnabled, Settings.Key.lidGlassIdleHz, Settings.Key.lidGlassTriggerAngle].map { key in
+            settings.observe(key) { [weak self] in self?.refresh() }
+        }
+        LidGlass.current?.onStatusChange = { [weak self] in self?.refresh() }
+        refresh()
+        return column
+    }
+
+    @objc private func toggled() {
+        let on = enableCheckbox.state == .on
+        // Ask at the moment it is wanted, as the other Screen Recording features do.
+        if on && !screenRecording() { ScreenRecordingAccess.request() }
+        settings.lidGlassEnabled = on
+    }
+
+    @objc private func idleRateMoved() { settings.lidGlassIdleHz = idleRateSlider.doubleValue.rounded() }
+
+    @objc private func triggerMoved() { settings.lidGlassTriggerAngle = triggerSlider.doubleValue.rounded() }
+
+    @objc private func openScreenRecording() {
+        ScreenRecordingAccess.request()
+        ScreenRecordingAccess.openSettings()
+    }
+
+    func refresh() {
+        let on = settings.lidGlassEnabled && macOS14
+        enableCheckbox.state = settings.lidGlassEnabled ? .on : .off
+        enableCheckbox.isEnabled = macOS14
+        let hz = Int(settings.lidGlassIdleHz.rounded()), angle = Int(settings.lidGlassTriggerAngle.rounded())
+        idleRateSlider.doubleValue = settings.lidGlassIdleHz
+        triggerSlider.doubleValue = settings.lidGlassTriggerAngle
+        idleRateLabel.stringValue = "Lid check rate while open: \(hz) Hz"
+        triggerLabel.stringValue = "Starts frosting at: \(angle)°"
+        idleRateSlider.isHidden = !on; idleRateLabel.isHidden = !on
+        triggerSlider.isHidden = !on; triggerLabel.isHidden = !on
+
+        let granted = screenRecording()
+        let state = status()
+        accessStatus.isHidden = !(on || !macOS14)
+        accessButton.isHidden = !on || granted
+        if !macOS14 {
+            accessStatus.stringValue = "Lid Glass needs macOS 14 or later."
+            accessStatus.textColor = .systemOrange
+        } else if state == .unsupported {
+            accessStatus.stringValue = "Lid Glass is not supported on this Mac: it has no lid-angle sensor."
+            accessStatus.textColor = .systemOrange
+        } else if state == .sensorLost {
+            accessStatus.stringValue = "The lid sensor stopped responding, so Lid Glass is paused. Turn it off and on to try again."
+            accessStatus.textColor = .systemOrange
+        } else if !granted {
+            accessStatus.stringValue = "Screen Recording: not allowed yet, so there is no picture to frost and nothing happens. "
+                + "Allow Anode under Privacy & Security → Screen Recording, then reopen Anode."
+            accessStatus.textColor = .systemOrange
+        } else {
+            accessStatus.stringValue = "Screen Recording: allowed. The lid is read \(hz) times a second while it is open, "
+                + "faster while it closes; nothing is recorded or kept."
+            accessStatus.textColor = .secondaryLabelColor
+        }
         layoutChanged?()
     }
 }

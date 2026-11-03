@@ -51,6 +51,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
     var windowSwitcher: WindowSwitcher?
     var dockPreviews: DockPreviews?
     var desktopSwitcher: DesktopSwitcher?
+    var lidGlass: LidGlass?
     var temperatureAlarm = TemperatureAlarm()
     var windowSnapper: WindowSnapper?
     var windowGroups: WindowGroupController?
@@ -314,6 +315,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         windowSwitcher = WindowSwitcher()
         dockPreviews = DockPreviews()
         desktopSwitcher = DesktopSwitcher()
+        lidGlass = LidGlass()
+        LidGlass.current = lidGlass
         windowSnapper = WindowSnapper()
         windowGroups = WindowGroupController()
         windowDragSnapper = WindowDragSnapper(snapper: windowSnapper)

@@ -27,6 +27,9 @@ enum LidGlassStatus: Equatable {
 
 final class LidGlass {
 
+    /// The running controller, for Settings to read its status from.
+    static weak var current: LidGlass?
+
     private(set) var status: LidGlassStatus = .off {
         didSet { if status != oldValue { onStatusChange?() } }
     }
