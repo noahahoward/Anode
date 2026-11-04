@@ -165,6 +165,25 @@ public struct LidFoldCurve {
     }
 }
 
+/// The rim of the glass's far edge, a thick lens: across a band `rimWidth` of the screen's height wide, the picture is
+/// looked up from further inside the screen, by an amount that is greatest at the very edge and falls to nothing at
+/// the band's inner edge. Where it falls faster than the glass moves on, the lookup runs backwards, so the content
+/// near the edge is seen flipped and compressed, and what the edge shows is what lies further in.
+/// (The shader does the same arithmetic; these constants and that function are the one definition of its shape.)
+public enum LidGlassLens {
+    /// Rim width as a share of the screen's height, at full fold.
+    public static let rimWidth = 0.07
+    /// How far inside the edge the lookup lands, as a share of the rim width.
+    public static let depth = 0.85
+
+    /// Points the lookup moves inward at `t` points from the glass's far edge, for a rim `rim` points wide.
+    public static func offset(t: Double, rim: Double) -> Double {
+        guard rim > 0, t >= 0, t < rim else { return 0 }
+        let k = 1 - t / rim
+        return depth * rim * k * k
+    }
+}
+
 /// Everything the shader needs for one frame, apart from the picture.
 public struct LidFoldFrame {
     public var corners: [LidPoint]
@@ -177,6 +196,8 @@ public struct LidFoldFrame {
     public var dimHingeFloor: Double
     /// Where the picture's far edge lands on the glass, in points.
     public var topEdge: Double
+    /// How strong the rim lens is, 0 to 1: nothing while unfolded, full a little way into the fold.
+    public var lens = 0.0
 
     public static func make(look: LidFoldLook, screen: CGSize, angle: Double) -> LidFoldFrame {
         let width = Double(screen.width), height = Double(screen.height)
@@ -195,6 +216,7 @@ public struct LidFoldFrame {
                             blurFloor: LidFoldCurve.smoothstep((separation - 45) / 35),
                             maxDim: look.dimming, maxBlurRadius: look.blurRadius,
                             dimReach: look.dimReach, dimHingeFloor: look.dimHingeFloor,
-                            topEdge: corners[2].y)
+                            topEdge: corners[2].y,
+                            lens: LidFoldCurve.smoothstep(curve.dimStrength(progress: progress) / 0.5))
     }
 }

@@ -119,6 +119,57 @@ final class LidGlassFeatureTests: XCTestCase {
         XCTAssertFalse(o.isDisplayLinkRunning)
     }
 
+    /// A fold held still draws nothing and, now, wakes nothing: the display link stops until the lid moves again.
+    @available(macOS 14.0, *)
+    func testTheDisplayLinkStopsWhenNothingIsMovingAndWakesWhenTheLidMoves() throws {
+        let o = try overlay(); o.showsWindow = false
+        o.show(image: try tinyImage(), startAngle: 90, from: 70, to: 70)
+        spin(until: o.isDisplayLinkRunning)
+        XCTAssertTrue(o.isDisplayLinkRunning)
+        var now = CACurrentMediaTime()
+        for _ in 0..<20 { now += 1.0 / 120; o.advance(dt: 1.0 / 120, now: now) }
+        XCTAssertFalse(o.isDisplayLinkRunning, "twenty frames of nothing changing")
+        o.setAngle(70)
+        XCTAssertFalse(o.isDisplayLinkRunning, "the same angle again is not movement")
+        o.setAngle(66)
+        XCTAssertTrue(o.isDisplayLinkRunning, "the lid moved")
+        o.hide()
+    }
+
+    @available(macOS 14.0, *)
+    func testAClearAskedForWhileTheLinkIsPausedStillRuns() throws {
+        let o = try overlay(); o.showsWindow = false
+        o.show(image: try tinyImage(), startAngle: 90, from: 70, to: 70)
+        spin(until: o.isDisplayLinkRunning)
+        var now = CACurrentMediaTime()
+        for _ in 0..<20 { now += 1.0 / 120; o.advance(dt: 1.0 / 120, now: now) }
+        XCTAssertFalse(o.isDisplayLinkRunning)
+        var done = false
+        o.animateClear(duration: 0.1) { done = true }
+        XCTAssertTrue(o.isDisplayLinkRunning, "a clear needs frames")
+        o.advance(dt: 1.0 / 120, now: CACurrentMediaTime() + 1)
+        XCTAssertTrue(done)
+        o.hide()
+    }
+
+    /// Smoothness matters at speed; a slow or settling fold looks as smooth at half the rate, for half the GPU.
+    @available(macOS 14.0, *)
+    func testTheFrameRateIsFullWhileTheLidIsFastAndHalvedWhenItIsSlowOrStill() throws {
+        let o = try overlay(); o.showsWindow = false
+        o.show(image: try tinyImage(), startAngle: 90, from: 90, to: 90)
+        spin(until: o.isDisplayLinkRunning)
+        XCTAssertEqual(o.frameRate, 120, "a close starts fast")
+        var t = CACurrentMediaTime()
+        for (i, angle) in [90.0, 85, 80, 75, 70].enumerated() { o.setAngle(angle, at: t + Double(i) * 0.1) }      // 50°/s
+        o.advance(dt: 1.0 / 120, now: t + 0.5)
+        XCTAssertEqual(o.frameRate, 120)
+        t += 5
+        for i in 0..<8 { o.setAngle(70, at: t + Double(i) * 0.1) }                                              // stopped
+        o.advance(dt: 1.0 / 120, now: t + 0.8)
+        XCTAssertEqual(o.frameRate, 60)
+        o.hide()
+    }
+
     /// With nothing showing, a clear has nothing to wait for.
     @available(macOS 14.0, *)
     func testClearWithNothingShowingCompletesAtOnce() throws {

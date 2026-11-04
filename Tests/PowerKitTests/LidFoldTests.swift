@@ -51,6 +51,35 @@ final class LidFoldTests: XCTestCase {
         XCTAssertLessThan(stretch(45), 1.5, "stretched, not exploded")
     }
 
+    // ── The rim lens ──
+    //
+    // Along the glass's far edge the picture is looked up from further inside the screen, by an amount that falls to
+    // nothing across the rim, so the content near the edge is seen flipped and compressed, as through the rim of a thick
+    // lens, instead of simply fading.
+
+    func testTheRimLensLooksFurtherInsideAtTheEdgeAndNothingBeyondTheRim() {
+        let rim = 80.0
+        XCTAssertEqual(LidGlassLens.offset(t: 0, rim: rim), LidGlassLens.depth * rim, accuracy: 1e-9)
+        XCTAssertEqual(LidGlassLens.offset(t: rim, rim: rim), 0, accuracy: 1e-9)
+        XCTAssertEqual(LidGlassLens.offset(t: rim + 50, rim: rim), 0)
+        XCTAssertEqual(LidGlassLens.offset(t: 10, rim: 0), 0, "no rim, no lens")
+    }
+
+    /// Where the lookup lands, measured inward from the edge: t + offset(t). It must go back on itself near the edge.
+    func testTheRimLensFoldsTheContentBackOnItself() {
+        let rim = 80.0
+        func inward(_ t: Double) -> Double { t + LidGlassLens.offset(t: t, rim: rim) }
+        var reversed = false
+        var previous = inward(0)
+        for i in 1...160 {
+            let now = inward(Double(i) * 0.5)
+            if now < previous - 1e-9 { reversed = true }
+            previous = now
+        }
+        XCTAssertTrue(reversed, "the lookup runs the wrong way for part of the rim")
+        XCTAssertEqual(inward(rim), rim, accuracy: 1e-9, "and is back to an ordinary lookup at its inner edge")
+    }
+
     func testTheHomographyMapsTheRectangleOntoTheCorners() {
         let c = corners(angle: 55)
         let m = LidHomography.matrix(width: w, height: h, to: c)

@@ -54,6 +54,12 @@ final class LidGlassOverlay: LidGlassOverlaying {
     private var prepareToken = 0
     private var isPreparing = false
     private var pictureIsReady = false
+    /// The overlay is on the screen. Separate from the display link, which stops while nothing moves.
+    private var isDisplayed = false
+    private var idleTicks = 0
+    private var lastIngestedAngle: Double?
+    /// Ticks in a row with nothing to draw before the display link is stopped (about 70 ms at 120 Hz).
+    private static let ticksBeforeSleep = 8
     /// A present was asked for; it happens when the picture is ready.
     private var wantsPresent = false
     private var pendingClear: (duration: TimeInterval, done: () -> Void)?
@@ -72,10 +78,16 @@ final class LidGlassOverlay: LidGlassOverlaying {
     private var stats = Stats()
     private let gpuLock = NSLock()
     private var gpuWorst = 0.0
+    private var gpuTotal = 0.0
     private var lastSummary: CFTimeInterval = 0
     /// The display link asks for the screen's best rate (120 Hz on a ProMotion display; it is a ceiling, not a
     /// promise), and a tick that finds the GPU still busy is skipped rather than waited for.
-    static let frameRate: Float = 120
+    static let fastFrameRate: Float = 120
+    /// Below this lid speed (degrees a second) half the rate looks as smooth, for half the GPU.
+    static let slowFrameRate: Float = 60
+    static let fastLidSpeed = 30.0
+    /// The rate the display link is currently asked for.
+    private(set) var frameRate: Float = LidGlassOverlay.fastFrameRate
     /// Intervals between ticks longer than this (seconds) are counted as late in the log summary.
     private static let lateInterval = 0.022
     private var lastTick: CFTimeInterval = 0
@@ -135,6 +147,7 @@ final class LidGlassOverlay: LidGlassOverlaying {
         spring.reset(to: from)
         tracker.reset(to: to, at: CACurrentMediaTime())
         target = to
+        lastIngestedAngle = to
         clear = nil
         pendingClear = nil
         wantsPresent = true
@@ -158,7 +171,9 @@ final class LidGlassOverlay: LidGlassOverlaying {
 
     /// The window goes up with the first frame drawn.
     private func display() {
-        guard link == nil else { return }
+        guard !isDisplayed else { return }
+        isDisplayed = true
+        idleTicks = 0
         lastDrawnAngle = nil
         view.matchDrawable(to: window.screen?.backingScaleFactor ?? 2)
         if showsWindow {
@@ -173,16 +188,25 @@ final class LidGlassOverlay: LidGlassOverlaying {
         }
     }
 
-    func setAngle(_ angle: Double) {
+    func setAngle(_ angle: Double) { setAngle(angle, at: CACurrentMediaTime()) }
+
+    /// `time` is when the reading was taken; tests pass their own.
+    func setAngle(_ angle: Double, at time: CFTimeInterval) {
         clear = nil
         target = angle
-        tracker.ingest(angle, at: CACurrentMediaTime())
+        tracker.ingest(angle, at: time)
+        // A reading that is the same as the last is not movement: it must not wake a sleeping link.
+        if angle != lastIngestedAngle {
+            lastIngestedAngle = angle
+            idleTicks = 0
+            if isDisplayed { startLink() }
+        }
     }
 
     func animateClear(duration: TimeInterval, completion: @escaping () -> Void) {
-        if wantsPresent, link == nil {
+        if wantsPresent, !isDisplayed {
             pendingClear = (duration, completion)
-        } else if link != nil {
+        } else if isDisplayed {
             beginClear(duration: duration, done: completion)
         } else {
             completion()
@@ -191,6 +215,8 @@ final class LidGlassOverlay: LidGlassOverlaying {
 
     private func beginClear(duration: TimeInterval, done: @escaping () -> Void) {
         clear = (spring.value, CACurrentMediaTime(), max(duration, 0.01), done)
+        idleTicks = 0
+        startLink()
     }
 
     func hide() {
@@ -198,6 +224,9 @@ final class LidGlassOverlay: LidGlassOverlaying {
         isPreparing = false
         pictureIsReady = false
         wantsPresent = false
+        isDisplayed = false
+        frameRate = Self.fastFrameRate
+        lastIngestedAngle = nil
         pendingClear = nil
         stopLink()
         clear = nil
@@ -208,7 +237,7 @@ final class LidGlassOverlay: LidGlassOverlaying {
     private func startLink() {
         guard link == nil else { return }
         let l = view.displayLink(target: self, selector: #selector(step(_:)))
-        l.preferredFrameRateRange = CAFrameRateRange(minimum: 30, maximum: Self.frameRate, preferred: Self.frameRate)
+        l.preferredFrameRateRange = CAFrameRateRange(minimum: 30, maximum: frameRate, preferred: frameRate)
         l.add(to: .main, forMode: .common)
         link = l
     }
@@ -241,8 +270,17 @@ final class LidGlassOverlay: LidGlassOverlaying {
             return
         }
         target = tracker.extrapolated(at: now)
+        let wanted = abs(tracker.velocity) > Self.fastLidSpeed ? Self.fastFrameRate : Self.slowFrameRate
+        if wanted != frameRate {
+            frameRate = wanted
+            link?.preferredFrameRateRange = CAFrameRateRange(minimum: 30, maximum: wanted, preferred: wanted)
+        }
         spring.advance(to: target, dt: dt)
         drawFrame()
+        // Settled: the picture would not change. After a few such ticks stop the link altogether, so a fold held
+        // still wakes nothing 120 times a second.
+        if abs(target - spring.value) < 0.01 { idleTicks += 1 } else { idleTicks = 0 }
+        if idleTicks >= Self.ticksBeforeSleep { stopLink() }
     }
 
     /// The angle the last frame was drawn at. A frame that would draw the same picture again is not drawn: a lid held
@@ -271,7 +309,7 @@ final class LidGlassOverlay: LidGlassOverlaying {
         onFrame?(spring.value, CACurrentMediaTime())
         renderer.draw(frame, into: drawable) { [weak self] seconds in
             guard let self else { return }
-            self.gpuLock.lock(); self.gpuWorst = max(self.gpuWorst, seconds); self.gpuLock.unlock()
+            self.gpuLock.lock(); self.gpuWorst = max(self.gpuWorst, seconds); self.gpuTotal += seconds; self.gpuLock.unlock()
         }
     }
 
@@ -286,10 +324,10 @@ final class LidGlassOverlay: LidGlassOverlaying {
         lastTick = now
         if lastSummary == 0 { lastSummary = now }
         guard now - lastSummary >= 1 else { return }
-        gpuLock.lock(); let gpu = gpuWorst; gpuWorst = 0; gpuLock.unlock()
-        log(String(format: "frames: %d ticks (%d later than %.0f ms, worst gap %.0f ms), %d drawn, %d skipped (gpu busy), %d no drawable; worst main step %.0f ms, worst gpu %.0f ms",
+        gpuLock.lock(); let gpu = gpuWorst, busy = gpuTotal; gpuWorst = 0; gpuTotal = 0; gpuLock.unlock()
+        log(String(format: "frames: %d ticks (%d later than %.0f ms, worst gap %.0f ms), %d drawn, %d skipped (gpu busy), %d no drawable; worst main step %.0f ms, gpu worst %.0f ms, gpu busy %.0f ms in the last second",
                    stats.ticks, stats.slowIntervals, Self.lateInterval * 1000, stats.worstInterval * 1000, stats.drawn,
-                   stats.skipped, stats.noDrawable, stats.worstStep * 1000, gpu * 1000))
+                   stats.skipped, stats.noDrawable, stats.worstStep * 1000, gpu * 1000, busy * 1000))
         stats = Stats()
         lastSummary = now
     }

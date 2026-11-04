@@ -108,14 +108,34 @@ final class LidGlassRendererTests: XCTestCase {
         func rows(_ angle: Double) throws -> (red: Int?, blue: Int?) {
             let f = LidFoldFrame.make(look: look, screen: CGSize(width: 256, height: 160), angle: angle)
             let b = rgba(try XCTUnwrap(r.renderOffscreen(f)))
-            return (edgeRow(channelProfile(b, width: 256, x: 128, channel: 0, rows: 0..<160)),
-                    edgeRow(channelProfile(b, width: 256, x: 128, channel: 2, rows: 0..<160)))
+            // Below the lens rim at the glass's top edge, which has its own lines of light.
+            return (edgeRow(channelProfile(b, width: 256, x: 128, channel: 0, rows: 20..<160)),
+                    edgeRow(channelProfile(b, width: 256, x: 128, channel: 2, rows: 20..<160)))
         }
         let flat = try rows(90)
         XCTAssertEqual(flat.red, flat.blue, "unfolded, nothing is fringed")
         let folded = try rows(50)
         let red = try XCTUnwrap(folded.red), blue = try XCTUnwrap(folded.blue)
         XCTAssertGreaterThanOrEqual(abs(red - blue), 4, "red at \(red), blue at \(blue)")
+    }
+
+    /// The rim lens changes what is drawn within the rim of the glass's far edge, and nothing below it.
+    func testTheRimLensChangesTheRimAndNothingBelowIt() throws {
+        // A picture whose brightness differs on every row, so any remapping shows.
+        let image = makeImage(width: 256, height: 400) { _, y in let v = UInt8(40 + (y * 7) % 200); return (v, v, v) }
+        let r = try renderer(for: image)
+        var look = LidFoldLook(startAngle: 90); look.blurRadius = 1; look.dimming = 0.2
+        var on = LidFoldFrame.make(look: look, screen: CGSize(width: 256, height: 400), angle: 40)
+        var off = on
+        off.lens = 0
+        on.lens = 1
+        let a = rgba(try XCTUnwrap(r.renderOffscreen(on))), b = rgba(try XCTUnwrap(r.renderOffscreen(off)))
+        func rowDiff(_ y: Int) -> Double {
+            (0..<256).map { abs(Double(a[(y * 256 + $0) * 4 + 1]) - Double(b[(y * 256 + $0) * 4 + 1])) }.reduce(0, +) / 256
+        }
+        let rimRows = Int(LidGlassLens.rimWidth * 400)
+        XCTAssertGreaterThan((6..<(rimRows - 4)).map(rowDiff).max() ?? 0, 10, "the rim looks somewhere else")
+        XCTAssertEqual((rimRows + 20..<400).map(rowDiff).max() ?? 0, 0, accuracy: 0.5, "below the rim, nothing moved")
     }
 
     /// The thin edge light along the glass's far edge, on a black picture: there at a fold, gone when unfolded.
