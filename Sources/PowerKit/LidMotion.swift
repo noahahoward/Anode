@@ -106,3 +106,54 @@ public struct LidSpring {
         velocity = 0
     }
 }
+
+/// Turns the sensor's stepped readings into a velocity, and carries the last movement forward between updates so
+/// the fold moves on every frame instead of stepping ten times a second. (After Mac Duo's `AngleTracker`,
+/// github.com/ninobc/mac-duo, MIT; see LidFold.swift for the notice.)
+public struct LidAngleTracker {
+
+    /// How far past the last change the angle is carried on: the sensor's period, with a little slack.
+    public static let horizon = 0.11
+    /// A reading unchanged for this long means the lid has stopped.
+    public static let stillAfter = 0.4
+
+    public private(set) var angle = 0.0
+    /// Degrees a second; negative while closing.
+    public private(set) var velocity = 0.0
+    private var lastAngle: Double?
+    private var lastChange: TimeInterval = 0
+
+    public init() {}
+
+    public mutating func reset(to angle: Double, at time: TimeInterval) {
+        self.angle = angle
+        velocity = 0
+        lastAngle = angle
+        lastChange = time
+    }
+
+    public mutating func ingest(_ reading: Double, at time: TimeInterval) {
+        angle = reading
+        guard let previous = lastAngle else {
+            lastAngle = reading
+            lastChange = time
+            return
+        }
+        if reading != previous {
+            let dt = time - lastChange
+            if dt > 0.001 {
+                velocity = 0.5 * ((reading - previous) / dt) + 0.5 * velocity
+            }
+            lastAngle = reading
+            lastChange = time
+        } else if time - lastChange > Self.stillAfter {
+            velocity = 0
+        }
+    }
+
+    /// Where the lid most likely is at `time`.
+    public func extrapolated(at time: TimeInterval) -> Double {
+        let age = min(max(time - lastChange, 0), Self.horizon)
+        return min(max(angle + velocity * age, 0), 180)
+    }
+}

@@ -32,6 +32,9 @@ final class LidGlassOverlay: LidGlassOverlaying {
     private var link: CADisplayLink?
     private var look = LidFoldLook(startAngle: 90)
     private var spring = LidSpring()
+    /// The sensor's readings arrive about ten a second; the tracker carries the lid's last movement forward between
+    /// them so the target moves on every frame.
+    private var tracker = LidAngleTracker()
     private var target = 0.0
     private var clear: (from: Double, start: CFTimeInterval, duration: TimeInterval, done: () -> Void)?
     /// Bumped by every `show` and `hide`, so a picture that finishes preparing after the overlay was dismissed
@@ -47,14 +50,18 @@ final class LidGlassOverlay: LidGlassOverlaying {
     /// What drawing did since the last summary. The GPU time arrives from another thread.
     private struct Stats {
         var ticks = 0, drawn = 0, skipped = 0, noDrawable = 0
-        var worstStep = 0.0, worstGPU = 0.0
+        var worstStep = 0.0, worstInterval = 0.0, slowIntervals = 0
     }
     private var stats = Stats()
     private let gpuLock = NSLock()
     private var gpuWorst = 0.0
     private var lastSummary: CFTimeInterval = 0
-    /// Frames are capped here: the display link asks for no more, and a tick that finds the GPU still busy is skipped.
-    static let frameRate: Float = 60
+    /// The display link asks for the screen's best rate (120 Hz on a ProMotion display; it is a ceiling, not a
+    /// promise), and a tick that finds the GPU still busy is skipped rather than waited for.
+    static let frameRate: Float = 120
+    /// Intervals between ticks longer than this (seconds) are counted as late in the log summary.
+    private static let lateInterval = 0.022
+    private var lastTick: CFTimeInterval = 0
 
     init(screen: NSScreen, makeRenderer: () -> LidGlassRenderer? = { LidGlassRenderer() }) {
         renderer = makeRenderer()
@@ -97,6 +104,7 @@ final class LidGlassOverlay: LidGlassOverlaying {
         let mine = showToken
         look = LidFoldLook(startAngle: startAngle)
         spring.reset(to: from)
+        tracker.reset(to: to, at: CACurrentMediaTime())
         target = to
         clear = nil
         pendingClear = nil
@@ -133,6 +141,7 @@ final class LidGlassOverlay: LidGlassOverlaying {
     func setAngle(_ angle: Double) {
         clear = nil
         target = angle
+        tracker.ingest(angle, at: CACurrentMediaTime())
     }
 
     func animateClear(duration: TimeInterval, completion: @escaping () -> Void) {
@@ -194,6 +203,7 @@ final class LidGlassOverlay: LidGlassOverlaying {
             }
             return
         }
+        target = tracker.extrapolated(at: now)
         spring.advance(to: target, dt: dt)
         drawFrame()
     }
@@ -214,11 +224,18 @@ final class LidGlassOverlay: LidGlassOverlaying {
     private func noteTick(took: TimeInterval, now: CFTimeInterval) {
         stats.ticks += 1
         stats.worstStep = max(stats.worstStep, took)
+        if lastTick != 0 {
+            let gap = now - lastTick
+            stats.worstInterval = max(stats.worstInterval, gap)
+            if gap > Self.lateInterval { stats.slowIntervals += 1 }
+        }
+        lastTick = now
         if lastSummary == 0 { lastSummary = now }
         guard now - lastSummary >= 1 else { return }
         gpuLock.lock(); let gpu = gpuWorst; gpuWorst = 0; gpuLock.unlock()
-        log(String(format: "frames: %d ticks, %d drawn, %d skipped (gpu busy), %d no drawable; worst main step %.0f ms, worst gpu %.0f ms",
-                   stats.ticks, stats.drawn, stats.skipped, stats.noDrawable, stats.worstStep * 1000, gpu * 1000))
+        log(String(format: "frames: %d ticks (%d later than %.0f ms, worst gap %.0f ms), %d drawn, %d skipped (gpu busy), %d no drawable; worst main step %.0f ms, worst gpu %.0f ms",
+                   stats.ticks, stats.slowIntervals, Self.lateInterval * 1000, stats.worstInterval * 1000, stats.drawn,
+                   stats.skipped, stats.noDrawable, stats.worstStep * 1000, gpu * 1000))
         stats = Stats()
         lastSummary = now
     }

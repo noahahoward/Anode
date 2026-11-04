@@ -171,6 +171,11 @@ final class LidGlass {
     // ── Angles ──
 
     private var lastLagLog = 0.0
+    /// While a close is active, each change in the sensor's reading is logged (capped), so the real cadence of the
+    /// readings can be read back from the log.
+    private var tracedAngle: Double?
+    private var traced = 0
+    private static let traceLimit = 400
 
     /// Samples should reach the main thread within a frame or two. When they do not, the main thread is busy
     /// (drawing, most likely), and a late stop or a frozen fold is the result; leave a line to say so.
@@ -194,6 +199,10 @@ final class LidGlass {
         case .none:
             guard status == .active else { return }
             overlay?.setAngle(angle)
+            if angle != tracedAngle, traced < Self.traceLimit {
+                tracedAngle = angle; traced += 1
+                log(String(format: "angle %.0f at %.3f", angle, time))
+            }
             if angle >= startAngle + Self.releaseMargin {
                 detector.reset()
                 closeSeen = false
@@ -208,6 +217,8 @@ final class LidGlass {
         guard !externalDisplayPresent() else { return }
         closeSeen = true
         recent = []
+        tracedAngle = nil
+        traced = 0
         startAngle = lastAngle
         lastCloseStart = startAngle
         status = .active
