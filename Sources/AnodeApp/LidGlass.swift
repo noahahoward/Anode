@@ -44,6 +44,10 @@ final class LidGlass {
     /// whole-degree steps and a hand that has not quite let go.
     static let stillTolerance = 3.0
     static let stillSettle: TimeInterval = 0.4
+    /// A fold shallower than this (degrees below where the picture was frozen) is a nudge, not a close: if the lid
+    /// rests there the fold is cleared. A deeper one waits for the lid to be opened again, as the iPhone Duo does,
+    /// and opening plays it backwards.
+    static let slightFold = 12.0
     /// Degrees past the angle the picture was frozen at the lid must rise to before the fold lets go: above it the
     /// fold is flat, so there is nothing to show, and a few degrees of sensor noise must not end a close.
     static let releaseMargin = 3.0
@@ -234,9 +238,10 @@ final class LidGlass {
         leaveTheEffect(why: "lid reopened")
     }
 
-    /// The lid has stopped part way. A shut lid is not a pause: it sits near 0° until the Mac sleeps.
+    /// The lid has been left a slight way below where the picture was frozen. A deep fold is not a pause to clear
+    /// for, and neither is a shut lid, which sits near 0° until the Mac sleeps.
     private func watchForStillness(angle: Double, time: TimeInterval) {
-        guard angle > Self.shutAngle else { recent = []; return }
+        guard angle > Self.shutAngle, startAngle - angle < Self.slightFold else { recent = []; return }
         recent.append((time, angle))
         recent.removeAll { time - $0.time > Self.stillSettle + 0.1 }
         guard let oldest = recent.first, time - oldest.time >= Self.stillSettle - 1e-6 else { return }
@@ -286,9 +291,15 @@ final class LidGlass {
         }
     }
 
-    func systemWillSleep() { teardown() }
+    func systemWillSleep() {
+        if status == .active || overlay != nil { log("going to sleep with the fold up") }
+        teardown()
+    }
 
-    func displayConfigurationChanged() { teardown() }
+    func displayConfigurationChanged() {
+        if status == .active || overlay != nil { log("screens changed with the fold up") }
+        teardown()
+    }
 
     /// A key, click or scroll cancels the opening effect. A close in progress ignores input.
     func userInput() {
@@ -299,6 +310,7 @@ final class LidGlass {
     // ── After unlock ──
 
     func screenUnlocked() {
+        if settings.lidGlassEnabled { log("unlocked (a close was seen: \(closeSeen))") }
         guard settings.lidGlassEnabled, status == .idle || status == .active, closeSeen else { return }
         closeSeen = false
         teardown()
@@ -311,7 +323,11 @@ final class LidGlass {
     }
 
     private func openingPictureArrived(_ image: CGImage?, generation mine: Int) {
-        guard mine == generation, status == .idle, let image, let overlay = makeOverlay() else { return }
+        guard mine == generation, status == .idle, let image, let overlay = makeOverlay() else {
+            log("opening effect skipped: no picture or no overlay")
+            return
+        }
+        log("opening effect")
         self.overlay = overlay
         showingOpeningEffect = true
         installInputMonitor()

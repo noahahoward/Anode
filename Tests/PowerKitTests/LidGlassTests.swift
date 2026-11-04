@@ -202,28 +202,46 @@ final class LidGlassTests: XCTestCase {
         XCTAssertEqual(sensor.lastRate, 8)
     }
 
-    func testTheFoldClearsQuicklyAfterTheLidStops() {
+    func testASlightFoldClearsQuicklyAfterTheLidStops() {
         let g = makeGlass()
-        closeFast(g)
+        closeFast(g)                                   // frozen at 100°
         waitUntil(overlays.first?.calls == ["show"])
-        g.handle(angle: 80, time: 0.5)
-        g.handle(angle: 80, time: 0.7)
+        g.handle(angle: 92, time: 0.5)
+        g.handle(angle: 92, time: 0.7)
         XCTAssertEqual(overlays[0].calls, ["show"], "0.2 s of stillness is not a stop")
-        g.handle(angle: 80, time: 1.0)
+        g.handle(angle: 92, time: 1.0)
         XCTAssertEqual(overlays[0].calls, ["show", "clear", "hide"], "half a second at most")
         XCTAssertLessThanOrEqual(LidGlass.stillSettle, 0.5)
         XCTAssertLessThanOrEqual(LidGlass.reopenClear, 0.25)
     }
 
+    // ── A lid that stops deep in the fold ──
+
+    /// Stopping half way waits, as the iPhone Duo does; opening then plays the fold backwards and lets go at the end.
+    func testALidStoppedDeepInTheFoldWaitsThenUnfoldsAsItOpens() {
+        let g = makeGlass()
+        closeFast(g)                                   // frozen at 100°
+        waitUntil(overlays.first?.calls == ["show"])
+        for i in 0...40 { g.handle(angle: 60, time: 0.5 + Double(i) * 0.1) }      // four seconds still
+        XCTAssertEqual(overlays[0].calls, ["show"], "a deep fold is not cleared for being still")
+        XCTAssertEqual(g.status, .active)
+        for (i, a) in [64.0, 72, 84, 96].enumerated() { g.handle(angle: a, time: 5 + Double(i) * 0.1) }
+        XCTAssertEqual(overlays[0].angles.suffix(4), [64, 72, 84, 96], "the overlay follows the lid up, so it unfolds")
+        XCTAssertEqual(overlays[0].calls, ["show"], "not yet above where the picture was frozen")
+        g.handle(angle: 104, time: 5.5)
+        XCTAssertEqual(overlays[0].calls, ["show", "clear", "hide"])
+        XCTAssertEqual(g.status, .idle)
+    }
+
     // ── A lid that stops ──
 
     /// Without this, nudging the lid down 6° and carrying on working would leave a frozen picture over the live screen.
-    func testALidThatStopsMidCloseSettlesBackToTheLiveScreen() {
+    func testALidNudgedASlightWayAndLeftSettlesBackToTheLiveScreen() {
         let g = makeGlass()
-        closeFast(g)
+        closeFast(g)                                   // frozen at 100°
         waitUntil(overlays.first?.calls == ["show"])
-        g.handle(angle: 80, time: 0.5)
-        for i in 1...20 { g.handle(angle: 80, time: 0.5 + Double(i) * 0.1) }
+        g.handle(angle: 92, time: 0.5)
+        for i in 1...20 { g.handle(angle: 92, time: 0.5 + Double(i) * 0.1) }
         XCTAssertEqual(overlays[0].calls, ["show", "clear", "hide"])
         XCTAssertEqual(g.status, .idle)
         XCTAssertEqual(sensor.lastRate, 8)
@@ -252,7 +270,7 @@ final class LidGlassTests: XCTestCase {
         let g = makeGlass()
         closeFast(g)
         waitUntil(overlays.first?.calls == ["show"])
-        for i in 0...20 { g.handle(angle: 80, time: 0.5 + Double(i) * 0.1) }
+        for i in 0...20 { g.handle(angle: 92, time: 0.5 + Double(i) * 0.1) }
         g.screenUnlocked()
         settle()
         XCTAssertEqual(overlays.count, 1)
@@ -263,7 +281,7 @@ final class LidGlassTests: XCTestCase {
         let g = makeGlass()
         closeFast(g)
         waitUntil(overlays.first?.calls == ["show"])
-        for i in 0...20 { g.handle(angle: 80, time: 0.5 + Double(i) * 0.1) }
+        for i in 0...20 { g.handle(angle: 92, time: 0.5 + Double(i) * 0.1) }
         g.handle(angle: 60, time: 2.7)
         g.handle(angle: 40, time: 2.9)
         waitUntil(overlays.count == 2)
