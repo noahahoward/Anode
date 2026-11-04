@@ -46,6 +46,8 @@ final class LidGlassOverlay: LidGlassOverlaying {
     var showsWindow = true
     /// Where a once-a-second summary of the drawing goes while the overlay is up (frames, skips, worst times).
     var log: (String) -> Void = { _ in }
+    /// Called with the angle each frame is drawn at, and the time; for tests that watch the motion.
+    var onFrame: ((Double, CFTimeInterval) -> Void)?
 
     /// What drawing did since the last summary. The GPU time arrives from another thread.
     private struct Stats {
@@ -215,6 +217,7 @@ final class LidGlassOverlay: LidGlassOverlaying {
         guard let drawable = view.currentDrawable else { stats.noDrawable += 1; return }
         let frame = LidFoldFrame.make(look: look, screen: window.frame.size, angle: spring.value)
         stats.drawn += 1
+        onFrame?(spring.value, CACurrentMediaTime())
         renderer.draw(frame, into: drawable) { [weak self] seconds in
             guard let self else { return }
             self.gpuLock.lock(); self.gpuWorst = max(self.gpuWorst, seconds); self.gpuLock.unlock()

@@ -84,8 +84,9 @@ public struct LidCloseDetector {
 /// Turns the sensor's ten-a-second steps into a value that moves smoothly at the screen's refresh rate.
 /// Critically damped, so it follows without overshooting.
 public struct LidSpring {
-    /// Radians a second. Higher follows the target faster and smooths less.
-    public static let frequency = 16.0
+    /// Radians a second. Higher follows the target faster and smooths less. 30 keeps the drawn angle within about 3° of the
+    /// real lid at 50°/s while the tracker supplies the smoothness (measured with a scripted close at 120 fps: 16 trailed by 6°).
+    public static let frequency = 30.0
     /// The longest step it will integrate; a stalled frame must not throw the value.
     public static let maxStep = 1.0 / 30
 
