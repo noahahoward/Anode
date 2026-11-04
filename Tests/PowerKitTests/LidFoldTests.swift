@@ -80,6 +80,38 @@ final class LidFoldTests: XCTestCase {
         XCTAssertEqual(inward(rim), rim, accuracy: 1e-9, "and is back to an ordinary lookup at its inner edge")
     }
 
+    // ── Render size ──
+    //
+    // The deeper the fold, the softer the picture, so the less of its detail is needed. Measured against a full-size
+    // render (mean difference per pixel, levels of 255): about 0.8 at half size from a third of the way in, 0.5 past the
+    // middle, 0.55 at 0.35 size at the end.
+
+    func testTheRenderSizeFallsAsTheFoldDeepensAndIsFullAtTheStart() {
+        XCTAssertEqual(LidRenderScale.scale(progress: 0, previous: nil), 1)
+        XCTAssertEqual(LidRenderScale.scale(progress: 0.1, previous: nil), 1)
+        XCTAssertEqual(LidRenderScale.scale(progress: 0.3, previous: nil), 0.6)
+        XCTAssertEqual(LidRenderScale.scale(progress: 0.6, previous: nil), 0.5)
+        XCTAssertEqual(LidRenderScale.scale(progress: 0.95, previous: nil), 0.35)
+        var last = 1.0
+        for i in 0...100 {
+            let now = LidRenderScale.scale(progress: Double(i) / 100, previous: nil)
+            XCTAssertLessThanOrEqual(now, last); last = now
+        }
+    }
+
+    func testTheRenderSizeDoesNotFlapAtAStep() {
+        XCTAssertEqual(LidRenderScale.scale(progress: 0.21, previous: 1.0), 1.0, "just past the step, but not yet clear of it")
+        XCTAssertEqual(LidRenderScale.scale(progress: 0.24, previous: 1.0), 0.6)
+        XCTAssertEqual(LidRenderScale.scale(progress: 0.19, previous: 0.6), 0.6, "just back across the step, not yet clear of it")
+        XCTAssertEqual(LidRenderScale.scale(progress: 0.15, previous: 0.6), 1.0)
+    }
+
+    func testAnUnfoldedPictureIsAlwaysDrawnFullSizeWhateverCameBefore() {
+        for previous in [1.0, 0.6, 0.5, 0.35] {
+            XCTAssertEqual(LidRenderScale.scale(progress: 0, previous: previous), 1.0)
+        }
+    }
+
     func testTheHomographyMapsTheRectangleOntoTheCorners() {
         let c = corners(angle: 55)
         let m = LidHomography.matrix(width: w, height: h, to: c)

@@ -150,6 +150,13 @@ final class LidGlassRendererTests: XCTestCase {
         XCTAssertGreaterThan(try level(50, row: 1), try level(50, row: 40) + 4)
     }
 
+    func testARenderAtHalfSizeIsHalfTheSize() throws {
+        let board = checkerboard
+        let r = try renderer(for: board)
+        let half = try XCTUnwrap(r.renderOffscreen(frame(board, angle: 50), scale: 0.5))
+        XCTAssertEqual(half.width, 128); XCTAssertEqual(half.height, 80)
+    }
+
     func testRenderIsDeterministic() throws {
         let board = checkerboard
         let r = try renderer(for: board)

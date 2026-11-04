@@ -88,6 +88,8 @@ final class LidGlassOverlay: LidGlassOverlaying {
     static let fastLidSpeed = 30.0
     /// The rate the display link is currently asked for.
     private(set) var frameRate: Float = LidGlassOverlay.fastFrameRate
+    /// The share of the screen's size being drawn at (see `LidRenderScale`).
+    private(set) var renderScale = 1.0
     /// Intervals between ticks longer than this (seconds) are counted as late in the log summary.
     private static let lateInterval = 0.022
     private var lastTick: CFTimeInterval = 0
@@ -175,7 +177,8 @@ final class LidGlassOverlay: LidGlassOverlaying {
         isDisplayed = true
         idleTicks = 0
         lastDrawnAngle = nil
-        view.matchDrawable(to: window.screen?.backingScaleFactor ?? 2)
+        renderScale = 1
+        view.matchDrawable(to: window.screen?.backingScaleFactor ?? 2, renderScale: 1)
         if showsWindow {
             window.setFrame(window.screen?.frame ?? window.frame, display: false)
             window.orderFrontRegardless()
@@ -226,6 +229,7 @@ final class LidGlassOverlay: LidGlassOverlaying {
         wantsPresent = false
         isDisplayed = false
         frameRate = Self.fastFrameRate
+        renderScale = 1
         lastIngestedAngle = nil
         pendingClear = nil
         stopLink()
@@ -292,6 +296,13 @@ final class LidGlassOverlay: LidGlassOverlaying {
         if clear == nil, let last = lastDrawnAngle, abs(last - spring.value) < 0.01 { return }
         // Never wait for a drawable: when the GPU is behind, skip this tick and draw the next one.
         guard renderer.framesInFlight < 2 else { stats.skipped += 1; return }
+        let frame = LidFoldFrame.make(look: look, screen: window.frame.size, angle: spring.value)
+        // The deeper the fold, the softer the picture: draw smaller, and let the compositor scale it up.
+        let wantedScale = LidRenderScale.scale(progress: frame.progress, previous: renderScale)
+        if wantedScale != renderScale {
+            renderScale = wantedScale
+            view.matchDrawable(to: window.screen?.backingScaleFactor ?? 2, renderScale: wantedScale)
+        }
         // A fresh drawable from the layer every frame. (MTKView's `currentDrawable` is only replaced when the view
         // runs its own draw cycle, so drawing through it re-presented the first frame: measured on screen, 7 visible
         // changes in a 1.6 s sweep while the GPU drew every frame.)
@@ -299,11 +310,10 @@ final class LidGlassOverlay: LidGlassOverlaying {
         // The shader maps by pixel position, so a drawable that is not exactly the screen's size would draw the picture
         // mis-scaled. Say so rather than flash it silently.
         let scale = window.screen?.backingScaleFactor ?? 2
-        let expected = (w: Int((window.frame.width * scale).rounded()), h: Int((window.frame.height * scale).rounded()))
+        let expected = (w: Int((window.frame.width * scale * renderScale).rounded()), h: Int((window.frame.height * scale * renderScale).rounded()))
         if drawable.texture.width != expected.w || drawable.texture.height != expected.h {
             log("drawable is \(drawable.texture.width)x\(drawable.texture.height), expected \(expected.w)x\(expected.h)")
         }
-        let frame = LidFoldFrame.make(look: look, screen: window.frame.size, angle: spring.value)
         stats.drawn += 1
         lastDrawnAngle = spring.value
         onFrame?(spring.value, CACurrentMediaTime())
@@ -346,19 +356,25 @@ final class MetalLayerView: NSView {
 
     override func makeBackingLayer() -> CALayer { metalLayer }
 
-    /// Keep the drawable exactly the screen's size in pixels; the shader maps by pixel position.
-    func matchDrawable(to scale: CGFloat) {
+    /// The drawable's size as a share of the screen's size in pixels (the layer scales it up to the window).
+    private var renderScale = 1.0
+
+    /// Size the drawable to the screen in pixels times `renderScale`; the shader maps by the size it draws into.
+    func matchDrawable(to scale: CGFloat, renderScale: Double = 1) {
+        self.renderScale = renderScale
         metalLayer.contentsScale = scale
-        metalLayer.drawableSize = CGSize(width: bounds.width * scale, height: bounds.height * scale)
+        metalLayer.magnificationFilter = .linear
+        metalLayer.drawableSize = CGSize(width: max(1, (bounds.width * scale * renderScale).rounded()),
+                                         height: max(1, (bounds.height * scale * renderScale).rounded()))
     }
 
     override func viewDidChangeBackingProperties() {
         super.viewDidChangeBackingProperties()
-        matchDrawable(to: window?.backingScaleFactor ?? metalLayer.contentsScale)
+        matchDrawable(to: window?.backingScaleFactor ?? metalLayer.contentsScale, renderScale: renderScale)
     }
 
     override func setFrameSize(_ newSize: NSSize) {
         super.setFrameSize(newSize)
-        matchDrawable(to: window?.backingScaleFactor ?? metalLayer.contentsScale)
+        matchDrawable(to: window?.backingScaleFactor ?? metalLayer.contentsScale, renderScale: renderScale)
     }
 }

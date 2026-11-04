@@ -184,6 +184,30 @@ public enum LidGlassLens {
     }
 }
 
+/// What share of the screen's size to draw at. The deeper the fold the softer the picture, so the less of its detail
+/// is needed; drawing smaller costs proportionally less GPU. Steps, not a slope, so the layer is not resized every
+/// frame, with a little hysteresis so it does not flap at a step. Measured against a full-size render (mean difference
+/// per pixel, levels of 255): about 0.8 at half size from a third of the way in, 0.5 past the middle, 0.55 at 0.35 size
+/// at the end; at the start the picture must match the live screen, so it is full size.
+public enum LidRenderScale {
+    /// (progress from which the step applies, share of the screen's size).
+    public static let steps: [(from: Double, scale: Double)] = [(0, 1.0), (0.2, 0.6), (0.5, 0.5), (0.8, 0.35)]
+    public static let hysteresis = 0.03
+
+    public static func scale(progress: Double, previous: Double?) -> Double {
+        func index(_ margin: Double) -> Int {
+            steps.lastIndex { progress >= $0.from + margin } ?? 0
+        }
+        guard let previous, var current = steps.firstIndex(where: { $0.scale == previous }) else {
+            return steps[index(0)].scale
+        }
+        let deeper = index(hysteresis)                 // clear of a step on the way in
+        let shallower = index(-hysteresis)             // clear of it on the way out
+        if deeper > current { current = deeper } else if shallower < current { current = shallower }
+        return steps[current].scale
+    }
+}
+
 /// Everything the shader needs for one frame, apart from the picture.
 public struct LidFoldFrame {
     public var corners: [LidPoint]
@@ -198,6 +222,8 @@ public struct LidFoldFrame {
     public var topEdge: Double
     /// How strong the rim lens is, 0 to 1: nothing while unfolded, full a little way into the fold.
     public var lens = 0.0
+    /// How far into the fold, 0 to 1.
+    public var progress = 0.0
 
     public static func make(look: LidFoldLook, screen: CGSize, angle: Double) -> LidFoldFrame {
         let width = Double(screen.width), height = Double(screen.height)
@@ -217,6 +243,7 @@ public struct LidFoldFrame {
                             maxDim: look.dimming, maxBlurRadius: look.blurRadius,
                             dimReach: look.dimReach, dimHingeFloor: look.dimHingeFloor,
                             topEdge: corners[2].y,
-                            lens: LidFoldCurve.smoothstep(curve.dimStrength(progress: progress) / 0.5))
+                            lens: LidFoldCurve.smoothstep(curve.dimStrength(progress: progress) / 0.5),
+                            progress: progress)
     }
 }

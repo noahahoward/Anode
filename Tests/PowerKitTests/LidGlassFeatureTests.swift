@@ -170,6 +170,25 @@ final class LidGlassFeatureTests: XCTestCase {
         o.hide()
     }
 
+    /// A deep fold is soft, so it is drawn smaller; an unfolded picture is drawn full size.
+    @available(macOS 14.0, *)
+    func testTheOverlayDrawsSmallerDeepIntoTheFoldAndFullSizeAtTheStart() throws {
+        let deep = try overlay(); deep.showsWindow = false
+        deep.show(image: try tinyImage(), startAngle: 90, from: 40, to: 40)
+        spin(until: deep.isDisplayLinkRunning)
+        deep.advance(dt: 1.0 / 120, now: CACurrentMediaTime())
+        XCTAssertEqual(deep.renderScale, 0.35, "86 percent of the way in")
+        deep.hide()
+        XCTAssertEqual(deep.renderScale, 1, "reset for the next one")
+
+        let start = try overlay(); start.showsWindow = false
+        start.show(image: try tinyImage(), startAngle: 90, from: 89, to: 89)
+        spin(until: start.isDisplayLinkRunning)
+        start.advance(dt: 1.0 / 120, now: CACurrentMediaTime())
+        XCTAssertEqual(start.renderScale, 1)
+        start.hide()
+    }
+
     /// With nothing showing, a clear has nothing to wait for.
     @available(macOS 14.0, *)
     func testClearWithNothingShowingCompletesAtOnce() throws {

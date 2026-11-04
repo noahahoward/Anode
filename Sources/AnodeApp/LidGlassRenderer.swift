@@ -36,7 +36,7 @@ final class LidGlassRenderer {
         var screenAndOrigin: SIMD4<Float>   // screen size (pt), padded origin (pt)
         var paddedAndBlur: SIMD4<Float>     // padded size (pt), max radius (px), blur strength
         var shape: SIMD4<Float>             // blur floor, max dim, pixel scale, max mip level
-        var light: SIMD4<Float>             // dim start, dim strength, grain, dim reach
+        var light: SIMD4<Float>             // dim start, dim strength, target pixels per point, dim reach
         var more: SIMD4<Float>              // dim floor at the hinge, recede, picture top edge on the glass
     }
 
@@ -75,10 +75,6 @@ final class LidGlassRenderer {
         return float4(corners[id], 0.0, 1.0);
     }
 
-    static inline float hash(float2 p) {
-        return fract(sin(dot(p, float2(12.9898, 78.233))) * 43758.5453);
-    }
-
     fragment float4 lidGlassFragment(float4 position [[position]],
                                      constant Uniforms &u [[buffer(0)]],
                                      texture2d<float> picture [[texture(0)]]) {
@@ -95,7 +91,7 @@ final class LidGlassRenderer {
         const float  maxLevel     = u.shape.w;
         const float  dimStart     = u.light.x;
         const float  dimStrength  = u.light.y;
-        const float  grain        = u.light.z;
+        const float  targetScale  = u.light.z;     // pixels per point of what is being drawn into, which may be smaller than the picture's
         const float  dimReach     = u.light.w;
         const float  dimHinge     = u.more.x;
         const float  recede       = u.more.y;
@@ -103,7 +99,7 @@ final class LidGlassRenderer {
         const float  lens         = u.more.w;
 
         // Fragments are pixels with y down; the geometry is points with y up.
-        float2 screenPoint = float2(position.x / pixelScale, screenSize.y - position.y / pixelScale);
+        float2 screenPoint = float2(position.x / targetScale, screenSize.y - position.y / targetScale);
         // Above the picture's far edge the glass carries the edge's own light, fading in screen space, so there
         // is never a hard line where the picture ends.
         float above = max(screenPoint.y - topEdge, 0.0);
@@ -114,8 +110,8 @@ final class LidGlassRenderer {
         float2 picturePoint = mapped.xy / mapped.z;
 
         // Where this pixel is on the glass, 0 at the hinge and 1 at the far edge; and across it, 0 to 1.
-        float glassY = clamp((screenSize.y - position.y / pixelScale) / screenSize.y, 0.0, 1.0);
-        float glassX = clamp(position.x / pixelScale / screenSize.x, 0.0, 1.0);
+        float glassY = clamp((screenSize.y - position.y / targetScale) / screenSize.y, 0.0, 1.0);
+        float glassX = clamp(position.x / targetScale / screenSize.x, 0.0, 1.0);
 
         // The rim lens: along the glass's far edge the picture is looked up from further inside the screen, by an amount
         // that falls to nothing across the rim, so near the edge the content is seen flipped and compressed (see
@@ -187,10 +183,6 @@ final class LidGlassRenderer {
 
         // The lines of light at the glass's edge, where a thick pane catches the light.
         colour += float3(0.9, 0.94, 1.0) * edgeLines;
-
-        // Grain, so a dark gradient does not band. Scaled by the dimming, so an unfolded picture is untouched.
-        float noise = hash(position.xy) - 0.5;
-        colour += noise * grain * dimStrength * (2.5 / 255.0);
 
         return float4(max(colour, 0.0), 1.0);
     }
@@ -280,10 +272,11 @@ final class LidGlassRenderer {
     }
 
     /// The frame as an image the size of the screen, for tests and for tuning against references.
-    func renderOffscreen(_ frame: LidFoldFrame) -> CGImage? {
+    /// `scale` draws at that share of the screen's size (what the overlay does deep into a fold).
+    func renderOffscreen(_ frame: LidFoldFrame, scale: Double = 1) -> CGImage? {
         guard let picture else { return nil }
-        let w = Int((picture.screenSize.width * picture.pixelScale).rounded())
-        let h = Int((picture.screenSize.height * picture.pixelScale).rounded())
+        let w = max(1, Int((picture.screenSize.width * picture.pixelScale * CGFloat(scale)).rounded()))
+        let h = max(1, Int((picture.screenSize.height * picture.pixelScale * CGFloat(scale)).rounded()))
         let desc = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .bgra8Unorm_srgb, width: w, height: h, mipmapped: false)
         desc.usage = [.renderTarget, .shaderRead]
         desc.storageMode = .shared
@@ -314,9 +307,7 @@ final class LidGlassRenderer {
             screenAndOrigin: SIMD4(Float(screen.width), Float(screen.height), Float(-Self.padding), Float(-Self.padding)),
             paddedAndBlur: SIMD4(Float(padded.width), Float(padded.height), Float(frame.maxBlurRadius * Double(scale)), Float(frame.blurStrength)),
             shape: SIMD4(Float(frame.blurFloor), Float(frame.maxDim), Float(scale), picture.maxLevel),
-            // No grain. It was added in linear light, where a step near black becomes a large step on screen:
-            // measured 7.8 levels of pixel-to-pixel speckle in the dark of a deep fold over a flat grey picture.
-            light: SIMD4(0, Float(frame.dimStrength), 0, Float(frame.dimReach)),
+            light: SIMD4(0, Float(frame.dimStrength), Float(target.width) / Float(screen.width), Float(frame.dimReach)),
             more: SIMD4(Float(frame.dimHingeFloor), 1, Float(frame.topEdge), Float(frame.lens)))
         let pass = MTLRenderPassDescriptor()
         pass.colorAttachments[0].texture = target
