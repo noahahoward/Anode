@@ -32,16 +32,23 @@ final class LidFoldTests: XCTestCase {
         XCTAssertNotEqual(c[2].y, h, accuracy: 1, "the far edge has moved on the glass")
     }
 
-    /// The far edge narrows as the picture recedes, but not so much that the content looks like it has shrunk away.
-    func testTheFarEdgeKeepsMostOfItsWidthThroughAGenerousFold() {
+    /// The glass is a lens over a picture that stays where it was: seen through it the picture is stretched
+    /// vertically (left behind as the glass tips toward the keyboard) and hardly narrows. It should not look like
+    /// the picture shrinking away.
+    func testTheFoldStretchesTheContentVerticallyAndHardlyNarrowsIt() {
         let look = LidFoldLook(startAngle: 90)
-        func topWidth(_ angle: Double) -> Double {
-            let c = LidFoldGeometry.corners(screenWidth: w, screenHeight: h, startAngle: 90, angle: angle, look: look)
-            return (c[2].x - c[3].x) / w
+        func corners(_ angle: Double) -> [LidPoint] {
+            LidFoldGeometry.corners(screenWidth: w, screenHeight: h, startAngle: 90, angle: angle, look: look)
         }
-        XCTAssertGreaterThan(topWidth(60), 0.82)
-        XCTAssertGreaterThan(topWidth(45), 0.72)
-        XCTAssertGreaterThan(topWidth(30), 0.55)
+        func topWidth(_ angle: Double) -> Double { let c = corners(angle); return (c[2].x - c[3].x) / w }
+        func stretch(_ angle: Double) -> Double { corners(angle)[2].y / h }       // how far past the glass the picture's top lands
+        XCTAssertGreaterThan(topWidth(60), 0.95)
+        XCTAssertGreaterThan(topWidth(45), 0.90)
+        XCTAssertGreaterThan(topWidth(30), 0.85)
+        // The parallel-projection ideal is 1 / cos(travel): 1.41 at 45 degrees of fold, 2.0 at 60.
+        XCTAssertGreaterThan(stretch(45), 1.30)
+        XCTAssertGreaterThan(stretch(30), 1.75)
+        XCTAssertLessThan(stretch(45), 1.5, "stretched, not exploded")
     }
 
     func testTheHomographyMapsTheRectangleOntoTheCorners() {

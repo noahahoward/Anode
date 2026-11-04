@@ -41,9 +41,11 @@ public struct LidFoldLook: Equatable {
     /// Dimming at the hinge as a share of the far edge, so the whole picture sinks a little as it folds.
     public var dimHingeFloor = 0.18
     /// Eye distance from the screen's middle, in screen heights. Closer means stronger perspective.
-    /// (Mac Duo's default is 2.4, which narrows the far edge to 66% of the width at 45 degrees of fold; this is 3.5,
-    /// 75%. 5 would be 82%, a stronger "stays in place" and less of the trapezoid.)
-    public var eyeDistance = 3.5
+    /// Very far, so the glass behaves as a lens over a picture that stays where it was: the picture is seen
+    /// stretched vertically by about 1 / cos(travel) (x1.4 at 45 degrees of fold, x2 at 60) and hardly narrows
+    /// (95 percent of its width at the far edge at 45 degrees). Mac Duo's 2.4 gives a trapezoid that narrows to 66
+    /// percent and a stretch of only x1.17, which reads as the picture shrinking away; 3.5 still narrowed to 75.
+    public var eyeDistance = 20.0
     /// Eye height above the screen's middle, in screen heights.
     public var eyeHeight = 0.0
     /// How much the picture stays fixed in the room: 1 is physically right.

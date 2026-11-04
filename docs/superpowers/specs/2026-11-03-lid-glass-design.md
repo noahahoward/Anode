@@ -135,6 +135,10 @@ iPhone Duo effect). It now follows Mac Duo's model (github.com/ninobc/mac-duo, M
 - The first frame is flat (identical to the live screen) because the start angle is the lid angle at capture; the
   spring then chases the real lid, which hides the 30-50 ms capture and the detection lag.
 - The picture is prepared off the main thread (about 50 ms at full size); the window appears when it is ready.
+- **Eye distance 20 screen heights** (Mac Duo uses 2.4): the glass behaves as a lens over a picture that stays where
+  it was, so the picture is stretched vertically by about 1/cos(travel) (x1.4 at 45 degrees of fold) and keeps about
+  95 percent of its width, instead of narrowing to a trapezoid that reads as the picture shrinking away. Owner
+  feedback after trying Mac Duo's own value and 3.5.
 - Tuned against nothing but Mac Duo's constants (blur radius 125 pt, dimming reach 0.55, hinge dim 0.18, eye
   distance 2.4 screen heights, blur exponent 1.55, dim exponent 0.75). Not user-tunable.
 
