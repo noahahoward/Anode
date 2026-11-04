@@ -15,7 +15,9 @@ public struct LidCloseDetector {
     /// Degrees a second a downward run must be at least as fast as.
     public static let minSpeed = 15.0
     /// Degrees a downward run must cover before it counts.
-    public static let minDrop = 6.0
+    /// Small enough that one fast step of the sensor confirms a close (a quick close steps 4-6 degrees every tenth
+    /// of a second); a nudge that is wrongly confirmed is shown flat, identical to the screen, and cleared again.
+    public static let minDrop = 3.0
     /// The sensor changes about ten times a second, however fast it is read, so a repeated reading is normal. A
     /// run survives repeats for this long; a lid that has not changed for longer has paused.
     public static let maxFlat = 0.35

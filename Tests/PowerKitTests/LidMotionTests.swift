@@ -76,9 +76,26 @@ final class LidMotionTests: XCTestCase {
         XCTAssertEqual(e.filter { $0 == .closing }.count, 0, "a pause of half a second is not one close")
     }
 
+    /// How soon after the lid starts to move a close is confirmed: the first fast step of the run, not the second.
+    func testAFastCloseIsConfirmedOnTheFirstStepOfItsRun() {
+        for hz in [8.0, 30, 120] {
+            var d = LidCloseDetector(trigger: 110)
+            var firedAt: Double?
+            // Resting at 100°, then closing at 50°/s from t = 0.5 s: the sensor steps 5° every 0.1 s.
+            var t = 0.0
+            while t < 1.5, firedAt == nil {
+                let held = (t * 10).rounded(.down) / 10
+                let angle = (100 - max(0, held - 0.5) * 50).rounded()
+                if d.feed(angle: angle, time: t) == .closing { firedAt = angle }
+                t += 1 / hz
+            }
+            XCTAssertEqual(firedAt, 95, "closing at \(hz) Hz")
+        }
+    }
+
     func testAQuickSmallNudgeDoesNotClose() {
         var d = LidCloseDetector(trigger: 110)
-        let e = feed(&d, [(105, 0), (101, 0.1), (101, 0.5)])
+        let e = feed(&d, [(105, 0), (103, 0.1), (103, 0.5)])
         XCTAssertEqual(e, [.none, .none, .none])
     }
 
