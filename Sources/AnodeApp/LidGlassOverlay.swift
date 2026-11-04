@@ -77,6 +77,9 @@ final class LidGlassOverlay: LidGlassOverlaying {
         window.hasShadow = false
         window.ignoresMouseEvents = true
         window.isReleasedWhenClosed = false
+        // No system ordering-in/out animation: it fades and scales a window over ~150 ms, which showed as a flicker
+        // against the identical live screen (measured with a 60 fps screen stream across the transition).
+        window.animationBehavior = .none
         window.sharingType = .none
         window.collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle, .fullScreenAuxiliary]
         view = MTKView(frame: CGRect(origin: .zero, size: screen.frame.size), device: renderer?.metalDevice)
@@ -215,6 +218,13 @@ final class LidGlassOverlay: LidGlassOverlaying {
         // Never wait for a drawable: when the GPU is behind, skip this tick and draw the next one.
         guard renderer.framesInFlight < 2 else { stats.skipped += 1; return }
         guard let drawable = view.currentDrawable else { stats.noDrawable += 1; return }
+        // The shader maps by pixel position, so a drawable that is not exactly the screen's size would draw the picture
+        // mis-scaled. Say so rather than flash it silently.
+        let scale = window.screen?.backingScaleFactor ?? 2
+        let expected = (w: Int((window.frame.width * scale).rounded()), h: Int((window.frame.height * scale).rounded()))
+        if drawable.texture.width != expected.w || drawable.texture.height != expected.h {
+            log("drawable is \(drawable.texture.width)x\(drawable.texture.height), expected \(expected.w)x\(expected.h)")
+        }
         let frame = LidFoldFrame.make(look: look, screen: window.frame.size, angle: spring.value)
         stats.drawn += 1
         onFrame?(spring.value, CACurrentMediaTime())
