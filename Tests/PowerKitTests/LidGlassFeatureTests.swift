@@ -64,9 +64,68 @@ final class LidGlassFeatureTests: XCTestCase {
         let image = try XCTUnwrap(CGContext(data: nil, width: 4, height: 4, bitsPerComponent: 8, bytesPerRow: 0,
                                             space: CGColorSpace(name: CGColorSpace.sRGB)!,
                                             bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)?.makeImage())
-        o.show(image: image)
+        o.show(image: image, startAngle: 90, from: 90, to: 80)
         XCTAssertFalse(o.window.isVisible)
         XCTAssertFalse(o.isDisplayLinkRunning)
+    }
+
+    // The overlay's own life cycle, with the window kept off the screen (`showsWindow = false`).
+
+    @available(macOS 14.0, *)
+    private func tinyImage() throws -> CGImage {
+        try XCTUnwrap(CGContext(data: nil, width: 64, height: 40, bitsPerComponent: 8, bytesPerRow: 0,
+                                space: CGColorSpace(name: CGColorSpace.displayP3)!,
+                                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)?.makeImage())
+    }
+
+    private func spin(until done: @autoclosure () -> Bool, timeout: TimeInterval = 3) {
+        let end = Date().addingTimeInterval(timeout)
+        while !done() && Date() < end { RunLoop.main.run(until: Date().addingTimeInterval(0.01)) }
+    }
+
+    /// The picture is prepared off the main thread, so the display link starts a little after `show`, and stops with `hide`.
+    @available(macOS 14.0, *)
+    func testShowPreparesInTheBackgroundThenRunsAndHideStopsIt() throws {
+        let o = try overlay(); o.showsWindow = false
+        o.show(image: try tinyImage(), startAngle: 90, from: 90, to: 70)
+        XCTAssertFalse(o.isDisplayLinkRunning, "not before the picture is ready")
+        spin(until: o.isDisplayLinkRunning)
+        XCTAssertTrue(o.isDisplayLinkRunning)
+        o.hide()
+        XCTAssertFalse(o.isDisplayLinkRunning)
+    }
+
+    /// The opening effect asks for the clear straight after `show`; it must wait for the picture, not finish at once.
+    @available(macOS 14.0, *)
+    func testAClearAskedForBeforeThePictureIsReadyRunsOnceItIs() throws {
+        let o = try overlay(); o.showsWindow = false
+        var done = false
+        o.show(image: try tinyImage(), startAngle: 90, from: 42, to: 42)
+        o.animateClear(duration: 0.1) { done = true }
+        XCTAssertFalse(done)
+        spin(until: o.isDisplayLinkRunning)
+        XCTAssertFalse(done, "the clear starts when the picture is ready, not before")
+        o.advance(dt: 1.0 / 60, now: CACurrentMediaTime() + 1)
+        XCTAssertTrue(done)
+        o.hide()
+    }
+
+    @available(macOS 14.0, *)
+    func testHidingBeforeThePictureIsReadyMeansItNeverAppears() throws {
+        let o = try overlay(); o.showsWindow = false
+        o.show(image: try tinyImage(), startAngle: 90, from: 90, to: 70)
+        o.hide()
+        spin(until: o.isDisplayLinkRunning, timeout: 0.5)
+        XCTAssertFalse(o.isDisplayLinkRunning)
+    }
+
+    /// With nothing showing, a clear has nothing to wait for.
+    @available(macOS 14.0, *)
+    func testClearWithNothingShowingCompletesAtOnce() throws {
+        let o = try overlay(); o.showsWindow = false
+        var done = false
+        o.animateClear(duration: 0.1) { done = true }
+        XCTAssertTrue(done)
     }
 
     // ── The Beta Features section ──

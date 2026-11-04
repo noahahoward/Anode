@@ -1,118 +1,163 @@
 import AppKit
 import Metal
+import MetalPerformanceShaders
+import PowerKit
 import QuartzCore
+import simd
 
-// ── Lid Glass: the frosted glass ────────────────────────────────────────────
+// ── Lid Glass: the fold, drawn ──────────────────────────────────────────────
 //
-// One fullscreen pass over the picture taken when the lid started to close. The picture is uploaded once with a
-// full mip chain, and the shader reads it through a disc of taps at a mip level chosen per pixel: the level
-// (and the disc) grows with `blur`, and is largest at the top edge and smallest at the bottom, where the hinge
-// is, the way the far edge of a tilting pane drifts out of focus. On top of that: refraction through a gently
-// domed pane (Snell's law), Schlick Fresnel brightening, a faint dispersion between channels, a thin tint and
-// fine noise. All of it is scaled by `blur`, so at 0 the output is the picture, unchanged.
+// One fullscreen pass over a picture of the screen taken when the lid started to close. The picture sits on a
+// black margin inside one mipmapped texture, with a Gaussian pyramid over it. Every glass pixel is mapped back
+// into that frozen picture through the inverse of the fold's projective map (see `LidFold`), so the picture
+// holds still in the room while the glass tilts in front of it. Frost, dimming and the dissolve at the edges
+// follow the picture's own height above the hinge: the far edge goes first, the hinge stays readable.
+//
+// The look is a port of Mac Duo's renderer (github.com/ninobc/mac-duo, MIT; see LidFold.swift for the notice),
+// without its live-picture, sheen and preset machinery: the picture here is one frozen frame, and the look is
+// not user-tunable.
 //
 // The shader is compiled from a string at run time: the package builds with `swift build`, which does not
 // produce a .metallib.
 
 final class LidGlassRenderer {
 
-    struct Uniforms {
-        var blur: Float
-        var width: Float
-        var height: Float
-        var padding: Float = 0
+    /// Display P3 shares sRGB's transfer curve, so an sRGB texture view decodes it. Stills are handed over in it.
+    static let colourSpaceName = CGColorSpace.displayP3
+
+    /// Black margin around the picture, in points. Kept above the widest blur so the picture's edges dissolve
+    /// into the dark instead of clamping.
+    static let padding: CGFloat = 176
+
+    private struct Uniforms {
+        var column0: SIMD4<Float>
+        var column1: SIMD4<Float>
+        var column2: SIMD4<Float>
+        var screenAndOrigin: SIMD4<Float>   // screen size (pt), padded origin (pt)
+        var paddedAndBlur: SIMD4<Float>     // padded size (pt), max radius (px), blur strength
+        var shape: SIMD4<Float>             // blur floor, max dim, pixel scale, max mip level
+        var light: SIMD4<Float>             // dim start, dim strength, grain, dim reach
+        var more: SIMD4<Float>              // dim floor at the hinge, recede, picture top edge on the glass
+    }
+
+    /// A picture prepared for drawing: the padded, mipmapped texture and what the shader needs to know of it.
+    struct Picture {
+        let texture: MTLTexture
+        let screenSize: CGSize
+        let pixelScale: CGFloat
+        let maxLevel: Float
     }
 
     static let shaderSource = """
     #include <metal_stdlib>
     using namespace metal;
 
-    // ── Tuning constants ──
-    constant float kIOR            = 1.5;    // glass
-    constant float kThickness      = 0.020;  // refraction reach, in uv, at full frost
-    constant float kDome           = 0.9;    // how strongly the pane curves
-    constant float kMaxRadius      = 0.13;   // frost disc radius at full frost, as a share of the picture's height
-    constant float kBlurCurve      = 0.7;    // <1: the first degrees of closing already frost noticeably, as in the Blender reference
-    constant float kHingeFrost     = 0.15;   // share of the frost that reaches the hinge edge
-    constant float kDispersion     = 0.0016; // channel split, in uv, at full frost
-    constant float kFresnelGain    = 0.10;   // how much sky the Fresnel term adds
-    constant float kTint           = 0.03;   // share of the cool tint at full frost
-    constant float kMilk           = 0.20;   // frosted glass lifts blacks and dims whites: pull toward mid grey
-    constant float kNoise          = 1.5 / 255.0;
-    constant int   kTaps           = 10;
+    struct Uniforms {
+        float4 column0;
+        float4 column1;
+        float4 column2;
+        float4 screenAndOrigin;
+        float4 paddedAndBlur;
+        float4 shape;
+        float4 light;
+        float4 more;
+    };
 
-    struct Uniforms { float blur; float width; float height; float padding; };
-
-    struct VOut { float4 position [[position]]; float2 uv; };
-
-    vertex VOut lidGlassVertex(uint vid [[vertex_id]]) {
-        float2 p = float2((vid << 1) & 2, vid & 2);          // (0,0) (2,0) (0,2): one triangle over the screen
-        VOut o;
-        o.position = float4(p * 2.0 - 1.0, 0.0, 1.0);
-        o.uv = float2(p.x, 1.0 - p.y);                        // uv.y = 0 is the top of the picture
-        return o;
+    vertex float4 lidGlassVertex(uint id [[vertex_id]]) {
+        const float2 corners[3] = { float2(-1.0, -3.0), float2(-1.0, 1.0), float2(3.0, 1.0) };
+        return float4(corners[id], 0.0, 1.0);
     }
 
-    float hash12(float2 p) {
-        float3 p3 = fract(float3(p.xyx) * 0.1031);
-        p3 += dot(p3, p3.yzx + 33.33);
-        return fract((p3.x + p3.y) * p3.z);
+    static inline float hash(float2 p) {
+        return fract(sin(dot(p, float2(12.9898, 78.233))) * 43758.5453);
     }
 
-    fragment float4 lidGlassFragment(VOut in [[stage_in]],
-                                     texture2d<float> tex [[texture(0)]],
-                                     constant Uniforms &u [[buffer(0)]]) {
-        constexpr sampler s(filter::linear, mip_filter::linear, address::clamp_to_edge);
-        float2 size = float2(u.width, u.height);
-        float2 uv = in.position.xy / size;                    // pixel centres, so blur 0 hits texels exactly
-        if (u.blur <= 0.0001) { return float4(tex.sample(s, uv, level(0)).rgb, 1.0); }
+    fragment float4 lidGlassFragment(float4 position [[position]],
+                                     constant Uniforms &u [[buffer(0)]],
+                                     texture2d<float> picture [[texture(0)]]) {
+        constexpr sampler smooth(filter::linear, mip_filter::linear, address::clamp_to_edge);
 
-        float blur = clamp(u.blur, 0.0, 1.0);
+        const float2 screenSize   = u.screenAndOrigin.xy;
+        const float2 paddedOrigin = u.screenAndOrigin.zw;
+        const float2 paddedSize   = u.paddedAndBlur.xy;
+        const float  maxRadius    = u.paddedAndBlur.z;
+        const float  blurStrength = u.paddedAndBlur.w;
+        const float  blurFloor    = u.shape.x;
+        const float  maxDim       = u.shape.y;
+        const float  pixelScale   = u.shape.z;
+        const float  maxLevel     = u.shape.w;
+        const float  dimStart     = u.light.x;
+        const float  dimStrength  = u.light.y;
+        const float  grain        = u.light.z;
+        const float  dimReach     = u.light.w;
+        const float  dimHinge     = u.more.x;
+        const float  recede       = u.more.y;
+        const float  topEdge      = u.more.z;
 
-        // How far this row is from the hinge: 0 at the bottom, 1 at the top.
-        float awayFromHinge = clamp(1.0 - uv.y, 0.0, 1.0);
-        float mask = mix(kHingeFrost, 1.0, awayFromHinge);   // a pane's blur grows with distance from the hinge
+        // Fragments are pixels with y down; the geometry is points with y up.
+        float2 screenPoint = float2(position.x / pixelScale, screenSize.y - position.y / pixelScale);
+        // Above the picture's far edge the glass carries the edge's own light, fading in screen space, so there
+        // is never a hard line where the picture ends.
+        float above = max(screenPoint.y - topEdge, 0.0);
+        screenPoint.y = min(screenPoint.y, topEdge);
+        float3x3 toPicture = float3x3(u.column0.xyz, u.column1.xyz, u.column2.xyz);
+        float3 mapped = toPicture * float3(screenPoint, 1.0);
+        if (abs(mapped.z) < 1e-6 || mapped.z < 0.0) { return float4(0.0, 0.0, 0.0, 1.0); }
+        float2 picturePoint = mapped.xy / mapped.z;
 
-        // A gently domed pane: the normal leans away from the middle, and the ray bends by Snell's law.
-        float2 d = uv - 0.5;
-        float3 n = normalize(float3(d * kDome, 1.0));
-        float3 refracted = refract(float3(0.0, 0.0, -1.0), n, 1.0 / kIOR);
-        float2 shift = refracted.xy / max(-refracted.z, 0.2) * kThickness * blur;
-        float2 centre = clamp(uv + shift, 0.0, 1.0);
+        // Outside the padded picture there is only the dark.
+        float2 unit = (picturePoint - paddedOrigin) / paddedSize;
+        if (any(unit < 0.0) || any(unit > 1.0)) { return float4(0.0, 0.0, 0.0, 1.0); }
+        float2 clampedPoint = clamp(picturePoint, float2(0.0), screenSize);
+        float2 texCoord = float2(unit.x, 1.0 - unit.y);
 
-        // The frost: a Vogel disc of taps, each read from the mip level whose texels match the disc's spacing.
-        float radius = kMaxRadius * pow(blur, kBlurCurve) * mask * u.height;   // in pixels
-        float lod = clamp(log2(max(radius, 1.0)) - 1.0, 0.0, 9.0);
-        float2 dir = normalize(float2(1.0, 0.35));
-        float2 split = dir * kDispersion * blur;
-        float3 sum = float3(0.0);
-        for (int i = 0; i < kTaps; i++) {
-            float r = sqrt((float(i) + 0.5) / float(kTaps));
-            float a = float(i) * 2.399963;
-            float2 off = float2(cos(a), sin(a)) * r * radius / size;
-            sum.r += tex.sample(s, centre + off + split, level(lod)).r;
-            sum.g += tex.sample(s, centre + off,         level(lod)).g;
-            sum.b += tex.sample(s, centre + off - split, level(lod)).b;
+        // Height above the hinge in the picture: 0 at the hinge, 1 at the far edge.
+        float g = clamp(clampedPoint.y / screenSize.y, 0.0, 1.0);
+
+        // Frost. The far edge dissolves first; the hinge stays readable.
+        float blur = blurStrength * (blurFloor + (1.0 - blurFloor) * g);
+        float radius = blur * maxRadius;
+        float mip = clamp(log2(max(radius, 1.0)), 0.0, maxLevel);
+
+        float3 colour;
+        if (radius < 0.75) {
+            colour = picture.sample(smooth, texCoord, level(0.0)).rgb;
+        } else {
+            // A 3x3 tent of trilinear taps hides the pyramid's steps.
+            float2 texel = 1.0 / (paddedSize * pixelScale);
+            float2 stride = texel * radius * 0.45;
+            colour = float3(0.0);
+            const float weights[3] = { 1.0, 2.0, 1.0 };
+            for (int y = -1; y <= 1; y++) {
+                for (int x = -1; x <= 1; x++) {
+                    float w = weights[x + 1] * weights[y + 1] / 16.0;
+                    colour += picture.sample(smooth, texCoord + float2(x, y) * stride, level(mip)).rgb * w;
+                }
+            }
         }
-        float3 color = sum / float(kTaps);
 
-        // Schlick Fresnel: glass reflects more at a grazing view.
-        float cosTheta = clamp(n.z, 0.0, 1.0);
-        float fresnel = 0.04 + 0.96 * pow(1.0 - cosTheta, 5.0);
-        color += fresnel * kFresnelGain * blur * float3(0.95, 0.97, 1.0) * mask;
+        // Dimming, in linear light so the far edge fades into the dark rather than going grey. It reaches full
+        // strength at `dimReach`; the hinge sinks a little too, so the whole picture recedes.
+        float spread = smoothstep(dimStart, max(dimReach, dimStart + 0.05), g);
+        float dim = dimStrength * (dimHinge + (1.0 - dimHinge) * spread) * maxDim;
+        colour *= pow(1.0 - dim, 2.1) * recede;
+        colour *= exp(-pow(above / max(0.22 * screenSize.y, 1.0), 1.4));
 
-        // A thin cool tint, and noise so the smooth gradients do not band.
-        color = mix(color, color * float3(0.94, 0.97, 1.0) + 0.02, kTint * blur * mask);
-        color = mix(color, float3(0.5), kMilk * blur * (0.5 + 0.5 * mask));
-        color += (hash12(in.position.xy) - 0.5) * kNoise * blur;
-        return float4(clamp(color, 0.0, 1.0), 1.0);
+        // Grain, so a dark gradient does not band. Scaled by the dimming, so an unfolded picture is untouched.
+        float noise = hash(position.xy) - 0.5;
+        colour += noise * grain * dimStrength * (2.5 / 255.0);
+
+        return float4(max(colour, 0.0), 1.0);
     }
     """
 
-    let device: MTLDevice
+    private let device: MTLDevice
     private let queue: MTLCommandQueue
     private let pipeline: MTLRenderPipelineState
-    private var texture: MTLTexture?
+    private var picture: Picture?
+
+    var hasImage: Bool { picture != nil }
+    var metalDevice: MTLDevice { device }
 
     init?(device: MTLDevice? = MTLCreateSystemDefaultDevice()) {
         guard let device, let queue = device.makeCommandQueue(),
@@ -122,82 +167,116 @@ final class LidGlassRenderer {
         let d = MTLRenderPipelineDescriptor()
         d.vertexFunction = vertex
         d.fragmentFunction = fragment
-        d.colorAttachments[0].pixelFormat = .bgra8Unorm
+        d.colorAttachments[0].pixelFormat = .bgra8Unorm_srgb
         guard let pipeline = try? device.makeRenderPipelineState(descriptor: d) else { return nil }
         self.device = device
         self.queue = queue
         self.pipeline = pipeline
     }
 
-    var hasImage: Bool { texture != nil }
+    /// Build the padded, mipmapped texture for one still. Safe off the main thread: it touches no renderer state.
+    func makePicture(from image: CGImage, scale: CGFloat) -> Picture? {
+        let screen = CGSize(width: CGFloat(image.width) / scale, height: CGFloat(image.height) / scale)
+        let padded = CGSize(width: screen.width + 2 * Self.padding, height: screen.height + 2 * Self.padding)
+        let width = Int((padded.width * scale).rounded()), height = Int((padded.height * scale).rounded())
+        let inset = Int((Self.padding * scale).rounded())
+        guard width > 0, height > 0, image.width > 0, image.height > 0,
+              let space = CGColorSpace(name: Self.colourSpaceName) else { return nil }
 
-    /// Upload the picture, with its mip chain. Replaces any earlier one.
-    func setImage(_ image: CGImage) {
-        let w = image.width, h = image.height
-        guard w > 0, h > 0 else { texture = nil; return }
-        var bytes = [UInt8](repeating: 0, count: w * h * 4)
-        guard let space = CGColorSpace(name: CGColorSpace.sRGB),
-              let ctx = CGContext(data: &bytes, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w * 4,
-                                  space: space, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else {
-            texture = nil; return
+        let descriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .bgra8Unorm_srgb, width: width, height: height, mipmapped: true)
+        descriptor.usage = [.shaderRead, .shaderWrite]
+        descriptor.storageMode = .shared
+        guard let texture = device.makeTexture(descriptor: descriptor) else { return nil }
+
+        // The frame on a black margin, drawn straight into the texture's own memory.
+        var bytes = [UInt8](repeating: 0, count: width * height * 4)
+        let drawn = bytes.withUnsafeMutableBytes { raw -> Bool in
+            guard let ctx = CGContext(data: raw.baseAddress, width: width, height: height, bitsPerComponent: 8,
+                                      bytesPerRow: width * 4, space: space,
+                                      bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue
+                                        | CGBitmapInfo.byteOrder32Little.rawValue) else { return false }
+            ctx.setFillColor(CGColor(red: 0, green: 0, blue: 0, alpha: 1))
+            ctx.fill(CGRect(x: 0, y: 0, width: width, height: height))
+            ctx.interpolationQuality = .high
+            ctx.draw(image, in: CGRect(x: inset, y: inset, width: image.width, height: image.height))
+            return true
         }
-        ctx.draw(image, in: CGRect(x: 0, y: 0, width: w, height: h))
-        let desc = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .rgba8Unorm, width: w, height: h, mipmapped: true)
-        desc.usage = .shaderRead
-        guard let t = device.makeTexture(descriptor: desc) else { texture = nil; return }
-        t.replace(region: MTLRegionMake2D(0, 0, w, h), mipmapLevel: 0, withBytes: bytes, bytesPerRow: w * 4)
-        if let cb = queue.makeCommandBuffer(), let blit = cb.makeBlitCommandEncoder() {
-            blit.generateMipmaps(for: t)
-            blit.endEncoding()
-            cb.commit()
-            cb.waitUntilCompleted()
-        }
-        texture = t
+        guard drawn else { return nil }
+        texture.replace(region: MTLRegionMake2D(0, 0, width, height), mipmapLevel: 0, withBytes: bytes, bytesPerRow: width * 4)
+
+        var inPlace: MTLTexture = texture
+        guard let commands = queue.makeCommandBuffer() else { return nil }
+        MPSImageGaussianPyramid(device: device, centerWeight: 0.375)
+            .encode(commandBuffer: commands, inPlaceTexture: &inPlace, fallbackCopyAllocator: nil)
+        commands.commit()
+        commands.waitUntilCompleted()
+        let levels = Int(floor(log2(Double(max(width, height))))) + 1
+        return Picture(texture: inPlace, screenSize: screen, pixelScale: scale, maxLevel: Float(levels - 1))
     }
 
-    func clearImage() { texture = nil }
+    func adopt(_ picture: Picture) { self.picture = picture }
 
-    /// Draw one frame into a drawable.
-    func draw(blur: Double, into drawable: CAMetalDrawable) {
-        encode(blur: blur, target: drawable.texture, present: drawable)
+    /// Prepare and adopt `image`, taken at `scale` pixels per point. Replaces any earlier one.
+    func setImage(_ image: CGImage, scale: CGFloat) {
+        picture = makePicture(from: image, scale: scale)
     }
 
-    /// The frame as an image the size of the picture, for tests and for tuning against references.
-    func renderOffscreen(blur: Double) -> CGImage? {
-        guard let source = texture else { return nil }
-        let desc = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .bgra8Unorm, width: source.width,
-                                                            height: source.height, mipmapped: false)
+    func clearImage() { picture = nil }
+
+    func draw(_ frame: LidFoldFrame, into drawable: CAMetalDrawable) {
+        encode(frame, target: drawable.texture, present: drawable)
+    }
+
+    /// The frame as an image the size of the screen, for tests and for tuning against references.
+    func renderOffscreen(_ frame: LidFoldFrame) -> CGImage? {
+        guard let picture else { return nil }
+        let w = Int((picture.screenSize.width * picture.pixelScale).rounded())
+        let h = Int((picture.screenSize.height * picture.pixelScale).rounded())
+        let desc = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .bgra8Unorm_srgb, width: w, height: h, mipmapped: false)
         desc.usage = [.renderTarget, .shaderRead]
         desc.storageMode = .shared
         guard let target = device.makeTexture(descriptor: desc),
-              encode(blur: blur, target: target, present: nil) else { return nil }
-        let w = target.width, h = target.height
+              encode(frame, target: target, present: nil) else { return nil }
         var bytes = [UInt8](repeating: 0, count: w * h * 4)
         target.getBytes(&bytes, bytesPerRow: w * 4, from: MTLRegionMake2D(0, 0, w, h), mipmapLevel: 0)
-        guard let space = CGColorSpace(name: CGColorSpace.sRGB),
-              let ctx = CGContext(data: &bytes, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w * 4,
-                                  space: space, bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue
+        guard let space = CGColorSpace(name: Self.colourSpaceName),
+              let ctx = CGContext(data: &bytes, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w * 4, space: space,
+                                  bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue
                                     | CGBitmapInfo.byteOrder32Little.rawValue) else { return nil }
         return ctx.makeImage()
     }
 
     @discardableResult
-    private func encode(blur: Double, target: MTLTexture, present: CAMetalDrawable?) -> Bool {
-        guard let texture, let cb = queue.makeCommandBuffer() else { return false }
+    private func encode(_ frame: LidFoldFrame, target: MTLTexture, present: CAMetalDrawable?) -> Bool {
+        guard let picture, let commands = queue.makeCommandBuffer() else { return false }
+        let screen = picture.screenSize, scale = picture.pixelScale
+        let padded = CGSize(width: screen.width + 2 * Self.padding, height: screen.height + 2 * Self.padding)
+        let inverse = LidHomography.matrix(width: Double(screen.width), height: Double(screen.height), to: frame.corners).inverse
+        func column(_ i: Int) -> SIMD4<Float> {
+            let c = inverse[i]
+            return SIMD4(Float(c.x), Float(c.y), Float(c.z), 0)
+        }
+        var uniforms = Uniforms(
+            column0: column(0), column1: column(1), column2: column(2),
+            screenAndOrigin: SIMD4(Float(screen.width), Float(screen.height), Float(-Self.padding), Float(-Self.padding)),
+            paddedAndBlur: SIMD4(Float(padded.width), Float(padded.height), Float(frame.maxBlurRadius * Double(scale)), Float(frame.blurStrength)),
+            shape: SIMD4(Float(frame.blurFloor), Float(frame.maxDim), Float(scale), picture.maxLevel),
+            light: SIMD4(0, Float(frame.dimStrength), 1, Float(frame.dimReach)),
+            more: SIMD4(Float(frame.dimHingeFloor), 1, Float(frame.topEdge), 0))
         let pass = MTLRenderPassDescriptor()
         pass.colorAttachments[0].texture = target
-        pass.colorAttachments[0].loadAction = .dontCare
+        pass.colorAttachments[0].loadAction = .clear
         pass.colorAttachments[0].storeAction = .store
-        guard let enc = cb.makeRenderCommandEncoder(descriptor: pass) else { return false }
-        var u = Uniforms(blur: Float(blur), width: Float(target.width), height: Float(target.height))
-        enc.setRenderPipelineState(pipeline)
-        enc.setFragmentTexture(texture, index: 0)
-        enc.setFragmentBytes(&u, length: MemoryLayout<Uniforms>.size, index: 0)
-        enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
-        enc.endEncoding()
-        if let present { cb.present(present) }
-        cb.commit()
-        if present == nil { cb.waitUntilCompleted() }
+        pass.colorAttachments[0].clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 1)
+        guard let encoder = commands.makeRenderCommandEncoder(descriptor: pass) else { return false }
+        encoder.setRenderPipelineState(pipeline)
+        encoder.setFragmentBytes(&uniforms, length: MemoryLayout<Uniforms>.stride, index: 0)
+        encoder.setFragmentTexture(picture.texture, index: 0)
+        encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
+        encoder.endEncoding()
+        if let present { commands.present(present) }
+        commands.commit()
+        if present == nil { commands.waitUntilCompleted() }
         return true
     }
 }

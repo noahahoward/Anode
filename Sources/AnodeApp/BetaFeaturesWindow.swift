@@ -940,9 +940,10 @@ final class WindowGroupsFeature: BetaFeature {
 final class LidGlassFeature: BetaFeature {
 
     let title = "Lid Glass"
-    let summary = "As you close the lid the screen stays where it is and frosts over like glass, blurring from the top "
-                + "down toward the hinge; after the next unlock the desktop clears from the frost. Built-in screen "
-                + "only, and it needs Screen Recording to take the picture it frosts."
+    let summary = "The iPhone Duo fold for your MacBook: as you close the lid the screen holds still in the room "
+                + "while the glass tips away from it, the far edge softening into the dark; after the next unlock the "
+                + "desktop comes back into focus. Built-in screen only, and it needs Screen Recording to take the "
+                + "picture it folds."
     var layoutChanged: (() -> Void)?
 
     private let settings: Settings

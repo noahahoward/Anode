@@ -2,11 +2,12 @@ import XCTest
 import AppKit
 import Metal
 @testable import AnodeApp
+@testable import PowerKit
 
 /// The glass shader, rendered to an image so it can be measured. No window is shown.
 final class LidGlassRendererTests: XCTestCase {
 
-    private let sRGB = CGColorSpace(name: CGColorSpace.sRGB)!
+    private let space = CGColorSpace(name: LidGlassRenderer.colourSpaceName)!
 
     private func makeImage(width: Int, height: Int, _ pixel: (Int, Int) -> (UInt8, UInt8, UInt8)) -> CGImage {
         var bytes = [UInt8](repeating: 255, count: width * height * 4)
@@ -15,14 +16,14 @@ final class LidGlassRendererTests: XCTestCase {
             bytes[i] = r; bytes[i + 1] = g; bytes[i + 2] = b
         } }
         let ctx = CGContext(data: &bytes, width: width, height: height, bitsPerComponent: 8, bytesPerRow: width * 4,
-                            space: sRGB, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+                            space: space, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
         return ctx.makeImage()!
     }
 
     private func rgba(_ image: CGImage) -> [UInt8] {
         var bytes = [UInt8](repeating: 0, count: image.width * image.height * 4)
         let ctx = CGContext(data: &bytes, width: image.width, height: image.height, bitsPerComponent: 8,
-                            bytesPerRow: image.width * 4, space: sRGB,
+                            bytesPerRow: image.width * 4, space: space,
                             bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
         ctx.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
         return bytes
@@ -30,8 +31,12 @@ final class LidGlassRendererTests: XCTestCase {
 
     private func renderer(for image: CGImage) throws -> LidGlassRenderer {
         guard let r = LidGlassRenderer() else { throw XCTSkip("no Metal device") }
-        r.setImage(image)
+        r.setImage(image, scale: 1)
         return r
+    }
+
+    private func frame(_ image: CGImage, angle: Double) -> LidFoldFrame {
+        LidFoldFrame.make(look: LidFoldLook(startAngle: 90), screen: CGSize(width: image.width, height: image.height), angle: angle)
     }
 
     /// Mean absolute difference between neighbouring pixels' green over rows `rows` — high for sharp, low for frosted.
@@ -53,7 +58,7 @@ final class LidGlassRendererTests: XCTestCase {
         let input = makeImage(width: 256, height: 160) { x, y in
             (UInt8(x % 256), UInt8((y * 3) % 256), UInt8(((x / 8) % 2 == 0) ? 255 : 20))
         }
-        let out = try XCTUnwrap(try renderer(for: input).renderOffscreen(blur: 0))
+        let out = try XCTUnwrap(try renderer(for: input).renderOffscreen(frame(input, angle: 90)))
         XCTAssertEqual(out.width, 256); XCTAssertEqual(out.height, 160)
         let a = rgba(input), b = rgba(out)
         var worst = 0
@@ -61,8 +66,13 @@ final class LidGlassRendererTests: XCTestCase {
         XCTAssertLessThanOrEqual(worst, 1)
     }
 
+    /// The frost alone, with the geometry held flat: the far (top) edge goes soft first, the hinge side stays sharper.
     func testBlurIsStrongerAwayFromTheHinge() throws {
-        let out = try XCTUnwrap(try renderer(for: checkerboard).renderOffscreen(blur: 1))
+        let board = checkerboard
+        var f = frame(board, angle: 90)
+        f.blurStrength = 1
+        f.maxBlurRadius = 24
+        let out = try XCTUnwrap(try renderer(for: board).renderOffscreen(f))
         let b = rgba(out)
         let top = contrast(b, width: 256, rows: 0..<16)
         let bottom = contrast(b, width: 256, rows: 144..<160)
@@ -70,21 +80,24 @@ final class LidGlassRendererTests: XCTestCase {
     }
 
     func testBlurAmountOrdersByStrength() throws {
-        let r = try renderer(for: checkerboard)
-        let c = try [0.0, 0.25, 0.75, 1.0].map { amount -> Double in
-            contrast(rgba(try XCTUnwrap(r.renderOffscreen(blur: amount))), width: 256, rows: 0..<160)
+        let board = checkerboard
+        let r = try renderer(for: board)
+        let c = try [90.0, 75, 60, 40].map { angle -> Double in
+            contrast(rgba(try XCTUnwrap(r.renderOffscreen(frame(board, angle: angle)))), width: 256, rows: 0..<160)
         }
         XCTAssertGreaterThan(c[0], c[1]); XCTAssertGreaterThan(c[1], c[2]); XCTAssertGreaterThan(c[2], c[3])
     }
 
     func testRenderIsDeterministic() throws {
-        let r = try renderer(for: checkerboard)
-        XCTAssertEqual(rgba(try XCTUnwrap(r.renderOffscreen(blur: 0.6))), rgba(try XCTUnwrap(r.renderOffscreen(blur: 0.6))))
+        let board = checkerboard
+        let r = try renderer(for: board)
+        let f = frame(board, angle: 60)
+        XCTAssertEqual(rgba(try XCTUnwrap(r.renderOffscreen(f))), rgba(try XCTUnwrap(r.renderOffscreen(f))))
     }
 
     func testRenderingBeforeAnImageIsSetGivesNothing() throws {
         guard let r = LidGlassRenderer() else { throw XCTSkip("no Metal device") }
-        XCTAssertNil(r.renderOffscreen(blur: 0.5))
+        XCTAssertNil(r.renderOffscreen(frame(checkerboard, angle: 60)))
     }
 
     /// The harness for tuning: `LIDGLASS_DUMP=<dir> LIDGLASS_IMAGE=<png> swift test --filter ...testWritesReferenceFrames`.
@@ -93,11 +106,12 @@ final class LidGlassRendererTests: XCTestCase {
               let path = ProcessInfo.processInfo.environment["LIDGLASS_IMAGE"] else { throw XCTSkip("LIDGLASS_DUMP not set") }
         let src = try XCTUnwrap(NSImage(contentsOfFile: path)?.cgImage(forProposedRect: nil, context: nil, hints: nil))
         let r = try renderer(for: src)
-        for blur in [0.0, 0.25, 0.5, 0.75, 1.0] {
-            let img = try XCTUnwrap(r.renderOffscreen(blur: blur))
+        for angle in [90.0, 80, 70, 60, 50, 40, 30] {
+            let img = try XCTUnwrap(r.renderOffscreen(LidFoldFrame.make(look: LidFoldLook(startAngle: 90),
+                                       screen: CGSize(width: src.width, height: src.height), angle: angle)))
             let rep = NSBitmapImageRep(cgImage: img)
             try XCTUnwrap(rep.representation(using: .png, properties: [:]))
-                .write(to: URL(fileURLWithPath: dir).appendingPathComponent("frame-\(blur).png"))
+                .write(to: URL(fileURLWithPath: dir).appendingPathComponent("frame-\(Int(angle)).png"))
         }
     }
 }

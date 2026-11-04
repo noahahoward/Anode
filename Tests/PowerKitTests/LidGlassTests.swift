@@ -25,10 +25,13 @@ final class LidGlassTests: XCTestCase {
     private final class FakeOverlay: LidGlassOverlaying {
         var windowID: CGWindowID = 7
         var calls: [String] = []
-        var shownBlur: [Double] = [], blurs: [Double] = [], clearDurations: [TimeInterval] = []
+        var shows: [(start: Double, from: Double, to: Double)] = []
+        var angles: [Double] = [], clearDurations: [TimeInterval] = []
         var finishClearAtOnce = true
-        func show(image: CGImage, blur: Double) { calls.append("show"); shownBlur.append(blur) }
-        func setBlur(_ amount: Double) { blurs.append(amount) }
+        func show(image: CGImage, startAngle: Double, from: Double, to: Double) {
+            calls.append("show"); shows.append((startAngle, from, to))
+        }
+        func setAngle(_ angle: Double) { angles.append(angle) }
         func animateClear(duration: TimeInterval, completion: @escaping () -> Void) {
             calls.append("clear"); clearDurations.append(duration)
             if finishClearAtOnce { completion() }
@@ -119,11 +122,13 @@ final class LidGlassTests: XCTestCase {
         XCTAssertEqual(g.status, .active)
         XCTAssertEqual(sensor.lastRate, 120)
         waitUntil(!overlays.isEmpty && overlays[0].calls == ["show"])
-        let curve = LidBlurCurve(trigger: 110)
         XCTAssertEqual(overlays[0].calls, ["show"])
-        XCTAssertEqual(overlays[0].shownBlur[0], curve.amount(at: 100), accuracy: 1e-9)
+        // The picture was taken with the lid at 100°: the fold is flat there and chases the lid from it.
+        XCTAssertEqual(overlays[0].shows[0].start, 100)
+        XCTAssertEqual(overlays[0].shows[0].from, 100)
+        XCTAssertEqual(overlays[0].shows[0].to, 100)
         g.handle(angle: 90, time: 0.45)
-        XCTAssertEqual(overlays[0].blurs.last ?? -1, curve.amount(at: 90), accuracy: 1e-9)
+        XCTAssertEqual(overlays[0].angles.last, 90)
     }
 
     func testNoPictureMeansNoOverlayAndBackToIdle() {
@@ -178,6 +183,36 @@ final class LidGlassTests: XCTestCase {
         g.handle(angle: 80, time: 0.4)
         waitUntil(!overlays.isEmpty)
         XCTAssertEqual(g.status, .active)
+    }
+
+    // ── Letting go ──
+
+    /// Back above where the picture was frozen the fold is flat, so there is nothing to show: let go at once
+    /// rather than leave a frozen picture over a live screen.
+    func testTheFoldLetsGoAsSoonAsTheLidRisesPastWhereItWasFrozen() {
+        let g = makeGlass()
+        closeFast(g)                                   // frozen at 100°
+        waitUntil(overlays.first?.calls == ["show"])
+        g.handle(angle: 95, time: 0.45)
+        g.handle(angle: 98, time: 0.55)
+        XCTAssertEqual(overlays[0].calls, ["show"], "98° is still below 103°")
+        g.handle(angle: 104, time: 0.65)
+        XCTAssertEqual(overlays[0].calls, ["show", "clear", "hide"])
+        XCTAssertEqual(g.status, .idle)
+        XCTAssertEqual(sensor.lastRate, 8)
+    }
+
+    func testTheFoldClearsQuicklyAfterTheLidStops() {
+        let g = makeGlass()
+        closeFast(g)
+        waitUntil(overlays.first?.calls == ["show"])
+        g.handle(angle: 80, time: 0.5)
+        g.handle(angle: 80, time: 0.7)
+        XCTAssertEqual(overlays[0].calls, ["show"], "0.2 s of stillness is not a stop")
+        g.handle(angle: 80, time: 1.0)
+        XCTAssertEqual(overlays[0].calls, ["show", "clear", "hide"], "half a second at most")
+        XCTAssertLessThanOrEqual(LidGlass.stillSettle, 0.5)
+        XCTAssertLessThanOrEqual(LidGlass.reopenClear, 0.25)
     }
 
     // ── A lid that stops ──
@@ -316,8 +351,12 @@ final class LidGlassTests: XCTestCase {
         g.screenUnlocked()
         waitUntil(overlays.count == 2 && overlays[1].calls.contains("hide"))
         XCTAssertEqual(overlays[1].calls, ["show", "clear", "hide"])
-        XCTAssertEqual(overlays[1].shownBlur, [1])
-        XCTAssertEqual(overlays[1].clearDurations, [0.5])
+        // The opening starts from the fully folded look of the close that was seen (100° and 58° of travel).
+        XCTAssertEqual(overlays[1].shows.count, 1)
+        XCTAssertEqual(overlays[1].shows[0].start, 100)
+        XCTAssertEqual(overlays[1].shows[0].from, 42)
+        XCTAssertEqual(overlays[1].shows[0].to, 42)
+        XCTAssertEqual(overlays[1].clearDurations, [LidGlass.openingClear])
         g.screenUnlocked()
         settle()
         XCTAssertEqual(overlays.count, 2, "a second unlock does nothing")

@@ -1,6 +1,6 @@
 import Foundation
 
-/// Deciding from a stream of lid angles that the lid is being closed, and how much frost that means.
+/// Deciding from a stream of lid angles that the lid is being closed, and smoothing the sensor's steps.
 
 /// Watches angles and says when a close begins and when it is undone.
 ///
@@ -84,27 +84,5 @@ public struct LidSpring {
     public mutating func reset(to newValue: Double) {
         value = newValue
         velocity = 0
-    }
-}
-
-/// How frosted the glass is at a lid angle: nothing at `trigger` and above, fully frosted at `darkAngle` and
-/// below, easing in between.
-public struct LidBlurCurve {
-    /// The angle by which the strongest frost is reached. The built-in display goes dark a little before the
-    /// lid is shut, so the frost must be complete before that; replaced by a measured value in Task 9.
-    public static let defaultDarkAngle = 5.0
-
-    public let trigger: Double
-    public let darkAngle: Double
-
-    public init(trigger: Double, darkAngle: Double = LidBlurCurve.defaultDarkAngle) {
-        self.trigger = trigger
-        self.darkAngle = darkAngle
-    }
-
-    public func amount(at angle: Double) -> Double {
-        guard trigger > darkAngle else { return angle > trigger ? 0 : 1 }
-        let t = min(max((trigger - angle) / (trigger - darkAngle), 0), 1)
-        return t * t * (3 - 2 * t)
     }
 }

@@ -118,20 +118,30 @@ the timers.
 
 ## Glass look
 
-Target: realistic frosted glass, not a generic gaussian blur. Quality is the goal; cost is bounded because it
-runs for about a second. The author's starting model, to be tuned against reference renders:
+**Reworked after the owner's first trial** (the first version only blurred the picture in place, which was not the
+iPhone Duo effect). It now follows Mac Duo's model (github.com/ninobc/mac-duo, MIT; attributed in
+`Sources/PowerKit/LidFold.swift`):
 
-- Progressive blur: strongest at the top edge, far from the hinge (the hinge is at the bottom of the screen and stays sharpest, as the far edge of a tilting pane goes out of focus), and growing with closing angle.
-- Refraction: sample positions displaced following Snell's law across a gently curved pane.
-- Fresnel (Schlick) edge brightening, a faint chromatic dispersion between colour channels.
-- A slight thickness tint and fine noise to prevent banding.
+- The picture is **frozen in the room** at the lid angle it was taken at (the start angle). As the lid closes
+  past it, every glass pixel shows what a fixed eye would see of that picture through the tilting glass: a
+  projective map (`LidFoldGeometry`, `LidHomography`). The far edge recedes, the sides converge.
+- **Frost and dimming follow the picture's height above the hinge**: the far (top) edge dissolves first and goes
+  dark, the hinge (bottom) stays readable; the whole picture sinks a little. Frost and dimming strength are
+  curves of the lid angle (`LidFoldCurve`): zero at the start angle, full 58 degrees below it.
+- The picture sits on a black margin inside one mipmapped texture with a Gaussian pyramid, so its edges dissolve
+  into the dark. Display P3 end to end.
+- The lid angle (not a frost amount) is smoothed by a critically damped spring and drives everything, so opening
+  runs the same curve backwards.
+- The first frame is flat (identical to the live screen) because the start angle is the lid angle at capture; the
+  spring then chases the real lid, which hides the 30-50 ms capture and the detection lag.
+- The picture is prepared off the main thread (about 50 ms at full size); the window appears when it is ready.
+- Tuned against nothing but Mac Duo's constants (blur radius 125 pt, dimming reach 0.55, hinge dim 0.18, eye
+  distance 2.4 screen heights, blur exponent 1.55, dim exponent 0.75). Not user-tunable.
 
-Cheap blur technique to try first: a mipmapped copy of the screenshot sampled at a per-pixel level of detail,
-in one pass.
-
-Tuning method: build a small standalone harness that takes a screenshot and an angle and writes images, and
-compare against reference stills rendered in Blender (Cycles, rough transmission glass, IOR about 1.5). Blender
-is a reference only; nothing from it ships.
+**Letting go (also reworked):** the fold lets go as soon as the lid rises 3 degrees past the angle it was
+frozen at (it is flat there, so there is nothing to show), and 0.4 s after the lid stops moving (2 degree
+tolerance, not near shut), clearing over 0.2 s. After unlock the opening plays the fold backwards from fully
+folded over 0.5 s.
 
 ## Constraints
 

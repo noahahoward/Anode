@@ -38,11 +38,16 @@ final class LidGlass {
 
     /// How long the frost takes to clear after unlock, and when a lid is reopened mid-close.
     static let openingClear: TimeInterval = 0.5
-    static let reopenClear: TimeInterval = 0.25
+    static let reopenClear: TimeInterval = 0.2
     /// A lid that has moved less than `stillTolerance` degrees for `stillSettle` seconds has stopped; the frozen
     /// picture must not stay over a live screen the owner is working on.
     static let stillTolerance = 2.0
-    static let stillSettle: TimeInterval = 1.5
+    static let stillSettle: TimeInterval = 0.4
+    /// Degrees past the angle the picture was frozen at the lid must rise to before the fold lets go: above it the
+    /// fold is flat, so there is nothing to show, and a few degrees of sensor noise must not end a close.
+    static let releaseMargin = 3.0
+    /// Below this the lid is shut, or as near as makes no difference; it sits there until the Mac sleeps.
+    static let shutAngle = 5.0
 
     private let settings: Settings
     private let sensor: LidAngleSource
@@ -59,6 +64,10 @@ final class LidGlass {
     /// Set when a close began and not yet undone or followed by an unlock: the next unlock plays the opening.
     private var closeSeen = false
     private var lastAngle = 180.0
+    /// The lid angle when the picture of this close was taken: the fold is flat there.
+    private var startAngle = 0.0
+    /// The start angle of the last close that was seen, for the opening effect after unlock.
+    private var lastCloseStart: Double?
     private var still: (angle: Double, since: TimeInterval)?
 
     private var settingTokens: [AnyObject] = []
@@ -166,10 +175,14 @@ final class LidGlass {
             reopened()
         case .none:
             guard status == .active else { return }
-            if let overlay, let from = detector.armedFrom {
-                overlay.setBlur(LidBlurCurve(trigger: from).amount(at: angle))
+            overlay?.setAngle(angle)
+            if angle >= startAngle + Self.releaseMargin {
+                detector.reset()
+                closeSeen = false
+                leaveTheEffect(why: "lid back above where it was frozen")
+            } else {
+                watchForStillness(angle: angle, time: time)
             }
-            watchForStillness(angle: angle, time: time)
         }
     }
 
@@ -177,6 +190,8 @@ final class LidGlass {
         guard !externalDisplayPresent() else { return }
         closeSeen = true
         still = nil
+        startAngle = lastAngle
+        lastCloseStart = startAngle
         status = .active
         sensor.setRate(hz: LidPollPolicy.activeHz)
         log(String(format: "closing at %.0f", lastAngle))
@@ -196,8 +211,7 @@ final class LidGlass {
             return
         }
         self.overlay = overlay
-        let from = detector.armedFrom ?? detector.trigger
-        overlay.show(image: image, blur: LidBlurCurve(trigger: from).amount(at: lastAngle))
+        overlay.show(image: image, startAngle: startAngle, from: startAngle, to: lastAngle)
     }
 
     private func reopened() {
@@ -208,7 +222,7 @@ final class LidGlass {
 
     /// The lid has stopped part way. A shut lid is not a pause: it sits near 0° until the Mac sleeps.
     private func watchForStillness(angle: Double, time: TimeInterval) {
-        guard angle > LidBlurCurve.defaultDarkAngle else { still = nil; return }
+        guard angle > Self.shutAngle else { still = nil; return }
         guard let s = still, abs(angle - s.angle) <= Self.stillTolerance else { still = (angle, time); return }
         if time - s.since >= Self.stillSettle {
             detector.reset()
@@ -285,7 +299,9 @@ final class LidGlass {
         self.overlay = overlay
         showingOpeningEffect = true
         installInputMonitor()
-        overlay.show(image: image, blur: 1)
+        let start = lastCloseStart ?? settings.lidGlassTriggerAngle
+        let folded = start - LidFoldLook(startAngle: start).span
+        overlay.show(image: image, startAngle: start, from: folded, to: folded)
         overlay.animateClear(duration: Self.openingClear) { [weak self, weak overlay] in
             guard let self, let overlay, self.overlay === overlay else { return }
             self.removeInputMonitor()

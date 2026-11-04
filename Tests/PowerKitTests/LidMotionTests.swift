@@ -95,26 +95,4 @@ final class LidMotionTests: XCTestCase {
         s.advance(to: 0.5, dt: 1.0 / 60)
         XCTAssertEqual(s.value, 0.5, accuracy: 1e-9)
     }
-
-    // ── The frost ──
-
-    func testBlurCurveEndpointsAndMonotonic() {
-        let c = LidBlurCurve(trigger: 110, darkAngle: 5)
-        XCTAssertEqual(c.amount(at: 110), 0)
-        XCTAssertEqual(c.amount(at: 130), 0)
-        XCTAssertEqual(c.amount(at: 5), 1)
-        XCTAssertEqual(c.amount(at: 0), 1)
-        var last = 0.0
-        for a in stride(from: 110.0, through: 0, by: -1) {
-            let v = c.amount(at: a)
-            XCTAssertGreaterThanOrEqual(v, last)
-            last = v
-        }
-    }
-
-    func testBlurCurveWithATriggerBelowTheDarkAngleDoesNotDivideByZero() {
-        let c = LidBlurCurve(trigger: 5, darkAngle: 5)
-        XCTAssertEqual(c.amount(at: 20), 0)
-        XCTAssertEqual(c.amount(at: 3), 1)
-    }
 }
