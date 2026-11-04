@@ -41,13 +41,30 @@ final class LidGlassOverlay: LidGlassOverlaying {
     private var pendingClear: (duration: TimeInterval, done: () -> Void)?
     /// False in tests: everything else runs, but the window is never put on the screen.
     var showsWindow = true
+    /// Where a once-a-second summary of the drawing goes while the overlay is up (frames, skips, worst times).
+    var log: (String) -> Void = { _ in }
+
+    /// What drawing did since the last summary. The GPU time arrives from another thread.
+    private struct Stats {
+        var ticks = 0, drawn = 0, skipped = 0, noDrawable = 0
+        var worstStep = 0.0, worstGPU = 0.0
+    }
+    private var stats = Stats()
+    private let gpuLock = NSLock()
+    private var gpuWorst = 0.0
+    private var lastSummary: CFTimeInterval = 0
+    /// Frames are capped here: the display link asks for no more, and a tick that finds the GPU still busy is skipped.
+    static let frameRate: Float = 60
 
     init(screen: NSScreen, makeRenderer: () -> LidGlassRenderer? = { LidGlassRenderer() }) {
         renderer = makeRenderer()
         window = NSWindow(contentRect: screen.frame, styleMask: .borderless, backing: .buffered, defer: false, screen: screen)
-        window.level = .screenSaver
-        window.isOpaque = true
-        window.backgroundColor = .black
+        // Above the menu bar and everything else. Not opaque: an opaque full-screen window makes the window
+        // server treat everything under it as hidden, and the layer's frames then stop completing (measured: a few
+        // frames drew, then every later one stayed in flight and the main thread blocked waiting for a drawable).
+        window.level = NSWindow.Level(rawValue: Int(CGShieldingWindowLevel()))
+        window.isOpaque = false
+        window.backgroundColor = .clear
         window.hasShadow = false
         window.ignoresMouseEvents = true
         window.isReleasedWhenClosed = false
@@ -59,7 +76,13 @@ final class LidGlassOverlay: LidGlassOverlaying {
         view.isPaused = true
         view.enableSetNeedsDisplay = false
         view.autoResizeDrawable = true
-        (view.layer as? CAMetalLayer)?.colorspace = CGColorSpace(name: LidGlassRenderer.colourSpaceName)
+        if let layer = view.layer as? CAMetalLayer {
+            layer.colorspace = CGColorSpace(name: LidGlassRenderer.colourSpaceName)
+            // The shader writes alpha 1 everywhere, so blending gives the same picture as an opaque layer.
+            layer.isOpaque = false
+            // The display link paces frames; waiting on the drawable would block the main thread.
+            layer.displaySyncEnabled = false
+        }
         window.contentView = view
     }
 
@@ -139,6 +162,7 @@ final class LidGlassOverlay: LidGlassOverlaying {
     private func startLink() {
         guard link == nil else { return }
         let l = view.displayLink(target: self, selector: #selector(step(_:)))
+        l.preferredFrameRateRange = CAFrameRateRange(minimum: 30, maximum: Self.frameRate, preferred: Self.frameRate)
         l.add(to: .main, forMode: .common)
         link = l
     }
@@ -154,6 +178,8 @@ final class LidGlassOverlay: LidGlassOverlaying {
 
     /// One frame's worth of motion, then draw. Separate from the display link so tests can step it.
     func advance(dt: TimeInterval, now: CFTimeInterval) {
+        let began = ProcessInfo.processInfo.systemUptime
+        defer { noteTick(took: ProcessInfo.processInfo.systemUptime - began, now: now) }
         if let c = clear {
             let t = min(max((now - c.start) / c.duration, 0), 1)
             let eased = t * t * (3 - 2 * t)
@@ -173,8 +199,27 @@ final class LidGlassOverlay: LidGlassOverlaying {
     }
 
     private func drawFrame() {
-        guard let renderer, let drawable = view.currentDrawable else { return }
+        guard let renderer else { return }
+        // Never wait for a drawable: when the GPU is behind, skip this tick and draw the next one.
+        guard renderer.framesInFlight < 2 else { stats.skipped += 1; return }
+        guard let drawable = view.currentDrawable else { stats.noDrawable += 1; return }
         let frame = LidFoldFrame.make(look: look, screen: window.frame.size, angle: spring.value)
-        renderer.draw(frame, into: drawable)
+        stats.drawn += 1
+        renderer.draw(frame, into: drawable) { [weak self] seconds in
+            guard let self else { return }
+            self.gpuLock.lock(); self.gpuWorst = max(self.gpuWorst, seconds); self.gpuLock.unlock()
+        }
+    }
+
+    private func noteTick(took: TimeInterval, now: CFTimeInterval) {
+        stats.ticks += 1
+        stats.worstStep = max(stats.worstStep, took)
+        if lastSummary == 0 { lastSummary = now }
+        guard now - lastSummary >= 1 else { return }
+        gpuLock.lock(); let gpu = gpuWorst; gpuWorst = 0; gpuLock.unlock()
+        log(String(format: "frames: %d ticks, %d drawn, %d skipped (gpu busy), %d no drawable; worst main step %.0f ms, worst gpu %.0f ms",
+                   stats.ticks, stats.drawn, stats.skipped, stats.noDrawable, stats.worstStep * 1000, gpu * 1000))
+        stats = Stats()
+        lastSummary = now
     }
 }

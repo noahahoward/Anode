@@ -155,6 +155,12 @@ final class LidGlassRenderer {
     private let queue: MTLCommandQueue
     private let pipeline: MTLRenderPipelineState
     private var picture: Picture?
+    private let inFlightLock = NSLock()
+    private var _framesInFlight = 0
+
+    /// Frames handed to the GPU and not yet finished. The overlay skips a tick rather than queue a third: asking
+    /// the layer for a drawable when none is free blocks the main thread, and everything else waits behind it.
+    var framesInFlight: Int { inFlightLock.lock(); defer { inFlightLock.unlock() }; return _framesInFlight }
 
     var hasImage: Bool { picture != nil }
     var metalDevice: MTLDevice { device }
@@ -223,8 +229,9 @@ final class LidGlassRenderer {
 
     func clearImage() { picture = nil }
 
-    func draw(_ frame: LidFoldFrame, into drawable: CAMetalDrawable) {
-        encode(frame, target: drawable.texture, present: drawable)
+    /// `gpuSeconds` is called, off the main thread, with how long the GPU took on the frame.
+    func draw(_ frame: LidFoldFrame, into drawable: CAMetalDrawable, gpuSeconds: ((Double) -> Void)? = nil) {
+        encode(frame, target: drawable.texture, present: drawable, gpuSeconds: gpuSeconds)
     }
 
     /// The frame as an image the size of the screen, for tests and for tuning against references.
@@ -247,7 +254,8 @@ final class LidGlassRenderer {
     }
 
     @discardableResult
-    private func encode(_ frame: LidFoldFrame, target: MTLTexture, present: CAMetalDrawable?) -> Bool {
+    private func encode(_ frame: LidFoldFrame, target: MTLTexture, present: CAMetalDrawable?,
+                        gpuSeconds: ((Double) -> Void)? = nil) -> Bool {
         guard let picture, let commands = queue.makeCommandBuffer() else { return false }
         let screen = picture.screenSize, scale = picture.pixelScale
         let padded = CGSize(width: screen.width + 2 * Self.padding, height: screen.height + 2 * Self.padding)
@@ -274,7 +282,15 @@ final class LidGlassRenderer {
         encoder.setFragmentTexture(picture.texture, index: 0)
         encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
         encoder.endEncoding()
-        if let present { commands.present(present) }
+        if let present {
+            commands.present(present)
+            inFlightLock.lock(); _framesInFlight += 1; inFlightLock.unlock()
+            commands.addCompletedHandler { [weak self] cb in
+                self?.inFlightLock.lock(); self?._framesInFlight -= 1; self?.inFlightLock.unlock()
+                if cb.status != .completed { FeatureLog.append("lidglass.log", "frame ended \(cb.status.rawValue): \(cb.error?.localizedDescription ?? "no error")") }
+                gpuSeconds?(cb.gpuEndTime - cb.gpuStartTime)
+            }
+        }
         commands.commit()
         if present == nil { commands.waitUntilCompleted() }
         return true

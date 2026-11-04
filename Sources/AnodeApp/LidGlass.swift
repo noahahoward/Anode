@@ -39,9 +39,10 @@ final class LidGlass {
     /// How long the frost takes to clear after unlock, and when a lid is reopened mid-close.
     static let openingClear: TimeInterval = 0.5
     static let reopenClear: TimeInterval = 0.2
-    /// A lid that has moved less than `stillTolerance` degrees for `stillSettle` seconds has stopped; the frozen
-    /// picture must not stay over a live screen the owner is working on.
-    static let stillTolerance = 2.0
+    /// A lid whose angle has stayed within `stillTolerance` degrees for `stillSettle` seconds has stopped; the
+    /// frozen picture must not stay over a live screen the owner is working on. The tolerance covers the sensor's
+    /// whole-degree steps and a hand that has not quite let go.
+    static let stillTolerance = 3.0
     static let stillSettle: TimeInterval = 0.4
     /// Degrees past the angle the picture was frozen at the lid must rise to before the fold lets go: above it the
     /// fold is flat, so there is nothing to show, and a few degrees of sensor noise must not end a close.
@@ -68,7 +69,7 @@ final class LidGlass {
     private var startAngle = 0.0
     /// The start angle of the last close that was seen, for the opening effect after unlock.
     private var lastCloseStart: Double?
-    private var still: (angle: Double, since: TimeInterval)?
+    private var recent: [(time: TimeInterval, angle: Double)] = []
 
     private var settingTokens: [AnyObject] = []
     private var systemObservers: [(NotificationCenter, NSObjectProtocol)] = []
@@ -140,7 +141,7 @@ final class LidGlass {
         status = .idle
         sensor.start(hz: idleHz,
                      onSample: { [weak self] degrees, time in
-                         DispatchQueue.main.async { self?.handle(angle: degrees, time: time) }
+                         DispatchQueue.main.async { self?.noteLag(sampleTime: time); self?.handle(angle: degrees, time: time) }
                      },
                      onLost: { [weak self] in DispatchQueue.main.async { self?.sensorLost() } })
         log("on, idle \(idleHz) Hz")
@@ -164,6 +165,19 @@ final class LidGlass {
     }
 
     // ── Angles ──
+
+    private var lastLagLog = 0.0
+
+    /// Samples should reach the main thread within a frame or two. When they do not, the main thread is busy
+    /// (drawing, most likely), and a late stop or a frozen fold is the result; leave a line to say so.
+    private func noteLag(sampleTime: TimeInterval) {
+        guard status == .active else { return }
+        let now = ProcessInfo.processInfo.systemUptime
+        let lag = now - sampleTime
+        guard lag > 0.25, now - lastLagLog > 1 else { return }
+        lastLagLog = now
+        log(String(format: "lid samples are arriving %.0f ms late: the main thread is busy", lag * 1000))
+    }
 
     func handle(angle: Double, time: TimeInterval) {
         guard status == .idle || status == .active else { return }
@@ -189,7 +203,7 @@ final class LidGlass {
     private func closingBegan() {
         guard !externalDisplayPresent() else { return }
         closeSeen = true
-        still = nil
+        recent = []
         startAngle = lastAngle
         lastCloseStart = startAngle
         status = .active
@@ -222,19 +236,21 @@ final class LidGlass {
 
     /// The lid has stopped part way. A shut lid is not a pause: it sits near 0° until the Mac sleeps.
     private func watchForStillness(angle: Double, time: TimeInterval) {
-        guard angle > Self.shutAngle else { still = nil; return }
-        guard let s = still, abs(angle - s.angle) <= Self.stillTolerance else { still = (angle, time); return }
-        if time - s.since >= Self.stillSettle {
-            detector.reset()
-            closeSeen = false
-            leaveTheEffect(why: "lid stopped")
-        }
+        guard angle > Self.shutAngle else { recent = []; return }
+        recent.append((time, angle))
+        recent.removeAll { time - $0.time > Self.stillSettle + 0.1 }
+        guard let oldest = recent.first, time - oldest.time >= Self.stillSettle - 1e-6 else { return }
+        let window = recent.filter { time - $0.time <= Self.stillSettle + 1e-6 }.map(\.angle)
+        guard let low = window.min(), let high = window.max(), high - low <= Self.stillTolerance else { return }
+        detector.reset()
+        closeSeen = false
+        leaveTheEffect(why: "lid stopped")
     }
 
     /// Clear the frost away and go back to watching at the idle rate.
     private func leaveTheEffect(why: String) {
         generation += 1
-        still = nil
+        recent = []
         let leaving = overlay
         overlay = nil
         status = .idle
@@ -247,7 +263,7 @@ final class LidGlass {
 
     private func backToIdle() {
         generation += 1
-        still = nil
+        recent = []
         detector.reset()
         status = .idle
         sensor.setRate(hz: idleHz)
@@ -258,7 +274,7 @@ final class LidGlass {
     /// Remove whatever is on screen, forget any picture still on its way, and go back to the idle rate.
     private func teardown() {
         generation += 1
-        still = nil
+        recent = []
         removeInputMonitor()
         overlay?.hide()
         overlay = nil
@@ -331,7 +347,9 @@ final class LidGlass {
               let screen = NSScreen.screens.first(where: {
                   ($0.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value == id
               }) else { return nil }
-        return LidGlassOverlay(screen: screen)
+        let overlay = LidGlassOverlay(screen: screen)
+        overlay.log = { FeatureLog.append("lidglass.log", $0) }
+        return overlay
     }
 
     static func realCapture() async -> CGImage? {

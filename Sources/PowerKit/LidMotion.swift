@@ -16,27 +16,38 @@ public struct LidCloseDetector {
     public static let minSpeed = 15.0
     /// Degrees a downward run must cover before it counts.
     public static let minDrop = 6.0
+    /// The sensor changes about ten times a second, however fast it is read, so a repeated reading is normal. A
+    /// run survives repeats for this long; a lid that has not changed for longer has paused.
+    public static let maxFlat = 0.35
+    /// The longest a change is taken to have been in coming: the sensor's period, with a little slack. After a long
+    /// rest the first change would otherwise look like a crawl.
+    public static let sensorPeriod = 0.12
 
     public var trigger: Double
     public private(set) var isActive = false
-    /// The angle the frost is measured from while a close is active: the trigger, or the angle the run began at
-    /// if that was lower.
+    /// The angle the frost was measured from in the first version; the trigger, or where the run began if lower.
     public private(set) var armedFrom: Double?
 
     private var previous: (angle: Double, time: TimeInterval)?
+    /// The last reading that differed from the one before it.
+    private var lastChange: (angle: Double, time: TimeInterval)?
     private var runStart: Double?
 
     public init(trigger: Double) { self.trigger = trigger }
 
     public mutating func reset() {
-        isActive = false; armedFrom = nil; previous = nil; runStart = nil
+        isActive = false; armedFrom = nil; previous = nil; lastChange = nil; runStart = nil
     }
 
     public mutating func feed(angle: Double, time: TimeInterval) -> Event {
         defer { previous = (angle, time) }
-        guard let last = previous else { return .none }
+        guard let last = previous, let changed = lastChange else {
+            lastChange = (angle, time)
+            return .none
+        }
 
         if isActive {
+            if angle != changed.angle { lastChange = (angle, time) }
             if let from = armedFrom, angle > from {
                 isActive = false; armedFrom = nil; runStart = nil
                 return .reopened
@@ -44,11 +55,20 @@ public struct LidCloseDetector {
             return .none
         }
 
-        let dt = time - last.time
+        // A repeated reading is no news: it neither extends nor ends a run, unless the lid has been still a while.
+        if angle == changed.angle {
+            if time - changed.time > Self.maxFlat { runStart = nil }
+            return .none
+        }
+
+        // A reading that changed. It happened some time after the previous sample, and no earlier than the last
+        // change; held readings make that interval uncertain, so take the sensor's period as its upper bound.
+        let dt = max(time - last.time, min(time - changed.time, Self.sensorPeriod))
+        lastChange = (angle, time)
         guard dt > 0 else { return .none }
-        let speedDown = (last.angle - angle) / dt
+        let speedDown = (changed.angle - angle) / dt
         if speedDown >= Self.minSpeed {
-            runStart = runStart ?? last.angle
+            runStart = runStart ?? changed.angle
         } else {
             runStart = nil
         }

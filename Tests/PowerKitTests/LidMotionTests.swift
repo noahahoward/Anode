@@ -43,6 +43,39 @@ final class LidMotionTests: XCTestCase {
         XCTAssertEqual(d.armedFrom, 105)
     }
 
+    /// The sensor changes about ten times a second however fast it is polled, so at 30 Hz two samples in three are
+    /// stale repeats. A repeat is "no news", not "stopped": it must not erase a close that is under way.
+    private func polled(hz: Double, from start: Double, degreesPerSecond rate: Double, for seconds: Double) -> [(Double, TimeInterval)] {
+        var out: [(Double, TimeInterval)] = []
+        var t = 0.0
+        while t <= seconds {
+            let held = (t * 10).rounded(.down) / 10            // the hardware's last update
+            out.append(((start - rate * held).rounded(), t))
+            t += 1 / hz
+        }
+        return out
+    }
+
+    func testAModerateCloseIsSeenWhenPolledFasterThanTheSensorUpdates() {
+        for hz in [8.0, 30, 120] {
+            var d = LidCloseDetector(trigger: 110)
+            let events = feed(&d, polled(hz: hz, from: 125, degreesPerSecond: 40, for: 1.2))
+            XCTAssertTrue(events.contains(.closing), "40°/s polled at \(hz) Hz")
+        }
+    }
+
+    func testAnIdleLidStillNeverClosesWhenPolledFast() {
+        var d = LidCloseDetector(trigger: 110)
+        let events = feed(&d, polled(hz: 30, from: 100, degreesPerSecond: 0, for: 20))
+        XCTAssertTrue(events.allSatisfy { $0 == .none })
+    }
+
+    func testALidThatPausesLongerThanTheSensorPeriodEndsTheRun() {
+        var d = LidCloseDetector(trigger: 110)
+        let e = feed(&d, [(125, 0), (121, 0.1), (121, 0.2), (121, 0.3), (121, 0.4), (121, 0.5), (117, 0.6), (113, 0.7)])
+        XCTAssertEqual(e.filter { $0 == .closing }.count, 0, "a pause of half a second is not one close")
+    }
+
     func testAQuickSmallNudgeDoesNotClose() {
         var d = LidCloseDetector(trigger: 110)
         let e = feed(&d, [(105, 0), (101, 0.1), (101, 0.5)])
