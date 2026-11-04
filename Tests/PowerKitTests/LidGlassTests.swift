@@ -280,6 +280,24 @@ final class LidGlassTests: XCTestCase {
         _ = g
     }
 
+    // ── After the lid is closed ──
+
+    /// There was once an opening effect after unlock. It looked like a glitch and is gone: after a close, a sleep and an
+    /// unlock nothing more is captured or shown.
+    func testNothingIsShownAfterUnlockFollowingACloseAndASleep() {
+        let g = makeGlass()
+        closeFast(g)
+        waitUntil(overlays.first?.calls == ["show"])
+        g.systemWillSleep()
+        let capturesBefore = captures
+        DistributedNotificationCenter.default().post(name: Notification.Name("com.apple.screenIsUnlocked"), object: nil)
+        waitUntil(captures > capturesBefore || overlays.count > 1, timeout: 0.6)
+        settle()
+        XCTAssertEqual(captures, capturesBefore, "no picture is taken for an opening effect")
+        XCTAssertEqual(overlays.count, 1)
+        XCTAssertEqual(g.status, .idle)
+    }
+
     // ── Where the fold starts ──
 
     func testASlowCloseHasNoLeadBecauseThereIsNothingToCatchUpWith() {
@@ -377,17 +395,6 @@ final class LidGlassTests: XCTestCase {
         XCTAssertEqual(overlays[0].calls, ["show"])
     }
 
-    func testAfterTheLidSettlesTheNextUnlockPlaysNothing() {
-        let g = makeGlass()
-        closeFast(g)
-        waitUntil(overlays.first?.calls == ["show"])
-        for i in 0...20 { g.handle(angle: 92, time: 0.5 + Double(i) * 0.1) }
-        g.screenUnlocked()
-        settle()
-        XCTAssertEqual(overlays.count, 1)
-        XCTAssertEqual(captures, 1)
-    }
-
     func testAnotherCloseStartsAfterTheLidSettled() {
         let g = makeGlass()
         closeFast(g)
@@ -470,63 +477,4 @@ final class LidGlassTests: XCTestCase {
         _ = g
     }
 
-    // ── After unlock ──
-
-    func testUnlockAfterACloseClearsTheFrostOnce() {
-        let g = makeGlass()
-        closeFast(g)
-        waitUntil(overlays.first?.calls == ["show"])
-        g.systemWillSleep()
-        g.screenUnlocked()
-        waitUntil(overlays.count == 2 && overlays[1].calls.contains("hide"))
-        XCTAssertEqual(overlays[1].calls, ["show", "clear", "hide"])
-        // The opening starts from the fully folded look of the close that was seen (58° of travel past its start).
-        XCTAssertEqual(overlays[1].shows.count, 1)
-        let start = overlays[0].shows[0].start
-        XCTAssertEqual(overlays[1].shows[0].start, start)
-        XCTAssertEqual(overlays[1].shows[0].from, start - 58, accuracy: 1e-9)
-        XCTAssertEqual(overlays[1].shows[0].to, start - 58, accuracy: 1e-9)
-        XCTAssertEqual(overlays[1].clearDurations, [LidGlass.openingClear])
-        g.screenUnlocked()
-        settle()
-        XCTAssertEqual(overlays.count, 2, "a second unlock does nothing")
-    }
-
-    func testUnlockWithoutACloseDoesNothing() {
-        let g = makeGlass()
-        g.screenUnlocked()
-        settle()
-        XCTAssertEqual(captures, 0)
-        XCTAssertTrue(overlays.isEmpty)
-    }
-
-    func testReopeningBeforeTheLidShutMeansTheNextUnlockPlaysNothing() {
-        let g = makeGlass()
-        closeFast(g)
-        waitUntil(overlays.first?.calls == ["show"])
-        g.handle(angle: 115, time: 0.9)
-        g.screenUnlocked()
-        settle()
-        XCTAssertEqual(overlays.count, 1)
-    }
-
-    func testInputDuringTheClosingEffectIsIgnored() {
-        let g = makeGlass()
-        closeFast(g)
-        waitUntil(overlays.first?.calls == ["show"])
-        g.userInput()
-        XCTAssertEqual(overlays[0].calls, ["show"])
-    }
-
-    func testInputDuringTheOpeningEffectHidesIt() {
-        let g = makeGlass()
-        closeFast(g)
-        waitUntil(overlays.first?.calls == ["show"])
-        g.systemWillSleep()
-        finishClearsAtOnce = false
-        g.screenUnlocked()
-        waitUntil(overlays.count == 2 && overlays[1].calls.contains("clear"))
-        g.userInput()
-        XCTAssertEqual(overlays[1].calls, ["show", "clear", "hide"])
-    }
 }

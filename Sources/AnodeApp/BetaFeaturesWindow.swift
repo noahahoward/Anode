@@ -936,14 +936,13 @@ final class WindowGroupsFeature: BetaFeature {
 
 // ── Lid Glass ───────────────────────────────────────────────────────────────
 
-/// The screen frosts over like glass as the lid closes, and clears after the next unlock (see `LidGlass`).
+/// The iPhone Duo fold as the lid closes, and unfolding as it opens again (see `LidGlass`).
 final class LidGlassFeature: BetaFeature {
 
     let title = "Lid Glass"
     let summary = "The iPhone Duo fold for your MacBook: as you close the lid the screen holds still in the room "
-                + "while the glass tips away from it, the far edge softening into the dark; after the next unlock the "
-                + "desktop comes back into focus. Built-in screen only, and it needs Screen Recording to take the "
-                + "picture it folds."
+                + "while the glass tips away from it like a lens, the far edge softening into the dark; open the lid "
+                + "and it unfolds again. Built-in screen only, and it needs Screen Recording to take the picture it folds."
     var layoutChanged: (() -> Void)?
 
     private let settings: Settings

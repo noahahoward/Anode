@@ -1,5 +1,9 @@
 # Lid Glass — design
 
+> **Update, after the owner tried it:** the after-unlock opening effect described below was removed (it looked like a
+> glitch). Opening the lid is shown only while the Mac is awake and the lid is partway: the fold unfolds with the lid.
+> The sections on "After unlock" are kept for the record of why it existed.
+
 A new Beta Features section for Anode. As the MacBook lid closes, the screen appears to stay where it is
 while it frosts over like glass, blurring progressively from the top edge toward the hinge. After the Mac is
 unlocked, the desktop clears from a frosted state. It recreates the effect of the Mac Duo family of apps.

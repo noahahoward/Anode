@@ -3,8 +3,8 @@ import PowerKit
 
 // ── Lid Glass ───────────────────────────────────────────────────────────────
 //
-// As the lid closes the screen stays where it is and frosts over like glass; after the next unlock the desktop
-// clears from a frosted state. This is the part that decides when: it reads the lid angle, notices a close,
+// As the lid closes the screen stays where it is while the glass folds away from it, and opening the lid unfolds
+// it again. This is the part that decides when: it reads the lid angle, notices a close,
 // asks for one picture of the screen, shows the overlay and feeds it the frost, and takes it all away again.
 //
 // The sensor, the picture, the overlay and the "is an external display attached" question are all handed in, so
@@ -36,8 +36,7 @@ final class LidGlass {
     /// Called on the main thread whenever `status` changes, so Settings can say what is going on.
     var onStatusChange: (() -> Void)?
 
-    /// How long the frost takes to clear after unlock, and when a lid is reopened mid-close.
-    static let openingClear: TimeInterval = 0.5
+    /// How long the fold takes to clear when the lid is reopened or has stopped.
     static let reopenClear: TimeInterval = 0.2
     /// A lid whose angle has stayed within `stillTolerance` degrees for `stillSettle` seconds has stopped; the
     /// frozen picture must not stay over a live screen the owner is working on. The tolerance covers the sensor's
@@ -46,7 +45,7 @@ final class LidGlass {
     static let stillSettle: TimeInterval = 0.4
     /// A fold shallower than this (degrees below where the picture was frozen) is a nudge, not a close: if the lid
     /// rests there the fold is cleared. A deeper one waits for the lid to be opened again, as the iPhone Duo does,
-    /// and opening plays it backwards.
+    /// and opening plays it backwards (the overlay follows the lid up).
     static let slightFold = 12.0
     /// Degrees past the angle the picture was frozen at the lid must rise to before the fold lets go: above it the
     /// fold is flat, so there is nothing to show, and a few degrees of sensor noise must not end a close.
@@ -81,9 +80,6 @@ final class LidGlass {
     /// Bumped whenever the effect is torn down, so a picture that arrives late finds its moment gone.
     private var generation = 0
     private var overlay: LidGlassOverlaying?
-    private var showingOpeningEffect = false
-    /// Set when a close began and not yet undone or followed by an unlock: the next unlock plays the opening.
-    private var closeSeen = false
     private var lastAngle = 180.0
     /// The angle the fold is flat at: ahead of the lid by the travel while the picture appears (`startLatency`).
     private var startAngle = 0.0
@@ -91,13 +87,11 @@ final class LidGlass {
     private var closedAt = 0.0
     /// Estimates how fast the lid is moving, for the lead.
     private var speed = LidAngleTracker()
-    /// The start angle of the last close that was seen, for the opening effect after unlock.
-    private var lastCloseStart: Double?
+    /// Recent readings of an active close, for noticing that the lid has stopped.
     private var recent: [(time: TimeInterval, angle: Double)] = []
 
     private var settingTokens: [AnyObject] = []
     private var systemObservers: [(NotificationCenter, NSObjectProtocol)] = []
-    private var inputMonitor: Any?
 
     init(settings: Settings = .shared,
          sensor: LidAngleSource = LidAngleSensor(),
@@ -118,13 +112,11 @@ final class LidGlass {
         }
         observe(NSWorkspace.shared.notificationCenter, NSWorkspace.willSleepNotification) { $0.systemWillSleep() }
         observe(NotificationCenter.default, NSApplication.didChangeScreenParametersNotification) { $0.displayConfigurationChanged() }
-        observe(DistributedNotificationCenter.default(), Notification.Name("com.apple.screenIsUnlocked")) { $0.screenUnlocked() }
         settingsChanged()
     }
 
     deinit {
         for (center, token) in systemObservers { center.removeObserver(token) }
-        if let inputMonitor { NSEvent.removeMonitor(inputMonitor) }
         sensor.stop()
     }
 
@@ -195,7 +187,6 @@ final class LidGlass {
     private func stopAll() {
         teardown()
         sensor.stop()
-        closeSeen = false
         status = .off
         log("off")
     }
@@ -204,7 +195,6 @@ final class LidGlass {
         guard status == .idle || status == .active else { return }
         teardown()
         sensor.stop()
-        closeSeen = false
         status = .sensorLost
         log("sensor stopped answering")
     }
@@ -266,7 +256,6 @@ final class LidGlass {
             }
             if angle >= closedAt + Self.releaseMargin {
                 detector.reset()
-                closeSeen = false
                 leaveTheEffect(why: "lid back above where the close began")
             } else {
                 watchForStillness(angle: angle, time: time)
@@ -276,7 +265,6 @@ final class LidGlass {
 
     private func closingBegan() {
         guard !externalDisplayPresent() else { return }
-        closeSeen = true
         recent = []
         tracedAngle = nil
         traced = 0
@@ -285,7 +273,6 @@ final class LidGlass {
         let latency = (warm?.ready ?? false) ? Self.warmStartLatency : Self.startLatency
         let lead = min(max(-speed.velocity, 0) * latency, Self.maxStartLead)
         startAngle = lastAngle - lead
-        lastCloseStart = startAngle
         status = .active
         sensor.setRate(hz: LidPollPolicy.activeHz)
         log(String(format: "closing at %.0f (%@)", lastAngle, usable ? "picture warmed" : "taking the picture now"))
@@ -356,7 +343,6 @@ final class LidGlass {
     }
 
     private func reopened() {
-        closeSeen = false
         guard status == .active else { return }
         leaveTheEffect(why: "lid reopened")
     }
@@ -371,7 +357,6 @@ final class LidGlass {
         let window = recent.filter { time - $0.time <= Self.stillSettle + 1e-6 }.map(\.angle)
         guard let low = window.min(), let high = window.max(), high - low <= Self.stillTolerance else { return }
         detector.reset()
-        closeSeen = false
         leaveTheEffect(why: "lid stopped")
     }
 
@@ -404,10 +389,8 @@ final class LidGlass {
         generation += 1
         discardWarm()
         recent = []
-        removeInputMonitor()
         overlay?.hide()
         overlay = nil
-        showingOpeningEffect = false
         detector.reset()
         if status == .active {
             status = .idle
@@ -423,61 +406,6 @@ final class LidGlass {
     func displayConfigurationChanged() {
         if status == .active || overlay != nil { log("screens changed with the fold up") }
         teardown()
-    }
-
-    /// A key, click or scroll cancels the opening effect. A close in progress ignores input.
-    func userInput() {
-        guard showingOpeningEffect else { return }
-        teardown()
-    }
-
-    // ── After unlock ──
-
-    func screenUnlocked() {
-        if settings.lidGlassEnabled { log("unlocked (a close was seen: \(closeSeen))") }
-        guard settings.lidGlassEnabled, status == .idle || status == .active, closeSeen else { return }
-        closeSeen = false
-        teardown()
-        let mine = generation
-        Task { [weak self] in
-            guard let capture = self?.capture else { return }
-            let image = await capture()
-            DispatchQueue.main.async { self?.openingPictureArrived(image, generation: mine) }
-        }
-    }
-
-    private func openingPictureArrived(_ image: CGImage?, generation mine: Int) {
-        guard mine == generation, status == .idle, let image, let overlay = makeOverlay() else {
-            log("opening effect skipped: no picture or no overlay")
-            return
-        }
-        log("opening effect")
-        self.overlay = overlay
-        showingOpeningEffect = true
-        installInputMonitor()
-        let start = lastCloseStart ?? settings.lidGlassTriggerAngle
-        let folded = start - LidFoldLook(startAngle: start).span
-        overlay.show(image: image, startAngle: start, from: folded, to: folded)
-        overlay.animateClear(duration: Self.openingClear) { [weak self, weak overlay] in
-            guard let self, let overlay, self.overlay === overlay else { return }
-            self.removeInputMonitor()
-            overlay.hide()
-            self.overlay = nil
-            self.showingOpeningEffect = false
-        }
-    }
-
-    private func installInputMonitor() {
-        guard inputMonitor == nil else { return }
-        inputMonitor = NSEvent.addGlobalMonitorForEvents(
-            matching: [.keyDown, .leftMouseDown, .rightMouseDown, .otherMouseDown, .scrollWheel]) { [weak self] _ in
-            DispatchQueue.main.async { self?.userInput() }
-        }
-    }
-
-    private func removeInputMonitor() {
-        if let inputMonitor { NSEvent.removeMonitor(inputMonitor) }
-        inputMonitor = nil
     }
 
     // ── The real parts ──
