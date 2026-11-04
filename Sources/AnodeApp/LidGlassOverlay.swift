@@ -1,6 +1,7 @@
 import AppKit
-import MetalKit
+import Metal
 import PowerKit
+import QuartzCore
 
 // ── Lid Glass: the window the fold is drawn in ──────────────────────────────
 
@@ -27,7 +28,7 @@ protocol LidGlassOverlaying: AnyObject {
 final class LidGlassOverlay: LidGlassOverlaying {
 
     let window: NSWindow
-    private let view: MTKView
+    private let view: MetalLayerView
     private let renderer: LidGlassRenderer?
     private var link: CADisplayLink?
     private var look = LidFoldLook(startAngle: 90)
@@ -82,19 +83,19 @@ final class LidGlassOverlay: LidGlassOverlaying {
         window.animationBehavior = .none
         window.sharingType = .none
         window.collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle, .fullScreenAuxiliary]
-        view = MTKView(frame: CGRect(origin: .zero, size: screen.frame.size), device: renderer?.metalDevice)
-        view.colorPixelFormat = .bgra8Unorm_srgb
-        view.framebufferOnly = true
-        view.isPaused = true
-        view.enableSetNeedsDisplay = false
-        view.autoResizeDrawable = true
-        if let layer = view.layer as? CAMetalLayer {
-            layer.colorspace = CGColorSpace(name: LidGlassRenderer.colourSpaceName)
-            // The shader writes alpha 1 everywhere, so blending gives the same picture as an opaque layer.
-            layer.isOpaque = false
-            // The display link paces frames; waiting on the drawable would block the main thread.
-            layer.displaySyncEnabled = false
-        }
+        view = MetalLayerView(frame: CGRect(origin: .zero, size: screen.frame.size))
+        let layer = view.metalLayer
+        layer.device = renderer?.metalDevice
+        layer.pixelFormat = .bgra8Unorm_srgb
+        layer.framebufferOnly = true
+        layer.colorspace = CGColorSpace(name: LidGlassRenderer.colourSpaceName)
+        // The shader writes alpha 1 everywhere, so blending gives the same picture as an opaque layer.
+        layer.isOpaque = false
+        // The display link paces frames; waiting on the drawable would block the main thread.
+        layer.displaySyncEnabled = false
+        layer.contentsScale = screen.backingScaleFactor
+        layer.drawableSize = CGSize(width: screen.frame.width * screen.backingScaleFactor,
+                                    height: screen.frame.height * screen.backingScaleFactor)
         window.contentView = view
     }
 
@@ -131,6 +132,8 @@ final class LidGlassOverlay: LidGlassOverlaying {
             return
         }
         renderer.adopt(picture)
+        lastDrawnAngle = nil
+        view.matchDrawable(to: window.screen?.backingScaleFactor ?? 2)
         if showsWindow {
             window.setFrame(window.screen?.frame ?? window.frame, display: false)
             window.orderFrontRegardless()
@@ -213,11 +216,19 @@ final class LidGlassOverlay: LidGlassOverlaying {
         drawFrame()
     }
 
+    /// The angle the last frame was drawn at. A frame that would draw the same picture again is not drawn: a lid held
+    /// still costs no GPU.
+    private var lastDrawnAngle: Double?
+
     private func drawFrame() {
         guard let renderer else { return }
+        if clear == nil, let last = lastDrawnAngle, abs(last - spring.value) < 0.01 { return }
         // Never wait for a drawable: when the GPU is behind, skip this tick and draw the next one.
         guard renderer.framesInFlight < 2 else { stats.skipped += 1; return }
-        guard let drawable = view.currentDrawable else { stats.noDrawable += 1; return }
+        // A fresh drawable from the layer every frame. (MTKView's `currentDrawable` is only replaced when the view
+        // runs its own draw cycle, so drawing through it re-presented the first frame: measured on screen, 7 visible
+        // changes in a 1.6 s sweep while the GPU drew every frame.)
+        guard let drawable = view.metalLayer.nextDrawable() else { stats.noDrawable += 1; return }
         // The shader maps by pixel position, so a drawable that is not exactly the screen's size would draw the picture
         // mis-scaled. Say so rather than flash it silently.
         let scale = window.screen?.backingScaleFactor ?? 2
@@ -227,6 +238,7 @@ final class LidGlassOverlay: LidGlassOverlaying {
         }
         let frame = LidFoldFrame.make(look: look, screen: window.frame.size, angle: spring.value)
         stats.drawn += 1
+        lastDrawnAngle = spring.value
         onFrame?(spring.value, CACurrentMediaTime())
         renderer.draw(frame, into: drawable) { [weak self] seconds in
             guard let self else { return }
@@ -251,5 +263,35 @@ final class LidGlassOverlay: LidGlassOverlaying {
                    stats.skipped, stats.noDrawable, stats.worstStep * 1000, gpu * 1000))
         stats = Stats()
         lastSummary = now
+    }
+}
+
+/// A plain view whose backing layer is a `CAMetalLayer` the overlay draws into directly.
+final class MetalLayerView: NSView {
+    let metalLayer = CAMetalLayer()
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        wantsLayer = true
+    }
+
+    required init?(coder: NSCoder) { nil }
+
+    override func makeBackingLayer() -> CALayer { metalLayer }
+
+    /// Keep the drawable exactly the screen's size in pixels; the shader maps by pixel position.
+    func matchDrawable(to scale: CGFloat) {
+        metalLayer.contentsScale = scale
+        metalLayer.drawableSize = CGSize(width: bounds.width * scale, height: bounds.height * scale)
+    }
+
+    override func viewDidChangeBackingProperties() {
+        super.viewDidChangeBackingProperties()
+        matchDrawable(to: window?.backingScaleFactor ?? metalLayer.contentsScale)
+    }
+
+    override func setFrameSize(_ newSize: NSSize) {
+        super.setFrameSize(newSize)
+        matchDrawable(to: window?.backingScaleFactor ?? metalLayer.contentsScale)
     }
 }

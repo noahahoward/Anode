@@ -269,7 +269,9 @@ final class LidGlassRenderer {
             screenAndOrigin: SIMD4(Float(screen.width), Float(screen.height), Float(-Self.padding), Float(-Self.padding)),
             paddedAndBlur: SIMD4(Float(padded.width), Float(padded.height), Float(frame.maxBlurRadius * Double(scale)), Float(frame.blurStrength)),
             shape: SIMD4(Float(frame.blurFloor), Float(frame.maxDim), Float(scale), picture.maxLevel),
-            light: SIMD4(0, Float(frame.dimStrength), 1, Float(frame.dimReach)),
+            // No grain. It was added in linear light, where a step near black becomes a large step on screen:
+            // measured 7.8 levels of pixel-to-pixel speckle in the dark of a deep fold over a flat grey picture.
+            light: SIMD4(0, Float(frame.dimStrength), 0, Float(frame.dimReach)),
             more: SIMD4(Float(frame.dimHingeFloor), 1, Float(frame.topEdge), 0))
         let pass = MTLRenderPassDescriptor()
         pass.colorAttachments[0].texture = target
