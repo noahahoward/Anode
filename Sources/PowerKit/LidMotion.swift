@@ -10,7 +10,8 @@ import Foundation
 /// whose lid already rests at 105°. A lid that merely sits below the trigger, or drifts, never fires.
 public struct LidCloseDetector {
 
-    public enum Event: Equatable { case none, closing, reopened }
+    /// `armed`: a steady descent has begun but is not yet a confirmed close; the moment to warm the picture.
+    public enum Event: Equatable { case none, armed, closing, reopened }
 
     /// Degrees a second a downward run must be at least as fast as.
     public static let minSpeed = 15.0
@@ -25,6 +26,23 @@ public struct LidCloseDetector {
     /// rest the first change would otherwise look like a crawl.
     public static let sensorPeriod = 0.12
 
+    /// A close slow enough to watch is a steady descent, not a fast step: this much net travel...
+    public static let slowMinDrop = 4.0
+    /// ...over at least this long (so a flick that stops is not one)...
+    public static let slowMinTime = 0.25
+    /// ...at no less than this average speed (degrees a second)...
+    public static let slowMinSpeed = 5.0
+    /// ...looking back no further than this, and never climbing by more than this between readings (so a wander
+    /// or a hand that is settling is not one).
+    public static let slowWindow = 0.8
+    public static let slowBacktrack = 1.0
+    /// A descent shows itself this early: this much net travel, for this long, at this average speed, and no further
+    /// than this many degrees above the trigger.
+    public static let armMinDrop = 2.0
+    public static let armMinTime = 0.15
+    public static let armMinSpeed = 5.0
+    public static let armZone = 25.0
+
     public var trigger: Double
     public private(set) var isActive = false
     /// The angle the frost was measured from in the first version; the trigger, or where the run began if lower.
@@ -34,11 +52,47 @@ public struct LidCloseDetector {
     /// The last reading that differed from the one before it.
     private var lastChange: (angle: Double, time: TimeInterval)?
     private var runStart: Double?
+    /// Recent readings that changed, newest last, for the slow path.
+    private var history: [(angle: Double, time: TimeInterval)] = []
+    private var armedSent = false
 
     public init(trigger: Double) { self.trigger = trigger }
 
     public mutating func reset() {
-        isActive = false; armedFrom = nil; previous = nil; lastChange = nil; runStart = nil
+        isActive = false; armedFrom = nil; previous = nil; lastChange = nil; runStart = nil; history = []; armedSent = false
+    }
+
+    /// A steady descent over the last moments: enough net travel, for long enough, fast enough on average, without
+    /// climbing back along the way.
+    private mutating func slowClose(angle: Double, time: TimeInterval, restedAt: (angle: Double, time: TimeInterval)) -> Event {
+        // A lid that has rested began this descent within the last sensor period: seed the window with where it was.
+        if history.isEmpty { history = [(restedAt.angle, max(restedAt.time, time - Self.sensorPeriod))] }
+        history.append((angle, time))
+        history.removeAll { time - $0.time > Self.slowWindow }
+        guard let oldest = history.first else { return .none }
+        let drop = oldest.angle - angle, elapsed = max(time - oldest.time, 1e-6)
+        var steady = true
+        var low = oldest.angle
+        for reading in history.dropFirst() {
+            if reading.angle > low + Self.slowBacktrack { steady = false; break }
+            low = min(low, reading.angle)
+        }
+        guard steady else { armedSent = false; return .none }
+
+        if angle <= trigger, drop >= Self.slowMinDrop, elapsed >= Self.slowMinTime, drop / elapsed >= Self.slowMinSpeed {
+            isActive = true
+            armedFrom = min(trigger, oldest.angle)
+            armedSent = false
+            return .closing
+        }
+        let descending = angle <= trigger + Self.armZone && drop >= Self.armMinDrop
+            && elapsed >= Self.armMinTime && drop / elapsed >= Self.armMinSpeed
+        if descending, !armedSent {
+            armedSent = true
+            return .armed
+        }
+        if !descending { armedSent = false }
+        return .none
     }
 
     public mutating func feed(angle: Double, time: TimeInterval) -> Event {
@@ -79,7 +133,7 @@ public struct LidCloseDetector {
             armedFrom = min(trigger, start)
             return .closing
         }
-        return .none
+        return slowClose(angle: angle, time: time, restedAt: changed)
     }
 }
 

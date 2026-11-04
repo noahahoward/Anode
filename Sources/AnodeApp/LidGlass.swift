@@ -65,6 +65,10 @@ final class LidGlass {
     static let startLatency: TimeInterval = 0.1
     /// The most the fold is placed ahead of the lid, in degrees: a flick must not put its start far below it.
     static let maxStartLead = 15.0
+    /// With the picture already prepared, only a frame is left between the close being confirmed and the fold showing.
+    static let warmStartLatency: TimeInterval = 0.03
+    /// A picture warmed for a close that never came is thrown away after this long.
+    static let warmLife: TimeInterval = 1.5
 
     private let settings: Settings
     private let sensor: LidAngleSource
@@ -208,6 +212,18 @@ final class LidGlass {
     // ── Angles ──
 
     private var lastLagLog = 0.0
+
+    /// A picture taken and prepared when a descent was first seen, before it was confirmed as a close. It is shown
+    /// at once if the close is confirmed, and thrown away if not. Nothing runs for a lid that is not descending.
+    private struct Warm {
+        var armedAt: TimeInterval
+        var overlay: LidGlassOverlaying?
+        var ready = false
+        var failed = false
+        /// The close was confirmed while the picture was still on its way.
+        var wantsPresent = false
+    }
+    private var warm: Warm?
     /// While a close is active, each change in the sensor's reading is logged (capped), so the real cadence of the
     /// readings can be read back from the log.
     private var tracedAngle: Double?
@@ -229,10 +245,16 @@ final class LidGlass {
         guard status == .idle || status == .active else { return }
         lastAngle = angle
         speed.ingest(angle, at: time)
+        if let w = warm, status == .idle, time - w.armedAt > Self.warmLife {
+            log("warmed picture not used")
+            discardWarm()
+        }
         if status == .idle { adjustRestingRate() }
         switch detector.feed(angle: angle, time: time) {
         case .closing:
             closingBegan()
+        case .armed:
+            warmUp(at: time)
         case .reopened:
             reopened()
         case .none:
@@ -259,18 +281,67 @@ final class LidGlass {
         tracedAngle = nil
         traced = 0
         closedAt = lastAngle
-        let lead = min(max(-speed.velocity, 0) * Self.startLatency, Self.maxStartLead)
+        let usable = warm.map { !$0.failed } ?? false
+        let latency = (warm?.ready ?? false) ? Self.warmStartLatency : Self.startLatency
+        let lead = min(max(-speed.velocity, 0) * latency, Self.maxStartLead)
         startAngle = lastAngle - lead
         lastCloseStart = startAngle
         status = .active
         sensor.setRate(hz: LidPollPolicy.activeHz)
-        log(String(format: "closing at %.0f", lastAngle))
+        log(String(format: "closing at %.0f (%@)", lastAngle, usable ? "picture warmed" : "taking the picture now"))
+        if usable {
+            if warm?.ready == true { presentWarm() } else { warm?.wantsPresent = true }
+            return
+        }
         let mine = generation
         Task { [weak self] in
             guard let capture = self?.capture else { return }
             let image = await capture()
             DispatchQueue.main.async { self?.pictureArrived(image, generation: mine) }
         }
+    }
+
+    // ── Warming ──
+
+    private func warmUp(at time: TimeInterval) {
+        guard status == .idle, warm == nil, !externalDisplayPresent() else { return }
+        warm = Warm(armedAt: time)
+        let mine = generation
+        log("descent seen: warming the picture")
+        Task { [weak self] in
+            guard let capture = self?.capture else { return }
+            let image = await capture()
+            DispatchQueue.main.async { self?.warmPictureArrived(image, generation: mine) }
+        }
+    }
+
+    private func warmPictureArrived(_ image: CGImage?, generation mine: Int) {
+        guard mine == generation, warm != nil else { return }
+        guard let image, let overlay = makeOverlay() else {
+            warm?.failed = true
+            if warm?.wantsPresent == true {
+                log("no picture; no effect")
+                warm = nil
+                backToIdle()
+            }
+            return
+        }
+        overlay.prepare(image: image)
+        warm?.overlay = overlay
+        warm?.ready = true
+        if warm?.wantsPresent == true { presentWarm() }
+    }
+
+    private func presentWarm() {
+        guard let overlay = warm?.overlay else { return }
+        warm = nil
+        self.overlay = overlay
+        overlay.present(startAngle: startAngle, from: startAngle, to: lastAngle)
+    }
+
+    private func discardWarm() {
+        warm?.overlay?.hide()
+        warm = nil
     }
 
     private func pictureArrived(_ image: CGImage?, generation mine: Int) {
@@ -331,6 +402,7 @@ final class LidGlass {
     /// Remove whatever is on screen, forget any picture still on its way, and go back to the idle rate.
     private func teardown() {
         generation += 1
+        discardWarm()
         recent = []
         removeInputMonitor()
         overlay?.hide()

@@ -41,7 +41,9 @@ public struct LidFoldLook: Equatable {
     /// Dimming at the hinge as a share of the far edge, so the whole picture sinks a little as it folds.
     public var dimHingeFloor = 0.18
     /// Eye distance from the screen's middle, in screen heights. Closer means stronger perspective.
-    public var eyeDistance = 2.4
+    /// (Mac Duo's default is 2.4, which narrows the far edge to 66% of the width at 45 degrees of fold; this is 3.5,
+    /// 75%. 5 would be 82%, a stronger "stays in place" and less of the trapezoid.)
+    public var eyeDistance = 3.5
     /// Eye height above the screen's middle, in screen heights.
     public var eyeHeight = 0.0
     /// How much the picture stays fixed in the room: 1 is physically right.

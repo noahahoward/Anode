@@ -93,6 +93,55 @@ final class LidMotionTests: XCTestCase {
         }
     }
 
+    /// A close slow enough to watch the animation: a degree or two per sensor update, never a fast step.
+    func testASlowCloseIsSeenAtAnyPollRate() {
+        for (rate, hz) in [(10.0, 10.0), (10.0, 30), (10.0, 120), (6.0, 30), (8.0, 8)] {
+            var d = LidCloseDetector(trigger: 110)
+            let events = feed(&d, polled(hz: hz, from: 104, degreesPerSecond: rate, for: 2.0))
+            XCTAssertTrue(events.contains(.closing), "\(rate)°/s polled at \(hz) Hz")
+        }
+    }
+
+    /// A slow close shows signs of itself well before it is confirmed; that is when the picture is warmed.
+    func testASlowCloseIsAnnouncedBeforeItIsConfirmed() {
+        var d = LidCloseDetector(trigger: 110)
+        let events = feed(&d, polled(hz: 10, from: 104, degreesPerSecond: 8, for: 2.0))
+        let armed = events.firstIndex(of: .armed), closing = events.firstIndex(of: .closing)
+        XCTAssertNotNil(armed); XCTAssertNotNil(closing)
+        XCTAssertLessThan(armed ?? 99, closing ?? 0)
+    }
+
+    func testNothingIsAnnouncedAboveTheClosingZone() {
+        var d = LidCloseDetector(trigger: 110)
+        let events = feed(&d, polled(hz: 10, from: 160, degreesPerSecond: 8, for: 4.0).filter { $0.0 > 136 })
+        XCTAssertFalse(events.contains(.armed), "a lid still 26 degrees above the trigger is not about to close")
+    }
+
+    func testAStillLidAndAJitteringOneAreNeverAnnounced() {
+        var d = LidCloseDetector(trigger: 110)
+        var events: [LidCloseDetector.Event] = []
+        for i in 0..<400 { events.append(d.feed(angle: 100 + (i % 2 == 0 ? 1 : -1), time: Double(i) / 8)) }
+        XCTAssertTrue(events.allSatisfy { $0 == .none })
+    }
+
+    func testAMarginalCrawlIsNotAClose() {
+        for rate in [0.0, 1.0, 2.0, 3.0] {
+            var d = LidCloseDetector(trigger: 110)
+            let events = feed(&d, polled(hz: 30, from: 104, degreesPerSecond: rate, for: 4.0))
+            XCTAssertTrue(events.allSatisfy { $0 == .none }, "\(rate)°/s")
+        }
+    }
+
+    func testAWanderingLidWithNoNetDescentIsNotAClose() {
+        var d = LidCloseDetector(trigger: 110)
+        var events: [LidCloseDetector.Event] = []
+        for i in 0..<200 {
+            let angle = 100 + (i % 20 < 10 ? Double(i % 10) / 3 : Double(10 - i % 10) / 3).rounded()
+            events.append(d.feed(angle: angle, time: Double(i) * 0.1))
+        }
+        XCTAssertTrue(events.allSatisfy { $0 == .none })
+    }
+
     func testAQuickSmallNudgeDoesNotClose() {
         var d = LidCloseDetector(trigger: 110)
         let e = feed(&d, [(105, 0), (103, 0.1), (103, 0.5)])

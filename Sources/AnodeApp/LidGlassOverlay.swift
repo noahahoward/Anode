@@ -8,16 +8,27 @@ import QuartzCore
 /// What the controller needs from the overlay, so it can be tested without a window.
 protocol LidGlassOverlaying: AnyObject {
     var windowID: CGWindowID { get }
-    /// Cover the screen with `image`, which was taken with the lid at `startAngle`: the fold is flat at that
-    /// angle and recedes as the lid closes past it. The picture is drawn as if the lid were at `from`, and the
-    /// overlay follows `to` from there: a close starts at `startAngle` (flat) and chases the lid, an opening
-    /// starts fully folded and is cleared with `animateClear`.
-    func show(image: CGImage, startAngle: Double, from: Double, to: Double)
+    /// Start preparing `image` (drawn onto its margin and mipmapped, off the main thread). Nothing is shown.
+    func prepare(image: CGImage)
+    /// Put the prepared picture on screen, now if it is ready and as soon as it is if not. The picture was taken
+    /// with the lid at `startAngle`: the fold is flat at that angle and recedes as the lid closes past it. It is
+    /// drawn as if the lid were at `from`, and follows `to` from there: a close starts at `startAngle` (flat) and
+    /// chases the lid, an opening starts fully folded and is cleared with `animateClear`.
+    func present(startAngle: Double, from: Double, to: Double)
     /// Follow the lid to this angle; the overlay smooths the sensor's steps.
     func setAngle(_ angle: Double)
     /// Unfold back to flat over `duration` seconds, then call `completion`.
     func animateClear(duration: TimeInterval, completion: @escaping () -> Void)
+    /// Take the overlay off the screen and drop the picture, prepared or not.
     func hide()
+}
+
+extension LidGlassOverlaying {
+    /// Prepare and present in one go.
+    func show(image: CGImage, startAngle: Double, from: Double, to: Double) {
+        prepare(image: image)
+        present(startAngle: startAngle, from: from, to: to)
+    }
 }
 
 /// A borderless window over the whole built-in screen, above everything, that does not take clicks.
@@ -40,8 +51,11 @@ final class LidGlassOverlay: LidGlassOverlaying {
     private var clear: (from: Double, start: CFTimeInterval, duration: TimeInterval, done: () -> Void)?
     /// Bumped by every `show` and `hide`, so a picture that finishes preparing after the overlay was dismissed
     /// finds its moment gone.
-    private var showToken = 0
+    private var prepareToken = 0
     private var isPreparing = false
+    private var pictureIsReady = false
+    /// A present was asked for; it happens when the picture is ready.
+    private var wantsPresent = false
     private var pendingClear: (duration: TimeInterval, done: () -> Void)?
     /// False in tests: everything else runs, but the window is never put on the screen.
     var showsWindow = true
@@ -102,19 +116,13 @@ final class LidGlassOverlay: LidGlassOverlaying {
     var windowID: CGWindowID { CGWindowID(window.windowNumber) }
     var isDisplayLinkRunning: Bool { link != nil }
 
-    /// The picture is prepared (drawn onto its margin, mipmapped) off the main thread, which takes about 50 ms at
-    /// full size; the window appears when it is ready, drawing the lid's latest angle from the flat start.
-    func show(image: CGImage, startAngle: Double, from: Double, to: Double) {
+    /// The picture is prepared off the main thread, which takes about 50 ms at full size.
+    func prepare(image: CGImage) {
         guard let renderer else { return }
-        showToken += 1
-        let mine = showToken
-        look = LidFoldLook(startAngle: startAngle)
-        spring.reset(to: from)
-        tracker.reset(to: to, at: CACurrentMediaTime())
-        target = to
-        clear = nil
-        pendingClear = nil
+        prepareToken += 1
+        let mine = prepareToken
         isPreparing = true
+        pictureIsReady = false
         let scale = window.screen?.backingScaleFactor ?? 2
         DispatchQueue.global(qos: .userInteractive).async { [weak self] in
             let picture = renderer.makePicture(from: image, scale: scale)
@@ -122,16 +130,35 @@ final class LidGlassOverlay: LidGlassOverlaying {
         }
     }
 
+    func present(startAngle: Double, from: Double, to: Double) {
+        look = LidFoldLook(startAngle: startAngle)
+        spring.reset(to: from)
+        tracker.reset(to: to, at: CACurrentMediaTime())
+        target = to
+        clear = nil
+        pendingClear = nil
+        wantsPresent = true
+        if pictureIsReady { display() }
+    }
+
     private func pictureReady(_ picture: LidGlassRenderer.Picture?, token: Int) {
-        guard token == showToken else { return }
+        guard token == prepareToken else { return }
         isPreparing = false
         guard let renderer, let picture else {
             let waiting = pendingClear
             pendingClear = nil
+            wantsPresent = false
             waiting?.done()
             return
         }
         renderer.adopt(picture)
+        pictureIsReady = true
+        if wantsPresent { display() }
+    }
+
+    /// The window goes up with the first frame drawn.
+    private func display() {
+        guard link == nil else { return }
         lastDrawnAngle = nil
         view.matchDrawable(to: window.screen?.backingScaleFactor ?? 2)
         if showsWindow {
@@ -153,7 +180,7 @@ final class LidGlassOverlay: LidGlassOverlaying {
     }
 
     func animateClear(duration: TimeInterval, completion: @escaping () -> Void) {
-        if isPreparing {
+        if wantsPresent, link == nil {
             pendingClear = (duration, completion)
         } else if link != nil {
             beginClear(duration: duration, done: completion)
@@ -167,8 +194,10 @@ final class LidGlassOverlay: LidGlassOverlaying {
     }
 
     func hide() {
-        showToken += 1
+        prepareToken += 1
         isPreparing = false
+        pictureIsReady = false
+        wantsPresent = false
         pendingClear = nil
         stopLink()
         clear = nil

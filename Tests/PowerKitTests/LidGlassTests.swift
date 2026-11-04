@@ -28,7 +28,9 @@ final class LidGlassTests: XCTestCase {
         var shows: [(start: Double, from: Double, to: Double)] = []
         var angles: [Double] = [], clearDurations: [TimeInterval] = []
         var finishClearAtOnce = true
-        func show(image: CGImage, startAngle: Double, from: Double, to: Double) {
+        var prepares = 0
+        func prepare(image: CGImage) { prepares += 1 }
+        func present(startAngle: Double, from: Double, to: Double) {
             calls.append("show"); shows.append((startAngle, from, to))
         }
         func setAngle(_ angle: Double) { angles.append(angle) }
@@ -210,10 +212,72 @@ final class LidGlassTests: XCTestCase {
         settings.lidGlassTriggerAngle = 90
         g.handle(angle: 125, time: 0); g.handle(angle: 100, time: 0.25)
         settle()
-        XCTAssertEqual(captures, 0, "100° is above a 90° trigger")
+        XCTAssertTrue(overlays.allSatisfy { !$0.calls.contains("show") }, "100° is above a 90° trigger: nothing shown")
         g.handle(angle: 80, time: 0.4)
         waitUntil(!overlays.isEmpty)
         XCTAssertEqual(g.status, .active)
+    }
+
+    // ── Warming the picture ──
+
+    /// A slow close: 6° a second, one degree per sensor update, from a lid resting at 104°.
+    private func slowClose(_ g: LidGlass, upTo seconds: Double, from start: Double = 104, rate: Double = 6) {
+        var t = 0.0
+        while t <= seconds {
+            let held = (t * 10).rounded(.down) / 10
+            g.handle(angle: (start - rate * held).rounded(), time: t)
+            t += 0.1
+        }
+    }
+
+    func testASlowCloseWarmsThePictureBeforeItIsConfirmedAndThenShowsAtOnce() {
+        let g = makeGlass()
+        slowClose(g, upTo: 0.5)
+        waitUntil(overlays.first?.prepares == 1)
+        XCTAssertEqual(captures, 1, "one screenshot, taken when the descent was first seen")
+        XCTAssertEqual(overlays.first?.prepares, 1)
+        XCTAssertEqual(overlays.first?.calls, [], "warming shows nothing")
+        XCTAssertEqual(g.status, .idle)
+        slowClose(g, upTo: 1.5)
+        XCTAssertEqual(overlays.first?.calls, ["show"])
+        XCTAssertEqual(captures, 1, "the warmed picture was used, not a second screenshot")
+        XCTAssertEqual(overlays.count, 1)
+    }
+
+    func testAWarmedPictureThatIsNeverUsedIsThrownAway() {
+        let g = makeGlass()
+        slowClose(g, upTo: 0.5)
+        waitUntil(overlays.first?.prepares == 1)
+        for i in 0..<30 { g.handle(angle: 101, time: 0.6 + Double(i) * 0.1) }     // the lid stops where it is; three seconds pass
+        XCTAssertEqual(overlays.first?.calls, ["hide"])
+        XCTAssertEqual(g.status, .idle)
+    }
+
+    func testNothingIsWarmedForALidThatIsNotClosing() {
+        let g = makeGlass()
+        for i in 0..<400 { g.handle(angle: 100 + (i % 2 == 0 ? 1 : -1), time: Double(i) / 8) }
+        for i in 0..<100 { g.handle(angle: 101, time: 60 + Double(i) * 0.1) }
+        settle()
+        XCTAssertEqual(captures, 0)
+        XCTAssertTrue(overlays.isEmpty)
+    }
+
+    func testAnExternalDisplayBlocksWarmingToo() {
+        external = true
+        let g = makeGlass()
+        slowClose(g, upTo: 1.5)
+        settle()
+        XCTAssertEqual(captures, 0)
+        XCTAssertTrue(overlays.isEmpty)
+    }
+
+    func testTurningOffWhileWarmThrowsThePictureAway() {
+        let g = makeGlass()
+        slowClose(g, upTo: 0.5)
+        waitUntil(overlays.first?.prepares == 1)
+        settings.lidGlassEnabled = false
+        XCTAssertEqual(overlays.first?.calls, ["hide"])
+        _ = g
     }
 
     // ── Where the fold starts ──

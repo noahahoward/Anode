@@ -32,6 +32,18 @@ final class LidFoldTests: XCTestCase {
         XCTAssertNotEqual(c[2].y, h, accuracy: 1, "the far edge has moved on the glass")
     }
 
+    /// The far edge narrows as the picture recedes, but not so much that the content looks like it has shrunk away.
+    func testTheFarEdgeKeepsMostOfItsWidthThroughAGenerousFold() {
+        let look = LidFoldLook(startAngle: 90)
+        func topWidth(_ angle: Double) -> Double {
+            let c = LidFoldGeometry.corners(screenWidth: w, screenHeight: h, startAngle: 90, angle: angle, look: look)
+            return (c[2].x - c[3].x) / w
+        }
+        XCTAssertGreaterThan(topWidth(60), 0.82)
+        XCTAssertGreaterThan(topWidth(45), 0.72)
+        XCTAssertGreaterThan(topWidth(30), 0.55)
+    }
+
     func testTheHomographyMapsTheRectangleOntoTheCorners() {
         let c = corners(angle: 55)
         let m = LidHomography.matrix(width: w, height: h, to: c)
