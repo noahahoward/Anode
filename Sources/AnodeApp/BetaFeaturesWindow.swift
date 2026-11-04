@@ -1025,7 +1025,9 @@ final class LidGlassFeature: BetaFeature {
         let hz = Int(settings.lidGlassIdleHz.rounded()), angle = Int(settings.lidGlassTriggerAngle.rounded())
         idleRateSlider.doubleValue = settings.lidGlassIdleHz
         triggerSlider.doubleValue = settings.lidGlassTriggerAngle
-        idleRateLabel.stringValue = "Lid check rate while open: \(hz) Hz"
+        idleRateLabel.stringValue = hz < 10
+            ? "Lid check rate when wide open: \(hz) Hz (10 Hz near closing)"
+            : "Lid check rate while open: \(hz) Hz"
         triggerLabel.stringValue = "Starts frosting at: \(angle)°"
         idleRateSlider.isHidden = !on; idleRateLabel.isHidden = !on
         triggerSlider.isHidden = !on; triggerLabel.isHidden = !on
@@ -1048,8 +1050,8 @@ final class LidGlassFeature: BetaFeature {
                 + "Allow Anode under Privacy & Security → Screen Recording, then reopen Anode."
             accessStatus.textColor = .systemOrange
         } else {
-            accessStatus.stringValue = "Screen Recording: allowed. The lid is read \(hz) times a second while it is open, "
-                + "faster while it closes; nothing is recorded or kept."
+            accessStatus.stringValue = "Screen Recording: allowed. The lid is read \(hz) times a second while it is open (never slower than "
+                + "10 near closing, which is how often the sensor itself updates), faster while it closes; nothing is recorded or kept."
             accessStatus.textColor = .secondaryLabelColor
         }
         layoutChanged?()

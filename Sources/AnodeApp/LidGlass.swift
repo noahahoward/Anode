@@ -53,6 +53,18 @@ final class LidGlass {
     static let releaseMargin = 3.0
     /// Below this the lid is shut, or as near as makes no difference; it sits there until the Mac sleeps.
     static let shutAngle = 5.0
+    /// The sensor's own update rate. Reading more slowly than this while a close could begin makes the effect start
+    /// late: at 4 Hz the lid is noticed up to a quarter of a second after it started to move.
+    static let nativeSensorHz = 10.0
+    /// How far above the trigger angle a close can still be about to begin. Higher than this the slider's rate applies.
+    static let closingZone = 30.0
+    /// How long the picture takes to appear after a close is confirmed: the screenshot (about 45 ms) and preparing it
+    /// (about 40 ms), and a frame. The fold is placed ahead of the lid by the travel in that time, so the picture
+    /// appears flat just as the lid reaches its start and the fold begins in step with it, instead of appearing
+    /// flat behind a lid that has already moved on and catching up.
+    static let startLatency: TimeInterval = 0.1
+    /// The most the fold is placed ahead of the lid, in degrees: a flick must not put its start far below it.
+    static let maxStartLead = 15.0
 
     private let settings: Settings
     private let sensor: LidAngleSource
@@ -69,8 +81,12 @@ final class LidGlass {
     /// Set when a close began and not yet undone or followed by an unlock: the next unlock plays the opening.
     private var closeSeen = false
     private var lastAngle = 180.0
-    /// The lid angle when the picture of this close was taken: the fold is flat there.
+    /// The angle the fold is flat at: ahead of the lid by the travel while the picture appears (`startLatency`).
     private var startAngle = 0.0
+    /// The lid angle when the close was confirmed. The fold lets go once the lid is back above this.
+    private var closedAt = 0.0
+    /// Estimates how fast the lid is moving, for the lead.
+    private var speed = LidAngleTracker()
     /// The start angle of the last close that was seen, for the opening effect after unlock.
     private var lastCloseStart: Double?
     private var recent: [(time: TimeInterval, angle: Double)] = []
@@ -126,7 +142,7 @@ final class LidGlass {
         if settings.lidGlassEnabled {
             switch status {
             case .off: start()
-            case .idle: sensor.setRate(hz: idleHz)
+            case .idle: setRestingRate()
             case .active, .unsupported, .sensorLost: break
             }
         } else if status != .off {
@@ -136,6 +152,26 @@ final class LidGlass {
 
     private var idleHz: Double { LidPollPolicy.idleHz(settings.lidGlassIdleHz) }
 
+    /// The rate the sensor is read at while nothing is happening: the slider's, but no slower than the sensor itself
+    /// while the lid is low enough for a close to begin.
+    private var restingHz: Double {
+        lastAngle <= settings.lidGlassTriggerAngle + Self.closingZone ? max(idleHz, Self.nativeSensorHz) : idleHz
+    }
+    private var restingRate: Double?
+
+    /// Put the sensor on the resting rate (always).
+    private func setRestingRate() {
+        let wanted = restingHz
+        restingRate = wanted
+        sensor.setRate(hz: wanted)
+    }
+
+    /// Follow the lid between the slider's rate and the sensor's own, touching the sensor only when it changes.
+    private func adjustRestingRate() {
+        guard restingRate != restingHz else { return }
+        setRestingRate()
+    }
+
     private func start() {
         guard #available(macOS 14.0, *), sensor.isAvailable else {
             status = .unsupported
@@ -143,6 +179,7 @@ final class LidGlass {
             return
         }
         status = .idle
+        restingRate = idleHz
         sensor.start(hz: idleHz,
                      onSample: { [weak self] degrees, time in
                          DispatchQueue.main.async { self?.noteLag(sampleTime: time); self?.handle(angle: degrees, time: time) }
@@ -191,6 +228,8 @@ final class LidGlass {
     func handle(angle: Double, time: TimeInterval) {
         guard status == .idle || status == .active else { return }
         lastAngle = angle
+        speed.ingest(angle, at: time)
+        if status == .idle { adjustRestingRate() }
         switch detector.feed(angle: angle, time: time) {
         case .closing:
             closingBegan()
@@ -203,10 +242,10 @@ final class LidGlass {
                 tracedAngle = angle; traced += 1
                 log(String(format: "angle %.0f at %.3f", angle, time))
             }
-            if angle >= startAngle + Self.releaseMargin {
+            if angle >= closedAt + Self.releaseMargin {
                 detector.reset()
                 closeSeen = false
-                leaveTheEffect(why: "lid back above where it was frozen")
+                leaveTheEffect(why: "lid back above where the close began")
             } else {
                 watchForStillness(angle: angle, time: time)
             }
@@ -219,7 +258,9 @@ final class LidGlass {
         recent = []
         tracedAngle = nil
         traced = 0
-        startAngle = lastAngle
+        closedAt = lastAngle
+        let lead = min(max(-speed.velocity, 0) * Self.startLatency, Self.maxStartLead)
+        startAngle = lastAngle - lead
         lastCloseStart = startAngle
         status = .active
         sensor.setRate(hz: LidPollPolicy.activeHz)
@@ -270,7 +311,7 @@ final class LidGlass {
         let leaving = overlay
         overlay = nil
         status = .idle
-        sensor.setRate(hz: idleHz)
+        setRestingRate()
         log(why)
         if let leaving {
             leaving.animateClear(duration: Self.reopenClear) { leaving.hide() }
@@ -282,7 +323,7 @@ final class LidGlass {
         recent = []
         detector.reset()
         status = .idle
-        sensor.setRate(hz: idleHz)
+        setRestingRate()
     }
 
     // ── Things that end an effect ──
@@ -298,7 +339,7 @@ final class LidGlass {
         detector.reset()
         if status == .active {
             status = .idle
-            sensor.setRate(hz: idleHz)
+            setRestingRate()
         }
     }
 

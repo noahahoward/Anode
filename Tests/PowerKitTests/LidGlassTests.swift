@@ -114,6 +114,36 @@ final class LidGlassTests: XCTestCase {
         _ = g
     }
 
+    // ── Polling rate ──
+
+    /// The sensor only changes about ten times a second, so reading it more slowly than that near a close means
+    /// the effect starts late (at 4 Hz, up to a quarter of a second after the lid began to move).
+    func testWhileTheLidIsNearClosingTheRateIsNeverBelowTheSensorsOwn() {
+        settings.lidGlassIdleHz = 4
+        let g = makeGlass()
+        XCTAssertEqual(sensor.startedHz, [4], "before the first reading it is what was asked for")
+        g.handle(angle: 100, time: 0)
+        XCTAssertEqual(sensor.lastRate, 10)
+        g.handle(angle: 170, time: 1)
+        XCTAssertEqual(sensor.lastRate, 4, "wide open, a close is not about to start: the slider's rate")
+        g.handle(angle: 135, time: 60)                 // eased down slowly, not a close
+        XCTAssertEqual(sensor.lastRate, 10)
+    }
+
+    func testAFasterSliderIsNeverSlowedDown() {
+        settings.lidGlassIdleHz = 25
+        let g = makeGlass()
+        g.handle(angle: 100, time: 0)
+        XCTAssertEqual(sensor.lastRate, 25)
+    }
+
+    func testTheRateIsNotRewrittenOnEverySample() {
+        settings.lidGlassIdleHz = 4
+        let g = makeGlass()
+        for i in 0..<50 { g.handle(angle: 100, time: Double(i) * 0.1) }
+        XCTAssertEqual(sensor.rates.count, 1, "one change to 10 Hz, not fifty")
+    }
+
     // ── Closing ──
 
     func testClosingShowsTheOverlayThenFrostsWithTheAngleAndSpeedsUpPolling() {
@@ -123,9 +153,10 @@ final class LidGlassTests: XCTestCase {
         XCTAssertEqual(sensor.lastRate, 120)
         waitUntil(!overlays.isEmpty && overlays[0].calls == ["show"])
         XCTAssertEqual(overlays[0].calls, ["show"])
-        // The picture was taken with the lid at 100°: the fold is flat there and chases the lid from it.
-        XCTAssertEqual(overlays[0].shows[0].start, 100)
-        XCTAssertEqual(overlays[0].shows[0].from, 100)
+        // Detected at 100° while closing at about 52°/s. The picture takes about a tenth of a second to appear, so the
+        // fold is placed ahead of the lid by that much travel: flat at about 94.75°, where the lid will be by then.
+        XCTAssertEqual(overlays[0].shows[0].start, 100 - 5.25, accuracy: 0.05)
+        XCTAssertEqual(overlays[0].shows[0].from, overlays[0].shows[0].start)
         XCTAssertEqual(overlays[0].shows[0].to, 100)
         g.handle(angle: 90, time: 0.45)
         XCTAssertEqual(overlays[0].angles.last, 90)
@@ -138,7 +169,7 @@ final class LidGlassTests: XCTestCase {
         waitUntil(g.status == .idle)
         XCTAssertEqual(g.status, .idle)
         XCTAssertTrue(overlays.isEmpty || overlays.allSatisfy { !$0.calls.contains("show") })
-        XCTAssertEqual(sensor.lastRate, 8)
+        XCTAssertEqual(sensor.lastRate, 10, "the lid is near closing, so no slower than the sensor itself")
     }
 
     /// People work at 100–120°. A lid resting below the trigger does nothing, ever.
@@ -149,7 +180,7 @@ final class LidGlassTests: XCTestCase {
         XCTAssertEqual(captures, 0)
         XCTAssertTrue(overlays.isEmpty)
         XCTAssertEqual(g.status, .idle)
-        XCTAssertEqual(sensor.lastRate, 8)
+        XCTAssertEqual(sensor.lastRate, 10, "the lid is near closing, so no slower than the sensor itself")
     }
 
     func testReopeningMidCloseClearsTheFrostAndReturnsToTheIdleRate() {
@@ -160,7 +191,7 @@ final class LidGlassTests: XCTestCase {
         g.handle(angle: 115, time: 0.9)
         XCTAssertEqual(overlays[0].calls, ["show", "clear", "hide"])
         XCTAssertEqual(g.status, .idle)
-        XCTAssertEqual(sensor.lastRate, 8)
+        XCTAssertEqual(sensor.lastRate, 10, "the lid is near closing, so no slower than the sensor itself")
     }
 
     func testAnExternalDisplayBlocksTheClosingEffect() {
@@ -171,7 +202,7 @@ final class LidGlassTests: XCTestCase {
         XCTAssertEqual(captures, 0)
         XCTAssertTrue(overlays.isEmpty)
         XCTAssertEqual(g.status, .idle)
-        XCTAssertEqual(sensor.lastRate, 8)
+        XCTAssertEqual(sensor.lastRate, 10, "the lid is near closing, so no slower than the sensor itself")
     }
 
     func testChangingTheTriggerAppliesToTheNextClose() {
@@ -183,6 +214,22 @@ final class LidGlassTests: XCTestCase {
         g.handle(angle: 80, time: 0.4)
         waitUntil(!overlays.isEmpty)
         XCTAssertEqual(g.status, .active)
+    }
+
+    // ── Where the fold starts ──
+
+    func testASlowCloseHasNoLeadBecauseThereIsNothingToCatchUpWith() {
+        let g = makeGlass()
+        g.handle(angle: 105, time: 0); g.handle(angle: 105, time: 1); g.handle(angle: 102, time: 1.2)
+        waitUntil(overlays.first?.calls == ["show"])
+        XCTAssertEqual(overlays[0].shows[0].start, 102, accuracy: 0.5)
+    }
+
+    func testTheLeadIsCappedSoAFlickOfTheLidDoesNotPlaceTheFoldFarAhead() {
+        let g = makeGlass()
+        g.handle(angle: 125, time: 0); g.handle(angle: 90, time: 0.1); g.handle(angle: 60, time: 0.2)
+        waitUntil(overlays.first?.calls == ["show"])
+        XCTAssertGreaterThanOrEqual(overlays[0].shows[0].start, 60 - LidGlass.maxStartLead)
     }
 
     // ── Letting go ──
@@ -199,7 +246,7 @@ final class LidGlassTests: XCTestCase {
         g.handle(angle: 104, time: 0.65)
         XCTAssertEqual(overlays[0].calls, ["show", "clear", "hide"])
         XCTAssertEqual(g.status, .idle)
-        XCTAssertEqual(sensor.lastRate, 8)
+        XCTAssertEqual(sensor.lastRate, 10, "the lid is near closing, so no slower than the sensor itself")
     }
 
     func testASlightFoldClearsQuicklyAfterTheLidStops() {
@@ -244,7 +291,7 @@ final class LidGlassTests: XCTestCase {
         for i in 1...20 { g.handle(angle: 92, time: 0.5 + Double(i) * 0.1) }
         XCTAssertEqual(overlays[0].calls, ["show", "clear", "hide"])
         XCTAssertEqual(g.status, .idle)
-        XCTAssertEqual(sensor.lastRate, 8)
+        XCTAssertEqual(sensor.lastRate, 10, "the lid is near closing, so no slower than the sensor itself")
     }
 
     func testALidStillMovingDoesNotSettle() {
@@ -320,7 +367,7 @@ final class LidGlassTests: XCTestCase {
             event(g)
             XCTAssertEqual(overlays[0].calls, ["show", "hide"])
             XCTAssertEqual(g.status, .idle)
-            XCTAssertEqual(sensor.lastRate, 8)
+            XCTAssertEqual(sensor.lastRate, 10, "the lid is near closing, so no slower than the sensor itself")
             settings.lidGlassEnabled = false
         }
     }
@@ -369,11 +416,12 @@ final class LidGlassTests: XCTestCase {
         g.screenUnlocked()
         waitUntil(overlays.count == 2 && overlays[1].calls.contains("hide"))
         XCTAssertEqual(overlays[1].calls, ["show", "clear", "hide"])
-        // The opening starts from the fully folded look of the close that was seen (100° and 58° of travel).
+        // The opening starts from the fully folded look of the close that was seen (58° of travel past its start).
         XCTAssertEqual(overlays[1].shows.count, 1)
-        XCTAssertEqual(overlays[1].shows[0].start, 100)
-        XCTAssertEqual(overlays[1].shows[0].from, 42)
-        XCTAssertEqual(overlays[1].shows[0].to, 42)
+        let start = overlays[0].shows[0].start
+        XCTAssertEqual(overlays[1].shows[0].start, start)
+        XCTAssertEqual(overlays[1].shows[0].from, start - 58, accuracy: 1e-9)
+        XCTAssertEqual(overlays[1].shows[0].to, start - 58, accuracy: 1e-9)
         XCTAssertEqual(overlays[1].clearDurations, [LidGlass.openingClear])
         g.screenUnlocked()
         settle()
