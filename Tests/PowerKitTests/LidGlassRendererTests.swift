@@ -88,6 +88,48 @@ final class LidGlassRendererTests: XCTestCase {
         XCTAssertGreaterThan(c[0], c[1]); XCTAssertGreaterThan(c[1], c[2]); XCTAssertGreaterThan(c[2], c[3])
     }
 
+    // ── Glass effects ──
+
+    private func channelProfile(_ bytes: [UInt8], width: Int, x: Int, channel: Int, rows: Range<Int>) -> [Double] {
+        rows.map { Double(bytes[($0 * width + x) * 4 + channel]) }
+    }
+
+    /// The row where a channel first falls below half of its own brightest value, going down a column.
+    private func edgeRow(_ profile: [Double]) -> Int? {
+        guard let top = profile.max(), top > 8 else { return nil }
+        return profile.firstIndex { $0 < top / 2 }
+    }
+
+    /// Chromatic aberration: at a deep fold red and blue land on different rows; unfolded, they are the same.
+    func testTheColoursSeparateAtADeepFoldAndNotAtAllUnfolded() throws {
+        let image = makeImage(width: 256, height: 160) { _, y in y < 70 ? (255, 255, 255) : (0, 0, 0) }
+        let r = try renderer(for: image)
+        var look = LidFoldLook(startAngle: 90); look.blurRadius = 1
+        func rows(_ angle: Double) throws -> (red: Int?, blue: Int?) {
+            let f = LidFoldFrame.make(look: look, screen: CGSize(width: 256, height: 160), angle: angle)
+            let b = rgba(try XCTUnwrap(r.renderOffscreen(f)))
+            return (edgeRow(channelProfile(b, width: 256, x: 128, channel: 0, rows: 0..<160)),
+                    edgeRow(channelProfile(b, width: 256, x: 128, channel: 2, rows: 0..<160)))
+        }
+        let flat = try rows(90)
+        XCTAssertEqual(flat.red, flat.blue, "unfolded, nothing is fringed")
+        let folded = try rows(50)
+        let red = try XCTUnwrap(folded.red), blue = try XCTUnwrap(folded.blue)
+        XCTAssertGreaterThanOrEqual(abs(red - blue), 4, "red at \(red), blue at \(blue)")
+    }
+
+    /// The thin edge light along the glass's far edge, on a black picture: there at a fold, gone when unfolded.
+    func testAThinLightRunsAlongTheFarEdgeOfTheGlassWhenFolded() throws {
+        let black = makeImage(width: 256, height: 160) { _, _ in (0, 0, 0) }
+        let r = try renderer(for: black)
+        func level(_ angle: Double, row: Int) throws -> Double {
+            let b = rgba(try XCTUnwrap(r.renderOffscreen(frame(black, angle: angle))))
+            return channelProfile(b, width: 256, x: 128, channel: 2, rows: row..<(row + 1))[0]
+        }
+        XCTAssertEqual(try level(90, row: 1), 0)
+        XCTAssertGreaterThan(try level(50, row: 1), try level(50, row: 40) + 4)
+    }
+
     func testRenderIsDeterministic() throws {
         let board = checkerboard
         let r = try renderer(for: board)

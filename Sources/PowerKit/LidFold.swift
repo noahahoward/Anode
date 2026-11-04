@@ -32,8 +32,9 @@ public struct LidFoldLook: Equatable {
     public var startAngle: Double
     /// Degrees of further closing to reach full strength.
     public var span = 58.0
-    /// Blur radius at the far edge at full strength, in points.
-    public var blurRadius = 125.0
+    /// Blur radius at the far edge at full strength, in points. Mac Duo's 125 is a mush at a deep fold, and reads as
+    /// too much next to the stretch; 60 keeps the far edge soft and the text legible a little longer.
+    public var blurRadius = 60.0
     /// How dark the far edge goes, 0...1.
     public var dimming = 1.0
     /// Height, as a share of the screen, where the dimming reaches full strength.

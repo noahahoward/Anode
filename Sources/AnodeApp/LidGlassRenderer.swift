@@ -52,6 +52,11 @@ final class LidGlassRenderer {
     #include <metal_stdlib>
     using namespace metal;
 
+    // Glass, on top of the fold. Every one is scaled by the fold's strength (`glass`), so the unfolded picture is untouched.
+    constant float kChroma  = 7.0;    // colour fringing at the top of the glass at full fold, in points
+    constant float kRefract = 20.0;   // how far the top of the glass bends the picture's lookup, in points
+    constant float kRim     = 0.10;   // brightness of the thin edge light along the glass's far edge
+
     struct Uniforms {
         float4 column0;
         float4 column1;
@@ -105,6 +110,15 @@ final class LidGlassRenderer {
         if (abs(mapped.z) < 1e-6 || mapped.z < 0.0) { return float4(0.0, 0.0, 0.0, 1.0); }
         float2 picturePoint = mapped.xy / mapped.z;
 
+        // Where this pixel is on the glass, 0 at the hinge and 1 at the far edge; and across it, 0 to 1.
+        float glassY = clamp((screenSize.y - position.y / pixelScale) / screenSize.y, 0.0, 1.0);
+        float glassX = clamp(position.x / pixelScale / screenSize.x, 0.0, 1.0);
+
+        // Refraction: the far part of the pane bends the picture more, and more toward its sides, as the edge of a
+        // thick lens does.
+        float topBand = smoothstep(0.5, 1.0, glassY);
+        picturePoint += float2((glassX - 0.5) * 0.7, 1.0) * topBand * dimStrength * kRefract;
+
         // Outside the padded picture there is only the dark.
         float2 unit = (picturePoint - paddedOrigin) / paddedSize;
         if (any(unit < 0.0) || any(unit > 1.0)) { return float4(0.0, 0.0, 0.0, 1.0); }
@@ -136,12 +150,27 @@ final class LidGlassRenderer {
             }
         }
 
+        // Chromatic aberration: the glass splits the colours a little, red one way and blue the other, more toward its
+        // far edge and sides where the rays meet it at a steeper angle. Two extra reads of the blurred picture.
+        if (dimStrength > 0.001) {
+            // None at the hinge, where the picture ends and there is nothing past it to read.
+            float2 fringe = float2((glassX - 0.5) * 0.5, 1.0) * dimStrength * kChroma * (0.3 + 0.7 * glassY)
+                          * smoothstep(0.0, 0.3, glassY);
+            float2 shift = float2(fringe.x, -fringe.y) / paddedSize;
+            colour.r = picture.sample(smooth, texCoord + shift, level(mip)).r;
+            colour.b = picture.sample(smooth, texCoord - shift, level(mip)).b;
+        }
+
         // Dimming, in linear light so the far edge fades into the dark rather than going grey. It reaches full
         // strength at `dimReach`; the hinge sinks a little too, so the whole picture recedes.
         float spread = smoothstep(dimStart, max(dimReach, dimStart + 0.05), g);
         float dim = dimStrength * (dimHinge + (1.0 - dimHinge) * spread) * maxDim;
         colour *= pow(1.0 - dim, 2.1) * recede;
         colour *= exp(-pow(above / max(0.22 * screenSize.y, 1.0), 1.4));
+
+        // A thin edge light along the glass's far edge, where a pane catches the light.
+        float rimBand = exp(-pow((1.0 - glassY) * screenSize.y / 7.0, 2.0));
+        colour += float3(0.82, 0.88, 1.0) * rimBand * dimStrength * kRim;
 
         // Grain, so a dark gradient does not band. Scaled by the dimming, so an unfolded picture is untouched.
         float noise = hash(position.xy) - 0.5;
