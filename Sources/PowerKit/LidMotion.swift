@@ -214,3 +214,34 @@ public struct LidAngleTracker {
         return min(max(angle + velocity * age, 0), 180)
     }
 }
+
+/// Notices that the lid has been left alone: its angle has stayed within `tolerance` degrees of itself for `after`
+/// seconds, however deep the fold. The tolerance covers the sensor's whole-degree steps and a hand that has not quite
+/// let go. Any wider movement starts the count again.
+public struct LidRestWatch {
+    public let after: TimeInterval
+    public let tolerance: Double
+    private var since: TimeInterval?
+    private var low = 0.0, high = 0.0
+
+    public init(after: TimeInterval, tolerance: Double) {
+        self.after = after
+        self.tolerance = tolerance
+    }
+
+    public mutating func reset() { since = nil }
+
+    /// True once the lid has been at rest for `after` seconds.
+    public mutating func feed(angle: Double, time: TimeInterval) -> Bool {
+        guard let start = since else {
+            since = time; low = angle; high = angle
+            return false
+        }
+        low = min(low, angle); high = max(high, angle)
+        if high - low > tolerance {
+            since = time; low = angle; high = angle
+            return false
+        }
+        return time - start >= after
+    }
+}

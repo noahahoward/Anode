@@ -194,4 +194,38 @@ final class LidMotionTests: XCTestCase {
         s.advance(to: 0.5, dt: 1.0 / 60)
         XCTAssertEqual(s.value, 0.5, accuracy: 1e-9)
     }
+
+    // ── Resting ──
+
+    func testALidThatStaysPutForTheWholeTimeIsAtRest() {
+        var w = LidRestWatch(after: 3, tolerance: 3)
+        var restedAt: Double?
+        var t = 0.0
+        while t <= 4, restedAt == nil {
+            if w.feed(angle: 60 + (Int(t * 10) % 2 == 0 ? 0 : 1), time: t) { restedAt = t }      // a degree of jitter
+            t += 1.0 / 30
+        }
+        XCTAssertEqual(try XCTUnwrap(restedAt), 3, accuracy: 0.05)
+    }
+
+    func testAnyMovementBeyondTheToleranceStartsTheCountAgain() {
+        var w = LidRestWatch(after: 3, tolerance: 3)
+        var t = 0.0
+        while t < 2.5 { XCTAssertFalse(w.feed(angle: 60, time: t)); t += 0.1 }
+        XCTAssertFalse(w.feed(angle: 52, time: 2.6), "the lid moved 8 degrees")
+        var restedAt: Double?
+        t = 2.7
+        while t <= 7, restedAt == nil { if w.feed(angle: 52, time: t) { restedAt = t }; t += 0.1 }
+        XCTAssertEqual(try XCTUnwrap(restedAt), 2.6 + 3, accuracy: 0.15, "three seconds from the move, not from the start")
+    }
+
+    func testResetForgetsTheCount() {
+        var w = LidRestWatch(after: 3, tolerance: 3)
+        var t = 0.0
+        while t < 2.9 { _ = w.feed(angle: 60, time: t); t += 0.1 }
+        w.reset()
+        XCTAssertFalse(w.feed(angle: 60, time: 3.0))
+        XCTAssertFalse(w.feed(angle: 60, time: 5.0), "two seconds since the reset")
+        XCTAssertTrue(w.feed(angle: 60, time: 6.1))
+    }
 }

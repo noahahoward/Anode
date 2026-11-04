@@ -351,8 +351,8 @@ final class LidGlassTests: XCTestCase {
         let g = makeGlass()
         closeFast(g)                                   // frozen at 100°
         waitUntil(overlays.first?.calls == ["show"])
-        for i in 0...40 { g.handle(angle: 60, time: 0.5 + Double(i) * 0.1) }      // four seconds still
-        XCTAssertEqual(overlays[0].calls, ["show"], "a deep fold is not cleared for being still")
+        for i in 0...20 { g.handle(angle: 60, time: 0.5 + Double(i) * 0.1) }      // two seconds still
+        XCTAssertEqual(overlays[0].calls, ["show"], "a deep fold is not cleared at once for being still")
         XCTAssertEqual(g.status, .active)
         for (i, a) in [64.0, 72, 84, 96].enumerated() { g.handle(angle: a, time: 5 + Double(i) * 0.1) }
         XCTAssertEqual(overlays[0].angles.suffix(4), [64, 72, 84, 96], "the overlay follows the lid up, so it unfolds")
@@ -360,6 +360,52 @@ final class LidGlassTests: XCTestCase {
         g.handle(angle: 104, time: 5.5)
         XCTAssertEqual(overlays[0].calls, ["show", "clear", "hide"])
         XCTAssertEqual(g.status, .idle)
+    }
+
+    // ── A lid left alone ──
+
+    /// Someone may want the Mac almost closed and awake: the effect must not keep a GPU busy for that. Three seconds
+    /// without the lid moving stops it, however deep the fold.
+    func testTheEffectStopsWhenTheLidHasNotMovedForThreeSeconds() {
+        let g = makeGlass()
+        closeFast(g)
+        waitUntil(overlays.first?.calls == ["show"])
+        for i in 0..<25 { g.handle(angle: 20, time: 0.5 + Double(i) * 0.1) }          // 2.4 s
+        XCTAssertEqual(overlays[0].calls, ["show"], "not yet")
+        XCTAssertEqual(g.status, .active)
+        for i in 25..<40 { g.handle(angle: 20, time: 0.5 + Double(i) * 0.1) }         // past 3 s
+        XCTAssertEqual(overlays[0].calls, ["show", "clear", "hide"])
+        XCTAssertEqual(g.status, .idle)
+        XCTAssertEqual(sensor.lastRate, 10, "back to watching")
+    }
+
+    func testAnAlmostShutLidLeftAloneStopsToo() {
+        let g = makeGlass()
+        closeFast(g)
+        waitUntil(overlays.first?.calls == ["show"])
+        for i in 0..<40 { g.handle(angle: 3, time: 0.5 + Double(i) * 0.1) }
+        XCTAssertEqual(overlays[0].calls, ["show", "clear", "hide"])
+    }
+
+    func testAnyRealMovementRestartsTheThreeSeconds() {
+        let g = makeGlass()
+        closeFast(g)
+        waitUntil(overlays.first?.calls == ["show"])
+        for i in 0..<25 { g.handle(angle: 40, time: 0.5 + Double(i) * 0.1) }          // 2.4 s still
+        for i in 0..<25 { g.handle(angle: 34, time: 3.0 + Double(i) * 0.1) }          // moved 6 degrees, then 2.4 s still
+        XCTAssertEqual(overlays[0].calls, ["show"], "five seconds in all, but never three still in a row")
+        XCTAssertEqual(g.status, .active)
+    }
+
+    func testAfterItStoppedAFreshCloseStartsANewEffect() {
+        let g = makeGlass()
+        closeFast(g)
+        waitUntil(overlays.first?.calls == ["show"])
+        for i in 0..<40 { g.handle(angle: 20, time: 0.5 + Double(i) * 0.1) }
+        XCTAssertEqual(g.status, .idle)
+        g.handle(angle: 20, time: 5); g.handle(angle: 15, time: 5.1); g.handle(angle: 8, time: 5.2)
+        waitUntil(overlays.count == 2)
+        XCTAssertEqual(g.status, .active)
     }
 
     // ── A lid that stops ──
@@ -385,13 +431,14 @@ final class LidGlassTests: XCTestCase {
         XCTAssertEqual(g.status, .active)
     }
 
-    /// A lid that is shut sits at about 0° until the Mac sleeps; that is not a pause to clear the frost for.
+    /// A lid that is shut sits at about 0° until the Mac sleeps; that is not a pause to clear the fold for (a lid left
+    /// alone for three seconds is stopped, tested separately).
     func testAShutLidDoesNotSettle() {
         let g = makeGlass()
         closeFast(g)
         waitUntil(overlays.first?.calls == ["show"])
         g.handle(angle: 2, time: 0.6)
-        for i in 1...30 { g.handle(angle: 2, time: 0.6 + Double(i) * 0.1) }
+        for i in 1...20 { g.handle(angle: 2, time: 0.6 + Double(i) * 0.1) }      // two seconds: not the three-second rest
         XCTAssertEqual(overlays[0].calls, ["show"])
     }
 

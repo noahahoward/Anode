@@ -43,6 +43,9 @@ final class LidGlass {
     /// whole-degree steps and a hand that has not quite let go.
     static let stillTolerance = 3.0
     static let stillSettle: TimeInterval = 0.4
+    /// The lid left alone this long, at any depth of fold, stops the effect: someone may want the Mac almost closed
+    /// and awake, and that must not keep a GPU busy.
+    static let restStop: TimeInterval = 3
     /// A fold shallower than this (degrees below where the picture was frozen) is a nudge, not a close: if the lid
     /// rests there the fold is cleared. A deeper one waits for the lid to be opened again, as the iPhone Duo does,
     /// and opening plays it backwards (the overlay follows the lid up).
@@ -89,6 +92,7 @@ final class LidGlass {
     private var speed = LidAngleTracker()
     /// Recent readings of an active close, for noticing that the lid has stopped.
     private var recent: [(time: TimeInterval, angle: Double)] = []
+    private var rest = LidRestWatch(after: LidGlass.restStop, tolerance: LidGlass.stillTolerance)
 
     private var settingTokens: [AnyObject] = []
     private var systemObservers: [(NotificationCenter, NSObjectProtocol)] = []
@@ -257,6 +261,9 @@ final class LidGlass {
             if angle >= closedAt + Self.releaseMargin {
                 detector.reset()
                 leaveTheEffect(why: "lid back above where the close began")
+            } else if rest.feed(angle: angle, time: time) {
+                detector.reset()
+                leaveTheEffect(why: "lid left alone for \(Int(Self.restStop)) s")
             } else {
                 watchForStillness(angle: angle, time: time)
             }
@@ -266,6 +273,7 @@ final class LidGlass {
     private func closingBegan() {
         guard !externalDisplayPresent() else { return }
         recent = []
+        rest.reset()
         tracedAngle = nil
         traced = 0
         closedAt = lastAngle
@@ -364,6 +372,7 @@ final class LidGlass {
     private func leaveTheEffect(why: String) {
         generation += 1
         recent = []
+        rest.reset()
         let leaving = overlay
         overlay = nil
         status = .idle
@@ -377,6 +386,7 @@ final class LidGlass {
     private func backToIdle() {
         generation += 1
         recent = []
+        rest.reset()
         detector.reset()
         status = .idle
         setRestingRate()
@@ -389,6 +399,7 @@ final class LidGlass {
         generation += 1
         discardWarm()
         recent = []
+        rest.reset()
         overlay?.hide()
         overlay = nil
         detector.reset()
