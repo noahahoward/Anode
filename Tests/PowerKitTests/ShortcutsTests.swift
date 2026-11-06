@@ -51,6 +51,15 @@ final class ShortcutsTests: XCTestCase {
         XCTAssertEqual(Set(all.map(\.id)).count, all.count)
     }
 
+    func testCleanerCommandsHaveTheDocumentedDefaultsAndAreInTheList() {
+        XCTAssertEqual(ShortcutCommands.cleanerStart.defaultShortcut.label, "⌃⌥⌘K")
+        XCTAssertEqual(ShortcutCommands.cleanerExit.defaultShortcut.label, "⌃⌥⌘⎋")
+        XCTAssertEqual(ShortcutCommands.cleanerStart.id, "cleaner.start")
+        XCTAssertEqual(ShortcutCommands.cleanerExit.id, "cleaner.exit")
+        XCTAssertEqual(ShortcutCommands.cleaner.map(\.id), ["cleaner.start", "cleaner.exit"])
+        XCTAssertTrue(all.contains(ShortcutCommands.cleanerStart) && all.contains(ShortcutCommands.cleanerExit))
+    }
+
     func testChoosingAShortcutReplacesTheDefaultAndPersists() {
         let defaults = UserDefaults(suiteName: "shortcuts-\(UUID().uuidString)")!
         let s = ShortcutStore(defaults: defaults)

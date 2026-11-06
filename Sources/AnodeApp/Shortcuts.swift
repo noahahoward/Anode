@@ -122,7 +122,18 @@ extension GroupAction {
 enum ShortcutCommands {
     static var window: [ShortcutCommand] { WindowAction.allCases.map(\.command) }
     static var groups: [ShortcutCommand] { GroupAction.allCases.map(\.command) }
-    static var all: [ShortcutCommand] { window + groups }
+
+    /// Keyboard & Screen Cleaner. Start is ⌃⌥⌘K and is only listened for while the setting is on; exit is ⌃⌥⌘⎋ and is
+    /// matched by the cleaner's own tap while a session runs, so it can be changed here like any other.
+    static let cleanerStart = ShortcutCommand(
+        id: "cleaner.start", title: "Start the keyboard cleaner", section: "Keyboard & Screen Cleaner",
+        defaultShortcut: Shortcut(key: kVK_ANSI_K, carbon: controlKey | optionKey | cmdKey))
+    static let cleanerExit = ShortcutCommand(
+        id: "cleaner.exit", title: "End the keyboard cleaner", section: "Keyboard & Screen Cleaner",
+        defaultShortcut: Shortcut(key: kVK_Escape, carbon: controlKey | optionKey | cmdKey))
+    static var cleaner: [ShortcutCommand] { [cleanerStart, cleanerExit] }
+
+    static var all: [ShortcutCommand] { window + groups + cleaner }
 }
 
 /// The user's choices: each command's shortcut, its default unless changed, or none.
