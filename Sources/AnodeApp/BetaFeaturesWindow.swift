@@ -49,7 +49,7 @@ final class BetaFeaturesWindowController: NSWindowController {
 
     init(features: [BetaFeature] = [BackdropFeature(), WindowSwitcherFeature(), DesktopSwitcherFeature(),
                                     DockPreviewFeature(), WindowActionsFeature(), WindowGroupsFeature(),
-                                    LidGlassFeature(), KeepAwakeFeature()]) {
+                                    LidGlassFeature(), KeepAwakeFeature(), KeyboardCleanerFeature()]) {
         self.features = features
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: Self.columnWidth + 2 * Self.inset, height: 200),
                               styleMask: [.titled, .closable], backing: .buffered, defer: false)
@@ -1176,6 +1176,109 @@ final class KeepAwakeFeature: BetaFeature {
             permissionButton.title = "Allow Always Stay Awake…"
         }
         permissionLabel.textColor = .secondaryLabelColor
+        layoutChanged?()
+    }
+}
+
+// ── Keyboard & Screen Cleaner ───────────────────────────────────────────────
+
+/// Turns every screen black and ignores the keyboard, mouse and trackpad (see `KeyboardCleaner`).
+final class KeyboardCleanerFeature: BetaFeature {
+
+    let title = "Keyboard & Screen Cleaner"
+    let summary = "Turns every screen pure black and ignores the keyboard, mouse and trackpad, so you can wipe them without "
+                + "typing into anything. The combination printed in the bottom-left corner of the screen ends it. "
+                + "It needs Accessibility, and the Mac stays awake while it is up."
+    var layoutChanged: (() -> Void)?
+
+    private let settings: Settings
+    private let store: ShortcutStore
+    private let cleaner: () -> KeyboardCleaner?
+    private let accessibility: () -> Bool
+    private let requestAccessibility: () -> Void
+
+    let startButton = NSButton(title: "Clean now", target: nil, action: nil)
+    let statusLabel = BetaFeaturesWindowController.wrapping("")
+    let accessButton = NSButton(title: "Open Accessibility Settings…", target: nil, action: nil)
+    let shortcutCheckbox = NSButton(checkboxWithTitle: "", target: nil, action: nil)
+    let exitNote = BetaFeaturesWindowController.wrapping("", color: .secondaryLabelColor)
+    let customizeButton = NSButton(title: "Customize shortcuts…", target: nil, action: nil)
+
+    init(settings: Settings = .shared, store: ShortcutStore = .shared,
+         cleaner: @escaping () -> KeyboardCleaner? = { KeyboardCleaner.current },
+         accessibilityAllowed: @escaping () -> Bool = { AccessibilityAccess.isTrusted },
+         requestAccessibility: @escaping () -> Void = { AccessibilityAccess.request() }) {
+        self.settings = settings
+        self.store = store
+        self.cleaner = cleaner
+        self.accessibility = accessibilityAllowed
+        self.requestAccessibility = requestAccessibility
+    }
+
+    func makeView() -> NSView {
+        startButton.target = self
+        startButton.action = #selector(startClicked)
+        startButton.bezelStyle = .rounded
+        accessButton.target = self
+        accessButton.action = #selector(openAccessibility)
+        accessButton.bezelStyle = .rounded
+        accessButton.controlSize = .small
+        shortcutCheckbox.target = self
+        shortcutCheckbox.action = #selector(shortcutToggled)
+        customizeButton.target = self
+        customizeButton.action = #selector(customize)
+        customizeButton.bezelStyle = .rounded
+        customizeButton.controlSize = .small
+        let column = NSStackView(views: [startButton, statusLabel, accessButton, shortcutCheckbox, exitNote, customizeButton])
+        column.orientation = .vertical
+        column.alignment = .leading
+        column.spacing = 8
+        cleaner()?.onChange = { [weak self] in DispatchQueue.main.async { self?.refresh() } }
+        refresh()
+        return column
+    }
+
+    @objc private func startClicked() {
+        guard accessibility() else {
+            requestAccessibility()
+            refresh()
+            return
+        }
+        cleaner()?.start()
+        refresh()
+    }
+
+    @objc private func shortcutToggled() {
+        let on = shortcutCheckbox.state == .on
+        if on && !accessibility() { requestAccessibility() }
+        settings.keyboardCleanerShortcutEnabled = on
+    }
+
+    @objc private func openAccessibility() { AccessibilityAccess.openSettings() }
+    @objc private func customize() { ShortcutsWindowController.shared.show() }
+
+    func refresh() {
+        let allowed = accessibility()
+        let active = cleaner()?.isActive ?? false
+        let start = store.shortcut(for: ShortcutCommands.cleanerStart)?.label ?? "no shortcut"
+        let exit = store.shortcut(for: ShortcutCommands.cleanerExit) ?? ShortcutCommands.cleanerExit.defaultShortcut
+        startButton.isEnabled = !active
+        shortcutCheckbox.title = "Also start it with \(start)"
+        shortcutCheckbox.state = settings.keyboardCleanerShortcutEnabled ? .on : .off
+        exitNote.stringValue = "Ends with \(exit.label), which is also printed in the corner while it runs. "
+            + "Both combinations can be changed in Customize."
+        accessButton.isHidden = allowed
+        if !allowed {
+            statusLabel.stringValue = "Accessibility: not allowed yet. Without it the cleaner cannot ignore the keyboard, "
+                + "so it will not start. Allow Anode in Accessibility."
+            statusLabel.textColor = .systemOrange
+        } else if active {
+            statusLabel.stringValue = "A cleaning session is running."
+            statusLabel.textColor = .secondaryLabelColor
+        } else {
+            statusLabel.stringValue = "Accessibility: allowed."
+            statusLabel.textColor = .secondaryLabelColor
+        }
         layoutChanged?()
     }
 }

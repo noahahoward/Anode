@@ -53,6 +53,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
     var desktopSwitcher: DesktopSwitcher?
     var lidGlass: LidGlass?
     var keepAwake: KeepAwakeController?
+    var keyboardCleaner: KeyboardCleaner?
     var temperatureAlarm = TemperatureAlarm()
     var windowSnapper: WindowSnapper?
     var windowGroups: WindowGroupController?
@@ -320,6 +321,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         LidGlass.current = lidGlass
         keepAwake = KeepAwakeController()
         KeepAwakeController.current = keepAwake
+        keyboardCleaner = KeyboardCleaner(tap: CleanerInputTap(), windows: CleanerWindows())
+        KeyboardCleaner.current = keyboardCleaner
         windowSnapper = WindowSnapper()
         windowGroups = WindowGroupController()
         windowDragSnapper = WindowDragSnapper(snapper: windowSnapper)
