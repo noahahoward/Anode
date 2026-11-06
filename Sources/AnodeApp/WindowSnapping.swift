@@ -191,13 +191,53 @@ enum WindowGeometry {
 }
 
 /// One window, through accessibility.
+///
+/// A window of THIS process is never touched through accessibility. The accessibility server answers a request
+/// for one of our own windows from a thread of its own and then waits on the main thread, while the main
+/// thread, mid display-cycle, waits on a view lock that request holds: a deadlock, measured twice on
+/// 2026-11-05 (main thread in `NSViewHierarchyLock lockForReading`, the drag queue in `AXUIElementSetAttributeValue`
+/// → `-[NSWindow _setFrameCommon:]`) that froze the app and, with its event taps, the whole Mac. The drag
+/// snapper reaches here from a background queue, which is what made it possible. So our own windows are
+/// read and moved with `NSWindow` itself, on the main thread, and every other app's through accessibility.
 struct AccessibleWindow {
     let element: AXUIElement
     let pid: pid_t
+    /// Set for a window of this process; `element` is then a placeholder that is never queried.
+    var local: NSWindow? = nil
+
+    static var ownPID: pid_t { ProcessInfo.processInfo.processIdentifier }
+
+    static func own(_ window: NSWindow) -> AccessibleWindow {
+        AccessibleWindow(element: AXUIElementCreateApplication(ownPID), pid: ownPID, local: window)
+    }
+
+    /// Run `body` on the main thread and wait for it (straight away if already there). Nothing on the main
+    /// thread ever waits for the queues that call this, so the wait cannot close a loop.
+    static func onMain<T>(_ body: () -> T) -> T {
+        Thread.isMainThread ? body() : DispatchQueue.main.sync { body() }
+    }
+
+    /// Screen coordinates, y down from the top of the primary display (accessibility's), from AppKit's, y up.
+    static func accessibilityFrame(_ f: NSRect) -> CGRect {
+        let h = NSScreen.screens.first?.frame.height ?? 0
+        return CGRect(x: f.minX, y: h - f.maxY, width: f.width, height: f.height)
+    }
+
+    static func appKitFrame(_ f: CGRect) -> NSRect {
+        let h = NSScreen.screens.first?.frame.height ?? 0
+        return NSRect(x: f.minX, y: h - f.maxY, width: f.width, height: f.height)
+    }
 
     /// The window with keyboard focus in the front app, if it is one that can be moved.
     static func front() -> AccessibleWindow? {
         guard let app = NSWorkspace.shared.frontmostApplication else { return nil }
+        if app.processIdentifier == ownPID {
+            return onMain {
+                guard let w = NSApp.keyWindow ?? NSApp.mainWindow, w.isVisible, !w.isSheet,
+                      !w.styleMask.contains(.fullScreen) else { return nil }
+                return AccessibleWindow.own(w)
+            }
+        }
         let appElement = AXUIElementCreateApplication(app.processIdentifier)
         var focused: CFTypeRef?
         guard AXUIElementCopyAttributeValue(appElement, kAXFocusedWindowAttribute as CFString, &focused) == .success,
@@ -210,16 +250,19 @@ struct AccessibleWindow {
     }
 
     var frame: CGRect? {
+        if let local { return Self.onMain { Self.accessibilityFrame(local.frame) } }
         guard let p = point(kAXPositionAttribute), let s = size(kAXSizeAttribute) else { return nil }
         return CGRect(origin: p, size: s)
     }
 
     var isResizable: Bool {
+        if let local { return Self.onMain { local.styleMask.contains(.resizable) } }
         var settable = DarwinBoolean(false)
         return AXUIElementIsAttributeSettable(element, kAXSizeAttribute as CFString, &settable) == .success && settable.boolValue
     }
 
     var windowID: CGWindowID? {
+        if let local { return Self.onMain { CGWindowID(local.windowNumber) } }
         typealias GetWindow = @convention(c) (AXUIElement, UnsafeMutablePointer<CGWindowID>) -> AXError
         guard let sym = dlsym(dlopen(nil, RTLD_NOW), "_AXUIElementGetWindow") else { return nil }
         var id: CGWindowID = 0
@@ -230,6 +273,12 @@ struct AccessibleWindow {
     /// app's enhanced user interface off for the duration (see the header).
     @discardableResult
     func setFrame(_ frame: CGRect) -> CGRect? {
+        if let local {
+            return Self.onMain {
+                local.setFrame(Self.appKitFrame(frame), display: true)
+                return Self.accessibilityFrame(local.frame)
+            }
+        }
         let app = AXUIElementCreateApplication(pid)
         var enhanced: CFTypeRef?
         let hadEnhanced = AXUIElementCopyAttributeValue(app, "AXEnhancedUserInterface" as CFString, &enhanced) == .success

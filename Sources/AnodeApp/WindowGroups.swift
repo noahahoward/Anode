@@ -151,6 +151,8 @@ extension AccessibleWindow {
 
     /// The window with this number in the app `pid`, if accessibility can see it.
     static func find(id: CGWindowID, pid: pid_t) -> AccessibleWindow? {
+        // Our own windows never go through accessibility (see `AccessibleWindow`).
+        if pid == ownPID { return onMain { NSApp.window(withWindowNumber: Int(id)) }.map(own) }
         let app = AXUIElementCreateApplication(pid)
         var value: CFTypeRef?
         guard AXUIElementCopyAttributeValue(app, kAXWindowsAttribute as CFString, &value) == .success,
@@ -159,6 +161,7 @@ extension AccessibleWindow {
     }
 
     var title: String {
+        if let local { return Self.onMain { local.title } }
         var v: CFTypeRef?
         AXUIElementCopyAttributeValue(element, kAXTitleAttribute as CFString, &v)
         return v as? String ?? ""
@@ -251,7 +254,9 @@ final class WindowGroupController {
         let onScreen = Set(WindowCatalog.current().map(\.id))
         for m in WindowGroupStore.raiseOrder(front: id, group: group, onScreen: onScreen) {
             if let w = AccessibleWindow.find(id: m.id, pid: m.pid) {
-                AXUIElementPerformAction(w.element, kAXRaiseAction as CFString)
+                if let local = w.local { local.orderFront(nil) } else {
+                    AXUIElementPerformAction(w.element, kAXRaiseAction as CFString)
+                }
             }
         }
     }
