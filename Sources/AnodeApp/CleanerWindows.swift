@@ -73,7 +73,9 @@ final class CleanerWindows: CleanerWindowPresenting {
             NSCursor.hide()
             pointerHidden = true
         }
-        windows.first?.makeKeyAndOrderFront(nil)
+        // Deliberately not made key: all input is swallowed by the tap, so nothing needs to type into these, and
+        // `bringForward()` (the repo's rule for ordinary windows) would make Anode a Dock app and take the windows off
+        // "every Space". Overlay windows here order front with `orderFrontRegardless()`.
     }
 
     func hide() {
