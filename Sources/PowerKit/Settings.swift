@@ -42,6 +42,7 @@ public final class Settings {
         public static let windowSwitcherTrigger = "windowSwitcherTrigger"
         public static let desktopSwitcherEnabled = "desktopSwitcherEnabled"
         public static let lidGlassEnabled = "lidGlassEnabled"
+        public static let keepAwakeEnabled = "keepAwakeEnabled"
         public static let lidGlassIdleHz = "lidGlassIdleHz"
         public static let lidGlassTriggerAngle = "lidGlassTriggerAngle"
         public static let windowSnapperEnabled = "windowSnapperEnabled"
@@ -111,6 +112,8 @@ public final class Settings {
         /// OFF: it takes over Option-Tab, so the user turns it on.
         static let desktopSwitcherEnabled = false
         static let lidGlassEnabled = false
+        /// OFF: it adds a menu bar icon, so the user turns it on.
+        static let keepAwakeEnabled = false
         static let lidGlassIdleHz = 8.0
         static let lidGlassTriggerAngle = 110.0
         /// OFF: it claims a set of global shortcuts another window manager may already own.
@@ -218,6 +221,7 @@ public final class Settings {
         var panelHidden: [String]
         var ledgerGraphLines: [String]
         var lidGlassEnabled: Bool
+        var keepAwakeEnabled: Bool
         var lidGlassIdleHz, lidGlassTriggerAngle: Double
     }
     private var snapshot: Values
@@ -429,6 +433,12 @@ public final class Settings {
     public var lidGlassEnabled: Bool {
         get { Settings.readBool(defaults, Key.lidGlassEnabled, Default.lidGlassEnabled) }
         set { writeBool(Key.lidGlassEnabled, \.lidGlassEnabled, newValue, Default.lidGlassEnabled) }
+    }
+
+    /// Whether the Keep Awake icon is in the menu bar (Beta Features). Off until asked for.
+    public var keepAwakeEnabled: Bool {
+        get { Settings.readBool(defaults, Key.keepAwakeEnabled, Default.keepAwakeEnabled) }
+        set { writeBool(Key.keepAwakeEnabled, \.keepAwakeEnabled, newValue, Default.keepAwakeEnabled) }
     }
 
     /// How often the lid angle is read while the lid is open and still, 4 to 30 times a second.
@@ -800,6 +810,7 @@ public final class Settings {
         if old.windowSwitcherTrigger != now.windowSwitcherTrigger { notify(Key.windowSwitcherTrigger) }
         if old.desktopSwitcherEnabled != now.desktopSwitcherEnabled { notify(Key.desktopSwitcherEnabled) }
         if old.lidGlassEnabled != now.lidGlassEnabled { notify(Key.lidGlassEnabled) }
+        if old.keepAwakeEnabled != now.keepAwakeEnabled { notify(Key.keepAwakeEnabled) }
         if old.lidGlassIdleHz != now.lidGlassIdleHz { notify(Key.lidGlassIdleHz) }
         if old.lidGlassTriggerAngle != now.lidGlassTriggerAngle { notify(Key.lidGlassTriggerAngle) }
         if old.windowSnapperEnabled != now.windowSnapperEnabled { notify(Key.windowSnapperEnabled) }
@@ -950,6 +961,7 @@ public final class Settings {
                panelHidden: readIDList(d, Key.panelHidden),
                ledgerGraphLines: readLedgerLines(d),
                lidGlassEnabled: readBool(d, Key.lidGlassEnabled, Default.lidGlassEnabled),
+               keepAwakeEnabled: readBool(d, Key.keepAwakeEnabled, Default.keepAwakeEnabled),
                lidGlassIdleHz: readDouble(d, Key.lidGlassIdleHz, Default.lidGlassIdleHz, lidGlassIdleHzRange),
                lidGlassTriggerAngle: readDouble(d, Key.lidGlassTriggerAngle, Default.lidGlassTriggerAngle,
                                                 lidGlassTriggerRange))

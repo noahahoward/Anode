@@ -49,7 +49,7 @@ final class BetaFeaturesWindowController: NSWindowController {
 
     init(features: [BetaFeature] = [BackdropFeature(), WindowSwitcherFeature(), DesktopSwitcherFeature(),
                                     DockPreviewFeature(), WindowActionsFeature(), WindowGroupsFeature(),
-                                    LidGlassFeature()]) {
+                                    LidGlassFeature(), KeepAwakeFeature()]) {
         self.features = features
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: Self.columnWidth + 2 * Self.inset, height: 200),
                               styleMask: [.titled, .closable], backing: .buffered, defer: false)
@@ -1053,6 +1053,129 @@ final class LidGlassFeature: BetaFeature {
                 + "10 near closing, which is how often the sensor itself updates), faster while it closes; nothing is recorded or kept."
             accessStatus.textColor = .secondaryLabelColor
         }
+        layoutChanged?()
+    }
+}
+
+// ── Keep Awake ──────────────────────────────────────────────────────────────
+
+/// A Caffeine-style icon in the menu bar: Never Sleep, and Always Stay Awake with the lid closed (see `KeepAwake`).
+final class KeepAwakeFeature: BetaFeature {
+
+    let title = "Keep Awake"
+    let summary = "An icon in the menu bar, like Caffeine, that each click moves along: off (dark laptop) → Never Sleep "
+                + "(lit laptop) → Always Stay Awake (shut laptop) → off. Never Sleep keeps the Mac and its screen awake while the lid "
+                + "is open. Always Stay Awake also keeps the Mac running with the lid closed and nothing attached: the "
+                + "screen goes fully dark while the lid is shut and comes back to its old brightness when it opens. "
+                + "It needs a one-time admin permission, and turns itself off if the battery gets low. Right-click the "
+                + "icon for the menu."
+    var layoutChanged: (() -> Void)?
+
+    private let settings: Settings
+    private let isAuthorised: () -> Bool
+    private var token: AnyObject?
+
+    let enableCheckbox = NSButton(checkboxWithTitle: "Show the Keep Awake icon in the menu bar", target: nil, action: nil)
+    let stateLabel = BetaFeaturesWindowController.wrapping("")
+    let permissionLabel = BetaFeaturesWindowController.wrapping("")
+    let permissionButton = NSButton(title: "", target: nil, action: nil)
+    let modePopUp = NSPopUpButton(frame: .zero, pullsDown: false)
+    let durationPopUp = NSPopUpButton(frame: .zero, pullsDown: false)
+    let switchButton = NSButton(title: "", target: nil, action: nil)
+
+    init(settings: Settings = .shared,
+         isAuthorised: @escaping () -> Bool = { PmsetClosedLidSleep().isAuthorised() }) {
+        self.settings = settings
+        self.isAuthorised = isAuthorised
+    }
+
+    func makeView() -> NSView {
+        enableCheckbox.target = self
+        enableCheckbox.action = #selector(toggled)
+        permissionButton.target = self
+        permissionButton.action = #selector(permissionClicked)
+        permissionButton.bezelStyle = .rounded
+        permissionButton.controlSize = .small
+        for m in KeepAwakeMode.allCases { modePopUp.addItem(withTitle: "\(m.title) — \(m.detail)") }
+        modePopUp.target = self
+        modePopUp.action = #selector(modePicked)
+        for d in KeepAwakeDuration.allCases { durationPopUp.addItem(withTitle: d.title) }
+        durationPopUp.target = self
+        durationPopUp.action = #selector(durationPicked)
+        switchButton.target = self
+        switchButton.action = #selector(switchClicked)
+        switchButton.bezelStyle = .rounded
+        let modeRow = NSStackView(views: [NSTextField(labelWithString: "Mode:"), modePopUp])
+        modeRow.spacing = 8
+        let durationRow = NSStackView(views: [NSTextField(labelWithString: "For:"), durationPopUp])
+        durationRow.spacing = 8
+        let column = NSStackView(views: [enableCheckbox, stateLabel, modeRow, durationRow, switchButton,
+                                         permissionLabel, permissionButton])
+        column.orientation = .vertical
+        column.alignment = .leading
+        column.spacing = 8
+        token = settings.observe(Settings.Key.keepAwakeEnabled) { [weak self] in
+            DispatchQueue.main.async { self?.refresh() }
+        }
+        KeepAwakeController.current?.onChange = { [weak self] in self?.refresh() }
+        refresh()
+        return column
+    }
+
+    @objc private func toggled() { settings.keepAwakeEnabled = enableCheckbox.state == .on }
+
+    /// Changing the mode switches to it at once if Keep Awake is running, as the menu does; otherwise it is the
+    /// mode the next click on the icon starts.
+    @objc private func modePicked() {
+        guard let c = KeepAwakeController.current else { return }
+        let m = KeepAwakeMode.allCases[max(0, modePopUp.indexOfSelectedItem)]
+        if c.core.isActive { c.begin(m) } else { c.mode = m }
+    }
+
+    @objc private func durationPicked() {
+        guard let c = KeepAwakeController.current else { return }
+        c.duration = KeepAwakeDuration.allCases[max(0, durationPopUp.indexOfSelectedItem)]
+        if let s = c.core.session { c.begin(s.mode) }
+    }
+
+    @objc private func switchClicked() { KeepAwakeController.current?.toggle() }
+
+    @objc private func permissionClicked() {
+        guard let c = KeepAwakeController.current else { return }
+        if isAuthorised() {
+            c.revokeAuthorisation { [weak self] _ in self?.refresh() }
+        } else {
+            c.authorise { [weak self] _ in self?.refresh() }
+        }
+    }
+
+    func refresh() {
+        let on = settings.keepAwakeEnabled
+        enableCheckbox.state = on ? .on : .off
+        stateLabel.isHidden = !on
+        stateLabel.stringValue = "Now: " + (KeepAwakeController.current?.statusLine() ?? "Off")
+        stateLabel.textColor = .secondaryLabelColor
+        let allowed = isAuthorised()
+        permissionLabel.isHidden = !on
+        permissionButton.isHidden = !on
+        for v in [modePopUp, durationPopUp, switchButton] as [NSView] { v.isHidden = !on }
+        modePopUp.superview?.isHidden = !on
+        durationPopUp.superview?.isHidden = !on
+        if let c = KeepAwakeController.current {
+            modePopUp.selectItem(at: KeepAwakeMode.allCases.firstIndex(of: c.core.session?.mode ?? c.mode) ?? 0)
+            durationPopUp.selectItem(at: KeepAwakeDuration.allCases.firstIndex(of: c.duration) ?? 0)
+            switchButton.title = c.core.isActive ? "Turn Off" : "Turn On"
+        }
+        if allowed {
+            permissionLabel.stringValue = "Always Stay Awake is allowed: Anode may run exactly “pmset -a disablesleep 1” "
+                + "and “0” without a password (the rule is in \(KeepAwakeAuthorisation.path)). Anode switches it off "
+                + "when you turn it off, when you quit, and at launch if a crash left it on."
+            permissionButton.title = "Remove Always Stay Awake permission…"
+        } else {
+            permissionLabel.stringValue = "Always Stay Awake is not allowed yet. Never Sleep works without it."
+            permissionButton.title = "Allow Always Stay Awake…"
+        }
+        permissionLabel.textColor = .secondaryLabelColor
         layoutChanged?()
     }
 }

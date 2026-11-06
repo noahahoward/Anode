@@ -58,3 +58,20 @@ final class LidGlassSettingsTests: XCTestCase {
         XCTAssertEqual(again.lidGlassTriggerAngle, 100)
     }
 }
+
+/// Keep Awake's switch: off until asked for, and it tells observers only when it really changes.
+final class KeepAwakeSettingsTests: XCTestCase {
+    func testOffByDefaultAndNotifiesOnlyOnChange() throws {
+        let (defaults, suite) = try TestDefaults.make(owner: "KeepAwakeSettings", test: name)
+        defer { TestDefaults.destroy(defaults, suite) }
+        let s = Settings(defaults: defaults)
+        XCTAssertFalse(s.keepAwakeEnabled)
+        var fired = 0
+        let token = s.observe(Settings.Key.keepAwakeEnabled) { fired += 1 }
+        s.keepAwakeEnabled = true; s.keepAwakeEnabled = true
+        XCTAssertEqual(fired, 1)
+        s.keepAwakeEnabled = false
+        XCTAssertEqual(fired, 2)
+        _ = token
+    }
+}

@@ -52,6 +52,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
     var dockPreviews: DockPreviews?
     var desktopSwitcher: DesktopSwitcher?
     var lidGlass: LidGlass?
+    var keepAwake: KeepAwakeController?
     var temperatureAlarm = TemperatureAlarm()
     var windowSnapper: WindowSnapper?
     var windowGroups: WindowGroupController?
@@ -317,6 +318,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         desktopSwitcher = DesktopSwitcher()
         lidGlass = LidGlass()
         LidGlass.current = lidGlass
+        keepAwake = KeepAwakeController()
+        KeepAwakeController.current = keepAwake
         windowSnapper = WindowSnapper()
         windowGroups = WindowGroupController()
         windowDragSnapper = WindowDragSnapper(snapper: windowSnapper)
@@ -2674,6 +2677,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
     /// which is exactly why the release cannot live only here.
     func applicationWillTerminate(_ note: Notification) {
         fansPane.teardown()
+        // Never leave the lid held open behind a quit app.
+        keepAwake?.shutdown()
         // Read on the sampling queue, which owns both — reading them here on
         // main raced the tick that mutates them. Safe to wait on: the sampling
         // queue only ever hands work to main asynchronously.
