@@ -141,3 +141,14 @@
 - [ ] **Step 4: Restore.** Turn the section off (every icon returns), turn on, `kill -9 $(pgrep -x AnodeApp)` while collapsed (every icon returns), relaunch. Expected: the hider returns collapsed and the hidden icon is still on the hidden side.
 - [ ] **Step 5: Displays and Spaces.** Plug/unplug the external display and enter/leave a full-screen app while collapsed. Expected: no false "blocked" message, no stuck state; the placement logic of the Anode widgets (`Density`) is unchanged: compare `MenuBarWidgetController.debugDump` before and after.
 - [ ] **Step 6: Record** the results (including how many icons fit on the notched display when expanded) and commit "Menu bar hider: verified on hardware".
+
+## Measured (Task 1 spike, 2026-11-06, 14" built-in display with notch, macOS 27)
+
+Probe: `docs/superpowers/spikes/2026-11-06-menu-bar-hider-probe.swift`. Two status items: `probe.divider` (created first) and `probe.left` ("B", created second). Divider length 24 → 10000 → 24; positions read from AppKit window frames, the Accessibility extras menu bar, and `screencapture` of the bar (`…-baseline.png`, `…-collapsed.png`).
+
+- **Creation order:** a new item lands to the LEFT of existing ones, as assumed (B at x≈1038, divider at x≈1078, Keep Awake at x≈1125).
+- **Collapse does not hide anything.** With the divider at length 10000, B (left of it) did not leave the screen and was not set off-screen: it slid right to the divider's old x (1038 → 1078) and stayed visible (window `visible=true`, occlusion 8194). The divider's own window grew to 5016 wide (capped, not 10000) extending rightwards; the items to its right did not move; the screenshot shows B in the divider's place and every other icon unchanged.
+- **Why:** this bar is already overflowing (WireGuard, Synology Drive, 1Password, G HUB and OpenVPN report x = −1…7, i.e. already hidden by the system). The left edge of the usable area is the clamp, so items pile up against it instead of being pushed off.
+- **Not measured:** a non-overflowing bar (would need the owner's icons removed); whether a ⌘-drag position survives relaunch (needs the owner's hands).
+
+**Decision: NO-GO** for the divider method on this Mac under macOS 27 (the plan's own criterion: items left of the divider must be off-screen when collapsed). Tasks 2–6 are not built. The alternative (Ice-style: capture the hidden icons and show them in a second bar; needs Screen Recording and synthesized clicks) is a different plan and the owner's call.
