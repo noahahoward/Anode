@@ -163,3 +163,7 @@
 - [ ] **Step 5: Display test.** Start a session, unplug/plug the external display. Expected: both displays black at all times.
 - [ ] **Step 6: Idle test.** Start a session and leave it longer than the display-sleep setting. Expected: the display does not sleep; after the exit the assertion is gone (`pmset -g assertions` has no "Anode keyboard cleaner").
 - [ ] **Step 7: Record** what was measured (and anything that differed from the plan) in this file, then commit "Keyboard cleaner: verified on hardware".
+
+## Measured
+
+2026-11-06, owner on the installed build (9bf2b03): "keyboard cleaner works well." The owner did not itemize Task 6's steps, so only the overall result is recorded; the kill test (Step 4), display plug/unplug (Step 5) and the idle/`pmset` check (Step 6) were not reported separately and remain unconfirmed.
