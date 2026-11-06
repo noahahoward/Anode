@@ -295,3 +295,45 @@ Each reuses the library, assignments, policy and controller; the extension point
 - **Playlists and schedules:** rotate through several items, change by time of day, by light/dark appearance, by AC vs battery, and a different wallpaper per Space; image slideshows.
 - **Generative and Anode-aware:** Metal shader wallpapers, wallpapers that draw live Anode data (CPU/GPU/battery graphs), and wallpapers that react to the cursor (a global mouse position feed; the window itself must stay click-through).
 - **Not possible for a third-party app, so not planned:** the lock screen and login window wallpaper, and macOS screen savers as live wallpapers.
+
+## Measured (Task 1 spike, 2026-11-06, MacBook Pro 14" Mac17,9, one built-in display, macOS 27)
+
+Probes: `docs/superpowers/spikes/2026-11-06-live-wallpapers-probe.swift` (modes `codecs`, `video`, `web`, `cuttiles`, `tileplay`, `tiles`) and `…-act.swift` (synthetic input helper). The owner said "go control the computer"; I drove it myself, hiding other apps for 3 s and restoring them in their original stacking order, using one blank TextEdit document (closed without saving, TextEdit quit), and stepping through Spaces and back. Not done (needs the owner): Steps 5 (display sleep/wake, lock/unlock, external display) and 12 (system wallpaper round trip: it would change the owner's real wallpaper).
+
+**Step 2 — window and stacking: GO.** Our window at `.desktopWindow` = −2147483623, on screen, playing (rate 1.0, `readyToPlay`). Window list, bottom to top: Display Backstop −…626, Offscreen Wallpaper −…625, system "Wallpaper" −…624, **ours −…623**, Event Shield and Finder −…603, underbelly/Safe-Area shield −…602, Notification Center widgets −…601. Exactly as the plan assumed.
+
+**Step 3 — input and stacking.**
+- Click-through: with every other app hidden, a synthetic click on the bare desktop made **Finder** frontmost, so the click passed through our window.
+- Spaces: playback never stalled across 8 Space switches (clock advanced every 2 s). During each slide `occlusionState.visible` goes **false for about 0.5 s** (e.g. 73.57 → 74.11 s) and is true again on arrival. **This is the same size as the plan's 0.5 s "covered" gate, so keep that gate.** A bare empty Space shows the video normally. Exactly one on-screen "Menubar" window after every switch.
+- Mission Control: the video stays as the desktop behind the shrunken windows (`…-wallpaper-mission-control.png`). No flash of the old wallpaper seen in the screenshot (a single frame; the owner should still look).
+- Not tested: Stage Manager, App Exposé (ran, no log change, not looked at).
+- Synthetic ⌃←/⌃→ posted with CGEvent did nothing here; the same keys sent through System Events `key code … using {control down}` switched Spaces (Anode's notes said the CGEvent route worked on another day).
+
+**Step 4 — occlusion.**
+- Whole window: a maximized app (Brave at 0,39 1800×1130 plus Code windows behind) leaves the 39 pt menu-bar strip uncovered, so **`.visible` stays true with the desktop apparently "covered"**. Only a **full-screen app** (its own Space) made it go false, and it stayed false (`vis=n` for the 10+ s I let it sit) while the player kept running. **Consequence for Tasks 3 and 6: "fully covered" cannot be read from the whole window's occlusionState on a Mac with a menu bar; either compute coverage from the window list excluding the menu-bar band, or accept that only full-screen apps and Spaces pause it.**
+- Per tile (Step 10a): 12 desktop-level tiles on an empty Space each report only their own area. Cover left half → exactly the 6 left tiles false. **A 6 pt sliver and a 1 pt sliver both keep a tile visible.** Whole-screen cover → all 12 false; uncover → all 12 true (≈1 s after the change in my sampling).
+
+**Step 6 — codecs and storage.** `VTIsHardwareDecodeSupported`: H.264, HEVC, ProRes 422, AV1, **VP9 all true** (VP9 after `VTRegisterSupplementalVideoDecoderIfAvailable`). `FileManager.copyItem` of the 666 MB 1080p MOV: **0.000 s and 88 KB of free space** used → APFS clone confirmed.
+
+**Step 7 — video power (probe CPU as `ps` cputime deltas; per-process energy was not obtainable).**
+
+| Content | Playing | Paused |
+|---|---|---|
+| 1080p30 H.264 | 1.6–2.0 % of one core, RSS 62 MB | 0.05 % |
+| 4K60 HEVC (16 s clip, 3840×2160) | 2.8 %, RSS 68 MB | 0.05 % |
+
+Energy: the Anode CLI's per-app table did not list the probe (an unbundled binary below the top rows), whole-system power republishes in 60 s batches, and WindowServer is root-owned, so **energy per wallpaper was not measured**. The Mac was on battery (84 %) for these runs.
+
+**Step 8 — web.** `WKWebView` with the Global Constraints configuration (non-persistent store, autoplay allowed, muting user script, local file with read access limited to its folder):
+- (a) local HTML (80-circle canvas animation + `<video autoplay loop>`): renders and animates; the video was `muted=true` and playing; **20.1 % of a core showing → 0.05 % after the pause recipe (suspend media + `anode-pause` event + removed from window) → 0.15 % with the window ordered out alone.** Both far under 0.5 %.
+- (c) plain page (example.com): 0.12 % showing, 0.05 % after both.
+- (b) YouTube: **navigating straight to `https://www.youtube.com/embed/<id>?…` fails with "Video player configuration error 153"** (`…-youtube-error153.png`): the embed needs a referring page. **Fix, measured working:** load an HTML wrapper with `loadHTMLString(html, baseURL: https://anode.app/)` containing `<iframe src="https://www.youtube.com/embed/<id>?autoplay=1&mute=1&loop=1&playlist=<id>&controls=0&playsinline=1&rel=0&origin=https://anode.app" allow="autoplay; encrypted-media">` (`…-youtube-iframe.png`; plays, muted, loops through `playlist=<id>`). Cost: 7.0 % showing, **0.65 % after the plan's recipe (over the 0.5 % target, because a cross-origin iframe cannot be paused from the outer page), 0.45 % with the window ordered out.** To pass, either use the IFrame API (`enablejsapi=1`, `postMessage({"event":"command","func":"pauseVideo"})`) or order the window out for web pages. Task 5 must change the YouTube path to the wrapper page.
+- The page's captions show by default on this clip; add `cc_load_policy=0`.
+
+**Step 9 — image.** A 12000×8000 PNG downsampled with `CGImageSourceCreateThumbnailAtIndex` to 3600×2400: 0.22 s, live image ≈ 32 MB, peak RSS 78 MB during the decode (12 MB before). One screen's worth, as planned. (My "naive decode" comparison was lazy and means nothing.)
+
+**Step 10 — tiles: NO-GO for Task 9 as designed.** Cut a 20 s 1080p clip into 12 HEVC tiles (4×3, 480×360) with `AVAssetExportSession`: 0.4 s per tile, 43 MB total. Played in 12 windows with 12 `AVQueuePlayer`+`AVPlayerLooper`: **15.5 % of a core, RSS 102 MB, against 1.6–2.0 % for one full-frame 1080p player: about 8× (limit was 1.3×).** With 9 of 12 paused: 5.3 % (about 2.7×). Per-tile cost is ~1.3 % of a core, so a tiled wallpaper only wins when about one or two tiles are visible. Resume of a tile paused 10 s with a zero-tolerance seek to the shared clock: **seek 6 ms, playing again after 98 ms**, 96 ms behind its neighbour at that moment (just inside the 100 ms limit, with a visible-seam risk). Per-tile occlusion itself works (Step 4). GPU and energy not measured; CPU alone already fails. Do not build Task 9 unless the owner wants a different approach (for example 2–3 large regions instead of 12).
+
+**Step 11 — menu bar.** Inconclusive: over the playing video the bar showed white text on black, as it did before; I could not separate system wallpaper from our window (the backdrop is dark either way). Needs a bright clip and the owner's eyes.
+
+**Decision (Step 13).** Core: **GO**, with two open items for the owner: Step 5 (sleep/wake, lock, external display) and the by-eye check that Space switches do not flash the old wallpaper. Tiles: **NO-GO**. Defaults the measurements justify: pause on battery / Low Power / heat / locked / display asleep are cheap to honour (paused video 0.05 %, paused page 0.05–0.65 %); "covered" must use window-list geometry or the full-screen-app signal, not `occlusionState` of the whole window; keep the 0.5 s gate.
