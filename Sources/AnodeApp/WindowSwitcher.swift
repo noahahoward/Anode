@@ -360,18 +360,27 @@ enum WindowActivator {
         }
         let app = NSRunningApplication(processIdentifier: window.pid)
         if app?.isHidden == true { app?.unhide() }
-        let element = axWindow(window)
+        // Anode's own windows are handled through AppKit: asking accessibility about a window of this very process
+        // is a round trip to ourselves, and from a busy main thread (or any other) it can deadlock the display cycle.
+        let local = ownWindow(window)
+        let element = local == nil ? axWindow(window) : nil
         // A minimized window has to be back on screen before it can be brought forward.
-        if let element, window.isOffScreen {
-            AXUIElementSetAttributeValue(element, kAXMinimizedAttribute as CFString, kCFBooleanFalse)
+        if window.isOffScreen {
+            if let local { AccessibleWindow.onMain { if local.isMiniaturized { local.deminiaturize(nil) } } }
+            else if let element {
+                AXUIElementSetAttributeValue(element, kAXMinimizedAttribute as CFString, kCFBooleanFalse)
+            }
         }
         if !frontViaSkyLight(window) {
             NSRunningApplication(processIdentifier: window.pid)?.activate(options: [])
         }
         // Within the app, the chosen window over its siblings.
-        guard let element else { return }
-        AXUIElementPerformAction(element, kAXRaiseAction as CFString)
-        AXUIElementSetAttributeValue(element, kAXMainAttribute as CFString, kCFBooleanTrue)
+        if let local {
+            AccessibleWindow.onMain { local.bringForward() }
+        } else if let element {
+            AXUIElementPerformAction(element, kAXRaiseAction as CFString)
+            AXUIElementSetAttributeValue(element, kAXMainAttribute as CFString, kCFBooleanTrue)
+        } else { return }
         // A window brought forward from inside Anode may be a group's: let the group follow.
         (NSApp.delegate as? AppDelegate)?.windowGroups?.checkFrontSoon()
     }
@@ -390,6 +399,7 @@ enum WindowActivator {
     /// an app that is not active lands just under the active app's front window, above all else
     /// — the place a tiled partner of the window just clicked belongs.
     static func raiseWithoutActivating(_ window: SwitchableWindow) {
+        if let local = ownWindow(window) { AccessibleWindow.onMain { local.orderFront(nil) }; return }
         guard let element = axWindow(window) else { return }
         AXUIElementPerformAction(element, kAXRaiseAction as CFString)
     }
@@ -398,6 +408,13 @@ enum WindowActivator {
     /// about unsaved changes. False when the window has no close button to press.
     @discardableResult
     static func close(_ window: SwitchableWindow) -> Bool {
+        if let local = ownWindow(window) {
+            return AccessibleWindow.onMain {
+                guard local.styleMask.contains(.closable) else { return false }
+                local.performClose(nil)
+                return true
+            }
+        }
         guard let element = axWindow(window) else { return false }
         var button: CFTypeRef?
         guard AXUIElementCopyAttributeValue(element, kAXCloseButtonAttribute as CFString, &button) == .success,
@@ -408,6 +425,7 @@ enum WindowActivator {
     /// Does the window have a close button to press? A dialog (TextEdit's Open panel, say) has
     /// none, and an ✕ on its tile would do nothing.
     static func canClose(_ window: SwitchableWindow) -> Bool {
+        if let local = ownWindow(window) { return AccessibleWindow.onMain { local.styleMask.contains(.closable) } }
         guard let element = axWindow(window) else { return false }
         var button: CFTypeRef?
         return AXUIElementCopyAttributeValue(element, kAXCloseButtonAttribute as CFString, &button) == .success
@@ -416,6 +434,7 @@ enum WindowActivator {
 
     /// Every window accessibility lists for `pid`, minimized ones included.
     static func accessibilityWindows(of pid: pid_t) -> [AXWindowInfo] {
+        if pid == AccessibleWindow.ownPID { return ownWindows() }
         guard let getWindow else { return [] }
         let app = AXUIElementCreateApplication(pid)
         var value: CFTypeRef?
@@ -438,8 +457,26 @@ enum WindowActivator {
         }
     }
 
+    /// Anode's own windows, read from AppKit instead of accessibility (see `bringForward`). Standard windows only,
+    /// as accessibility lists them: no panels, no windows that were never shown.
+    private static func ownWindows() -> [AXWindowInfo] {
+        AccessibleWindow.onMain {
+            NSApp.windows.compactMap { w in
+                guard w.windowNumber > 0, w.canBecomeMain, w.isVisible || w.isMiniaturized else { return nil }
+                return AXWindowInfo(id: CGWindowID(w.windowNumber), title: w.title,
+                                    frame: AccessibleWindow.accessibilityFrame(w.frame), minimized: w.isMiniaturized)
+            }
+        }
+    }
+
+    /// The AppKit window behind a switcher entry, when it is one of Anode's own.
+    static func ownWindow(_ window: SwitchableWindow) -> NSWindow? {
+        guard window.pid == AccessibleWindow.ownPID else { return nil }
+        return AccessibleWindow.onMain { NSApp.windows.first { CGWindowID($0.windowNumber) == window.id } }
+    }
+
     private static func axWindow(_ window: SwitchableWindow) -> AXUIElement? {
-        guard let getWindow else { return nil }
+        guard window.pid != AccessibleWindow.ownPID, let getWindow else { return nil }
         let app = AXUIElementCreateApplication(window.pid)
         var value: CFTypeRef?
         guard AXUIElementCopyAttributeValue(app, kAXWindowsAttribute as CFString, &value) == .success,

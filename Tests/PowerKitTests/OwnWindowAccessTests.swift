@@ -63,3 +63,67 @@ final class OwnWindowAccessTests: XCTestCase {
         XCTAssertEqual(found?.windowID, CGWindowID(w.windowNumber))
     }
 }
+
+/// The window switcher and the Dock previews list, raise and close windows too. For Anode's own windows they go
+/// through AppKit as well, so none of it needs the Accessibility permission or a round trip to this process.
+final class OwnWindowSwitcherTests: XCTestCase {
+
+    private func makeWindow(closable: Bool = true, title: String = "Own") -> NSWindow {
+        let w = NSWindow(contentRect: NSRect(x: 300, y: 300, width: 400, height: 300),
+                         styleMask: closable ? [.titled, .closable, .miniaturizable] : [.titled],
+                         backing: .buffered, defer: false)
+        w.isReleasedWhenClosed = false
+        w.title = title
+        return w
+    }
+
+    private func entry(_ w: NSWindow) -> SwitchableWindow {
+        SwitchableWindow(id: CGWindowID(w.windowNumber), pid: AccessibleWindow.ownPID, appName: "Anode",
+                         title: w.title, bounds: .zero)
+    }
+
+    func testOwnWindowsAreListedFromAppKit() {
+        let w = makeWindow(title: "Listed Window")
+        w.orderFront(nil)
+        defer { w.orderOut(nil) }
+        let listed = WindowActivator.accessibilityWindows(of: AccessibleWindow.ownPID)
+        let mine = listed.first { $0.id == CGWindowID(w.windowNumber) }
+        XCTAssertNotNil(mine)
+        XCTAssertEqual(mine?.title, "Listed Window")
+        XCTAssertEqual(mine?.frame, AccessibleWindow.accessibilityFrame(w.frame))
+        XCTAssertEqual(mine?.minimized, false)
+    }
+
+    func testAWindowThatWasNeverShownIsNotListed() {
+        let w = makeWindow()
+        XCTAssertNil(WindowActivator.accessibilityWindows(of: AccessibleWindow.ownPID)
+            .first { $0.id == CGWindowID(w.windowNumber) })
+    }
+
+    func testCanCloseFollowsTheStyleMask() {
+        let closable = makeWindow(closable: true), dialog = makeWindow(closable: false)
+        XCTAssertTrue(WindowActivator.canClose(entry(closable)))
+        XCTAssertFalse(WindowActivator.canClose(entry(dialog)))
+    }
+
+    func testCloseClosesAnOwnWindowThroughAppKit() {
+        let w = makeWindow()
+        w.orderFront(nil)
+        XCTAssertTrue(WindowActivator.close(entry(w)))
+        XCTAssertFalse(w.isVisible)
+        XCTAssertFalse(WindowActivator.close(entry(makeWindow(closable: false))))
+    }
+
+    func testRaiseAndBringForwardUseTheOwnWindow() {
+        let back = makeWindow(title: "Back"), front = makeWindow(title: "Front")
+        back.orderFront(nil); front.orderFront(nil)
+        defer { back.orderOut(nil); front.orderOut(nil) }
+        WindowActivator.raiseWithoutActivating(entry(back))
+        XCTAssertTrue(back.isVisible)
+        var shown = entry(front)
+        shown.isOffScreen = false
+        WindowActivator.bringForward(shown)
+        XCTAssertTrue(front.isVisible)
+    }
+}
+
