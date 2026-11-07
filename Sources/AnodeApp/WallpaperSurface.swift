@@ -134,6 +134,9 @@ final class WallpaperPlayers {
     private var made: [UUID: AVQueuePlayer] = [:]
     private var loopers: [UUID: AVPlayerLooper] = [:]
     private var wanting: [UUID: Set<ObjectIdentifier>] = [:]
+    private var silent: [UUID: Bool] = [:]
+    private var trackWatchers: [UUID: [ObjectIdentifier: NSKeyValueObservation]] = [:]
+    private var itemWatchers: [UUID: NSKeyValueObservation] = [:]
 
     static let shared = WallpaperPlayers()
 
@@ -157,6 +160,35 @@ final class WallpaperPlayers {
     }
 
     func looper(for id: UUID) -> AVPlayerLooper? { loopers[id] }
+
+    /// Muted means no audio at all, not just zero volume. A muted AVPlayer whose item has an ENABLED audio track still holds a
+    /// Core Audio output stream open, and coreaudiod then keeps the Mac from idling to sleep on the app's behalf (measured:
+    /// a `PreventUserIdleSystemSleep` assertion, "audio-out BuiltInSpeakerDevice", for as long as the wallpaper was loaded).
+    /// So while muted every audio track of every item the player holds (the looper keeps the next one ready) is switched off.
+    func setMuted(_ muted: Bool, item id: UUID) {
+        silent[id] = muted
+        guard let player = made[id] else { return }
+        player.isMuted = muted
+        applySilence(id, player)
+    }
+
+    private func applySilence(_ id: UUID, _ player: AVQueuePlayer) {
+        let off = silent[id] ?? false
+        var live = Set<ObjectIdentifier>()
+        for item in player.items() {
+            let key = ObjectIdentifier(item)
+            live.insert(key)
+            for track in item.tracks where track.assetTrack?.mediaType == .audio { track.isEnabled = !off }
+            // An item's tracks appear only once it has loaded: look again when they do.
+            if trackWatchers[id]?[key] == nil {
+                let watcher = item.observe(\.tracks, options: [.new]) { [weak self, weak player] _, _ in
+                    DispatchQueue.main.async { if let self, let player { self.applySilence(id, player) } }
+                }
+                trackWatchers[id, default: [:]][key] = watcher
+            }
+        }
+        trackWatchers[id] = trackWatchers[id]?.filter { live.contains($0.key) }
+    }
 
     func release(item id: UUID, owner: ObjectIdentifier) {
         wanting[id]?.remove(owner)
@@ -186,6 +218,10 @@ final class WallpaperPlayers {
         player.actionAtItemEnd = .advance
         loopers[id] = AVPlayerLooper(player: player, templateItem: template)
         made[id] = player
+        // The looper swaps items in as it loops; each new one needs the same audio state.
+        itemWatchers[id] = player.observe(\.currentItem, options: [.new]) { [weak self, weak player] _, _ in
+            DispatchQueue.main.async { if let self, let player { self.applySilence(id, player) } }
+        }
         return player
     }
 
@@ -197,6 +233,9 @@ final class WallpaperPlayers {
         made[id] = nil
         urls[id] = nil
         wanting[id] = nil
+        silent[id] = nil
+        trackWatchers[id] = nil
+        itemWatchers[id] = nil
         player.removeAllItems()
     }
 }

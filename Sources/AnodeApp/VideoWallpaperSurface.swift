@@ -93,7 +93,7 @@ final class VideoWallpaperSurface: WallpaperSurface {
 
     func apply(_ prefs: WallpaperPrefs) {
         guard !closed else { return }
-        player.isMuted = prefs.muted
+        players.setMuted(prefs.muted, item: itemID)
         player.volume = prefs.volume
         player.defaultRate = Float(prefs.speed)
         // A rate change takes effect on a playing player at once; a paused one picks it up on its next play.

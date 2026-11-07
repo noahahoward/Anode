@@ -109,6 +109,41 @@ final class WallpaperSurfaceTests: XCTestCase {
         XCTAssertTrue(s.player.isMuted)
     }
 
+    func testAMutedWallpaperHoldsNoAudioStreamOpen() async throws {
+        // Measured on the Mac: a muted AVPlayer with an enabled audio track still holds a Core Audio output stream, and
+        // coreaudiod then holds PreventUserIdleSystemSleep for the app. Muted means the audio tracks are switched off.
+        try await TestVideo.make(seconds: 1, audio: true, in: libDir, name: "av.mov")
+        let it = item(.video, .file("av.mov"))
+        let s = try VideoWallpaperSurface(display: display, item: it, library: library, players: WallpaperPlayers(), present: false)
+        defer { s.close() }
+        var p = WallpaperPrefs(); p.muted = true
+        s.apply(p)
+        try await waitForAudioTracks(of: s.player)
+        XCTAssertTrue(audioTracks(of: s.player).allSatisfy { !$0.isEnabled }, "muted: every audio track is off")
+        p.muted = false
+        s.apply(p)
+        try await waitUntil { self.audioTracks(of: s.player).allSatisfy { $0.isEnabled } }
+        p.muted = true
+        s.apply(p)
+        try await waitUntil { self.audioTracks(of: s.player).allSatisfy { !$0.isEnabled } }
+    }
+
+    private func audioTracks(of player: AVQueuePlayer) -> [AVPlayerItemTrack] {
+        player.items().flatMap { $0.tracks }.filter { $0.assetTrack?.mediaType == .audio }
+    }
+
+    private func waitForAudioTracks(of player: AVQueuePlayer) async throws {
+        try await waitUntil { !self.audioTracks(of: player).isEmpty }
+    }
+
+    private func waitUntil(timeout: TimeInterval = 10, _ condition: @escaping () -> Bool) async throws {
+        let deadline = Date().addingTimeInterval(timeout)
+        while !condition() {
+            if Date() > deadline { return XCTFail("timed out waiting for the audio tracks to settle") }
+            try await Task.sleep(nanoseconds: 50_000_000)
+        }
+    }
+
     func testAMissingFileMakesTheFactoryThrowBeforeAnyWindowExists() {
         let gone = item(.video, .file("nope.mov"), name: "Gone")
         let factory = RealWallpaperSurfaceFactory(players: WallpaperPlayers())
