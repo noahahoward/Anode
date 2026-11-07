@@ -337,3 +337,18 @@ Energy: the Anode CLI's per-app table did not list the probe (an unbundled binar
 **Step 11 — menu bar.** Inconclusive: over the playing video the bar showed white text on black, as it did before; I could not separate system wallpaper from our window (the backdrop is dark either way). Needs a bright clip and the owner's eyes.
 
 **Decision (Step 13).** Core: **GO**, with two open items for the owner: Step 5 (sleep/wake, lock, external display) and the by-eye check that Space switches do not flash the old wallpaper. Tiles: **NO-GO**. Defaults the measurements justify: pause on battery / Low Power / heat / locked / display asleep are cheap to honour (paused video 0.05 %, paused page 0.05–0.65 %); "covered" must use window-list geometry or the full-screen-app signal, not `occlusionState` of the whole window; keep the 0.5 s gate.
+
+## Built (2026-11-06, branch `live-wallpapers`, Tasks 2–7; not merged)
+
+Tasks 2–7 are built and unit-tested (full suite 1951 tests, 0 failures). Not built: Task 8 (its premise, Step 12, was never measured), Task 9 (tiles, spike NO-GO), Task 10 (needs the owner). Where this contradicts the Global Constraints above, **this section wins**:
+
+- **Covered** = the wallpaper window's whole-window `occlusionState` only. `fullScreenApp`, the `fullScreen` condition and the controller's `fullScreen` closure do not exist. A maximized window does not pause it (the menu-bar strip stays visible); the UI says so. Pausing behind maximized windows needs window-list geometry, which needs polling: a separate design.
+- **Gate delay is 1.0 s**, not 0.5 s: a Space slide hides the window for ~0.54 s.
+- **YouTube** loads through a wrapper page (`loadHTMLString`, base `https://anode.app/`, iframe with `enablejsapi=1`) and is paused/resumed through the IFrame API. It is always muted.
+- **A paused web page keeps its last picture** (a snapshot placeholder) before the web view is removed.
+- **Links retry on network return**: the controller watches the network (`NWPathMonitor`) only while a link-based wallpaper is failed and waiting.
+- **Main-frame navigation** is limited to https/file/about even mid-redirect; a page that is turned away, is a download, or takes over 30 s to load is reported as failed.
+- **Sound** for pages is an injected script with a per-surface random switch name; containment of the obvious routes, not a guarantee. Verify hostile-audio behaviour in Task 10 step 5.
+- Speed slider is enabled only for videos; the first item added becomes the default.
+- Review minors deferred: `.m3u8` should always stream; `refresh` flag dropped when displays change in the same event; Beta rows rebuild on every status change; stray `download-*` file after a crash; image re-decode race; a few test gaps.
+- Unverified on hardware: sleep/wake, lock/unlock, external display, Space-switch flash, a hostile page's audio, YouTube pause via the IFrame API, `pmset -g assertions` while a web video plays.
