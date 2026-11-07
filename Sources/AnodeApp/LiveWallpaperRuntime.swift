@@ -24,6 +24,7 @@ final class LiveWallpaperRuntime {
                                              displays: { DisplayInfo.current() }, factory: factory,
                                              conditions: { source.current() }, now: { Date() })
         holder.controller = controller
+        controller.log = { FeatureLog.append("wallpaper.log", $0) }
         token = settings.observe(Settings.Key.liveWallpaperEnabled) { [weak self] in self?.applySetting() }
         applySetting()
         controller.reconcile()

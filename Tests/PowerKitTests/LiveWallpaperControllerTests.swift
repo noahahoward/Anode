@@ -276,6 +276,26 @@ final class LiveWallpaperControllerTests: XCTestCase {
         XCTAssertEqual(r.net.cancelled, 1)
     }
 
+    func testEveryStateChangeIsLoggedAndNothingElseIs() throws {
+        let r = try rig(); defer { done(r) }
+        var lines: [String] = []
+        r.controller.log = { lines.append($0) }
+        let a = try addItem(r, "A"); assign(r, default: a)
+        r.controller.reconcile()
+        XCTAssertTrue(lines.contains { $0.contains("D1") && $0.contains("show") && $0.contains("A") }, lines.description)
+        lines.removeAll()
+        r.controller.conditionsChanged(); r.controller.conditionsChanged()
+        XCTAssertEqual(lines, [], "an event that changes nothing writes nothing")
+        r.conditions.value.onBattery = true; r.controller.conditionsChanged()
+        XCTAssertTrue(lines.contains { $0.contains("D1") && $0.contains("pause") && $0.contains("onBattery") }, lines.description)
+        lines.removeAll()
+        r.conditions.value.onBattery = false; r.controller.conditionsChanged()
+        XCTAssertTrue(lines.contains { $0.contains("D1") && $0.contains("play") }, lines.description)
+        lines.removeAll()
+        r.factory.live(for: "D1")?.onFailure?("boom")
+        XCTAssertTrue(lines.contains { $0.contains("D1") && $0.contains("fail") && $0.contains("boom") }, lines.description)
+    }
+
     // MARK: displays
 
     func testDisplayAddedOrRemovedReconciles() throws {

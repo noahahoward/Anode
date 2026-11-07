@@ -33,6 +33,10 @@ final class LiveWallpaperController {
     /// Called whenever anything the section shows may have changed.
     var onChange: (() -> Void)?
 
+    /// One line per state change (a surface shown, closed or failed; a display playing or paused and why), never per event.
+    /// The app points it at wallpaper.log; tests and the default leave it silent.
+    var log: (String) -> Void = { _ in }
+
     private final class Live {
         let surface: WallpaperSurface
         let itemID: UUID
@@ -183,6 +187,7 @@ final class LiveWallpaperController {
         // Close what should no longer be there: an unplugged display, a cleared assignment, a different item.
         for (uuid, l) in live where desired[uuid]?.1.id != l.itemID {
             l.surface.close()
+            log("\(uuid) close \(l.itemName)")
             live[uuid] = nil
         }
         for uuid in failures.keys where desired[uuid]?.1.id != failures[uuid]?.itemID { failures[uuid] = nil }
@@ -203,6 +208,7 @@ final class LiveWallpaperController {
     private func create(display: DisplayInfo, item: WallpaperItem, prefs: WallpaperPrefs) {
         if library.isMissing(item) {
             failures[display.uuid] = Failure(itemID: item.id, message: "File missing: \(item.name)", remote: false)
+            log("\(display.uuid) fail File missing: \(item.name)")
             return
         }
         do {
@@ -211,6 +217,7 @@ final class LiveWallpaperController {
             if case .remote = item.source { isRemote = true }
             let l = Live(surface: surface, itemID: item.id, itemName: item.name, remote: isRemote, display: display)
             live[display.uuid] = l
+            log("\(display.uuid) show \(item.name)")
             surface.onCoveredChange = { [weak self, weak l] covered in
                 guard let self, let l, self.live[display.uuid] === l else { return }
                 l.covered = covered
@@ -228,6 +235,7 @@ final class LiveWallpaperController {
             var isRemote = false
             if case .remote = item.source { isRemote = true }
             failures[display.uuid] = Failure(itemID: item.id, message: message, remote: isRemote)
+            log("\(display.uuid) fail \(message)")
         }
     }
 
@@ -236,6 +244,7 @@ final class LiveWallpaperController {
         l.surface.close()
         live[uuid] = nil
         failures[uuid] = Failure(itemID: l.itemID, message: message, remote: l.remote)
+        log("\(uuid) fail \(message)")
         updateNetworkWatch()
         applyPolicy()
         onChange?()
@@ -249,7 +258,7 @@ final class LiveWallpaperController {
     }
 
     private func closeAll() {
-        for (_, l) in live { l.surface.close() }
+        for (uuid, l) in live { l.surface.close(); log("\(uuid) close \(l.itemName)") }
         live.removeAll()
         timer?.invalidate(); timer = nil
     }
@@ -299,6 +308,9 @@ final class LiveWallpaperController {
             let raw = WallpaperPolicy.pauseReason(prefs: prefs, global: g, display: WallpaperDisplayConditions(covered: l.covered))
             let effective = l.gate.update(raw, now: at)
             if !l.told || effective != l.reason || (refresh && effective == nil) {
+                if effective != l.reason || !l.told {
+                    log("\(l.display.uuid) \(effective.map { "pause \($0)" } ?? "play") \(l.itemName)")
+                }
                 l.told = true
                 l.reason = effective
                 l.surface.setPlaying(effective == nil)
