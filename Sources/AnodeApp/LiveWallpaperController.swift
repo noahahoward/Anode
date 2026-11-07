@@ -1,4 +1,5 @@
 import AppKit
+import Network
 import PowerKit
 
 // ── Live wallpapers: which display shows what, and when it plays ────────────
@@ -36,18 +37,20 @@ final class LiveWallpaperController {
         let surface: WallpaperSurface
         let itemID: UUID
         let itemName: String
+        let remote: Bool
         var display: DisplayInfo
         var gate = PauseGate()
         var covered = false
         var reason: WallpaperPauseReason?
         var told = false                      // setPlaying has been called at least once
         var appliedPrefs: WallpaperPrefs?
-        init(surface: WallpaperSurface, itemID: UUID, itemName: String, display: DisplayInfo) {
-            self.surface = surface; self.itemID = itemID; self.itemName = itemName; self.display = display
+        init(surface: WallpaperSurface, itemID: UUID, itemName: String, remote: Bool, display: DisplayInfo) {
+            self.surface = surface; self.itemID = itemID; self.itemName = itemName; self.remote = remote; self.display = display
         }
     }
 
-    private struct Failure { let itemID: UUID; let message: String }
+    /// `remote`: the item is a link, so a failure may just mean there was no network at the time.
+    private struct Failure { let itemID: UUID; let message: String; let remote: Bool }
 
     private let settings: Settings
     private let library: WallpaperLibrary
@@ -56,6 +59,8 @@ final class LiveWallpaperController {
     private let factory: WallpaperSurfaceFactory
     private let conditions: () -> WallpaperGlobalConditions
     private let now: () -> Date
+    private let watchNetwork: (_ onReturn: @escaping () -> Void) -> () -> Void
+    private var stopWatchingNetwork: (() -> Void)?
 
     private var live: [String: Live] = [:]
     private var failures: [String: Failure] = [:]
@@ -73,7 +78,8 @@ final class LiveWallpaperController {
 
     init(settings: Settings, library: WallpaperLibrary, prefsStore: WallpaperPrefsStore,
          displays: @escaping () -> [DisplayInfo], factory: WallpaperSurfaceFactory,
-         conditions: @escaping () -> WallpaperGlobalConditions, now: @escaping () -> Date) {
+         conditions: @escaping () -> WallpaperGlobalConditions, now: @escaping () -> Date,
+         watchNetwork: @escaping (_ onReturn: @escaping () -> Void) -> () -> Void = LiveWallpaperController.systemNetworkWatch) {
         self.settings = settings
         self.library = library
         self.prefsStore = prefsStore
@@ -81,6 +87,7 @@ final class LiveWallpaperController {
         self.factory = factory
         self.conditions = conditions
         self.now = now
+        self.watchNetwork = watchNetwork
         let nc = NotificationCenter.default
         tokens.append(nc.addObserver(forName: WallpaperPrefsStore.didChange, object: prefsStore, queue: .main) { [weak self] _ in
             self?.reconcile()
@@ -108,8 +115,42 @@ final class LiveWallpaperController {
             performReconcile()
         } while reconcileAgain
         reconciling = false
+        updateNetworkWatch()
         applyPolicy()
         onChange?()
+    }
+
+    // MARK: network
+
+    /// Watches the network only while a link-based wallpaper is failed and waiting; `onReturn` fires when the network goes from
+    /// unavailable to available. The first report is only the starting state and is not an event, so a failure that has nothing
+    /// to do with the network (a dead page) does not retry in a loop.
+    static func systemNetworkWatch(onReturn: @escaping () -> Void) -> () -> Void {
+        let monitor = NWPathMonitor()
+        var wasSatisfied: Bool?
+        monitor.pathUpdateHandler = { path in
+            let now = path.status == .satisfied
+            defer { wasSatisfied = now }
+            guard let before = wasSatisfied, !before, now else { return }
+            DispatchQueue.main.async(execute: onReturn)
+        }
+        monitor.start(queue: DispatchQueue(label: "anode.wallpaper.network"))
+        return { monitor.cancel() }
+    }
+
+    private func updateNetworkWatch() {
+        let waiting = !isShutDown && failures.values.contains { $0.remote }
+        if waiting, stopWatchingNetwork == nil {
+            stopWatchingNetwork = watchNetwork { [weak self] in self?.networkReturned() }
+        } else if !waiting, let stop = stopWatchingNetwork {
+            stop(); stopWatchingNetwork = nil
+        }
+    }
+
+    private func networkReturned() {
+        guard !isShutDown else { return }
+        for (uuid, f) in failures where f.remote { failures[uuid] = nil }
+        reconcile()
     }
 
     private func performReconcile() {
@@ -161,12 +202,14 @@ final class LiveWallpaperController {
 
     private func create(display: DisplayInfo, item: WallpaperItem, prefs: WallpaperPrefs) {
         if library.isMissing(item) {
-            failures[display.uuid] = Failure(itemID: item.id, message: "File missing: \(item.name)")
+            failures[display.uuid] = Failure(itemID: item.id, message: "File missing: \(item.name)", remote: false)
             return
         }
         do {
             let surface = try factory.makeSurface(for: display, item: item, library: library, prefs: prefs)
-            let l = Live(surface: surface, itemID: item.id, itemName: item.name, display: display)
+            var isRemote = false
+            if case .remote = item.source { isRemote = true }
+            let l = Live(surface: surface, itemID: item.id, itemName: item.name, remote: isRemote, display: display)
             live[display.uuid] = l
             surface.onCoveredChange = { [weak self, weak l] covered in
                 guard let self, let l, self.live[display.uuid] === l else { return }
@@ -182,7 +225,9 @@ final class LiveWallpaperController {
             l.appliedPrefs = prefs
         } catch {
             let message = (error as? WallpaperSurfaceError)?.message ?? "Couldn't show \(item.name): \(error.localizedDescription)"
-            failures[display.uuid] = Failure(itemID: item.id, message: message)
+            var isRemote = false
+            if case .remote = item.source { isRemote = true }
+            failures[display.uuid] = Failure(itemID: item.id, message: message, remote: isRemote)
         }
     }
 
@@ -190,7 +235,8 @@ final class LiveWallpaperController {
         guard let l = live[uuid] else { return }
         l.surface.close()
         live[uuid] = nil
-        failures[uuid] = Failure(itemID: l.itemID, message: message)
+        failures[uuid] = Failure(itemID: l.itemID, message: message, remote: l.remote)
+        updateNetworkWatch()
         applyPolicy()
         onChange?()
     }
@@ -212,6 +258,7 @@ final class LiveWallpaperController {
         isShutDown = true
         closeAll()
         failures.removeAll()
+        updateNetworkWatch()
         for t in tokens { NotificationCenter.default.removeObserver(t) }
         tokens.removeAll()
         settingsToken = nil

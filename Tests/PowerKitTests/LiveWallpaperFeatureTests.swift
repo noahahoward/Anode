@@ -162,6 +162,17 @@ final class LiveWallpaperFeatureTests: XCTestCase {
         XCTAssertEqual(r.importer.calls, [])
     }
 
+    func testAllTheUIWorkOfAnImportHappensOnTheMainThread() async throws {
+        // The importer runs wherever Swift puts it; the section's own buttons, labels and rows must never be touched off main.
+        let r = try rig(); defer { done(r) }
+        var offMain = 0, total = 0
+        r.feature.layoutChanged = { total += 1; if !Thread.isMainThread { offMain += 1 } }
+        await r.feature.importFile(URL(fileURLWithPath: "/tmp/wave.mov"))
+        await r.feature.submitLink("https://example.com/clip.mp4", downloadCopy: false)
+        XCTAssertGreaterThan(total, 0)
+        XCTAssertEqual(offMain, 0, "\(offMain) of \(total) UI updates ran off the main thread")
+    }
+
     func testAFailedImportSaysWhyAndAddsNothing() async throws {
         let r = try rig(); defer { done(r) }
         r.importer.failure = WallpaperImportError.notPlayable

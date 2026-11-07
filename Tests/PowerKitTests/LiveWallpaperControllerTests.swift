@@ -8,6 +8,7 @@ import AppKit
 final class LiveWallpaperControllerTests: XCTestCase {
 
     final class Box<T> { var value: T; init(_ v: T) { value = v } }
+    final class NetworkProbe { var callbacks: [() -> Void] = []; var cancelled = 0 }
 
     final class FakeSurface: WallpaperSurface {
         let displayUUID: String
@@ -55,6 +56,7 @@ final class LiveWallpaperControllerTests: XCTestCase {
         let defaults: UserDefaults
         let suite: String
         let dir: URL
+        let net: NetworkProbe
     }
 
     private let t0 = Date(timeIntervalSinceReferenceDate: 5_000)
@@ -73,11 +75,16 @@ final class LiveWallpaperControllerTests: XCTestCase {
         let clock = Box(t0)
         let conditions = Box(WallpaperGlobalConditions())
         let displays = Box(ds ?? [display("D1"), display("D2", x: 1000)])
+        let net = NetworkProbe()
         let controller = LiveWallpaperController(settings: settings, library: library, prefsStore: store,
                                                  displays: { displays.value }, factory: factory,
-                                                 conditions: { conditions.value }, now: { clock.value })
+                                                 conditions: { conditions.value }, now: { clock.value },
+                                                 watchNetwork: { onReturn in
+            net.callbacks.append(onReturn)
+            return { net.cancelled += 1 }
+        })
         return Rig(controller: controller, library: library, store: store, settings: settings, factory: factory, clock: clock,
-                   conditions: conditions, displays: displays, defaults: defaults, suite: suite, dir: dir)
+                   conditions: conditions, displays: displays, defaults: defaults, suite: suite, dir: dir, net: net)
     }
 
     private func done(_ r: Rig) {
@@ -223,6 +230,50 @@ final class LiveWallpaperControllerTests: XCTestCase {
         var p = r.store.prefs; p.assignments.defaultItem = good.id; r.store.prefs = p
         r.controller.reconcile()
         XCTAssertEqual(r.factory.live(for: "D1")?.itemName, "Good")
+    }
+
+    func testARemotePageThatFailedIsRetriedWhenTheNetworkReturns() throws {
+        let r = try rig(); defer { done(r) }
+        let a = try addItem(r, "Remote")          // a link
+        r.factory.refuse = ["Remote"]
+        assign(r, default: a)
+        r.controller.reconcile()
+        XCTAssertEqual(r.net.callbacks.count, 1, "one watch, started because a link failed")
+        r.controller.reconcile(); r.controller.conditionsChanged()
+        XCTAssertEqual(r.net.callbacks.count, 1, "not one per event")
+        r.factory.refuse = []
+        r.net.callbacks[0]()                       // the network came back
+        XCTAssertNotNil(r.factory.live(for: "D1"))
+        XCTAssertEqual(r.controller.status(forDisplay: "D1"), .playing(itemName: "Remote"))
+        XCTAssertEqual(r.net.cancelled, 1, "and the watch ends once nothing is waiting")
+    }
+
+    func testASurfaceThatFailsAfterShowingARemotePageIsAlsoRetriedOnNetworkReturn() throws {
+        let r = try rig(displays: [display("D1")]); defer { done(r) }
+        let a = try addItem(r, "Remote"); assign(r, default: a)
+        r.controller.reconcile()
+        XCTAssertEqual(r.net.callbacks.count, 0, "nothing failed, nothing watched")
+        r.factory.live(for: "D1")?.onFailure?("The Internet connection appears to be offline.")
+        XCTAssertEqual(r.net.callbacks.count, 1)
+        r.net.callbacks[0]()
+        XCTAssertNotNil(r.factory.live(for: "D1"))
+    }
+
+    func testALocalFileThatFailedDoesNotStartANetworkWatch() throws {
+        let r = try rig(); defer { done(r) }
+        let gone = try addItem(r, "Gone", source: .file("gone.mov")); assign(r, default: gone)
+        r.controller.reconcile()
+        XCTAssertEqual(r.net.callbacks.count, 0)
+    }
+
+    func testShutdownEndsTheNetworkWatch() throws {
+        let r = try rig(); defer { done(r) }
+        let a = try addItem(r, "Remote")
+        r.factory.refuse = ["Remote"]
+        assign(r, default: a)
+        r.controller.reconcile()
+        r.controller.shutdown()
+        XCTAssertEqual(r.net.cancelled, 1)
     }
 
     // MARK: displays

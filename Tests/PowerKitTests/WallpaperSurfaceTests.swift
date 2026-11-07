@@ -247,6 +247,134 @@ final class WallpaperSurfaceTests: XCTestCase {
         XCTAssertThrowsError(try WebWallpaperSurface(display: display, item: it, library: library, present: false))
     }
 
+    // MARK: web: review fixes
+
+    private func webItem(_ source: WallpaperSource) throws -> WallpaperItem {
+        if case .folder(let dir, let entry) = source {
+            let d = libDir.appendingPathComponent(dir)
+            try fm.createDirectory(at: d, withIntermediateDirectories: true)
+            try Data("<html></html>".utf8).write(to: d.appendingPathComponent(entry))
+        }
+        return item(.web, source)
+    }
+
+    func testARedirectToAnInsecureAddressIsRefusedEvenBeforeTheFirstCommit() {
+        let secure = URL(string: "https://art.example/")!, insecure = URL(string: "http://art.example/")!
+        XCTAssertEqual(WebWallpaperSurface.navigationPolicy(isMainFrame: true, committedMainURL: nil, target: insecure), .cancel)
+        XCTAssertEqual(WebWallpaperSurface.navigationPolicy(isMainFrame: true, committedMainURL: nil, target: secure), .allow)
+        XCTAssertEqual(WebWallpaperSurface.navigationPolicy(isMainFrame: true, committedMainURL: nil,
+                                                            target: URL(string: "file:///tmp/p/index.html")!), .allow)
+        XCTAssertEqual(WebWallpaperSurface.navigationPolicy(isMainFrame: true, committedMainURL: nil, target: URL(string: "about:blank")!), .allow)
+        XCTAssertEqual(WebWallpaperSurface.navigationPolicy(isMainFrame: true, committedMainURL: nil,
+                                                            target: URL(string: "javascript:alert(1)")!), .cancel)
+        XCTAssertEqual(WebWallpaperSurface.navigationPolicy(isMainFrame: false, committedMainURL: nil, target: insecure), .allow,
+                       "an embedded frame is not the page")
+    }
+
+    func testAResponseTheViewCannotShowIsRefusedAndReportedForTheMainFrame() {
+        let bad = WebWallpaperSurface.responsePolicy(canShowMIMEType: false, isMainFrame: true)
+        XCTAssertEqual(bad.policy, .cancel)
+        XCTAssertNotNil(bad.failure, "the row must say why, not claim Playing")
+        let sub = WebWallpaperSurface.responsePolicy(canShowMIMEType: false, isMainFrame: false)
+        XCTAssertEqual(sub.policy, .cancel)
+        XCTAssertNil(sub.failure)
+        let fine = WebWallpaperSurface.responsePolicy(canShowMIMEType: true, isMainFrame: true)
+        XCTAssertEqual(fine.policy, .allow)
+        XCTAssertNil(fine.failure)
+    }
+
+    func testAPageThatNeverFinishesLoadingIsReportedAsFailed() throws {
+        let s = try WebWallpaperSurface(display: display, item: webItem(.folder(directory: "web-t", entry: "index.html")),
+                                        library: library, present: false)
+        defer { s.close() }
+        var reported: [String] = []
+        s.onFailure = { reported.append($0) }
+        s.loadTimedOut()
+        XCTAssertEqual(reported.count, 1)
+        XCTAssertTrue(reported[0].lowercased().contains("too long"))
+        // Once loaded, a late timer is harmless.
+        s.webView(s.webView, didFinish: nil)
+        s.loadTimedOut()
+        XCTAssertEqual(reported.count, 1)
+    }
+
+    func testEachSurfaceHasItsOwnSecretSoundSwitchNotTheDefaultName() throws {
+        let a = try WebWallpaperSurface(display: display, item: webItem(.folder(directory: "web-a", entry: "index.html")), library: library, present: false)
+        let b = try WebWallpaperSurface(display: display, item: webItem(.folder(directory: "web-b", entry: "index.html")), library: library, present: false)
+        defer { a.close(); b.close() }
+        XCTAssertNotEqual(a.setterName, b.setterName)
+        XCTAssertNotEqual(a.setterName, WebWallpaperSurface.defaultSetterName)
+        var sent: [String] = []
+        a.scriptSink = { sent.append($0) }
+        var p = WallpaperPrefs(); p.muted = false
+        a.apply(p)
+        XCTAssertTrue(sent.contains { $0.contains(a.setterName) && $0.contains("true") }, sent.description)
+        XCTAssertFalse(sent.contains { $0.contains(WebWallpaperSurface.defaultSetterName) })
+    }
+
+    func testAYouTubeEmbedIsPausedAndResumedThroughThePlayerAPI() throws {
+        let embed = WallpaperURLClassifier.youtubeEmbedURL(id: "dQw4w9WgXcQ")
+        let s = try WebWallpaperSurface(display: display, item: item(.web, .remote(embed)), library: library, present: false)
+        defer { s.close() }
+        var sent: [String] = []
+        s.scriptSink = { sent.append($0) }
+        s.webView(s.webView, didFinish: nil)       // loaded
+        sent.removeAll()
+        s.setPlaying(true)
+        XCTAssertTrue(sent.contains { $0.contains("playVideo") }); XCTAssertTrue(sent.contains { $0.contains("anode-resume") })
+        sent.removeAll()
+        s.setPlaying(false)
+        XCTAssertTrue(sent.contains { $0.contains("pauseVideo") }); XCTAssertTrue(sent.contains { $0.contains("anode-pause") })
+    }
+
+    func testAPageThatReloadsAfterACrashIsToldItsStateAgain() throws {
+        let s = try WebWallpaperSurface(display: display, item: webItem(.folder(directory: "web-c", entry: "index.html")),
+                                        library: library, present: false)
+        defer { s.close() }
+        var p = WallpaperPrefs(); p.muted = false
+        s.apply(p)
+        s.setPlaying(true)
+        s.webView(s.webView, didFinish: nil)       // first load
+        var sent: [String] = []
+        s.scriptSink = { sent.append($0) }
+        s.webView(s.webView, didFinish: nil)       // the reload after a crash
+        XCTAssertTrue(sent.contains { $0.contains(s.setterName) && $0.contains("true") }, "the unmuted choice is sent again: \(sent)")
+        XCTAssertTrue(sent.contains { $0.contains("anode-resume") }, "and so is the playing state")
+    }
+
+    func testTheMutingScriptCannotBeTurnedOffByThePageItself() async throws {
+        let config = WebWallpaperSurface.webConfiguration(setterName: "__secretSwitch")
+        let web = WKWebView(frame: NSRect(x: 0, y: 0, width: 100, height: 100), configuration: config)
+        let waiter = LoadWaiter()
+        web.navigationDelegate = waiter
+        let loaded = expectation(description: "loaded")
+        waiter.onFinish = { loaded.fulfill() }
+        web.loadHTMLString("<html><body></body></html>", baseURL: WallpaperURLClassifier.youtubeWrapperBaseURL)
+        await fulfillment(of: [loaded], timeout: 15)
+        let js = """
+        (function(){
+          var Ctx = window.AudioContext || window.webkitAudioContext;
+          var out = {};
+          out.defaultNameHidden = (typeof window.__anodeSetSound === 'undefined');
+          if (Ctx) {
+            var c = new Ctx();
+            out.constructorIsWrapped = (c.constructor === Ctx);
+            out.sameConstructorStillQuiet = (new (c.constructor)().constructor === Ctx);
+            out.resumeCannotBeRestored = (delete c.resume) === false || typeof c.resume === 'function';
+            out.protoResumeLocked = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(c), 'resume') === undefined
+                                    || Object.getOwnPropertyDescriptor(Ctx.prototype, 'resume').configurable === false;
+          }
+          return JSON.stringify(out);
+        })()
+        """
+        let result = try await web.evaluateJavaScript(js) as? String ?? ""
+        XCTAssertTrue(result.contains("\"defaultNameHidden\":true"), result)
+        XCTAssertTrue(result.contains("\"constructorIsWrapped\":true"), result)
+        XCTAssertTrue(result.contains("\"sameConstructorStillQuiet\":true"), result)
+        XCTAssertTrue(result.contains("\"protoResumeLocked\":true"), result)
+        web.navigationDelegate = nil
+    }
+
     func testTheRealSnapshotterPicturesALocalPage() async throws {
         let page = libDir.appendingPathComponent("snap.html")
         try Data("<html><body style='background:#c33'><h1>hello</h1></body></html>".utf8).write(to: page)
@@ -254,4 +382,9 @@ final class WallpaperSurfaceTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(image.width, 320)
         XCTAssertGreaterThanOrEqual(image.height, 200)
     }
+}
+
+private final class LoadWaiter: NSObject, WKNavigationDelegate {
+    var onFinish: (() -> Void)?
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) { onFinish?() }
 }

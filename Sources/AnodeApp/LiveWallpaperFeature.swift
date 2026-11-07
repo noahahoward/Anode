@@ -426,6 +426,7 @@ final class LiveWallpaperFeature: BetaFeature {
         layoutChanged?()
     }
 
+    @MainActor
     private func run(_ busyText: String, _ work: () async throws -> ImportResult) async {
         guard !busy else { return }
         setBusy(true, busyText)
@@ -448,10 +449,13 @@ final class LiveWallpaperFeature: BetaFeature {
         refresh()
     }
 
+    @MainActor
     func importFile(_ url: URL) async { await run("Adding \(url.lastPathComponent)…") { try await importer.addFile(url) } }
+    @MainActor
     func importFolder(_ url: URL) async { await run("Adding \(url.lastPathComponent)…") { try await importer.addFolder(url) } }
 
     /// A link typed by the user. Refused here, with a message, if it isn't an https link; otherwise handed to the importer.
+    @MainActor
     func submitLink(_ text: String, downloadCopy: Bool) async {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let url = URL(string: trimmed), url.scheme != nil, url.host != nil || url.scheme == "file" else {

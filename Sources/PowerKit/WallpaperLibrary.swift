@@ -66,7 +66,10 @@ public final class WallpaperLibrary {
     public static let shared = WallpaperLibrary(directory: WallpaperLibrary.defaultDirectory)
 
     public let directory: URL
-    public private(set) var items: [WallpaperItem] = []
+    /// Readable from any thread: an import adds from its own thread while the UI reads on main.
+    public var items: [WallpaperItem] { lock.lock(); defer { lock.unlock() }; return stored }
+    private var stored: [WallpaperItem] = []
+    private let lock = NSLock()
 
     private let fm: FileManager
     private var indexURL: URL { directory.appendingPathComponent("library.json") }
@@ -77,7 +80,7 @@ public final class WallpaperLibrary {
         // A corrupt or unreadable index is an empty library; the files beside it are left exactly as they are.
         if let data = try? Data(contentsOf: indexURL),
            let decoded = try? Self.decoder.decode([WallpaperItem].self, from: data) {
-            items = decoded
+            stored = decoded
         }
     }
 
@@ -124,7 +127,7 @@ public final class WallpaperLibrary {
         } catch {
             throw WallpaperLibraryError.writeFailed
         }
-        items = next
+        lock.lock(); stored = next; lock.unlock()
         NotificationCenter.default.post(name: Self.didChange, object: self)
     }
 

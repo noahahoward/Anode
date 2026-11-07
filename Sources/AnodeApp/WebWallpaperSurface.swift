@@ -1,5 +1,4 @@
 import AppKit
-import Network
 import PowerKit
 import WebKit
 
@@ -40,84 +39,122 @@ final class WebWallpaperSurface: NSObject, WallpaperSurface, WKNavigationDelegat
     private let placeholder: NSView
     private let plan: WebLoadPlan
     private let youtubeEmbed: Bool
-    private let isRemote: Bool
     private let present: Bool
+    let setterName: String
+    /// Every script the surface runs is also passed here, for tests.
+    var scriptSink: ((String) -> Void)?
+    var loadTimeout: TimeInterval = 30
+    private var loadTimer: DispatchWorkItem?
+    private var lastPrefs: WallpaperPrefs?
     private var committedMainURL: URL?
     private var desiredPlaying = false
     private var loaded = false
-    private var failedAndWaitingForNetwork = false
     private var restarts = 0
     private var pauseToken = 0
-    private var pathMonitor: NWPathMonitor?
     private var closed = false
 
     // MARK: pure pieces (tested)
 
-    static func webConfiguration() -> WKWebViewConfiguration {
+    /// The name the page-facing sound switch has when none is given (tests). A real surface makes its own, so a page cannot
+    /// know what to call.
+    static let defaultSetterName = "__anodeSetSound"
+
+    static func webConfiguration(setterName: String = WebWallpaperSurface.defaultSetterName) -> WKWebViewConfiguration {
         let c = WKWebViewConfiguration()
         c.websiteDataStore = .nonPersistent()
         c.mediaTypesRequiringUserActionForPlayback = []
         c.preferences.javaScriptCanOpenWindowsAutomatically = false
         c.defaultWebpagePreferences.allowsContentJavaScript = true
         c.allowsAirPlayForMediaPlayback = false
-        c.userContentController.addUserScript(mutingUserScript())
+        c.userContentController.addUserScript(mutingUserScript(setterName: setterName))
         return c
     }
 
     /// Forces every media element and audio context silent, in every frame, from the first moment of the page. The page can
-    /// still run its own audio code; it just makes no sound. `window.__anodeSetSound(true)` lets sound through.
-    static func mutingUserScript() -> WKUserScript {
-        WKUserScript(source: mutingScriptSource, injectionTime: .atDocumentStart, forMainFrameOnly: false)
+    /// still run its own audio code; it just makes no sound. A global function named `setterName` lets sound through; it is
+    /// not enumerable and its name is random per surface, and the hooks it relies on are installed non-configurable, so the
+    /// page has no ordinary route back to a working `resume()` or an unwrapped `AudioContext`. (WebKit has no public "mute this
+    /// page" switch, so this is containment of the obvious routes, not a guarantee.)
+    static func mutingUserScript(setterName: String = WebWallpaperSurface.defaultSetterName) -> WKUserScript {
+        WKUserScript(source: mutingScriptSource(setterName: setterName), injectionTime: .atDocumentStart, forMainFrameOnly: false)
     }
 
-    static let mutingScriptSource = """
-    (function () {
-      if (window.__anodeSetSound) { return; }
-      var allow = false;
-      var proto = HTMLMediaElement.prototype;
-      var mutedDesc = Object.getOwnPropertyDescriptor(proto, 'muted');
-      function silence(m) { try { if (!allow && mutedDesc && mutedDesc.set) { mutedDesc.set.call(m, true); } } catch (e) {} }
-      if (mutedDesc && mutedDesc.set) {
-        Object.defineProperty(proto, 'muted', { configurable: true, enumerable: mutedDesc.enumerable,
-          get: function () { return mutedDesc.get.call(this); },
-          set: function (v) { mutedDesc.set.call(this, allow ? v : true); } });
-      }
-      var nativePlay = proto.play;
-      proto.play = function () { silence(this); return nativePlay.apply(this, arguments); };
-      function sweep() { var els = document.querySelectorAll('video,audio'); for (var i = 0; i < els.length; i++) { silence(els[i]); } }
-      document.addEventListener('play', function (e) { if (e.target && e.target.tagName) { silence(e.target); } }, true);
-      document.addEventListener('volumechange', function (e) { if (e.target && e.target.tagName) { silence(e.target); } }, true);
-      var contexts = [];
-      function quiet(c) { try { if (!allow) { c.suspend(); c.resume = function () { return Promise.resolve(); }; } } catch (e) {} }
-      ['AudioContext', 'webkitAudioContext'].forEach(function (name) {
-        var Native = window[name];
-        if (!Native) { return; }
-        var Wrapped = function () {
-          var c = new Native(...arguments);
-          contexts.push(c);
-          quiet(c);
-          return c;
-        };
-        Wrapped.prototype = Native.prototype;
-        try { Object.defineProperty(window, name, { configurable: true, writable: true, value: Wrapped }); } catch (e) {}
-      });
-      window.__anodeSetSound = function (on) {
-        allow = !!on;
-        if (allow) { contexts.forEach(function (c) { try { delete c.resume; c.resume(); } catch (e) {} }); }
-        else { contexts.forEach(quiet); sweep(); }
-      };
-      document.addEventListener('DOMContentLoaded', sweep);
-    })();
-    """
+    static func mutingScriptSource(setterName: String) -> String {
+        """
+        (function () {
+          var NAME = '\(setterName)';
+          if (window[NAME]) { return; }
+          var allow = false;
+          var proto = HTMLMediaElement.prototype;
+          var mutedDesc = Object.getOwnPropertyDescriptor(proto, 'muted');
+          function silence(m) { try { if (!allow && mutedDesc && mutedDesc.set) { mutedDesc.set.call(m, true); } } catch (e) {} }
+          if (mutedDesc && mutedDesc.set) {
+            Object.defineProperty(proto, 'muted', { configurable: false, enumerable: mutedDesc.enumerable,
+              get: function () { return mutedDesc.get.call(this); },
+              set: function (v) { mutedDesc.set.call(this, allow ? v : true); } });
+          }
+          var nativePlay = proto.play;
+          Object.defineProperty(proto, 'play', { configurable: false, writable: false,
+            value: function () { silence(this); return nativePlay.apply(this, arguments); } });
+          function each(fn) { var els = document.querySelectorAll('video,audio'); for (var i = 0; i < els.length; i++) { fn(els[i]); } }
+          document.addEventListener('play', function (e) { if (e.target && e.target.tagName) { silence(e.target); } }, true);
+          document.addEventListener('volumechange', function (e) { if (e.target && e.target.tagName) { silence(e.target); } }, true);
+          document.addEventListener('DOMContentLoaded', function () { each(silence); });
+          var contexts = [];
+          function quiet(c) { try { if (!allow) { c.suspend(); } } catch (e) {} }
+          var seen = [];
+          ['AudioContext', 'webkitAudioContext'].forEach(function (name) {
+            var Native = window[name];
+            if (!Native) { return; }
+            var done = seen.filter(function (w) { return w.native === Native; })[0];
+            var Wrapped = done ? done.wrapped : null;
+            if (!Wrapped) {
+              var realResume = Native.prototype.resume;
+              Wrapped = function () { var c = new Native(...arguments); contexts.push(c); quiet(c); return c; };
+              Wrapped.prototype = Native.prototype;
+              try { Object.defineProperty(Native.prototype, 'resume', { configurable: false, writable: false,
+                    value: function () { return allow ? realResume.apply(this, arguments) : Promise.resolve(); } }); } catch (e) {}
+              try { Object.defineProperty(Native.prototype, 'constructor', { configurable: false, writable: false, value: Wrapped }); } catch (e) {}
+              seen.push({ native: Native, wrapped: Wrapped });
+            }
+            try { Object.defineProperty(window, name, { configurable: true, writable: true, value: Wrapped }); } catch (e) {}
+          });
+          Object.defineProperty(window, NAME, { enumerable: false, configurable: false, writable: false, value: function (on) {
+            allow = !!on;
+            if (allow) {
+              each(function (m) { try { mutedDesc.set.call(m, false); } catch (e) {} });
+              contexts.forEach(function (c) { try { c.resume(); } catch (e) {} });
+            } else {
+              each(silence);
+              contexts.forEach(quiet);
+            }
+          } });
+        })();
+        """
+    }
 
     /// Whether a navigation may go ahead. Before the page's first load has committed everything in the main frame is allowed
     /// (the load itself, and any server redirect on the way); afterwards the main frame may only reload the same page (or
     /// change its #fragment). Sub-frames (an embedded player, an ad, a widget) are never restricted here.
     static func navigationPolicy(isMainFrame: Bool, committedMainURL: URL?, target: URL?) -> WKNavigationActionPolicy {
         guard isMainFrame else { return .allow }
+        // Only secure or local addresses, even mid-redirect: an https page that bounces to http would otherwise run as the
+        // wallpaper over a connection anyone on the network can rewrite.
+        if let target, !isAllowedMainFrameScheme(target) { return .cancel }
         guard let committed = committedMainURL else { return .allow }
         guard let target else { return .cancel }
         return withoutFragment(target) == withoutFragment(committed) ? .allow : .cancel
+    }
+
+    static func isAllowedMainFrameScheme(_ url: URL) -> Bool {
+        ["https", "file", "about"].contains(url.scheme?.lowercased() ?? "")
+    }
+
+    /// What to do with a response, and the failure to report if the page can't be shown. Something the web view would
+    /// download rather than show is not a wallpaper, and the row must say so rather than claim it is playing.
+    static func responsePolicy(canShowMIMEType: Bool, isMainFrame: Bool) -> (policy: WKNavigationResponsePolicy, failure: String?) {
+        if canShowMIMEType { return (.allow, nil) }
+        return (.cancel, isMainFrame ? "That address is a download, not a web page." : nil)
     }
 
     private static func withoutFragment(_ url: URL) -> String {
@@ -166,8 +203,9 @@ final class WebWallpaperSurface: NSObject, WallpaperSurface, WKNavigationDelegat
         self.displayUUID = display.uuid
         self.plan = plan
         self.present = present
-        if case .remote(let url) = item.source { youtubeEmbed = WallpaperURLClassifier.youtubeEmbedID(in: url) != nil; isRemote = true }
-        else { youtubeEmbed = false; isRemote = false }
+        if case .remote(let url) = item.source { youtubeEmbed = WallpaperURLClassifier.youtubeEmbedID(in: url) != nil }
+        else { youtubeEmbed = false }
+        setterName = "__a" + UUID().uuidString.replacingOccurrences(of: "-", with: "")
         let bounds = NSRect(origin: .zero, size: display.frame.size)
         window = DesktopWallpaperWindow(frame: display.frame)
         container = NSView(frame: bounds)
@@ -178,7 +216,7 @@ final class WebWallpaperSurface: NSObject, WallpaperSurface, WKNavigationDelegat
         placeholder.wantsLayer = true
         placeholder.autoresizingMask = [.width, .height]
         placeholder.isHidden = true
-        webView = WKWebView(frame: bounds, configuration: Self.webConfiguration())
+        webView = WKWebView(frame: bounds, configuration: Self.webConfiguration(setterName: setterName))
         webView.autoresizingMask = [.width, .height]
         webView.underPageBackgroundColor = .black
         super.init()
@@ -192,25 +230,23 @@ final class WebWallpaperSurface: NSObject, WallpaperSurface, WKNavigationDelegat
 
     deinit { close() }
 
-    /// Begin loading. The window appears when the page has finished loading.
+    /// Begin loading. The window appears when the page has finished loading; if it never does, the surface reports a failure.
     func start() {
-        if isRemote { watchNetwork() }
         Self.start(plan, in: webView)
+        let timer = DispatchWorkItem { [weak self] in self?.loadTimedOut() }
+        loadTimer = timer
+        DispatchQueue.main.asyncAfter(deadline: .now() + loadTimeout, execute: timer)
     }
 
-    private func watchNetwork() {
-        let monitor = NWPathMonitor()
-        monitor.pathUpdateHandler = { [weak self] path in
-            guard path.status == .satisfied else { return }
-            DispatchQueue.main.async { [weak self] in
-                guard let self, !self.closed, self.failedAndWaitingForNetwork else { return }
-                self.failedAndWaitingForNetwork = false
-                self.committedMainURL = nil
-                Self.start(self.plan, in: self.webView)
-            }
-        }
-        monitor.start(queue: DispatchQueue(label: "anode.wallpaper.network"))
-        pathMonitor = monitor
+    /// The load has taken too long. Harmless if the page has finished or the surface is gone.
+    func loadTimedOut() {
+        guard !closed, !loaded else { return }
+        onFailure?("The page took too long to load.")
+    }
+
+    private func runScript(_ js: String) {
+        scriptSink?(js)
+        webView.evaluateJavaScript(js, completionHandler: nil)
     }
 
     // MARK: playing and pausing
@@ -226,8 +262,8 @@ final class WebWallpaperSurface: NSObject, WallpaperSurface, WKNavigationDelegat
         pauseToken += 1
         let token = pauseToken
         webView.setAllMediaPlaybackSuspended(true, completionHandler: nil)
-        webView.evaluateJavaScript("window.dispatchEvent(new Event('anode-pause'))", completionHandler: nil)
-        if youtubeEmbed { webView.evaluateJavaScript(WallpaperURLClassifier.youtubePlayerCommand(playing: false), completionHandler: nil) }
+        runScript("window.dispatchEvent(new Event('anode-pause'))")
+        if youtubeEmbed { runScript(WallpaperURLClassifier.youtubePlayerCommand(playing: false)) }
         guard webView.superview != nil else { return }
         // Keep the page's last picture on screen as a still, then take the live view out so WebKit stops running the page. If
         // no picture can be taken, the view stays in place (suspended) rather than leaving a black desktop.
@@ -245,8 +281,8 @@ final class WebWallpaperSurface: NSObject, WallpaperSurface, WKNavigationDelegat
         pauseToken += 1   // a snapshot still in flight must not take the view out again
         if webView.superview == nil { container.addSubview(webView) }
         webView.setAllMediaPlaybackSuspended(false, completionHandler: nil)
-        webView.evaluateJavaScript("window.dispatchEvent(new Event('anode-resume'))", completionHandler: nil)
-        if youtubeEmbed { webView.evaluateJavaScript(WallpaperURLClassifier.youtubePlayerCommand(playing: true), completionHandler: nil) }
+        runScript("window.dispatchEvent(new Event('anode-resume'))")
+        if youtubeEmbed { runScript(WallpaperURLClassifier.youtubePlayerCommand(playing: true)) }
         // Uncover the live view only once it has had a moment to draw, so there is no flash of an old frame.
         let token = pauseToken
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
@@ -258,7 +294,19 @@ final class WebWallpaperSurface: NSObject, WallpaperSurface, WKNavigationDelegat
 
     func apply(_ prefs: WallpaperPrefs) {
         guard !closed else { return }
-        webView.evaluateJavaScript("window.__anodeSetSound && window.__anodeSetSound(\(prefs.muted ? "false" : "true"))", completionHandler: nil)
+        lastPrefs = prefs
+        sendSound(!prefs.muted)
+    }
+
+    private func sendSound(_ on: Bool) {
+        runScript("window['\(setterName)'] && window['\(setterName)'](\(on ? "true" : "false"))")
+    }
+
+    /// The page was reloaded (a crashed content process comes back as a fresh page): tell it again what it was last told.
+    func reassertAfterReload() {
+        guard !closed else { return }
+        if let lastPrefs { sendSound(!lastPrefs.muted) }
+        desiredPlaying ? resume() : pause()
     }
 
     func updateFrame(_ frame: NSRect) {
@@ -270,8 +318,8 @@ final class WebWallpaperSurface: NSObject, WallpaperSurface, WKNavigationDelegat
         guard !closed else { return }
         closed = true
         pauseToken += 1
-        pathMonitor?.cancel()
-        pathMonitor = nil
+        loadTimer?.cancel()
+        loadTimer = nil
         webView.stopLoading()
         webView.navigationDelegate = nil
         webView.uiDelegate = nil
@@ -287,14 +335,21 @@ final class WebWallpaperSurface: NSObject, WallpaperSurface, WKNavigationDelegat
                  decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
         // A request to open a new window has no target frame: refuse it.
         guard let target = navigationAction.targetFrame else { decisionHandler(.cancel); return }
-        decisionHandler(Self.navigationPolicy(isMainFrame: target.isMainFrame, committedMainURL: committedMainURL,
-                                              target: navigationAction.request.url))
+        let policy = Self.navigationPolicy(isMainFrame: target.isMainFrame, committedMainURL: committedMainURL,
+                                           target: navigationAction.request.url)
+        decisionHandler(policy)
+        // A first load that is turned away (a redirect to an insecure address) never finishes: say so.
+        if policy == .cancel, target.isMainFrame, committedMainURL == nil, !loaded {
+            onFailure?("That page redirected to an address that isn't https.")
+        }
     }
 
     func webView(_ webView: WKWebView, decidePolicyFor navigationResponse: WKNavigationResponse,
                  decisionHandler: @escaping (WKNavigationResponsePolicy) -> Void) {
         // Something the web view would download rather than show is not a wallpaper.
-        decisionHandler(navigationResponse.canShowMIMEType ? .allow : .cancel)
+        let r = Self.responsePolicy(canShowMIMEType: navigationResponse.canShowMIMEType, isMainFrame: navigationResponse.isForMainFrame)
+        decisionHandler(r.policy)
+        if let failure = r.failure { onFailure?(failure) }
     }
 
     func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
@@ -303,10 +358,10 @@ final class WebWallpaperSurface: NSObject, WallpaperSurface, WKNavigationDelegat
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         guard !closed else { return }
-        failedAndWaitingForNetwork = false
+        loadTimer?.cancel()
         let firstTime = !loaded
         loaded = true
-        guard firstTime else { return }
+        guard firstTime else { reassertAfterReload(); return }
         // A YouTube player needs a moment after the page itself is done before it has a picture.
         let delay: TimeInterval = youtubeEmbed ? 2.0 : 0
         DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
@@ -329,7 +384,7 @@ final class WebWallpaperSurface: NSObject, WallpaperSurface, WKNavigationDelegat
         // Our own policy cancelling a navigation is not a failure of the page.
         if ns.domain == NSURLErrorDomain && ns.code == NSURLErrorCancelled { return }
         if ns.domain == "WebKitErrorDomain" && ns.code == 102 { return }
-        failedAndWaitingForNetwork = isRemote
+        loadTimer?.cancel()
         onFailure?(ns.localizedDescription)
     }
 
