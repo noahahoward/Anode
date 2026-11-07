@@ -262,7 +262,7 @@ final class RealWallpaperSurfaceFactory: WallpaperSurfaceFactory {
             s.apply(prefs); s.start()
             return s
         case .web:
-            let s = try WebWallpaperSurface(display: display, item: item, library: library)
+            let s = try WebWallpaperSurface(display: display, item: item, library: library, youtubeQuality: prefs.youtubeQuality)
             s.apply(prefs); s.start()
             return s
         }

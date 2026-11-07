@@ -147,4 +147,17 @@ final class WallpaperPrefsTests: XCTestCase {
         let back = try JSONDecoder().decode(WallpaperAssignments.self, from: JSONEncoder().encode(a))
         XCTAssertEqual(back, a)
     }
+
+    func testYouTubeQualityDefaultsToTheBestAndKeepsTheChosenOneAcrossAReload() throws {
+        XCTAssertEqual(WallpaperPrefs().youtubeQuality, .p2160)
+        XCTAssertEqual(YouTubeQuality.allCases.map(\.height), [2160, 1440, 1080, 720], "the four the owner asked for, best first")
+        var p = WallpaperPrefs(); p.youtubeQuality = .p1080
+        let back = try JSONDecoder().decode(WallpaperPrefs.self, from: JSONEncoder().encode(p))
+        XCTAssertEqual(back.youtubeQuality, .p1080)
+    }
+
+    func testAnOlderValueWithNoQualityOrAnUnknownOneReadsAsTheDefault() throws {
+        XCTAssertEqual(try JSONDecoder().decode(WallpaperPrefs.self, from: Data(#"{"speed": 1}"#.utf8)).youtubeQuality, .p2160)
+        XCTAssertEqual(try JSONDecoder().decode(WallpaperPrefs.self, from: Data(#"{"youtubeQuality": 4320}"#.utf8)).youtubeQuality, .p2160)
+    }
 }

@@ -41,13 +41,15 @@ final class WebWallpaperSurface: NSObject, WallpaperSurface, WKNavigationDelegat
     private let plan: WebLoadPlan
     private let youtubeEmbed: Bool
     private let youtubeID: String?
+    /// The quality the page was built with, or last told to switch to.
+    private var youtubeQuality: YouTubeQuality
     private let stillURL: URL?
     /// The clean picture shown instead of the YouTube player's own screen (nil until it has been fetched).
     private(set) var still: CGImage?
     var hasStill: Bool { still != nil }
     var stillFetch: YouTubeStill.Fetch = YouTubeStill.download
     /// How long a resumed YouTube player stays covered while its title and buttons fade, and how long the cover then takes to go.
-    var chromeSettle: TimeInterval = 3.5
+    var chromeSettle: TimeInterval = 1.5
     var fadeDuration: TimeInterval = 0.6
     private let present: Bool
     let setterName: String
@@ -81,6 +83,9 @@ final class WebWallpaperSurface: NSObject, WallpaperSurface, WKNavigationDelegat
         c.defaultWebpagePreferences.allowsContentJavaScript = true
         c.allowsAirPlayForMediaPlayback = false
         c.userContentController.addUserScript(mutingUserScript(setterName: setterName, setterKey: setterKey))
+        // Inside YouTube's own frame only (the script checks the host): no player title, buttons or captions over the video.
+        c.userContentController.addUserScript(WKUserScript(source: WallpaperURLClassifier.youtubeChromeHidingScript,
+                                                           injectionTime: .atDocumentEnd, forMainFrameOnly: false))
         return c
     }
 
@@ -180,7 +185,7 @@ final class WebWallpaperSurface: NSObject, WallpaperSurface, WKNavigationDelegat
         return c?.string ?? url.absoluteString
     }
 
-    static func loadPlan(for item: WallpaperItem, library: WallpaperLibrary) -> WebLoadPlan? {
+    static func loadPlan(for item: WallpaperItem, library: WallpaperLibrary, youtubeQuality: YouTubeQuality = .p2160) -> WebLoadPlan? {
         switch item.source {
         case .folder:
             guard let page = library.contentURL(item), let folder = library.folderURL(item) else { return nil }
@@ -190,7 +195,8 @@ final class WebWallpaperSurface: NSObject, WallpaperSurface, WKNavigationDelegat
             return .file(url: page, readAccess: page.deletingLastPathComponent())
         case .remote(let url):
             if WallpaperURLClassifier.youtubeEmbedID(in: url) != nil {
-                return .html(WallpaperURLClassifier.youtubeWrapperHTML(embedURL: url), baseURL: WallpaperURLClassifier.youtubeWrapperBaseURL)
+                return .html(WallpaperURLClassifier.youtubeWrapperHTML(embedURL: url, quality: youtubeQuality.height),
+                             baseURL: WallpaperURLClassifier.youtubeWrapperBaseURL)
             }
             return .remote(url)
         }
@@ -215,8 +221,10 @@ final class WebWallpaperSurface: NSObject, WallpaperSurface, WKNavigationDelegat
 
     // MARK: lifecycle
 
-    init(display: DisplayInfo, item: WallpaperItem, library: WallpaperLibrary, present: Bool = true) throws {
-        guard let plan = Self.loadPlan(for: item, library: library) else { throw WallpaperSurfaceError.missingFile(item.name) }
+    init(display: DisplayInfo, item: WallpaperItem, library: WallpaperLibrary, present: Bool = true,
+         youtubeQuality: YouTubeQuality = .p2160) throws {
+        guard let plan = Self.loadPlan(for: item, library: library, youtubeQuality: youtubeQuality) else { throw WallpaperSurfaceError.missingFile(item.name) }
+        self.youtubeQuality = youtubeQuality
         self.displayUUID = display.uuid
         self.plan = plan
         self.present = present
@@ -379,6 +387,10 @@ final class WebWallpaperSurface: NSObject, WallpaperSurface, WKNavigationDelegat
         guard !closed else { return }
         lastPrefs = prefs
         sendSound(!prefs.muted)
+        if youtubeEmbed, prefs.youtubeQuality != youtubeQuality {
+            youtubeQuality = prefs.youtubeQuality
+            runScript(WallpaperURLClassifier.youtubeQualityCommand(height: youtubeQuality.height))
+        }
     }
 
     private func sendSound(_ on: Bool) {
@@ -389,6 +401,7 @@ final class WebWallpaperSurface: NSObject, WallpaperSurface, WKNavigationDelegat
     func reassertAfterReload() {
         guard !closed else { return }
         if let lastPrefs { sendSound(!lastPrefs.muted) }
+        if youtubeEmbed { runScript(WallpaperURLClassifier.youtubeQualityCommand(height: youtubeQuality.height)) }
         desiredPlaying ? resume() : pause()
     }
 

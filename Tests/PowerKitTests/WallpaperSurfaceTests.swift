@@ -212,7 +212,10 @@ final class WallpaperSurfaceTests: XCTestCase {
         XCTAssertEqual(c.mediaTypesRequiringUserActionForPlayback, [])
         XCTAssertFalse(c.preferences.javaScriptCanOpenWindowsAutomatically)
         XCTAssertTrue(c.defaultWebpagePreferences.allowsContentJavaScript)
-        XCTAssertEqual(c.userContentController.userScripts.count, 1)
+        let scripts = c.userContentController.userScripts
+        XCTAssertEqual(scripts.count, 2, "the sound switch and the YouTube player-screen hider, and nothing else")
+        XCTAssertTrue(scripts.contains { $0.source == WallpaperURLClassifier.youtubeChromeHidingScript && !$0.isForMainFrameOnly },
+                      "the hider has to run inside YouTube's own frame")
     }
 
     func testTheMutingScriptRunsAtDocumentStartInEveryFrame() {
@@ -362,6 +365,107 @@ final class WallpaperSurfaceTests: XCTestCase {
         XCTAssertTrue(sent.contains { $0.contains("pauseVideo") }); XCTAssertTrue(sent.contains { $0.contains("anode-pause") })
     }
 
+    // MARK: YouTube quality and hiding the player's own screen
+
+    private func evaluate(_ web: WKWebView, _ js: String) async throws -> Any? {
+        try await withCheckedThrowingContinuation { c in
+            web.evaluateJavaScript(js) { r, e in if let e { c.resume(throwing: e) } else { c.resume(returning: r) } }
+        }
+    }
+
+    private func loaded(_ html: String, base: String = "https://anode.app/") async throws -> WKWebView {
+        let web = WKWebView(frame: NSRect(x: 0, y: 0, width: 1200, height: 800), configuration: WKWebViewConfiguration())
+        let waiter = LoadWaiter()
+        web.navigationDelegate = waiter
+        web.loadHTMLString(html, baseURL: URL(string: base))
+        await waiter.wait()
+        return web
+    }
+
+    func testTheYouTubePlayerIsSizedSoItDecodesExactlyTheChosenResolution() async throws {
+        // Measured on the Mac: the player picks its quality from its own size times the display's pixel ratio
+        // (iframe 1920 css px -> 2160p, 1280 -> 1440p, 960 -> 1080p, 640 -> 720p at ratio 2).
+        for q in YouTubeQuality.allCases {
+            let web = try await loaded(WallpaperURLClassifier.youtubeWrapperHTML(embedURL: URL(string: "about:blank")!, quality: q.height))
+            let device = try await evaluate(web, "parseFloat(document.getElementById('p').style.height) * window.devicePixelRatio") as? Double
+            XCTAssertEqual(try XCTUnwrap(device), Double(q.height), accuracy: 1, "\(q)")
+        }
+    }
+
+    func testChangingTheQualityResizesThePlayerWithoutReloadingIt() async throws {
+        let web = try await loaded(WallpaperURLClassifier.youtubeWrapperHTML(embedURL: URL(string: "about:blank")!, quality: 2160))
+        _ = try await evaluate(web, WallpaperURLClassifier.youtubeQualityCommand(height: 1080))
+        let device = try await evaluate(web, "parseFloat(document.getElementById('p').style.height) * window.devicePixelRatio") as? Double
+        XCTAssertEqual(try XCTUnwrap(device), 1080, accuracy: 1)
+        let covers = try await evaluate(web, """
+            (function(){ var r = document.getElementById('p').getBoundingClientRect();
+              return r.width >= innerWidth - 1 && r.height >= innerHeight - 1 && r.left <= 1 && r.top <= 1; })()
+            """) as? Bool
+        XCTAssertEqual(covers, true, "scaled up, the player still covers the whole window")
+    }
+
+    func testTheHidingScriptRemovesEveryOverlayNowAndOnesAddedLaterButKeepsTheVideoAndLoopsIt() async throws {
+        let html = """
+        <html><body><div id="player"><div class="html5-video-player" id="pl">
+          <div class="html5-video-container" id="vc"><video id="v" class="video-stream"></video></div>
+          <div class="ytp-unmute" id="o1">unmute</div><div id="o2">title</div>
+        </div><div id="o3">controls host</div></div></body></html>
+        """
+        let web = try await loaded(html, base: "https://www.youtube.com/")
+        _ = try await evaluate(web, WallpaperURLClassifier.youtubeChromeHidingScript)
+        let later = try await evaluate(web, """
+            (function(){ var d = document.createElement('div'); d.id = 'late'; document.getElementById('pl').appendChild(d);
+              var e = document.createElement('div'); e.id = 'late2'; document.getElementById('vc').appendChild(e); return true; })()
+            """)
+        XCTAssertEqual(later as? Bool, true)
+        await wait(0.6)
+        func display(_ id: String) async throws -> String {
+            try await evaluate(web, "getComputedStyle(document.getElementById('\(id)')).display") as? String ?? "?"
+        }
+        for id in ["o1", "o2", "o3", "late", "late2"] { let d = try await display(id); XCTAssertEqual(d, "none", id) }
+        for id in ["player", "pl", "vc", "v"] { let d = try await display(id); XCTAssertNotEqual(d, "none", "\(id) must stay") }
+        let loops = try await evaluate(web, "document.getElementById('v').loop") as? Bool
+        XCTAssertEqual(loops, true, "the browser loops the video itself, so there is no reload and no overlay at each restart")
+    }
+
+    func testTheHidingScriptDoesNothingOnAPageThatIsNotYouTube() async throws {
+        let web = try await loaded("<html><body><video id='v'></video><div id='o'>x</div></body></html>", base: "https://example.com/")
+        _ = try await evaluate(web, WallpaperURLClassifier.youtubeChromeHidingScript)
+        await wait(0.6)
+        let shown = try await evaluate(web, "getComputedStyle(document.getElementById('o')).display") as? String
+        XCTAssertEqual(shown, "block")
+    }
+
+    func testAYouTubeSurfaceIsToldTheQualityAtOnceAndWhenItChanges() throws {
+        let embed = WallpaperURLClassifier.youtubeEmbedURL(id: "dQw4w9WgXcQ")
+        let s = try WebWallpaperSurface(display: display, item: item(.web, .remote(embed)), library: library, present: false)
+        defer { s.close() }
+        var sent: [String] = []
+        s.scriptSink = { sent.append($0) }
+        var p = WallpaperPrefs(); p.youtubeQuality = .p1080
+        s.apply(p)
+        XCTAssertTrue(sent.contains(WallpaperURLClassifier.youtubeQualityCommand(height: 1080)), sent.description)
+        sent.removeAll()
+        s.apply(p)
+        XCTAssertFalse(sent.contains { $0.contains("anodeSetQuality") }, "an unchanged choice is not sent again")
+        p.youtubeQuality = .p720
+        s.apply(p)
+        XCTAssertTrue(sent.contains(WallpaperURLClassifier.youtubeQualityCommand(height: 720)))
+        sent.removeAll()
+        s.webView(s.webView, didFinish: nil); s.webView(s.webView, didFinish: nil)   // loaded, then reloaded
+        XCTAssertTrue(sent.contains(WallpaperURLClassifier.youtubeQualityCommand(height: 720)), "a reloaded page gets the choice again")
+    }
+
+    func testAPageThatIsNotYouTubeIsNeverToldAQuality() throws {
+        let s = try WebWallpaperSurface(display: display, item: webItem(.folder(directory: "web-q", entry: "index.html")),
+                                        library: library, present: false)
+        defer { s.close() }
+        var sent: [String] = []
+        s.scriptSink = { sent.append($0) }
+        s.apply(WallpaperPrefs())
+        XCTAssertFalse(sent.contains { $0.contains("anodeSetQuality") })
+    }
+
     // MARK: YouTube: the player's own screen is never what the desktop shows
 
     private func youtubeSurfaceWithAStill() throws -> (WebWallpaperSurface, WallpaperItem) {
@@ -509,4 +613,9 @@ final class WallpaperSurfaceTests: XCTestCase {
 private final class LoadWaiter: NSObject, WKNavigationDelegate {
     var onFinish: (() -> Void)?
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) { onFinish?() }
+}
+
+private extension LoadWaiter {
+    /// Returns when the page has finished loading.
+    func wait() async { await withCheckedContinuation { c in onFinish = { c.resume() } } }
 }

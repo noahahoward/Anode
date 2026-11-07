@@ -48,6 +48,16 @@ public struct WallpaperAssignments: Codable, Equatable {
     }
 }
 
+/// How sharp a YouTube wallpaper streams. The embedded player picks its quality from its own size times the display's pixel
+/// ratio and ignores any request to change it, so each choice is a player size (see `WallpaperURLClassifier.youtubeWrapperHTML`).
+/// A video that has nothing as sharp as the choice streams its best.
+public enum YouTubeQuality: Int, Codable, CaseIterable {
+    case p2160 = 2160, p1440 = 1440, p1080 = 1080, p720 = 720
+
+    public var height: Int { rawValue }
+    public var title: String { self == .p2160 ? "4K (2160p)" : "\(rawValue)p" }
+}
+
 public struct WallpaperPrefs: Codable, Equatable {
     public static let speedRange: ClosedRange<Double> = 0.25...2.0
 
@@ -60,12 +70,13 @@ public struct WallpaperPrefs: Codable, Equatable {
     public var volume: Float = 0.5 { didSet { volume = min(1, max(0, volume)) } }
     public var scaling: WallpaperScaling = .fill
     public var speed: Double = 1.0 { didSet { speed = min(Self.speedRange.upperBound, max(Self.speedRange.lowerBound, speed)) } }
+    public var youtubeQuality: YouTubeQuality = .p2160
     public var assignments = WallpaperAssignments()
 
     public init() {}
 
     private enum CodingKeys: String, CodingKey {
-        case pauseOnBattery, pauseInLowPower, pauseWhenCovered, pauseWhenHot, muted, volume, scaling, speed, assignments
+        case pauseOnBattery, pauseInLowPower, pauseWhenCovered, pauseWhenHot, muted, volume, scaling, speed, assignments, youtubeQuality
     }
 
     /// Every key is optional, so a value written by an older or newer build still reads, with the defaults filling the gaps.
@@ -79,6 +90,8 @@ public struct WallpaperPrefs: Codable, Equatable {
         muted = try c.decodeIfPresent(Bool.self, forKey: .muted) ?? d.muted
         scaling = try c.decodeIfPresent(WallpaperScaling.self, forKey: .scaling) ?? d.scaling
         assignments = try c.decodeIfPresent(WallpaperAssignments.self, forKey: .assignments) ?? d.assignments
+        // A quality this build does not know (a newer one) reads as the default instead of discarding everything else.
+        youtubeQuality = ((try? c.decodeIfPresent(YouTubeQuality.self, forKey: .youtubeQuality)) ?? nil) ?? d.youtubeQuality
         // `didSet` does not run inside an initializer, so clamp what was read by hand.
         let v = try c.decodeIfPresent(Float.self, forKey: .volume) ?? d.volume
         volume = min(1, max(0, v))

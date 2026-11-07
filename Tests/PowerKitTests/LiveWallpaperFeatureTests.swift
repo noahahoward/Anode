@@ -238,6 +238,17 @@ final class LiveWallpaperFeatureTests: XCTestCase {
         r.feature.batteryCheckbox.performClick(nil);  XCTAssertTrue(r.store.prefs.pauseOnBattery)
     }
 
+    func testTheYouTubeQualityPopUpListsTheFourChoicesAndWritesPrefs() throws {
+        let r = try rig(); defer { done(r) }
+        XCTAssertEqual(r.feature.qualityPopUp.itemTitles.count, 4)
+        XCTAssertTrue(r.feature.qualityPopUp.itemTitles[0].contains("4K"))
+        XCTAssertTrue(r.feature.qualityPopUp.itemTitles[3].contains("720"))
+        choose(r.feature.qualityPopUp, YouTubeQuality.allCases.firstIndex(of: .p1080)!)
+        XCTAssertEqual(r.store.prefs.youtubeQuality, .p1080)
+        r.feature.refresh()
+        XCTAssertEqual(r.feature.qualityPopUp.indexOfSelectedItem, YouTubeQuality.allCases.firstIndex(of: .p1080))
+    }
+
     func testScalingMuteVolumeAndSpeedWritePrefs() throws {
         let r = try rig(); defer { done(r) }
         let v = try add(r, "Clip", .video)

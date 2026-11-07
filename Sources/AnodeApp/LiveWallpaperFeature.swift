@@ -164,6 +164,7 @@ final class LiveWallpaperFeature: BetaFeature {
     let defaultPopUp = NSPopUpButton(frame: .zero, pullsDown: false)
     let displaysStack = NSStackView()
     let scalingPopUp = NSPopUpButton(frame: .zero, pullsDown: false)
+    let qualityPopUp = NSPopUpButton(frame: .zero, pullsDown: false)
     let speedSlider = NSSlider(value: 1, minValue: WallpaperPrefs.speedRange.lowerBound, maxValue: WallpaperPrefs.speedRange.upperBound,
                                target: nil, action: nil)
     let speedLabel = NSTextField(labelWithString: "")
@@ -232,6 +233,11 @@ final class LiveWallpaperFeature: BetaFeature {
         let scalingRow = NSStackView(views: [NSTextField(labelWithString: "Picture:"), scalingPopUp])
         scalingRow.orientation = .horizontal; scalingRow.spacing = 8
 
+        qualityPopUp.target = self; qualityPopUp.action = #selector(qualityChosen); qualityPopUp.controlSize = .small
+        for q in YouTubeQuality.allCases { qualityPopUp.addItem(withTitle: q.title) }
+        let qualityRow = NSStackView(views: [NSTextField(labelWithString: "YouTube quality:"), qualityPopUp])
+        qualityRow.orientation = .horizontal; qualityRow.spacing = 8
+
         speedSlider.target = self; speedSlider.action = #selector(speedChanged); speedSlider.isContinuous = false
         speedSlider.widthAnchor.constraint(equalToConstant: 160).isActive = true
         speedLabel.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
@@ -263,7 +269,7 @@ final class LiveWallpaperFeature: BetaFeature {
         }
 
         bodyStack.setViews([adds, messageLabel, libraryStack, heading("Displays"), defaultRow, displaysStack, heading("Playback"),
-                            scalingRow, speedRow, soundRow, heading("Pause rules"), batteryCheckbox, lowPowerCheckbox, coveredCheckbox,
+                            scalingRow, qualityRow, speedRow, soundRow, heading("Pause rules"), batteryCheckbox, lowPowerCheckbox, coveredCheckbox,
                             hotCheckbox, alwaysNote, shortcutRow, shortcutNote], in: .leading)
         bodyStack.orientation = .vertical
         bodyStack.alignment = .leading
@@ -310,6 +316,7 @@ final class LiveWallpaperFeature: BetaFeature {
         }
 
         scalingPopUp.selectItem(at: WallpaperScaling.allCases.firstIndex(of: prefs.scaling) ?? 0)
+        qualityPopUp.selectItem(at: YouTubeQuality.allCases.firstIndex(of: prefs.youtubeQuality) ?? 0)
         let assigned = screens.compactMap { prefs.assignments.resolved(forDisplay: $0.uuid) }.compactMap { library.item(id: $0) }
         let hasVideo = assigned.contains { $0.kind == .video }
         let hasSound = assigned.contains { $0.kind == .video || $0.kind == .web }
@@ -590,6 +597,11 @@ final class LiveWallpaperFeature: BetaFeature {
         let i = scalingPopUp.indexOfSelectedItem
         guard WallpaperScaling.allCases.indices.contains(i) else { return }
         update { $0.scaling = WallpaperScaling.allCases[i] }
+    }
+    @objc private func qualityChosen() {
+        let i = qualityPopUp.indexOfSelectedItem
+        guard YouTubeQuality.allCases.indices.contains(i) else { return }
+        update { $0.youtubeQuality = YouTubeQuality.allCases[i] }
     }
     @objc private func speedChanged() { update { $0.speed = speedSlider.doubleValue } }
     @objc private func muteToggled() { update { $0.muted = muteCheckbox.state == .on } }

@@ -82,19 +82,73 @@ public enum WallpaperURLClassifier {
     /// A page holding the embed in an iframe, to be loaded with `youtubeWrapperBaseURL` as its base. Loading the embed URL
     /// directly fails with "Video player configuration error 153" because the player wants a referring page. The iframe is
     /// sized to cover the window (the video fills the display rather than sitting in black bars).
-    public static func youtubeWrapperHTML(embedURL: URL) -> String {
+    ///
+    /// The player is `quality` device pixels tall (its CSS size is that divided by the display's pixel ratio), then scaled up to
+    /// cover the window. Measured on this Mac: the player decodes exactly the resolution of its own size in device pixels
+    /// (1920 css px wide at ratio 2 gives 2160p, 1280 gives 1440p, 960 gives 1080p, 640 gives 720p), and ignores
+    /// `setPlaybackQuality` sent from outside its frame. `anodeSetQuality(n)` resizes it, without reloading, to change the choice.
+    public static func youtubeWrapperHTML(embedURL: URL, quality: Int = 2160) -> String {
         let src = embedURL.absoluteString.replacingOccurrences(of: "&", with: "&amp;")
         return """
         <!doctype html><html><head><meta charset="utf-8">
         <style>
         html,body{margin:0;height:100%;background:#000;overflow:hidden}
-        iframe{position:fixed;left:50%;top:50%;border:0;transform:translate(-50%,-50%);
-               width:max(100vw,177.78vh);height:max(56.25vw,100vh)}
+        iframe{position:fixed;left:50%;top:50%;border:0}
         </style></head><body>
         <iframe id="p" src="\(src)" allow="autoplay; encrypted-media" referrerpolicy="strict-origin-when-cross-origin"></iframe>
+        <script>
+        (function(){
+          var q = \(quality), p = document.getElementById('p');
+          function fit(){
+            var dpr = window.devicePixelRatio || 1, h = q / dpr, w = h * 16 / 9;
+            p.style.width = w + 'px'; p.style.height = h + 'px';
+            var s = Math.max(innerWidth / w, innerHeight / h);
+            p.style.transform = 'translate(-50%,-50%) scale(' + s + ')';
+          }
+          window.anodeSetQuality = function(n){ q = n; fit(); };
+          window.addEventListener('resize', fit); fit();
+        })();
+        </script>
         </body></html>
         """
     }
+
+    /// Script, run in the wrapper page, that changes the player's size to `height` device pixels tall.
+    public static func youtubeQualityCommand(height: Int) -> String { "window.anodeSetQuality && window.anodeSetQuality(\(height));" }
+
+    /// Runs inside every frame of a wallpaper page and does something only inside YouTube's own. Hides everything the player
+    /// draws over the video (title, buttons, "More videos", the logo, the unmute prompt, captions) and makes the browser loop
+    /// the video itself.
+    ///
+    /// The embed's controls are not in a stable place (its markup changed to a different set of classes between two checks), so
+    /// this does not name them: it keeps the video and every ancestor of it, and hides every other element beside any of them,
+    /// including ones the player adds later. Looping with the video's own `loop` means the player never reaches the end of its
+    /// video, so it never reloads and never shows its screen at a restart (measured: with `loop=1&playlist=` it did, for seconds,
+    /// at every restart of a short video).
+    public static let youtubeChromeHidingScript = """
+    (function(){
+      if (!/(^|\\.)youtube(-nocookie)?\\.com$/.test(location.hostname) || window.__anodeHide) return;
+      window.__anodeHide = true;
+      function sweep(){
+        var v = document.querySelector('video'); if (!v) return;
+        var n = v;
+        while (n && n !== document.body && n.parentElement) {
+          var kids = n.parentElement.children;
+          for (var i = 0; i < kids.length; i++) {
+            var k = kids[i], t = k.tagName;
+            if (k !== n && t !== 'SCRIPT' && t !== 'STYLE' && t !== 'LINK' && k.style.display !== 'none') k.style.setProperty('display', 'none', 'important');
+          }
+          n = n.parentElement;
+        }
+        if (!v.loop) v.loop = true;
+      }
+      var pending = 0;
+      function soon(){ if (pending) return; pending = setTimeout(function(){ pending = 0; sweep(); }, 40); }
+      new MutationObserver(soon).observe(document.documentElement, {childList: true, subtree: true});
+      setInterval(sweep, 250);
+      sweep();
+    })();
+    """
 
     /// JavaScript, run in the wrapper page, that pauses or resumes the embedded player through the IFrame API.
     public static func youtubePlayerCommand(playing: Bool) -> String {
