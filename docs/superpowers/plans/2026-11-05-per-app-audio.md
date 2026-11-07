@@ -206,3 +206,42 @@
 **Files:** to be decided with the owner after Task 9; not started until they ask. The idea: a speaker icon in the menu bar that opens the same rows (`AppAudioRow`) in a popover, because per-app volume is something people change in the moment, not from a settings window. It would reuse `AppAudioRow` unchanged, add one `NSStatusItem` created only while App Volume is on, and follow the status-item rules in `KeepAwakeController` (right-click monitor, autosave name `dev.anode.appaudio`).
 
 - [ ] **Step 1: Ask the owner** whether they want it, and whether it should sit beside the Menu Bar Hider's controls. Write a short plan then.
+
+## Measured (Task 1 spike, 2026-11-06, MacBook Pro 14" built-in speakers, macOS 27)
+
+Probe: `docs/superpowers/spikes/2026-11-06-app-audio-probe.swift` (modes `list`, `devices`, `tap <app-path-substring> <seconds> <gain…>`, `preflight`, `appear`). Sources: `afplay` playing a quiet generated tone (peak 0.5), and a Chrome tab playing the same tone. System volume was left at its low setting (13 %). Levels were read from inside the IO callback (peak in, peak out); **I could not listen, so every "audible" claim below is inferred from levels, not heard.**
+
+**Step 2 — process objects.** `kAudioHardwarePropertyProcessObjectList` returns one object per audio client (37 on this Mac) with pid, bundle id and `IsRunning`/`IsRunningOutput`. Chrome and Brave show up as several objects each with bundle ids `com.google.Chrome`, `com.google.Chrome.helper` (and `com.brave.Browser`, `.helper`); **the process that actually played the tab's audio was a `…helper`, not the app's main process**, as the plan assumed, so grouping by the outermost `.app` path found it (`processes of 'Google Chrome.app': 89235(OUT) 89152(-) 89236(-)`). Command-line tools (afplay) have an empty bundle id. **Limit found:** WebKit-based apps (Safari, apps with a `WKWebView`, Anode's own web wallpapers) play through the system's `com.apple.WebKit.GPU` process, whose executable is under `/System/Volumes/Preboot/Cryptexes/…/WebKit.framework`, outside the app; path grouping will not attribute that audio to the app. Needs the responsible-process mapping (private `responsibility_get_pid_responsible_for_pid`) or is out of scope for v1.
+
+**Step 3 — the tap works.** `CATapDescription(stereoMixdownOfProcesses: [objectIDs])` with `isPrivate = true`, `muteBehavior = .muted`, `AudioHardwareCreateProcessTap` (3–6 ms), then a private aggregate device with exactly this dictionary, which worked:
+
+```
+kAudioAggregateDeviceNameKey: "anode-spike-agg", kAudioAggregateDeviceUIDKey: <fresh UUID>,
+kAudioAggregateDeviceMainSubDeviceKey: <default output UID>, kAudioAggregateDeviceIsPrivateKey: true,
+kAudioAggregateDeviceIsStackedKey: false, kAudioAggregateDeviceTapAutoStartKey: true,
+kAudioAggregateDeviceSubDeviceListKey: [[kAudioSubDeviceUIDKey: <default output UID>]],
+kAudioAggregateDeviceTapListKey: [[kAudioSubTapDriftCompensationKey: true, kAudioSubTapUIDKey: <desc.uuid.uuidString>]]
+```
+
+- `kAudioTapPropertyFormat`: **48000 Hz, 2 channels, 32-bit float, interleaved**, while the built-in speakers ran at 44100 Hz (the aggregate resamples with drift compensation; the IO callback sees one interleaved input buffer and one output buffer, 512 frames per call, about 86 calls per second).
+- With an IO proc copying input to output at gain 0.5: input peak 0.500, output peak 0.250, every call; with the Chrome helper: input peak 0.25, output 0.25 / 0.125 / 0.000 for gains 1 / 0.5 / 0, following the gain within one second of the change. No dropped callbacks.
+- **Latency:** Core Audio reports the same 14.0 ms for the aggregate's output as for the plain speakers (56 latency + 48 safety + 512 buffer frames at 44.1 kHz) and 13.4 ms on the input side. **Estimated added latency ≈ 13 ms (the input side), about 27 ms in total against 14 ms plain.** Under the 40 ms target; not judged against a speaking face (I cannot watch and listen).
+- **Setup time** for a tap on an already-playing app, after the permission exists: IO proc creation 3–10 ms, first callback 25–95 ms after start. A process that starts playing *after* the tap was requested: Core Audio lists its process object about **90 ms** after launch and reports `IsRunningOutput` about **135–150 ms** after launch (polling every 2 ms; includes process spawn), so with tap setup the unadjusted first sound is roughly **0.2 s**.
+
+**Step 4 — permission (the dangerous case).** Tested with a throwaway ad-hoc signed `.app` carrying `NSAudioCaptureUsageDescription`, launched with `open`:
+- **First use:** `AudioHardwareCreateProcessTap` and the aggregate device succeed immediately; **`AudioDeviceCreateIOProcIDWithBlock` blocks until the person answers the system dialog** ("<App> would like access to record your system audio", Don't Allow / Allow; screenshot `…-permission-prompt.png`). It took 7.8 s here because I was reading the dialog. `TCCAccessPreflight("kTCCServiceAudioCapture")` says **2 (undetermined)** at that point.
+- **Don't Allow (or the toggle off in System Settings → Privacy & Security → Screen & System Audio Recording → System Audio Recording Only):** *everything succeeds* (tap, aggregate, IO proc, start, callbacks at the normal rate) and **every input buffer is all zeros**. There is no error. `TCCAccessPreflight` returns **1 (denied)**, which agrees with reality.
+- **Consequence:** with `muteBehavior = .muted` the plan's design would hand the app's sound to a tap that delivers silence. (Whether the original is actually muted in that state could not be heard by me; assume it is.) **Task 7 must: (1) call `TCCAccessPreflight("kTCCServiceAudioCapture", nil)` through `dlopen("/System/Library/PrivateFrameworks/TCC.framework/TCC")`/`dlsym` before every muted tap, and create a muted tap only when it returns 0; (2) for 2 (undetermined) create the tap `.unmuted` with the gain stage outputting silence, only to raise the prompt, and switch to muted once preflight returns 0; (3) as a backstop for a missing symbol, tear down any session whose process reports `IsRunningOutput` while every callback for 1 s is all zeros.** The private call is a risk; the zero-input backstop does not need it.
+- Granted: audio flows as in Step 3. A rebuilt ad-hoc signed binary is a new identity: preflight returned 2 again for the same bundle id after I replaced its executable, so a rebuilt Anode will ask again (as the plan's README note says).
+
+**Step 5 — kill -9.** Probe holding `afplay` at gain 0 (input peak 0.5, output 0.0) was killed with `kill -9`: the process was gone, `afplay` kept running (`IsRunningOutput` still 1), and no aggregate or tap object is left (private devices are not listed even while alive; `devices` shows only the microphone and speakers before and after). **That the sound audibly returns was NOT heard**: the documented behaviour is that a tap's mute lasts only as long as the tap exists, but the owner should confirm by ear once.
+
+**Step 6 — follow-ups.**
+- (a) New helper / second source: covered by the grouping result above (a Chrome tab's audio came from a helper object that existed before the tap). A helper created *after* the tap needs a rebuild of the session with the new process ids (Task 5).
+- (b) Output device switch: **not testable here** (only the built-in speakers and microphone exist; no AirPods or AirPlay target was available).
+- (c) Sleep/wake: **not tested** (it would lock the Mac and I cannot sign in).
+- (d) The gap when playback starts after the tap was requested: about 0.2 s, above.
+
+**Not measured:** lip-sync by eye; output-device change; sleep/wake; audibility of mute and of the `kill -9` recovery; a tap on an app that is paused and resumes.
+
+**Decision (Step 7).** **Conditional GO.** The tap works on a helper-process browser; the added latency is about 13 ms; a refused permission is detectable by `TCCAccessPreflight` (and by the zero-input backstop) but **not harmless** unless Task 7 is built as above; `kill -9` leaves nothing behind (audible recovery to be confirmed by ear). Two plan changes: (1) Task 7 is now mandatory and as described, with the preflight call and the unmuted-until-granted rule; (2) WebKit-hosted audio is not attributed by app path (note in the section; v1 does not claim to control Safari or WKWebView apps).
