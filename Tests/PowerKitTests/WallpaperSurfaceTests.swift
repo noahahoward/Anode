@@ -362,6 +362,66 @@ final class WallpaperSurfaceTests: XCTestCase {
         XCTAssertTrue(sent.contains { $0.contains("pauseVideo") }); XCTAssertTrue(sent.contains { $0.contains("anode-pause") })
     }
 
+    // MARK: YouTube: the player's own screen is never what the desktop shows
+
+    private func youtubeSurfaceWithAStill() throws -> (WebWallpaperSurface, WallpaperItem) {
+        let it = item(.web, .remote(WallpaperURLClassifier.youtubeEmbedURL(id: "dQw4w9WgXcQ")))
+        try TestImage.write(.jpeg, width: 640, height: 360, to: try XCTUnwrap(library.stillURL(it)))
+        let s = try WebWallpaperSurface(display: display, item: it, library: library, present: false)
+        s.chromeSettle = 0.05
+        s.fadeDuration = 0.01
+        s.webView(s.webView, didFinish: nil)
+        return (s, it)
+    }
+
+    private func wait(_ seconds: Double) async { try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000)) }
+
+    func testAPausedYouTubeWallpaperIsCoveredByOurStillBeforeThePlayerIsToldToPause() throws {
+        let (s, _) = try youtubeSurfaceWithAStill()
+        defer { s.close() }
+        var coveredWhenPauseSent: Bool?
+        s.scriptSink = { js in if js.contains("pauseVideo") { coveredWhenPauseSent = !s.placeholder.isHidden && s.webView.superview == nil } }
+        s.setPlaying(false)
+        XCTAssertFalse(s.placeholder.isHidden, "the still is up")
+        XCTAssertNotNil(s.placeholder.layer?.contents)
+        XCTAssertNil(s.webView.superview, "the live player is out of the window")
+        XCTAssertEqual(coveredWhenPauseSent, true, "the player is only told to pause once nothing of it can be seen")
+    }
+
+    func testAYouTubeWallpaperKeepsTheStillUpWhileThePlayerHidesItsTitleThenFadesItAway() async throws {
+        let (s, _) = try youtubeSurfaceWithAStill()
+        defer { s.close() }
+        s.setPlaying(false)
+        s.setPlaying(true)
+        XCTAssertNotNil(s.webView.superview, "the player is back")
+        XCTAssertFalse(s.placeholder.isHidden, "but the still stays over it while its title and buttons are showing")
+        await wait(0.5)
+        XCTAssertTrue(s.placeholder.isHidden, "and goes once they have faded")
+    }
+
+    func testAPauseDuringTheSettlingTimeDoesNotLetTheOldFadeUncoverThePausedPlayer() async throws {
+        let (s, _) = try youtubeSurfaceWithAStill()
+        defer { s.close() }
+        s.chromeSettle = 0.1
+        s.setPlaying(true)
+        s.setPlaying(false)
+        await wait(0.5)
+        XCTAssertFalse(s.placeholder.isHidden, "paused means the still stays")
+    }
+
+    func testAYouTubeWallpaperWithNoStillYetFetchesOneAndKeepsIt() async throws {
+        let it = item(.web, .remote(WallpaperURLClassifier.youtubeEmbedURL(id: "dQw4w9WgXcQ")))
+        let jpegURL = try TestImage.write(.jpeg, width: 640, height: 360, to: root.appendingPathComponent("src.jpg"))
+        let data = try Data(contentsOf: jpegURL)
+        let s = try WebWallpaperSurface(display: display, item: it, library: library, present: false)
+        defer { s.close() }
+        s.stillFetch = { _ in data }
+        XCTAssertFalse(s.hasStill)
+        await s.fetchStillIfNeeded()
+        XCTAssertTrue(s.hasStill)
+        XCTAssertTrue(fm.fileExists(atPath: try XCTUnwrap(library.stillURL(it)).path))
+    }
+
     func testAPageThatReloadsAfterACrashIsToldItsStateAgain() throws {
         let s = try WebWallpaperSurface(display: display, item: webItem(.folder(directory: "web-c", entry: "index.html")),
                                         library: library, present: false)

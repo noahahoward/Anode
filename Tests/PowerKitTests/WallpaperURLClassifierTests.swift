@@ -19,6 +19,17 @@ final class WallpaperURLClassifierTests: XCTestCase {
         }
     }
 
+    func testYouTubeThumbnailAddressesGoFromLargestToSmallestAndStayOnYouTubesImageHost() {
+        let urls = WallpaperURLClassifier.youtubeThumbnailURLs(id: "dQw4w9WgXcQ")
+        XCTAssertEqual(urls.map(\.lastPathComponent), ["maxresdefault.jpg", "hq720.jpg", "mqdefault.jpg"])
+        for u in urls {
+            XCTAssertEqual(u.scheme, "https")
+            XCTAssertEqual(u.host, "i.ytimg.com")
+            XCTAssertEqual(u.path, "/vi/dQw4w9WgXcQ/\(u.lastPathComponent)")
+        }
+        XCTAssertEqual(WallpaperURLClassifier.youtubeThumbnailURLs(id: "../etc"), [], "an id that is not an id gives no address")
+    }
+
     func testYouTubeLinksAllGiveTheSameID() {
         let id = "dQw4w9WgXcQ"
         for s in ["https://www.youtube.com/watch?v=\(id)", "https://youtu.be/\(id)", "https://www.youtube.com/embed/\(id)",

@@ -64,6 +64,13 @@ public enum WallpaperURLClassifier {
             + "&cc_load_policy=0&playsinline=1&rel=0&origin=https://anode.app")!
     }
 
+    /// Where YouTube keeps a video's still picture, largest first (not every video has the largest). Used for the picture a
+    /// paused YouTube wallpaper shows: the player's own paused screen has the title, buttons and "More videos" drawn on it.
+    public static func youtubeThumbnailURLs(id: String) -> [URL] {
+        guard isValidYouTubeID(id) else { return [] }
+        return ["maxresdefault.jpg", "hq720.jpg", "mqdefault.jpg"].compactMap { URL(string: "https://i.ytimg.com/vi/\(id)/\($0)") }
+    }
+
     /// The id inside an embed URL made by `youtubeEmbedURL`, or nil for any other URL.
     public static func youtubeEmbedID(in url: URL) -> String? {
         guard url.scheme?.lowercased() == "https", url.host?.lowercased() == "www.youtube.com" else { return nil }

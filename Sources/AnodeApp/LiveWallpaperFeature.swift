@@ -50,7 +50,11 @@ final class RealWallpaperImporter: LiveWallpaperImporting {
         defer { downloader = nil }
         return try await WallpaperImporter.addLink(url, into: library, downloadCopy: downloadCopy, download: { source, dest, max in
             try await d.download(source, to: dest, maxBytes: max, progress: progress)
-        }, snapshot: WebWallpaperSurface.snapshot)
+        }, snapshot: { page, size in
+            // A YouTube link's preview is the video's thumbnail: a snapshot of the player would show its title and buttons.
+            if let id = WallpaperURLClassifier.youtubeEmbedID(in: page), let image = await YouTubeStill.thumbnailImage(id: id) { return image }
+            return try await WebWallpaperSurface.snapshot(page, size: size)
+        })
     }
 
     func cancel() { downloader?.cancel() }

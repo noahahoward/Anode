@@ -36,9 +36,19 @@ final class WebWallpaperSurface: NSObject, WallpaperSurface, WKNavigationDelegat
     let window: DesktopWallpaperWindow
     let webView: WKWebView
     private let container: NSView
-    private let placeholder: NSView
+    /// Over the live page while it is paused or settling; a picture of the page, or for YouTube the video's own thumbnail.
+    let placeholder: NSView
     private let plan: WebLoadPlan
     private let youtubeEmbed: Bool
+    private let youtubeID: String?
+    private let stillURL: URL?
+    /// The clean picture shown instead of the YouTube player's own screen (nil until it has been fetched).
+    private(set) var still: CGImage?
+    var hasStill: Bool { still != nil }
+    var stillFetch: YouTubeStill.Fetch = YouTubeStill.download
+    /// How long a resumed YouTube player stays covered while its title and buttons fade, and how long the cover then takes to go.
+    var chromeSettle: TimeInterval = 3.5
+    var fadeDuration: TimeInterval = 0.6
     private let present: Bool
     let setterName: String
     private let setterKey: String
@@ -210,8 +220,16 @@ final class WebWallpaperSurface: NSObject, WallpaperSurface, WKNavigationDelegat
         self.displayUUID = display.uuid
         self.plan = plan
         self.present = present
-        if case .remote(let url) = item.source { youtubeEmbed = WallpaperURLClassifier.youtubeEmbedID(in: url) != nil }
-        else { youtubeEmbed = false }
+        if case .remote(let url) = item.source, let id = WallpaperURLClassifier.youtubeEmbedID(in: url) {
+            youtubeEmbed = true
+            youtubeID = id
+            stillURL = library.stillURL(item)
+            still = stillURL.flatMap(Self.loadStill)
+        } else {
+            youtubeEmbed = false
+            youtubeID = nil
+            stillURL = nil
+        }
         setterName = "__a" + UUID().uuidString.replacingOccurrences(of: "-", with: "")
         setterKey = UUID().uuidString
         let bounds = NSRect(origin: .zero, size: display.frame.size)
@@ -230,8 +248,8 @@ final class WebWallpaperSurface: NSObject, WallpaperSurface, WKNavigationDelegat
         super.init()
         webView.navigationDelegate = self
         webView.uiDelegate = self
-        container.addSubview(placeholder)
         container.addSubview(webView)
+        container.addSubview(placeholder)   // above the page: it covers the page, never the other way round
         window.contentView = container
         window.onVisibilityChange = { [weak self] visible in self?.onCoveredChange?(!visible) }
     }
@@ -241,6 +259,7 @@ final class WebWallpaperSurface: NSObject, WallpaperSurface, WKNavigationDelegat
     /// Begin loading. The window appears when the page has finished loading; if it never does, the surface reports a failure.
     func start() {
         Self.start(plan, in: webView)
+        if youtubeEmbed { Task { @MainActor [weak self] in await self?.fetchStillIfNeeded() } }
         let timer = DispatchWorkItem { [weak self] in self?.loadTimedOut() }
         loadTimer = timer
         DispatchQueue.main.asyncAfter(deadline: .now() + loadTimeout, execute: timer)
@@ -250,6 +269,29 @@ final class WebWallpaperSurface: NSObject, WallpaperSurface, WKNavigationDelegat
     func loadTimedOut() {
         guard !closed, !loaded else { return }
         onFailure?("The page took too long to load.")
+    }
+
+    private static func loadStill(_ url: URL) -> CGImage? {
+        guard let src = CGImageSourceCreateWithURL(url as CFURL, nil) else { return nil }
+        return CGImageSourceCreateImageAtIndex(src, 0, nil)
+    }
+
+    /// Fetch the video's thumbnail if there is none yet. If the wallpaper is paused by the time it arrives, it replaces whatever
+    /// the pause put up (a snapshot of the player's own screen).
+    @MainActor
+    func fetchStillIfNeeded() async {
+        guard youtubeEmbed, still == nil, let id = youtubeID, let url = stillURL, !closed else { return }
+        guard await YouTubeStill.ensure(id: id, at: url, fetch: stillFetch), !closed, let image = Self.loadStill(url) else { return }
+        still = image
+        if loaded && !desiredPlaying { pause() }
+    }
+
+    private func showStill() {
+        placeholder.layer?.removeAllAnimations()
+        placeholder.alphaValue = 1
+        placeholder.layer?.contents = still
+        placeholder.layer?.contentsGravity = .resizeAspectFill
+        placeholder.isHidden = false
     }
 
     private func runScript(_ js: String) {
@@ -269,6 +311,16 @@ final class WebWallpaperSurface: NSObject, WallpaperSurface, WKNavigationDelegat
     private func pause() {
         pauseToken += 1
         let token = pauseToken
+        if youtubeEmbed, still != nil {
+            // Cover first, then stop the player: the player draws its own paused screen the moment it is told to pause, and that
+            // must never reach the display.
+            showStill()
+            webView.removeFromSuperview()
+            webView.setAllMediaPlaybackSuspended(true, completionHandler: nil)
+            runScript("window.dispatchEvent(new Event('anode-pause'))")
+            runScript(WallpaperURLClassifier.youtubePlayerCommand(playing: false))
+            return
+        }
         webView.setAllMediaPlaybackSuspended(true, completionHandler: nil)
         runScript("window.dispatchEvent(new Event('anode-pause'))")
         if youtubeEmbed { runScript(WallpaperURLClassifier.youtubePlayerCommand(playing: false)) }
@@ -287,10 +339,33 @@ final class WebWallpaperSurface: NSObject, WallpaperSurface, WKNavigationDelegat
 
     private func resume() {
         pauseToken += 1   // a snapshot still in flight must not take the view out again
-        if webView.superview == nil { container.addSubview(webView) }
+        if webView.superview == nil { container.addSubview(webView, positioned: .below, relativeTo: placeholder) }
         webView.setAllMediaPlaybackSuspended(false, completionHandler: nil)
         runScript("window.dispatchEvent(new Event('anode-resume'))")
         if youtubeEmbed { runScript(WallpaperURLClassifier.youtubePlayerCommand(playing: true)) }
+        if youtubeEmbed, still != nil {
+            // A player that has just started shows its title and buttons for a few seconds. Stay covered until they have gone,
+            // then fade the cover away.
+            showStill()
+            let token = pauseToken
+            DispatchQueue.main.asyncAfter(deadline: .now() + chromeSettle) { [weak self] in
+                guard let self, !self.closed, token == self.pauseToken else { return }
+                let fade = CABasicAnimation(keyPath: "opacity")
+                fade.fromValue = 1
+                fade.toValue = 0
+                fade.duration = self.fadeDuration
+                self.placeholder.layer?.add(fade, forKey: "fade")
+                self.placeholder.alphaValue = 0
+                DispatchQueue.main.asyncAfter(deadline: .now() + self.fadeDuration) { [weak self] in
+                    guard let self, !self.closed, token == self.pauseToken else { return }
+                    self.placeholder.isHidden = true
+                    self.placeholder.alphaValue = 1
+                    self.placeholder.layer?.removeAllAnimations()
+                    self.placeholder.layer?.contents = nil
+                }
+            }
+            return
+        }
         // Uncover the live view only once it has had a moment to draw, so there is no flash of an old frame.
         let token = pauseToken
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
@@ -372,6 +447,7 @@ final class WebWallpaperSurface: NSObject, WallpaperSurface, WKNavigationDelegat
         guard firstTime else { reassertAfterReload(); return }
         // A YouTube player needs a moment after the page itself is done before it has a picture.
         let delay: TimeInterval = youtubeEmbed ? 2.0 : 0
+        if youtubeEmbed, still != nil { showStill() }   // the player's first seconds show its title and buttons
         DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
             guard let self, !self.closed else { return }
             if self.present { self.window.present() }

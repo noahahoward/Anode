@@ -100,7 +100,7 @@ public final class WallpaperLibrary {
     /// Remove the entry and the files it owns. A remote item owns only its poster and thumbnail.
     public func remove(id: UUID) throws {
         guard let item = item(id: id) else { return }
-        var owned: [URL?] = [posterURL(item), thumbnailURL(item)]
+        var owned: [URL?] = [posterURL(item), thumbnailURL(item), stillURL(item)]
         switch item.source {
         case .file:                  owned.append(contentURL(item))
         case .folder:                owned.append(folderURL(item))
@@ -160,6 +160,9 @@ public final class WallpaperLibrary {
 
     public func posterURL(_ item: WallpaperItem) -> URL? { item.posterFilename.flatMap(owned) }
     public func thumbnailURL(_ item: WallpaperItem) -> URL? { item.thumbnailFilename.flatMap(owned) }
+
+    /// Where a YouTube wallpaper keeps its clean still picture (it may not exist yet).
+    public func stillURL(_ item: WallpaperItem) -> URL? { owned("\(item.id.uuidString)-still.jpg") }
 
     /// True when a local item's content is no longer on disk. A link is never missing (it may be unreachable, which is not this).
     public func isMissing(_ item: WallpaperItem) -> Bool {

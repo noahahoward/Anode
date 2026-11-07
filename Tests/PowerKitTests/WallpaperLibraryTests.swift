@@ -129,6 +129,18 @@ final class WallpaperLibraryTests: XCTestCase {
         XCTAssertNil(lib.thumbnailURL(without))
     }
 
+    func testAStillFileLivesBesideTheItemAndGoesWhenTheItemDoes() throws {
+        let lib = WallpaperLibrary(directory: dir)
+        let it = item(kind: .web, source: .remote(URL(string: "https://www.youtube.com/embed/dQw4w9WgXcQ")!))
+        try lib.add(it)
+        let still = try XCTUnwrap(lib.stillURL(it))
+        XCTAssertEqual(still.deletingLastPathComponent().standardizedFileURL, dir.standardizedFileURL)
+        XCTAssertEqual(still.lastPathComponent, "\(it.id.uuidString)-still.jpg")
+        _ = try touch(still.lastPathComponent)
+        try lib.remove(id: it.id)
+        XCTAssertFalse(fm.fileExists(atPath: still.path), "the still is the library's file and is removed with its item")
+    }
+
     func testACorruptIndexYieldsAnEmptyLibraryAndDeletesNothing() throws {
         let f = try touch("a.mov")
         try Data("{ nonsense".utf8).write(to: dir.appendingPathComponent("library.json"))
