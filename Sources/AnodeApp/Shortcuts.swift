@@ -133,7 +133,13 @@ enum ShortcutCommands {
         defaultShortcut: Shortcut(key: kVK_Escape, carbon: controlKey | optionKey | cmdKey))
     static var cleaner: [ShortcutCommand] { [cleanerStart, cleanerExit] }
 
-    static var all: [ShortcutCommand] { window + groups + cleaner }
+    /// Live wallpapers: pause or resume. ⌃⌥⌘W, listened for only while live wallpapers are switched on.
+    static let wallpaperPause = ShortcutCommand(
+        id: "wallpaper.pause", title: "Pause or resume the live wallpaper", section: "Live wallpapers",
+        defaultShortcut: Shortcut(key: kVK_ANSI_W, carbon: controlKey | optionKey | cmdKey))
+    static var wallpaper: [ShortcutCommand] { [wallpaperPause] }
+
+    static var all: [ShortcutCommand] { window + groups + cleaner + wallpaper }
 }
 
 /// The user's choices: each command's shortcut, its default unless changed, or none.

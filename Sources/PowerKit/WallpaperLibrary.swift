@@ -62,6 +62,9 @@ public final class WallpaperLibrary {
         return base.appendingPathComponent("Anode/Wallpapers", isDirectory: true)
     }
 
+    /// The app's one library, so the controller and the Beta Features section see the same list.
+    public static let shared = WallpaperLibrary(directory: WallpaperLibrary.defaultDirectory)
+
     public let directory: URL
     public private(set) var items: [WallpaperItem] = []
 

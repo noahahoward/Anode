@@ -53,6 +53,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
     var desktopSwitcher: DesktopSwitcher?
     var lidGlass: LidGlass?
     var keepAwake: KeepAwakeController?
+    var liveWallpaper: LiveWallpaperRuntime?
     var keyboardCleaner: KeyboardCleaner?
     var temperatureAlarm = TemperatureAlarm()
     var windowSnapper: WindowSnapper?
@@ -323,6 +324,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         KeepAwakeController.current = keepAwake
         keyboardCleaner = KeyboardCleaner(tap: CleanerInputTap(), windows: CleanerWindows())
         KeyboardCleaner.current = keyboardCleaner
+        liveWallpaper = LiveWallpaperRuntime()
+        LiveWallpaperController.current = liveWallpaper?.controller
         windowSnapper = WindowSnapper()
         windowGroups = WindowGroupController()
         windowDragSnapper = WindowDragSnapper(snapper: windowSnapper)
@@ -2682,6 +2685,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         fansPane.teardown()
         // Never leave the lid held open behind a quit app.
         keepAwake?.shutdown()
+        liveWallpaper?.shutdown()
         // Read on the sampling queue, which owns both — reading them here on
         // main raced the tick that mutates them. Safe to wait on: the sampling
         // queue only ever hands work to main asynchronously.

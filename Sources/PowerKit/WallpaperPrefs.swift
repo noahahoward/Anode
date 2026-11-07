@@ -91,6 +91,9 @@ public final class WallpaperPrefsStore {
     /// Posted (object: the store) after a change that altered the value.
     public static let didChange = Notification.Name("AnodeWallpaperPrefsDidChange")
 
+    /// The app's one store, so the controller and the Beta Features section see the same choices.
+    public static let shared = WallpaperPrefsStore(defaults: .standard)
+
     private let defaults: UserDefaults
     private let key: String
     private var stored: WallpaperPrefs

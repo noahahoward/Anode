@@ -49,7 +49,7 @@ final class BetaFeaturesWindowController: NSWindowController {
 
     init(features: [BetaFeature] = [BackdropFeature(), WindowSwitcherFeature(), DesktopSwitcherFeature(),
                                     DockPreviewFeature(), WindowActionsFeature(), WindowGroupsFeature(),
-                                    LidGlassFeature(), KeepAwakeFeature(), KeyboardCleanerFeature()]) {
+                                    LidGlassFeature(), KeepAwakeFeature(), KeyboardCleanerFeature(), LiveWallpaperFeature()]) {
         self.features = features
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: Self.columnWidth + 2 * Self.inset, height: 200),
                               styleMask: [.titled, .closable], backing: .buffered, defer: false)

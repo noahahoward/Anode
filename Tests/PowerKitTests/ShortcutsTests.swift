@@ -60,6 +60,15 @@ final class ShortcutsTests: XCTestCase {
         XCTAssertTrue(all.contains(ShortcutCommands.cleanerStart) && all.contains(ShortcutCommands.cleanerExit))
     }
 
+    func testWallpaperPauseHasTheDocumentedDefaultAndIsInTheList() {
+        XCTAssertEqual(ShortcutCommands.wallpaperPause.defaultShortcut.label, "⌃⌥⌘W")
+        XCTAssertEqual(ShortcutCommands.wallpaperPause.id, "wallpaper.pause")
+        XCTAssertEqual(ShortcutCommands.wallpaperPause.section, "Live wallpapers")
+        XCTAssertEqual(ShortcutCommands.wallpaper.map(\.id), ["wallpaper.pause"])
+        XCTAssertTrue(all.contains(ShortcutCommands.wallpaperPause))
+        XCTAssertEqual(Set(all.map { $0.defaultShortcut }).count, all.count, "every default shortcut is distinct")
+    }
+
     func testChoosingAShortcutReplacesTheDefaultAndPersists() {
         let defaults = UserDefaults(suiteName: "shortcuts-\(UUID().uuidString)")!
         let s = ShortcutStore(defaults: defaults)
