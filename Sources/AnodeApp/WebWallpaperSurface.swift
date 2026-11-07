@@ -41,6 +41,7 @@ final class WebWallpaperSurface: NSObject, WallpaperSurface, WKNavigationDelegat
     private let youtubeEmbed: Bool
     private let present: Bool
     let setterName: String
+    private let setterKey: String
     /// Every script the surface runs is also passed here, for tests.
     var scriptSink: ((String) -> Void)?
     var loadTimeout: TimeInterval = 30
@@ -59,14 +60,17 @@ final class WebWallpaperSurface: NSObject, WallpaperSurface, WKNavigationDelegat
     /// know what to call.
     static let defaultSetterName = "__anodeSetSound"
 
-    static func webConfiguration(setterName: String = WebWallpaperSurface.defaultSetterName) -> WKWebViewConfiguration {
+    static let defaultSetterKey = "anode"
+
+    static func webConfiguration(setterName: String = WebWallpaperSurface.defaultSetterName,
+                                 setterKey: String = WebWallpaperSurface.defaultSetterKey) -> WKWebViewConfiguration {
         let c = WKWebViewConfiguration()
         c.websiteDataStore = .nonPersistent()
         c.mediaTypesRequiringUserActionForPlayback = []
         c.preferences.javaScriptCanOpenWindowsAutomatically = false
         c.defaultWebpagePreferences.allowsContentJavaScript = true
         c.allowsAirPlayForMediaPlayback = false
-        c.userContentController.addUserScript(mutingUserScript(setterName: setterName))
+        c.userContentController.addUserScript(mutingUserScript(setterName: setterName, setterKey: setterKey))
         return c
     }
 
@@ -75,14 +79,16 @@ final class WebWallpaperSurface: NSObject, WallpaperSurface, WKNavigationDelegat
     /// not enumerable and its name is random per surface, and the hooks it relies on are installed non-configurable, so the
     /// page has no ordinary route back to a working `resume()` or an unwrapped `AudioContext`. (WebKit has no public "mute this
     /// page" switch, so this is containment of the obvious routes, not a guarantee.)
-    static func mutingUserScript(setterName: String = WebWallpaperSurface.defaultSetterName) -> WKUserScript {
-        WKUserScript(source: mutingScriptSource(setterName: setterName), injectionTime: .atDocumentStart, forMainFrameOnly: false)
+    static func mutingUserScript(setterName: String = WebWallpaperSurface.defaultSetterName,
+                                 setterKey: String = WebWallpaperSurface.defaultSetterKey) -> WKUserScript {
+        WKUserScript(source: mutingScriptSource(setterName: setterName, setterKey: setterKey), injectionTime: .atDocumentStart, forMainFrameOnly: false)
     }
 
-    static func mutingScriptSource(setterName: String) -> String {
+    static func mutingScriptSource(setterName: String, setterKey: String) -> String {
         """
         (function () {
           var NAME = '\(setterName)';
+          var KEY = '\(setterKey)';
           if (window[NAME]) { return; }
           var allow = false;
           var proto = HTMLMediaElement.prototype;
@@ -119,7 +125,8 @@ final class WebWallpaperSurface: NSObject, WallpaperSurface, WKNavigationDelegat
             }
             try { Object.defineProperty(window, name, { configurable: true, writable: true, value: Wrapped }); } catch (e) {}
           });
-          Object.defineProperty(window, NAME, { enumerable: false, configurable: false, writable: false, value: function (on) {
+          Object.defineProperty(window, NAME, { enumerable: false, configurable: false, writable: false, value: function (on, key) {
+            if (key !== KEY) { return; }
             allow = !!on;
             if (allow) {
               each(function (m) { try { mutedDesc.set.call(m, false); } catch (e) {} });
@@ -206,6 +213,7 @@ final class WebWallpaperSurface: NSObject, WallpaperSurface, WKNavigationDelegat
         if case .remote(let url) = item.source { youtubeEmbed = WallpaperURLClassifier.youtubeEmbedID(in: url) != nil }
         else { youtubeEmbed = false }
         setterName = "__a" + UUID().uuidString.replacingOccurrences(of: "-", with: "")
+        setterKey = UUID().uuidString
         let bounds = NSRect(origin: .zero, size: display.frame.size)
         window = DesktopWallpaperWindow(frame: display.frame)
         container = NSView(frame: bounds)
@@ -216,7 +224,7 @@ final class WebWallpaperSurface: NSObject, WallpaperSurface, WKNavigationDelegat
         placeholder.wantsLayer = true
         placeholder.autoresizingMask = [.width, .height]
         placeholder.isHidden = true
-        webView = WKWebView(frame: bounds, configuration: Self.webConfiguration(setterName: setterName))
+        webView = WKWebView(frame: bounds, configuration: Self.webConfiguration(setterName: setterName, setterKey: setterKey))
         webView.autoresizingMask = [.width, .height]
         webView.underPageBackgroundColor = .black
         super.init()
@@ -299,7 +307,7 @@ final class WebWallpaperSurface: NSObject, WallpaperSurface, WKNavigationDelegat
     }
 
     private func sendSound(_ on: Bool) {
-        runScript("window['\(setterName)'] && window['\(setterName)'](\(on ? "true" : "false"))")
+        runScript("window['\(setterName)'] && window['\(setterName)'](\(on ? "true" : "false"), '\(setterKey)')")
     }
 
     /// The page was reloaded (a crashed content process comes back as a fresh page): tell it again what it was last told.

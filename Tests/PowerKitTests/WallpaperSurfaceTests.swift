@@ -377,6 +377,33 @@ final class WallpaperSurfaceTests: XCTestCase {
         XCTAssertTrue(sent.contains { $0.contains("anode-resume") }, "and so is the playing state")
     }
 
+    func testAPageThatFindsTheSoundSwitchStillCannotUseItWithoutTheKey() async throws {
+        // Measured on the Mac: Object.getOwnPropertyNames(window) lists a non-enumerable switch, so hiding the name is not enough.
+        let config = WebWallpaperSurface.webConfiguration(setterName: "__found", setterKey: "right-key")
+        let web = WKWebView(frame: NSRect(x: 0, y: 0, width: 100, height: 100), configuration: config)
+        let waiter = LoadWaiter()
+        web.navigationDelegate = waiter
+        let loaded = expectation(description: "loaded")
+        waiter.onFinish = { loaded.fulfill() }
+        web.loadHTMLString("<html><body></body></html>", baseURL: WallpaperURLClassifier.youtubeWrapperBaseURL)
+        await fulfillment(of: [loaded], timeout: 15)
+        func mutedAfterTryingToUnmute() async throws -> String {
+            try await web.evaluateJavaScript("(function(){var v=document.createElement('video');v.muted=false;return String(v.muted)})()") as? String ?? "?"
+        }
+        do { let m = try await mutedAfterTryingToUnmute(); XCTAssertEqual(m, "true", "forced muted from the start") }
+        _ = try await web.evaluateJavaScript("window['__found'](true)")
+        do { let m = try await mutedAfterTryingToUnmute(); XCTAssertEqual(m, "true", "no key: nothing changes") }
+        _ = try await web.evaluateJavaScript("window['__found'](true, 'guess')")
+        do { let m = try await mutedAfterTryingToUnmute(); XCTAssertEqual(m, "true", "wrong key: nothing changes") }
+        let source = try await web.evaluateJavaScript("String(window['__found'])") as? String ?? ""
+        XCTAssertFalse(source.contains("right-key"), "the key is not readable from the function's text")
+        _ = try await web.evaluateJavaScript("window['__found'](true, 'right-key')")
+        do { let m = try await mutedAfterTryingToUnmute(); XCTAssertEqual(m, "false", "the app, which knows the key, can unmute") }
+        _ = try await web.evaluateJavaScript("window['__found'](false, 'right-key')")
+        do { let m = try await mutedAfterTryingToUnmute(); XCTAssertEqual(m, "true") }
+        web.navigationDelegate = nil
+    }
+
     func testTheMutingScriptCannotBeTurnedOffByThePageItself() async throws {
         let config = WebWallpaperSurface.webConfiguration(setterName: "__secretSwitch")
         let web = WKWebView(frame: NSRect(x: 0, y: 0, width: 100, height: 100), configuration: config)
