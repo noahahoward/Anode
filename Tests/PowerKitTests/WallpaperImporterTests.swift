@@ -130,6 +130,82 @@ final class WallpaperImporterTests: XCTestCase {
         XCTAssertEqual(libraryFiles(), [])
     }
 
+    // MARK: animated images (GIF)
+
+    func testAnimatedGIFBecomesALoopingVideoOfTheSameLength() async throws {
+        let gif = try TestImage.writeAnimated(frames: 10, delay: 0.2, to: srcDir.appendingPathComponent("spin.gif"))
+        let r = try await WallpaperImporter.importAnimatedImage(from: gif, into: library)
+        XCTAssertEqual(r.item.kind, .video)
+        XCTAssertEqual(r.item.name, "spin")
+        XCTAssertEqual(try XCTUnwrap(r.item.durationSeconds), 2.0, accuracy: 0.1, "10 frames of 0.2 s")
+        XCTAssertEqual(r.item.pixelWidth, 48)
+        XCTAssertEqual(r.item.pixelHeight, 32)
+        XCTAssertEqual(r.item.hasAudio, false)
+        XCTAssertEqual(try XCTUnwrap(library.contentURL(r.item)).pathExtension, "mov")
+        XCTAssertNotNil(library.posterURL(r.item))
+        XCTAssertNotNil(library.thumbnailURL(r.item))
+        XCTAssertEqual(library.items.count, 1)
+        XCTAssertEqual(libraryFiles().count, 3, "the video, its poster, its thumbnail: no temp file left behind")
+        let probe = try await WallpaperImporter.probeVideo(try XCTUnwrap(library.contentURL(r.item)))
+        XCTAssertEqual(probe.durationSeconds, 2.0, accuracy: 0.1)
+    }
+
+    func testAGIFShorterThanHalfASecondStillImportsByRepeatingItself() async throws {
+        let gif = try TestImage.writeAnimated(frames: 2, delay: 0.1, to: srcDir.appendingPathComponent("blink.gif"))
+        let r = try await WallpaperImporter.importAnimatedImage(from: gif, into: library)
+        XCTAssertGreaterThanOrEqual(try XCTUnwrap(r.item.durationSeconds), 1.0 - 0.05)
+    }
+
+    func testGIFFramesWithNoDelayPlayAtATenthOfASecondLikeABrowser() async throws {
+        let gif = try TestImage.writeAnimated(frames: 20, delay: 0, to: srcDir.appendingPathComponent("zero.gif"))
+        let r = try await WallpaperImporter.importAnimatedImage(from: gif, into: library)
+        XCTAssertEqual(try XCTUnwrap(r.item.durationSeconds), 2.0, accuracy: 0.1, "20 frames at the 0.1 s browsers use")
+    }
+
+    func testAnOddSizedGIFImports() async throws {
+        let gif = try TestImage.writeAnimated(frames: 6, delay: 0.2, width: 33, height: 21, to: srcDir.appendingPathComponent("odd.gif"))
+        let r = try await WallpaperImporter.importAnimatedImage(from: gif, into: library)
+        XCTAssertEqual(r.item.kind, .video)
+        XCTAssertEqual(try XCTUnwrap(r.item.pixelWidth) % 2, 0, "H.264 needs even sizes")
+        XCTAssertEqual(try XCTUnwrap(r.item.pixelHeight) % 2, 0)
+    }
+
+    func testAnAnimatedPNGBecomesAVideoToo() async throws {
+        let apng = try TestImage.writeAnimated(.png, frames: 5, delay: 0.2, to: srcDir.appendingPathComponent("anim.png"))
+        let r = try await WallpaperImporter.importAnimatedImage(from: apng, into: library)
+        XCTAssertEqual(r.item.kind, .video)
+        XCTAssertEqual(try XCTUnwrap(r.item.durationSeconds), 1.0, accuracy: 0.1)
+    }
+
+    func testAnimatedImageImportRejectsATextFileAndLeavesNothing() async throws {
+        let fake = srcDir.appendingPathComponent("x.gif")
+        try Data("hello".utf8).write(to: fake)
+        do { _ = try await WallpaperImporter.importAnimatedImage(from: fake, into: library); XCTFail("should throw") }
+        catch { XCTAssertEqual(error as? WallpaperImportError, .notAnImage) }
+        XCTAssertEqual(libraryFiles(), [])
+        XCTAssertEqual(library.items.count, 0)
+    }
+
+    func testAnimatedFrameCountSeesGIFFramesAndOneForAStill() throws {
+        let gif = try TestImage.writeAnimated(frames: 7, delay: 0.1, to: srcDir.appendingPathComponent("a.gif"))
+        let still = try TestImage.write(.gif, width: 20, height: 20, to: srcDir.appendingPathComponent("s.gif"))
+        let png = try TestImage.writePNG(to: srcDir.appendingPathComponent("p.png"))
+        XCTAssertEqual(WallpaperImporter.animatedFrameCount(gif), 7)
+        XCTAssertEqual(WallpaperImporter.animatedFrameCount(still), 1)
+        XCTAssertEqual(WallpaperImporter.animatedFrameCount(png), 1)
+        XCTAssertEqual(WallpaperImporter.animatedFrameCount(srcDir.appendingPathComponent("missing.gif")), 0)
+    }
+
+    func testAddFileSendsAnAnimatedGIFToVideoAndAStillGIFToImage() async throws {
+        let importer = RealWallpaperImporter(library: library)
+        let moving = try TestImage.writeAnimated(frames: 10, delay: 0.1, to: srcDir.appendingPathComponent("move.gif"))
+        let still = try TestImage.write(.gif, width: 20, height: 20, to: srcDir.appendingPathComponent("still.gif"))
+        let a = try await importer.addFile(moving)
+        let b = try await importer.addFile(still)
+        XCTAssertEqual(a.item.kind, .video)
+        XCTAssertEqual(b.item.kind, .image)
+    }
+
     // MARK: web
 
     func testImportHTMLFileCopiesOnlyThatFileSnapshotsItAndWarns() async throws {

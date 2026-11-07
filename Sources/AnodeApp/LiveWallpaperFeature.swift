@@ -26,13 +26,15 @@ final class RealWallpaperImporter: LiveWallpaperImporting {
 
     init(library: WallpaperLibrary = .shared) { self.library = library }
 
-    /// A file goes by its kind: a web page, an image, otherwise a video.
+    /// A file goes by its kind: a web page, an animated image (made into a video), a still image, otherwise a video.
     func addFile(_ url: URL) async throws -> ImportResult {
         let ext = url.pathExtension.lowercased()
         if ext == "html" || ext == "htm" {
             return try await WallpaperImporter.importHTMLFile(from: url, into: library, snapshot: WebWallpaperSurface.snapshot)
         }
         if let type = UTType(filenameExtension: ext), type.conforms(to: .image) {
+            // A GIF (or animated PNG or WebP) with more than one frame becomes a looping video; a still one stays an image.
+            if WallpaperImporter.animatedFrameCount(url) > 1 { return try await WallpaperImporter.importAnimatedImage(from: url, into: library) }
             return try await WallpaperImporter.importImage(from: url, into: library)
         }
         return try await WallpaperImporter.importVideo(from: url, into: library)

@@ -181,6 +181,115 @@ enum WallpaperImporter {
         }
     }
 
+    // MARK: animated images (GIF, animated PNG, animated WebP)
+
+    /// An animated picture is turned into a looping H.264 clip when it is added, so it plays through the same shared player,
+    /// the same pause rules and the same hardware decoder as any video. Drawing a GIF frame by frame on a timer would cost
+    /// far more battery and need its own pause logic.
+    static let animatedTypes: [UTType] = [.gif, .png, .webP]
+    static let maximumAnimatedSide = 3840
+    static let defaultFrameDelay = 0.1
+    static let minimumAnimatedDuration = 1.0
+    private static let frameTimescale: Int32 = 6000
+
+    /// How many animation frames the file has: its frame count for a GIF, PNG or WebP, 1 for any other picture (or a still
+    /// one), 0 if it is not an image.
+    static func animatedFrameCount(_ url: URL) -> Int {
+        guard let src = CGImageSourceCreateWithURL(url as CFURL, nil) else { return 0 }
+        let count = CGImageSourceGetCount(src)
+        guard count > 0 else { return 0 }
+        guard let id = CGImageSourceGetType(src) as String?, let type = UTType(id),
+              animatedTypes.contains(where: { type.conforms(to: $0) }) else { return 1 }
+        return count
+    }
+
+    /// How long a frame is shown. A missing, zero or one-hundredth-of-a-second delay becomes 0.1 s, which is what browsers do
+    /// with the many GIFs that were written with no delay at all.
+    static func frameDelay(_ src: CGImageSource, at index: Int) -> Double {
+        guard let props = CGImageSourceCopyPropertiesAtIndex(src, index, nil) as? [CFString: Any] else { return defaultFrameDelay }
+        let kinds: [(CFString, CFString, CFString)] = [
+            (kCGImagePropertyGIFDictionary, kCGImagePropertyGIFUnclampedDelayTime, kCGImagePropertyGIFDelayTime),
+            (kCGImagePropertyPNGDictionary, kCGImagePropertyAPNGUnclampedDelayTime, kCGImagePropertyAPNGDelayTime),
+            (kCGImagePropertyWebPDictionary, kCGImagePropertyWebPUnclampedDelayTime, kCGImagePropertyWebPDelayTime)]
+        for (dictionary, unclamped, clamped) in kinds {
+            guard let d = props[dictionary] as? [CFString: Any] else { continue }
+            if let v = (d[unclamped] as? Double) ?? (d[clamped] as? Double) { return v > 0.011 ? v : defaultFrameDelay }
+        }
+        return defaultFrameDelay
+    }
+
+    static func importAnimatedImage(from url: URL, into library: WallpaperLibrary) async throws -> ImportResult {
+        guard let src = CGImageSourceCreateWithURL(url as CFURL, nil), CGImageSourceGetCount(src) > 0 else {
+            throw WallpaperImportError.notAnImage
+        }
+        let temp = library.directory.appendingPathComponent("convert-\(UUID().uuidString).mov")
+        do {
+            try fm.createDirectory(at: library.directory, withIntermediateDirectories: true)
+            try await writeClip(from: src, to: temp)
+            return try await importVideo(from: temp, into: library, moveSource: true, makePoster: writePoster, name: displayName(of: url))
+        } catch {
+            try? fm.removeItem(at: temp)
+            throw error
+        }
+    }
+
+    /// The frames of `src` as an H.264 QuickTime clip with each frame's own duration, repeated until it lasts at least
+    /// `minimumAnimatedDuration` (a loop of a very short GIF looks the same, and a clip under half a second is refused).
+    private static func writeClip(from src: CGImageSource, to url: URL) async throws {
+        let count = CGImageSourceGetCount(src)
+        guard let props = CGImageSourceCopyPropertiesAtIndex(src, 0, nil) as? [CFString: Any],
+              let sourceW = props[kCGImagePropertyPixelWidth] as? Int, let sourceH = props[kCGImagePropertyPixelHeight] as? Int,
+              sourceW > 0, sourceH > 0 else { throw WallpaperImportError.notAnImage }
+        let shrink = min(1, Double(maximumAnimatedSide) / Double(max(sourceW, sourceH)))
+        let width = max(2, Int(Double(sourceW) * shrink) / 2 * 2), height = max(2, Int(Double(sourceH) * shrink) / 2 * 2)
+        let delays = (0..<count).map { frameDelay(src, at: $0) }
+        let once = delays.reduce(0, +)
+        let passes = once >= minimumAnimatedDuration ? 1 : Int((minimumAnimatedDuration / once).rounded(.up))
+
+        let writer = try AVAssetWriter(outputURL: url, fileType: .mov)
+        let input = AVAssetWriterInput(mediaType: .video, outputSettings: [
+            AVVideoCodecKey: AVVideoCodecType.h264, AVVideoWidthKey: width, AVVideoHeightKey: height,
+            AVVideoCompressionPropertiesKey: [AVVideoQualityKey: 0.85]])
+        let adaptor = AVAssetWriterInputPixelBufferAdaptor(assetWriterInput: input, sourcePixelBufferAttributes: [
+            kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
+            kCVPixelBufferWidthKey as String: width, kCVPixelBufferHeightKey as String: height])
+        guard writer.canAdd(input) else { throw WallpaperImportError.copyFailed }
+        writer.add(input)
+        guard writer.startWriting() else { throw WallpaperImportError.copyFailed }
+        writer.startSession(atSourceTime: .zero)
+
+        var elapsed = 0.0
+        func time(_ seconds: Double) -> CMTime { CMTime(value: CMTimeValue((seconds * Double(frameTimescale)).rounded()), timescale: frameTimescale) }
+        for _ in 0..<passes {
+            for i in 0..<count {
+                guard let frame = CGImageSourceCreateImageAtIndex(src, i, nil) else { throw WallpaperImportError.notAnImage }
+                while !input.isReadyForMoreMediaData { try await Task.sleep(nanoseconds: 2_000_000) }
+                guard let pool = adaptor.pixelBufferPool else { throw WallpaperImportError.copyFailed }
+                var buffer: CVPixelBuffer?
+                CVPixelBufferPoolCreatePixelBuffer(nil, pool, &buffer)
+                guard let pixels = buffer else { throw WallpaperImportError.copyFailed }
+                CVPixelBufferLockBaseAddress(pixels, [])
+                if let base = CVPixelBufferGetBaseAddress(pixels),
+                   let ctx = CGContext(data: base, width: width, height: height, bitsPerComponent: 8,
+                                       bytesPerRow: CVPixelBufferGetBytesPerRow(pixels), space: CGColorSpaceCreateDeviceRGB(),
+                                       bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue) {
+                    // Transparent GIFs sit on black, the colour a wallpaper window is behind them anyway.
+                    ctx.setFillColor(CGColor(red: 0, green: 0, blue: 0, alpha: 1))
+                    ctx.fill(CGRect(x: 0, y: 0, width: width, height: height))
+                    ctx.interpolationQuality = .high
+                    ctx.draw(frame, in: CGRect(x: 0, y: 0, width: width, height: height))
+                }
+                CVPixelBufferUnlockBaseAddress(pixels, [])
+                guard adaptor.append(pixels, withPresentationTime: time(elapsed)) else { throw WallpaperImportError.copyFailed }
+                elapsed += delays[i]
+            }
+        }
+        input.markAsFinished()
+        writer.endSession(atSourceTime: time(elapsed))
+        await writer.finishWriting()
+        guard writer.status == .completed else { throw WallpaperImportError.copyFailed }
+    }
+
     // MARK: web
 
     static func importHTMLFile(from url: URL, into library: WallpaperLibrary, snapshot: PageSnapshotter) async throws -> ImportResult {
