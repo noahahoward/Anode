@@ -352,3 +352,31 @@ Tasks 2–7 are built and unit-tested (full suite 1951 tests, 0 failures). Not b
 - Speed slider is enabled only for videos; the first item added becomes the default.
 - Review minors deferred: `.m3u8` should always stream; `refresh` flag dropped when displays change in the same event; Beta rows rebuild on every status change; stray `download-*` file after a crash; image re-decode race; a few test gaps.
 - Unverified on hardware: sleep/wake, lock/unlock, external display, Space-switch flash, a hostile page's audio, YouTube pause via the IFrame API, `pmset -g assertions` while a web video plays.
+
+## Measured (Task 10, on hardware, 2026-11-06, MacBook Pro 14", macOS 27, on battery 26 %, one built-in display)
+
+Driven by Claude with the owner's go-ahead (real clicks, System Events, accessibility presses, `CGWindowList`, window captures by id). Build under test: c834dd8 → 60ff391 (three fixes made during the run, below). The feature was left OFF, the library empty, "Pause on battery" back on.
+
+**Worked as designed**
+- Import through the real panels: a 666 MB 1080p MOV (APFS clone, instant), two web folders, a PNG, a YouTube link. Posters and thumbnails written; the real page snapshotter produced previews; first item became the default. Status line reads "Paused (on battery)" until that rule is unticked, as designed.
+- Window: one Anode window at −2147483623, on screen, between the system "Wallpaper" and Finder; Notification Center widgets draw on top of the video.
+- Video plays (frames differ), pauses frozen via the button; web page animates and its WebContent process falls from 9.7 % to 0 % of a core when paused, and the desktop keeps the page's last picture (no black); YouTube plays muted on the desktop and pauses through the IFrame API: 3.25 % → 0.37 % of a core (target 0.5 %), frozen, resumes.
+- Covered: a full-screen TextEdit paused it ("pause covered") and leaving resumed it; six real Space switches (TextEdit ↔ iTerm2) wrote no pause line: the 1.0 s gate holds.
+- Failures: `http://` link refused with "Only https links work"; a dead https link → "The download failed." with no stray file; garbage → "That doesn't look like a web link."; a clip deleted behind the app's back → row "File missing: 1080p", library row offers Remove, no desktop window (system wallpaper shows).
+- Hostile page: `window.open` → null (no window), `alert`/`confirm` no-ops, a scripted `location` change refused (page stayed), `fetch('file:///etc/hosts')` blocked, AudioContext stayed suspended, `<audio autoplay>`/`new Audio()` stayed muted, the default switch name absent, and after the page found the secret switch via `getOwnPropertyNames` and called it, a fresh video was still muted.
+- Teardown: feature off → desktop window and WebContent process gone, no assertions held; `kill -9` while a YouTube wallpaper was up → no orphan window, relaunch restored it by itself.
+
+**Found and fixed during the run (each with a failing test first)**
+1. A muted wallpaper held a Core Audio output stream and `coreaudiod` held `PreventUserIdleSystemSleep` for Anode ("audio-out BuiltInSpeakerDevice") the whole time it was loaded. Fix: muted means the player's audio tracks are switched off (`WallpaperPlayers.setMuted`). Verified: no output stream, no assertion afterwards.
+2. The sound switch was discoverable by a page. Fix: it now needs a per-surface key the page cannot read (verified in real WebKit and on the Mac).
+3. Added `wallpaper.log` (one line per state change: show/close/fail/play/pause with the reason), which is what made the covered and Space checks possible.
+
+**Known limits, not fixed**
+- A playing web video (including a muted YouTube embed) keeps a WebKit GPU-process audio assertion that prevents idle system sleep while it plays; WebKit drops it within 20 s of a pause (measured: gone by the first 20 s check), so display-sleep, lock, battery and user pauses release it. A muted `<audio>` element did the same.
+- YouTube shows captions here (probably the macOS "prefer captions" setting; `cc_load_policy=0` did not override it).
+- Energy per wallpaper was not measured (no `powermetrics`; per-process CPU in this machine is too noisy to attribute: Anode itself sat at 1–6 % of a core with or without a wallpaper).
+- The Beta Features window gets very tall in its third column once the section has rows (scrollable; the columns are balanced by section order only).
+
+**Not testable by driving, left to the owner**
+- ⌃⌥⌘W: synthetic key events (both System Events and CGEvent) never reach Anode's key listener (consistent with the earlier spike notes), so the shortcut is unverified; the Pause button and the controller path it shares are verified.
+- Display sleep/wake and lock/unlock: the Mac locks immediately on sleep (screen-lock delay "immediate") and Claude cannot type the password, so these were not run. Also not run: unplugging the charger, Low Power Mode (needs admin), heat, an external display, Stage Manager, and the by-eye check for a flash of the old wallpaper on Space switches.
