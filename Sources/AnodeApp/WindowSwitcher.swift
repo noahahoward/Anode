@@ -1,6 +1,7 @@
 import AppKit
 import ApplicationServices
 import ScreenCaptureKit
+import Security
 import PowerKit
 
 // ── Window switcher (Beta Features) ─────────────────────────────────────────
@@ -503,6 +504,61 @@ enum AccessibilityAccess {
             NSWorkspace.shared.open(url)
         }
     }
+
+    /// Forget Anode's Accessibility approval and ask again.
+    ///
+    /// For the approval that System Settings shows as ON while `AXIsProcessTrusted` says no. macOS stores
+    /// an approval against the program's signature, and an ad-hoc signature (every build made on a Mac
+    /// without Anode's local signing identity) changes with every update. Switching the entry off and on
+    /// again only flips its flag and keeps the old signature; the entry has to be removed so the next
+    /// request writes a new one. `tccutil reset` removes it, and needs no password for one's own app.
+    static func resetAndAsk() {
+        let bundleID = Bundle.main.bundleIdentifier ?? "dev.anode.app"
+        DispatchQueue.global(qos: .userInitiated).async {
+            let p = Process()
+            p.executableURL = URL(fileURLWithPath: "/usr/bin/tccutil")
+            p.arguments = ["reset", "Accessibility", bundleID]
+            p.standardOutput = FileHandle.nullDevice
+            p.standardError = FileHandle.nullDevice
+            let ok = (try? p.run()) != nil && { p.waitUntilExit(); return p.terminationStatus == 0 }()
+            FeatureLog.append("accessibility.log", "reset requested for \(bundleID): \(ok ? "done" : "tccutil failed")")
+            DispatchQueue.main.async {
+                request()
+                openSettings()
+            }
+        }
+    }
+
+    /// What macOS has to go on when it decides whether this process is trusted: where the app runs from and
+    /// how it is signed. One line, for the log.
+    static func diagnosis() -> String {
+        var kind = "unknown", cdhash = "?", identifier = "?"
+        var me: SecCode?
+        var staticCode: SecStaticCode?
+        var infoCF: CFDictionary?
+        if SecCodeCopySelf([], &me) == errSecSuccess, let me,
+           SecCodeCopyStaticCode(me, [], &staticCode) == errSecSuccess, let staticCode,
+           SecCodeCopySigningInformation(staticCode, SecCSFlags(rawValue: kSecCSSigningInformation), &infoCF) == errSecSuccess,
+           let info = infoCF as? [String: Any] {
+            let flags = (info[kSecCodeInfoFlags as String] as? UInt32) ?? 0
+            kind = flags & SecCodeSignatureFlags.adhoc.rawValue != 0 ? "ad-hoc"
+                 : info[kSecCodeInfoCertificates as String] != nil ? "certificate" : "unsigned"
+            cdhash = (info[kSecCodeInfoUnique as String] as? Data)?.prefix(4).map { String(format: "%02x", $0) }.joined() ?? "?"
+            identifier = (info[kSecCodeInfoIdentifier as String] as? String) ?? "?"
+        }
+        return "AXIsProcessTrusted=\(isTrusted) signature=\(kind) cdhash=\(cdhash) id=\(identifier) "
+             + "path=\(Bundle.main.bundlePath)"
+    }
+
+    private static var diagnosed = false
+
+    /// Write `diagnosis()` to the log, once per launch, when a feature that needs the permission cannot start.
+    /// The next report from a Mac where "it is on but Anode says it is not" can then be read, not guessed.
+    static func logDiagnosisOnce(for feature: String) {
+        guard !diagnosed else { return }
+        diagnosed = true
+        FeatureLog.append("accessibility.log", "\(feature) cannot start: \(diagnosis())")
+    }
 }
 
 /// Which tile is selected. Pure, for tests.
@@ -631,6 +687,7 @@ final class WindowSwitcher {
             if tap != nil { prewarm() }
         }
         if tap == nil {
+            AccessibilityAccess.logDiagnosisOnce(for: "window switcher")
             guard retryTimer == nil else { return }
             retryTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
                 self?.apply()

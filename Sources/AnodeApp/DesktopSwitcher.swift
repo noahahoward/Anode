@@ -314,6 +314,7 @@ final class DesktopSwitcher {
             if tap != nil { noteCurrentDesktop() }
         }
         if tap == nil {
+            AccessibilityAccess.logDiagnosisOnce(for: "desktop switcher")
             guard retryTimer == nil else { return }
             retryTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in self?.apply() }
         } else {

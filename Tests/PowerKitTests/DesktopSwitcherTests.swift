@@ -172,6 +172,19 @@ final class DesktopSwitcherTests: XCTestCase {
         _ = f.enableCheckbox.target?.perform(f.enableCheckbox.action)
         XCTAssertTrue(s.desktopSwitcherEnabled)
         XCTAssertTrue(f.accessButton.isHidden)
+        XCTAssertTrue(f.resetButton.isHidden)
+    }
+
+    func testNotAllowedOffersTheResetToo() throws {
+        let (defaults, suiteName) = try TestDefaults.make(owner: "DesktopSwitcherFeature", test: name)
+        addTeardownBlock { TestDefaults.destroy(defaults, suiteName) }
+        let s = Settings(defaults: defaults)
+        s.desktopSwitcherEnabled = true
+        let f = DesktopSwitcherFeature(settings: s, accessibilityAllowed: { false })
+        _ = f.makeView()
+        f.refresh()
+        XCTAssertFalse(f.accessButton.isHidden)
+        XCTAssertFalse(f.resetButton.isHidden)
     }
 
     func testTheBetaWindowListsIt() {

@@ -126,10 +126,13 @@ final class WindowSwitcherTests: XCTestCase {
         XCTAssertTrue(s.windowSwitcherEnabled)
         XCTAssertFalse(f.accessStatus.isHidden)
         XCTAssertTrue(f.accessButton.isHidden, "nothing to open when it is already allowed")
+        XCTAssertTrue(f.resetButton.isHidden, "nothing to reset when it is already allowed")
 
         allowed = false
         f.refresh()
         XCTAssertFalse(f.accessButton.isHidden)
+        XCTAssertFalse(f.resetButton.isHidden, "an approval that is ON but ignored needs a way to be cleared")
+        XCTAssertTrue(f.accessStatus.stringValue.contains("older build"), "and the text says why")
         XCTAssertTrue(f.accessStatus.stringValue.contains("not allowed"))
     }
 

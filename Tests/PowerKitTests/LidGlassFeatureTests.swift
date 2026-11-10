@@ -219,7 +219,17 @@ final class LidGlassFeatureTests: XCTestCase {
         XCTAssertEqual(f.title, "Lid Glass")
         XCTAssertEqual(f.enableCheckbox.state, .off)
         XCTAssertFalse(settings.lidGlassEnabled)
-        XCTAssertTrue(BetaFeaturesWindowController().features.contains { $0.title == "Lid Glass" })
+        XCTAssertEqual(BetaFeaturesWindowController().features.contains { $0.title == "Lid Glass" },
+                       LidGlassFeature.isSupportedHere, "listed exactly where the sensor exists")
+    }
+
+    func testTheSectionIsLeftOutOfMacsWithoutALidSensor() {
+        let without = BetaFeaturesWindowController.defaultFeatures(hasLidSensor: false)
+        let with = BetaFeaturesWindowController.defaultFeatures(hasLidSensor: true)
+        XCTAssertFalse(without.contains { $0 is LidGlassFeature })
+        XCTAssertTrue(with.contains { $0 is LidGlassFeature })
+        // Nothing else moves: the same sections, in the same order, minus this one.
+        XCTAssertEqual(with.filter { !($0 is LidGlassFeature) }.map(\.title), without.map(\.title))
     }
 
     func testTheCheckboxAndSlidersWriteTheirSettings() throws {

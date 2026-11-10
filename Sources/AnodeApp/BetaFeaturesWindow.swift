@@ -47,10 +47,18 @@ final class BetaFeaturesWindowController: NSWindowController {
     private let scroll = NSScrollView()
     private var activeToken: NSObjectProtocol?
 
-    init(features: [BetaFeature] = [BackdropFeature(), WindowSwitcherFeature(), DesktopSwitcherFeature(),
-                                    DockPreviewFeature(), WindowActionsFeature(), WindowGroupsFeature(),
-                                    LidGlassFeature(), KeepAwakeFeature(), KeyboardCleanerFeature(), LiveWallpaperFeature(),
-                                    GameModeFeature()]) {
+    /// The sections this Mac gets, in order. Lid Glass is left out where there is no lid-angle sensor
+    /// (a MacBook Neo, a desktop Mac): a section whose only message is "not supported on this Mac" is
+    /// clutter, and its Screen Recording request would be for an effect that can never run.
+    static func defaultFeatures(hasLidSensor: Bool = LidGlassFeature.isSupportedHere) -> [BetaFeature] {
+        var list: [BetaFeature] = [BackdropFeature(), WindowSwitcherFeature(), DesktopSwitcherFeature(),
+                                   DockPreviewFeature(), WindowActionsFeature(), WindowGroupsFeature()]
+        if hasLidSensor { list.append(LidGlassFeature()) }
+        list += [KeepAwakeFeature(), KeyboardCleanerFeature(), LiveWallpaperFeature(), GameModeFeature()]
+        return list
+    }
+
+    init(features: [BetaFeature] = BetaFeaturesWindowController.defaultFeatures()) {
         self.features = features
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: Self.columnWidth + 2 * Self.inset, height: 200),
                               styleMask: [.titled, .closable], backing: .buffered, defer: false)
@@ -433,6 +441,7 @@ final class WindowSwitcherFeature: BetaFeature {
     let triggerLabel = NSTextField(labelWithString: "Open with:")
     let accessStatus = BetaFeaturesWindowController.wrapping("")
     let accessButton = NSButton(title: "Open Accessibility Settings…", target: nil, action: nil)
+    let resetButton = NSButton(title: "Already on? Reset Anode's approval and ask again", target: nil, action: nil)
     let previewNote = BetaFeaturesWindowController.wrapping("", color: .secondaryLabelColor)
     let previewButton = NSButton(title: "Open Screen Recording Settings…", target: nil, action: nil)
     private let previewsFailing: () -> Bool
@@ -454,6 +463,10 @@ final class WindowSwitcherFeature: BetaFeature {
         accessButton.action = #selector(openAccessibility)
         accessButton.bezelStyle = .rounded
         accessButton.controlSize = .small
+        resetButton.target = self
+        resetButton.action = #selector(resetAccessibility)
+        resetButton.bezelStyle = .rounded
+        resetButton.controlSize = .small
 
         previewButton.target = self
         previewButton.action = #selector(openScreenRecording)
@@ -464,7 +477,7 @@ final class WindowSwitcherFeature: BetaFeature {
         triggerPopup.action = #selector(triggerChanged)
         let triggerRow = NSStackView(views: [triggerLabel, triggerPopup])
         triggerRow.spacing = 8
-        let column = NSStackView(views: [enableCheckbox, triggerRow, accessStatus, accessButton, previewNote, previewButton])
+        let column = NSStackView(views: [enableCheckbox, triggerRow, accessStatus, accessButton, resetButton, previewNote, previewButton])
         column.orientation = .vertical
         column.alignment = .leading
         column.spacing = 8
@@ -486,6 +499,8 @@ final class WindowSwitcherFeature: BetaFeature {
         AccessibilityAccess.openSettings()
     }
 
+    @objc private func resetAccessibility() { AccessibilityAccess.resetAndAsk() }
+
     @objc private func triggerChanged() {
         let all = WindowSwitcherTrigger.allCases, i = triggerPopup.indexOfSelectedItem
         guard all.indices.contains(i) else { return }
@@ -506,12 +521,14 @@ final class WindowSwitcherFeature: BetaFeature {
         triggerPopup.isEnabled = on
         accessStatus.isHidden = !on
         accessButton.isHidden = !on || allowed
+        resetButton.isHidden = !on || allowed
         accessStatus.stringValue = allowed
             ? "Accessibility: allowed. Only \(trigger.label), and Tab, the arrows and Esc while the switcher is open, "
               + "are taken; every other key goes on untouched"
               + (trigger == .commandOption ? ", and ⌘Tab is still the system's." : ".")
             : "Accessibility: not allowed yet, so \(trigger.label) does nothing. Allow Anode in "
-              + "Accessibility and it starts within a couple of seconds."
+              + "Accessibility and it starts within a couple of seconds. If Anode is already switched on there, "
+              + "that approval belongs to an older build of it: Reset below clears it so macOS asks afresh."
         accessStatus.textColor = allowed ? .secondaryLabelColor : .systemOrange
         previewNote.isHidden = !on
         let granted = screenRecording(), failing = granted && previewsFailing()
@@ -646,6 +663,7 @@ final class DesktopSwitcherFeature: BetaFeature {
     let enableCheckbox = NSButton(checkboxWithTitle: "Use Option-Tab to switch desktops", target: nil, action: nil)
     let accessStatus = BetaFeaturesWindowController.wrapping("")
     let accessButton = NSButton(title: "Open Accessibility Settings…", target: nil, action: nil)
+    let resetButton = NSButton(title: "Already on? Reset Anode's approval and ask again", target: nil, action: nil)
 
     init(settings: Settings = .shared,
          accessibilityAllowed: @escaping () -> Bool = { AccessibilityAccess.isTrusted }) {
@@ -660,7 +678,11 @@ final class DesktopSwitcherFeature: BetaFeature {
         accessButton.action = #selector(openAccessibility)
         accessButton.bezelStyle = .rounded
         accessButton.controlSize = .small
-        let column = NSStackView(views: [enableCheckbox, accessStatus, accessButton])
+        resetButton.target = self
+        resetButton.action = #selector(resetAccessibility)
+        resetButton.bezelStyle = .rounded
+        resetButton.controlSize = .small
+        let column = NSStackView(views: [enableCheckbox, accessStatus, accessButton, resetButton])
         column.orientation = .vertical
         column.alignment = .leading
         column.spacing = 8
@@ -679,12 +701,15 @@ final class DesktopSwitcherFeature: BetaFeature {
         AccessibilityAccess.openSettings()
     }
 
+    @objc private func resetAccessibility() { AccessibilityAccess.resetAndAsk() }
+
     func refresh() {
         let on = settings.desktopSwitcherEnabled
         let allowed = accessibility()
         enableCheckbox.state = on ? .on : .off
         accessStatus.isHidden = !on
         accessButton.isHidden = !on || allowed
+        resetButton.isHidden = !on || allowed
         accessStatus.stringValue = !SpaceCatalog.isAvailable
             ? "This version of macOS does not offer what the desktop switcher needs, so Option-Tab is left alone."
             : !SpaceCatalog.keyboardSteppingEnabled()
@@ -695,7 +720,8 @@ final class DesktopSwitcherFeature: BetaFeature {
                 ? "Accessibility: allowed. Only Option-Tab, and Tab, the arrows, the number keys and Esc while "
                   + "it is open, are taken; with a single desktop Option-Tab is left alone."
                 : "Accessibility: not allowed yet, so Option-Tab does nothing. Allow Anode in Accessibility "
-                  + "and it starts within a couple of seconds."
+                  + "and it starts within a couple of seconds. If Anode is already switched on there, that approval "
+                  + "belongs to an older build of it: Reset below clears it so macOS asks afresh."
         accessStatus.textColor = allowed && SpaceCatalog.canSwitch ? .secondaryLabelColor : .systemOrange
         layoutChanged?()
     }
@@ -945,6 +971,10 @@ final class LidGlassFeature: BetaFeature {
                 + "while the glass tips away from it like a lens, the far edge softening into the dark; open the lid "
                 + "and it unfolds again. Built-in screen only, and it needs Screen Recording to take the picture it folds."
     var layoutChanged: (() -> Void)?
+
+    /// Does this Mac have the lid-angle sensor the effect is driven by? Asked once: hardware does not appear
+    /// or vanish while the app runs.
+    static let isSupportedHere: Bool = LidAngleSensor().isAvailable
 
     private let settings: Settings
     private let screenRecording: () -> Bool
