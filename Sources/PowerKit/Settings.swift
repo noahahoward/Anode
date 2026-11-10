@@ -45,6 +45,9 @@ public final class Settings {
         public static let keepAwakeEnabled = "keepAwakeEnabled"
         public static let keyboardCleanerShortcutEnabled = "keyboardCleanerShortcutEnabled"
         public static let liveWallpaperEnabled = "liveWallpaperEnabled"
+        public static let gameHUDEnabled = "gameHUDEnabled"
+        public static let gameHUDCorner = "gameHUDCorner"
+        public static let gameHUDExtraApps = "gameHUDExtraApps"
         public static let lidGlassIdleHz = "lidGlassIdleHz"
         public static let lidGlassTriggerAngle = "lidGlassTriggerAngle"
         public static let windowSnapperEnabled = "windowSnapperEnabled"
@@ -120,6 +123,9 @@ public final class Settings {
         static let keyboardCleanerShortcutEnabled = false
         /// OFF: it puts a window over the desktop and plays video behind it, so the user turns it on.
         static let liveWallpaperEnabled = false
+        /// OFF: it puts a window over fullscreen games, so the user turns it on.
+        static let gameHUDEnabled = false
+        static let gameHUDCorner = HUDCorner.topRight
         static let lidGlassIdleHz = 8.0
         static let lidGlassTriggerAngle = 110.0
         /// OFF: it claims a set of global shortcuts another window manager may already own.
@@ -230,6 +236,9 @@ public final class Settings {
         var keepAwakeEnabled: Bool
         var keyboardCleanerShortcutEnabled: Bool
         var liveWallpaperEnabled: Bool
+        var gameHUDEnabled: Bool
+        var gameHUDCorner: HUDCorner
+        var gameHUDExtraApps: [String]
         var lidGlassIdleHz, lidGlassTriggerAngle: Double
     }
     private var snapshot: Values
@@ -453,6 +462,33 @@ public final class Settings {
     public var liveWallpaperEnabled: Bool {
         get { Settings.readBool(defaults, Key.liveWallpaperEnabled, Default.liveWallpaperEnabled) }
         set { writeBool(Key.liveWallpaperEnabled, \.liveWallpaperEnabled, newValue, Default.liveWallpaperEnabled) }
+    }
+
+    /// Whether the Game Mode strip is shown over a game (Beta Features). Off until asked for.
+    public var gameHUDEnabled: Bool {
+        get { Settings.readBool(defaults, Key.gameHUDEnabled, Default.gameHUDEnabled) }
+        set { writeBool(Key.gameHUDEnabled, \.gameHUDEnabled, newValue, Default.gameHUDEnabled) }
+    }
+
+    /// The corner the Game Mode strip sits in. An unknown stored value reads as the default.
+    public var gameHUDCorner: HUDCorner {
+        get { Settings.readHUDCorner(defaults) }
+        set {
+            guard newValue != gameHUDCorner else { return }
+            lock.lock(); snapshot.gameHUDCorner = newValue; lock.unlock()
+            defaults.set(newValue.rawValue, forKey: Settings.storageKey(Key.gameHUDCorner))
+            notify(Key.gameHUDCorner)
+        }
+    }
+
+    /// Bundle ids of apps the owner added by hand, treated as games whatever their category says.
+    public var gameHUDExtraApps: [String] {
+        get { Settings.readIDList(defaults, Key.gameHUDExtraApps) }
+        set { writeIDList(newValue, key: Key.gameHUDExtraApps, keyPath: \.gameHUDExtraApps) }
+    }
+
+    private static func readHUDCorner(_ d: UserDefaults) -> HUDCorner {
+        d.string(forKey: storageKey(Key.gameHUDCorner)).flatMap(HUDCorner.init(rawValue:)) ?? Default.gameHUDCorner
     }
 
     /// Whether the keyboard cleaner's start shortcut is listened for (Beta Features). The cleaner can always be started
@@ -834,6 +870,9 @@ public final class Settings {
         if old.keepAwakeEnabled != now.keepAwakeEnabled { notify(Key.keepAwakeEnabled) }
         if old.keyboardCleanerShortcutEnabled != now.keyboardCleanerShortcutEnabled { notify(Key.keyboardCleanerShortcutEnabled) }
         if old.liveWallpaperEnabled != now.liveWallpaperEnabled { notify(Key.liveWallpaperEnabled) }
+        if old.gameHUDEnabled != now.gameHUDEnabled { notify(Key.gameHUDEnabled) }
+        if old.gameHUDCorner != now.gameHUDCorner { notify(Key.gameHUDCorner) }
+        if old.gameHUDExtraApps != now.gameHUDExtraApps { notify(Key.gameHUDExtraApps) }
         if old.lidGlassIdleHz != now.lidGlassIdleHz { notify(Key.lidGlassIdleHz) }
         if old.lidGlassTriggerAngle != now.lidGlassTriggerAngle { notify(Key.lidGlassTriggerAngle) }
         if old.windowSnapperEnabled != now.windowSnapperEnabled { notify(Key.windowSnapperEnabled) }
@@ -987,6 +1026,9 @@ public final class Settings {
                keepAwakeEnabled: readBool(d, Key.keepAwakeEnabled, Default.keepAwakeEnabled),
                keyboardCleanerShortcutEnabled: readBool(d, Key.keyboardCleanerShortcutEnabled, Default.keyboardCleanerShortcutEnabled),
                liveWallpaperEnabled: readBool(d, Key.liveWallpaperEnabled, Default.liveWallpaperEnabled),
+               gameHUDEnabled: readBool(d, Key.gameHUDEnabled, Default.gameHUDEnabled),
+               gameHUDCorner: readHUDCorner(d),
+               gameHUDExtraApps: readIDList(d, Key.gameHUDExtraApps),
                lidGlassIdleHz: readDouble(d, Key.lidGlassIdleHz, Default.lidGlassIdleHz, lidGlassIdleHzRange),
                lidGlassTriggerAngle: readDouble(d, Key.lidGlassTriggerAngle, Default.lidGlassTriggerAngle,
                                                 lidGlassTriggerRange))
