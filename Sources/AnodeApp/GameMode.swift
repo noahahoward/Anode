@@ -215,7 +215,7 @@ enum RealFrontmost {
         guard let screen else { return nil }
         let safeTop = screen.safeAreaInsets.top
         let menuBarHeight = max(screen.frame.maxY - screen.visibleFrame.maxY, safeTop, 24)
-        let fullscreen = window.map { isFullscreen($0, on: screen, safeTop: safeTop, windows: windows) } ?? false
+        let fullscreen = window != nil && isFullscreen(presentationOptions: NSApp.currentSystemPresentationOptions)
         return FrontmostApp(bundleID: app.bundleIdentifier, category: category, fullscreen: fullscreen,
                             screenFrame: screen.frame, safeTop: safeTop, menuBarHeight: menuBarHeight)
     }
@@ -242,18 +242,11 @@ enum RealFrontmost {
         }
     }
 
-    /// A window that fills the screen AND the menu bar is not showing there. A zoomed window fills the same rectangle but the
-    /// menu bar (a "Menubar" window owned by the window server, at the top of its screen) is still up over it.
-    private static func isFullscreen(_ window: CGRect, on screen: NSScreen, safeTop: CGFloat, windows: [[String: Any]]) -> Bool {
-        guard window.width >= screen.frame.width - 1, window.height >= screen.frame.height - max(safeTop, 39) - 1 else { return false }
-        let primaryHeight = NSScreen.screens.first?.frame.height ?? 0
-        let menuBarUp = windows.contains { w in
-            guard (w[kCGWindowLayer as String] as? Int) == 24, (w[kCGWindowOwnerName as String] as? String) == "Window Server",
-                  let b = w[kCGWindowBounds as String] as? [String: Any],
-                  let x = b["X"] as? Double, let y = b["Y"] as? Double, let h = b["Height"] as? Double else { return false }
-            let cocoaY = primaryHeight - y - h
-            return screen.frame.contains(CGPoint(x: x + 1, y: cocoaY + h - 1))
-        }
-        return !menuBarUp
+    /// Whether the app in front has taken the whole screen. A fullscreen app changes the presentation options in force for
+    /// the whole system: Bloons TD6 hides the menu bar and the Dock, a Cocoa fullscreen window sets `.fullScreen`; with a
+    /// browser in front there are none. (The menu bar's own window cannot tell: on a notched screen it stays listed on
+    /// screen even in fullscreen. Measured 2026-11-09.)
+    static func isFullscreen(presentationOptions options: NSApplication.PresentationOptions) -> Bool {
+        !options.isDisjoint(with: [.hideMenuBar, .autoHideMenuBar, .fullScreen])
     }
 }

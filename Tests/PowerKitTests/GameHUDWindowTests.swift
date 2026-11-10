@@ -11,6 +11,12 @@ final class GameHUDWindowTests: XCTestCase {
 
     func testWindowRecipe() {
         let w = GameHUDWindow().makeWindow()
+        // A plain NSWindow from a regular-policy app never reaches another app's fullscreen Space (measured 2026-11-09:
+        // ordered front, reported off-screen). A non-activating panel that does not hide when Anode is not active does.
+        let panel = w as? NSPanel
+        XCTAssertNotNil(panel, "the strip must be a panel")
+        XCTAssertTrue(w.styleMask.contains(.nonactivatingPanel))
+        XCTAssertEqual(panel?.hidesOnDeactivate, false)
         XCTAssertEqual(w.level, .screenSaver)
         XCTAssertEqual(w.collectionBehavior, [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle])
         XCTAssertTrue(w.ignoresMouseEvents)

@@ -3,7 +3,7 @@ import PowerKit
 
 // ── The Game Mode strip (Beta Features) ─────────────────────────────────────
 //
-// One borderless window with one line of text. The recipe is the one verified over a fullscreen Bloons TD6 on 2026-11-09:
+// One borderless panel with one line of text. The recipe is the one verified over a fullscreen Bloons TD6 on 2026-11-09:
 //  - `.screenSaver` level and a collection behaviour that joins every Space and is allowed over a fullscreen app;
 //  - it ignores the mouse, so a click reaches the game underneath;
 //  - it is ordered front WITHOUT becoming key (`orderFrontRegardless`), so the game keeps keyboard focus.
@@ -26,8 +26,12 @@ final class GameHUDWindow: GameHUDPresenting {
 
     /// The window, not yet on screen.
     func makeWindow() -> NSWindow {
-        let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 120, height: GameHUDPlacement.height),
-                         styleMask: [.borderless], backing: .buffered, defer: false)
+        // A panel, not a plain window: from a regular-policy app a plain NSWindow was ordered front yet never reached the
+        // game's fullscreen Space (measured 2026-11-09). Non-activating, and it must not hide when Anode is inactive, which
+        // is the whole time a game is in front.
+        let w = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 120, height: GameHUDPlacement.height),
+                        styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+        w.hidesOnDeactivate = false
         w.level = .screenSaver
         w.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
         w.isOpaque = false
