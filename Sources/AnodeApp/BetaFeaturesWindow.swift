@@ -49,7 +49,8 @@ final class BetaFeaturesWindowController: NSWindowController {
 
     init(features: [BetaFeature] = [BackdropFeature(), WindowSwitcherFeature(), DesktopSwitcherFeature(),
                                     DockPreviewFeature(), WindowActionsFeature(), WindowGroupsFeature(),
-                                    LidGlassFeature(), KeepAwakeFeature(), KeyboardCleanerFeature(), LiveWallpaperFeature()]) {
+                                    LidGlassFeature(), KeepAwakeFeature(), KeyboardCleanerFeature(), LiveWallpaperFeature(),
+                                    GameModeFeature()]) {
         self.features = features
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: Self.columnWidth + 2 * Self.inset, height: 200),
                               styleMask: [.titled, .closable], backing: .buffered, defer: false)
@@ -1278,6 +1279,140 @@ final class KeyboardCleanerFeature: BetaFeature {
         } else {
             statusLabel.stringValue = "Accessibility: allowed."
             statusLabel.textColor = .secondaryLabelColor
+        }
+        layoutChanged?()
+    }
+}
+
+// ── Game Mode ───────────────────────────────────────────────────────────────
+
+final class GameModeFeature: BetaFeature {
+
+    let title = "Game Mode"
+    let summary = "Shows CPU and GPU temperature and use, memory use and battery charge and drain in a thin strip over a "
+                + "fullscreen game. Any app in the Games category counts as a game; add others below. The strip is "
+                + "click-through and only shows while the game is in front."
+    var layoutChanged: (() -> Void)?
+
+    private let settings: Settings
+    private let controller: () -> GameModeController?
+    private let displayName: (String) -> String
+
+    let enableCheckbox = NSButton(checkboxWithTitle: "Show the readout over games", target: nil, action: nil)
+    let cornerPopup = NSPopUpButton(frame: .zero, pullsDown: false)
+    let previewButton = NSButton(title: "Show it for 5 seconds", target: nil, action: nil)
+    let appsList = NSPopUpButton(frame: .zero, pullsDown: false)
+    let addButton = NSButton(title: "Add an app…", target: nil, action: nil)
+    let removeButton = NSButton(title: "Remove", target: nil, action: nil)
+    let statusLabel = BetaFeaturesWindowController.wrapping("", color: .secondaryLabelColor)
+
+    private static let cornerTitles: [HUDCorner: String] = [
+        .topRight: "Top right", .topLeft: "Top left", .bottomRight: "Bottom right", .bottomLeft: "Bottom left"]
+
+    init(settings: Settings = .shared, controller: @escaping () -> GameModeController? = { GameModeController.current },
+         displayName: @escaping (String) -> String = GameModeFeature.appName(for:)) {
+        self.settings = settings
+        self.controller = controller
+        self.displayName = displayName
+    }
+
+    /// The name the Finder shows for an installed app, or the bundle id if it cannot be found.
+    static func appName(for bundleID: String) -> String {
+        guard let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) else { return bundleID }
+        return FileManager.default.displayName(atPath: url.path).replacingOccurrences(of: ".app", with: "")
+    }
+
+    func makeView() -> NSView {
+        enableCheckbox.target = self
+        enableCheckbox.action = #selector(enableToggled)
+        cornerPopup.removeAllItems()
+        cornerPopup.addItems(withTitles: HUDCorner.allCases.map { Self.cornerTitles[$0] ?? $0.rawValue })
+        cornerPopup.target = self
+        cornerPopup.action = #selector(cornerChosen)
+        previewButton.target = self
+        previewButton.action = #selector(previewClicked)
+        previewButton.bezelStyle = .rounded
+        previewButton.controlSize = .small
+        addButton.target = self
+        addButton.action = #selector(addClicked)
+        addButton.bezelStyle = .rounded
+        addButton.controlSize = .small
+        removeButton.target = self
+        removeButton.action = #selector(removeClicked)
+        removeButton.bezelStyle = .rounded
+        removeButton.controlSize = .small
+        let cornerRow = NSStackView(views: [NSTextField(labelWithString: "Corner"), cornerPopup, previewButton])
+        cornerRow.spacing = 8
+        let appsRow = NSStackView(views: [appsList, addButton, removeButton])
+        appsRow.spacing = 8
+        let column = NSStackView(views: [enableCheckbox, cornerRow, NSTextField(labelWithString: "Also treat these as games:"),
+                                         appsRow, statusLabel])
+        column.orientation = .vertical
+        column.alignment = .leading
+        column.spacing = 8
+        refresh()
+        return column
+    }
+
+    @objc private func enableToggled() { settings.gameHUDEnabled = enableCheckbox.state == .on }
+
+    @objc private func cornerChosen() {
+        let index = cornerPopup.indexOfSelectedItem
+        guard HUDCorner.allCases.indices.contains(index) else { return }
+        settings.gameHUDCorner = HUDCorner.allCases[index]
+    }
+
+    @objc private func previewClicked() { controller()?.preview() }
+
+    @objc private func addClicked() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.application]
+        panel.directoryURL = URL(fileURLWithPath: "/Applications")
+        panel.allowsMultipleSelection = false
+        panel.prompt = "Add"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        guard let id = Bundle(url: url)?.bundleIdentifier else {
+            statusLabel.stringValue = "That app has no identifier, so it cannot be added."
+            layoutChanged?()
+            return
+        }
+        add(bundleID: id)
+    }
+
+    @objc private func removeClicked() { removeSelected() }
+
+    /// Treat the app with this bundle id as a game. Adding one already in the list changes nothing.
+    func add(bundleID: String) {
+        guard !settings.gameHUDExtraApps.contains(bundleID) else { return }
+        settings.gameHUDExtraApps += [bundleID]
+        refresh()
+    }
+
+    /// Stop treating the app chosen in the list as a game. With nothing chosen, nothing happens.
+    func removeSelected() {
+        let apps = settings.gameHUDExtraApps
+        let index = appsList.indexOfSelectedItem
+        guard apps.indices.contains(index) else { return }
+        settings.gameHUDExtraApps = apps.enumerated().filter { $0.offset != index }.map { $0.element }
+        refresh()
+    }
+
+    func refresh() {
+        enableCheckbox.state = settings.gameHUDEnabled ? .on : .off
+        cornerPopup.selectItem(at: HUDCorner.allCases.firstIndex(of: settings.gameHUDCorner) ?? 0)
+        let apps = settings.gameHUDExtraApps
+        let kept = appsList.indexOfSelectedItem
+        appsList.removeAllItems()
+        appsList.addItems(withTitles: apps.map(displayName))
+        if apps.indices.contains(kept) { appsList.selectItem(at: kept) }
+        appsList.isHidden = apps.isEmpty
+        removeButton.isEnabled = !apps.isEmpty
+        if !settings.gameHUDEnabled {
+            statusLabel.stringValue = "Off."
+        } else if controller()?.isShowing ?? false {
+            statusLabel.stringValue = "On, and showing now."
+        } else {
+            statusLabel.stringValue = "On. It appears when a game is the app in front."
         }
         layoutChanged?()
     }
