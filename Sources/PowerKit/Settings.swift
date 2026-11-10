@@ -48,6 +48,7 @@ public final class Settings {
         public static let gameHUDEnabled = "gameHUDEnabled"
         public static let gameHUDCorner = "gameHUDCorner"
         public static let gameHUDExtraApps = "gameHUDExtraApps"
+        public static let gameHUDHotCorner = "gameHUDHotCorner"
         public static let lidGlassIdleHz = "lidGlassIdleHz"
         public static let lidGlassTriggerAngle = "lidGlassTriggerAngle"
         public static let windowSnapperEnabled = "windowSnapperEnabled"
@@ -126,6 +127,8 @@ public final class Settings {
         /// OFF: it puts a window over fullscreen games, so the user turns it on.
         static let gameHUDEnabled = false
         static let gameHUDCorner = HUDCorner.topRight
+        /// OFF: it puts a tiny window in a screen corner, so the user turns it on.
+        static let gameHUDHotCorner = false
         static let lidGlassIdleHz = 8.0
         static let lidGlassTriggerAngle = 110.0
         /// OFF: it claims a set of global shortcuts another window manager may already own.
@@ -239,6 +242,7 @@ public final class Settings {
         var gameHUDEnabled: Bool
         var gameHUDCorner: HUDCorner
         var gameHUDExtraApps: [String]
+        var gameHUDHotCorner: Bool
         var lidGlassIdleHz, lidGlassTriggerAngle: Double
     }
     private var snapshot: Values
@@ -485,6 +489,12 @@ public final class Settings {
     public var gameHUDExtraApps: [String] {
         get { Settings.readIDList(defaults, Key.gameHUDExtraApps) }
         set { writeIDList(newValue, key: Key.gameHUDExtraApps, keyPath: \.gameHUDExtraApps) }
+    }
+
+    /// Whether the pointer touching the strip's corner shows the strip for a few seconds, in any app (Beta Features).
+    public var gameHUDHotCorner: Bool {
+        get { Settings.readBool(defaults, Key.gameHUDHotCorner, Default.gameHUDHotCorner) }
+        set { writeBool(Key.gameHUDHotCorner, \.gameHUDHotCorner, newValue, Default.gameHUDHotCorner) }
     }
 
     private static func readHUDCorner(_ d: UserDefaults) -> HUDCorner {
@@ -873,6 +883,7 @@ public final class Settings {
         if old.gameHUDEnabled != now.gameHUDEnabled { notify(Key.gameHUDEnabled) }
         if old.gameHUDCorner != now.gameHUDCorner { notify(Key.gameHUDCorner) }
         if old.gameHUDExtraApps != now.gameHUDExtraApps { notify(Key.gameHUDExtraApps) }
+        if old.gameHUDHotCorner != now.gameHUDHotCorner { notify(Key.gameHUDHotCorner) }
         if old.lidGlassIdleHz != now.lidGlassIdleHz { notify(Key.lidGlassIdleHz) }
         if old.lidGlassTriggerAngle != now.lidGlassTriggerAngle { notify(Key.lidGlassTriggerAngle) }
         if old.windowSnapperEnabled != now.windowSnapperEnabled { notify(Key.windowSnapperEnabled) }
@@ -1029,6 +1040,7 @@ public final class Settings {
                gameHUDEnabled: readBool(d, Key.gameHUDEnabled, Default.gameHUDEnabled),
                gameHUDCorner: readHUDCorner(d),
                gameHUDExtraApps: readIDList(d, Key.gameHUDExtraApps),
+               gameHUDHotCorner: readBool(d, Key.gameHUDHotCorner, Default.gameHUDHotCorner),
                lidGlassIdleHz: readDouble(d, Key.lidGlassIdleHz, Default.lidGlassIdleHz, lidGlassIdleHzRange),
                lidGlassTriggerAngle: readDouble(d, Key.lidGlassTriggerAngle, Default.lidGlassTriggerAngle,
                                                 lidGlassTriggerRange))

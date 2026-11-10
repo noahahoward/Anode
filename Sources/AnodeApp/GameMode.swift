@@ -36,6 +36,19 @@ protocol GameHUDPresenting: AnyObject {
     var isShowing: Bool { get }
 }
 
+/// The tiny pointer-catching panels in the strip's corner of every screen.
+protocol HotCornerPresenting: AnyObject {
+    /// Put a hot spot in `corner` of every screen (replacing any before); `onEnter` gets that screen as a target.
+    func show(corner: HUDCorner, onEnter: @escaping (FrontmostApp) -> Void)
+    func hide()
+}
+
+/// No hot corner (the default, so a controller can be made without one).
+final class NoHotCorner: HotCornerPresenting {
+    func show(corner: HUDCorner, onEnter: @escaping (FrontmostApp) -> Void) {}
+    func hide() {}
+}
+
 /// "The frontmost app, the Space or the screens changed."
 protocol ActivationObserving: AnyObject {
     func start(_ onChange: @escaping () -> Void)
@@ -62,19 +75,25 @@ final class GameModeController {
     private let value: (MetricID) -> MetricValue?
     private let now: () -> Date
     private let appleGameMode: () -> Bool
+    private let hotCorner: HotCornerPresenting
 
     private let log: (String) -> Void
     private var lastNote = ""
     private var tokens: [AnyObject] = []
     private var observing = false
     private var previewUntil: Date?
+    /// Where a hot-corner peek shows; nil for a preview, which shows wherever the frontmost app is.
+    private var previewTarget: FrontmostApp?
+    private var hotCornerShownIn: HUDCorner?
 
     init(settings: Settings = .shared, presenter: GameHUDPresenting, observer: ActivationObserving,
          frontmost: @escaping () -> FrontmostApp?, value: @escaping (MetricID) -> MetricValue?,
          now: @escaping () -> Date = Date.init,
          log: @escaping (String) -> Void = { FeatureLog.append("gamemode.log", $0) },
-         appleGameMode: @escaping () -> Bool = { false }) {
+         appleGameMode: @escaping () -> Bool = { false },
+         hotCorner: HotCornerPresenting = NoHotCorner()) {
         self.settings = settings
+        self.hotCorner = hotCorner
         self.appleGameMode = appleGameMode
         self.log = log
         self.presenter = presenter
@@ -82,7 +101,8 @@ final class GameModeController {
         self.frontmost = frontmost
         self.value = value
         self.now = now
-        for key in [Settings.Key.gameHUDEnabled, Settings.Key.gameHUDCorner, Settings.Key.gameHUDExtraApps] {
+        for key in [Settings.Key.gameHUDEnabled, Settings.Key.gameHUDCorner, Settings.Key.gameHUDExtraApps,
+                    Settings.Key.gameHUDHotCorner] {
             tokens.append(settings.observe(key) { [weak self] in
                 DispatchQueue.main.async { self?.settingsChanged() }
             })
@@ -107,13 +127,26 @@ final class GameModeController {
                 observer.stop()
             }
         }
+        applyHotCorner()
         reevaluate()
+    }
+
+    private func applyHotCorner() {
+        if settings.gameHUDHotCorner {
+            let corner = settings.gameHUDCorner
+            guard hotCornerShownIn != corner else { return }
+            hotCornerShownIn = corner
+            hotCorner.show(corner: corner) { [weak self] target in self?.peek(on: target) }
+        } else if hotCornerShownIn != nil {
+            hotCornerShownIn = nil
+            hotCorner.hide()
+        }
     }
 
     /// Look at the frontmost app and put the strip up or take it down. Called on every activation, Space or display change.
     func reevaluate() {
-        if let until = previewUntil, now() >= until { previewUntil = nil }
-        let app = frontmost()
+        if let until = previewUntil, now() >= until { previewUntil = nil; previewTarget = nil }
+        let app = previewTarget ?? frontmost()
         let (show, reason) = decision(for: app)
         note("front=\(app?.bundleID ?? "nil") category=\(app?.category ?? "nil") fullscreen=\(app?.fullscreen ?? false) "
              + "\u{2192} \(show ? "show" : "hide") (\(reason))")
@@ -135,7 +168,7 @@ final class GameModeController {
     /// Whether the strip should be up, and why in a few words (for the log).
     private func decision(for app: FrontmostApp?) -> (show: Bool, reason: String) {
         guard let app else { return (false, "no frontmost app") }
-        if previewUntil != nil { return (true, "preview") }
+        if previewUntil != nil { return (true, previewTarget != nil ? "hot corner" : "preview") }
         guard settings.gameHUDEnabled else { return (false, "disabled") }
         // Apple's own Game Mode first; the Games category and the owner's list are the fallback, so neither can hide a game
         // the other finds.
@@ -167,6 +200,14 @@ final class GameModeController {
 
     /// Show the strip for a few seconds whatever is in front, so a corner can be chosen without a game running.
     func preview(seconds: TimeInterval = 5) {
+        previewTarget = nil
+        previewUntil = now().addingTimeInterval(seconds)
+        reevaluate()
+    }
+
+    /// The pointer touched the hot corner of `target`'s screen: show the strip there for a few seconds.
+    func peek(on target: FrontmostApp, seconds: TimeInterval = 4) {
+        previewTarget = target
         previewUntil = now().addingTimeInterval(seconds)
         reevaluate()
     }
@@ -174,6 +215,11 @@ final class GameModeController {
     func shutdown() {
         tokens.removeAll()
         previewUntil = nil
+        previewTarget = nil
+        if hotCornerShownIn != nil {
+            hotCornerShownIn = nil
+            hotCorner.hide()
+        }
         if observing {
             observing = false
             observer.stop()
@@ -250,6 +296,15 @@ enum RealFrontmost {
         let fullscreen = window != nil && isFullscreen(presentationOptions: NSApp.currentSystemPresentationOptions)
         return FrontmostApp(bundleID: app.bundleIdentifier, category: category, fullscreen: fullscreen,
                             screenFrame: screen.frame, safeTop: safeTop, menuBarHeight: menuBarHeight)
+    }
+
+    /// A target for the strip on `screen` with no app behind it: where a hot-corner peek shows.
+    static func target(for screen: NSScreen) -> FrontmostApp {
+        let safeTop = screen.safeAreaInsets.top
+        return FrontmostApp(bundleID: nil, category: nil,
+                            fullscreen: isFullscreen(presentationOptions: NSApp.currentSystemPresentationOptions),
+                            screenFrame: screen.frame, safeTop: safeTop,
+                            menuBarHeight: max(screen.frame.maxY - screen.visibleFrame.maxY, safeTop, 24))
     }
 
     /// The app's biggest ordinary (layer 0) window on screen, in Cocoa coordinates.

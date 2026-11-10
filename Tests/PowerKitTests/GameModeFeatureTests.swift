@@ -92,6 +92,16 @@ final class GameModeFeatureTests: XCTestCase {
         XCTAssertTrue(r.feature.removeButton.isEnabled)
     }
 
+    func testHotCornerCheckboxWritesTheSettingAndRefreshReflectsIt() throws {
+        let r = try rig(); defer { done(r) }
+        XCTAssertEqual(r.feature.hotCornerCheckbox.state, .off)
+        r.feature.hotCornerCheckbox.performClick(nil)
+        XCTAssertTrue(r.settings.gameHUDHotCorner)
+        r.settings.gameHUDHotCorner = false
+        r.feature.refresh()
+        XCTAssertEqual(r.feature.hotCornerCheckbox.state, .off)
+    }
+
     func testSectionIsInTheWindowsList() {
         XCTAssertTrue(BetaFeaturesWindowController().features.contains { $0 is GameModeFeature })
     }

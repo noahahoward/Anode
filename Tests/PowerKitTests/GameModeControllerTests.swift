@@ -22,6 +22,15 @@ final class GameModeControllerTests: XCTestCase {
         func stop() { stops += 1 }
     }
 
+    final class FakeHotCorner: HotCornerPresenting {
+        var shows: [HUDCorner] = []
+        var hideCount = 0
+        var onEnter: ((FrontmostApp) -> Void)?
+        func show(corner: HUDCorner, onEnter: @escaping (FrontmostApp) -> Void) { shows.append(corner); self.onEnter = onEnter }
+        func hide() { hideCount += 1 }
+    }
+
+    private let hotCorner = FakeHotCorner()
     private var suiteName: String!
     private var defaults: UserDefaults!
     private var settings: Settings!
@@ -57,7 +66,7 @@ final class GameModeControllerTests: XCTestCase {
                                         frontmost: { [unowned self] in frontmostCalls += 1; return app },
                                         value: { [unowned self] in readings[$0] },
                                         now: { [unowned self] in clock }, log: log,
-                                        appleGameMode: { [unowned self] in appleGameModeOn })
+                                        appleGameMode: { [unowned self] in appleGameModeOn }, hotCorner: hotCorner)
     }
 
     /// Settings changes reach the controller through the main queue, as the cleaner's do.
@@ -268,6 +277,69 @@ final class GameModeControllerTests: XCTestCase {
         makeController()
         XCTAssertFalse(controller.isShowing)
         XCTAssertEqual(observer.starts, 0)
+    }
+
+    private let otherScreen = FrontmostApp(bundleID: nil, category: nil, fullscreen: true,
+                                           screenFrame: CGRect(x: 1800, y: -200, width: 1920, height: 1080), safeTop: 0, menuBarHeight: 24)
+
+    func testHotCornerIsShownOnlyWhileItsSettingIsOn() {
+        settings.gameHUDHotCorner = true
+        makeController()
+        XCTAssertEqual(hotCorner.shows, [.topRight])
+        settings.gameHUDHotCorner = false
+        pump()
+        XCTAssertEqual(hotCorner.hideCount, 1)
+    }
+
+    func testHotCornerIsOffByDefault() {
+        makeController()
+        XCTAssertTrue(hotCorner.shows.isEmpty)
+        XCTAssertEqual(hotCorner.hideCount, 0)
+    }
+
+    func testHotCornerFollowsTheChosenCorner() {
+        settings.gameHUDHotCorner = true
+        makeController()
+        settings.gameHUDCorner = .bottomLeft
+        pump()
+        XCTAssertEqual(hotCorner.shows, [.topRight, .bottomLeft])
+    }
+
+    func testHotCornerWorksWithTheAutomaticSettingOff() {
+        settings.gameHUDEnabled = false
+        settings.gameHUDHotCorner = true
+        app = utility
+        makeController()
+        XCTAssertEqual(hotCorner.shows.count, 1)
+        XCTAssertEqual(observer.starts, 0, "no workspace observer for a hot corner alone")
+        hotCorner.onEnter?(otherScreen)
+        XCTAssertTrue(controller.isShowing)
+    }
+
+    func testEnteringTheCornerPeeksOnThatScreenThenHides() {
+        settings.gameHUDHotCorner = true
+        app = utility
+        makeController()
+        hotCorner.onEnter?(otherScreen)
+        XCTAssertEqual(presenter.shows.count, 1)
+        let size = presenter.size(for: expectedText)
+        XCTAssertEqual(presenter.shows.last?.frame,
+                       GameHUDPlacement.frame(size: size, corner: .topRight, screenFrame: otherScreen.screenFrame,
+                                              safeTop: 0, menuBarHeight: 24, fullscreen: true))
+        clock = clock.addingTimeInterval(3)
+        controller.refresh()
+        XCTAssertTrue(controller.isShowing)
+        clock = clock.addingTimeInterval(2)
+        controller.refresh()
+        XCTAssertFalse(controller.isShowing)
+        XCTAssertEqual(controller.needs, [])
+    }
+
+    func testShutdownHidesTheHotCorner() {
+        settings.gameHUDHotCorner = true
+        makeController()
+        controller.shutdown()
+        XCTAssertEqual(hotCorner.hideCount, 1)
     }
 
     func testOnChangeFiresOnShowAndHideOnly() {

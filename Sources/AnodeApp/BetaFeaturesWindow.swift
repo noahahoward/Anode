@@ -1299,6 +1299,8 @@ final class GameModeFeature: BetaFeature {
     private let displayName: (String) -> String
 
     let enableCheckbox = NSButton(checkboxWithTitle: "Show the readout over games", target: nil, action: nil)
+    let hotCornerCheckbox = NSButton(checkboxWithTitle: "Also show it for a few seconds when the pointer touches the corner, in any app",
+                                     target: nil, action: nil)
     let cornerPopup = NSPopUpButton(frame: .zero, pullsDown: false)
     let previewButton = NSButton(title: "Show it for 5 seconds", target: nil, action: nil)
     let appsList = NSPopUpButton(frame: .zero, pullsDown: false)
@@ -1325,6 +1327,8 @@ final class GameModeFeature: BetaFeature {
     func makeView() -> NSView {
         enableCheckbox.target = self
         enableCheckbox.action = #selector(enableToggled)
+        hotCornerCheckbox.target = self
+        hotCornerCheckbox.action = #selector(hotCornerToggled)
         cornerPopup.removeAllItems()
         cornerPopup.addItems(withTitles: HUDCorner.allCases.map { Self.cornerTitles[$0] ?? $0.rawValue })
         cornerPopup.target = self
@@ -1345,7 +1349,7 @@ final class GameModeFeature: BetaFeature {
         cornerRow.spacing = 8
         let appsRow = NSStackView(views: [appsList, addButton, removeButton])
         appsRow.spacing = 8
-        let column = NSStackView(views: [enableCheckbox, cornerRow, NSTextField(labelWithString: "Also treat these as games:"),
+        let column = NSStackView(views: [enableCheckbox, hotCornerCheckbox, cornerRow, NSTextField(labelWithString: "Also treat these as games:"),
                                          appsRow, statusLabel])
         column.orientation = .vertical
         column.alignment = .leading
@@ -1355,6 +1359,7 @@ final class GameModeFeature: BetaFeature {
     }
 
     @objc private func enableToggled() { settings.gameHUDEnabled = enableCheckbox.state == .on }
+    @objc private func hotCornerToggled() { settings.gameHUDHotCorner = hotCornerCheckbox.state == .on }
 
     @objc private func cornerChosen() {
         let index = cornerPopup.indexOfSelectedItem
@@ -1399,6 +1404,7 @@ final class GameModeFeature: BetaFeature {
 
     func refresh() {
         enableCheckbox.state = settings.gameHUDEnabled ? .on : .off
+        hotCornerCheckbox.state = settings.gameHUDHotCorner ? .on : .off
         cornerPopup.selectItem(at: HUDCorner.allCases.firstIndex(of: settings.gameHUDCorner) ?? 0)
         let apps = settings.gameHUDExtraApps
         let kept = appsList.indexOfSelectedItem

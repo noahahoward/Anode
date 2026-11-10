@@ -54,4 +54,17 @@ final class GameHUDPlacementTests: XCTestCase {
             }
         }
     }
+
+    func testHotSpotIsASixPointSquareFlushToTheCorner() {
+        XCTAssertEqual(HotCornerGeometry.size, 6)
+        XCTAssertEqual(HotCornerGeometry.frame(corner: .topRight, screenFrame: screen), CGRect(x: 1794, y: 1163, width: 6, height: 6))
+        XCTAssertEqual(HotCornerGeometry.frame(corner: .topLeft, screenFrame: screen), CGRect(x: 0, y: 1163, width: 6, height: 6))
+        XCTAssertEqual(HotCornerGeometry.frame(corner: .bottomRight, screenFrame: screen), CGRect(x: 1794, y: 0, width: 6, height: 6))
+        XCTAssertEqual(HotCornerGeometry.frame(corner: .bottomLeft, screenFrame: screen), CGRect(x: 0, y: 0, width: 6, height: 6))
+    }
+
+    func testHotSpotOnASecondaryDisplayUsesThatDisplaysOrigin() {
+        let second = CGRect(x: 1800, y: -200, width: 1920, height: 1080)
+        XCTAssertEqual(HotCornerGeometry.frame(corner: .topRight, screenFrame: second), CGRect(x: 3714, y: 874, width: 6, height: 6))
+    }
 }

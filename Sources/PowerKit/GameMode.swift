@@ -101,3 +101,25 @@ public enum GameHUDPlacement {
         return CGRect(x: x, y: y, width: size.width, height: size.height)
     }
 }
+
+// ── The hot corner ──────────────────────────────────────────────────────────
+
+public enum HotCornerGeometry {
+    /// The pointer-catching square: small enough to cost nothing in a menu bar or a game, large enough to hit by flinging
+    /// the pointer into the corner.
+    public static let size: CGFloat = 6
+
+    /// A `size` square flush to `corner` of the screen, in Cocoa coordinates.
+    public static func frame(corner: HUDCorner, screenFrame: CGRect) -> CGRect {
+        let x: CGFloat, y: CGFloat
+        switch corner {
+        case .topRight, .bottomRight: x = screenFrame.maxX - size
+        case .topLeft, .bottomLeft: x = screenFrame.minX
+        }
+        switch corner {
+        case .topRight, .topLeft: y = screenFrame.maxY - size
+        case .bottomRight, .bottomLeft: y = screenFrame.minY
+        }
+        return CGRect(x: x, y: y, width: size, height: size)
+    }
+}

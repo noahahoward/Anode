@@ -63,4 +63,16 @@ final class GameModeSettingsTests: XCTestCase {
         XCTAssertEqual([enabled, corner, apps], [1, 1, 1])
         _ = (t1, t2, t3)
     }
+
+    func testHotCornerDefaultsOffPersistsAndNotifies() {
+        let s = Settings(defaults: defaults)
+        XCTAssertFalse(s.gameHUDHotCorner)
+        var fired = 0
+        let token = s.observe(Settings.Key.gameHUDHotCorner) { fired += 1 }
+        s.gameHUDHotCorner = true
+        s.gameHUDHotCorner = true
+        XCTAssertEqual(fired, 1)
+        XCTAssertTrue(Settings(defaults: defaults).gameHUDHotCorner)
+        _ = token
+    }
 }
