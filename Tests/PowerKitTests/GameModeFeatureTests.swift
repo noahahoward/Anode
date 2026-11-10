@@ -25,7 +25,7 @@ final class GameModeFeatureTests: XCTestCase {
         let app = utility
         let controller = GameModeController(settings: settings, presenter: presenter,
                                             observer: GameModeControllerTests.FakeObserver(),
-                                            frontmost: { app }, value: { _ in nil })
+                                            frontmost: { app }, value: { _ in nil }, log: { _ in })
         let feature = GameModeFeature(settings: settings, controller: { controller },
                                       displayName: { "App \($0)" })
         _ = feature.makeView()

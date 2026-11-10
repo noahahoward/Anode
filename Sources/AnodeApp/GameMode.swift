@@ -61,14 +61,18 @@ final class GameModeController {
     private let value: (MetricID) -> MetricValue?
     private let now: () -> Date
 
+    private let log: (String) -> Void
+    private var lastNote = ""
     private var tokens: [AnyObject] = []
     private var observing = false
     private var previewUntil: Date?
 
     init(settings: Settings = .shared, presenter: GameHUDPresenting, observer: ActivationObserving,
          frontmost: @escaping () -> FrontmostApp?, value: @escaping (MetricID) -> MetricValue?,
-         now: @escaping () -> Date = Date.init) {
+         now: @escaping () -> Date = Date.init,
+         log: @escaping (String) -> Void = { FeatureLog.append("gamemode.log", $0) }) {
         self.settings = settings
+        self.log = log
         self.presenter = presenter
         self.observer = observer
         self.frontmost = frontmost
@@ -105,7 +109,11 @@ final class GameModeController {
     /// Look at the frontmost app and put the strip up or take it down. Called on every activation, Space or display change.
     func reevaluate() {
         if let until = previewUntil, now() >= until { previewUntil = nil }
-        guard let app = frontmost(), shouldShow(for: app) else {
+        let app = frontmost()
+        let (show, reason) = decision(for: app)
+        note("front=\(app?.bundleID ?? "nil") category=\(app?.category ?? "nil") fullscreen=\(app?.fullscreen ?? false) "
+             + "\u{2192} \(show ? "show" : "hide") (\(reason))")
+        guard show, let app else {
             takeDown()
             return
         }
@@ -120,10 +128,20 @@ final class GameModeController {
         }
     }
 
-    private func shouldShow(for app: FrontmostApp) -> Bool {
-        if previewUntil != nil { return true }
-        guard settings.gameHUDEnabled else { return false }
-        return GameRules.isGame(bundleID: app.bundleID, category: app.category, extraApps: settings.gameHUDExtraApps)
+    /// Whether the strip should be up, and why in a few words (for the log).
+    private func decision(for app: FrontmostApp?) -> (show: Bool, reason: String) {
+        guard let app else { return (false, "no frontmost app") }
+        if previewUntil != nil { return (true, "preview") }
+        guard settings.gameHUDEnabled else { return (false, "disabled") }
+        let game = GameRules.isGame(bundleID: app.bundleID, category: app.category, extraApps: settings.gameHUDExtraApps)
+        return game ? (true, "a game") : (false, "not a game")
+    }
+
+    /// Log a decision only when it differs from the last one: a tick every two seconds must not fill a file.
+    private func note(_ line: String) {
+        guard line != lastNote else { return }
+        lastNote = line
+        log(line)
     }
 
     private func takeDown() {

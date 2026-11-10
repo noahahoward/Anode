@@ -51,11 +51,11 @@ final class GameModeControllerTests: XCTestCase {
         TestDefaults.destroy(defaults, suiteName)
     }
 
-    private func makeController() {
+    private func makeController(log: @escaping (String) -> Void = { _ in }) {
         controller = GameModeController(settings: settings, presenter: presenter, observer: observer,
                                         frontmost: { [unowned self] in frontmostCalls += 1; return app },
                                         value: { [unowned self] in readings[$0] },
-                                        now: { [unowned self] in clock })
+                                        now: { [unowned self] in clock }, log: log)
     }
 
     /// Settings changes reach the controller through the main queue, as the cleaner's do.
@@ -201,6 +201,22 @@ final class GameModeControllerTests: XCTestCase {
         XCTAssertEqual(presenter.hideCount, 1)
         XCTAssertEqual(observer.stops, 1)
         XCTAssertFalse(controller.isShowing)
+    }
+
+    func testDecisionsAreLoggedOnceEachTimeTheyChange() {
+        settings.gameHUDEnabled = true
+        app = game
+        var lines: [String] = []
+        makeController(log: { lines.append($0) })
+        controller.refresh()                      // same decision again: nothing new to say
+        app = utility
+        controller.reevaluate()
+        app = nil
+        controller.reevaluate()
+        XCTAssertEqual(lines.count, 3, "\(lines)")
+        XCTAssertTrue(lines[0].contains("com.x.game") && lines[0].contains("show"), lines[0])
+        XCTAssertTrue(lines[1].contains("com.x.tool") && lines[1].contains("hide"), lines[1])
+        XCTAssertTrue(lines[2].contains("no frontmost app") && lines[2].contains("hide"), lines[2])
     }
 
     func testOnChangeFiresOnShowAndHideOnly() {
