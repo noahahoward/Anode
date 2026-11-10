@@ -1,5 +1,6 @@
 import AppKit
 import PowerKit
+import notify
 
 // ── Game Mode HUD (Beta Features) ───────────────────────────────────────────
 //
@@ -60,6 +61,7 @@ final class GameModeController {
     private let frontmost: () -> FrontmostApp?
     private let value: (MetricID) -> MetricValue?
     private let now: () -> Date
+    private let appleGameMode: () -> Bool
 
     private let log: (String) -> Void
     private var lastNote = ""
@@ -70,8 +72,10 @@ final class GameModeController {
     init(settings: Settings = .shared, presenter: GameHUDPresenting, observer: ActivationObserving,
          frontmost: @escaping () -> FrontmostApp?, value: @escaping (MetricID) -> MetricValue?,
          now: @escaping () -> Date = Date.init,
-         log: @escaping (String) -> Void = { FeatureLog.append("gamemode.log", $0) }) {
+         log: @escaping (String) -> Void = { FeatureLog.append("gamemode.log", $0) },
+         appleGameMode: @escaping () -> Bool = { false }) {
         self.settings = settings
+        self.appleGameMode = appleGameMode
         self.log = log
         self.presenter = presenter
         self.observer = observer
@@ -133,6 +137,9 @@ final class GameModeController {
         guard let app else { return (false, "no frontmost app") }
         if previewUntil != nil { return (true, "preview") }
         guard settings.gameHUDEnabled else { return (false, "disabled") }
+        // Apple's own Game Mode first; the Games category and the owner's list are the fallback, so neither can hide a game
+        // the other finds.
+        if appleGameMode() { return (true, "Apple Game Mode") }
         let game = GameRules.isGame(bundleID: app.bundleID, category: app.category, extraApps: settings.gameHUDExtraApps)
         return game ? (true, "a game") : (false, "not a game")
     }
@@ -181,9 +188,13 @@ final class GameModeController {
 /// removes every one of them.
 final class WorkspaceActivationObserver: ActivationObserving {
     private var observers: [(NotificationCenter, NSObjectProtocol)] = []
+    private var darwinToken: Int32 = 0
+    private var darwinRegistered = false
+
+    var isListening: Bool { !observers.isEmpty || darwinRegistered }
 
     func start(_ onChange: @escaping () -> Void) {
-        guard observers.isEmpty else { return }
+        guard !isListening else { return }
         let ws = NSWorkspace.shared.notificationCenter
         let nc = NotificationCenter.default
         for (center, name) in [(ws, NSWorkspace.didActivateApplicationNotification),
@@ -191,14 +202,35 @@ final class WorkspaceActivationObserver: ActivationObserving {
                                (nc, NSApplication.didChangeScreenParametersNotification)] {
             observers.append((center, center.addObserver(forName: name, object: nil, queue: .main) { _ in onChange() }))
         }
+        // Apple's Game Mode turning on or off.
+        darwinRegistered = notify_register_dispatch(AppleGameMode.notificationName, &darwinToken, .main) { _ in onChange() }
+            == UInt32(NOTIFY_STATUS_OK)
     }
 
     func stop() {
         for (center, o) in observers { center.removeObserver(o) }
         observers.removeAll()
+        if darwinRegistered {
+            notify_cancel(darwinToken)
+            darwinRegistered = false
+        }
     }
 
     deinit { stop() }
+}
+
+/// Whether macOS says Game Mode is on right now. Main thread only.
+enum AppleGameModeReader {
+    private static var token: Int32 = 0
+    private static var registered = false
+
+    static func isOn() -> Bool {
+        if !registered { registered = notify_register_check(AppleGameMode.notificationName, &token) == UInt32(NOTIFY_STATUS_OK) }
+        guard registered else { return false }
+        var state: UInt64 = 0
+        guard notify_get_state(token, &state) == UInt32(NOTIFY_STATUS_OK) else { return false }
+        return AppleGameMode.isOn(state: state)
+    }
 }
 
 /// Reads the real frontmost app. Every failure (no app, no bundle, no window, no screen) is "not a game", never a crash.

@@ -326,7 +326,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         keyboardCleaner = KeyboardCleaner(tap: CleanerInputTap(), windows: CleanerWindows())
         KeyboardCleaner.current = keyboardCleaner
         gameMode = GameModeController(presenter: GameHUDWindow(), observer: WorkspaceActivationObserver(),
-                                      frontmost: RealFrontmost.current, value: { MetricRegistry.shared.value(for: $0) })
+                                      frontmost: RealFrontmost.current, value: { MetricRegistry.shared.value(for: $0) },
+                                      appleGameMode: AppleGameModeReader.isOn)
         GameModeController.current = gameMode
         // The strip going up or down changes how fast the sampler must run, and the timer is only re-read on a tick.
         gameMode?.onChange = { [weak self] in

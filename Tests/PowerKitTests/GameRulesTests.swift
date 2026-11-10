@@ -31,4 +31,14 @@ final class GameRulesTests: XCTestCase {
     func testCategoryAloneMakesAGame() {
         XCTAssertTrue(GameRules.isGame(bundleID: "com.x.y", category: "public.app-category.games", extraApps: []))
     }
+
+    /// Measured on 2026-11-09 with the notification `com.apple.system.game_mode_status_changed`: 1 with Bloons TD6 in front,
+    /// 2 with a browser in front. Anything else is "not on".
+    func testAppleGameModeStateMapping() {
+        XCTAssertEqual(AppleGameMode.notificationName, "com.apple.system.game_mode_status_changed")
+        XCTAssertTrue(AppleGameMode.isOn(state: 1))
+        XCTAssertFalse(AppleGameMode.isOn(state: 0))
+        XCTAssertFalse(AppleGameMode.isOn(state: 2))
+        XCTAssertFalse(AppleGameMode.isOn(state: 99))
+    }
 }

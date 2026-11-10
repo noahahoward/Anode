@@ -25,4 +25,22 @@ final class GameFrontmostTests: XCTestCase {
         XCTAssertFalse(RealFrontmost.isFullscreen(presentationOptions: [.autoHideDock]))
         XCTAssertFalse(RealFrontmost.isFullscreen(presentationOptions: [.hideDock]))
     }
+
+    func testObserverStartTwiceThenStopLeavesNothingListening() {
+        let observer = WorkspaceActivationObserver()
+        XCTAssertFalse(observer.isListening)
+        observer.start {}
+        observer.start {}
+        XCTAssertTrue(observer.isListening)
+        observer.stop()
+        XCTAssertFalse(observer.isListening)
+        observer.stop()   // stopping what is stopped is harmless
+        XCTAssertFalse(observer.isListening)
+    }
+
+    func testReaderAnswersWithoutCrashing() {
+        // The value depends on what is in front right now; the call must simply be safe to make any number of times.
+        _ = AppleGameModeReader.isOn()
+        _ = AppleGameModeReader.isOn()
+    }
 }

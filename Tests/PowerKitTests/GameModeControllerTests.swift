@@ -31,6 +31,7 @@ final class GameModeControllerTests: XCTestCase {
     private var frontmostCalls = 0
     private var readings: [MetricID: MetricValue] = [:]
     private var clock = Date(timeIntervalSince1970: 1_000_000)
+    private var appleGameModeOn = false
     private var controller: GameModeController!
 
     private let game = FrontmostApp(bundleID: "com.x.game", category: "public.app-category.games", fullscreen: true,
@@ -55,7 +56,8 @@ final class GameModeControllerTests: XCTestCase {
         controller = GameModeController(settings: settings, presenter: presenter, observer: observer,
                                         frontmost: { [unowned self] in frontmostCalls += 1; return app },
                                         value: { [unowned self] in readings[$0] },
-                                        now: { [unowned self] in clock }, log: log)
+                                        now: { [unowned self] in clock }, log: log,
+                                        appleGameMode: { [unowned self] in appleGameModeOn })
     }
 
     /// Settings changes reach the controller through the main queue, as the cleaner's do.
@@ -217,6 +219,55 @@ final class GameModeControllerTests: XCTestCase {
         XCTAssertTrue(lines[0].contains("com.x.game") && lines[0].contains("show"), lines[0])
         XCTAssertTrue(lines[1].contains("com.x.tool") && lines[1].contains("hide"), lines[1])
         XCTAssertTrue(lines[2].contains("no frontmost app") && lines[2].contains("hide"), lines[2])
+    }
+
+    func testAppleGameModeShowsTheStripForAnAppTheCategoryRuleWouldMiss() {
+        settings.gameHUDEnabled = true
+        app = utility
+        appleGameModeOn = true
+        var lines: [String] = []
+        makeController(log: { lines.append($0) })
+        XCTAssertTrue(controller.isShowing)
+        XCTAssertTrue(lines.first?.contains("Apple Game Mode") ?? false, "\(lines)")
+    }
+
+    func testCategoryRuleStillWorksWhenAppleSaysOff() {
+        settings.gameHUDEnabled = true
+        app = game
+        appleGameModeOn = false
+        var lines: [String] = []
+        makeController(log: { lines.append($0) })
+        XCTAssertTrue(controller.isShowing)
+        XCTAssertTrue(lines.first?.contains("a game") ?? false, "\(lines)")
+    }
+
+    func testAppleGameModeFollowsTheAppleSignalWhenItChanges() {
+        settings.gameHUDEnabled = true
+        app = utility
+        makeController()
+        XCTAssertFalse(controller.isShowing)
+        appleGameModeOn = true
+        controller.reevaluate()
+        XCTAssertTrue(controller.isShowing)
+        appleGameModeOn = false
+        controller.reevaluate()
+        XCTAssertFalse(controller.isShowing)
+    }
+
+    func testNoFrontmostAppShowsNothingEvenIfAppleSaysOn() {
+        settings.gameHUDEnabled = true
+        app = nil
+        appleGameModeOn = true
+        makeController()
+        XCTAssertFalse(controller.isShowing)
+    }
+
+    func testDisabledSettingWinsOverAppleGameMode() {
+        app = game
+        appleGameModeOn = true
+        makeController()
+        XCTAssertFalse(controller.isShowing)
+        XCTAssertEqual(observer.starts, 0)
     }
 
     func testOnChangeFiresOnShowAndHideOnly() {

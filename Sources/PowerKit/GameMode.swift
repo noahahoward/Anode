@@ -11,6 +11,14 @@ public enum HUDCorner: String, CaseIterable {
     case topRight, topLeft, bottomRight, bottomLeft
 }
 
+/// Apple's own Game Mode, as macOS announces it. The Darwin notification below carries a state: measured on 2026-11-09
+/// (macOS 27) it read 1 with Bloons TD6 in front and 2 with a browser in front, and fired about 0.4 s after the switch. It is
+/// not documented, so it is only ever ONE of the two ways a game is recognised (see `GameRules`).
+public enum AppleGameMode {
+    public static let notificationName = "com.apple.system.game_mode_status_changed"
+    public static func isOn(state: UInt64) -> Bool { state == 1 }
+}
+
 public enum GameRules {
 
     /// A game is an app that says so: `LSApplicationCategoryType` is `public.app-category.games`, or one of the sub-categories
