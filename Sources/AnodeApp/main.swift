@@ -1048,6 +1048,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
                         prior: prior, allTime_W: allTime_W, recent_W: recent_W))
                     self.widgets.refresh()
                 }
+                // Both branches have put this tick's readings in the registry: show them on the strip (a no-op when none is
+                // up). Here and not in `apply`, which a hidden window's tick never reaches, and a game is always in front
+                // of a hidden window.
+                self.gameMode?.refresh()
             }
         }
 
@@ -1067,8 +1071,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
             s, lastDrain, previous: MetricRegistry.shared.displayedRate, prior: lastPrior,
             allTime_W: lastAllTime_W, recent_W: lastRecent_W))
         widgets.refresh()
-        // The registry now holds this tick's readings: put them on the strip (a no-op when none is up).
-        gameMode?.refresh()
 
         // Everything below reads what only a full sweep produces: the app rows,
         // the ledger's per-bucket split, the inspector. Handed a light sample the
