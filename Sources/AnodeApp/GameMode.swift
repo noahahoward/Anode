@@ -122,6 +122,7 @@ final class GameModeController {
             }
         } else {
             previewUntil = nil
+            previewTarget = nil
             if observing {
                 observing = false
                 observer.stop()
@@ -146,7 +147,8 @@ final class GameModeController {
     /// Look at the frontmost app and put the strip up or take it down. Called on every activation, Space or display change.
     func reevaluate() {
         if let until = previewUntil, now() >= until { previewUntil = nil; previewTarget = nil }
-        let app = previewTarget ?? frontmost()
+        // A peek's target only counts while the peek is running; a leftover one must never stand in for the frontmost app.
+        let app = previewUntil != nil ? (previewTarget ?? frontmost()) : frontmost()
         let (show, reason) = decision(for: app)
         note("front=\(app?.bundleID ?? "nil") category=\(app?.category ?? "nil") fullscreen=\(app?.fullscreen ?? false) "
              + "\u{2192} \(show ? "show" : "hide") (\(reason))")

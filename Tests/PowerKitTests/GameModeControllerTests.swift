@@ -335,6 +335,20 @@ final class GameModeControllerTests: XCTestCase {
         XCTAssertEqual(controller.needs, [])
     }
 
+    func testChangingASettingDuringAPeekDoesNotPinTheTarget() {
+        settings.gameHUDHotCorner = true
+        app = utility
+        makeController()
+        hotCorner.onEnter?(otherScreen)           // a peek on another screen, automatic option still off
+        settings.gameHUDCorner = .bottomLeft      // a settings change cancels the peek (the feature is disabled)
+        pump()
+        settings.gameHUDEnabled = true
+        app = game
+        controller.reevaluate()
+        XCTAssertTrue(controller.isShowing, "a game in front must show once the feature is on, not be judged against the old peek")
+        XCTAssertEqual(presenter.shows.last?.frame.origin.y, 8, "placed on the game's screen (bottom-left), not the peek's")
+    }
+
     func testShutdownHidesTheHotCorner() {
         settings.gameHUDHotCorner = true
         makeController()

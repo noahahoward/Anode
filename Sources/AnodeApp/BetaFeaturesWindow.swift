@@ -1307,6 +1307,9 @@ final class GameModeFeature: BetaFeature {
     let addButton = NSButton(title: "Add an app…", target: nil, action: nil)
     let removeButton = NSButton(title: "Remove", target: nil, action: nil)
     let statusLabel = BetaFeaturesWindowController.wrapping("", color: .secondaryLabelColor)
+    let hotCornerNote = BetaFeaturesWindowController.wrapping(
+        "While the corner option is on, a small square in that corner catches the pointer, so a click on the very corner "
+        + "pixels (the last menu bar item, say) lands on it instead of what is underneath.", color: .secondaryLabelColor)
 
     private static let cornerTitles: [HUDCorner: String] = [
         .topRight: "Top right", .topLeft: "Top left", .bottomRight: "Bottom right", .bottomLeft: "Bottom left"]
@@ -1349,7 +1352,7 @@ final class GameModeFeature: BetaFeature {
         cornerRow.spacing = 8
         let appsRow = NSStackView(views: [appsList, addButton, removeButton])
         appsRow.spacing = 8
-        let column = NSStackView(views: [enableCheckbox, hotCornerCheckbox, cornerRow, NSTextField(labelWithString: "Also treat these as games:"),
+        let column = NSStackView(views: [enableCheckbox, hotCornerCheckbox, hotCornerNote, cornerRow, NSTextField(labelWithString: "Also treat these as games:"),
                                          appsRow, statusLabel])
         column.orientation = .vertical
         column.alignment = .leading

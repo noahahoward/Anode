@@ -102,6 +102,11 @@ final class GameModeFeatureTests: XCTestCase {
         XCTAssertEqual(r.feature.hotCornerCheckbox.state, .off)
     }
 
+    func testHotCornerCopyWarnsThatTheCornerPixelsStopReceivingClicks() throws {
+        let r = try rig(); defer { done(r) }
+        XCTAssertTrue(r.feature.hotCornerNote.stringValue.lowercased().contains("click"), r.feature.hotCornerNote.stringValue)
+    }
+
     func testSectionIsInTheWindowsList() {
         XCTAssertTrue(BetaFeaturesWindowController().features.contains { $0 is GameModeFeature })
     }
