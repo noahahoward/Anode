@@ -55,6 +55,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
     var keepAwake: KeepAwakeController?
     var liveWallpaper: LiveWallpaperRuntime?
     var keyboardCleaner: KeyboardCleaner?
+    var gameMode: GameModeController?
     var temperatureAlarm = TemperatureAlarm()
     var windowSnapper: WindowSnapper?
     var windowGroups: WindowGroupController?
@@ -324,6 +325,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         KeepAwakeController.current = keepAwake
         keyboardCleaner = KeyboardCleaner(tap: CleanerInputTap(), windows: CleanerWindows())
         KeyboardCleaner.current = keyboardCleaner
+        gameMode = GameModeController(presenter: GameHUDWindow(), observer: WorkspaceActivationObserver(),
+                                      frontmost: RealFrontmost.current, value: { MetricRegistry.shared.value(for: $0) })
+        GameModeController.current = gameMode
+        // The strip going up or down changes how fast the sampler must run, and the timer is only re-read on a tick.
+        gameMode?.onChange = { [weak self] in
+            guard let self else { return }
+            self.restartTimer(hidden: !self.windowIsWorthDrawing)
+        }
         liveWallpaper = LiveWallpaperRuntime()
         LiveWallpaperController.current = liveWallpaper?.controller
         windowSnapper = WindowSnapper()
@@ -681,6 +690,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
     private var timerInterval: TimeInterval = 0
 
     func restartTimer(hidden: Bool = false) {
+        // Every caller passes "nobody is looking at the window"; a strip over a game is somebody looking.
+        let hidden = Self.tickIsHidden(visible: !hidden, panelOpen: false, gameShowing: gameMode?.isShowing ?? false)
         restartTimer(at: Self.cadence(hidden: hidden,
                                       setting: Settings.shared.sampleInterval,
                                       drivingFans: fansPane.isDrivingFans))
@@ -716,6 +727,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
                                      MetricID.unattributedShare.rawValue,
                                      MetricID.processCoverage.rawValue]
         return configs.contains { $0.enabled && fullOnly.contains($0.metricID) }
+    }
+
+    /// The hidden rate applies only when nothing is reading: no window, no open panel, and no strip over a game.
+    static func tickIsHidden(visible: Bool, panelOpen: Bool, gameShowing: Bool) -> Bool {
+        !visible && !panelOpen && !gameShowing
+    }
+
+    /// What the sampler reads this tick: whatever the window or the menu bar asks for, plus what the strip shows while it is up.
+    static func samplingNeeds(base: SystemMetrics.Needs, gameShowing: Bool) -> SystemMetrics.Needs {
+        gameShowing ? base.union([.cpu, .memory, .gpu, .sensors]) : base
     }
 
     /// What the tick rate should be, as arithmetic — so the three rules that
@@ -804,7 +825,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         // decides which subsystems this tick pays for — see `visibleNeeds`.
         // An open panel is a reader too — see `MenuBarWidgetController.isPanelOpen`.
         let panelOpen = widgets?.isPanelOpen ?? false
-        let needs = visible ? visibleNeeds : hiddenNeeds
+        let needs = Self.samplingNeeds(base: visible ? visibleNeeds : hiddenNeeds, gameShowing: gameMode?.isShowing ?? false)
         // Main-thread state for the same reason: the widget configs live here.
         let widgetNeedsFull = Settings.shared.menuBarWidgetsEnabled
             && Self.widgetsNeedFullSample(configs: widgets?.configs ?? [])
@@ -1046,6 +1067,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
             s, lastDrain, previous: MetricRegistry.shared.displayedRate, prior: lastPrior,
             allTime_W: lastAllTime_W, recent_W: lastRecent_W))
         widgets.refresh()
+        // The registry now holds this tick's readings: put them on the strip (a no-op when none is up).
+        gameMode?.refresh()
 
         // Everything below reads what only a full sweep produces: the app rows,
         // the ledger's per-bucket split, the inspector. Handed a light sample the
@@ -2685,6 +2708,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         fansPane.teardown()
         // Never leave the lid held open behind a quit app.
         keepAwake?.shutdown()
+        gameMode?.shutdown()
         liveWallpaper?.shutdown()
         // Read on the sampling queue, which owns both — reading them here on
         // main raced the tick that mutates them. Safe to wait on: the sampling

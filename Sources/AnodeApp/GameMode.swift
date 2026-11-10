@@ -156,3 +156,86 @@ final class GameModeController {
         takeDown()
     }
 }
+
+// ── The real workspace ──────────────────────────────────────────────────────
+
+/// "The frontmost app, the Space or the screens changed", from the three notifications that say so. Event-driven; `stop()`
+/// removes every one of them.
+final class WorkspaceActivationObserver: ActivationObserving {
+    private var observers: [(NotificationCenter, NSObjectProtocol)] = []
+
+    func start(_ onChange: @escaping () -> Void) {
+        guard observers.isEmpty else { return }
+        let ws = NSWorkspace.shared.notificationCenter
+        let nc = NotificationCenter.default
+        for (center, name) in [(ws, NSWorkspace.didActivateApplicationNotification),
+                               (ws, NSWorkspace.activeSpaceDidChangeNotification),
+                               (nc, NSApplication.didChangeScreenParametersNotification)] {
+            observers.append((center, center.addObserver(forName: name, object: nil, queue: .main) { _ in onChange() }))
+        }
+    }
+
+    func stop() {
+        for (center, o) in observers { center.removeObserver(o) }
+        observers.removeAll()
+    }
+
+    deinit { stop() }
+}
+
+/// Reads the real frontmost app. Every failure (no app, no bundle, no window, no screen) is "not a game", never a crash.
+enum RealFrontmost {
+
+    static func current() -> FrontmostApp? {
+        guard let app = NSWorkspace.shared.frontmostApplication else { return nil }
+        let category = app.bundleURL
+            .flatMap { Bundle(url: $0) }
+            .flatMap { $0.object(forInfoDictionaryKey: "LSApplicationCategoryType") as? String }
+        let windows = (CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [[String: Any]]) ?? []
+        let window = largestWindow(of: app.processIdentifier, in: windows)
+        let screen = window.flatMap { screen(containing: $0) } ?? NSScreen.main ?? NSScreen.screens.first
+        guard let screen else { return nil }
+        let safeTop = screen.safeAreaInsets.top
+        let menuBarHeight = max(screen.frame.maxY - screen.visibleFrame.maxY, safeTop, 24)
+        let fullscreen = window.map { isFullscreen($0, on: screen, safeTop: safeTop, windows: windows) } ?? false
+        return FrontmostApp(bundleID: app.bundleIdentifier, category: category, fullscreen: fullscreen,
+                            screenFrame: screen.frame, safeTop: safeTop, menuBarHeight: menuBarHeight)
+    }
+
+    /// The app's biggest ordinary (layer 0) window on screen, in Cocoa coordinates.
+    private static func largestWindow(of pid: pid_t, in windows: [[String: Any]]) -> CGRect? {
+        let primaryHeight = NSScreen.screens.first?.frame.height ?? 0
+        var best: CGRect?
+        for w in windows {
+            guard (w[kCGWindowOwnerPID as String] as? pid_t) == pid, (w[kCGWindowLayer as String] as? Int) == 0,
+                  let b = w[kCGWindowBounds as String] as? [String: Any],
+                  let x = b["X"] as? Double, let y = b["Y"] as? Double,
+                  let width = b["Width"] as? Double, let height = b["Height"] as? Double else { continue }
+            let rect = CGRect(x: x, y: primaryHeight - y - height, width: width, height: height)
+            if best == nil || rect.width * rect.height > best!.width * best!.height { best = rect }
+        }
+        return best
+    }
+
+    private static func screen(containing rect: CGRect) -> NSScreen? {
+        NSScreen.screens.max { a, b in
+            let ia = a.frame.intersection(rect), ib = b.frame.intersection(rect)
+            return ia.width * ia.height < ib.width * ib.height
+        }
+    }
+
+    /// A window that fills the screen AND the menu bar is not showing there. A zoomed window fills the same rectangle but the
+    /// menu bar (a "Menubar" window owned by the window server, at the top of its screen) is still up over it.
+    private static func isFullscreen(_ window: CGRect, on screen: NSScreen, safeTop: CGFloat, windows: [[String: Any]]) -> Bool {
+        guard window.width >= screen.frame.width - 1, window.height >= screen.frame.height - max(safeTop, 39) - 1 else { return false }
+        let primaryHeight = NSScreen.screens.first?.frame.height ?? 0
+        let menuBarUp = windows.contains { w in
+            guard (w[kCGWindowLayer as String] as? Int) == 24, (w[kCGWindowOwnerName as String] as? String) == "Window Server",
+                  let b = w[kCGWindowBounds as String] as? [String: Any],
+                  let x = b["X"] as? Double, let y = b["Y"] as? Double, let h = b["Height"] as? Double else { return false }
+            let cocoaY = primaryHeight - y - h
+            return screen.frame.contains(CGPoint(x: x + 1, y: cocoaY + h - 1))
+        }
+        return !menuBarUp
+    }
+}
