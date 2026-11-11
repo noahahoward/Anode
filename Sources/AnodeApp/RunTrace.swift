@@ -42,10 +42,64 @@ enum RunTrace {
         FeatureLog.append("run.log", "launch pid \(pid), \(ProcessInfo.processInfo.operatingSystemVersionString), \(footprint())")
     }
 
-    /// The normal route out (`applicationWillTerminate`).
+    /// The normal route out (`applicationWillTerminate`). Says who asked, because "Anode quit" is not one
+    /// story: a ⌘Q, a click on a Quit item, another program's Apple event (the updater, System Settings'
+    /// "Quit & Reopen"), or this app's own code all arrive here the same way and the system log cannot tell them
+    /// apart (measured on a MacBook Neo: `terminate:` and a clean exit, no crash report, no sender).
     static func cleanExit() {
-        FeatureLog.append("run.log", "quit normally, \(footprint())")
+        FeatureLog.append("run.log", "quit normally, \(footprint()); asked by: \(quitCause())")
+        for line in callers() { FeatureLog.append("run.log", "  via: \(line)") }
         if let url = markerURL { try? FileManager.default.removeItem(at: url) }
+    }
+
+    /// Four letters of an Apple event class or id, as they are written ('aevt', 'quit').
+    static func fourCharacterCode(_ code: UInt32) -> String {
+        String(bytes: [24, 16, 8, 0].map { UInt8((code >> $0) & 0xFF) }, encoding: .macOSRoman) ?? "????"
+    }
+
+    /// What was being handled when the app was told to quit: a key (which), a click, or an Apple event (from
+    /// which program). Read inside `applicationWillTerminate`, which runs inside `terminate:`, so it is still current.
+    static func quitCause() -> String {
+        var parts: [String] = []
+        // `currentEvent` is the last event the app was given, which can be minutes old (a mouse move, in the
+        // first test of this): only a key or a click from the last moment can have been the cause.
+        if let e = NSApp?.currentEvent, ProcessInfo.processInfo.systemUptime - e.timestamp < 0.5 {
+            switch e.type {
+            case .keyDown: parts.append("key \"\(e.charactersIgnoringModifiers ?? "?")\" code \(e.keyCode) flags \(e.modifierFlags.rawValue >> 16)")
+            case .leftMouseDown, .leftMouseUp, .rightMouseDown, .rightMouseUp: parts.append("a click")
+            default: break
+            }
+        }
+        if let ae = NSAppleEventManager.shared().currentAppleEvent {
+            let senderPID = ae.attributeDescriptor(forKeyword: 0x73706964 /* 'spid' */)?.int32Value ?? 0
+            let sender = senderPID > 0 ? (NSRunningApplication(processIdentifier: senderPID)?.localizedName ?? "pid \(senderPID)") : "unknown"
+            parts.append("Apple event \(fourCharacterCode(ae.eventClass))/\(fourCharacterCode(ae.eventID)) from \(sender)")
+        }
+        return parts.isEmpty ? "no event in progress (this app's own code, or the system)" : parts.joined(separator: "; ")
+    }
+
+    /// The frames that led to `terminate:`, innermost first, as short names, in lines that fit the log's limit.
+    /// A menu or key gives AppKit's menu frames, an Apple event its handler, this app's own code one of its
+    /// own closures: which of them is the answer to "who asked".
+    static func callers() -> [String] {
+        let names = Thread.callStackSymbols.compactMap { line -> String? in
+            // "12  AppKit  0x000... -[NSMenuItem _corePerformAction] + 123": keep what follows the address.
+            guard let r = line.range(of: " 0x") else { return nil }
+            let rest = line[r.upperBound...].drop { $0 != " " }.dropFirst()
+            guard let name = rest.split(separator: "+").first.map({ String($0).trimmingCharacters(in: .whitespaces) }),
+                  !name.isEmpty else { return nil }
+            return name.count > 44 ? String(name.prefix(44)) + "…" : name
+        }
+        // From the call to terminate: outward; without one in the list, the outermost frames.
+        let from = names.firstIndex { $0.contains("terminate:") }.map { $0 + 1 } ?? max(0, names.count - 10)
+        let wanted = Array(names[min(from, names.count)...].prefix(12))
+        var lines: [String] = [], current = ""
+        for n in wanted {
+            if current.count + n.count > 170 { lines.append(current); current = "" }
+            current += current.isEmpty ? n : " < " + n
+        }
+        if !current.isEmpty { lines.append(current) }
+        return lines
     }
 
     /// One step of something that could be the last one.

@@ -22,3 +22,19 @@ final class RunTraceTests: XCTestCase {
         XCTAssertNil(RunTrace.runThatEndedBadly(marker: "", current: 10, isAlive: { _ in false }))
     }
 }
+
+final class QuitCauseTests: XCTestCase {
+    func testFourCharacterCodes() {
+        XCTAssertEqual(RunTrace.fourCharacterCode(0x61657674), "aevt")
+        XCTAssertEqual(RunTrace.fourCharacterCode(0x71756974), "quit")
+        XCTAssertEqual(RunTrace.fourCharacterCode(0x73706964), "spid")
+    }
+
+    func testNothingInProgressIsSaidPlainly() {
+        XCTAssertTrue(RunTrace.quitCause().contains("no event in progress") || RunTrace.quitCause().contains("event"))
+    }
+
+    func testCallersNamesFramesAndDoesNotCrash() {
+        XCTAssertFalse(RunTrace.callers().joined().isEmpty)
+    }
+}
