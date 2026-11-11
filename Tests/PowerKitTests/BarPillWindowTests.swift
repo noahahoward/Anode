@@ -40,4 +40,17 @@ final class BarPillWindowTests: XCTestCase {
         XCTAssertEqual(BarPictures.source(for: item(x: 1430), screens: [CGRect(x: 0, y: 0, width: 1800, height: 1169)],
                                           captureAvailable: false), .appIcon)
     }
+
+    /// Only the hider's own covers and pill are left out of the capture. Anode's menu bar backdrop is what makes the
+    /// owner's bar black; leaving all of Anode's windows out photographed the wallpaper behind it (a tan patch behind
+    /// Sound in the pill, seen on hardware 2026-11-11).
+    func testCaptureLeavesOutOnlyTheHidersOwnWindows() {
+        let windows: [(number: Int, identifier: String?)] = [
+            (number: 11, identifier: BarPictures.hiderWindowIdentifier),   // a cover
+            (number: 12, identifier: nil),                                  // the menu bar backdrop
+            (number: 13, identifier: "something else"),
+            (number: 14, identifier: BarPictures.hiderWindowIdentifier),   // the pill
+        ]
+        XCTAssertEqual(BarPictures.windowsToLeaveOut(windows), [11, 14])
+    }
 }

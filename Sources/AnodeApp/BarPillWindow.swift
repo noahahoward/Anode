@@ -37,16 +37,27 @@ enum BarPictures {
         return icon
     }
 
-    /// One capture of the bar band of the display carrying `screen` (top-left global points), Anode's own windows left out.
+    /// Set on the hider's covers and pill, so a capture of the bar can leave out exactly those.
+    static let hiderWindowIdentifier = "dev.anode.menuBarHider"
+
+    /// The window numbers to leave out of a capture: the hider's own covers and pill, and nothing else of Anode's. The
+    /// menu bar backdrop must stay in, because on a bar it paints black it IS the bar's colour.
+    static func windowsToLeaveOut(_ windows: [(number: Int, identifier: String?)]) -> Set<CGWindowID> {
+        Set(windows.filter { $0.identifier == hiderWindowIdentifier && $0.number > 0 }.map { CGWindowID($0.number) })
+    }
+
+    /// One capture of the bar band of the display carrying `screen` (top-left global points), the windows in `leavingOut`
+    /// (the hider's covers and pill) left out.
     /// Never called without Screen Recording granted: asking without it puts a permission dialog on the owner's screen.
     @available(macOS 14.0, *)
-    static func captureBand(of screen: CGRect, height: CGFloat) async -> (image: CGImage, origin: CGPoint, scale: CGFloat)? {
+    static func captureBand(of screen: CGRect, height: CGFloat,
+                            leavingOut: Set<CGWindowID>) async -> (image: CGImage, origin: CGPoint, scale: CGFloat)? {
         guard ScreenRecordingAccess.isGranted else { return nil }
         do {
             let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
             guard let display = content.displays.first(where: { $0.frame.intersects(screen) }) else { return nil }
-            let ours = content.applications.filter { $0.processID == getpid() }
-            let filter = SCContentFilter(display: display, excludingApplications: ours, exceptingWindows: [])
+            let hidden = content.windows.filter { leavingOut.contains($0.windowID) }
+            let filter = SCContentFilter(display: display, excludingWindows: hidden)
             let config = SCStreamConfiguration()
             let scale: CGFloat = 2
             config.sourceRect = CGRect(x: 0, y: 0, width: display.frame.width, height: height)
@@ -181,8 +192,9 @@ final class BarPillWindow: PillPresenting {
         guard capturable, #available(macOS 14.0, *) else { return }
         let wanted = items.filter { BarPictures.source(for: $0, screens: screens, captureAvailable: true) == .capture }
         guard !wanted.isEmpty, let band = screens.first(where: { s in wanted.contains { $0.frame.intersects(s) } }) else { return }
+        let leaveOut = BarPictures.windowsToLeaveOut(NSApp.windows.map { (number: $0.windowNumber, identifier: $0.identifier?.rawValue) })
         Task { [weak self] in
-            guard let shot = await BarPictures.captureBand(of: band, height: 40) else { return }
+            guard let shot = await BarPictures.captureBand(of: band, height: 40, leavingOut: leaveOut) else { return }
             await MainActor.run {
                 guard let self, self.generation == gen else { return }
                 for cell in self.cells where wanted.contains(where: { $0.key == cell.item.key }) {
@@ -202,6 +214,7 @@ final class BarPillWindow: PillPresenting {
                         styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
         p.hidesOnDeactivate = false
         p.level = .popUpMenu
+        p.identifier = NSUserInterfaceItemIdentifier(BarPictures.hiderWindowIdentifier)
         p.collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle]
         p.isOpaque = false
         p.backgroundColor = .clear

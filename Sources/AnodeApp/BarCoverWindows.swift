@@ -48,6 +48,7 @@ final class BarCoverWindows: CoverPresenting {
                         styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
         p.hidesOnDeactivate = false
         p.level = .screenSaver
+        p.identifier = NSUserInterfaceItemIdentifier(BarPictures.hiderWindowIdentifier)
         p.collectionBehavior = Self.collectionBehavior
         p.isOpaque = true
         p.backgroundColor = Self.fill
