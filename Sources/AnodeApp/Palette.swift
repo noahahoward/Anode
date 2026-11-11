@@ -330,8 +330,15 @@ extension NSView {
     /// the pointer inside it, so it will not send one later either — the view
     /// stays hovered until it is entered and left again. Only a key window
     /// counts, to match `.activeInKeyWindow`.
+    ///
+    /// INSIDE THE VIEW'S OWN BOUNDS as well as its visible rect. On current macOS a view's `visibleRect` is clipped by
+    /// scroll views and the window but NOT by the bounds of its parents (`clipsToBounds` is off by default), so for a
+    /// 22 pt row in a list it is the whole viewport: (0, -29, 870, 828) was measured. `visibleRect.contains` alone
+    /// answered yes for every row at once, and expanding a group in the Sensors list, which rebuilds its rows and so
+    /// asks every one of them, lit the whole list as hovered until the pointer had crossed each row.
     var isUnderPointer: Bool {
         guard let window, window.isKeyWindow else { return false }
-        return visibleRect.contains(convert(window.mouseLocationOutsideOfEventStream, from: nil))
+        let point = convert(window.mouseLocationOutsideOfEventStream, from: nil)
+        return bounds.contains(point) && visibleRect.contains(point)
     }
 }
