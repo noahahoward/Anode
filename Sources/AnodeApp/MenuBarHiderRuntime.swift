@@ -105,6 +105,7 @@ final class MenuBarHiderRuntime {
         if let rebuildObserver { NotificationCenter.default.removeObserver(rebuildObserver) }
         rebuildObserver = nil
         settleWork?.cancel(); rebuildWork?.cancel()
+        events.urgent = false
         events.stop()
         controller.shutdown()
         MenuBarHiderController.current = MenuBarHiderController.current === controller ? nil : MenuBarHiderController.current
@@ -142,8 +143,14 @@ final class MenuBarHiderRuntime {
     }
 
     /// The decision or the pill changed: the shortcut is listened for only while the pill can be opened, the timer runs only while the
-    /// pill is open, and a "settling" refusal is retried when the settle window has passed.
+    /// pill is open, the bar is watched closely only while something is covered, and a "settling" refusal is retried when the
+    /// settle window has passed.
     private func controllerChanged() {
+        // A cover over a bar that has moved is worse than none: while covers are up the bar is re-read every few seconds, in
+        // case it moved without an event saying so. With nothing covered there is nothing to go stale.
+        let watch = !finished && controller.isCovering
+        if events.urgent != watch { events.urgent = watch }
+
         if controller.canTogglePill && !finished {
             if !shortcutRegistered {
                 shortcutRegistered = true

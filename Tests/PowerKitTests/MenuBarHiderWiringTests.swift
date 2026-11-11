@@ -36,7 +36,11 @@ final class MenuBarHiderWiringTests: XCTestCase {
         reader.fallback = [BarItem(key: "op|1Password", bundleID: "op", appName: "1Password", title: "",
                                    frame: CGRect(x: 1114, y: 0, width: 40, height: 37), isLocked: false, hasPress: true, pid: 100),
                            BarItem(key: "cc|Battery", bundleID: "cc", appName: "A", title: "Battery",
-                                   frame: CGRect(x: 1600, y: 0, width: 40, height: 37), isLocked: false, hasPress: true, pid: 100)]
+                                   frame: CGRect(x: 1600, y: 0, width: 40, height: 37), isLocked: false, hasPress: true, pid: 100),
+                           BarItem(key: "dev.anode.app|" + MenuBarHiderController.chevronLabel, bundleID: "dev.anode.app",
+                                   appName: "Anode", title: MenuBarHiderController.chevronLabel,
+                                   frame: CGRect(x: 1250, y: 0, width: 30, height: 37), isLocked: false, hasPress: true,
+                                   pid: getpid())]
         let events = FakeEvents()
         let shortcut = Shortcut()
         let runtime = MenuBarHiderRuntime(
@@ -98,6 +102,41 @@ final class MenuBarHiderWiringTests: XCTestCase {
         XCTAssertFalse(r.covers.rects.isEmpty)
         r.events.invalidate?()
         XCTAssertEqual(r.covers.rects, [])
+    }
+
+    /// A cover over a bar that has moved is worse than none, so while covers are up the bar is re-read often ("urgent"); with
+    /// nothing covered it is not, which is what keeps the hider's cost near zero.
+    func testTheBarIsWatchedCloselyExactlyWhileCovered() throws {
+        let r = try rig(); defer { done(r) }
+        XCTAssertFalse(r.events.urgent)
+        r.settings.menuBarHiderEnabled = true
+        XCTAssertFalse(r.covers.rects.isEmpty)
+        XCTAssertTrue(r.events.urgent, "covers are up")
+        r.events.invalidate?()
+        XCTAssertEqual(r.covers.rects, [])
+        XCTAssertFalse(r.events.urgent, "taken down for a display change")
+        r.runtime.controller.layoutMayHaveChanged()
+        XCTAssertTrue(r.events.urgent, "back up after the re-read")
+        let fallback = r.reader.fallback
+        r.reader.fallback = nil
+        r.runtime.controller.layoutMayHaveChanged()
+        XCTAssertFalse(r.events.urgent, "a failed read takes the covers down")
+        r.reader.fallback = fallback
+        r.runtime.controller.layoutMayHaveChanged()
+        XCTAssertTrue(r.events.urgent)
+        // Collapsed, but with nothing on the bar to cover: nothing to watch.
+        r.settings.menuBarHiderArrangement = BarArrangement(pinned: ["op|1Password", "cc|Battery"], pillOrder: [])
+        XCTAssertEqual(r.runtime.controller.decision, .collapsed)
+        XCTAssertEqual(r.covers.rects, [])
+        XCTAssertFalse(r.events.urgent)
+        r.settings.menuBarHiderArrangement = BarArrangement(pinned: ["cc|Battery"], pillOrder: ["op|1Password"])
+        XCTAssertTrue(r.events.urgent)
+        r.settings.menuBarHiderEnabled = false
+        XCTAssertFalse(r.events.urgent, "off")
+        r.settings.menuBarHiderEnabled = true
+        XCTAssertTrue(r.events.urgent)
+        r.runtime.shutdown()
+        XCTAssertFalse(r.events.urgent, "shut down")
     }
 
     func testTheShortcutStaysWhileTheBarIsUnreadable() throws {

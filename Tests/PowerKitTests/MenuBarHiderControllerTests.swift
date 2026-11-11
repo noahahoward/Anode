@@ -75,11 +75,20 @@ final class MenuBarHiderControllerTests: XCTestCase {
                 isLocked: locked, hasPress: true, pid: pid)
     }
 
-    /// The owner's shape: a hidden third-party icon, then battery, sound, Wi-Fi, Control Center and the clock.
+    /// Anode's chevron as the Accessibility read reports it: its own process, named by its accessibility label.
+    private func chevronItem(_ x: CGFloat, y: CGFloat = 0) -> BarItem {
+        BarItem(key: "dev.anode.app|" + MenuBarHiderController.chevronLabel, bundleID: "dev.anode.app", appName: "Anode",
+                title: MenuBarHiderController.chevronLabel, frame: CGRect(x: x, y: y, width: 30, height: 37),
+                isLocked: false, hasPress: true, pid: 777)
+    }
+
+    /// The owner's shape: a hidden third-party icon, then battery, sound, Wi-Fi, Control Center and the clock, with the
+    /// chevron (last in the list, so indices 0 and 1 stay the hidden icons) between the hidden icons and Wi-Fi.
     private var layout: [BarItem] {
         [item("op|1Password", 1114), item("wg|WireGuard", 1160),
          item("cc|Wi-Fi", 1507), item("cc|Sound", 1550), item("cc|Battery", 1600),
-         item("cc|Control Center", 1700, locked: true), item("cc|Clock", 1740, locked: true)]
+         item("cc|Control Center", 1700, locked: true), item("cc|Clock", 1740, locked: true),
+         chevronItem(1250)]
     }
 
     override func setUpWithError() throws {
@@ -292,7 +301,7 @@ final class MenuBarHiderControllerTests: XCTestCase {
     /// covered, and no cover reaches over them.
     func testChevronBetweenHiddenItemsSplitsTheCover() {
         let chevronFrame = CGRect(x: 1200, y: 0, width: 30, height: 37)
-        reader.fallback = [item("a|One", 1100), item("dev.anode.app|AnodeHiderChevron", 1200, w: 30, pid: 777), item("b|Two", 1240),
+        reader.fallback = [item("a|One", 1100), chevronItem(1200), item("b|Two", 1240),
                            item("cc|Wi-Fi", 1507), item("cc|Sound", 1550), item("cc|Battery", 1600)]
         turnOn()
         XCTAssertEqual(covers.rects.count, 2)
@@ -346,8 +355,9 @@ final class MenuBarHiderControllerTests: XCTestCase {
 
     /// I4: a first read without the system's items must not store an arrangement that would hide nothing it should keep.
     func testNoDefaultArrangementIsStoredFromAReadWithoutSystemItems() {
-        reader.fallback = [item("op|1Password", 1114), item("wg|WireGuard", 1160)]
+        reader.fallback = [item("op|1Password", 1114), item("wg|WireGuard", 1160), chevronItem(1250)]
         turnOn()
+        XCTAssertEqual(controller.decision, .collapsed)
         XCTAssertNil(settings.menuBarHiderArrangement)
     }
 
@@ -363,6 +373,121 @@ final class MenuBarHiderControllerTests: XCTestCase {
         XCTAssertTrue((pill.shown.last ?? []).contains(MenuBarWidgetController.key(forMetricID: "cpuUsage")))
         env.fullScreen = true; controller.reevaluate()
         XCTAssertFalse(controller.canTogglePill)
+    }
+
+    // ── Second review ───────────────────────────────────────────────────────
+
+    /// A full bar: macOS parks the new chevron off the bar, where nobody can press it. Then nothing is covered and nothing is
+    /// folded, or the hidden icons and Anode's widgets would have no route at all.
+    func testChevronParkedOffTheBarStandsDownAndUnfolds() {
+        turnOn()
+        XCTAssertFalse(widgets.folded.isEmpty)
+        var parked = layout; parked[parked.count - 1] = chevronItem(-1, y: 1157)
+        reader.fallback = parked
+        controller.layoutMayHaveChanged()
+        XCTAssertEqual(controller.decision, .standDown(.chevronOffBar))
+        XCTAssertEqual(covers.rects, [])
+        XCTAssertEqual(widgets.folded, [], "the widgets go back on the bar")
+        XCTAssertFalse(controller.canTogglePill)
+        XCTAssertTrue(chevron.installed, "the chevron is not torn down and remade in a loop")
+    }
+
+    func testChevronParkedFromTheStartNeverCollapses() {
+        var parked = layout; parked[parked.count - 1] = chevronItem(-1, y: 1157)
+        reader.fallback = parked
+        turnOn()
+        XCTAssertEqual(controller.decision, .standDown(.chevronOffBar))
+        XCTAssertEqual(covers.rects, [])
+        XCTAssertEqual(widgets.folded, [])
+    }
+
+    /// A read that has no chevron in it (not laid out yet) is not a layout to cover from: it is read again later.
+    func testChevronMissingFromTheReadIsNotCollapsed() {
+        reader.fallback = Array(layout.dropLast())
+        turnOn()
+        XCTAssertNotEqual(controller.decision, .collapsed)
+        XCTAssertEqual(covers.rects, [])
+        XCTAssertFalse(held.isEmpty, "read again once the chevron has been laid out")
+        reader.fallback = layout
+        flush()
+        XCTAssertEqual(controller.decision, .collapsed)
+        XCTAssertFalse(covers.rects.isEmpty)
+    }
+
+    /// A text item that stays on the bar (a CPU reading, a clock) changes width every second. On the bar an item grows to the
+    /// left, so the hidden icons to its right do not move: the two reads agree on the covers and the bar collapses.
+    func testAPinnedItemWhoseWidthChangesStillCollapses() {
+        settings.menuBarHiderArrangement = BarArrangement(pinned: ["tx|CPU", "cc|Wi-Fi", "cc|Sound", "cc|Battery"],
+                                                          pillOrder: ["op|1Password", "wg|WireGuard"])
+        let narrow = [item("tx|CPU", 1000, w: 50)] + layout
+        var wide = narrow; wide[0].frame = CGRect(x: 993, y: 0, width: 57, height: 37)
+        // A hidden icon that shifts by a point between reads (rounding in what Accessibility reports) is the same layout too.
+        wide[1].frame.origin.x += 1
+        reader.queue = [narrow, wide, narrow, wide, narrow, wide]
+        reader.fallback = narrow
+        turnOn()
+        XCTAssertEqual(controller.decision, .collapsed)
+        XCTAssertEqual(covers.rects.count, 1)
+        XCTAssertEqual(covers.rects.first?.minX ?? 0, 1111, accuracy: 1.01)
+    }
+
+    /// The tolerance is for jitter, not for a bar that moved: a hidden icon 20 pt away between the two reads is no cover.
+    func testAHiddenItemThatMovedBetweenTheReadsStillRefuses() {
+        turnOn()
+        XCTAssertFalse(covers.rects.isEmpty)
+        var moved = layout; moved[0].frame.origin.x += 20
+        reader.queue = [moved, layout]
+        controller.layoutMayHaveChanged()
+        XCTAssertEqual(covers.rects, [])
+    }
+
+    /// Everything pinned: nothing is behind the chevron, so pressing it opens no empty pill.
+    func testNothingBehindTheChevronOpensNoPill() {
+        let cpu = MenuBarWidgetController.key(forMetricID: "cpuUsage"), memory = MenuBarWidgetController.key(forMetricID: "memoryUsage")
+        settings.menuBarHiderArrangement = BarArrangement(
+            pinned: [cpu, memory, "op|1Password", "wg|WireGuard", "cc|Wi-Fi", "cc|Sound", "cc|Battery"], pillOrder: [])
+        turnOn()
+        XCTAssertEqual(controller.decision, .collapsed)
+        XCTAssertEqual(controller.items, [])
+        XCTAssertFalse(controller.canTogglePill)
+        chevron.onToggle?()
+        XCTAssertFalse(pill.isShowing)
+    }
+
+    /// While covers are up the bar is read every few seconds. A read that changes nothing must not tell anyone: each
+    /// notification reloads the Beta Features lists.
+    func testAReadThatChangesNothingTellsNoOne() {
+        var calls = 0, posts = 0
+        controller.onChange = { calls += 1 }
+        let token = NotificationCenter.default.addObserver(forName: MenuBarHiderController.didChange, object: nil, queue: nil) { _ in
+            posts += 1
+        }
+        defer { NotificationCenter.default.removeObserver(token) }
+        turnOn()
+        XCTAssertEqual(controller.decision, .collapsed)
+        XCTAssertGreaterThan(calls, 0)
+        calls = 0; posts = 0
+        controller.reevaluate()
+        controller.reevaluate()
+        XCTAssertEqual(calls, 0)
+        XCTAssertEqual(posts, 0)
+        // An item that stays on the bar changing width is not news either.
+        var wider = layout; wider[2].frame = CGRect(x: 1500, y: 0, width: 47, height: 37)
+        reader.fallback = wider
+        controller.reevaluate(); controller.reevaluate()
+        XCTAssertEqual(posts, 0)
+        // A change the owner can see is.
+        settings.menuBarHiderArrangement = BarArrangement(pinned: ["op|1Password", "cc|Wi-Fi", "cc|Sound", "cc|Battery"], pillOrder: [])
+        controller.reevaluate()
+        XCTAssertEqual(posts, 1)
+        XCTAssertEqual(calls, 1)
+    }
+
+    /// The controller finds its chevron by the accessibility label the chevron gives itself.
+    func testTheChevronStillCarriesTheLabelTheControllerLooksFor() throws {
+        let source = try String(contentsOf: URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent().appendingPathComponent("Sources/AnodeApp/BarChevron.swift"), encoding: .utf8)
+        XCTAssertTrue(source.contains("setAccessibilityLabel(\"\(MenuBarHiderController.chevronLabel)\")"))
     }
 
     func testChevronTogglesThePill() {
