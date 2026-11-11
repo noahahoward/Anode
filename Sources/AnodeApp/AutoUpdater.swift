@@ -73,7 +73,9 @@ final class AutoUpdater {
             checkout.fetch()
             let finding = Finding(state: checkout.state(),
                                   commit: checkout.upstreamCommit(),
-                                  build: checkout.upstreamBuild())
+                                  build: checkout.upstreamBuild(),
+                                  version: checkout.upstreamVersion(),
+                                  note: checkout.upstreamNote())
             DispatchQueue.main.async { settle(finding) }
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + AutoUpdate.checkTimeout) { settle(nil) }
@@ -105,6 +107,9 @@ final class AutoUpdater {
         let state: SourceCheckout.State
         let commit: String?
         let build: Int?
+        /// The version and two-sentence description of what is about to be installed, from the upstream commit.
+        let version: String?
+        let note: String?
     }
 
     /// Runs the bundled `update.sh` with its output in a log file.
@@ -123,7 +128,7 @@ final class AutoUpdater {
               let output = try? FileHandle(forWritingTo: log),
               let reader = try? FileHandle(forReadingFrom: log) else { return open() }
 
-        let panel = UpdatePanelController(build: finding.build)
+        let panel = UpdatePanelController(build: finding.build, version: finding.version, note: finding.note)
         panel.onDismiss = { [weak self] in
             self?.panel = nil
             open()

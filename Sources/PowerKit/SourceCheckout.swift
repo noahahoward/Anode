@@ -131,6 +131,17 @@ public struct SourceCheckout {
         run(["rev-list", "--count", "@{upstream}"]).flatMap { Int($0) }
     }
 
+    /// What the update is, in the two sentences its author wrote (`UPDATE-NOTE.md`, as it is on the upstream commit).
+    /// Nil when that commit has none, which is every update from before the note existed.
+    public func upstreamNote() -> String? {
+        UpdateNote.text(from: run(["show", "@{upstream}:\(UpdateNote.fileName)"]))
+    }
+
+    /// The version About will show after updating: `VERSION` in the upstream `build-app.sh`.
+    public func upstreamVersion() -> String? {
+        UpdateNote.version(inBuildScript: run(["show", "@{upstream}:build-app.sh"]))
+    }
+
     /// One line, for the row in Preferences.
     public static func summary(_ state: State) -> String {
         switch state {

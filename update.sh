@@ -56,7 +56,14 @@ AFTER="$(git rev-parse --short HEAD)"
 if [ "$BEFORE" = "$AFTER" ]; then
   say "already up to date ($AFTER) — rebuilding anyway so the bundle matches."
 else
-  say "updated $BEFORE → $AFTER:"
+  VERSION_NOW="$(sed -n 's/^VERSION="\([0-9][0-9.]*\)".*/\1/p' build-app.sh 2>/dev/null | head -1)"
+  say "updated $BEFORE → $AFTER${VERSION_NOW:+ (Anode $VERSION_NOW)}:"
+  # What the update is, in the two sentences its author wrote (UPDATE-NOTE.md). Printed WITHOUT the "› " that marks
+  # the stages the progress window follows, so no line of prose can be mistaken for one.
+  if [ -f UPDATE-NOTE.md ]; then
+    NOTE="$(grep -vE '^[[:space:]]*(#|<!--|-->|$)' UPDATE-NOTE.md | tr '\n' ' ' | tr -s ' ' | fold -s -w 72 | sed 's/ *$//; s/^/    /')"
+    [ -n "$NOTE" ] && { echo; echo "$NOTE"; echo; }
+  fi
   git --no-pager log --oneline "$BEFORE..$AFTER" | sed 's/^/›   /'
 fi
 

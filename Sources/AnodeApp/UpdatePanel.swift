@@ -15,16 +15,25 @@ final class UpdatePanelController: NSWindowController, NSWindowDelegate {
     var onDismiss: (() -> Void)?
 
     private let heading = NSTextField(labelWithString: "")
+    /// What the update is, in the two sentences its author wrote. Hidden when the update has none.
+    private let note = NSTextField(labelWithString: "")
     private let detail = NSTextField(labelWithString: "")
+    private let stack = NSStackView()
     private let bar = NSProgressIndicator()
     private let buttons = NSStackView()
     private let target: String
     private var logURL: URL?
     private var dismissed = false
 
-    /// `build` is the number About will show afterwards, when it is known.
-    init(build: Int?) {
-        target = build.map { "build \($0)" } ?? "the latest build"
+    /// `version` and `build` are what About will show afterwards, when they are known; `note` is the update in two
+    /// sentences (`UpdateNote`), shown under the heading so the person waiting reads what is arriving.
+    init(build: Int?, version: String? = nil, note text: String? = nil) {
+        switch (version, build) {
+        case let (v?, b?): target = "version \(v) (build \(b))"
+        case let (v?, nil): target = "version \(v)"
+        case let (nil, b?): target = "build \(b)"
+        default: target = "the latest build"
+        }
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 340, height: 110),
                               styleMask: [.titled], backing: .buffered, defer: false)
         window.title = "Anode"
@@ -33,8 +42,15 @@ final class UpdatePanelController: NSWindowController, NSWindowDelegate {
         super.init(window: window)
         window.delegate = self
 
-        heading.stringValue = "Updating Anode…"
+        heading.stringValue = version.map { "Updating to Anode \($0)…" } ?? "Updating Anode…"
         heading.font = .boldSystemFont(ofSize: NSFont.systemFontSize)
+        note.stringValue = text ?? ""
+        note.isHidden = text == nil
+        note.font = .systemFont(ofSize: NSFont.systemFontSize)
+        note.textColor = .labelColor
+        note.lineBreakMode = .byWordWrapping
+        note.maximumNumberOfLines = 0
+        note.preferredMaxLayoutWidth = 300
         detail.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
         detail.textColor = .secondaryLabelColor
         detail.lineBreakMode = .byWordWrapping
@@ -56,7 +72,7 @@ final class UpdatePanelController: NSWindowController, NSWindowDelegate {
         buttons.spacing = 8
         buttons.isHidden = true
 
-        let stack = NSStackView(views: [heading, bar, detail, buttons])
+        stack.setViews([heading, note, bar, detail, buttons], in: .leading)
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 8
@@ -64,6 +80,7 @@ final class UpdatePanelController: NSWindowController, NSWindowDelegate {
         buttons.widthAnchor.constraint(equalToConstant: 300).isActive = true
         window.contentView = stack
         update(AutoUpdate.Progress())
+        fitToContent()
         window.center()
     }
 
@@ -71,6 +88,13 @@ final class UpdatePanelController: NSWindowController, NSWindowDelegate {
     required init?(coder: NSCoder) { fatalError("not used") }
 
     func show() { window?.bringForward() }
+
+    /// The window is as tall as what it holds: a note of two sentences takes three or four lines at this width, and a
+    /// panel with no note keeps its old small size.
+    private func fitToContent() {
+        stack.layoutSubtreeIfNeeded()
+        window?.setContentSize(NSSize(width: 340, height: ceil(stack.fittingSize.height)))
+    }
 
     func update(_ progress: AutoUpdate.Progress) {
         detail.stringValue = "\(progress.stage.label) Anode will reopen on \(target)."
@@ -92,9 +116,10 @@ final class UpdatePanelController: NSWindowController, NSWindowDelegate {
         heading.stringValue = "Anode could not update itself"
         detail.stringValue = reason
         bar.isHidden = true
+        note.isHidden = true
         buttons.isHidden = false
         window?.styleMask.insert(.closable)
-        window?.layoutIfNeeded()
+        fitToContent()
         show()
     }
 
