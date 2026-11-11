@@ -140,6 +140,13 @@ final class MenuBarHiderController {
         onChange?()
     }
 
+    /// The owner clicked away from the pill.
+    func dismissPill() {
+        guard pillState.isOpen else { return }
+        closePill()
+        onChange?()
+    }
+
     /// Close the pill when its time is up. Called by a timer that runs only while the pill is open.
     func tick() {
         let was = pillState.isOpen

@@ -267,6 +267,16 @@ final class MenuBarHiderControllerTests: XCTestCase {
         XCTAssertEqual(controller.decision, .collapsed)
     }
 
+    func testDismissClosesThePill() {
+        turnOn()
+        controller.togglePill()
+        controller.dismissPill()
+        XCTAssertFalse(pill.isShowing)
+        XCTAssertFalse(controller.isPillOpen)
+        controller.dismissPill()   // already closed: nothing happens
+        XCTAssertFalse(pill.isShowing)
+    }
+
     func testChevronTogglesThePill() {
         turnOn()
         chevron.onToggle?()
