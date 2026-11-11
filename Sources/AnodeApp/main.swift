@@ -2885,6 +2885,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
     /// immediately — it just gets there by looking at what it was shown.
     static let nameColumnCap: CGFloat = 240
 
+    /// Measured text widths, so the same string at the same font is typeset once. See `TextWidthMemo`.
+    private var widths = TextWidthMemo()
+
     func autosizeColumns() {
         let visible = main.table.rows(in: main.table.visibleRect)
         // An empty range means the table has not been laid out yet (zero-height
@@ -2907,9 +2910,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
             for i in range where i < rows.count {
                 let r = rows[i]
                 let (text, _) = cellText(r, id)
-                let w = (text as NSString)
-                    .size(withAttributes: [.font: font(for: id, isApp: r.isApp)]).width
-                widest = max(widest, w)
+                widest = max(widest, widths.width(of: text, in: font(for: id, isApp: r.isApp)))
             }
 
             // The name column is capped. Columns only ever grow, the name is the
@@ -3011,14 +3012,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
     func configure(_ cell: ProcessCellView, with r: Row, id: String) {
         let (text, dim) = cellText(r, id)
         guard let label = cell.textField else { return }
-        label.stringValue = text
+        // Only what changed. Assigning an identical string still marks the field for redisplay, and the typesetter
+        // redraws it: text drawing was the biggest single share of the open window's CPU (348 of ~2,800 ms in 40 s),
+        // and most cells (names, units, a CPU figure at 0.0) are the same as they were two seconds ago.
+        if label.stringValue != text { label.stringValue = text }
         cell.setFont(font(for: id, isApp: r.isApp))
         // System rows take the same colour the ledger bar gives its "system
         // processes" segment, so the link is visual rather than something the
         // user has to be told: these rows ARE that segment, itemised. It also
         // keeps them from reading as ordinary measured rows, which they are not.
-        label.textColor = r.isModeled && id == "name" ? Palette.accentDim
-                                                      : (dim ? Palette.dim : Palette.text)
+        let colour = r.isModeled && id == "name" ? Palette.accentDim
+                                                 : (dim ? Palette.dim : Palette.text)
+        if label.textColor?.isEqual(colour) != true { label.textColor = colour }
         // The row's own tooltip carries what a truncated name cannot: the full
         // name, and — for a row that has no measured process behind it — the fact
         // that its battery figure is a share of a bucket rather than a reading.

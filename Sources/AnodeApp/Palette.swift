@@ -266,11 +266,32 @@ enum Palette {
 
     // ── Type ────────────────────────────────────────────────────────────────
     enum Font {
+        /// Fonts are values the system builds by looking the face up, and the process table asked for the same two
+        /// for every cell on every tick: `monospacedDigitSystemFont` alone was 188 of ~2,800 ms of CPU in a 40 s
+        /// profile of the open window (UIFoundation `__NSGetSystemFontVariants`). A font is immutable, so one per
+        /// (kind, size, weight) is shared. Locked because some callers draw off the main thread.
+        private struct Key: Hashable { let kind: UInt8; let size: CGFloat; let weight: CGFloat }
+        private static let lock = NSLock()
+        private static var cache: [Key: NSFont] = [:]
+        private static func shared(_ kind: UInt8, _ size: CGFloat, _ weight: NSFont.Weight,
+                                   _ make: () -> NSFont) -> NSFont {
+            let key = Key(kind: kind, size: size, weight: weight.rawValue)
+            lock.lock(); defer { lock.unlock() }
+            if let f = cache[key] { return f }
+            // A handful of sizes in practice; the bound is only so a caller computing sizes cannot grow it for ever.
+            if cache.count > 128 { cache.removeAll() }
+            let f = make()
+            cache[key] = f
+            return f
+        }
+        /// How many fonts are held. For tests.
+        static var cachedCount: Int { lock.lock(); defer { lock.unlock() }; return cache.count }
+
         static func mono(_ size: CGFloat, _ weight: NSFont.Weight = .regular) -> NSFont {
-            .monospacedDigitSystemFont(ofSize: size, weight: weight)
+            shared(0, size, weight) { .monospacedDigitSystemFont(ofSize: size, weight: weight) }
         }
         static func sans(_ size: CGFloat, _ weight: NSFont.Weight = .regular) -> NSFont {
-            .systemFont(ofSize: size, weight: weight)
+            shared(1, size, weight) { .systemFont(ofSize: size, weight: weight) }
         }
         /// The small-label voice: uppercase, kerned, monospaced. It names a table
         /// column, a graph axis and a Resources card, and those three are the same
@@ -278,7 +299,7 @@ enum Palette {
         /// Defined once so they cannot drift into three near-identical fonts,
         /// which is exactly how a header row and a chart axis stop looking related.
         static func label(_ size: CGFloat = 9.5, _ weight: NSFont.Weight = .semibold) -> NSFont {
-            .monospacedDigitSystemFont(ofSize: size, weight: weight)
+            mono(size, weight)
         }
         /// Tracking for `label`. Uppercase at 9 pt sets too tight without it.
         static let labelKern: CGFloat = 0.4

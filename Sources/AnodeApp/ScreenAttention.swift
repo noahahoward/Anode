@@ -123,11 +123,14 @@ final class ScreenWatch {
             CFRunLoopAddSource(CFRunLoopGetMain(), IONotificationPortGetRunLoopSource(port).takeUnretainedValue(), .commonModes)
             let root = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching("IOPMrootDomain"))
             if root != 0 {
-                IOServiceAddInterestNotification(port, root, kIOGeneralInterest, { refcon, _, _, _ in
+                let status = IOServiceAddInterestNotification(port, root, kIOGeneralInterest, { refcon, _, _, _ in
                     guard let refcon else { return }
                     Unmanaged<ScreenWatch>.fromOpaque(refcon).takeUnretainedValue().update()
                 }, Unmanaged.passUnretained(self).toOpaque(), &notifier)
                 IOObjectRelease(root)
+                if status != KERN_SUCCESS {
+                    log("screen: no lid notifications (status \(status)); the sampler checks the lid once per tick instead")
+                }
             }
         }
         // A monitor plugged in or out changes the answer without any lid event.
