@@ -473,7 +473,13 @@ enum WindowActivator {
     /// The AppKit window behind a switcher entry, when it is one of Anode's own.
     static func ownWindow(_ window: SwitchableWindow) -> NSWindow? {
         guard window.pid == AccessibleWindow.ownPID else { return nil }
-        return AccessibleWindow.onMain { NSApp.windows.first { CGWindowID($0.windowNumber) == window.id } }
+        return AccessibleWindow.onMain { ownWindow(withID: window.id, in: NSApp.windows) }
+    }
+
+    /// The one of `windows` the window server knows as `id`. A window that has never been shown has no id
+    /// and is skipped: converting its number (-1) to a `CGWindowID` is a trap that crashed the app (see `WindowServerID`).
+    static func ownWindow(withID id: CGWindowID, in windows: [NSWindow]) -> NSWindow? {
+        windows.first { $0.windowServerID == id }
     }
 
     private static func axWindow(_ window: SwitchableWindow) -> AXUIElement? {

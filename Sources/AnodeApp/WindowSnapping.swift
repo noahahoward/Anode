@@ -262,7 +262,7 @@ struct AccessibleWindow {
     }
 
     var windowID: CGWindowID? {
-        if let local { return Self.onMain { CGWindowID(local.windowNumber) } }
+        if let local { return Self.onMain { local.windowServerID } }
         typealias GetWindow = @convention(c) (AXUIElement, UnsafeMutablePointer<CGWindowID>) -> AXError
         guard let sym = dlsym(dlopen(nil, RTLD_NOW), "_AXUIElementGetWindow") else { return nil }
         var id: CGWindowID = 0

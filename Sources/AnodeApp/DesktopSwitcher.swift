@@ -530,7 +530,7 @@ final class DesktopPanel {
         // Transparent first, so even a frame still in flight shows nothing; no fade-out of its own.
         window.alphaValue = 0
         window.orderOut(nil)
-        let number = CGWindowID(window.windowNumber)
+        guard let number = window.windowServerID else { done?(); return }
         var tries = 0
         func check() {
             tries += 1

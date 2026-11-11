@@ -127,7 +127,7 @@ final class LidGlassOverlay: LidGlassOverlaying {
         window.contentView = view
     }
 
-    var windowID: CGWindowID { CGWindowID(window.windowNumber) }
+    var windowID: CGWindowID { window.windowServerID ?? kCGNullWindowID }
     var isDisplayLinkRunning: Bool { link != nil }
 
     /// The picture is prepared off the main thread, which takes about 50 ms at full size.
