@@ -262,4 +262,15 @@ final class BarReaderTests: XCTestCase {
         XCTAssertFalse(AXBarReader.isStillTheApp(bundleID: nil, name: "Other", of: unbundled))
         XCTAssertFalse(AXBarReader.isStillTheApp(bundleID: "o", name: "O", of: unbundled))
     }
+
+    /// Seen on hardware 2026-11-11: `universalaccessd` (a system process with no menu bar items) never answers in time, and
+    /// failing the read on it meant the hider never collapsed. An app's silence matters only when it may own an item: the
+    /// system's owners, Anode itself, and any app seen with items before.
+    func testOnlyASilentAppThatMayOwnItemsFailsTheRead() {
+        let known: Set<pid_t> = [42]
+        XCTAssertFalse(AXBarReader.silenceMatters(pid: 663, bundleID: "com.apple.universalaccessd", knownOwners: known, ownPID: 1))
+        XCTAssertTrue(AXBarReader.silenceMatters(pid: 42, bundleID: "com.example.vpn", knownOwners: known, ownPID: 1))
+        XCTAssertTrue(AXBarReader.silenceMatters(pid: 7, bundleID: "com.apple.MenuBarAgent", knownOwners: known, ownPID: 1))
+        XCTAssertTrue(AXBarReader.silenceMatters(pid: 1, bundleID: "dev.anode.app", knownOwners: known, ownPID: 1))
+    }
 }

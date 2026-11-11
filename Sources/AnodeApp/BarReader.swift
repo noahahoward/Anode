@@ -84,6 +84,13 @@ final class AXBarReader: BarReading {
 
     /// Whether the process now at the item's pid (its bundle id and name) is still the item's app: a pid can be reused
     /// between drawing the pill and the press. An app without a bundle id is known by its name.
+    /// Whether an app that did not answer for its extras menu bar fails the whole read. Only when it may own an item that a
+    /// cover could then span: the system's owners, Anode itself, and any app seen with items before. Seen on hardware
+    /// 2026-11-11: `universalaccessd` never answers in time, and counting it meant the hider never collapsed.
+    static func silenceMatters(pid: pid_t, bundleID: String?, knownOwners: Set<pid_t>, ownPID: pid_t) -> Bool {
+        pid == ownPID || knownOwners.contains(pid) || bundleID.map(systemOwners.contains) == true
+    }
+
     static func isStillTheApp(bundleID: String?, name: String?, of item: BarItem) -> Bool {
         guard bundleID == item.bundleID else { return false }
         return item.bundleID != nil || name == item.appName
@@ -156,6 +163,8 @@ final class AXBarReader: BarReading {
     /// The apps that said they have no extras menu bar, not asked again for a while. Touched on `queue` only; a press asks
     /// its app whatever this says.
     private var noBar = NoBarCache(neverSkipped: AXBarReader.systemOwners)
+    /// The apps seen with items in a read, so their silence later fails the read (`silenceMatters`). Touched on `queue` only.
+    private var knownOwners: Set<pid_t> = []
 
     init(log: @escaping (String) -> Void = { FeatureLog.append("menubarhider.log", $0) }) {
         self.log = log
@@ -173,11 +182,15 @@ final class AXBarReader: BarReading {
             noBar.sync(running: Set(apps.map(\.pid)), now: Date())
             let asked = apps.filter { !noBar.skips($0.pid) }
             let results = Self.scan(apps: asked)
+            knownOwners.formIntersection(Set(apps.map(\.pid)))
             for (app, result) in zip(asked, results) {
                 if case .nothingThere = result { noBar.record(pid: app.pid, bundleID: app.bundleID, answer: .nothingThere) }
+                if case .items(let found) = result, !found.isEmpty { knownOwners.insert(app.pid) }
             }
-            let found = Self.combine(results)
-            noteFailure(apps: asked, results: results)
+            let owners = knownOwners, me = getpid()
+            let matters = asked.map { Self.silenceMatters(pid: $0.pid, bundleID: $0.bundleID, knownOwners: owners, ownPID: me) }
+            let found = Self.combine(results, silenceMatters: matters)
+            noteFailure(apps: asked, results: results, silenceMatters: matters)
             DispatchQueue.main.async {
                 deadline.cancel()
                 _ = once.complete(found?.map(\.item))
@@ -197,7 +210,7 @@ final class AXBarReader: BarReading {
         }
         let entry = (bundleID: app.bundleIdentifier, name: app.localizedName ?? "?", pid: pid)
         pressQueue.async {
-            guard let found = Self.combine(Self.scan(apps: [entry])) else {
+            guard let found = Self.combine(Self.scan(apps: [entry]), silenceMatters: [true]) else {
                 log("press: \(item.key) not pressed, its app could not be read")
                 return
             }
@@ -210,9 +223,15 @@ final class AXBarReader: BarReading {
     }
 
     /// Writes down which app failed a read, and how, when that is not what was written down last.
-    private func noteFailure(apps: [App], results: [AppScan]) {
-        guard let i = results.firstIndex(where: { if case .failed = $0 { return true } else { return false } }),
-              case .failed(let why) = results[i] else { lastFailure = nil; return }
+    private func noteFailure(apps: [App], results: [AppScan], silenceMatters: [Bool]) {
+        func why(_ i: Int) -> String? {
+            switch results[i] {
+            case .failed(let why): return why
+            case .unanswered(let why): return silenceMatters[i] ? why : nil
+            default: return nil
+            }
+        }
+        guard let i = results.indices.first(where: { why($0) != nil }), let why = why(i) else { lastFailure = nil; return }
         let line = "read failed: \(apps[i].bundleID ?? apps[i].name) (pid \(apps[i].pid)): \(why)"
         guard line != lastFailure else { return }
         lastFailure = line
@@ -226,18 +245,22 @@ final class AXBarReader: BarReading {
         case items([Found])
         /// The app said it has no extras menu bar.
         case nothingThere
-        /// The app did not answer in a way that can be trusted; the text says where and how.
+        /// The app has an extras menu bar but did not answer for it in a way that can be trusted; the text says where and how.
         case failed(String)
+        /// The app did not answer whether it has an extras menu bar at all. Fails the read only when `silenceMatters`.
+        case unanswered(String)
     }
 
-    /// Every app's items in bar order, or nil when any app's could not be read in full.
-    private static func combine(_ results: [AppScan]) -> [Found]? {
+    /// Every app's items in bar order, or nil when any app's could not be read in full (or, for an app whose silence matters,
+    /// at all).
+    private static func combine(_ results: [AppScan], silenceMatters: [Bool]) -> [Found]? {
         var all: [Found] = []
-        for result in results {
+        for (i, result) in results.enumerated() {
             switch result {
             case .items(let found): all += found
             case .nothingThere: continue
             case .failed: return nil
+            case .unanswered: if silenceMatters[i] { return nil }
             }
         }
         return all.sorted { precedes($0.item, $1.item) }
@@ -263,7 +286,7 @@ final class AXBarReader: BarReading {
         case .bar(let found): bar = found
         // Most apps have no extras menu bar, and say so.
         case .nothingThere: return .nothingThere
-        case .failed: return .failed("extras menu bar: AXError \(status.rawValue)")
+        case .failed: return .unanswered("extras menu bar: AXError \(status.rawValue)")
         }
         AXUIElementSetMessagingTimeout(bar, perAppTimeout)
         var kidsValue: CFTypeRef?
