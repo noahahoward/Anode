@@ -64,6 +64,11 @@ final class MenuBarHiderControllerTests: XCTestCase {
     private var clock = Date(timeIntervalSince1970: 1_000_000)
     private var logged: [String] = []
     private var controller: MenuBarHiderController!
+    /// Short gaps (under 0.9 s) run at once unless `deferGaps`; longer waits (the retry) are always held until `flushRetries()`.
+    private var deferGaps = false
+    private var held: [() -> Void] = []
+    private func flush() { while !held.isEmpty { held.removeFirst()() } }
+    private func step(_ n: Int = 1) { for _ in 0..<n where !held.isEmpty { held.removeFirst()() } }
 
     private func item(_ key: String, _ x: CGFloat, w: CGFloat = 40, pid: pid_t = 100, locked: Bool = false) -> BarItem {
         BarItem(key: key, bundleID: nil, appName: "A", title: key, frame: CGRect(x: x, y: 0, width: w, height: 37),
@@ -83,7 +88,10 @@ final class MenuBarHiderControllerTests: XCTestCase {
         reader.fallback = layout
         controller = MenuBarHiderController(settings: settings, reader: reader, covers: covers, pill: pill, chevron: chevron,
                                             widgets: widgets, environment: { [unowned self] in self.env },
-                                            now: { [unowned self] in self.clock }, ownPID: 777, log: { [unowned self] in self.logged.append($0) })
+                                            now: { [unowned self] in self.clock }, ownPID: 777, log: { [unowned self] in self.logged.append($0) },
+                                            schedule: { [unowned self] delay, work in
+                                                if self.deferGaps || delay >= 0.9 { self.held.append(work) } else { work() }
+                                            })
     }
 
     override func tearDownWithError() throws {
@@ -147,7 +155,7 @@ final class MenuBarHiderControllerTests: XCTestCase {
     func testLayoutChangedBetweenReadAndShowRereads() {
         turnOn()
         let reads = reader.reads
-        XCTAssertEqual(reads, 2, "two agreeing reads before anything is covered")
+        XCTAssertGreaterThanOrEqual(reads, 2, "two agreeing reads before anything is covered")
         var moved = layout; moved[0].frame.origin.x = 1000; moved[1].frame.origin.x = 1046
         reader.queue = [moved, moved]
         controller.layoutMayHaveChanged()
@@ -158,6 +166,7 @@ final class MenuBarHiderControllerTests: XCTestCase {
         reader.queue = [other, moved]
         controller.layoutMayHaveChanged()
         XCTAssertEqual(covers.rects, [])
+        XCTAssertFalse(held.isEmpty, "an unstable layout is retried later, not left uncovered for ever")
     }
 
     func testTogglePillShowsHiddenItemsInOrder() {
@@ -275,6 +284,85 @@ final class MenuBarHiderControllerTests: XCTestCase {
         XCTAssertFalse(controller.isPillOpen)
         controller.dismissPill()   // already closed: nothing happens
         XCTAssertFalse(pill.isShowing)
+    }
+
+    // ── Review fixes ────────────────────────────────────────────────────────
+
+    /// C1: Anode's own items that stay on the bar (its chevron, pinned widgets) split a run of hidden items; they are never
+    /// covered, and no cover reaches over them.
+    func testChevronBetweenHiddenItemsSplitsTheCover() {
+        let chevronFrame = CGRect(x: 1200, y: 0, width: 30, height: 37)
+        reader.fallback = [item("a|One", 1100), item("dev.anode.app|AnodeHiderChevron", 1200, w: 30, pid: 777), item("b|Two", 1240),
+                           item("cc|Wi-Fi", 1507), item("cc|Sound", 1550), item("cc|Battery", 1600)]
+        turnOn()
+        XCTAssertEqual(covers.rects.count, 2)
+        for r in covers.rects { XCTAssertFalse(r.intersects(chevronFrame), "a cover reaches over the chevron: \(r)") }
+    }
+
+    /// C2: folding Anode's widgets moves everything; nothing is covered from the read taken before it.
+    func testFoldingTheWidgetsRemovesCoversUntilTheBarHasBeenReReadAfterIt() {
+        deferGaps = true
+        settings.menuBarHiderEnabled = true
+        controller.reevaluate()
+        step(3)       // the chevron's first-read delay, the first read, the gap, the confirming read
+        XCTAssertEqual(widgets.folded, ["cpuUsage", "memoryUsage"])
+        XCTAssertEqual(covers.rects, [], "the read was taken before the widgets left the bar")
+        XCTAssertFalse(held.isEmpty, "the bar is read again after the fold")
+        flush()
+        XCTAssertFalse(covers.rects.isEmpty, "after the re-read of the new layout the covers go up")
+    }
+
+    /// I1: the moment a read disagrees with the layout the covers were drawn for, the covers come down; they do not wait for the
+    /// confirming read.
+    func testDisagreementRemovesCoversBeforeTheSecondRead() {
+        turnOn()
+        XCTAssertFalse(covers.rects.isEmpty)
+        deferGaps = true
+        var moved = layout; moved[0].frame.origin.x = 1000
+        reader.queue = [moved]
+        controller.layoutMayHaveChanged()
+        XCTAssertEqual(covers.rects, [], "down at once")
+        XCTAssertFalse(held.isEmpty, "and the confirming read is waiting its turn")
+    }
+
+    func testUnstableLayoutIsRetriedLater() {
+        turnOn()
+        var moved = layout; moved[0].frame.origin.x = 1000
+        var other = moved; other[0].frame.origin.x = 900
+        reader.queue = [other, moved]
+        controller.layoutMayHaveChanged()
+        XCTAssertEqual(covers.rects, [])
+        reader.fallback = moved
+        flush()
+        XCTAssertFalse(covers.rects.isEmpty)
+    }
+
+    func testInvalidateRemovesCoversAtOnce() {
+        turnOn()
+        XCTAssertFalse(covers.rects.isEmpty)
+        controller.invalidateCovers()
+        XCTAssertEqual(covers.rects, [])
+    }
+
+    /// I4: a first read without the system's items must not store an arrangement that would hide nothing it should keep.
+    func testNoDefaultArrangementIsStoredFromAReadWithoutSystemItems() {
+        reader.fallback = [item("op|1Password", 1114), item("wg|WireGuard", 1160)]
+        turnOn()
+        XCTAssertNil(settings.menuBarHiderArrangement)
+    }
+
+    /// I5: a passing refusal must not leave the folded widgets without a route.
+    func testThePillStillOpensWhileTheBarIsUnreadable() {
+        turnOn()
+        reader.fallback = nil
+        controller.layoutMayHaveChanged()
+        XCTAssertEqual(controller.decision, .standDown(.layoutUnreadable))
+        XCTAssertTrue(controller.canTogglePill)
+        controller.togglePill()
+        XCTAssertTrue(pill.isShowing)
+        XCTAssertTrue((pill.shown.last ?? []).contains(MenuBarWidgetController.key(forMetricID: "cpuUsage")))
+        env.fullScreen = true; controller.reevaluate()
+        XCTAssertFalse(controller.canTogglePill)
     }
 
     func testChevronTogglesThePill() {

@@ -4,7 +4,7 @@ import PowerKit
 // ── The covers (Menu Bar Hider) ─────────────────────────────────────────────
 //
 // One borderless black panel per run of hidden items. The recipe is the one verified over a fullscreen game (`GameHUDWindow`):
-// a non-activating `NSPanel` that does not hide when Anode is inactive, `.screenSaver` level, joins every Space. Unlike the
+// a non-activating `NSPanel` that does not hide when Anode is inactive, `.screenSaver` level, joins every Space (but not a full-screen app's). Unlike the
 // Game Mode strip it does NOT ignore the mouse: a click on a cover is swallowed, so it cannot reach an icon underneath.
 // Measured 2026-11-10: a black panel at this level over x 1108-1504 hid Anode's widgets and their neighbours seamlessly, and
 // 2026-11-11: the owner's bar is solid black, so black matches it exactly.
@@ -12,6 +12,9 @@ import PowerKit
 final class BarCoverWindows: CoverPresenting {
 
     static let fill = NSColor.black
+    /// Every Space but a full-screen app's: a cover must never be drawn over a full-screen app, which has no menu bar to hide
+    /// things in, so `fullScreenAuxiliary` (what lets the Game Mode strip appear there) is deliberately absent.
+    static let collectionBehavior: NSWindow.CollectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle]
 
     private var panels: [NSPanel] = []
     private(set) var rects: [CGRect] = []
@@ -45,7 +48,7 @@ final class BarCoverWindows: CoverPresenting {
                         styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
         p.hidesOnDeactivate = false
         p.level = .screenSaver
-        p.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
+        p.collectionBehavior = Self.collectionBehavior
         p.isOpaque = true
         p.backgroundColor = Self.fill
         p.hasShadow = false

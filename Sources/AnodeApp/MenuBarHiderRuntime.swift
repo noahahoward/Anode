@@ -25,10 +25,11 @@ final class MenuBarHiderRuntime {
 
     init(settings: Settings = .shared, reader: BarReading, covers: CoverPresenting, pill: PillPresenting,
          chevron: ChevronPresenting, widgets: WidgetFolding,
-         makeEvents: (@escaping (_ displayChanged: Bool) -> Void) -> BarEventing,
+         makeEvents: (@escaping (_ displayChanged: Bool) -> Void, @escaping () -> Void) -> BarEventing,
          environment: @escaping (_ secondsSinceDisplayChange: TimeInterval) -> HiderEnvironment,
          registerShortcut: @escaping (@escaping () -> Void) -> Void, unregisterShortcut: @escaping () -> Void,
-         openBetaFeatures: @escaping () -> Void, pillTick: @escaping () -> Void) {
+         openBetaFeatures: @escaping () -> Void, pillTick: @escaping () -> Void,
+         schedule: ((TimeInterval, @escaping () -> Void) -> Void)? = nil) {
         self.settings = settings
         self.registerShortcut = registerShortcut
         self.unregisterShortcut = unregisterShortcut
@@ -39,8 +40,10 @@ final class MenuBarHiderRuntime {
         let box = Box()
         controller = MenuBarHiderController(
             settings: settings, reader: reader, covers: covers, pill: pill, chevron: chevron, widgets: widgets,
-            environment: { environment(Date().timeIntervalSince(box.runtime?.lastDisplayChange ?? .distantPast)) })
-        events = makeEvents { [weak box] displayChanged in box?.runtime?.eventFired(displayChanged: displayChanged) }
+            environment: { environment(Date().timeIntervalSince(box.runtime?.lastDisplayChange ?? .distantPast)) },
+            schedule: schedule ?? { delay, work in DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work) })
+        events = makeEvents({ [weak box] displayChanged in box?.runtime?.eventFired(displayChanged: displayChanged) },
+                            { [weak box] in box?.runtime?.controller.invalidateCovers() })
         box.runtime = self
 
         (chevron as? BarChevron)?.menuProvider = { [weak self] in
@@ -66,7 +69,7 @@ final class MenuBarHiderRuntime {
         pill.anodeImage = { [weak widgets] in widgets?.pillImage(forMetricID: $0) }
         let runtime = MenuBarHiderRuntime(
             reader: AXBarReader(), covers: BarCoverWindows(), pill: pill, chevron: BarChevron(), widgets: widgets,
-            makeEvents: { onChange in BarEvents(onChange: onChange) },
+            makeEvents: { onChange, onInvalidate in BarEvents(onChange: onChange, onInvalidate: onInvalidate) },
             environment: Self.liveEnvironment,
             registerShortcut: { fire in
                 KeybindCenter.shared.register(owner: "menuBarHider", commands: ShortcutCommands.hider) { _ in fire() }
@@ -124,6 +127,8 @@ final class MenuBarHiderRuntime {
 
     private func widgetsRebuilt() {
         guard !finished, settings.menuBarHiderEnabled else { return }
+        // The bar is about to be laid out afresh: whatever is covered now was drawn for the layout before the rebuild.
+        controller.invalidateCovers()
         rebuildWork?.cancel()
         let work = DispatchWorkItem { [weak self] in
             guard let self, !self.finished else { return }
@@ -134,10 +139,10 @@ final class MenuBarHiderRuntime {
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.0, execute: work)
     }
 
-    /// The decision or the pill changed: the shortcut is listened for only while collapsed, the timer runs only while the
+    /// The decision or the pill changed: the shortcut is listened for only while the pill can be opened, the timer runs only while the
     /// pill is open, and a "settling" refusal is retried when the settle window has passed.
     private func controllerChanged() {
-        if controller.isCollapsed && !finished {
+        if controller.canTogglePill && !finished {
             if !shortcutRegistered {
                 shortcutRegistered = true
                 registerShortcut { [weak self] in self?.controller.togglePill() }

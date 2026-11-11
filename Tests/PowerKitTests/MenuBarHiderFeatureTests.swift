@@ -87,7 +87,7 @@ final class MenuBarHiderFeatureTests: XCTestCase {
             widgets: Fakes.FakeWidgets(),
             environment: { HiderEnvironment(trusted: true, fullScreen: false, secondsSinceChange: 60,
                                             screen: CGRect(x: 0, y: 0, width: 1800, height: 1169), notch: nil, menuBarHeight: 37) },
-            ownPID: 777, log: { _ in })
+            ownPID: 777, log: { _ in }, schedule: { delay, work in if delay < 0.9 { work() } })
         defer { controller.shutdown() }
         controller.reevaluate()
         let feature = MenuBarHiderFeature(settings: settings, items: { controller.allItems }, accessibilityAllowed: { true },

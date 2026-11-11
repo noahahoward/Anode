@@ -22,4 +22,10 @@ final class BarCoverWindowsTests: XCTestCase {
     func testCoverIsBlack() {
         XCTAssertEqual(BarCoverWindows.fill, NSColor.black)
     }
+
+    /// Never over a full-screen app's Space: the covers must not carry `fullScreenAuxiliary`.
+    func testCoversDoNotJoinFullScreenSpaces() {
+        XCTAssertFalse(BarCoverWindows.collectionBehavior.contains(.fullScreenAuxiliary))
+        XCTAssertTrue(BarCoverWindows.collectionBehavior.contains(.canJoinAllSpaces))
+    }
 }

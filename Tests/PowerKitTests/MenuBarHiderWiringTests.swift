@@ -11,6 +11,7 @@ final class MenuBarHiderWiringTests: XCTestCase {
 
     final class FakeEvents: BarEventing {
         var isRunning = false
+        var invalidate: (() -> Void)?
         func start() { isRunning = true }
         func stop() { isRunning = false }
     }
@@ -39,12 +40,13 @@ final class MenuBarHiderWiringTests: XCTestCase {
         let shortcut = Shortcut()
         let runtime = MenuBarHiderRuntime(
             settings: settings, reader: reader, covers: covers, pill: pill, chevron: chevron, widgets: Fakes.FakeWidgets(),
-            makeEvents: { _ in events },
+            makeEvents: { _, invalidate in events.invalidate = invalidate; return events },
             environment: { _ in HiderEnvironment(trusted: true, fullScreen: false, secondsSinceChange: 60,
                                                  screen: CGRect(x: 0, y: 0, width: 1800, height: 1169), notch: nil, menuBarHeight: 37) },
             registerShortcut: { fire in shortcut.registered = true; shortcut.fire = fire },
             unregisterShortcut: { shortcut.registered = false; shortcut.fire = nil },
-            openBetaFeatures: {}, pillTick: {})
+            openBetaFeatures: {}, pillTick: {},
+            schedule: { delay, work in if delay < 0.9 { work() } })   // gaps run at once; a retry is simply not made
         return Rig(runtime: runtime, settings: settings, reader: reader, covers: covers, pill: pill, chevron: chevron,
                    events: events, defaults: defaults, suite: suite, shortcut: shortcut)
     }
@@ -86,6 +88,24 @@ final class MenuBarHiderWiringTests: XCTestCase {
         XCTAssertTrue(r.runtime.isTimerRunning)
         r.chevron.onToggle?()
         XCTAssertFalse(r.runtime.isTimerRunning)
+    }
+
+    /// A Space or screen change takes the covers down at once; the debounced re-read puts them back.
+    func testADisplayChangeTakesTheCoversDownAtOnce() throws {
+        let r = try rig(); defer { done(r) }
+        r.settings.menuBarHiderEnabled = true
+        XCTAssertFalse(r.covers.rects.isEmpty)
+        r.events.invalidate?()
+        XCTAssertEqual(r.covers.rects, [])
+    }
+
+    func testTheShortcutStaysWhileTheBarIsUnreadable() throws {
+        let r = try rig(); defer { done(r) }
+        r.settings.menuBarHiderEnabled = true
+        XCTAssertTrue(r.shortcut.registered)
+        r.reader.fallback = nil
+        r.runtime.controller.layoutMayHaveChanged()
+        XCTAssertTrue(r.shortcut.registered, "the folded widgets still have a route")
     }
 
     func testAChangedArrangementReevaluates() throws {

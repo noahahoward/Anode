@@ -24,6 +24,8 @@ final class AXBarReader: BarReading {
         var description: String?
         var frame: CGRect
         var hasPress: Bool
+        /// A position, size or identifier that should have been there could not be read.
+        var readFailed = false
     }
 
     private struct Found {
@@ -32,6 +34,9 @@ final class AXBarReader: BarReading {
     }
 
     private let queue = DispatchQueue(label: "dev.anode.barreader", qos: .userInitiated)
+    private let pressQueue = DispatchQueue(label: "dev.anode.barreader.press", qos: .userInteractive)
+    /// The owners of the system's own items: when THEIR read fails the read as a whole has failed.
+    private static let systemOwners: Set<String> = ["com.apple.MenuBarAgent", "com.apple.controlcenter"]
     /// The longest a whole read may take. Past it the bar is "unreadable" and nothing stays covered on the strength of it.
     static let budget: TimeInterval = 1.5
     static let perAppTimeout: Float = 0.4
@@ -40,9 +45,21 @@ final class AXBarReader: BarReading {
 
     /// The items of one app, left to right. The ordinal in each key counts among the items sharing a name (or among the
     /// unnamed ones), so one app's two items called the same, or with no name at all, still get different keys.
+    /// The indices of `children` left to right. Ties (parked items stack at the same x) keep their original order, so this is
+    /// the one ordering that keys and elements are both put in.
+    static func order(of children: [Child]) -> [Int] {
+        children.indices.sorted { a, b in
+            children[a].frame.minX != children[b].frame.minX ? children[a].frame.minX < children[b].frame.minX : a < b
+        }
+    }
+
+    /// False when any item could not be read in full. The whole read then fails: an item left out of it would not split a run
+    /// of hidden ones, and a cover would be drawn over it.
+    static func isComplete(_ children: [Child]) -> Bool { !children.contains { $0.readFailed } }
+
     static func parse(app: (bundleID: String?, name: String, pid: pid_t), children: [Child]) -> [BarItem] {
         var seen: [String: Int] = [:]
-        return children.sorted { $0.frame.minX < $1.frame.minX }.map { c in
+        return order(of: children).map { children[$0] }.map { c in
             func clean(_ s: String?) -> String? {
                 guard let t = s?.trimmingCharacters(in: .whitespacesAndNewlines), !t.isEmpty else { return nil }
                 return t
@@ -64,43 +81,62 @@ final class AXBarReader: BarReading {
         guard AXIsProcessTrusted() else { DispatchQueue.main.async { completion(nil) }; return }
         // The app list is read here, on the main thread; the accessibility work happens on the queue.
         let apps = NSWorkspace.shared.runningApplications.map { (bundleID: $0.bundleIdentifier, name: $0.localizedName ?? "?", pid: $0.processIdentifier) }
+        // The deadline is kept on THIS side: a scan stuck on a hung app cannot be cut short, but its answer can be refused.
+        let once = OnceCompletion(completion)
+        let deadline = DispatchWorkItem { _ = once.complete(nil) }
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.budget, execute: deadline)
         queue.async {
-            let started = Date()
             let found = Self.scan(apps: apps)
-            let ok = Date().timeIntervalSince(started) <= Self.budget
-            DispatchQueue.main.async { completion(ok ? found.map(\.item) : nil) }
+            DispatchQueue.main.async {
+                deadline.cancel()
+                _ = once.complete(found?.map(\.item))
+            }
         }
     }
 
-    /// `AXPress` on the item. The target is found again by process and key, since an element does not outlive a read.
+    /// `AXPress` on the item. The target is found again by process and key, since an element does not outlive a read. On a
+    /// queue of its own: a click must not wait behind a slow read.
     func press(_ item: BarItem) {
         guard AXIsProcessTrusted(), let pid = item.pid,
               let app = NSRunningApplication(processIdentifier: pid) else { return }
         let entry = (bundleID: app.bundleIdentifier, name: app.localizedName ?? "?", pid: pid)
-        queue.async {
-            guard let hit = Self.scan(apps: [entry]).first(where: { $0.item.key == item.key }) else { return }
+        pressQueue.async {
+            guard let hit = Self.scan(apps: [entry])?.first(where: { $0.item.key == item.key }) else { return }
             _ = AXUIElementPerformAction(hit.press, kAXPressAction as CFString)
         }
     }
 
     // ── Accessibility ───────────────────────────────────────────────────────
 
-    private static func scan(apps: [(bundleID: String?, name: String, pid: pid_t)]) -> [Found] {
+    /// nil when the bar could not be read in full.
+    private static func scan(apps: [(bundleID: String?, name: String, pid: pid_t)]) -> [Found]? {
         let lock = NSLock()
         var all: [Found] = []
+        var failed = false
         DispatchQueue.concurrentPerform(iterations: apps.count) { i in
-            let found = scan(app: apps[i])
+            guard let found = scan(app: apps[i]) else {
+                lock.lock(); failed = true; lock.unlock()
+                return
+            }
             guard !found.isEmpty else { return }
             lock.lock(); all += found; lock.unlock()
         }
-        return all
+        return failed ? nil : all
     }
 
-    private static func scan(app: (bundleID: String?, name: String, pid: pid_t)) -> [Found] {
+    private static func scan(app: (bundleID: String?, name: String, pid: pid_t)) -> [Found]? {
         let root = AXUIElementCreateApplication(app.pid)
         AXUIElementSetMessagingTimeout(root, perAppTimeout)
-        guard let bar = attribute(root, "AXExtrasMenuBar"),
-              let kids = attribute(bar as! AXUIElement, kAXChildrenAttribute) as? [AXUIElement], !kids.isEmpty else { return [] }
+        var barValue: CFTypeRef?
+        let status = AXUIElementCopyAttributeValue(root, "AXExtrasMenuBar" as CFString, &barValue)
+        guard status == .success, let bar = barValue else {
+            // Most apps have no extras menu bar, and say so. The system's own items are the exception: an error there is a read
+            // that failed, not an app with nothing to show.
+            let none = status == .noValue || status == .attributeUnsupported || status == .notImplemented
+            return none || !(app.bundleID.map(systemOwners.contains) ?? false) ? [] : nil
+        }
+        AXUIElementSetMessagingTimeout(bar as! AXUIElement, perAppTimeout)
+        guard let kids = attribute(bar as! AXUIElement, kAXChildrenAttribute) as? [AXUIElement], !kids.isEmpty else { return [] }
 
         var children: [Child] = []
         var targets: [AXUIElement] = []
@@ -111,14 +147,19 @@ final class AXBarReader: BarReading {
             if let inner { AXUIElementSetMessagingTimeout(inner, perAppTimeout) }
             let outerPress = hasPress(kid)
             let innerPress = inner.map(hasPress) ?? false
-            children.append(Child(identifier: string(kid, kAXIdentifierAttribute) ?? inner.flatMap { string($0, kAXIdentifierAttribute) },
+            let (box, framed) = frame(of: kid)
+            let hosting = string(kid, kAXSubroleAttribute) == "AXHostingView"
+            let identifier = string(kid, kAXIdentifierAttribute) ?? inner.flatMap { string($0, kAXIdentifierAttribute) }
+            children.append(Child(identifier: identifier,
                                   title: string(kid, kAXTitleAttribute),
                                   description: string(kid, kAXDescriptionAttribute) ?? inner.flatMap { string($0, kAXDescriptionAttribute) },
-                                  frame: frame(of: kid), hasPress: outerPress || innerPress))
+                                  frame: box, hasPress: outerPress || innerPress,
+                                  readFailed: !framed || (hosting && identifier == nil)))
             targets.append(outerPress ? kid : (innerPress ? inner! : kid))
         }
-        // `parse` sorts left to right; keep each element with its child through the same order.
-        let order = children.indices.sorted { children[$0].frame.minX < children[$1].frame.minX }
+        guard isComplete(children) else { return nil }
+        // Keys and elements are put in the same order, by the same function.
+        let order = Self.order(of: children)
         let items = parse(app: app, children: children)
         return zip(items, order).map { Found(item: $0.0, press: targets[$0.1]) }
     }
@@ -136,11 +177,28 @@ final class AXBarReader: BarReading {
         return (actions as? [String])?.contains(kAXPressAction as String) ?? false
     }
 
-    private static func frame(of e: AXUIElement) -> CGRect {
+    /// The frame, and whether both the position and the size could be read.
+    private static func frame(of e: AXUIElement) -> (CGRect, Bool) {
         var p = CGPoint.zero, s = CGSize.zero
-        if let pv = attribute(e, kAXPositionAttribute) { AXValueGetValue(pv as! AXValue, .cgPoint, &p) }
-        if let sv = attribute(e, kAXSizeAttribute) { AXValueGetValue(sv as! AXValue, .cgSize, &s) }
-        return CGRect(origin: p, size: s)
+        var ok = true
+        if let pv = attribute(e, kAXPositionAttribute) { ok = ok && AXValueGetValue(pv as! AXValue, .cgPoint, &p) } else { ok = false }
+        if let sv = attribute(e, kAXSizeAttribute) { ok = ok && AXValueGetValue(sv as! AXValue, .cgSize, &s) } else { ok = false }
+        return (CGRect(origin: p, size: s), ok)
+    }
+}
+
+/// Delivers a result once. The read's deadline and its late answer race; whichever is second is dropped.
+final class OnceCompletion {
+    private let deliver: ([BarItem]?) -> Void
+    private var done = false
+    init(_ deliver: @escaping ([BarItem]?) -> Void) { self.deliver = deliver }
+    /// True if this call was the one delivered.
+    @discardableResult
+    func complete(_ result: [BarItem]?) -> Bool {
+        guard !done else { return false }
+        done = true
+        deliver(result)
+        return true
     }
 }
 
@@ -159,6 +217,9 @@ protocol BarEventing: AnyObject {
 final class BarEvents: BarEventing {
 
     private let onChange: (_ displayChanged: Bool) -> Void
+    /// Called AT ONCE (not debounced) when the display changes, so covers drawn for the old layout come down before anything is
+    /// read again.
+    private let onInvalidate: () -> Void
     private let fallbackSeconds: TimeInterval
     private var tokens: [(NotificationCenter, NSObjectProtocol)] = []
     private var timer: Timer?
@@ -166,7 +227,9 @@ final class BarEvents: BarEventing {
     private var pendingScreenChange = false
     private(set) var isRunning = false
 
-    init(fallbackSeconds: TimeInterval = 30, onChange: @escaping (_ displayChanged: Bool) -> Void) {
+    init(fallbackSeconds: TimeInterval = 30, onChange: @escaping (_ displayChanged: Bool) -> Void,
+         onInvalidate: @escaping () -> Void = {}) {
+        self.onInvalidate = onInvalidate
         self.fallbackSeconds = fallbackSeconds
         self.onChange = onChange
     }
@@ -201,6 +264,7 @@ final class BarEvents: BarEventing {
     }
 
     private func fire(screen: Bool) {
+        if screen { onInvalidate() }
         pendingScreenChange = pendingScreenChange || screen
         pending?.cancel()
         let work = DispatchWorkItem { [weak self] in

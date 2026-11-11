@@ -78,6 +78,14 @@ final class MenuBarHiderController {
     private let now: () -> Date
     private let ownPID: pid_t
     private let log: (String) -> Void
+    private let schedule: (TimeInterval, @escaping () -> Void) -> Void
+
+    /// Between the two reads that must agree, and before the first read after the chevron appears: AppKit and macOS lay the
+    /// bar out a moment after anything changes it, so two reads back to back can both see the old layout.
+    static let readGap: TimeInterval = 0.4
+    /// Before a layout that would not hold still is read again.
+    static let retryDelay: TimeInterval = 1.0
+    static let maxRetries = 3
 
     private(set) var decision: HiderDecision = .standDown(.disabled)
     var isCollapsed: Bool { decision == .collapsed }
@@ -94,10 +102,17 @@ final class MenuBarHiderController {
     private var confirmed: [BarItem]?
     private var generation = 0
     private var lastLogged: String?
+    /// The widgets the last pass folded: a change moves everything on the bar, so nothing is covered from the read before it.
+    private var appliedFolded: Set<String> = []
+    private var chevronOn = false
+    private var retries = 0
 
     init(settings: Settings, reader: BarReading, covers: CoverPresenting, pill: PillPresenting, chevron: ChevronPresenting,
          widgets: WidgetFolding, environment: @escaping () -> HiderEnvironment, now: @escaping () -> Date = Date.init,
-         ownPID: pid_t = getpid(), log: @escaping (String) -> Void = { FeatureLog.append("menubarhider.log", $0) }) {
+         ownPID: pid_t = getpid(), log: @escaping (String) -> Void = { FeatureLog.append("menubarhider.log", $0) },
+         schedule: @escaping (TimeInterval, @escaping () -> Void) -> Void = { delay, work in
+             DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
+         }) {
         self.settings = settings
         self.reader = reader
         self.covers = covers
@@ -108,6 +123,7 @@ final class MenuBarHiderController {
         self.now = now
         self.ownPID = ownPID
         self.log = log
+        self.schedule = schedule
         chevron.onToggle = { [weak self] in self?.togglePill() }
     }
 
@@ -123,9 +139,28 @@ final class MenuBarHiderController {
         if case .standDown(let why) = pre {
             standDown(why)
         } else {
+            let fresh = !chevronOn
+            chevronOn = true
             chevron.install()
-            startRead(attempt: 0, previous: confirmed)
+            if fresh {
+                let gen = generation
+                schedule(Self.readGap + 0.1) { [weak self] in
+                    guard let self, gen == self.generation else { return }
+                    self.startRead(attempt: 0, previous: self.confirmed)
+                }
+            } else {
+                startRead(attempt: 0, previous: confirmed)
+            }
         }
+    }
+
+    /// The display or the bar is changing under the covers: take them down now, and trust nothing read before this. The
+    /// re-read that follows (the caller's) puts them back if there is still something to cover.
+    func invalidateCovers() {
+        guard settings.menuBarHiderEnabled else { return }
+        generation += 1
+        confirmed = nil
+        if !covers.rects.isEmpty { covers.removeAll() }
     }
 
     /// Something that moves the bar happened (an app started or quit, a Space or screen change, Anode's own widgets were
@@ -135,8 +170,17 @@ final class MenuBarHiderController {
         reevaluate()
     }
 
+    /// The pill can be opened while the bar is collapsed, and also while it is only briefly unreadable or settling: Anode's
+    /// folded widgets would otherwise have no route. Never in full screen, nor when the hider is off or has nothing to show.
+    var canTogglePill: Bool {
+        switch decision {
+        case .collapsed, .standDown(.layoutUnreadable), .standDown(.settling): return true
+        case .standDown: return false
+        }
+    }
+
     func togglePill() {
-        guard isCollapsed else { return }
+        guard canTogglePill else { return }
         pillState.toggle(now: now(), autoClose: settings.menuBarHiderAutoCloseSeconds)
         syncPill()
         onChange?()
@@ -164,6 +208,8 @@ final class MenuBarHiderController {
         chevron.remove()
         widgets.setFolded([])
         confirmed = nil
+        chevronOn = false
+        appliedFolded = []
         decision = .standDown(.disabled)
     }
 
@@ -178,13 +224,29 @@ final class MenuBarHiderController {
             guard let self, gen == self.generation else { return }
             guard let result else { self.standDown(.layoutUnreadable); return }
             if let previous, Self.sameLayout(previous, result) {
+                self.retries = 0
                 self.apply(result)
             } else if attempt == 0 {
-                self.startRead(attempt: 1, previous: result)
+                // The layout is not the one the covers were drawn for: they come down now, not after the confirming read.
+                self.covers.removeAll()
+                self.schedule(Self.readGap) { [weak self] in
+                    guard let self, gen == self.generation else { return }
+                    self.startRead(attempt: 1, previous: result)
+                }
             } else {
                 self.covers.removeAll()
                 self.note("layout still moving; no cover")
+                self.scheduleRetry(gen)
             }
+        }
+    }
+
+    private func scheduleRetry(_ gen: Int) {
+        guard retries < Self.maxRetries else { return }
+        retries += 1
+        schedule(Self.retryDelay) { [weak self] in
+            guard let self, gen == self.generation else { return }
+            self.reevaluate()
         }
     }
 
@@ -206,53 +268,91 @@ final class MenuBarHiderController {
                                          itemsOnThisScreen: read.contains { $0.isOnBar(screens: [env.screen]) })
         if case .standDown(let why) = verdict { standDown(why); return }
 
-        // Anode's own status items (pinned widgets, the chevron) stay on the bar and are never covered; its folded widgets
-        // are listed separately, below, from the widget controller.
+        // Other apps' items are what can be hidden. Anode's own items on the bar (its chevron, widgets it keeps there) stay: they
+        // are given to the planner as locked, so a run of hidden items is split around them and no cover reaches over them.
+        // Its folded widgets are listed separately, below, from the widget controller.
         let others = read.filter { $0.pid != ownPID }
-        let own = widgets.widgetKeys.map {
-            BarItem(key: $0.key, bundleID: "dev.anode.app", appName: "Anode", title: $0.title, frame: .zero,
-                    isLocked: false, hasPress: false, pid: nil)
+        let ownOnBar: [BarItem] = read.filter { $0.pid == ownPID && $0.isOnBar(screens: [env.screen]) }.map { item in
+            var stays = item
+            stays.isLocked = true
+            return stays
         }
-        let all = others + own
+        let all = others + ownPseudoItems()
         let arrangement = settings.menuBarHiderArrangement ?? {
             let first = BarArrangement.defaultArrangement(for: all)
-            settings.menuBarHiderArrangement = first
+            // A read without the system's own items (battery, sound, Wi-Fi) is not a first arrangement worth keeping.
+            if !first.pinned.isEmpty { settings.menuBarHiderArrangement = first }
             return first
         }()
 
         let foldedIDs = Set(widgets.widgetKeys.filter { arrangement.group(of: $0.key, items: all) == .behindChevron }.map(\.metricID))
-        widgets.setFolded(foldedIDs)
+        items = arrangement.pillItems(from: all)
+        allItems = all
+        if foldedIDs != appliedFolded {
+            // Folding or unfolding moves everything on the bar. Nothing is covered from the read taken before it: the covers
+            // come down and the bar is read again once macOS has laid it out.
+            appliedFolded = foldedIDs
+            widgets.setFolded(foldedIDs)
+            covers.removeAll()
+            confirmed = nil
+            decision = .collapsed
+            let gen = generation
+            schedule(Self.readGap + 0.1) { [weak self] in
+                guard let self, gen == self.generation else { return }
+                self.startRead(attempt: 0, previous: nil)
+            }
+            onChange?()
+            return
+        }
 
-        let rects = CoverPlanner.covers(items: others, arrangement: arrangement, screen: env.screen)
+        let rects = CoverPlanner.covers(items: others + ownOnBar, arrangement: arrangement, screen: env.screen)
         if rects != covers.rects {
             rects.isEmpty ? covers.removeAll() : covers.show(rects, on: env.screen)
         }
-        items = arrangement.pillItems(from: all)
-        allItems = all
         decision = .collapsed
         note("collapsed: \(rects.count) cover(s), \(items.count) behind the chevron")
         if pillState.isOpen { syncPill() }
         onChange?()
     }
 
+    /// Anode's own widgets, as items the owner can arrange (they have no place on the bar to read).
+    private func ownPseudoItems() -> [BarItem] {
+        widgets.widgetKeys.map {
+            BarItem(key: $0.key, bundleID: "dev.anode.app", appName: "Anode", title: $0.title, frame: .zero,
+                    isLocked: false, hasPress: false, pid: nil)
+        }
+    }
+
     private func standDown(_ why: HiderRefusal) {
         let changed = decision != .standDown(why)
         decision = .standDown(why)
         if !covers.rects.isEmpty { covers.removeAll() }
-        closePill()
+        let passing = why == .layoutUnreadable || why == .settling
+        if !passing { closePill() }
         if why == .disabled {
             generation += 1
             confirmed = nil
             allItems = []
             items = []
+            chevronOn = false
+            appliedFolded = []
             chevron.remove()
         } else {
+            chevronOn = true
             chevron.install()
+            if passing && items.isEmpty {
+                // Never read yet: Anode's own widgets are still known, and are what the pill can show.
+                let own = ownPseudoItems()
+                let arrangement = settings.menuBarHiderArrangement ?? BarArrangement.defaultArrangement(for: own)
+                items = arrangement.pillItems(from: own)
+            }
         }
         // Anode's widgets go back on the bar when the hider can do nothing for them. A passing refusal (full screen, a
         // moving layout, one failed read) leaves them folded: rebuilding the bar for a moment would only make it jump.
         switch why {
-        case .disabled, .noAccessibility, .itemsNotOnThisScreen: widgets.setFolded([])
+        case .disabled, .noAccessibility, .itemsNotOnThisScreen:
+            appliedFolded = []
+            widgets.setFolded([])
         case .layoutUnreadable, .fullScreen, .settling: break
         }
         note("stand down: \(why)")

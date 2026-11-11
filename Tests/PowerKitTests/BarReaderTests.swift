@@ -53,4 +53,31 @@ final class BarReaderTests: XCTestCase {
                                       children: [child(title: "", desc: "Keep Awake", x: 1067)])
         XCTAssertEqual(items[0].title, "Keep Awake")
     }
+
+    /// Two parked items sit at the same x. Their order must come out the same wherever it is worked out, or a key is paired
+    /// with the wrong element and a press hits the wrong item.
+    func testOrderKeepsTheOriginalOrderForTies() {
+        let kids = [child(x: 7), child(x: -1), child(x: 7), child(x: -1)]
+        XCTAssertEqual(AXBarReader.order(of: kids), [1, 3, 0, 2])
+    }
+
+    /// A position, size or identifier that could not be read means the app's items are not known; the whole read then fails
+    /// rather than leaving the item out and letting a cover span it.
+    func testAReadThatLostSomethingIsNotComplete() {
+        XCTAssertTrue(AXBarReader.isComplete([child(x: 1), child(x: 2)]))
+        var bad = child(x: 3)
+        bad.readFailed = true
+        XCTAssertFalse(AXBarReader.isComplete([child(x: 1), bad]))
+        XCTAssertTrue(AXBarReader.isComplete([]))
+    }
+
+    /// The read has a deadline on the main side; whichever of the deadline and the late result comes second is dropped.
+    func testOnlyTheFirstCompletionIsDelivered() {
+        var got: [[BarItem]?] = []
+        let once = OnceCompletion { got.append($0) }
+        XCTAssertTrue(once.complete(nil))
+        XCTAssertFalse(once.complete([]))
+        XCTAssertEqual(got.count, 1)
+        XCTAssertNil(got[0] as Any? as? [BarItem])
+    }
 }
