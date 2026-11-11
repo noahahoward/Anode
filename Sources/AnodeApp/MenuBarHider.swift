@@ -188,6 +188,12 @@ final class MenuBarHiderController {
         guard settings.menuBarHiderEnabled else { return }
         generation += 1
         confirmed = nil
+        takeCoversDown()
+        changed()
+    }
+
+    /// Takes the covers down, if any are up. The caller tells (`changed()`) once the rest of its state is set.
+    private func takeCoversDown() {
         if !covers.rects.isEmpty { covers.removeAll() }
     }
 
@@ -258,13 +264,15 @@ final class MenuBarHiderController {
                 self.apply(result)
             } else if attempt == 0 {
                 // The layout is not the one the covers were drawn for: they come down now, not after the confirming read.
-                self.covers.removeAll()
+                self.takeCoversDown()
+                self.changed()
                 self.schedule(Self.readGap) { [weak self] in
                     guard let self, gen == self.generation else { return }
                     self.startRead(attempt: 1, previous: result)
                 }
             } else {
-                self.covers.removeAll()
+                self.takeCoversDown()
+                self.changed()
                 self.note("layout still moving; no cover")
                 self.scheduleRetry(gen)
             }
@@ -397,7 +405,7 @@ final class MenuBarHiderController {
 
     private func standDown(_ why: HiderRefusal) {
         decision = .standDown(why)
-        if !covers.rects.isEmpty { covers.removeAll() }
+        takeCoversDown()
         let passing = why == .layoutUnreadable || why == .settling
         if !passing { closePill() }
         if why == .disabled {
