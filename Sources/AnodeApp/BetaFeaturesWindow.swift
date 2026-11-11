@@ -507,9 +507,14 @@ final class WindowSwitcherFeature: BetaFeature {
         settings.windowSwitcherTrigger = all[i]
     }
 
+    /// The button is shown only while the permission is refused (or granted but returning nothing), so there is
+    /// no good approval to lose by clearing a dead one first: Settings opened on a switch that is lit but
+    /// ignored, with nothing to press, was what the Neo's owner was left with.
     @objc private func openScreenRecording() {
-        ScreenRecordingAccess.request()
-        ScreenRecordingAccess.openSettings()
+        ApprovalRepair.reset(.screenRecording) {
+            ScreenRecordingAccess.request()
+            ScreenRecordingAccess.openSettings()
+        }
     }
 
     func refresh() {

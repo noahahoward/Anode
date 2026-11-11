@@ -182,6 +182,24 @@ codesign --force --sign - "$APP/Contents/MacOS/$HELPER" 2>/dev/null \
 SIGN_KEYCHAIN="$HOME/Library/Keychains/anode-signing.keychain-db"
 SIGN_NAME="Anode Local Signing"
 SIGNED_LOCAL=0
+
+# The identity is made here, on the first build on a machine, rather than left to be asked for.
+#
+# Left optional it was never made on the machines that needed it: a Mac that built from
+# source with install.sh or the in-app updater signed ad-hoc, every update was a new
+# signature, and macOS kept ignoring the approvals while System Settings showed them on.
+# Accessibility and Screen Recording read as refused with the switch lit, update after
+# update (measured on a MacBook Neo). The trade-off is the one stated in
+# make-signing-identity.sh. `./make-signing-identity.sh --remove` declines it for good (it
+# leaves a marker this checks); a failure to make it is not a failure to build.
+OPTOUT="$HOME/Library/Application Support/Anode/no-signing-identity"
+if [ "${ANODE_ADHOC:-0}" != "1" ] && [ ! -f "$SIGN_KEYCHAIN" ] && [ ! -f "$OPTOUT" ]; then
+  echo "  (making a local signing identity so macOS permissions survive updates;"
+  echo "   ./make-signing-identity.sh --remove undoes it and stops builds making it)"
+  if ! MADE="$(./make-signing-identity.sh 2>&1)"; then
+    echo "  (could not make it; signing ad-hoc. $(printf '%s' "$MADE" | tail -1))"
+  fi
+fi
 if [ "${ANODE_ADHOC:-0}" != "1" ] && [ -f "$SIGN_KEYCHAIN" ] \
    && security unlock-keychain -p "anode-local-signing" "$SIGN_KEYCHAIN" 2>/dev/null \
    && security find-identity -p codesigning "$SIGN_KEYCHAIN" 2>/dev/null | grep -q "$SIGN_NAME"; then

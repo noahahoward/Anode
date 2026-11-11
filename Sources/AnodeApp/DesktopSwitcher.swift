@@ -315,6 +315,7 @@ final class DesktopSwitcher {
         }
         if tap == nil {
             AccessibilityAccess.logDiagnosisOnce(for: "desktop switcher")
+            AccessibilityAccess.repairOncePerBuild()
             guard retryTimer == nil else { return }
             retryTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in self?.apply() }
         } else {
@@ -407,6 +408,7 @@ final class DesktopSwitcher {
         // The current desktop is first, so a quick tap lands on the one used before it.
         selection.start(count: desktops.count, current: 0, backward: backward)
         isActive = true
+        RunTrace.step("desktop switcher opened: \(desktops.count) desktops")
         showTimer?.invalidate()
         // Built just after the tap returns, shown after the same short delay as the window switcher.
         DispatchQueue.main.async { [weak self] in
@@ -433,9 +435,11 @@ final class DesktopSwitcher {
               let steps = SpaceCatalog.steps(from: current.id, to: chosen.id, in: list) else { return cancel() }
         // The slide starts from a picture of the screen, so the panel has to be off it BEFORE the first
         // key goes in; left up, it would ride along through the whole change.
+        RunTrace.step("desktop switcher: moving \(steps) step(s)")
         cancel { [weak self] in
             self?.recency.visit(chosen.id)
             SpaceCatalog.step(steps)
+            RunTrace.step("desktop switcher: back from the move")
         }
     }
 

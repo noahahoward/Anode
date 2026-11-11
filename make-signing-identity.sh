@@ -18,9 +18,15 @@
 #     keychain of its own: ~/Library/Keychains/anode-signing.keychain-db. Your
 #     login keychain is not touched and no trust settings are changed, so nothing
 #     here needs your password.
-#   - build-app.sh uses the identity when that keychain exists and signs ad-hoc
-#     when it does not, so a machine that never ran this still builds exactly as
-#     before. Release builds always sign ad-hoc.
+#   - build-app.sh runs this itself, once, on the first build on a machine, so an
+#     update never silently kills the approvals the last build was given: without
+#     it every update is a new signature and macOS keeps ignoring the old
+#     approval while System Settings still shows it switched on (measured on a
+#     MacBook Neo: AXIsProcessTrusted=false, signature=ad-hoc, switch on).
+#     If creating it fails the build signs ad-hoc as before. `--remove` also
+#     leaves a marker so no later build makes it again; running this script
+#     with no arguments takes the marker away. Release builds always sign
+#     ad-hoc (make-release.sh), whatever is here.
 #   - The certificate is trusted by nothing and proves nothing to anyone else.
 #
 # THE TRADE-OFF, STATED PLAINLY. An ad-hoc approval is pinned to one exact build,
@@ -38,7 +44,7 @@
 # If that matters more to you than re-approving a permission after each rebuild,
 # run `./make-signing-identity.sh --remove` and nothing else changes.
 #
-# To undo:  ./make-signing-identity.sh --remove
+# To undo:  ./make-signing-identity.sh --remove   (and builds stop making it)
 set -euo pipefail
 
 NAME="Anode Local Signing"
@@ -49,10 +55,18 @@ PASS="anode-local-signing"
 # writes a PKCS#12 format `security import` cannot read.
 SSL=/usr/bin/openssl
 
+# Written by --remove so that build-app.sh, which makes the identity by itself, does
+# not make it again behind the back of someone who said no.
+OPTOUT="$HOME/Library/Application Support/Anode/no-signing-identity"
+
 if [ "${1:-}" = "--remove" ]; then
   security delete-keychain "$KC" 2>/dev/null && echo "✓ removed $KC" || echo "nothing to remove"
+  mkdir -p "$(dirname "$OPTOUT")" && : > "$OPTOUT"
+  echo "  builds will sign ad-hoc and will not make it again; run this script with no arguments to turn it back on."
   exit 0
 fi
+# Asked for by name: whatever was said before, it is wanted now.
+rm -f "$OPTOUT"
 
 if [ -f "$KC" ] && security find-identity -p codesigning "$KC" 2>/dev/null | grep -q "$NAME"; then
   echo "✓ the signing identity already exists in $KC"

@@ -269,6 +269,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
     }
 
     func applicationDidFinishLaunching(_ note: Notification) {
+        RunTrace.launch()
         // Every accessibility call into another app waits for its answer, six seconds by default if the app
         // is busy (FaceTime during a call, a hung app). Half a second is plenty for one that is well, and
         // keeps a stuck one from holding this app for long. Set on the system-wide element, it is the default
@@ -2708,6 +2709,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
     /// runs until it matters. AppKit does not call this for a crash or a SIGKILL,
     /// which is exactly why the release cannot live only here.
     func applicationWillTerminate(_ note: Notification) {
+        RunTrace.cleanExit()
         fansPane.teardown()
         // Never leave the lid held open behind a quit app.
         keepAwake?.shutdown()

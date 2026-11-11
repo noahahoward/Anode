@@ -505,48 +505,27 @@ enum AccessibilityAccess {
         }
     }
 
-    /// Forget Anode's Accessibility approval and ask again.
-    ///
-    /// For the approval that System Settings shows as ON while `AXIsProcessTrusted` says no. macOS stores
-    /// an approval against the program's signature, and an ad-hoc signature (every build made on a Mac
-    /// without Anode's local signing identity) changes with every update. Switching the entry off and on
-    /// again only flips its flag and keeps the old signature; the entry has to be removed so the next
-    /// request writes a new one. `tccutil reset` removes it, and needs no password for one's own app.
+    /// Forget Anode's Accessibility approval and ask again: the button for an approval that is switched on
+    /// in System Settings while `AXIsProcessTrusted` says no (see `ApprovalRepair` for why).
     static func resetAndAsk() {
-        let bundleID = Bundle.main.bundleIdentifier ?? "dev.anode.app"
-        DispatchQueue.global(qos: .userInitiated).async {
-            let p = Process()
-            p.executableURL = URL(fileURLWithPath: "/usr/bin/tccutil")
-            p.arguments = ["reset", "Accessibility", bundleID]
-            p.standardOutput = FileHandle.nullDevice
-            p.standardError = FileHandle.nullDevice
-            let ok = (try? p.run()) != nil && { p.waitUntilExit(); return p.terminationStatus == 0 }()
-            FeatureLog.append("accessibility.log", "reset requested for \(bundleID): \(ok ? "done" : "tccutil failed")")
-            DispatchQueue.main.async {
-                request()
-                openSettings()
-            }
+        ApprovalRepair.reset(.accessibility) {
+            request()
+            openSettings()
         }
+    }
+
+    /// A feature that needs Accessibility is on and cannot start: put a dead approval right, once for each
+    /// build, without waiting for the user to find the button.
+    static func repairOncePerBuild() {
+        ApprovalRepair.repairOncePerBuild(.accessibility) { request() }
     }
 
     /// What macOS has to go on when it decides whether this process is trusted: where the app runs from and
     /// how it is signed. One line, for the log.
     static func diagnosis() -> String {
-        var kind = "unknown", cdhash = "?", identifier = "?"
-        var me: SecCode?
-        var staticCode: SecStaticCode?
-        var infoCF: CFDictionary?
-        if SecCodeCopySelf([], &me) == errSecSuccess, let me,
-           SecCodeCopyStaticCode(me, [], &staticCode) == errSecSuccess, let staticCode,
-           SecCodeCopySigningInformation(staticCode, SecCSFlags(rawValue: kSecCSSigningInformation), &infoCF) == errSecSuccess,
-           let info = infoCF as? [String: Any] {
-            let flags = (info[kSecCodeInfoFlags as String] as? UInt32) ?? 0
-            kind = flags & SecCodeSignatureFlags.adhoc.rawValue != 0 ? "ad-hoc"
-                 : info[kSecCodeInfoCertificates as String] != nil ? "certificate" : "unsigned"
-            cdhash = (info[kSecCodeInfoUnique as String] as? Data)?.prefix(4).map { String(format: "%02x", $0) }.joined() ?? "?"
-            identifier = (info[kSecCodeInfoIdentifier as String] as? String) ?? "?"
-        }
-        return "AXIsProcessTrusted=\(isTrusted) signature=\(kind) cdhash=\(cdhash) id=\(identifier) "
+        let id = CodeIdentity.current()
+        return "AXIsProcessTrusted=\(isTrusted) signature=\(id?.kind ?? "unknown") "
+             + "cdhash=\(id.map { String($0.cdhash.prefix(8)) } ?? "?") id=\(id?.identifier ?? "?") "
              + "path=\(Bundle.main.bundlePath)"
     }
 
@@ -688,6 +667,7 @@ final class WindowSwitcher {
         }
         if tap == nil {
             AccessibilityAccess.logDiagnosisOnce(for: "window switcher")
+            AccessibilityAccess.repairOncePerBuild()
             guard retryTimer == nil else { return }
             retryTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
                 self?.apply()
@@ -776,6 +756,7 @@ final class WindowSwitcher {
         selection.start(count: windows.count)
         if backward { selection.step(-2) }   // start() already took one step forward
         isActive = true
+        RunTrace.step("window switcher opened: \(windows.count) windows")
         // Everything slow happens now, during the hold delay, so that showing the panel
         // when the delay ends is only putting it on screen (measured before: ~70 ms of
         // building AFTER the delay, ~190 ms from Tab to panel).
@@ -804,7 +785,13 @@ final class WindowSwitcher {
     private func commit() {
         let chosen = selection.index.flatMap { windows.indices.contains($0) ? windows[$0] : nil }
         cancel()
-        if let chosen { WindowActivator.bringForward(chosen) }
+        if let chosen {
+            RunTrace.step("window switcher: going to \(chosen.appName) (pid \(chosen.pid), "
+                          + "\(chosen.isOffScreen ? "off screen" : "on screen"), "
+                          + "\(chosen.spaceID == nil ? "this desktop" : "another desktop"))")
+            WindowActivator.bringForward(chosen)
+            RunTrace.step("window switcher: back from \(chosen.appName)")
+        }
     }
 
     private func cancel() {
