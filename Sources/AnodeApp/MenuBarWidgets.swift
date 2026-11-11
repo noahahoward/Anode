@@ -351,6 +351,20 @@ public final class MenuBarWidgetController: NSObject, NSMenuDelegate {
 
     /// The arrangement actually put in the bar at `density`. Pure, for tests.
     static func effectiveConfigs(_ stored: [WidgetConfig], density: Density) -> [WidgetConfig] {
+        effectiveConfigs(stored, density: density, folded: [])
+    }
+
+    /// The same, with the widgets the Menu Bar Hider folded behind its chevron taken out after the density rule has been
+    /// applied. Their stored configs are untouched, so they come back when `folded` is empty again.
+    static func effectiveConfigs(_ stored: [WidgetConfig], density: Density, folded: Set<String>) -> [WidgetConfig] {
+        let shown = densityConfigs(stored, density: density)
+        return folded.isEmpty ? shown : shown.filter { !folded.contains($0.metricID) }
+    }
+
+    /// The key the Menu Bar Hider files one of Anode's own widgets under, beside other apps' items.
+    public static func key(forMetricID metricID: String) -> String { "dev.anode.app|widget.\(metricID)" }
+
+    private static func densityConfigs(_ stored: [WidgetConfig], density: Density) -> [WidgetConfig] {
         let enabled = stored.filter(\.enabled)
         switch density {
         case .full:
@@ -529,6 +543,17 @@ public final class MenuBarWidgetController: NSObject, NSMenuDelegate {
         }
     }
 
+    /// The metric ids of the widgets the Menu Bar Hider has folded behind its chevron. They are DESTROYED by the next
+    /// rebuild (`removeStatusItem`), not made invisible: macOS saves `isVisible` per autosave name, and a widget left
+    /// invisible by a crash would come back missing with nothing in Anode to put it right.
+    public private(set) var folded: Set<String> = []
+
+    public func setFolded(_ metricIDs: Set<String>) {
+        guard metricIDs != folded else { return }
+        folded = metricIDs
+        onMain { self.rebuild() }
+    }
+
     /// Turn the whole menu bar on or off. `rebuild()` already tears down every
     /// status item before it decides what to create, so off is just "stop after
     /// the teardown" and the configs survive untouched.
@@ -610,7 +635,7 @@ public final class MenuBarWidgetController: NSObject, NSMenuDelegate {
         // New status items are inserted to the LEFT of existing ones, so create in
         // reverse for configs[0] to land leftmost. autosaveName additionally lets
         // macOS remember a position the user cmd-dragged to.
-        for config in Self.effectiveConfigs(storedConfigs, density: density).reversed() {
+        for config in Self.effectiveConfigs(storedConfigs, density: density, folded: folded).reversed() {
             let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
             // A dying WindowServer connection (or a headless agent context) hands back
             // an item with no button. Drop that ONE widget and keep going — one bad
