@@ -21,6 +21,15 @@ final class BarArrangementTests: XCTestCase {
         XCTAssertEqual(a.pillOrder, ["op|1Password", "wg|WireGuard", "ov|OpenVPN", "ov|OpenVPN#1"])
     }
 
+    /// Anode's own widgets fold into the pill by default, even the battery-drain one whose key says "battery".
+    func testDefaultDoesNotPinAnodeWidgets() {
+        let own = BarItem(key: "dev.anode.app|widget.batteryDrain", bundleID: "dev.anode.app", appName: "Anode", title: "Battery drain",
+                          frame: .zero, isLocked: false, hasPress: false, pid: nil)
+        let a = BarArrangement.defaultArrangement(for: items + [own])
+        XCTAssertFalse(a.pinned.contains(own.key))
+        XCTAssertTrue(a.pillOrder.contains(own.key))
+    }
+
     func testUnknownItemsLandBehindChevron() {
         let a = BarArrangement(pinned: ["cc|Battery"], pillOrder: [])
         XCTAssertEqual(a.group(of: "never|seen", items: items), .behindChevron)

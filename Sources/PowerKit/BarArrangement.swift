@@ -29,6 +29,8 @@ public struct BarArrangement: Codable, Equatable {
     /// The first arrangement: battery, sound and Wi-Fi stay on the bar, everything else goes behind the chevron.
     public static func defaultArrangement(for items: [BarItem]) -> BarArrangement {
         func staysOnBar(_ item: BarItem) -> Bool {
+            // Anode's own widgets fold into the pill by default.
+            if item.bundleID == "dev.anode.app" { return false }
             let hay = (item.key + " " + item.title).lowercased()
             return ["battery", "sound", "wi-fi", "wifi"].contains { hay.contains($0) }
         }
