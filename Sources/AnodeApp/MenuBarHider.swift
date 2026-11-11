@@ -69,6 +69,8 @@ final class MenuBarHiderController {
     static let didChange = Notification.Name("AnodeMenuBarHiderDidChange")
 
     private static let anodePrefix = MenuBarWidgetController.key(forMetricID: "")
+    /// The accessibility label `BarChevron` gives itself, which is how the chevron is found among the items read.
+    static let chevronLabel = "Menu bar icons"
 
     private let settings: Settings
     private let reader: BarReading
@@ -230,7 +232,6 @@ final class MenuBarHiderController {
             guard let self, gen == self.generation else { return }
             guard let result else { self.standDown(.layoutUnreadable); return }
             if let previous, Self.sameLayout(previous, result) {
-                self.retries = 0
                 self.apply(result)
             } else if attempt == 0 {
                 // The layout is not the one the covers were drawn for: they come down now, not after the confirming read.
@@ -268,11 +269,24 @@ final class MenuBarHiderController {
     private func apply(_ read: [BarItem]) {
         confirmed = read
         let env = environment()
+        // The chevron is the owner's only way to the hidden icons. macOS gives a new status item the leftmost place and, on a
+        // full bar, parks it off the bar where it cannot be clicked: then nothing may be hidden.
+        let chevronItem = read.first(where: isChevron)
         let verdict = HiderPolicy.decide(enabled: settings.menuBarHiderEnabled, accessibilityTrusted: env.trusted,
                                          layoutReadable: true, fullScreen: env.fullScreen,
                                          secondsSinceSpaceOrDisplayChange: env.secondsSinceChange,
-                                         itemsOnThisScreen: read.contains { $0.isOnBar(screens: [env.screen]) })
-        if case .standDown(let why) = verdict { standDown(why); return }
+                                         itemsOnThisScreen: read.contains { $0.isOnBar(screens: [env.screen]) },
+                                         chevronOnBar: chevronItem?.isOnBar(screens: [env.screen]) ?? true)
+        if case .standDown(let why) = verdict { retries = 0; standDown(why); return }
+        guard chevronItem != nil else {
+            // Not laid out yet (it was just created, or the bar is being rebuilt): not a layout to cover from. Read again
+            // shortly; `retries` is not reset here, so a chevron that never shows does not keep the Mac reading.
+            note("no chevron in the read; reading again")
+            standDown(.layoutUnreadable)
+            scheduleRetry(generation)
+            return
+        }
+        retries = 0
 
         // Other apps' items are what can be hidden. Anode's own items on the bar (its chevron, widgets it keeps there) stay: they
         // are given to the planner as locked, so a run of hidden items is split around them and no cover reaches over them.
@@ -321,6 +335,12 @@ final class MenuBarHiderController {
         changed()
     }
 
+    /// Anode's chevron among the items read: one of Anode's own, named by the label `BarChevron` gives it (or, should macOS
+    /// report the status item's autosave name as its identifier, keyed by that).
+    private func isChevron(_ item: BarItem) -> Bool {
+        item.pid == ownPID && (item.title == Self.chevronLabel || item.key.hasSuffix("|" + BarChevron.autosaveName))
+    }
+
     /// Anode's own widgets, as items the owner can arrange (they have no place on the bar to read).
     private func ownPseudoItems() -> [BarItem] {
         widgets.widgetKeys.map {
@@ -356,7 +376,7 @@ final class MenuBarHiderController {
         // Anode's widgets go back on the bar when the hider can do nothing for them. A passing refusal (full screen, a
         // moving layout, one failed read) leaves them folded: rebuilding the bar for a moment would only make it jump.
         switch why {
-        case .disabled, .noAccessibility, .itemsNotOnThisScreen:
+        case .disabled, .noAccessibility, .itemsNotOnThisScreen, .chevronOffBar:
             appliedFolded = []
             widgets.setFolded([])
         case .layoutUnreadable, .fullScreen, .settling: break

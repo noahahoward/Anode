@@ -5,9 +5,9 @@ import XCTest
 final class HiderPolicyTests: XCTestCase {
 
     private func decide(enabled: Bool = true, trusted: Bool = true, readable: Bool = true, fullScreen: Bool = false,
-                        since: TimeInterval = 60, onScreen: Bool = true) -> HiderDecision {
+                        since: TimeInterval = 60, onScreen: Bool = true, chevronOnBar: Bool = true) -> HiderDecision {
         HiderPolicy.decide(enabled: enabled, accessibilityTrusted: trusted, layoutReadable: readable, fullScreen: fullScreen,
-                           secondsSinceSpaceOrDisplayChange: since, itemsOnThisScreen: onScreen)
+                           secondsSinceSpaceOrDisplayChange: since, itemsOnThisScreen: onScreen, chevronOnBar: chevronOnBar)
     }
 
     func testCollapsedWhenAllClear() {
@@ -22,7 +22,8 @@ final class HiderPolicyTests: XCTestCase {
         XCTAssertEqual(decide(readable: false, fullScreen: true, since: 0, onScreen: false), .standDown(.layoutUnreadable))
         XCTAssertEqual(decide(fullScreen: true, since: 0, onScreen: false), .standDown(.fullScreen))
         XCTAssertEqual(decide(since: 0, onScreen: false), .standDown(.settling))
-        XCTAssertEqual(decide(onScreen: false), .standDown(.itemsNotOnThisScreen))
+        XCTAssertEqual(decide(onScreen: false, chevronOnBar: false), .standDown(.itemsNotOnThisScreen))
+        XCTAssertEqual(decide(chevronOnBar: false), .standDown(.chevronOffBar))
     }
 
     func testSettlingUnderOneSecond() {

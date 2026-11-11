@@ -147,6 +147,12 @@ final class MenuBarHiderFeatureTests: XCTestCase {
         XCTAssertEqual(r.feature.enableCheckbox.state, .off)
     }
 
+    func testAParkedChevronIsExplainedInPlainWords() {
+        let text = MenuBarHiderFeature.describe(.standDown(.chevronOffBar)) ?? ""
+        XCTAssertTrue(text.contains("no room"), text)
+        XCTAssertTrue(text.contains("off and on again"), text)
+    }
+
     func testFeatureIsInDefaultList() {
         XCTAssertTrue(BetaFeaturesWindowController.defaultFeatures(hasLidSensor: false).contains { $0 is MenuBarHiderFeature })
     }

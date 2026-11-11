@@ -133,6 +133,8 @@ final class MenuBarHiderFeature: BetaFeature {
             case .fullScreen: return "Paused while an app is full screen."
             case .settling: return "Paused for a moment while the screen settles."
             case .itemsNotOnThisScreen: return "The menu bar icons are not on this screen, so nothing is covered."
+            case .chevronOffBar:
+                return "The chevron has no room on the menu bar, so nothing is hidden. Remove an icon or two and turn this off and on again."
             }
         }
     }

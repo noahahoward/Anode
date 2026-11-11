@@ -4,6 +4,8 @@ import Foundation
 
 public enum HiderRefusal: Equatable {
     case disabled, noAccessibility, layoutUnreadable, fullScreen, settling, itemsNotOnThisScreen
+    /// macOS had no room for the chevron and parked it off the bar, where it cannot be seen or clicked.
+    case chevronOffBar
 }
 
 public enum HiderDecision: Equatable {
@@ -18,13 +20,15 @@ public enum HiderPolicy {
 
     /// The first refusal that applies, in the order of the enum; otherwise collapsed.
     public static func decide(enabled: Bool, accessibilityTrusted: Bool, layoutReadable: Bool, fullScreen: Bool,
-                              secondsSinceSpaceOrDisplayChange: TimeInterval, itemsOnThisScreen: Bool) -> HiderDecision {
+                              secondsSinceSpaceOrDisplayChange: TimeInterval, itemsOnThisScreen: Bool,
+                              chevronOnBar: Bool = true) -> HiderDecision {
         if !enabled { return .standDown(.disabled) }
         if !accessibilityTrusted { return .standDown(.noAccessibility) }
         if !layoutReadable { return .standDown(.layoutUnreadable) }
         if fullScreen { return .standDown(.fullScreen) }
         if secondsSinceSpaceOrDisplayChange < settleSeconds { return .standDown(.settling) }
         if !itemsOnThisScreen { return .standDown(.itemsNotOnThisScreen) }
+        if !chevronOnBar { return .standDown(.chevronOffBar) }
         return .collapsed
     }
 }

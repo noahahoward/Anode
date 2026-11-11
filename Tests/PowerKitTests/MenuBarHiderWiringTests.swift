@@ -36,7 +36,11 @@ final class MenuBarHiderWiringTests: XCTestCase {
         reader.fallback = [BarItem(key: "op|1Password", bundleID: "op", appName: "1Password", title: "",
                                    frame: CGRect(x: 1114, y: 0, width: 40, height: 37), isLocked: false, hasPress: true, pid: 100),
                            BarItem(key: "cc|Battery", bundleID: "cc", appName: "A", title: "Battery",
-                                   frame: CGRect(x: 1600, y: 0, width: 40, height: 37), isLocked: false, hasPress: true, pid: 100)]
+                                   frame: CGRect(x: 1600, y: 0, width: 40, height: 37), isLocked: false, hasPress: true, pid: 100),
+                           BarItem(key: "dev.anode.app|" + MenuBarHiderController.chevronLabel, bundleID: "dev.anode.app",
+                                   appName: "Anode", title: MenuBarHiderController.chevronLabel,
+                                   frame: CGRect(x: 1250, y: 0, width: 30, height: 37), isLocked: false, hasPress: true,
+                                   pid: getpid())]
         let events = FakeEvents()
         let shortcut = Shortcut()
         let runtime = MenuBarHiderRuntime(
