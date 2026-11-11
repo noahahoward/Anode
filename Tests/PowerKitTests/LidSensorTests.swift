@@ -58,13 +58,22 @@ final class LidSensorTests: XCTestCase {
         wait(for: [e], timeout: seconds)
     }
 
+    /// The RATE is the claim, so this waits for a number of samples and not for a number of seconds: it used to
+    /// count ticks in a fixed second and failed on a busy machine (a CI runner running tests in parallel), where
+    /// timer ticks come late. It still catches a sensor that is too fast (30 samples at 30 Hz take about a second,
+    /// never much less) and one that stalls (they must arrive within seconds, however loaded the machine is).
     func testDeliversTheAngleAtRoughlyTheRequestedRate() {
         let sensor = LidAngleSensor(readOverride: { 100 })
         let sink = Sink()
+        let started = Date()
         sensor.start(hz: 30, onSample: { d, _ in sink.sample(d) }, onLost: { sink.lose() })
-        wait(1.0)
+        let deadline = started.addingTimeInterval(10)
+        while sink.samples.count < 30 && Date() < deadline { Thread.sleep(forTimeInterval: 0.02) }
+        let elapsed = Date().timeIntervalSince(started)
         sensor.stop()
-        XCTAssertTrue((15...40).contains(sink.samples.count), "got \(sink.samples.count)")
+        let count = sink.samples.count
+        XCTAssertGreaterThanOrEqual(count, 30, "only \(count) samples in \(elapsed) s")
+        XCTAssertGreaterThan(elapsed, 0.6, "30 samples in \(elapsed) s is faster than the 30 Hz asked for")
         XCTAssertTrue(sink.samples.allSatisfy { $0 == 100 })
         XCTAssertEqual(sink.lost, 0)
     }

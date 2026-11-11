@@ -11,15 +11,18 @@ and fan control, in one window with a menu bar you can bind any of it to.
 curl -fsSL https://raw.githubusercontent.com/noahahoward/Anode/main/install.sh | bash
 ```
 
-That is the whole installation. It clones the source to `~/Developer/Anode`,
-builds it, installs `~/Applications/Anode.app`, and opens it. It takes a few
-minutes the first time, needs no password, and nothing runs as root.
+That is the whole installation. It clones the source to a hidden folder,
+`~/.anode/source`, builds it, installs `~/Applications/Anode.app`, and opens it.
+It takes a few minutes the first time, needs no password, and nothing runs as
+root. If the build fails it prints the compiler errors and removes everything
+it had made, leaving only the log, `~/Library/Logs/Anode-install.log`.
 
 **Requirements:** an Apple Silicon Mac on macOS 13+, and Apple's command line
 tools. If you do not have those, run `xcode-select --install` first.
 
-To update later: **Settings → General → Update and Rebuild**, or `~/Developer/Anode/update.sh`.
-To remove it: **Settings → General → Uninstall Anode…**, or `~/Developer/Anode/uninstall.sh`.
+To update later: **Settings → General → Update and Rebuild**, or `~/.anode/source/update.sh`.
+To remove it: **Settings → General → Uninstall Anode…**, or `~/.anode/source/uninstall.sh`.
+(An install made by an earlier version of the script is in `~/Developer/Anode`, and keeps working there.)
 
 <details>
 <summary><b>Why there is no download button</b></summary>
@@ -148,6 +151,22 @@ swift build
 ./.build/debug/anode --smc          # SMC power sensor discovery
 ./.build/debug/anode --ssd          # NVMe SSD health, and what writes to it
 ```
+
+### Tests
+
+They run on your own Mac; there is no CI service, because the app is AppKit, IOKit and private
+frameworks and builds nowhere else.
+
+```
+./test.sh                  # build every product, then the whole test suite (about 2 minutes)
+./test.sh --quick          # the test suite only (about 1 minute)
+./test.sh --full           # also a REAL install and uninstall into a throwaway home
+./test.sh --install-hook   # optional: run --quick before every `git push` (`git push --no-verify` skips it once)
+```
+
+The suite includes tests of `install.sh` and `uninstall.sh` (`Tests/installer-tests.sh`): an install lands
+where it says, a failed one takes away everything it made and nothing it did not, and an uninstall leaves
+nothing of Anode. They run in a temporary home and cannot touch your own install or keychain.
 
 Handing it to someone else to test: see [TESTING.md](TESTING.md). Short version —
 send the repo, not a `.app`, and expect a larger unattributed share on hardware

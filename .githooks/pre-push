@@ -1,0 +1,4 @@
+#!/bin/bash
+# Runs the tests before a push, in place of the CI that used to run on GitHub. Turned on once with
+# `./test.sh --install-hook`. To push without it, once: git push --no-verify
+cd "$(git rev-parse --show-toplevel)" && exec ./test.sh --quick
