@@ -37,6 +37,17 @@ Probes: `docs/superpowers/spikes/2026-11-11-menu-bar-hider-press-probe.swift` (A
 **Mistake, corrected:** the first press probe took Anode's first status item, which was Keep Awake, and started a Never Sleep session. Quitting Anode released it (`pmset` showed no Anode assertion afterwards; Keep Awake log: `state: off`).
 
 **Not verified**
-- The cover over a real item (every third-party icon is parked, so nothing needed covering). I moved Sound behind the chevron in a test arrangement; the log said `1 cover(s)` but the display went to sleep before a screenshot, and the test arrangement was removed again.
 - The ⌃⌥⌘B shortcut (needs a real key press), a click on the chevron or a pill cell, and a drag in Beta Features (need the pointer). Pressing an item in the pill with a real click.
 - Where a pill-forwarded press on a parked item lands is known (top-left), so its menu will not be under the pill.
+
+## Second hardware pass (2026-11-11, build 1.16.0; display awake, still no cursor or clicks)
+
+- **Cover over a real item: works.** Test arrangement with Sound behind the chevron (Wi-Fi and battery pinned), feature on, relaunch.
+  Log: `collapsed: 1 cover(s), 12 behind the chevron`. The screenshot shows chevron, Keep Awake, Wi-Fi, a seamless black gap
+  where Sound was, battery, Control Center, clock.
+- **Pill (chevron pressed with AXPress):** Sound first, then the four parked apps' icons, then Anode's widgets live, wrapped to a
+  second row for the eighth. Closed itself after 10 s.
+- **Found and fixed:** Sound's captured picture sat on a tan patch. The capture left out every Anode window, including the menu bar
+  backdrop that paints this bar black, so it photographed the wallpaper. Now only the hider's covers and pill (tagged
+  `dev.anode.menuBarHider`) are left out; the re-test shows the picture on black.
+- Settings put back afterwards (arrangement key deleted, feature off); the bar came back whole.
