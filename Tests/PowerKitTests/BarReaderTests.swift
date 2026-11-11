@@ -243,5 +243,23 @@ final class BarReaderTests: XCTestCase {
 
     func testPressNeverGoesToAnotherAppsItem() {
         XCTAssertNil(AXBarReader.pressTarget(for: at("o|#1", x: 130), among: [at("p|#0", x: 130, pid: 8)]))
+        // The same pid, now another app (the pid was reused): its item where the target was is not the target.
+        var other = at("p|#0", x: 130)
+        other.bundleID = "p"
+        XCTAssertNil(AXBarReader.pressTarget(for: at("o|#1", x: 130), among: [other]))
+    }
+
+    /// A pid can be reused between drawing the pill and the press: the process must still be the item's app.
+    func testPressOnlyGoesToAProcessThatIsStillTheItemsApp() {
+        let item = at("o|#0", x: 100)
+        XCTAssertTrue(AXBarReader.isStillTheApp(bundleID: "o", name: "O", of: item))
+        XCTAssertFalse(AXBarReader.isStillTheApp(bundleID: "p", name: "O", of: item))
+        XCTAssertFalse(AXBarReader.isStillTheApp(bundleID: nil, name: "O", of: item))
+        // An app without a bundle id is known by its name.
+        var unbundled = item
+        unbundled.bundleID = nil
+        XCTAssertTrue(AXBarReader.isStillTheApp(bundleID: nil, name: "O", of: unbundled))
+        XCTAssertFalse(AXBarReader.isStillTheApp(bundleID: nil, name: "Other", of: unbundled))
+        XCTAssertFalse(AXBarReader.isStillTheApp(bundleID: "o", name: "O", of: unbundled))
     }
 }

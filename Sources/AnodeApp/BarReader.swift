@@ -76,10 +76,17 @@ final class AXBarReader: BarReading {
         func isWhereTargetWas(_ item: BarItem) -> Bool {
             abs(item.frame.midX - target.frame.midX) <= tolerance && abs(item.frame.midY - target.frame.midY) <= tolerance
         }
-        let siblings = now.indices.filter { now[$0].pid == target.pid }
+        let siblings = now.indices.filter { now[$0].pid == target.pid && now[$0].bundleID == target.bundleID }
         if let keyed = siblings.first(where: { now[$0].key == target.key }), isWhereTargetWas(now[keyed]) { return keyed }
         let there = siblings.filter { isWhereTargetWas(now[$0]) }
         return there.count == 1 ? there[0] : nil
+    }
+
+    /// Whether the process now at the item's pid (its bundle id and name) is still the item's app: a pid can be reused
+    /// between drawing the pill and the press. An app without a bundle id is known by its name.
+    static func isStillTheApp(bundleID: String?, name: String?, of item: BarItem) -> Bool {
+        guard bundleID == item.bundleID else { return false }
+        return item.bundleID != nil || name == item.appName
     }
 
     static func parse(app: (bundleID: String?, name: String, pid: pid_t), children: [Child]) -> [BarItem] {
@@ -183,8 +190,12 @@ final class AXBarReader: BarReading {
     func press(_ item: BarItem) {
         guard AXIsProcessTrusted(), let pid = item.pid,
               let app = NSRunningApplication(processIdentifier: pid) else { return }
-        let entry = (bundleID: app.bundleIdentifier, name: app.localizedName ?? "?", pid: pid)
         let log = self.log
+        guard Self.isStillTheApp(bundleID: app.bundleIdentifier, name: app.localizedName, of: item) else {
+            log("press: \(item.key) not pressed, pid \(pid) is now another app")
+            return
+        }
+        let entry = (bundleID: app.bundleIdentifier, name: app.localizedName ?? "?", pid: pid)
         pressQueue.async {
             guard let found = Self.combine(Self.scan(apps: [entry])) else {
                 log("press: \(item.key) not pressed, its app could not be read")
