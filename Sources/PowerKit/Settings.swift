@@ -49,6 +49,9 @@ public final class Settings {
         public static let gameHUDCorner = "gameHUDCorner"
         public static let gameHUDExtraApps = "gameHUDExtraApps"
         public static let gameHUDHotCorner = "gameHUDHotCorner"
+        public static let menuBarHiderEnabled = "menuBarHiderEnabled"
+        public static let menuBarHiderAutoCloseSeconds = "menuBarHiderAutoCloseSeconds"
+        public static let menuBarHiderArrangement = "menuBarHiderArrangement"
         public static let lidGlassIdleHz = "lidGlassIdleHz"
         public static let lidGlassTriggerAngle = "lidGlassTriggerAngle"
         public static let windowSnapperEnabled = "windowSnapperEnabled"
@@ -129,6 +132,9 @@ public final class Settings {
         static let gameHUDCorner = HUDCorner.topRight
         /// OFF: it puts a tiny window in a screen corner, so the user turns it on.
         static let gameHUDHotCorner = false
+        /// OFF: it covers part of the menu bar, so the user turns it on.
+        static let menuBarHiderEnabled = false
+        static let menuBarHiderAutoCloseSeconds = 10
         static let lidGlassIdleHz = 8.0
         static let lidGlassTriggerAngle = 110.0
         /// OFF: it claims a set of global shortcuts another window manager may already own.
@@ -243,6 +249,9 @@ public final class Settings {
         var gameHUDCorner: HUDCorner
         var gameHUDExtraApps: [String]
         var gameHUDHotCorner: Bool
+        var menuBarHiderEnabled: Bool
+        var menuBarHiderAutoCloseSeconds: Int
+        var menuBarHiderArrangement: BarArrangement?
         var lidGlassIdleHz, lidGlassTriggerAngle: Double
     }
     private var snapshot: Values
@@ -495,6 +504,56 @@ public final class Settings {
     public var gameHUDHotCorner: Bool {
         get { Settings.readBool(defaults, Key.gameHUDHotCorner, Default.gameHUDHotCorner) }
         set { writeBool(Key.gameHUDHotCorner, \.gameHUDHotCorner, newValue, Default.gameHUDHotCorner) }
+    }
+
+    /// Whether the menu bar hider is on (Beta Features). Off until asked for: it puts a cover over part of the bar.
+    public var menuBarHiderEnabled: Bool {
+        get { Settings.readBool(defaults, Key.menuBarHiderEnabled, Default.menuBarHiderEnabled) }
+        set { writeBool(Key.menuBarHiderEnabled, \.menuBarHiderEnabled, newValue, Default.menuBarHiderEnabled) }
+    }
+
+    /// Seconds the pill stays open before it closes itself; 0 means until the owner closes it. Only 0, 5, 10 and 30 are
+    /// offered, so anything else reads as the default 10.
+    public var menuBarHiderAutoCloseSeconds: Int {
+        get { Settings.readAutoClose(defaults) }
+        set {
+            let clean = Settings.autoCloseChoices.contains(newValue) ? newValue : Default.menuBarHiderAutoCloseSeconds
+            guard clean != menuBarHiderAutoCloseSeconds else { return }
+            lock.lock(); snapshot.menuBarHiderAutoCloseSeconds = clean; lock.unlock()
+            defaults.set(clean, forKey: Settings.storageKey(Key.menuBarHiderAutoCloseSeconds))
+            notify(Key.menuBarHiderAutoCloseSeconds)
+        }
+    }
+    public static let autoCloseChoices = [0, 5, 10, 30]
+
+    /// Which icons are always on the bar and the order of the rest. nil until the owner has arranged them (or the first
+    /// read of the bar has stored the default). Stored as JSON; anything unreadable reads as nil.
+    public var menuBarHiderArrangement: BarArrangement? {
+        get { Settings.readArrangement(defaults) }
+        set {
+            guard newValue != menuBarHiderArrangement else { return }
+            lock.lock(); snapshot.menuBarHiderArrangement = newValue; lock.unlock()
+            let key = Settings.storageKey(Key.menuBarHiderArrangement)
+            if let newValue, let data = try? JSONEncoder().encode(newValue), let text = String(data: data, encoding: .utf8) {
+                defaults.set(text, forKey: key)
+            } else {
+                defaults.removeObject(forKey: key)
+            }
+            notify(Key.menuBarHiderArrangement)
+        }
+    }
+
+    private static func readAutoClose(_ d: UserDefaults) -> Int {
+        let key = storageKey(Key.menuBarHiderAutoCloseSeconds)
+        guard d.object(forKey: key) != nil else { return Default.menuBarHiderAutoCloseSeconds }
+        let n = d.integer(forKey: key)
+        return autoCloseChoices.contains(n) ? n : Default.menuBarHiderAutoCloseSeconds
+    }
+
+    private static func readArrangement(_ d: UserDefaults) -> BarArrangement? {
+        guard let text = d.string(forKey: storageKey(Key.menuBarHiderArrangement)),
+              let data = text.data(using: .utf8) else { return nil }
+        return try? JSONDecoder().decode(BarArrangement.self, from: data)
     }
 
     private static func readHUDCorner(_ d: UserDefaults) -> HUDCorner {
@@ -884,6 +943,9 @@ public final class Settings {
         if old.gameHUDCorner != now.gameHUDCorner { notify(Key.gameHUDCorner) }
         if old.gameHUDExtraApps != now.gameHUDExtraApps { notify(Key.gameHUDExtraApps) }
         if old.gameHUDHotCorner != now.gameHUDHotCorner { notify(Key.gameHUDHotCorner) }
+        if old.menuBarHiderEnabled != now.menuBarHiderEnabled { notify(Key.menuBarHiderEnabled) }
+        if old.menuBarHiderAutoCloseSeconds != now.menuBarHiderAutoCloseSeconds { notify(Key.menuBarHiderAutoCloseSeconds) }
+        if old.menuBarHiderArrangement != now.menuBarHiderArrangement { notify(Key.menuBarHiderArrangement) }
         if old.lidGlassIdleHz != now.lidGlassIdleHz { notify(Key.lidGlassIdleHz) }
         if old.lidGlassTriggerAngle != now.lidGlassTriggerAngle { notify(Key.lidGlassTriggerAngle) }
         if old.windowSnapperEnabled != now.windowSnapperEnabled { notify(Key.windowSnapperEnabled) }
@@ -1041,6 +1103,9 @@ public final class Settings {
                gameHUDCorner: readHUDCorner(d),
                gameHUDExtraApps: readIDList(d, Key.gameHUDExtraApps),
                gameHUDHotCorner: readBool(d, Key.gameHUDHotCorner, Default.gameHUDHotCorner),
+               menuBarHiderEnabled: readBool(d, Key.menuBarHiderEnabled, Default.menuBarHiderEnabled),
+               menuBarHiderAutoCloseSeconds: readAutoClose(d),
+               menuBarHiderArrangement: readArrangement(d),
                lidGlassIdleHz: readDouble(d, Key.lidGlassIdleHz, Default.lidGlassIdleHz, lidGlassIdleHzRange),
                lidGlassTriggerAngle: readDouble(d, Key.lidGlassTriggerAngle, Default.lidGlassTriggerAngle,
                                                 lidGlassTriggerRange))
