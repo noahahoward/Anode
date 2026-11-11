@@ -39,3 +39,35 @@ public enum CoverPlanner {
         return rects
     }
 }
+
+public enum PillLayout {
+
+    /// Cells laid left to right in rows, wrapping when the next cell would pass `maxWidth` (padding included); at least one
+    /// cell sits on every row. Frames are in the pill's own space, origin top-left. With no cells the size is padding only.
+    public static func frames(count: Int, cell: CGSize, maxWidth: CGFloat, padding: CGFloat,
+                              spacing: CGFloat) -> (cells: [CGRect], size: CGSize) {
+        guard count > 0 else { return ([], CGSize(width: 2 * padding, height: 2 * padding)) }
+        let inner = max(maxWidth - 2 * padding, cell.width)
+        let perRow = max(1, Int((inner + spacing) / (cell.width + spacing)))
+        var cells: [CGRect] = []
+        for i in 0..<count {
+            let row = i / perRow, col = i % perRow
+            cells.append(CGRect(x: padding + CGFloat(col) * (cell.width + spacing),
+                                y: padding + CGFloat(row) * (cell.height + spacing),
+                                width: cell.width, height: cell.height))
+        }
+        let rows = (count + perRow - 1) / perRow
+        let cols = min(count, perRow)
+        let width = 2 * padding + CGFloat(cols) * cell.width + CGFloat(cols - 1) * spacing
+        let height = 2 * padding + CGFloat(rows) * cell.height + CGFloat(rows - 1) * spacing
+        return (cells, CGSize(width: width, height: height))
+    }
+
+    /// The pill's top-left corner: centred on the notch (or the screen when there is none), just under the menu bar, and
+    /// kept inside the screen.
+    public static func origin(size: CGSize, screen: CGRect, notch: CGRect?, menuBarHeight: CGFloat, gap: CGFloat = 4) -> CGPoint {
+        let centre = notch?.midX ?? screen.midX
+        let x = min(max(centre - size.width / 2, screen.minX), max(screen.minX, screen.maxX - size.width))
+        return CGPoint(x: x, y: screen.minY + menuBarHeight + gap)
+    }
+}
