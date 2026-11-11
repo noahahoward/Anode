@@ -1228,17 +1228,23 @@ enum WidgetRenderer {
         }
         // The single-item fallback binds a real metric to the group style.
         if style == .group {
-            let reading = descriptor.map { d in
-                value.map { "\(d.title): \($0.text)" } ?? "\(d.title): no data"
-            }
+            let reading = descriptor.map { d in value == nil ? "\(d.title): no data" : d.title }
             return [reading, "Click for all readings"].compactMap { $0 }.joined(separator: "\n")
         }
         guard let d = descriptor else {
             return "Unknown metric “\(metricID)” — it may belong to another version of Anode"
         }
         guard let v = value else { return "\(d.title): no data" }
-        return "\(d.title): \(v.text)\(v.isEstimate ? " (estimate)" : "")"
+        return "\(d.title)\(v.isEstimate ? " (estimate)" : "")"
     }
+
+    // NOT the reading. The widget beside the tooltip already shows it, and putting it here made the tooltip a
+    // different string on nearly every tick: AppKit re-registers a tooltip each time its text changes, and on a
+    // MacBook Neo that left "CPU usage: 41%" popping up beside the pointer, far from the menu bar, at random
+    // moments, until the widgets were hovered again. It also defeated the guard at the assignment, which exists
+    // so the window's tracking areas are not rebuilt every tick (see the note there): a live number changes
+    // nearly every time. What may differ between ticks is only a state that changes rarely, "no data" and
+    // "estimate".
 
     /// Draws label-over-value at exact pixel positions, as a TEMPLATE image so the
     /// system tints it to match the rest of the menu bar.
