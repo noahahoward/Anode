@@ -99,9 +99,29 @@ final class MenuBarHiderController {
     private(set) var items: [BarItem] = []
     /// Every item the owner can arrange: other apps' items and Anode's own widgets (its chevron is not among them).
     private(set) var allItems: [BarItem] = []
-    /// Told when the decision or the pill's open state changes.
+    /// Told when the decision, the item lists, the pill's open state or whether anything is covered changes.
     var onChange: (() -> Void)?
+    /// Whether covers are on screen now (the bar is collapsed and there is at least one).
+    var isCovering: Bool { decision == .collapsed && !covers.rects.isEmpty }
+
+    /// What the owner (Beta Features) and the runtime act on. The bar is re-read every few seconds while it is covered, and
+    /// most reads change nothing: only a different one is told, so the settings lists are not reloaded for nothing. Frames are
+    /// left out on purpose: the lists do not show them, and an item showing text changes width every second.
+    private struct Snapshot: Equatable {
+        var decision: HiderDecision
+        var pillOpen: Bool
+        var covering: Bool
+        var behind: [String]
+        var all: [String]
+    }
+    private var lastTold: Snapshot?
+
     private func changed() {
+        let now = Snapshot(decision: decision, pillOpen: pillState.isOpen, covering: isCovering,
+                           behind: items.map(\.key),
+                           all: allItems.map { "\($0.key)|\($0.title)|\($0.appName)|\($0.isLocked)" })
+        guard now != lastTold else { return }
+        lastTold = now
         onChange?()
         NotificationCenter.default.post(name: Self.didChange, object: nil)
     }
@@ -221,6 +241,7 @@ final class MenuBarHiderController {
         chevronOn = false
         appliedFolded = []
         decision = .standDown(.disabled)
+        changed()
     }
 
     // ── Reading ─────────────────────────────────────────────────────────────
@@ -375,7 +396,6 @@ final class MenuBarHiderController {
     }
 
     private func standDown(_ why: HiderRefusal) {
-        let didChange = decision != .standDown(why)
         decision = .standDown(why)
         if !covers.rects.isEmpty { covers.removeAll() }
         let passing = why == .layoutUnreadable || why == .settling
@@ -407,7 +427,7 @@ final class MenuBarHiderController {
         case .layoutUnreadable, .fullScreen, .settling: break
         }
         note("stand down: \(why)")
-        if didChange { changed() }
+        changed()
     }
 
     // ── The pill ────────────────────────────────────────────────────────────

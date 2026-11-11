@@ -454,6 +454,35 @@ final class MenuBarHiderControllerTests: XCTestCase {
         XCTAssertFalse(pill.isShowing)
     }
 
+    /// While covers are up the bar is read every few seconds. A read that changes nothing must not tell anyone: each
+    /// notification reloads the Beta Features lists.
+    func testAReadThatChangesNothingTellsNoOne() {
+        var calls = 0, posts = 0
+        controller.onChange = { calls += 1 }
+        let token = NotificationCenter.default.addObserver(forName: MenuBarHiderController.didChange, object: nil, queue: nil) { _ in
+            posts += 1
+        }
+        defer { NotificationCenter.default.removeObserver(token) }
+        turnOn()
+        XCTAssertEqual(controller.decision, .collapsed)
+        XCTAssertGreaterThan(calls, 0)
+        calls = 0; posts = 0
+        controller.reevaluate()
+        controller.reevaluate()
+        XCTAssertEqual(calls, 0)
+        XCTAssertEqual(posts, 0)
+        // An item that stays on the bar changing width is not news either.
+        var wider = layout; wider[2].frame = CGRect(x: 1500, y: 0, width: 47, height: 37)
+        reader.fallback = wider
+        controller.reevaluate(); controller.reevaluate()
+        XCTAssertEqual(posts, 0)
+        // A change the owner can see is.
+        settings.menuBarHiderArrangement = BarArrangement(pinned: ["op|1Password", "cc|Wi-Fi", "cc|Sound", "cc|Battery"], pillOrder: [])
+        controller.reevaluate()
+        XCTAssertEqual(posts, 1)
+        XCTAssertEqual(calls, 1)
+    }
+
     /// The controller finds its chevron by the accessibility label the chevron gives itself.
     func testTheChevronStillCarriesTheLabelTheControllerLooksFor() throws {
         let source = try String(contentsOf: URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
