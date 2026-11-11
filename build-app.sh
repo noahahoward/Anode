@@ -26,15 +26,43 @@ DIRTY=""
 if ! git diff --quiet HEAD 2>/dev/null; then DIRTY="+"; fi
 
 echo "› building ($CONFIG)…"
-swift build -c "$CONFIG" --product "$BIN"
 # The fan helper ships beside the app but is NEVER started by it: it runs as root
 # and the user starts it themselves with sudo when they want fan control. It is
 # in the bundle so there is one obvious path to type, and so it and the app it
 # will only ever talk to are rebuilt together — the helper pins the app's cdhash
 # at startup, and an app rebuilt without its helper would simply be refused.
-swift build -c "$CONFIG" --product "$HELPER"
-BUILT="$(swift build -c "$CONFIG" --show-bin-path)/$BIN"
-BUILT_HELPER="$(swift build -c "$CONFIG" --show-bin-path)/$HELPER"
+#
+# COMPILED FILE BY FILE, not whole-module. SwiftPM's release build is whole-module, which recompiles ALL of
+# a module when ONE file changes: 57,000 lines for a one-line fix. Compiling per file in the native build
+# backend (`-no-whole-module-optimization`) only redoes what changed. Timed on a 15-core Mac, release,
+# AnodeApp: cold 31.8 s -> 17.7 s, one app file changed 17.9 s -> 8.2 s, one PowerKit file 9.3 s -> 3.8 s;
+# fewer cores gain more, because files compile in parallel. The cost, measured, is nothing the app can
+# show: the sampler's instruction count over 15 samples is the same within noise (0.18 vs 0.19 billion)
+# since its time goes into system calls; the .dSYM bundles crash reports are symbolicated from are
+# still made. The native backend is deprecated, so if the toolchain does not take this combination (an
+# older or a newer SwiftPM) the standard build runs instead and nothing else changes. ANODE_SLOW_BUILD=1
+# forces the standard one. The first build after this changes backend compiles everything once.
+#
+# One product per `swift build`: a repeated --product does not build both, only the last (found by the
+# install test: the app was never compiled and the copy below failed).
+FAST_FLAGS=(--build-system native -Xswiftc -no-whole-module-optimization)
+BUILD_FLAGS=()
+if [ "$CONFIG" = "release" ] && [ "${ANODE_SLOW_BUILD:-0}" != "1" ]; then
+  if swift build -c "$CONFIG" "${FAST_FLAGS[@]}" --product "$BIN" \
+     && swift build -c "$CONFIG" "${FAST_FLAGS[@]}" --product "$HELPER"; then
+    BUILD_FLAGS=("${FAST_FLAGS[@]}")
+  else
+    echo "  (the faster build did not work with this toolchain; building the standard way)"
+    swift build -c "$CONFIG" --product "$BIN"
+    swift build -c "$CONFIG" --product "$HELPER"
+  fi
+else
+  swift build -c "$CONFIG" --product "$BIN"
+  swift build -c "$CONFIG" --product "$HELPER"
+fi
+BIN_DIR="$(swift build -c "$CONFIG" ${BUILD_FLAGS[@]+"${BUILD_FLAGS[@]}"} --show-bin-path)"
+BUILT="$BIN_DIR/$BIN"
+BUILT_HELPER="$BIN_DIR/$HELPER"
 
 echo "› assembling ${APP}…"
 rm -rf "$APP"
