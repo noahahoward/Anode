@@ -146,6 +146,9 @@ final class AXBarReader: BarReading {
     private let log: (String) -> Void
     /// The last failure logged, so an app that keeps failing is written down once, not on every read. Touched on `queue` only.
     private var lastFailure: String?
+    /// The apps that said they have no extras menu bar, not asked again for a while. Touched on `queue` only; a press asks
+    /// its app whatever this says.
+    private var noBar = NoBarCache(neverSkipped: AXBarReader.systemOwners)
 
     init(log: @escaping (String) -> Void = { FeatureLog.append("menubarhider.log", $0) }) {
         self.log = log
@@ -160,9 +163,14 @@ final class AXBarReader: BarReading {
         let deadline = DispatchWorkItem { _ = once.complete(nil) }
         DispatchQueue.main.asyncAfter(deadline: .now() + Self.budget, execute: deadline)
         queue.async { [self] in
-            let results = Self.scan(apps: apps)
+            noBar.sync(running: Set(apps.map(\.pid)), now: Date())
+            let asked = apps.filter { !noBar.skips($0.pid) }
+            let results = Self.scan(apps: asked)
+            for (app, result) in zip(asked, results) {
+                if case .nothingThere = result { noBar.record(pid: app.pid, bundleID: app.bundleID, answer: .nothingThere) }
+            }
             let found = Self.combine(results)
-            noteFailure(apps: apps, results: results)
+            noteFailure(apps: asked, results: results)
             DispatchQueue.main.async {
                 deadline.cancel()
                 _ = once.complete(found?.map(\.item))
@@ -205,7 +213,7 @@ final class AXBarReader: BarReading {
     /// What one app's extras menu bar held.
     private enum AppScan {
         case items([Found])
-        /// The app said it has no extras menu bar (or an empty one).
+        /// The app said it has no extras menu bar.
         case nothingThere
         /// The app did not answer in a way that can be trusted; the text says where and how.
         case failed(String)
@@ -250,7 +258,8 @@ final class AXBarReader: BarReading {
         var kidsValue: CFTypeRef?
         let kidsStatus = AXUIElementCopyAttributeValue(bar, kAXChildrenAttribute as CFString, &kidsValue)
         guard let kids = elements(status: kidsStatus, value: kidsValue) else { return .failed("children: AXError \(kidsStatus.rawValue)") }
-        guard !kids.isEmpty else { return .nothingThere }
+        // An empty bar is not "no bar": the app has one and may fill it, so it is not remembered as having none.
+        guard !kids.isEmpty else { return .items([]) }
 
         var children: [Child] = []
         var targets: [AXUIElement] = []
@@ -338,6 +347,45 @@ final class AXBarReader: BarReading {
         guard let value, CFGetTypeID(value) == AXValueGetTypeID() else { return nil }
         let ax = unsafeBitCast(value, to: AXValue.self)
         return AXValueGetType(ax) == type ? ax : nil
+    }
+}
+
+/// The processes that said they have no extras menu bar, so a read does not message (and wake) them again. A process is
+/// asked again once it quits (its pid is forgotten), when anything launches, and every `maxAge`: an app that adds a status
+/// item later is found within that. Only a definite "no" is kept, never a timeout, and never for Anode itself or the
+/// system's own items (a passing "no value" there would drop battery, Wi-Fi, sound or the chevron from every read).
+/// Not thread-safe: the reader keeps it on its serial queue.
+struct NoBarCache {
+    let maxAge: TimeInterval
+    let ownPID: pid_t
+    let neverSkipped: Set<String>
+    private var skipped: Set<pid_t> = []
+    /// The processes running at the last `sync`, and when the cache was last emptied.
+    private var running: Set<pid_t> = []
+    private var since = Date.distantPast
+
+    init(maxAge: TimeInterval = 300, ownPID: pid_t = getpid(), neverSkipped: Set<String>) {
+        self.maxAge = maxAge
+        self.ownPID = ownPID
+        self.neverSkipped = neverSkipped
+    }
+
+    func skips(_ pid: pid_t) -> Bool { skipped.contains(pid) }
+
+    /// Before each read, with the processes about to be read.
+    mutating func sync(running now: Set<pid_t>, now date: Date) {
+        if !now.isSubset(of: running) || date.timeIntervalSince(since) >= maxAge {
+            skipped = []
+            since = date
+        } else {
+            skipped.formIntersection(now)
+        }
+        running = now
+    }
+
+    mutating func record(pid: pid_t, bundleID: String?, answer: AXBarReader.Missing) {
+        guard answer == .nothingThere, pid != ownPID, !(bundleID.map(neverSkipped.contains) ?? false) else { return }
+        skipped.insert(pid)
     }
 }
 

@@ -193,6 +193,54 @@ final class BarReaderTests: XCTestCase {
         XCTAssertNil(AXBarReader.pressTarget(for: at("o|#0", x: -1, y: 1157), among: [at("o|#0", x: -1, y: 0)]))
     }
 
+    // ── Not asking again an app that said it has no items ───────────────────
+
+    private let t0 = Date(timeIntervalSinceReferenceDate: 0)
+
+    private func cache(running: Set<pid_t>) -> NoBarCache {
+        var c = NoBarCache(maxAge: 300, ownPID: 99, neverSkipped: ["com.apple.MenuBarAgent"])
+        c.sync(running: running, now: t0)
+        return c
+    }
+
+    /// Every read used to message every running process, waking App-Napped ones, every 30 s.
+    func testAnAppThatSaidItHasNoBarIsNotAskedAgainUntilItQuits() {
+        var c = cache(running: [1, 2, 3])
+        c.record(pid: 2, bundleID: "b", answer: .nothingThere)
+        XCTAssertTrue(c.skips(2))
+        XCTAssertFalse(c.skips(1))
+        c.sync(running: [1, 2, 3], now: t0 + 30)
+        XCTAssertTrue(c.skips(2))
+        c.sync(running: [1, 3], now: t0 + 60)
+        XCTAssertFalse(c.skips(2))
+    }
+
+    /// An app that adds a status item later is still found: anything launching, or five minutes passing, starts over.
+    func testALaunchOrFiveMinutesForgetsEveryAnswer() {
+        var c = cache(running: [1, 2])
+        c.record(pid: 1, bundleID: "a", answer: .nothingThere)
+        c.sync(running: [1, 2, 4], now: t0 + 10)
+        XCTAssertFalse(c.skips(1), "a launch")
+
+        c.record(pid: 1, bundleID: "a", answer: .nothingThere)
+        c.sync(running: [1, 2, 4], now: t0 + 10 + 299)
+        XCTAssertTrue(c.skips(1))
+        c.sync(running: [1, 2, 4], now: t0 + 10 + 300)
+        XCTAssertFalse(c.skips(1), "five minutes")
+    }
+
+    /// A timeout is a failed read, never "no bar". And a "no value" from the system's items or from Anode itself (mid-rebuild)
+    /// must not drop battery, Wi-Fi, sound or the chevron from every read for minutes.
+    func testOnlyAnotherAppsDefiniteNoIsRemembered() {
+        var c = cache(running: [1, 2, 99])
+        c.record(pid: 1, bundleID: "a", answer: .failed)
+        c.record(pid: 2, bundleID: "com.apple.MenuBarAgent", answer: .nothingThere)
+        c.record(pid: 99, bundleID: "dev.anode.app", answer: .nothingThere)
+        XCTAssertFalse(c.skips(1))
+        XCTAssertFalse(c.skips(2))
+        XCTAssertFalse(c.skips(99))
+    }
+
     func testPressNeverGoesToAnotherAppsItem() {
         XCTAssertNil(AXBarReader.pressTarget(for: at("o|#1", x: 130), among: [at("p|#0", x: 130, pid: 8)]))
     }
