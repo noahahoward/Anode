@@ -108,4 +108,30 @@ final class BarReaderTests: XCTestCase {
         XCTAssertEqual(AXBarReader.elements(status: .noValue, value: nil)?.count, 0)
         XCTAssertEqual(AXBarReader.elements(status: .success, value: [] as CFArray)?.count, 0)
     }
+
+    // ── Values of the wrong type from another app ───────────────────────────
+    // Creating an element or a value is local; nothing here is sent to any app.
+
+    func testABarThatIsNotAnElementFailsTheRead() {
+        let element = AXUIElementCreateApplication(getpid())
+        XCTAssertEqual(AXBarReader.bar(status: .success, value: element), .bar(element))
+        XCTAssertEqual(AXBarReader.bar(status: .success, value: "bar" as CFString), .failed)
+    }
+
+    func testChildrenThatAreNotElementsFailTheRead() {
+        let element = AXUIElementCreateApplication(getpid())
+        XCTAssertEqual(AXBarReader.elements(status: .success, value: [element] as CFArray)?.count, 1)
+        XCTAssertNil(AXBarReader.elements(status: .success, value: [element, "x" as CFString] as CFArray))
+        XCTAssertNil(AXBarReader.elements(status: .success, value: "x" as CFString))
+    }
+
+    func testAPositionOrSizeOfTheWrongTypeIsNoFrame() {
+        var p = CGPoint(x: 1114, y: 0), s = CGSize(width: 22, height: 39)
+        let point = AXValueCreate(.cgPoint, &p)!, size = AXValueCreate(.cgSize, &s)!
+        XCTAssertEqual(AXBarReader.frame(position: point, size: size), CGRect(x: 1114, y: 0, width: 22, height: 39))
+        XCTAssertNil(AXBarReader.frame(position: size, size: size))
+        XCTAssertNil(AXBarReader.frame(position: point, size: point))
+        XCTAssertNil(AXBarReader.frame(position: "x" as CFString, size: size))
+        XCTAssertNil(AXBarReader.frame(position: point, size: nil))
+    }
 }

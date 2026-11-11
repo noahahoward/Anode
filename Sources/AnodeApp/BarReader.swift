@@ -102,14 +102,16 @@ final class AXBarReader: BarReading {
     /// An app's extras menu bar, from what `AXExtrasMenuBar` answered.
     static func bar(status: AXError, value: CFTypeRef?) -> BarLookup {
         guard status == .success else { return classify(status) == .nothingThere ? .nothingThere : .failed }
-        guard let value else { return .failed }
-        return .bar(value as! AXUIElement)
+        return element(value).map { .bar($0) } ?? .failed
     }
 
-    /// A list of elements (children) from what was answered; nil when the read failed. "No value" is an empty list.
+    /// A list of elements (children) from what was answered; nil when the read failed or anything in it is not an element.
+    /// "No value" is an empty list.
     static func elements(status: AXError, value: CFTypeRef?) -> [AXUIElement]? {
         guard status == .success else { return classify(status) == .nothingThere ? [] : nil }
-        return value as? [AXUIElement]
+        guard let value, CFGetTypeID(value) == CFArrayGetTypeID(), let list = value as? [AnyObject] else { return nil }
+        let found = list.compactMap(element)
+        return found.count == list.count ? found : nil
     }
 
     // ── BarReading ──────────────────────────────────────────────────────────
@@ -232,7 +234,7 @@ final class AXBarReader: BarReading {
             if let inner { AXUIElementSetMessagingTimeout(inner, perAppTimeout) }
             let outerPress = hasPress(kid, lost: &lost)
             let innerPress = inner.map { hasPress($0, lost: &lost) } ?? false
-            let (box, framed) = frame(of: kid)
+            let box = frame(of: kid, lost: &lost)
             let hosting = string(kid, kAXSubroleAttribute, lost: &lost) == "AXHostingView"
             let identifier = string(kid, kAXIdentifierAttribute, lost: &lost)
                 ?? inner.flatMap { string($0, kAXIdentifierAttribute, lost: &lost) }
@@ -240,8 +242,8 @@ final class AXBarReader: BarReading {
             let description = string(kid, kAXDescriptionAttribute, lost: &lost)
                 ?? inner.flatMap { string($0, kAXDescriptionAttribute, lost: &lost) }
             children.append(Child(identifier: identifier, title: title, description: description,
-                                  frame: box, hasPress: outerPress || innerPress,
-                                  readFailed: lost || !framed || (hosting && identifier == nil)))
+                                  frame: box ?? .zero, hasPress: outerPress || innerPress,
+                                  readFailed: lost || box == nil || (hosting && identifier == nil)))
             targets.append(outerPress ? kid : (innerPress ? inner! : kid))
         }
         guard isComplete(children) else { return .failed("an item's position, size, name or actions") }
@@ -276,14 +278,33 @@ final class AXBarReader: BarReading {
         return (actions as? [String])?.contains(kAXPressAction as String) ?? false
     }
 
-    /// The frame, and whether both the position and the size could be read.
-    private static func frame(of e: AXUIElement) -> (CGRect, Bool) {
-        var p = CGPoint.zero, s = CGSize.zero
-        var ok = true, lost = false
-        defer { _ = lost }
-        if let pv = attribute(e, kAXPositionAttribute, lost: &lost) { ok = ok && AXValueGetValue(pv as! AXValue, .cgPoint, &p) } else { ok = false }
-        if let sv = attribute(e, kAXSizeAttribute, lost: &lost) { ok = ok && AXValueGetValue(sv as! AXValue, .cgSize, &s) } else { ok = false }
-        return (CGRect(origin: p, size: s), ok)
+    /// The frame; nil unless both the position and the size could be read.
+    private static func frame(of e: AXUIElement, lost: inout Bool) -> CGRect? {
+        frame(position: attribute(e, kAXPositionAttribute, lost: &lost), size: attribute(e, kAXSizeAttribute, lost: &lost))
+    }
+
+    // ── Values from another app, type-checked ──────────────────────────────
+    // Another app answers with whatever it likes: nothing it returns is force-cast.
+
+    /// The value as an element, or nil when it is anything else.
+    static func element(_ value: CFTypeRef?) -> AXUIElement? {
+        guard let value, CFGetTypeID(value) == AXUIElementGetTypeID() else { return nil }
+        return unsafeBitCast(value, to: AXUIElement.self)
+    }
+
+    /// A position and a size, each an `AXValue` of its own kind, as a frame; nil when either is missing or not that.
+    static func frame(position: CFTypeRef?, size: CFTypeRef?) -> CGRect? {
+        var origin = CGPoint.zero, extent = CGSize.zero
+        guard let p = axValue(position, .cgPoint), AXValueGetValue(p, .cgPoint, &origin),
+              let s = axValue(size, .cgSize), AXValueGetValue(s, .cgSize, &extent) else { return nil }
+        return CGRect(origin: origin, size: extent)
+    }
+
+    /// The value as an `AXValue` holding `type`, or nil when it is anything else.
+    private static func axValue(_ value: CFTypeRef?, _ type: AXValueType) -> AXValue? {
+        guard let value, CFGetTypeID(value) == AXValueGetTypeID() else { return nil }
+        let ax = unsafeBitCast(value, to: AXValue.self)
+        return AXValueGetType(ax) == type ? ax : nil
     }
 }
 
