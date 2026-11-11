@@ -67,6 +67,21 @@ final class AXBarReader: BarReading {
 
     static func inBarOrder(_ items: [BarItem]) -> [BarItem] { items.sorted(by: precedes) }
 
+    /// Which of `now` (a fresh read of the target's app) a press on `target` (from an earlier read) goes to, or nil for none.
+    /// Unnamed items are keyed by their order, so when a sibling parks, comes or goes the keys shift and the key alone would
+    /// open the other icon's menu. The item must also still be where it was, within `tolerance` points (x and y, so a parked
+    /// item stays parked). If the key's item has moved, the one sibling now where the target was is the target; with none,
+    /// or several (parked items stack), nothing is pressed.
+    static func pressTarget(for target: BarItem, among now: [BarItem], tolerance: CGFloat = 4) -> Int? {
+        func isWhereTargetWas(_ item: BarItem) -> Bool {
+            abs(item.frame.midX - target.frame.midX) <= tolerance && abs(item.frame.midY - target.frame.midY) <= tolerance
+        }
+        let siblings = now.indices.filter { now[$0].pid == target.pid }
+        if let keyed = siblings.first(where: { now[$0].key == target.key }), isWhereTargetWas(now[keyed]) { return keyed }
+        let there = siblings.filter { isWhereTargetWas(now[$0]) }
+        return there.count == 1 ? there[0] : nil
+    }
+
     static func parse(app: (bundleID: String?, name: String, pid: pid_t), children: [Child]) -> [BarItem] {
         var seen: [String: Int] = [:]
         return order(of: children).map { children[$0] }.map { c in
@@ -155,15 +170,23 @@ final class AXBarReader: BarReading {
         }
     }
 
-    /// `AXPress` on the item. The target is found again by process and key, since an element does not outlive a read. On a
-    /// queue of its own: a click must not wait behind a slow read.
+    /// `AXPress` on the item. The target is found again by process, key and place (`pressTarget`), since an element does not
+    /// outlive a read. On a queue of its own: a click must not wait behind a slow read.
     func press(_ item: BarItem) {
         guard AXIsProcessTrusted(), let pid = item.pid,
               let app = NSRunningApplication(processIdentifier: pid) else { return }
         let entry = (bundleID: app.bundleIdentifier, name: app.localizedName ?? "?", pid: pid)
+        let log = self.log
         pressQueue.async {
-            guard let hit = Self.combine(Self.scan(apps: [entry]))?.first(where: { $0.item.key == item.key }) else { return }
-            _ = AXUIElementPerformAction(hit.press, kAXPressAction as CFString)
+            guard let found = Self.combine(Self.scan(apps: [entry])) else {
+                log("press: \(item.key) not pressed, its app could not be read")
+                return
+            }
+            guard let i = Self.pressTarget(for: item, among: found.map(\.item)) else {
+                log("press: \(item.key) not pressed, nothing of its app is where it was (\(Int(item.frame.minX)),\(Int(item.frame.minY)))")
+                return
+            }
+            _ = AXUIElementPerformAction(found[i].press, kAXPressAction as CFString)
         }
     }
 

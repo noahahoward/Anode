@@ -154,4 +154,46 @@ final class BarReaderTests: XCTestCase {
             XCTAssertEqual(AXBarReader.inBarOrder(bar.shuffled(using: &generator)), expected)
         }
     }
+
+    // ── Which item a press goes to ──────────────────────────────────────────
+
+    private func at(_ key: String, x: CGFloat, y: CGFloat = 0, pid: pid_t = 7) -> BarItem {
+        BarItem(key: key, bundleID: "o", appName: "O", title: "", frame: CGRect(x: x, y: y, width: 22, height: 39),
+                isLocked: false, hasPress: true, pid: pid)
+    }
+
+    func testPressGoesToTheItemWithTheKeyWhenItIsWhereItWas() {
+        let now = [at("o|#0", x: 100), at("o|#1", x: 130)]
+        XCTAssertEqual(AXBarReader.pressTarget(for: at("o|#1", x: 130), among: now), 1)
+        // A point or two of drift (a neighbour's text changed width) is still the same item.
+        XCTAssertEqual(AXBarReader.pressTarget(for: at("o|#1", x: 127), among: now), 1)
+    }
+
+    /// Unnamed items are keyed by their order. When a sibling to the left goes, the keys shift: the press must follow the
+    /// item that is where the pressed one was, not the key, or it opens the other icon's menu.
+    func testPressFollowsThePlaceWhenASiblingWentAndTheKeysShifted() {
+        let now = [at("o|#0", x: 130)]
+        XCTAssertEqual(AXBarReader.pressTarget(for: at("o|#1", x: 130), among: now), 0)
+        // The item that went is not pressed by way of its old key, now worn by its sibling somewhere else.
+        XCTAssertNil(AXBarReader.pressTarget(for: at("o|#0", x: 100), among: now))
+    }
+
+    func testPressDoesNothingWhenTheItemMovedAndNothingIsWhereItWas() {
+        let now = [at("o|#0", x: 400), at("o|#1", x: 430)]
+        XCTAssertNil(AXBarReader.pressTarget(for: at("o|#1", x: 130), among: now))
+    }
+
+    /// Parked items stack at the same place off the bar. The key tells them apart while it still matches; when it does not,
+    /// several siblings sit where the item was and none can be chosen.
+    func testParkedSiblingsAreToldApartByKeyAndNeverGuessed() {
+        let now = [at("o|#0", x: -1, y: 1157), at("o|#1", x: -1, y: 1157)]
+        XCTAssertEqual(AXBarReader.pressTarget(for: at("o|#1", x: -1, y: 1157), among: now), 1)
+        XCTAssertNil(AXBarReader.pressTarget(for: at("o|#2", x: -1, y: 1157), among: now))
+        // A parked item stays parked: one on the bar at the same x is not it.
+        XCTAssertNil(AXBarReader.pressTarget(for: at("o|#0", x: -1, y: 1157), among: [at("o|#0", x: -1, y: 0)]))
+    }
+
+    func testPressNeverGoesToAnotherAppsItem() {
+        XCTAssertNil(AXBarReader.pressTarget(for: at("o|#1", x: 130), among: [at("p|#0", x: 130, pid: 8)]))
+    }
 }
