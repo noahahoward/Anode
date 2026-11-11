@@ -179,8 +179,10 @@ final class MenuBarHiderController {
     }
 
     /// The pill can be opened while the bar is collapsed, and also while it is only briefly unreadable or settling: Anode's
-    /// folded widgets would otherwise have no route. Never in full screen, nor when the hider is off or has nothing to show.
+    /// folded widgets would otherwise have no route. Never in full screen, nor when the hider is off or has nothing to show
+    /// (an open pill can always be closed).
     var canTogglePill: Bool {
+        guard !items.isEmpty || pillState.isOpen else { return false }
         switch decision {
         case .collapsed, .standDown(.layoutUnreadable), .standDown(.settling): return true
         case .standDown: return false

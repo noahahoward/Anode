@@ -441,6 +441,19 @@ final class MenuBarHiderControllerTests: XCTestCase {
         XCTAssertEqual(covers.rects, [])
     }
 
+    /// Everything pinned: nothing is behind the chevron, so pressing it opens no empty pill.
+    func testNothingBehindTheChevronOpensNoPill() {
+        let cpu = MenuBarWidgetController.key(forMetricID: "cpuUsage"), memory = MenuBarWidgetController.key(forMetricID: "memoryUsage")
+        settings.menuBarHiderArrangement = BarArrangement(
+            pinned: [cpu, memory, "op|1Password", "wg|WireGuard", "cc|Wi-Fi", "cc|Sound", "cc|Battery"], pillOrder: [])
+        turnOn()
+        XCTAssertEqual(controller.decision, .collapsed)
+        XCTAssertEqual(controller.items, [])
+        XCTAssertFalse(controller.canTogglePill)
+        chevron.onToggle?()
+        XCTAssertFalse(pill.isShowing)
+    }
+
     /// The controller finds its chevron by the accessibility label the chevron gives itself.
     func testTheChevronStillCarriesTheLabelTheControllerLooksFor() throws {
         let source = try String(contentsOf: URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
