@@ -146,12 +146,19 @@ final class AXBarReader: BarReading {
 
 // ── What makes the layout worth reading again ───────────────────────────────
 
-/// Calls `onChange` when something that moves the menu bar happens: an app starts or quits, the Space or a screen changes.
+protocol BarEventing: AnyObject {
+    var isRunning: Bool { get }
+    func start()
+    func stop()
+}
+
+/// Calls `onChange` when something that moves the menu bar happens: an app starts or quits, the Space or a screen changes
+/// (`displayChanged` is true for the last two: the layout is still moving and the pill was placed for the old one).
 /// There is also a slow fallback timer, because an item can come and go without any of those. Nothing runs until `start()`
 /// and everything is removed by `stop()`. Bursts are coalesced into one call.
-final class BarEvents {
+final class BarEvents: BarEventing {
 
-    private let onChange: (_ screenChanged: Bool) -> Void
+    private let onChange: (_ displayChanged: Bool) -> Void
     private let fallbackSeconds: TimeInterval
     private var tokens: [(NotificationCenter, NSObjectProtocol)] = []
     private var timer: Timer?
@@ -159,7 +166,7 @@ final class BarEvents {
     private var pendingScreenChange = false
     private(set) var isRunning = false
 
-    init(fallbackSeconds: TimeInterval = 30, onChange: @escaping (_ screenChanged: Bool) -> Void) {
+    init(fallbackSeconds: TimeInterval = 30, onChange: @escaping (_ displayChanged: Bool) -> Void) {
         self.fallbackSeconds = fallbackSeconds
         self.onChange = onChange
     }
@@ -170,10 +177,12 @@ final class BarEvents {
         guard !isRunning else { return }
         isRunning = true
         let ws = NSWorkspace.shared.notificationCenter
-        for name in [NSWorkspace.didLaunchApplicationNotification, NSWorkspace.didTerminateApplicationNotification,
-                     NSWorkspace.activeSpaceDidChangeNotification] {
+        for name in [NSWorkspace.didLaunchApplicationNotification, NSWorkspace.didTerminateApplicationNotification] {
             tokens.append((ws, ws.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in self?.fire(screen: false) }))
         }
+        tokens.append((ws, ws.addObserver(forName: NSWorkspace.activeSpaceDidChangeNotification, object: nil, queue: .main) {
+            [weak self] _ in self?.fire(screen: true)
+        }))
         let nc = NotificationCenter.default
         tokens.append((nc, nc.addObserver(forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main) {
             [weak self] _ in self?.fire(screen: true)

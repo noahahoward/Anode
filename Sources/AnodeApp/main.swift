@@ -56,6 +56,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
     var liveWallpaper: LiveWallpaperRuntime?
     var keyboardCleaner: KeyboardCleaner?
     var gameMode: GameModeController?
+    var menuBarHider: MenuBarHiderRuntime?
     var temperatureAlarm = TemperatureAlarm()
     var windowSnapper: WindowSnapper?
     var windowGroups: WindowGroupController?
@@ -416,6 +417,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         // eight seconds later. `refresh` re-reads the needs and re-paces the timer,
         // so both halves follow from this one call.
         widgets.onPanelVisibilityChange = { [weak self] _ in self?.refresh() }
+        // Nothing of the hider exists until its setting is on (Beta Features).
+        menuBarHider = MenuBarHiderRuntime.live(widgets: widgets, openBetaFeatures: { [weak self] in self?.betaFeaturesWindow.show() })
         widgets.onPlacementChange = { [weak self] placement in
             self?.menuBarPlacementChanged(placement)
         }
@@ -2731,6 +2734,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         // Never leave the lid held open behind a quit app.
         keepAwake?.shutdown()
         gameMode?.shutdown()
+        menuBarHider?.shutdown()
         liveWallpaper?.shutdown()
         // Read on the sampling queue, which owns both — reading them here on
         // main raced the tick that mutates them. Safe to wait on: the sampling

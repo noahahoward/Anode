@@ -1548,3 +1548,43 @@ extension MenuBarWidgetController {
                      action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
     }
 }
+
+// ── Folding into the Menu Bar Hider's pill ──────────────────────────────────
+
+extension MenuBarWidgetController: WidgetFolding {
+
+    /// The widgets the owner has configured, each under the key the hider files it by.
+    var widgetKeys: [(key: String, metricID: String, title: String)] {
+        configs.filter(\.enabled).map { config in
+            let id = MetricID(rawValue: config.metricID)
+            let title = config.metricID == MetricID.groupPlaceholder.rawValue
+                ? "All readings" : (MetricRegistry.shared.descriptor(for: id)?.title ?? config.metricID)
+            return (Self.key(forMetricID: config.metricID), config.metricID, title)
+        }
+    }
+
+    /// What a click on the widget does, from the pill: the group opens its list of readings, any other opens the window on
+    /// the lens that explains the number, exactly as a click on the status item would.
+    func openWidgetMenu(metricID: String) {
+        guard let config = configs.first(where: { $0.metricID == metricID }) else { return }
+        if config.style == .group {
+            let menu = NSMenu()
+            menu.delegate = self
+            menu.popUp(positioning: nil, at: NSEvent.mouseLocation, in: nil)
+        } else {
+            onClick(MetricID(rawValue: metricID))
+        }
+    }
+
+    /// The picture of a widget for the pill, with the reading of the moment.
+    func pillImage(forMetricID metricID: String) -> NSImage? {
+        guard let config = configs.first(where: { $0.metricID == metricID }) else { return nil }
+        if config.style == .group { return WidgetRenderer.groupImage() }
+        let id = MetricID(rawValue: metricID)
+        let descriptor = MetricRegistry.shared.descriptor(for: id)
+        let value = descriptor == nil ? nil : MetricRegistry.shared.value(for: id)
+        if let image = WidgetRenderer.image(style: config.style, descriptor: descriptor, value: value, history: []) { return image }
+        let label = config.style == .textWithLabel ? (value?.label ?? descriptor?.shortTitle ?? "?") : nil
+        return WidgetRenderer.textImage(label: label, value: value?.text ?? "\u{2014}")
+    }
+}

@@ -47,11 +47,10 @@ final class BarChevron: NSObject, ChevronPresenting {
     @objc private func clicked(_ sender: NSStatusBarButton) {
         let event = NSApp.currentEvent
         let isRight = event?.type == .rightMouseUp || (event?.modifierFlags.contains(.control) ?? false)
-        if isRight, let menu = menuProvider?(), let item {
-            // A menu on the item itself would take the left click too; attach it for this one click only.
-            item.menu = menu
-            sender.performClick(nil)
-            item.menu = nil
+        if isRight, let menu = menuProvider?() {
+            // popUp, not `item.menu` plus `performClick`: that re-enters this very action from inside itself (the same
+            // lesson as `MenuBarWidgetController.widgetClicked`).
+            menu.popUp(positioning: nil, at: NSPoint(x: 0, y: sender.bounds.height + 5), in: sender)
         } else {
             onToggle?()
         }

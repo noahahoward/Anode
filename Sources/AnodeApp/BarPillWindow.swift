@@ -84,7 +84,10 @@ final class PillCell: NSView {
 
     required init?(coder: NSCoder) { fatalError("not used") }
 
-    func setPicture(_ image: NSImage?) { imageView.image = image }
+    func setPicture(_ image: NSImage?) {
+        imageView.image = image
+        imageView.contentTintColor = .white   // a template picture (Anode's own widgets) is drawn white on the dark pill
+    }
 
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
     override func mouseDown(with event: NSEvent) { layer?.backgroundColor = NSColor.white.withAlphaComponent(0.16).cgColor }
