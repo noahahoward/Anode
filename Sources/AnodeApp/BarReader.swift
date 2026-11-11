@@ -366,10 +366,11 @@ protocol BarEventing: AnyObject {
     func stop()
 }
 
-/// Calls `onChange` when something that moves the menu bar happens: an app starts or quits, the Space or a screen changes
-/// (`displayChanged` is true for the last two: the layout is still moving and the pill was placed for the old one).
-/// There is also a slow fallback timer, because an item can come and go without any of those. Nothing runs until `start()`
-/// and everything is removed by `stop()`. Bursts are coalesced into one call.
+/// Calls `onChange` when something that moves the menu bar happens: an app starts, quits or comes forward, the Space or a
+/// screen changes, or the Mac, its screens or the session wake (`displayChanged` is true for the last ones: the layout is
+/// still moving and the pill was placed for the old one). There is also a timer, because an item can come and go without any
+/// of those: every 3 s while `urgent` (covers are up), else a slow fallback, and none at all while the screens sleep or the
+/// session is locked. Nothing runs until `start()` and everything is removed by `stop()`. Bursts are coalesced into one call.
 final class BarEvents: BarEventing {
 
     private let onChange: (_ displayChanged: Bool) -> Void
@@ -377,18 +378,51 @@ final class BarEvents: BarEventing {
     /// read again.
     private let onInvalidate: () -> Void
     private let fallbackSeconds: TimeInterval
+    private let urgentSeconds: TimeInterval
+    private let workspaceCenter: NotificationCenter
+    private let appCenter: NotificationCenter
+    private let sessionCenter: NotificationCenter
+    private let makeTimer: (_ interval: TimeInterval, _ fire: @escaping () -> Void) -> BarEventTimer
+    private let after: (_ delay: TimeInterval, _ work: DispatchWorkItem) -> Void
     private var tokens: [(NotificationCenter, NSObjectProtocol)] = []
-    private var timer: Timer?
+    private var timer: BarEventTimer?
     private var pending: DispatchWorkItem?
     private var pendingScreenChange = false
     private(set) var isRunning = false
-    var urgent = false
+    /// The displays are asleep, or the session is locked: no timer then. Both are forgotten by `stop()`.
+    private var asleep = false
+    private var locked = false
+    /// Setting it to a new value restarts the timer at the new interval (if running and not paused); setting the same value
+    /// again leaves the timer alone, so being told on every pass does not put the next read off.
+    var urgent = false {
+        didSet { if urgent != oldValue { reschedule() } }
+    }
 
-    init(fallbackSeconds: TimeInterval = 30, onChange: @escaping (_ displayChanged: Bool) -> Void,
-         onInvalidate: @escaping () -> Void = {}) {
+    /// The centres, the timer and the debounce are parameters so a test can run all of it by hand; the defaults are the real
+    /// ones. `sessionCenter` carries the session's lock and unlock (a distributed notification).
+    init(fallbackSeconds: TimeInterval = 30, urgentSeconds: TimeInterval = 3,
+         onChange: @escaping (_ displayChanged: Bool) -> Void, onInvalidate: @escaping () -> Void = {},
+         workspaceCenter: NotificationCenter = NSWorkspace.shared.notificationCenter,
+         appCenter: NotificationCenter = .default,
+         sessionCenter: NotificationCenter = DistributedNotificationCenter.default(),
+         makeTimer: @escaping (_ interval: TimeInterval, _ fire: @escaping () -> Void) -> BarEventTimer = BarEvents.repeatingTimer,
+         after: @escaping (_ delay: TimeInterval, _ work: DispatchWorkItem) -> Void = { DispatchQueue.main.asyncAfter(deadline: .now() + $0, execute: $1) }) {
         self.onInvalidate = onInvalidate
         self.fallbackSeconds = fallbackSeconds
+        self.urgentSeconds = urgentSeconds
         self.onChange = onChange
+        self.workspaceCenter = workspaceCenter
+        self.appCenter = appCenter
+        self.sessionCenter = sessionCenter
+        self.makeTimer = makeTimer
+        self.after = after
+    }
+
+    /// A main-run-loop repeating timer, with a quarter of its interval as tolerance so the system can batch its wake-ups.
+    static func repeatingTimer(interval: TimeInterval, fire: @escaping () -> Void) -> BarEventTimer {
+        let timer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { _ in fire() }
+        timer.tolerance = interval / 4
+        return timer
     }
 
     deinit { stop() }
@@ -396,19 +430,27 @@ final class BarEvents: BarEventing {
     func start() {
         guard !isRunning else { return }
         isRunning = true
-        let ws = NSWorkspace.shared.notificationCenter
+        let ws = workspaceCenter
         for name in [NSWorkspace.didLaunchApplicationNotification, NSWorkspace.didTerminateApplicationNotification] {
             tokens.append((ws, ws.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in self?.fire(screen: false) }))
         }
         tokens.append((ws, ws.addObserver(forName: NSWorkspace.activeSpaceDidChangeNotification, object: nil, queue: .main) {
             [weak self] _ in self?.fire(screen: true)
         }))
-        let nc = NotificationCenter.default
+        // An app with wide menus coming forward makes macOS drop status items on a notched Mac.
+        observe(ws, NSWorkspace.didActivateApplicationNotification) { $0.fire(screen: false) }
+        // Waking is a display change: the layout may have moved while nobody was looking.
+        for name in [NSWorkspace.didWakeNotification, NSWorkspace.screensDidWakeNotification] {
+            observe(ws, name) { $0.asleep = false; $0.reschedule(); $0.fire(screen: true) }
+        }
+        observe(ws, NSWorkspace.screensDidSleepNotification) { $0.asleep = true; $0.reschedule() }
+        observe(sessionCenter, Self.sessionLocked) { $0.locked = true; $0.reschedule() }
+        observe(sessionCenter, Self.sessionUnlocked) { $0.locked = false; $0.reschedule(); $0.fire(screen: true) }
+        let nc = appCenter
         tokens.append((nc, nc.addObserver(forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main) {
             [weak self] _ in self?.fire(screen: true)
         }))
-        timer = Timer.scheduledTimer(withTimeInterval: fallbackSeconds, repeats: true) { [weak self] _ in self?.fire(screen: false) }
-        timer?.tolerance = fallbackSeconds / 4
+        reschedule()
     }
 
     func stop() {
@@ -416,8 +458,27 @@ final class BarEvents: BarEventing {
         isRunning = false
         for (center, token) in tokens { center.removeObserver(token) }
         tokens.removeAll()
-        timer?.invalidate(); timer = nil
+        asleep = false
+        locked = false
+        reschedule()
         pending?.cancel(); pending = nil
+    }
+
+    static let sessionLocked = Notification.Name("com.apple.screenIsLocked")
+    static let sessionUnlocked = Notification.Name("com.apple.screenIsUnlocked")
+
+    private func observe(_ center: NotificationCenter, _ name: Notification.Name, _ handle: @escaping (BarEvents) -> Void) {
+        tokens.append((center, center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+            if let self { handle(self) }
+        }))
+    }
+
+    /// The timer exists only while running with the screens awake and the session unlocked: nobody sees a cover otherwise, and
+    /// every read wakes every running app. Its interval is short while covers are up.
+    private func reschedule() {
+        timer?.invalidate(); timer = nil
+        guard isRunning, !asleep, !locked else { return }
+        timer = makeTimer(urgent ? urgentSeconds : fallbackSeconds) { [weak self] in self?.fire(screen: false) }
     }
 
     private func fire(screen: Bool) {
@@ -431,6 +492,13 @@ final class BarEvents: BarEventing {
             self.onChange(screen)
         }
         pending = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: work)
+        after(0.3, work)
     }
 }
+
+/// A repeating timer `BarEvents` can stop.
+protocol BarEventTimer: AnyObject {
+    func invalidate()
+}
+
+extension Timer: BarEventTimer {}
