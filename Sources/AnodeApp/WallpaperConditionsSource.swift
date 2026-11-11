@@ -29,7 +29,10 @@ final class WallpaperConditionsSource {
         WallpaperGlobalConditions(onBattery: Self.isOnBattery(),
                                   lowPowerMode: ProcessInfo.processInfo.isLowPowerModeEnabled,
                                   thermalHot: Self.isHot(ProcessInfo.processInfo.thermalState),
-                                  displaysAsleep: displaysAsleep, screenLocked: screenLocked, userPaused: false)
+                                  // A shut lid with nothing else plugged in is a display nobody can see, and Always Stay
+                                  // Awake keeps the panel lit (at brightness 0) so the system never says it is asleep.
+                                  displaysAsleep: displaysAsleep || !ScreenWatch.shared.isWatched,
+                                  screenLocked: screenLocked, userPaused: false)
     }
 
     static func isOnBattery() -> Bool {

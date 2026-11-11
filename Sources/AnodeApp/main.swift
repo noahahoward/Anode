@@ -495,6 +495,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
                 self.restartTimer(hidden: !awake)
                 if awake { self.refresh() }
             }
+        // The lid shutting or opening. The tick re-reads the same answer, so this is about promptness: back to the fast
+        // rate, and a fresh reading, the moment the lid opens rather than at the next slow tick. Asynchronous because
+        // the tick itself can be what noticed, and a refresh inside a refresh is not wanted.
+        ScreenWatch.shared.onChange = { [weak self] watched in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                let drawing = self.windowIsWorthDrawing
+                self.restartTimer(hidden: !drawing)
+                LiveWallpaperController.current?.conditionsChanged(refresh: watched)
+                if watched && drawing { self.refresh() }
+            }
+        }
+        ScreenWatch.shared.start()
         // The trailing-window column is TITLED from this setting, so a change has to
         // reach the header. Without it the column would keep saying "10 HR POWER"
         // over a two-hour figure.
@@ -649,7 +662,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
     var windowIsWorthDrawing: Bool {
         let open = main.window.isVisible
         let onScreen = main.window.occlusionState.contains(.visible)
-        let answer = AppPresence.windowIsWorthDrawing(isOpen: open, isOnScreen: onScreen)
+        // A window on a panel nobody can see (lid shut, nothing else plugged in) is not occluded as far as the
+        // window server knows, so occlusion alone says "drawing" — see `ScreenWatch`.
+        let answer = AppPresence.windowIsWorthDrawing(isOpen: open, isOnScreen: onScreen) && ScreenWatch.shared.isWatched
         // `ANODE_LOG_VISIBILITY=1` prints every change to this answer and the two
         // readings behind it. Kept because "is the window actually being drawn"
         // is invisible from outside the process and cannot be measured by CPU
@@ -806,6 +821,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
 
     func refresh() {
         guard let m = monitor else { return }
+        // The net under the lid notifications: one registry read per tick, so a missed message costs one tick.
+        ScreenWatch.shared.update()
         // The cheap half first: a closed window cannot be stranded, and that is
         // the state this app spends most of its life in, so the hidden tick pays
         // one property read and never asks the window server anything.
@@ -826,7 +843,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         // The tab on screen, read on main because that is where it is written. It
         // decides which subsystems this tick pays for — see `visibleNeeds`.
         // An open panel is a reader too — see `MenuBarWidgetController.isPanelOpen`.
-        let panelOpen = widgets?.isPanelOpen ?? false
+        let panelOpen = (widgets?.isPanelOpen ?? false) && ScreenWatch.shared.isWatched
         let needs = Self.samplingNeeds(base: visible ? visibleNeeds : hiddenNeeds, gameShowing: gameMode?.isShowing ?? false)
         // Main-thread state for the same reason: the widget configs live here.
         let widgetNeedsFull = Settings.shared.menuBarWidgetsEnabled
