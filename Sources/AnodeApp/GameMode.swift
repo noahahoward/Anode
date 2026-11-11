@@ -291,8 +291,11 @@ enum RealFrontmost {
             .flatMap { $0.object(forInfoDictionaryKey: "LSApplicationCategoryType") as? String }
         let windows = (CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [[String: Any]]) ?? []
         let window = largestWindow(of: app.processIdentifier, in: windows)
-        let screen = window.flatMap { screen(containing: $0) } ?? NSScreen.main ?? NSScreen.screens.first
-        guard let screen else { return nil }
+        // Not `let screen = ... screen(containing:) ...`: a variable named like the function it calls in its own
+        // initializer is read as the variable by older Swift compilers ("cannot call value of non-function type
+        // 'NSScreen?'") and as the function by newer ones, so the install failed on a Mac with an older toolchain.
+        let found = window.flatMap { Self.screen(containing: $0) } ?? NSScreen.main ?? NSScreen.screens.first
+        guard let screen = found else { return nil }
         let safeTop = screen.safeAreaInsets.top
         let menuBarHeight = max(screen.frame.maxY - screen.visibleFrame.maxY, safeTop, 24)
         let fullscreen = window != nil && isFullscreen(presentationOptions: NSApp.currentSystemPresentationOptions)

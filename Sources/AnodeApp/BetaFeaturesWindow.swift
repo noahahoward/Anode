@@ -131,7 +131,15 @@ final class BetaFeaturesWindowController: NSWindowController {
         let widthAllows = max(1, min(maxColumns, Int((maxWidth - 2 * inset + columnGap) / (columnWidth + columnGap))))
         for count in 1...widthAllows {
             let groups = partition(heights: heights, into: count, spacing: spacing)
-            let tallest = groups.map { g in g.map { heights[$0] }.reduce(0, +) + spacing * CGFloat(max(0, g.count - 1)) }.max() ?? 0
+            // A loop with typed steps, not one expression: older Swift compilers gave up on the single
+            // `groups.map { ... reduce(0, +) + spacing * CGFloat(...) }.max() ?? 0` ("unable to type-check this
+            // expression in reasonable time"), and the install failed on a Mac with one.
+            var tallest: CGFloat = 0
+            for group in groups {
+                let stacked: CGFloat = group.reduce(CGFloat(0)) { $0 + heights[$1] }
+                let gaps: CGFloat = spacing * CGFloat(max(0, group.count - 1))
+                tallest = max(tallest, stacked + gaps)
+            }
             if tallest + 2 * inset <= available { return count }
         }
         return widthAllows
