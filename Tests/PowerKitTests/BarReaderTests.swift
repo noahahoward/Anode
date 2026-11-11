@@ -134,4 +134,24 @@ final class BarReaderTests: XCTestCase {
         XCTAssertNil(AXBarReader.frame(position: "x" as CFString, size: size))
         XCTAssertNil(AXBarReader.frame(position: point, size: nil))
     }
+
+    // ── The order a read is delivered in ────────────────────────────────────
+
+    private func item(_ key: String, x: CGFloat, pid: pid_t = 1) -> BarItem {
+        BarItem(key: key, bundleID: nil, appName: "A", title: "", frame: CGRect(x: x, y: 0, width: 22, height: 39),
+                isLocked: false, hasPress: true, pid: pid)
+    }
+
+    /// Apps are read in parallel and answer in any order. Two reads of an unchanged bar must come out equal (they are compared
+    /// to confirm a layout), and the pill and the settings list must not shuffle.
+    func testItemsAreDeliveredInBarOrderWhateverOrderTheAppsAnswered() {
+        let bar = [item("p|#0", x: -1, pid: 4), item("q|#0", x: -1, pid: 5), item("o|#0", x: 7, pid: 3),
+                   item("a|Wi-Fi", x: 1502, pid: 2), item("b|Clock", x: 1662, pid: 2), item("anode|#0", x: 1114, pid: 9)]
+        let expected = [item("p|#0", x: -1, pid: 4), item("q|#0", x: -1, pid: 5), item("o|#0", x: 7, pid: 3),
+                        item("anode|#0", x: 1114, pid: 9), item("a|Wi-Fi", x: 1502, pid: 2), item("b|Clock", x: 1662, pid: 2)]
+        var generator = SystemRandomNumberGenerator()
+        for _ in 0..<20 {
+            XCTAssertEqual(AXBarReader.inBarOrder(bar.shuffled(using: &generator)), expected)
+        }
+    }
 }

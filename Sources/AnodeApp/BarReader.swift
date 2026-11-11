@@ -57,6 +57,16 @@ final class AXBarReader: BarReading {
     /// of hidden ones, and a cover would be drawn over it.
     static func isComplete(_ children: [Child]) -> Bool { !children.contains { $0.readFailed } }
 
+    /// Left to right on the bar; items at the same x (parked ones stack) by key, then process. Apps are read in parallel and
+    /// answer in any order, and two reads of an unchanged bar must come out equal.
+    static func precedes(_ a: BarItem, _ b: BarItem) -> Bool {
+        if a.frame.minX != b.frame.minX { return a.frame.minX < b.frame.minX }
+        if a.key != b.key { return a.key < b.key }
+        return (a.pid ?? 0) < (b.pid ?? 0)
+    }
+
+    static func inBarOrder(_ items: [BarItem]) -> [BarItem] { items.sorted(by: precedes) }
+
     static func parse(app: (bundleID: String?, name: String, pid: pid_t), children: [Child]) -> [BarItem] {
         var seen: [String: Int] = [:]
         return order(of: children).map { children[$0] }.map { c in
@@ -178,7 +188,7 @@ final class AXBarReader: BarReading {
         case failed(String)
     }
 
-    /// Every app's items, or nil when any app's could not be read in full.
+    /// Every app's items in bar order, or nil when any app's could not be read in full.
     private static func combine(_ results: [AppScan]) -> [Found]? {
         var all: [Found] = []
         for result in results {
@@ -188,7 +198,7 @@ final class AXBarReader: BarReading {
             case .failed: return nil
             }
         }
-        return all
+        return all.sorted { precedes($0.item, $1.item) }
     }
 
     private static func scan(apps: [App]) -> [AppScan] {
