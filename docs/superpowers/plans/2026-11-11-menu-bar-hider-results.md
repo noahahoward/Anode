@@ -51,3 +51,20 @@ Probes: `docs/superpowers/spikes/2026-11-11-menu-bar-hider-press-probe.swift` (A
   backdrop that paints this bar black, so it photographed the wallpaper. Now only the hider's covers and pill (tagged
   `dev.anode.menuBarHider`) are left out; the re-test shows the picture on black.
 - Settings put back afterwards (arrangement key deleted, feature off); the bar came back whole.
+
+## After the second review (2026-11-11, build 5f99dd8)
+
+A fresh whole-branch review found ten problems (stale covers on layout shifts with no event, a parked chevron, a timeout
+read as "no items", exact-width comparison of reads, a 30 s scan of every app, force casts, random order, a press reaching
+the wrong sibling, an empty pill, build-app.sh ending silently). All fixed with tests; suite 2290 tests, 0 failures.
+
+- **Found on hardware and fixed:** with "any timeout fails the read", `universalaccessd` (no menu bar items) answered
+  `AXError -25204` on every read and the hider never collapsed (`stand down: layoutUnreadable`). Now an app's silence fails
+  the read only for the system's owners, Anode, and apps seen with items before.
+- **Re-test:** collapsed with 2 covers: Sound (test arrangement) and AlDente, started since the last pass, which appeared on
+  the bar at x 1393 and went behind the chevron by default. Both covers seamless; the chevron was recognised by its label.
+  The pill showed Sound and AlDente as captured pictures on black. Settings put back; the bar came back whole, AlDente included.
+- **macOS 27.0 has no overflow arrow here** (read-only probe: no `AXOverflowButton`, no arrow child or hit), so a parked
+  icon's menu keeps opening at the top-left; the Beta Features section now says so.
+- **Unmeasured risk (from Thaw's source):** AXPress on a parked item may leave MenuBarAgent keeping the bar shown in
+  full-screen apps until it restarts. Owner to check once.
