@@ -57,6 +57,38 @@ final class AXBarReader: BarReading {
     /// of hidden ones, and a cover would be drawn over it.
     static func isComplete(_ children: [Child]) -> Bool { !children.contains { $0.readFailed } }
 
+    /// Left to right on the bar; items at the same x (parked ones stack) by key, then process. Apps are read in parallel and
+    /// answer in any order, and two reads of an unchanged bar must come out equal.
+    static func precedes(_ a: BarItem, _ b: BarItem) -> Bool {
+        if a.frame.minX != b.frame.minX { return a.frame.minX < b.frame.minX }
+        if a.key != b.key { return a.key < b.key }
+        return (a.pid ?? 0) < (b.pid ?? 0)
+    }
+
+    static func inBarOrder(_ items: [BarItem]) -> [BarItem] { items.sorted(by: precedes) }
+
+    /// Which of `now` (a fresh read of the target's app) a press on `target` (from an earlier read) goes to, or nil for none.
+    /// Unnamed items are keyed by their order, so when a sibling parks, comes or goes the keys shift and the key alone would
+    /// open the other icon's menu. The item must also still be where it was, within `tolerance` points (x and y, so a parked
+    /// item stays parked). If the key's item has moved, the one sibling now where the target was is the target; with none,
+    /// or several (parked items stack), nothing is pressed.
+    static func pressTarget(for target: BarItem, among now: [BarItem], tolerance: CGFloat = 4) -> Int? {
+        func isWhereTargetWas(_ item: BarItem) -> Bool {
+            abs(item.frame.midX - target.frame.midX) <= tolerance && abs(item.frame.midY - target.frame.midY) <= tolerance
+        }
+        let siblings = now.indices.filter { now[$0].pid == target.pid && now[$0].bundleID == target.bundleID }
+        if let keyed = siblings.first(where: { now[$0].key == target.key }), isWhereTargetWas(now[keyed]) { return keyed }
+        let there = siblings.filter { isWhereTargetWas(now[$0]) }
+        return there.count == 1 ? there[0] : nil
+    }
+
+    /// Whether the process now at the item's pid (its bundle id and name) is still the item's app: a pid can be reused
+    /// between drawing the pill and the press. An app without a bundle id is known by its name.
+    static func isStillTheApp(bundleID: String?, name: String?, of item: BarItem) -> Bool {
+        guard bundleID == item.bundleID else { return false }
+        return item.bundleID != nil || name == item.appName
+    }
+
     static func parse(app: (bundleID: String?, name: String, pid: pid_t), children: [Child]) -> [BarItem] {
         var seen: [String: Int] = [:]
         return order(of: children).map { children[$0] }.map { c in
@@ -75,7 +107,59 @@ final class AXBarReader: BarReading {
         }
     }
 
+    // ── What another app's answer means ────────────────────────────────────
+
+    /// What an error from another app's accessibility tree means.
+    enum Missing: Equatable {
+        /// The app said so: there is nothing of that kind there.
+        case nothingThere
+        /// No answer that can be trusted (a timeout, a busy or quitting app, anything else). The read as a whole has failed:
+        /// an app left out of it would let a cover span its items.
+        case failed
+    }
+
+    static func classify(_ status: AXError) -> Missing {
+        switch status {
+        case .noValue, .attributeUnsupported, .notImplemented: return .nothingThere
+        default: return .failed
+        }
+    }
+
+    enum BarLookup: Equatable {
+        case bar(AXUIElement)
+        case nothingThere
+        case failed
+    }
+
+    /// An app's extras menu bar, from what `AXExtrasMenuBar` answered.
+    static func bar(status: AXError, value: CFTypeRef?) -> BarLookup {
+        guard status == .success else { return classify(status) == .nothingThere ? .nothingThere : .failed }
+        return element(value).map { .bar($0) } ?? .failed
+    }
+
+    /// A list of elements (children) from what was answered; nil when the read failed or anything in it is not an element.
+    /// "No value" is an empty list.
+    static func elements(status: AXError, value: CFTypeRef?) -> [AXUIElement]? {
+        guard status == .success else { return classify(status) == .nothingThere ? [] : nil }
+        guard let value, CFGetTypeID(value) == CFArrayGetTypeID(), let list = value as? [AnyObject] else { return nil }
+        let found = list.compactMap(element)
+        return found.count == list.count ? found : nil
+    }
+
     // ── BarReading ──────────────────────────────────────────────────────────
+
+    typealias App = (bundleID: String?, name: String, pid: pid_t)
+
+    private let log: (String) -> Void
+    /// The last failure logged, so an app that keeps failing is written down once, not on every read. Touched on `queue` only.
+    private var lastFailure: String?
+    /// The apps that said they have no extras menu bar, not asked again for a while. Touched on `queue` only; a press asks
+    /// its app whatever this says.
+    private var noBar = NoBarCache(neverSkipped: AXBarReader.systemOwners)
+
+    init(log: @escaping (String) -> Void = { FeatureLog.append("menubarhider.log", $0) }) {
+        self.log = log
+    }
 
     func read(completion: @escaping ([BarItem]?) -> Void) {
         guard AXIsProcessTrusted() else { DispatchQueue.main.async { completion(nil) }; return }
@@ -85,8 +169,15 @@ final class AXBarReader: BarReading {
         let once = OnceCompletion(completion)
         let deadline = DispatchWorkItem { _ = once.complete(nil) }
         DispatchQueue.main.asyncAfter(deadline: .now() + Self.budget, execute: deadline)
-        queue.async {
-            let found = Self.scan(apps: apps)
+        queue.async { [self] in
+            noBar.sync(running: Set(apps.map(\.pid)), now: Date())
+            let asked = apps.filter { !noBar.skips($0.pid) }
+            let results = Self.scan(apps: asked)
+            for (app, result) in zip(asked, results) {
+                if case .nothingThere = result { noBar.record(pid: app.pid, bundleID: app.bundleID, answer: .nothingThere) }
+            }
+            let found = Self.combine(results)
+            noteFailure(apps: asked, results: results)
             DispatchQueue.main.async {
                 deadline.cancel()
                 _ = once.complete(found?.map(\.item))
@@ -94,96 +185,222 @@ final class AXBarReader: BarReading {
         }
     }
 
-    /// `AXPress` on the item. The target is found again by process and key, since an element does not outlive a read. On a
-    /// queue of its own: a click must not wait behind a slow read.
+    /// `AXPress` on the item. The target is found again by process, key and place (`pressTarget`), since an element does not
+    /// outlive a read. On a queue of its own: a click must not wait behind a slow read.
     func press(_ item: BarItem) {
         guard AXIsProcessTrusted(), let pid = item.pid,
               let app = NSRunningApplication(processIdentifier: pid) else { return }
+        let log = self.log
+        guard Self.isStillTheApp(bundleID: app.bundleIdentifier, name: app.localizedName, of: item) else {
+            log("press: \(item.key) not pressed, pid \(pid) is now another app")
+            return
+        }
         let entry = (bundleID: app.bundleIdentifier, name: app.localizedName ?? "?", pid: pid)
         pressQueue.async {
-            guard let hit = Self.scan(apps: [entry])?.first(where: { $0.item.key == item.key }) else { return }
-            _ = AXUIElementPerformAction(hit.press, kAXPressAction as CFString)
+            guard let found = Self.combine(Self.scan(apps: [entry])) else {
+                log("press: \(item.key) not pressed, its app could not be read")
+                return
+            }
+            guard let i = Self.pressTarget(for: item, among: found.map(\.item)) else {
+                log("press: \(item.key) not pressed, nothing of its app is where it was (\(Int(item.frame.minX)),\(Int(item.frame.minY)))")
+                return
+            }
+            _ = AXUIElementPerformAction(found[i].press, kAXPressAction as CFString)
         }
+    }
+
+    /// Writes down which app failed a read, and how, when that is not what was written down last.
+    private func noteFailure(apps: [App], results: [AppScan]) {
+        guard let i = results.firstIndex(where: { if case .failed = $0 { return true } else { return false } }),
+              case .failed(let why) = results[i] else { lastFailure = nil; return }
+        let line = "read failed: \(apps[i].bundleID ?? apps[i].name) (pid \(apps[i].pid)): \(why)"
+        guard line != lastFailure else { return }
+        lastFailure = line
+        log(line)
     }
 
     // ── Accessibility ───────────────────────────────────────────────────────
 
-    /// nil when the bar could not be read in full.
-    private static func scan(apps: [(bundleID: String?, name: String, pid: pid_t)]) -> [Found]? {
-        let lock = NSLock()
-        var all: [Found] = []
-        var failed = false
-        DispatchQueue.concurrentPerform(iterations: apps.count) { i in
-            guard let found = scan(app: apps[i]) else {
-                lock.lock(); failed = true; lock.unlock()
-                return
-            }
-            guard !found.isEmpty else { return }
-            lock.lock(); all += found; lock.unlock()
-        }
-        return failed ? nil : all
+    /// What one app's extras menu bar held.
+    private enum AppScan {
+        case items([Found])
+        /// The app said it has no extras menu bar.
+        case nothingThere
+        /// The app did not answer in a way that can be trusted; the text says where and how.
+        case failed(String)
     }
 
-    private static func scan(app: (bundleID: String?, name: String, pid: pid_t)) -> [Found]? {
+    /// Every app's items in bar order, or nil when any app's could not be read in full.
+    private static func combine(_ results: [AppScan]) -> [Found]? {
+        var all: [Found] = []
+        for result in results {
+            switch result {
+            case .items(let found): all += found
+            case .nothingThere: continue
+            case .failed: return nil
+            }
+        }
+        return all.sorted { precedes($0.item, $1.item) }
+    }
+
+    private static func scan(apps: [App]) -> [AppScan] {
+        let lock = NSLock()
+        var results = [AppScan](repeating: .nothingThere, count: apps.count)
+        DispatchQueue.concurrentPerform(iterations: apps.count) { i in
+            let result = scan(app: apps[i])
+            lock.lock(); results[i] = result; lock.unlock()
+        }
+        return results
+    }
+
+    private static func scan(app: App) -> AppScan {
         let root = AXUIElementCreateApplication(app.pid)
         AXUIElementSetMessagingTimeout(root, perAppTimeout)
         var barValue: CFTypeRef?
         let status = AXUIElementCopyAttributeValue(root, "AXExtrasMenuBar" as CFString, &barValue)
-        guard status == .success, let bar = barValue else {
-            // Most apps have no extras menu bar, and say so. The system's own items are the exception: an error there is a read
-            // that failed, not an app with nothing to show.
-            let none = status == .noValue || status == .attributeUnsupported || status == .notImplemented
-            return none || !(app.bundleID.map(systemOwners.contains) ?? false) ? [] : nil
+        let bar: AXUIElement
+        switch Self.bar(status: status, value: barValue) {
+        case .bar(let found): bar = found
+        // Most apps have no extras menu bar, and say so.
+        case .nothingThere: return .nothingThere
+        case .failed: return .failed("extras menu bar: AXError \(status.rawValue)")
         }
-        AXUIElementSetMessagingTimeout(bar as! AXUIElement, perAppTimeout)
-        guard let kids = attribute(bar as! AXUIElement, kAXChildrenAttribute) as? [AXUIElement], !kids.isEmpty else { return [] }
+        AXUIElementSetMessagingTimeout(bar, perAppTimeout)
+        var kidsValue: CFTypeRef?
+        let kidsStatus = AXUIElementCopyAttributeValue(bar, kAXChildrenAttribute as CFString, &kidsValue)
+        guard let kids = elements(status: kidsStatus, value: kidsValue) else { return .failed("children: AXError \(kidsStatus.rawValue)") }
+        // An empty bar is not "no bar": the app has one and may fill it, so it is not remembered as having none.
+        guard !kids.isEmpty else { return .items([]) }
 
         var children: [Child] = []
         var targets: [AXUIElement] = []
         for kid in kids {
             AXUIElementSetMessagingTimeout(kid, perAppTimeout)
+            // Any attribute that timed out (rather than being absent) loses the item: its name, and so its key, is not known.
+            // The first attribute lost, and how, for the log.
+            var lost: String?
             // The system's items are hosting groups; the item proper, with its identifier, is the first child.
-            let inner = (attribute(kid, kAXChildrenAttribute) as? [AXUIElement])?.first
+            var innerValue: CFTypeRef?
+            let innerStatus = AXUIElementCopyAttributeValue(kid, kAXChildrenAttribute as CFString, &innerValue)
+            let innerKids = elements(status: innerStatus, value: innerValue)
+            if innerKids == nil { lost = "item children: AXError \(innerStatus.rawValue)" }
+            let inner = innerKids?.first
             if let inner { AXUIElementSetMessagingTimeout(inner, perAppTimeout) }
-            let outerPress = hasPress(kid)
-            let innerPress = inner.map(hasPress) ?? false
-            let (box, framed) = frame(of: kid)
-            let hosting = string(kid, kAXSubroleAttribute) == "AXHostingView"
-            let identifier = string(kid, kAXIdentifierAttribute) ?? inner.flatMap { string($0, kAXIdentifierAttribute) }
-            children.append(Child(identifier: identifier,
-                                  title: string(kid, kAXTitleAttribute),
-                                  description: string(kid, kAXDescriptionAttribute) ?? inner.flatMap { string($0, kAXDescriptionAttribute) },
-                                  frame: box, hasPress: outerPress || innerPress,
-                                  readFailed: !framed || (hosting && identifier == nil)))
+            let outerPress = hasPress(kid, lost: &lost)
+            let innerPress = inner.map { hasPress($0, lost: &lost) } ?? false
+            let box = frame(of: kid, lost: &lost)
+            let hosting = string(kid, kAXSubroleAttribute, lost: &lost) == "AXHostingView"
+            let identifier = string(kid, kAXIdentifierAttribute, lost: &lost)
+                ?? inner.flatMap { string($0, kAXIdentifierAttribute, lost: &lost) }
+            let title = string(kid, kAXTitleAttribute, lost: &lost)
+            let description = string(kid, kAXDescriptionAttribute, lost: &lost)
+                ?? inner.flatMap { string($0, kAXDescriptionAttribute, lost: &lost) }
+            if lost == nil, box == nil { lost = "item position or size of the wrong type" }
+            if lost == nil, hosting, identifier == nil { lost = "hosting item without an identifier" }
+            children.append(Child(identifier: identifier, title: title, description: description,
+                                  frame: box ?? .zero, hasPress: outerPress || innerPress, readFailed: lost != nil))
             targets.append(outerPress ? kid : (innerPress ? inner! : kid))
+            if let lost { return .failed(lost) }
         }
-        guard isComplete(children) else { return nil }
+        guard isComplete(children) else { return .failed("an item could not be read in full") }
         // Keys and elements are put in the same order, by the same function.
         let order = Self.order(of: children)
         let items = parse(app: app, children: children)
-        return zip(items, order).map { Found(item: $0.0, press: targets[$0.1]) }
+        return .items(zip(items, order).map { Found(item: $0.0, press: targets[$0.1]) })
     }
 
-    private static func attribute(_ e: AXUIElement, _ name: String) -> CFTypeRef? {
+    /// The value, or nil when there is none. `lost` is set (if not already) when the app did not say there is none but
+    /// failed to answer, naming the attribute and the error.
+    private static func attribute(_ e: AXUIElement, _ name: String, lost: inout String?) -> CFTypeRef? {
         var value: CFTypeRef?
-        return AXUIElementCopyAttributeValue(e, name as CFString, &value) == .success ? value : nil
+        let status = AXUIElementCopyAttributeValue(e, name as CFString, &value)
+        guard status == .success else {
+            if classify(status) == .failed, lost == nil { lost = "item \(name): AXError \(status.rawValue)" }
+            return nil
+        }
+        return value
     }
 
-    private static func string(_ e: AXUIElement, _ name: String) -> String? { attribute(e, name) as? String }
+    private static func string(_ e: AXUIElement, _ name: String, lost: inout String?) -> String? {
+        attribute(e, name, lost: &lost) as? String
+    }
 
-    private static func hasPress(_ e: AXUIElement) -> Bool {
+    private static func hasPress(_ e: AXUIElement, lost: inout String?) -> Bool {
         var actions: CFArray?
-        guard AXUIElementCopyActionNames(e, &actions) == .success else { return false }
+        let status = AXUIElementCopyActionNames(e, &actions)
+        guard status == .success else {
+            if classify(status) == .failed, lost == nil { lost = "item actions: AXError \(status.rawValue)" }
+            return false
+        }
         return (actions as? [String])?.contains(kAXPressAction as String) ?? false
     }
 
-    /// The frame, and whether both the position and the size could be read.
-    private static func frame(of e: AXUIElement) -> (CGRect, Bool) {
-        var p = CGPoint.zero, s = CGSize.zero
-        var ok = true
-        if let pv = attribute(e, kAXPositionAttribute) { ok = ok && AXValueGetValue(pv as! AXValue, .cgPoint, &p) } else { ok = false }
-        if let sv = attribute(e, kAXSizeAttribute) { ok = ok && AXValueGetValue(sv as! AXValue, .cgSize, &s) } else { ok = false }
-        return (CGRect(origin: p, size: s), ok)
+    /// The frame; nil unless both the position and the size could be read.
+    private static func frame(of e: AXUIElement, lost: inout String?) -> CGRect? {
+        frame(position: attribute(e, kAXPositionAttribute, lost: &lost), size: attribute(e, kAXSizeAttribute, lost: &lost))
+    }
+
+    // ── Values from another app, type-checked ──────────────────────────────
+    // Another app answers with whatever it likes: nothing it returns is force-cast.
+
+    /// The value as an element, or nil when it is anything else.
+    static func element(_ value: CFTypeRef?) -> AXUIElement? {
+        guard let value, CFGetTypeID(value) == AXUIElementGetTypeID() else { return nil }
+        return unsafeBitCast(value, to: AXUIElement.self)
+    }
+
+    /// A position and a size, each an `AXValue` of its own kind, as a frame; nil when either is missing or not that.
+    static func frame(position: CFTypeRef?, size: CFTypeRef?) -> CGRect? {
+        var origin = CGPoint.zero, extent = CGSize.zero
+        guard let p = axValue(position, .cgPoint), AXValueGetValue(p, .cgPoint, &origin),
+              let s = axValue(size, .cgSize), AXValueGetValue(s, .cgSize, &extent) else { return nil }
+        return CGRect(origin: origin, size: extent)
+    }
+
+    /// The value as an `AXValue` holding `type`, or nil when it is anything else.
+    private static func axValue(_ value: CFTypeRef?, _ type: AXValueType) -> AXValue? {
+        guard let value, CFGetTypeID(value) == AXValueGetTypeID() else { return nil }
+        let ax = unsafeBitCast(value, to: AXValue.self)
+        return AXValueGetType(ax) == type ? ax : nil
+    }
+}
+
+/// The processes that said they have no extras menu bar, so a read does not message (and wake) them again. A process is
+/// asked again once it quits (its pid is forgotten), when anything launches, and every `maxAge`: an app that adds a status
+/// item later is found within that. Only a definite "no" is kept, never a timeout, and never for Anode itself or the
+/// system's own items (a passing "no value" there would drop battery, Wi-Fi, sound or the chevron from every read).
+/// Not thread-safe: the reader keeps it on its serial queue.
+struct NoBarCache {
+    let maxAge: TimeInterval
+    let ownPID: pid_t
+    let neverSkipped: Set<String>
+    private var skipped: Set<pid_t> = []
+    /// The processes running at the last `sync`, and when the cache was last emptied.
+    private var running: Set<pid_t> = []
+    private var since = Date.distantPast
+
+    init(maxAge: TimeInterval = 300, ownPID: pid_t = getpid(), neverSkipped: Set<String>) {
+        self.maxAge = maxAge
+        self.ownPID = ownPID
+        self.neverSkipped = neverSkipped
+    }
+
+    func skips(_ pid: pid_t) -> Bool { skipped.contains(pid) }
+
+    /// Before each read, with the processes about to be read.
+    mutating func sync(running now: Set<pid_t>, now date: Date) {
+        if !now.isSubset(of: running) || date.timeIntervalSince(since) >= maxAge {
+            skipped = []
+            since = date
+        } else {
+            skipped.formIntersection(now)
+        }
+        running = now
+    }
+
+    mutating func record(pid: pid_t, bundleID: String?, answer: AXBarReader.Missing) {
+        guard answer == .nothingThere, pid != ownPID, !(bundleID.map(neverSkipped.contains) ?? false) else { return }
+        skipped.insert(pid)
     }
 }
 
@@ -212,10 +429,11 @@ protocol BarEventing: AnyObject {
     func stop()
 }
 
-/// Calls `onChange` when something that moves the menu bar happens: an app starts or quits, the Space or a screen changes
-/// (`displayChanged` is true for the last two: the layout is still moving and the pill was placed for the old one).
-/// There is also a slow fallback timer, because an item can come and go without any of those. Nothing runs until `start()`
-/// and everything is removed by `stop()`. Bursts are coalesced into one call.
+/// Calls `onChange` when something that moves the menu bar happens: an app starts, quits or comes forward, the Space or a
+/// screen changes, or the Mac, its screens or the session wake (`displayChanged` is true for the last ones: the layout is
+/// still moving and the pill was placed for the old one). There is also a timer, because an item can come and go without any
+/// of those: every 3 s while `urgent` (covers are up), else a slow fallback, and none at all while the screens sleep or the
+/// session is locked. Nothing runs until `start()` and everything is removed by `stop()`. Bursts are coalesced into one call.
 final class BarEvents: BarEventing {
 
     private let onChange: (_ displayChanged: Bool) -> Void
@@ -223,18 +441,51 @@ final class BarEvents: BarEventing {
     /// read again.
     private let onInvalidate: () -> Void
     private let fallbackSeconds: TimeInterval
+    private let urgentSeconds: TimeInterval
+    private let workspaceCenter: NotificationCenter
+    private let appCenter: NotificationCenter
+    private let sessionCenter: NotificationCenter
+    private let makeTimer: (_ interval: TimeInterval, _ fire: @escaping () -> Void) -> BarEventTimer
+    private let after: (_ delay: TimeInterval, _ work: DispatchWorkItem) -> Void
     private var tokens: [(NotificationCenter, NSObjectProtocol)] = []
-    private var timer: Timer?
+    private var timer: BarEventTimer?
     private var pending: DispatchWorkItem?
     private var pendingScreenChange = false
     private(set) var isRunning = false
-    var urgent = false
+    /// The displays are asleep, or the session is locked: no timer then. Both are forgotten by `stop()`.
+    private var asleep = false
+    private var locked = false
+    /// Setting it to a new value restarts the timer at the new interval (if running and not paused); setting the same value
+    /// again leaves the timer alone, so being told on every pass does not put the next read off.
+    var urgent = false {
+        didSet { if urgent != oldValue { reschedule() } }
+    }
 
-    init(fallbackSeconds: TimeInterval = 30, onChange: @escaping (_ displayChanged: Bool) -> Void,
-         onInvalidate: @escaping () -> Void = {}) {
+    /// The centres, the timer and the debounce are parameters so a test can run all of it by hand; the defaults are the real
+    /// ones. `sessionCenter` carries the session's lock and unlock (a distributed notification).
+    init(fallbackSeconds: TimeInterval = 30, urgentSeconds: TimeInterval = 3,
+         onChange: @escaping (_ displayChanged: Bool) -> Void, onInvalidate: @escaping () -> Void = {},
+         workspaceCenter: NotificationCenter = NSWorkspace.shared.notificationCenter,
+         appCenter: NotificationCenter = .default,
+         sessionCenter: NotificationCenter = DistributedNotificationCenter.default(),
+         makeTimer: @escaping (_ interval: TimeInterval, _ fire: @escaping () -> Void) -> BarEventTimer = BarEvents.repeatingTimer,
+         after: @escaping (_ delay: TimeInterval, _ work: DispatchWorkItem) -> Void = { DispatchQueue.main.asyncAfter(deadline: .now() + $0, execute: $1) }) {
         self.onInvalidate = onInvalidate
         self.fallbackSeconds = fallbackSeconds
+        self.urgentSeconds = urgentSeconds
         self.onChange = onChange
+        self.workspaceCenter = workspaceCenter
+        self.appCenter = appCenter
+        self.sessionCenter = sessionCenter
+        self.makeTimer = makeTimer
+        self.after = after
+    }
+
+    /// A main-run-loop repeating timer, with a quarter of its interval as tolerance so the system can batch its wake-ups.
+    static func repeatingTimer(interval: TimeInterval, fire: @escaping () -> Void) -> BarEventTimer {
+        let timer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { _ in fire() }
+        timer.tolerance = interval / 4
+        return timer
     }
 
     deinit { stop() }
@@ -242,19 +493,27 @@ final class BarEvents: BarEventing {
     func start() {
         guard !isRunning else { return }
         isRunning = true
-        let ws = NSWorkspace.shared.notificationCenter
+        let ws = workspaceCenter
         for name in [NSWorkspace.didLaunchApplicationNotification, NSWorkspace.didTerminateApplicationNotification] {
             tokens.append((ws, ws.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in self?.fire(screen: false) }))
         }
         tokens.append((ws, ws.addObserver(forName: NSWorkspace.activeSpaceDidChangeNotification, object: nil, queue: .main) {
             [weak self] _ in self?.fire(screen: true)
         }))
-        let nc = NotificationCenter.default
+        // An app with wide menus coming forward makes macOS drop status items on a notched Mac.
+        observe(ws, NSWorkspace.didActivateApplicationNotification) { $0.fire(screen: false) }
+        // Waking is a display change: the layout may have moved while nobody was looking.
+        for name in [NSWorkspace.didWakeNotification, NSWorkspace.screensDidWakeNotification] {
+            observe(ws, name) { $0.asleep = false; $0.reschedule(); $0.fire(screen: true) }
+        }
+        observe(ws, NSWorkspace.screensDidSleepNotification) { $0.asleep = true; $0.reschedule() }
+        observe(sessionCenter, Self.sessionLocked) { $0.locked = true; $0.reschedule() }
+        observe(sessionCenter, Self.sessionUnlocked) { $0.locked = false; $0.reschedule(); $0.fire(screen: true) }
+        let nc = appCenter
         tokens.append((nc, nc.addObserver(forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main) {
             [weak self] _ in self?.fire(screen: true)
         }))
-        timer = Timer.scheduledTimer(withTimeInterval: fallbackSeconds, repeats: true) { [weak self] _ in self?.fire(screen: false) }
-        timer?.tolerance = fallbackSeconds / 4
+        reschedule()
     }
 
     func stop() {
@@ -262,8 +521,27 @@ final class BarEvents: BarEventing {
         isRunning = false
         for (center, token) in tokens { center.removeObserver(token) }
         tokens.removeAll()
-        timer?.invalidate(); timer = nil
+        asleep = false
+        locked = false
+        reschedule()
         pending?.cancel(); pending = nil
+    }
+
+    static let sessionLocked = Notification.Name("com.apple.screenIsLocked")
+    static let sessionUnlocked = Notification.Name("com.apple.screenIsUnlocked")
+
+    private func observe(_ center: NotificationCenter, _ name: Notification.Name, _ handle: @escaping (BarEvents) -> Void) {
+        tokens.append((center, center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+            if let self { handle(self) }
+        }))
+    }
+
+    /// The timer exists only while running with the screens awake and the session unlocked: nobody sees a cover otherwise, and
+    /// every read wakes every running app. Its interval is short while covers are up.
+    private func reschedule() {
+        timer?.invalidate(); timer = nil
+        guard isRunning, !asleep, !locked else { return }
+        timer = makeTimer(urgent ? urgentSeconds : fallbackSeconds) { [weak self] in self?.fire(screen: false) }
     }
 
     private func fire(screen: Bool) {
@@ -277,6 +555,13 @@ final class BarEvents: BarEventing {
             self.onChange(screen)
         }
         pending = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: work)
+        after(0.3, work)
     }
 }
+
+/// A repeating timer `BarEvents` can stop.
+protocol BarEventTimer: AnyObject {
+    func invalidate()
+}
+
+extension Timer: BarEventTimer {}
