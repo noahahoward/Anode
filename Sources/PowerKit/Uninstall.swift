@@ -62,7 +62,11 @@ public enum Uninstall {
         return ["Library/Caches/\(id)", "Library/HTTPStorages/\(id)",
                 "Library/HTTPStorages/\(id).binarycookies", "Library/WebKit/\(id)",
                 "Library/Saved Application State/\(id).savedState",
-                "Library/Logs/\(id)"].map { "\(home)/\($0)" }
+                "Library/Logs/\(id)",
+                // The signing identity build-app.sh makes so permissions survive updates, and the
+                // log of the install. Both are this app's own and not data.
+                "Library/Keychains/anode-signing.keychain-db",
+                "Library/Logs/Anode-install.log"].map { "\(home)/\($0)" }
     }
 
     /// macOS's per-user cache folder for the app, which it keeps under /var/folders and which
@@ -88,9 +92,10 @@ public enum Uninstall {
         return String(cString: buffer)
     }
 
-    /// Where `install.sh` clones to unless told otherwise.
-    public static func installedCheckoutDirectory(home: String) -> String {
-        "\(home)/Developer/Anode"
+    /// Where `install.sh` clones to unless told otherwise, newest first: a hidden folder of its own, then
+    /// `~/Developer/Anode`, where earlier versions of the script put it and where those installs still are.
+    public static func installedCheckoutDirectories(home: String) -> [String] {
+        ["\(home)/.anode/source", "\(home)/Developer/Anode"]
     }
 
     /// Settings domains, newest first. `dev.anode.app` is the bundle identifier,
@@ -153,8 +158,7 @@ public enum Uninstall {
                 .filter { exists("\(home)/Library/Preferences/\($0).plist") }
         }
 
-        let checkout = installedCheckoutDirectory(home: home)
-        if exists("\(checkout)/.git") {
+        if let checkout = installedCheckoutDirectories(home: home).first(where: { exists("\($0)/.git") }) {
             plan.installedCheckout = checkout
             if !tempDirectory.isEmpty {
                 plan.systemFiles += buildLockFiles(checkout: checkout, tempDirectory: tempDirectory)

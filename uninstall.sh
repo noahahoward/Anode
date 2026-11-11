@@ -12,8 +12,8 @@
 #
 #   * It never deletes a source checkout you made yourself. You may have work in
 #     it, and an uninstaller that removes a git repository is a story people tell
-#     for years. The ONE exception is ~/Developer/Anode, the clone install.sh
-#     makes — and even that only when git says it has no uncommitted, stashed or
+#     for years. The ONE exception is the clone install.sh makes (~/.anode/source, or
+#     ~/Developer/Anode where an earlier version put it) — and even that only when git says it has no uncommitted, stashed or
 #     unpushed work. Otherwise it is left and the reason is printed.
 #   * It never runs sudo. The fan helper is a root daemon and removing it needs a
 #     password; this project's rule is that anything needing root is a command
@@ -34,8 +34,12 @@ done
 
 SUPPORT="$HOME/Library/Application Support/Anode"
 DAEMON_LABEL="dev.anode.app.fanhelper"
-# Where install.sh clones to. A checkout anywhere else is never touched.
-INSTALLED_SRC="$HOME/Developer/Anode"
+# Where install.sh clones to: ~/.anode/source, or ~/Developer/Anode where an earlier version put it.
+# A checkout anywhere else is never touched.
+INSTALLED_SRC="$HOME/.anode/source"
+if [ ! -d "$INSTALLED_SRC/.git" ] && [ -d "$HOME/Developer/Anode/.git" ]; then
+  INSTALLED_SRC="$HOME/Developer/Anode"
+fi
 # Settings domains: the named suite, the one before the rename, and the bundle
 # identifiers (now and before the rename) — the last is where the app's window
 # frame and menu bar widgets live. Kept in step with Uninstall.defaultsDomainNames.
@@ -64,6 +68,11 @@ CANDIDATES=(
   "$HOME/Library/WebKit/dev.anode.app"
   "$HOME/Library/Saved Application State/dev.anode.app.savedState"
   "$HOME/Library/Logs/dev.anode.app"
+  # The signing identity build-app.sh makes so permissions survive updates. A credential this app
+  # created and only it uses, so it goes with the app. Kept in step with Uninstall.systemFileLocations.
+  "$HOME/Library/Keychains/anode-signing.keychain-db"
+  # The install log, which is the diagnosis of a failed install and is not worth keeping after a good one.
+  "$HOME/Library/Logs/Anode-install.log"
 )
 # The cache folder macOS keeps for the app, under its old identifiers too.
 # Kept in step with Uninstall.userCacheFolders.
@@ -169,6 +178,8 @@ for path in "${FOUND[@]:-}"; do
   rm -rf "$path"
   echo "removed  $path"
 done
+# The hidden folder install.sh made to hold the clone, once it is empty. rmdir refuses otherwise.
+rmdir "$HOME/.anode" 2>/dev/null && echo "removed  $HOME/.anode" || true
 
 if [ "$REMOVE_DATA" = "1" ]; then
   # Clear the domain first, THEN delete the file. macOS keeps a copy of the

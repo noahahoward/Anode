@@ -391,10 +391,16 @@ final class UninstallPlanTests: XCTestCase {
         let plan = Uninstall.plan(removingData: false, home: home, cacheDirectory: "/var/C/",
                                   tempDirectory: "/var/T/", exists: allExist)
         XCTAssertTrue(plan.systemFiles.contains("/var/C/dev.anode.app"))
+        // Named from the clone's path with the slashes turned into underscores: the hidden folder the
+        // installer clones into now, and ~/Developer/Anode for an install an earlier version made.
         XCTAssertTrue(plan.systemFiles.contains(
+            "/var/T/_Users_someone_.anode_source_.build.lock"))
+        XCTAssertTrue(plan.systemFiles.contains(
+            "/var/T/_Users_someone_.anode_source_.build_workspace-state.json.lock"))
+        let legacy = Uninstall.plan(removingData: false, home: home, cacheDirectory: "/var/C/",
+                                    tempDirectory: "/var/T/") { $0 != "\(home)/.anode/source/.git" }
+        XCTAssertTrue(legacy.systemFiles.contains(
             "/var/T/_Users_someone_Developer_Anode_.build.lock"))
-        XCTAssertTrue(plan.systemFiles.contains(
-            "/var/T/_Users_someone_Developer_Anode_.build_workspace-state.json.lock"))
 
         let noClone = Uninstall.plan(removingData: false, home: home, cacheDirectory: "/var/C/",
                                      tempDirectory: "/var/T/") { !$0.hasSuffix(".git") }
@@ -402,12 +408,27 @@ final class UninstallPlanTests: XCTestCase {
                        "locks for a clone that is staying were listed")
     }
 
-    /// The clone the installer made is listed; a working copy elsewhere is not.
+    /// The clone the installer made is listed; a working copy elsewhere is not. The installer now clones
+    /// into a hidden folder of its own, and an earlier version's ~/Developer/Anode is still found.
     func testOnlyTheInstallersCloneIsListed() {
         let plan = Uninstall.plan(removingData: false, home: home, exists: allExist)
-        XCTAssertEqual(plan.installedCheckout, "\(home)/Developer/Anode")
-        let elsewhere = Uninstall.plan(removingData: false, home: home) { $0 != "\(home)/Developer/Anode/.git" }
+        XCTAssertEqual(plan.installedCheckout, "\(home)/.anode/source")
+
+        let legacyOnly = Uninstall.plan(removingData: false, home: home) { $0 != "\(home)/.anode/source/.git" }
+        XCTAssertEqual(legacyOnly.installedCheckout, "\(home)/Developer/Anode",
+                       "an install made by an earlier version was not found")
+
+        let elsewhere = Uninstall.plan(removingData: false, home: home) {
+            $0 != "\(home)/.anode/source/.git" && $0 != "\(home)/Developer/Anode/.git"
+        }
         XCTAssertNil(elsewhere.installedCheckout)
+    }
+
+    /// The signing keychain the build makes goes with the app, so an uninstall leaves nothing of it.
+    func testTheSigningKeychainAndInstallLogAreRemoved() {
+        let plan = Uninstall.plan(removingData: false, home: home, exists: allExist)
+        XCTAssertTrue(plan.systemFiles.contains("\(home)/Library/Keychains/anode-signing.keychain-db"))
+        XCTAssertTrue(plan.systemFiles.contains("\(home)/Library/Logs/Anode-install.log"))
     }
 
     /// Every login agent label this app has ever used — one left behind still
@@ -445,7 +466,7 @@ final class UninstallPlanTests: XCTestCase {
         let plan = Uninstall.plan(removingData: false, home: home, exists: allExist)
         let text = Uninstall.summary(plan, removingData: false)
         XCTAssertTrue(text.contains("\(home)/Applications/Anode.app"))
-        XCTAssertTrue(text.contains("\(home)/Developer/Anode"), "does not name the installer's clone")
+        XCTAssertTrue(text.contains("\(home)/.anode/source"), "does not name the installer's clone")
         XCTAssertTrue(text.contains("anywhere else is never touched"))
         XCTAssertTrue(text.contains("KEPT"), "does not say history survives")
     }
