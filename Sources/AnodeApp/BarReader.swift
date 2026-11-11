@@ -75,7 +75,54 @@ final class AXBarReader: BarReading {
         }
     }
 
+    // ── What another app's answer means ────────────────────────────────────
+
+    /// What an error from another app's accessibility tree means.
+    enum Missing: Equatable {
+        /// The app said so: there is nothing of that kind there.
+        case nothingThere
+        /// No answer that can be trusted (a timeout, a busy or quitting app, anything else). The read as a whole has failed:
+        /// an app left out of it would let a cover span its items.
+        case failed
+    }
+
+    static func classify(_ status: AXError) -> Missing {
+        switch status {
+        case .noValue, .attributeUnsupported, .notImplemented: return .nothingThere
+        default: return .failed
+        }
+    }
+
+    enum BarLookup: Equatable {
+        case bar(AXUIElement)
+        case nothingThere
+        case failed
+    }
+
+    /// An app's extras menu bar, from what `AXExtrasMenuBar` answered.
+    static func bar(status: AXError, value: CFTypeRef?) -> BarLookup {
+        guard status == .success else { return classify(status) == .nothingThere ? .nothingThere : .failed }
+        guard let value else { return .failed }
+        return .bar(value as! AXUIElement)
+    }
+
+    /// A list of elements (children) from what was answered; nil when the read failed. "No value" is an empty list.
+    static func elements(status: AXError, value: CFTypeRef?) -> [AXUIElement]? {
+        guard status == .success else { return classify(status) == .nothingThere ? [] : nil }
+        return value as? [AXUIElement]
+    }
+
     // ── BarReading ──────────────────────────────────────────────────────────
+
+    typealias App = (bundleID: String?, name: String, pid: pid_t)
+
+    private let log: (String) -> Void
+    /// The last failure logged, so an app that keeps failing is written down once, not on every read. Touched on `queue` only.
+    private var lastFailure: String?
+
+    init(log: @escaping (String) -> Void = { FeatureLog.append("menubarhider.log", $0) }) {
+        self.log = log
+    }
 
     func read(completion: @escaping ([BarItem]?) -> Void) {
         guard AXIsProcessTrusted() else { DispatchQueue.main.async { completion(nil) }; return }
@@ -85,8 +132,10 @@ final class AXBarReader: BarReading {
         let once = OnceCompletion(completion)
         let deadline = DispatchWorkItem { _ = once.complete(nil) }
         DispatchQueue.main.asyncAfter(deadline: .now() + Self.budget, execute: deadline)
-        queue.async {
-            let found = Self.scan(apps: apps)
+        queue.async { [self] in
+            let results = Self.scan(apps: apps)
+            let found = Self.combine(results)
+            noteFailure(apps: apps, results: results)
             DispatchQueue.main.async {
                 deadline.cancel()
                 _ = once.complete(found?.map(\.item))
@@ -101,88 +150,139 @@ final class AXBarReader: BarReading {
               let app = NSRunningApplication(processIdentifier: pid) else { return }
         let entry = (bundleID: app.bundleIdentifier, name: app.localizedName ?? "?", pid: pid)
         pressQueue.async {
-            guard let hit = Self.scan(apps: [entry])?.first(where: { $0.item.key == item.key }) else { return }
+            guard let hit = Self.combine(Self.scan(apps: [entry]))?.first(where: { $0.item.key == item.key }) else { return }
             _ = AXUIElementPerformAction(hit.press, kAXPressAction as CFString)
         }
     }
 
-    // ── Accessibility ───────────────────────────────────────────────────────
-
-    /// nil when the bar could not be read in full.
-    private static func scan(apps: [(bundleID: String?, name: String, pid: pid_t)]) -> [Found]? {
-        let lock = NSLock()
-        var all: [Found] = []
-        var failed = false
-        DispatchQueue.concurrentPerform(iterations: apps.count) { i in
-            guard let found = scan(app: apps[i]) else {
-                lock.lock(); failed = true; lock.unlock()
-                return
-            }
-            guard !found.isEmpty else { return }
-            lock.lock(); all += found; lock.unlock()
-        }
-        return failed ? nil : all
+    /// Writes down which app failed a read, and how, when that is not what was written down last.
+    private func noteFailure(apps: [App], results: [AppScan]) {
+        guard let i = results.firstIndex(where: { if case .failed = $0 { return true } else { return false } }),
+              case .failed(let why) = results[i] else { lastFailure = nil; return }
+        let line = "read failed: \(apps[i].bundleID ?? apps[i].name) (pid \(apps[i].pid)): \(why)"
+        guard line != lastFailure else { return }
+        lastFailure = line
+        log(line)
     }
 
-    private static func scan(app: (bundleID: String?, name: String, pid: pid_t)) -> [Found]? {
+    // ── Accessibility ───────────────────────────────────────────────────────
+
+    /// What one app's extras menu bar held.
+    private enum AppScan {
+        case items([Found])
+        /// The app said it has no extras menu bar (or an empty one).
+        case nothingThere
+        /// The app did not answer in a way that can be trusted; the text says where and how.
+        case failed(String)
+    }
+
+    /// Every app's items, or nil when any app's could not be read in full.
+    private static func combine(_ results: [AppScan]) -> [Found]? {
+        var all: [Found] = []
+        for result in results {
+            switch result {
+            case .items(let found): all += found
+            case .nothingThere: continue
+            case .failed: return nil
+            }
+        }
+        return all
+    }
+
+    private static func scan(apps: [App]) -> [AppScan] {
+        let lock = NSLock()
+        var results = [AppScan](repeating: .nothingThere, count: apps.count)
+        DispatchQueue.concurrentPerform(iterations: apps.count) { i in
+            let result = scan(app: apps[i])
+            lock.lock(); results[i] = result; lock.unlock()
+        }
+        return results
+    }
+
+    private static func scan(app: App) -> AppScan {
         let root = AXUIElementCreateApplication(app.pid)
         AXUIElementSetMessagingTimeout(root, perAppTimeout)
         var barValue: CFTypeRef?
         let status = AXUIElementCopyAttributeValue(root, "AXExtrasMenuBar" as CFString, &barValue)
-        guard status == .success, let bar = barValue else {
-            // Most apps have no extras menu bar, and say so. The system's own items are the exception: an error there is a read
-            // that failed, not an app with nothing to show.
-            let none = status == .noValue || status == .attributeUnsupported || status == .notImplemented
-            return none || !(app.bundleID.map(systemOwners.contains) ?? false) ? [] : nil
+        let bar: AXUIElement
+        switch Self.bar(status: status, value: barValue) {
+        case .bar(let found): bar = found
+        // Most apps have no extras menu bar, and say so.
+        case .nothingThere: return .nothingThere
+        case .failed: return .failed("extras menu bar: AXError \(status.rawValue)")
         }
-        AXUIElementSetMessagingTimeout(bar as! AXUIElement, perAppTimeout)
-        guard let kids = attribute(bar as! AXUIElement, kAXChildrenAttribute) as? [AXUIElement], !kids.isEmpty else { return [] }
+        AXUIElementSetMessagingTimeout(bar, perAppTimeout)
+        var kidsValue: CFTypeRef?
+        let kidsStatus = AXUIElementCopyAttributeValue(bar, kAXChildrenAttribute as CFString, &kidsValue)
+        guard let kids = elements(status: kidsStatus, value: kidsValue) else { return .failed("children: AXError \(kidsStatus.rawValue)") }
+        guard !kids.isEmpty else { return .nothingThere }
 
         var children: [Child] = []
         var targets: [AXUIElement] = []
         for kid in kids {
             AXUIElementSetMessagingTimeout(kid, perAppTimeout)
+            // Any attribute that timed out (rather than being absent) loses the item: its name, and so its key, is not known.
+            var lost = false
             // The system's items are hosting groups; the item proper, with its identifier, is the first child.
-            let inner = (attribute(kid, kAXChildrenAttribute) as? [AXUIElement])?.first
+            var innerValue: CFTypeRef?
+            let innerStatus = AXUIElementCopyAttributeValue(kid, kAXChildrenAttribute as CFString, &innerValue)
+            let innerKids = elements(status: innerStatus, value: innerValue)
+            if innerKids == nil { lost = true }
+            let inner = innerKids?.first
             if let inner { AXUIElementSetMessagingTimeout(inner, perAppTimeout) }
-            let outerPress = hasPress(kid)
-            let innerPress = inner.map(hasPress) ?? false
+            let outerPress = hasPress(kid, lost: &lost)
+            let innerPress = inner.map { hasPress($0, lost: &lost) } ?? false
             let (box, framed) = frame(of: kid)
-            let hosting = string(kid, kAXSubroleAttribute) == "AXHostingView"
-            let identifier = string(kid, kAXIdentifierAttribute) ?? inner.flatMap { string($0, kAXIdentifierAttribute) }
-            children.append(Child(identifier: identifier,
-                                  title: string(kid, kAXTitleAttribute),
-                                  description: string(kid, kAXDescriptionAttribute) ?? inner.flatMap { string($0, kAXDescriptionAttribute) },
+            let hosting = string(kid, kAXSubroleAttribute, lost: &lost) == "AXHostingView"
+            let identifier = string(kid, kAXIdentifierAttribute, lost: &lost)
+                ?? inner.flatMap { string($0, kAXIdentifierAttribute, lost: &lost) }
+            let title = string(kid, kAXTitleAttribute, lost: &lost)
+            let description = string(kid, kAXDescriptionAttribute, lost: &lost)
+                ?? inner.flatMap { string($0, kAXDescriptionAttribute, lost: &lost) }
+            children.append(Child(identifier: identifier, title: title, description: description,
                                   frame: box, hasPress: outerPress || innerPress,
-                                  readFailed: !framed || (hosting && identifier == nil)))
+                                  readFailed: lost || !framed || (hosting && identifier == nil)))
             targets.append(outerPress ? kid : (innerPress ? inner! : kid))
         }
-        guard isComplete(children) else { return nil }
+        guard isComplete(children) else { return .failed("an item's position, size, name or actions") }
         // Keys and elements are put in the same order, by the same function.
         let order = Self.order(of: children)
         let items = parse(app: app, children: children)
-        return zip(items, order).map { Found(item: $0.0, press: targets[$0.1]) }
+        return .items(zip(items, order).map { Found(item: $0.0, press: targets[$0.1]) })
     }
 
-    private static func attribute(_ e: AXUIElement, _ name: String) -> CFTypeRef? {
+    /// The value, or nil when there is none. `lost` is set when the app did not say there is none but failed to answer.
+    private static func attribute(_ e: AXUIElement, _ name: String, lost: inout Bool) -> CFTypeRef? {
         var value: CFTypeRef?
-        return AXUIElementCopyAttributeValue(e, name as CFString, &value) == .success ? value : nil
+        let status = AXUIElementCopyAttributeValue(e, name as CFString, &value)
+        guard status == .success else {
+            if classify(status) == .failed { lost = true }
+            return nil
+        }
+        return value
     }
 
-    private static func string(_ e: AXUIElement, _ name: String) -> String? { attribute(e, name) as? String }
+    private static func string(_ e: AXUIElement, _ name: String, lost: inout Bool) -> String? {
+        attribute(e, name, lost: &lost) as? String
+    }
 
-    private static func hasPress(_ e: AXUIElement) -> Bool {
+    private static func hasPress(_ e: AXUIElement, lost: inout Bool) -> Bool {
         var actions: CFArray?
-        guard AXUIElementCopyActionNames(e, &actions) == .success else { return false }
+        let status = AXUIElementCopyActionNames(e, &actions)
+        guard status == .success else {
+            if classify(status) == .failed { lost = true }
+            return false
+        }
         return (actions as? [String])?.contains(kAXPressAction as String) ?? false
     }
 
     /// The frame, and whether both the position and the size could be read.
     private static func frame(of e: AXUIElement) -> (CGRect, Bool) {
         var p = CGPoint.zero, s = CGSize.zero
-        var ok = true
-        if let pv = attribute(e, kAXPositionAttribute) { ok = ok && AXValueGetValue(pv as! AXValue, .cgPoint, &p) } else { ok = false }
-        if let sv = attribute(e, kAXSizeAttribute) { ok = ok && AXValueGetValue(sv as! AXValue, .cgSize, &s) } else { ok = false }
+        var ok = true, lost = false
+        defer { _ = lost }
+        if let pv = attribute(e, kAXPositionAttribute, lost: &lost) { ok = ok && AXValueGetValue(pv as! AXValue, .cgPoint, &p) } else { ok = false }
+        if let sv = attribute(e, kAXSizeAttribute, lost: &lost) { ok = ok && AXValueGetValue(sv as! AXValue, .cgSize, &s) } else { ok = false }
         return (CGRect(origin: p, size: s), ok)
     }
 }

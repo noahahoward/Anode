@@ -80,4 +80,32 @@ final class BarReaderTests: XCTestCase {
         XCTAssertEqual(got.count, 1)
         XCTAssertNil(got[0] as Any? as? [BarItem])
     }
+
+    // ── What an error from another app means ────────────────────────────────
+
+    /// Only a definite "nothing here" means an app has no items. A timeout, a busy app (Anode's own items are answered by
+    /// Anode's main thread) or any other error is a read that failed: leaving the app out would let a cover span its items.
+    func testOnlyADefiniteNoMeansAnAppHasNoItems() {
+        for status: AXError in [.noValue, .attributeUnsupported, .notImplemented] {
+            XCTAssertEqual(AXBarReader.classify(status), .nothingThere, "\(status.rawValue)")
+        }
+        for status: AXError in [.cannotComplete, .failure, .invalidUIElement, .apiDisabled, .illegalArgument,
+                                .invalidUIElementObserver, .notEnoughPrecision, .actionUnsupported] {
+            XCTAssertEqual(AXBarReader.classify(status), .failed, "\(status.rawValue)")
+        }
+    }
+
+    func testABarThatTimedOutFailsTheRead() {
+        XCTAssertEqual(AXBarReader.bar(status: .cannotComplete, value: nil), .failed)
+        XCTAssertEqual(AXBarReader.bar(status: .noValue, value: nil), .nothingThere)
+        XCTAssertEqual(AXBarReader.bar(status: .success, value: nil), .failed)
+    }
+
+    /// A children read that failed is not an empty bar, even for the system's own items.
+    func testChildrenThatTimedOutFailTheRead() {
+        XCTAssertNil(AXBarReader.elements(status: .cannotComplete, value: nil))
+        XCTAssertNil(AXBarReader.elements(status: .failure, value: nil))
+        XCTAssertEqual(AXBarReader.elements(status: .noValue, value: nil)?.count, 0)
+        XCTAssertEqual(AXBarReader.elements(status: .success, value: [] as CFArray)?.count, 0)
+    }
 }
