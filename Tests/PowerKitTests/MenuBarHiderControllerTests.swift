@@ -414,6 +414,33 @@ final class MenuBarHiderControllerTests: XCTestCase {
         XCTAssertFalse(covers.rects.isEmpty)
     }
 
+    /// A text item that stays on the bar (a CPU reading, a clock) changes width every second. On the bar an item grows to the
+    /// left, so the hidden icons to its right do not move: the two reads agree on the covers and the bar collapses.
+    func testAPinnedItemWhoseWidthChangesStillCollapses() {
+        settings.menuBarHiderArrangement = BarArrangement(pinned: ["tx|CPU", "cc|Wi-Fi", "cc|Sound", "cc|Battery"],
+                                                          pillOrder: ["op|1Password", "wg|WireGuard"])
+        let narrow = [item("tx|CPU", 1000, w: 50)] + layout
+        var wide = narrow; wide[0].frame = CGRect(x: 993, y: 0, width: 57, height: 37)
+        // A hidden icon that shifts by a point between reads (rounding in what Accessibility reports) is the same layout too.
+        wide[1].frame.origin.x += 1
+        reader.queue = [narrow, wide, narrow, wide, narrow, wide]
+        reader.fallback = narrow
+        turnOn()
+        XCTAssertEqual(controller.decision, .collapsed)
+        XCTAssertEqual(covers.rects.count, 1)
+        XCTAssertEqual(covers.rects.first?.minX ?? 0, 1111, accuracy: 1.01)
+    }
+
+    /// The tolerance is for jitter, not for a bar that moved: a hidden icon 20 pt away between the two reads is no cover.
+    func testAHiddenItemThatMovedBetweenTheReadsStillRefuses() {
+        turnOn()
+        XCTAssertFalse(covers.rects.isEmpty)
+        var moved = layout; moved[0].frame.origin.x += 20
+        reader.queue = [moved, layout]
+        controller.layoutMayHaveChanged()
+        XCTAssertEqual(covers.rects, [])
+    }
+
     /// The controller finds its chevron by the accessibility label the chevron gives itself.
     func testTheChevronStillCarriesTheLabelTheControllerLooksFor() throws {
         let source = try String(contentsOf: URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()

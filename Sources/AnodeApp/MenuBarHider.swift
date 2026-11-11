@@ -231,7 +231,7 @@ final class MenuBarHiderController {
         reader.read { [weak self] result in
             guard let self, gen == self.generation else { return }
             guard let result else { self.standDown(.layoutUnreadable); return }
-            if let previous, Self.sameLayout(previous, result) {
+            if let previous, self.sameCovers(previous, result) {
                 self.apply(result)
             } else if attempt == 0 {
                 // The layout is not the one the covers were drawn for: they come down now, not after the confirming read.
@@ -257,11 +257,45 @@ final class MenuBarHiderController {
         }
     }
 
-    private static func sameLayout(_ a: [BarItem], _ b: [BarItem]) -> Bool {
-        func shape(_ list: [BarItem]) -> [String] {
-            list.map { "\($0.key)@\(Int($0.frame.minX.rounded())),\(Int($0.frame.minY.rounded())),\(Int($0.frame.width.rounded())),\(Int($0.frame.height.rounded()))" }.sorted()
+    /// How far apart, per edge, two reads' covers can be and still be the same layout: Accessibility's rounding, not a move.
+    static let coverTolerance: CGFloat = 2
+
+    /// Whether two reads would put up the same covers, and agree on where the chevron is. Only what the covers are drawn
+    /// from is compared: an item that stays on the bar and changes width every second (a CPU reading, a clock) would
+    /// otherwise make every pair of reads disagree. Both are planned with the arrangement the newer read would use.
+    private func sameCovers(_ older: [BarItem], _ newer: [BarItem]) -> Bool {
+        let screen = environment().screen
+        func chevronOnBar(_ read: [BarItem]) -> Bool? { read.first(where: isChevron).map { $0.isOnBar(screens: [screen]) } }
+        guard chevronOnBar(older) == chevronOnBar(newer) else { return false }
+        let arrangement = self.arrangement(for: newer)
+        let a = coverPlan(older, arrangement: arrangement, screen: screen)
+        let b = coverPlan(newer, arrangement: arrangement, screen: screen)
+        guard a.count == b.count else { return false }
+        let t = Self.coverTolerance
+        return zip(a, b).allSatisfy {
+            abs($0.minX - $1.minX) <= t && abs($0.maxX - $1.maxX) <= t && abs($0.minY - $1.minY) <= t && abs($0.maxY - $1.maxY) <= t
         }
-        return shape(a) == shape(b)
+    }
+
+    /// The covers for one read. Other apps' items are what can be hidden. Anode's own items on the bar (its chevron, widgets
+    /// it keeps there) stay: they are given to the planner as locked, so a run of hidden items is split around them and no
+    /// cover reaches over them.
+    private func coverPlan(_ read: [BarItem], arrangement: BarArrangement, screen: CGRect) -> [CGRect] {
+        let others = read.filter { $0.pid != ownPID }
+        let ownOnBar: [BarItem] = read.filter { $0.pid == ownPID && $0.isOnBar(screens: [screen]) }.map { item in
+            var stays = item
+            stays.isLocked = true
+            return stays
+        }
+        return CoverPlanner.covers(items: others + ownOnBar, arrangement: arrangement, screen: screen)
+    }
+
+    /// Every item the owner can arrange in this read: other apps' items and Anode's own widgets.
+    private func arrangeable(_ read: [BarItem]) -> [BarItem] { read.filter { $0.pid != ownPID } + ownPseudoItems() }
+
+    /// The owner's arrangement, or the first one for this read when there is none yet. Stored only by `apply`.
+    private func arrangement(for read: [BarItem]) -> BarArrangement {
+        settings.menuBarHiderArrangement ?? BarArrangement.defaultArrangement(for: arrangeable(read))
     }
 
     // ── Acting ──────────────────────────────────────────────────────────────
@@ -288,22 +322,11 @@ final class MenuBarHiderController {
         }
         retries = 0
 
-        // Other apps' items are what can be hidden. Anode's own items on the bar (its chevron, widgets it keeps there) stay: they
-        // are given to the planner as locked, so a run of hidden items is split around them and no cover reaches over them.
-        // Its folded widgets are listed separately, below, from the widget controller.
-        let others = read.filter { $0.pid != ownPID }
-        let ownOnBar: [BarItem] = read.filter { $0.pid == ownPID && $0.isOnBar(screens: [env.screen]) }.map { item in
-            var stays = item
-            stays.isLocked = true
-            return stays
-        }
-        let all = others + ownPseudoItems()
-        let arrangement = settings.menuBarHiderArrangement ?? {
-            let first = BarArrangement.defaultArrangement(for: all)
-            // A read without the system's own items (battery, sound, Wi-Fi) is not a first arrangement worth keeping.
-            if !first.pinned.isEmpty { settings.menuBarHiderArrangement = first }
-            return first
-        }()
+        // Anode's folded widgets are listed from the widget controller, not the read: they have no place on the bar.
+        let all = arrangeable(read)
+        let arrangement = self.arrangement(for: read)
+        // A read without the system's own items (battery, sound, Wi-Fi) is not a first arrangement worth keeping.
+        if settings.menuBarHiderArrangement == nil, !arrangement.pinned.isEmpty { settings.menuBarHiderArrangement = arrangement }
 
         let foldedIDs = Set(widgets.widgetKeys.filter { arrangement.group(of: $0.key, items: all) == .behindChevron }.map(\.metricID))
         items = arrangement.pillItems(from: all)
@@ -325,7 +348,7 @@ final class MenuBarHiderController {
             return
         }
 
-        let rects = CoverPlanner.covers(items: others + ownOnBar, arrangement: arrangement, screen: env.screen)
+        let rects = coverPlan(read, arrangement: arrangement, screen: env.screen)
         if rects != covers.rects {
             rects.isEmpty ? covers.removeAll() : covers.show(rects, on: env.screen)
         }
