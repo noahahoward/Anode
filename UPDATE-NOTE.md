@@ -1,3 +1,3 @@
 <!-- Two plain sentences saying what THIS update is. The update screen shows them; update.sh prints them.
      Rewrite them on every push. Say what changed for the person using the app, not how it was done. -->
-Anode now idles properly with the lid shut in Keep Awake, where it had been using about half a watt, and its open window uses less power. The Sensors list no longer lights every row when you open a group, and updates now say which version you are getting and what is in it.
+Anode can now tuck your menu bar icons behind a chevron, leaving only battery, sound, Wi-Fi, Control Center and the clock, and show the rest in a small panel when you press it. It is a beta feature and off by default, and it also lets you reach icons macOS had hidden when the bar was too full.
