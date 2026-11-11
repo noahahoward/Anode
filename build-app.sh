@@ -327,4 +327,19 @@ if [ "${ANODE_NO_LAUNCH:-0}" != "1" ]; then
     # while the app is still starting is swallowed and the window never appears.
     sleep 2
     open -a "$INSTALL_DIR/Anode.app"
+
+    # The copy that is RUNNING must be the copy just installed. Seen 2026-11-11: a copy started from the old files while they
+    # were being swapped kept running, so the disk said the new build while the process was the old one, and the fan helper
+    # refused it ("caller has no readable code signature": the code on disk did not match what was running). Checking the
+    # build commit on disk cannot see that; asking the system whether the process still matches its files can.
+    for _ in 1 2; do
+        PID="$(pgrep -f "$INSTALL_DIR/Anode.app/Contents/MacOS/AnodeApp" | head -1)"
+        [ -n "$PID" ] || break
+        codesign --verify "$PID" 2>/dev/null && break
+        echo "› the running copy is not the one just installed; restarting it"
+        osascript -e 'if application id "dev.anode.app" is running then tell application id "dev.anode.app" to quit' >/dev/null 2>&1 || true
+        sleep 2
+        open -a "$INSTALL_DIR/Anode.app"
+        sleep 2
+    done
 fi
