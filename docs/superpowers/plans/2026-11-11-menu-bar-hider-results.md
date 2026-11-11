@@ -18,3 +18,25 @@ Four captures of the top 8 pt of the bar over x 1060–1500, 20 s apart, with `s
 
 - Risk 1: do the parked items return when Anode's widgets leave the bar? (step 2)
 - Risk 2: where does `AXPress` open an item's menu, for an on-bar item and a parked one? (step 3)
+
+## Task 15, hardware pass (2026-11-11, owner at the Mac; no cursor, no clicks, no window switching)
+
+Probes: `docs/superpowers/spikes/2026-11-11-menu-bar-hider-press-probe.swift` (AXPress, menu frame, screenshot, AXCancel).
+
+**Measured, working**
+- Turning the setting on and relaunching: the bar read `Anode widgets (8) → gone`, the chevron appeared at x 1425, Keep Awake (Anode's own item, not a widget) stayed, and the system's Wi-Fi, sound, battery, Control Center and clock stayed. Log: `collapsed: 0 cover(s), 11 behind the chevron` (four parked icons and seven Anode widgets).
+- The pill (opened with an accessibility press of the chevron): a dark pill centred under the notch holding the app icons of G HUB, WireGuard, Synology Drive and 1Password and Anode's own widgets drawn live (Drain, Left, CPU, RAM, GPU, Swap, the group glyph). It closed by itself after 10 s.
+- Turning the setting off and relaunching: Anode's eight widgets were back at x 1097–1459 and the chevron was gone. Relaunching with it on three times left the bar whole each time, so quit-while-collapsed is safe.
+- **Risk 2, on-bar item:** `AXPress` on the Wi-Fi item opens its normal panel directly under the icon.
+
+**Measured, not what was hoped**
+- **Risk 1: the four parked icons did NOT come back** when Anode's widgets left the bar, with about 380 pt free. macOS keeps an item parked until its app relaunches (not tried: it would mean quitting the owner's apps). They are reachable only through the pill.
+- **Risk 2, parked item:** `AXPress` on WireGuard's parked item returns `kAXErrorCannotComplete` (−25204) after about 1.7 s but the menu does open, at the **top-left corner of the screen** (frame −5, 1, 199×187) over the Apple menu, not under the pill. It is readable and clickable and closes with `AXCancel`.
+- `AXCancel` does not close the system's Wi-Fi panel; a second `AXPress` on the item does.
+
+**Mistake, corrected:** the first press probe took Anode's first status item, which was Keep Awake, and started a Never Sleep session. Quitting Anode released it (`pmset` showed no Anode assertion afterwards; Keep Awake log: `state: off`).
+
+**Not verified**
+- The cover over a real item (every third-party icon is parked, so nothing needed covering). I moved Sound behind the chevron in a test arrangement; the log said `1 cover(s)` but the display went to sleep before a screenshot, and the test arrangement was removed again.
+- The ⌃⌥⌘B shortcut (needs a real key press), a click on the chevron or a pill cell, and a drag in Beta Features (need the pointer). Pressing an item in the pill with a real click.
+- Where a pill-forwarded press on a parked item lands is known (top-left), so its menu will not be under the pill.
