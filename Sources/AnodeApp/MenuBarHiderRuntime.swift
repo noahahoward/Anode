@@ -29,6 +29,7 @@ final class MenuBarHiderRuntime {
          environment: @escaping (_ secondsSinceDisplayChange: TimeInterval) -> HiderEnvironment,
          registerShortcut: @escaping (@escaping () -> Void) -> Void, unregisterShortcut: @escaping () -> Void,
          openBetaFeatures: @escaping () -> Void, pillTick: @escaping () -> Void,
+         log: @escaping (String) -> Void = { FeatureLog.append("menubarhider.log", $0) },
          schedule: ((TimeInterval, @escaping () -> Void) -> Void)? = nil) {
         self.settings = settings
         self.registerShortcut = registerShortcut
@@ -41,6 +42,7 @@ final class MenuBarHiderRuntime {
         controller = MenuBarHiderController(
             settings: settings, reader: reader, covers: covers, pill: pill, chevron: chevron, widgets: widgets,
             environment: { environment(Date().timeIntervalSince(box.runtime?.lastDisplayChange ?? .distantPast)) },
+            log: log,
             schedule: schedule ?? { delay, work in DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work) })
         events = makeEvents({ [weak box] displayChanged in box?.runtime?.eventFired(displayChanged: displayChanged) },
                             { [weak box] in box?.runtime?.controller.invalidateCovers() })

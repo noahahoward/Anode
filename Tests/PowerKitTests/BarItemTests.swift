@@ -69,4 +69,12 @@ final class BarItemTests: XCTestCase {
         XCTAssertFalse(BarItem.isLockedItem(identifier: "com.apple.menuextra.battery", title: "Battery"))
         XCTAssertFalse(BarItem.isLockedItem(identifier: nil, title: nil))
     }
+
+    /// Only the system's own clock and Control Center are locked, not any third-party item that mentions a clock.
+    func testAThirdPartyClockIsNotLocked() {
+        XCTAssertFalse(BarItem.isLockedItem(identifier: nil, title: "World Clock Pro"))
+        XCTAssertFalse(BarItem.isLockedItem(identifier: "com.example.clockwork", title: nil))
+        XCTAssertTrue(BarItem.isLockedItem(identifier: "com.apple.menuextra.clock", title: nil))
+        XCTAssertTrue(BarItem.isLockedItem(identifier: nil, title: "Control Center"))
+    }
 }

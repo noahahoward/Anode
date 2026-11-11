@@ -132,6 +132,21 @@ final class MenuBarHiderFeatureTests: XCTestCase {
         XCTAssertTrue(ok.feature.screenRecordingButton.isHidden)
     }
 
+    /// The section follows the settings and the controller on its own, without waiting for the window to come forward.
+    func testTheSectionRefreshesWhenTheSettingsOrTheControllerChange() throws {
+        let r = try rig(); defer { done(r) }
+        XCTAssertEqual(r.feature.statusLabel.stringValue, "Off.")
+        r.settings.menuBarHiderEnabled = true
+        XCTAssertNotEqual(r.feature.statusLabel.stringValue, "Off.")
+        XCTAssertEqual(r.feature.enableCheckbox.state, .on)
+        r.settings.menuBarHiderAutoCloseSeconds = 30
+        XCTAssertEqual(r.feature.autoClosePopup.indexOfSelectedItem, 2)
+        r.settings.menuBarHiderEnabled = false
+        r.feature.enableCheckbox.state = .on        // stale on screen
+        NotificationCenter.default.post(name: MenuBarHiderController.didChange, object: nil)
+        XCTAssertEqual(r.feature.enableCheckbox.state, .off)
+    }
+
     func testFeatureIsInDefaultList() {
         XCTAssertTrue(BetaFeaturesWindowController.defaultFeatures(hasLidSensor: false).contains { $0 is MenuBarHiderFeature })
     }

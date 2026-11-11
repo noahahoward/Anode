@@ -30,6 +30,24 @@ final class BarArrangementTests: XCTestCase {
         XCTAssertTrue(a.pillOrder.contains(own.key))
     }
 
+    /// A bundle id that happens to say "sound" does not make an app one of the icons that stay.
+    func testDefaultMatchesTheNameNotTheBundleID() {
+        let source = BarItem(key: "com.rogueamoeba.SoundSource|#0", bundleID: "com.rogueamoeba.SoundSource", appName: "SoundSource",
+                             title: "", frame: .zero, isLocked: false, hasPress: true, pid: 9)
+        let a = BarArrangement.defaultArrangement(for: items + [source])
+        XCTAssertFalse(a.pinned.contains(source.key))
+        XCTAssertTrue(a.pinned.contains("cc|Sound"))
+    }
+
+    /// Dropping among the shown pinned items lands there even when the stored list also names apps that have quit.
+    func testMoveToOnBarCountsOnlyShownItems() {
+        let a = BarArrangement(pinned: ["gone|X", "cc|Wi-Fi", "cc|Battery"], pillOrder: ["cc|Sound"])
+        let b = a.moving("cc|Sound", to: .onBar, at: 1, items: items)
+        let shown = b.pinned.filter { k in items.contains { $0.key == k } }
+        XCTAssertEqual(shown, ["cc|Wi-Fi", "cc|Sound", "cc|Battery"])
+        XCTAssertTrue(b.pinned.contains("gone|X"), "the quit app's place is kept")
+    }
+
     func testUnknownItemsLandBehindChevron() {
         let a = BarArrangement(pinned: ["cc|Battery"], pillOrder: [])
         XCTAssertEqual(a.group(of: "never|seen", items: items), .behindChevron)

@@ -45,10 +45,12 @@ public struct BarItem: Equatable {
         return false
     }
 
-    /// The system's right-hand cluster that Anode never hides: the clock and Control Center.
+    /// The system's right-hand cluster that Anode never hides: the clock and Control Center, by their system identifiers, or
+    /// (when an item has none) by exactly those names. A third-party item that merely mentions a clock is not locked.
     public static func isLockedItem(identifier: String?, title: String?) -> Bool {
-        let hay = [identifier, title].compactMap { $0?.lowercased() }
-        return hay.contains { $0.contains("clock") || $0.contains("controlcenter") || $0.contains("control center") }
+        if let id = identifier?.lowercased(), id == "com.apple.menuextra.clock" || id == "com.apple.menuextra.controlcenter" { return true }
+        guard identifier?.isEmpty ?? true, let name = title?.trimmingCharacters(in: .whitespaces).lowercased() else { return false }
+        return name == "clock" || name == "control center"
     }
 }
 

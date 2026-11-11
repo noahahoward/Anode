@@ -65,6 +65,8 @@ final class MenuBarHiderController {
 
     /// Set by the app so Beta Features can reach the live controller.
     static var current: MenuBarHiderController?
+    /// Posted (main thread) whenever the decision, the item lists or the pill's open state change, for the settings section.
+    static let didChange = Notification.Name("AnodeMenuBarHiderDidChange")
 
     private static let anodePrefix = MenuBarWidgetController.key(forMetricID: "")
 
@@ -97,6 +99,10 @@ final class MenuBarHiderController {
     private(set) var allItems: [BarItem] = []
     /// Told when the decision or the pill's open state changes.
     var onChange: (() -> Void)?
+    private func changed() {
+        onChange?()
+        NotificationCenter.default.post(name: Self.didChange, object: nil)
+    }
 
     /// The last layout two reads agreed on.
     private var confirmed: [BarItem]?
@@ -183,21 +189,21 @@ final class MenuBarHiderController {
         guard canTogglePill else { return }
         pillState.toggle(now: now(), autoClose: settings.menuBarHiderAutoCloseSeconds)
         syncPill()
-        onChange?()
+        changed()
     }
 
     /// The owner clicked away from the pill.
     func dismissPill() {
         guard pillState.isOpen else { return }
         closePill()
-        onChange?()
+        changed()
     }
 
     /// Close the pill when its time is up. Called by a timer that runs only while the pill is open.
     func tick() {
         let was = pillState.isOpen
         pillState.tick(now: now())
-        if was != pillState.isOpen { syncPill(); onChange?() }
+        if was != pillState.isOpen { syncPill(); changed() }
     }
 
     func shutdown() {
@@ -301,7 +307,7 @@ final class MenuBarHiderController {
                 guard let self, gen == self.generation else { return }
                 self.startRead(attempt: 0, previous: nil)
             }
-            onChange?()
+            changed()
             return
         }
 
@@ -312,7 +318,7 @@ final class MenuBarHiderController {
         decision = .collapsed
         note("collapsed: \(rects.count) cover(s), \(items.count) behind the chevron")
         if pillState.isOpen { syncPill() }
-        onChange?()
+        changed()
     }
 
     /// Anode's own widgets, as items the owner can arrange (they have no place on the bar to read).
@@ -324,7 +330,7 @@ final class MenuBarHiderController {
     }
 
     private func standDown(_ why: HiderRefusal) {
-        let changed = decision != .standDown(why)
+        let didChange = decision != .standDown(why)
         decision = .standDown(why)
         if !covers.rects.isEmpty { covers.removeAll() }
         let passing = why == .layoutUnreadable || why == .settling
@@ -356,7 +362,7 @@ final class MenuBarHiderController {
         case .layoutUnreadable, .fullScreen, .settling: break
         }
         note("stand down: \(why)")
-        if changed { onChange?() }
+        if didChange { changed() }
     }
 
     // ── The pill ────────────────────────────────────────────────────────────
@@ -383,7 +389,7 @@ final class MenuBarHiderController {
         } else {
             closePill()
             reader.press(item)
-            onChange?()
+            changed()
         }
     }
 

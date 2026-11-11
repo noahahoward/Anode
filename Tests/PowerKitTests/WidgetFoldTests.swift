@@ -40,6 +40,17 @@ final class WidgetFoldTests: XCTestCase {
         XCTAssertFalse(ids.contains("groupPlaceholder"))
     }
 
+    /// The pill lists the widgets that exist: none while the widget master switch is off, and one entry per metric.
+    func testWidgetKeysSkipDisabledWidgetsAndDuplicates() {
+        let configs = [WidgetConfig(metricID: "cpuUsage", style: .text), WidgetConfig(metricID: "cpuUsage", style: .sparkline),
+                       WidgetConfig(metricID: "memoryUsage", style: .text, enabled: false),
+                       WidgetConfig(metricID: "groupPlaceholder", style: .group)]
+        let keys = C.widgetKeys(for: configs, masterEnabled: true, title: { "T-\($0)" })
+        XCTAssertEqual(keys.map(\.metricID), ["cpuUsage", "groupPlaceholder"])
+        XCTAssertEqual(keys[0].title, "T-cpuUsage")
+        XCTAssertEqual(C.widgetKeys(for: configs, masterEnabled: false, title: { $0 }).count, 0)
+    }
+
     func testKeyFormat() {
         XCTAssertEqual(C.key(forMetricID: "cpuUsage"), "dev.anode.app|widget.cpuUsage")
     }

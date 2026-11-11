@@ -83,6 +83,7 @@ final class MenuBarHiderFeature: BetaFeature {
     let shortcutNote = BetaFeaturesWindowController.wrapping("", color: .secondaryLabelColor)
     private let onBarSource = BarListSource(group: .onBar)
     private let behindSource = BarListSource(group: .behindChevron)
+    private var observers: [AnyObject] = []
     private let onBarTable = NSTableView()
     private let behindTable = NSTableView()
 
@@ -96,6 +97,18 @@ final class MenuBarHiderFeature: BetaFeature {
         self.accessibility = accessibilityAllowed
         self.screenRecording = screenRecordingAllowed
         self.statusProvider = status
+        // Follows the settings and the controller itself, so a change made from the chevron's menu, or the lists filling in a
+        // second after the switch goes on, show without the window being brought forward.
+        for key in [Settings.Key.menuBarHiderEnabled, Settings.Key.menuBarHiderArrangement, Settings.Key.menuBarHiderAutoCloseSeconds] {
+            observers.append(settings.observe(key) { [weak self] in self?.refresh() })
+        }
+        observers.append(NotificationCenter.default.addObserver(forName: MenuBarHiderController.didChange, object: nil, queue: .main) {
+            [weak self] _ in self?.refresh()
+        })
+    }
+
+    deinit {
+        for case let token as NSObjectProtocol in observers { NotificationCenter.default.removeObserver(token) }
     }
 
     // ── Pure parts ──────────────────────────────────────────────────────────

@@ -45,7 +45,7 @@ final class MenuBarHiderWiringTests: XCTestCase {
                                                  screen: CGRect(x: 0, y: 0, width: 1800, height: 1169), notch: nil, menuBarHeight: 37) },
             registerShortcut: { fire in shortcut.registered = true; shortcut.fire = fire },
             unregisterShortcut: { shortcut.registered = false; shortcut.fire = nil },
-            openBetaFeatures: {}, pillTick: {},
+            openBetaFeatures: {}, pillTick: {}, log: { _ in },
             schedule: { delay, work in if delay < 0.9 { work() } })   // gaps run at once; a retry is simply not made
         return Rig(runtime: runtime, settings: settings, reader: reader, covers: covers, pill: pill, chevron: chevron,
                    events: events, defaults: defaults, suite: suite, shortcut: shortcut)

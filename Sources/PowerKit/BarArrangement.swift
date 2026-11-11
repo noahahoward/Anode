@@ -31,7 +31,10 @@ public struct BarArrangement: Codable, Equatable {
         func staysOnBar(_ item: BarItem) -> Bool {
             // Anode's own widgets fold into the pill by default.
             if item.bundleID == "dev.anode.app" { return false }
-            let hay = (item.key + " " + item.title).lowercased()
+            // The name part of the key (identifier, else title), and the title: not the bundle id, which may say "sound" or
+            // "battery" for an app that is neither.
+            let name = item.key.split(separator: "|", maxSplits: 1).dropFirst().first.map(String.init) ?? item.key
+            let hay = (name + " " + item.title).lowercased()
             return ["battery", "sound", "wi-fi", "wifi"].contains { hay.contains($0) }
         }
         let movable = items.filter { !$0.isLocked }
@@ -71,7 +74,9 @@ public struct BarArrangement: Codable, Equatable {
         var result = self
         switch group {
         case .onBar:
-            result.pinned = inserting(key, into: pinned, at: index)
+            let shown = pinned.filter { k in k != key && items.contains { $0.key == k } }
+            let absent = pinned.filter { k in k != key && !items.contains { $0.key == k } }
+            result.pinned = inserting(key, into: shown, at: index) + absent
             result.pillOrder = pillOrder.filter { $0 != key }
         case .behindChevron:
             result.pinned = pinned.filter { $0 != key }

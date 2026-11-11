@@ -1553,13 +1553,20 @@ extension MenuBarWidgetController {
 
 extension MenuBarWidgetController: WidgetFolding {
 
-    /// The widgets the owner has configured, each under the key the hider files it by.
+    /// The widgets the owner has configured, each under the key the hider files it by. None while the widgets' master switch is
+    /// off, and one entry per metric even if two widgets show it.
     var widgetKeys: [(key: String, metricID: String, title: String)] {
-        configs.filter(\.enabled).map { config in
-            let id = MetricID(rawValue: config.metricID)
-            let title = config.metricID == MetricID.groupPlaceholder.rawValue
-                ? "All readings" : (MetricRegistry.shared.descriptor(for: id)?.title ?? config.metricID)
-            return (Self.key(forMetricID: config.metricID), config.metricID, title)
+        Self.widgetKeys(for: configs, masterEnabled: isEnabled) { id in
+            id == MetricID.groupPlaceholder.rawValue ? "All readings" : MetricRegistry.shared.descriptor(for: MetricID(rawValue: id))?.title
+        }
+    }
+
+    static func widgetKeys(for configs: [WidgetConfig], masterEnabled: Bool,
+                           title: (String) -> String?) -> [(key: String, metricID: String, title: String)] {
+        guard masterEnabled else { return [] }
+        var seen = Set<String>()
+        return configs.filter(\.enabled).filter { seen.insert($0.metricID).inserted }.map {
+            (key(forMetricID: $0.metricID), $0.metricID, title($0.metricID) ?? $0.metricID)
         }
     }
 

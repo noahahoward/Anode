@@ -38,7 +38,7 @@ final class BarCoverWindows: CoverPresenting {
     }
 
     func removeAll() {
-        for panel in panels { panel.orderOut(nil) }
+        for panel in panels { panel.orderOut(nil); panel.close() }
         panels.removeAll()
         rects = []
     }
