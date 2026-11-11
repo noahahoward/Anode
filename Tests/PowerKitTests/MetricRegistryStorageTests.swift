@@ -47,10 +47,18 @@ final class MetricRegistryStorageTests: XCTestCase {
                           errorLogEntries: 0)
     }
 
+    /// A throwaway suite that goes away, named for the test and the nth one it asked for.
+    ///
+    /// This used to be `anode.tests.storage.<UUID>` cleared with `removePersistentDomain`, which clears the values and
+    /// leaves the plist: 1,804 files were found in the real `~/Library/Preferences`, one per call per run. A stable
+    /// name cannot accumulate, and `TestDefaults.destroy` unlinks the file (see `TestDefaults` for why both).
+    private var scratchCount = 0
     private func scratchDefaults() -> UserDefaults {
-        let name = "anode.tests.storage.\(UUID().uuidString)"
+        scratchCount += 1
+        let name = "com.anode.tests.Storage.\(TestDefaults.suffix(self.name)).\(scratchCount)"
         let d = UserDefaults(suiteName: name)!
-        addTeardownBlock { d.removePersistentDomain(forName: name) }
+        d.removePersistentDomain(forName: name)   // a run that died before its teardown
+        addTeardownBlock { TestDefaults.destroy(d, name) }
         return d
     }
 
