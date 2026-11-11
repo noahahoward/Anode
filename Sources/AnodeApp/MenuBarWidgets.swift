@@ -426,6 +426,9 @@ public final class MenuBarWidgetController: NSObject, NSMenuDelegate {
 
     public var configs: [WidgetConfig] { storedConfigs }
 
+    /// The buttons of the status items now on the bar, for tests.
+    var statusButtons: [NSStatusBarButton] { items.compactMap { $0.item.button } }
+
     /// `onClick` is the integrator's "open the main window", told WHICH widget was
     /// clicked so it can open on the matching destination. The argument is the
     /// clicked widget's metric, or nil when the click carries no destination (an
@@ -987,24 +990,27 @@ public final class MenuBarWidgetController: NSObject, NSMenuDelegate {
             history[entry.config.metricID] = h
         }
 
-        // Assigned only when it CHANGES, which is the whole point.
+        // What the widget is, for VoiceOver, and NO tooltip.
         //
-        // A tooltip is backed by a cursor rect, so setting one invalidates the
-        // window's tracking areas — and this ran on every tick whatever the value
-        // was. Profiled with the window covered, the app's largest remaining cost
-        // was AppKit walking the view tree to rebuild those:
+        // A tooltip here was shown by macOS 27.2 on a MacBook Neo and then not taken away: with the pointer long
+        // gone it came back beside it, over other apps' windows, until the widgets were hovered again, and another
+        // app's status item (Synology Drive) did the same on that Mac, so this is the system's handling of
+        // tooltips on status items and not something a change of text could fix (the reading was already taken
+        // out of it, and Anode was measured not to recreate its items: five requests at launch, none since).
+        // macOS 27.0 never showed one on the development Mac. The widget already prints what it is and its
+        // reading, so the tooltip added only the word "(estimate)" and, on the folded single item, the name; both
+        // are in the accessibility label.
         //
-        //   displayCycleUpdateStructuralRegions
-        //     -> updateTrackingAreasWithInvalidCursorRects:
-        //       -> -[NSNextStepFrame updateTrackingAreas]
-        //
-        // The value below it was already guarded against no-op redraws; this line
-        // sat above that guard and undid it, every eight seconds, for a tooltip
-        // nobody was pointing at.
+        // Assigned only when it CHANGES. A tooltip was backed by a cursor rect, and setting one invalidated
+        // the window's tracking areas on every tick: profiled with the window covered, the app's largest
+        // remaining cost was AppKit rebuilding them (displayCycleUpdateStructuralRegions ->
+        // updateTrackingAreasWithInvalidCursorRects:), see a6ce213. The label has no such cost, but the guard
+        // costs nothing either.
         let tip = WidgetRenderer.toolTip(
             metricID: entry.config.metricID, descriptor: descriptor, value: value,
             style: entry.config.style)
-        if button.toolTip != tip { button.toolTip = tip }
+        if button.toolTip != nil { button.toolTip = nil }
+        if button.accessibilityLabel() != tip { button.setAccessibilityLabel(tip) }
 
         if entry.config.style == .group {
             // A menu attached to the status item opens directly beneath it, which is
@@ -1238,13 +1244,9 @@ enum WidgetRenderer {
         return "\(d.title)\(v.isEstimate ? " (estimate)" : "")"
     }
 
-    // NOT the reading. The widget beside the tooltip already shows it, and putting it here made the tooltip a
-    // different string on nearly every tick: AppKit re-registers a tooltip each time its text changes, and on a
-    // MacBook Neo that left "CPU usage: 41%" popping up beside the pointer, far from the menu bar, at random
-    // moments, until the widgets were hovered again. It also defeated the guard at the assignment, which exists
-    // so the window's tracking areas are not rebuilt every tick (see the note there): a live number changes
-    // nearly every time. What may differ between ticks is only a state that changes rarely, "no data" and
-    // "estimate".
+    // This is the widget's description for VoiceOver (see `render`: it is no longer shown as a tooltip). It does
+    // not carry the reading: the widget shows that itself, and what is left to say is only what the widget does
+    // not print and that changes rarely, "no data" and "estimate". (Its name is from when it was a tooltip.)
 
     /// Draws label-over-value at exact pixel positions, as a TEMPLATE image so the
     /// system tints it to match the rest of the menu bar.

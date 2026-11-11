@@ -43,3 +43,19 @@ final class WidgetToolTipTests: XCTestCase {
         XCTAssertTrue(tip.hasPrefix("Unknown metric"), tip)
     }
 }
+
+/// macOS 27.2 showed a status item's tooltip and then did not take it away (and did the same to another app's
+/// item), so Anode's widgets carry no tooltip at all; what it said is the accessibility label instead.
+final class WidgetHasNoToolTipTests: XCTestCase {
+
+    func testAWidgetOnTheBarHasALabelAndNoToolTip() throws {
+        let (defaults, name) = try TestDefaults.make(owner: "WidgetNoToolTip", test: self.name)
+        let controller = MenuBarWidgetController(onClick: { _ in }, defaults: defaults, enabled: true)
+        controller.setConfigs([WidgetConfig(metricID: MetricID.cpuUsage.rawValue, style: .text)])
+        addTeardownBlock { controller.setEnabled(false); TestDefaults.destroy(defaults, name) }
+        controller.refresh()
+        let button = try XCTUnwrap(controller.statusButtons.first, "no status bar in this environment")
+        XCTAssertNil(button.toolTip, "a tooltip on a status item is what macOS 27.2 left on screen")
+        XCTAssertFalse((button.accessibilityLabel() ?? "").isEmpty, "the description moved to VoiceOver")
+    }
+}
