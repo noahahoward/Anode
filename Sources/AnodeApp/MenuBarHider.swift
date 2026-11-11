@@ -85,6 +85,8 @@ final class MenuBarHiderController {
     var isPillOpen: Bool { pillState.isOpen }
     /// The items behind the chevron, the last time the layout was settled.
     private(set) var items: [BarItem] = []
+    /// Every item the owner can arrange: other apps' items and Anode's own widgets (its chevron is not among them).
+    private(set) var allItems: [BarItem] = []
     /// Told when the decision or the pill's open state changes.
     var onChange: (() -> Void)?
 
@@ -226,6 +228,7 @@ final class MenuBarHiderController {
             rects.isEmpty ? covers.removeAll() : covers.show(rects, on: env.screen)
         }
         items = arrangement.pillItems(from: all)
+        allItems = all
         decision = .collapsed
         note("collapsed: \(rects.count) cover(s), \(items.count) behind the chevron")
         if pillState.isOpen { syncPill() }
@@ -240,6 +243,8 @@ final class MenuBarHiderController {
         if why == .disabled {
             generation += 1
             confirmed = nil
+            allItems = []
+            items = []
             chevron.remove()
         } else {
             chevron.install()
