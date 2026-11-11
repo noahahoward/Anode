@@ -277,12 +277,13 @@ final class AXBarReader: BarReading {
         for kid in kids {
             AXUIElementSetMessagingTimeout(kid, perAppTimeout)
             // Any attribute that timed out (rather than being absent) loses the item: its name, and so its key, is not known.
-            var lost = false
+            // The first attribute lost, and how, for the log.
+            var lost: String?
             // The system's items are hosting groups; the item proper, with its identifier, is the first child.
             var innerValue: CFTypeRef?
             let innerStatus = AXUIElementCopyAttributeValue(kid, kAXChildrenAttribute as CFString, &innerValue)
             let innerKids = elements(status: innerStatus, value: innerValue)
-            if innerKids == nil { lost = true }
+            if innerKids == nil { lost = "item children: AXError \(innerStatus.rawValue)" }
             let inner = innerKids?.first
             if let inner { AXUIElementSetMessagingTimeout(inner, perAppTimeout) }
             let outerPress = hasPress(kid, lost: &lost)
@@ -294,45 +295,48 @@ final class AXBarReader: BarReading {
             let title = string(kid, kAXTitleAttribute, lost: &lost)
             let description = string(kid, kAXDescriptionAttribute, lost: &lost)
                 ?? inner.flatMap { string($0, kAXDescriptionAttribute, lost: &lost) }
+            if lost == nil, box == nil { lost = "item position or size of the wrong type" }
+            if lost == nil, hosting, identifier == nil { lost = "hosting item without an identifier" }
             children.append(Child(identifier: identifier, title: title, description: description,
-                                  frame: box ?? .zero, hasPress: outerPress || innerPress,
-                                  readFailed: lost || box == nil || (hosting && identifier == nil)))
+                                  frame: box ?? .zero, hasPress: outerPress || innerPress, readFailed: lost != nil))
             targets.append(outerPress ? kid : (innerPress ? inner! : kid))
+            if let lost { return .failed(lost) }
         }
-        guard isComplete(children) else { return .failed("an item's position, size, name or actions") }
+        guard isComplete(children) else { return .failed("an item could not be read in full") }
         // Keys and elements are put in the same order, by the same function.
         let order = Self.order(of: children)
         let items = parse(app: app, children: children)
         return .items(zip(items, order).map { Found(item: $0.0, press: targets[$0.1]) })
     }
 
-    /// The value, or nil when there is none. `lost` is set when the app did not say there is none but failed to answer.
-    private static func attribute(_ e: AXUIElement, _ name: String, lost: inout Bool) -> CFTypeRef? {
+    /// The value, or nil when there is none. `lost` is set (if not already) when the app did not say there is none but
+    /// failed to answer, naming the attribute and the error.
+    private static func attribute(_ e: AXUIElement, _ name: String, lost: inout String?) -> CFTypeRef? {
         var value: CFTypeRef?
         let status = AXUIElementCopyAttributeValue(e, name as CFString, &value)
         guard status == .success else {
-            if classify(status) == .failed { lost = true }
+            if classify(status) == .failed, lost == nil { lost = "item \(name): AXError \(status.rawValue)" }
             return nil
         }
         return value
     }
 
-    private static func string(_ e: AXUIElement, _ name: String, lost: inout Bool) -> String? {
+    private static func string(_ e: AXUIElement, _ name: String, lost: inout String?) -> String? {
         attribute(e, name, lost: &lost) as? String
     }
 
-    private static func hasPress(_ e: AXUIElement, lost: inout Bool) -> Bool {
+    private static func hasPress(_ e: AXUIElement, lost: inout String?) -> Bool {
         var actions: CFArray?
         let status = AXUIElementCopyActionNames(e, &actions)
         guard status == .success else {
-            if classify(status) == .failed { lost = true }
+            if classify(status) == .failed, lost == nil { lost = "item actions: AXError \(status.rawValue)" }
             return false
         }
         return (actions as? [String])?.contains(kAXPressAction as String) ?? false
     }
 
     /// The frame; nil unless both the position and the size could be read.
-    private static func frame(of e: AXUIElement, lost: inout Bool) -> CGRect? {
+    private static func frame(of e: AXUIElement, lost: inout String?) -> CGRect? {
         frame(position: attribute(e, kAXPositionAttribute, lost: &lost), size: attribute(e, kAXSizeAttribute, lost: &lost))
     }
 
