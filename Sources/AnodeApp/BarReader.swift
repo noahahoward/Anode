@@ -206,6 +206,8 @@ final class OnceCompletion {
 
 protocol BarEventing: AnyObject {
     var isRunning: Bool { get }
+    /// True while covers are on screen: the layout is then re-read often, because a cover over a moved bar is worse than none.
+    var urgent: Bool { get set }
     func start()
     func stop()
 }
@@ -226,6 +228,7 @@ final class BarEvents: BarEventing {
     private var pending: DispatchWorkItem?
     private var pendingScreenChange = false
     private(set) var isRunning = false
+    var urgent = false
 
     init(fallbackSeconds: TimeInterval = 30, onChange: @escaping (_ displayChanged: Bool) -> Void,
          onInvalidate: @escaping () -> Void = {}) {

@@ -11,6 +11,7 @@ final class MenuBarHiderWiringTests: XCTestCase {
 
     final class FakeEvents: BarEventing {
         var isRunning = false
+        var urgent = false
         var invalidate: (() -> Void)?
         func start() { isRunning = true }
         func stop() { isRunning = false }
