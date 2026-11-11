@@ -78,7 +78,9 @@ final class MenuBarHiderFeature: BetaFeature {
     let accessibilityButton = NSButton(title: "Open Accessibility settings", target: nil, action: nil)
     let screenRecordingButton = NSButton(title: "Open Screen Recording settings", target: nil, action: nil)
     let coverNote = BetaFeaturesWindowController.wrapping(
-        "The cover over hidden icons is plain black, which matches a black menu bar. On a coloured or see-through bar it may show.",
+        "The cover over hidden icons is plain black, which matches a black menu bar. On a coloured or see-through bar it may show. "
+        + "An icon macOS has moved off the bar for lack of room opens its menu in the top-left corner of the screen when you "
+        + "press it in the panel: macOS offers no way to open it anywhere else.",
         color: .secondaryLabelColor)
     let shortcutNote = BetaFeaturesWindowController.wrapping("", color: .secondaryLabelColor)
     private let onBarSource = BarListSource(group: .onBar)

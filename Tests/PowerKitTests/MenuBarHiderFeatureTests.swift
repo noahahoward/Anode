@@ -153,6 +153,12 @@ final class MenuBarHiderFeatureTests: XCTestCase {
         XCTAssertTrue(text.contains("off and on again"), text)
     }
 
+    /// Icons macOS parked off the bar open their menu at the top-left corner when pressed from the panel; the section says so.
+    func testTheNotesSayWhereAParkedIconsMenuOpens() throws {
+        let r = try rig(); defer { done(r) }
+        XCTAssertTrue(r.feature.coverNote.stringValue.contains("top-left corner of the screen"), r.feature.coverNote.stringValue)
+    }
+
     func testFeatureIsInDefaultList() {
         XCTAssertTrue(BetaFeaturesWindowController.defaultFeatures(hasLidSensor: false).contains { $0 is MenuBarHiderFeature })
     }
