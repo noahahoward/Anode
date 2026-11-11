@@ -139,7 +139,13 @@ enum ShortcutCommands {
         defaultShortcut: Shortcut(key: kVK_ANSI_W, carbon: controlKey | optionKey | cmdKey))
     static var wallpaper: [ShortcutCommand] { [wallpaperPause] }
 
-    static var all: [ShortcutCommand] { window + groups + cleaner + wallpaper }
+    /// Menu Bar Hider: open or close the pill. ⌃⌥⌘B, listened for only while the hider is collapsing the bar.
+    static let hiderToggle = ShortcutCommand(
+        id: "hider.toggle", title: "Show or hide the menu bar icons", section: "Menu Bar Hider",
+        defaultShortcut: Shortcut(key: kVK_ANSI_B, carbon: controlKey | optionKey | cmdKey))
+    static var hider: [ShortcutCommand] { [hiderToggle] }
+
+    static var all: [ShortcutCommand] { window + groups + cleaner + wallpaper + hider }
 }
 
 /// The user's choices: each command's shortcut, its default unless changed, or none.

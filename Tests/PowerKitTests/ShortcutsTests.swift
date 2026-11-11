@@ -69,6 +69,15 @@ final class ShortcutsTests: XCTestCase {
         XCTAssertEqual(Set(all.map { $0.defaultShortcut }).count, all.count, "every default shortcut is distinct")
     }
 
+    func testHiderToggleHasTheDocumentedDefaultAndIsInTheList() {
+        XCTAssertEqual(ShortcutCommands.hiderToggle.defaultShortcut.label, "⌃⌥⌘B")
+        XCTAssertEqual(ShortcutCommands.hiderToggle.id, "hider.toggle")
+        XCTAssertEqual(ShortcutCommands.hiderToggle.section, "Menu Bar Hider")
+        XCTAssertEqual(ShortcutCommands.hider.map(\.id), ["hider.toggle"])
+        XCTAssertTrue(all.contains(ShortcutCommands.hiderToggle))
+        XCTAssertEqual(Set(all.map { $0.defaultShortcut }).count, all.count, "every default shortcut is distinct")
+    }
+
     func testChoosingAShortcutReplacesTheDefaultAndPersists() {
         let defaults = UserDefaults(suiteName: "shortcuts-\(UUID().uuidString)")!
         let s = ShortcutStore(defaults: defaults)
