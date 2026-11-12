@@ -3383,6 +3383,117 @@ final class ChargeControllerTests: XCTestCase {
         c.tick()
         XCTAssertNil(c.chargerReconnectTimeLeft(), "plugging back in is not the end of a discharge")
     }
+
+    // ── A helper-set limit after 100 ────────────────────────────────────────
+
+    /// macOS turns its limit switch off by itself at a limit of 100, and the helper only writes the value, so a value
+    /// only the helper can set is not in force until the switch is turned on. It is turned on before the helper is
+    /// asked, not 35 s later by a drift pass. The fake client does not turn the switch off at 100 as macOS does, so
+    /// the tests do it, and look at the switch at the moment each command goes out.
+    func testALimitOnlyTheHelperCanSetFollowing100TurnsTheSwitchOnFirst() {
+        settings.chargeLimit = 100
+        helper.landsOn = client
+        let c = make()
+        XCTAssertEqual(client.state?.mclLimit, 100)
+        client.state?.mclEnabled = false   // macOS, at 100
+        var switchAtSend: [Bool?] = []
+        helper.beforeSend = { [client] in if case .setChargeLimit = $0 { switchAtSend.append(client?.state?.mclEnabled) } }
+        settings.chargeLimit = 63
+        XCTAssertEqual(helper.commands, [.setChargeLimit(63)])
+        XCTAssertEqual(switchAtSend, [true], "the helper was asked while macOS's limit switch was still off")
+        XCTAssertEqual(client.state, NativeChargeState(mclEnabled: true, mclLimit: 63, optimizedChargingEnabled: false))
+        XCTAssertEqual(limitInForce.value, 63)
+        c.periodicTick()
+        XCTAssertFalse(lines.contains { $0.contains("changed outside") }, lines.joined(separator: "\n"))
+    }
+
+    /// Top Up ends (the person cancels it) into a limit only the helper can set: 100 was in force, and the switch with
+    /// it off.
+    func testTopUpEndingIntoAHelperOnlyLimitTurnsTheSwitchOnFirst() {
+        settings.chargeLimit = 63
+        helper.landsOn = client
+        battery = Self.state(50)
+        let c = make()
+        c.pressTopUp()
+        XCTAssertEqual(client.state?.mclLimit, 100)
+        client.state?.mclEnabled = false   // macOS, at 100
+        var switchAtSend: [Bool?] = []
+        helper.beforeSend = { [client] in if case .setChargeLimit = $0 { switchAtSend.append(client?.state?.mclEnabled) } }
+        c.pressTopUp()
+        XCTAssertEqual(switchAtSend, [true], "Top Up ended into a limit the helper set while the switch was off")
+        XCTAssertEqual(client.state, NativeChargeState(mclEnabled: true, mclLimit: 63, optimizedChargingEnabled: false))
+    }
+
+    /// Going to sleep at a limit of 100 with a hold at the current charge: the waited send must find the switch on, or
+    /// the Mac sleeps with nothing held (no tick runs asleep to put it right).
+    func testTheSleepHoldAfter100TurnsTheSwitchOnBeforeTheWaitedSend() {
+        settings.chargeLimit = 100
+        settings.chargeStopWhenSleeping = true
+        battery = Self.state(63)
+        helper.landsOn = client
+        let c = make()
+        client.state?.mclEnabled = false   // macOS, at 100
+        var switchAtSend: [Bool?] = []
+        helper.beforeSend = { [client] in if case .setChargeLimit = $0 { switchAtSend.append(client?.state?.mclEnabled) } }
+        c.willSleep()
+        XCTAssertEqual(helper.waited, [.setChargeLimit(63)])
+        XCTAssertEqual(switchAtSend, [true], "the Mac was let go to sleep with the limit's switch off")
+        XCTAssertEqual(client.state, NativeChargeState(mclEnabled: true, mclLimit: 63, optimizedChargingEnabled: false))
+    }
+
+    /// If macOS turns the switch off again as the limit lands (it does at 100, and what it does when the switch is
+    /// turned on at 100 is not measured), the helper's yes is followed by turning it on once more.
+    func testTheSwitchIsTurnedOnAgainAfterTheHelpersYesWhenItMayHaveBeenOff() {
+        settings.chargeLimit = 100
+        let c = make()
+        client.state?.mclEnabled = false
+        helper.answer = { [client] in
+            // The helper writes the value; macOS, meanwhile, leaves the switch off.
+            if case .setChargeLimit(let p) = $0 { client?.state?.mclLimit = p; client?.state?.mclEnabled = false }
+            return FanReply(ok: true, message: "ok")
+        }
+        settings.chargeLimit = 63
+        XCTAssertEqual(client.state?.mclEnabled, true, "the limit is not in force: the switch is still off after the yes")
+        _ = c
+    }
+
+    /// While a helper limit is on its way, a switch reading off (and a limit that has landed before its yes) is not
+    /// news: it is what the transition looks like, and Charge Control is turning it on. Not a line in the log that
+    /// says someone else changed macOS's settings.
+    func testNoFalseDriftLineWhileAHelperLimitIsOnItsWayFrom100() {
+        settings.chargeLimit = 100
+        let c = make()
+        client.state?.mclEnabled = false
+        helper.deferReplies = true
+        settings.chargeLimit = 63
+        client.state?.mclLimit = 63        // the helper's write has landed; its answer has not
+        client.state?.mclEnabled = false
+        c.periodicTick()
+        XCTAssertFalse(lines.contains { $0.contains("changed outside") }, lines.joined(separator: "\n"))
+        helper.flushReplies()
+    }
+
+    func testNoFalseDriftLineWhileTheFirstHelperLimitIsOnItsWay() {
+        settings.chargeLimit = 63
+        helper.deferReplies = true
+        let c = make()
+        client.state?.mclEnabled = false
+        c.periodicTick()
+        XCTAssertFalse(lines.contains { $0.contains("changed outside") }, lines.joined(separator: "\n"))
+        helper.flushReplies()
+    }
+
+    /// The suppression is only for the window: a switch found off with a limit in force (a person's change) is still
+    /// news.
+    func testASwitchTurnedOffWithAHelperLimitInForceIsStillDrift() {
+        settings.chargeLimit = 63
+        helper.landsOn = client
+        let c = make()
+        XCTAssertEqual(client.state?.mclLimit, 63)
+        client.state?.mclEnabled = false
+        c.periodicTick()
+        XCTAssertTrue(lines.contains { $0.contains("the limit was turned off") }, lines.joined(separator: "\n"))
+    }
 }
 
 // ── Fakes ───────────────────────────────────────────────────────────────────

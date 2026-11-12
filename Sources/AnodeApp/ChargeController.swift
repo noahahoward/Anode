@@ -1296,7 +1296,11 @@ final class ChargeController {
         guard let c = client, let found = c.read() else { return }
         var changed: [String] = []
         let offByItself = appliedLimit == Self.noLimit && found.mclLimit == Self.noLimit
-        if !found.mclEnabled, !offByItself { changed.append("the limit was turned off") }
+        // A limit only the helper can set, on its way from nothing in force or from 100 (where macOS keeps the switch
+        // off): the switch is being turned on around it (`switchOnForTheHelper`), and macOS may show it off, or the
+        // value already landed, for a moment before the helper's yes. That is the transition, not someone's change.
+        let helperLimitOnItsWay = limitInFlight && (appliedLimit == nil || appliedLimit == Self.noLimit)
+        if !found.mclEnabled, !offByItself, !helperLimitOnItsWay { changed.append("the limit was turned off") }
         if found.optimizedChargingEnabled { changed.append("Optimized Battery Charging was turned on") }
         if let mine = appliedLimit, !limitInFlight, found.mclLimit != mine {
             changed.append("the limit is \(found.mclLimit), not \(mine)")
@@ -1689,6 +1693,7 @@ final class ChargeController {
             setClientLimit(want, client: c, reason: d.reason)
         } else if helper.available, refusedLimit == nil {
             let from = appliedLimit
+            switchOnForTheHelper(from: from, client: c)
             if let deadline = waitUntil {
                 // Going to sleep: in force before sleep is allowed. Queued behind anything still on its way, whose
                 // late answer then books nothing.
@@ -1727,10 +1732,23 @@ final class ChargeController {
         if r.ok {
             appliedLimit = want
             log("\(Self.limitChange(from, want)) (\(reason.rawValue))")
+            // Once more now that the value has landed: what macOS does to a switch turned on while it still held 100
+            // was not measured, and the cost of asking again is one call that changes nothing if it is on.
+            if let c = client { switchOnForTheHelper(from: from, client: c, afterTheYes: true) }
         } else {
             log("the helper did not set the limit to \(want): \(r.message)")
             if r.message != HelperConnection.stoppedAnswering { refusedLimit = (want, r.message) }
         }
+    }
+
+    /// macOS turns its limit switch off by itself at a limit of 100, and the helper only writes the value and says so:
+    /// nothing turns the switch on. So a value only the helper can set is not in force until the switch is on, which
+    /// the next drift pass would see and fix up to 35 s later (and a Mac asleep runs none). Whenever the switch may be
+    /// off (nothing of Charge Control's in force, or 100) it is turned on first, as the drift pass does, and asked
+    /// again after the helper's yes. `from` is what was in force before this limit.
+    private func switchOnForTheHelper(from: Int?, client c: ChargeLimitClient, afterTheYes: Bool = false) {
+        guard from == nil || from == Self.noLimit else { return }
+        if !c.setLimitEnabled(true), !afterTheYes { log("macOS would not turn its charge limit on") }
     }
 
     private func setClientLimit(_ value: Int, client c: ChargeLimitClient, reason: ChargeReason, wanted: Int? = nil) {
