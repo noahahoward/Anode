@@ -1740,6 +1740,74 @@ final class ChargeHelperTestsSocket: XCTestCase {
         adopting.stop()
     }
 
+    /// A HELPER KILLED MID-DISCHARGE, and the next one to start. Server A takes
+    /// a discharge over a real socket and is then killed: its line to the
+    /// charger is severed first, so nothing it does on its way out reaches the
+    /// charger — the fake stays cut, as `kill -9` leaves `CHIE` at 0x08. Server
+    /// B, started on the same socket path against the same charger, clears
+    /// that cut before it serves anything, and then serves.
+    func testAServerStartedAfterAKilledOneClearsItsCut() throws {
+        guard let mine = ownCDHash() else {
+            throw XCTSkip("no code identity available in this test environment")
+        }
+        let hw = FakeChargeHardware(percent: 77, onAC: true)
+        let path = NSTemporaryDirectory() + "bs-chg-\(UUID().uuidString.prefix(8)).sock"
+        let config = FanHelperServer.Configuration(socketPath: path, ownerUID: getuid(),
+                                                   pin: .exactBuild(cdhash: mine))
+
+        let lineA = ChargeLine(hw)
+        let a = FanHelperServer(hardware: FakeFans([:]), configuration: config, charge: lineA)
+        a.chargeTiming = .immediate
+        try a.start()
+        let threadA = Thread { a.run() }
+        threadA.start()
+        let linkA = FanControlLink(socketPath: path)
+        var status: FanControlLink.Status?
+        linkA.connect { status = $0 }
+        spin(until: { status != nil })
+        var started: FanReply?
+        linkA.send(.discharge(toPercent: 40)) { started = $0 }
+        spin(until: { started != nil })
+        XCTAssertEqual(started?.ok, true, started?.message ?? "no reply")
+        XCTAssertEqual(hw.isCut, true)
+
+        // Killed. Nothing from A reaches the charger any more.
+        lineA.sever()
+        linkA.disconnect()
+        a.stop()
+        spin(until: { threadA.isFinished })
+        XCTAssertEqual(hw.isCut, true, "the killed helper reconnected the charger after all")
+        XCTAssertEqual(hw.cutWrites, [true])
+        XCTAssertGreaterThan(lineA.writes.count, 1, "A never tried to hand the charger back")
+
+        let log = ChargeLogRecorder(hw)
+        let b = FanHelperServer(hardware: FakeFans([:]), configuration: config,
+                                log: { log.record($0) }, charge: hw)
+        b.chargeTiming = .immediate
+        server = b            // tearDown stops it
+        socketPath = path
+        try b.start()
+        XCTAssertEqual(hw.isCut, false, "the next helper started with the charger still cut")
+        XCTAssertEqual(hw.cutWrites, [true, false])
+        XCTAssertTrue(log.lines.contains("cleared an adapter cut nobody owned"), "\(log.lines)")
+        let clearedAt = log.lines.firstIndex(of: "cleared an adapter cut nobody owned")
+        let listeningAt = log.lines.firstIndex { $0.hasPrefix("listening on") }
+        XCTAssertNotNil(listeningAt)
+        if let clearedAt, let listeningAt {
+            XCTAssertLessThan(clearedAt, listeningAt, "B listened before it cleared the cut")
+        }
+
+        thread = Thread { b.run() }
+        thread.start()
+        link = FanControlLink(socketPath: path)
+        status = nil
+        link.connect { status = $0 }
+        spin(until: { status != nil })
+        XCTAssertEqual(send(.stopDischarge),
+                       FanReply(ok: true, message: "the charger is not cut — nothing to reconnect"))
+        XCTAssertEqual(hw.cutWrites, [true, false])
+    }
+
     /// The RUN LOOP's idle rule, not only `isIdle`: an on-demand helper whose
     /// reconnect is failing must not time out and leave the charger cut. It
     /// leaves once the reconnect lands.
