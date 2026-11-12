@@ -8,7 +8,8 @@ Nothing was bumped between 1.0.0 and 1.15.0. Those versions were assigned afterw
 git tags (`git show v1.7.0`); builds made before 1.15.0 still say 1.0.0 in their About box.
 
 ## 1.17.0 — 2026-11-12
-- Charge Control (Beta Features, off by default): hold the battery at a charge limit you choose, from 20% to 100%. macOS itself holds the limit, so it keeps working while Anode is closed, and turning Charge Control off puts macOS's own charging settings back as they were.
+- Charge Control (Beta Features, off by default): hold the battery at a charge limit you choose, from 20% to 100%. The limit applies while Anode is running: quitting Anode, or turning Charge Control off, puts macOS's own charging settings back as they were, and opening Anode again brings your limit back.
+- If Anode ever stops without quitting, the next time it opens it lifts the limit first and waits a minute before setting it again, so an Anode that is not working does not hold your battery.
 - Discharge runs the Mac from the battery down to your limit while it stays plugged in, and Top Up charges to 100% once and returns to your limit when you unplug.
 - Sailing Mode lets the battery drift a few percent below the limit before recharging. Heat Protection pauses charging while the battery is hot. Charging can also pause while the Mac sleeps, and discharge can start by itself whenever the battery is above the limit.
 - Limits other than 80, 85, 90, 95 or 100%, and discharging, need the Anode helper (the same one the fans use). The helper always reconnects the charger: when Anode quits, before the Mac sleeps, when the cable is pulled, and when it next starts after being stopped.
