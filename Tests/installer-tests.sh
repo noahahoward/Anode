@@ -49,7 +49,11 @@ KEYCHAINS_BEFORE="$(security list-keychains 2>/dev/null)"
 BASE="$T/base"
 mkdir -p "$BASE"
 ( cd "$ROOT" && git ls-files -co --exclude-standard -z | rsync -a --from0 --files-from=- ./ "$BASE/" )
-( cd "$BASE" && git init -q && git add -A && git -c user.name=t -c user.email=t@t commit -qm base )
+# No background tidying in these throwaway repos. A commit starts git's maintenance detached, and it packs the
+# loose objects away while the next step is still copying them: the installer's clone of this repo then died with
+# "failed to copy file … No such file or directory" about one run in four (git 2.54), failing scenario 1.
+quiet_commit() { git -c user.name=t -c user.email=t@t -c gc.auto=0 -c maintenance.auto=false commit -qm "$1"; }
+( cd "$BASE" && git init -q && git add -A && quiet_commit base )
 
 # A variant of it whose build-app.sh is `$2`, committed.
 variant() {
@@ -57,7 +61,7 @@ variant() {
   git clone -q "$BASE" "$T/repo-$name"
   printf '%s\n' "$script" > "$T/repo-$name/build-app.sh"
   chmod +x "$T/repo-$name/build-app.sh"
-  ( cd "$T/repo-$name" && git add -A && git -c user.name=t -c user.email=t@t commit -qm "$name" )
+  ( cd "$T/repo-$name" && git add -A && quiet_commit "$name" )
 }
 
 # Makes the things the real build makes (signing keychain, the app), then fails with a compiler-style error.
