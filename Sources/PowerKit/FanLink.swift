@@ -666,6 +666,18 @@ public final class FanControlLink {
         return answer.take(within: timeout)
     }
 
+    /// Wait until everything already handed to this link has been exchanged with the helper: true when it has,
+    /// false after `timeout`. The answers themselves may still be on their way to the main thread.
+    ///
+    /// For a caller that must act after anything still on its way to the helper has landed: Charge Control putting
+    /// macOS's own charge limit back, which a limit the helper is still setting would otherwise overwrite. Never
+    /// call this from this link's own queue.
+    public func drain(timeout: TimeInterval) -> Bool {
+        let done = DispatchSemaphore(value: 0)
+        queue.async { done.signal() }
+        return done.wait(timeout: .now() + timeout) == .success
+    }
+
     /// One reply, handed from this link's queue to a thread that is waiting for it.
     private final class WaitedReply {
         private let lock = NSLock()

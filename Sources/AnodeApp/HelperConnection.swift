@@ -30,6 +30,7 @@ protocol HelperWire: AnyObject {
     func ping(_ done: @escaping (FanControlLink.Status) -> Void)
     func send(_ command: FanCommand, _ done: @escaping (FanReply) -> Void)
     func sendWaiting(_ command: FanCommand, timeout: TimeInterval) -> FanReply?
+    func drain(timeout: TimeInterval) -> Bool
     func disconnect()
 }
 
@@ -39,6 +40,10 @@ final class HelperConnection {
 
     /// The app's connection. Inert until something asks it to connect: creating it opens nothing.
     static let shared = HelperConnection(wire: FanControlLink())
+
+    /// What `FanControlLink` answers a command with when there is no socket, or the helper closed it without
+    /// answering. The link never answers "nothing": this refusal is how a helper that is gone shows up.
+    static let stoppedAnswering = "the fan helper stopped answering"
 
     enum Holder: Hashable {
         case fans
@@ -109,6 +114,9 @@ final class HelperConnection {
     func suspend() {
         suspended = true
         close()
+        // Told even when the socket was already closed: a user that is not holding it (Charge Control between
+        // commands) still needs to know an install or uninstall is under way, to look again once it is over.
+        notify()
     }
 
     /// The install or uninstall is over. Reconnect at once if anyone is still holding the socket.
@@ -153,6 +161,12 @@ final class HelperConnection {
         let reply = wire.sendWaiting(command, timeout: timeout)
         if reply?.ok != true { checkStillThere() }
         return reply
+    }
+
+    /// Wait until everything already sent has been exchanged with the helper, or `timeout`. Blocks the calling
+    /// thread; see `FanControlLink.drain`.
+    func drain(timeout: TimeInterval) -> Bool {
+        wire.drain(timeout: timeout)
     }
 
     /// A command failed: find out whether the socket did too. `FanControlLink` closes a socket that stopped

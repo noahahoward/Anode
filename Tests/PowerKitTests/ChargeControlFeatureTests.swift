@@ -165,6 +165,9 @@ final class ChargeControlFeatureTests: XCTestCase {
         for msg in [ChargeController.unavailableText, ChargeController.unreadableText, ChargeController.noBatteryText] {
             XCTAssertEqual(text(.unavailable(msg)), msg)
         }
+        let refusal = ChargeController.dischargeRefusedText("this Mac cannot warn the helper before it sleeps")
+        XCTAssertEqual(text(.refused(refusal)), "The Anode helper would not discharge: this Mac cannot warn the helper "
+                       + "before it sleeps")
         XCTAssertEqual(text(.off), "Off")
     }
 
@@ -341,6 +344,40 @@ final class ChargeControlFeatureTests: XCTestCase {
         XCTAssertEqual(installs, 1)
     }
 
+    /// The window shows the section (or the app comes forward with it open): the controller looks again for a helper
+    /// that has not answered. The section's own redraws, on every setting and status change, do not; nor does a
+    /// timer.
+    func testShowingTheSectionLooksForTheHelperAgain() throws {
+        battery = ChargeControllerTests.state(90)
+        let f = make(enabled: true)
+        let before = helper.rechecks
+        f.refresh()
+        XCTAssertEqual(helper.rechecks, before + 1)
+        settings.chargeLimit = 85
+        f.dischargeButton.performClick(nil)
+        controller?.periodicTick()
+        XCTAssertEqual(helper.rechecks, before + 1, "a redraw looked for the helper")
+    }
+
+    /// The helper refusing a discharge for a reason that does not pass by itself: the reason is shown, and there is
+    /// nothing to install.
+    func testALastingRefusalIsShownWithoutAnInstallButton() throws {
+        let why = "the charger may still be cut off from an earlier failure"
+        helper.answer = { cmd in
+            if case .discharge = cmd { return FanReply(ok: false, message: why) }
+            return FanReply(ok: true, message: "ok")
+        }
+        battery = ChargeControllerTests.state(90)
+        let f = make(enabled: true)
+        f.dischargeButton.performClick(nil)
+        XCTAssertEqual(controller?.status, .refused(ChargeController.dischargeRefusedText(why)))
+        XCTAssertEqual(f.statusLabel.stringValue, "The Anode helper would not discharge: \(why)")
+        XCTAssertFalse(f.statusLabel.isHiddenOrHasHiddenAncestor)
+        XCTAssertTrue(f.installButton.isHiddenOrHasHiddenAncestor, "the helper is there; installing would not help")
+        XCTAssertTrue(f.dischargeButton.isEnabled)
+        XCTAssertEqual(f.dischargeButton.title, "Stop Discharge")
+    }
+
     /// The windows built from `defaultFeatures()` make this section with no controller (tests, or before launch
     /// finishes). On, it must show its controls without a controller to press.
     func testOnWithoutAControllerIsSafe() {
@@ -383,7 +420,9 @@ final class ChargeControlFeatureTests: XCTestCase {
         shown += reasons.map { ChargeControlFeature.statusText(.active(ChargeDecision(osLimit: 70, dischargeTo: nil, reason: $0))) }
         shown += [ChargeController.unavailableText, ChargeController.unreadableText, ChargeController.noBatteryText,
                   ChargeController.limitNeedsHelperText, ChargeController.dischargeNeedsHelperText,
-                  ChargeController.helperOutdatedText]
+                  ChargeController.helperOutdatedText,
+                  ChargeController.dischargeRefusedText("the charger may still be cut off from an earlier failure"),
+                  ChargeController.limitRefusedText(63, "macOS did not take the charge limit")]
         let banned = ["MCL", "SMC", "PowerUI", "topUp", "watt", "CHIE", "OBC"]
         for text in shown {
             for word in banned { XCTAssertFalse(text.localizedCaseInsensitiveContains(word), "“\(word)” in: \(text)") }

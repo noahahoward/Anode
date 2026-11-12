@@ -230,31 +230,319 @@ final class HelperConnectionTests: XCTestCase {
         wire.answerConnects(.connected(fanCount: 2, version: nil), reopened: true)
         XCTAssertTrue(c.isConnected)
         XCTAssertFalse(c.speaksCharge)
-        let adapter = ChargeHelperAdapter(connection: c)
+        c.release(.charge)
+
+        // Charge Control remembers what the helper said after letting the connection go.
+        wire.answerAtOnce = .connected(fanCount: 2, version: nil)
+        let adapter = ChargeHelperAdapter(connection: c, isInstalled: { true })
+        adapter.follow {}
+        XCTAssertFalse(c.isConnected, "let go after the greeting")
         XCTAssertFalse(adapter.available)
         XCTAssertTrue(adapter.outdated)
+        adapter.letGo()
     }
 }
 
-/// A wire that answers connects only when told to, and records what it sent.
+/// Charge Control over the real adapter and the real shared connection, on a scripted wire: when it talks to the
+/// helper, and when it leaves it alone.
+///
+/// The helper is a root daemon launchd starts on demand. Every hello wakes it, so Charge Control connects once at
+/// launch (the daemon's startup clears a charger cut a dead helper left behind) and then only when it has something
+/// to ask, and keeps the connection open only while a discharge lives on it.
+final class ChargeControlConnectionTests: XCTestCase {
+
+    private var defaults: UserDefaults!
+    private var suiteName: String!
+    private var settings: Settings!
+    private var client: FakeChargeLimitClient!
+    private var wire: ScriptedWire!
+    private var connection: HelperConnection!
+    private var adapter: ChargeHelperAdapter!
+    private var installed = true
+    private var battery: Battery.State?
+    private var lines: [String] = []
+    private var controller: ChargeController?
+
+    override func setUpWithError() throws {
+        (defaults, suiteName) = try TestDefaults.make(owner: "ChargeControlConnection", test: name)
+        settings = Settings(defaults: defaults)
+        client = FakeChargeLimitClient()
+        wire = ScriptedWire()
+        wire.answerAtOnce = .connected(fanCount: 1, version: 2)
+        connection = HelperConnection(wire: wire)
+        installed = true
+        adapter = ChargeHelperAdapter(connection: connection, isInstalled: { [weak self] in self?.installed ?? false })
+        battery = ChargeControllerTests.state(70)
+        lines = []
+        // A limit the helper sets is macOS's own, and what the client then reads back.
+        wire.reply = { [weak self] cmd in
+            if case .setChargeLimit(let p) = cmd { self?.client.state?.mclLimit = p }
+            return FanReply(ok: true, message: "ok")
+        }
+    }
+
+    override func tearDownWithError() throws {
+        controller?.shutdown()
+        controller = nil
+        settings = nil
+        TestDefaults.destroy(defaults, suiteName)
+    }
+
+    @discardableResult
+    private func make() -> ChargeController {
+        settings.chargeControlEnabled = true
+        let c = ChargeController(settings: settings, makeClient: { [weak self] in self?.client },
+                                 helper: adapter, battery: { [weak self] in self?.battery },
+                                 log: { [weak self] in self?.lines.append($0) })
+        controller = c
+        return c
+    }
+
+    private var traffic: [Int] { [wire.connectsAsked, wire.pings, wire.sent.count] }
+
+    // ── Launch ──────────────────────────────────────────────────────────────
+
+    /// Ruling 7: a connect at launch starts the daemon, whose startup clears an orphaned cut. Then it is let go.
+    func testAtLaunchAnInstalledHelperIsGreetedOnceAndLetGo() {
+        let c = make()
+        XCTAssertEqual(wire.connectsAsked, 1)
+        XCTAssertTrue(connection.holders.isEmpty, "Charge Control kept the connection with nothing to ask")
+        XCTAssertEqual(wire.disconnects, 1)
+        XCTAssertTrue(adapter.available)
+        XCTAssertEqual(c.status, .active(ChargeDecision(osLimit: 80, dischargeTo: nil, reason: .limit)))
+    }
+
+    func testAHelperThatIsNotInstalledIsNeverConnected() {
+        installed = false
+        settings.chargeLimit = 63
+        let c = make()
+        XCTAssertEqual(wire.connectsAsked, 0)
+        XCTAssertEqual(c.status, .needsHelper(ChargeController.limitNeedsHelperText),
+                       "a helper known not to be installed is known at once")
+        c.periodicTick()
+        c.periodicTick()
+        XCTAssertEqual(wire.connectsAsked, 0)
+    }
+
+    /// Nothing is said about the helper until it has answered: no "needs the helper" flash before the hello.
+    func testNothingIsSaidAboutTheHelperBeforeItAnswers() {
+        wire.answerAtOnce = nil
+        settings.chargeLimit = 63
+        let c = make()
+        XCTAssertNotEqual(c.status, .needsHelper(ChargeController.limitNeedsHelperText))
+        XCTAssertTrue(client.limitCalls.isEmpty)
+        wire.answerConnects(.notRunning, reopened: true)
+        XCTAssertEqual(c.status, .needsHelper(ChargeController.limitNeedsHelperText))
+        XCTAssertEqual(client.limitCalls, [80])
+    }
+
+    // ── Quiet while nothing needs it ────────────────────────────────────────
+
+    /// The 30 s timer never wakes the daemon while no discharge runs.
+    func testNoPeriodicTrafficWhileNoDischargeRuns() {
+        let c = make()
+        let before = traffic
+        for _ in 0..<5 { c.periodicTick() }
+        XCTAssertEqual(traffic, before, "the timer talked to the helper with no discharge running")
+    }
+
+    /// Not even while the Fans tab holds the socket open.
+    func testNoPeriodicTrafficWhileTheFansTabHoldsTheSocket() {
+        let c = make()
+        connection.connect(for: .fans) { _ in }
+        let before = traffic
+        for _ in 0..<5 { c.periodicTick() }
+        XCTAssertEqual(traffic, before)
+        connection.release(.fans)
+    }
+
+    /// The adapter's own check on the connection does nothing unless a discharge keeps it open.
+    func testRefreshIsQuietUnlessKeptOpen() {
+        adapter.follow {}
+        let before = traffic
+        adapter.refresh()
+        XCTAssertEqual(traffic, before)
+        adapter.keepOpen(true)
+        let open = traffic
+        adapter.refresh()
+        XCTAssertEqual(wire.connectsAsked, open[0] + 1)
+        adapter.letGo()
+        XCTAssertTrue(connection.holders.isEmpty)
+    }
+
+    /// A limit only the helper can set: connect, set it, let go.
+    func testALimitOnlyTheHelperCanSetIsSetAndTheConnectionLetGo() {
+        settings.chargeLimit = 63
+        let c = make()
+        XCTAssertEqual(wire.sent, [.setChargeLimit(63)])
+        XCTAssertTrue(connection.holders.isEmpty)
+        XCTAssertEqual(c.status, .active(ChargeDecision(osLimit: 63, dischargeTo: nil, reason: .limit)))
+        settings.chargeLimit = 64
+        XCTAssertEqual(wire.sent, [.setChargeLimit(63), .setChargeLimit(64)])
+        XCTAssertTrue(connection.holders.isEmpty)
+        let before = traffic
+        c.periodicTick()
+        XCTAssertEqual(traffic, before)
+    }
+
+    // ── Open while a discharge lives on it ──────────────────────────────────
+
+    /// Closing the socket would end the cut, so a discharge keeps it open; the timer may check on it then. Once the
+    /// discharge has stopped, it is let go.
+    func testADischargeKeepsTheConnectionUntilItStops() {
+        battery = ChargeControllerTests.state(90)
+        let c = make()
+        c.pressDischarge()
+        XCTAssertEqual(wire.sent, [.discharge(toPercent: 80)])
+        XCTAssertTrue(connection.holders.contains(.charge))
+        let closes = wire.disconnects
+        c.periodicTick()
+        XCTAssertEqual(wire.disconnects, closes, "the connection under a discharge was closed")
+        XCTAssertTrue(connection.holders.contains(.charge))
+
+        battery = ChargeControllerTests.state(89, ac: false, adapter: false)
+        c.tick()
+        XCTAssertEqual(wire.sent, [.discharge(toPercent: 80), .stopDischarge])
+        XCTAssertTrue(connection.holders.isEmpty, "the connection was kept after the discharge stopped")
+    }
+
+    // ── Looking again ───────────────────────────────────────────────────────
+
+    /// Showing the section looks again for a helper that has not answered (started since, say): one connect, let
+    /// go. A helper that has answered is not woken for it.
+    func testShowingTheSectionLooksAgainForAHelperThatHasNotAnswered() {
+        wire.answerAtOnce = .notRunning
+        settings.chargeLimit = 63
+        let c = make()
+        XCTAssertEqual(c.status, .needsHelper(ChargeController.limitNeedsHelperText))
+        XCTAssertEqual(wire.connectsAsked, 1)
+
+        wire.answerAtOnce = .connected(fanCount: 1, version: 2)
+        c.recheckHelper()
+        XCTAssertEqual(wire.connectsAsked, 2)
+        XCTAssertEqual(wire.sent, [.setChargeLimit(63)])
+        XCTAssertEqual(c.status, .active(ChargeDecision(osLimit: 63, dischargeTo: nil, reason: .limit)))
+        XCTAssertTrue(connection.holders.isEmpty)
+
+        let before = traffic
+        c.recheckHelper()
+        XCTAssertEqual(traffic, before, "a helper that had answered was woken to answer again")
+    }
+
+    /// An install or an uninstall closes the connection for everyone and opens it again; Charge Control looks
+    /// again then. A limit the helper set stays in force after an uninstall (it is macOS's own setting); the next
+    /// one it cannot set falls back.
+    func testAnUninstallAndAnInstallAreNoticed() {
+        settings.chargeLimit = 63
+        let c = make()
+        XCTAssertTrue(adapter.available)
+
+        connection.suspend()
+        installed = false
+        connection.resume()
+        XCTAssertFalse(adapter.available)
+        settings.chargeLimit = 62
+        XCTAssertEqual(c.status, .needsHelper(ChargeController.limitNeedsHelperText))
+        XCTAssertEqual(client.limitCalls, [80])
+
+        connection.suspend()
+        installed = true
+        connection.resume()
+        XCTAssertTrue(adapter.available)
+        XCTAssertEqual(wire.sent.last, .setChargeLimit(62))
+        XCTAssertEqual(c.status, .active(ChargeDecision(osLimit: 62, dischargeTo: nil, reason: .limit)))
+        XCTAssertTrue(connection.holders.isEmpty)
+    }
+
+    /// The real link answers a socket that is gone with "stopped answering", never with nothing. That helper is
+    /// unavailable until it answers again, and the limit falls back to the nearest value macOS takes above it.
+    func testAHelperThatStoppedAnsweringIsUnavailable() {
+        settings.chargeLimit = 63
+        let c = make()
+        wire.answerAtOnce = .notRunning
+        settings.chargeLimit = 64
+        XCTAssertFalse(adapter.available)
+        XCTAssertEqual(c.status, .needsHelper(ChargeController.limitNeedsHelperText))
+        XCTAssertEqual(client.limitCalls, [80], "the limit was not held at the nearest value above it")
+    }
+
+    /// The same when the hello still answered and the command did not.
+    func testAStoppedAnsweringReplyMakesTheHelperUnavailable() {
+        settings.chargeLimit = 63
+        let c = make()
+        wire.reply = { _ in FanReply(ok: false, message: HelperConnection.stoppedAnswering) }
+        settings.chargeLimit = 64
+        XCTAssertFalse(adapter.available)
+        XCTAssertEqual(c.status, .needsHelper(ChargeController.limitNeedsHelperText))
+        XCTAssertEqual(client.limitCalls, [80])
+        XCTAssertTrue(connection.holders.isEmpty)
+    }
+
+    /// What `HelperConnection` calls "stopped answering" is what `FanControlLink` really says.
+    func testStoppedAnsweringIsWhatTheLinkSays() {
+        let link = FanControlLink(socketPath: NSTemporaryDirectory() + "no-such-\(UUID().uuidString.prefix(8)).sock")
+        var reply: FanReply?
+        link.send(.stopDischarge) { reply = $0 }
+        let deadline = Date().addingTimeInterval(3)
+        while reply == nil, Date() < deadline { RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.01)) }
+        XCTAssertEqual(reply, FanReply(ok: false, message: HelperConnection.stoppedAnswering))
+    }
+}
+
+/// A wire that answers connects only when told to (or at once, with `answerAtOnce`), and records what it sent.
 final class ScriptedWire: HelperWire {
     private(set) var sent: [FanCommand] = []
     private(set) var disconnects = 0
+    /// Every `ensureConnected`: each is a hello, and the first after a close starts the daemon.
+    private(set) var connectsAsked = 0
+    private(set) var pings = 0
+    private(set) var drains = 0
     private var connects: [(FanControlLink.Status, Bool) -> Void] = []
 
-    func ensureConnected(_ done: @escaping (FanControlLink.Status, Bool) -> Void) { connects.append(done) }
-    func ping(_ done: @escaping (FanControlLink.Status) -> Void) { done(.notRunning) }
+    /// When set, every connect is answered at once with this, as reopened when no socket was open; and a command
+    /// with no socket open is answered the way `FanControlLink` answers it. Unset, connects wait for
+    /// `answerConnects` and every command is answered ok.
+    var answerAtOnce: FanControlLink.Status?
+    /// A connect has answered "connected" and nothing has closed the socket since.
+    private(set) var open = false
+    var reply: (FanCommand) -> FanReply = { _ in FanReply(ok: true, message: "ok") }
+    var pingStatus: FanControlLink.Status = .notRunning
+
+    func ensureConnected(_ done: @escaping (FanControlLink.Status, Bool) -> Void) {
+        connectsAsked += 1
+        guard let status = answerAtOnce else { return connects.append(done) }
+        let reopened = !open
+        if case .connected = status { open = true } else { open = false }
+        done(status, reopened)
+    }
+    func ping(_ done: @escaping (FanControlLink.Status) -> Void) {
+        pings += 1
+        done(pingStatus)
+    }
     func send(_ command: FanCommand, _ done: @escaping (FanReply) -> Void) {
         sent.append(command)
-        done(FanReply(ok: true, message: "ok"))
+        done(answer(command))
     }
     func sendWaiting(_ command: FanCommand, timeout: TimeInterval) -> FanReply? {
         sent.append(command)
-        return FanReply(ok: true, message: "ok")
+        return answer(command)
     }
-    func disconnect() { disconnects += 1 }
+    func drain(timeout: TimeInterval) -> Bool {
+        drains += 1
+        return true
+    }
+    func disconnect() {
+        disconnects += 1
+        open = false
+    }
+
+    private func answer(_ command: FanCommand) -> FanReply {
+        if answerAtOnce != nil, !open { return FanReply(ok: false, message: HelperConnection.stoppedAnswering) }
+        return reply(command)
+    }
 
     func answerConnects(_ status: FanControlLink.Status, reopened: Bool) {
+        if case .connected = status { open = true } else { open = false }
         let pending = connects
         connects = []
         pending.forEach { $0(status, reopened) }

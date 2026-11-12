@@ -88,7 +88,7 @@ final class ChargeControllerTests: XCTestCase {
         XCTAssertEqual(c.status, .off)
         XCTAssertNil(c.lastDecision)
         XCTAssertTrue(helper.commands.isEmpty, "a helper command was sent while off")
-        XCTAssertEqual(helper.holds, 0, "the helper link was held while off")
+        XCTAssertEqual(helper.follows, 0, "the helper link was held while off")
         XCTAssertNil(settings.chargeRestoreRecord)
     }
 
@@ -103,13 +103,14 @@ final class ChargeControllerTests: XCTestCase {
         XCTAssertEqual(clientsMade, 1)
     }
 
-    func testHoldsTheHelperOnlyWhileOn() {
+    func testFollowsTheHelperOnlyWhileOn() {
         make(enabled: false)
-        XCTAssertEqual(helper.holds, 0)
+        XCTAssertEqual(helper.follows, 0)
         settings.chargeControlEnabled = true
-        XCTAssertTrue(helper.holding, "Charge Control on does not hold the helper link")
+        XCTAssertTrue(helper.following, "Charge Control on does not follow the helper")
         settings.chargeControlEnabled = false
-        XCTAssertFalse(helper.holding, "Charge Control off still holds the helper link")
+        XCTAssertFalse(helper.following, "Charge Control off still follows the helper")
+        XCTAssertFalse(helper.isOpen)
     }
 
     // ── Enable ──────────────────────────────────────────────────────────────
@@ -151,11 +152,30 @@ final class ChargeControllerTests: XCTestCase {
         XCTAssertEqual(record, NativeChargeState(mclEnabled: true, mclLimit: 90, optimizedChargingEnabled: true))
     }
 
-    func testUndecodableRecordIsTreatedAsNone() {
+    /// A record that cannot be read may still be the only trace of the state before Charge Control ran, and the
+    /// state found now may be one Charge Control made: it is never written over. Switching off puts back macOS's
+    /// defaults instead (no limit, Optimized Battery Charging on), says so, and then clears it.
+    func testUndecodableRecordIsKeptAndSwitchingOffPutsBackTheDefaults() {
         settings.chargeRestoreRecord = "{not a record"
         client.state = NativeChargeState(mclEnabled: true, mclLimit: 85, optimizedChargingEnabled: false)
-        make()
-        XCTAssertEqual(record, NativeChargeState(mclEnabled: true, mclLimit: 85, optimizedChargingEnabled: false))
+        let c = make()
+        XCTAssertEqual(settings.chargeRestoreRecord, "{not a record", "the unreadable record was written over")
+        settings.chargeControlEnabled = false
+        XCTAssertEqual(client.state, NativeChargeState(mclEnabled: false, mclLimit: 100, optimizedChargingEnabled: true))
+        XCTAssertNil(settings.chargeRestoreRecord)
+        XCTAssertEqual(c.status, .off)
+        XCTAssertTrue(lines.contains { $0.contains("could not be read") && $0.contains("defaults") },
+                      lines.joined(separator: "\n"))
+    }
+
+    /// The same while off, before an uninstall.
+    func testUninstallPutsBackTheDefaultsForAnUndecodableRecord() {
+        settings.chargeRestoreRecord = "[1,2,3]"
+        client.state = NativeChargeState(mclEnabled: true, mclLimit: 80, optimizedChargingEnabled: false)
+        let c = make(enabled: false)
+        c.restoreForUninstall()
+        XCTAssertEqual(client.state, NativeChargeState(mclEnabled: false, mclLimit: 100, optimizedChargingEnabled: true))
+        XCTAssertNil(settings.chargeRestoreRecord)
     }
 
     func testUnavailableClientShowsReason() {
@@ -163,7 +183,7 @@ final class ChargeControllerTests: XCTestCase {
         let c = make()
         XCTAssertEqual(c.status, .unavailable("Needs macOS 26.4 or later on Apple silicon"))
         XCTAssertNil(settings.chargeRestoreRecord)
-        XCTAssertEqual(helper.holds, 0)
+        XCTAssertEqual(helper.follows, 0)
         XCTAssertTrue(helper.commands.isEmpty)
     }
 
@@ -204,10 +224,76 @@ final class ChargeControllerTests: XCTestCase {
         settings.chargeControlEnabled = false
         XCTAssertEqual(helper.commands.last, .stopDischarge)
         XCTAssertEqual(client.state, NativeChargeState(mclEnabled: false, mclLimit: 100, optimizedChargingEnabled: true))
-        XCTAssertFalse(helper.holding)
+        XCTAssertFalse(helper.following)
         let after = helper.commands.count
         c.tick()
         XCTAssertEqual(helper.commands.count, after, "the controller kept working after it was switched off")
+    }
+
+    /// Limit 63 → 62 puts `.setChargeLimit(62)` on the link; Charge Control is switched off before it has been
+    /// answered. The restore must land after it, or macOS would be left at 62 with the record cleared.
+    func testSwitchingOffLandsAfterAHelperLimitStillOnItsWay() {
+        settings.chargeLimit = 63
+        helper.landsOn = client
+        make()
+        XCTAssertEqual(client.state?.mclLimit, 63)
+        helper.deferReplies = true
+        settings.chargeLimit = 62
+        settings.chargeControlEnabled = false
+        helper.flushReplies()   // anything still on its way lands now, if it had not already
+        XCTAssertEqual(client.state, NativeChargeState(mclEnabled: false, mclLimit: 100, optimizedChargingEnabled: true),
+                       "a limit still on its way to the helper landed after the restore")
+        XCTAssertNil(settings.chargeRestoreRecord)
+    }
+
+    /// The same before an uninstall.
+    func testUninstallLandsAfterAHelperLimitStillOnItsWay() {
+        settings.chargeLimit = 63
+        helper.landsOn = client
+        let c = make()
+        helper.deferReplies = true
+        settings.chargeLimit = 62
+        c.restoreForUninstall()
+        helper.flushReplies()
+        XCTAssertEqual(client.state, NativeChargeState(mclEnabled: false, mclLimit: 100, optimizedChargingEnabled: true))
+    }
+
+    /// When the link cannot be waited for (2 s at most), the restore is not known to have landed last: the record
+    /// is kept, and that is logged, so the next switch-off tries again from the true original.
+    func testARestoreThatCouldNotWaitForTheHelperKeepsTheRecord() {
+        settings.chargeLimit = 63
+        make()
+        helper.deferReplies = true
+        settings.chargeLimit = 62
+        helper.drainTimesOut = true
+        settings.chargeControlEnabled = false
+        XCTAssertNotNil(settings.chargeRestoreRecord, "the record was cleared though the restore may be overtaken")
+        XCTAssertTrue(lines.contains { $0.contains("record is kept") }, lines.joined(separator: "\n"))
+    }
+
+    /// A limit only the helper can put back is waited for, and a refusal keeps the record.
+    func testAHelperRestoreIsWaitedForAndARefusalKeepsTheRecord() {
+        settings.chargeRestoreRecord = ChargeController.encodeRecord(
+            NativeChargeState(mclEnabled: true, mclLimit: 63, optimizedChargingEnabled: true))
+        make()
+        helper.answer = { cmd in
+            if case .setChargeLimit(63) = cmd { return FanReply(ok: false, message: "macOS did not take the charge limit") }
+            return FanReply(ok: true, message: "ok")
+        }
+        settings.chargeControlEnabled = false
+        XCTAssertEqual(helper.waited, [.setChargeLimit(63)], "the helper's part of the restore was not waited for")
+        XCTAssertNotNil(settings.chargeRestoreRecord, "a refused restore cleared the record")
+        XCTAssertTrue(lines.contains { $0.contains("record is kept") }, lines.joined(separator: "\n"))
+    }
+
+    func testAHelperRestoreThatSucceedsClearsTheRecord() {
+        settings.chargeRestoreRecord = ChargeController.encodeRecord(
+            NativeChargeState(mclEnabled: true, mclLimit: 63, optimizedChargingEnabled: true))
+        make()
+        settings.chargeControlEnabled = false
+        XCTAssertEqual(helper.waited, [.setChargeLimit(63)])
+        XCTAssertNil(settings.chargeRestoreRecord)
+        XCTAssertEqual(client.state?.optimizedChargingEnabled, true)
     }
 
     func testRestoreForUninstallRestoresAndTurnsOff() {
@@ -238,11 +324,24 @@ final class ChargeControllerTests: XCTestCase {
         XCTAssertEqual(client.limitCalls, [90], "the client outlived the restore")
     }
 
+    /// A controller that goes away without a shutdown still lets go of its claim on the shared connection; otherwise
+    /// the socket could never close again, and the helper's dead man's switch would never run.
+    func testDeinitLetsGoOfTheHelper() {
+        var c: ChargeController? = ChargeController(settings: settings, makeClient: { [weak self] in self?.clientToMake },
+                                                    helper: helper, battery: { [weak self] in self?.battery },
+                                                    log: { _ in })
+        settings.chargeControlEnabled = true
+        XCTAssertTrue(helper.following)
+        XCTAssertNotNil(c)
+        c = nil
+        XCTAssertFalse(helper.following, "the controller went away still holding its claim on the helper link")
+    }
+
     /// Quitting leaves macOS's limit in force (it outlives the app by design) and lets the helper link go.
     func testShutdownLeavesTheLimitAndLetsGo() {
         let c = make()
         c.shutdown()
-        XCTAssertFalse(helper.holding)
+        XCTAssertFalse(helper.following)
         XCTAssertEqual(client.state?.mclLimit, 80)
         XCTAssertNotNil(settings.chargeRestoreRecord)
         XCTAssertTrue(settings.chargeControlEnabled)
@@ -317,12 +416,45 @@ final class ChargeControllerTests: XCTestCase {
     /// nearest value in that moment, or the limit would go up and come back down at every launch.
     func testANonClientLimitWaitsForTheHelpersFirstAnswer() {
         helper.available = false
-        helper.answersOnHold = false
+        helper.answersAtOnce = false
         settings.chargeLimit = 63
         make()
         XCTAssertTrue(client.limitCalls.isEmpty, "the fallback was set before the helper had answered")
         helper.firstAnswer()
         XCTAssertEqual(client.limitCalls, [80])
+    }
+
+    /// A limit the helper refuses is not sent again on every tick (each would wake the daemon): the nearest value
+    /// macOS takes above it holds, the reason is shown, and a new limit is asked for at once.
+    func testALimitTheHelperRefusesIsNotAskedForEveryTick() {
+        settings.chargeLimit = 63
+        helper.answer = { cmd in
+            if case .setChargeLimit = cmd { return FanReply(ok: false, message: "macOS did not take the charge limit") }
+            return FanReply(ok: true, message: "ok")
+        }
+        let c = make()
+        XCTAssertEqual(helper.commands, [.setChargeLimit(63)])
+        XCTAssertEqual(client.limitCalls, [80], "the nearest value above did not hold meanwhile")
+        XCTAssertEqual(c.status, .refused(ChargeController.limitRefusedText(63, "macOS did not take the charge limit")))
+        for _ in 0..<3 { c.periodicTick() }
+        XCTAssertEqual(helper.commands, [.setChargeLimit(63)], "a refused limit was asked for again on the timer")
+        settings.chargeLimit = 64
+        XCTAssertEqual(helper.commands, [.setChargeLimit(63), .setChargeLimit(64)])
+    }
+
+    /// At launch, until the helper has answered, nothing is said about it: the status does not flash "needs the
+    /// helper" for the moment before its hello.
+    func testNoNeedsHelperBeforeTheHelperHasAnswered() {
+        helper.available = false
+        helper.answersAtOnce = false
+        settings.chargeLimit = 63
+        let c = make()
+        XCTAssertNotEqual(c.status, .needsHelper(ChargeController.limitNeedsHelperText),
+                          "the status said the helper was needed before it had answered")
+        c.tick()
+        XCTAssertNotEqual(c.status, .needsHelper(ChargeController.limitNeedsHelperText))
+        helper.firstAnswer()
+        XCTAssertEqual(c.status, .needsHelper(ChargeController.limitNeedsHelperText))
     }
 
     func testOutdatedHelperAsksForAnUpdate() {
@@ -432,6 +564,68 @@ final class ChargeControllerTests: XCTestCase {
         XCTAssertEqual(discharges(helper.commands), [80, 80])
     }
 
+    /// The real link never answers "nothing": a socket that is gone comes back as a refusal saying the helper stopped
+    /// answering. For a stop that is as good as done (the helper reconnects the charger when its client goes), so
+    /// it is not asked again and again.
+    func testAStopThatFindsTheHelperGoneIsNotRepeated() {
+        battery = Self.state(90)
+        let c = make()
+        c.pressDischarge()
+        helper.answer = { cmd in
+            if case .stopDischarge = cmd { return FanReply(ok: false, message: "the fan helper stopped answering") }
+            return FanReply(ok: true, message: "ok")
+        }
+        battery = Self.state(89, ac: false, adapter: false)
+        c.tick()
+        c.tick()
+        c.tick()
+        XCTAssertEqual(helper.commands, [.discharge(toPercent: 80), .stopDischarge],
+                       "a stop answered by a helper that is gone was sent again")
+    }
+
+    /// Two refusals from the helper do not pass by themselves: the charger may still be cut off from an earlier
+    /// failure, or the Mac cannot warn the helper before it sleeps. The reason is shown, and the discharge is not
+    /// asked for again until the person presses again.
+    func testADischargeRefusalThatWillNotPassIsShownAndNotRetried() {
+        let why = "the charger may still be cut off from an earlier failure"
+        battery = Self.state(90)
+        helper.answer = { cmd in
+            if case .discharge = cmd { return FanReply(ok: false, message: why) }
+            return FanReply(ok: true, message: "ok")
+        }
+        let c = make()
+        c.pressDischarge()
+        XCTAssertEqual(discharges(helper.commands), [80])
+        XCTAssertTrue(ChargeControlFeature.statusText(c.status).contains(why), "status: \(c.status)")
+        c.tick()
+        c.periodicTick()
+        c.tick()
+        XCTAssertEqual(discharges(helper.commands), [80], "a refusal that will not pass was asked again")
+        XCTAssertTrue(ChargeControlFeature.statusText(c.status).contains(why), "status: \(c.status)")
+
+        c.pressDischarge()   // cancel
+        c.pressDischarge()   // and ask again
+        XCTAssertEqual(discharges(helper.commands), [80, 80], "pressing again did not ask again")
+    }
+
+    /// An automatic discharge refused that way is asked again when the decision changes, not before.
+    func testAnAutomaticDischargeRefusedThatWayWaitsForTheDecisionToChange() {
+        let why = "this Mac cannot warn the helper before it sleeps"
+        settings.chargeAutomaticDischarge = true
+        battery = Self.state(95)
+        helper.answer = { cmd in
+            if case .discharge = cmd { return FanReply(ok: false, message: why) }
+            return FanReply(ok: true, message: "ok")
+        }
+        let c = make()
+        c.periodicTick()
+        c.periodicTick()
+        XCTAssertEqual(discharges(helper.commands), [80])
+        XCTAssertTrue(ChargeControlFeature.statusText(c.status).contains(why), "status: \(c.status)")
+        settings.chargeLimit = 85
+        XCTAssertEqual(discharges(helper.commands), [80, 85])
+    }
+
     /// The Fans tab's "return to automatic" also reconnects the charger, and so does a reopened socket. A discharge
     /// that is still wanted is asked for again.
     func testHelperResetStartsTheDischargeAgain() {
@@ -537,6 +731,93 @@ final class ChargeControllerTests: XCTestCase {
         XCTAssertEqual(discharges(helper.commands), [80, 80])
     }
 
+    // ── macOS changed behind Charge Control ─────────────────────────────────
+
+    /// The person turns the limit off in System Settings. The next timer tick reads macOS back, says so in one line,
+    /// and puts all three settings back.
+    func testTheTimerPutsBackALimitTurnedOffElsewhere() {
+        let c = make()
+        XCTAssertEqual(client.limitCalls, [80])
+        client.state?.mclEnabled = false
+        c.periodicTick()
+        XCTAssertEqual(client.state?.mclEnabled, true, "the limit turned off elsewhere was left off")
+        XCTAssertEqual(client.limitCalls, [80, 80], "the limit was not asserted again")
+        XCTAssertEqual(client.optimizedChargingCalls, [false, false])
+        XCTAssertEqual(lines.filter { $0.contains("changed outside Charge Control") }.count, 1,
+                       lines.joined(separator: "\n"))
+        c.periodicTick()
+        XCTAssertEqual(client.limitCalls, [80, 80], "a tick with nothing changed asserted the limit again")
+        XCTAssertEqual(client.optimizedChargingCalls, [false, false])
+    }
+
+    /// 100 set in System Settings, while the status still says 80.
+    func testTheTimerPutsBackALimitChangedElsewhere() {
+        let c = make()
+        client.state?.mclLimit = 100
+        c.periodicTick()
+        XCTAssertEqual(client.state?.mclLimit, 80)
+        XCTAssertEqual(c.status, .active(ChargeDecision(osLimit: 80, dischargeTo: nil, reason: .limit)))
+    }
+
+    /// Optimized Battery Charging turned back on: two controllers would fight over the charger.
+    func testTheTimerTurnsOptimizedChargingOffAgain() {
+        let c = make()
+        client.state?.optimizedChargingEnabled = true
+        c.periodicTick()
+        XCTAssertEqual(client.state?.optimizedChargingEnabled, false)
+        XCTAssertTrue(lines.contains { $0.contains("changed outside Charge Control") }, lines.joined(separator: "\n"))
+    }
+
+    /// A limit only the helper can set is read back the same way, and put back through the helper.
+    func testAHelperLimitChangedElsewhereGoesBackThroughTheHelper() {
+        settings.chargeLimit = 63
+        let c = make()
+        XCTAssertEqual(helper.commands, [.setChargeLimit(63)])
+        client.state = NativeChargeState(mclEnabled: true, mclLimit: 63, optimizedChargingEnabled: false)
+        c.periodicTick()
+        XCTAssertEqual(helper.commands, [.setChargeLimit(63)], "a limit read back as set was set again")
+        client.state?.mclLimit = 90
+        c.periodicTick()
+        XCTAssertEqual(helper.commands, [.setChargeLimit(63), .setChargeLimit(63)])
+    }
+
+    /// The timer checks on the helper only while a discharge lives on the connection; otherwise the daemon is left
+    /// asleep.
+    func testTheTimerChecksOnTheHelperOnlyUnderADischarge() {
+        battery = Self.state(90)
+        let c = make()
+        for _ in 0..<3 { c.periodicTick() }
+        XCTAssertEqual(helper.refreshes, 0, "the timer talked to the helper with no discharge running")
+        c.pressDischarge()
+        c.periodicTick()
+        XCTAssertEqual(helper.refreshes, 1)
+    }
+
+    /// A macOS that keeps refusing is asked once per tick, not in a loop, and the drift is logged once.
+    func testARefusingMacIsAskedOncePerTick() {
+        let c = make()
+        client.state?.optimizedChargingEnabled = true
+        client.succeeds = false
+        c.periodicTick()
+        c.periodicTick()
+        c.periodicTick()
+        XCTAssertEqual(client.optimizedChargingCalls, [false, false, false, false])
+        XCTAssertEqual(lines.filter { $0.contains("changed outside Charge Control") }.count, 1,
+                       lines.joined(separator: "\n"))
+    }
+
+    /// The same check after a wake: the person may have changed it while the Mac slept.
+    func testWakeReadsMacOSBack() {
+        let c = make()
+        c.willSleep()
+        client.state?.optimizedChargingEnabled = true
+        client.state?.mclEnabled = false
+        c.didWake()
+        XCTAssertEqual(client.state?.optimizedChargingEnabled, false)
+        XCTAssertEqual(client.state?.mclEnabled, true)
+        XCTAssertTrue(lines.contains { $0.contains("changed outside Charge Control") }, lines.joined(separator: "\n"))
+    }
+
     // ── Restore record ──────────────────────────────────────────────────────
 
     func testRecordRoundTripsAsJSON() {
@@ -570,60 +851,139 @@ final class ChargeControllerTests: XCTestCase {
 
 // ── Fakes ───────────────────────────────────────────────────────────────────
 
-/// The helper as Charge Control sees it, scripted. Replies come back at once unless `deferReplies` is set.
+/// The helper as Charge Control sees it, scripted. Replies come back at once unless `deferReplies` is set. Like the
+/// real link it never answers "nothing": a helper that is gone answers ok:false, "the fan helper stopped answering".
 final class FakeHelperLink: ChargeHelperLink {
     var available = true
     var outdated = false
+    /// Set when `follow` answers (`answersAtOnce`), or by `firstAnswer`.
+    private(set) var known = false
+    private(set) var isOpen = false
+    /// Whether `keepOpen(true)` opens the connection at once, as one the Fans tab already holds is. When false it
+    /// opens on `finishOpening`, as a new connection does when its hello comes back.
+    var opensAtOnce = true
     private(set) var resets = 0
     private(set) var commands: [FanCommand] = []
     /// The commands sent through `sendWaiting`, in order.
     private(set) var waited: [FanCommand] = []
-    private(set) var holds = 0
+    private(set) var follows = 0
     private(set) var letGos = 0
     private(set) var refreshes = 0
-    var holding: Bool { holds > letGos }
-    var answer: (FanCommand) -> FanReply? = { _ in FanReply(ok: true, message: "ok") }
+    private(set) var rechecks = 0
+    /// Every `keepOpen`, in order.
+    private(set) var openRequests: [Bool] = []
+    var following: Bool { follows > letGos }
+    var answer: (FanCommand) -> FanReply = { _ in FanReply(ok: true, message: "ok") }
+    /// Hold every exchange back until `flushReplies` (or a drain): a command still on its way.
     var deferReplies = false
-    private var deferred: [() -> Void] = []
+    /// Where a `.setChargeLimit` the helper accepts lands: the same macOS limit the client reads.
+    var landsOn: FakeChargeLimitClient?
+    /// `drain` gives up, as the real one does after its timeout.
+    var drainTimesOut = false
+    private(set) var drains = 0
+    /// Sent and not yet answered on the main thread, in order. The link's queue is serial: an exchange runs (and a
+    /// limit lands) in this order, whether its answer has reached the main thread or not.
+    private var queue: [Exchange] = []
     private var changed: (() -> Void)?
 
-    /// Whether `hold` answers at once, as a link that has connected (or found nothing) does.
-    var answersOnHold = true
+    private final class Exchange {
+        let command: FanCommand
+        let done: (FanReply) -> Void
+        var reply: FanReply?
+        init(_ command: FanCommand, _ done: @escaping (FanReply) -> Void) { self.command = command; self.done = done }
+    }
 
-    func hold(_ changed: @escaping () -> Void) {
-        holds += 1
+    @discardableResult
+    private func run(_ e: Exchange) -> FanReply {
+        if let r = e.reply { return r }
+        let r = answer(e.command)
+        e.reply = r
+        land(e.command, r)
+        return r
+    }
+
+    private func land(_ c: FanCommand, _ reply: FanReply) {
+        guard reply.ok, case .setChargeLimit(let p) = c else { return }
+        landsOn?.state?.mclLimit = p
+    }
+
+    /// Whether `follow` answers at once, as a link that has greeted the helper (or found it missing) does.
+    var answersAtOnce = true
+
+    func follow(_ changed: @escaping () -> Void) {
+        follows += 1
         self.changed = changed
-        if answersOnHold { changed() }
+        if answersAtOnce {
+            known = true
+            changed()
+        }
     }
 
     /// The link's first answer, for a test that held it back.
-    func firstAnswer() { changed?() }
-    func letGo() { letGos += 1; changed = nil }
-    func refresh() { refreshes += 1 }
-
-    func send(_ c: FanCommand, _ done: @escaping (FanReply?) -> Void) {
-        commands.append(c)
-        let reply = answer(c)
-        if deferReplies { deferred.append { done(reply) } } else { done(reply) }
+    func firstAnswer() {
+        known = true
+        changed?()
     }
 
+    func letGo() {
+        letGos += 1
+        changed = nil
+        isOpen = false
+        known = false
+    }
+
+    func keepOpen(_ open: Bool) {
+        openRequests.append(open)
+        if !open { isOpen = false } else if opensAtOnce { isOpen = true }
+    }
+
+    func finishOpening() {
+        isOpen = true
+        changed?()
+    }
+
+    func recheck() { rechecks += 1 }
+    func refresh() { refreshes += 1 }
+
+    func send(_ c: FanCommand, _ done: @escaping (FanReply) -> Void) {
+        commands.append(c)
+        let e = Exchange(c, done)
+        if deferReplies {
+            queue.append(e)
+        } else {
+            done(run(e))
+        }
+    }
+
+    /// Answered after everything sent before it, as on the real link's serial queue.
     func sendWaiting(_ c: FanCommand, timeout: TimeInterval) -> FanReply? {
         commands.append(c)
         waited.append(c)
-        return answer(c)
+        queue.forEach { run($0) }
+        let reply = answer(c)
+        land(c, reply)
+        return reply
+    }
+
+    /// Everything sent so far has been exchanged; the answers still reach the main thread later.
+    func drain(timeout: TimeInterval) -> Bool {
+        drains += 1
+        guard !drainTimesOut else { return false }
+        queue.forEach { run($0) }
+        return true
     }
 
     func flushReplies() {
-        let pending = deferred
-        deferred = []
+        let pending = queue
+        queue = []
         deferReplies = false
-        pending.forEach { $0() }
+        for e in pending { e.done(run(e)) }
     }
 
     /// What the shared connection reports when the Fans tab releases everything or a socket is reopened.
     func reset() { resets += 1; changed?() }
 
-    func becomeAvailable() { available = true; outdated = false; changed?() }
+    func becomeAvailable() { available = true; outdated = false; known = true; changed?() }
 }
 
 /// A client that records EVERY limit asked of it, including the ones it refuses, and whether the restore record was

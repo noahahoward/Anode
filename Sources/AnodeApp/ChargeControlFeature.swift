@@ -66,7 +66,7 @@ final class ChargeControlFeature: BetaFeature {
         switch s {
         case .off:
             return "Off"
-        case .unavailable(let why), .needsHelper(let why):
+        case .unavailable(let why), .needsHelper(let why), .refused(let why):
             return why
         case .active(let d):
             if let to = d.dischargeTo { return "Discharging to \(to)% on the adapter" }
@@ -185,8 +185,8 @@ final class ChargeControlFeature: BetaFeature {
                     Settings.Key.chargeSailingGap, Settings.Key.chargeHeatProtectionEnabled,
                     Settings.Key.chargeMaxTemperatureC, Settings.Key.chargeStopWhenSleeping,
                     Settings.Key.chargeAutomaticDischarge]
-        tokens = keys.map { settings.observe($0) { [weak self] in self?.refresh() } }
-        refresh()
+        tokens = keys.map { settings.observe($0) { [weak self] in self?.redraw() } }
+        redraw()
         return column
     }
 
@@ -197,7 +197,7 @@ final class ChargeControlFeature: BetaFeature {
         let earlier = c.onChange
         c.onChange = { [weak self] in
             earlier?()
-            self?.refresh()
+            self?.redraw()
         }
     }
 
@@ -218,8 +218,8 @@ final class ChargeControlFeature: BetaFeature {
         limitValueLabel.stringValue = "\(settings.chargeLimit)%"
     }
 
-    @objc private func dischargePressed() { controller()?.pressDischarge(); refresh() }
-    @objc private func topUpPressed() { controller()?.pressTopUp(); refresh() }
+    @objc private func dischargePressed() { controller()?.pressDischarge(); redraw() }
+    @objc private func topUpPressed() { controller()?.pressTopUp(); redraw() }
     @objc private func installPressed() { installHelper() }
 
     @objc private func sailingToggled() { settings.chargeSailingEnabled = sailingCheckbox.state == .on }
@@ -231,17 +231,26 @@ final class ChargeControlFeature: BetaFeature {
 
     // ── Showing ─────────────────────────────────────────────────────────────
 
-    /// Reads only: it never writes a setting or presses the controller, so the observers and the controller's
-    /// callback cannot loop through it.
+    /// The window is showing the section, or the app came forward with it open: the controller looks again for a
+    /// helper that has not answered (installed from a terminal since, say), and the section is redrawn. This is the
+    /// one place that looks; the controller does not do it on a timer.
     func refresh() {
+        controller()?.recheckHelper()
+        redraw()
+    }
+
+    /// Reads only: it never writes a setting, presses the controller or asks it to look for the helper, so the
+    /// observers and the controller's callback cannot loop through it.
+    private func redraw() {
         hookController()
         let on = settings.chargeControlEnabled
         let c = controller()
         let status = c?.status ?? .off
-        var unavailable = false, needsHelper = false
+        var unavailable = false, needsHelper = false, refused = false
         switch status {
         case .unavailable: unavailable = true
         case .needsHelper: needsHelper = true
+        case .refused: refused = true
         case .off, .active: break
         }
         // Off, or on but impossible on this Mac: nothing below the switch can do anything.
@@ -286,7 +295,7 @@ final class ChargeControlFeature: BetaFeature {
 
         for r in rows { r.isHidden = !on }
         statusLabel.stringValue = Self.statusText(status)
-        statusLabel.textColor = unavailable || needsHelper ? .systemOrange : .secondaryLabelColor
+        statusLabel.textColor = unavailable || needsHelper || refused ? .systemOrange : .secondaryLabelColor
         // A switched-on section with nothing to report yet (the controller has not answered) shows no line.
         statusLabel.isHidden = !on || status == .off
         installButton.isHidden = !on || !needsHelper
