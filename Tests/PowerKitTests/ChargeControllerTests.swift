@@ -17,8 +17,9 @@ final class ChargeControllerTests: XCTestCase {
     private var clientToMake: ChargeLimitClient?
     private var helper: FakeHelperLink!
     private var battery: Battery.State?
-    /// What the charger switch reads. nil = it cannot be read, as on a Mac without one: the controller then goes by
-    /// what macOS says, which is what every test that does not set this is about.
+    /// What the charger switch reads. nil = the read fails. Until a read has worked, that is a Mac whose switch cannot
+    /// be read, and the controller goes by what macOS says, which is what every test that does not set this is about.
+    /// After a read has worked, a failed read is no information.
     private var chargerSwitch: UInt8?
     /// How many times the switch was read.
     private var switchReads = 0
@@ -1335,6 +1336,208 @@ final class ChargeControllerTests: XCTestCase {
         c.retryOwedStopWhileOff()
         c.recheckHelper()
         XCTAssertEqual(switchReads, 0)
+    }
+
+    // ── A switch that has been read and then cannot be ──────────────────────
+    //
+    // Once the switch has been read in this run of the app, a read that fails says nothing about the charger. It does
+    // not end a stretch of reading cut, it does not make one longer, and it does not stand in for a reading of
+    // connected with macOS's word. Before the first read that works, a failed read means this Mac's switch cannot be
+    // read, and macOS's word is what there is (every test above that leaves `chargerSwitch` nil).
+
+    /// A cut left behind, read as cut, cut, failed, cut: the failed read neither starts the 90 s again nor adds to
+    /// them, so the net fires at the first read after 90 s, as it would with no failed read at all.
+    func testAFailedReadAmongCutReadsDoesNotPutOffTheNet() {
+        let t0 = Date()
+        chargerSwitch = AdapterCutKey.cut
+        let c = make()
+        c.tick(now: t0.addingTimeInterval(30))
+        chargerSwitch = nil
+        c.tick(now: t0.addingTimeInterval(60))
+        chargerSwitch = AdapterCutKey.cut
+        c.tick(now: t0.addingTimeInterval(90))
+        XCTAssertEqual(helper.stops(), 0, "90 s is not more than 90 s")
+        c.tick(now: t0.addingTimeInterval(120))
+        XCTAssertGreaterThan(helper.stops(), 0, "a failed read among the cut reads put the net off")
+        XCTAssertTrue(lines.contains { $0.contains("the charger switch has read cut") }, lines.joined(separator: "\n"))
+    }
+
+    /// A read that fails every third tick, with the switch cut at every other, is a cut left behind all the same.
+    func testAFailedReadEveryThirdTickDoesNotKeepTheNetFromFiring() {
+        let t0 = Date()
+        chargerSwitch = AdapterCutKey.cut
+        let c = make()
+        for i in 1...12 {
+            chargerSwitch = i % 3 == 0 ? nil : AdapterCutKey.cut
+            c.tick(now: t0.addingTimeInterval(TimeInterval(i * 30)))
+        }
+        XCTAssertGreaterThan(helper.stops(), 0, "a cut left behind was never found, because every third read failed")
+    }
+
+    /// A failed read is no information, so it does not fire the net either, however long the cut has been read: the
+    /// first read that works after it does.
+    func testAFailedReadDoesNotFireTheNetBecauseTheTimeIsUp() {
+        let t0 = Date()
+        chargerSwitch = AdapterCutKey.cut
+        let c = make()
+        chargerSwitch = nil
+        c.tick(now: t0.addingTimeInterval(91))
+        c.tick(now: t0.addingTimeInterval(200))
+        XCTAssertEqual(helper.stops(), 0, "the net fired on a read that failed")
+        XCTAssertNotEqual(c.status, .warning(ChargeController.cutWarningText))
+        chargerSwitch = AdapterCutKey.cut
+        c.tick(now: t0.addingTimeInterval(230))
+        XCTAssertGreaterThan(helper.stops(), 0, "the cut read before the failed reads was forgotten")
+    }
+
+    /// The same for macOS's look of a cut, which is what counts where the switch reads a value Anode never writes:
+    /// a failed read does not let it run on.
+    func testAFailedReadDoesNotAdvanceMacOSsLookOfACut() {
+        let t0 = Date()
+        battery = Self.state(70, ac: false, adapter: true)
+        chargerSwitch = 0x04
+        let c = make()
+        chargerSwitch = nil
+        c.tick(now: t0.addingTimeInterval(91))
+        XCTAssertEqual(helper.stops(), 0, "macOS's look of a cut ran on over a switch that could not be read")
+        chargerSwitch = 0x04
+        c.tick(now: t0.addingTimeInterval(121))
+        XCTAssertEqual(helper.stops(), 1)
+    }
+
+    /// A debt, the switch read as cut, then reads that fail while macOS says "on the adapter" for far longer than 90
+    /// s: nothing is settled, because macOS's word is no proof and the switch said nothing.
+    func testFailedReadsDoNotSettleTheDebtOnMacOSsWord() {
+        let c = lostUnderAnUninstall()
+        chargerSwitch = AdapterCutKey.cut
+        let t0 = Date()
+        c.tick(now: t0)
+        chargerSwitch = nil
+        for seconds in [30.0, 60, 91, 200, 400] { c.tick(now: t0.addingTimeInterval(seconds)) }
+        XCTAssertTrue(settings.chargeCutUnconfirmed, "the debt was settled on macOS's word over a switch last read cut")
+        XCTAssertEqual(c.status, .warning(ChargeController.cutWarningNoHelperText))
+        XCTAssertFalse(lines.contains { $0.contains("macOS has said the Mac is on the adapter") },
+                       lines.joined(separator: "\n"))
+    }
+
+    /// Failed reads hold the count of reads of connected: they do not start it, end it or add to it, and settle
+    /// nothing. The next read of connected, past the 90 s counted from the one before, settles.
+    func testFailedReadsHoldTheCountOfReadsOfConnected() {
+        let c = lostUnderAnUninstall()
+        chargerSwitch = AdapterCutKey.connected
+        let t0 = Date()
+        c.tick(now: t0)
+        chargerSwitch = nil
+        c.tick(now: t0.addingTimeInterval(60))
+        c.tick(now: t0.addingTimeInterval(120))
+        XCTAssertTrue(settings.chargeCutUnconfirmed, "failed reads settled the debt")
+        chargerSwitch = AdapterCutKey.connected
+        c.tick(now: t0.addingTimeInterval(121))
+        XCTAssertFalse(settings.chargeCutUnconfirmed, "the failed reads put the count back to nothing")
+        XCTAssertTrue(lines.contains { $0.contains("the charger switch has read connected") },
+                      lines.joined(separator: "\n"))
+    }
+
+    /// A switch that has never been read in this run (a Mac without one, or one that cannot be opened) goes by
+    /// macOS's word, both ways. The look of a cut starts the net; the switch is still asked each tick, so a Mac whose
+    /// switch comes back is noticed.
+    func testASwitchNeverReadStillGoesByMacOSsLookOfACut() {
+        let t0 = Date()
+        battery = Self.state(70, ac: false, adapter: true)
+        let c = make()
+        c.tick(now: t0.addingTimeInterval(91))
+        XCTAssertGreaterThan(helper.stops(), 0, "macOS's look of a cut was ignored where the switch cannot be read")
+        XCTAssertGreaterThan(switchReads, 0)
+    }
+
+    /// And "on the adapter" for more than 90 s settles a debt there, as it always did.
+    func testASwitchNeverReadStillGoesByMacOSsWordOnTheAdapter() {
+        let c = lostUnderAnUninstall()
+        let t0 = Date()
+        c.tick(now: t0)
+        c.tick(now: t0.addingTimeInterval(91))
+        XCTAssertFalse(settings.chargeCutUnconfirmed, "macOS's word was ignored on a Mac whose switch cannot be read")
+        XCTAssertGreaterThan(switchReads, 0)
+    }
+
+    /// A switch that stops answering after it answered is logged once, and so is its return; nothing per tick.
+    func testALostSwitchIsLoggedOnceAndSoIsItsReturn() {
+        let t0 = Date()
+        chargerSwitch = AdapterCutKey.connected
+        let c = make()
+        let lost = { self.lines.filter { $0.contains("can no longer be read") }.count }
+        let back = { self.lines.filter { $0.contains("can be read again") }.count }
+        XCTAssertEqual(lost() + back(), 0)
+
+        chargerSwitch = nil
+        for i in 1...5 { c.tick(now: t0.addingTimeInterval(TimeInterval(i * 30))) }
+        XCTAssertEqual(lost(), 1, lines.joined(separator: "\n"))
+        XCTAssertEqual(back(), 0)
+
+        chargerSwitch = AdapterCutKey.connected
+        for i in 6...9 { c.tick(now: t0.addingTimeInterval(TimeInterval(i * 30))) }
+        XCTAssertEqual(lost(), 1)
+        XCTAssertEqual(back(), 1, lines.joined(separator: "\n"))
+
+        // Lost again: a new stretch is a new line.
+        chargerSwitch = nil
+        c.tick(now: t0.addingTimeInterval(300))
+        c.tick(now: t0.addingTimeInterval(330))
+        XCTAssertEqual(lost(), 2)
+    }
+
+    /// A switch that never answered says nothing at all: it is the ordinary state of a Mac without one.
+    func testASwitchThatNeverAnsweredIsNotLogged() {
+        let t0 = Date()
+        let c = make()
+        for i in 1...5 { c.tick(now: t0.addingTimeInterval(TimeInterval(i * 30))) }
+        XCTAssertTrue(lines.filter { $0.contains("charger switch") }.isEmpty, lines.joined(separator: "\n"))
+    }
+
+    /// The real reader opens its connection at the first read, and when a read fails opens a new one for the next:
+    /// `SystemChargeHardware()` cannot fail (a refused open is kept inside it as no connection, for good), and a
+    /// connection that dies stays dead. One open attempt per read at most, none after a read that worked.
+    func testAReadThatFailsIsFollowedByAFreshConnection() {
+        let charger = FakeChargeHardware(cut: false)
+        var line = ChargeLine(charger)
+        var opened = 0
+        let read = ChargeController.systemChargerSwitch(open: {
+            opened += 1
+            line = ChargeLine(charger)
+            return line
+        })
+        XCTAssertEqual(opened, 0, "the switch was opened before anything read it")
+        XCTAssertEqual(read(), AdapterCutKey.connected)
+        XCTAssertEqual(read(), AdapterCutKey.connected)
+        XCTAssertEqual(opened, 1, "the connection was opened again with reads working")
+
+        line.sever()
+        XCTAssertNil(read(), "a dead connection read")
+        XCTAssertEqual(opened, 1, "a failed read opened a connection of its own")
+        XCTAssertEqual(read(), AdapterCutKey.connected, "the read after a failed one kept the old connection")
+        XCTAssertEqual(opened, 2)
+        XCTAssertEqual(read(), AdapterCutKey.connected)
+        XCTAssertEqual(opened, 2, "a connection that works was opened again")
+    }
+
+    /// A key that cannot be read at all is asked again with a new connection each read, and no more than one.
+    func testAnUnreadableSwitchIsOpenedOnceAReadAtMost() {
+        let charger = FakeChargeHardware(cut: false)
+        charger.cutUnreadable = true
+        var opened = 0
+        let read = ChargeController.systemChargerSwitch(open: {
+            opened += 1
+            return ChargeLine(charger)
+        })
+        for expected in 1...4 {
+            XCTAssertNil(read())
+            XCTAssertEqual(opened, expected, "more than one connection was opened for one read")
+        }
+        charger.cutUnreadable = false
+        XCTAssertEqual(read(), AdapterCutKey.connected)
+        XCTAssertEqual(opened, 5)
+        XCTAssertEqual(read(), AdapterCutKey.connected)
+        XCTAssertEqual(opened, 5)
     }
 
     /// Another account on screen: its Anode may be discharging, and the helper's socket is its own, so this one could

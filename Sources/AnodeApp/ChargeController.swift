@@ -41,8 +41,11 @@ import PowerKit
 // The switch is read by the app itself (reading needs no root; only writing does), because what macOS says is not
 // proof either way. Measured on Mac17,9, macOS 27.0: with no macOS limit holding the battery, a cut makes macOS say
 // the Mac is off the adapter within 1 to 2 s; with a limit below the battery level in force (limit 63, battery 100)
-// the switch read cut for 50 s and macOS said "on the adapter" throughout. Only on a Mac whose switch cannot be read
-// do the net and the settling go by macOS's word instead, as the weaker evidence. See `noteCutLook`, `noteConnected`.
+// the switch read cut for 50 s and macOS said "on the adapter" throughout. macOS's word is used only until the switch
+// has been read once in this run of the app (a Mac whose switch cannot be read never reads it): the net and the
+// settling go by it then, as the weaker evidence. After that a read that fails is no information, and macOS's word
+// does not stand in for it: the net neither ends nor goes on, and nothing is settled. See `noteCutLook`,
+// `noteConnected`.
 //
 // While the setting is off nothing exists: no client, no timer, no observer but the one on the switch itself, no
 // helper connection and no helper command. The exceptions are what an earlier run left unfinished: a restore record
@@ -238,8 +241,9 @@ final class ChargeController {
     private let helper: ChargeHelperLink
     private let battery: () -> Battery.State?
     /// The byte the Mac's own charger switch holds (`AdapterCutKey`): 0x00 connected, 0x08 Anode's cut. nil when it
-    /// cannot be read, or this Mac has none. Reading it needs no root and no helper; see `systemChargerSwitch` for
-    /// the real one and `chargerSwitchThisTick` for when it is read.
+    /// cannot be read, or this Mac has none; what that means depends on whether it has been read before in this run
+    /// (`switchEverRead`). Reading it needs no root and no helper; see `systemChargerSwitch` for the real one and
+    /// `chargerSwitchThisTick` for when it is read.
     private let chargerSwitch: () -> UInt8?
     private let log: (String) -> Void
     /// NSWorkspace's notification center: sleep, wake and account switches. A parameter for the tests.
@@ -328,6 +332,13 @@ final class ChargeController {
     private var connectedSince: Date?
     /// What the charger switch read in which tick; see `chargerSwitchThisTick`.
     private var switchRead: (tick: Int, value: UInt8?)?
+    /// The switch has been read at least once in this run of the app. From then on a read that fails is no
+    /// information (see `noteCutLook`, `noteConnected`); before it, a read that fails means this Mac's switch cannot
+    /// be read, and macOS's word is what there is. Not forgotten when Charge Control is switched off: it is about the
+    /// Mac and the run, not the switch-on.
+    private var switchEverRead = false
+    /// A switch that had been read could not be read, and that was logged: once, until it reads again.
+    private var switchLost = false
     /// Counts the discharges sent: a stop's yes settles the debt only if no discharge went out after the stop.
     private var dischargeSeq = 0
     /// A stop's answer said the charger switch holds a value Anode never writes, and that has been logged: once.
@@ -391,12 +402,22 @@ final class ChargeController {
     /// The Mac's own charger switch, read as the person and not through the helper: only writing it needs root
     /// (measured on Mac17,9, macOS 27.0: an unprivileged process reads it). The helper's own reader and key name
     /// (`SystemChargeHardware.adapterCutValue`), so there is one of each; nothing here can write. The connection to
-    /// the SMC is opened at the first read, which is never while Charge Control is off, and kept.
-    static func systemChargerSwitch() -> () -> UInt8? {
-        var hardware: SystemChargeHardware?
+    /// the SMC is opened at the first read, which is never while Charge Control is off.
+    ///
+    /// A read that fails is followed, at the next read, by a new connection. `SystemChargeHardware()` cannot fail: an
+    /// SMC that would not open is kept inside it as "no connection" for good (`SMC.init?` is nil then), and a
+    /// connection that has died is never opened again by itself. So the one that failed is dropped, and the next read
+    /// opens one (one open at most per read, and the controller reads once a tick at most). `open` is a parameter for
+    /// the tests, which must not reach the real SMC.
+    static func systemChargerSwitch(open: @escaping () -> ChargeHardware = { SystemChargeHardware() })
+        -> () -> UInt8? {
+        var hardware: ChargeHardware?
+        var lastReadFailed = false
         return {
-            if hardware == nil { hardware = SystemChargeHardware() }
-            return hardware?.adapterCutValue()
+            if hardware == nil || lastReadFailed { hardware = open() }
+            let value = hardware?.adapterCutValue()
+            lastReadFailed = value == nil
+            return value
         }
     }
 
@@ -1191,7 +1212,7 @@ final class ChargeController {
         // helper this one cannot even reach. It looks only with a charger on the cable: with the cable out nothing
         // is cut off from anything, and the Mac is on its battery, where every read costs.
         let netLooks = sessionActive && onAC && appliedDischarge == nil
-        noteCutLook(switchReads: netLooks ? chargerSwitchThisTick() : nil,
+        noteCutLook(looked: netLooks, switchReads: netLooks ? chargerSwitchThisTick() : nil,
                     macOSLook: sessionActive && !b.onAC && b.adapterPresent, now: now)
         // macOS's own flag, not `onAC` above: the adapter's details say yes all through a cut.
         noteConnected(externalConnected: b.onAC, now: now)
@@ -1205,13 +1226,27 @@ final class ChargeController {
 
     /// The charger switch, read at most once a tick: by the net and by the debt, whichever asks first, and by neither
     /// when neither needs it (a discharge in force; the cable out with nothing owed; another account on screen with
-    /// nothing owed; off). Two calls into the SMC (about 0.2 ms together, measured on Mac17,9), no helper, no timer
-    /// of its own. A later pass of the same tick gets the first pass's reading: an answer that came back inside the
-    /// tick may have changed the switch, and the next tick sees that.
+    /// nothing owed; off). Two calls into the SMC, well under a millisecond, no helper, no timer of its own. A later
+    /// pass of the same tick gets the first pass's reading: an answer that came back inside the tick may have
+    /// changed the switch, and the next tick sees that.
+    ///
+    /// Also where it is noticed that a switch which had been read cannot be read now, and that it can again: one line
+    /// each time, in the charge log, and nothing for the ticks in between.
     private func chargerSwitchThisTick() -> UInt8? {
         if let read = switchRead, read.tick == tickSerial { return read.value }
         let value = chargerSwitch()
         switchRead = (tickSerial, value)
+        if value != nil {
+            if switchLost {
+                switchLost = false
+                log("the charger switch can be read again")
+            }
+            switchEverRead = true
+        } else if switchEverRead, !switchLost {
+            switchLost = true
+            log("the charger switch can no longer be read; until it can, a cut left behind is not looked for, and a "
+                + "debt is not settled by it or by macOS's word")
+        }
         return value
     }
 
@@ -1231,9 +1266,16 @@ final class ChargeController {
     ///     50 s and macOS said "on the adapter" throughout, so macOS's word alone would never see that cut;
     ///   * macOS reporting the Mac off the adapter while the adapter is there (`macOSLook`), which is what a cut
     ///     looks like with no limit holding the battery (measured: within 1 to 2 s of the cut). This is the route
-    ///     for a Mac whose switch cannot be read (nil). It is not believed against a switch that reads connected:
-    ///     there is then nothing to reconnect, and the helper is not woken to say so.
-    private func noteCutLook(switchReads read: UInt8?, macOSLook: Bool, now: Date) {
+    ///     for a Mac whose switch has never been read in this run. It is not believed against a switch that reads
+    ///     connected: there is then nothing to reconnect, and the helper is not woken to say so.
+    ///
+    /// `looked` is whether the switch was asked at all this tick (`read` is nil when it was not). A read that fails
+    /// is no information once the switch has been read in this run: the look neither ends nor goes on, `cutLookSince`
+    /// and `cutSeen` stay as they were, and nothing fires on it. (Before that, a read that fails means this Mac's
+    /// switch cannot be read, and macOS's word is all there is.) A cut read as cut, cut, failed, cut would otherwise
+    /// start its 90 s again, and one failing every third tick would never be found.
+    private func noteCutLook(looked: Bool, switchReads read: UInt8?, macOSLook: Bool, now: Date) {
+        if looked, read == nil, switchEverRead { return }
         let switchCut = read == AdapterCutKey.cut
         let looksCut = switchCut || (macOSLook && read != AdapterCutKey.connected)
         guard looksCut, appliedDischarge == nil else {
@@ -1257,22 +1299,33 @@ final class ChargeController {
     /// no helper can answer (none installed, one that stopped answering) would stay for good. Looked for only while
     /// there is something to settle. A discharge sent starts the count again; a stop does not.
     ///
-    /// The evidence is the charger switch reading connected (`AdapterCutKey.connected`), which is also all a
-    /// helper's yes to a stop rests on. Any other reading, Anode's cut or a value it never writes, is not: the debt
-    /// is never settled here while the switch reads anything else, whatever macOS says.
+    /// The evidence is the charger switch reading connected (`AdapterCutKey.connected`). Any other reading, Anode's
+    /// cut or a value it never writes, is not: the debt is never settled here while the switch reads anything else,
+    /// whatever macOS says.
     ///
-    /// Only where the switch cannot be read (nil) is macOS's word taken instead: the Mac on the adapter
-    /// (ExternalConnected) for as long. That is the weaker evidence, and no proof. Measured on Mac17,9, macOS 27.0:
-    /// with no macOS limit holding the battery a cut makes ExternalConnected read No within 1 to 2 s, but with a
-    /// limit below the battery level in force (limit 63, battery 100) it stayed Yes through 50 s of the switch
-    /// reading cut. It is kept because the other choice on such a Mac is a warning that never goes.
+    /// A read that fails depends on whether the switch has ever been read in this run:
+    ///   * it has: the failed read is no information. It does not start the count, end it or add to it
+    ///     (`connectedSince` stays as it was), and nothing is settled on it, nor on macOS's word in its place.
+    ///   * it has not: this Mac's switch cannot be read, and macOS's word is taken instead, the Mac on the adapter
+    ///     (ExternalConnected) for as long. That is the weaker evidence, and no proof. Measured on Mac17,9, macOS
+    ///     27.0: with no macOS limit holding the battery a cut makes ExternalConnected read No within 1 to 2 s, but
+    ///     with a limit below the battery level in force (limit 63, battery 100) it stayed Yes through 50 s of the
+    ///     switch reading cut. It is kept because the other choice on such a Mac is a warning that never goes.
     private func noteConnected(externalConnected: Bool, now: Date) {
         guard appliedDischarge == nil, somethingToSettle else {
             connectedSince = nil
             return
         }
         let read = chargerSwitchThisTick()
-        guard read.map({ $0 == AdapterCutKey.connected }) ?? externalConnected else {
+        let connected: Bool
+        if let read {
+            connected = read == AdapterCutKey.connected
+        } else if switchEverRead {
+            return
+        } else {
+            connected = externalConnected
+        }
+        guard connected else {
             connectedSince = nil
             return
         }
