@@ -902,6 +902,118 @@ final class ChargeControllerTests: XCTestCase {
         settings.chargeLimit = 63
         XCTAssertTrue(lines.contains("limit 85 -> 63 (discharging)"), lines.joined(separator: "\n"))
     }
+
+    // ── What the section reads ──────────────────────────────────────────────
+
+    /// Every listener hears every change, however many there are; one that drops its token stops hearing, and
+    /// nobody can take another's place.
+    func testEveryListenerHearsAndADroppedOneStops() {
+        let c = make()
+        var first = 0, second = 0
+        var a: AnyObject? = c.observeChanges { first += 1 }
+        let b = c.observeChanges { second += 1 }
+        c.pressTopUp()
+        XCTAssertGreaterThan(first, 0)
+        XCTAssertGreaterThan(second, 0)
+        XCTAssertNotNil(a)
+        a = nil
+        let (f0, s0) = (first, second)
+        c.pressTopUp()
+        XCTAssertEqual(first, f0, "a listener that let go was still called")
+        XCTAssertGreaterThan(second, s0)
+        withExtendedLifetime(b) {}
+    }
+
+    /// The charge and whether the cable is in, as the last tick saw them, so the section's words and buttons agree
+    /// with the decision they sit next to. A change is announced.
+    func testTheBatteryAsLastSeenIsReadableAndAnnounced() {
+        let c = make()
+        XCTAssertEqual(c.batteryPercent, 70)
+        XCTAssertTrue(c.isCablePresent)
+        var heard = 0
+        let token = c.observeChanges { heard += 1 }
+        battery = Self.state(71)
+        c.tick()
+        XCTAssertEqual(c.batteryPercent, 71)
+        XCTAssertEqual(heard, 1, "a new charge was not announced")
+        c.tick()
+        XCTAssertEqual(heard, 1, "nothing changed, and it was announced anyway")
+        battery = Self.state(71, ac: false, adapter: true)   // Anode's own charger cut: the cable is still in
+        c.tick()
+        XCTAssertTrue(c.isCablePresent)
+        XCTAssertEqual(heard, 1, "the cable did not change, and it was announced anyway")
+        battery = Self.state(71, ac: false)
+        c.tick()
+        XCTAssertFalse(c.isCablePresent)
+        XCTAssertGreaterThan(heard, 1, "pulling the cable was not announced")
+        settings.chargeControlEnabled = false
+        XCTAssertNil(c.batteryPercent, "kept after switching off")
+        XCTAssertFalse(c.isCablePresent)
+        withExtendedLifetime(token) {}
+    }
+
+    /// What the helper is actually running, not what was asked for: nil until it says yes, and still there until it
+    /// says the stop worked. Each change is announced, though the status itself does not change.
+    func testTheDischargeInForceIsWhatTheHelperAccepted() {
+        settings.chargeLimit = 40
+        battery = Self.state(90)
+        let c = make()
+        var heard = 0
+        let token = c.observeChanges { heard += 1 }
+        helper.deferReplies = true
+        c.pressDischarge()
+        XCTAssertNil(c.dischargeInForce, "booked before the helper answered")
+        var before = heard
+        helper.flushReplies()
+        XCTAssertEqual(c.dischargeInForce, 40)
+        XCTAssertGreaterThan(heard, before, "nobody was told the discharge started")
+
+        helper.deferReplies = true
+        c.pressDischarge()   // cancel
+        XCTAssertEqual(c.dischargeInForce, 40, "the discharge runs until the helper says it stopped")
+        before = heard
+        helper.flushReplies()
+        XCTAssertNil(c.dischargeInForce)
+        XCTAssertGreaterThan(heard, before, "nobody was told the discharge stopped")
+        withExtendedLifetime(token) {}
+    }
+
+    /// Measured on this Mac: when a discharge ends with the cable in, macOS shows "not charging" for about a minute
+    /// before charging resumes. The controller says how long that may still last; an unplug or a new discharge
+    /// ends it.
+    func testTheChargerIsReconnectingForAMinuteAndAHalfAfterADischargeEnds() throws {
+        battery = Self.state(90)
+        let c = make()
+        XCTAssertNil(c.chargerReconnectTimeLeft())
+        c.pressDischarge()
+        XCTAssertEqual(c.dischargeInForce, 80)
+        XCTAssertNil(c.chargerReconnectTimeLeft(), "a discharge is running")
+        battery = Self.state(79)
+        c.tick()
+        XCTAssertNil(c.dischargeInForce)
+        let left = try XCTUnwrap(c.chargerReconnectTimeLeft())
+        XCTAssertEqual(left, ChargeController.chargerReconnectTime, accuracy: 1)
+        XCTAssertEqual(ChargeController.chargerReconnectTime, 90)
+        XCTAssertNil(c.chargerReconnectTimeLeft(now: Date().addingTimeInterval(91)))
+        battery = Self.state(79, ac: false)
+        c.tick()
+        XCTAssertNil(c.chargerReconnectTimeLeft(), "nothing reconnects with the cable out")
+    }
+
+    /// A discharge that ends because the cable was pulled reconnects nothing.
+    func testADischargeEndedByAnUnplugIsNotReconnecting() {
+        battery = Self.state(90)
+        let c = make()
+        c.pressDischarge()
+        XCTAssertEqual(c.dischargeInForce, 80)
+        battery = Self.state(90, ac: false)
+        c.tick()
+        XCTAssertNil(c.dischargeInForce)
+        XCTAssertNil(c.chargerReconnectTimeLeft())
+        battery = Self.state(90)
+        c.tick()
+        XCTAssertNil(c.chargerReconnectTimeLeft(), "plugging back in is not the end of a discharge")
+    }
 }
 
 // ── Fakes ───────────────────────────────────────────────────────────────────

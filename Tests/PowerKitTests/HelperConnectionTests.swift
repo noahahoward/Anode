@@ -503,6 +503,8 @@ final class FanPanelSharingTests: XCTestCase {
     private var connection: HelperConnection!
     private let fans = [FanInfo(index: 0, currentRPM: 2317, minRPM: 2317, maxRPM: 7826, targetRPM: 2317)]
     private let limits = FanPolicy.Limits(minRPM: 2317, maxRPM: 7826)
+    /// Holds a scripted authorisation open; let go in tearDown too, so a failed test cannot leave a thread waiting.
+    private var gate: DispatchSemaphore?
 
     override func setUpWithError() throws {
         _ = NSApplication.shared
@@ -515,10 +517,23 @@ final class FanPanelSharingTests: XCTestCase {
     }
 
     override func tearDownWithError() throws {
+        gate?.signal()
+        gate = nil
         connection.release(.fans)
         connection.release(.charge)
         settings = nil
         TestDefaults.destroy(defaults, suiteName)
+    }
+
+    /// A strip whose install reaches nothing outside the test: a made-up bundled helper, a confirmation that answers
+    /// `confirm` without a dialog, and an authorisation that answers `authorise` without running anything.
+    private func installingPanel(bundled: String? = "/Applications/Anode.app/Contents/MacOS/AnodeHelper",
+                                 confirm: @escaping (String, FanControlPanel.InstallOrigin) -> Bool = { _, _ in true },
+                                 authorise: @escaping () -> FanElevation.Result) -> FanControlPanel {
+        FanControlPanel(frame: NSRect(x: 0, y: 0, width: 420, height: 200), settings: settings, link: connection,
+                        installSteps: FanControlPanel.InstallSteps(bundledHelper: { bundled },
+                                                                   confirm: confirm,
+                                                                   authorise: { _, _ in authorise() }))
     }
 
     /// A strip with fan control on, connected through the shared connection, holding fan 0.
@@ -580,6 +595,78 @@ final class FanPanelSharingTests: XCTestCase {
         panel.installSucceeded(from: .chargeControl)
         XCTAssertFalse(settings.fanControlEnabled, "installing for Charge Control turned fan control on")
         XCTAssertFalse(panel.session.enabled)
+    }
+
+    /// The same, through the whole install Charge Control starts (`installHelper`), not only its last step: fan
+    /// control stays off, and Charge Control is told each step.
+    func testAnInstallStartedFromChargeControlLeavesFanControlOffAndSaysSo() {
+        settings.fanControlEnabled = false
+        var origins: [FanControlPanel.InstallOrigin] = []
+        let panel = installingPanel(confirm: { _, origin in origins.append(origin); return true },
+                                    authorise: { .done("") })
+        var heard: [String] = []
+        let finished = expectation(description: "the install finished")
+        panel.installHelper { text in
+            heard.append(text)
+            if heard.count == 2 { finished.fulfill() }
+        }
+        wait(for: [finished], timeout: 5)
+        XCTAssertEqual(heard, ["Waiting for authorisation\u{2026}",
+                               "The Anode helper is installed. Fan control is as it was."])
+        XCTAssertEqual(origins, [.chargeControl])
+        XCTAssertFalse(settings.fanControlEnabled, "installing for Charge Control turned fan control on")
+        XCTAssertFalse(panel.session.enabled)
+        XCTAssertFalse(connection.suspended, "the shared connection was left shut")
+    }
+
+    /// Every way an install from Charge Control can end is said to Charge Control, which cannot see this strip.
+    func testAnInstallFromChargeControlSaysEveryStepWhereItWasStarted() {
+        // A second press while the authorisation is up, then a failure.
+        let gate = DispatchSemaphore(value: 0)
+        self.gate = gate
+        let panel = installingPanel(authorise: { gate.wait(); return .failed("the disk is locked") })
+        var heard: [String] = []
+        let failed = expectation(description: "the install failed")
+        let report = { (text: String) in
+            heard.append(text)
+            if text.hasPrefix("The Anode helper was not installed") { failed.fulfill() }
+        }
+        panel.installHelper(report: report)
+        XCTAssertEqual(heard, ["Waiting for authorisation\u{2026}"])
+        panel.installHelper(report: report)
+        XCTAssertEqual(heard.last, "Finish the authorisation already on screen.")
+        gate.signal()
+        wait(for: [failed], timeout: 5)
+        XCTAssertEqual(heard.last, "The Anode helper was not installed: the disk is locked")
+
+        // Cancelled in the system's dialog.
+        heard = []
+        let cancelled = expectation(description: "the install was cancelled")
+        let cancelling = installingPanel(authorise: { .cancelled })
+        cancelling.installHelper { text in
+            heard.append(text)
+            if heard.count == 2 { cancelled.fulfill() }
+        }
+        wait(for: [cancelled], timeout: 5)
+        withExtendedLifetime(cancelling) {}
+        XCTAssertEqual(heard.last, "Cancelled \u{2014} nothing was changed.")
+
+        // Not a bundled build: nothing to install, and no dialog.
+        heard = []
+        var asked = 0
+        installingPanel(bundled: nil, confirm: { _, _ in asked += 1; return true },
+                        authorise: { XCTFail("authorised without a helper to install"); return .cancelled })
+            .installHelper { heard.append($0) }
+        XCTAssertEqual(heard, ["Only a bundled build can be installed. Run ./build-app.sh and open "
+                               + "~/Applications/Anode.app."])
+        XCTAssertEqual(asked, 0)
+
+        // The person said no to the confirmation: nothing happens, so there is nothing to say.
+        heard = []
+        installingPanel(confirm: { _, _ in false },
+                        authorise: { XCTFail("authorised after the person said no"); return .cancelled })
+            .installHelper { heard.append($0) }
+        XCTAssertEqual(heard, [])
     }
 
     /// The Fans tab's own install still is.

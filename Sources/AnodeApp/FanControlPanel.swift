@@ -130,6 +130,7 @@ final class FanControlPanel: NSView {
     /// True while a system authorisation dialog is up, so a second press cannot
     /// stack two of them.
     private var elevating = false
+    private let installSteps: InstallSteps
 
     private var daemonState: FanDaemon.State {
         FanDaemon.state(installed: installed,
@@ -163,10 +164,11 @@ final class FanControlPanel: NSView {
     private var boostButtons: [Int: NSButton] = [:]
     private var releaseButtons: [Int: NSButton] = [:]
 
-    /// `settings` and `link` are the app's own except in tests.
-    init(frame: NSRect, settings: Settings, link: HelperConnection) {
+    /// `settings`, `link` and `installSteps` are the app's own except in tests.
+    init(frame: NSRect, settings: Settings, link: HelperConnection, installSteps: InstallSteps = .real) {
         self.settings = settings
         self.link = link
+        self.installSteps = installSteps
         session = FanSession(enabled: settings.fanControlEnabled)
         seenResets = link.resets
         super.init(frame: frame)
@@ -566,6 +568,33 @@ final class FanControlPanel: NSView {
         return bundle.appendingPathComponent("Contents/MacOS/AnodeHelper").path
     }
 
+    /// What an install reaches outside the app: the helper in this bundle, the confirmation, and the system's
+    /// authorisation (which then runs the install as root). The real ones except in tests, which must never put up
+    /// a dialog or run anything as root.
+    struct InstallSteps {
+        var bundledHelper: () -> String?
+        var confirm: (_ helper: String, _ origin: InstallOrigin) -> Bool
+        /// Blocking; called off the main thread.
+        var authorise: (_ command: String, _ prompt: String) -> FanElevation.Result
+
+        static let real = InstallSteps(
+            bundledHelper: { FanControlPanel.bundledHelper() },
+            confirm: { helper, origin in
+                FanControlPanel.installAlert(helper: helper, origin: origin).runModal() == .alertFirstButtonReturn
+            },
+            authorise: { FanElevation.run(command: $0, prompt: $1) })
+    }
+
+    static let authorisationOnScreenText = "Finish the authorisation already on screen."
+    static let notBundledInstallText = "Only a bundled build can be installed. Run ./build-app.sh "
+        + "and open ~/Applications/Anode.app."
+    static let waitingText = "Waiting for authorisation\u{2026}"
+    static let cancelledText = "Cancelled \u{2014} nothing was changed."
+    static let installedForChargeControlText = "The Anode helper is installed. Fan control is as it was."
+    /// An install started from Charge Control that failed, as Charge Control says it: the strip shows the reason
+    /// alone, under its own button; the section names what did not happen.
+    static func notInstalledText(_ why: String) -> String { "The Anode helper was not installed: \(why)" }
+
     /// Where an install was started.
     enum InstallOrigin {
         /// This strip's own button.
@@ -575,27 +604,31 @@ final class FanControlPanel: NSView {
     }
 
     /// The install flow for a caller outside the Fans tab: Charge Control's "Install Helper…" in Beta Features.
-    /// The same confirmation and authorisation as this strip's own button; what it says, it says here.
-    func installHelper() { install(from: .chargeControl) }
+    /// The same confirmation and authorisation as this strip's own button. What it says, it says on this strip and
+    /// to `report` (on the main thread), because the caller cannot see this strip: that it is waiting, that a dialog
+    /// is already up, that this is not a bundled build, and how it ended. A "no" to the confirmation says nothing.
+    func installHelper(report: @escaping (String) -> Void) { install(from: .chargeControl, report: report) }
 
     @objc private func installTapped() { install(from: .fansTab) }
 
-    private func install(from origin: InstallOrigin) {
-        guard !elevating else { return say("Finish the authorisation already on screen.") }
-        guard let helper = Self.bundledHelper() else {
-            return say("Only a bundled build can be installed. Run ./build-app.sh "
-                     + "and open ~/Applications/Anode.app.")
+    private func install(from origin: InstallOrigin, report: ((String) -> Void)? = nil) {
+        func tell(_ text: String) {
+            say(text)
+            report?(text)
         }
-        guard confirmInstall(helper: helper, origin: origin) else { return }
+        guard !elevating else { return tell(Self.authorisationOnScreenText) }
+        guard let helper = installSteps.bundledHelper() else { return tell(Self.notBundledInstallText) }
+        guard installSteps.confirm(helper, origin) else { return }
         let done = origin == .fansTab
             ? "Fan control is installed and ON. Drag a slider or press ❄︎ to "
                 + "take a fan. It keeps working after you rebuild and after a "
                 + "reboot, with no more prompts."
-            : "The Anode helper is installed. Fan control is as it was."
+            : Self.installedForChargeControlText
         elevate(command: FanElevation.installCommand(helper: helper, ownerUID: getuid()),
                 prompt: FanElevation.installPrompt,
-                waiting: "Waiting for authorisation…",
+                waiting: Self.waitingText,
                 done: done,
+                report: report,
                 onSuccess: { panel in panel.installSucceeded(from: origin) })
     }
 
@@ -616,14 +649,14 @@ final class FanControlPanel: NSView {
     }
 
     @objc private func uninstallTapped() {
-        guard !elevating else { return say("Finish the authorisation already on screen.") }
+        guard !elevating else { return say(Self.authorisationOnScreenText) }
         guard let helper = Self.bundledHelper() else {
             return say("Only a bundled build can uninstall. Run "
                      + "`sudo <Anode.app>/Contents/MacOS/AnodeHelper --uninstall`.")
         }
         elevate(command: FanElevation.uninstallCommand(helper: helper),
                 prompt: FanElevation.uninstallPrompt,
-                waiting: "Waiting for authorisation…",
+                waiting: Self.waitingText,
                 done: FanElevation.uninstallDone)
     }
 
@@ -636,37 +669,38 @@ final class FanControlPanel: NSView {
     /// surviving helper like a second client. The socket is shared with Charge
     /// Control, so it is closed for both and held shut until the dialog is
     /// answered (`suspend`/`resume`).
+    ///
+    /// `report`, when given, hears what the strip says: the waiting line, then how it ended. It hears the end even
+    /// if this strip has gone meanwhile.
     private func elevate(command: String, prompt: String, waiting: String, done: String,
+                         report: ((String) -> Void)? = nil,
                          onSuccess: ((FanControlPanel) -> Void)? = nil) {
         elevating = true
         say(waiting)
+        report?(waiting)
         render()
         let link = self.link
         link.release(.fans)
         link.suspend()
         seenResets = link.resets
         session.helperBecame(.absent)
+        let authorise = installSteps.authorise
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            let result = FanElevation.run(command: command, prompt: prompt)
+            let result = authorise(command, prompt)
             DispatchQueue.main.async {
                 // Whatever became of the strip: a suspended link would keep
                 // Charge Control off the helper for good.
                 link.resume()
-                guard let self else { return }
+                guard let self else {
+                    report?(Self.outcome(result, done: done, forReport: true))
+                    return
+                }
                 self.elevating = false
                 self.installed = FanDaemon.isInstalled()
                 self.daemonVersion = nil
-                switch result {
-                case .done:
-                    onSuccess?(self)
-                    self.say(done)
-                case .cancelled:
-                    // A refused authorisation is an answer, not a failure. Nothing
-                    // was written and nothing needs undoing.
-                    self.say("Cancelled — nothing was changed.")
-                case .failed(let why):
-                    self.say(why)
-                }
+                if case .done = result { onSuccess?(self) }
+                self.say(Self.outcome(result, done: done, forReport: false))
+                report?(Self.outcome(result, done: done, forReport: true))
                 // The daemon launchd just started needs a moment to bind; the
                 // ordinary reconnect poll picks it up on the next tick.
                 self.lastConnectAttempt = .distantPast
@@ -675,13 +709,23 @@ final class FanControlPanel: NSView {
         }
     }
 
-    /// The disclosure, shown before the system's own dialog. See the note at the
-    /// top of this file: the objection to a password box is that it names
-    /// nothing, so this names everything.
-    private func confirmInstall(helper: String, origin: InstallOrigin) -> Bool {
-        Self.installAlert(helper: helper, origin: origin).runModal() == .alertFirstButtonReturn
+    /// How an authorisation ended, in words: on this strip, or to the caller that started it elsewhere.
+    private static func outcome(_ result: FanElevation.Result, done: String, forReport: Bool) -> String {
+        switch result {
+        case .done:
+            return done
+        case .cancelled:
+            // A refused authorisation is an answer, not a failure. Nothing
+            // was written and nothing needs undoing.
+            return cancelledText
+        case .failed(let why):
+            return forReport ? notInstalledText(why) : why
+        }
     }
 
+    /// The disclosure, shown before the system's own dialog (`InstallSteps.real`). See the note at the top of this
+    /// file: the objection to a password box is that it names nothing, so this names everything.
+    ///
     /// The confirmation, built and not shown. Internal for the tests.
     static func installAlert(helper: String, origin: InstallOrigin) -> NSAlert {
         let alert = NSAlert()

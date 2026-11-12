@@ -116,8 +116,9 @@ final class ChargeController {
         "this Mac cannot warn the helper before it sleeps",
     ]
 
-    /// Called whenever `status` or the two press flags may have changed.
-    var onChange: (() -> Void)?
+    /// How long after a discharge ends with the cable in that macOS may still show "not charging". Measured on
+    /// this Mac: about a minute before charging resumes; this leaves room.
+    static let chargerReconnectTime: TimeInterval = 90
 
     /// The policy's last answer.
     private(set) var lastDecision: ChargeDecision?
@@ -126,6 +127,13 @@ final class ChargeController {
     private(set) var isDischargeRequested = false
     /// The person pressed Top Up and has not unplugged or cancelled it.
     private(set) var isTopUpRequested = false
+    /// The charge the last tick saw; nil while off.
+    private(set) var batteryPercent: Int?
+    /// Whether the cable was in at the last tick: on the adapter, or cut off from it by Anode's own discharge
+    /// (macOS then reports the Mac on battery, but the adapter is still there). False while off.
+    private(set) var isCablePresent = false
+    /// The discharge the helper said yes to and has not said it stopped: what is running, not what was asked for.
+    var dischargeInForce: Int? { appliedDischarge }
 
     private let settings: Settings
     private let makeClient: () -> ChargeLimitClient?
@@ -146,7 +154,21 @@ final class ChargeController {
     /// A limit the helper refused, and why. Not sent again until the decision's limit changes, the Mac wakes, macOS
     /// is found changed, or the section looks again; meanwhile the nearest value macOS takes above it holds.
     private var refusedLimit: (value: Int, why: String)?
-    private var appliedDischarge: Int?
+    private var appliedDischarge: Int? {
+        didSet {
+            guard appliedDischarge != oldValue else { return }
+            // A discharge that ends with the cable in hands the battery back to the charger, which takes macOS a
+            // minute; one that ends because the cable was pulled hands it back to nothing.
+            if appliedDischarge != nil {
+                dischargeEndedAt = nil
+            } else if oldValue != nil {
+                dischargeEndedAt = isCablePresent ? Date() : nil
+            }
+            changed()
+        }
+    }
+    /// When a discharge last ended with the cable in; see `chargerReconnectTimeLeft`.
+    private var dischargeEndedAt: Date?
     private var dischargeInFlight = false
     /// Bumped when a discharge in flight is overtaken (going to sleep stops it), so its late answer is ignored.
     private var dischargeEpoch = 0
@@ -174,6 +196,18 @@ final class ChargeController {
 
     private var running: Bool { client != nil }
 
+    /// Everything that wants to hear about changes; see `observeChanges`. Held weakly: the listener holds the token.
+    private var observers: [WeakObservation] = []
+
+    private final class Observation {
+        let call: () -> Void
+        init(_ call: @escaping () -> Void) { self.call = call }
+    }
+
+    private struct WeakObservation {
+        weak var value: Observation?
+    }
+
     init(settings: Settings, makeClient: @escaping () -> ChargeLimitClient? = { PowerUIChargeClient() },
          helper: ChargeHelperLink, battery: @escaping () -> Battery.State? = { Battery.state() },
          log: @escaping (String) -> Void = { FeatureLog.append("charge.log", $0) }) {
@@ -193,6 +227,31 @@ final class ChargeController {
         removeTriggers()
         // The connection is shared: a claim left behind would keep it open for good.
         if running { helper.letGo() }
+    }
+
+    // ── Listening ───────────────────────────────────────────────────────────
+
+    /// Call `f` (on the main thread) whenever something the section shows may have changed: `status`, the two press
+    /// flags, `dischargeInForce`, `batteryPercent` or `isCablePresent`. Any number of listeners; each keeps hearing
+    /// for as long as it keeps the token returned, and none can take another's place.
+    func observeChanges(_ f: @escaping () -> Void) -> AnyObject {
+        let o = Observation(f)
+        observers.append(WeakObservation(value: o))
+        return o
+    }
+
+    private func changed() {
+        observers.removeAll { $0.value == nil }
+        // A copy: a listener may start or stop listening while it is called.
+        for o in observers { o.value?.call() }
+    }
+
+    /// How much longer macOS may show "not charging" after a discharge ended with the cable in, before it charges
+    /// again; nil when it should not (no discharge ended lately, the cable is out, a discharge runs).
+    func chargerReconnectTimeLeft(now: Date = Date()) -> TimeInterval? {
+        guard let ended = dischargeEndedAt, isCablePresent, appliedDischarge == nil else { return nil }
+        let left = Self.chargerReconnectTime - now.timeIntervalSince(ended)
+        return left > 0 ? left : nil
     }
 
     // ── On and off ──────────────────────────────────────────────────────────
@@ -318,6 +377,9 @@ final class ChargeController {
         blockedDischarge = nil
         isDischargeRequested = false
         isTopUpRequested = false
+        batteryPercent = nil
+        isCablePresent = false
+        dischargeEndedAt = nil
         lastRefusal = nil
         lastDrift = nil
     }
@@ -477,7 +539,7 @@ final class ChargeController {
         blockedDischarge = nil
         log(isDischargeRequested ? "Discharge pressed" : "Discharge cancelled")
         tick()
-        onChange?()
+        changed()
     }
 
     /// Charge to 100% until unplugged; pressed again, cancel. Cancels a manual discharge.
@@ -487,7 +549,7 @@ final class ChargeController {
         if isTopUpRequested { isDischargeRequested = false }
         log(isTopUpRequested ? "Top Up pressed" : "Top Up cancelled")
         tick()
-        onChange?()
+        changed()
     }
 
     // ── Sleep ───────────────────────────────────────────────────────────────
@@ -510,7 +572,7 @@ final class ChargeController {
         if isDischargeRequested {
             isDischargeRequested = false
             log("manual discharge ended by sleep")
-            onChange?()
+            changed()
         }
         tick()
     }
@@ -552,16 +614,23 @@ final class ChargeController {
         // Anode's own charger cut makes macOS report the Mac off the adapter while the cable is in; the adapter's
         // details still describe a charger then, and stop describing one when the cable is really pulled.
         let onAC = b.onAC || b.adapterPresent
+        // What the section reads, from the same reading the decision is made from, so the two always agree.
+        var announce = false
+        if b.percent != batteryPercent || onAC != isCablePresent {
+            batteryPercent = b.percent
+            isCablePresent = onAC
+            if !onAC { dischargeEndedAt = nil }
+            announce = true
+        }
         let inputs = ChargeInputs(percent: b.percent, onAC: onAC,
                                   temperatureC: b.temperature_C.flatMap { $0.isFinite ? $0 : nil },
                                   sleeping: sleeping, topUp: isTopUpRequested,
                                   manualDischarge: isDischargeRequested, now: now)
         let decision = ChargePolicy.decide(settings.chargeSettingsSnapshot(), inputs, &memory)
-        var flagsChanged = false
-        if decision.endTopUp && isTopUpRequested { isTopUpRequested = false; flagsChanged = true }
+        if decision.endTopUp && isTopUpRequested { isTopUpRequested = false; announce = true }
         if decision.endManualDischarge && isDischargeRequested {
             isDischargeRequested = false
-            flagsChanged = true
+            announce = true
             log(onAC ? "manual discharge finished" : "manual discharge ended: unplugged")
         }
         lastDecision = decision
@@ -569,7 +638,7 @@ final class ChargeController {
         // Sailing and heat memory belong to one connection to the adapter.
         if !onAC { memory = ChargeMemory() }
         settle()
-        if flagsChanged { onChange?() }
+        if announce { changed() }
     }
 
     /// Apply `lastDecision` again after an answer came back, in case it changed while the request was on its way.
@@ -776,7 +845,7 @@ final class ChargeController {
     private func setStatus(_ s: ChargeStatus) {
         guard s != status else { return }
         status = s
-        onChange?()
+        changed()
     }
 
     // ── Pure pieces ─────────────────────────────────────────────────────────

@@ -19,6 +19,8 @@ final class ChargeControlFeatureTests: XCTestCase {
     private var battery: Battery.State?
     private var controller: ChargeController?
     private var installs = 0
+    /// What the last "Install Helper…" press was handed to say how the install is going.
+    private var installReport: ((String) -> Void)?
     /// What `makeView` returned for the last section made.
     private var view: NSView?
 
@@ -30,6 +32,7 @@ final class ChargeControlFeatureTests: XCTestCase {
         clientToMake = FakeChargeLimitClient()
         battery = ChargeControllerTests.state(70)
         installs = 0
+        installReport = nil
     }
 
     override func tearDownWithError() throws {
@@ -51,7 +54,10 @@ final class ChargeControlFeatureTests: XCTestCase {
         }
         let c = controller
         let f = ChargeControlFeature(settings: settings, controller: { c },
-                                     installHelper: { [weak self] in self?.installs += 1 })
+                                     installHelper: { [weak self] report in
+                                         self?.installs += 1
+                                         self?.installReport = report
+                                     })
         view = f.makeView()
         return f
     }
@@ -117,7 +123,84 @@ final class ChargeControlFeatureTests: XCTestCase {
         XCTAssertEqual(f.limitValueLabel.stringValue, "63%")
     }
 
+    /// A drag AppKit refuses to start (the slider was disabled under the pointer) is not a drag: the knob must go on
+    /// following the setting afterwards.
+    func testADragThatNeverStartedDoesNotFreezeTheKnob() throws {
+        let f = make(enabled: true)
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 300, height: 60), styleMask: [.borderless],
+                              backing: .buffered, defer: false)
+        window.contentView?.addSubview(f.limitSlider)
+        f.limitSlider.frame = NSRect(x: 50, y: 20, width: 200, height: 21)
+        let cell = try XCTUnwrap(f.limitSlider.cell as? NSSliderCell)
+        f.limitSlider.isEnabled = false
+        XCTAssertFalse(cell.startTracking(at: NSPoint(x: 150, y: 10), in: f.limitSlider),
+                       "AppKit started a drag on a disabled slider; this test needs another way to refuse one")
+        settings.chargeLimit = 63
+        XCTAssertEqual(f.limitSlider.doubleValue, 63, "the knob stopped following the setting")
+        XCTAssertEqual(f.limitValueLabel.stringValue, "63%")
+    }
+
+    /// A slider in a window, with its cell, so a test can drag it through the cell's own tracking calls.
+    private func draggable(_ f: ChargeControlFeature) throws -> (NSWindow, NSSliderCell) {
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 300, height: 60), styleMask: [.borderless],
+                              backing: .buffered, defer: false)
+        window.contentView?.addSubview(f.limitSlider)
+        f.limitSlider.frame = NSRect(x: 50, y: 20, width: 200, height: 21)
+        return (window, try XCTUnwrap(f.limitSlider.cell as? NSSliderCell))
+    }
+
+    /// Let the main run loop take one turn in the default mode, as it does once a drag has ended.
+    private func settle() {
+        RunLoop.main.run(mode: .default, before: Date().addingTimeInterval(0.05))
+        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+    }
+
+    /// A drag that ends while the slider is disabled (or hidden: switched off from the menu mid-drag) sends no action.
+    /// The knob goes back to the stored limit rather than resting on a value nobody stored.
+    func testADragEndingWithoutItsActionPutsTheKnobBack() throws {
+        let f = make(enabled: true)
+        let (window, cell) = try draggable(f)
+        let knob = NSPoint(x: 150, y: 10), there = NSPoint(x: 60, y: 10)
+        XCTAssertTrue(cell.startTracking(at: knob, in: f.limitSlider))
+        _ = cell.continueTracking(last: knob, current: there, in: f.limitSlider)
+        XCTAssertLessThan(f.limitSlider.doubleValue, 70, "the drag did not move the knob")
+        f.limitSlider.isEnabled = false
+        cell.stopTracking(last: there, current: there, in: f.limitSlider, mouseIsUp: true)
+        settle()
+        XCTAssertEqual(f.limitSlider.doubleValue, 80, "the knob rests on a limit that was never stored")
+        XCTAssertEqual(f.limitValueLabel.stringValue, "80%")
+        XCTAssertEqual(settings.chargeLimit, 80)
+        withExtendedLifetime(window) {}
+    }
+
+    /// The ordinary release: the action AppKit sends after the drag writes the limit, and the redraw that follows
+    /// the drag keeps it.
+    func testAReleasedDragKeepsWhatItWrote() throws {
+        let f = make(enabled: true)
+        let (window, cell) = try draggable(f)
+        let knob = NSPoint(x: 150, y: 10), there = NSPoint(x: 60, y: 10)
+        XCTAssertTrue(cell.startTracking(at: knob, in: f.limitSlider))
+        _ = cell.continueTracking(last: knob, current: there, in: f.limitSlider)
+        let dragged = Int(f.limitSlider.doubleValue.rounded())
+        cell.stopTracking(last: there, current: there, in: f.limitSlider, mouseIsUp: true)
+        send(f.limitSlider)
+        settle()
+        XCTAssertEqual(settings.chargeLimit, dragged)
+        XCTAssertEqual(f.limitSlider.doubleValue, Double(dragged))
+        XCTAssertEqual(f.limitValueLabel.stringValue, "\(dragged)%")
+        withExtendedLifetime(window) {}
+    }
+
+    /// VoiceOver names each control that has no title of its own.
+    func testControlsHaveAccessibleNames() {
+        let f = make(enabled: true)
+        XCTAssertEqual(f.limitSlider.accessibilityLabel(), "Charge limit")
+        XCTAssertEqual(f.sailingStepper.accessibilityLabel(), "Sailing Mode: how far below the limit to recharge")
+        XCTAssertEqual(f.heatStepper.accessibilityLabel(), "Heat Protection: temperature to pause at")
+    }
+
     func testControlsHiddenWhileOff() {
+        battery = ChargeControllerTests.state(90)   // above the limit, so both buttons can do something when on
         let f = make(enabled: false)
         XCTAssertEqual(f.enableCheckbox.title, "Charge Control")
         XCTAssertEqual(f.enableCheckbox.state, .off)
@@ -143,21 +226,40 @@ final class ChargeControlFeatureTests: XCTestCase {
     }
 
     func testStatusTextForEachStatus() {
-        let text = ChargeControlFeature.statusText
-        XCTAssertEqual(text(.active(ChargeDecision(osLimit: 63, dischargeTo: nil, reason: .sailing))),
-                       "macOS is holding 63% (sailing)")
-        XCTAssertEqual(text(.active(ChargeDecision(osLimit: 80, dischargeTo: 40, reason: .discharging))),
+        typealias Facts = ChargeControlFeature.Facts
+        func text(_ s: ChargeStatus, _ facts: Facts = Facts()) -> String { ChargeControlFeature.statusText(s, facts) }
+        func active(_ limit: Int, _ reason: ChargeReason, to: Int? = nil) -> ChargeStatus {
+            .active(ChargeDecision(osLimit: limit, dischargeTo: to, reason: reason))
+        }
+        let plugged = { (p: Int) in Facts(percent: p, cablePresent: true) }
+
+        // A ceiling is a ceiling: "charging to" below it, "holding" only at it.
+        XCTAssertEqual(text(active(80, .limit), plugged(70)), "Charging to 80% (your limit)")
+        XCTAssertEqual(text(active(80, .limit), plugged(80)), "Holding 80% (your limit)")
+        XCTAssertEqual(text(active(80, .limit), plugged(85)), "Not charging: 85% is above 80% (your limit)")
+        XCTAssertEqual(text(active(100, .topUp), plugged(70)), "Charging to 100% (Top Up)")
+        XCTAssertEqual(text(active(100, .topUp), plugged(100)), "Holding 100% (Top Up)")
+        XCTAssertEqual(text(active(63, .sailing), plugged(63)), "Holding 63% (sailing)")
+        XCTAssertEqual(text(active(57, .heat), plugged(57)), "Holding 57% (Heat Protection)")
+        XCTAssertEqual(text(active(66, .sleeping), plugged(66)), "Holding 66% (sleeping)")
+        XCTAssertEqual(text(active(40, .discharged), plugged(40)), "Holding 40% (discharged)")
+        XCTAssertEqual(text(active(80, .limit), Facts(percent: 70, cablePresent: false)),
+                       "On battery; charging stops at 80%")
+        XCTAssertEqual(text(active(80, .limit)), "Charging stops at 80% (your limit)", "nothing known about the battery")
+
+        // A discharge is what the helper runs, not what was asked for.
+        XCTAssertEqual(text(active(80, .discharging, to: 40), Facts(percent: 90, dischargeInForce: 40)),
                        "Discharging to 40% on the adapter")
-        XCTAssertEqual(text(.active(ChargeDecision(osLimit: 80, dischargeTo: nil, reason: .limit))),
-                       "macOS is holding 80% (your limit)")
-        XCTAssertEqual(text(.active(ChargeDecision(osLimit: 100, dischargeTo: nil, reason: .topUp))),
-                       "macOS is holding 100% (Top Up)")
-        XCTAssertEqual(text(.active(ChargeDecision(osLimit: 57, dischargeTo: nil, reason: .heat))),
-                       "macOS is holding 57% (Heat Protection)")
-        XCTAssertEqual(text(.active(ChargeDecision(osLimit: 66, dischargeTo: nil, reason: .sleeping))),
-                       "macOS is holding 66% (sleeping)")
-        XCTAssertEqual(text(.active(ChargeDecision(osLimit: 40, dischargeTo: nil, reason: .discharged))),
-                       "macOS is holding 40% (discharged)")
+        XCTAssertEqual(text(active(80, .discharging, to: 40), plugged(90)), "Starting to discharge\u{2026}")
+        XCTAssertEqual(text(active(80, .limit), Facts(percent: 90, dischargeInForce: 40)),
+                       "Stopping the discharge\u{2026}")
+
+        // The minute after a discharge, when macOS shows "not charging" though nothing is wrong.
+        XCTAssertEqual(text(active(80, .discharged), Facts(percent: 79, reconnecting: true)),
+                       "Reconnecting the charger\u{2026}")
+        XCTAssertEqual(text(active(80, .discharged), Facts(percent: 80, reconnecting: true)),
+                       "Holding 80% (discharged)", "at the limit there is nothing to reconnect for")
+
         for msg in [ChargeController.limitNeedsHelperText, ChargeController.dischargeNeedsHelperText,
                     ChargeController.helperOutdatedText] {
             XCTAssertEqual(text(.needsHelper(msg)), msg)
@@ -168,6 +270,8 @@ final class ChargeControlFeatureTests: XCTestCase {
         let refusal = ChargeController.dischargeRefusedText("this Mac cannot warn the helper before it sleeps")
         XCTAssertEqual(text(.refused(refusal)), "The Anode helper would not discharge: this Mac cannot warn the helper "
                        + "before it sleeps")
+        XCTAssertEqual(text(.refused(ChargeController.limitRefusedText(63, "macOS did not take the charge limit"))),
+                       "The Anode helper did not set the limit to 63%: macOS did not take the charge limit")
         XCTAssertEqual(text(.off), "Off")
     }
 
@@ -186,7 +290,7 @@ final class ChargeControlFeatureTests: XCTestCase {
         f.sailingStepper.integerValue = 9
         send(f.sailingStepper)
         XCTAssertEqual(settings.chargeSailingGap, 9)
-        XCTAssertEqual(f.sailingLabel.stringValue, "recharge below limit \u{2212} 9%")
+        XCTAssertEqual(f.sailingLabel.stringValue, "recharge at limit \u{2212} 9%")
 
         XCTAssertEqual(f.heatCheckbox.title, "Heat Protection")
         f.heatCheckbox.performClick(nil)
@@ -196,7 +300,7 @@ final class ChargeControlFeatureTests: XCTestCase {
         f.heatStepper.integerValue = 41
         send(f.heatStepper)
         XCTAssertEqual(settings.chargeMaxTemperatureC, 41)
-        XCTAssertEqual(f.heatLabel.stringValue, "pause above 41 \u{00B0}C")
+        XCTAssertEqual(f.heatLabel.stringValue, "pause at 41 \u{00B0}C")
 
         XCTAssertEqual(f.sleepCheckbox.title, "Stop charging when sleeping")
         f.sleepCheckbox.performClick(nil)
@@ -213,8 +317,8 @@ final class ChargeControlFeatureTests: XCTestCase {
     /// A change made elsewhere (the menu, `defaults write`, another window) shows without anyone calling refresh.
     func testSettingsChangedElsewhereShowAtOnce() {
         let f = make(enabled: true)
-        XCTAssertEqual(f.sailingLabel.stringValue, "recharge below limit \u{2212} 5%")
-        XCTAssertEqual(f.heatLabel.stringValue, "pause above 35 \u{00B0}C")
+        XCTAssertEqual(f.sailingLabel.stringValue, "recharge at limit \u{2212} 5%")
+        XCTAssertEqual(f.heatLabel.stringValue, "pause at 35 \u{00B0}C")
         XCTAssertFalse(f.sailingStepper.isEnabled, "a stepper for a switched-off mode")
         XCTAssertFalse(f.heatStepper.isEnabled, "a stepper for a switched-off mode")
 
@@ -231,10 +335,10 @@ final class ChargeControlFeatureTests: XCTestCase {
         XCTAssertEqual(f.sailingCheckbox.state, .on)
         XCTAssertEqual(f.sailingStepper.integerValue, 12)
         XCTAssertTrue(f.sailingStepper.isEnabled)
-        XCTAssertEqual(f.sailingLabel.stringValue, "recharge below limit \u{2212} 12%")
+        XCTAssertEqual(f.sailingLabel.stringValue, "recharge at limit \u{2212} 12%")
         XCTAssertEqual(f.heatCheckbox.state, .on)
         XCTAssertTrue(f.heatStepper.isEnabled)
-        XCTAssertEqual(f.heatLabel.stringValue, "pause above 42.5 \u{00B0}C", "a stored half degree is shown as stored")
+        XCTAssertEqual(f.heatLabel.stringValue, "pause at 42.5 \u{00B0}C", "a stored half degree is shown as stored")
         XCTAssertEqual(f.sleepCheckbox.state, .on)
         XCTAssertEqual(f.autoDischargeCheckbox.state, .on)
     }
@@ -246,30 +350,112 @@ final class ChargeControlFeatureTests: XCTestCase {
         settings.chargeLimit = 40
         let f = make(enabled: true)
         let c = try XCTUnwrap(controller)
-        XCTAssertEqual(f.statusLabel.stringValue, "macOS is holding 40% (your limit)")
+        XCTAssertEqual(f.statusLabel.stringValue, "Not charging: 70% is above 40% (your limit)")
         c.pressDischarge()   // as the menu would: the section is not told
         XCTAssertEqual(f.statusLabel.stringValue, "Discharging to 40% on the adapter")
         XCTAssertEqual(f.dischargeButton.title, "Stop Discharge")
         battery = ChargeControllerTests.state(40)
         c.tick()
-        XCTAssertEqual(f.statusLabel.stringValue, "macOS is holding 40% (discharged)")
+        XCTAssertEqual(f.statusLabel.stringValue, "Holding 40% (discharged)")
         XCTAssertEqual(f.dischargeButton.title, "Discharge", "a discharge that reached the limit ended itself")
     }
 
-    /// Whatever already listened to the controller keeps hearing it.
-    func testHookingTheControllerKeepsAnEarlierListener() throws {
-        settings.chargeControlEnabled = true
-        let c = ChargeController(settings: settings, makeClient: { [weak self] in self?.clientToMake }, helper: helper,
-                                 battery: { [weak self] in self?.battery }, log: { _ in })
-        controller = c
+    /// Another part of the app listening to the controller neither silences the section nor is silenced by it.
+    func testAnotherListenerDoesNotDisplaceTheSection() throws {
+        let f = make(enabled: true)
+        let c = try XCTUnwrap(controller)
         var heard = 0
-        c.onChange = { heard += 1 }
-        let f = ChargeControlFeature(settings: settings, controller: { c }, installHelper: {})
-        _ = f.makeView()
+        let other = c.observeChanges { heard += 1 }
         f.refresh()
         c.pressTopUp()
-        XCTAssertGreaterThan(heard, 0, "the earlier listener was dropped")
-        XCTAssertEqual(f.topUpButton.title, "Cancel Top Up")
+        XCTAssertGreaterThan(heard, 0, "the other listener was dropped")
+        XCTAssertEqual(f.topUpButton.title, "Cancel Top Up", "the section was dropped")
+        withExtendedLifetime(other) {}
+    }
+
+    /// While the helper has not yet said yes, the line says a discharge is starting, and it changes when the
+    /// helper answers, with nobody calling refresh. The same for a stop.
+    func testStartingAndStoppingADischargeSaySo() throws {
+        settings.chargeLimit = 40
+        battery = ChargeControllerTests.state(90)
+        let f = make(enabled: true)
+        let c = try XCTUnwrap(controller)
+        helper.deferReplies = true
+        c.pressDischarge()
+        XCTAssertEqual(f.statusLabel.stringValue, "Starting to discharge\u{2026}")
+        helper.flushReplies()
+        XCTAssertEqual(f.statusLabel.stringValue, "Discharging to 40% on the adapter")
+        helper.deferReplies = true
+        c.pressDischarge()
+        XCTAssertEqual(f.statusLabel.stringValue, "Stopping the discharge\u{2026}")
+        helper.flushReplies()
+        XCTAssertEqual(f.statusLabel.stringValue, "Not charging: 90% is above 40% (your limit)")
+    }
+
+    /// The minute after a discharge in which macOS shows "not charging" is shown as what it is, not as a fault; then
+    /// the line says the battery is charging.
+    func testAfterADischargeTheLineSaysTheChargerIsReconnecting() throws {
+        battery = ChargeControllerTests.state(90)
+        let f = make(enabled: true)
+        let c = try XCTUnwrap(controller)
+        c.pressDischarge()
+        battery = ChargeControllerTests.state(79)
+        c.tick()
+        XCTAssertEqual(f.statusLabel.stringValue, "Reconnecting the charger\u{2026}")
+        XCTAssertEqual(f.statusLabel.textColor, .secondaryLabelColor, "shown as a fault")
+    }
+
+    /// The words follow the charge and the cable as the controller sees them, with nobody calling refresh.
+    func testTheLineFollowsTheChargeAndTheCable() throws {
+        let f = make(enabled: true)
+        let c = try XCTUnwrap(controller)
+        XCTAssertEqual(f.statusLabel.stringValue, "Charging to 80% (your limit)")
+        battery = ChargeControllerTests.state(80)
+        c.tick()
+        XCTAssertEqual(f.statusLabel.stringValue, "Holding 80% (your limit)")
+        battery = ChargeControllerTests.state(80, ac: false)
+        c.tick()
+        XCTAssertEqual(f.statusLabel.stringValue, "On battery; charging stops at 80%")
+    }
+
+    /// Top Up with the cable out would end the moment it began: the button waits for the charger, and says so.
+    func testTopUpNeedsTheCharger() throws {
+        battery = ChargeControllerTests.state(70, ac: false)
+        let f = make(enabled: true)
+        let c = try XCTUnwrap(controller)
+        XCTAssertFalse(f.topUpButton.isEnabled)
+        XCTAssertEqual(f.topUpButton.toolTip, "Top Up needs the charger.")
+        battery = ChargeControllerTests.state(70)
+        c.tick()
+        XCTAssertTrue(f.topUpButton.isEnabled)
+        XCTAssertEqual(f.topUpButton.toolTip, "Charge to 100% this once. It ends when you unplug.")
+    }
+
+    /// Discharge needs the charger and a battery above the limit; otherwise it would end the moment it began. A
+    /// discharge under way can always be stopped.
+    func testDischargeNeedsTheChargerAndABatteryAboveTheLimit() throws {
+        let blocked = "Discharge needs the charger and a battery above the limit."
+        let f = make(enabled: true)   // 70%, limit 80
+        let c = try XCTUnwrap(controller)
+        XCTAssertFalse(f.dischargeButton.isEnabled, "nothing above the limit to discharge")
+        XCTAssertEqual(f.dischargeButton.toolTip, blocked)
+        battery = ChargeControllerTests.state(80)
+        c.tick()
+        XCTAssertFalse(f.dischargeButton.isEnabled, "at the limit there is nothing to discharge")
+        battery = ChargeControllerTests.state(81)
+        c.tick()
+        XCTAssertTrue(f.dischargeButton.isEnabled)
+        XCTAssertTrue(f.dischargeButton.toolTip?.hasPrefix("Run the Mac from the battery") == true)
+        battery = ChargeControllerTests.state(90, ac: false)
+        c.tick()
+        XCTAssertFalse(f.dischargeButton.isEnabled, "the cable is out")
+        XCTAssertEqual(f.dischargeButton.toolTip, blocked)
+
+        battery = ChargeControllerTests.state(90)
+        c.tick()
+        f.dischargeButton.performClick(nil)
+        XCTAssertEqual(f.dischargeButton.title, "Stop Discharge")
+        XCTAssertTrue(f.dischargeButton.isEnabled, "a discharge under way cannot be stopped")
     }
 
     func testDischargeAndTopUpPressTheControllerAndSayHowToUndo() throws {
@@ -289,7 +475,8 @@ final class ChargeControlFeatureTests: XCTestCase {
         XCTAssertFalse(c.isDischargeRequested, "Top Up cancels a discharge")
         XCTAssertEqual(f.dischargeButton.title, "Discharge")
         XCTAssertEqual(f.topUpButton.title, "Cancel Top Up")
-        XCTAssertEqual(f.statusLabel.stringValue, "macOS is holding 100% (Top Up)")
+        // The discharge Top Up ended hands the battery back to the charger, which macOS takes a minute over.
+        XCTAssertEqual(f.statusLabel.stringValue, "Reconnecting the charger\u{2026}")
 
         f.topUpButton.performClick(nil)
         XCTAssertFalse(c.isTopUpRequested)
@@ -328,8 +515,39 @@ final class ChargeControlFeatureTests: XCTestCase {
         f.limitSlider.doubleValue = 85
         send(f.limitSlider)
         XCTAssertEqual(settings.chargeLimit, 85)
-        XCTAssertEqual(f.statusLabel.stringValue, "macOS is holding 85% (your limit)")
+        XCTAssertEqual(f.statusLabel.stringValue, "Charging to 85% (your limit)")
         XCTAssertTrue(f.installButton.isHiddenOrHasHiddenAncestor, "85 needs no helper")
+    }
+
+    /// The install is started here and runs in the Fans tab's flow, whose own strip is not on screen: everything it
+    /// says (waiting, a second press, the outcome) is shown in this section, under the button.
+    func testTheInstallSaysHowItIsGoingHere() throws {
+        helper.available = false
+        settings.chargeLimit = 63
+        let f = make(enabled: true)
+        XCTAssertTrue(f.installNoteLabel.isHiddenOrHasHiddenAncestor, "a note before anything was pressed")
+        f.installButton.performClick(nil)
+        let report = try XCTUnwrap(installReport)
+        for text in ["Waiting for authorisation\u{2026}", "Finish the authorisation already on screen.",
+                     "The Anode helper was not installed: the disk is locked"] {
+            report(text)
+            XCTAssertEqual(f.installNoteLabel.stringValue, text)
+            XCTAssertFalse(f.installNoteLabel.isHiddenOrHasHiddenAncestor, "not shown: \(text)")
+        }
+        // Pressed again: the old outcome goes; the new install says its own.
+        f.installButton.performClick(nil)
+        XCTAssertTrue(f.installNoteLabel.isHiddenOrHasHiddenAncestor, "an old outcome shown for a new install")
+        try XCTUnwrap(installReport)("The Anode helper is installed. Fan control is as it was.")
+        XCTAssertEqual(f.installNoteLabel.stringValue, "The Anode helper is installed. Fan control is as it was.")
+        // Still shown once the helper is there and the button has gone.
+        helper.becomeAvailable()
+        XCTAssertTrue(f.installButton.isHiddenOrHasHiddenAncestor)
+        XCTAssertFalse(f.installNoteLabel.isHiddenOrHasHiddenAncestor, "the outcome went with the button")
+        // Switched off, it goes, and does not come back on.
+        settings.chargeControlEnabled = false
+        XCTAssertTrue(f.installNoteLabel.isHiddenOrHasHiddenAncestor)
+        settings.chargeControlEnabled = true
+        XCTAssertTrue(f.installNoteLabel.isHiddenOrHasHiddenAncestor)
     }
 
     func testNeedsHelperForADischargeOffersTheInstall() throws {
@@ -409,6 +627,7 @@ final class ChargeControlFeatureTests: XCTestCase {
         func collect(_ v: NSView) {
             if let b = v as? NSButton { shown.append(b.title); shown.append(b.toolTip ?? "") }
             else if let t = v as? NSTextField { shown.append(t.stringValue) }
+            shown.append(v.accessibilityLabel() ?? "")
             v.subviews.forEach(collect)
         }
         let root = try XCTUnwrap(view)
@@ -416,14 +635,32 @@ final class ChargeControlFeatureTests: XCTestCase {
         f.dischargeButton.performClick(nil)
         f.topUpButton.performClick(nil)
         collect(root)
+        battery = ChargeControllerTests.state(30, ac: false)   // both buttons say why they wait
+        controller?.tick()
+        collect(root)
         let reasons: [ChargeReason] = [.limit, .topUp, .heat, .sleeping, .sailing, .discharging, .discharged]
-        shown += reasons.map { ChargeControlFeature.statusText(.active(ChargeDecision(osLimit: 70, dischargeTo: nil, reason: $0))) }
+        typealias Facts = ChargeControlFeature.Facts
+        let facts = [Facts(), Facts(percent: 60), Facts(percent: 70), Facts(percent: 80), Facts(percent: 60, cablePresent: false),
+                     Facts(percent: 60, reconnecting: true), Facts(percent: 80, dischargeInForce: 70)]
+        for reason in reasons {
+            for to in [nil, 70] as [Int?] {
+                shown += facts.map {
+                    ChargeControlFeature.statusText(.active(ChargeDecision(osLimit: 70, dischargeTo: to, reason: reason)), $0)
+                }
+            }
+        }
         shown += [ChargeController.unavailableText, ChargeController.unreadableText, ChargeController.noBatteryText,
                   ChargeController.limitNeedsHelperText, ChargeController.dischargeNeedsHelperText,
                   ChargeController.helperOutdatedText,
                   ChargeController.dischargeRefusedText("the charger may still be cut off from an earlier failure"),
                   ChargeController.limitRefusedText(63, "macOS did not take the charge limit")]
-        let banned = ["MCL", "SMC", "PowerUI", "topUp", "watt", "CHIE", "OBC"]
+        // What an install started here can say under its button.
+        shown += [FanControlPanel.waitingText, FanControlPanel.authorisationOnScreenText,
+                  FanControlPanel.notBundledInstallText, FanControlPanel.cancelledText,
+                  FanControlPanel.installedForChargeControlText, FanControlPanel.notInstalledText("the disk is locked")]
+        // The other charge app's name, built from pieces so this file does not carry it either.
+        let otherApp = ["Al", "Den", "te"].joined()
+        let banned = ["MCL", "SMC", "PowerUI", "topUp", "watt", "CHIE", "OBC", otherApp]
         for text in shown {
             for word in banned { XCTAssertFalse(text.localizedCaseInsensitiveContains(word), "“\(word)” in: \(text)") }
             XCTAssertNil(text.range(of: #"\d\s?W\b"#, options: .regularExpression), "watts in: \(text)")
