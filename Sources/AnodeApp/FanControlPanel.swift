@@ -90,8 +90,10 @@ final class FanControlPanel: NSView {
 
     /// Shared with Charge Control: the helper takes one client, and a client leaving releases the fans and ends a
     /// discharge. See `HelperConnection`.
-    private let link = HelperConnection.shared
-    private var session = FanSession(enabled: Settings.shared.fanControlEnabled)
+    private let link: HelperConnection
+    private let settings: Settings
+    /// Internal so the tests can put the strip in a state (connected, a fan held) that otherwise takes the helper.
+    var session: FanSession
     private var fans: [FanInfo] = []
     /// The helper's last word, shown verbatim. Its refusals name the reason, and
     /// paraphrasing them here would be a second place to keep in step.
@@ -106,6 +108,11 @@ final class FanControlPanel: NSView {
         note = text
         noteAt = Date()
     }
+
+    /// The shared connection's `resets` when this strip last knew where it stood. A reset this strip did not cause
+    /// (the helper dropped the socket and Charge Control opened a new one, say) means the helper handed back every
+    /// fan with the old socket; see `noticeResets`.
+    private var seenResets = 0
 
     private var lastConnectAttempt = Date.distantPast
     private var lastPing = Date.distantPast
@@ -156,10 +163,19 @@ final class FanControlPanel: NSView {
     private var boostButtons: [Int: NSButton] = [:]
     private var releaseButtons: [Int: NSButton] = [:]
 
-    override init(frame: NSRect) {
+    /// `settings` and `link` are the app's own except in tests.
+    init(frame: NSRect, settings: Settings, link: HelperConnection) {
+        self.settings = settings
+        self.link = link
+        session = FanSession(enabled: settings.fanControlEnabled)
+        seenResets = link.resets
         super.init(frame: frame)
         build()
         render()
+    }
+
+    override convenience init(frame: NSRect) {
+        self.init(frame: frame, settings: .shared, link: .shared)
     }
     required init?(coder: NSCoder) { fatalError() }
 
@@ -177,13 +193,14 @@ final class FanControlPanel: NSView {
     /// New fan readings, once per tick while the tab is on screen.
     func update(fans: [FanInfo]) {
         self.fans = fans
-        session.enabled = Settings.shared.fanControlEnabled
+        session.enabled = settings.fanControlEnabled
         if note != nil, Date().timeIntervalSince(noteAt) > Self.noteLifetime { note = nil }
         // Re-read rather than cached forever: an uninstall can also be run from a
         // terminal, and a strip still offering "Uninstall" for a daemon that is
         // gone would be the one place a user could not see it. Skipped while a
         // dialog is up, where the answer is about to arrive anyway.
         if !elevating { installed = FanDaemon.isInstalled() }
+        noticeResets()
         upkeep()
         render()
     }
@@ -198,6 +215,7 @@ final class FanControlPanel: NSView {
     func teardown() {
         endPolling()
         link.release(.fans)
+        seenResets = link.resets
     }
 
     // ── Connection ──────────────────────────────────────────────────────────
@@ -238,7 +256,23 @@ final class FanControlPanel: NSView {
         }
     }
 
+    /// The socket this strip was connected on was closed or replaced by someone else: the helper took that as its
+    /// client leaving and handed every fan back. Treated exactly as the helper going away; the ordinary reconnect
+    /// then finds it again with nothing held. Resets this strip caused itself (its own release, its own connect)
+    /// are taken in without that.
+    ///
+    /// With Charge Control never switched on, the only resets are this strip's own and a socket that died under a
+    /// failed command, which the next ping would have reported as the helper gone anyway.
+    private func noticeResets() {
+        guard link.resets != seenResets else { return }
+        seenResets = link.resets
+        guard case .connected = session.helper else { return }
+        linkAnswered(.notRunning)
+    }
+
     private func linkAnswered(_ status: FanControlLink.Status) {
+        // News about the socket from before this answer comes first.
+        noticeResets()
         // While a helper is being started by hand, "nothing is listening" is not
         // news — it is what waiting looks like. Only a connection or a refusal
         // ends the wait, so a slow password prompt does not throw away the
@@ -273,6 +307,8 @@ final class FanControlPanel: NSView {
             self.say(reply.message)
             self.render()
         }
+        // This strip's own "release everything" counts as a reset for Charge Control, not for this strip.
+        if case .releaseAll = command { seenResets = link.resets }
     }
 
     // ── Gestures ────────────────────────────────────────────────────────────
@@ -313,7 +349,7 @@ final class FanControlPanel: NSView {
         // not silently do nothing just because the feature ships off. The sheet
         // is the same one the "Turn On" button shows, because it is the same
         // decision.
-        if !Settings.shared.fanControlEnabled {
+        if !settings.fanControlEnabled {
             if case .release = g { return render() }
             // THE ASKED-FOR SPEED IS HELD ACROSS THE SHEET.
             //
@@ -360,15 +396,15 @@ final class FanControlPanel: NSView {
     /// exactly once for the lot: per-gesture, a two-fan machine would put up two
     /// sheets, and cancelling the first would be answered by the second.
     private func ensureFanControlIsOn() -> Bool {
-        guard !Settings.shared.fanControlEnabled else { return true }
+        guard !settings.fanControlEnabled else { return true }
         // Read once is read. The disclosure explains what the helper is; the thing
         // that actually gates it is the Terminal window and the password, and this
         // does not touch either. Someone adjusting fans daily should not be made
         // to re-read it daily.
-        if !Settings.shared.fanDisclosureSeen {
+        if !settings.fanDisclosureSeen {
             guard confirmTurnOn() else { return false }
         }
-        Settings.shared.fanControlEnabled = true
+        settings.fanControlEnabled = true
         session.enabled = true
         return true
     }
@@ -486,7 +522,7 @@ final class FanControlPanel: NSView {
         // Only when they said YES. Ticking the box and then cancelling is not
         // consent to skip the explanation next time — it is a cancel.
         if agreed, alert.suppressionButton?.state == .on {
-            Settings.shared.fanDisclosureSeen = true
+            settings.fanDisclosureSeen = true
         }
         return agreed
     }
@@ -495,12 +531,13 @@ final class FanControlPanel: NSView {
         // Release before disconnecting rather than relying on the dead man's
         // switch: the user asked for this one, so it should be reported.
         perform(session.apply(.release))
-        Settings.shared.fanControlEnabled = false
+        settings.fanControlEnabled = false
         session.enabled = false
         endPolling()
         // Closes the socket only if Charge Control is not holding it; the
         // release above has already handed the fans back either way.
         link.release(.fans)
+        seenResets = link.resets
         session.helperBecame(.absent)
         render()
     }
@@ -529,33 +566,53 @@ final class FanControlPanel: NSView {
         return bundle.appendingPathComponent("Contents/MacOS/AnodeHelper").path
     }
 
+    /// Where an install was started.
+    enum InstallOrigin {
+        /// This strip's own button.
+        case fansTab
+        /// Charge Control's "Install Helper…" in Beta Features.
+        case chargeControl
+    }
+
     /// The install flow for a caller outside the Fans tab: Charge Control's "Install Helper…" in Beta Features.
     /// The same confirmation and authorisation as this strip's own button; what it says, it says here.
-    func installHelper() { installTapped() }
+    func installHelper() { install(from: .chargeControl) }
 
-    @objc private func installTapped() {
+    @objc private func installTapped() { install(from: .fansTab) }
+
+    private func install(from origin: InstallOrigin) {
         guard !elevating else { return say("Finish the authorisation already on screen.") }
         guard let helper = Self.bundledHelper() else {
             return say("Only a bundled build can be installed. Run ./build-app.sh "
                      + "and open ~/Applications/Anode.app.")
         }
-        guard confirmInstall(helper: helper) else { return }
+        guard confirmInstall(helper: helper, origin: origin) else { return }
+        let done = origin == .fansTab
+            ? "Fan control is installed and ON. Drag a slider or press ❄︎ to "
+                + "take a fan. It keeps working after you rebuild and after a "
+                + "reboot, with no more prompts."
+            : "The Anode helper is installed. Fan control is as it was."
         elevate(command: FanElevation.installCommand(helper: helper, ownerUID: getuid()),
                 prompt: FanElevation.installPrompt,
                 waiting: "Waiting for authorisation…",
-                done: "Fan control is installed and ON. Drag a slider or press ❄︎ to "
-                    + "take a fan. It keeps working after you rebuild and after a "
-                    + "reboot, with no more prompts.",
-                onSuccess: { panel in
-                    // Installing IS the request for fan control. Nobody authorises a
-                    // root helper for a feature they then want left off, and leaving
-                    // it off here was a dead end: the strip said "Fan control is
-                    // installed", the setting stayed false, so `upkeep` never
-                    // connected, launchd was never contacted, the helper never
-                    // started, and the fans sat at 0 with nothing to say why.
-                    Settings.shared.fanControlEnabled = true
-                    panel.session.enabled = true
-                })
+                done: done,
+                onSuccess: { panel in panel.installSucceeded(from: origin) })
+    }
+
+    /// What a finished install does besides installing. Internal for the tests.
+    ///
+    /// From Charge Control, nothing: that install was asked for to set limits and discharge, and fan control stays
+    /// as it was.
+    func installSucceeded(from origin: InstallOrigin) {
+        guard origin == .fansTab else { return }
+        // From this strip, installing IS the request for fan control. Nobody
+        // authorises a root helper for a feature they then want left off, and
+        // leaving it off here was a dead end: the strip said "Fan control is
+        // installed", the setting stayed false, so `upkeep` never connected,
+        // launchd was never contacted, the helper never started, and the fans
+        // sat at 0 with nothing to say why.
+        settings.fanControlEnabled = true
+        session.enabled = true
     }
 
     @objc private func uninstallTapped() {
@@ -587,6 +644,7 @@ final class FanControlPanel: NSView {
         let link = self.link
         link.release(.fans)
         link.suspend()
+        seenResets = link.resets
         session.helperBecame(.absent)
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let result = FanElevation.run(command: command, prompt: prompt)
@@ -620,9 +678,16 @@ final class FanControlPanel: NSView {
     /// The disclosure, shown before the system's own dialog. See the note at the
     /// top of this file: the objection to a password box is that it names
     /// nothing, so this names everything.
-    private func confirmInstall(helper: String) -> Bool {
+    private func confirmInstall(helper: String, origin: InstallOrigin) -> Bool {
+        Self.installAlert(helper: helper, origin: origin).runModal() == .alertFirstButtonReturn
+    }
+
+    /// The confirmation, built and not shown. Internal for the tests.
+    static func installAlert(helper: String, origin: InstallOrigin) -> NSAlert {
         let alert = NSAlert()
-        alert.messageText = "Install the fan helper?"
+        // From Charge Control it is the same helper, asked for something other than fans; the body below lists
+        // everything it can do.
+        alert.messageText = origin == .fansTab ? "Install the fan helper?" : "Install the Anode helper?"
         // In PowerKit so a test holds it to the helper's whole vocabulary — the
         // installed helper also sets the charge limit and cuts the charger.
         alert.informativeText = FanElevation.installDisclosure
@@ -635,7 +700,7 @@ final class FanControlPanel: NSView {
         alert.accessoryView = command
         alert.addButton(withTitle: "Install")
         alert.addButton(withTitle: "Cancel")
-        return alert.runModal() == .alertFirstButtonReturn
+        return alert
     }
 
     // ── Rendering ───────────────────────────────────────────────────────────
@@ -648,7 +713,7 @@ final class FanControlPanel: NSView {
         syncToggle.isHidden = !installed || usable.count < 2 || FanGauge.sharedLimits(usable.map {
             FanPolicy.Limits(minRPM: $0.minRPM, maxRPM: $0.maxRPM)
         }) == nil
-        syncToggle.state = Settings.shared.fanSyncEnabled ? .on : .off
+        syncToggle.state = settings.fanSyncEnabled ? .on : .off
         syncToggle.contentTintColor = Palette.dim
 
         // NO CONTROL INTERFACE WITHOUT THE HELPER.
@@ -808,7 +873,7 @@ final class FanControlPanel: NSView {
     /// is always refused is worse than none.
     private func drivable(_ fans: [FanInfo]) -> (fans: [FanInfo], shared: FanPolicy.Limits?) {
         let usable = fans.filter { $0.maxRPM > $0.minRPM && $0.minRPM > 0 }
-        guard Settings.shared.fanSyncEnabled, usable.count > 1 else { return (usable, nil) }
+        guard settings.fanSyncEnabled, usable.count > 1 else { return (usable, nil) }
         // Not "sync is on" — sync is on AND these fans have a speed in common. A
         // machine whose fans do not overlap splits the strip back apart on its
         // own rather than offering a knob half of them would refuse.
@@ -985,7 +1050,7 @@ final class FanControlPanel: NSView {
     @objc private func syncToggled() {
         // A view preference. It releases nothing and asks the helper for nothing:
         // the fans stay exactly where they are and the strip redraws around them.
-        Settings.shared.fanSyncEnabled = syncToggle.state == .on
+        settings.fanSyncEnabled = syncToggle.state == .on
         render()
     }
 

@@ -489,6 +489,123 @@ final class ChargeControlConnectionTests: XCTestCase {
     }
 }
 
+/// The Fans tab on the shared connection: when someone else replaced or closed the socket, the helper has handed the
+/// fans back, and the strip must stop claiming them.
+///
+/// The panel is built on a test `Settings` and a `HelperConnection` over a scripted wire; nothing reaches the real
+/// helper, the real preferences, or an install dialog.
+final class FanPanelSharingTests: XCTestCase {
+
+    private var defaults: UserDefaults!
+    private var suiteName: String!
+    private var settings: Settings!
+    private var wire: ScriptedWire!
+    private var connection: HelperConnection!
+    private let fans = [FanInfo(index: 0, currentRPM: 2317, minRPM: 2317, maxRPM: 7826, targetRPM: 2317)]
+    private let limits = FanPolicy.Limits(minRPM: 2317, maxRPM: 7826)
+
+    override func setUpWithError() throws {
+        _ = NSApplication.shared
+        (defaults, suiteName) = try TestDefaults.make(owner: "FanPanelSharing", test: name)
+        settings = Settings(defaults: defaults)
+        wire = ScriptedWire()
+        wire.answerAtOnce = .connected(fanCount: 1, version: 2)
+        wire.pingStatus = .connected(fanCount: 1, version: 2)
+        connection = HelperConnection(wire: wire)
+    }
+
+    override func tearDownWithError() throws {
+        connection.release(.fans)
+        connection.release(.charge)
+        settings = nil
+        TestDefaults.destroy(defaults, suiteName)
+    }
+
+    /// A strip with fan control on, connected through the shared connection, holding fan 0.
+    private func panelHoldingAFan() -> FanControlPanel {
+        settings.fanControlEnabled = true
+        let panel = FanControlPanel(frame: NSRect(x: 0, y: 0, width: 420, height: 200),
+                                    settings: settings, link: connection)
+        panel.update(fans: fans)   // not connected yet: connects
+        guard case .connected = panel.session.helper else {
+            XCTFail("the strip did not connect: \(panel.session.helper)")
+            return panel
+        }
+        var s = panel.session
+        _ = s.apply(.setSpeed(index: 0, rpm: 5000, limits: limits))
+        panel.session = s
+        XCTAssertTrue(panel.isDriving)
+        return panel
+    }
+
+    /// Fans held, Fans tab closed. The helper drops the socket; Charge Control opens a new one, and the helper has
+    /// released the fans with the old one. The Fans tab opens: its hello answers on the new socket. The strip must
+    /// not go on claiming the fan.
+    func testASocketReplacedBySomeoneElseHandsTheFansBack() {
+        let panel = panelHoldingAFan()
+        wire.disconnect()   // the helper went away under the open socket
+        connection.connect(for: .charge) { _ in }   // Charge Control's next connect opens a new one
+        connection.release(.charge)
+        panel.update(fans: fans)
+        XCTAssertFalse(panel.isDriving, "the strip still claims a fan the helper handed back")
+        XCTAssertTrue(panel.session.held.isEmpty)
+    }
+
+    /// Charge Control greeting the helper over the socket the strip holds, and letting go of it, changes nothing.
+    func testChargeControlSharingTheSocketKeepsTheFansHeld() {
+        let panel = panelHoldingAFan()
+        connection.connect(for: .charge) { _ in }
+        connection.release(.charge)
+        panel.update(fans: fans)
+        panel.update(fans: fans)
+        XCTAssertTrue(panel.isDriving, "the strip let go of a fan nobody released")
+        XCTAssertEqual(panel.session.held[0], 5000)
+    }
+
+    /// Without Charge Control, nothing changes: a strip left alone keeps its fan.
+    func testWithoutChargeControlTheStripKeepsItsFan() {
+        let panel = panelHoldingAFan()
+        for _ in 0..<3 { panel.update(fans: fans) }
+        XCTAssertTrue(panel.isDriving)
+        XCTAssertEqual(wire.connectsAsked, 1)
+    }
+
+    // ── Installing from Charge Control ──────────────────────────────────────
+
+    /// "Install Helper…" in Charge Control installs the helper; it is not a request for fan control.
+    func testAnInstallFromChargeControlDoesNotTurnFanControlOn() {
+        settings.fanControlEnabled = false
+        let panel = FanControlPanel(frame: NSRect(x: 0, y: 0, width: 420, height: 200),
+                                    settings: settings, link: connection)
+        panel.installSucceeded(from: .chargeControl)
+        XCTAssertFalse(settings.fanControlEnabled, "installing for Charge Control turned fan control on")
+        XCTAssertFalse(panel.session.enabled)
+    }
+
+    /// The Fans tab's own install still is.
+    func testAnInstallFromTheFansTabTurnsFanControlOn() {
+        settings.fanControlEnabled = false
+        let panel = FanControlPanel(frame: NSRect(x: 0, y: 0, width: 420, height: 200),
+                                    settings: settings, link: connection)
+        panel.installSucceeded(from: .fansTab)
+        XCTAssertTrue(settings.fanControlEnabled)
+        XCTAssertTrue(panel.session.enabled)
+    }
+
+    /// The confirmation names the helper; from Charge Control it does not call it the fan helper. The body lists
+    /// everything the helper can do either way.
+    func testTheConfirmationFromChargeControlIsNotAboutFans() {
+        let charge = FanControlPanel.installAlert(helper: "/Applications/Anode.app/Contents/MacOS/AnodeHelper",
+                                                  origin: .chargeControl)
+        XCTAssertFalse(charge.messageText.localizedCaseInsensitiveContains("fan"), charge.messageText)
+        XCTAssertTrue(charge.messageText.contains("Anode helper"), charge.messageText)
+        XCTAssertTrue(charge.informativeText.contains("set the macOS charge limit"), charge.informativeText)
+        XCTAssertTrue(charge.informativeText.contains("cut the charger"), charge.informativeText)
+        let fansTab = FanControlPanel.installAlert(helper: "/x", origin: .fansTab)
+        XCTAssertEqual(fansTab.messageText, "Install the fan helper?")
+    }
+}
+
 /// A wire that answers connects only when told to (or at once, with `answerAtOnce`), and records what it sent.
 final class ScriptedWire: HelperWire {
     private(set) var sent: [FanCommand] = []
