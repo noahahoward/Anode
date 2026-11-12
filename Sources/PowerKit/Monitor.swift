@@ -628,6 +628,9 @@ public final class PowerMonitor {
     /// learner and the published target are told the same thing. See
     /// `ChargeLimitLearner.observe` and `ChargeTarget.limit`.
     private let chargeControlLimit: () -> Int?
+    /// False where a hold the monitor cannot rule out would be taken for the Mac's own limit: the learner is then
+    /// stood down altogether. See `forCommandLine`.
+    public let learnsChargeLimit: Bool
 
     public var ioReportAvailable: Bool { ioreport != nil }
 
@@ -637,11 +640,36 @@ public final class PowerMonitor {
     /// `chargeTarget` is that limit rather than anything learned. It defaults to
     /// "off", which is right for anything that has no Charge Control — the CLI,
     /// and tests.
-    public init?(scale: BatteryScale? = nil, chargeControlLimit: @escaping () -> Int? = { nil }) {
+    public init?(scale: BatteryScale? = nil, chargeControlLimit: @escaping () -> Int? = { nil },
+                 learnsChargeLimit: Bool = true) {
         guard let s = scale ?? Battery.scale() else { return nil }
         self.scale = s
         self.chargeControlLimit = chargeControlLimit
+        self.learnsChargeLimit = learnsChargeLimit
         self.lastPublished = PowerTelemetry.sample()
+    }
+
+    /// The monitor for a process that is not the app, which has no Charge Control of its own while the app's may be
+    /// holding the battery below the Mac's limit. Left at "off" it took any hold of five minutes or more for a limit
+    /// macOS enforces, and remembered it (and so showed a wrong "charging to" figure later). It reads whether the
+    /// app's Charge Control is on, and its limit, from the app's settings (`defaults`: that domain), on each tick.
+    ///
+    /// Where those cannot be read reliably it learns nothing at all: there is no settings domain, or the process runs
+    /// as root (`effectiveUID` 0), which reads root's settings and not the person's, so the app's Charge Control would
+    /// read as off however it is set. `defaults` and `effectiveUID` are parameters for the tests.
+    public static func forCommandLine(scale: BatteryScale? = nil,
+                                      defaults: UserDefaults? = UserDefaults(suiteName: Settings.suiteName),
+                                      effectiveUID: uid_t = geteuid()) -> PowerMonitor? {
+        guard let defaults, effectiveUID != 0 else {
+            return PowerMonitor(scale: scale, chargeControlLimit: { nil }, learnsChargeLimit: false)
+        }
+        return PowerMonitor(scale: scale, chargeControlLimit: { Settings.chargeControlLimit(in: defaults) })
+    }
+
+    /// The learner is told not to learn from this tick's state: Charge Control holds the charge, or this monitor
+    /// cannot tell whether it does.
+    static func learnerStandsDown(chargeControlLimit: Int?, learnsChargeLimit: Bool) -> Bool {
+        chargeControlLimit != nil || !learnsChargeLimit
     }
 
     /// Awake seconds since boot.
@@ -933,7 +961,8 @@ public final class PowerMonitor {
         let chargeControlNow = self.chargeControlLimit()
         if let b = battery {
             chargeLimits.observe(b, percent: scale.chargePercent(b),
-                                 anodeHolding: chargeControlNow != nil)
+                                 anodeHolding: Self.learnerStandsDown(chargeControlLimit: chargeControlNow,
+                                                                      learnsChargeLimit: learnsChargeLimit))
         }
 
         let usbMeasured = usbTracker.measuredWatts

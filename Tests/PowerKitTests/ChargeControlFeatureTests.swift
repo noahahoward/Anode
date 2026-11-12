@@ -51,7 +51,9 @@ final class ChargeControlFeatureTests: XCTestCase {
                                           helper: helper,
                                           battery: { [weak self] in self?.battery },
                                           chargerSwitch: { nil },
-                                          log: { _ in })
+                                          log: { _ in },
+                                          noClientBecause: { ChargeController.NoClientReason(unsupportedMac: true,
+                                                                                            step: nil) })
         }
         let c = controller
         let f = ChargeControlFeature(settings: settings, controller: { c },
@@ -290,7 +292,8 @@ final class ChargeControlFeatureTests: XCTestCase {
                     ChargeController.helperOutdatedText] {
             XCTAssertEqual(text(.needsHelper(msg)), msg)
         }
-        for msg in [ChargeController.unavailableText, ChargeController.unreadableText, ChargeController.noBatteryText] {
+        for msg in [ChargeController.unavailableText, ChargeController.clientMissingText,
+                    ChargeController.unreadableText, ChargeController.noBatteryText] {
             XCTAssertEqual(text(.unavailable(msg)), msg)
         }
         let refusal = ChargeController.dischargeRefusedText("this Mac cannot warn the helper before it sleeps")
@@ -813,7 +816,8 @@ final class ChargeControlFeatureTests: XCTestCase {
                 }
             }
         }
-        shown += [ChargeController.unavailableText, ChargeController.unreadableText, ChargeController.noBatteryText,
+        shown += [ChargeController.unavailableText, ChargeController.clientMissingText,
+                  ChargeController.unreadableText, ChargeController.noBatteryText,
                   ChargeController.limitNeedsHelperText, ChargeController.dischargeNeedsHelperText,
                   ChargeController.helperOutdatedText,
                   ChargeController.dischargeRefusedText("the charger may still be cut off from an earlier failure"),

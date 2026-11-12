@@ -31,6 +31,9 @@ final class ChargeControllerTests: XCTestCase {
     /// Stands in for NSWorkspace's notification center, so a test can say the Mac sleeps or the account is switched.
     private var center: NotificationCenter!
     private var limitInForce: ChargeLimitInForce!
+    /// Why `makeClient` gave nothing, when `clientToMake` is nil. The tests that say only "no client" mean a Mac that
+    /// is too old for it.
+    private var noClientReason = ChargeController.NoClientReason(unsupportedMac: true, step: nil)
 
     override func setUpWithError() throws {
         (defaults, suiteName) = try TestDefaults.make(owner: "ChargeController", test: name)
@@ -59,8 +62,8 @@ final class ChargeControllerTests: XCTestCase {
     // ── Helpers ─────────────────────────────────────────────────────────────
 
     static func state(_ percent: Int, ac: Bool = true, adapter: Bool? = nil,
-                      temperature: Double? = nil) -> Battery.State {
-        var s = Battery.State(percent: percent, isCharging: false, onAC: ac, cycleCount: 100,
+                      temperature: Double? = nil, charging: Bool = false) -> Battery.State {
+        var s = Battery.State(percent: percent, isCharging: charging, onAC: ac, cycleCount: 100,
                               voltage_mV: 12_000, amperage_mA: 0, remainingCapacity_mAh: 4_000,
                               timeRemaining_min: nil)
         s.adapterPresent = adapter ?? ac
@@ -85,7 +88,11 @@ final class ChargeControllerTests: XCTestCase {
                                  },
                                  log: { [weak self] in self?.lines.append($0) },
                                  workspace: center, limitInForce: limitInForce, startDelay: startDelay,
-                                 liftedAtLaunch: liftedAtLaunch)
+                                 liftedAtLaunch: liftedAtLaunch,
+                                 noClientBecause: { [weak self] in
+                                     self?.noClientReason ?? ChargeController.NoClientReason(unsupportedMac: true,
+                                                                                            step: nil)
+                                 })
         controller = c
         return c
     }
@@ -3598,6 +3605,92 @@ final class ChargeControllerTests: XCTestCase {
         c.recheckHelper()
         XCTAssertNil(c.offWarning)
         XCTAssertFalse(settings.chargeCutUnconfirmed)
+    }
+
+    // ── Why there is no client ──────────────────────────────────────────────
+
+    /// "Needs macOS 26.4 or later on Apple silicon" was said whenever the client could not be made, which is any failed
+    /// framework, class, method or signature check, not only an old macOS. It is said only for a Mac that is too old.
+    func testNoClientOnAnOldMacSaysItNeedsANewerMacOS() {
+        clientToMake = nil
+        noClientReason = .init(unsupportedMac: true, step: nil)
+        let c = make()
+        XCTAssertEqual(c.status, .unavailable(ChargeController.unavailableText))
+    }
+
+    func testNoClientOnAMacThatFitsSaysSoInPlainWordsAndLogsTheStepOnce() {
+        clientToMake = nil
+        noClientReason = .init(unsupportedMac: false, step: "the method setMCLLimit:error: is not there")
+        let c = make()
+        XCTAssertEqual(c.status, .unavailable(ChargeController.clientMissingText))
+        XCTAssertFalse(ChargeController.clientMissingText.contains("26.4"), ChargeController.clientMissingText)
+        let said = lines.filter { $0.contains("the method setMCLLimit:error: is not there") }
+        XCTAssertEqual(said.count, 1, lines.joined(separator: "\n"))
+        XCTAssertFalse(said[0].contains("older than macOS 26.4"), said[0])
+        // Switched off and on again: the same news is not said again.
+        settings.chargeControlEnabled = false
+        settings.chargeControlEnabled = true
+        XCTAssertEqual(lines.filter { $0.contains("setMCLLimit:error:") }.count, 1, lines.joined(separator: "\n"))
+        XCTAssertEqual(c.status, .unavailable(ChargeController.clientMissingText))
+    }
+
+    func testTheLogSaysWhenTheMacIsTooOld() {
+        clientToMake = nil
+        noClientReason = .init(unsupportedMac: true, step: "the framework /x did not load")
+        _ = make()
+        XCTAssertTrue(lines.contains { $0.contains("older than macOS 26.4") && $0.contains("did not load") },
+                      lines.joined(separator: "\n"))
+    }
+
+    func testWhichMacsFitChargeControl() {
+        func fits(_ major: Int, _ minor: Int, silicon: Bool = true) -> Bool {
+            ChargeController.osFitsChargeControl(OperatingSystemVersion(majorVersion: major, minorVersion: minor,
+                                                                         patchVersion: 0), appleSilicon: silicon)
+        }
+        XCTAssertFalse(fits(15, 6))
+        XCTAssertFalse(fits(26, 0))
+        XCTAssertFalse(fits(26, 3))
+        XCTAssertTrue(fits(26, 4))
+        XCTAssertTrue(fits(26, 5))
+        XCTAssertTrue(fits(27, 0))
+        XCTAssertFalse(fits(27, 0, silicon: false), "an Intel Mac is not one it needs")
+        XCTAssertFalse(fits(26, 4, silicon: false))
+    }
+
+    // ── Reconnecting, until charging resumes ────────────────────────────────
+
+    /// The line said "Reconnecting the charger…" for a fixed 90 s after a discharge ended below the limit; charging was
+    /// measured to resume after about 55 s. Once the battery reports charging the line goes, and does not come back
+    /// for the rest of the 90 s if charging stops again (at the limit, say).
+    func testReconnectingEndsWhenChargingResumes() throws {
+        battery = Self.state(90)
+        let c = make()
+        c.pressDischarge()
+        battery = Self.state(79)
+        c.tick()
+        XCTAssertNotNil(c.chargerReconnectTimeLeft(), "the discharge ended with the cable in")
+        var heard = 0
+        let token = c.observeChanges { heard += 1 }
+        battery = Self.state(79, charging: true)
+        c.tick()
+        XCTAssertNil(c.chargerReconnectTimeLeft(now: Date().addingTimeInterval(55)), "charging has resumed")
+        XCTAssertGreaterThan(heard, 0, "the section was not told")
+        battery = Self.state(79, charging: false)
+        c.tick()
+        XCTAssertNil(c.chargerReconnectTimeLeft(now: Date().addingTimeInterval(60)),
+                     "charging resumed and stopped again: it is not reconnecting")
+        withExtendedLifetime(token) {}
+    }
+
+    /// While macOS says it is not charging, the clock still rules.
+    func testReconnectingGoesOnWhileNotChargingForNinetySeconds() throws {
+        battery = Self.state(90)
+        let c = make()
+        c.pressDischarge()
+        battery = Self.state(79, charging: false)
+        c.tick()
+        XCTAssertNotNil(c.chargerReconnectTimeLeft(now: Date().addingTimeInterval(55)))
+        XCTAssertNil(c.chargerReconnectTimeLeft(now: Date().addingTimeInterval(91)))
     }
 }
 

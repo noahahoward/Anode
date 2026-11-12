@@ -55,8 +55,8 @@ public enum NativeChargeLimit {
 /// way the probes did. Before a cast the method's runtime type encoding must equal the one
 /// measured: a signature that changed in a later macOS would otherwise be called with the wrong
 /// arguments, and one of these calls changes the charge limit. A framework, class, selector or
-/// encoding that is not exactly what was measured makes `init?` return nil. Charge Control then
-/// reads as unavailable; it never crashes.
+/// encoding that is not exactly what was measured makes `make()` return nil, and says which step failed
+/// (`lastFailure`). Charge Control then reads as unavailable; it never crashes.
 ///
 /// The `NSError **` argument is a raw pointer slot on purpose. The OS stores an autoreleased error
 /// there; a Swift `NSError?` variable would release that error again and over-release it.
@@ -90,24 +90,95 @@ public final class PowerUIChargeClient: ChargeLimitClient {
     private let enableOptimized: Call<Action>
     private let disableOptimized: Call<Action>
 
-    public init?() {
-        guard dlopen(Self.frameworkPath, RTLD_NOW) != nil,
-              let cls = NSClassFromString(Self.className) as? NSObject.Type,
-              let initWithName = Self.bind(cls, "initWithClientName:", "@24@0:8@16", InitWithName.self),
-              let getLimit = Self.bind(cls, "getMCLLimitWithError:", "C24@0:8^@16", GetUInt8.self),
-              let isLimitEnabled = Self.bind(cls, "isMCLCurrentlyEnabled:", "Q24@0:8^@16", GetUInt64.self),
-              let setLimitValue = Self.bind(cls, "setMCLLimit:error:", "B28@0:8C16^@20", SetUInt8.self),
-              let enableLimit = Self.bind(cls, "enableMCL:", "B24@0:8^@16", Action.self),
-              let disableLimit = Self.bind(cls, "disableMCL:", "B24@0:8^@16", Action.self),
-              let isOptimizedEnabled = Self.bind(cls, "isSmartChargingCurrentlyEnabled:", "Q24@0:8^@16", GetUInt64.self),
-              let enableOptimized = Self.bind(cls, "enableSmartCharging:", "B24@0:8^@16", Action.self),
-              let disableOptimized = Self.bind(cls, "disableSmartCharging:", "B24@0:8^@16", Action.self),
-              // +alloc hands back an owned object and -init passes that ownership on, so the
-              // result is adopted as retained.
-              let allocated = cls.perform(NSSelectorFromString("alloc"))?.takeUnretainedValue(),
-              let made = initWithName.function(allocated, initWithName.selector, Self.clientName as NSString)?.takeRetainedValue()
-        else { return nil }
-        self.object = made
+    /// Which step of opening the client failed, in a sentence for the charge log. Nothing in it is shown to the
+    /// person: the section says only whether the Mac is too old (`ChargeController.unavailableText`) or not.
+    public struct OpenFailure: Error, Equatable, CustomStringConvertible {
+        public let description: String
+    }
+
+    /// Why the last `make()` returned nil; nil after one that worked. Read by whoever has to say why Charge Control is
+    /// unavailable (it is not an old macOS every time).
+    public static var lastFailure: String? {
+        failureLock.lock()
+        defer { failureLock.unlock() }
+        return recordedFailure
+    }
+    private static let failureLock = NSLock()
+    private static var recordedFailure: String?
+
+    /// The real client, or nil, with the reason in `lastFailure`.
+    public static func make() -> PowerUIChargeClient? {
+        let result = open()
+        failureLock.lock()
+        defer { failureLock.unlock() }
+        switch result {
+        case .success(let client):
+            recordedFailure = nil
+            return client
+        case .failure(let why):
+            recordedFailure = why.description
+            return nil
+        }
+    }
+
+    /// `frameworkPath` and `className` are parameters for the tests, which point them at things that are not there (or
+    /// at a class whose methods differ) to see each step report itself; nothing else passes them.
+    static func open(frameworkPath: String = PowerUIChargeClient.frameworkPath,
+                     className: String = PowerUIChargeClient.className) -> Result<PowerUIChargeClient, OpenFailure> {
+        func fail<T>(_ why: String) -> Result<T, OpenFailure> { .failure(OpenFailure(description: why)) }
+        guard dlopen(frameworkPath, RTLD_NOW) != nil else { return fail("the framework \(frameworkPath) did not load") }
+        guard let cls = NSClassFromString(className) as? NSObject.Type else {
+            return fail("the class \(className) is not there")
+        }
+        // A selector is bound only when it is there and its encoding is exactly the measured one.
+        func bind<Fn>(_ name: String, _ encoding: String, _ type: Fn.Type) -> Result<Call<Fn>, OpenFailure> {
+            let selector = NSSelectorFromString(name)
+            guard let method = class_getInstanceMethod(cls, selector) else {
+                return fail("the method \(name) is not there")
+            }
+            guard let found = method_getTypeEncoding(method), String(cString: found) == encoding else {
+                let was = method_getTypeEncoding(method).map { String(cString: $0) } ?? "none"
+                return fail("the method \(name) takes a different signature than the one measured (\(was), "
+                            + "expected \(encoding))")
+            }
+            return .success(Call(selector: selector, function: unsafeBitCast(method_getImplementation(method), to: type)))
+        }
+        var failure: OpenFailure?
+        func get<Fn>(_ result: Result<Call<Fn>, OpenFailure>) -> Call<Fn>? {
+            switch result {
+            case .success(let call): return call
+            case .failure(let why):
+                failure = failure ?? why
+                return nil
+            }
+        }
+        // Each step stops the chain at the first that fails, which is the one reported.
+        guard let initWithName = get(bind("initWithClientName:", "@24@0:8@16", InitWithName.self)),
+              let getLimit = get(bind("getMCLLimitWithError:", "C24@0:8^@16", GetUInt8.self)),
+              let isLimitEnabled = get(bind("isMCLCurrentlyEnabled:", "Q24@0:8^@16", GetUInt64.self)),
+              let setLimitValue = get(bind("setMCLLimit:error:", "B28@0:8C16^@20", SetUInt8.self)),
+              let enableLimit = get(bind("enableMCL:", "B24@0:8^@16", Action.self)),
+              let disableLimit = get(bind("disableMCL:", "B24@0:8^@16", Action.self)),
+              let isOptimizedEnabled = get(bind("isSmartChargingCurrentlyEnabled:", "Q24@0:8^@16", GetUInt64.self)),
+              let enableOptimized = get(bind("enableSmartCharging:", "B24@0:8^@16", Action.self)),
+              let disableOptimized = get(bind("disableSmartCharging:", "B24@0:8^@16", Action.self))
+        else { return .failure(failure ?? OpenFailure(description: "a method of \(className) did not bind")) }
+        // +alloc hands back an owned object and -init passes that ownership on, so the
+        // result is adopted as retained.
+        guard let allocated = cls.perform(NSSelectorFromString("alloc"))?.takeUnretainedValue(),
+              let made = initWithName.function(allocated, initWithName.selector, Self.clientName as NSString)?
+                  .takeRetainedValue()
+        else { return fail("the class \(className) could not make a client") }
+        return .success(PowerUIChargeClient(object: made, getLimit: getLimit, isLimitEnabled: isLimitEnabled,
+                                            setLimitValue: setLimitValue, enableLimit: enableLimit,
+                                            disableLimit: disableLimit, isOptimizedEnabled: isOptimizedEnabled,
+                                            enableOptimized: enableOptimized, disableOptimized: disableOptimized))
+    }
+
+    private init(object: AnyObject, getLimit: Call<GetUInt8>, isLimitEnabled: Call<GetUInt64>,
+                 setLimitValue: Call<SetUInt8>, enableLimit: Call<Action>, disableLimit: Call<Action>,
+                 isOptimizedEnabled: Call<GetUInt64>, enableOptimized: Call<Action>, disableOptimized: Call<Action>) {
+        self.object = object
         self.getLimit = getLimit
         self.isLimitEnabled = isLimitEnabled
         self.setLimitValue = setLimitValue
@@ -116,15 +187,6 @@ public final class PowerUIChargeClient: ChargeLimitClient {
         self.isOptimizedEnabled = isOptimizedEnabled
         self.enableOptimized = enableOptimized
         self.disableOptimized = disableOptimized
-    }
-
-    private static func bind<Fn>(_ cls: AnyClass, _ name: String, _ encoding: String, _ type: Fn.Type) -> Call<Fn>? {
-        let selector = NSSelectorFromString(name)
-        guard let method = class_getInstanceMethod(cls, selector),
-              let found = method_getTypeEncoding(method),
-              String(cString: found) == encoding
-        else { return nil }
-        return Call(selector: selector, function: unsafeBitCast(method_getImplementation(method), to: type))
     }
 
     public func read() -> NativeChargeState? {

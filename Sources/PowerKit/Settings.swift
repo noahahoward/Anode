@@ -1272,6 +1272,16 @@ public final class Settings {
         return Int(min(max(v, Double(range.lowerBound)), Double(range.upperBound)).rounded())
     }
 
+    /// Whether the app's Charge Control is on, and the limit it holds, as a process that is not the app (the
+    /// command-line tool) can read them: `defaults` is the app's settings domain (`suiteName`). The limit is the
+    /// person's own, which is what Charge Control holds except while a hold (heat, sailing, sleep) or Top Up is in
+    /// force, which only the app knows. nil while it is off (and nothing is stored: off is the default). Read on each
+    /// call, with the same clamping as the app's own read.
+    public static func chargeControlLimit(in d: UserDefaults) -> Int? {
+        guard readBool(d, Key.chargeControlEnabled, Default.chargeControlEnabled) else { return nil }
+        return readInt(d, Key.chargeLimit, Default.chargeLimit, chargeLimitRange)
+    }
+
     private static func readBool(_ d: UserDefaults, _ key: String, _ def: Bool) -> Bool {
         // bool(forKey:) returns false for "absent" — indistinguishable from a
         // stored false, which would break a true default. object(forKey:) doesn't.

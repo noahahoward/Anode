@@ -25,7 +25,33 @@ final class NativeChargeLimitTests: XCTestCase {
     /// Constructing the client only loads the framework and creates the object. Nil (no framework,
     /// class or matching selector on this macOS) is as acceptable as non-nil; a crash is not.
     func testRealClientInitNeverCrashes() {
-        _ = PowerUIChargeClient()
+        _ = PowerUIChargeClient.make()
+    }
+
+    /// Which step failed is said, so that "unavailable" is not taken for "an old macOS" every time.
+    func testOpenSaysWhichStepFailed() {
+        func why(_ r: Result<PowerUIChargeClient, PowerUIChargeClient.OpenFailure>) -> String? {
+            if case .failure(let f) = r { return f.description }
+            return nil
+        }
+        let loadable = "/usr/lib/libSystem.B.dylib"
+        XCTAssertTrue(why(PowerUIChargeClient.open(frameworkPath: "/nonexistent/PowerUI"))?.contains("did not load") == true)
+        XCTAssertTrue(why(PowerUIChargeClient.open(frameworkPath: loadable, className: "NoSuchPowerUIClass"))?
+            .contains("class NoSuchPowerUIClass is not there") == true)
+        // A class that is there and has none of the methods.
+        XCTAssertTrue(why(PowerUIChargeClient.open(frameworkPath: loadable, className: "NSObject"))?
+            .contains("the method initWithClientName: is not there") == true)
+        // A class with the first method and the wrong signature for the next: never bound, since one of these changes
+        // the charge limit and a call with the wrong arguments must not be made.
+        let found = why(PowerUIChargeClient.open(frameworkPath: loadable, className: "AnodeTestPowerUILookalike"))
+        XCTAssertTrue(found?.contains("takes a different signature than the one measured") == true, found ?? "opened")
+    }
+
+    /// `make()` keeps the reason for the last nil, and forgets it after a client.
+    func testMakeKeepsTheReasonForTheLastNil() {
+        let client = PowerUIChargeClient.make()
+        XCTAssertEqual(client == nil, PowerUIChargeClient.lastFailure != nil,
+                       "a reason without a failure, or a failure without one")
     }
 
     /// Later tests rely on the fake having the real client's gate, so a controller that asks for 63 sees
@@ -78,4 +104,13 @@ public final class FakeChargeLimitClient: ChargeLimitClient {
         state?.optimizedChargingEnabled = on
         return true
     }
+}
+
+/// A class with a method of the real client's name and another signature, to see a changed signature refused.
+@objc(AnodeTestPowerUILookalike)
+final class PowerUILookalike: NSObject {
+    @objc(initWithClientName:)
+    init(clientName: NSString) { super.init() }
+    @objc(getMCLLimitWithError:)
+    func getLimit(_ error: UnsafeMutableRawPointer?) -> Int { 0 }
 }

@@ -140,7 +140,12 @@ final class ChargeController {
     /// The running controller, for the Beta Features section to read.
     static weak var current: ChargeController?
 
+    /// Said only when the Mac really is older than macOS 26.4, or is not Apple silicon (`osFitsChargeControl`).
     static let unavailableText = "Needs macOS 26.4 or later on Apple silicon"
+    /// Said when this Mac is new enough and the client still could not be opened (a framework, class or method that is
+    /// not what Anode was written for: macOS changed it). The step that failed goes to the charge log.
+    static let clientMissingText = "Anode could not reach macOS's charge controls on this version of macOS, so "
+        + "Charge Control is unavailable"
     static let unreadableText = "macOS did not report its charge settings, so Charge Control changed nothing"
     static let noBatteryText = "Anode could not read the battery"
     static let limitNeedsHelperText = "Limits other than 80, 85, 90, 95 or 100% need the Anode helper"
@@ -198,6 +203,29 @@ final class ChargeController {
         return inForce.value ?? settings.chargeLimit
     }
 
+    /// Why there is no charge client, for the section and for the log.
+    struct NoClientReason: Equatable {
+        /// This Mac is older than macOS 26.4 or is not Apple silicon, which is what `unavailableText` says.
+        var unsupportedMac: Bool
+        /// The step of opening the client that failed (`PowerUIChargeClient.lastFailure`), for the log.
+        var step: String?
+    }
+
+    /// Charge Control's route to macOS's limit exists from macOS 26.4, on Apple silicon.
+    static func osFitsChargeControl(_ v: OperatingSystemVersion, appleSilicon: Bool) -> Bool {
+        appleSilicon && (v.majorVersion > 26 || (v.majorVersion == 26 && v.minorVersion >= 4))
+    }
+
+    /// The real answer: this Mac's version, and the step that failed. `hw.optional.arm64` is 1 on Apple silicon even
+    /// for a process running translated.
+    static func systemNoClientReason() -> NoClientReason {
+        var arm64: Int32 = 0
+        var size = MemoryLayout<Int32>.size
+        let known = sysctlbyname("hw.optional.arm64", &arm64, &size, nil, 0) == 0
+        let fits = osFitsChargeControl(ProcessInfo.processInfo.operatingSystemVersion, appleSilicon: known && arm64 == 1)
+        return NoClientReason(unsupportedMac: !fits, step: PowerUIChargeClient.lastFailure)
+    }
+
     /// The launch argument `uninstall.sh` runs the app with: put macOS's own charge settings back, with no window,
     /// and exit 0 if nothing of Charge Control's is left in force, 1 if something may be.
     static let restoreArgument = "--restore-charge-settings"
@@ -210,7 +238,7 @@ final class ChargeController {
     /// holds from one that may be left).
     static func restoreForUninstall(settings: Settings,
                                     records: ChargeRecords? = nil,
-                                    makeClient: @escaping () -> ChargeLimitClient? = { PowerUIChargeClient() },
+                                    makeClient: @escaping () -> ChargeLimitClient? = { PowerUIChargeClient.make() },
                                     helper: ChargeHelperLink,
                                     log: @escaping (String) -> Void = { FeatureLog.append("charge.log", $0) }) -> Bool {
         restoreForUninstallOutcome(settings: settings, records: records, makeClient: makeClient, helper: helper,
@@ -232,7 +260,7 @@ final class ChargeController {
     }
 
     static func restoreForUninstallOutcome(settings: Settings, records: ChargeRecords? = nil,
-                                           makeClient: @escaping () -> ChargeLimitClient? = { PowerUIChargeClient() },
+                                           makeClient: @escaping () -> ChargeLimitClient? = { PowerUIChargeClient.make() },
                                            helper: ChargeHelperLink,
                                            log: @escaping (String) -> Void = { FeatureLog.append("charge.log", $0) })
         -> UninstallRestore {
@@ -276,7 +304,7 @@ final class ChargeController {
     /// asked for only when there is work, so `helper` is a closure.
     @discardableResult
     static func liftAtLaunch(settings: Settings = .shared, records: ChargeRecords? = nil,
-                             makeClient: @escaping () -> ChargeLimitClient? = { PowerUIChargeClient() },
+                             makeClient: @escaping () -> ChargeLimitClient? = { PowerUIChargeClient.make() },
                              helper: () -> ChargeHelperLink = { ChargeHelperAdapter() },
                              log: @escaping (String) -> Void = { FeatureLog.append("charge.log", $0) }) -> Bool {
         let records = records ?? ChargeRecords(settings: settings)
@@ -348,6 +376,8 @@ final class ChargeController {
     /// Whether the cable was in at the last tick: on the adapter, or cut off from it by Anode's own discharge
     /// (macOS may then report the Mac on battery, but the adapter is still there). False while off.
     private(set) var isCablePresent = false
+    /// The battery reported charging at the last tick; false while off.
+    private(set) var isCharging = false
     /// The discharge the helper said yes to and has not said it stopped: what is running, not what was asked for.
     var dischargeInForce: Int? { appliedDischarge }
 
@@ -355,6 +385,10 @@ final class ChargeController {
     /// The record of macOS's own settings, shared by every account's Anode on this Mac (`ChargeRecords`).
     private let records: ChargeRecords
     private let makeClient: () -> ChargeLimitClient?
+    /// Asked only when `makeClient` gave nothing. A parameter for the tests.
+    private let noClientBecause: () -> NoClientReason
+    /// The step that failed has been logged in this run: said once, however often Charge Control is switched on.
+    private var saidWhyNoClient = false
     private let helper: ChargeHelperLink
     private let battery: () -> Battery.State?
     /// The byte the Mac's own charger switch holds (`AdapterCutKey`): 0x00 connected, 0x08 Anode's cut. nil when it
@@ -533,16 +567,18 @@ final class ChargeController {
     }
 
     convenience init(settings: Settings, records: ChargeRecords? = nil,
-                     makeClient: @escaping () -> ChargeLimitClient? = { PowerUIChargeClient() },
+                     makeClient: @escaping () -> ChargeLimitClient? = { PowerUIChargeClient.make() },
                      helper: ChargeHelperLink, battery: @escaping () -> Battery.State? = { Battery.state() },
                      chargerSwitch: @escaping () -> UInt8? = ChargeController.systemChargerSwitch(),
                      log: @escaping (String) -> Void = { FeatureLog.append("charge.log", $0) },
                      workspace: NotificationCenter = NSWorkspace.shared.notificationCenter,
                      limitInForce: ChargeLimitInForce = ChargeLimitInForce(),
-                     startDelay: TimeInterval = ChargeController.startDelay, liftedAtLaunch: Bool = false) {
+                     startDelay: TimeInterval = ChargeController.startDelay, liftedAtLaunch: Bool = false,
+                     noClientBecause: @escaping () -> NoClientReason = ChargeController.systemNoClientReason) {
         self.init(settings: settings, records: records ?? ChargeRecords(settings: settings), makeClient: makeClient,
                   helper: helper, battery: battery, chargerSwitch: chargerSwitch, log: log, workspace: workspace,
-                  limitInForce: limitInForce, startDelay: startDelay, liftedAtLaunch: liftedAtLaunch, observing: true)
+                  limitInForce: limitInForce, startDelay: startDelay, liftedAtLaunch: liftedAtLaunch, observing: true,
+                  noClientBecause: noClientBecause)
     }
 
     /// The Mac's own charger switch, read as the person and not through the helper: only writing it needs root
@@ -574,10 +610,12 @@ final class ChargeController {
                  helper: ChargeHelperLink,
                  battery: @escaping () -> Battery.State?, chargerSwitch: @escaping () -> UInt8?,
                  log: @escaping (String) -> Void, workspace: NotificationCenter, limitInForce: ChargeLimitInForce,
-                 startDelay: TimeInterval, liftedAtLaunch: Bool, observing: Bool) {
+                 startDelay: TimeInterval, liftedAtLaunch: Bool, observing: Bool,
+                 noClientBecause: @escaping () -> NoClientReason = ChargeController.systemNoClientReason) {
         self.settings = settings
         self.records = records
         self.makeClient = makeClient
+        self.noClientBecause = noClientBecause
         self.helper = helper
         self.battery = battery
         self.chargerSwitch = chargerSwitch
@@ -633,9 +671,10 @@ final class ChargeController {
     }
 
     /// How much longer macOS may show "not charging" after a discharge ended with the cable in, before it charges
-    /// again; nil when it should not (no discharge ended lately, the cable is out, a discharge runs).
+    /// again; nil when it should not (no discharge ended lately, the cable is out, a discharge runs, or the battery
+    /// reports charging: it resumed, which was measured at about 55 s, so the fixed 90 s is only the longest it waits).
     func chargerReconnectTimeLeft(now: Date = Date()) -> TimeInterval? {
-        guard let ended = dischargeEndedAt, isCablePresent, appliedDischarge == nil else { return nil }
+        guard let ended = dischargeEndedAt, isCablePresent, appliedDischarge == nil, !isCharging else { return nil }
         let left = Self.chargerReconnectTime - now.timeIntervalSince(ended)
         return left > 0 ? left : nil
     }
@@ -650,8 +689,14 @@ final class ChargeController {
         // Not while the delay after an unclean exit runs: that ends in `startNow`, or is cancelled by switching off.
         guard !running, startsAt == nil else { return }
         guard let c = makeClient() else {
-            log("unavailable: the macOS charge limit client is missing on this Mac")
-            return setStatus(.unavailable(Self.unavailableText))
+            let why = noClientBecause()
+            if !saidWhyNoClient {
+                saidWhyNoClient = true
+                log("unavailable: the macOS charge limit client could not be opened"
+                    + (why.unsupportedMac ? " (this Mac is older than macOS 26.4, or is not Apple silicon)" : "")
+                    + (why.step.map { ": \($0)" } ?? ""))
+            }
+            return setStatus(.unavailable(why.unsupportedMac ? Self.unavailableText : Self.clientMissingText))
         }
         // The way back is written down before anything is changed, and flushed: macOS keeps these settings if Anode
         // dies, so the record has to survive a crash in the next few lines. A record that is there already stands, and
@@ -825,6 +870,7 @@ final class ChargeController {
         isTopUpRequested = false
         batteryPercent = nil
         isCablePresent = false
+        isCharging = false
         dischargeEndedAt = nil
         lastRefusal = nil
         lastDrift = nil
@@ -1524,10 +1570,13 @@ final class ChargeController {
         let onAC = b.onAC || b.adapterPresent
         // What the section reads, from the same reading the decision is made from, so the two always agree.
         var announce = false
-        if b.percent != batteryPercent || onAC != isCablePresent {
+        if b.percent != batteryPercent || onAC != isCablePresent || b.isCharging != isCharging {
             batteryPercent = b.percent
             isCablePresent = onAC
+            isCharging = b.isCharging
             if !onAC { dischargeEndedAt = nil }
+            // Charging again is the end of the reconnecting wait, whatever it does after: it is not asked about again.
+            if b.isCharging { dischargeEndedAt = nil }
             announce = true
         }
         let inputs = ChargeInputs(percent: b.percent, onAC: onAC,

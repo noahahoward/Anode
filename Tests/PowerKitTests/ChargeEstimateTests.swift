@@ -520,6 +520,67 @@ final class ChargeEstimateTests: XCTestCase {
         XCTAssertEqual(full, ChargeTarget.Level(percent: 100, isLearnedLimit: false))
     }
 
+    // ── The command-line tool and Charge Control ────────────────────────────
+
+    /// The tool has no Charge Control of its own, but the app's may be holding the battery below the Mac's own limit
+    /// while the tool runs. Left at "off" the tool's learner took a hold of five minutes or more for a limit macOS
+    /// enforces, and remembered it. The tool reads whether the app's Charge Control is on, and its limit, from the
+    /// app's settings (the same domain `Settings` reads).
+    func testTheCommandLineReadsTheAppsChargeControlFromItsSettings() throws {
+        let (d, name) = try TestDefaults.make(owner: "CLICharge", test: self.name)
+        defer { TestDefaults.destroy(d, name) }
+        let app = Settings(defaults: d)
+
+        XCTAssertNil(Settings.chargeControlLimit(in: d), "Charge Control is off by default")
+        app.chargeControlEnabled = true
+        app.chargeLimit = 90
+        XCTAssertEqual(Settings.chargeControlLimit(in: d), 90)
+        app.chargeLimit = 63
+        XCTAssertEqual(Settings.chargeControlLimit(in: d), 63, "read at each tick, not once")
+        app.chargeControlEnabled = false
+        XCTAssertNil(Settings.chargeControlLimit(in: d))
+        // Garbage in the plist (written by hand) is the same clamped number the app reads.
+        d.set(1000, forKey: "anode." + Settings.Key.chargeLimit)
+        app.chargeControlEnabled = true
+        XCTAssertEqual(Settings.chargeControlLimit(in: d), Settings.chargeLimitRange.upperBound)
+    }
+
+    /// The tool's monitor passes that reading on, and stands its learner down while the app's Charge Control is on.
+    func testTheCommandLineMonitorFollowsTheAppsChargeControl() throws {
+        let (d, name) = try TestDefaults.make(owner: "CLICharge", test: self.name)
+        defer { TestDefaults.destroy(d, name) }
+        let app = Settings(defaults: d)
+        app.chargeControlEnabled = true
+        app.chargeLimit = 99
+        let m = try XCTUnwrap(PowerMonitor.forCommandLine(scale: makeExactScale(), defaults: d, effectiveUID: 501))
+        XCTAssertTrue(m.learnsChargeLimit, "a reading that can be trusted needs no blanket stand-down")
+        let snap = try XCTUnwrap(m.tick(full: false, attribution: false))
+        guard let st = snap.state else { throw XCTSkip("no battery on this machine") }
+        try XCTSkipIf(st.isCharging && st.percent >= 99, "charging past the limit takes the overshoot rule")
+        let target = try XCTUnwrap(snap.chargeTarget)
+        XCTAssertTrue(target.isLearnedLimit)
+        XCTAssertEqual(target.percent * snap.scale.gaugeRatio(st), 99, accuracy: 1e-6,
+                       "the tool says what the app holds, not what an earlier run learned")
+    }
+
+    /// A tool that cannot read the app's settings reliably (run as root, it reads root's, not the person's; or no
+    /// settings at all) learns nothing: a hold it cannot tell from the Mac's own limit is never remembered.
+    func testTheCommandLineLearnsNothingWhereItCannotReadTheAppsSettings() throws {
+        let (d, name) = try TestDefaults.make(owner: "CLICharge", test: self.name)
+        defer { TestDefaults.destroy(d, name) }
+        let asRoot = try XCTUnwrap(PowerMonitor.forCommandLine(scale: makeExactScale(), defaults: d, effectiveUID: 0))
+        XCTAssertFalse(asRoot.learnsChargeLimit)
+        let noStore = try XCTUnwrap(PowerMonitor.forCommandLine(scale: makeExactScale(), defaults: nil,
+                                                                effectiveUID: 501))
+        XCTAssertFalse(noStore.learnsChargeLimit)
+        // The learner is stood down for a hold Charge Control is known to have, and for one that cannot be ruled out.
+        XCTAssertTrue(PowerMonitor.learnerStandsDown(chargeControlLimit: 90, learnsChargeLimit: true))
+        XCTAssertTrue(PowerMonitor.learnerStandsDown(chargeControlLimit: nil, learnsChargeLimit: false))
+        XCTAssertTrue(PowerMonitor.learnerStandsDown(chargeControlLimit: 90, learnsChargeLimit: false))
+        XCTAssertFalse(PowerMonitor.learnerStandsDown(chargeControlLimit: nil, learnsChargeLimit: true),
+                       "with Charge Control off the Mac's own limit is still learned")
+    }
+
     /// The limit is worth nothing if it is forgotten at quit: the app is normally
     /// launched into a machine already sitting at its limit, where there is no
     /// stop to observe. Same bargain `USBPowerTracker` makes with device costs.

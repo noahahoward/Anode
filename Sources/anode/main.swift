@@ -57,7 +57,7 @@ guard let scale = Battery.scale(), let state = Battery.state() else {
 
 // ── Metric registry dump ────────────────────────────────────────────────────
 if args.contains("--metrics") {
-    guard let monitor = PowerMonitor(scale: scale) else { exit(1) }
+    guard let monitor = PowerMonitor.forCommandLine(scale: scale) else { exit(1) }
     let sys = SystemMetrics()
     monitor.tick(); _ = sys.sample()          // prime: both need an interval
     Thread.sleep(forTimeInterval: 2.0)
@@ -506,7 +506,7 @@ if args.contains("--netproc") {
 // construction and the two are not measuring the same thing.
 if let i = args.firstIndex(of: "--overflow") {
     let n = args.count > i + 1 ? Int(args[i + 1]) ?? 40 : 40
-    guard let monitor = PowerMonitor(scale: scale) else { exit(1) }
+    guard let monitor = PowerMonitor.forCommandLine(scale: scale) else { exit(1) }
     let dbgSMC = SMC()
     monitor.tick()
     var ratios: [Double] = []
@@ -560,7 +560,7 @@ if let i = args.firstIndex(of: "--overflow") {
 // Ticks the real monitor and prints the named shares of the two anonymous
 // buckets, so the end-to-end path can be verified without the GUI.
 if args.contains("--sysattr") {
-    guard let monitor = PowerMonitor(scale: scale) else { exit(1) }
+    guard let monitor = PowerMonitor.forCommandLine(scale: scale) else { exit(1) }
     // The first tick returns nil (no prior sweep to diff) BEFORE reaching the
     // refresh call, so the rollup is only requested on the second tick and lands
     // asynchronously after it. Three ticks is the shortest honest sequence.
@@ -613,7 +613,7 @@ if args.contains("--sysattr") {
 // ratio, and this mode says so rather than printing a confident number.
 if let i = args.firstIndex(of: "--validate") {
     let mins = args.count > i + 1 ? Double(args[i + 1]) ?? 20 : 20
-    guard let monitor = PowerMonitor(scale: scale) else {
+    guard let monitor = PowerMonitor.forCommandLine(scale: scale) else {
         print("PowerMonitor unavailable"); exit(1)
     }
     let validator = ModelValidator(scale: scale)
@@ -789,7 +789,7 @@ if args.contains("--smc") {
 
 // ── Watch mode ──────────────────────────────────────────────────────────────
 if args.contains("--watch") || args.contains("-f") {
-    guard let monitor = PowerMonitor(scale: scale) else { exit(1) }
+    guard let monitor = PowerMonitor.forCommandLine(scale: scale) else { exit(1) }
     monitor.tick()  // prime
     func p(_ s: String, _ w: Int) -> String {
         s.count >= w ? String(s.prefix(w)) : s + String(repeating: " ", count: w - s.count)
