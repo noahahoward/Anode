@@ -195,13 +195,43 @@ final class ChargeController {
                                     log: @escaping (String) -> Void = { FeatureLog.append("charge.log", $0) }) -> Bool {
         let c = ChargeController(settings: settings, makeClient: makeClient, helper: helper, battery: { nil },
                                  chargerSwitch: { nil }, log: log, workspace: NotificationCenter(),
-                                 limitInForce: ChargeLimitInForce(), startDelay: Self.startDelay, observing: false)
+                                 limitInForce: ChargeLimitInForce(), startDelay: Self.startDelay, liftedAtLaunch: false,
+                                 observing: false)
         c.restoreForUninstall()
         settings.flush()
         let left = settings.chargeRestoreRecord != nil || settings.chargeCutUnconfirmed
         log(left ? "uninstalling: something of Charge Control's may still be in force"
                  : "uninstalling: macOS's own charge settings are back")
         return !left
+    }
+
+    /// The first thing the program does, before `NSApplication` and before anything else of the app is built (see
+    /// `main.swift`): if Charge Control is on and the last run did not quit (a restore record is still there, or a
+    /// start is still pending), write the pending start down, put macOS's own settings back, and log it. True when it
+    /// did. The controller, built much later, is told (`liftedAtLaunch`) and only waits.
+    ///
+    /// It is early on purpose. The controller is made in the middle of `applicationDidFinishLaunching`, after the
+    /// panes, the sampling monitor, the history database and the menu. A relaunch that crashes in any of them every
+    /// time (a state file the dead run left half written) would never reach it, and the limit would stay held by an
+    /// Anode that crashes on every launch. So this depends on as little as possible: the settings, the charge client,
+    /// the helper link and the charge log. Nothing that reads the history database, the trend file, the menu or a
+    /// window. The same restore as everywhere else, with the same bounded waits, a cut debt's stop first.
+    ///
+    /// For a normal launch (nothing to lift) it does nothing and builds nothing: the client and the helper link are
+    /// asked for only when there is work, so `helper` is a closure.
+    @discardableResult
+    static func liftAtLaunch(settings: Settings = .shared,
+                             makeClient: @escaping () -> ChargeLimitClient? = { PowerUIChargeClient() },
+                             helper: () -> ChargeHelperLink = { ChargeHelperAdapter() },
+                             log: @escaping (String) -> Void = { FeatureLog.append("charge.log", $0) }) -> Bool {
+        guard settings.chargeControlEnabled, settings.chargeRestoreRecord != nil || settings.chargeStartPending else {
+            return false
+        }
+        let c = ChargeController(settings: settings, makeClient: makeClient, helper: helper(), battery: { nil },
+                                 chargerSwitch: { nil }, log: log, workspace: NotificationCenter(),
+                                 limitInForce: ChargeLimitInForce(), startDelay: Self.startDelay,
+                                 liftedAtLaunch: false, observing: false)
+        return c.liftNow()
     }
 
     static func dischargeRefusedText(_ why: String) -> String {
@@ -396,6 +426,9 @@ final class ChargeController {
     // After a launch that found the last run did not quit cleanly (`liftAfterUncleanExit`): macOS's own settings are
     // back and Charge Control is on in the setting but holds nothing, until this time.
     private let startAfter: TimeInterval
+    /// `liftAtLaunch` already ran in this process: macOS's own settings were put back before the app was built, and
+    /// the pending start written. The controller waits without lifting again.
+    private let liftedAtLaunch: Bool
     private var startsAt: Date? {
         didSet {
             guard (startsAt == nil) != (oldValue == nil) else { return }
@@ -446,10 +479,10 @@ final class ChargeController {
                      log: @escaping (String) -> Void = { FeatureLog.append("charge.log", $0) },
                      workspace: NotificationCenter = NSWorkspace.shared.notificationCenter,
                      limitInForce: ChargeLimitInForce = ChargeLimitInForce(),
-                     startDelay: TimeInterval = ChargeController.startDelay) {
+                     startDelay: TimeInterval = ChargeController.startDelay, liftedAtLaunch: Bool = false) {
         self.init(settings: settings, makeClient: makeClient, helper: helper, battery: battery,
                   chargerSwitch: chargerSwitch, log: log, workspace: workspace, limitInForce: limitInForce,
-                  startDelay: startDelay, observing: true)
+                  startDelay: startDelay, liftedAtLaunch: liftedAtLaunch, observing: true)
     }
 
     /// The Mac's own charger switch, read as the person and not through the helper: only writing it needs root
@@ -479,7 +512,7 @@ final class ChargeController {
     private init(settings: Settings, makeClient: @escaping () -> ChargeLimitClient?, helper: ChargeHelperLink,
                  battery: @escaping () -> Battery.State?, chargerSwitch: @escaping () -> UInt8?,
                  log: @escaping (String) -> Void, workspace: NotificationCenter, limitInForce: ChargeLimitInForce,
-                 startDelay: TimeInterval, observing: Bool) {
+                 startDelay: TimeInterval, liftedAtLaunch: Bool, observing: Bool) {
         self.settings = settings
         self.makeClient = makeClient
         self.helper = helper
@@ -489,6 +522,7 @@ final class ChargeController {
         self.workspace = workspace
         self.limitInForce = limitInForce
         self.startAfter = startDelay
+        self.liftedAtLaunch = liftedAtLaunch
         cutOwed = settings.chargeCutUnconfirmed
         guard observing else { return }
         enabledToken = settings.observe(Settings.Key.chargeControlEnabled) { [weak self] in self?.applyEnabled() }
@@ -795,27 +829,24 @@ final class ChargeController {
 
     // ── After an unclean exit ───────────────────────────────────────────────
 
-    /// At launch, with Charge Control on in the setting: a record still there means the last run did not quit (a
-    /// quit puts macOS back and clears it), and macOS's limit may still be in force with nobody holding it. Put
-    /// macOS's own settings back at once, with a client made for that alone and let go, as for a record left over
-    /// while off. Then switch on again only after `startAfter`, so that an Anode that breaks again within it leaves
-    /// the battery released: the sentence in the section says so (`liftedText`), and the setting and the person's
-    /// limit are not touched. True when it did this, false when there is nothing to lift (no record, no start
-    /// pending) or no client to do it with (the ordinary switch-on then reports that).
+    /// The lift: a record still there means the last run did not quit (a quit puts macOS back and clears it), and
+    /// macOS's limit may still be in force with nobody holding it. Put macOS's own settings back at once, with a
+    /// client made for that alone and let go, as for a record left over while off. True when it did this, false when
+    /// there is nothing to lift (no record, no start pending) or no client to do it with (the ordinary switch-on then
+    /// reports that). It runs at the top of the program (`liftAtLaunch`), and again here if the controller is built
+    /// without that having run (the tests; nothing in the app).
     ///
     /// A start still pending (`Settings.chargeStartPending`) takes the same route with no record: the last run was
-    /// itself waiting out this delay and died before it ended, which cleared the record but not the pending start.
+    /// itself waiting out the delay and died before it ended, which cleared the record but not the pending start.
     /// There is nothing to put back then, and the full delay is waited again. The flag is written, and flushed,
     /// before anything is put back, so that no crash between the record going and the wait starting can leave neither;
     /// it stays until the switch-on after the delay has run (`startNow`), or Charge Control is switched off, quits
     /// cleanly or is uninstalled.
     ///
-    /// A discharge's end never confirmed is dealt with first and as before: `restore` waits for a stop ahead of
-    /// anything else, and what it could not settle is asked again on the off-retry's timer until a running helper
-    /// answers (with no record there is no restore, and the retry asks at once). The delay holds back the limit and
-    /// new discharges, never the reconnecting of a charger. A restore macOS refused keeps the record; the switch-on
-    /// that follows leaves it as it is.
-    private func liftAfterUncleanExit() -> Bool {
+    /// A discharge's end never confirmed is dealt with first: `restore` waits for a stop ahead of anything else (with
+    /// no record there is no restore, and the off-retry asks at once; see `liftAfterUncleanExit`). A restore macOS
+    /// refused keeps the record; the switch-on that follows leaves it as it is.
+    private func liftNow() -> Bool {
         let recorded = settings.chargeRestoreRecord != nil
         guard recorded || settings.chargeStartPending else { return false }
         // Something to put back needs a client; with nothing, the wait is all there is.
@@ -830,6 +861,18 @@ final class ChargeController {
             log("a start was still pending from last time (Anode stopped before the delay ended); nothing to put "
                 + "back, and Charge Control starts again in \(Int(startAfter)) s")
         }
+        return true
+    }
+
+    /// At launch, with Charge Control on in the setting, when the last run did not quit: the lift, then the wait
+    /// before switching on again, so that an Anode that breaks again within it leaves the battery released. The
+    /// sentence in the section says so (`liftedText`), and the setting and the person's limit are not touched. The lift
+    /// has usually been done already, at the top of the program (`liftedAtLaunch`), and is not repeated: this only
+    /// waits, and asks about a debt the lift could not settle on the off-retry's timer until a running helper
+    /// answers. The delay holds back the limit and new discharges, never the reconnecting of a charger. True when it
+    /// waits, false when there is nothing to wait for.
+    private func liftAfterUncleanExit() -> Bool {
+        if !liftedAtLaunch, !liftNow() { return false }
         waitToStart()
         retryOwedStopWhileOff()
         return true

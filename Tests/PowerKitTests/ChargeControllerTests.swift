@@ -25,6 +25,8 @@ final class ChargeControllerTests: XCTestCase {
     private var switchReads = 0
     private var lines: [String] = []
     private var clientsMade = 0
+    /// How many times the helper link was asked for by the early lift (it builds one only when it has work).
+    private var helpersMade = 0
     private var controller: ChargeController?
     /// Stands in for NSWorkspace's notification center, so a test can say the Mac sleeps or the account is switched.
     private var center: NotificationCenter!
@@ -42,6 +44,7 @@ final class ChargeControllerTests: XCTestCase {
         switchReads = 0
         lines = []
         clientsMade = 0
+        helpersMade = 0
         center = NotificationCenter()
         limitInForce = ChargeLimitInForce()
     }
@@ -66,8 +69,8 @@ final class ChargeControllerTests: XCTestCase {
     }
 
     @discardableResult
-    private func make(enabled: Bool = true,
-                      startDelay: TimeInterval = ChargeController.startDelay) -> ChargeController {
+    private func make(enabled: Bool = true, startDelay: TimeInterval = ChargeController.startDelay,
+                      liftedAtLaunch: Bool = false) -> ChargeController {
         settings.chargeControlEnabled = enabled
         let c = ChargeController(settings: settings,
                                  makeClient: { [weak self] in
@@ -81,7 +84,8 @@ final class ChargeControllerTests: XCTestCase {
                                      return self?.chargerSwitch
                                  },
                                  log: { [weak self] in self?.lines.append($0) },
-                                 workspace: center, limitInForce: limitInForce, startDelay: startDelay)
+                                 workspace: center, limitInForce: limitInForce, startDelay: startDelay,
+                                 liftedAtLaunch: liftedAtLaunch)
         controller = c
         return c
     }
@@ -976,6 +980,202 @@ final class ChargeControllerTests: XCTestCase {
         c.shutdown()
         XCTAssertEqual(writesToMacOS, writes)
         XCTAssertNotNil(settings.chargeRestoreRecord)
+    }
+
+    // ── The lift at the top of the program ──────────────────────────────────
+
+    /// What `main.swift` runs before anything else of the app is built, on the fakes: the settings, the client, the
+    /// helper link (asked for only when there is work) and the log.
+    @discardableResult
+    private func liftAtLaunch() -> Bool {
+        ChargeController.liftAtLaunch(settings: settings, makeClient: { [weak self] in
+            self?.clientsMade += 1
+            return self?.client
+        }, helper: { [unowned self] in
+            self.helpersMade += 1
+            return self.helper
+        }, log: { [weak self] in self?.lines.append($0) })
+    }
+
+    /// A relaunch that crashes in everything it builds before the controller (the history database, a state file the
+    /// dead run left half written) must still release the battery: the lift is the first thing, before any of that.
+    /// With a record, macOS's own settings are back, the record is gone, the start is pending, and no controller (or
+    /// anything else of the app) was made.
+    func testTheEarlyLiftWithARecordPutsMacOSBackAndWritesThePendingStart() {
+        crashedWhileHolding(limit: 85)
+        XCTAssertEqual(client.state?.mclLimit, 85)
+        let follows = helper.follows
+        XCTAssertTrue(liftAtLaunch())
+        XCTAssertEqual(client.state, found, "the limit was not lifted")
+        XCTAssertNil(settings.chargeRestoreRecord)
+        XCTAssertTrue(settings.chargeStartPending)
+        XCTAssertTrue(settings.chargeControlEnabled, "the setting was changed")
+        XCTAssertEqual(settings.chargeLimit, 85)
+        XCTAssertEqual(helper.follows, follows, "the helper was followed")
+        XCTAssertFalse(helper.following)
+        XCTAssertTrue(lines.contains { $0.contains("did not quit cleanly") }, lines.joined(separator: "\n"))
+    }
+
+    /// Crashing again before the controller exists, however often: the pending start is on disk, so each launch
+    /// lifts again, writing nothing, and the battery is never held by an Anode that cannot get as far as the
+    /// controller.
+    func testAnAnodeThatCrashesBeforeTheControllerExistsNeverHoldsTheLimit() {
+        crashedWhileHolding(limit: 85)
+        let made = clientsMade
+        for _ in 1...3 {
+            XCTAssertTrue(liftAtLaunch())
+            XCTAssertEqual(client.state, found, "a limit was held by an Anode that never got started")
+            XCTAssertTrue(settings.chargeStartPending)
+        }
+        XCTAssertEqual(clientsMade, made + 1, "only the first lift had anything to put back")
+    }
+
+    /// With only a pending start there is nothing to put back: nothing is written, no client is made.
+    func testTheEarlyLiftWithOnlyAPendingStartWritesNothing() {
+        settings.chargeControlEnabled = true
+        settings.chargeStartPending = true
+        client.state = found
+        XCTAssertTrue(liftAtLaunch())
+        XCTAssertEqual(writesToMacOS, [0, 0, 0])
+        XCTAssertEqual(clientsMade, 0, "a client was made with nothing to put back")
+        XCTAssertEqual(client.state, found)
+        XCTAssertTrue(settings.chargeStartPending)
+        XCTAssertTrue(lines.contains { $0.contains("start was still pending") }, lines.joined(separator: "\n"))
+    }
+
+    /// The normal launch: no record, nothing pending. Nothing is built and nothing is logged.
+    func testTheEarlyLiftWithNeitherMakesNothing() {
+        settings.chargeControlEnabled = true
+        XCTAssertFalse(liftAtLaunch())
+        XCTAssertEqual(clientsMade, 0)
+        XCTAssertEqual(helpersMade, 0, "a helper link was built for a launch with nothing to lift")
+        XCTAssertTrue(lines.isEmpty, lines.joined(separator: "\n"))
+        XCTAssertFalse(settings.chargeStartPending)
+    }
+
+    /// Off, a record left over is the controller's to put back (once, at launch); the lift is for Charge Control on.
+    func testTheEarlyLiftDoesNothingWhileChargeControlIsOff() {
+        settings.chargeRestoreRecord = ChargeController.encodeRecord(found)
+        settings.chargeStartPending = true
+        settings.chargeControlEnabled = false
+        XCTAssertFalse(liftAtLaunch())
+        XCTAssertEqual(clientsMade, 0)
+        XCTAssertEqual(helpersMade, 0)
+        XCTAssertNotNil(settings.chargeRestoreRecord)
+    }
+
+    /// A restore macOS refuses keeps the record, and the pending start is on disk all the same.
+    func testARefusedEarlyLiftKeepsTheRecordAndWritesThePendingStart() {
+        crashedWhileHolding(limit: 85)
+        client.succeeds = false
+        XCTAssertTrue(liftAtLaunch())
+        XCTAssertNotNil(settings.chargeRestoreRecord)
+        XCTAssertTrue(settings.chargeStartPending)
+        XCTAssertTrue(lines.contains { $0.contains("record is kept") }, lines.joined(separator: "\n"))
+    }
+
+    /// The pending start is on disk before anything is put back, so no crash in the middle can leave neither.
+    func testTheEarlyLiftWritesThePendingStartBeforePuttingAnythingBack() {
+        let spy = RecordingChargeClient(state: found)
+        spy.settings = settings
+        clientToMake = spy
+        settings.chargeRestoreRecord = ChargeController.encodeRecord(found)
+        settings.chargeControlEnabled = true
+        XCTAssertTrue(ChargeController.liftAtLaunch(settings: settings, makeClient: { spy }, helper: { self.helper },
+                                                    log: { _ in }))
+        XCTAssertFalse(spy.pendingAtEachCall.isEmpty)
+        XCTAssertTrue(spy.pendingAtEachCall.allSatisfy { $0 })
+    }
+
+    /// A cut debt is asked about first: the stop is sent and waited for before macOS is put back.
+    func testTheEarlyLiftAsksAboutACutDebtFirst() {
+        crashedWhileHolding(limit: 85)
+        settings.chargeCutUnconfirmed = true
+        var heldWhenAsked: NativeChargeState?
+        helper.beforeSend = { [unowned self] cmd in
+            if cmd == .stopDischarge, heldWhenAsked == nil { heldWhenAsked = self.client.state }
+        }
+        XCTAssertTrue(liftAtLaunch())
+        XCTAssertEqual(helper.waited.first, .stopDischarge, "the debt was not asked about first")
+        XCTAssertEqual(heldWhenAsked?.mclLimit, 85, "macOS was put back before the debt was asked about")
+        XCTAssertFalse(settings.chargeCutUnconfirmed, "the helper's yes was not heard")
+        XCTAssertEqual(client.state, found)
+    }
+
+    /// The controller started after the lift waits and does not lift again: no second client, nothing written. The
+    /// wait is the same as after a lift of its own, and ends in the ordinary switch-on.
+    func testTheControllerStartedAfterTheEarlyLiftWaitsAndDoesNotLiftTwice() {
+        crashedWhileHolding(limit: 85)
+        XCTAssertTrue(liftAtLaunch())
+        let made = clientsMade, writes = writesToMacOS, lineCount = lines.count
+        let c = make(liftedAtLaunch: true)
+        XCTAssertTrue(c.isWaitingToStart)
+        XCTAssertEqual(c.status, .waiting(ChargeController.liftedText))
+        XCTAssertEqual(clientsMade, made, "the controller made a client to lift again")
+        XCTAssertEqual(writesToMacOS, writes)
+        XCTAssertEqual(client.state, found)
+        XCTAssertFalse(lines.dropFirst(lineCount).contains { $0.contains("did not quit cleanly") },
+                       "the lift was logged twice")
+        XCTAssertTrue(settings.chargeStartPending)
+        XCTAssertFalse(helper.following)
+
+        c.resumeIfDue(now: afterTheDelay)
+        XCTAssertFalse(c.isWaitingToStart)
+        XCTAssertEqual(client.state?.mclLimit, 85)
+        XCTAssertEqual(record, found)
+        XCTAssertFalse(settings.chargeStartPending)
+    }
+
+    /// A lift macOS refused is not repeated by the controller either (it was just refused); the record stays, and
+    /// what starts after the delay keeps it.
+    func testTheControllerDoesNotRepeatARefusedEarlyLift() {
+        crashedWhileHolding(limit: 85)
+        client.succeeds = false
+        XCTAssertTrue(liftAtLaunch())
+        let made = clientsMade, writes = writesToMacOS
+        let c = make(liftedAtLaunch: true)
+        XCTAssertTrue(c.isWaitingToStart)
+        XCTAssertEqual(clientsMade, made)
+        XCTAssertEqual(writesToMacOS, writes)
+        XCTAssertNotNil(settings.chargeRestoreRecord)
+        client.succeeds = true
+        c.resumeIfDue(now: afterTheDelay)
+        XCTAssertEqual(record, found, "the record was replaced")
+        XCTAssertEqual(client.state?.mclLimit, 85)
+    }
+
+    /// The controller still asks about a debt the lift could not settle, on the off-retry's timer, as before.
+    func testTheControllerAfterTheEarlyLiftStillPaysADebtTheLiftCouldNotSettle() {
+        crashedWhileHolding(limit: 85)
+        settings.chargeCutUnconfirmed = true
+        helper.gone = true
+        XCTAssertTrue(liftAtLaunch())
+        XCTAssertTrue(settings.chargeCutUnconfirmed)
+        let c = make(liftedAtLaunch: true)
+        XCTAssertNotNil(c.offWarning)
+        helper.gone = false
+        helper.available = true
+        c.retryOwedStopWhileOff()
+        XCTAssertFalse(settings.chargeCutUnconfirmed)
+        XCTAssertTrue(c.isWaitingToStart)
+    }
+
+    /// `main.swift` runs the lift first: after the `--restore-charge-settings` branch (which must stay first, so the
+    /// uninstall never lifts), and before the application object, the delegate (whose properties build the panes) and
+    /// everything else of the app. Read from the source, because the order of top-level statements is the point.
+    func testMainRunsTheLiftBeforeAnythingOfTheAppIsBuilt() throws {
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let main = try String(contentsOf: root.appendingPathComponent("Sources/AnodeApp/main.swift"), encoding: .utf8)
+        func at(_ s: String) throws -> String.Index { try XCTUnwrap(main.range(of: s)?.lowerBound, s) }
+        let restoreBranch = try at("if CommandLine.arguments.contains(ChargeController.restoreArgument)")
+        let lift = try at("ChargeController.liftAtLaunch(")
+        let application = try at("let app = NSApplication.shared")
+        let delegate = try at("let delegate = AppDelegate()")
+        XCTAssertLessThan(restoreBranch, lift)
+        XCTAssertLessThan(lift, application)
+        XCTAssertLessThan(lift, delegate)
+        XCTAssertTrue(main.contains("liftedAtLaunch: chargeLiftedAtLaunch"), "the controller is not told")
     }
 
     /// The Uninstall button during the delay: nothing of Charge Control's is in force, so nothing is put back over

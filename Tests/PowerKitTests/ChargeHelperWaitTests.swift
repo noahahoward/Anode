@@ -187,6 +187,26 @@ final class ChargeHelperWaitTests: XCTestCase {
         XCTAssertTrue(stalling.commands.contains(.setChargeLimit(62)))
     }
 
+    /// The lift at the top of the program has the same bounds: it runs before the window exists, and a debt left over
+    /// with a helper that has stopped answering must not hold the launch longer than a switch-off does.
+    func testTheLiftAtTheTopOfTheProgramDoesNotHoldTheMainThread() {
+        settings.chargeRestoreRecord = ChargeController.encodeRecord(
+            NativeChargeState(mclEnabled: true, mclLimit: 63, optimizedChargingEnabled: true))
+        settings.chargeCutUnconfirmed = true
+        settings.chargeControlEnabled = true
+        stalling.answering = false
+        var lifted = false
+        let took = measured {
+            lifted = ChargeController.liftAtLaunch(settings: settings, makeClient: { [client] in client },
+                                                   helper: { [adapter] in adapter! },
+                                                   log: { [weak self] in self?.lines.append($0) })
+        }
+        XCTAssertTrue(lifted)
+        XCTAssertLessThan(took, Self.bound, "the lift at launch held the main thread \(took) s")
+        XCTAssertTrue(settings.chargeStartPending)
+        XCTAssertTrue(settings.chargeCutUnconfirmed, "a stop nobody answered settled the debt")
+    }
+
     /// A helper that answers is still waited for: nothing above cut a healthy one short.
     func testAHealthyHelperIsStillWaitedForOnTheWayOff() {
         let c = holdingALimitOnlyTheHelperSets()
