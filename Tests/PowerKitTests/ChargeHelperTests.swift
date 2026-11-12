@@ -1290,6 +1290,58 @@ final class ChargeHelperTests: XCTestCase {
         XCTAssertTrue(server.handle(.command(.discharge(toPercent: 40))).ok)
     }
 
+    /// THE SPACING NEVER HOLDS A STOP BACK. The app stops a discharge and, on
+    /// a new target, asks for the next one at once; only that second cut may
+    /// wait. With the clock never moving: a stop straight after a cut
+    /// reconnects; a discharge straight after the stop is refused with
+    /// `ChargeRefusal.switchedRecently` and writes nothing, so the charger
+    /// stays connected; and every stop around it — repeated, or while a
+    /// running discharge's re-target is being refused — still reconnects.
+    func testTheSpacingNeverHoldsAStopBack() {
+        let hw = FakeChargeHardware(percent: 77)
+        let server = makeServer(hw)
+        let clock = ChargeTestClock()
+        server.now = { clock.now }
+        func stop() -> FanReply { server.handle(.command(.stopDischarge)) }
+        func ask(_ target: Int) -> FanReply { server.handle(.command(.discharge(toPercent: target))) }
+
+        XCTAssertTrue(ask(40).ok)
+        XCTAssertEqual(hw.isCut, true)
+        let stopped = stop()
+        XCTAssertTrue(stopped.ok, stopped.message)
+        XCTAssertNotEqual(stopped.message, ChargeRefusal.switchedRecently)
+        XCTAssertEqual(hw.isCut, false, "a stop straight after a cut did not reconnect")
+        XCTAssertEqual(hw.cutWrites, [true, false])
+
+        XCTAssertEqual(ask(40), FanReply(ok: false, message: ChargeRefusal.switchedRecently))
+        XCTAssertEqual(hw.isCut, false, "a refused discharge left the charger cut")
+        XCTAssertEqual(hw.cutWrites, [true, false], "a refused discharge wrote to the charger")
+        XCTAssertNil(server.dischargeTarget)
+        XCTAssertFalse(server.reconnectOwed)
+        XCTAssertTrue(server.isIdle)
+
+        for _ in 0..<3 {
+            let again = stop()
+            XCTAssertTrue(again.ok, again.message)
+            XCTAssertNotEqual(again.message, ChargeRefusal.switchedRecently)
+        }
+        XCTAssertEqual(hw.isCut, false)
+
+        // Running, and re-targeted inside the spacing: the re-target is refused
+        // and the discharge keeps going; a stop still reconnects at once.
+        clock.advance(FanHelperServer.cutSpacing)
+        XCTAssertTrue(ask(40).ok)
+        XCTAssertEqual(ask(30), FanReply(ok: false, message: ChargeRefusal.switchedRecently))
+        XCTAssertEqual(server.dischargeTarget, 40)
+        XCTAssertEqual(hw.isCut, true)
+        let last = stop()
+        XCTAssertTrue(last.ok, last.message)
+        XCTAssertNotEqual(last.message, ChargeRefusal.switchedRecently)
+        XCTAssertEqual(hw.isCut, false)
+        XCTAssertNil(server.dischargeTarget)
+        XCTAssertEqual(hw.cutWrites, [true, false, true, false])
+    }
+
     // ── Every answer to a discharge, word for word ─────────────────────────
 
     /// The app tells the helper's refusals apart by their exact words, so the
