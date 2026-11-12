@@ -1182,12 +1182,53 @@ final class ChargeControllerTests: XCTestCase {
         XCTAssertTrue(text.contains("may still be switched off"), text)
         XCTAssertTrue(text.contains("Fans tab"), text)
         XCTAssertTrue(text.contains("as it starts"), text)
-        // An installed helper is being asked every 30 s already: the line says that.
+        // With an installed helper at launch, not answering yet, it is asked every 30 s: the line says that.
         helper.installed = true
-        XCTAssertEqual(c.offWarning, ChargeController.cutWarningText)
+        helper.gone = true
+        let asking = make(enabled: false)
+        XCTAssertEqual(helper.stops(), 1)
+        XCTAssertEqual(asking.offWarning, ChargeController.cutWarningText)
+        withExtendedLifetime(c) {}
         // Nothing owed, nothing said.
         settings.chargeCutUnconfirmed = false
         XCTAssertNil(make(enabled: false).offWarning)
+    }
+
+    /// The line says "Reconnecting…" only while something is. A helper installed while off, after the debt arose
+    /// with none, is asked when the section is next shown (what the debt already causes for an installed helper:
+    /// a stop now, then every 30 s), and only then does the line say so.
+    func testAHelperInstalledWhileOffIsAskedWhenTheSectionIsShown() {
+        settings.chargeCutUnconfirmed = true
+        helper.installed = false
+        let c = make(enabled: false)
+        helper.installed = true   // installed from the Fans tab, with Charge Control off
+        XCTAssertEqual(c.offWarning, ChargeController.cutWarningOffText, "it said reconnecting with nothing asking")
+        XCTAssertTrue(helper.commands.isEmpty)
+
+        var heard = 0
+        let token = c.observeChanges { heard += 1 }
+        helper.gone = true   // its first answer is slow to come
+        c.recheckHelper()    // the section was shown
+        XCTAssertEqual(helper.stops(), 1)
+        XCTAssertEqual(c.offWarning, ChargeController.cutWarningText)
+        XCTAssertGreaterThan(heard, 0, "the section was not told the line changed")
+        c.recheckHelper()
+        XCTAssertEqual(helper.stops(), 1, "asked on every look as well as every 30 s")
+
+        helper.gone = false
+        c.retryOwedStopWhileOff()   // the timer
+        XCTAssertFalse(settings.chargeCutUnconfirmed)
+        XCTAssertNil(c.offWarning)
+        withExtendedLifetime(token) {}
+    }
+
+    /// Without a debt, showing the section while off sends nothing.
+    func testShowingTheSectionWhileOffWithNothingOwedSendsNothing() {
+        let c = make(enabled: false)
+        c.recheckHelper()
+        XCTAssertTrue(helper.commands.isEmpty)
+        XCTAssertEqual(helper.follows, 0)
+        XCTAssertEqual(clientsMade, 0)
     }
 
     /// The section is told when the debt goes, while off as well as on: nothing else would redraw it.

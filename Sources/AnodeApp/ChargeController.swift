@@ -699,6 +699,8 @@ final class ChargeController {
             t.tolerance = 5
             RunLoop.main.add(t, forMode: .common)
             offRetryTimer = t
+            // The line while off says so now (`offWarning`).
+            changed()
         }
         guard !offStopInFlight else { return }
         offStopInFlight = true
@@ -721,9 +723,12 @@ final class ChargeController {
     }
 
     private func endOffRetry() {
+        let ended = offRetryTimer != nil
         offRetryTimer?.invalidate()
         offRetryTimer = nil
         lastOffFailure = nil
+        // The line while off stops saying "Reconnecting…" (`offWarning`).
+        if ended { changed() }
     }
 
     // ── The debt ────────────────────────────────────────────────────────────
@@ -796,12 +801,12 @@ final class ChargeController {
     }
 
     /// What the section shows under the switch while Charge Control is off: nothing, unless a discharge's end was
-    /// never confirmed. Then the charger may still be cut, and the line says so and how to get it back; an installed
-    /// helper is being asked every 30 s already (`retryOwedStopWhileOff`). Reads a file, and makes nothing: no
-    /// client, timer or helper traffic is added for it.
+    /// never confirmed. Then the charger may still be cut, and the line says so: "Reconnecting…" while an installed
+    /// helper is being asked (`retryOwedStopWhileOff`), otherwise how to get it back. Makes nothing: no client,
+    /// timer or helper traffic is added for it.
     var offWarning: String? {
         guard !running, cutOwed else { return nil }
-        return helper.installed ? Self.cutWarningText : Self.cutWarningOffText
+        return offRetryTimer != nil ? Self.cutWarningText : Self.cutWarningOffText
     }
 
     /// A stop was not answered yes: by a helper that is gone (or a link that heard nothing), or by one that could
@@ -968,8 +973,15 @@ final class ChargeController {
 
     /// The Beta Features section was shown: look again for a helper that has not answered (installed from a
     /// terminal, say). A helper that is there is not woken for this.
+    ///
+    /// While off, the same for the debt: a helper installed since it arose (or since the retry ended) is asked
+    /// now, and then every 30 s, as one installed at launch is. Nothing without a debt and an installed helper, and
+    /// nothing more while the retry is already asking.
     func recheckHelper() {
-        guard running else { return }
+        guard running else {
+            if offRetryTimer == nil { retryOwedStopWhileOff() }
+            return
+        }
         refusedLimit = nil
         helper.recheck()
     }
