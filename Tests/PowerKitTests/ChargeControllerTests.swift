@@ -564,6 +564,34 @@ final class ChargeControllerTests: XCTestCase {
         XCTAssertTrue(next.isWaitingToStart)
     }
 
+    /// A limit the helper has not answered, because it is slow, may land after the restore and stay: the drain says
+    /// so (false), and the record is kept and a line says it may land after this, so that the next launch lifts it
+    /// instead of recording it as macOS's own. Quitting, as switching off.
+    func testQuittingBehindALimitTheHelperHasNotLandedKeepsTheRecord() {
+        settings.chargeLimit = 63
+        helper.landsOn = client
+        let c = make()
+        helper.deferReplies = true
+        settings.chargeLimit = 62
+        helper.drainTimesOut = true
+        c.shutdown()
+        XCTAssertNotNil(settings.chargeRestoreRecord, "the record was cleared though a limit may land after it")
+        XCTAssertTrue(lines.contains { $0.contains("may land after this") }, lines.joined(separator: "\n"))
+        XCTAssertTrue(lines.contains { $0.contains("record is kept") }, lines.joined(separator: "\n"))
+        XCTAssertTrue(settings.chargeControlEnabled)
+
+        // The next launch takes the unclean route: it lifts, and does not take the late limit for macOS's own.
+        crash()
+        helper.drainTimesOut = false
+        helper.flushReplies()
+        XCTAssertEqual(client.state?.mclLimit, 62, "the late limit landed")
+        let next = make()
+        XCTAssertTrue(next.isWaitingToStart)
+        XCTAssertEqual(client.state, NativeChargeState(mclEnabled: false, mclLimit: 100, optimizedChargingEnabled: true),
+                       "the late limit was kept as macOS's own")
+        XCTAssertNil(settings.chargeRestoreRecord)
+    }
+
     /// The helper not answering the stop on the way out: macOS is still put back, but not known to be, so the record
     /// stays and the next launch takes the unclean route.
     func testQuittingWithAHelperThatDoesNotAnswerKeepsTheRecord() {

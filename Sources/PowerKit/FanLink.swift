@@ -571,12 +571,20 @@ public final class FanControlLink {
     }
 
     private let socketPath: String
+    /// How long a read or a write on the socket waits before the helper is taken to have stopped answering. A
+    /// parameter for the tests, which must not wait out two seconds for a helper that answers late.
+    private let socketTimeout: TimeInterval
     private let queue = DispatchQueue(label: "com.anode.fanlink", qos: .userInitiated)
     private var fd: Int32 = -1
     private var buffer = Data()
+    /// Commands that went out and ended with no answer (the helper stopped answering, or was slower than the
+    /// socket's timeout) since the helper last answered anything with a yes. A helper that is slow may still apply
+    /// such a command a moment later, so nothing is known about whether it landed. Only the queue touches it.
+    private var unansweredCommands = 0
 
-    public init(socketPath: String = FanSocket.path) {
+    public init(socketPath: String = FanSocket.path, socketTimeout: TimeInterval = 2) {
         self.socketPath = socketPath
+        self.socketTimeout = socketTimeout
     }
 
     deinit { if fd >= 0 { close(fd) } }
@@ -666,16 +674,33 @@ public final class FanControlLink {
         return answer.take(within: timeout)
     }
 
-    /// Wait until everything already handed to this link has been exchanged with the helper: true when it has,
-    /// false after `timeout`. The answers themselves may still be on their way to the main thread.
+    /// Wait until everything already handed to this link has been exchanged with the helper and has landed: true
+    /// when it has, false after `timeout`, and false when a command ended with no answer (see `unansweredCommands`)
+    /// and the helper has not answered anything since. The answers themselves may still be on their way to the main
+    /// thread.
     ///
     /// For a caller that must act after anything still on its way to the helper has landed: Charge Control putting
-    /// macOS's own charge limit back, which a limit the helper is still setting would otherwise overwrite. Never
-    /// call this from this link's own queue.
+    /// macOS's own charge limit back, which a limit the helper is still setting would otherwise overwrite. A command
+    /// whose exchange timed out is the case that matters: the link has given up, the helper has not, and the exchange
+    /// being over says nothing about whether the command has landed. Never call this from this link's own queue.
     public func drain(timeout: TimeInterval) -> Bool {
         let done = DispatchSemaphore(value: 0)
-        queue.async { done.signal() }
-        return done.wait(timeout: .now() + timeout) == .success
+        let landed = DrainResult()
+        queue.async { [self] in
+            landed.set(unansweredCommands == 0)
+            done.signal()
+        }
+        return done.wait(timeout: .now() + timeout) == .success && landed.value
+    }
+
+    /// What a drain found, handed from this link's queue to the thread that waits for it. A drain that gave up may
+    /// still be answered later; the late answer goes nowhere.
+    private final class DrainResult {
+        private let lock = NSLock()
+        private var landed = false
+
+        func set(_ v: Bool) { lock.lock(); landed = v; lock.unlock() }
+        var value: Bool { lock.lock(); defer { lock.unlock() }; return landed }
     }
 
     /// One reply, handed from this link's queue to a thread that is waiting for it.
@@ -732,7 +757,7 @@ public final class FanControlLink {
         }
         let s = socket(AF_UNIX, SOCK_STREAM, 0)
         guard s >= 0 else { return .refused("could not create a socket") }
-        FanSocketIO.configure(s, timeout: 2)
+        FanSocketIO.configure(s, timeout: socketTimeout)
         // `Darwin.` qualified: this type has its own `connect(_:)`, and the
         // unqualified name resolves to it.
         let rc = FanSocketIO.withAddress(&addr) { p, len in Darwin.connect(s, p, len) }
@@ -778,8 +803,13 @@ public final class FanControlLink {
         guard let line = try? FanSocketIO.readLine(fd, buffer: &buffer),
               let reply = try? FanWire.decode(FanReply.self, from: line) else {
             close(fd); fd = -1
+            // The command may be on its way to a slow helper that will apply it after this: see `drain`.
+            if case .command = request { unansweredCommands += 1 }
             return nil
         }
+        // The helper is single-threaded and serves one client at a time, so a yes from it, on this connection or a
+        // new one, means it has got past anything it was sent before.
+        if reply.ok { unansweredCommands = 0 }
         return reply
     }
 }

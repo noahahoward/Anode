@@ -163,6 +163,30 @@ final class ChargeHelperWaitTests: XCTestCase {
         XCTAssertTrue(settings.chargeCutUnconfirmed, "a stop nobody answered settled the debt")
     }
 
+    /// The sequence on the real link: the limit is 63, the person moves it to 62, and Anode quits 0.3 s later. The
+    /// helper takes longer over 62 than the link waits, so the exchange ends with no answer and the drain behind it
+    /// must not call that landed: the restore would write the original and clear the record, and the helper would
+    /// then apply 62 and the next cold start would take 62 for macOS's own. The record is kept instead, and the
+    /// next launch lifts the limit.
+    func testQuittingBehindALimitTheHelperAppliesLateKeepsTheRecord() {
+        // A faster link than the default, so the helper being slower than it costs a second, not three.
+        wire = FanControlLink(socketPath: stalling.path, socketTimeout: 0.3)
+        connection = HelperConnection(wire: wire)
+        adapter = ChargeHelperAdapter(connection: connection, isInstalled: { true })
+        client.state = NativeChargeState(mclEnabled: false, mclLimit: 100, optimizedChargingEnabled: true)
+        let c = holdingALimitOnlyTheHelperSets()
+        spin(until: { stalling.commands.contains(.setChargeLimit(63)) })
+        stalling.commandDelay = 0.9
+        settings.chargeLimit = 62
+        Thread.sleep(forTimeInterval: 0.3)
+        c.shutdown()
+        XCTAssertNotNil(settings.chargeRestoreRecord, "the record was cleared behind a limit nobody had answered")
+        XCTAssertTrue(lines.contains { $0.contains("may land after this") }, lines.joined(separator: "\n"))
+        // The helper does apply it afterwards.
+        spin(until: { stalling.commands.contains(.setChargeLimit(62)) })
+        XCTAssertTrue(stalling.commands.contains(.setChargeLimit(62)))
+    }
+
     /// A helper that answers is still waited for: nothing above cut a healthy one short.
     func testAHealthyHelperIsStillWaitedForOnTheWayOff() {
         let c = holdingALimitOnlyTheHelperSets()
@@ -178,11 +202,16 @@ final class ChargeHelperWaitTests: XCTestCase {
 
 /// A helper on a temporary socket that answers like the real one (hello: version 2; every command: ok) until
 /// `answering` is turned off. From then on it keeps every connection open, reads what comes and answers nothing.
+///
+/// With `commandDelay` set it is a slow one instead: it reads a command, takes that long over it (it serves one
+/// connection at a time, like the real one), and only then applies it (`commands`) and answers it. A client whose
+/// own timeout is shorter has given up on the answer by then, and the command lands all the same.
 final class StallingHelper {
     let path: String
     private let listener: Int32
     private let lock = NSLock()
     private var _answering = true
+    private var _commandDelay: TimeInterval = 0
     private var _stopping = false
     private var _commands: [FanCommand] = []
     private let finished = DispatchSemaphore(value: 0)
@@ -206,6 +235,12 @@ final class StallingHelper {
     var answering: Bool {
         get { lock.lock(); defer { lock.unlock() }; return _answering }
         set { lock.lock(); _answering = newValue; lock.unlock() }
+    }
+
+    /// How long a command takes before it is applied and answered; hello is answered at once.
+    var commandDelay: TimeInterval {
+        get { lock.lock(); defer { lock.unlock() }; return _commandDelay }
+        set { lock.lock(); _commandDelay = newValue; lock.unlock() }
     }
 
     /// Every command it answered, in order.
@@ -257,6 +292,8 @@ final class StallingHelper {
                     case .hello:
                         reply = FanReply(ok: true, message: "hello", fanCount: 0, version: 2)
                     case .command(let c):
+                        let delay = commandDelay
+                        if delay > 0 { Thread.sleep(forTimeInterval: delay) }
                         lock.lock(); _commands.append(c); lock.unlock()
                         reply = FanReply(ok: true, message: "ok")
                     }
