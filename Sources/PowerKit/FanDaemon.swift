@@ -529,19 +529,19 @@ public enum FanDaemonInstall {
         public var errorDescription: String? {
             switch self {
             case .noSuchHelper(let p):
-                return "There is no fan helper at \(p) to install."
+                return "There is no Anode helper at \(p) to install."
             case .notInsideAnAppBundle(let p):
                 return "\(p) is not inside a Anode.app. Only a bundled build "
                      + "can be installed — run ./build-app.sh and install from "
                      + "~/Applications/Anode.app."
             case .ownerWouldBeRoot:
-                return "The fan helper serves one ordinary user and would serve "
+                return "The Anode helper serves one ordinary user and would serve "
                      + "nobody if installed for root. Run the app as yourself."
             case .wrongSigningIdentifier(let found):
                 // The install would "succeed" and then refuse every connection,
                 // which is the worst kind of working.
                 return "This build signs as \(found ?? "nothing readable"), but the "
-                     + "fan helper only answers \(FanDaemon.clientSigningIdentifier). "
+                     + "Anode helper only answers \(FanDaemon.clientSigningIdentifier). "
                      + "Installing it would produce a daemon that refuses this app."
             }
         }
@@ -942,10 +942,12 @@ public enum FanElevation {
     the helper before it runs as root except you, when you read the path.
     """
 
-    /// The sheet before Install raises the authorisation dialog.
+    /// The sheet before Install raises the authorisation dialog. The same body
+    /// whether the install was started in the Fans tab or in Charge Control, so
+    /// it names the Anode helper and says where the Fans tab's controls are.
     public static let installDisclosure = """
-    This asks for your password ONCE and then never again — the helper keeps \
-    working after you rebuild Anode and after you restart the Mac.
+    This asks for your password ONCE and then never again — the Anode helper \
+    keeps working after you rebuild Anode and after you restart the Mac.
 
     It installs two files, both owned by root:
       \(FanDaemon.helperPath)
@@ -964,12 +966,13 @@ public enum FanElevation {
     as you can. Another user on this Mac cannot, and neither can anything at all \
     before you install this.
 
-    The safer alternative is already on this strip: run the helper by hand \
+    The safer alternative is in the Fans tab: run the Anode helper by hand \
     when you want it, and stop it with ⌃C. It costs one command each session \
     and it only ever trusts the exact build you started it beside.
 
-    "Uninstall Fan Helper" removes both files, unloads the daemon, hands the \
-    fans back and reconnects the charger. \(chargeLimitOutlivesTheHelper)
+    "Uninstall Fan Helper…" in the Fans tab removes both files, unloads the \
+    daemon, hands the fans back and reconnects the charger. \
+    \(chargeLimitOutlivesTheHelper)
     """
 
     public static func osascriptArguments(command: String, prompt: String) -> [String] {

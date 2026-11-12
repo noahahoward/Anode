@@ -802,6 +802,19 @@ final class FanPanelSharingTests: XCTestCase {
         let fansTab = FanControlPanel.installAlert(helper: "/x", origin: .fansTab)
         XCTAssertEqual(fansTab.messageText, "Install the fan helper?")
     }
+
+    /// The body is the same from both places, so it is true from both: it does not point at "this strip" (from
+    /// Charge Control there is none on screen), it names the Anode helper, and it names the Fans tab's uninstall by
+    /// its exact title and says where it is.
+    func testTheConfirmationBodyIsTrueFromBothPlaces() {
+        for origin in [FanControlPanel.InstallOrigin.fansTab, .chargeControl] {
+            let body = FanControlPanel.installAlert(helper: "/x", origin: origin).informativeText
+            XCTAssertFalse(body.contains("strip"), body)
+            XCTAssertTrue(body.contains("the Anode helper"), body)
+            XCTAssertTrue(body.contains("\"Uninstall Fan Helper\u{2026}\" in the Fans tab"), body)
+            XCTAssertTrue(body.contains("The safer alternative is in the Fans tab"), body)
+        }
+    }
 }
 
 /// A wire that answers connects only when told to (or at once, with `answerAtOnce`), and records what it sent.
