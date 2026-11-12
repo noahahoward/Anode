@@ -1109,9 +1109,12 @@ final class ChargeHelperTests: XCTestCase {
     func testAFailedCutWhileOneIsHeldKeepsTheHeldOneOwed() {
         let hw = FakeChargeHardware(percent: 77)
         let server = makeServer(hw)
+        let clock = ChargeTestClock()
+        server.now = { clock.now }
         XCTAssertTrue(server.handle(.command(.discharge(toPercent: 40))).ok)
 
         hw.keyExists = false
+        clock.advance(FanHelperServer.cutSpacing)
         XCTAssertFalse(server.handle(.command(.discharge(toPercent: 50))).ok)
         XCTAssertEqual(hw.cutWrites, [true, true, false, false, false])
         XCTAssertEqual(hw.isCut, true)
@@ -1197,6 +1200,76 @@ final class ChargeHelperTests: XCTestCase {
         XCTAssertTrue(server.handle(.command(.discharge(toPercent: 50))).ok)
         XCTAssertEqual(hw.cutWrites.last, true)
         XCTAssertEqual(server.dischargeTarget, 50)
+    }
+
+    // ── Cuts are spaced ─────────────────────────────────────────────────────
+
+    /// A CUT IS NOT TRIED AGAIN WITHIN TEN SECONDS of the last attempt. A
+    /// client could otherwise switch the charger about once a second. The
+    /// refusal writes nothing; a reconnect is never held back, before or after.
+    func testACutIsNotTriedAgainWithinTenSecondsOfTheLast() {
+        let hw = FakeChargeHardware(percent: 77)
+        let server = makeServer(hw)
+        let clock = ChargeTestClock()
+        server.now = { clock.now }
+        XCTAssertEqual(FanHelperServer.cutSpacing, 10)
+
+        XCTAssertTrue(server.handle(.command(.discharge(toPercent: 40))).ok)
+        XCTAssertTrue(server.handle(.command(.stopDischarge)).ok, "a reconnect was held back")
+        XCTAssertEqual(hw.cutWrites, [true, false])
+
+        for wait in [1.0, 8.9] {
+            clock.advance(wait)
+            let reply = server.handle(.command(.discharge(toPercent: 40)))
+            XCTAssertFalse(reply.ok, reply.message)
+            XCTAssertEqual(reply.message, "the charger was switched a moment ago; try again shortly")
+        }
+        XCTAssertEqual(hw.cutWrites, [true, false], "a refused discharge wrote to the charger")
+        XCTAssertNil(server.dischargeTarget)
+        XCTAssertTrue(server.isIdle)
+
+        clock.advance(0.1)   // ten seconds after the cut
+        XCTAssertTrue(server.handle(.command(.discharge(toPercent: 40))).ok)
+        XCTAssertEqual(hw.cutWrites, [true, false, true])
+        XCTAssertTrue(server.handle(.command(.stopDischarge)).ok, "a reconnect was held back")
+        XCTAssertEqual(hw.isCut, false)
+    }
+
+    /// A cut the SMC refused is an attempt all the same: one that keeps being
+    /// refused is not retried on every ask.
+    func testARefusedCutCountsAsAnAttempt() {
+        let hw = FakeChargeHardware(percent: 77)
+        hw.refuseCut = true
+        let server = makeServer(hw)
+        let clock = ChargeTestClock()
+        server.now = { clock.now }
+
+        XCTAssertFalse(server.handle(.command(.discharge(toPercent: 40))).ok)
+        let afterTheAttempt = hw.cutWrites
+        XCTAssertEqual(afterTheAttempt.first, true)
+
+        hw.refuseCut = false
+        clock.advance(5)
+        let reply = server.handle(.command(.discharge(toPercent: 40)))
+        XCTAssertEqual(reply.message, "the charger was switched a moment ago; try again shortly")
+        XCTAssertEqual(hw.cutWrites, afterTheAttempt)
+
+        clock.advance(5)
+        XCTAssertTrue(server.handle(.command(.discharge(toPercent: 40))).ok)
+        XCTAssertEqual(hw.isCut, true)
+    }
+
+    /// A clock set back is not a reason to hold every cut back until it
+    /// catches up again.
+    func testAClockSetBackDoesNotHoldCutsBack() {
+        let hw = FakeChargeHardware(percent: 77)
+        let server = makeServer(hw)
+        let clock = ChargeTestClock()
+        server.now = { clock.now }
+        XCTAssertTrue(server.handle(.command(.discharge(toPercent: 40))).ok)
+        XCTAssertTrue(server.handle(.command(.stopDischarge)).ok)
+        clock.advance(-3600)
+        XCTAssertTrue(server.handle(.command(.discharge(toPercent: 40))).ok)
     }
 
     // ── A cut is judged by reading it back ─────────────────────────────────
@@ -1693,6 +1766,19 @@ final class ChargeLogRecorder {
         lock.lock(); defer { lock.unlock() }
         guard let i = recorded.firstIndex(where: { $0.line.hasPrefix(prefix) }) else { return [] }
         return Array(recorded[(i + 1)...])
+    }
+}
+
+/// A clock a test moves by hand, for the server's `now`. Locked: the socket
+/// tests read it from the server's thread.
+final class ChargeTestClock {
+    private let lock = NSLock()
+    private var current = Date(timeIntervalSinceReferenceDate: 1_000_000)
+
+    var now: Date { lock.lock(); defer { lock.unlock() }; return current }
+
+    func advance(_ seconds: TimeInterval) {
+        lock.lock(); current += seconds; lock.unlock()
     }
 }
 

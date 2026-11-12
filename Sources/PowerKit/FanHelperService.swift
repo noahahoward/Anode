@@ -546,6 +546,20 @@ public final class FanHelperServer {
     /// can skip the pauses.
     var chargeTiming: ChargeRelease.Timing = .standard
 
+    /// The server's clock, for the spacing between cuts. A var only so a test
+    /// can move it instead of sleeping; set it before `run()`.
+    var now: () -> Date = Date.init
+
+    /// The least time between two attempts to cut the charger. A discharge
+    /// asked for sooner is refused with nothing written, so no client can
+    /// switch the charger every second, and a cut the SMC keeps refusing is
+    /// not retried on every ask. Reconnects are never spaced.
+    public static let cutSpacing: TimeInterval = 10
+
+    /// When this helper last tried to cut the charger, whether or not the cut
+    /// was taken. Loop thread only.
+    private var lastCutAttempt: Date?
+
     public init(hardware: FanHardware,
                 configuration: Configuration,
                 log: @escaping (String) -> Void = { _ in },
@@ -1173,6 +1187,18 @@ public final class FanHelperServer {
             else { why = "the battery is already at or below \(max(target, DischargeWatch.floor))%" }
             return FanReply(ok: false, message: "refused: \(why)")
         }
+        // Last before the write, so every lasting reason above is the one a
+        // client hears. A clock set back reads as long ago, not as a refusal
+        // until it catches up.
+        let attempt = now()
+        if let last = lastCutAttempt {
+            let since = attempt.timeIntervalSince(last)
+            guard since < 0 || since >= Self.cutSpacing else {
+                return FanReply(ok: false,
+                                message: "the charger was switched a moment ago; try again shortly")
+            }
+        }
+        lastCutAttempt = attempt
         // Judged by the read-back alone: the write's own answer is logged, not
         // trusted. A cut that cannot be confirmed is undone at once — with a
         // write, whatever the key reads now, because a read straight after the

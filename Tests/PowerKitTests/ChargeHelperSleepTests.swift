@@ -310,6 +310,8 @@ final class ChargeHelperSleepTests: XCTestCase {
                                                           pin: .exactBuild(cdhash: mine)),
                                      charge: hw)
         server.chargeTiming = .immediate
+        let clock = ChargeTestClock()
+        server.now = { clock.now }
         try server.start()
         let thread = Thread { server.run() }
         thread.start()
@@ -335,6 +337,8 @@ final class ChargeHelperSleepTests: XCTestCase {
         XCTAssertEqual(hw.cutWrites, [true, false])
 
         server.noteSystemDidWake()
+        // Past the spacing between cuts, which is not what this test is about.
+        clock.advance(FanHelperServer.cutSpacing)
         XCTAssertEqual(send(link, .discharge(toPercent: 40)).ok, true)
         XCTAssertEqual(hw.isCut, true)
     }
