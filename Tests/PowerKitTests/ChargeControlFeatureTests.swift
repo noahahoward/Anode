@@ -236,7 +236,10 @@ final class ChargeControlFeatureTests: XCTestCase {
         XCTAssertFalse(f.statusLabel.isHiddenOrHasHiddenAncestor, "the debt was silent while off")
         XCTAssertEqual(f.statusLabel.stringValue, ChargeController.cutWarningOffText)
         XCTAssertEqual(f.statusLabel.textColor, .systemOrange)
-        for v in controls(f) + [f.installButton] where v !== f.statusLabel {
+        // The button the line points at is shown beside it, with Charge Control off: a Charge-Control-only person
+        // has no other (the Fans tab's Copy Start Command is there only with fan control on).
+        XCTAssertFalse(f.installButton.isHiddenOrHasHiddenAncestor, "the line points at a button that is not there")
+        for v in controls(f) where v !== f.statusLabel {
             XCTAssertTrue(v.isHiddenOrHasHiddenAncestor, "shown while off: \(v)")
         }
         XCTAssertTrue(helper.commands.isEmpty, "the line sent something")
@@ -325,7 +328,7 @@ final class ChargeControlFeatureTests: XCTestCase {
     }
 
     /// With no helper installed to ask, the line that tells how to get the charger back cannot say "once Charge Control
-    /// is on": the checkbox is on already. It says Charge Control has not started yet.
+    /// is on": the checkbox is on already. It says nothing about the checkbox, and points at the button.
     func testADebtWithNoHelperDuringTheDelayDoesNotSayChargeControlIsOff() throws {
         settings.chargeRestoreRecord = ChargeController.encodeRecord(
             NativeChargeState(mclEnabled: false, mclLimit: 100, optimizedChargingEnabled: true))
@@ -334,12 +337,13 @@ final class ChargeControlFeatureTests: XCTestCase {
         helper.gone = true   // nobody answers the launch's stop, so the debt stays
         let f = make(enabled: true)
         XCTAssertEqual(controller?.isWaitingToStart, true)
-        XCTAssertEqual(f.statusLabel.stringValue, ChargeController.cutWarningWaitingText)
+        XCTAssertEqual(f.statusLabel.stringValue, ChargeController.cutWarningOffText)
         XCTAssertFalse(f.statusLabel.stringValue.contains("is on and"), f.statusLabel.stringValue)
         XCTAssertEqual(f.statusLabel.textColor, .systemOrange)
+        XCTAssertFalse(f.installButton.isHiddenOrHasHiddenAncestor, "the line points at a button that is not there")
         // Once it has started, it is the on-state line.
         controller?.resumeIfDue(now: Date().addingTimeInterval(ChargeController.startDelay + 1))
-        XCTAssertNotEqual(f.statusLabel.stringValue, ChargeController.cutWarningWaitingText)
+        XCTAssertNotEqual(f.statusLabel.stringValue, ChargeController.cutWarningOffText)
     }
 
     /// A discharge's end never confirmed is shown during the delay too, and first: the charger may be cut.
@@ -629,6 +633,68 @@ final class ChargeControlFeatureTests: XCTestCase {
         XCTAssertTrue(f.installNoteLabel.isHiddenOrHasHiddenAncestor)
     }
 
+    /// The cut warnings point at the section's own button, so no sentence may name a remedy the person may not have:
+    /// the Fans tab shows "Copy Start Command" only with fan control on (or blocked), and fan control is off by
+    /// default and stays off when the helper is installed from here.
+    func testTheCutWarningsPointAtTheButtonAndNotAtTheFansTab() {
+        for text in ChargeController.cutWarningsThatOfferInstall {
+            XCTAssertTrue(text.contains("Press Install Helper\u{2026} below"), text)
+            XCTAssertFalse(text.contains("Fans tab"), text)
+            XCTAssertFalse(text.contains("Copy Start Command"), text)
+            XCTAssertFalse(text.contains("sudo"), text)
+        }
+        // The lines that are shown with the helper installed do not send anyone to a button that is not there.
+        for text in [ChargeController.cutWarningText, ChargeController.cutWarningInstalledText] {
+            XCTAssertFalse(text.contains("Install Helper"), text)
+            XCTAssertFalse(text.contains("Fans tab"), text)
+        }
+        XCTAssertEqual(ChargeController.cutWarningsThatOfferInstall,
+                       [ChargeController.cutWarningNoHelperText, ChargeController.cutWarningOffText])
+    }
+
+    /// Running, the charger may be cut and no helper is installed: the line points at the button, so the button is
+    /// there, and goes when a helper is (then the line says it is asking).
+    func testARunningCutWarningWithNoHelperShowsTheInstallButton() {
+        battery = ChargeControllerTests.state(90)
+        let f = make(enabled: true)
+        f.dischargeButton.performClick(nil)
+        helper.gone = true
+        helper.installed = false
+        f.dischargeButton.performClick(nil)   // the stop is not answered: the cut may be left
+        XCTAssertEqual(f.statusLabel.stringValue, ChargeController.cutWarningNoHelperText)
+        XCTAssertFalse(f.installButton.isHiddenOrHasHiddenAncestor, "the line points at a button that is not there")
+        f.installButton.performClick(nil)
+        XCTAssertEqual(installs, 1)
+        // The helper is installed and starts: the line is the asking one, and nothing points at the button.
+        helper.installed = true
+        helper.gone = false
+        helper.becomeAvailable()
+        XCTAssertTrue(f.installButton.isHiddenOrHasHiddenAncestor)
+        XCTAssertNotEqual(f.statusLabel.stringValue, ChargeController.cutWarningNoHelperText)
+    }
+
+    /// Off, with the cut owed and nothing installed: the button is there, says how the install is going (under it),
+    /// and once it has installed the helper the owed stop is asked at once, since nothing else would ask while off.
+    func testWhileOffTheInstallButtonShowsItsNoteAndThenAsksTheNewHelper() throws {
+        settings.chargeCutUnconfirmed = true
+        helper.installed = false
+        let f = make(enabled: false)
+        XCTAssertFalse(f.installButton.isHiddenOrHasHiddenAncestor)
+        f.installButton.performClick(nil)
+        XCTAssertEqual(installs, 1)
+        let report = try XCTUnwrap(installReport)
+        report("Waiting for authorisation\u{2026}")
+        XCTAssertEqual(f.installNoteLabel.stringValue, "Waiting for authorisation\u{2026}")
+        XCTAssertFalse(f.installNoteLabel.isHiddenOrHasHiddenAncestor, "the note was dropped while off")
+        XCTAssertTrue(helper.commands.isEmpty)
+        helper.installed = true
+        report(FanControlPanel.installedForChargeControlText)
+        XCTAssertEqual(helper.stops(), 1, "the helper that was just installed was not asked about the charger")
+        XCTAssertNil(controller?.offWarning)
+        XCTAssertFalse(settings.chargeCutUnconfirmed)
+        XCTAssertTrue(f.installButton.isHiddenOrHasHiddenAncestor)
+    }
+
     func testNeedsHelperForADischargeOffersTheInstall() throws {
         helper.available = false
         battery = ChargeControllerTests.state(90)
@@ -755,7 +821,7 @@ final class ChargeControlFeatureTests: XCTestCase {
                   ChargeController.dischargeRefusedText("the SMC took the cut and the charger does not read as cut"),
                   ChargeController.limitRefusedText(63, "macOS did not take the charge limit"),
                   ChargeController.cutWarningText, ChargeController.cutWarningNoHelperText,
-                  ChargeController.cutWarningOffText, ChargeController.cutWarningWaitingText,
+                  ChargeController.cutWarningOffText, ChargeController.cutWarningInstalledText,
                   ChargeController.liftedText]
         shown += reasons.map {
             ChargeController.limitNeedsHelperText(for: ChargeDecision(osLimit: 63, dischargeTo: nil, reason: $0))

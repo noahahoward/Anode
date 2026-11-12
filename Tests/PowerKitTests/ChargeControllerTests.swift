@@ -1786,7 +1786,8 @@ final class ChargeControllerTests: XCTestCase {
         XCTAssertEqual(c.status, .warning(ChargeController.cutWarningNoHelperText))
         let text = ChargeController.cutWarningNoHelperText
         XCTAssertTrue(text.contains("unplugging"), text)
-        XCTAssertTrue(text.contains("Fans tab"), text)
+        XCTAssertTrue(text.contains("Install Helper\u{2026}"), text)
+        XCTAssertFalse(text.contains("Fans tab"), "the Fans tab has no button for this with fan control off: " + text)
     }
 
     /// The safety net. macOS saying the Mac is off the adapter while the adapter is there is what a charger cut looks
@@ -2638,7 +2639,8 @@ final class ChargeControllerTests: XCTestCase {
         XCTAssertEqual(helper.follows, 0)
         let text = ChargeController.cutWarningOffText
         XCTAssertTrue(text.contains("may still be switched off"), text)
-        XCTAssertTrue(text.contains("Fans tab"), text)
+        XCTAssertTrue(text.contains("Install Helper\u{2026}"), text)
+        XCTAssertFalse(text.contains("Fans tab"), "the Fans tab has no button for this with fan control off: " + text)
         XCTAssertTrue(text.contains("as it starts"), text)
         // With an installed helper at launch, not answering yet, it is asked every 30 s: the line says that.
         helper.installed = true
@@ -2660,7 +2662,8 @@ final class ChargeControllerTests: XCTestCase {
         helper.installed = false
         let c = make(enabled: false)
         helper.installed = true   // installed from the Fans tab, with Charge Control off
-        XCTAssertEqual(c.offWarning, ChargeController.cutWarningOffText, "it said reconnecting with nothing asking")
+        XCTAssertEqual(c.offWarning, ChargeController.cutWarningInstalledText,
+                       "it said reconnecting with nothing asking, or pointed at a button that is not there")
         XCTAssertTrue(helper.commands.isEmpty)
 
         var heard = 0
@@ -3520,6 +3523,81 @@ final class ChargeControllerTests: XCTestCase {
                        "the stop did not go out at once: " + lines.joined(separator: "\n"))
         XCTAssertEqual(wire.reachedAHelper.prefix(2).last, true, "the stop went to a socket nobody had opened")
         XCTAssertTrue(lines.contains { $0.contains("reset under the discharge") }, lines.joined(separator: "\n"))
+    }
+
+    // ── A warning that never clears while off ───────────────────────────────
+
+    /// A discharge on a hand-started helper (no installed daemon), the helper stopped (it reconnects the charger as
+    /// it goes), the cut marked lost, and Charge Control switched off: nothing was left that could read the switch,
+    /// so the line stayed for good, across launches, with the charger connected. The section reading the switch once,
+    /// when it is shown, settles it.
+    func testAnOwedCutIsSettledByOneReadOfTheSwitchWhenTheSectionIsShownWithNoHelper() {
+        settings.chargeCutUnconfirmed = true
+        helper.installed = false
+        let c = make(enabled: false)
+        XCTAssertEqual(c.offWarning, ChargeController.cutWarningOffText)
+        XCTAssertEqual(switchReads, 0, "the switch was read at launch, with nothing asking")
+        chargerSwitch = AdapterCutKey.connected
+        c.recheckHelper()
+        XCTAssertEqual(switchReads, 1)
+        XCTAssertNil(c.offWarning, "the charger reads connected and the line stayed")
+        XCTAssertFalse(settings.chargeCutUnconfirmed, "the debt was kept on disk, for the next launch to show again")
+        XCTAssertTrue(lines.contains { $0.contains("the charger switch reads connected") }, lines.joined(separator: "\n"))
+        XCTAssertTrue(helper.commands.isEmpty, "a helper that is not installed was asked")
+        // Nothing owed: nothing is read any more, and a later launch says nothing.
+        c.recheckHelper()
+        XCTAssertEqual(switchReads, 1)
+        XCTAssertNil(make(enabled: false).offWarning)
+    }
+
+    /// Anything but a clear "connected" settles nothing: the cut, a value Anode never writes, a switch that cannot be
+    /// read. One read per look, no timer.
+    func testAnOwedCutIsNotSettledByASwitchThatReadsCutOrOddOrNothing() {
+        settings.chargeCutUnconfirmed = true
+        helper.installed = false
+        let c = make(enabled: false)
+        var reads = 0
+        for value in [AdapterCutKey.cut, 0x04, nil] as [UInt8?] {
+            chargerSwitch = value
+            c.recheckHelper()
+            reads += 1
+            XCTAssertEqual(switchReads, reads, "one read for each look")
+            XCTAssertEqual(c.offWarning, ChargeController.cutWarningOffText, "settled by \(String(describing: value))")
+            XCTAssertTrue(settings.chargeCutUnconfirmed)
+        }
+    }
+
+    /// Nothing to read for: an installed helper is asked instead (which a yes settles), and with no debt nothing is
+    /// read at all.
+    func testTheSwitchIsReadOnlyForADebtWithNoInstalledHelper() {
+        chargerSwitch = AdapterCutKey.connected
+        helper.installed = false
+        let clean = make(enabled: false)
+        clean.recheckHelper()
+        XCTAssertEqual(switchReads, 0, "read with nothing owed")
+
+        settings.chargeCutUnconfirmed = true
+        helper.installed = true
+        helper.gone = true
+        let asked = make(enabled: false)
+        asked.recheckHelper()
+        XCTAssertEqual(switchReads, 0, "read when an installed helper is there to ask")
+        withExtendedLifetime(clean) {}
+    }
+
+    /// While waiting out the delay after an unclean exit nothing is running either, and the line is the same.
+    func testAnOwedCutIsSettledByTheSwitchDuringTheDelayToo() {
+        settings.chargeRestoreRecord = ChargeController.encodeRecord(found)
+        settings.chargeCutUnconfirmed = true
+        helper.installed = false
+        helper.gone = true   // nobody answers the launch's stop, so the debt stays
+        let c = make(enabled: true)
+        XCTAssertTrue(c.isWaitingToStart)
+        XCTAssertEqual(c.offWarning, ChargeController.cutWarningOffText)
+        chargerSwitch = AdapterCutKey.connected
+        c.recheckHelper()
+        XCTAssertNil(c.offWarning)
+        XCTAssertFalse(settings.chargeCutUnconfirmed)
     }
 }
 

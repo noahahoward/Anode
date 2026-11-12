@@ -69,7 +69,9 @@ import PowerKit
 // owed, the section says so (`offWarning`), from the flag alone. The delay after an unclean exit is the same kind of
 // thing: Charge Control is on in the setting but holds nothing, so nothing of it exists but one timer and the two
 // session observers (so that it does not start into another account's limit), and the debt is paid in the same way
-// meanwhile.
+// meanwhile. With no helper installed to ask, the one thing done for the debt is a single read of the charger switch
+// whenever the section is shown (`settleOwedCutByReadingTheSwitch`): a helper started by hand and stopped has
+// reconnected the charger itself, and nothing else would say so.
 //
 // Main thread throughout.
 
@@ -152,24 +154,28 @@ final class ChargeController {
     /// A discharge's end has not been confirmed by a running helper, and Charge Control is still asking.
     static let cutWarningText = "The charger may still be switched off. Reconnecting\u{2026}"
     /// The same with no helper installed as a daemon: nothing will start a fresh one, and an unplug does not undo
-    /// the cut. The way out is what the Fans tab offers: start the helper (its startup switches the charger back
-    /// on), or its uninstall, which does the same.
+    /// the cut. The way out is the section's own Install Helper\u{2026} button, shown with this line
+    /// (`cutWarningsThatOfferInstall`): the installed helper starts on the first connection, and its startup switches
+    /// the charger back on (`FanHelperServer.clearOrphanedAdapterCut`).
     static let cutWarningNoHelperText = "The charger may still be switched off, and unplugging it will not switch it "
-        + "back on. Start the Anode helper again from the Fans tab (Copy Start Command), or run AnodeHelper "
-        + "--uninstall with sudo, to switch it back on."
+        + "back on. Press Install Helper\u{2026} below: the helper switches the charger back on as it starts."
 
-    /// The same while Charge Control is off, with no helper installed: nothing while off can find out whether the
-    /// charger is connected, so the line also says what clears it.
+    /// The same while Charge Control is not running (off, or waiting out the delay after an unclean exit), with no
+    /// helper installed: nothing is cutting the charger from here, so the line also says what else clears it. While
+    /// not running, the section reads the charger switch once whenever it is shown (`recheckHelper`), and the line goes
+    /// when that reads connected; while running, the net does the same after 90 s.
     static let cutWarningOffText = "The charger may still be switched off, and unplugging it will not switch it "
-        + "back on. Start the Anode helper again from the Fans tab (Copy Start Command): it switches the charger "
-        + "back on as it starts. This line goes once Charge Control is on and finds the charger connected."
+        + "back on. Press Install Helper\u{2026} below: the helper switches the charger back on as it starts. This "
+        + "line also goes when Anode finds the charger connected."
 
-    /// The same while Charge Control waits to start after an unclean exit, with no helper installed: the setting is on,
-    /// so the line cannot say it goes once Charge Control is on. It goes once Charge Control has started and finds the
-    /// charger connected.
-    static let cutWarningWaitingText = "The charger may still be switched off, and unplugging it will not switch it "
-        + "back on. Start the Anode helper again from the Fans tab (Copy Start Command): it switches the charger "
-        + "back on as it starts. This line goes once Charge Control has started again and finds the charger connected."
+    /// A helper was installed after the debt arose, while Charge Control was not running, and nothing has asked it
+    /// yet (`recheckHelper` does, when the section is next shown). The button is gone, so no sentence may point at it.
+    static let cutWarningInstalledText = "The charger may still be switched off, and unplugging it will not switch it "
+        + "back on. The Anode helper is installed now, and Anode will ask it to switch the charger back on."
+
+    /// The cut warnings that point at the section's Install Helper\u{2026} button: the section shows the button
+    /// whenever the line it shows is one of these.
+    static let cutWarningsThatOfferInstall: Set<String> = [cutWarningNoHelperText, cutWarningOffText]
 
     /// A hold only the helper can set, named by the feature that wanted it: with the person's limit at 80, "limits
     /// other than 80" would be no help. macOS holds the nearest value it takes above it meanwhile, so the Mac charges
@@ -542,7 +548,8 @@ final class ChargeController {
     /// The Mac's own charger switch, read as the person and not through the helper: only writing it needs root
     /// (measured on Mac17,9, macOS 27.0: an unprivileged process reads it). The helper's own reader and key name
     /// (`SystemChargeHardware.adapterCutValue`), so there is one of each; nothing here can write. The connection to
-    /// the SMC is opened at the first read, which is never while Charge Control is off.
+    /// the SMC is opened at the first read, which is never while Charge Control is off, except for the one read the
+    /// section asks for when a debt is owed and no helper is installed to ask (`settleOwedCutByReadingTheSwitch`).
     ///
     /// A read that fails is followed, at the next read, by a new connection. `SystemChargeHardware()` cannot fail: an
     /// SMC that would not open is kept inside it as "no connection" for good (`SMC.init?` is nil then), and a
@@ -1081,6 +1088,19 @@ final class ChargeController {
         }
     }
 
+    /// While not running, with a debt and no installed helper to ask: the charger switch, read once. A hand-started
+    /// helper that was stopped has reconnected the charger as it went, and nothing else would ever say so: no helper
+    /// is there to answer a stop, and while not running nothing reads the switch, so the warning (`offWarning`) would
+    /// stay for good, across launches. Not running means nothing of this Anode's can be cutting the charger, so one
+    /// read that says connected is enough: the net's 90 s of agreement guards against a discharge ending, and there is
+    /// none. A switch that reads cut, a value Anode never writes, or cannot be read settles nothing. Asked when the
+    /// section is shown or the app comes forward; there is no timer for it.
+    private func settleOwedCutByReadingTheSwitch() {
+        guard !running, cutOwed, !helper.installed, chargerSwitch() == AdapterCutKey.connected else { return }
+        settleWithoutTheHelper("the charger switch reads connected, and nothing of Charge Control's is running to cut "
+                               + "it again")
+    }
+
     private func endOffRetry() {
         let ended = offRetryTimer != nil
         offRetryTimer?.invalidate()
@@ -1166,7 +1186,8 @@ final class ChargeController {
     var offWarning: String? {
         guard !running, cutOwed else { return nil }
         if offRetryTimer != nil { return Self.cutWarningText }
-        return isWaitingToStart ? Self.cutWarningWaitingText : Self.cutWarningOffText
+        // Nothing is asking: either no helper is installed, or one was installed since and has not been asked yet.
+        return helper.installed ? Self.cutWarningInstalledText : Self.cutWarningOffText
     }
 
     /// A stop was not answered yes: by a helper that is gone (or a link that heard nothing), or by one that could
@@ -1350,6 +1371,7 @@ final class ChargeController {
     func recheckHelper() {
         guard running else {
             if offRetryTimer == nil { retryOwedStopWhileOff() }
+            settleOwedCutByReadingTheSwitch()
             return
         }
         refusedLimit = nil

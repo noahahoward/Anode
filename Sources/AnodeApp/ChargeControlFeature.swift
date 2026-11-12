@@ -283,6 +283,9 @@ final class ChargeControlFeature: BetaFeature {
         redraw()
         installHelper { [weak self] text in
             self?.installNote = text
+            // With Charge Control off nothing else would ask the helper that has just been installed, so a charger it
+            // is owed for is looked at now (it asks only when there is a debt, and only an installed helper).
+            self?.controller()?.recheckHelper()
             self?.redraw()
         }
     }
@@ -386,9 +389,14 @@ final class ChargeControlFeature: BetaFeature {
             ? .systemOrange : .secondaryLabelColor
         // A switched-on section with nothing to report yet (the controller has not answered) shows no line.
         statusLabel.isHidden = offWarning == nil && (!on || status == .off)
-        installButton.isHidden = !on || !needsHelper
+        // Beside a line that points at it (`ChargeController.cutWarningsThatOfferInstall`), on or off: a charger that
+        // may still be cut and no helper installed to switch it back on, which the Fans tab offers no button for
+        // unless fan control is on (or blocked).
+        let offersInstallForCut = ChargeController.cutWarningsThatOfferInstall.contains(statusLabel.stringValue)
+            && !statusLabel.isHidden
+        installButton.isHidden = !((on && needsHelper) || offersInstallForCut)
         // Kept once the helper is there and the button has gone (it says the install worked), not once switched off.
-        if !on { installNote = nil }
+        if !on, !offersInstallForCut { installNote = nil }
         installNoteLabel.stringValue = installNote ?? ""
         installNoteLabel.isHidden = installNote == nil
         layoutChanged?()
