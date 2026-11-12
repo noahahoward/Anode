@@ -308,8 +308,8 @@ final class ChargeControlFeatureTests: XCTestCase {
         XCTAssertEqual(controller?.isWaitingToStart, true)
         XCTAssertFalse(f.statusLabel.isHiddenOrHasHiddenAncestor)
         XCTAssertEqual(f.statusLabel.stringValue,
-                       "Anode did not quit cleanly last time, so the limit was lifted. Charge Control starts again in "
-                       + "a minute.")
+                       "The limit was lifted because Anode did not finish quitting last time. Charge Control starts "
+                       + "again in a minute.")
         XCTAssertEqual(f.statusLabel.stringValue, ChargeController.liftedText)
         XCTAssertFalse(f.dischargeButton.isEnabled)
         XCTAssertFalse(f.topUpButton.isEnabled, "Top Up can be pressed while nothing is held")

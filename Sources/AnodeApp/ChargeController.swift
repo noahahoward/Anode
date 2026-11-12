@@ -28,6 +28,9 @@ import PowerKit
 // launch switches on again from a cold start. A record still there at launch with Charge Control on therefore means
 // the last run ended without a quit (a crash, a kill, the power going), with macOS's limit still in force; that
 // launch puts macOS's own settings back at once and switches on again only after `startDelay` (`liftAfterUncleanExit`).
+// It writes `Settings.chargeStartPending` first and clears it only once that switch-on has run (or on switching off, a
+// clean quit or an uninstall), so an Anode that dies during the delay finds the flag at its next launch and waits
+// again: only one that stays up for the whole delay ever holds a limit, however often it crashes before that.
 // While on, macOS is read back on the timer and after a wake, and put back if something else changed it.
 //
 // A charger cut outlives the helper that made it (measured: a killed helper leaves it cut, and the installed daemon
@@ -236,7 +239,7 @@ final class ChargeController {
     static let startDelay: TimeInterval = 60
 
     /// The line in the section while that delay runs.
-    static let liftedText = "Anode did not quit cleanly last time, so the limit was lifted. "
+    static let liftedText = "The limit was lifted because Anode did not finish quitting last time. "
         + "Charge Control starts again in a minute."
 
     /// The policy's last answer.
@@ -584,8 +587,9 @@ final class ChargeController {
 
     private func disable() {
         // Off during the delay after an unclean exit cancels it. Nothing of Charge Control's is in force then, and
-        // the record has gone (`liftAfterUncleanExit`), so there is nothing to put back.
+        // the record has gone (`liftAfterUncleanExit`), so there is nothing to put back. No start is pending any more.
         endStartWait()
+        setStartPending(false)
         if running, let c = client {
             switchingOff = true
             restore(client: c)
@@ -714,7 +718,9 @@ final class ChargeController {
     func shutdown() {
         enabledToken = nil
         endOffRetry()
+        // A quit during the delay is a clean one: macOS's own settings are in force and nothing is pending.
         endStartWait()
+        setStartPending(false)
         guard running, let c = client else { return }
         switchingOff = true
         defer { switchingOff = false }
@@ -739,6 +745,9 @@ final class ChargeController {
     /// Also while off, if a record is left over (a switch-off macOS partly refused, or the setting turned off while
     /// Anode was closed): once Anode is gone nothing could ever undo that hold.
     func restoreForUninstall() {
+        // Nothing is pending once Charge Control is switched off and macOS put back; the headless restore has no
+        // observer to do that when the setting goes off.
+        setStartPending(false)
         if running, let c = client {
             switchingOff = true
             restore(client: c)
@@ -776,18 +785,36 @@ final class ChargeController {
     /// macOS's own settings back at once, with a client made for that alone and let go, as for a record left over
     /// while off. Then switch on again only after `startAfter`, so that an Anode that breaks again within it leaves
     /// the battery released: the sentence in the section says so (`liftedText`), and the setting and the person's
-    /// limit are not touched. True when it did this, false when there is nothing to lift (no record) or no client
-    /// to do it with (the ordinary switch-on then reports that).
+    /// limit are not touched. True when it did this, false when there is nothing to lift (no record, no start
+    /// pending) or no client to do it with (the ordinary switch-on then reports that).
+    ///
+    /// A start still pending (`Settings.chargeStartPending`) takes the same route with no record: the last run was
+    /// itself waiting out this delay and died before it ended, which cleared the record but not the pending start.
+    /// There is nothing to put back then, and the full delay is waited again. The flag is written, and flushed,
+    /// before anything is put back, so that no crash between the record going and the wait starting can leave neither;
+    /// it stays until the switch-on after the delay has run (`startNow`), or Charge Control is switched off, quits
+    /// cleanly or is uninstalled.
     ///
     /// A discharge's end never confirmed is dealt with first and as before: `restore` waits for a stop ahead of
     /// anything else, and what it could not settle is asked again on the off-retry's timer until a running helper
-    /// answers. The delay holds back the limit and new discharges, never the reconnecting of a charger. A restore
-    /// macOS refused keeps the record; the switch-on that follows leaves it as it is.
+    /// answers (with no record there is no restore, and the retry asks at once). The delay holds back the limit and
+    /// new discharges, never the reconnecting of a charger. A restore macOS refused keeps the record; the switch-on
+    /// that follows leaves it as it is.
     private func liftAfterUncleanExit() -> Bool {
-        guard settings.chargeRestoreRecord != nil, let c = makeClient() else { return false }
-        log("Anode did not quit cleanly last time (the record of macOS's own settings was still there); putting them "
-            + "back now, and Charge Control starts again in \(Int(startAfter)) s")
-        restore(client: c)
+        let recorded = settings.chargeRestoreRecord != nil
+        guard recorded || settings.chargeStartPending else { return false }
+        // Something to put back needs a client; with nothing, the wait is all there is.
+        let c = recorded ? makeClient() : nil
+        if recorded, c == nil { return false }
+        setStartPending(true)
+        if let c {
+            log("Anode did not quit cleanly last time (the record of macOS's own settings was still there); putting "
+                + "them back now, and Charge Control starts again in \(Int(startAfter)) s")
+            restore(client: c)
+        } else {
+            log("a start was still pending from last time (Anode stopped before the delay ended); nothing to put "
+                + "back, and Charge Control starts again in \(Int(startAfter)) s")
+        }
         waitToStart()
         retryOwedStopWhileOff()
         return true
@@ -832,6 +859,15 @@ final class ChargeController {
         endStartWait()
         log("the delay after an unclean exit is over; switching on")
         enable()
+        // Only now: Anode has stayed up for the whole delay and the ordinary switch-on has run.
+        setStartPending(false)
+    }
+
+    /// Written down, and flushed, before what depends on it happens, like the record and the debt.
+    private func setStartPending(_ pending: Bool) {
+        guard settings.chargeStartPending != pending else { return }
+        settings.chargeStartPending = pending
+        settings.flush()
     }
 
     private func sessionBecameActiveWhileWaiting() {

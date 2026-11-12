@@ -891,11 +891,35 @@ public final class Settings {
     }
     private static let chargeCutUnconfirmedKey = storageKey("chargeCutUnconfirmed")
 
+    /// True from the moment Charge Control starts waiting out the delay after an unclean exit until the ordinary
+    /// switch-on that follows has run. While it is true a start is pending: Anode has not yet stayed up for the whole
+    /// delay, so it has not earned holding a limit again.
+    ///
+    /// It is what keeps a crash-looping Anode from holding the limit. The restore record says the last run died with
+    /// a limit in force, and the launch after that puts macOS's own settings back, which clears the record; if that
+    /// run dies during the delay there is no record left to say anything. This flag is written, and flushed, before
+    /// the record goes, and the next launch waits again. Cleared by the switch-on after the delay, by switching
+    /// Charge Control off, by a clean quit and by the uninstall's restore.
+    ///
+    /// Bookkeeping, not a preference, like `chargeCutUnconfirmed`: no observation key, nothing is notified. Clearing
+    /// removes the key.
+    public var chargeStartPending: Bool {
+        get { (defaults.object(forKey: Settings.chargeStartPendingKey) as? Bool) ?? false }
+        set {
+            if newValue {
+                defaults.set(true, forKey: Settings.chargeStartPendingKey)
+            } else {
+                defaults.removeObject(forKey: Settings.chargeStartPendingKey)
+            }
+        }
+    }
+    private static let chargeStartPendingKey = storageKey("chargeStartPending")
+
     /// Write what this handle holds to disk now rather than when `cfprefsd` gets to it.
     ///
-    /// For Charge Control's bookkeeping: it stores `chargeRestoreRecord` (or `chargeCutUnconfirmed`) and then
-    /// changes something that outlives the app. If the app died between the two with the note still in memory,
-    /// nothing would know how to put it back.
+    /// For Charge Control's bookkeeping: it stores `chargeRestoreRecord` (or `chargeCutUnconfirmed`, or
+    /// `chargeStartPending`) and then changes something that outlives the app. If the app died between the two with
+    /// the note still in memory, nothing would know how to put it back.
     public func flush() {
         defaults.synchronize()
     }

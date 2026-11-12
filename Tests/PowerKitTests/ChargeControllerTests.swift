@@ -639,6 +639,7 @@ final class ChargeControllerTests: XCTestCase {
         XCTAssertFalse(helper.following, "the helper was followed while the delay runs")
         XCTAssertTrue(settings.chargeControlEnabled, "the setting was changed")
         XCTAssertEqual(settings.chargeLimit, 85, "the person's limit was changed")
+        XCTAssertTrue(settings.chargeStartPending, "a start pending was not written down for the wait")
 
         // For the delay nothing is set, whatever happens: the limit changes, the Mac sleeps and wakes, the timer runs.
         let writes = writesToMacOS
@@ -651,6 +652,7 @@ final class ChargeControllerTests: XCTestCase {
         XCTAssertTrue(c.isWaitingToStart)
         XCTAssertEqual(writesToMacOS, writes, "something was set during the delay")
         XCTAssertEqual(client.state, found)
+        XCTAssertTrue(settings.chargeStartPending, "the pending start was cleared before the delay ended")
 
         // After it: as from a cold start, with the limit as it is now, and macOS's own settings written down afresh.
         c.resumeIfDue(now: afterTheDelay)
@@ -661,6 +663,7 @@ final class ChargeControllerTests: XCTestCase {
         XCTAssertEqual(client.state?.optimizedChargingEnabled, false)
         XCTAssertTrue(helper.following)
         XCTAssertEqual(c.status, .active(ChargeDecision(osLimit: 95, dischargeTo: nil, reason: .limit)))
+        XCTAssertFalse(settings.chargeStartPending, "the pending start outlived the switch-on that followed the delay")
     }
 
     /// The delay is a timer on the main run loop, not only something a test can call: it fires by itself.
@@ -673,6 +676,7 @@ final class ChargeControllerTests: XCTestCase {
             RunLoop.main.run(mode: .default, before: Date().addingTimeInterval(0.01))
         }
         XCTAssertFalse(c.isWaitingToStart, "the delay never ended")
+        XCTAssertFalse(settings.chargeStartPending)
         XCTAssertEqual(client.state?.mclLimit, 85)
         XCTAssertEqual(c.status, .active(ChargeDecision(osLimit: 85, dischargeTo: nil, reason: .limit)))
     }
@@ -680,8 +684,8 @@ final class ChargeControllerTests: XCTestCase {
     /// The delay is a minute, and the sentence says "a minute".
     func testTheDelayIsAMinute() {
         XCTAssertEqual(ChargeController.startDelay, 60)
-        XCTAssertTrue(ChargeController.liftedText.contains("did not quit cleanly"))
-        XCTAssertTrue(ChargeController.liftedText.contains("in a minute"))
+        XCTAssertEqual(ChargeController.liftedText, "The limit was lifted because Anode did not finish quitting last "
+                       + "time. Charge Control starts again in a minute.")
     }
 
     /// An Anode that stops again within the delay leaves the limit lifted: nothing was set, and the record is gone,
@@ -694,6 +698,7 @@ final class ChargeControllerTests: XCTestCase {
         XCTAssertNil(settings.chargeRestoreRecord)
         XCTAssertFalse(c.isWaitingToStart)
         XCTAssertTrue(settings.chargeControlEnabled)
+        XCTAssertFalse(settings.chargeStartPending, "a clean quit left a start pending")
         let writes = writesToMacOS
         c.resumeIfDue(now: afterTheDelay)
         XCTAssertEqual(writesToMacOS, writes, "the delay ended after the controller had stopped")
@@ -709,6 +714,119 @@ final class ChargeControllerTests: XCTestCase {
         XCTAssertNil(settings.chargeRestoreRecord)
     }
 
+    /// A crash during the delay leaves no record, but it does not earn a cold start: the pending start is still on
+    /// disk, so the next launch waits the full delay again, writing nothing. Only an Anode that stays up for the
+    /// whole delay holds a limit, however often it crashes before that.
+    func testCrashingDuringTheDelayMakesTheNextLaunchWaitAgain() {
+        crashedWhileHolding(limit: 85)
+        for _ in 1...3 {
+            let c = make()
+            XCTAssertTrue(c.isWaitingToStart, "a launch after a crash during the delay did not wait")
+            XCTAssertEqual(client.state, found, "a limit was held by an Anode that had not stayed up")
+            XCTAssertNil(settings.chargeRestoreRecord)
+            XCTAssertTrue(settings.chargeStartPending)
+            crash()
+        }
+        // One that stays up for the whole delay does hold it.
+        let c = make()
+        c.resumeIfDue(now: afterTheDelay)
+        XCTAssertFalse(c.isWaitingToStart)
+        XCTAssertEqual(client.state?.mclLimit, 85)
+        XCTAssertFalse(settings.chargeStartPending)
+        // And a crash after that is the ordinary one: the record is there, the pending start is not.
+        crash()
+        XCTAssertNotNil(settings.chargeRestoreRecord)
+        XCTAssertFalse(settings.chargeStartPending)
+    }
+
+    /// With a start pending and no record there is nothing to put back: the launch writes nothing, says a start was
+    /// still pending, waits the full delay, then switches on as from a cold start and clears the pending start.
+    func testALaunchWithAStartPendingAndNoRecordWaitsTheFullDelay() {
+        settings.chargeStartPending = true
+        settings.chargeLimit = 85
+        let macOS = NativeChargeState(mclEnabled: true, mclLimit: 95, optimizedChargingEnabled: true)
+        client.state = macOS
+        let c = make()
+        XCTAssertTrue(c.isWaitingToStart)
+        XCTAssertEqual(c.status, .waiting(ChargeController.liftedText))
+        XCTAssertEqual(writesToMacOS, [0, 0, 0], "something was written with nothing to put back")
+        XCTAssertEqual(client.state, macOS)
+        XCTAssertNil(settings.chargeRestoreRecord)
+        XCTAssertTrue(lines.contains { $0.contains("start was still pending") }, lines.joined(separator: "\n"))
+        XCTAssertFalse(helper.following)
+        XCTAssertTrue(settings.chargeStartPending)
+        c.resumeIfDue(now: beforeTheDelayEnds)
+        XCTAssertTrue(c.isWaitingToStart)
+        XCTAssertEqual(writesToMacOS, [0, 0, 0])
+
+        c.resumeIfDue(now: afterTheDelay)
+        XCTAssertFalse(c.isWaitingToStart)
+        XCTAssertEqual(record, macOS, "macOS's own settings were not written down afresh")
+        XCTAssertEqual(client.state?.mclLimit, 85)
+        XCTAssertEqual(client.state?.optimizedChargingEnabled, false)
+        XCTAssertFalse(settings.chargeStartPending, "the start was still pending after it had run")
+        XCTAssertTrue(helper.following)
+    }
+
+    /// The pending start is on disk before the record goes. If it were written after, a crash between the two would
+    /// leave neither, and the next launch would hold the limit at once.
+    func testThePendingStartIsWrittenBeforeTheRecordGoes() {
+        let spy = RecordingChargeClient(state: found)
+        spy.settings = settings
+        clientToMake = spy
+        settings.chargeRestoreRecord = ChargeController.encodeRecord(found)
+        make()
+        XCTAssertFalse(spy.pendingAtEachCall.isEmpty, "nothing was put back")
+        XCTAssertTrue(spy.pendingAtEachCall.allSatisfy { $0 },
+                      "macOS was changed before the pending start was stored")
+        XCTAssertNil(settings.chargeRestoreRecord)
+    }
+
+    /// A pending start with a debt: the debt is still asked about at once, with nothing to put back first.
+    func testACutDebtIsStillAskedAboutWhenOnlyAStartIsPending() {
+        settings.chargeStartPending = true
+        settings.chargeCutUnconfirmed = true
+        helper.gone = true
+        let c = make()
+        XCTAssertTrue(c.isWaitingToStart)
+        XCTAssertTrue(helper.commands.contains(.stopDischarge), "the debt was not asked about at launch")
+        XCTAssertNotNil(c.offWarning)
+        helper.gone = false
+        helper.available = true
+        c.retryOwedStopWhileOff()
+        XCTAssertFalse(settings.chargeCutUnconfirmed)
+        XCTAssertTrue(c.isWaitingToStart)
+        XCTAssertEqual(writesToMacOS, [0, 0, 0])
+    }
+
+    /// A clean quit during the delay is the ordinary exit of an Anode that put macOS back: nothing is pending, and
+    /// the next launch is a cold start.
+    func testAQuitDuringTheDelayLeavesNothingPendingAndTheNextLaunchIsAColdStart() {
+        crashedWhileHolding(limit: 85)
+        let c = make()
+        XCTAssertTrue(settings.chargeStartPending)
+        c.shutdown()
+        XCTAssertFalse(settings.chargeStartPending)
+        XCTAssertEqual(client.state, found)
+        crash()
+        let next = make()
+        XCTAssertFalse(next.isWaitingToStart, "a clean quit was taken for a crash")
+        XCTAssertEqual(client.state?.mclLimit, 85, "the limit was not set at launch")
+        XCTAssertEqual(record, found)
+    }
+
+    /// The headless restore (`uninstall.sh`) leaves nothing pending: Charge Control is switched off and macOS is
+    /// as it found it.
+    func testTheHeadlessRestoreClearsAPendingStart() {
+        settings.chargeStartPending = true
+        settings.chargeControlEnabled = true
+        XCTAssertTrue(ChargeController.restoreForUninstall(settings: settings, makeClient: { [weak self] in
+            self?.client
+        }, helper: helper, log: { _ in }))
+        XCTAssertFalse(settings.chargeStartPending)
+        XCTAssertFalse(settings.chargeControlEnabled)
+    }
+
     /// Switching Charge Control off during the delay cancels it: nothing starts when it runs out.
     func testSwitchingOffDuringTheDelayCancelsIt() {
         crashedWhileHolding(limit: 85)
@@ -719,6 +837,7 @@ final class ChargeControllerTests: XCTestCase {
         XCTAssertEqual(c.status, .off)
         XCTAssertEqual(client.state, found)
         XCTAssertNil(settings.chargeRestoreRecord)
+        XCTAssertFalse(settings.chargeStartPending, "switching off left a start pending")
         let writes = writesToMacOS, made = clientsMade
         c.resumeIfDue(now: afterTheDelay)
         XCTAssertEqual(writesToMacOS, writes, "the delay ran out after Charge Control was switched off")
@@ -748,9 +867,11 @@ final class ChargeControllerTests: XCTestCase {
         XCTAssertEqual(client.state, theirs)
         XCTAssertNil(settings.chargeRestoreRecord, "the other account's state was written down as macOS's own")
         XCTAssertFalse(helper.following)
+        XCTAssertTrue(settings.chargeStartPending, "the start was no longer pending though it had not run")
 
         center.post(name: NSWorkspace.sessionDidBecomeActiveNotification, object: nil)
         XCTAssertFalse(c.isWaitingToStart, "the start did not come once this account was back")
+        XCTAssertFalse(settings.chargeStartPending)
         XCTAssertEqual(client.state?.mclLimit, 85)
         XCTAssertEqual(record, theirs, "macOS's state when this account came back is what is written down")
         XCTAssertTrue(helper.following)
@@ -793,6 +914,7 @@ final class ChargeControllerTests: XCTestCase {
         c.restoreForUninstall()
         XCTAssertFalse(c.isWaitingToStart)
         XCTAssertFalse(settings.chargeControlEnabled)
+        XCTAssertFalse(settings.chargeStartPending)
         XCTAssertEqual(writesToMacOS, writes)
         XCTAssertEqual(client.state?.mclLimit, 95)
     }
@@ -3144,6 +3266,8 @@ final class RecordingChargeClient: ChargeLimitClient {
     weak var settings: Settings?
     private(set) var limitCalls: [Int] = []
     private(set) var recordAtEachCall: [String?] = []
+    /// Whether a start was pending (`Settings.chargeStartPending`) at the moment of each call.
+    private(set) var pendingAtEachCall: [Bool] = []
 
     init(state: NativeChargeState?) { self.state = state }
 
@@ -3152,6 +3276,7 @@ final class RecordingChargeClient: ChargeLimitClient {
     func setLimit(_ percent: Int) -> Bool {
         limitCalls.append(percent)
         recordAtEachCall.append(settings?.chargeRestoreRecord)
+        pendingAtEachCall.append(settings?.chargeStartPending ?? false)
         guard NativeChargeLimit.isClientSettable(percent) else { return false }
         state?.mclLimit = percent
         return true
@@ -3159,12 +3284,14 @@ final class RecordingChargeClient: ChargeLimitClient {
 
     func setLimitEnabled(_ on: Bool) -> Bool {
         recordAtEachCall.append(settings?.chargeRestoreRecord)
+        pendingAtEachCall.append(settings?.chargeStartPending ?? false)
         state?.mclEnabled = on
         return true
     }
 
     func setOptimizedCharging(_ on: Bool) -> Bool {
         recordAtEachCall.append(settings?.chargeRestoreRecord)
+        pendingAtEachCall.append(settings?.chargeStartPending ?? false)
         state?.optimizedChargingEnabled = on
         return true
     }

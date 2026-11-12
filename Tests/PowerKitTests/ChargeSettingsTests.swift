@@ -314,6 +314,32 @@ final class ChargeSettingsTests: XCTestCase {
         _ = token
     }
 
+    /// The start pending after an unclean exit is bookkeeping like the debt: off until written, stored as a plain
+    /// Bool under its own key, cleared by removing the key, and an observer of every key hears nothing.
+    func testAStartPendingRoundTripsAndClears() {
+        let s = Settings(defaults: defaults)
+        XCTAssertFalse(s.chargeStartPending)
+        var fired = 0
+        let token = s.observe(Settings.Key.any) { fired += 1 }
+        s.chargeStartPending = true
+        XCTAssertTrue(s.chargeStartPending)
+        XCTAssertEqual(stored("chargeStartPending") as? Bool, true)
+        XCTAssertTrue(Settings(defaults: defaults).chargeStartPending)
+        s.chargeStartPending = false
+        XCTAssertFalse(s.chargeStartPending)
+        XCTAssertNil(stored("chargeStartPending"), "clearing must remove the key, not leave a false behind")
+        XCTAssertEqual(fired, 0)
+        _ = token
+    }
+
+    /// A string or a number under the key is not a pending start.
+    func testAStartPendingOfTheWrongTypeReadsAsNotPending() {
+        store("yes", as: "chargeStartPending")
+        XCTAssertFalse(Settings(defaults: defaults).chargeStartPending)
+        store(Data([1]), as: "chargeStartPending")
+        XCTAssertFalse(Settings(defaults: defaults).chargeStartPending)
+    }
+
     // ── What the policy is handed ───────────────────────────────────────────
 
     /// Each field of the snapshot comes from its own setting. Two arrangements, so that no two switches agree in
