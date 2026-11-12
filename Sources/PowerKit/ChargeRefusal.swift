@@ -48,9 +48,12 @@ public enum ChargeRefusal {
     /// the charger. Passes by itself.
     public static let switchedRecently = "the charger was switched a moment ago; try again shortly"
 
-    /// The SMC said no to the cut, and the charger does not read cut.
+    /// The SMC said no to the cut, and the charger does not read as Anode's
+    /// cut (exactly 0x08).
     public static let cutRefused = "the SMC would not cut the charger"
 
-    /// The SMC said yes to the cut, and the charger does not read cut.
+    /// The SMC said yes to the cut, and the charger does not read as Anode's
+    /// cut (exactly 0x08): connected, unreadable, or some other value, which
+    /// the undo writes back to 0x00.
     public static let cutNotKept = "the SMC took the cut and the charger does not read as cut"
 }

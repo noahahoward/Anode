@@ -11,12 +11,14 @@ import notify
 /// (measured: `kill -9` left `CHIE` = 08 and the charger disconnected).
 public protocol ChargeHardware: AnyObject {
     /// Is the charger cut right now? nil when the key cannot be read. Any
-    /// non-zero value reads as cut: this is the question a READ-BACK asks.
+    /// non-zero value reads as cut: this is the question a reconnect's
+    /// READ-BACK asks (only 0x00 is connected).
     func adapterCut() -> Bool?
     /// The byte the adapter-cut key holds right now, nil when it cannot be
     /// read. Tells Anode's own cut — `AdapterCutKey.cut`, the only non-zero
     /// value it writes — from a value nobody here has measured, which a
-    /// reconnect holding nothing leaves alone (`ChargeRelease.reconnect`).
+    /// reconnect holding nothing leaves alone (`ChargeRelease.reconnect`). A
+    /// cut's read-back asks this, and takes only exactly 0x08.
     func adapterCutValue() -> UInt8?
     /// Cut (true) or reconnect (false). The only two writes the helper makes to
     /// the charger. True means the SMC said yes to the write — neither that
@@ -88,10 +90,16 @@ public struct DischargeWatch {
 /// answered with an error is not proof that nothing changed. `setAdapterCut`'s
 /// answer is logged, never trusted; only reading `CHIE` again says what the
 /// charger is doing. So a reconnect is DONE when the key reads connected, and a
-/// cut is done when the key reads cut. Anything else is a failure, reported as
+/// cut is done when the key reads exactly 0x08. Anything else is a failure, reported as
 /// one. (The SMC's result byte for a good `CHIE` write has never been measured:
 /// nothing here may depend on it being 0.)
 public enum ChargeRelease {
+
+    /// How an `.unrecognised` answer begins: a stop (or a startup clear, or an
+    /// uninstall) that found the key holding a value Anode never writes, and
+    /// left it. The reply is ok — it is not Anode's cut — but it is not
+    /// "connected" either, and the app tells it apart by these words.
+    public static let notAnodesValue = "the charger switch holds a value Anode did not write"
 
     /// How hard to try. A few reads a moment apart per write, because the SMC is
     /// a microcontroller and a read in the same breath as the write may still see
@@ -134,6 +142,12 @@ public enum ChargeRelease {
             /// written. Not Anode's cut, and not Anode's to overwrite: nobody
             /// here has measured what it means. Never the answer while a cut
             /// is held or owed (`reconnect(holding:)`).
+            ///
+            /// Ok, because it is not Anode's by construction: a cut is taken
+            /// only when it reads back exactly 0x08, and any other read-back
+            /// is undone with 0x00 (`cut`), so no value but 0x08 is ever left
+            /// by Anode. Its message says so in words of its own
+            /// (`notAnodesValue`), so the app does not take it for "connected".
             case unrecognised(UInt8)
         }
 
@@ -159,8 +173,8 @@ public enum ChargeRelease {
             case .noKey:       return "this Mac has no adapter-cut key — nothing to reconnect"
             case .reconnected: return "charger reconnected"
             case .unrecognised(let value):
-                return "the charger's cut key reads " + String(format: "0x%02X", value)
-                     + ", a value Anode never writes — left alone"
+                return ChargeRelease.notAnodesValue + " (" + String(format: "0x%02X", value)
+                     + "); Anode leaves it alone"
             case .stillCut:
                 return "the charger did NOT reconnect — it still reads as cut off after "
                      + "\(writes) tr\(writes == 1 ? "y" : "ies")"
@@ -240,15 +254,20 @@ public enum ChargeRelease {
     /// write's own answer, which only picks the words: the SMC's result byte
     /// for a good `CHIE` write has not been measured, and trusting it would
     /// refuse every discharge on a Mac that answers a good write with non-zero.
+    /// "Reads cut" means reads EXACTLY `AdapterCutKey.cut`: any other non-zero
+    /// value is one nobody here has measured, and Anode must never be left
+    /// holding it.
     public enum CutOutcome: Equatable {
-        /// It reads cut, and the write said yes.
+        /// It reads 0x08, and the write said yes.
         case cut
-        /// It reads cut, and the write said no. A cut all the same; the answer
+        /// It reads 0x08, and the write said no. A cut all the same; the answer
         /// is worth a log line, because it is the unmeasured case.
         case cutAlthoughRefused
-        /// It does not read cut (or cannot be read), and the write said no.
+        /// It does not read 0x08 (0x00, another value, or unreadable), and the
+        /// write said no.
         case refused
-        /// It does not read cut (or cannot be read), and the write said yes.
+        /// It does not read 0x08 (0x00, another value, or unreadable), and the
+        /// write said yes.
         case notKept
 
         /// The charger reads cut: the discharge is on.
@@ -257,10 +276,11 @@ public enum ChargeRelease {
 
     /// Cut the charger and confirm it by reading it back. Anything not `isCut`
     /// must be followed by `reconnect(alwaysWrite: true)`: a write that did not
-    /// provably cut may still land.
+    /// provably cut may still land, and a value other than 0x08 that it left is
+    /// written back to 0x00 that way, and judged by that read-back.
     public static func cut(_ charge: ChargeHardware, timing: Timing = .standard) -> CutOutcome {
         let accepted = charge.setAdapterCut(true)
-        let readsCut = readBack(charge, expecting: true, timing: timing) == true
+        let readsCut = readBackValue(charge, expecting: AdapterCutKey.cut, timing: timing) == AdapterCutKey.cut
         switch (readsCut, accepted) {
         case (true, true):   return .cut
         case (true, false):  return .cutAlthoughRefused
@@ -277,6 +297,19 @@ public enum ChargeRelease {
         while seen != cut, reads < max(timing.readsPerTry, 1) {
             pause(timing.readPause)
             seen = charge.adapterCut()
+            reads += 1
+        }
+        return seen
+    }
+
+    /// The same for an exact value: read until the key holds `value`, and
+    /// return the last reading.
+    static func readBackValue(_ charge: ChargeHardware, expecting value: UInt8, timing: Timing) -> UInt8? {
+        var seen = charge.adapterCutValue()
+        var reads = 1
+        while seen != value, reads < max(timing.readsPerTry, 1) {
+            pause(timing.readPause)
+            seen = charge.adapterCutValue()
             reads += 1
         }
         return seen

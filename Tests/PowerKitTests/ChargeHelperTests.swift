@@ -190,6 +190,21 @@ final class ChargeHelperTestsReconnect: XCTestCase {
         XCTAssertEqual(ignoring.isCut, false)
     }
 
+    /// ONLY 0x08 IS ANODE'S CUT, on the way in as well as out. A cut that reads
+    /// back any other value — non-zero, so the charger may well be off — is not
+    /// taken: nobody here has measured what it means, and taking it would leave
+    /// Anode holding a value it never writes.
+    func testACutIsTakenOnlyWhenItReadsBackExactlyAnodesValue() {
+        for value: UInt8 in [0x01, 0x04, 0x09, 0xFF] {
+            let hw = FakeChargeHardware()
+            hw.cutLandsAs = value
+            XCTAssertEqual(ChargeRelease.cut(hw, timing: now), .notKept, "\(value) was taken for a cut")
+        }
+        let ours = FakeChargeHardware()
+        ours.cutLandsAs = AdapterCutKey.cut
+        XCTAssertEqual(ChargeRelease.cut(ours, timing: now), .cut)
+    }
+
     /// The other half of "judged by the read-back": a write that answers no
     /// and lands is a cut. The result byte of a good `CHIE` write is
     /// unmeasured; a Mac that answers it non-zero must still discharge.
@@ -1444,6 +1459,41 @@ final class ChargeHelperTests: XCTestCase {
         XCTAssertTrue(lines.contains { $0.contains("answered the cut with an error") }, "\(lines)")
     }
 
+    /// A cut that reads back a value other than 0x08 is refused like a cut that
+    /// was not kept, and undone: 0x00 written, and judged by its own read-back.
+    /// Nothing is held afterwards — the charger reads connected, no target, no
+    /// reconnect owed.
+    func testACutThatReadsBackAnotherValueIsRefusedAndUndone() {
+        let hw = FakeChargeHardware(percent: 77)
+        hw.cutLandsAs = 0x04
+        let server = makeServer(hw)
+        let reply = server.handle(.command(.discharge(toPercent: 40)))
+        XCTAssertEqual(reply, FanReply(ok: false, message: ChargeRefusal.cutNotKept))
+        XCTAssertEqual(hw.cutWrites, [true, false], "the value the cut left was not undone")
+        XCTAssertEqual(hw.isCut, false)
+        XCTAssertEqual(hw.adapterCutValue(), AdapterCutKey.connected)
+        XCTAssertNil(server.dischargeTarget)
+        XCTAssertFalse(server.reconnectOwed)
+        XCTAssertTrue(server.isIdle)
+    }
+
+    /// So a non-zero value other than 0x08, found later, is never Anode's. A
+    /// stop that finds one with nothing held writes nothing and answers ok —
+    /// in words that say plainly that the charger switch holds a value Anode
+    /// did not write, so the app does not take it for "connected".
+    func testAStopFindingAValueAnodeDidNotWriteSaysSoPlainly() {
+        let hw = FakeChargeHardware(percent: 77)
+        hw.unknownValue = 0x04
+        let server = makeServer(hw)
+        let reply = server.handle(.command(.stopDischarge))
+        XCTAssertEqual(reply, FanReply(ok: true, message: "the charger switch holds a value Anode did not write "
+                                                         + "(0x04); Anode leaves it alone"))
+        XCTAssertTrue(reply.message.hasPrefix(ChargeRelease.notAnodesValue), "the app could not tell it apart")
+        XCTAssertTrue(hw.cutWrites.isEmpty, "a value Anode did not write was written over")
+        XCTAssertEqual(hw.unknownValue, 0x04)
+        XCTAssertNil(server.dischargeTarget)
+    }
+
     /// A helper with no charge hardware refuses the charge commands rather than
     /// pretending.
     func testAHelperWithoutChargeHardwareRefuses() {
@@ -2123,6 +2173,13 @@ final class FakeChargeHardware: ChargeHardware {
         get { locked { _unknownValue } }
         set { locked { _unknownValue = newValue } }
     }
+    /// A cut write lands as this value instead of 0x08: the charger reads cut
+    /// (non-zero), but not with the one value Anode writes.
+    var cutLandsAs: UInt8? {
+        get { locked { _cutLandsAs } }
+        set { locked { _cutLandsAs = newValue } }
+    }
+    private var _cutLandsAs: UInt8?
 
     func adapterCutValue() -> UInt8? {
         locked {
@@ -2148,7 +2205,7 @@ final class FakeChargeHardware: ChargeHardware {
                 if _ignoreRestore { return true }
             }
             _cut = on
-            _unknownValue = nil
+            _unknownValue = on ? _cutLandsAs : nil
             return true
         }
     }

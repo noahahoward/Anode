@@ -294,6 +294,8 @@ final class ChargeController {
     private var cutLookAnswered = false
     /// Counts the discharges sent: a stop's yes settles the debt only if no discharge went out after the stop.
     private var dischargeSeq = 0
+    /// A stop's answer said the charger switch holds a value Anode never writes, and that has been logged: once.
+    private var saidNotAnodesValue = false
     /// Counts calls to `tick`. A stop for a lost cut goes out at most once a tick, so a helper that keeps not
     /// answering is asked every tick, not in a loop on its own answers.
     private var tickSerial = 0
@@ -657,7 +659,7 @@ final class ChargeController {
     private func waitedStop(timeout: TimeInterval) -> FanReply? {
         let seq = dischargeSeq
         let r = helper.sendWaiting(.stopDischarge, timeout: timeout)
-        if r?.ok == true { chargerConfirmed(stopSentAt: seq) }
+        if let r, r.ok { chargerConfirmed(stopSentAt: seq, message: r.message) }
         return r
     }
 
@@ -685,8 +687,8 @@ final class ChargeController {
             // Switched on meanwhile: the controller's own stop has this now.
             guard !self.running else { return }
             if r.ok {
-                self.chargerConfirmed(stopSentAt: seq)
-                self.log("the charger is connected: \(r.message)")
+                self.chargerConfirmed(stopSentAt: seq, message: r.message)
+                if !Self.isNotAnodesValue(r.message) { self.log("the charger is connected: \(r.message)") }
                 self.endOffRetry()
             } else if r.message != self.lastOffFailure {
                 self.lastOffFailure = r.message
@@ -712,11 +714,16 @@ final class ChargeController {
         settings.flush()
     }
 
-    /// A running helper answered a stop with yes: the charger is connected (or was never cut). Settles the debt,
-    /// unless a discharge went out after that stop.
-    private func chargerConfirmed(stopSentAt seq: Int) {
+    /// A running helper answered a stop with yes: the charger is connected (or was never cut, or holds a value Anode
+    /// never writes, which is not Anode's cut). Settles the debt, unless a discharge went out after that stop.
+    private func chargerConfirmed(stopSentAt seq: Int, message: String) {
+        let foreign = Self.isNotAnodesValue(message)
+        if foreign, !saidNotAnodesValue {
+            saidNotAnodesValue = true
+            log("\(message): it is not Anode's cut, so Charge Control leaves it as it is")
+        }
         guard seq == dischargeSeq else { return }
-        let wasLost = cutLost || cutSeen
+        let wasLost = (cutLost || cutSeen) && !foreign
         stopDue = false
         cutLost = false
         if cutSeen || cutLookSince != nil { cutLookAnswered = true }
@@ -727,6 +734,11 @@ final class ChargeController {
             settings.flush()
         }
         if wasLost { log("a running helper says the charger is connected") }
+    }
+
+    /// The helper's ok to a stop that found the charger switch holding a value Anode never writes, and left it.
+    static func isNotAnodesValue(_ message: String) -> Bool {
+        message.hasPrefix(ChargeRelease.notAnodesValue)
     }
 
     /// A stop was not answered yes: by a helper that is gone (or a link that heard nothing), or by one that could
@@ -1282,10 +1294,10 @@ final class ChargeController {
             guard self.running else { return }
             if r.ok {
                 self.appliedDischarge = nil
-                self.chargerConfirmed(stopSentAt: seq)
+                self.chargerConfirmed(stopSentAt: seq, message: r.message)
                 if let from {
                     self.log("discharge to \(from) stopped (\(why))")
-                } else if !lost {
+                } else if !lost, !Self.isNotAnodesValue(r.message) {
                     self.log("the charger is connected (\(why)): \(r.message)")
                 }
                 self.reapply()

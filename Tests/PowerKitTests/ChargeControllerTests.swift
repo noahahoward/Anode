@@ -947,6 +947,30 @@ final class ChargeControllerTests: XCTestCase {
         XCTAssertEqual(helper.stops(), asked + 1)
     }
 
+    /// A stop answered "the charger switch holds a value Anode did not write" settles the debt (it is not Anode's
+    /// cut: Anode keeps a cut only when it reads back exactly 0x08), but it is not "the charger is connected". It is
+    /// logged once, in its own words, however many stops hear it.
+    func testAValueAnodeDidNotWriteIsLoggedOnceAndNeverCalledConnected() {
+        let foreign = ChargeRelease.Result(.unrecognised(0x04), writes: 0).message
+        helper.answer = { cmd in
+            FanReply(ok: true, message: cmd == .stopDischarge ? foreign : "ok")
+        }
+        settings.chargeCutUnconfirmed = true
+        let t0 = Date()
+        battery = Self.state(70, ac: false, adapter: true)
+        let c = make()   // the debt from last time is paid first, which answers this stretch of the cut look
+        XCTAssertFalse(settings.chargeCutUnconfirmed)
+        // Then the net, over the next stretch.
+        battery = Self.state(70, ac: false, adapter: false)
+        c.tick(now: t0.addingTimeInterval(100))
+        battery = Self.state(70, ac: false, adapter: true)
+        c.tick(now: t0.addingTimeInterval(110))
+        c.tick(now: t0.addingTimeInterval(205))
+        XCTAssertEqual(helper.stops(), 2)
+        XCTAssertEqual(lines.filter { $0.contains(ChargeRelease.notAnodesValue) }.count, 1, lines.joined(separator: "\n"))
+        XCTAssertFalse(lines.contains { $0.contains("charger is connected") }, lines.joined(separator: "\n"))
+    }
+
     /// A discharge in force is not a cut left behind, however long it runs.
     func testADischargeInForceIsNotTakenForAnOrphanedCut() {
         let t0 = Date()
