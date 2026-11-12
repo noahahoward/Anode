@@ -410,6 +410,28 @@ do {
     failedToStart(error.localizedDescription)
 }
 
+// Sleep, in both modes. Nothing in this process runs while the Mac sleeps, so a
+// charger cut left in place over sleep has nobody watching the floor. Each
+// will-sleep goes to the loop thread the way a stop signal does, and macOS is
+// answered once the loop has reconnected the charger, or after
+// `sleepAnswerDeadline`, whichever is first: a stuck loop never holds up sleep.
+// Made after `start`, which creates the pipe the notice wakes the loop through.
+let sleepWatch = SystemSleepWatch(
+    willSleep: {
+        guard !server.noteSystemWillSleep() else { return }
+        let why = "the loop did not answer a sleep notice within "
+            + "\(Int(FanHelperServer.sleepAnswerDeadline))s — sleep was let through anyway"
+        fanLog.error("helper: WARNING: \(why, privacy: .public)")
+        printErr("anode-helper: WARNING: \(why)")
+    },
+    didWake: { server.noteSystemDidWake() })
+if sleepWatch == nil {
+    let why = "could not register for sleep notices — a discharge is not stopped "
+        + "before sleep by this helper"
+    fanLog.error("helper: WARNING: \(why, privacy: .public)")
+    printErr("anode-helper: WARNING: \(why)")
+}
+
 // Said out loud at the moment the user authorises it, because this is the only
 // point where a person is looking at the decision. A trust model buried in a
 // source file is not disclosure to the person typing the password.
@@ -442,6 +464,8 @@ if isInstalledDaemon {
 }
 
 server.run()
+// At once: the loop has handed everything back and is gone.
+sleepWatch?.stop()
 withExtendedLifetime(signalSources) {}   // a released source stops firing
 // SIGKILL is the one exit this cannot cover: nothing runs, and a fan set
 // manually stays set until something writes it again — and a cut charger stays

@@ -460,6 +460,29 @@ public final class FanHelperServer {
         set { stateLock.lock(); stoppingFlag = newValue; stateLock.unlock() }
     }
 
+    /// The system's sleep and wake, as the loop is told about them.
+    private enum PowerNotice {
+        /// Signalled once the loop has acted on it.
+        case willSleep(answered: DispatchSemaphore)
+        case didWake
+    }
+
+    /// Notices posted from the sleep watch's queue, in the order they came,
+    /// for the loop to act on. Behind `stateLock`, beside the stop flag, and
+    /// for the same reason.
+    private var powerNotices: [PowerNotice] = []
+    /// Set once the loop has handed everything back on its way out. A notice
+    /// posted after that is answered at once: nothing is left to reconnect.
+    private var loopEnded = false
+
+    /// The longest a will-sleep notice waits for the loop before macOS is
+    /// answered anyway, so a stuck loop can never hold up sleep.
+    public static let sleepAnswerDeadline: TimeInterval = 2
+
+    /// Between a will-sleep and the next wake. A discharge is refused for the
+    /// whole of it. Touched only on the loop thread.
+    private(set) var systemAsleep = false
+
     /// The fans this helper has taken, and where each was before it did.
     ///
     /// This is the whole memory a release works from. Emptied only by a CLEAN
@@ -590,7 +613,7 @@ public final class FanHelperServer {
             unlink(config.socketPath)
             throw Failure.socketFailed(why)
         }
-        wakePipe = pipeFDs
+        adoptWakePipe(pipeFDs)
         listenFD = fd
         log("listening on \(config.socketPath) for uid \(config.ownerUID)")
     }
@@ -673,7 +696,7 @@ public final class FanHelperServer {
             // way out of a failure.
             throw Failure.socketFailed(String(cString: strerror(errno)))
         }
-        wakePipe = pipeFDs
+        adoptWakePipe(pipeFDs)
         listenFD = fd
         ownsSocketPath = false
         // The bound path is logged rather than checked. It is the one piece of
@@ -700,6 +723,10 @@ public final class FanHelperServer {
     /// cut the loop wakes every `dischargeWatchInterval` to look at the battery,
     /// because the floor has to hold whether or not the app is there to ask.
     /// It also never times out while discharging (`isIdle`).
+    ///
+    /// A SLEEP OR WAKE NOTICE wakes it the way a stop signal does — a byte on
+    /// the wake pipe — and is acted on before any request line is served, so a
+    /// discharge asked for after the Mac said it is going to sleep is refused.
     ///
     /// NOTHING A CLIENT DOES CAN HOLD THIS THREAD. The client socket is
     /// non-blocking: a readable client gets one `read`, whole lines are served
@@ -753,6 +780,9 @@ public final class FanHelperServer {
                 _ = read(wakePipe[0], &scratch, scratch.count)
             }
             if pollsClient, fds[2].revents != 0 { readFromClient() }
+            // After the read and before the serve: a line read in this pass was
+            // sent after any notice already posted, and must see it.
+            actOnPowerNotices()
             serveOneLine()
             dropAClientThatStalled()
             if fds[0].revents & Int16(POLLIN) != 0 { acceptOne() }
@@ -797,10 +827,111 @@ public final class FanHelperServer {
     /// only writes one byte to a pipe.
     public func stop() {
         stopping = true
-        if wakePipe[1] >= 0 {
-            var byte: UInt8 = 1
-            _ = write(wakePipe[1], &byte, 1)
+        wakeLoop()
+    }
+
+    /// The one way another thread gets the loop's attention: a byte on the wake
+    /// pipe. A stop signal and a sleep notice both come through here.
+    ///
+    /// Under `stateLock`, as is every change to the pipe, so a byte can never go
+    /// to a descriptor `shutdownSocket` has closed and something else has since
+    /// been given. The write end is non-blocking: a full pipe already wakes the
+    /// loop, and the byte is not needed.
+    private func wakeLoop() {
+        stateLock.lock(); defer { stateLock.unlock() }
+        guard wakePipe[1] >= 0 else { return }
+        var byte: UInt8 = 1
+        _ = write(wakePipe[1], &byte, 1)
+    }
+
+    private func adoptWakePipe(_ fds: [Int32]) {
+        _ = fcntl(fds[1], F_SETFL, fcntl(fds[1], F_GETFL) | O_NONBLOCK)
+        stateLock.lock(); wakePipe = fds; stateLock.unlock()
+    }
+
+    // ── Sleep ───────────────────────────────────────────────────────────────
+
+    /// The Mac is about to sleep: tell the loop, and wait until it has acted —
+    /// at most `timeout`. True when the loop answered in time.
+    ///
+    /// For the sleep watch's queue, or any thread but the loop's. Nothing in
+    /// this process runs while the Mac sleeps, so the charger must be
+    /// reconnected before macOS is answered; and macOS must be answered whatever
+    /// the loop is doing, so the wait is bounded.
+    @discardableResult
+    public func noteSystemWillSleep(timeout: TimeInterval = sleepAnswerDeadline) -> Bool {
+        // One semaphore per notice: a loop that answers one late must never
+        // bank a signal that lets the NEXT sleep through unanswered.
+        let answered = DispatchSemaphore(value: 0)
+        stateLock.lock()
+        if loopEnded { stateLock.unlock(); return true }
+        powerNotices.append(.willSleep(answered: answered))
+        stateLock.unlock()
+        wakeLoop()
+        return answered.wait(timeout: .now() + timeout) == .success
+    }
+
+    /// The Mac has woken. For any thread but the loop's; does not wait.
+    public func noteSystemDidWake() {
+        stateLock.lock()
+        powerNotices.append(.didWake)
+        stateLock.unlock()
+        wakeLoop()
+    }
+
+    /// Act on every posted notice, oldest first: a sleep then a wake the loop
+    /// was too busy to see must leave the helper awake, not asleep.
+    private func actOnPowerNotices() {
+        stateLock.lock()
+        let notices = powerNotices
+        powerNotices.removeAll()
+        stateLock.unlock()
+        for notice in notices {
+            switch notice {
+            case .willSleep(let answered):
+                systemWillSleep()
+                answered.signal()
+            case .didWake:
+                systemDidWake()
+            }
         }
+    }
+
+    /// On the way out, after `release()` has reconnected the charger: answer
+    /// every sleep notice still waiting, and any posted later, at once.
+    private func answerPowerNoticesOnTheWayOut() {
+        stateLock.lock()
+        let notices = powerNotices
+        powerNotices.removeAll()
+        loopEnded = true
+        stateLock.unlock()
+        for case .willSleep(let answered) in notices { answered.signal() }
+    }
+
+    /// Reconnect the charger before the Mac sleeps, and refuse to cut it again
+    /// until it wakes. LOOP THREAD ONLY: the watch reaches it through
+    /// `noteSystemWillSleep`.
+    ///
+    /// Through the same routine `stopDischarge` uses, and with the same books: a
+    /// reconnect that read back connected clears the target; one that failed is
+    /// still owed and is retried by the watch after wake. Reconnect first, then
+    /// log. A sleep with nothing cut writes nothing and says nothing.
+    func systemWillSleep() {
+        systemAsleep = true
+        guard dischargeTarget != nil || reconnectOwed else { return }
+        let result = reconnectCharger()
+        if result.ok {
+            log("reconnected the charger before sleep")
+        } else {
+            log("WARNING: \(result.message) before sleep — retrying after wake, "
+              + "every \(Int(dischargeWatchInterval))s")
+        }
+    }
+
+    /// The Mac is awake. LOOP THREAD ONLY. A discharge is NOT resumed: the app
+    /// decides again, and asks.
+    func systemDidWake() {
+        systemAsleep = false
     }
 
     // ── Connections ─────────────────────────────────────────────────────────
@@ -919,13 +1050,16 @@ public final class FanHelperServer {
         // take the socket away so nothing can reconnect mid-teardown.
         if clientFD >= 0 { dropClient(reason: "the helper is stopping") }
         else { log(release().message) }
+        answerPowerNoticesOnTheWayOut()
         if listenFD >= 0 { close(listenFD); listenFD = -1 }
         // Only if we made it. launchd's socket outlives this process on purpose:
         // it is what the next connection arrives on, and removing it would make
         // this the last helper that ever started.
         if ownsSocketPath { unlink(config.socketPath) }
+        stateLock.lock()
         for fd in wakePipe where fd >= 0 { close(fd) }
         wakePipe = [-1, -1]
+        stateLock.unlock()
         log("stopped")
     }
 
@@ -980,6 +1114,11 @@ public final class FanHelperServer {
     private func discharge(to target: Int) -> FanReply {
         guard let charge else {
             return FanReply(ok: false, message: "this helper has no charge control")
+        }
+        // Nothing here runs while the Mac sleeps, so nothing would watch the
+        // floor. Refused until the wake; the reconnect is never refused.
+        guard !systemAsleep else {
+            return FanReply(ok: false, message: "the Mac is going to sleep")
         }
         guard Self.dischargeTargetRange.contains(target) else {
             return FanReply(ok: false, message: "refused: a discharge target must be "

@@ -11,8 +11,10 @@ import XCTest
 //
 //     swift test --filter ChargeHelperTests
 //
-// runs every charge-helper test. A class named otherwise is silently skipped by
+// runs every test in this file. A class named otherwise is silently skipped by
 // that gate — which is how the dead man's switch test once went unrun by it.
+// The sleep tests are `ChargeHelperSleepTests`, in their own file, and that
+// gate does NOT run them: `swift test --filter ChargeHelper` runs both.
 
 // ── Pure decisions, and the exact root surface ──────────────────────────────
 
