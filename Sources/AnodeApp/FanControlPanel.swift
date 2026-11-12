@@ -88,7 +88,9 @@ final class FanControlPanel: NSView {
     /// helper that arrives to find nobody queued anything for it.
     private static let startTimeout: TimeInterval = 180
 
-    private let link = FanControlLink()
+    /// Shared with Charge Control: the helper takes one client, and a client leaving releases the fans and ends a
+    /// discharge. See `HelperConnection`.
+    private let link = HelperConnection.shared
     private var session = FanSession(enabled: Settings.shared.fanControlEnabled)
     private var fans: [FanInfo] = []
     /// The helper's last word, shown verbatim. Its refusals name the reason, and
@@ -190,10 +192,12 @@ final class FanControlPanel: NSView {
     ///
     /// Closing the socket IS the release: the helper hands the fans back when its
     /// client disappears, so quitting takes the same path a crash takes and the
-    /// path that matters is the one exercised every day.
+    /// path that matters is the one exercised every day. The socket is shared with
+    /// Charge Control, so this lets go of the strip's hold on it; it closes when
+    /// the last holder lets go, which on a quit is straight after.
     func teardown() {
         endPolling()
-        link.disconnect()
+        link.release(.fans)
     }
 
     // ── Connection ──────────────────────────────────────────────────────────
@@ -227,7 +231,7 @@ final class FanControlPanel: NSView {
         guard !connecting else { return }
         connecting = true
         lastConnectAttempt = Date()
-        link.connect { [weak self] status in
+        link.connect(for: .fans) { [weak self] status in
             guard let self else { return }
             self.connecting = false
             self.linkAnswered(status)
@@ -494,7 +498,9 @@ final class FanControlPanel: NSView {
         Settings.shared.fanControlEnabled = false
         session.enabled = false
         endPolling()
-        link.disconnect()
+        // Closes the socket only if Charge Control is not holding it; the
+        // release above has already handed the fans back either way.
+        link.release(.fans)
         session.helperBecame(.absent)
         render()
     }
@@ -566,17 +572,24 @@ final class FanControlPanel: NSView {
     /// it and the user may take a minute over it — on the main thread that is a
     /// frozen window. The link is dropped first: an uninstall stops the daemon
     /// under our open socket, and reconnecting from a stale fd would look to a
-    /// surviving helper like a second client.
+    /// surviving helper like a second client. The socket is shared with Charge
+    /// Control, so it is closed for both and held shut until the dialog is
+    /// answered (`suspend`/`resume`).
     private func elevate(command: String, prompt: String, waiting: String, done: String,
                          onSuccess: ((FanControlPanel) -> Void)? = nil) {
         elevating = true
         say(waiting)
         render()
-        link.disconnect()
+        let link = self.link
+        link.release(.fans)
+        link.suspend()
         session.helperBecame(.absent)
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let result = FanElevation.run(command: command, prompt: prompt)
             DispatchQueue.main.async {
+                // Whatever became of the strip: a suspended link would keep
+                // Charge Control off the helper for good.
+                link.resume()
                 guard let self else { return }
                 self.elevating = false
                 self.installed = FanDaemon.isInstalled()

@@ -53,6 +53,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
     var desktopSwitcher: DesktopSwitcher?
     var lidGlass: LidGlass?
     var keepAwake: KeepAwakeController?
+    /// Charge Control. Exists for the app's whole life; while its setting is off it holds nothing but an observer.
+    var chargeControl: ChargeController?
     var liveWallpaper: LiveWallpaperRuntime?
     var keyboardCleaner: KeyboardCleaner?
     var gameMode: GameModeController?
@@ -329,6 +331,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         LidGlass.current = lidGlass
         keepAwake = KeepAwakeController()
         KeepAwakeController.current = keepAwake
+        chargeControl = ChargeController(settings: .shared, helper: ChargeHelperAdapter())
+        ChargeController.current = chargeControl
         keyboardCleaner = KeyboardCleaner(tap: CleanerInputTap(), windows: CleanerWindows())
         KeyboardCleaner.current = keyboardCleaner
         gameMode = GameModeController(presenter: GameHUDWindow(), observer: WorkspaceActivationObserver(),
@@ -2735,6 +2739,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
     func applicationWillTerminate(_ note: Notification) {
         RunTrace.cleanExit()
         fansPane.teardown()
+        // Leaves macOS's charge limit in force, which is the point of it, and lets go of the helper link; the
+        // last holder letting go is what ends a discharge.
+        chargeControl?.shutdown()
         // Never leave the lid held open behind a quit app.
         keepAwake?.shutdown()
         gameMode?.shutdown()

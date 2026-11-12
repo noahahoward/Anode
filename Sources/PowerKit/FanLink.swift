@@ -627,6 +627,63 @@ public final class FanControlLink {
         }
     }
 
+    /// `connect` for a link that more than one part of the app uses: say hello over the socket that is already
+    /// open, and open a new one only when there is none or it no longer answers. `reopened` says which happened.
+    ///
+    /// `connect` closes an open socket before opening another, and the helper takes its client's socket closing
+    /// as the client leaving: it hands the fans back and reconnects the charger. So a second user connecting
+    /// through `connect` would undo whatever the first had asked for. The check and the open are one step on this
+    /// link's queue, so two callers cannot both find no socket and open two.
+    public func ensureConnected(_ done: @escaping (_ status: Status, _ reopened: Bool) -> Void) {
+        queue.async { [self] in
+            if fd >= 0, let reply = exchange(.hello) {
+                let status: Status = reply.ok
+                    ? .connected(fanCount: reply.fanCount ?? 0, version: reply.version)
+                    : .refused(reply.message)
+                DispatchQueue.main.async { done(status, false) }
+                return
+            }
+            let status = openAndGreet()
+            DispatchQueue.main.async { done(status, true) }
+        }
+    }
+
+    /// `send`, with the answer handed back to the caller instead of to the main thread: nil if there is no socket,
+    /// the helper stopped answering, or nothing came within `timeout`.
+    ///
+    /// For the caller that must know the answer before it returns: Charge Control stopping a discharge as the Mac
+    /// goes to sleep. That caller is on the main thread, which is why the answer cannot travel through it the way
+    /// `send`'s does. The wait is bounded; a reply that arrives after it is dropped. Never call this from this
+    /// link's own queue.
+    public func sendWaiting(_ command: FanCommand, timeout: TimeInterval) -> FanReply? {
+        let answer = WaitedReply()
+        queue.async { [self] in
+            fanLog.info("sending \(String(describing: command), privacy: .public) (waited for)")
+            let reply = exchange(.command(command))
+            fanLog.info("reply ok=\(reply?.ok ?? false) — \(reply?.message ?? "no answer", privacy: .public)")
+            answer.put(reply)
+        }
+        return answer.take(within: timeout)
+    }
+
+    /// One reply, handed from this link's queue to a thread that is waiting for it.
+    private final class WaitedReply {
+        private let lock = NSLock()
+        private let arrived = DispatchSemaphore(value: 0)
+        private var reply: FanReply?
+
+        func put(_ r: FanReply?) {
+            lock.lock(); reply = r; lock.unlock()
+            arrived.signal()
+        }
+
+        func take(within timeout: TimeInterval) -> FanReply? {
+            guard arrived.wait(timeout: .now() + timeout) == .success else { return nil }
+            lock.lock(); defer { lock.unlock() }
+            return reply
+        }
+    }
+
     /// Drop the connection without asking the helper for anything.
     ///
     /// This is also how the app hands the fans back when it quits, and it is

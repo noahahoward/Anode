@@ -2,7 +2,10 @@ import Foundation
 import ObjectiveC
 
 /// What macOS's own charge limit and Optimized Battery Charging say right now.
-public struct NativeChargeState: Equatable {
+///
+/// Codable because Charge Control stores the state it found, as JSON in `Settings.chargeRestoreRecord`, to put back
+/// when it is switched off. The property names are that storage format.
+public struct NativeChargeState: Equatable, Codable {
     /// Apple's manual charge limit (MCL) is on.
     public var mclEnabled: Bool
     /// The limit it holds, in percent. Only meaningful while `mclEnabled`: with none set the OS read 100 (plan 0 baseline).

@@ -424,6 +424,9 @@ private final class GeneralPane: Pane {
         alert.buttons.first?.keyEquivalent = ""
 
         guard alert.runModal() == .alertFirstButtonReturn else { return }
+        // Before the uninstaller can stop the helper: put macOS's own charge limit and Optimized Battery Charging
+        // back as Charge Control found them, since they would outlive the app.
+        ChargeController.current?.restoreForUninstall()
         switch UpdateLauncher.launchUninstall(removingData: wipe.state == .on) {
         case .openedTerminal:
             updateNote.stringValue = "Uninstalling in Terminal…"

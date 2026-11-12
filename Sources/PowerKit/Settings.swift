@@ -865,6 +865,15 @@ public final class Settings {
     }
     private static let chargeRestoreRecordKey = storageKey("chargeRestoreRecord")
 
+    /// Write what this handle holds to disk now rather than when `cfprefsd` gets to it.
+    ///
+    /// For one caller: Charge Control stores `chargeRestoreRecord` and then changes macOS's own charge settings,
+    /// which outlive the app. If the app died between the two with the record still in memory, nothing would know
+    /// how to put those settings back.
+    public func flush() {
+        defaults.synchronize()
+    }
+
     /// Every charge setting `ChargePolicy` decides from, read together.
     ///
     /// The values come through the getters above, so they are already inside their ranges. That is the point of
