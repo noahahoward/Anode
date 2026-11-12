@@ -29,14 +29,14 @@ import PowerKit
 // A charger cut outlives the helper that made it (measured: a killed helper leaves it cut, and the installed daemon
 // is not kept alive; only a new connection to its socket starts a fresh helper, whose startup reconnects the
 // charger). So a discharge is never taken as ended until a RUNNING helper has answered a stop with yes. The debt is
-// written down (`Settings.chargeCutUnconfirmed`, flushed) before a discharge is asked for; a stop nobody answered,
-// a connection reset under a discharge, or the charger switch reading cut for more than 90 s with no discharge
-// running, all mean the cut may be left with nobody watching: the connection is opened again at once and the stop
-// asked again, then on every tick, with a warning, until a running helper says yes. Two things settle it with no
-// helper: the helper's own uninstall finishing (it reconnects the charger, and fails when it cannot), and the charger
-// switch reading connected for more than 90 s with no discharge running. That net, and only it, does not run while
-// another account is on screen: that account's Anode may be discharging, through a helper whose socket this one
-// cannot open.
+// written down (`Settings.chargeCutUnconfirmed`, flushed) before a discharge is asked for, and when the net finds a
+// cut nobody holds (below), so that switching off or quitting still asks about it. A stop nobody answered, a
+// connection reset under a discharge, or the charger switch reading cut for more than 90 s with no discharge running,
+// all mean the cut may be left with nobody watching: the connection is opened again at once and the stop asked
+// again, then on every tick, with a warning, until a running helper says yes. Two things settle it with no helper:
+// the helper's own uninstall finishing (it reconnects the charger, and fails when it cannot), and the charger switch
+// reading connected for more than 90 s with no discharge running. That net, and only it, does not run while another
+// account is on screen: that account's Anode may be discharging, through a helper whose socket this one cannot open.
 //
 // The switch is read by the app itself (reading needs no root; only writing does), because what macOS says is not
 // proof either way. Measured on Mac17,9, macOS 27.0: with no macOS limit holding the battery, a cut makes macOS say
@@ -302,9 +302,10 @@ final class ChargeController {
 
     // The charger cut, as far as anyone has confirmed it. See the note at the top of the file.
 
-    /// The debt: a discharge was asked for and nothing has shown the charger connected since (a running helper's yes
-    /// to a stop, the helper's own uninstall, or the charger switch itself; see `noteConnected`). Mirrors
-    /// `Settings.chargeCutUnconfirmed`, which is written (and flushed) before the discharge goes out.
+    /// The debt: a discharge was asked for, or the net found a cut nobody holds (`noteCutLook`), and nothing has shown
+    /// the charger connected since (a running helper's yes to a stop, the helper's own uninstall, or the charger
+    /// switch itself; see `noteConnected`). Mirrors `Settings.chargeCutUnconfirmed`, which is written (and flushed)
+    /// before the discharge goes out, or the stop for the cut the net found.
     private var cutOwed = false {
         // The section shows it while off too (`offWarning`), and nothing else would tell it.
         didSet { if cutOwed != oldValue { changed() } }
@@ -1134,8 +1135,10 @@ final class ChargeController {
         cutSeen = false
         cutLookSince = nil
         cutLookAnswered = false
-        // A lost cut with nothing of this Anode's owed can only be the net's (every other stop goes out for a
-        // discharge, which is owed before it is asked for): it goes too, warning and all.
+        // Every lost cut is owed: a discharge is owed before it is asked for, and the net owes what it finds, so a
+        // debt this Anode has written down is still asked about while away (that is putting right, not holding),
+        // warning and all. This holds only a lost cut with no debt behind it, which nothing makes now; it is kept so
+        // that one could never outlive the debt it belongs to.
         if !cutOwed {
             cutLost = false
             stopDue = false
@@ -1289,6 +1292,10 @@ final class ChargeController {
         guard !dischargeInFlight, !cutLookAnswered, !cutSeen,
               now.timeIntervalSince(since) > Self.chargerReconnectTime else { return }
         cutSeen = true
+        // A cut the net finds is a debt like any other: written down before the helper is asked (`applyDischarge`,
+        // later in this tick), so a switch-off or a quit while it is unsettled still asks the helper, and the line
+        // while off still says so. The look itself is only in memory, and ends with the look.
+        oweCut()
         let what = switchCut ? "the charger switch has read cut" : "macOS has said the Mac is off the adapter"
         log("\(what), with the adapter there and no discharge running, for over \(Int(Self.chargerReconnectTime)) s: "
             + "the charger may have been left cut; asking the helper to reconnect it")

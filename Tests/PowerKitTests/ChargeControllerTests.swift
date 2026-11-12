@@ -1563,8 +1563,10 @@ final class ChargeControllerTests: XCTestCase {
         XCTAssertGreaterThan(helper.stops(), 0)
     }
 
-    /// A warning the net raised before the switch (its stop not answered, nothing of this Anode's owed) goes with it.
-    func testAWarningFromTheNetDoesNotOutliveAnAccountSwitch() {
+    /// A cut the net found is owed (see "A cut the net found" below), so the account switch does not drop it: the look
+    /// itself is dropped (the net does not run there), but a debt is still asked about while another account is on
+    /// screen, as any other is. That is putting right, not holding.
+    func testADebtTheNetFoundOutlivesAnAccountSwitch() {
         let t0 = Date()
         battery = Self.state(70, ac: false, adapter: true)
         helper.gone = true
@@ -1572,13 +1574,116 @@ final class ChargeControllerTests: XCTestCase {
         c.tick(now: t0)
         c.tick(now: t0.addingTimeInterval(91))
         XCTAssertEqual(c.status, .warning(ChargeController.cutWarningText))
-        XCTAssertFalse(settings.chargeCutUnconfirmed)
+        XCTAssertTrue(settings.chargeCutUnconfirmed)
         center.post(name: NSWorkspace.sessionDidResignActiveNotification, object: nil)
-        XCTAssertNotEqual(c.status, .warning(ChargeController.cutWarningText))
+        XCTAssertTrue(settings.chargeCutUnconfirmed, "the account switch dropped a debt the net had written down")
+        XCTAssertEqual(c.status, .warning(ChargeController.cutWarningText))
         let asked = helper.stops()
         c.tick(now: t0.addingTimeInterval(200))
-        c.periodicTick(now: t0.addingTimeInterval(230))
-        XCTAssertEqual(helper.stops(), asked)
+        XCTAssertGreaterThan(helper.stops(), asked, "a debt was not asked about while another account is on screen")
+    }
+
+    // ── A cut the net found is owed ─────────────────────────────────────────
+    //
+    // The net finds a cut nobody holds (the switch read cut for more than 90 s with no discharge running). That cut
+    // is as much a debt as one a discharge left: written down before the helper is asked, asked about by a switch-off
+    // and by a quit, shown while off, and settled the same ways (a running helper's yes, or the switch reading
+    // connected for long enough). Held only in memory, a person who saw "may still be switched off" and switched
+    // Charge Control off, or quit, sent no stop and left no flag and no warning.
+
+    /// The switch read cut for more than 90 s with no helper answering: the net has fired, and the stop is not
+    /// answered.
+    private func netFoundACutNobodyAnswers() -> ChargeController {
+        let t0 = Date()
+        chargerSwitch = AdapterCutKey.cut
+        let c = make()
+        helper.gone = true
+        c.tick(now: t0.addingTimeInterval(91))
+        XCTAssertEqual(c.status, .warning(ChargeController.cutWarningText))
+        return c
+    }
+
+    /// Written down before anything is asked, and settled by a running helper's yes like any other debt.
+    func testACutTheNetFoundIsWrittenDownBeforeTheHelperIsAskedAndSettledByItsYes() {
+        let t0 = Date()
+        chargerSwitch = AdapterCutKey.cut
+        let c = make()
+        var owedWhenAsked: [Bool] = []
+        helper.beforeSend = { [weak self] cmd in
+            if cmd == .stopDischarge, let self { owedWhenAsked.append(self.settings.chargeCutUnconfirmed) }
+        }
+        helper.answer = { [weak self] cmd in
+            if cmd == .stopDischarge { self?.chargerSwitch = AdapterCutKey.connected }
+            return FanReply(ok: true, message: "ok")
+        }
+        c.tick(now: t0.addingTimeInterval(91))
+        XCTAssertEqual(owedWhenAsked, [true], "the stop went out before the cut was written down")
+        XCTAssertFalse(settings.chargeCutUnconfirmed, "a running helper's yes did not settle the debt")
+        XCTAssertNotEqual(c.status, .warning(ChargeController.cutWarningText))
+    }
+
+    /// The person sees the warning and switches Charge Control off: a stop is waited for, and with nobody answering
+    /// the debt stays on disk and the section says so while off.
+    func testSwitchingOffAfterTheNetFoundACutAsksTheHelperAndKeepsTheDebt() {
+        let c = netFoundACutNobodyAnswers()
+        XCTAssertTrue(settings.chargeCutUnconfirmed, "the cut the net found was not written down")
+        let waited = helper.waited.count
+        settings.chargeControlEnabled = false
+        XCTAssertTrue(helper.waited.dropFirst(waited).contains(.stopDischarge),
+                      "switching off did not ask the helper to reconnect a charger the net found cut: \(helper.waited)")
+        XCTAssertTrue(settings.chargeCutUnconfirmed, "the debt was forgotten by the switch-off")
+        XCTAssertNotNil(c.offWarning, "the section says nothing while off")
+        XCTAssertEqual(c.status, .off)
+    }
+
+    /// The same when the helper is there: the switch-off's stop is answered yes, and that settles it.
+    func testSwitchingOffAfterTheNetFoundACutSettlesItWhenTheHelperAnswers() {
+        let c = netFoundACutNobodyAnswers()
+        helper.gone = false
+        helper.available = true
+        let waited = helper.waited.count
+        settings.chargeControlEnabled = false
+        XCTAssertTrue(helper.waited.dropFirst(waited).contains(.stopDischarge), "\(helper.waited)")
+        XCTAssertFalse(settings.chargeCutUnconfirmed)
+        XCTAssertNil(c.offWarning)
+    }
+
+    /// Quitting: the same stop is waited for, and what is left is shown at the next launch, and while off.
+    func testQuittingAfterTheNetFoundACutAsksTheHelperAndKeepsTheDebt() {
+        let c = netFoundACutNobodyAnswers()
+        XCTAssertTrue(settings.chargeCutUnconfirmed, "the cut the net found was not written down")
+        let waited = helper.waited.count
+        c.shutdown()
+        XCTAssertTrue(helper.waited.dropFirst(waited).contains(.stopDischarge),
+                      "quitting did not ask the helper to reconnect a charger the net found cut: \(helper.waited)")
+        XCTAssertTrue(settings.chargeCutUnconfirmed, "the debt was forgotten by the quit")
+        XCTAssertNotNil(c.offWarning)
+    }
+
+    /// With no helper to answer, the switch reading connected for more than 90 s settles it, as it does any debt.
+    func testACutTheNetFoundIsSettledByTheSwitchReadingConnectedForLongEnough() {
+        let c = netFoundACutNobodyAnswers()
+        helper.installed = false
+        XCTAssertTrue(settings.chargeCutUnconfirmed)
+        chargerSwitch = AdapterCutKey.connected
+        let t0 = Date()
+        c.tick(now: t0.addingTimeInterval(100))
+        c.tick(now: t0.addingTimeInterval(150))
+        XCTAssertTrue(settings.chargeCutUnconfirmed, "90 s of the switch reading connected was not waited for")
+        c.tick(now: t0.addingTimeInterval(191))
+        XCTAssertFalse(settings.chargeCutUnconfirmed)
+        XCTAssertNotEqual(c.status, .warning(ChargeController.cutWarningNoHelperText))
+        XCTAssertNotEqual(c.status, .warning(ChargeController.cutWarningText))
+    }
+
+    /// macOS's word does not settle it while the switch reads cut, however long it says the Mac is on the adapter.
+    func testMacOSsWordDoesNotSettleACutTheNetFound() {
+        let c = netFoundACutNobodyAnswers()
+        helper.installed = false
+        let t0 = Date()
+        c.tick(now: t0.addingTimeInterval(100))
+        c.tick(now: t0.addingTimeInterval(300))
+        XCTAssertTrue(settings.chargeCutUnconfirmed)
     }
 
     /// Its own debt is still put right while another account is on screen: that is not holding the charger.
