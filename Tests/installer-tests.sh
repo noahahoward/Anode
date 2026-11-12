@@ -36,6 +36,8 @@ mkdir -p "$T/shim" "$T/cache" "$T/tmp" "$T/shared-charge"
 # The uninstaller names the record every account's Anode shares by an absolute path under /Users/Shared; this is the
 # test's own, so no scenario can touch the real one.
 export ANODE_SHARED_CHARGE_DIR="$T/shared-charge"
+# Likewise the helper's launchd job: where a helper is installed on this Mac must not change what a scenario prints.
+export ANODE_LAUNCH_DAEMONS_DIR="$T/no-launch-daemons"
 printf '#!/bin/sh\nexit 0\n' > "$T/shim/osascript"
 cat > "$T/shim/getconf" <<EOF
 #!/bin/sh
@@ -186,11 +188,15 @@ else
 
   echo "6b. Charge Control's limit is put back before the app goes (a stub app answers)"
   # The stub stands in for AnodeApp: it writes down how it was run, and whether its settings were still there.
-  stub_app() {  # stub_app HOME EXIT-STATUS
+  stub_app() {  # stub_app HOME EXIT-STATUS [VERSION: default 1.17.0, the first that takes the argument; "none" writes no Info.plist]
     mkdir -p "$1/Applications/Anode.app/Contents/MacOS"
     printf '#!/bin/sh\necho "$*" > "$HOME/restore-asked"\nexit %s\n' "$2" \
       > "$1/Applications/Anode.app/Contents/MacOS/AnodeApp"
     chmod +x "$1/Applications/Anode.app/Contents/MacOS/AnodeApp"
+    if [ "${3:-1.17.0}" != "none" ]; then
+      printf '<?xml version="1.0" encoding="UTF-8"?>\n<plist version="1.0"><dict><key>CFBundleShortVersionString</key><string>%s</string></dict></plist>\n' \
+        "${3:-1.17.0}" > "$1/Applications/Anode.app/Contents/Info.plist"
+    fi
   }
   H="$(new_home 9)"; stub_app "$H" 1
   OUT="$(HOME="$H" PATH="$T/shim:$PATH" bash "$ROOT/uninstall.sh" --yes 2>&1 || true)"
@@ -208,9 +214,14 @@ else
   printf '#!/bin/sh\nexit 0\n' > "$T/shim-running/sleep"
   chmod +x "$T/shim-running/pgrep" "$T/shim-running/sleep"
   H="$(new_home 12)"; stub_app "$H" 0
-  OUT="$(HOME="$H" PATH="$T/shim-running:$T/shim:$PATH" bash "$ROOT/uninstall.sh" --yes 2>&1 || true)"
+  RUNNING_STATUS=0
+  OUT="$(HOME="$H" PATH="$T/shim-running:$T/shim:$PATH" bash "$ROOT/uninstall.sh" --yes 2>&1)" || RUNNING_STATUS=$?
   check "Anode still running after the wait is said, in one line" [ "$(printf '%s\n' "$OUT" | grep -c "still running")" = 1 ]
-  check "and the restore is still asked for"                  grep -qx -- "--restore-charge-settings" "$H/restore-asked"
+  check "and it stops, with a failing exit status"            [ "$RUNNING_STATUS" != 0 ]
+  check "and says to quit Anode and run it again"             has "Quit Anode and run this again"
+  check "and removes nothing (the live app would set its limit again)" present "$H/Applications/Anode.app"
+  check "and does not run the restore against the live app"   absent "$H/restore-asked"
+  check "and does not claim it removed Anode"                 hasnt "Anode has been removed"
   only_this_user() { [ -s "$H/pgrep-asked" ] && ! grep -qv -- "-U $(id -u) " "$H/pgrep-asked"; }
   check "only this user's Anode is waited for"                only_this_user
   H="$(new_home 10)"; stub_app "$H" 0
@@ -219,6 +230,40 @@ else
   H="$(new_home 11)"; stub_app "$H" 1
   OUT="$(HOME="$H" PATH="$T/shim:$PATH" ANODE_NO_LAUNCH=1 bash "$ROOT/uninstall.sh" --yes 2>&1 || true)"
   check "ANODE_NO_LAUNCH=1 runs no app"                       absent "$H/restore-asked"
+
+  echo "6b2. An installed app too old to take --restore-charge-settings is not run"
+  # An older app would start its whole interface for the unknown argument, and the script would wait on it.
+  for old in 1.16.0 1.9.9 0.9.0; do
+    H="$(new_home "old-$old")"; stub_app "$H" 1 "$old"
+    OUT="$(HOME="$H" PATH="$T/shim:$PATH" bash "$ROOT/uninstall.sh" --yes 2>&1 || true)"
+    check "$old is not run"                                   absent "$H/restore-asked"
+    check "$old: says what was skipped, and why"              has "The installed Anode is version $old, older than 1.17.0"
+    check "$old: says where to change a limit by hand"        has "System Settings → Battery"
+    check "$old: the app is still removed"                    absent "$H/Applications/Anode.app"
+  done
+  for new in 1.17.0 1.17.1 1.18.0 1.100.0 2.0.0; do
+    H="$(new_home "new-$new")"; stub_app "$H" 0 "$new"
+    OUT="$(HOME="$H" PATH="$T/shim:$PATH" bash "$ROOT/uninstall.sh" --yes 2>&1 || true)"
+    check "$new is asked to put the charge settings back"     grep -qx -- "--restore-charge-settings" "$H/restore-asked"
+    check "$new: says nothing was skipped"                    hasnt "older than 1.17.0"
+  done
+  H="$(new_home no-plist)"; stub_app "$H" 1 none
+  OUT="$(HOME="$H" PATH="$T/shim:$PATH" bash "$ROOT/uninstall.sh" --yes 2>&1 || true)"
+  check "an app whose version cannot be read is not run"      absent "$H/restore-asked"
+  check "and says so"                                         has "Could not tell which version of Anode is installed"
+  check "the app is still removed"                            absent "$H/Applications/Anode.app"
+
+  echo "6b3. The helper that is still installed is removed by its own uninstall, which reconnects the charger"
+  mkdir -p "$T/launch-daemons"; : > "$T/launch-daemons/dev.anode.app.fanhelper.plist"
+  H="$(new_home 17)"; mkdir -p "$H/Applications/Anode.app"
+  OUT="$(HOME="$H" PATH="$T/shim:$PATH" ANODE_LAUNCH_DAEMONS_DIR="$T/launch-daemons" bash "$ROOT/uninstall.sh" --yes 2>&1 || true)"
+  check "tells the helper's own uninstall"                    has "sudo /Library/PrivilegedHelperTools/dev.anode.app.fanhelper --uninstall"
+  check "and that it reconnects the charger first"            has "reconnects the charger if Anode had switched it off, then removes itself"
+  check "and no longer tells to delete the helper by hand"    hasnt "sudo rm -f"
+  check "nor to boot it out first"                            hasnt "launchctl bootout system"
+  H="$(new_home 18)"; mkdir -p "$H/Applications/Anode.app"
+  OUT="$(HOME="$H" PATH="$T/shim:$PATH" bash "$ROOT/uninstall.sh" --yes 2>&1 || true)"
+  check "with no helper installed it says nothing about one"  hasnt "fan helper is still installed"
 
   echo "6c. A limit another account's Anode holds is left alone, and said so; the shared record goes only when empty"
   # Exit status 2 from the restore: the limit in force is another account's running Anode's.

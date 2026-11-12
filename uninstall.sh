@@ -38,6 +38,11 @@ SUPPORT="$HOME/Library/Application Support/Anode"
 SHARED_DIR="${ANODE_SHARED_CHARGE_DIR:-/Users/Shared/Anode}"
 SHARED_RECORD="$SHARED_DIR/charge-control.json"
 DAEMON_LABEL="dev.anode.app.fanhelper"
+# Where the helper's launchd job lives. ANODE_LAUNCH_DAEMONS_DIR is for the tests, which must not read the real one.
+LAUNCH_DAEMONS_DIR="${ANODE_LAUNCH_DAEMONS_DIR:-/Library/LaunchDaemons}"
+# The first version of the app that takes --restore-charge-settings. An older app would start its whole interface
+# instead and this script would wait on it.
+RESTORE_ARGUMENT_SINCE="1.17.0"
 # Where install.sh clones to: ~/.anode/source, or ~/Developer/Anode where an earlier version put it.
 # A checkout anywhere else is never touched.
 INSTALLED_SRC="$HOME/.anode/source"
@@ -179,12 +184,52 @@ sleep 1
 # be left). After the quit, so the running copy cannot set its limit again, once it has finished quitting. Only this
 # user's copy is waited for: an Anode another account is running from /Applications is not this one's to wait on.
 # ANODE_NO_LAUNCH=1 skips it.
+#
+# An Anode that is still running after the wait stops the uninstall, with nothing removed: the restore would clear the
+# record while the live app held its limit and set it again, and that limit would outlive the deleted app, with nothing
+# left that could put it back.
+#
+# An installed app older than the one that knows the argument is not run: it would start its whole interface, and this
+# script would wait on it. Such a version has no Charge Control, so there is nothing of it to put back; the line says
+# what was skipped.
+version_at_least() {  # version_at_least FOUND NEEDED: both MAJOR.MINOR.PATCH, compared number by number
+  local IFS=. i x y
+  local -a found=($1) needed=($2)
+  for i in 0 1 2; do
+    x="${found[$i]:-0}"; y="${needed[$i]:-0}"
+    case "$x$y" in *[!0-9]*) return 1 ;; esac
+    [ "$x" -gt "$y" ] && return 0
+    [ "$x" -lt "$y" ] && return 1
+  done
+  return 0
+}
 for app in "$HOME/Applications/Anode.app" "/Applications/Anode.app"; do
   bin="$app/Contents/MacOS/AnodeApp"
   { [ -x "$bin" ] && [ "${ANODE_NO_LAUNCH:-0}" != "1" ]; } || continue
   for _ in 1 2 3 4 5; do pgrep -U "$(id -u)" -f "$bin" >/dev/null || break; sleep 1; done
   if pgrep -U "$(id -u)" -f "$bin" >/dev/null; then
-    echo "Anode is still running, so it may set its charge limit again; putting macOS's own back anyway."
+    echo "Anode is still running, so nothing was removed: while it runs it holds its charge limit, and that would" \
+      "outlive the deleted app. Quit Anode and run this again." >&2
+    exit 1
+  fi
+  # PlistBuddy on a file that is not there prints a sentence of its own instead of failing quietly, so the file is
+  # checked first, and anything that is not a version number is no answer.
+  version=""
+  if [ -f "$app/Contents/Info.plist" ]; then
+    version="$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$app/Contents/Info.plist" 2>/dev/null || true)"
+  fi
+  case "$version" in [0-9]*.[0-9]*) ;; *) version="" ;; esac
+  if [ -z "$version" ]; then
+    echo "Could not tell which version of Anode is installed in $app, so it was not asked to put macOS's own charge" \
+      "settings back (an app older than $RESTORE_ARGUMENT_SINCE cannot do it). If macOS holds a charge limit you did" \
+      "not choose, change it in System Settings → Battery."
+    break
+  fi
+  if ! version_at_least "$version" "$RESTORE_ARGUMENT_SINCE"; then
+    echo "The installed Anode is version $version, older than $RESTORE_ARGUMENT_SINCE, the first that can put macOS's" \
+      "own charge settings back, so that step was skipped. If macOS holds a charge limit you did not choose, change" \
+      "it in System Settings → Battery."
+    break
   fi
   restore_status=0
   "$bin" --restore-charge-settings >/dev/null 2>&1 || restore_status=$?
@@ -245,12 +290,16 @@ if [ "$REMOVE_DATA" = "1" ]; then
 fi
 
 echo
-if [ -e "/Library/LaunchDaemons/$DAEMON_LABEL.plist" ]; then
+if [ -e "$LAUNCH_DAEMONS_DIR/$DAEMON_LABEL.plist" ]; then
+  # The helper's own uninstall, not its files deleted by hand: a discharge may have left the charger switched off,
+  # and the helper reconnects it before it removes itself (deleting it would leave the charger cut for good).
   cat <<EOF
 The fan helper is still installed and runs as ROOT. It cannot be removed from
 here without a password. To remove it, run:
 
-  sudo launchctl bootout system/$DAEMON_LABEL; sudo rm -f /Library/LaunchDaemons/$DAEMON_LABEL.plist /Library/PrivilegedHelperTools/$DAEMON_LABEL
+  sudo /Library/PrivilegedHelperTools/$DAEMON_LABEL --uninstall
+
+It reconnects the charger if Anode had switched it off, then removes itself.
 
 EOF
 fi
