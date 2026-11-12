@@ -3494,6 +3494,33 @@ final class ChargeControllerTests: XCTestCase {
         c.periodicTick()
         XCTAssertTrue(lines.contains { $0.contains("the limit was turned off") }, lines.joined(separator: "\n"))
     }
+
+    // ── A helper that dies between ticks ────────────────────────────────────
+
+    /// The helper dies under a discharge, with nothing being exchanged (measured: Charge Control noticed 28 s later,
+    /// at its next tick, and the section said "Discharging" meanwhile). The link now reports the closed socket, the
+    /// connection records it, and the controller sends its stop at once, on a fresh socket (for an installed helper
+    /// that starts a new one, whose startup reconnects the charger), before the discharge it still wants.
+    func testAHelperThatDiesUnderADischargeIsStoppedAtOnceWithNoTick() {
+        let wire = ScriptedWire()
+        wire.answerAtOnce = .connected(fanCount: 0, version: 2)
+        let adapter = ChargeHelperAdapter(connection: HelperConnection(wire: wire), isInstalled: { true })
+        battery = Self.state(90)
+        settings.chargeControlEnabled = true
+        let c = ChargeController(settings: settings, makeClient: { [client] in client }, helper: adapter,
+                                 battery: { [weak self] in self?.battery }, chargerSwitch: { nil },
+                                 log: { [weak self] in self?.lines.append($0) }, workspace: center,
+                                 limitInForce: limitInForce)
+        controller = c
+        c.pressDischarge()
+        XCTAssertEqual(c.dischargeInForce, 80)
+        XCTAssertEqual(wire.sent, [.discharge(toPercent: 80)])
+        wire.peerCloses()
+        XCTAssertEqual(Array(wire.sent.prefix(2)), [.discharge(toPercent: 80), .stopDischarge],
+                       "the stop did not go out at once: " + lines.joined(separator: "\n"))
+        XCTAssertEqual(wire.reachedAHelper.prefix(2).last, true, "the stop went to a socket nobody had opened")
+        XCTAssertTrue(lines.contains { $0.contains("reset under the discharge") }, lines.joined(separator: "\n"))
+    }
 }
 
 // ── Fakes ───────────────────────────────────────────────────────────────────

@@ -577,6 +577,16 @@ public final class FanControlLink {
     private let queue = DispatchQueue(label: "com.anode.fanlink", qos: .userInitiated)
     private var fd: Int32 = -1
     private var buffer = Data()
+    /// Watches the open socket for the helper's end closing between exchanges, so that a helper that dies is noticed
+    /// when it dies and not at the next exchange (which can be 30 s on). Armed once a socket has greeted, on this
+    /// link's own queue, so its handler never runs inside an exchange; costs nothing while idle (no timer, no
+    /// polling: the kernel wakes it). While it exists it owns the descriptor's `close` (`closeSocket`). Only the
+    /// queue touches it.
+    private var watcher: DispatchSourceRead?
+    /// Told, on the main thread, that the helper closed the socket while nothing was being exchanged: it died, or
+    /// was stopped. Not told of a close made here (`disconnect`, a failed exchange: those are the caller's own
+    /// news). Set once by the owner, from the main thread, before the first connect.
+    public var onPeerClosed: (() -> Void)?
     /// Commands that went out and ended with no answer (the helper stopped answering, or was slower than the
     /// socket's timeout) since the helper last answered anything with a yes. A helper that is slow may still apply
     /// such a command a moment later, so nothing is known about whether it landed. Only the queue touches it.
@@ -587,7 +597,7 @@ public final class FanControlLink {
         self.socketTimeout = socketTimeout
     }
 
-    deinit { if fd >= 0 { close(fd) } }
+    deinit { closeSocket() }
 
     /// Open the socket and say hello. Writes nothing to any fan.
     public func connect(_ done: @escaping (Status) -> Void) {
@@ -730,7 +740,7 @@ public final class FanControlLink {
     /// runs until it matters.
     public func disconnect() {
         queue.sync { [self] in
-            if fd >= 0 { close(fd); fd = -1 }
+            closeSocket()
             buffer.removeAll()
         }
     }
@@ -741,15 +751,70 @@ public final class FanControlLink {
     /// another). Anything handed to the link afterwards goes after the close, as it would after `disconnect`.
     public func disconnectWithoutWaiting() {
         queue.async { [self] in
-            if fd >= 0 { close(fd); fd = -1 }
+            closeSocket()
             buffer.removeAll()
         }
     }
 
     // ── on the queue ────────────────────────────────────────────────────────
 
+    /// The one way a socket is closed here. The helper takes its client's socket closing as the client leaving (it
+    /// hands the fans back and reconnects the charger, and serves one client at a time), so the helper must see the
+    /// close now, not when a dispatch source gets round to it: the socket is shut down at once, which the other end
+    /// reads as the close. The descriptor itself is closed by the watcher's cancel handler when there is one, and only
+    /// then: a descriptor closed under a live dispatch source is a crash in libdispatch, and a number closed before
+    /// the source is gone could be reused by the next socket and watched by the dead source. It stays allocated until
+    /// the cancel handler runs, so it cannot be reused before.
+    private func closeSocket() {
+        guard fd >= 0 else { return }
+        if let source = watcher {
+            watcher = nil
+            shutdown(fd, SHUT_RDWR)
+            source.cancel()
+        } else {
+            close(fd)
+        }
+        fd = -1
+    }
+
+    /// Start watching the open socket (`watcher`). The handler hops nowhere: it runs on the queue, between
+    /// exchanges, because an exchange holds the queue.
+    private func watchSocket() {
+        guard fd >= 0, watcher == nil else { return }
+        let s = fd
+        let source = DispatchSource.makeReadSource(fileDescriptor: s, queue: queue)
+        source.setEventHandler { [weak self] in self?.socketReadable(s) }
+        source.setCancelHandler { close(s) }
+        watcher = source
+        source.activate()
+    }
+
+    /// The watched socket became readable between exchanges. The helper never speaks first, so that is the end of the
+    /// stream, or bytes nobody asked for. A wake for bytes an exchange has taken since (readable when the source was
+    /// told, empty by the time it runs) finds nothing and changes nothing.
+    private func socketReadable(_ s: Int32) {
+        guard s == fd, watcher != nil else { return }
+        var chunk = [UInt8](repeating: 0, count: 1024)
+        var stray = 0
+        while true {
+            let n = recv(s, &chunk, chunk.count, MSG_DONTWAIT)
+            if n > 0 { stray += n; continue }
+            if n < 0 && errno == EINTR { continue }
+            if n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK) {
+                // Anything unasked for is dropped, so it cannot be taken for the answer to the next request.
+                if stray > 0 { fanLog.info("dropped \(stray) byte(s) the helper sent that nobody asked for") }
+                return
+            }
+            break   // end of the stream, or a reset
+        }
+        fanLog.info("the helper closed the socket between exchanges")
+        closeSocket()
+        buffer.removeAll()
+        DispatchQueue.main.async { [weak self] in self?.onPeerClosed?() }
+    }
+
     private func openAndGreet() -> Status {
-        if fd >= 0 { close(fd); fd = -1 }
+        closeSocket()
         buffer.removeAll()
 
         guard var addr = FanSocketIO.address(socketPath) else {
@@ -780,16 +845,17 @@ public final class FanControlLink {
         }
         guard reply.ok else {
             fanLog.error("helper REFUSED this app: \(reply.message, privacy: .public)")
-            close(fd); fd = -1
+            closeSocket()
             return .refused(reply.message)
         }
+        watchSocket()
         fanLog.info("connected — helper reports \(reply.fanCount ?? 0) fan(s)")
         return .connected(fanCount: reply.fanCount ?? 0, version: reply.version)
     }
 
     private func exchange(_ request: FanRequest) -> FanReply? {
         guard fd >= 0, let data = try? FanWire.encode(request) else {
-            if fd >= 0 { close(fd); fd = -1 }
+            closeSocket()
             return nil
         }
         // The write result is deliberately ignored. A helper that refuses this
@@ -802,7 +868,7 @@ public final class FanControlLink {
         _ = FanSocketIO.writeAll(fd, data)
         guard let line = try? FanSocketIO.readLine(fd, buffer: &buffer),
               let reply = try? FanWire.decode(FanReply.self, from: line) else {
-            close(fd); fd = -1
+            closeSocket()
             // The command may be on its way to a slow helper that will apply it after this: see `drain`.
             if case .command = request { unansweredCommands += 1 }
             return nil

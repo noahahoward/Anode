@@ -234,6 +234,8 @@ final class StallingHelper {
     private var _commandDelay: TimeInterval = 0
     private var _stopping = false
     private var _commands: [FanCommand] = []
+    private var _dropClients = false
+    private var _unsolicited: [Data] = []
     private let finished = DispatchSemaphore(value: 0)
 
     struct Failure: Error {}
@@ -263,8 +265,28 @@ final class StallingHelper {
         set { lock.lock(); _commandDelay = newValue; lock.unlock() }
     }
 
+    /// Close every client's connection, as a helper that dies or is stopped does; the listener stays.
+    func dropClients() { lock.lock(); _dropClients = true; lock.unlock() }
+
+    /// Send every client these bytes without being asked, as a late answer to something long given up on would.
+    func sendUnsolicited(_ data: Data) { lock.lock(); _unsolicited.append(data); lock.unlock() }
+
     /// Every command it answered, in order.
     var commands: [FanCommand] { lock.lock(); defer { lock.unlock() }; return _commands }
+
+    /// Sleeps `seconds`, or until `dropClients` is called; true in that case (and the request is used up).
+    private func sleepUnlessDropped(_ seconds: TimeInterval) -> Bool {
+        let end = Date().addingTimeInterval(seconds)
+        while Date() < end {
+            lock.lock()
+            let drop = _dropClients
+            if drop { _dropClients = false }
+            lock.unlock()
+            if drop { return true }
+            Thread.sleep(forTimeInterval: 0.01)
+        }
+        return false
+    }
 
     private var stopping: Bool { lock.lock(); defer { lock.unlock() }; return _stopping }
 
@@ -282,7 +304,17 @@ final class StallingHelper {
             close(listener)
             finished.signal()
         }
-        while !stopping {
+        serving: while !stopping {
+            lock.lock()
+            let drop = _dropClients, unsolicited = _unsolicited
+            _dropClients = false
+            _unsolicited = []
+            lock.unlock()
+            if drop {
+                for fd in clients.keys { close(fd) }
+                clients = [:]
+            }
+            for data in unsolicited { for fd in clients.keys { _ = FanSocketIO.writeAll(fd, data) } }
             var fds = [pollfd(fd: listener, events: Int16(POLLIN), revents: 0)]
             fds += clients.keys.map { pollfd(fd: $0, events: Int16(POLLIN), revents: 0) }
             guard poll(&fds, nfds_t(fds.count), 20) > 0 else { continue }
@@ -313,7 +345,12 @@ final class StallingHelper {
                         reply = FanReply(ok: true, message: "hello", fanCount: 0, version: 2)
                     case .command(let c):
                         let delay = commandDelay
-                        if delay > 0 { Thread.sleep(forTimeInterval: delay) }
+                        if delay > 0, sleepUnlessDropped(delay) {
+                            // Dropped while it was on the command: gone, with nothing answered or applied.
+                            for fd in clients.keys { close(fd) }
+                            clients = [:]
+                            continue serving
+                        }
                         lock.lock(); _commands.append(c); lock.unlock()
                         reply = FanReply(ok: true, message: "ok")
                     }

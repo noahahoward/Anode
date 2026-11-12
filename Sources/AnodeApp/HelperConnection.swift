@@ -34,6 +34,9 @@ protocol HelperWire: AnyObject {
     func disconnect()
     /// Close after everything already sent, without waiting for it: see `FanControlLink.disconnectWithoutWaiting`.
     func disconnectWithoutWaiting()
+    /// Called on the main thread when the helper closed the socket while nothing was on it: see
+    /// `FanControlLink.onPeerClosed`.
+    var onPeerClosed: (() -> Void)? { get set }
 }
 
 extension FanControlLink: HelperWire {}
@@ -70,6 +73,17 @@ final class HelperConnection {
 
     init(wire: HelperWire) {
         self.wire = wire
+        wire.onPeerClosed = { [weak self] in self?.peerClosed() }
+    }
+
+    /// The helper closed the socket between exchanges: it died, or was stopped. Until now that was seen only by the
+    /// next exchange (up to 30 s on, and only while a discharge was on it), with `status` still saying connected and a
+    /// charger that may be cut left with nobody watching it. Recorded as the socket going away, so `resets` goes up and
+    /// everyone watching hears at once. Not for a socket closed here (`close`, which has already recorded it), nor one
+    /// closed since this was sent from the link's queue.
+    private func peerClosed() {
+        guard isConnected, !suspended else { return }
+        record(.disconnected)
     }
 
     var isConnected: Bool {

@@ -223,6 +223,38 @@ final class HelperConnectionTests: XCTestCase {
         XCTAssertEqual(c.resets, opened + 1)
     }
 
+    /// The helper closing its socket while nothing is on it (it was killed, say) is a socket that went away: the
+    /// status says so now and `resets` goes up, as it does for a command that finds the socket gone, so what listens
+    /// (Charge Control, with a discharge on that socket) is told at once and not at its next tick.
+    func testThePeerClosingBetweenExchangesIsRecordedAtOnce() {
+        let wire = ScriptedWire()
+        let c = HelperConnection(wire: wire)
+        var heard = 0
+        let token = c.watch { heard += 1 }
+        c.connect(for: .charge) { _ in }
+        wire.answerConnects(.connected(fanCount: 0, version: 2), reopened: true)
+        let resets = c.resets, told = heard
+        XCTAssertTrue(c.isConnected)
+        wire.peerCloses()
+        XCTAssertFalse(c.isConnected, "a helper that closed its socket was still taken to be connected")
+        XCTAssertEqual(c.resets, resets + 1)
+        XCTAssertGreaterThan(heard, told, "nobody was told")
+        withExtendedLifetime(token) {}
+    }
+
+    /// A close made here is recorded where it is made; a report that comes after it is about a socket already gone.
+    func testAPeerCloseReportedAfterALocalCloseChangesNothing() {
+        let wire = ScriptedWire()
+        let c = HelperConnection(wire: wire)
+        c.connect(for: .charge) { _ in }
+        wire.answerConnects(.connected(fanCount: 0, version: 2), reopened: true)
+        c.release(.charge)
+        let resets = c.resets
+        wire.peerCloses()
+        XCTAssertEqual(c.resets, resets, "one close was counted twice")
+        XCTAssertFalse(c.isConnected)
+    }
+
     func testAnOlderHelperDoesNotSpeakCharge() {
         let wire = ScriptedWire()
         let c = HelperConnection(wire: wire)
@@ -857,6 +889,13 @@ final class ScriptedWire: HelperWire {
     private(set) var pings = 0
     private(set) var drains = 0
     private var connects: [(FanControlLink.Status, Bool) -> Void] = []
+    var onPeerClosed: (() -> Void)?
+
+    /// The helper closed the socket while nothing was on it, and the link says so.
+    func peerCloses() {
+        open = false
+        onPeerClosed?()
+    }
 
     /// When set, every connect is answered at once with this, as reopened when no socket was open; and a command
     /// with no socket open is answered the way `FanControlLink` answers it. Unset, connects wait for
