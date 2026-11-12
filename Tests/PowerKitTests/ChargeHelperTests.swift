@@ -293,7 +293,7 @@ final class ChargeHelperSocketTests: XCTestCase {
         super.tearDown()
     }
 
-    private func start(_ hw: FakeChargeHardware) throws {
+    private func start(_ hw: FakeChargeHardware, watchEvery interval: TimeInterval? = nil) throws {
         let path = NSTemporaryDirectory() + "bs-chg-\(UUID().uuidString.prefix(8)).sock"
         guard let mine = ownCDHash() else {
             throw XCTSkip("no code identity available in this test environment")
@@ -302,6 +302,7 @@ final class ChargeHelperSocketTests: XCTestCase {
                                  configuration: .init(socketPath: path, ownerUID: getuid(),
                                                       pin: .exactBuild(cdhash: mine)),
                                  charge: hw)
+        if let interval { server.dischargeWatchInterval = interval }
         try server.start()
         thread = Thread { [server] in server?.run() }
         thread.start()
@@ -335,6 +336,20 @@ final class ChargeHelperSocketTests: XCTestCase {
         spin(until: { hw.isCut == false })
         XCTAssertEqual(hw.isCut, false, "the charger stayed cut after the app went away")
         XCTAssertEqual(hw.cutWrites, [true, false])
+    }
+
+    /// The floor holds with the app connected and SILENT: the loop wakes on its
+    /// own timer, looks at the battery, and reconnects at the target.
+    func testTheLoopReconnectsAtTheTargetWithNoRequest() throws {
+        let hw = FakeChargeHardware(percent: 77, onAC: true)
+        try start(hw, watchEvery: 0.05)
+        XCTAssertTrue(send(.discharge(toPercent: 40)).ok)
+        spin(until: { false }, timeout: 0.2, failOnTimeout: false)
+        XCTAssertEqual(hw.isCut, true, "reconnected above the target")
+
+        hw.percent = 40   // nothing is sent; only the timed wake can see this
+        spin(until: { hw.isCut == false })
+        XCTAssertEqual(hw.isCut, false, "the loop never checked the battery on its own")
     }
 
     /// The charge limit is macOS's own setting and is deliberately left where

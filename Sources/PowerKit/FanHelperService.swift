@@ -435,8 +435,9 @@ public final class FanHelperServer {
     private var reconnectOwed = false
 
     /// How often a discharge looks at the battery. The only periodic wake this
-    /// helper ever has, and only while the charger is cut.
-    static let dischargeWatchInterval: TimeInterval = 10
+    /// helper ever has, and only while the charger is cut. A var only so a test
+    /// can shorten it; set it before `run()`.
+    var dischargeWatchInterval: TimeInterval = 10
 
     public init(hardware: FanHardware,
                 configuration: Configuration,
@@ -653,7 +654,7 @@ public final class FanHelperServer {
             }
             if dischargeTarget != nil {
                 // Never idle while discharging, so this is the only timeout.
-                timeout = Int32(Self.dischargeWatchInterval * 1000)
+                timeout = Int32((dischargeWatchInterval * 1000).rounded(.up))
             }
 
             guard poll(&fds, nfds_t(fds.count), timeout) >= 0 || errno == EINTR else { break }
