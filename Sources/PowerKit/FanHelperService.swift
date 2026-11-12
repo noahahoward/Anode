@@ -509,9 +509,11 @@ public final class FanHelperServer {
     /// it, so the helper stays up (see `isIdle`) and the watch tries again.
     public private(set) var dischargeTarget: Int?
 
-    /// A reconnect failed and is still owed: this helper made the cut, or the
-    /// charger still reads cut after the writes. The watch retries it on every
-    /// wake whatever the battery says, and the helper is not idle until it lands.
+    /// A reconnect failed and is still owed: this helper made the cut, the
+    /// undo of a cut that did not read back could not be read back either, or
+    /// the charger still reads cut after the writes. The watch retries it on
+    /// every wake whatever the battery says, always writing, and the helper is
+    /// not idle until a read shows it connected.
     private(set) var reconnectOwed = false
 
     /// How often a discharge looks at the battery. The only periodic wake this
@@ -1135,17 +1137,22 @@ public final class FanHelperServer {
             else { why = "the battery is already at or below \(max(target, DischargeWatch.floor))%" }
             return FanReply(ok: false, message: "refused: \(why)")
         }
-        // Read back: "accepted" is not "cut". A cut that cannot be confirmed is
-        // undone at once — with a write, whatever the key reads now, because a
-        // read straight after the cut may not show it yet.
+        // Judged by the read-back alone: the write's own answer is logged, not
+        // trusted. A cut that cannot be confirmed is undone at once — with a
+        // write, whatever the key reads now, because a read straight after the
+        // cut may not show it yet.
         let cut = ChargeRelease.cut(charge, timing: chargeTiming)
-        guard cut == .cut else {
+        guard cut.isCut else {
             let undo = reconnectCharger(alwaysWrite: true)
             let why = cut == .refused
                 ? "the SMC would not cut the charger"
                 : "the SMC took the cut and the charger does not read as cut"
             log("\(why); \(undo.message)")
             return FanReply(ok: false, message: undo.ok ? why : "\(why); \(undo.message)")
+        }
+        if cut == .cutAlthoughRefused {
+            log("the SMC answered the cut with an error and the charger reads cut — "
+              + "going by the read-back")
         }
         dischargeTarget = target
         reconnectOwed = false
@@ -1171,16 +1178,24 @@ public final class FanHelperServer {
     /// Reconnect the charger through the one verified routine and keep this
     /// helper's books: the target is cleared only by a reconnect that READ BACK
     /// connected. A failure keeps the target and owes the reconnect — when this
-    /// helper made the cut, or the charger plainly still reads cut — so the
-    /// helper stays up (`isIdle`) and the watch retries it on every pass.
+    /// helper holds the cut or already owed it, when the reconnect was the
+    /// always-written undo of a cut that did not read back, or when the charger
+    /// plainly still reads cut — so the helper stays up (`isIdle`) and the
+    /// watch retries it on every pass.
+    ///
+    /// While a cut is held or a reconnect owed, the write is ALWAYS made and
+    /// "no such key" is never the answer (`ChargeRelease.reconnect(holding:)`):
+    /// the cut read back, so the key is there, whatever one failed read says.
     @discardableResult
     private func reconnectCharger(alwaysWrite: Bool = false) -> ChargeRelease.Result {
         guard let charge else { return ChargeRelease.Result(.noKey, writes: 0) }
-        let result = ChargeRelease.reconnect(charge, alwaysWrite: alwaysWrite, timing: chargeTiming)
+        let holding = dischargeTarget != nil || reconnectOwed
+        let result = ChargeRelease.reconnect(charge, alwaysWrite: alwaysWrite,
+                                             holding: holding, timing: chargeTiming)
         if result.ok {
             dischargeTarget = nil
             reconnectOwed = false
-        } else if dischargeTarget != nil || result.outcome == .stillCut {
+        } else if holding || alwaysWrite || result.outcome == .stillCut {
             reconnectOwed = true
         }
         return result

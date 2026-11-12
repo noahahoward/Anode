@@ -186,7 +186,90 @@ final class ChargeHelperTestsReconnect: XCTestCase {
         let ignoring = FakeChargeHardware()
         ignoring.ignoreCut = true
         XCTAssertEqual(ChargeRelease.cut(ignoring, timing: now), .notKept)
+        XCTAssertFalse(ChargeRelease.CutOutcome.notKept.isCut)
         XCTAssertEqual(ignoring.isCut, false)
+    }
+
+    /// The other half of "judged by the read-back": a write that answers no
+    /// and lands is a cut. The result byte of a good `CHIE` write is
+    /// unmeasured; a Mac that answers it non-zero must still discharge.
+    func testACutThatReadsCutIsACutWhateverTheWriteSaid() {
+        let hw = FakeChargeHardware()
+        hw.cutLandsButSaysNo = true
+        let outcome = ChargeRelease.cut(hw, timing: now)
+        XCTAssertEqual(outcome, .cutAlthoughRefused)
+        XCTAssertTrue(outcome.isCut)
+        XCTAssertTrue(ChargeRelease.CutOutcome.cut.isCut)
+        XCTAssertFalse(ChargeRelease.CutOutcome.refused.isCut)
+        XCTAssertEqual(hw.cutWrites, [true])
+    }
+
+    /// Holding a cut that read back, the key is known to exist: the reconnect
+    /// is written whatever the first read says, and never called "no such key"
+    /// — not when every read fails and the key-info question says no.
+    func testAHeldCutIsAlwaysWrittenAndNeverCalledNoKey() {
+        let gone = FakeChargeHardware(cut: true)
+        gone.keyExists = false
+        let r = ChargeRelease.reconnect(gone, holding: true, timing: now)
+        XCTAssertEqual(r, ChargeRelease.Result(.unconfirmed, writes: 3))
+        XCTAssertFalse(r.ok)
+        XCTAssertEqual(gone.cutWrites, [false, false, false])
+
+        // A read that says connected is not a reason to skip the write either.
+        let reads = FakeChargeHardware(cut: false)
+        XCTAssertEqual(ChargeRelease.reconnect(reads, holding: true, timing: now),
+                       ChargeRelease.Result(.reconnected, writes: 1))
+        XCTAssertEqual(reads.cutWrites, [false])
+
+        // One failed read, and a key-info answer that failed the same way.
+        let flaky = FakeChargeHardware(cut: true)
+        flaky.failNextReads = 1
+        flaky.existsAnswersNo = true
+        XCTAssertEqual(ChargeRelease.reconnect(flaky, holding: true, timing: now),
+                       ChargeRelease.Result(.reconnected, writes: 2))
+        XCTAssertEqual(flaky.isCut, false)
+    }
+
+    /// Not holding — the undo of a cut that did not read back — a Mac the SMC
+    /// says has no `CHIE` is still `.noKey` after the writes, so a discharge
+    /// asked of such a Mac does not leave a helper owing a reconnect for ever.
+    func testAnUndoOnAMacWithNoKeyIsNoKey() {
+        let hw = FakeChargeHardware()
+        hw.keyExists = false
+        let r = ChargeRelease.reconnect(hw, alwaysWrite: true, timing: now)
+        XCTAssertEqual(r, ChargeRelease.Result(.noKey, writes: 3))
+        XCTAssertTrue(r.ok)
+    }
+
+    /// "No such key" is the SMC's own answer and nothing else. MEASURED
+    /// read-only on this Mac: a key that is not there answers IOKit 0, result
+    /// 0x84, size 0. Every other failure — an IOKit error, an in-band timeout
+    /// (0xB6), a short buffer — says nothing, and the key might exist. The old
+    /// `exists` answered "no such key" for all of them, and the charger
+    /// believed it.
+    func testOnlyTheSMCsOwnNoSuchKeyMeansAbsent() {
+        func info(result: UInt8, size: UInt32) -> [UInt8] {
+            var b = [UInt8](repeating: 0, count: 80)
+            b[40] = result
+            b[28] = UInt8(size & 0xFF)
+            b[29] = UInt8((size >> 8) & 0xFF)
+            b[30] = UInt8((size >> 16) & 0xFF)
+            b[31] = UInt8((size >> 24) & 0xFF)
+            return b
+        }
+        XCTAssertEqual(SMC.noSuchKey, 0x84)
+        XCTAssertTrue(SMC.saysNoSuchKey(rc: kIOReturnSuccess, output: info(result: 0x84, size: 0)))
+
+        XCTAssertFalse(SMC.saysNoSuchKey(rc: kIOReturnSuccess, output: info(result: 0x84, size: 1)))
+        XCTAssertFalse(SMC.saysNoSuchKey(rc: kIOReturnSuccess, output: info(result: 0, size: 0)),
+                       "size 0 with no 'no such key' is not an answer")
+        XCTAssertFalse(SMC.saysNoSuchKey(rc: kIOReturnSuccess, output: info(result: 0xB6, size: 0)),
+                       "an SMC timeout was taken for 'no such key'")
+        XCTAssertFalse(SMC.saysNoSuchKey(rc: kIOReturnSuccess, output: info(result: 0, size: 1)))
+        XCTAssertFalse(SMC.saysNoSuchKey(rc: kIOReturnNotPrivileged, output: info(result: 0x84, size: 0)))
+        XCTAssertFalse(SMC.saysNoSuchKey(rc: kIOReturnTimeout, output: info(result: 0, size: 0)),
+                       "an IOKit error was taken for 'no such key'")
+        XCTAssertFalse(SMC.saysNoSuchKey(rc: kIOReturnSuccess, output: [0x84]))
     }
 
     /// The SMC's own result byte, not only IOKit's return code. MEASURED
@@ -851,6 +934,167 @@ final class ChargeHelperTests: XCTestCase {
         XCTAssertTrue(server.isIdle)
     }
 
+    // ── A held cut is always written back ──────────────────────────────────
+
+    /// A HELD CUT PROVES THE KEY EXISTS: it read back cut. So when the watch
+    /// fires and the key cannot be read — and the key-info question, failing
+    /// too, answers "no such key" — the reconnect is written anyway, and the
+    /// discharge is kept and owed until a read-back shows connected. It used to
+    /// be called "this Mac has no adapter-cut key": nothing written, the target
+    /// cleared, and the charger left cut with nobody watching.
+    func testAHeldCutIsWrittenBackWhenTheKeyCannotBeRead() {
+        let hw = FakeChargeHardware(percent: 77)
+        var lines: [String] = []
+        let server = makeServer(hw, log: { lines.append($0) })
+        XCTAssertTrue(server.handle(.command(.discharge(toPercent: 40))).ok)
+
+        hw.keyExists = false
+        hw.percent = 40
+        server.watchDischarge()
+        XCTAssertEqual(hw.cutWrites, [true, false, false, false], "the reconnect was skipped")
+        XCTAssertEqual(server.dischargeTarget, 40)
+        XCTAssertTrue(server.reconnectOwed)
+        XCTAssertFalse(server.isIdle)
+        XCTAssertFalse(lines.contains { $0.contains("no adapter-cut key") }, "\(lines)")
+
+        server.watchDischarge()
+        XCTAssertEqual(hw.cutWrites.count, 7, "the owed reconnect was not written again")
+        XCTAssertEqual(server.dischargeTarget, 40, "cleared without a read-back")
+
+        hw.keyExists = true
+        server.watchDischarge()
+        XCTAssertEqual(hw.isCut, false)
+        XCTAssertNil(server.dischargeTarget)
+        XCTAssertFalse(server.reconnectOwed)
+        XCTAssertTrue(server.isIdle)
+    }
+
+    /// The same thing as it would happen on the hardware: the key is there and
+    /// takes writes, ONE read fails, and the key-info question answers "no such
+    /// key" because its own call failed. The reconnect is written, and read back.
+    func testOneFailedReadDoesNotSkipTheReconnectOfAHeldCut() {
+        let hw = FakeChargeHardware(percent: 77)
+        let server = makeServer(hw)
+        XCTAssertTrue(server.handle(.command(.discharge(toPercent: 40))).ok)
+
+        hw.failNextReads = 1
+        hw.existsAnswersNo = true
+        hw.percent = 40
+        server.watchDischarge()
+        XCTAssertEqual(hw.isCut, false, "the charger was left cut")
+        XCTAssertEqual(hw.cutWrites.last, false)
+        XCTAssertNil(server.dischargeTarget)
+        XCTAssertTrue(server.isIdle)
+    }
+
+    /// Asked to stop while the key cannot be read: written, not explained away.
+    func testStopDischargeWritesAHeldCutBackWhenTheKeyCannotBeRead() {
+        let hw = FakeChargeHardware(percent: 77)
+        let server = makeServer(hw)
+        XCTAssertTrue(server.handle(.command(.discharge(toPercent: 40))).ok)
+
+        hw.keyExists = false
+        let reply = server.handle(.command(.stopDischarge))
+        XCTAssertFalse(reply.ok, reply.message)
+        XCTAssertTrue(reply.message.contains("may still be cut off"), reply.message)
+        XCTAssertEqual(hw.cutWrites, [true, false, false, false])
+        XCTAssertEqual(server.dischargeTarget, 40)
+        XCTAssertTrue(server.reconnectOwed)
+    }
+
+    /// `releaseAll` is the dead man's switch's own path (`release()`).
+    func testReleaseAllWritesAHeldCutBackWhenTheKeyCannotBeRead() {
+        let hw = FakeChargeHardware(percent: 77)
+        let server = makeServer(hw)
+        XCTAssertTrue(server.handle(.command(.discharge(toPercent: 40))).ok)
+
+        hw.keyExists = false
+        XCTAssertFalse(server.handle(.command(.releaseAll)).ok)
+        XCTAssertEqual(hw.cutWrites, [true, false, false, false])
+        XCTAssertEqual(server.dischargeTarget, 40)
+        XCTAssertFalse(server.isIdle)
+    }
+
+    /// The post-write "no such key" exit: a second discharge whose cut fails
+    /// while one is held is undone with writes that cannot be read back. The
+    /// held cut is still the helper's, still owed.
+    func testAFailedCutWhileOneIsHeldKeepsTheHeldOneOwed() {
+        let hw = FakeChargeHardware(percent: 77)
+        let server = makeServer(hw)
+        XCTAssertTrue(server.handle(.command(.discharge(toPercent: 40))).ok)
+
+        hw.keyExists = false
+        XCTAssertFalse(server.handle(.command(.discharge(toPercent: 50))).ok)
+        XCTAssertEqual(hw.cutWrites, [true, true, false, false, false])
+        XCTAssertEqual(hw.isCut, true)
+        XCTAssertEqual(server.dischargeTarget, 40)
+        XCTAssertTrue(server.reconnectOwed)
+
+        hw.keyExists = true
+        server.watchDischarge()
+        XCTAssertEqual(hw.isCut, false)
+        XCTAssertTrue(server.isIdle)
+    }
+
+    // ── An undo that cannot be confirmed is owed ───────────────────────────
+
+    /// A cut that did not read back is undone with a reconnect written whatever
+    /// the key says. When that undo cannot be read back either, nobody knows
+    /// whether the charger is cut: the reconnect is owed, so the helper is not
+    /// idle and the watch keeps writing it.
+    func testAnUndoThatCannotBeReadBackIsOwed() {
+        let hw = FakeChargeHardware(percent: 77)
+        hw.cutUnreadable = true
+        hw.ignoreRestore = true
+        let server = makeServer(hw)
+        let reply = server.handle(.command(.discharge(toPercent: 40)))
+        XCTAssertFalse(reply.ok, reply.message)
+        XCTAssertTrue(reply.message.contains("may still be cut off"), reply.message)
+        XCTAssertNil(server.dischargeTarget)
+        XCTAssertEqual(hw.isCut, true)
+        XCTAssertTrue(server.reconnectOwed, "an unconfirmed undo was forgotten")
+        XCTAssertFalse(server.isIdle)
+
+        hw.cutUnreadable = false
+        hw.ignoreRestore = false
+        server.watchDischarge()
+        XCTAssertEqual(hw.isCut, false)
+        XCTAssertFalse(server.reconnectOwed)
+        XCTAssertTrue(server.isIdle)
+    }
+
+    /// A Mac with no `CHIE` at all: the cut is refused, the undo finds no such
+    /// key, and nothing is owed — the helper must not stay up for ever there.
+    func testADischargeOnAMacWithNoKeyIsRefusedAndOwesNothing() {
+        let hw = FakeChargeHardware(percent: 77)
+        hw.keyExists = false
+        let server = makeServer(hw)
+        let reply = server.handle(.command(.discharge(toPercent: 40)))
+        XCTAssertFalse(reply.ok)
+        XCTAssertEqual(reply.message, "the SMC would not cut the charger")
+        XCTAssertNil(server.dischargeTarget)
+        XCTAssertFalse(server.reconnectOwed)
+        XCTAssertTrue(server.isIdle)
+    }
+
+    // ── A cut is judged by reading it back ─────────────────────────────────
+
+    /// The result byte of a good `CHIE` write has never been measured. A cut
+    /// that READS cut is a cut whatever the write answered: the answer is
+    /// logged, and the discharge runs.
+    func testACutThatReadsCutIsACutWhateverTheWriteAnswered() {
+        let hw = FakeChargeHardware(percent: 77)
+        hw.cutLandsButSaysNo = true
+        var lines: [String] = []
+        let server = makeServer(hw, log: { lines.append($0) })
+        let reply = server.handle(.command(.discharge(toPercent: 40)))
+        XCTAssertTrue(reply.ok, reply.message)
+        XCTAssertEqual(server.dischargeTarget, 40)
+        XCTAssertEqual(hw.cutWrites, [true], "a cut that read back was undone")
+        XCTAssertEqual(hw.isCut, true)
+        XCTAssertTrue(lines.contains { $0.contains("answered the cut with an error") }, "\(lines)")
+    }
+
     /// A helper with no charge hardware refuses the charge commands rather than
     /// pretending.
     func testAHelperWithoutChargeHardwareRefuses() {
@@ -1219,6 +1463,66 @@ final class ChargeHelperTestsSocket: XCTestCase {
         XCTAssertEqual(hw.isCut, false)
     }
 
+    /// The app goes away while the key cannot be read. The held cut is written
+    /// back, and — not read back — still owed: the on-demand helper stays up
+    /// and keeps writing until a read shows connected. It used to call this
+    /// "no adapter-cut key", clear the target and idle out with the charger cut.
+    func testAnOnDemandHelperStaysUpWhenAHeldCutCannotBeReadBack() throws {
+        let hw = FakeChargeHardware(percent: 77)
+        let log = ChargeLogRecorder(hw)
+        try start(hw, watchEvery: 0.05, log: log) { $0.idleExit = 0.3 }
+        XCTAssertTrue(send(.discharge(toPercent: 40)).ok)
+
+        hw.keyExists = false
+        link.disconnect()
+        spin(until: { false }, timeout: 1.0, failOnTimeout: false)
+        XCTAssertFalse(thread.isFinished, "an on-demand helper exited with the charger still cut")
+        XCTAssertEqual(hw.isCut, true)
+        XCTAssertGreaterThan(hw.cutWrites.count, 4, "the watch did not keep writing the reconnect")
+        XCTAssertFalse(log.lines.contains { $0.contains("no adapter-cut key") }, "\(log.lines)")
+
+        hw.keyExists = true
+        spin(until: { self.thread.isFinished }, timeout: 3)
+        XCTAssertTrue(thread.isFinished, "it never left once the charger read connected")
+        XCTAssertEqual(hw.isCut, false)
+    }
+
+    /// A stop signal while the key cannot be read: the process is leaving, and
+    /// the one thing it can still do — write the reconnect — it does.
+    func testStoppingWritesAHeldCutBackWhenTheKeyCannotBeRead() throws {
+        let hw = FakeChargeHardware(percent: 77)
+        let log = ChargeLogRecorder(hw)
+        try start(hw, log: log)
+        XCTAssertTrue(send(.discharge(toPercent: 40)).ok)
+
+        hw.keyExists = false
+        server.stop()
+        spin(until: { self.thread.isFinished })
+        XCTAssertEqual(hw.cutWrites, [true, false, false, false], "the reconnect was skipped")
+        XCTAssertFalse(log.lines.contains { $0.contains("no adapter-cut key") }, "\(log.lines)")
+    }
+
+    /// The undo of a cut that did not read back, not read back itself, and the
+    /// app goes away: the on-demand helper stays up until a read shows connected.
+    func testAnOnDemandHelperStaysUpWhileAnUndoIsUnconfirmed() throws {
+        let hw = FakeChargeHardware(percent: 77)
+        try start(hw, watchEvery: 0.05) { $0.idleExit = 0.3 }
+        hw.cutUnreadable = true
+        hw.ignoreRestore = true
+        XCTAssertFalse(send(.discharge(toPercent: 40)).ok)
+
+        link.disconnect()
+        spin(until: { false }, timeout: 1.0, failOnTimeout: false)
+        XCTAssertFalse(thread.isFinished, "an on-demand helper exited owing an unconfirmed reconnect")
+        XCTAssertEqual(hw.isCut, true)
+
+        hw.cutUnreadable = false
+        hw.ignoreRestore = false
+        spin(until: { self.thread.isFinished }, timeout: 3)
+        XCTAssertTrue(thread.isFinished, "it never left once the charger read connected")
+        XCTAssertEqual(hw.isCut, false)
+    }
+
     private func makeListeningSocket(at path: String) -> Int32? {
         guard var addr = FanSocketIO.address(path) else { return nil }
         unlink(path)
@@ -1299,6 +1603,9 @@ final class FakeChargeHardware: ChargeHardware {
     private var _ignoreRestore = false
     private var _restoreRefusalsLeft = 0
     private var _refuseLimit = false
+    private var _cutLandsButSaysNo = false
+    private var _failNextReads = 0
+    private var _existsAnswersNo = false
 
     init(percent: Int? = 50, onAC: Bool? = true, cut: Bool = false) {
         _percent = percent; _cable = onAC; _cut = cut
@@ -1358,8 +1665,31 @@ final class FakeChargeHardware: ChargeHardware {
         get { locked { _refuseLimit } }
         set { locked { _refuseLimit = newValue } }
     }
+    /// The SMC applies the cut and answers no: a write whose result byte is
+    /// not 0 although it landed. Unmeasured on real hardware, so possible.
+    var cutLandsButSaysNo: Bool {
+        get { locked { _cutLandsButSaysNo } }
+        set { locked { _cutLandsButSaysNo = newValue } }
+    }
+    /// This many reads of the key fail, then reads work again. The key is
+    /// there and takes writes throughout.
+    var failNextReads: Int {
+        get { locked { _failNextReads } }
+        set { locked { _failNextReads = newValue } }
+    }
+    /// `adapterCutKeyExists()` answers no while the key is there and takes
+    /// writes — what `SMC.exists` answers for any key-info call that fails.
+    var existsAnswersNo: Bool {
+        get { locked { _existsAnswersNo } }
+        set { locked { _existsAnswersNo = newValue } }
+    }
 
-    func adapterCut() -> Bool? { locked { (_unreadable || !_keyExists) ? nil : _cut } }
+    func adapterCut() -> Bool? {
+        locked {
+            if _failNextReads > 0 { _failNextReads -= 1; return nil }
+            return (_unreadable || !_keyExists) ? nil : _cut
+        }
+    }
     func setAdapterCut(_ on: Bool) -> Bool {
         locked {
             _cutWrites.append(on)
@@ -1367,6 +1697,7 @@ final class FakeChargeHardware: ChargeHardware {
             if on {
                 if _refuseCut { return false }
                 if _ignoreCut { return true }
+                if _cutLandsButSaysNo { _cut = true; return false }
             } else {
                 if _restoreRefusalsLeft > 0 { _restoreRefusalsLeft -= 1; return false }
                 if _refuseRestore { return false }
@@ -1378,7 +1709,7 @@ final class FakeChargeHardware: ChargeHardware {
     }
     func batteryPercent() -> Int? { locked { _percent } }
     func onAC() -> Bool? { locked { _cut ? (_acWhileCut ?? _cable) : _cable } }
-    func adapterCutKeyExists() -> Bool { locked { _keyExists } }
+    func adapterCutKeyExists() -> Bool { locked { _keyExists && !_existsAnswersNo } }
     func writeChargeLimit(_ percent: Int) -> Bool {
         locked {
             _limitWrites.append(percent)

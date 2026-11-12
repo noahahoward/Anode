@@ -162,6 +162,34 @@ final class ChargeHelperSleepTests: XCTestCase {
         XCTAssertTrue(server.isIdle)
     }
 
+    /// The same when the key cannot be read before sleep: the held cut is
+    /// written back anyway, not called "no adapter-cut key" — which used to log
+    /// "reconnected the charger before sleep", clear the target and leave the
+    /// charger cut over sleep with nothing owed. Owed, it is retried after wake.
+    func testAnUnconfirmedReconnectBeforeSleepIsOwedAndRetriedAfterWake() {
+        let hw = FakeChargeHardware(percent: 77, onAC: true)
+        var lines: [String] = []
+        let server = makeServer(hw, log: { lines.append($0) })
+        XCTAssertTrue(server.handle(.command(.discharge(toPercent: 40))).ok)
+
+        hw.keyExists = false
+        server.systemWillSleep()
+        XCTAssertEqual(hw.cutWrites, [true, false, false, false], "nothing was written before sleep")
+        XCTAssertEqual(hw.isCut, true)
+        XCTAssertEqual(server.dischargeTarget, 40)
+        XCTAssertTrue(server.reconnectOwed)
+        XCTAssertFalse(server.isIdle)
+        XCTAssertTrue(lines.last?.hasPrefix("WARNING") ?? false, "\(lines)")
+        XCTAssertFalse(lines.contains("reconnected the charger before sleep"), "\(lines)")
+
+        server.systemDidWake()
+        hw.keyExists = true
+        server.watchDischarge()
+        XCTAssertEqual(hw.isCut, false)
+        XCTAssertNil(server.dischargeTarget)
+        XCTAssertTrue(server.isIdle)
+    }
+
     /// A cut this helper owes a reconnect for — one nobody owned that would not
     /// clear at startup — is a cut all the same, and is tried again before sleep.
     func testWillSleepRetriesAnOwedReconnect() {
@@ -199,6 +227,35 @@ final class ChargeHelperSleepTests: XCTestCase {
         XCTAssertTrue(server.noteSystemWillSleep(timeout: 2), "the loop never answered")
         XCTAssertEqual(hw.isCut, false, "the sleep notice was answered with the charger still cut")
         XCTAssertEqual(hw.cutWrites, [true, false, false, false])
+        XCTAssertLessThan(Date().timeIntervalSince(began), 1.0)
+    }
+
+    /// On the loop: a reconnect before sleep that cannot be read back is retried
+    /// by the FIRST pass after wake — the one the wake notice itself causes.
+    /// The watch's own timer is set to a minute, so nothing else can be what
+    /// reconnects it within the second this test waits.
+    func testTheFirstPassAfterWakeRetriesAnUnconfirmedReconnect() throws {
+        let hw = FakeChargeHardware(percent: 77, onAC: true)
+        let server = makeServer(hw, socketPath: tempSocket())
+        server.dischargeWatchInterval = 60
+        try server.start()
+        XCTAssertTrue(server.handle(.command(.discharge(toPercent: 40))).ok)
+        let thread = Thread { server.run() }
+        thread.start()
+        defer { server.stop(); spin(until: { thread.isFinished }) }
+
+        hw.keyExists = false
+        XCTAssertTrue(server.noteSystemWillSleep(timeout: 2), "the loop never answered")
+        // Let the loop finish that pass and settle into its minute-long wait.
+        spin(until: { false }, timeout: 0.2, failOnTimeout: false)
+        XCTAssertEqual(hw.isCut, true)
+        XCTAssertGreaterThan(hw.cutWrites.count, 1, "nothing was written before sleep")
+
+        hw.keyExists = true
+        let began = Date()
+        server.noteSystemDidWake()
+        spin(until: { hw.isCut == false }, timeout: 2)
+        XCTAssertEqual(hw.isCut, false, "the first pass after wake did not retry the reconnect")
         XCTAssertLessThan(Date().timeIntervalSince(began), 1.0)
     }
 

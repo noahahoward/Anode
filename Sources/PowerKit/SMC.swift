@@ -171,12 +171,44 @@ public final class SMC {
     /// `kIOReturnSuccess`, with `dataSize` 0 and an empty type — `F0Ac`/`F1Ac` come
     /// back size 4 type `flt` while `F2Ac`..`F9Ac` come back size 0. **The size is
     /// the existence test; the return code is not.**
+    ///
+    /// A call that fails answers false here too, which is right for counting
+    /// fans and wrong for the charger: a key-info call that fails says nothing
+    /// about whether `CHIE` is there. The charger asks `isAbsent` instead.
     public func exists(_ key: String) -> Bool {
         var i = [UInt8](repeating: 0, count: Off.total)
         Self.setU32(&i, Off.key, Self.code(key))
         i[Off.data8] = Cmd.readKeyInfo.rawValue
         guard let o = call(i) else { return false }
         return Self.u32(o, Off.dataSize) > 0
+    }
+
+    /// The SMC's own result for "no such key". MEASURED read-only on this Mac
+    /// (macOS 27): `ZZZZ` key info comes back rc 0, result 132, size 0.
+    static let noSuchKey: UInt8 = 0x84
+
+    /// Does the SMC ITSELF say this key is not there?
+    ///
+    /// The strict sibling of `exists`, for a key whose absence lets the caller
+    /// skip a write that matters — the charger's `CHIE`. True only for the
+    /// SMC's own "no such key": the call went through, the result byte is
+    /// 0x84, and the size is 0. Any other failure — an IOKit error, a timeout
+    /// in-band, a short buffer — says nothing either way, and is false: the
+    /// key might exist. Read-only.
+    public func isAbsent(_ key: String) -> Bool {
+        var i = [UInt8](repeating: 0, count: Off.total)
+        Self.setU32(&i, Off.key, Self.code(key))
+        i[Off.data8] = Cmd.readKeyInfo.rawValue
+        let (rc, out) = callRaw(i)
+        return Self.saysNoSuchKey(rc: rc, output: out)
+    }
+
+    /// `isAbsent`'s whole decision, pure, so it can be tested without an SMC.
+    static func saysNoSuchKey(rc: kern_return_t, output: [UInt8]) -> Bool {
+        rc == kIOReturnSuccess
+            && output.count == Off.total
+            && output[Off.result] == noSuchKey
+            && u32(output, Off.dataSize) == 0
     }
 
     /// Decodes the SMC numeric types we care about. `flt` is the one that matters on

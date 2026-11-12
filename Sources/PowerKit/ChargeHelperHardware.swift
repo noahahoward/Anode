@@ -13,8 +13,9 @@ public protocol ChargeHardware: AnyObject {
     /// Is the charger cut right now? nil when the key cannot be read.
     func adapterCut() -> Bool?
     /// Cut (true) or reconnect (false). The only two writes the helper makes to
-    /// the charger. True means the SMC accepted the write, NOT that the charger
-    /// changed: `ChargeRelease` reads every write back.
+    /// the charger. True means the SMC said yes to the write — neither that
+    /// the charger changed nor, when false, that it did not: `ChargeRelease`
+    /// reads every write back and decides by the read alone.
     func setAdapterCut(_ on: Bool) -> Bool
     func batteryPercent() -> Int?
     /// Is a charger on the cable? Answered the same while the charger is cut
@@ -25,7 +26,9 @@ public protocol ChargeHardware: AnyObject {
     func writeChargeLimit(_ percent: Int) -> Bool
     /// Does this Mac have the adapter-cut key at all? Tells "no such key" (a
     /// Mac this helper can never have cut) from "unreadable" (one it may
-    /// have). True when it cannot be told.
+    /// have). False only when the SMC itself says the key is not there; true
+    /// whenever it cannot be told. Never asked while this helper holds a cut:
+    /// a cut that read back already proved the key exists.
     func adapterCutKeyExists() -> Bool
 }
 
@@ -69,11 +72,13 @@ public struct DischargeWatch {
 /// same rule `FanRelease` follows for the fans, for the same reason: copies of
 /// a write this consequential drift apart.
 ///
-/// A write the SMC accepted is not a write the SMC applied. `setAdapterCut`
-/// returning true says the call went through; only reading `CHIE` again says
-/// what the charger is doing. So a reconnect is DONE when the key reads
-/// connected, and a cut is done when the write was accepted AND the key reads
-/// cut. Anything else is a failure, reported as one.
+/// A write the SMC accepted is not a write the SMC applied, and a write it
+/// answered with an error is not proof that nothing changed. `setAdapterCut`'s
+/// answer is logged, never trusted; only reading `CHIE` again says what the
+/// charger is doing. So a reconnect is DONE when the key reads connected, and a
+/// cut is done when the key reads cut. Anything else is a failure, reported as
+/// one. (The SMC's result byte for a good `CHIE` write has never been measured:
+/// nothing here may depend on it being 0.)
 public enum ChargeRelease {
 
     /// How hard to try. A few reads a moment apart per write, because the SMC is
@@ -103,7 +108,8 @@ public enum ChargeRelease {
         public enum Outcome: Equatable {
             /// It read connected; nothing was written.
             case notCut
-            /// This Mac has no adapter-cut key; nothing was written.
+            /// The SMC says this Mac has no adapter-cut key. Never the answer
+            /// while a cut is held (`reconnect(holding:)`).
             case noKey
             /// Written, and it then read connected.
             case reconnected
@@ -148,16 +154,26 @@ public enum ChargeRelease {
     ///
     /// Writes unless the key already reads connected, so the everyday path —
     /// a helper starting on a charger nobody cut — writes nothing. A key that
-    /// cannot be read IS written: reconnecting cannot hurt, and leaving a cut in
-    /// place because a read failed can.
+    /// cannot be read IS written, unless the SMC itself says there is no such
+    /// key (`adapterCutKeyExists`): reconnecting cannot hurt, and leaving a cut
+    /// in place because a read failed can.
     ///
     /// `alwaysWrite` skips that first read. It is for straight after a cut
     /// attempt, when a read may still show the state from before the write and
     /// "it reads connected" proves nothing.
+    ///
+    /// `holding` is for a caller that holds a cut which READ BACK cut, or owes
+    /// a reconnect: the key is known to exist. Then the reconnect is always
+    /// written, and the answer is never `.noKey` — not on a first read that
+    /// fails, and not after writes that cannot be read back. A failed read
+    /// there is a failed read, and the key-info question that would follow
+    /// can fail the same way and answer "no such key"; taking its word once
+    /// left a held cut unwritten, its target cleared, and nobody watching.
     public static func reconnect(_ charge: ChargeHardware,
                                  alwaysWrite: Bool = false,
+                                 holding: Bool = false,
                                  timing: Timing = .standard) -> Result {
-        if !alwaysWrite {
+        if !alwaysWrite && !holding {
             switch charge.adapterCut() {
             case false?: return Result(.notCut, writes: 0)
             case nil where !charge.adapterCutKeyExists(): return Result(.noKey, writes: 0)
@@ -178,28 +194,45 @@ public enum ChargeRelease {
             }
         }
         // A key that is not there cannot be cut; say that rather than "may still
-        // be cut off" about a Mac that has no way to be.
-        if outcome == .unconfirmed, !charge.adapterCutKeyExists() {
+        // be cut off" about a Mac that has no way to be. Never about a cut this
+        // caller holds: that one read back, so the key is there.
+        if outcome == .unconfirmed, !holding, !charge.adapterCutKeyExists() {
             return Result(.noKey, writes: tries)
         }
         return Result(outcome, writes: tries)
     }
 
+    /// What a cut came to. Decided by READING `CHIE` BACK, never by the
+    /// write's own answer, which only picks the words: the SMC's result byte
+    /// for a good `CHIE` write has not been measured, and trusting it would
+    /// refuse every discharge on a Mac that answers a good write with non-zero.
     public enum CutOutcome: Equatable {
-        /// Accepted, and it reads cut.
+        /// It reads cut, and the write said yes.
         case cut
-        /// The SMC refused the write.
+        /// It reads cut, and the write said no. A cut all the same; the answer
+        /// is worth a log line, because it is the unmeasured case.
+        case cutAlthoughRefused
+        /// It does not read cut (or cannot be read), and the write said no.
         case refused
-        /// Accepted, and it does not read cut (or cannot be read).
+        /// It does not read cut (or cannot be read), and the write said yes.
         case notKept
+
+        /// The charger reads cut: the discharge is on.
+        public var isCut: Bool { self == .cut || self == .cutAlthoughRefused }
     }
 
-    /// Cut the charger and confirm it. Anything but `.cut` must be followed by
-    /// `reconnect(alwaysWrite: true)`: a write that did not provably cut may
-    /// still land.
+    /// Cut the charger and confirm it by reading it back. Anything not `isCut`
+    /// must be followed by `reconnect(alwaysWrite: true)`: a write that did not
+    /// provably cut may still land.
     public static func cut(_ charge: ChargeHardware, timing: Timing = .standard) -> CutOutcome {
-        guard charge.setAdapterCut(true) else { return .refused }
-        return readBack(charge, expecting: true, timing: timing) == true ? .cut : .notKept
+        let accepted = charge.setAdapterCut(true)
+        let readsCut = readBack(charge, expecting: true, timing: timing) == true
+        switch (readsCut, accepted) {
+        case (true, true):   return .cut
+        case (true, false):  return .cutAlthoughRefused
+        case (false, false): return .refused
+        case (false, true):  return .notKept
+        }
     }
 
     /// Read the key until it says `expecting`, a few times a moment apart, and
@@ -276,11 +309,14 @@ public final class SystemChargeHardware: ChargeHardware {
         smc?.writeByte(AdapterCutKey.key, on ? AdapterCutKey.cut : AdapterCutKey.connected) ?? false
     }
 
-    /// Key info only — no read of the value, no write. Without an SMC
-    /// connection nothing can be told, and the answer is the cautious one.
+    /// Key info only — no read of the value, no write. False only on the
+    /// SMC's own "no such key" (`SMC.isAbsent`); a call that fails, or
+    /// anything else, is the cautious true. Without an SMC connection nothing
+    /// can be told, and the answer is the cautious one. Not `SMC.exists`, which
+    /// answers false for ANY failed call.
     public func adapterCutKeyExists() -> Bool {
         guard let smc else { return true }
-        return smc.exists(AdapterCutKey.key)
+        return !smc.isAbsent(AdapterCutKey.key)
     }
 
     public func batteryPercent() -> Int? {
