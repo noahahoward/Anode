@@ -41,11 +41,14 @@ final class BarReaderTests: XCTestCase {
         XCTAssertEqual(AXBarReader.parse(app: agent, children: []), [])
     }
 
-    func testLockedFlagSetForClockAndControlCenter() {
+    /// Every system item is locked (the owner's call, 2026-11-11); another app's item is not.
+    func testLockedFlagSetForEverySystemItemAndNoOtherAppsItem() {
         let items = AXBarReader.parse(app: agent, children: [
             child("com.apple.menuextra.wifi", x: 1502), child("com.apple.menuextra.controlcenter", x: 1620),
             child("com.apple.menuextra.clock", x: 1662)])
-        XCTAssertEqual(items.map(\.isLocked), [false, true, true])
+        XCTAssertEqual(items.map(\.isLocked), [true, true, true])
+        let other = AXBarReader.parse(app: (bundleID: "com.logi.ghub", name: "G HUB", pid: 9), children: [child(nil, x: 1300)])
+        XCTAssertEqual(other.map(\.isLocked), [false])
     }
 
     func testTitleOfAnItemIsItsDescriptionWhenThereIsNoTitle() {

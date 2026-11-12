@@ -77,4 +77,20 @@ final class BarItemTests: XCTestCase {
         XCTAssertTrue(BarItem.isLockedItem(identifier: "com.apple.menuextra.clock", title: nil))
         XCTAssertTrue(BarItem.isLockedItem(identifier: nil, title: "Control Center"))
     }
+
+    /// Every item macOS draws itself is locked: never covered, never behind the chevron. Seen on hardware 2026-11-11: the
+    /// orange microphone-in-use indicator and an AirPods item appeared, were not in the arrangement, went behind the chevron
+    /// by default and were covered (the cover narrower than the indicator, its orange edges showing).
+    func testEverySystemItemIsLocked() {
+        for owner in ["com.apple.MenuBarAgent", "com.apple.controlcenter", "com.apple.systemuiserver", "com.apple.TextInputMenuAgent",
+                      "com.apple.Spotlight"] {
+            XCTAssertTrue(BarItem.isLockedItem(bundleID: owner, identifier: nil, title: nil), owner)
+            XCTAssertTrue(BarItem.isLockedItem(bundleID: owner, identifier: "com.apple.menuextra.battery", title: "Battery"), owner)
+        }
+        XCTAssertFalse(BarItem.isLockedItem(bundleID: "com.logi.ghub", identifier: nil, title: nil))
+        XCTAssertFalse(BarItem.isLockedItem(bundleID: "com.example.audio", identifier: nil, title: "Sound"))
+        XCTAssertFalse(BarItem.isLockedItem(bundleID: "dev.anode.app", identifier: nil, title: "CPU usage"))
+        XCTAssertFalse(BarItem.isLockedItem(bundleID: nil, identifier: nil, title: nil))
+        XCTAssertFalse(BarItem.isLockedItem(bundleID: "com.applesauce.menu", identifier: nil, title: nil))
+    }
 }
