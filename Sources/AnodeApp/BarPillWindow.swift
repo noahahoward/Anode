@@ -237,8 +237,9 @@ final class BarPillWindow: PillPresenting {
 
     private func installMonitor() {
         guard clickMonitor == nil else { return }
-        // A global monitor sees only clicks in OTHER apps' windows and the system's; a click in the pill or on the chevron is
-        // Anode's own and does not come here, which is what is wanted.
+        // A global monitor sees only clicks in OTHER apps' windows and the system's; a click in the pill is Anode's own and does
+        // not come here. A click on the chevron DOES (macOS 27 draws status items in MenuBarAgent): the controller treats the
+        // toggle that follows at once as the same click (`MenuBarHiderController.sameClickSeconds`).
         clickMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
             self?.onDismiss?()
         }

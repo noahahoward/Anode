@@ -215,8 +215,19 @@ final class MenuBarHiderController {
         }
     }
 
+    /// When the pill was last closed by a click away. On macOS 27 the chevron is drawn by MenuBarAgent, so a click on it is
+    /// "another app's" click: its mouse-down closes the pill through the click-away monitor, and its mouse-up then toggles.
+    private var clickedAwayAt: Date?
+    /// A toggle this soon after a click-away close is that same click.
+    static let sameClickSeconds: TimeInterval = 0.5
+
     func togglePill() {
         guard canTogglePill else { return }
+        if !pillState.isOpen, let at = clickedAwayAt, now().timeIntervalSince(at) < Self.sameClickSeconds {
+            clickedAwayAt = nil
+            return
+        }
+        clickedAwayAt = nil
         pillState.toggle(now: now(), autoClose: settings.menuBarHiderAutoCloseSeconds)
         syncPill()
         changed()
@@ -225,6 +236,7 @@ final class MenuBarHiderController {
     /// The owner clicked away from the pill.
     func dismissPill() {
         guard pillState.isOpen else { return }
+        clickedAwayAt = now()
         closePill()
         changed()
     }
