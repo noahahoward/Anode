@@ -178,8 +178,9 @@ for app in "$HOME/Applications/Anode.app" "/Applications/Anode.app"; do
   fi
   if ! "$bin" --restore-charge-settings >/dev/null 2>&1; then
     echo "Anode could not put back macOS's own charge settings, so macOS may still hold a charge limit: change it in" \
-      "System Settings → Battery. If the battery is not charging on the charger, restarting the Mac or reinstalling" \
-      "Anode's helper reconnects it."
+      "System Settings → Battery. If the battery is not charging on the charger, Anode's helper reconnects it: run" \
+      "'sudo /Library/PrivilegedHelperTools/$DAEMON_LABEL --uninstall' if that helper is installed (it reconnects" \
+      "the charger, then removes itself), or install Anode again and start its helper from the Fans tab."
   fi
   break
 done
