@@ -21,13 +21,21 @@ import PowerKit
 // connection ends the cut). Nothing about the helper is said until it has answered, or is known not to be there.
 //
 // The first time it is switched on, the state of macOS's limit and Optimized Battery Charging is written down
-// (`Settings.chargeRestoreRecord`, flushed to disk) BEFORE anything is changed, and switching off puts it back at
-// once, after anything still on its way to the helper has landed. So does quitting: the limit is in force only while
-// Anode is running, so that an Anode that ever breaks on someone's Mac leaves the battery released, not held. The
-// record is cleared by a restore that worked, and the setting and the person's limit are not touched, so the next
-// launch switches on again from a cold start. A record still there at launch with Charge Control on therefore means
-// the last run ended without a quit (a crash, a kill, the power going), with macOS's limit still in force; that
-// launch puts macOS's own settings back at once and switches on again only after `startDelay` (`liftAfterUncleanExit`).
+// (`ChargeRecords`: one record for the whole Mac, flushed to disk) BEFORE anything is changed, and switching off puts
+// it back at once, after anything still on its way to the helper has landed. So does quitting: the limit is in force
+// only while Anode is running, so that an Anode that ever breaks on someone's Mac leaves the battery released, not
+// held. The record is cleared by a restore that worked, and the setting and the person's limit are not touched, so
+// the next launch switches on again from a cold start.
+//
+// macOS's limit is one setting for the whole Mac, and every account has its own Anode, so the record is shared and
+// lists who holds the limit: switching on adopts a record that is already there (macOS's settings then are another
+// Anode's limit, not macOS's own) and joins its holders; putting back removes this account from them, and only the
+// last live holder puts anything back. Whether this account is on screen does not matter for that.
+//
+// A record still there at launch with Charge Control on that lists this account under another process, or lists
+// nobody alive, means the last run ended without a quit (a crash, a kill, the power going), with macOS's limit still
+// in force; that launch puts macOS's own settings back at once (unless another account's live Anode holds the limit)
+// and switches on again only after `startDelay` (`liftAfterUncleanExit`).
 // It writes `Settings.chargeStartPending` first and clears it only once that switch-on has run (or on switching off, a
 // clean quit or an uninstall), so an Anode that dies during the delay finds the flag at its next launch and waits
 // again: only one that stays up for the whole delay ever holds a limit, however often it crashes before that.
@@ -188,21 +196,58 @@ final class ChargeController {
     /// starts nothing (Charge Control is never switched on to be switched off, whatever the setting says): the
     /// record put back, the debt of an unconfirmed discharge asked about (waited for; only waited commands work
     /// with no run loop, and they open the connection themselves), the setting turned off, and all of it flushed.
-    /// True when no record and no debt are left.
+    /// True when no record and no debt are left (`restoreForUninstallOutcome` tells a limit another account's Anode
+    /// holds from one that may be left).
     static func restoreForUninstall(settings: Settings,
+                                    records: ChargeRecords? = nil,
                                     makeClient: @escaping () -> ChargeLimitClient? = { PowerUIChargeClient() },
                                     helper: ChargeHelperLink,
                                     log: @escaping (String) -> Void = { FeatureLog.append("charge.log", $0) }) -> Bool {
-        let c = ChargeController(settings: settings, makeClient: makeClient, helper: helper, battery: { nil },
-                                 chargerSwitch: { nil }, log: log, workspace: NotificationCenter(),
+        restoreForUninstallOutcome(settings: settings, records: records, makeClient: makeClient, helper: helper,
+                                   log: log) == .cleared
+    }
+
+    /// How the headless restore ended: nothing of Charge Control's is left in force (exit 0); something may be (exit
+    /// 1); or the limit is in force and is another account's Anode's to put back, which is left alone (exit 2).
+    enum UninstallRestore: Equatable {
+        case cleared, mayBeLeft, heldByAnotherAccount
+
+        var exitCode: Int32 {
+            switch self {
+            case .cleared: return 0
+            case .mayBeLeft: return 1
+            case .heldByAnotherAccount: return 2
+            }
+        }
+    }
+
+    static func restoreForUninstallOutcome(settings: Settings, records: ChargeRecords? = nil,
+                                           makeClient: @escaping () -> ChargeLimitClient? = { PowerUIChargeClient() },
+                                           helper: ChargeHelperLink,
+                                           log: @escaping (String) -> Void = { FeatureLog.append("charge.log", $0) })
+        -> UninstallRestore {
+        let records = records ?? ChargeRecords(settings: settings)
+        let c = ChargeController(settings: settings, records: records, makeClient: makeClient, helper: helper,
+                                 battery: { nil }, chargerSwitch: { nil }, log: log, workspace: NotificationCenter(),
                                  limitInForce: ChargeLimitInForce(), startDelay: Self.startDelay, liftedAtLaunch: false,
                                  observing: false)
         c.restoreForUninstall()
         settings.flush()
-        let left = settings.chargeRestoreRecord != nil || settings.chargeCutUnconfirmed
-        log(left ? "uninstalling: something of Charge Control's may still be in force"
-                 : "uninstalling: macOS's own charge settings are back")
-        return !left
+        let outcome: UninstallRestore
+        if settings.chargeCutUnconfirmed {
+            outcome = .mayBeLeft
+        } else if records.hasRecord {
+            outcome = records.heldByAnotherAccount ? .heldByAnotherAccount : .mayBeLeft
+        } else {
+            outcome = .cleared
+        }
+        switch outcome {
+        case .cleared: log("uninstalling: macOS's own charge settings are back")
+        case .mayBeLeft: log("uninstalling: something of Charge Control's may still be in force")
+        case .heldByAnotherAccount:
+            log("uninstalling: another account's Anode is holding the charge limit, so it is left in force")
+        }
+        return outcome
     }
 
     /// The first thing the program does, before `NSApplication` and before anything else of the app is built (see
@@ -220,15 +265,16 @@ final class ChargeController {
     /// For a normal launch (nothing to lift) it does nothing and builds nothing: the client and the helper link are
     /// asked for only when there is work, so `helper` is a closure.
     @discardableResult
-    static func liftAtLaunch(settings: Settings = .shared,
+    static func liftAtLaunch(settings: Settings = .shared, records: ChargeRecords? = nil,
                              makeClient: @escaping () -> ChargeLimitClient? = { PowerUIChargeClient() },
                              helper: () -> ChargeHelperLink = { ChargeHelperAdapter() },
                              log: @escaping (String) -> Void = { FeatureLog.append("charge.log", $0) }) -> Bool {
-        guard settings.chargeControlEnabled, settings.chargeRestoreRecord != nil || settings.chargeStartPending else {
+        let records = records ?? ChargeRecords(settings: settings)
+        guard settings.chargeControlEnabled, records.lastRunDidNotRelease() || settings.chargeStartPending else {
             return false
         }
-        let c = ChargeController(settings: settings, makeClient: makeClient, helper: helper(), battery: { nil },
-                                 chargerSwitch: { nil }, log: log, workspace: NotificationCenter(),
+        let c = ChargeController(settings: settings, records: records, makeClient: makeClient, helper: helper(),
+                                 battery: { nil }, chargerSwitch: { nil }, log: log, workspace: NotificationCenter(),
                                  limitInForce: ChargeLimitInForce(), startDelay: Self.startDelay,
                                  liftedAtLaunch: false, observing: false)
         return c.liftNow()
@@ -296,6 +342,8 @@ final class ChargeController {
     var dischargeInForce: Int? { appliedDischarge }
 
     private let settings: Settings
+    /// The record of macOS's own settings, shared by every account's Anode on this Mac (`ChargeRecords`).
+    private let records: ChargeRecords
     private let makeClient: () -> ChargeLimitClient?
     private let helper: ChargeHelperLink
     private let battery: () -> Battery.State?
@@ -310,7 +358,8 @@ final class ChargeController {
     /// What `limitForMonitor` reads from the monitor's queue; see `ChargeLimitInForce`.
     private let limitInForce: ChargeLimitInForce
     /// This account is the one on screen. The limit is the whole Mac's and each account has its own Anode, so only
-    /// the one on screen holds it; see `sessionResigned`.
+    /// the one on screen asserts it (which of them holds it for the purpose of putting back is the record's business:
+    /// `ChargeRecords`); see `sessionResigned`.
     private var sessionActive = true
     /// While going to sleep, a limit only the helper can set is waited for, until this, rather than sent and left.
     private var waitUntil: Date?
@@ -473,16 +522,17 @@ final class ChargeController {
         weak var value: Observation?
     }
 
-    convenience init(settings: Settings, makeClient: @escaping () -> ChargeLimitClient? = { PowerUIChargeClient() },
+    convenience init(settings: Settings, records: ChargeRecords? = nil,
+                     makeClient: @escaping () -> ChargeLimitClient? = { PowerUIChargeClient() },
                      helper: ChargeHelperLink, battery: @escaping () -> Battery.State? = { Battery.state() },
                      chargerSwitch: @escaping () -> UInt8? = ChargeController.systemChargerSwitch(),
                      log: @escaping (String) -> Void = { FeatureLog.append("charge.log", $0) },
                      workspace: NotificationCenter = NSWorkspace.shared.notificationCenter,
                      limitInForce: ChargeLimitInForce = ChargeLimitInForce(),
                      startDelay: TimeInterval = ChargeController.startDelay, liftedAtLaunch: Bool = false) {
-        self.init(settings: settings, makeClient: makeClient, helper: helper, battery: battery,
-                  chargerSwitch: chargerSwitch, log: log, workspace: workspace, limitInForce: limitInForce,
-                  startDelay: startDelay, liftedAtLaunch: liftedAtLaunch, observing: true)
+        self.init(settings: settings, records: records ?? ChargeRecords(settings: settings), makeClient: makeClient,
+                  helper: helper, battery: battery, chargerSwitch: chargerSwitch, log: log, workspace: workspace,
+                  limitInForce: limitInForce, startDelay: startDelay, liftedAtLaunch: liftedAtLaunch, observing: true)
     }
 
     /// The Mac's own charger switch, read as the person and not through the helper: only writing it needs root
@@ -509,11 +559,13 @@ final class ChargeController {
 
     /// `observing` false: a controller that watches nothing and starts nothing, for the uninstall's restore with no
     /// window (`restoreForUninstall(settings:...)`), which must not switch Charge Control on to switch it off.
-    private init(settings: Settings, makeClient: @escaping () -> ChargeLimitClient?, helper: ChargeHelperLink,
+    private init(settings: Settings, records: ChargeRecords, makeClient: @escaping () -> ChargeLimitClient?,
+                 helper: ChargeHelperLink,
                  battery: @escaping () -> Battery.State?, chargerSwitch: @escaping () -> UInt8?,
                  log: @escaping (String) -> Void, workspace: NotificationCenter, limitInForce: ChargeLimitInForce,
                  startDelay: TimeInterval, liftedAtLaunch: Bool, observing: Bool) {
         self.settings = settings
+        self.records = records
         self.makeClient = makeClient
         self.helper = helper
         self.battery = battery
@@ -591,24 +643,25 @@ final class ChargeController {
             return setStatus(.unavailable(Self.unavailableText))
         }
         // The way back is written down before anything is changed, and flushed: macOS keeps these settings if Anode
-        // dies, so the record has to survive a crash in the next few lines. A record still there is the state before
-        // Charge Control ever ran (at launch it is not: see `liftAfterUncleanExit`; here it is one a refused
-        // switch-off or restore left), and stays. So does one that cannot be read: the state found now may be one
-        // Charge Control made, and switching off puts back macOS's defaults instead.
-        if let text = settings.chargeRestoreRecord {
-            if Self.decodeRecord(text) == nil {
+        // dies, so the record has to survive a crash in the next few lines. A record that is there already stands, and
+        // this Anode becomes one of its holders: it is the state before any Anode changed macOS (at launch after a run
+        // that did not quit it is not there: see `liftAfterUncleanExit`; here it is one a refused restore left, or
+        // another account's Anode holds the limit now, and what macOS says is that Anode's limit, not macOS's own).
+        // So does one that cannot be read: switching off puts back macOS's defaults instead.
+        switch records.acquire(read: { c.read() }) {
+        case .adopted(let readable):
+            if readable {
+                log("the record of macOS's own settings that was already there stands")
+            } else {
                 log("the record of macOS's own settings could not be read; it is kept, and switching off will put "
                     + "back macOS's defaults")
             }
-        } else {
-            guard let found = c.read(), let json = Self.encodeRecord(found) else {
-                log("unavailable: macOS did not report its charge settings; nothing was changed")
-                return setStatus(.unavailable(Self.unreadableText))
-            }
-            settings.chargeRestoreRecord = json
-            settings.flush()
+        case .recorded(let found):
             log("recorded macOS's own settings: limit \(found.mclLimit) \(found.mclEnabled ? "on" : "off"), "
                 + "Optimized Battery Charging \(found.optimizedChargingEnabled ? "on" : "off")")
+        case .macOSUnreadable:
+            log("unavailable: macOS did not report its charge settings; nothing was changed")
+            return setStatus(.unavailable(Self.unreadableText))
         }
         client = c
         session += 1
@@ -653,8 +706,10 @@ final class ChargeController {
     /// are waited for on this thread, `stopTimeout` at most for all of them together: a helper that has stopped
     /// answering must not hold the main thread once for each.
     ///
-    /// The record is cleared only when every step is known to have worked. Otherwise it is kept and that is logged,
-    /// so the next switch-off, quit or launch tries again from the true original rather than from what is left.
+    /// The record is cleared only when every step is known to have worked. Otherwise it is kept (with nobody holding
+    /// it) and that is logged, so the next switch-off, quit or launch of any account's Anode tries again from the true
+    /// original rather than from what is left. And nothing is put back at all while another account's running Anode
+    /// holds the limit (`ChargeRecords.release`).
     ///
     /// Used for switching off, quitting and uninstalling, and at a launch that finds the last run did not quit
     /// (`liftAfterUncleanExit`); `why` names which, in the line about a discharge stopped on the way.
@@ -673,25 +728,43 @@ final class ChargeController {
             log("the helper had not finished what it was asked within \(Int(Self.stopTimeout)) s; it may land after "
                 + "this")
         }
-        let record: NativeChargeState
-        if let found = recordToRestore() {
-            record = found
-        } else {
-            // Lost while on (removed by hand, say): Charge Control's settings are not left in force for that.
-            log("no record of macOS's own settings to put back; putting back macOS's defaults: no limit, "
-                + "Optimized Battery Charging on")
-            record = Self.defaultRecord
+        // This account stops holding the limit. Only the last live holder puts anything back (the shared record is
+        // locked while it does, so no other Anode records half-restored settings): another account's Anode that is
+        // running holds the limit now, and it is that Anode's to put back.
+        let released = records.release { original in
+            let record: NativeChargeState
+            switch original {
+            case .state(let found):
+                record = found
+            case .unreadableText:
+                log("the record of macOS's own settings could not be read; putting back macOS's defaults: no limit, "
+                    + "Optimized Battery Charging on")
+                record = Self.defaultRecord
+            case .none:
+                // Lost while on (removed by hand, say): Charge Control's settings are not left in force for that.
+                log("no record of macOS's own settings to put back; putting back macOS's defaults: no limit, "
+                    + "Optimized Battery Charging on")
+                record = Self.defaultRecord
+            }
+            var ok = restoreLimit(record.mclLimit, client: c, deadline: deadline) && settled
+            ok = c.setLimitEnabled(record.mclEnabled) && ok
+            ok = c.setOptimizedCharging(record.optimizedChargingEnabled) && ok
+            if ok {
+                log("put back macOS's own settings: limit \(record.mclLimit) \(record.mclEnabled ? "on" : "off"), "
+                    + "Optimized Battery Charging \(record.optimizedChargingEnabled ? "on" : "off")")
+            } else {
+                log("putting back macOS's own settings is not known to have worked; the record is kept")
+            }
+            return ok
         }
-        var ok = restoreLimit(record.mclLimit, client: c, deadline: deadline) && settled
-        ok = c.setLimitEnabled(record.mclEnabled) && ok
-        ok = c.setOptimizedCharging(record.optimizedChargingEnabled) && ok
-        if ok {
-            settings.chargeRestoreRecord = nil
-            settings.flush()
-            log("put back macOS's own settings: limit \(record.mclLimit) \(record.mclEnabled ? "on" : "off"), "
-                + "Optimized Battery Charging \(record.optimizedChargingEnabled ? "on" : "off")")
-        } else {
-            log("putting back macOS's own settings is not known to have worked; the record is kept")
+        switch released {
+        case .restored:
+            break
+        case .handedOver:
+            log("another account's Anode is holding the charge limit, so nothing is put back; it is that Anode's to "
+                + "put back when it quits")
+        case .unreadable(let why):
+            log("the shared record of macOS's own settings could not be read (\(why)); nothing is put back from it")
         }
     }
 
@@ -757,23 +830,29 @@ final class ChargeController {
     /// macOS or the helper refused leaves the record, and the next launch then lifts the limit
     /// (`liftAfterUncleanExit`). Then the helper link is let go. All the waiting together is `stopTimeout` at most.
     ///
-    /// Not when the record has gone (something else, an uninstall, has put macOS back since), and not while another
-    /// account is on screen: the limit in force is that account's Anode's, not this one's. A discharge is still
-    /// stopped then.
+    /// Not when the record has gone (something else, an uninstall, has put macOS back since). With the shared record,
+    /// nothing is put back while another account's Anode is running and holds the limit: it is that Anode's, and
+    /// whether this account is on screen does not matter. With a per-account record (the shared file could not be
+    /// had) nobody can say whose limit is in force, so nothing is put back while another account is on screen. A
+    /// discharge is still stopped then: that is this account's own.
     func shutdown() {
         enabledToken = nil
         endOffRetry()
         // A quit during the delay is a clean one: nothing is pending, and macOS's own settings are in force, unless
-        // the lift was refused: the record is then still there, and is put back now (not while another account is on
-        // screen: the limit in force is its Anode's).
+        // the lift was refused: the record is then still there, and is put back now, if nobody else holds it.
         let wasWaiting = startsAt != nil, onScreen = sessionActive
         endStartWait()
         setStartPending(false)
-        if wasWaiting, onScreen { putBackLeftoverRecord(when: "as Anode quit", leaving: "quitting") }
+        if wasWaiting, onScreen || records.isShared {
+            putBackLeftoverRecord(when: "as Anode quit", leaving: "quitting")
+        }
         guard running, let c = client else { return }
         switchingOff = true
         defer { switchingOff = false }
-        if sessionActive, settings.chargeRestoreRecord != nil {
+        // Who holds the limit is known when the record is shared (`restore` puts nothing back while another account's
+        // Anode is running and holds it); with a per-account record it is not, and nothing is put back while another
+        // account is on screen: the limit in force is probably its Anode's.
+        if records.hasRecord, sessionActive || records.isShared {
             restore(client: c, leaving: "quitting")
         } else if appliedDischarge != nil || dischargeInFlight || cutOwed {
             let r = waitedStop(timeout: Self.stopTimeout)
@@ -821,7 +900,7 @@ final class ChargeController {
     /// nothing to put back, or no client to do it with.
     @discardableResult
     private func putBackLeftoverRecord(when: String, leaving: String = "switching off") -> Bool {
-        guard !running, settings.chargeRestoreRecord != nil, let c = makeClient() else { return false }
+        guard !running, records.leftOverForThisAccount(), let c = makeClient() else { return false }
         log("a record of macOS's own settings was left over while off; putting it back \(when)")
         restore(client: c, leaving: leaving)
         return true
@@ -847,8 +926,8 @@ final class ChargeController {
     /// no record there is no restore, and the off-retry asks at once; see `liftAfterUncleanExit`). A restore macOS
     /// refused keeps the record; the switch-on that follows leaves it as it is.
     private func liftNow() -> Bool {
-        let recorded = settings.chargeRestoreRecord != nil
-        guard recorded || settings.chargeStartPending else { return false }
+        let recorded = records.hasRecord
+        guard records.lastRunDidNotRelease() || settings.chargeStartPending else { return false }
         // Something to put back needs a client; with nothing, the wait is all there is.
         let c = recorded ? makeClient() : nil
         if recorded, c == nil { return false }
@@ -1812,20 +1891,11 @@ final class ChargeController {
     /// What is put back for a record that cannot be read: macOS's own defaults.
     static let defaultRecord = NativeChargeState(mclEnabled: false, mclLimit: 100, optimizedChargingEnabled: true)
 
-    /// The state to put back: the record; macOS's defaults for a record that cannot be read; nil for none.
-    private func recordToRestore() -> NativeChargeState? {
-        guard let text = settings.chargeRestoreRecord else { return nil }
-        if let record = Self.decodeRecord(text) { return record }
-        log("the record of macOS's own settings could not be read; putting back macOS's defaults: no limit, "
-            + "Optimized Battery Charging on")
-        return Self.defaultRecord
-    }
-
     static func encodeRecord(_ s: NativeChargeState) -> String? {
         (try? JSONEncoder().encode(s)).flatMap { String(data: $0, encoding: .utf8) }
     }
 
-    /// nil for no record, and for a string that is not one (see `recordToRestore`).
+    /// nil for no record, and for a string that is not one.
     static func decodeRecord(_ text: String?) -> NativeChargeState? {
         guard let text else { return nil }
         return try? JSONDecoder().decode(NativeChargeState.self, from: Data(text.utf8))

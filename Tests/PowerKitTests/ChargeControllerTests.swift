@@ -969,8 +969,8 @@ final class ChargeControllerTests: XCTestCase {
         XCTAssertTrue(settings.chargeControlEnabled)
     }
 
-    /// With another account on screen, a quit during the wait puts nothing back, as any quit.
-    func testQuittingDuringTheDelayAfterARefusedLiftWithAnotherAccountOnScreenPutsNothingBack() {
+    /// With a per-account record and another account on screen, a quit during the wait puts nothing back, as any quit.
+    func testWithAPerAccountRecordQuittingDuringTheDelayAfterARefusedLiftWithAnotherAccountOnScreenPutsNothingBack() {
         crashedWhileHolding(limit: 85)
         client.succeeds = false
         let c = make()
@@ -1176,6 +1176,13 @@ final class ChargeControllerTests: XCTestCase {
         XCTAssertLessThan(lift, application)
         XCTAssertLessThan(lift, delegate)
         XCTAssertTrue(main.contains("liftedAtLaunch: chargeLiftedAtLaunch"), "the controller is not told")
+        // Every way into the record is the one shared record, not this account's own: the headless restore, the lift
+        // and the controller. (Tests build controllers with per-account records on purpose; the app never does.)
+        XCTAssertTrue(main.contains("let chargeRecords = ChargeRecords.live()"))
+        XCTAssertTrue(main.contains("restoreForUninstallOutcome(settings: .shared, records: chargeRecords"))
+        XCTAssertTrue(main.contains("ChargeController.liftAtLaunch(records: chargeRecords)"))
+        XCTAssertTrue(main.contains("ChargeController(settings: .shared, records: chargeRecords"))
+        XCTAssertLessThan(try at("let chargeRecords = ChargeRecords.live()"), restoreBranch)
     }
 
     /// The Uninstall button during the delay: nothing of Charge Control's is in force, so nothing is put back over
@@ -3056,10 +3063,12 @@ final class ChargeControllerTests: XCTestCase {
         XCTAssertEqual(client.state?.mclLimit, 85, "the account back on screen did not take up its limit")
     }
 
-    /// Quitting while another account is on screen puts nothing back over its limit: the limit in force is that
-    /// account's Anode's, not this one's. The record stays, so this account's next launch lifts whatever is then in
-    /// force and starts again after the delay.
-    func testQuittingWhileAnotherAccountIsOnScreenPutsNothingBack() {
+    /// With a per-account record (the shared file could not be had, which is what every test here uses) nobody can say
+    /// whose limit is in force, so quitting while another account is on screen puts nothing back: the limit in force
+    /// is probably that account's Anode's. The record stays, so this account's next launch lifts whatever is then in
+    /// force and starts again after the delay. With the shared record the rule is the holders', not the screen's:
+    /// see `ChargeSharedRecordTests`.
+    func testWithAPerAccountRecordQuittingWhileAnotherAccountIsOnScreenPutsNothingBack() {
         battery = Self.state(85)
         let c = make()
         c.pressTopUp()

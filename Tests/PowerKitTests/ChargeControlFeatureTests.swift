@@ -693,7 +693,8 @@ final class ChargeControlFeatureTests: XCTestCase {
     func testSummarySaysWhatItChangesAndWhatItNeeds() {
         let s = ChargeControlFeature().summary
         // The limit is in force only while Anode runs: it is lifted when Anode quits.
-        XCTAssertTrue(s.contains("The limit applies while Anode is running, and is lifted when Anode quits"), s)
+        XCTAssertTrue(s.contains("The limit applies while Anode is running, and is lifted when Anode quits, unless "
+                                 + "another account's Anode is holding one."), s)
         XCTAssertFalse(s.contains("keeps working while Anode is closed"), s)
         XCTAssertTrue(s.contains("turns off Optimized Battery Charging"), s)
         XCTAssertTrue(s.contains("puts it back"), s)

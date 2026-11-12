@@ -15,12 +15,13 @@ final class ChargeControlFeature: BetaFeature {
 
     let title = "Charge Control"
     let summary = "Holds the battery at a charge limit you choose, and can drain it down to the limit while the Mac stays "
-                + "plugged in. The limit applies while Anode is running, and is lifted when Anode quits. While Charge "
-                + "Control is on, Anode turns off Optimized Battery Charging, and puts it back as it was when you turn "
-                + "Charge Control off or quit. Discharging needs the Anode helper, and so does holding the charge "
-                + "anywhere but 80, 85, 90, 95 or 100%, whether for your limit, Heat Protection, Sailing Mode or Stop "
-                + "charging when sleeping. Quit Anode before removing it by hand (if it ever stopped without quitting, "
-                + "open it and quit it once more first): dragging it to the Trash puts nothing back."
+                + "plugged in. The limit applies while Anode is running, and is lifted when Anode quits, unless "
+                + "another account's Anode is holding one. While Charge Control is on, Anode turns off Optimized "
+                + "Battery Charging, and puts it back as it was when you turn Charge Control off or quit. Discharging "
+                + "needs the Anode helper, and so does holding the charge anywhere but 80, 85, 90, 95 or 100%, whether "
+                + "for your limit, Heat Protection, Sailing Mode or Stop charging when sleeping. Quit Anode before "
+                + "removing it by hand (if it ever stopped without quitting, open it and quit it once more first): "
+                + "dragging it to the Trash puts nothing back."
     var layoutChanged: (() -> Void)?
 
     private let settings: Settings

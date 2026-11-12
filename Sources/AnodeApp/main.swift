@@ -57,6 +57,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
     var chargeControl: ChargeController?
     /// `ChargeController.liftAtLaunch` ran at the top of the program and put macOS back; the controller only waits.
     var chargeLiftedAtLaunch = false
+    /// The record of macOS's own charge settings, shared by every account's Anode on this Mac.
+    var chargeRecords: ChargeRecords?
     var liveWallpaper: LiveWallpaperRuntime?
     var keyboardCleaner: KeyboardCleaner?
     var gameMode: GameModeController?
@@ -336,7 +338,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         LidGlass.current = lidGlass
         keepAwake = KeepAwakeController()
         KeepAwakeController.current = keepAwake
-        chargeControl = ChargeController(settings: .shared, helper: ChargeHelperAdapter(),
+        chargeControl = ChargeController(settings: .shared, records: chargeRecords, helper: ChargeHelperAdapter(),
                                          limitInForce: chargeLimitInForce, liftedAtLaunch: chargeLiftedAtLaunch)
         ChargeController.current = chargeControl
         keyboardCleaner = KeyboardCleaner(tap: CleanerInputTap(), windows: CleanerWindows())
@@ -3063,8 +3065,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
 // `uninstall.sh` runs the app this way, with no window and before anything else starts, to put macOS's own charge
 // settings back before the app and its settings are deleted. A quit does that already, but an Anode that crashed or
 // was killed never got to, and macOS keeps a limit it was given: it would outlive the app and its settings.
+// The record of macOS's own charge settings, shared by every account's Anode on this Mac.
+let chargeRecords = ChargeRecords.live()
+
 if CommandLine.arguments.contains(ChargeController.restoreArgument) {
-    exit(ChargeController.restoreForUninstall(settings: .shared, helper: ChargeHelperAdapter()) ? 0 : 1)
+    exit(ChargeController.restoreForUninstallOutcome(settings: .shared, records: chargeRecords,
+                                                     helper: ChargeHelperAdapter()).exitCode)
 }
 
 // Charge Control's lift after an Anode that did not quit, before anything else of the app is built. The controller
@@ -3072,11 +3078,12 @@ if CommandLine.arguments.contains(ChargeController.restoreArgument) {
 // the menu; an Anode that crashes in any of them on every launch would never get that far, and the limit it left
 // would stay held. So this runs first, depends on nothing but the settings, the charge client and the helper link,
 // and does nothing at all when the last run quit.
-let chargeLiftedAtLaunch = ChargeController.liftAtLaunch()
+let chargeLiftedAtLaunch = ChargeController.liftAtLaunch(records: chargeRecords)
 
 let app = NSApplication.shared
 let delegate = AppDelegate()
 delegate.chargeLiftedAtLaunch = chargeLiftedAtLaunch
+delegate.chargeRecords = chargeRecords
 app.delegate = delegate
 // Before run(), not inside applicationDidFinishLaunching: the policy set here is
 // the one the first frame is drawn under, so a menu-bar-only start never shows a

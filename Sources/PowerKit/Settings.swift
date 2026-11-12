@@ -843,13 +843,18 @@ public final class Settings {
     }
 
     /// How macOS's own charge limit and Optimized Battery Charging were set before Charge Control first changed
-    /// them, as the JSON of a `NativeChargeState`. nil when there is nothing to put back.
+    /// them, as the JSON of a `NativeChargeState`, in THIS account's preferences. nil when there is nothing to put
+    /// back.
+    ///
+    /// No longer where the record normally lives: macOS's limit is one setting for the whole Mac, so the record is
+    /// one file every account's Anode shares (`ChargeRecordStore`), with the list of who holds the limit. This key is
+    /// the fallback when that file cannot be had (`/Users/Shared` missing or read-only), with the rules there were
+    /// before it was shared, and where an earlier build left its record, which is moved into the file once and removed.
+    /// Nothing reads it otherwise.
     ///
     /// Written when Charge Control is switched on (unless one is already there), and cleared once that state has been
-    /// restored: by switching off, by quitting, or by the launch after a crash. It is stored and not just held in
-    /// memory because the limit outlives the process that set it (macOS keeps it in its own preferences, measured in
-    /// plan 0), so after a crash the way back has to still be there. Since a quit clears it, a record still there at
-    /// launch with Charge Control on is also how the launch knows the last run did not quit cleanly.
+    /// restored. It is stored and not just held in memory because the limit outlives the process that set it (macOS
+    /// keeps it in its own preferences, measured in plan 0), so after a crash the way back has to still be there.
     ///
     /// Bookkeeping rather than a preference, like `autoUpdateFailedCommit`: it has no observation key and a write
     /// notifies nobody. Its one writer is Charge Control's own controller, in the middle of switching itself on or

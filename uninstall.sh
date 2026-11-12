@@ -33,6 +33,10 @@ for arg in "$@"; do
 done
 
 SUPPORT="$HOME/Library/Application Support/Anode"
+# The record of macOS's own charge settings every account's Anode shares (it is the Mac's, not this account's).
+# ANODE_SHARED_CHARGE_DIR is for the tests, which must not touch the real one.
+SHARED_DIR="${ANODE_SHARED_CHARGE_DIR:-/Users/Shared/Anode}"
+SHARED_RECORD="$SHARED_DIR/charge-control.json"
 DAEMON_LABEL="dev.anode.app.fanhelper"
 # Where install.sh clones to: ~/.anode/source, or ~/Developer/Anode where an earlier version put it.
 # A checkout anywhere else is never touched.
@@ -139,6 +143,9 @@ if [ "$REMOVE_DATA" = "1" ]; then
   echo
   echo " …and these preference domains:"
   printf '   %s\n' "${DOMAINS[@]}"
+  echo
+  echo " …and the record of macOS's own charge settings that every account's Anode shares, $SHARED_RECORD,"
+  echo " but only if it holds no record: while an Anode holds a charge limit it is what puts macOS back."
 else
   echo
   echo " Your measurement history and settings are KEPT."
@@ -167,9 +174,10 @@ sleep 1
 
 # Quitting Anode puts macOS's own charge settings back, but an Anode that crashed or was killed never got to, and
 # macOS keeps a limit it was given after the app that set it is gone. So before the app and its settings go, the app
-# is run once more to put back what macOS had (no window; it exits 0 when nothing of Charge Control's is left). After
-# the quit, so the running copy cannot set its limit again, once it has finished quitting. Only this user's copy is
-# waited for: an Anode another account is running from /Applications is not this one's to wait on.
+# is run once more to put back what macOS had (no window; it exits 0 when nothing of Charge Control's is left, 2 when
+# the limit in force is another account's running Anode's, which is left alone and said, and 1 when something may
+# be left). After the quit, so the running copy cannot set its limit again, once it has finished quitting. Only this
+# user's copy is waited for: an Anode another account is running from /Applications is not this one's to wait on.
 # ANODE_NO_LAUNCH=1 skips it.
 for app in "$HOME/Applications/Anode.app" "/Applications/Anode.app"; do
   bin="$app/Contents/MacOS/AnodeApp"
@@ -178,14 +186,36 @@ for app in "$HOME/Applications/Anode.app" "/Applications/Anode.app"; do
   if pgrep -U "$(id -u)" -f "$bin" >/dev/null; then
     echo "Anode is still running, so it may set its charge limit again; putting macOS's own back anyway."
   fi
-  if ! "$bin" --restore-charge-settings >/dev/null 2>&1; then
-    echo "Anode could not put back macOS's own charge settings, so macOS may still hold a charge limit: change it in" \
-      "System Settings → Battery. If the battery is not charging on the charger, Anode's helper reconnects it: run" \
-      "'sudo /Library/PrivilegedHelperTools/$DAEMON_LABEL --uninstall' if that helper is installed (it reconnects" \
-      "the charger, then removes itself), or install Anode again and start its helper from the Fans tab."
-  fi
+  restore_status=0
+  "$bin" --restore-charge-settings >/dev/null 2>&1 || restore_status=$?
+  case "$restore_status" in
+    0) ;;
+    2)
+      echo "Another account's Anode is holding macOS's charge limit, so it was left in force: that Anode puts it back" \
+        "when it quits. If that account no longer uses Anode, change the limit in System Settings → Battery."
+      ;;
+    *)
+      echo "Anode could not put back macOS's own charge settings, so macOS may still hold a charge limit: change it" \
+        "in System Settings → Battery. If the battery is not charging on the charger, Anode's helper reconnects it: run" \
+        "'sudo /Library/PrivilegedHelperTools/$DAEMON_LABEL --uninstall' if that helper is installed (it reconnects" \
+        "the charger, then removes itself), or install Anode again and start its helper from the Fans tab."
+      ;;
+  esac
   break
 done
+
+# The shared record goes with --data only when it holds no record: the restore above empties it when this Anode was
+# the last to hold the limit (or nothing ever recorded). A record that is still there is what another account's Anode
+# needs to put macOS back, or what a restore that failed leaves for the next launch.
+if [ "$REMOVE_DATA" = "1" ] && [ -e "$SHARED_RECORD" ]; then
+  if [ ! -s "$SHARED_RECORD" ]; then
+    if rm -f "$SHARED_RECORD" 2>/dev/null; then echo "removed  $SHARED_RECORD"; fi
+    rmdir "$SHARED_DIR" 2>/dev/null || true
+  else
+    echo "kept     $SHARED_RECORD: it still holds a record of macOS's own charge settings, which another account's" \
+      "Anode (or a later Anode) needs to put them back."
+  fi
+fi
 
 for path in "${FOUND[@]:-}"; do
   [ -z "$path" ] && continue

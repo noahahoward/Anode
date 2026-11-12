@@ -32,7 +32,10 @@ has()     { printf '%s' "$OUT" | grep -qF -- "$1"; }
 hasnt()   { ! printf '%s' "$OUT" | grep -qF -- "$1"; }
 
 # ── Stubs that keep the real machine out of it ──────────────────────────────
-mkdir -p "$T/shim" "$T/cache" "$T/tmp"
+mkdir -p "$T/shim" "$T/cache" "$T/tmp" "$T/shared-charge"
+# The uninstaller names the record every account's Anode shares by an absolute path under /Users/Shared; this is the
+# test's own, so no scenario can touch the real one.
+export ANODE_SHARED_CHARGE_DIR="$T/shared-charge"
 printf '#!/bin/sh\nexit 0\n' > "$T/shim/osascript"
 cat > "$T/shim/getconf" <<EOF
 #!/bin/sh
@@ -216,6 +219,33 @@ else
   H="$(new_home 11)"; stub_app "$H" 1
   OUT="$(HOME="$H" PATH="$T/shim:$PATH" ANODE_NO_LAUNCH=1 bash "$ROOT/uninstall.sh" --yes 2>&1 || true)"
   check "ANODE_NO_LAUNCH=1 runs no app"                       absent "$H/restore-asked"
+
+  echo "6c. A limit another account's Anode holds is left alone, and said so; the shared record goes only when empty"
+  # Exit status 2 from the restore: the limit in force is another account's running Anode's.
+  H="$(new_home 13)"; stub_app "$H" 2
+  OUT="$(HOME="$H" PATH="$T/shim:$PATH" bash "$ROOT/uninstall.sh" --yes 2>&1 || true)"
+  check "says another account's Anode is holding the limit"   has "Another account's Anode is holding macOS's charge limit"
+  check "and that it was left in force"                       has "left in force"
+  check "and does not claim the restore failed"               hasnt "could not put back"
+  check "and does not tell the sudo command for the charger"  hasnt "sudo /Library/PrivilegedHelperTools"
+  check "the app is still removed"                            absent "$H/Applications/Anode.app"
+  # --data and the shared record.
+  mkdir -p "$ANODE_SHARED_CHARGE_DIR"
+  : > "$ANODE_SHARED_CHARGE_DIR/charge-control.json"
+  H="$(new_home 14)"; stub_app "$H" 0
+  OUT="$(HOME="$H" PATH="$T/shim:$PATH" bash "$ROOT/uninstall.sh" --yes --data 2>&1 || true)"
+  check "--data removes the shared record when it is empty"   absent "$ANODE_SHARED_CHARGE_DIR/charge-control.json"
+  check "and says so"                                         has "removed  $ANODE_SHARED_CHARGE_DIR/charge-control.json"
+  check "the list says the shared record goes only if empty"  has "but only if it holds no record"
+  mkdir -p "$ANODE_SHARED_CHARGE_DIR"
+  printf '{"version":1}' > "$ANODE_SHARED_CHARGE_DIR/charge-control.json"
+  H="$(new_home 15)"; stub_app "$H" 2
+  OUT="$(HOME="$H" PATH="$T/shim:$PATH" bash "$ROOT/uninstall.sh" --yes --data 2>&1 || true)"
+  check "--data keeps a shared record that holds a record"    present "$ANODE_SHARED_CHARGE_DIR/charge-control.json"
+  check "and says why"                                        has "kept     $ANODE_SHARED_CHARGE_DIR/charge-control.json"
+  H="$(new_home 16)"; stub_app "$H" 0
+  OUT="$(HOME="$H" PATH="$T/shim:$PATH" bash "$ROOT/uninstall.sh" --yes 2>&1 || true)"
+  check "without --data the shared record is not touched"     present "$ANODE_SHARED_CHARGE_DIR/charge-control.json"
 fi
 
 # ═══ 7. optional: the real thing ════════════════════════════════════════════
