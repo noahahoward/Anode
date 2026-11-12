@@ -712,8 +712,8 @@ final class ChargeControllerTests: XCTestCase {
     /// The delay is a minute, and the sentence says "a minute".
     func testTheDelayIsAMinute() {
         XCTAssertEqual(ChargeController.startDelay, 60)
-        XCTAssertEqual(ChargeController.liftedText, "The limit was lifted because Anode did not finish quitting last "
-                       + "time. Charge Control starts again in a minute.")
+        XCTAssertEqual(ChargeController.liftedText, "Starting again in a minute. Charge Control waits before holding a "
+                       + "limit when Anode did not close normally last time.")
     }
 
     /// An Anode that stops again within the delay leaves the limit lifted: nothing was set, and the record is gone,
@@ -930,6 +930,52 @@ final class ChargeControllerTests: XCTestCase {
         settings.chargeControlEnabled = true
         XCTAssertEqual(client.state?.mclLimit, 85)
         XCTAssertEqual(record, found)
+    }
+
+    /// A lift macOS refused leaves the dead run's limit in force and its record on disk, and the controller waits all
+    /// the same. Switching off during that wait puts the record back, as it would from any other off state: nothing
+    /// else would, and the limit would stay for the rest of the run.
+    func testSwitchingOffDuringTheDelayAfterARefusedLiftPutsTheRecordBack() {
+        crashedWhileHolding(limit: 85)
+        client.succeeds = false
+        let c = make()
+        XCTAssertTrue(c.isWaitingToStart)
+        XCTAssertNotNil(settings.chargeRestoreRecord, "the refused lift cleared the record")
+        XCTAssertEqual(client.state?.mclLimit, 85, "macOS was not refusing")
+        client.succeeds = true
+        settings.chargeControlEnabled = false
+        XCTAssertFalse(c.isWaitingToStart)
+        XCTAssertEqual(client.state, found, "the dead run's limit was left in force after switching off")
+        XCTAssertNil(settings.chargeRestoreRecord)
+        XCTAssertFalse(settings.chargeStartPending)
+        XCTAssertEqual(c.status, .off)
+    }
+
+    /// The same on the way out: a quit during that wait puts the record back, with the quit's own bounded waits.
+    func testQuittingDuringTheDelayAfterARefusedLiftPutsTheRecordBack() {
+        crashedWhileHolding(limit: 85)
+        client.succeeds = false
+        let c = make()
+        XCTAssertNotNil(settings.chargeRestoreRecord)
+        client.succeeds = true
+        c.shutdown()
+        XCTAssertEqual(client.state, found, "the dead run's limit was left in force after the quit")
+        XCTAssertNil(settings.chargeRestoreRecord)
+        XCTAssertFalse(settings.chargeStartPending)
+        XCTAssertTrue(settings.chargeControlEnabled)
+    }
+
+    /// With another account on screen, a quit during the wait puts nothing back, as any quit.
+    func testQuittingDuringTheDelayAfterARefusedLiftWithAnotherAccountOnScreenPutsNothingBack() {
+        crashedWhileHolding(limit: 85)
+        client.succeeds = false
+        let c = make()
+        center.post(name: NSWorkspace.sessionDidResignActiveNotification, object: nil)
+        client.succeeds = true
+        let writes = writesToMacOS
+        c.shutdown()
+        XCTAssertEqual(writesToMacOS, writes)
+        XCTAssertNotNil(settings.chargeRestoreRecord)
     }
 
     /// The Uninstall button during the delay: nothing of Charge Control's is in force, so nothing is put back over

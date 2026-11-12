@@ -59,8 +59,9 @@ import PowerKit
 // is put back once at launch (and before an uninstall), with a client made for that alone; and that debt, which is
 // paid at launch through an installed helper, and asked again every 30 s until a running helper answers. While it is
 // owed, the section says so (`offWarning`), from the flag alone. The delay after an unclean exit is the same kind of
-// thing: Charge Control is on in the setting but holds nothing, so nothing of it exists but one timer, and the debt
-// is paid in the same way meanwhile.
+// thing: Charge Control is on in the setting but holds nothing, so nothing of it exists but one timer and the two
+// session observers (so that it does not start into another account's limit), and the debt is paid in the same way
+// meanwhile.
 //
 // Main thread throughout.
 
@@ -151,6 +152,13 @@ final class ChargeController {
         + "back on. Start the Anode helper again from the Fans tab (Copy Start Command): it switches the charger "
         + "back on as it starts. This line goes once Charge Control is on and finds the charger connected."
 
+    /// The same while Charge Control waits to start after an unclean exit, with no helper installed: the setting is on,
+    /// so the line cannot say it goes once Charge Control is on. It goes once Charge Control has started and finds the
+    /// charger connected.
+    static let cutWarningWaitingText = "The charger may still be switched off, and unplugging it will not switch it "
+        + "back on. Start the Anode helper again from the Fans tab (Copy Start Command): it switches the charger "
+        + "back on as it starts. This line goes once Charge Control has started again and finds the charger connected."
+
     /// A hold only the helper can set, named by the feature that wanted it: with the person's limit at 80, "limits
     /// other than 80" would be no help. macOS holds the nearest value it takes above it meanwhile, so the Mac charges
     /// on to that; the sentence says so.
@@ -239,8 +247,8 @@ final class ChargeController {
     static let startDelay: TimeInterval = 60
 
     /// The line in the section while that delay runs.
-    static let liftedText = "The limit was lifted because Anode did not finish quitting last time. "
-        + "Charge Control starts again in a minute."
+    static let liftedText = "Starting again in a minute. Charge Control waits before holding a limit when Anode "
+        + "did not close normally last time."
 
     /// The policy's last answer.
     private(set) var lastDecision: ChargeDecision?
@@ -586,10 +594,13 @@ final class ChargeController {
     }
 
     private func disable() {
-        // Off during the delay after an unclean exit cancels it. Nothing of Charge Control's is in force then, and
-        // the record has gone (`liftAfterUncleanExit`), so there is nothing to put back. No start is pending any more.
+        // Off during the delay after an unclean exit cancels it, and no start is pending any more. Nothing of Charge
+        // Control's is in force then unless the lift was refused (`liftAfterUncleanExit`): the record is then still
+        // there, and the dead run's limit with it, so it is put back as for any record left over while off.
+        let wasWaiting = startsAt != nil
         endStartWait()
         setStartPending(false)
+        if wasWaiting { putBackLeftoverRecord(when: "as the delay was cancelled") }
         if running, let c = client {
             switchingOff = true
             restore(client: c)
@@ -718,9 +729,13 @@ final class ChargeController {
     func shutdown() {
         enabledToken = nil
         endOffRetry()
-        // A quit during the delay is a clean one: macOS's own settings are in force and nothing is pending.
+        // A quit during the delay is a clean one: nothing is pending, and macOS's own settings are in force, unless
+        // the lift was refused: the record is then still there, and is put back now (not while another account is on
+        // screen: the limit in force is its Anode's).
+        let wasWaiting = startsAt != nil, onScreen = sessionActive
         endStartWait()
         setStartPending(false)
+        if wasWaiting, onScreen { putBackLeftoverRecord(when: "as Anode quit", leaving: "quitting") }
         guard running, let c = client else { return }
         switchingOff = true
         defer { switchingOff = false }
@@ -771,10 +786,10 @@ final class ChargeController {
     /// observer, no helper connection. `restore` logs how it went; a refusal keeps the record. False when there was
     /// nothing to put back, or no client to do it with.
     @discardableResult
-    private func putBackLeftoverRecord(when: String) -> Bool {
+    private func putBackLeftoverRecord(when: String, leaving: String = "switching off") -> Bool {
         guard !running, settings.chargeRestoreRecord != nil, let c = makeClient() else { return false }
         log("a record of macOS's own settings was left over while off; putting it back \(when)")
-        restore(client: c)
+        restore(client: c, leaving: leaving)
         return true
     }
 
@@ -1017,7 +1032,8 @@ final class ChargeController {
     /// timer or helper traffic is added for it.
     var offWarning: String? {
         guard !running, cutOwed else { return nil }
-        return offRetryTimer != nil ? Self.cutWarningText : Self.cutWarningOffText
+        if offRetryTimer != nil { return Self.cutWarningText }
+        return isWaitingToStart ? Self.cutWarningWaitingText : Self.cutWarningOffText
     }
 
     /// A stop was not answered yes: by a helper that is gone (or a link that heard nothing), or by one that could

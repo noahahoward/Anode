@@ -308,8 +308,8 @@ final class ChargeControlFeatureTests: XCTestCase {
         XCTAssertEqual(controller?.isWaitingToStart, true)
         XCTAssertFalse(f.statusLabel.isHiddenOrHasHiddenAncestor)
         XCTAssertEqual(f.statusLabel.stringValue,
-                       "The limit was lifted because Anode did not finish quitting last time. Charge Control starts "
-                       + "again in a minute.")
+                       "Starting again in a minute. Charge Control waits before holding a limit when Anode did not "
+                       + "close normally last time.")
         XCTAssertEqual(f.statusLabel.stringValue, ChargeController.liftedText)
         XCTAssertFalse(f.dischargeButton.isEnabled)
         XCTAssertFalse(f.topUpButton.isEnabled, "Top Up can be pressed while nothing is held")
@@ -322,6 +322,24 @@ final class ChargeControlFeatureTests: XCTestCase {
         controller?.resumeIfDue(now: Date().addingTimeInterval(ChargeController.startDelay + 1))
         XCTAssertEqual(f.statusLabel.stringValue, "Charging to 80% (your limit)")
         XCTAssertTrue(f.topUpButton.isEnabled)
+    }
+
+    /// With no helper installed to ask, the line that tells how to get the charger back cannot say "once Charge Control
+    /// is on": the checkbox is on already. It says Charge Control has not started yet.
+    func testADebtWithNoHelperDuringTheDelayDoesNotSayChargeControlIsOff() throws {
+        settings.chargeRestoreRecord = ChargeController.encodeRecord(
+            NativeChargeState(mclEnabled: false, mclLimit: 100, optimizedChargingEnabled: true))
+        settings.chargeCutUnconfirmed = true
+        helper.installed = false
+        helper.gone = true   // nobody answers the launch's stop, so the debt stays
+        let f = make(enabled: true)
+        XCTAssertEqual(controller?.isWaitingToStart, true)
+        XCTAssertEqual(f.statusLabel.stringValue, ChargeController.cutWarningWaitingText)
+        XCTAssertFalse(f.statusLabel.stringValue.contains("is on and"), f.statusLabel.stringValue)
+        XCTAssertEqual(f.statusLabel.textColor, .systemOrange)
+        // Once it has started, it is the on-state line.
+        controller?.resumeIfDue(now: Date().addingTimeInterval(ChargeController.startDelay + 1))
+        XCTAssertNotEqual(f.statusLabel.stringValue, ChargeController.cutWarningWaitingText)
     }
 
     /// A discharge's end never confirmed is shown during the delay too, and first: the charger may be cut.
@@ -736,7 +754,8 @@ final class ChargeControlFeatureTests: XCTestCase {
                   ChargeController.dischargeRefusedText("the SMC took the cut and the charger does not read as cut"),
                   ChargeController.limitRefusedText(63, "macOS did not take the charge limit"),
                   ChargeController.cutWarningText, ChargeController.cutWarningNoHelperText,
-                  ChargeController.cutWarningOffText, ChargeController.liftedText]
+                  ChargeController.cutWarningOffText, ChargeController.cutWarningWaitingText,
+                  ChargeController.liftedText]
         shown += reasons.map {
             ChargeController.limitNeedsHelperText(for: ChargeDecision(osLimit: 63, dischargeTo: nil, reason: $0))
         }
