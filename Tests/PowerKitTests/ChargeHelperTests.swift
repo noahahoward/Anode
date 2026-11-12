@@ -588,6 +588,24 @@ final class ChargeHelperTestsDisclosure: XCTestCase {
         }
     }
 
+    /// A charge limit the helper set is macOS's own setting, written for the
+    /// whole Mac, and nothing about removing or stopping the helper puts it
+    /// back. Every sheet before authorising says so in plain words: how low it
+    /// can be, whose it is, and the two ways to undo it. The install sheet
+    /// used to list what the uninstall undoes and stop there.
+    func testEverySheetBeforeAuthorisingSaysTheChargeLimitOutlivesTheHelper() {
+        let sheets = ["install sheet": FanElevation.installDisclosure,
+                      "session sheet": FanElevation.sessionDisclosure]
+        for (name, text) in sheets {
+            XCTAssertTrue(text.contains("does not undo it"), "the \(name) does not say the limit stays")
+            XCTAssertTrue(text.contains("as low as 20%"), "the \(name) does not say how low")
+            XCTAssertTrue(text.contains("for every user of this Mac"), "the \(name) does not say whose")
+            XCTAssertTrue(text.contains("switch Charge Control off"), "the \(name) omits one way back")
+            XCTAssertTrue(text.contains("System Settings → Battery"), "the \(name) omits the other")
+        }
+        XCTAssertFalse(FanElevation.installDisclosure.contains("every trace"))
+    }
+
     func testTheSystemPromptsNameTheCharger() {
         XCTAssertTrue(FanElevation.installPrompt.contains("charge limit"))
         XCTAssertTrue(FanElevation.installPrompt.contains("cuts or reconnects the charger"))

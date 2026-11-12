@@ -38,9 +38,11 @@ import PowerKit
 // installed one gives up — is written out in full at the top of `FanLink.swift`
 // and `FanDaemon.swift`. Read them before changing anything here.
 //
-// `--uninstall` hands the fans back, reconnects the charger, and removes
-// everything any version of this project has ever asked root to leave on the
-// disk, including the retired LaunchDaemon from the first draft.
+// `--uninstall` hands the fans back, reconnects the charger, and removes every
+// file and launchd job any version of this project has ever installed as root,
+// including the retired LaunchDaemon from the first draft. It leaves macOS's
+// charge limit where the helper put it: that is macOS's own setting, and it
+// says so (`FanElevation.chargeLimitOutlivesTheHelper`).
 
 // Before anything can write or be typed at: no SIGPIPE from a log reader that
 // died, and no ⌃Z suspending a process that may be holding the charger cut.
@@ -188,6 +190,7 @@ if arguments.contains("--uninstall") {
         }
     }
     print("Done. Nothing of this project runs as root any more.")
+    print(FanElevation.chargeLimitOutlivesTheHelper)
     exit(0)
 }
 

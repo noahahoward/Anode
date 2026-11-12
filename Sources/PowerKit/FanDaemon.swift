@@ -129,9 +129,14 @@ import Foundation
 // any other SMC key or preference, cannot run anything, and has no path or key
 // name in its input.
 //
-// The undo is one button and removes every trace, including handing the fans
-// back and reconnecting the charger. `FanHelperInstall.artifacts` is the list,
-// and it is asserted complete.
+// The undo is one button. It removes every file and launchd job this project
+// installed — `FanHelperInstall.artifacts` is the list, and it is asserted
+// complete — hands the fans back and reconnects the charger. It does NOT put
+// back macOS's charge limit. That is macOS's own setting, written for every
+// user of the Mac, and a limit the helper set — as low as 20% — stays in force
+// after the helper is gone, until Charge Control is switched off or the limit
+// is changed in System Settings → Battery. Both sheets say so
+// (`FanElevation.chargeLimitOutlivesTheHelper`).
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Names, paths and versions for the installed fan daemon. One place, because a
@@ -908,6 +913,16 @@ public enum FanElevation {
     // `HelperVocabulary.sentence`, because each is the last thing a person reads
     // before giving a root process that power.
 
+    /// What neither stopping nor removing the helper undoes, in both sheets.
+    /// The limit is macOS's own setting, written as root for the whole Mac.
+    public static let chargeLimitOutlivesTheHelper = """
+    A charge limit the helper sets is macOS's own setting, and stopping or \
+    removing the helper does not undo it: that limit — as low as \
+    \(FanHelperServer.chargeLimitRange.lowerBound)%, and for every user of this Mac \
+    — stays in force until you switch Charge Control off or change the limit in \
+    System Settings → Battery.
+    """
+
     /// The sheet before the session helper is first started (the Terminal
     /// route). One exact build can ask; it stops with ⌃C.
     public static let sessionDisclosure = """
@@ -920,6 +935,8 @@ public enum FanElevation {
     slider opens a Terminal window with the command below; you read it, \
     authenticate, and stop it with ⌃C. The fans go back to automatic control and \
     the charger is reconnected when you do — or if Anode quits or crashes.
+
+    \(chargeLimitOutlivesTheHelper)
 
     Anode is not signed with an Apple Developer ID, so nothing verifies \
     the helper before it runs as root except you, when you read the path.
@@ -952,7 +969,7 @@ public enum FanElevation {
     and it only ever trusts the exact build you started it beside.
 
     "Uninstall Fan Helper" removes both files, unloads the daemon, hands the \
-    fans back and reconnects the charger.
+    fans back and reconnects the charger. \(chargeLimitOutlivesTheHelper)
     """
 
     public static func osascriptArguments(command: String, prompt: String) -> [String] {
