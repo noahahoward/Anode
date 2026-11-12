@@ -188,7 +188,7 @@ public final class SMC {
     /// are discovered rather than hardcoded.
     // ── Writes ──────────────────────────────────────────────────────────────
 
-    /// Write a float key. The ONLY write in this file, and it needs root.
+    /// Write a float key. Like every write in this file, it needs root.
     ///
     /// Kept deliberately narrow: it takes a key and a Double, refuses anything
     /// whose declared type is not a 4-byte float, and does no policy of its own.
@@ -254,6 +254,41 @@ public final class SMC {
         Self.setU32(&buf, Off.key, Self.code(key))
         Self.setU32(&buf, Off.dataSize, 1)
         Self.setU32(&buf, Off.dataType, Self.code("ui8"))
+        buf[Off.data8] = Cmd.writeBytes.rawValue
+        buf[Off.bytes] = value
+        return call(buf) != nil
+    }
+
+    /// The raw byte of a one-byte key, whatever its declared type.
+    ///
+    /// `read` decodes numbers and returns nil for anything else, so a `hex_` key
+    /// such as the charger's `CHIE` is invisible to it. This answers only "what
+    /// byte is there", and only for a key the SMC itself says is one byte long.
+    public func readByte(_ key: String) -> UInt8? {
+        guard let (bytes, _) = readRaw(Self.code(key)), bytes.count == 1 else { return nil }
+        return bytes[0]
+    }
+
+    /// Write a one-byte key, keeping the type the SMC declares for it.
+    ///
+    /// The sibling of `writeUInt8` for keys that are one byte but not `ui8` —
+    /// `CHIE` is `hex_`. The size guard is the whole safety, as in the two
+    /// writes above: one byte, or nothing is written. The type sent with the
+    /// write is the key's own, read a moment earlier, never one this code
+    /// assumes.
+    @discardableResult
+    public func writeByte(_ key: String, _ value: UInt8) -> Bool {
+        var info = [UInt8](repeating: 0, count: Off.total)
+        Self.setU32(&info, Off.key, Self.code(key))
+        info[Off.data8] = Cmd.readKeyInfo.rawValue
+        guard let meta = call(info) else { return false }
+        guard Self.u32(meta, Off.dataSize) == 1 else { return false }
+        let declaredType = Self.u32(meta, Off.dataType)
+
+        var buf = [UInt8](repeating: 0, count: Off.total)
+        Self.setU32(&buf, Off.key, Self.code(key))
+        Self.setU32(&buf, Off.dataSize, 1)
+        Self.setU32(&buf, Off.dataType, declaredType)
         buf[Off.data8] = Cmd.writeBytes.rawValue
         buf[Off.bytes] = value
         return call(buf) != nil

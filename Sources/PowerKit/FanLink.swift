@@ -61,12 +61,14 @@ public let fanLog = Logger(subsystem: "dev.anode.app", category: "fan")
 // different hash whatever it calls itself.
 //
 // WHAT A USER GIVES UP BY ENABLING IT: while the helper is running there is a
-// root process on the machine that will write fan targets on request. If an
-// attacker can already run code as root they can do this and everything else
-// anyway; if they can run code as you, they must ALSO be running from a binary
-// whose cdhash matches your Anode build to be heard at all. The helper's
-// entire vocabulary is "set fan N to R rpm" and "release the fans", R is
-// re-clamped against limits read fresh from the hardware, and it can read and
+// root process on the machine that will write fan targets and charge settings on
+// request. If an attacker can already run code as root they can do this and
+// everything else anyway; if they can run code as you, they must ALSO be running
+// from a binary whose cdhash matches your Anode build to be heard at all. The
+// helper's entire vocabulary is "set fan N to R rpm", "release the fans", "set
+// the macOS charge limit (20–100%)", "cut the charger to discharge down to a
+// percentage", and "reconnect it". R is re-clamped against limits read fresh
+// from the hardware, a discharge never goes below 10%, and it can read and
 // write nothing else.
 //
 // WHAT IT IS NOT: it is not the guarantee SMJobBless gives, because nothing
@@ -103,20 +105,26 @@ public let fanLog = Logger(subsystem: "dev.anode.app", category: "fan")
 //     satisfies it. That is one command, and anything running as you can run it.
 //
 // So, in plain words, WHAT INSTALLING GIVES UP: from the moment you install,
-// anything running as your user can set your fan speeds, at any time, until you
+// anything running as your user can set your fan speeds, set the macOS charge
+// limit, and discharge the battery on the charger, at any time, until you
 // uninstall. Not another user, and nothing at all before you install — but the
 // "it must be exactly this app" claim is gone, and no amount of code brings it
 // back without a Developer ID, because an ad-hoc signature has no key an attacker
 // cannot also use.
 //
 // WHAT IS LEFT AS THE ACTUAL BOUNDARY, and it is not nothing: the vocabulary is
-// two commands — set one fan to one speed, and release. Every speed is re-clamped
-// against limits read fresh from the fan itself, so the reachable range is the
-// range the hardware already permits its own controller. There is no key-name
-// input, no path input, and nothing to read back. An attacker who takes it gets
-// to make your machine loud, or to hold a fan at a speed the firmware would also
-// hold it at; the SMC arbitrates and has been observed clamping a written target
-// UPWARD. It is a nuisance, not a foothold.
+// five commands — set fan N to R rpm, release the fans, set the macOS charge
+// limit (20–100%), cut the charger to discharge down to a percentage, and
+// reconnect it. Every speed is re-clamped against limits read fresh from the fan
+// itself, so the reachable range is the range the hardware already permits its
+// own controller. The charge limit is range-checked by the helper, and a
+// discharge never goes below 10% and reconnects the charger on every exit the
+// helper can see. There is no key-name input, no path input, and nothing to
+// read back. An attacker who takes it gets to make your machine loud, to hold a
+// fan at a speed the firmware would also hold it at (the SMC arbitrates and has
+// been observed clamping a written target UPWARD), to stop charging at 20%, or
+// to run the battery down to 10% with the cable in. It is a nuisance, not a
+// foothold.
 //
 // If that trade is not worth it — and for a developer rebuilding all day it is
 // not — do not install. `sudo AnodeHelper` still works exactly as it always

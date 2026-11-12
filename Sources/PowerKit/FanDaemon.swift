@@ -96,8 +96,11 @@ import Foundation
 //          Identifier=dev.anode.app   Signature=adhoc   valid on disk
 //
 //      So the installed daemon's real boundary is the uid check, which is the
-//      kernel's and cannot be forged, plus a vocabulary of two commands whose
-//      values the fan's own firmware clamps. It is not "only this app". Saying
+//      kernel's and cannot be forged, plus a vocabulary of five commands — set
+//      fan N to R rpm, release the fans, set the macOS charge limit (20–100%),
+//      cut the charger to discharge down to a percentage, and reconnect it —
+//      whose fan values the firmware clamps and whose charge values the helper
+//      range-checks (never below 10%). It is not "only this app". Saying
 //      it were would be the overstatement this project keeps refusing to make.
 //
 // ── WHAT A USER IS AGREEING TO ──────────────────────────────────────────────
@@ -285,7 +288,9 @@ public enum FanDaemon {
     /// talks to a helper built today. Without a version on the wire that goes
     /// wrong silently. With one, the app can say "the installed fan helper is
     /// older than this build" and offer to reinstall.
-    public static let protocolVersion = 1
+    ///
+    /// 2: adds `setChargeLimit`, `discharge` and `stopDischarge`.
+    public static let protocolVersion = 2
 
     /// The argument that tells the helper it is the installed daemon rather than
     /// a session helper. The difference is the pin, and where the socket comes

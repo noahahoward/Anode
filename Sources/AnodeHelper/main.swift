@@ -3,13 +3,15 @@ import PowerKit
 
 // AnodeHelper — the only part of this project that runs as root.
 //
-// It exists for exactly one reason: SMC writes require root, and fan control is
-// an SMC write. Everything else in Anode is deliberately unprivileged.
+// It exists because SMC writes require root — fan control and cutting the
+// charger are SMC writes — and so does writing macOS's charge limit for the
+// machine. Everything else in Anode is deliberately unprivileged.
 //
-// The whole privileged surface is two operations: set one fan to one speed, and
-// stop controlling the fans. It is small enough to audit in one sitting, and
-// that is the point — a root daemon you cannot read in full is a root daemon you
-// cannot trust.
+// The whole privileged surface is five operations: set fan N to R rpm, release
+// the fans, set the macOS charge limit (20–100%), cut the charger to discharge
+// down to a percentage, and reconnect it. It is small enough to audit in one
+// sitting, and that is the point — a root daemon you cannot read in full is a
+// root daemon you cannot trust.
 //
 // IT RUNS TWO WAYS, and the default installs nothing.
 //
@@ -36,9 +38,9 @@ import PowerKit
 // installed one gives up — is written out in full at the top of `FanLink.swift`
 // and `FanDaemon.swift`. Read them before changing anything here.
 //
-// `--uninstall` hands the fans back and removes everything any version of this
-// project has ever asked root to leave on the disk, including the retired
-// LaunchDaemon from the first draft.
+// `--uninstall` hands the fans back, reconnects the charger, and removes
+// everything any version of this project has ever asked root to leave on the
+// disk, including the retired LaunchDaemon from the first draft.
 
 let arguments = Array(CommandLine.arguments.dropFirst())
 
@@ -70,15 +72,16 @@ func failedToStart(_ why: String) -> Never {
 }
 
 let usage = """
-AnodeHelper — fan control for Anode. Runs as root.
+AnodeHelper — fan and charge control for Anode. Runs as root.
 
-  sudo AnodeHelper                start fan control for this session only.
+  sudo AnodeHelper                start it for this session only.
                                         Nothing is installed. ⌃C stops it.
   sudo AnodeHelper --install      install it as a LaunchDaemon: one
                                         authorisation, then it works across
                                         rebuilds and reboots with no more prompts
-  sudo AnodeHelper --uninstall    hand the fans back and remove everything
-                                        this project has ever installed as root
+  sudo AnodeHelper --uninstall    hand the fans back, reconnect the charger,
+                                        and remove everything this project has
+                                        ever installed as root
        AnodeHelper --help
 
 Options
@@ -90,23 +93,26 @@ Options
                     not.
 
 SESSION (the default) is the stronger of the two. While it runs, one program can
-drive your fans: the exact Anode build this helper shipped beside, running
-as you. Not another user, not another program of yours, not a rebuilt
-Anode. Stop it with ⌃C and the fans go back to automatic.
+drive your fans and charger: the exact Anode build this helper shipped beside,
+running as you. Not another user, not another program of yours, not a rebuilt
+Anode. Stop it with ⌃C and the fans go back to automatic and the charger is
+reconnected.
 
 INSTALLED is the convenient one. It is started ON DEMAND — launchd holds the
 socket and runs it when the app connects, and it exits again once it has been
-idle and holds no fan — so installing it does not put a root process on your
-machine at boot or while Anode is closed.
+idle, holds no fan and is not discharging — so installing it does not put a
+root process on your machine at boot or while Anode is closed.
 
 It is weaker than the session helper in one specific way you should know before
 you type a password: the daemon outlives your rebuilds, so it cannot pin a hash
 that changes on every rebuild. It pins the signing identifier instead, and anyone
 who can run `codesign -s - -i dev.anode.app` on their own binary satisfies
 that. So while it is up, ANYTHING RUNNING AS YOU can set your fan speeds, within
-the range the fan itself reports. Nothing else can: other users are refused by
-the kernel, and the daemon's whole vocabulary is "set fan N to R rpm" and
-"release".
+the range the fan itself reports, set the macOS charge limit, and discharge the
+battery on the charger (never below 10%). Nothing else can: other users are
+refused by the kernel, and the daemon's whole vocabulary is "set fan N to R
+rpm", "release the fans", "set the macOS charge limit (20–100%)", "cut the
+charger to discharge down to a percentage", and "reconnect it".
 """
 
 func value(after flag: String) -> String? {
@@ -137,6 +143,21 @@ if arguments.contains("--uninstall") {
     // been deleted", and leaving them pinned is the failure it exists for.
     let result = FanRelease.toAutomatic(hardware: SMCFanHardware())
     print("  \(result.message)")
+
+    // The charger, before the bootout. A cut outlives the process that made it
+    // (measured: `kill -9` left the charger disconnected), and "an app that cut
+    // my charger has been deleted" is exactly what this command is for. Only
+    // written when it reads cut, or cannot be read.
+    print("Reconnecting the charger…")
+    let charger = SystemChargeHardware()
+    switch charger.adapterCut() {
+    case false?:
+        print("  the charger was not cut — nothing to reconnect")
+    case true?, nil:
+        print(charger.setAdapterCut(false)
+              ? "  charger reconnected"
+              : "  FAILED to reconnect the charger — this Mac may have no such key")
+    }
 
     // launchctl first: removing a plist does not unload a job that is already
     // running, and a bootout after the file is gone has nothing to name. Both
@@ -222,11 +243,14 @@ if arguments.contains(FanDaemon.installArgument) {
       accepts  any build signing as \(FanDaemon.clientSigningIdentifier)
 
     It is started ON DEMAND. launchd holds the socket and runs the helper when
-    something connects; it exits again after \(Int(FanDaemon.idleExit))s with no client and no
-    fan held. Nothing of this runs at boot, or while Anode is closed.
+    something connects; it exits again after \(Int(FanDaemon.idleExit))s with no client, no
+    fan held and no discharge running. Nothing of this runs at boot, or while
+    Anode is closed.
 
-    While it is up it will set a fan target on request from uid \(installFor), within
-    the range the fan itself reports. Anything running as that user can ask —
+    While it is up it will, on request from uid \(installFor): set fan N to R rpm
+    (within the range the fan itself reports), release the fans, set the macOS
+    charge limit (20–100%), cut the charger to discharge down to a percentage
+    (never below 10%), and reconnect it. Anything running as that user can ask —
     this build has no Apple Developer ID, so nothing can tell your Anode
     from another program that signs itself with the same identifier. Undo it all
     with --uninstall.
@@ -339,6 +363,8 @@ let ownerUID: uid_t = {
 
 // ── Run ─────────────────────────────────────────────────────────────────────
 
+// The server clears any charger cut nobody owns as the first thing either
+// `start` does, in both modes, before anything is served.
 let server = FanHelperServer(
     hardware: SMCFanHardware(),
     configuration: .init(ownerUID: ownerUID, pin: pin),
@@ -351,7 +377,8 @@ let server = FanHelperServer(
     log: {
         printErr("anode-helper: \($0)")
         fanLog.info("helper: \($0, privacy: .public)")
-    })
+    },
+    charge: SystemChargeHardware())
 
 do {
     if isInstalledDaemon {
@@ -387,18 +414,19 @@ if isInstalledDaemon {
     """)
 } else {
     print("""
-    Anode fan control is running as root.
+    Anode fan and charge control is running as root.
 
       client   \(clientDescription)
       user     uid \(ownerUID)
       socket   \(FanSocket.path)
 
-    Only that exact build, run by that user, can set a fan speed — and only within
-    the min/max the fan itself reports. Rebuild Anode and this helper will stop
-    recognising it; stop and start it again if you still want fan control.
+    Only that exact build, run by that user, can set a fan speed (only within the
+    min/max the fan itself reports), set the macOS charge limit (20–100%), or cut
+    the charger to discharge (never below 10%). Rebuild Anode and this helper will
+    stop recognising it; stop and start it again if you still want it.
 
-    Press ⌃C to stop. The fans return to automatic control when you do, and also if
-    Anode quits or crashes.
+    Press ⌃C to stop. The fans return to automatic control and the charger is
+    reconnected when you do, and also if Anode quits or crashes.
     """)
 }
 
@@ -407,9 +435,16 @@ if isInstalledDaemon {
 // is called from it. A dispatch source runs on an ordinary queue, so there is no
 // such rule to break. SIG_IGN first, or the default action kills us before the
 // source ever sees it.
+//
+// `stop()` ends the loop, and the loop's way out (`shutdownSocket`) is what
+// hands the fans back and reconnects the charger — so every signal here takes
+// the same path as ⌃C. SIGHUP too: closing the Terminal window a session
+// helper runs in sends it, and its default action would exit with the charger
+// still cut.
 signal(SIGINT, SIG_IGN)
 signal(SIGTERM, SIG_IGN)
-let sources = [SIGINT, SIGTERM].map { sig -> DispatchSourceSignal in
+signal(SIGHUP, SIG_IGN)
+let sources = [SIGINT, SIGTERM, SIGHUP].map { sig -> DispatchSourceSignal in
     let s = DispatchSource.makeSignalSource(signal: sig, queue: .global())
     s.setEventHandler { server.stop() }
     s.resume()
@@ -419,6 +454,8 @@ _ = sources   // held for the life of the process; a released source stops firin
 
 server.run()
 // SIGKILL is the one exit this cannot cover: nothing runs, and a fan set
-// manually stays set until something writes it again. `--uninstall` is the way
-// out of that, and it is why that command releases unconditionally.
-print("Fan control stopped.")
+// manually stays set until something writes it again — and a cut charger stays
+// cut (measured). The next helper to start clears that cut before serving, and
+// `--uninstall` is the way out of both; it is why that command releases
+// unconditionally.
+print("Fan and charge control stopped.")

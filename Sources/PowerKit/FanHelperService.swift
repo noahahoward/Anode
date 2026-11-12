@@ -319,7 +319,9 @@ public final class SMCFanHardware: FanHardware {
 
 // ── The server ──────────────────────────────────────────────────────────────
 
-/// The helper's socket, its access check, and the two operations behind it.
+/// The helper's socket, its access check, and the operations behind it: set fan
+/// N to R rpm, release the fans, set the macOS charge limit (20–100%), cut the
+/// charger to discharge down to a percentage, and reconnect it.
 ///
 /// Lives in PowerKit rather than in the helper executable so the test suite can
 /// run a real server, over a real socket, against fake hardware, as an ordinary
@@ -385,9 +387,9 @@ public final class FanHelperServer {
     /// ever started — every later connection would find nothing at that path.
     private var ownsSocketPath = true
 
-    /// How long to wait, with nothing connected and no fan held, before this
-    /// helper stops. nil for a session helper, which is stopped by the person who
-    /// started it and by nothing else.
+    /// How long to wait, with nothing connected, no fan held and no discharge
+    /// running, before this helper stops. nil for a session helper, which is
+    /// stopped by the person who started it and by nothing else.
     public var idleExit: TimeInterval?
 
     /// Written by whoever calls `stop()` — a signal source on another queue — and
@@ -417,17 +419,61 @@ public final class FanHelperServer {
     /// no-op until something has actually been set.
     public var hasWrittenATarget: Bool { !holdings.isEmpty }
 
+    /// The charger. nil on a helper built without charge control, which then
+    /// refuses the charge commands.
+    private let charge: ChargeHardware?
+
+    /// The percentage a discharge stops at, while this helper holds the charger
+    /// cut. nil when it holds no cut.
+    ///
+    /// Cleared only by a reconnect that succeeded: a failed one keeps it, so the
+    /// helper stays up (see `isIdle`) and the watch tries again.
+    public private(set) var dischargeTarget: Int?
+
+    /// A reconnect failed and is still owed. The watch retries it on every wake
+    /// whatever the battery says.
+    private var reconnectOwed = false
+
+    /// How often a discharge looks at the battery. The only periodic wake this
+    /// helper ever has, and only while the charger is cut.
+    static let dischargeWatchInterval: TimeInterval = 10
+
     public init(hardware: FanHardware,
                 configuration: Configuration,
-                log: @escaping (String) -> Void = { _ in }) {
+                log: @escaping (String) -> Void = { _ in },
+                charge: ChargeHardware? = nil) {
         self.hardware = hardware
         self.config = configuration
         self.log = log
+        self.charge = charge
+    }
+
+    /// Nothing connected, no fan held, and the charger not cut. Only then may an
+    /// on-demand daemon time out — exiting mid-discharge would leave the battery
+    /// draining with nobody watching the floor.
+    var isIdle: Bool { clientFD < 0 && holdings.isEmpty && dischargeTarget == nil }
+
+    /// Reconnect a charger cut that no live helper owns.
+    ///
+    /// A cut OUTLIVES the process that made it — measured: `kill -9` left
+    /// `CHIE` = 08 and the charger disconnected. Only one helper serves the
+    /// socket, so a cut found at startup belongs to a helper that died without
+    /// its dead man's switch. Run by both `start` paths, before anything is
+    /// served. Writes nothing when the charger is already connected.
+    func clearOrphanedAdapterCut() {
+        guard let charge, charge.adapterCut() == true else { return }
+        if charge.setAdapterCut(false) {
+            log("cleared an adapter cut nobody owned")
+        } else {
+            log("WARNING: found an adapter cut nobody owned and could not clear it — "
+              + "the charger is still disconnected")
+        }
     }
 
     /// Bind and listen. Separate from `run()` so a caller — or a test — knows the
     /// socket is ready before anything tries to connect to it.
     public func start() throws {
+        clearOrphanedAdapterCut()
         guard var addr = FanSocketIO.address(config.socketPath) else {
             throw Failure.badPath(config.socketPath)
         }
@@ -487,6 +533,7 @@ public final class FanHelperServer {
     /// this does instead is CHECK, because adopting a descriptor that is not what
     /// we think it is would mean a root process serving something unexamined.
     public func start(adopting fd: Int32) throws {
+        clearOrphanedAdapterCut()
         guard fd >= 0 else { throw Failure.socketFailed("launchd offered no descriptor") }
 
         // It must be a unix stream socket. That is the whole of what this side
@@ -576,6 +623,11 @@ public final class FanHelperServer {
     /// A HELPER HOLDING A FAN NEVER TIMES OUT. Leaving runs the dead-man's
     /// switch, and handing the fans back is right when the app has died and
     /// wrong when it merely has nothing to say for ninety seconds.
+    ///
+    /// THE ONE EXCEPTION TO "NEVER WOKEN" IS A DISCHARGE. While the charger is
+    /// cut the loop wakes every `dischargeWatchInterval` to look at the battery,
+    /// because the floor has to hold whether or not the app is there to ask.
+    /// It also never times out while discharging (`isIdle`).
     public func run() {
         var idleSince: Date? = Date()
         while !stopping {
@@ -585,7 +637,7 @@ public final class FanHelperServer {
                 fds.append(pollfd(fd: clientFD, events: Int16(POLLIN), revents: 0))
             }
 
-            let idling = clientFD < 0 && holdings.isEmpty
+            let idling = isIdle
             if !idling { idleSince = nil }
             else if idleSince == nil { idleSince = Date() }
 
@@ -593,11 +645,15 @@ public final class FanHelperServer {
             if let idleExit, let idleSince, idling {
                 let left = idleExit - Date().timeIntervalSince(idleSince)
                 if left <= 0 {
-                    log("idle for \(Int(idleExit))s with no fan held — stopping. "
+                    log("idle for \(Int(idleExit))s with no fan held and no discharge — stopping. "
                       + "launchd starts a new helper when the app next connects.")
                     break
                 }
                 timeout = Int32((left * 1000).rounded(.up))
+            }
+            if dischargeTarget != nil {
+                // Never idle while discharging, so this is the only timeout.
+                timeout = Int32(Self.dischargeWatchInterval * 1000)
             }
 
             guard poll(&fds, nfds_t(fds.count), timeout) >= 0 || errno == EINTR else { break }
@@ -609,8 +665,27 @@ public final class FanHelperServer {
             }
             if fds.count > 2, fds[2].revents != 0 { serveClientReadable() }
             if fds[0].revents & Int16(POLLIN) != 0 { acceptOne() }
+            // On every wake, not only the timed ones: a busy client must not be
+            // able to starve the floor check.
+            watchDischarge()
         }
         shutdownSocket()
+    }
+
+    /// Reconnect the charger if the discharge has reached its floor, the
+    /// battery cannot be read, the cable is known to be out, or an earlier
+    /// reconnect failed. Does nothing when no cut is held.
+    func watchDischarge() {
+        guard let charge, let target = dischargeTarget else { return }
+        let percent = charge.batteryPercent()
+        guard reconnectOwed
+                || DischargeWatch.shouldRestore(target: target,
+                                                percent: percent,
+                                                onAC: charge.onAC()) else { return }
+        let why = reconnectOwed ? "retrying a failed reconnect"
+            : "discharge to \(target)% ended, battery "
+              + (percent.map { "\($0)%" } ?? "unreadable")
+        log(reconnectCharger(why: why).message)
     }
 
     /// Wake the loop and let it unwind. Safe to call from another thread — it
@@ -725,7 +800,106 @@ public final class FanHelperServer {
             return set(target)
         case .command(.releaseAll):
             return release()
+        case .command(.setChargeLimit(let percent)):
+            return setChargeLimit(percent)
+        case .command(.discharge(let target)):
+            return discharge(to: target)
+        case .command(.stopDischarge):
+            return stopDischarge()
         }
+    }
+
+    // ── The charger ─────────────────────────────────────────────────────────
+
+    /// The range the helper accepts for macOS's charge limit. The app's own
+    /// range may be narrower; this is the boundary root enforces.
+    static let chargeLimitRange = 20...100
+    /// The range a discharge target may name. `DischargeWatch.floor` still
+    /// applies on top: nothing discharges below 10%.
+    static let dischargeTargetRange = 10...100
+
+    private func setChargeLimit(_ percent: Int) -> FanReply {
+        guard let charge else {
+            return FanReply(ok: false, message: "this helper has no charge control")
+        }
+        guard Self.chargeLimitRange.contains(percent) else {
+            return FanReply(ok: false, message: "refused: a charge limit must be "
+                          + "\(Self.chargeLimitRange.lowerBound)–\(Self.chargeLimitRange.upperBound)%")
+        }
+        // Not held, and not undone on disconnect: the limit is macOS's own
+        // setting and stays where the user put it.
+        guard charge.writeChargeLimit(percent) else {
+            log("could not write the charge limit \(percent)%")
+            return FanReply(ok: false, message: "macOS did not take the charge limit")
+        }
+        log("set the macOS charge limit to \(percent)%")
+        return FanReply(ok: true, message: "charge limit set to \(percent)%")
+    }
+
+    private func discharge(to target: Int) -> FanReply {
+        guard let charge else {
+            return FanReply(ok: false, message: "this helper has no charge control")
+        }
+        guard Self.dischargeTargetRange.contains(target) else {
+            return FanReply(ok: false, message: "refused: a discharge target must be "
+                          + "\(Self.dischargeTargetRange.lowerBound)–\(Self.dischargeTargetRange.upperBound)%")
+        }
+        // The same test the watch uses, asked before cutting: a discharge that
+        // would end on its first check is not started at all.
+        let percent = charge.batteryPercent()
+        let ac = charge.onAC()
+        guard !DischargeWatch.shouldRestore(target: target, percent: percent, onAC: ac) else {
+            let why: String
+            if percent == nil { why = "the battery level cannot be read" }
+            else if ac == false { why = "no charger is connected" }
+            else { why = "the battery is already at or below \(max(target, DischargeWatch.floor))%" }
+            return FanReply(ok: false, message: "refused: \(why)")
+        }
+        guard charge.setAdapterCut(true) else {
+            // A refused write is not proof that nothing changed. Reconnecting is
+            // the one write that cannot hurt.
+            _ = charge.setAdapterCut(false)
+            log("the SMC refused the adapter cut")
+            return FanReply(ok: false, message: "the SMC would not cut the charger")
+        }
+        dischargeTarget = target
+        reconnectOwed = false
+        log("cut the charger: discharging to \(target)% from \(percent.map { "\($0)%" } ?? "?")")
+        return FanReply(ok: true, message: "discharging to \(target)%")
+    }
+
+    private func stopDischarge() -> FanReply {
+        guard let charge else {
+            return FanReply(ok: false, message: "this helper has no charge control")
+        }
+        // Asked to reconnect, it reconnects — including a cut it does not
+        // remember making. Reconnecting cannot hurt; refusing to could.
+        guard dischargeTarget != nil || charge.adapterCut() == true else {
+            return FanReply(ok: true, message: "the charger is not cut — nothing to reconnect")
+        }
+        let reply = reconnectCharger(why: "asked to stop")
+        log(reply.message)
+        return reply
+    }
+
+    /// Reconnect the charger. A few tries a moment apart: this is the write
+    /// that must not be skipped. The target is cleared only on success, so a
+    /// failure keeps the helper up and the watch retrying.
+    private func reconnectCharger(why: String) -> FanReply {
+        guard let charge else {
+            return FanReply(ok: false, message: "this helper has no charge control")
+        }
+        for attempt in 0..<3 {
+            if attempt > 0 { usleep(100_000) }
+            if charge.setAdapterCut(false) {
+                dischargeTarget = nil
+                reconnectOwed = false
+                return FanReply(ok: true, message: "charger reconnected (\(why))")
+            }
+        }
+        reconnectOwed = dischargeTarget != nil
+        return FanReply(ok: false, message: "the charger did NOT reconnect (\(why)) — "
+                      + "it is still cut off")
     }
 
     private func set(_ target: FanTarget) -> FanReply {
@@ -873,8 +1047,24 @@ public final class FanHelperServer {
         return modeHeld && targetHeld
     }
 
+    /// Hand back everything this helper holds: the charger, then the fans.
+    ///
+    /// The one release path — `releaseAll`, the dead man's switch in
+    /// `dropClient`, and `shutdownSocket` (which SIGTERM and SIGINT reach
+    /// through `stop()`) all come here.
     @discardableResult
     private func release() -> FanReply {
+        // The charger FIRST, and outside the fans' "nothing held" early return:
+        // the common case is a discharge with no fan held at all.
+        let charger = dischargeTarget != nil ? reconnectCharger(why: "released") : nil
+        let hadFans = !holdings.isEmpty
+        let fans = releaseFans()
+        guard let charger else { return fans }
+        return FanReply(ok: charger.ok && fans.ok,
+                        message: hadFans ? "\(fans.message); \(charger.message)" : charger.message)
+    }
+
+    private func releaseFans() -> FanReply {
         // The default mode writes NOTHING, so a helper that was started and never
         // used must leave a machine it has not touched — including on the way
         // out. Releasing unconditionally here would write a target to a fan

@@ -43,10 +43,20 @@ public struct FanTarget: Codable, Equatable {
 }
 
 /// What the helper is allowed to be asked to do. Deliberately tiny: the whole
-/// privileged surface is "set this fan to this speed" and "stop controlling".
+/// privileged surface is "set fan N to R rpm", "release the fans", "set the
+/// macOS charge limit (20–100%)", "cut the charger to discharge down to a
+/// percentage", and "reconnect it".
 public enum FanCommand: Codable, Equatable {
     case setTarget(FanTarget)
     case releaseAll
+    /// macOS's own Charge Limit, 20…100. Left in place when the app goes away:
+    /// it is the OS's setting, not something this helper holds.
+    case setChargeLimit(Int)
+    /// Cut the charger until the battery is down to `toPercent` (10…100, never
+    /// below 10%). Reconnected on every exit the helper can see.
+    case discharge(toPercent: Int)
+    /// Reconnect the charger.
+    case stopDischarge
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -397,6 +407,9 @@ public struct FanSession: Equatable {
             if !ok { held[t.index] = nil }
         case .releaseAll:
             if ok { held.removeAll() }
+        case .setChargeLimit, .discharge, .stopDischarge:
+            // Not a fan command; nothing a fan session tracks.
+            break
         }
     }
 }

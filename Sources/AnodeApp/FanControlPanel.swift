@@ -889,8 +889,8 @@ final class FanControlPanel: NSView {
                                     action: #selector(releaseTapped))
             stop.tag = f.index
             stop.contentTintColor = Palette.critical
-            // Says "every fan" because that is what it does. The helper's whole
-            // privileged vocabulary is "set one fan" and "release the fans" —
+            // Says "every fan" because that is what it does. The helper's only
+            // fan commands are "set one fan" and "release the fans" —
             // there is no per-fan release, and inventing one by writing a single
             // fan its minimum would PIN it there, quietly, which is the exact
             // failure this button exists to undo.
