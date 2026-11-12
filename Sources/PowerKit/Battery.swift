@@ -172,8 +172,8 @@ public enum Battery {
         return fresh
     }
 
-    private static func readProperties() -> [String: Any]? {
-        let match = IOServiceMatching("AppleSmartBattery")
+    private static func readProperties(of serviceClass: String = "AppleSmartBattery") -> [String: Any]? {
+        let match = IOServiceMatching(serviceClass)
         let service = IOServiceGetMatchingService(kIOMainPortDefault, match)
         guard service != 0 else { return nil }
         defer { IOObjectRelease(service) }
@@ -337,6 +337,20 @@ public enum Battery {
             let pack_mW = Double(amperage_mA) * Double(voltage_mV) / 1000
             return "\(w(input - pack_mW))/\(w(input))W"
         }
+
+        /// The pack's temperature from its gas gauge, °C. Nil where this machine
+        /// publishes none, and where the figure it publishes is not a
+        /// temperature: see `Battery.temperatureC(fromRaw:)`.
+        ///
+        /// Charge Control's Heat Protection holds and resumes charging on it,
+        /// and reads nil as neither hot nor cool.
+        ///
+        /// It can be over a minute old. Watched for four minutes while the pack
+        /// warmed, the figure changed 60, 60 and 96 s apart, by at most 0.5 °C
+        /// a step.
+        ///
+        /// Defaulted for the fixtures, like `notChargingReason`.
+        public var temperature_C: Double? = nil
     }
 
     public static func state() -> State? {
@@ -378,7 +392,71 @@ public enum Battery {
             fullyCharged: props["FullyCharged"] as? Bool ?? false
         )
         state.adapterInput_mW = input
+        // The battery entry, then its pack's, which is the only place this Mac
+        // keeps it. See `packProperties()`.
+        state.temperature_C = Self.temperatureC(fromProperties: props)
+            ?? Self.packProperties().flatMap(Self.temperatureC(fromProperties:))
         return state
+    }
+
+    // ── Pack temperature ────────────────────────────────────────────────────
+
+    /// The range a pack temperature is believed in, °C. Far wider than a pack
+    /// in a running Mac gets (this Mac's pack records a lifetime minimum of 15
+    /// and maximum of 40, and Heat Protection's setting stops at 50), so all it
+    /// ever rejects is a figure that is not a temperature.
+    static let plausibleTemperature_C: ClosedRange<Double> = -20...100
+
+    /// One registry `Temperature` value as °C, or nil when it is not a
+    /// plausible pack temperature.
+    ///
+    /// CENTI-°C, measured rather than assumed: `SensorNaming` records this
+    /// figure reading 2709 while the SMC's battery thermistors read 27.10 °C.
+    /// The Smart Battery unit, 0.1 K, would have made that -2.25 °C.
+    ///
+    /// Anything else is nil, because Charge Control's Heat Protection holds and
+    /// resumes charging on this number. 65535, the "unknown" that `state()`
+    /// already keeps out of `TimeRemaining`, is 655.35 °C and would hold the
+    /// charge on a cool pack; a fault that came out below -20 °C would resume
+    /// it on a hot one. `ChargePolicy` reads nil as neither.
+    static func temperatureC(fromRaw raw: Any?) -> Double? {
+        // A registry boolean bridges to NSNumber, and `true` would read 0.01 °C.
+        guard let n = raw as? NSNumber, CFGetTypeID(n) != CFBooleanGetTypeID() else { return nil }
+        let c = n.doubleValue / 100
+        guard c.isFinite, plausibleTemperature_C.contains(c) else { return nil }
+        return c
+    }
+
+    /// The temperature one registry entry publishes: its top-level
+    /// `Temperature`, else the one nested in its `BatteryData`. Tried in that
+    /// order, so a top-level figure that is not a temperature does not hide a
+    /// nested one that is.
+    ///
+    /// The top level is where earlier macOS versions are documented to keep
+    /// it. That is not measured here: this Mac publishes none there.
+    static func temperatureC(fromProperties props: [String: Any]) -> Double? {
+        temperatureC(fromRaw: props["Temperature"])
+            ?? temperatureC(fromRaw: (props["BatteryData"] as? [String: Any])?["Temperature"])
+    }
+
+    /// The properties of `AppleSmartBatteryPack`, the battery entry's child,
+    /// read for the temperature alone.
+    ///
+    /// MEASURED on `Mac17,9`, macOS 27.0 (26A428), 2026-11-11: the battery entry
+    /// publishes no `Temperature` at all. There is none at its top level, and
+    /// its `BatteryData` is eleven fields of capacity and charge. The pack
+    /// entry's `BatteryData` has it: 3500 for 35.00 °C, with the SMC's battery
+    /// thermistors at 35.0, 35.0 and 34.4 °C the same moment.
+    ///
+    /// `ioreg -rl` prints the pack's dictionary under the battery's, where it
+    /// reads as the battery's own. It is a different entry, and `properties()`
+    /// never sees it.
+    ///
+    /// Not cached: it is read only when the battery entry has no temperature,
+    /// once per `state()`, and costs 37 µs against that entry's 159 µs (medians
+    /// of 200 back-to-back reads).
+    private static func packProperties() -> [String: Any]? {
+        readProperties(of: "AppleSmartBatteryPack")
     }
 }
 
