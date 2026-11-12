@@ -2,7 +2,7 @@ import Foundation
 
 /// Where charging will actually stop, and how long the last stretch really takes.
 ///
-/// ## The machine will not tell us the limit
+/// ## The battery registry does not state the limit
 ///
 /// Every property of `AppleSmartBattery`, `AppleSmartBatteryManager`,
 /// `IOPMPowerSource` and `IOPMrootDomain` was enumerated on this machine
@@ -11,7 +11,8 @@ import Foundation
 /// `MaxCharge*` exists at any level, the `BatteryData` sub-dictionary carries only
 /// capacity fields. `pmset -g battlimit` and PowerUI report macOS's own manual
 /// limit; Charge Control reads that directly. This learner is the fallback for
-/// holds nothing reports.
+/// holds nothing reports. While Charge Control is on, the limit it holds replaces
+/// the learned one in the published target (see `limit(learned:chargeControl:gaugeRatio:)`).
 ///
 /// What the machine DOES publish is the consequence: `ChargerData` gains
 /// `NotChargingReason` = 128 while it sits on the adapter refusing to charge, with
@@ -44,7 +45,8 @@ public enum ChargeTarget {
     public struct Level: Equatable {
         public let percent: Double
         /// True when `percent` is a limit this machine was seen to stop and hold
-        /// at, false when it is the pack's own 100% because no limit is known.
+        /// at, or the limit Charge Control holds it at while that is on; false
+        /// when it is the pack's own 100% because no limit is known.
         /// The UI has to say which: "45 min to 80%" and "45 min to full" are
         /// different claims and only one of them is going to happen.
         public let isLearnedLimit: Bool
@@ -58,6 +60,33 @@ public enum ChargeTarget {
         /// note on `.timeLeft`): the RATE behind it is measured, the future is not.
         public let hours: Double
         public let target: Level
+    }
+
+    /// The limit charging is heading for, on the mAh basis, or nil for the
+    /// pack's own 100%.
+    ///
+    /// While Charge Control is on (`chargeControl` non-nil) its limit is the one
+    /// the machine is held at, so it replaces whatever was learned: a stale 80
+    /// from Optimized Battery Charging stayed in use and the card said "charging
+    /// to 80%", then "to full", then a bare "not charging" at the real hold. The
+    /// learned limit is only passed over, never edited. A Charge Control limit of
+    /// 100 is "no limit" — nil, not the learned value coming back.
+    ///
+    /// Charge Control's limit is a GAUGE percent: the integer macOS shows, which
+    /// the charge controller compares against (the plan has it read `percent`
+    /// from `Battery.state()`, i.e. `CurrentCapacity`). The target is on the mAh
+    /// basis, which the headroom, the hold band and the card's `gaugeRatio`
+    /// conversion all assume, so it is divided by `gaugeRatio` (gauge over mAh
+    /// percent, `BatteryScale.gaugeRatio`). Taken at the current level, as the
+    /// card's own conversion is, so the label gives back the limit exactly. 100
+    /// is judged before that division, or 100 / 1.05 would become a limit.
+    /// `learned` is already on the mAh basis and is returned as it is.
+    public static func limit(learned: Double?, chargeControl: Int?,
+                             gaugeRatio: Double = 1) -> Double? {
+        guard let cc = chargeControl else { return learned }
+        guard cc < 100 else { return nil }
+        guard gaugeRatio.isFinite, gaugeRatio > 0 else { return Double(cc) }
+        return Double(cc) / gaugeRatio
     }
 }
 
@@ -329,8 +358,17 @@ public final class ChargeLimitLearner {
     /// remembered limit while still climbing. The machine tops up past its limit
     /// sometimes (one session ran 80 -> 92), and reporting "already at the limit"
     /// while the gauge visibly rises would be the same lie in the other direction.
-    public func target(atPercent percent: Double, isCharging: Bool) -> ChargeTarget.Level {
-        guard let l = limit else { return ChargeTarget.Level(percent: 100, isLearnedLimit: false) }
+    ///
+    /// `chargeControlLimit` is the limit Charge Control holds, nil while it is off;
+    /// when it is set it replaces the learned limit (`ChargeTarget.limit`), and
+    /// `gaugeRatio` carries it onto the mAh basis. The overshoot rule applies to
+    /// either.
+    public func target(atPercent percent: Double, isCharging: Bool,
+                       chargeControlLimit: Int? = nil,
+                       gaugeRatio: Double = 1) -> ChargeTarget.Level {
+        guard let l = ChargeTarget.limit(learned: limit, chargeControl: chargeControlLimit,
+                                         gaugeRatio: gaugeRatio)
+        else { return ChargeTarget.Level(percent: 100, isLearnedLimit: false) }
         if isCharging && percent > l + Self.overshootTolerance {
             return ChargeTarget.Level(percent: 100, isLearnedLimit: false)
         }

@@ -138,6 +138,21 @@ public struct BatteryScale {
         }
         return min(100, s.remainingCapacity_mAh / fullChargeCapacity_mAh * 100)
     }
+
+    /// Gauge percent over mAh percent at this instant: how much larger the integer
+    /// `CurrentCapacity` reads than `chargePercent`. 1.0 when either is
+    /// unavailable — an unconverted number is better than a number multiplied by
+    /// something meaningless.
+    ///
+    /// The one conversion between the two bases. The card uses it to print an
+    /// mAh-basis target in the gauge's terms, and the monitor uses it the other
+    /// way to bring Charge Control's limit (a gauge percent) onto the mAh basis,
+    /// so the two are the same number at the same instant.
+    public func gaugeRatio(_ s: Battery.State) -> Double {
+        let mAh = chargePercent(s)
+        guard mAh > 1, s.percent > 0 else { return 1 }
+        return Double(s.percent) / mAh
+    }
 }
 
 public enum Battery {

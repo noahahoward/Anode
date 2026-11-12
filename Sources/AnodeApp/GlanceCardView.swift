@@ -602,9 +602,7 @@ final class GlanceCardView: NSView {
     /// unavailable — an unconverted number is better than a number multiplied by
     /// something meaningless.
     static func gaugeRatio(_ s: PowerMonitor.Snapshot, _ st: Battery.State) -> Double {
-        let mAh = s.scale.chargePercent(st)
-        guard mAh > 1, st.percent > 0 else { return 1 }
-        return Double(st.percent) / mAh
+        s.scale.gaugeRatio(st)
     }
 
     /// Where the headline came from, in the user's words rather than the enum's.

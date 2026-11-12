@@ -361,6 +361,165 @@ final class ChargeEstimateTests: XCTestCase {
         XCTAssertEqual(ChargeLimitLearner(defaults: d).limit, 80)
     }
 
+    // ── Charge Control's limit replaces what was learned ────────────────────
+
+    /// While Charge Control is on, the limit the card names is the one Charge
+    /// Control holds. A limit learned earlier (Optimized Battery Charging's 80) is
+    /// the Mac's, is left in the store untouched, and must not be the one shown.
+    func testChargeControlLimitReplacesALearnedLimit() {
+        XCTAssertEqual(ChargeTarget.limit(learned: 80, chargeControl: 90), 90)
+    }
+
+    /// 100 is "no limit", exactly as an absent learned limit is, and it is not
+    /// read as a level to stop at: the learned 80 must not come back either.
+    func testChargeControlAtOneHundredMeansNoLimit() {
+        XCTAssertNil(ChargeTarget.limit(learned: 80, chargeControl: 100))
+        XCTAssertNil(ChargeTarget.limit(learned: nil, chargeControl: 100))
+    }
+
+    func testLearnedLimitIsUsedWhenChargeControlIsOff() {
+        XCTAssertEqual(ChargeTarget.limit(learned: 80, chargeControl: nil), 80)
+    }
+
+    func testNoLimitAtAllWhenNeitherExists() {
+        XCTAssertNil(ChargeTarget.limit(learned: nil, chargeControl: nil))
+        XCTAssertEqual(ChargeTarget.limit(learned: nil, chargeControl: 90), 90,
+                       "Charge Control needs nothing learned")
+    }
+
+    /// Charge Control's limit is a GAUGE percent (the integer the menu bar shows,
+    /// which is what the charge controller compares against). Everything the
+    /// target feeds is on the mAh basis, so it is divided by the gauge/mAh ratio —
+    /// and 100 is judged BEFORE that, or 100 / 1.05 = 95 would become a limit.
+    func testChargeControlLimitIsConvertedToTheMAhBasis() throws {
+        let ratio = 1.05
+        XCTAssertEqual(try XCTUnwrap(ChargeTarget.limit(learned: 76, chargeControl: 90, gaugeRatio: ratio)),
+                       90 / 1.05, accuracy: 1e-9)
+        XCTAssertNil(ChargeTarget.limit(learned: 76, chargeControl: 100, gaugeRatio: ratio))
+        // A ratio that means nothing is not applied.
+        for bad in [0.0, -1.0, .nan, .infinity] {
+            XCTAssertEqual(ChargeTarget.limit(learned: nil, chargeControl: 90, gaugeRatio: bad), 90)
+        }
+        // The learned limit is already on the mAh basis and is never converted.
+        XCTAssertEqual(ChargeTarget.limit(learned: 76, chargeControl: nil, gaugeRatio: ratio), 76)
+    }
+
+    func testTheLearnersTargetFollowsChargeControlWhileItIsOn() {
+        let learner = ChargeLimitLearner(defaults: store())
+        learn(learner, at: 76)
+
+        let cc = learner.target(atPercent: 60, isCharging: true, chargeControlLimit: 90)
+        XCTAssertEqual(cc, ChargeTarget.Level(percent: 90, isLearnedLimit: true),
+                       "a learned 76 must not be what the card counts down to")
+
+        let full = learner.target(atPercent: 60, isCharging: true, chargeControlLimit: 100)
+        XCTAssertEqual(full, ChargeTarget.Level(percent: 100, isLearnedLimit: false))
+
+        let off = learner.target(atPercent: 60, isCharging: true, chargeControlLimit: nil)
+        XCTAssertEqual(off, ChargeTarget.Level(percent: 76, isLearnedLimit: true))
+
+        XCTAssertEqual(learner.limit, 76, "choosing a target never edits what was learned")
+    }
+
+    /// Charging visibly past Charge Control's limit is the same lie as counting
+    /// to a limit that is not binding, so the overshoot rule covers it too.
+    func testChargingPastChargeControlsLimitYieldsFull() {
+        let learner = ChargeLimitLearner(defaults: store())
+        XCTAssertEqual(learner.target(atPercent: 85, isCharging: true, chargeControlLimit: 80),
+                       ChargeTarget.Level(percent: 100, isLearnedLimit: false))
+        XCTAssertEqual(learner.target(atPercent: 85, isCharging: false, chargeControlLimit: 80),
+                       ChargeTarget.Level(percent: 80, isLearnedLimit: true))
+    }
+
+    // ── The card, with gauge and mAh disagreeing ────────────────────────────
+
+    /// A pack whose gauge reads `gauge` while the mAh basis reads `mAhPercent`,
+    /// like the real one (80 against 76). The other fixtures make the two equal,
+    /// which hides every basis defect.
+    private func skewed(gauge: Int, mAhPercent: Double, charging: Bool, scale: BatteryScale)
+        -> Battery.State {
+        Battery.State(percent: gauge, isCharging: charging, onAC: true,
+                      cycleCount: 21, voltage_mV: 12469, amperage_mA: charging ? 3600 : 0,
+                      remainingCapacity_mAh: scale.fullChargeCapacity_mAh * mAhPercent / 100,
+                      timeRemaining_min: nil,
+                      notChargingReason: charging ? 0 : 128, fullyCharged: false)
+    }
+
+    /// THE REPORTED SYMPTOM, without a monitor. Charge Control holds at 90 and the
+    /// Mac had once been seen holding at 80 (76 on the mAh basis). The card said
+    /// "charging to 80%", then "charging to full", then a bare "not charging" at
+    /// the real hold. It has to say 90 all the way and "held at 90%" at the end.
+    func testTheCardFollowsChargeControlsLimitNotTheLearnedOne() {
+        let scale = pack()
+        let learner = ChargeLimitLearner(defaults: store())
+        learn(learner, at: 76)
+
+        // Charging at gauge 70.
+        let charging = skewed(gauge: 70, mAhPercent: 66.5, charging: true, scale: scale)
+        let toTarget = learner.target(atPercent: scale.chargePercent(charging), isCharging: true,
+                                      chargeControlLimit: 90, gaugeRatio: scale.gaugeRatio(charging))
+        let c = GlanceCardView.model(from: snapshot(charging, scale: scale, target: toTarget),
+                                     drain: nil, shared: nil)
+        XCTAssertEqual(c?.sourceLabel, "charging to 90% · estimated")
+
+        // Held at gauge 90, which is 85.5 on the mAh basis.
+        let hold = skewed(gauge: 90, mAhPercent: 85.5, charging: false, scale: scale)
+        let atHold = learner.target(atPercent: scale.chargePercent(hold), isCharging: false,
+                                    chargeControlLimit: 90, gaugeRatio: scale.gaugeRatio(hold))
+        let heldSnap = snapshot(hold, scale: scale, target: atHold)
+        XCTAssertTrue(heldSnap.isHeldAtChargeLimit)
+        XCTAssertEqual(GlanceCardView.model(from: heldSnap, drain: nil, shared: nil)?.sourceLabel,
+                       "held at 90% limit")
+
+        // And the old behaviour, which this replaces: the stale learned target.
+        let stale = learner.target(atPercent: scale.chargePercent(hold), isCharging: false)
+        XCTAssertFalse(snapshot(hold, scale: scale, target: stale).isHeldAtChargeLimit)
+        // An unconverted 90 would miss the band too, which is why the ratio is applied.
+        let raw = ChargeTarget.Level(percent: 90, isLearnedLimit: true)
+        XCTAssertFalse(snapshot(hold, scale: scale, target: raw).isHeldAtChargeLimit)
+    }
+
+    func testTheGaugeRatioIsTheGaugeOverTheMAhBasis() {
+        let scale = pack()
+        let s = skewed(gauge: 80, mAhPercent: 76, charging: false, scale: scale)
+        XCTAssertEqual(scale.gaugeRatio(s), 80.0 / 76.0, accuracy: 1e-9)
+        // Unavailable either way: an unconverted number beats one scaled by nothing.
+        XCTAssertEqual(scale.gaugeRatio(skewed(gauge: 80, mAhPercent: 0.5, charging: false, scale: scale)), 1)
+        XCTAssertEqual(scale.gaugeRatio(skewed(gauge: 0, mAhPercent: 50, charging: false, scale: scale)), 1)
+    }
+
+    // ── The monitor hands Charge Control's limit to the target ──────────────
+
+    /// The closure is read once per tick, so the learner and the target are told
+    /// the same thing, and not at all by anything that is not a tick.
+    func testTheMonitorReadsChargeControlsLimitOncePerTick() throws {
+        var reads = 0
+        let m = try XCTUnwrap(PowerMonitor(scale: makeExactScale(),
+                                           chargeControlLimit: { reads += 1; return 99 }))
+        XCTAssertEqual(reads, 0)
+        _ = m.tick(full: false, attribution: false)
+        XCTAssertEqual(reads, 1)
+        _ = m.tick(full: false, attribution: false)
+        XCTAssertEqual(reads, 2)
+    }
+
+    func testTheMonitorPublishesChargeControlsLimitAsTheTarget() throws {
+        // Non-nil, so the learner stands down and never writes the real defaults.
+        let m = try XCTUnwrap(PowerMonitor(scale: makeExactScale(), chargeControlLimit: { 99 }))
+        let snap = try XCTUnwrap(m.tick(full: false, attribution: false))
+        guard let st = snap.state else { throw XCTSkip("no battery on this machine") }
+        try XCTSkipIf(st.isCharging && st.percent >= 99, "charging past the limit takes the overshoot rule")
+
+        let target = try XCTUnwrap(snap.chargeTarget)
+        XCTAssertTrue(target.isLearnedLimit)
+        XCTAssertEqual(target.percent * snap.scale.gaugeRatio(st), 99, accuracy: 1e-6,
+                       "whatever was learned on this Mac, the target is Charge Control's 99")
+
+        let none = try XCTUnwrap(PowerMonitor(scale: makeExactScale(), chargeControlLimit: { 100 }))
+        let full = try XCTUnwrap(none.tick(full: false, attribution: false)?.chargeTarget)
+        XCTAssertEqual(full, ChargeTarget.Level(percent: 100, isLearnedLimit: false))
+    }
+
     /// The limit is worth nothing if it is forgotten at quit: the app is normally
     /// launched into a machine already sitting at its limit, where there is no
     /// stop to observe. Same bargain `USBPowerTracker` makes with device costs.

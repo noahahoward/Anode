@@ -325,9 +325,10 @@ public final class PowerMonitor {
             return s.amperage_mA < -100
         }
 
-        /// Where charging is heading — the learned limit when there is one, the
-        /// pack's own 100% when there is not. Nil before the first tick has fed
-        /// the learner. See `ChargeTarget` for why this is inferred and not read.
+        /// Where charging is heading — the limit Charge Control holds while it is
+        /// on, else the learned limit when there is one, else the pack's own 100%.
+        /// Nil before the first tick has fed the learner. See `ChargeTarget` for
+        /// why a Mac's own limit is inferred and not read.
         ///
         /// Defaulted, and therefore `var`, for the same reason `isFullSample` is:
         /// the synthetic fixtures describe a battery without having an opinion
@@ -407,8 +408,9 @@ public final class PowerMonitor {
         public var timeToFull_hr: Double? { chargeEstimate?.hours }
 
         /// True when the machine is sitting on AC at the limit it was learned to
-        /// hold at, rather than merely idle on AC. "Not charging" and "held at 80%"
-        /// are different facts and the second one is the one the user chose.
+        /// hold at (or that Charge Control holds it at), rather than merely idle
+        /// on AC. "Not charging" and "held at 80%" are different facts and the
+        /// second one is the one the user chose.
         ///
         /// A BAND around the limit, not merely at-or-above it. A session that
         /// overrode the limit and stopped at 92% is on AC and not charging, but it
@@ -616,25 +618,29 @@ public final class PowerMonitor {
     /// LEARN one, since the overnight session that sat at 80% for seven hours is
     /// precisely the evidence this is looking for.
     private let chargeLimits = ChargeLimitLearner()
-    /// Whether Charge Control is holding the charge back right now. Handed in by
-    /// the app, which owns the settings, rather than read here: this class has no
-    /// settings handle, the CLI links it too, and a `Settings` built per tick would
-    /// re-read every key. A closure rather than a Bool because the answer changes
-    /// while the monitor lives, and it is called on the sampling queue, so it must
-    /// be cheap and safe off the main thread. Fixed at `init`, so it cannot race
-    /// the ticks. See `ChargeLimitLearner.observe`.
-    private let anodeHolding: () -> Bool
+    /// The limit Charge Control is holding the charge at right now (20…100), or nil
+    /// while it is off. Handed in by the app, which owns the settings, rather than
+    /// read here: this class has no settings handle, the CLI links it too, and a
+    /// `Settings` built per tick would re-read every key. A closure rather than a
+    /// value because the answer changes while the monitor lives, and it is called
+    /// on the sampling queue, so it must be cheap and safe off the main thread.
+    /// Fixed at `init`, so it cannot race the ticks, and read once per tick so the
+    /// learner and the published target are told the same thing. See
+    /// `ChargeLimitLearner.observe` and `ChargeTarget.limit`.
+    private let chargeControlLimit: () -> Int?
 
     public var ioReportAvailable: Bool { ioreport != nil }
 
-    /// `anodeHolding` says whether Charge Control is holding the charge back, so the
-    /// charge-limit learner does not mistake that for a limit the Mac enforces. It
-    /// defaults to "not holding", which is right for anything that has no Charge
-    /// Control — the CLI, and tests.
-    public init?(scale: BatteryScale? = nil, anodeHolding: @escaping () -> Bool = { false }) {
+    /// `chargeControlLimit` is the limit Charge Control holds the charge at, or nil
+    /// while it is off. While it is non-nil the charge-limit learner does not
+    /// mistake that hold for a limit the Mac enforces, and the published
+    /// `chargeTarget` is that limit rather than anything learned. It defaults to
+    /// "off", which is right for anything that has no Charge Control — the CLI,
+    /// and tests.
+    public init?(scale: BatteryScale? = nil, chargeControlLimit: @escaping () -> Int? = { nil }) {
         guard let s = scale ?? Battery.scale() else { return nil }
         self.scale = s
-        self.anodeHolding = anodeHolding
+        self.chargeControlLimit = chargeControlLimit
         self.lastPublished = PowerTelemetry.sample()
     }
 
@@ -923,8 +929,11 @@ public final class PowerMonitor {
         usbTracker.update(systemWatts: smoothed, systemQuiet: quiet,
                           onAC: battery?.onAC ?? false)
 
+        // Once, so the learner and the target below see the same answer.
+        let chargeControlNow = self.chargeControlLimit()
         if let b = battery {
-            chargeLimits.observe(b, percent: scale.chargePercent(b), anodeHolding: anodeHolding())
+            chargeLimits.observe(b, percent: scale.chargePercent(b),
+                                 anodeHolding: chargeControlNow != nil)
         }
 
         let usbMeasured = usbTracker.measuredWatts
@@ -1004,7 +1013,9 @@ public final class PowerMonitor {
             interval: interval,
             chargeTarget: battery.map {
                 chargeLimits.target(atPercent: scale.chargePercent($0),
-                                    isCharging: $0.isCharging && $0.amperage_mA > 0)
+                                    isCharging: $0.isCharging && $0.amperage_mA > 0,
+                                    chargeControlLimit: chargeControlNow,
+                                    gaugeRatio: scale.gaugeRatio($0))
             }
         )
 
