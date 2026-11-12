@@ -188,8 +188,23 @@ else
   H="$(new_home 9)"; stub_app "$H" 1
   OUT="$(HOME="$H" PATH="$T/shim:$PATH" bash "$ROOT/uninstall.sh" --yes 2>&1 || true)"
   check "the app is asked to put macOS's charge settings back" grep -qx -- "--restore-charge-settings" "$H/restore-asked"
+  check "a failure says macOS may still hold a charge limit"  has "macOS may still hold a charge limit"
   check "a failure says where to change the limit"            has "System Settings → Battery"
+  check "a failure says what reconnects a charger left off"   has "restarting the Mac or reinstalling Anode's helper reconnects it"
+  check "a restore that ran says nothing about Anode running" hasnt "still running"
   check "the app is still removed"                            absent "$H/Applications/Anode.app"
+  # Anode does not finish quitting: a pgrep that always finds it (and writes down how it was asked), and a sleep
+  # that does not wait, so the scenario takes no time.
+  mkdir -p "$T/shim-running"
+  printf '#!/bin/sh\necho "$*" >> "$HOME/pgrep-asked"\nexit 0\n' > "$T/shim-running/pgrep"
+  printf '#!/bin/sh\nexit 0\n' > "$T/shim-running/sleep"
+  chmod +x "$T/shim-running/pgrep" "$T/shim-running/sleep"
+  H="$(new_home 12)"; stub_app "$H" 0
+  OUT="$(HOME="$H" PATH="$T/shim-running:$T/shim:$PATH" bash "$ROOT/uninstall.sh" --yes 2>&1 || true)"
+  check "Anode still running after the wait is said, in one line" [ "$(printf '%s\n' "$OUT" | grep -c "still running")" = 1 ]
+  check "and the restore is still asked for"                  grep -qx -- "--restore-charge-settings" "$H/restore-asked"
+  only_this_user() { [ -s "$H/pgrep-asked" ] && ! grep -qv -- "-U $(id -u) " "$H/pgrep-asked"; }
+  check "only this user's Anode is waited for"                only_this_user
   H="$(new_home 10)"; stub_app "$H" 0
   OUT="$(HOME="$H" PATH="$T/shim:$PATH" bash "$ROOT/uninstall.sh" --yes 2>&1 || true)"
   check "a restore that worked says nothing about it"         hasnt "System Settings → Battery"

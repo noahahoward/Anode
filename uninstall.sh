@@ -167,13 +167,19 @@ sleep 1
 
 # Charge Control's limit is macOS's own setting and outlives the app. Before the app and its settings go, the app
 # puts back what macOS had (no window; it exits 0 when nothing of Charge Control's is left). After the quit, so the
-# running copy cannot set its limit again, once it has finished quitting. ANODE_NO_LAUNCH=1 skips it.
+# running copy cannot set its limit again, once it has finished quitting. Only this user's copy is waited for: an
+# Anode another account is running from /Applications is not this one's to wait on. ANODE_NO_LAUNCH=1 skips it.
 for app in "$HOME/Applications/Anode.app" "/Applications/Anode.app"; do
   bin="$app/Contents/MacOS/AnodeApp"
   { [ -x "$bin" ] && [ "${ANODE_NO_LAUNCH:-0}" != "1" ]; } || continue
-  for _ in 1 2 3 4 5; do pgrep -f "$bin" >/dev/null || break; sleep 1; done
+  for _ in 1 2 3 4 5; do pgrep -U "$(id -u)" -f "$bin" >/dev/null || break; sleep 1; done
+  if pgrep -U "$(id -u)" -f "$bin" >/dev/null; then
+    echo "Anode is still running, so it may set its charge limit again; putting macOS's own back anyway."
+  fi
   if ! "$bin" --restore-charge-settings >/dev/null 2>&1; then
-    echo "Anode could not put back macOS's own charge limit, so macOS may still hold one: change it in System Settings → Battery."
+    echo "Anode could not put back macOS's own charge settings, so macOS may still hold a charge limit: change it in" \
+      "System Settings → Battery. If the battery is not charging on the charger, restarting the Mac or reinstalling" \
+      "Anode's helper reconnects it."
   fi
   break
 done
