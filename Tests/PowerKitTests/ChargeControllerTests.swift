@@ -1105,27 +1105,41 @@ final class ChargeControllerTests: XCTestCase {
         XCTAssertFalse(settings.chargeCutUnconfirmed)
     }
 
-    /// A discharge in force, or one on its way, is never evidence however long macOS says "on the adapter": it may
-    /// cut the charger at any moment.
-    func testADischargeInForceOrOnItsWayIsNeverEvidence() {
+    /// A discharge in force is never evidence however long macOS says "on the adapter": it may cut the charger at any
+    /// moment. Were it taken for evidence the debt would be settled under a discharge that is still running, and the
+    /// same tick would send the discharge again and write the debt again, so the flag cannot show it. What shows it:
+    /// the line that says the debt was settled, and a second discharge going out.
+    func testADischargeInForceIsNeverEvidence() {
         battery = Self.state(90)
         let t0 = Date()
         let c = make()
         c.pressDischarge()
         XCTAssertEqual(c.dischargeInForce, 80)
+        let sent = helper.commands
         c.tick(now: t0.addingTimeInterval(1))
         c.tick(now: t0.addingTimeInterval(200))
+        c.tick(now: t0.addingTimeInterval(400))
         XCTAssertTrue(settings.chargeCutUnconfirmed)
         XCTAssertEqual(c.dischargeInForce, 80)
+        XCTAssertEqual(helper.commands, sent, "a discharge in force was settled by macOS's word, and sent again")
+        XCTAssertFalse(lines.contains { $0.contains("with no discharge running") }, lines.joined(separator: "\n"))
+    }
 
-        c.pressDischarge()   // stopped, and settled by the helper's yes
-        XCTAssertFalse(settings.chargeCutUnconfirmed)
+    /// One on its way is not evidence either. The request is cancelled while it is on its way, so that nothing asks
+    /// again: a discharge still wanted would be sent again after the debt was settled, and written down again, and the
+    /// flag would read true whether or not the guard held.
+    func testADischargeOnItsWayIsNeverEvidence() {
+        battery = Self.state(90)
+        let t0 = Date()
+        let c = make()
         helper.deferReplies = true
-        c.pressDischarge()   // asked again, and not answered yet
+        c.pressDischarge()   // asked, and not answered yet
         XCTAssertTrue(settings.chargeCutUnconfirmed)
+        c.pressDischarge()   // cancelled while on its way: nothing wants one now
         c.tick(now: t0.addingTimeInterval(300))
         c.tick(now: t0.addingTimeInterval(500))
         XCTAssertTrue(settings.chargeCutUnconfirmed, "a discharge on its way was settled by macOS's word")
+        XCTAssertFalse(lines.contains { $0.contains("with no discharge running") }, lines.joined(separator: "\n"))
     }
 
     // ── The charger switch itself ───────────────────────────────────────────
@@ -1192,7 +1206,8 @@ final class ChargeControllerTests: XCTestCase {
         XCTAssertNotEqual(c.status, .warning(ChargeController.cutWarningNoHelperText))
     }
 
-    /// A discharge on its way is never evidence, however long the switch has read connected before it cuts.
+    /// A discharge on its way is never evidence, however long the switch has read connected before it cuts. Cancelled
+    /// while on its way, as in `testADischargeOnItsWayIsNeverEvidence`, so that nothing asks again.
     func testTheSwitchIsNotEvidenceWhileADischargeIsOnItsWay() {
         battery = Self.state(90)
         chargerSwitch = AdapterCutKey.connected
@@ -1201,9 +1216,55 @@ final class ChargeControllerTests: XCTestCase {
         helper.deferReplies = true
         c.pressDischarge()   // asked, and not answered yet
         XCTAssertTrue(settings.chargeCutUnconfirmed)
+        c.pressDischarge()   // cancelled while on its way
         c.tick(now: t0.addingTimeInterval(100))
         c.tick(now: t0.addingTimeInterval(300))
         XCTAssertTrue(settings.chargeCutUnconfirmed, "a discharge on its way was settled by the switch")
+        XCTAssertFalse(lines.contains { $0.contains("with no discharge running") }, lines.joined(separator: "\n"))
+    }
+
+    /// Nor is one in force: the switch is not even read under it, and nothing is settled.
+    func testTheSwitchIsNotEvidenceWhileADischargeIsInForce() {
+        battery = Self.state(90)
+        chargerSwitch = AdapterCutKey.connected
+        let t0 = Date()
+        let c = make()
+        c.pressDischarge()
+        XCTAssertEqual(c.dischargeInForce, 80)
+        let sent = helper.commands
+        c.tick(now: t0.addingTimeInterval(100))
+        c.tick(now: t0.addingTimeInterval(300))
+        XCTAssertTrue(settings.chargeCutUnconfirmed)
+        XCTAssertEqual(c.dischargeInForce, 80)
+        XCTAssertEqual(helper.commands, sent, "a discharge in force was settled by the switch, and sent again")
+        XCTAssertFalse(lines.contains { $0.contains("with no discharge running") }, lines.joined(separator: "\n"))
+    }
+
+    /// A discharge sent starts the count of evidence again: whatever was read before it says nothing about what it
+    /// does. The first request is refused, which leaves the debt (a refused or unanswered request may have cut the
+    /// charger all the same) and no discharge on its way or in force, so nothing else stops the count; a second, for
+    /// another target, is refused too. Ninety-one seconds after the first count began is then not enough.
+    func testADischargeSentStartsTheCountOfConnectedAgain() {
+        battery = Self.state(90)
+        chargerSwitch = AdapterCutKey.connected
+        helper.answer = { cmd in
+            if case .discharge = cmd { return FanReply(ok: false, message: "refused: not now") }
+            return FanReply(ok: true, message: "ok")
+        }
+        let t0 = Date()
+        let c = make()
+        c.pressDischarge()
+        XCTAssertTrue(settings.chargeCutUnconfirmed, "a refused request left no debt")
+        XCTAssertNil(c.dischargeInForce)
+        c.tick(now: t0.addingTimeInterval(10))   // the count of connected begins here
+        settings.chargeLimit = 85                // another target: asked again, and refused again
+        XCTAssertEqual(discharges(helper.commands), [80, 85])
+        c.tick(now: t0.addingTimeInterval(101))  // 91 s after the first count began, 0 s after the second
+        XCTAssertTrue(settings.chargeCutUnconfirmed, "a discharge sent did not start the count again")
+        c.tick(now: t0.addingTimeInterval(150))
+        XCTAssertTrue(settings.chargeCutUnconfirmed)
+        c.tick(now: t0.addingTimeInterval(192))  // 91 s after the second count began
+        XCTAssertFalse(settings.chargeCutUnconfirmed)
     }
 
     /// The net, by the switch. Cut, with no discharge running or on its way, for more than 90 s is a cut left behind

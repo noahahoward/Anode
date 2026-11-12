@@ -372,7 +372,7 @@ public enum Battery {
         /// macOS 27.0, `ExternalConnected` reads No 48 s into a cut with the
         /// cable in, and `AdapterDetails` is then what it was on the charger.
         /// With the cable out it is `{"FamilyCode"=0}`. (A cut does not always
-        /// turn `ExternalConnected` to No: see the table at
+        /// turn `ExternalConnected` to No: see the measurements at
         /// `Battery.adapterPresent(fromProperties:)`.)
         ///
         /// Read by Charge Control's helper alone, to tell a pulled cable from
@@ -452,18 +452,25 @@ public enum Battery {
     /// and this can.
     ///
     /// `ExternalConnected` = Yes does not say there is no cut, either. MEASURED
-    /// later on the same Mac and macOS, `ExternalConnected` only:
+    /// later on the same Mac and macOS (`Mac17,9`, macOS 27.0, 2026-11-12):
     ///
-    ///     state                                           ExternalConnected
-    ///     cut by CHIE = 08, no macOS charge limit in      No within 1 to 2 s
-    ///     force
-    ///     cut by CHIE = 08 while a macOS charge limit     Yes for all of the
-    ///     below the battery level was in force (limit     50 s that CHIE read
-    ///     63, battery 100, macOS draining to the limit)   08
+    ///  1. With a macOS charge limit below the battery level in force (limit
+    ///     63, battery 100) and Anode's cut in force, `CHIE` read 08 for about
+    ///     50 s and `ExternalConnected` stayed Yes throughout. (`AdapterDetails`
+    ///     was not recorded in this state.)
+    ///  2. With no limit in force, a cut made `ExternalConnected` read No within
+    ///     1 to 2 s, and `AdapterDetails` kept its `Watts` and `FamilyCode`
+    ///     throughout (sampled about ten times a second).
+    ///  3. With a limit below the battery level in force and no cut by Anode,
+    ///     `CHIE` read 00 in every one of 230 samples over about ten minutes,
+    ///     and every 08 reading in the session coincided with a cut that Anode
+    ///     or a test probe had made: macOS did not set the switch itself.
+    ///  4. In the state of (1), pulling the cable ended the discharge within
+    ///     about a second, and the switch read 00 within 3 s.
     ///
-    /// So whether the charger is cut is asked of `CHIE` itself wherever it can
-    /// be read (reading it needs no root), and of this flag only where it
-    /// cannot. `AdapterDetails` was not looked at in the second state.
+    /// So Charge Control asks `CHIE` itself whether the charger is cut
+    /// (reading it needs no root), and goes by this flag only until `CHIE` has
+    /// been read once in the run of the app: see `ChargeController`.
     ///
     /// `FamilyCode` is published as an unsigned 64-bit number above `Int.max`,
     /// and `as? Int` on it is nil. It is read through `NSNumber`, and only

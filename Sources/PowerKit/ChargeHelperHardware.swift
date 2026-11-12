@@ -335,7 +335,8 @@ public enum ChargeAC {
     /// cut, so it is read with `adapterPresent`
     /// (`Battery.adapterPresent(fromProperties:)`), which can. (Measured
     /// later: a cut made while a macOS charge limit below the battery level
-    /// was in force left `ExternalConnected` at Yes; see the table there.
+    /// was in force left `ExternalConnected` at Yes; see the measurements
+    /// there.
     /// Either answer saying yes is enough here, so that state reads as a
     /// charger on the cable too.)
     ///
