@@ -1134,7 +1134,7 @@ public final class FanHelperServer {
 
     private func setChargeLimit(_ percent: Int) -> FanReply {
         guard let charge else {
-            return FanReply(ok: false, message: "this helper has no charge control")
+            return FanReply(ok: false, message: ChargeRefusal.noChargeControl)
         }
         guard Self.chargeLimitRange.contains(percent) else {
             return FanReply(ok: false, message: "refused: a charge limit must be "
@@ -1150,31 +1150,31 @@ public final class FanHelperServer {
         return FanReply(ok: true, message: "charge limit set to \(percent)%")
     }
 
+    /// Every refusal here is a `ChargeRefusal` constant, word for word: the app
+    /// compares against the same ones.
     private func discharge(to target: Int) -> FanReply {
         guard let charge else {
-            return FanReply(ok: false, message: "this helper has no charge control")
+            return FanReply(ok: false, message: ChargeRefusal.noChargeControl)
         }
         // No sleep notices, so nothing would reconnect the charger before the
         // Mac sleeps. Refused for this helper's whole life; it will not change.
         guard !sleepNoticesUnavailable else {
-            return FanReply(ok: false, message: "this Mac cannot warn the helper before it sleeps")
+            return FanReply(ok: false, message: ChargeRefusal.noSleepNotices)
         }
         // Nothing here runs while the Mac sleeps, so nothing would watch the
         // floor. Refused until the wake; the reconnect is never refused.
         guard !systemAsleep else {
-            return FanReply(ok: false, message: "the Mac is going to sleep")
+            return FanReply(ok: false, message: ChargeRefusal.goingToSleep)
         }
         // A reconnect known to be failing is not hidden behind a new cut. On a
         // charger stuck at 0x08, even a refused cut reads back as one, and
         // taking it would clear the debt and answer "discharging". Refused,
         // with nothing written, until the watch reads the charger connected.
         guard !reconnectOwed else {
-            return FanReply(ok: false,
-                            message: "the charger may still be cut off from an earlier failure")
+            return FanReply(ok: false, message: ChargeRefusal.reconnectOwed)
         }
         guard Self.dischargeTargetRange.contains(target) else {
-            return FanReply(ok: false, message: "refused: a discharge target must be "
-                          + "\(Self.dischargeTargetRange.lowerBound)–\(Self.dischargeTargetRange.upperBound)%")
+            return FanReply(ok: false, message: ChargeRefusal.targetOutOfRange)
         }
         // The same test the watch uses, asked before cutting: a discharge that
         // would end on its first check is not started at all.
@@ -1182,10 +1182,10 @@ public final class FanHelperServer {
         let ac = charge.onAC()
         guard !DischargeWatch.shouldRestore(target: target, percent: percent, onAC: ac) else {
             let why: String
-            if percent == nil { why = "the battery level cannot be read" }
-            else if ac == false { why = "no charger is connected" }
-            else { why = "the battery is already at or below \(max(target, DischargeWatch.floor))%" }
-            return FanReply(ok: false, message: "refused: \(why)")
+            if percent == nil { why = ChargeRefusal.batteryUnreadable }
+            else if ac == false { why = ChargeRefusal.noCharger }
+            else { why = ChargeRefusal.atOrBelow(max(target, DischargeWatch.floor)) }
+            return FanReply(ok: false, message: why)
         }
         // Last before the write, so every lasting reason above is the one a
         // client hears. A clock set back reads as long ago, not as a refusal
@@ -1194,8 +1194,7 @@ public final class FanHelperServer {
         if let last = lastCutAttempt {
             let since = attempt.timeIntervalSince(last)
             guard since < 0 || since >= Self.cutSpacing else {
-                return FanReply(ok: false,
-                                message: "the charger was switched a moment ago; try again shortly")
+                return FanReply(ok: false, message: ChargeRefusal.switchedRecently)
             }
         }
         lastCutAttempt = attempt
@@ -1206,9 +1205,7 @@ public final class FanHelperServer {
         let cut = ChargeRelease.cut(charge, timing: chargeTiming)
         guard cut.isCut else {
             let undo = reconnectCharger(alwaysWrite: true)
-            let why = cut == .refused
-                ? "the SMC would not cut the charger"
-                : "the SMC took the cut and the charger does not read as cut"
+            let why = cut == .refused ? ChargeRefusal.cutRefused : ChargeRefusal.cutNotKept
             log("\(why); \(undo.message)")
             return FanReply(ok: false, message: undo.ok ? why : "\(why); \(undo.message)")
         }
@@ -1224,7 +1221,7 @@ public final class FanHelperServer {
 
     private func stopDischarge() -> FanReply {
         guard charge != nil else {
-            return FanReply(ok: false, message: "this helper has no charge control")
+            return FanReply(ok: false, message: ChargeRefusal.noChargeControl)
         }
         // Asked to reconnect, it reconnects — including a cut it does not
         // remember making, when the key reads 0x08, the value Anode writes.

@@ -1272,6 +1272,90 @@ final class ChargeHelperTests: XCTestCase {
         XCTAssertTrue(server.handle(.command(.discharge(toPercent: 40))).ok)
     }
 
+    // ── Every answer to a discharge, word for word ─────────────────────────
+
+    /// The app tells the helper's refusals apart by their exact words, so the
+    /// words live on `ChargeRefusal`: the server sends those constants and the
+    /// app compares against the same ones. Pinned twice over — each constant's
+    /// text, and the whole reply the server sends, ok flag included — so
+    /// neither the words nor which case sends them can drift unseen.
+    func testEveryAnswerToADischargeIsPinned() {
+        XCTAssertEqual(ChargeRefusal.noChargeControl, "this helper has no charge control")
+        XCTAssertEqual(ChargeRefusal.noSleepNotices, "this Mac cannot warn the helper before it sleeps")
+        XCTAssertEqual(ChargeRefusal.goingToSleep, "the Mac is going to sleep")
+        XCTAssertEqual(ChargeRefusal.reconnectOwed, "the charger may still be cut off from an earlier failure")
+        XCTAssertEqual(ChargeRefusal.targetOutOfRange, "refused: a discharge target must be 10–100%")
+        XCTAssertEqual(ChargeRefusal.batteryUnreadable, "refused: the battery level cannot be read")
+        XCTAssertEqual(ChargeRefusal.noCharger, "refused: no charger is connected")
+        XCTAssertEqual(ChargeRefusal.atOrBelow(40), "refused: the battery is already at or below 40%")
+        XCTAssertEqual(ChargeRefusal.switchedRecently, "the charger was switched a moment ago; try again shortly")
+        XCTAssertEqual(ChargeRefusal.cutRefused, "the SMC would not cut the charger")
+        XCTAssertEqual(ChargeRefusal.cutNotKept, "the SMC took the cut and the charger does not read as cut")
+
+        func refused(_ message: String) -> FanReply { FanReply(ok: false, message: message) }
+        func ask(_ server: FanHelperServer, _ target: Int) -> FanReply {
+            server.handle(.command(.discharge(toPercent: target)))
+        }
+
+        // Already running: asked again within the spacing, refused with
+        // nothing written; after it, the running discharge takes the new target.
+        let running = FakeChargeHardware(percent: 77)
+        let server = makeServer(running)
+        let clock = ChargeTestClock()
+        server.now = { clock.now }
+        XCTAssertEqual(ask(server, 40), FanReply(ok: true, message: "discharging to 40%"))
+        XCTAssertEqual(ask(server, 30), refused(ChargeRefusal.switchedRecently))
+        XCTAssertEqual(running.cutWrites, [true])
+        XCTAssertEqual(server.dischargeTarget, 40)
+        clock.advance(FanHelperServer.cutSpacing)
+        XCTAssertEqual(ask(server, 30), FanReply(ok: true, message: "discharging to 30%"))
+        XCTAssertEqual(server.dischargeTarget, 30)
+
+        // At or below the target, and the floor.
+        XCTAssertEqual(ask(makeServer(FakeChargeHardware(percent: 40)), 40),
+                       refused(ChargeRefusal.atOrBelow(40)))
+        XCTAssertEqual(ask(makeServer(FakeChargeHardware(percent: 10)), 10),
+                       refused(ChargeRefusal.atOrBelow(DischargeWatch.floor)))
+        // No cable; a battery that cannot be read; a target out of range.
+        XCTAssertEqual(ask(makeServer(FakeChargeHardware(percent: 77, onAC: false)), 40),
+                       refused(ChargeRefusal.noCharger))
+        XCTAssertEqual(ask(makeServer(FakeChargeHardware(percent: nil)), 40),
+                       refused(ChargeRefusal.batteryUnreadable))
+        XCTAssertEqual(ask(makeServer(FakeChargeHardware(percent: 77)), 9),
+                       refused(ChargeRefusal.targetOutOfRange))
+
+        // Asleep.
+        let asleep = makeServer(FakeChargeHardware(percent: 77))
+        asleep.systemWillSleep()
+        XCTAssertEqual(ask(asleep, 40), refused(ChargeRefusal.goingToSleep))
+
+        // A reconnect owed.
+        let stuck = FakeChargeHardware(percent: 77, cut: true)
+        stuck.refuseRestore = true
+        let owing = makeServer(stuck)
+        owing.clearOrphanedAdapterCut()
+        XCTAssertEqual(ask(owing, 40), refused(ChargeRefusal.reconnectOwed))
+
+        // No sleep notices.
+        let deaf = makeServer(FakeChargeHardware(percent: 77))
+        deaf.sleepNoticesUnavailable = true
+        XCTAssertEqual(ask(deaf, 40), refused(ChargeRefusal.noSleepNotices))
+
+        // A cut the SMC refused, and one it took and did not keep, each undone.
+        let refusing = FakeChargeHardware(percent: 77)
+        refusing.refuseCut = true
+        XCTAssertEqual(ask(makeServer(refusing), 40), refused(ChargeRefusal.cutRefused))
+        let ignoring = FakeChargeHardware(percent: 77)
+        ignoring.ignoreCut = true
+        XCTAssertEqual(ask(makeServer(ignoring), 40), refused(ChargeRefusal.cutNotKept))
+
+        // No charge control at all.
+        let bare = FanHelperServer(hardware: FakeFans([:]),
+                                   configuration: .init(socketPath: "/unused", ownerUID: getuid(),
+                                                        pin: .signingIdentifier("x")))
+        XCTAssertEqual(ask(bare, 40), refused(ChargeRefusal.noChargeControl))
+    }
+
     // ── A cut is judged by reading it back ─────────────────────────────────
 
     /// The result byte of a good `CHIE` write has never been measured. A cut
