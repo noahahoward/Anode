@@ -7,6 +7,13 @@ feature or a visible change in how something works, the first only for a rewrite
 Nothing was bumped between 1.0.0 and 1.15.0. Those versions were assigned afterwards from the history and exist as
 git tags (`git show v1.7.0`); builds made before 1.15.0 still say 1.0.0 in their About box.
 
+## 1.17.0 — 2026-11-12
+- Charge Control (Beta Features, off by default): hold the battery at a charge limit you choose, from 20% to 100%. macOS itself holds the limit, so it keeps working while Anode is closed, and turning Charge Control off puts macOS's own charging settings back as they were.
+- Discharge runs the Mac from the battery down to your limit while it stays plugged in, and Top Up charges to 100% once and returns to your limit when you unplug.
+- Sailing Mode lets the battery drift a few percent below the limit before recharging. Heat Protection pauses charging while the battery is hot. Charging can also pause while the Mac sleeps, and discharge can start by itself whenever the battery is above the limit.
+- Limits other than 80, 85, 90, 95 or 100%, and discharging, need the Anode helper (the same one the fans use). The helper always reconnects the charger: when Anode quits, before the Mac sleeps, when the cable is pulled, and when it next starts after being stopped.
+- The main card's "charging to" and "held at" lines follow Charge Control's limit while it is on.
+
 ## 1.16.0 — 2026-11-11
 - Menu bar hider (Beta Features, off by default): a chevron in the menu bar tucks other apps' icons out of sight, leaving macOS's own icons (Wi-Fi, sound, battery, the microphone light and the rest) and the ones you choose to keep. Press the chevron (or ⌃⌥⌘B) and a small panel under the notch shows the rest, each one clickable.
 - Icons macOS had parked off the left edge when the bar got too full (they could not be seen or clicked) are reachable from the panel too.
