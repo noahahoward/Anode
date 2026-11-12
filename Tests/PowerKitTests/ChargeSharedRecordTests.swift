@@ -74,18 +74,19 @@ final class ChargeSharedRecordTests: XCTestCase {
         return a
     }
 
-    private func store(for a: Account) -> ChargeRecordStore {
-        ChargeRecordStore(directory: directory, uid: a.uid, pid: a.pid, isLive: { [unowned self] in live.contains($0) })
+    private func store(for a: Account, lockTimeout: TimeInterval = 3) -> ChargeRecordStore {
+        ChargeRecordStore(directory: directory, uid: a.uid, pid: a.pid, isLive: { [unowned self] in live.contains($0) },
+                          lockTimeout: lockTimeout)
     }
 
     /// A new process for the account: what `main.swift` does at the top and then in the middle of launch.
     @discardableResult
-    private func launch(_ a: Account, shared: Bool = true, startDelay: TimeInterval = ChargeController.startDelay)
-        -> ChargeController {
+    private func launch(_ a: Account, shared: Bool = true, lockTimeout: TimeInterval = 3,
+                        startDelay: TimeInterval = ChargeController.startDelay) -> ChargeController {
         nextPid += 1
         a.pid = nextPid
         live.insert(a.pid)
-        a.records = ChargeRecords(settings: a.settings, store: shared ? store(for: a) : nil,
+        a.records = ChargeRecords(settings: a.settings, store: shared ? store(for: a, lockTimeout: lockTimeout) : nil,
                                   log: { [weak a] in a?.lines.append($0) })
         let lifted = ChargeController.liftAtLaunch(settings: a.settings, records: a.records,
                                                    makeClient: { [macOS] in macOS }, helper: { a.helper },
@@ -171,9 +172,10 @@ final class ChargeSharedRecordTests: XCTestCase {
         try twoAccountsQuit(first: 1)
     }
 
-    /// With per-account records (the shared file cannot be had) the same two accounts leave the limit behind: they
-    /// cannot be told apart. This is why the record is shared.
-    func testWithPerAccountRecordsTheSameTwoAccountsCannotBeToldApart() throws {
+    /// DOCUMENTS A LIMITATION, it does not bless it: with per-account records (the shared file cannot be had, which is
+    /// logged) the same two accounts cannot be told apart and the limit is left behind with no Anode running. This is
+    /// why the record is shared, and why the fallback says so in the log.
+    func testTheFallbackToPerAccountRecordsDocumentsThatTwoAccountsCannotBeToldApart() throws {
         let a = try account("A", uid: 501, limit: 85)
         let b = try account("B", uid: 502, limit: 90)
         launch(a, shared: false)
@@ -299,6 +301,83 @@ final class ChargeSharedRecordTests: XCTestCase {
             XCTAssertEqual(r.original, macOSOwn, "A's limit was recorded as macOS's own")
         }
         XCTAssertNotNil(held)
+    }
+
+    // ── A record that cannot be reached for a moment ────────────────────────
+
+    /// Another process holds the file's lock (it is in the middle of a restore) for longer than this one will wait.
+    private func lockTheFile() throws -> Int32 {
+        let fd = open(directory + "/" + ChargeRecordStore.fileName, O_RDWR)
+        XCTAssertGreaterThanOrEqual(fd, 0)
+        XCTAssertEqual(flock(fd, LOCK_EX), 0)
+        return fd
+    }
+
+    /// A quit that cannot take the lock puts nothing back: the file is another Anode's to finish, the holders and the
+    /// original in it are the truth, and macOS's defaults written in their place could land over another account's
+    /// limit. Nothing is written to this account's own record either: the record stays the Mac's. The quit leaves
+    /// this account a stale holder; the next launch of any account's Anode lifts.
+    func testAQuitThatCannotReachTheSharedRecordPutsNothingBackAndWritesNoRecordOfItsOwn() throws {
+        let a = try account("A", uid: 501, limit: 85)
+        launch(a, lockTimeout: 0.2)
+        let held = macOS.state
+        let fd = try lockTheFile()
+        let start = Date()
+        quit(a)
+        XCTAssertLessThan(Date().timeIntervalSince(start), 3, "a locked record held the quit")
+        flock(fd, LOCK_UN)
+        close(fd)
+        XCTAssertEqual(macOS.state, held, "macOS was written to without the record")
+        XCTAssertNil(a.settings.chargeRestoreRecord, "a per-account record was written for a record that was only busy")
+        if case .record(let r)? = file() {
+            XCTAssertEqual(r.original, macOSOwn, "the record's original was lost")
+        } else {
+            XCTFail("the shared record was lost: \(String(describing: file()))")
+        }
+        XCTAssertTrue(a.lines.contains { $0.contains("could not be reached") }, a.lines.joined(separator: "\n"))
+        // Nobody live holds it now: the next launch takes the unclean route and puts macOS back.
+        launch(a)
+        XCTAssertEqual(macOS.state, macOSOwn)
+    }
+
+    /// Switching on while the record is busy changes nothing and says so; it does not record what macOS says into this
+    /// account's own preferences (that may be another account's limit), and the Mac's record is still the shared one
+    /// once the lock is free: one busy moment does not turn the shared record off for the rest of the run.
+    func testSwitchingOnWhileTheSharedRecordIsBusyChangesNothingAndDoesNotFallBackForGood() throws {
+        let a = try account("A", uid: 501, limit: 85)
+        let b = try account("B", uid: 502, limit: 90)
+        launch(a)
+        toBackground(a)
+        let held = macOS.state
+        b.settings.chargeControlEnabled = false
+        launch(b, lockTimeout: 0.2)
+        let fd = try lockTheFile()
+        b.settings.chargeControlEnabled = true
+        XCTAssertEqual(macOS.state, held, "macOS was changed without the record")
+        XCTAssertNil(b.settings.chargeRestoreRecord, "A's limit was written down as B's own record")
+        XCTAssertEqual(b.controller?.status, .unavailable(ChargeController.recordUnreachableText))
+        XCTAssertTrue(b.lines.contains { $0.contains("could not be reached") }, b.lines.joined(separator: "\n"))
+        flock(fd, LOCK_UN)
+        close(fd)
+        // Free again: off and on works, with the shared record, adopting A's.
+        b.settings.chargeControlEnabled = false
+        b.settings.chargeControlEnabled = true
+        XCTAssertNil(b.settings.chargeRestoreRecord)
+        XCTAssertEqual(Set(holders().map(\.uid)), [501, 502])
+        if case .record(let r)? = file() { XCTAssertEqual(r.original, macOSOwn) } else { XCTFail() }
+    }
+
+    /// Switching off while the record is busy puts nothing back either, and does not guess.
+    func testSwitchingOffWhileTheSharedRecordIsBusyPutsNothingBack() throws {
+        let a = try account("A", uid: 501, limit: 85)
+        launch(a, lockTimeout: 0.2)
+        let held = macOS.state
+        let fd = try lockTheFile()
+        a.settings.chargeControlEnabled = false
+        flock(fd, LOCK_UN)
+        close(fd)
+        XCTAssertEqual(macOS.state, held)
+        XCTAssertNil(a.settings.chargeRestoreRecord)
     }
 
     // ── The uninstall restore ───────────────────────────────────────────────

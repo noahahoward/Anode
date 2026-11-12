@@ -19,6 +19,9 @@ import PowerKit
 
 /// What `acquire` found.
 enum RecordAcquired: Equatable {
+    /// The shared record could not be reached (another Anode holds its lock for longer than this one waits): nothing
+    /// was written and nothing was changed.
+    case unreachable
     /// No record was there: macOS was read, and what it said is written down as macOS's own.
     case recorded(NativeChargeState)
     /// A record was there, so macOS's settings now are somebody's limit and are not written down; this account is a
@@ -39,6 +42,9 @@ enum RecordOriginal {
 
 /// What `release` did.
 enum RecordReleased: Equatable {
+    /// The shared record could not be reached: nothing was put back, and this account is left a stale holder, so the
+    /// next launch of any account's Anode lifts the limit.
+    case unreachable
     /// This account was the last holder: the closure ran, and said whether everything was put back (true clears the
     /// record; false keeps it for the next launch of any account's Anode to lift).
     case restored(Bool)
@@ -96,8 +102,21 @@ final class ChargeRecords {
             + "put back from it")
     }
 
-    /// Anything recorded that quitting or switching off has to deal with.
-    var hasRecord: Bool { perAccountText != nil || sharedRecord() != nil }
+    /// Anything recorded that quitting or switching off has to deal with. A shared file that cannot be read at the
+    /// moment (its lock is held, say) may hold one: it is taken for one, so that the release is attempted and says
+    /// what happened.
+    var hasRecord: Bool {
+        if perAccountText != nil { return true }
+        guard let store, mode != .perAccount else { return false }
+        switch store.peek() {
+        case .record?: return true
+        case .unreadable(let why)?:
+            sayUnreadable(why)
+            return false
+        case .none?: return false
+        case nil: return true
+        }
+    }
 
     /// The last run of this account did not release: a record says it held the limit under another process, or says
     /// nobody alive holds it, or an earlier build left this account's own. Not when another account's live Anode
@@ -135,7 +154,9 @@ final class ChargeRecords {
     var isShared: Bool { resolved() != nil }
 
     /// The store when records are shared on this Mac; nil when they are per account. The first time, the file is
-    /// made if need be and a record an earlier build left in this account's preferences is moved into it.
+    /// made if need be and a record an earlier build left in this account's preferences is moved into it. Only a
+    /// folder or file that cannot be had at all makes the record per account, and for good: a file that is merely
+    /// busy at some moment does not (`acquire` and `release` say `unreachable`).
     private func resolved() -> ChargeRecordStore? {
         if let mode { return mode == .shared ? store : nil }
         guard let store else {
@@ -176,7 +197,10 @@ final class ChargeRecords {
             case .recorded(let found)?: return .recorded(found)
             case .adopted?: return .adopted(readable: true)
             case .macOSUnreadable?: return .macOSUnreadable
-            case nil: fallBack("\(store.path) could not be written")
+            case nil:
+                // Busy, or not writable just now: not a reason to record into this account's preferences, where it
+                // could be another account's limit. Nothing is changed this time.
+                return .unreachable
             }
         }
         if let text = perAccountText { return .adopted(readable: ChargeController.decodeRecord(text) != nil) }
@@ -197,7 +221,10 @@ final class ChargeRecords {
             case .unreadable(let why)?:
                 sayUnreadable(why)
                 return .unreadable(why)
-            case nil: fallBack("\(store.path) could not be written")
+            case nil:
+                // Busy: nothing is put back, and above all not macOS's defaults over a limit the record says is
+                // another account's.
+                return .unreachable
             }
         }
         let original: RecordOriginal

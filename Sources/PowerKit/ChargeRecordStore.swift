@@ -96,7 +96,7 @@ public final class ChargeRecordStore {
 
     /// `directory` is a parameter so the tests use a temporary folder: no test may touch `/Users/Shared`.
     public init(directory: String = ChargeRecordStore.sharedDirectory, uid: UInt32 = getuid(), pid: Int32 = getpid(),
-                isLive: @escaping (Int32) -> Bool = ChargeHolderLiveness.isLiveAnode, lockTimeout: TimeInterval = 3) {
+                isLive: @escaping (Int32) -> Bool = ChargeHolderLiveness.isLiveAnode, lockTimeout: TimeInterval = 1) {
         self.directory = directory
         self.me = ChargeHolder(uid: uid, pid: pid)
         self.isLiveProcess = isLive
@@ -217,7 +217,8 @@ public final class ChargeRecordStore {
 
     /// Run `body` with the file locked, creating the folder and the file if need be. nil when the folder or the file
     /// cannot be had (missing and not creatable, read-only, not a regular file) or the lock cannot be taken within
-    /// the timeout, which is what a process that is stopped while holding it looks like.
+    /// the timeout, which is what a process that is stopped while holding it looks like. The timeout is short because
+    /// the caller is the main thread: a restore holds the lock for as long as it waits for the helper.
     public func withExclusiveLock<T>(_ body: (Session) -> T) -> T? {
         guard ensureDirectory() else { return nil }
         let fd = open(path, O_RDWR | O_CREAT | O_NOFOLLOW | O_CLOEXEC, 0o666)
@@ -234,8 +235,16 @@ public final class ChargeRecordStore {
     }
 
     /// Whether the file can be had at all: the folder made, the file made, both writable. How the controller finds
-    /// out that two accounts cannot be told apart on this Mac.
-    public func isUsable() -> Bool { withExclusiveLock { _ in true } ?? false }
+    /// out that two accounts cannot be told apart on this Mac. It takes no lock: a file that is busy is usable, and
+    /// being busy for a moment must not look like being unusable.
+    public func isUsable() -> Bool {
+        guard ensureDirectory() else { return false }
+        let fd = open(path, O_RDWR | O_CREAT | O_NOFOLLOW | O_CLOEXEC, 0o666)
+        guard fd >= 0 else { return false }
+        defer { close(fd) }
+        var info = stat()
+        return fstat(fd, &info) == 0 && (info.st_mode & S_IFMT) == S_IFREG
+    }
 
     // ── The decisions ───────────────────────────────────────────────────────
 

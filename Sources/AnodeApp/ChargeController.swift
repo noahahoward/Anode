@@ -144,6 +144,10 @@ final class ChargeController {
     static let limitNeedsHelperText = "Limits other than 80, 85, 90, 95 or 100% need the Anode helper"
     static let dischargeNeedsHelperText = "Discharge needs the Anode helper"
     static let helperOutdatedText = "The Anode helper needs updating to control charging"
+    /// The record of macOS's own settings is another Anode's to finish at the moment (its lock is held), so switching
+    /// on changed nothing.
+    static let recordUnreachableText = "Charge Control could not reach the record of macOS's own charge settings, so "
+        + "it changed nothing"
 
     /// A discharge's end has not been confirmed by a running helper, and Charge Control is still asking.
     static let cutWarningText = "The charger may still be switched off. Reconnecting\u{2026}"
@@ -662,6 +666,10 @@ final class ChargeController {
         case .macOSUnreadable:
             log("unavailable: macOS did not report its charge settings; nothing was changed")
             return setStatus(.unavailable(Self.unreadableText))
+        case .unreachable:
+            log("the shared record of macOS's own settings could not be reached (another Anode may be using it); "
+                + "nothing was changed")
+            return setStatus(.unavailable(Self.recordUnreachableText))
         }
         client = c
         session += 1
@@ -765,6 +773,9 @@ final class ChargeController {
                 + "put back when it quits")
         case .unreadable(let why):
             log("the shared record of macOS's own settings could not be read (\(why)); nothing is put back from it")
+        case .unreachable:
+            log("the shared record of macOS's own settings could not be reached (another Anode may be using it); "
+                + "nothing is put back, and the next launch of any account's Anode lifts the limit")
         }
     }
 
