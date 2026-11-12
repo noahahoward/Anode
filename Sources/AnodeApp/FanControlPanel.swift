@@ -529,6 +529,10 @@ final class FanControlPanel: NSView {
         return bundle.appendingPathComponent("Contents/MacOS/AnodeHelper").path
     }
 
+    /// The install flow for a caller outside the Fans tab: Charge Control's "Install Helper…" in Beta Features.
+    /// The same confirmation and authorisation as this strip's own button; what it says, it says here.
+    func installHelper() { installTapped() }
+
     @objc private func installTapped() {
         guard !elevating else { return say("Finish the authorisation already on screen.") }
         guard let helper = Self.bundledHelper() else {

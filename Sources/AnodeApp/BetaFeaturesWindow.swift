@@ -54,7 +54,8 @@ final class BetaFeaturesWindowController: NSWindowController {
         var list: [BetaFeature] = [BackdropFeature(), WindowSwitcherFeature(), DesktopSwitcherFeature(),
                                    DockPreviewFeature(), WindowActionsFeature(), WindowGroupsFeature()]
         if hasLidSensor { list.append(LidGlassFeature()) }
-        list += [KeepAwakeFeature(), KeyboardCleanerFeature(), LiveWallpaperFeature(), GameModeFeature(), MenuBarHiderFeature()]
+        list += [KeepAwakeFeature(), KeyboardCleanerFeature(), LiveWallpaperFeature(), GameModeFeature(), MenuBarHiderFeature(),
+                 ChargeControlFeature()]
         return list
     }
 
