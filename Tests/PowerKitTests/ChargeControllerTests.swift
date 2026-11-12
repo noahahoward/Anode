@@ -89,7 +89,57 @@ final class ChargeControllerTests: XCTestCase {
         XCTAssertNil(c.lastDecision)
         XCTAssertTrue(helper.commands.isEmpty, "a helper command was sent while off")
         XCTAssertEqual(helper.follows, 0, "the helper link was held while off")
+        XCTAssertEqual(helper.drains, 0, "the helper link was used while off")
         XCTAssertNil(settings.chargeRestoreRecord)
+    }
+
+    /// Off at launch with nothing left to put back: nothing is made at all.
+    func testOffWithNoRecordMakesNothingAtLaunch() {
+        let c = make(enabled: false)
+        XCTAssertEqual(clientsMade, 0, "a client was made at launch while off")
+        XCTAssertEqual(helper.follows, 0)
+        XCTAssertEqual(helper.drains, 0)
+        XCTAssertTrue(helper.commands.isEmpty)
+        XCTAssertEqual(c.status, .off)
+        XCTAssertTrue(lines.isEmpty, lines.joined(separator: "\n"))
+    }
+
+    /// Off at launch with a record left over (a switch-off macOS partly refused, or the setting turned off while
+    /// Anode was closed): macOS would otherwise keep a limit Anode set while the switch shows off. It is put back
+    /// once, with a client made only for that; nothing else starts.
+    func testOffWithALeftoverRecordPutsItBackOnceAtLaunch() {
+        let found = NativeChargeState(mclEnabled: true, mclLimit: 90, optimizedChargingEnabled: true)
+        settings.chargeRestoreRecord = ChargeController.encodeRecord(found)
+        client.state = NativeChargeState(mclEnabled: true, mclLimit: 80, optimizedChargingEnabled: false)
+        let c = make(enabled: false)
+        XCTAssertEqual(client.state, found, "the leftover record was not put back at launch")
+        XCTAssertNil(settings.chargeRestoreRecord)
+        XCTAssertEqual(clientsMade, 1)
+        XCTAssertEqual(c.status, .off)
+        XCTAssertEqual(helper.follows, 0, "the helper was followed while off")
+        XCTAssertTrue(lines.contains { $0.contains("left over while off; putting it back at launch") },
+                      lines.joined(separator: "\n"))
+        XCTAssertTrue(lines.contains { $0.hasPrefix("put back macOS's own settings") }, lines.joined(separator: "\n"))
+        // Nothing runs on: no timer, no observer, no client kept.
+        let calls = client.limitCalls
+        settings.chargeLimit = 85
+        c.periodicTick()
+        c.tick()
+        XCTAssertEqual(client.limitCalls, calls, "the client outlived the restore")
+        XCTAssertEqual(clientsMade, 1)
+    }
+
+    /// A launch-time restore macOS refuses keeps the record and says so, and is not tried again on its own.
+    func testALaunchRestoreThatIsRefusedKeepsTheRecord() {
+        let found = NativeChargeState(mclEnabled: true, mclLimit: 90, optimizedChargingEnabled: true)
+        settings.chargeRestoreRecord = ChargeController.encodeRecord(found)
+        client.succeeds = false
+        let c = make(enabled: false)
+        XCTAssertNotNil(settings.chargeRestoreRecord, "a refused restore cleared the record")
+        XCTAssertTrue(lines.contains { $0.contains("record is kept") }, lines.joined(separator: "\n"))
+        c.periodicTick()
+        c.tick()
+        XCTAssertEqual(clientsMade, 1, "tried again without a launch, a switch-off or an uninstall")
     }
 
     /// Off means no observers: a charge setting changed while off does nothing.
@@ -314,14 +364,19 @@ final class ChargeControllerTests: XCTestCase {
         let found = NativeChargeState(mclEnabled: true, mclLimit: 90, optimizedChargingEnabled: true)
         settings.chargeRestoreRecord = ChargeController.encodeRecord(found)
         client.state = NativeChargeState(mclEnabled: true, mclLimit: 80, optimizedChargingEnabled: false)
+        client.succeeds = false   // the launch-time restore is refused, so the record is still there to uninstall
         let c = make(enabled: false)
-        XCTAssertEqual(clientsMade, 0)
+        XCTAssertEqual(clientsMade, 1)
+        XCTAssertNotNil(settings.chargeRestoreRecord)
+        client.succeeds = true
         c.restoreForUninstall()
+        XCTAssertEqual(clientsMade, 2)
         XCTAssertEqual(client.state, found)
         XCTAssertNil(settings.chargeRestoreRecord)
         XCTAssertEqual(c.status, .off)
+        let calls = client.limitCalls
         c.tick()
-        XCTAssertEqual(client.limitCalls, [90], "the client outlived the restore")
+        XCTAssertEqual(client.limitCalls, calls, "the client outlived the restore")
     }
 
     /// A controller that goes away without a shutdown still lets go of its claim on the shared connection; otherwise

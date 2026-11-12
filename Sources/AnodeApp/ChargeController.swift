@@ -27,7 +27,8 @@ import PowerKit
 // put back if something else changed it.
 //
 // While the setting is off nothing exists: no client, no timer, no observer but the one on the switch itself, no
-// helper connection and no helper command.
+// helper connection and no helper command. The one exception is a record left over from a restore that did not
+// finish: it is put back once at launch (and before an uninstall), with a client made for that alone.
 //
 // Main thread throughout.
 
@@ -183,6 +184,9 @@ final class ChargeController {
         self.log = log
         enabledToken = settings.observe(Settings.Key.chargeControlEnabled) { [weak self] in self?.applyEnabled() }
         applyEnabled()
+        // Off at launch, a record left over means macOS may still hold a limit Anode set while the switch shows
+        // off (a switch-off macOS partly refused, or the setting turned off while Anode was closed). Put back once.
+        if !settings.chargeControlEnabled { putBackLeftoverRecord(when: "at launch") }
     }
 
     deinit {
@@ -331,19 +335,26 @@ final class ChargeController {
     /// Anode is being uninstalled: put macOS back now, waiting for the helper, and switch Charge Control off.
     ///
     /// Also while off, if a record is left over (a switch-off macOS partly refused, or the setting turned off while
-    /// Anode was closed): once Anode is gone nothing could ever undo that hold. The one time a client is made while
-    /// off, and it is let go at once.
+    /// Anode was closed): once Anode is gone nothing could ever undo that hold.
     func restoreForUninstall() {
         if running, let c = client {
             restore(client: c)
             stop()
             log("off (uninstalling)")
-        } else if settings.chargeRestoreRecord != nil, let c = makeClient() {
-            restore(client: c)
-            log("put back a leftover record before uninstalling")
+        } else {
+            putBackLeftoverRecord(when: "before uninstalling")
         }
         setStatus(.off)
         settings.chargeControlEnabled = false
+    }
+
+    /// While off: put back a record that is left over, with a client made for that alone and let go at once (the
+    /// only times a client exists while off: at launch, and before an uninstall). Nothing else starts: no timer, no
+    /// observer, no helper connection. `restore` logs how it went; a refusal keeps the record.
+    private func putBackLeftoverRecord(when: String) {
+        guard !running, settings.chargeRestoreRecord != nil, let c = makeClient() else { return }
+        log("a record of macOS's own settings was left over while off; putting it back \(when)")
+        restore(client: c)
     }
 
     // ── Triggers ────────────────────────────────────────────────────────────
