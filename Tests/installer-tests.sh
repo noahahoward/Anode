@@ -47,7 +47,35 @@ case "\$1" in
   *) exec /usr/bin/getconf "\$@" ;;
 esac
 EOF
-chmod +x "$T/shim/osascript" "$T/shim/getconf"
+# `defaults` and `launchctl` do not go by HOME: they talk to the settings service and to launchd of the person
+# running the tests. An uninstall --data scenario with the real `defaults` once deleted the real Anode settings of
+# the Mac it ran on. So both are stubs that write down what they were asked and touch nothing. A `defaults` call
+# that names none of Anode's settings domains (reading a bundle's Info.plist by path, say) goes to the real one.
+cat > "$T/shim/defaults" <<EOF
+#!/bin/sh
+for a in "\$@"; do
+  case "\$a" in
+    com.anode.settings|com.betterstats.settings|dev.anode.app|dev.noah.anode)
+      echo "\$*" >> "$T/defaults-asked"; exit 0 ;;
+  esac
+done
+exec /usr/bin/defaults "\$@"
+EOF
+printf '#!/bin/sh\necho "$*" >> "%s"\nexit 0\n' "$T/launchctl-asked" > "$T/shim/launchctl"
+chmod +x "$T/shim/osascript" "$T/shim/getconf" "$T/shim/defaults" "$T/shim/launchctl"
+# The tripwire: nothing below runs unless the stubs are the ones a scenario's PATH finds.
+for tool in osascript getconf defaults launchctl; do
+  if [ "$(PATH="$T/shim:$PATH" command -v "$tool")" != "$T/shim/$tool" ]; then
+    echo "✗ the $tool stub is not first on the scenarios' PATH; refusing to run, so nothing real is touched" >&2
+    exit 1
+  fi
+done
+# Every uninstall.sh run in this file must have the stubs on its PATH, whoever adds a scenario later.
+if grep -n 'uninstall\.sh' "$0" | grep -v 'PATH="\$T/shim' | grep -E 'bash +"' >/dev/null; then
+  echo "✗ a scenario runs uninstall.sh without the stubs on its PATH:" >&2
+  grep -n 'uninstall\.sh' "$0" | grep -v 'PATH="\$T/shim' | grep -E 'bash +"' >&2
+  exit 1
+fi
 KEYCHAINS_BEFORE="$(security list-keychains 2>/dev/null)"
 
 # ── The source the installer will clone: this working tree, as a local git repo ──
@@ -282,6 +310,8 @@ else
   check "--data removes the shared record when it is empty"   absent "$ANODE_SHARED_CHARGE_DIR/charge-control.json"
   check "and says so"                                         has "removed  $ANODE_SHARED_CHARGE_DIR/charge-control.json"
   check "the list says the shared record goes only if empty"  has "but only if it holds no record"
+  check "--data asks for the settings to be cleared"          grep -qx "delete com.anode.settings" "$T/defaults-asked"
+  check "and the app's own domain"                            grep -qx "delete dev.anode.app" "$T/defaults-asked"
   mkdir -p "$ANODE_SHARED_CHARGE_DIR"
   printf '{"version":1}' > "$ANODE_SHARED_CHARGE_DIR/charge-control.json"
   H="$(new_home 15)"; stub_app "$H" 2
