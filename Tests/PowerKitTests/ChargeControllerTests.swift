@@ -1024,10 +1024,11 @@ final class ChargeControllerTests: XCTestCase {
         XCTAssertEqual(c.dischargeInForce, 80)
     }
 
-    /// The controller tells the helper's refusals apart by the helper's own words: its transient set is made of
-    /// `ChargeRefusal` constants, never a copy that can drift, and every other refusal the helper publishes lasts —
-    /// shown, and not asked again on a tick — including one with a figure in it and a refused cut with its failed
-    /// undo after it. A refusal added to the helper, renamed or moved between the two kinds fails here.
+    /// The controller tells the helper's refusals apart by the helper's own words: its transient set is exactly
+    /// `ChargeRefusal.goingToSleep` and `.switchedRecently`, never a copy that can drift, and every other refusal
+    /// listed here from `ChargeRefusal` lasts — shown, and not asked again on a tick — including one with a figure
+    /// in it and a refused cut with its failed undo after it. Fails if the set holds anything else, or if any listed
+    /// refusal is asked again. A constant added to `ChargeRefusal` must be added to `published` by hand.
     func testTheControllersRefusalKindsAreTheHelpersOwnConstants() {
         let published = [ChargeRefusal.noChargeControl, ChargeRefusal.noSleepNotices, ChargeRefusal.goingToSleep,
                          ChargeRefusal.reconnectOwed, ChargeRefusal.targetOutOfRange, ChargeRefusal.batteryUnreadable,
