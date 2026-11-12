@@ -15,6 +15,9 @@ import XCTest
 ///
 /// `ExternalConnected` cannot tell a pulled cable from Anode's own cut, which
 /// is why a discharge could not see the cable pulled. `AdapterDetails` can.
+/// (The cut does not always read No: measured later, with a macOS charge limit
+/// below the battery level in force, `ExternalConnected` stayed Yes through
+/// 50 s of `CHIE` = 08. See `Battery.adapterPresent(fromProperties:)`.)
 final class BatteryAdapterPresenceTests: XCTestCase {
 
     /// The `FamilyCode` this Mac publishes. Above `Int.max`, so `as? Int` on it

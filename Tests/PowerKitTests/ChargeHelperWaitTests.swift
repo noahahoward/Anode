@@ -59,7 +59,7 @@ final class ChargeHelperWaitTests: XCTestCase {
 
     private func make() -> ChargeController {
         let c = ChargeController(settings: settings, makeClient: { [client] in client }, helper: adapter,
-                                 battery: { ChargeControllerTests.state(90) },
+                                 battery: { ChargeControllerTests.state(90) }, chargerSwitch: { nil },
                                  log: { [weak self] in self?.lines.append($0) },
                                  workspace: center, limitInForce: ChargeLimitInForce())
         controller = c

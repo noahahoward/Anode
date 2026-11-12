@@ -50,6 +50,7 @@ final class ChargeControlFeatureTests: XCTestCase {
                                           makeClient: { [weak self] in self?.clientToMake },
                                           helper: helper,
                                           battery: { [weak self] in self?.battery },
+                                          chargerSwitch: { nil },
                                           log: { _ in })
         }
         let c = controller

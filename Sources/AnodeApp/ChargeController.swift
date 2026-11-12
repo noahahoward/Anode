@@ -30,13 +30,19 @@ import PowerKit
 // is not kept alive; only a new connection to its socket starts a fresh helper, whose startup reconnects the
 // charger). So a discharge is never taken as ended until a RUNNING helper has answered a stop with yes. The debt is
 // written down (`Settings.chargeCutUnconfirmed`, flushed) before a discharge is asked for; a stop nobody answered,
-// a connection reset under a discharge, or macOS saying the Mac is off the adapter with the adapter there for more
-// than 90 s with no discharge running, all mean the cut may be left with nobody watching: the connection is opened
-// again at once and the stop asked again, then on every tick, with a warning, until a running helper says yes. Two
-// things settle it with no helper: the helper's own uninstall finishing (it reconnects the charger, and fails when it
-// cannot), and macOS saying the Mac is on the adapter for more than 90 s with no discharge running (a cut makes it say
-// no within seconds). That net, and only it, does not run while another account is on screen: that account's Anode
-// may be discharging, through a helper whose socket this one cannot open.
+// a connection reset under a discharge, or the charger switch reading cut for more than 90 s with no discharge
+// running, all mean the cut may be left with nobody watching: the connection is opened again at once and the stop
+// asked again, then on every tick, with a warning, until a running helper says yes. Two things settle it with no
+// helper: the helper's own uninstall finishing (it reconnects the charger, and fails when it cannot), and the charger
+// switch reading connected for more than 90 s with no discharge running. That net, and only it, does not run while
+// another account is on screen: that account's Anode may be discharging, through a helper whose socket this one
+// cannot open.
+//
+// The switch is read by the app itself (reading needs no root; only writing does), because what macOS says is not
+// proof either way. Measured on Mac17,9, macOS 27.0: with no macOS limit holding the battery, a cut makes macOS say
+// the Mac is off the adapter within 1 to 2 s; with a limit below the battery level in force (limit 63, battery 100)
+// the switch read cut for 50 s and macOS said "on the adapter" throughout. Only on a Mac whose switch cannot be read
+// do the net and the settling go by macOS's word instead, as the weaker evidence. See `noteCutLook`, `noteConnected`.
 //
 // While the setting is off nothing exists: no client, no timer, no observer but the one on the switch itself, no
 // helper connection and no helper command. The exceptions are what an earlier run left unfinished: a restore record
@@ -165,8 +171,8 @@ final class ChargeController {
                                     helper: ChargeHelperLink,
                                     log: @escaping (String) -> Void = { FeatureLog.append("charge.log", $0) }) -> Bool {
         let c = ChargeController(settings: settings, makeClient: makeClient, helper: helper, battery: { nil },
-                                 log: log, workspace: NotificationCenter(), limitInForce: ChargeLimitInForce(),
-                                 observing: false)
+                                 chargerSwitch: { nil }, log: log, workspace: NotificationCenter(),
+                                 limitInForce: ChargeLimitInForce(), observing: false)
         c.restoreForUninstall()
         settings.flush()
         let left = settings.chargeRestoreRecord != nil || settings.chargeCutUnconfirmed
@@ -222,7 +228,7 @@ final class ChargeController {
     /// The charge the last tick saw; nil while off.
     private(set) var batteryPercent: Int?
     /// Whether the cable was in at the last tick: on the adapter, or cut off from it by Anode's own discharge
-    /// (macOS then reports the Mac on battery, but the adapter is still there). False while off.
+    /// (macOS may then report the Mac on battery, but the adapter is still there). False while off.
     private(set) var isCablePresent = false
     /// The discharge the helper said yes to and has not said it stopped: what is running, not what was asked for.
     var dischargeInForce: Int? { appliedDischarge }
@@ -231,6 +237,10 @@ final class ChargeController {
     private let makeClient: () -> ChargeLimitClient?
     private let helper: ChargeHelperLink
     private let battery: () -> Battery.State?
+    /// The byte the Mac's own charger switch holds (`AdapterCutKey`): 0x00 connected, 0x08 Anode's cut. nil when it
+    /// cannot be read, or this Mac has none. Reading it needs no root and no helper; see `systemChargerSwitch` for
+    /// the real one and `chargerSwitchThisTick` for when it is read.
+    private let chargerSwitch: () -> UInt8?
     private let log: (String) -> Void
     /// NSWorkspace's notification center: sleep, wake and account switches. A parameter for the tests.
     private let workspace: NotificationCenter
@@ -289,7 +299,7 @@ final class ChargeController {
     // The charger cut, as far as anyone has confirmed it. See the note at the top of the file.
 
     /// The debt: a discharge was asked for and nothing has shown the charger connected since (a running helper's yes
-    /// to a stop, the helper's own uninstall, or macOS; see `noteConnected`). Mirrors
+    /// to a stop, the helper's own uninstall, or the charger switch itself; see `noteConnected`). Mirrors
     /// `Settings.chargeCutUnconfirmed`, which is written (and flushed) before the discharge goes out.
     private var cutOwed = false {
         // The section shows it while off too (`offWarning`), and nothing else would tell it.
@@ -300,21 +310,24 @@ final class ChargeController {
     private var stopDue = false
     /// A stop was not answered yes (the helper is gone, or could not reconnect the charger): the cut may be left
     /// with nobody watching. The warning shows, and the stop is asked again once a tick until a running helper says
-    /// yes, the helper's uninstall finishes (`helperUninstalled`), or macOS shows the charger connected for long
+    /// yes, the helper's uninstall finishes (`helperUninstalled`), or the charger shows as connected for long
     /// enough (`noteConnected`).
     private var cutLost = false
-    /// macOS has said the Mac is off the adapter, with the adapter there and no discharge in force, for longer than
-    /// the end of a discharge takes: the look of a cut nobody holds. Treated like `cutLost` while it lasts; a stop
-    /// it asks that is not answered yes sets `cutLost`, which outlasts the look and is settled the same ways.
+    /// The charger has looked cut (`noteCutLook`: the switch reading cut, or macOS's word where that is all there
+    /// is), with no discharge in force, for longer than the end of a discharge takes: the look of a cut nobody
+    /// holds. Treated like `cutLost` while it lasts; a stop it asks that is not answered yes sets `cutLost`, which
+    /// outlasts the look and is settled the same ways.
     private var cutSeen = false
-    /// When that look began; nil while macOS says otherwise or a discharge is in force.
+    /// When that look began; nil while the charger does not look cut, or a discharge is in force.
     private var cutLookSince: Date?
     /// A running helper said the charger is connected during this stretch of that look: not asked again until it
     /// ends, or a charger macOS reports oddly would wake the helper every tick.
     private var cutLookAnswered = false
-    /// Since when macOS has said the Mac is on the adapter, with no discharge in force; nil while it says otherwise.
-    /// See `noteConnected`.
+    /// Since when the charger has shown as connected, with something to settle and no discharge in force; nil
+    /// otherwise. See `noteConnected`.
     private var connectedSince: Date?
+    /// What the charger switch read in which tick; see `chargerSwitchThisTick`.
+    private var switchRead: (tick: Int, value: UInt8?)?
     /// Counts the discharges sent: a stop's yes settles the debt only if no discharge went out after the stop.
     private var dischargeSeq = 0
     /// A stop's answer said the charger switch holds a value Anode never writes, and that has been logged: once.
@@ -366,22 +379,38 @@ final class ChargeController {
 
     convenience init(settings: Settings, makeClient: @escaping () -> ChargeLimitClient? = { PowerUIChargeClient() },
                      helper: ChargeHelperLink, battery: @escaping () -> Battery.State? = { Battery.state() },
+                     chargerSwitch: @escaping () -> UInt8? = ChargeController.systemChargerSwitch(),
                      log: @escaping (String) -> Void = { FeatureLog.append("charge.log", $0) },
                      workspace: NotificationCenter = NSWorkspace.shared.notificationCenter,
                      limitInForce: ChargeLimitInForce = ChargeLimitInForce()) {
-        self.init(settings: settings, makeClient: makeClient, helper: helper, battery: battery, log: log,
-                  workspace: workspace, limitInForce: limitInForce, observing: true)
+        self.init(settings: settings, makeClient: makeClient, helper: helper, battery: battery,
+                  chargerSwitch: chargerSwitch, log: log, workspace: workspace, limitInForce: limitInForce,
+                  observing: true)
+    }
+
+    /// The Mac's own charger switch, read as the person and not through the helper: only writing it needs root
+    /// (measured on Mac17,9, macOS 27.0: an unprivileged process reads it). The helper's own reader and key name
+    /// (`SystemChargeHardware.adapterCutValue`), so there is one of each; nothing here can write. The connection to
+    /// the SMC is opened at the first read, which is never while Charge Control is off, and kept.
+    static func systemChargerSwitch() -> () -> UInt8? {
+        var hardware: SystemChargeHardware?
+        return {
+            if hardware == nil { hardware = SystemChargeHardware() }
+            return hardware?.adapterCutValue()
+        }
     }
 
     /// `observing` false: a controller that watches nothing and starts nothing, for the uninstall's restore with no
     /// window (`restoreForUninstall(settings:...)`), which must not switch Charge Control on to switch it off.
     private init(settings: Settings, makeClient: @escaping () -> ChargeLimitClient?, helper: ChargeHelperLink,
-                 battery: @escaping () -> Battery.State?, log: @escaping (String) -> Void,
-                 workspace: NotificationCenter, limitInForce: ChargeLimitInForce, observing: Bool) {
+                 battery: @escaping () -> Battery.State?, chargerSwitch: @escaping () -> UInt8?,
+                 log: @escaping (String) -> Void, workspace: NotificationCenter, limitInForce: ChargeLimitInForce,
+                 observing: Bool) {
         self.settings = settings
         self.makeClient = makeClient
         self.helper = helper
         self.battery = battery
+        self.chargerSwitch = chargerSwitch
         self.log = log
         self.workspace = workspace
         self.limitInForce = limitInForce
@@ -586,6 +615,7 @@ final class ChargeController {
         cutLookSince = nil
         cutLookAnswered = false
         connectedSince = nil
+        switchRead = nil
         lookDueAt = nil
         lookCount = 0
     }
@@ -780,11 +810,11 @@ final class ChargeController {
     }
 
     /// The charger is known to be connected by something other than a helper's yes to a stop
-    /// (`chargerConfirmed`): the helper's own uninstall, or macOS's word (`noteConnected`). The debt, a lost cut and
-    /// the net are all dropped, and whatever is still on its way is overtaken, so its late answer (from a helper
-    /// that is gone) cannot bring the warning back. While off, the retry ends.
+    /// (`chargerConfirmed`): the helper's own uninstall, or the charger switch itself (`noteConnected`). The debt, a
+    /// lost cut and the net are all dropped, and whatever is still on its way is overtaken, so its late answer (from
+    /// a helper that is gone) cannot bring the warning back. While off, the retry ends.
     private func settleWithoutTheHelper(_ why: String) {
-        let had = cutOwed || settings.chargeCutUnconfirmed || cutLost || cutSeen || stopDue
+        let had = somethingToSettle
         dischargeEpoch += 1
         dischargeInFlight = false
         appliedDischarge = nil
@@ -1133,8 +1163,9 @@ final class ChargeController {
 
     private func tickOnce(now: Date) {
         guard let b = battery() else { return setStatus(.unavailable(Self.noBatteryText)) }
-        // Anode's own charger cut makes macOS report the Mac off the adapter while the cable is in; the adapter's
-        // details still describe a charger then, and stop describing one when the cable is really pulled.
+        // Anode's own charger cut can make macOS report the Mac off the adapter while the cable is in (measured with
+        // no macOS limit holding the battery); the adapter's details still describe a charger then, and stop
+        // describing one when the cable is really pulled.
         let onAC = b.onAC || b.adapterPresent
         // What the section reads, from the same reading the decision is made from, so the two always agree.
         var announce = false
@@ -1157,10 +1188,13 @@ final class ChargeController {
         }
         lastDecision = decision
         // The net is this account's alone: while another is on screen, its Anode may be discharging through a
-        // helper this one cannot even reach.
-        noteCutLook(sessionActive && !b.onAC && b.adapterPresent, now: now)
+        // helper this one cannot even reach. It looks only with a charger on the cable: with the cable out nothing
+        // is cut off from anything, and the Mac is on its battery, where every read costs.
+        let netLooks = sessionActive && onAC && appliedDischarge == nil
+        noteCutLook(switchReads: netLooks ? chargerSwitchThisTick() : nil,
+                    macOSLook: sessionActive && !b.onAC && b.adapterPresent, now: now)
         // macOS's own flag, not `onAC` above: the adapter's details say yes all through a cut.
-        noteConnected(b.onAC, now: now)
+        noteConnected(externalConnected: b.onAC, now: now)
         apply(decision)
         // Sailing and heat memory belong to one connection to the adapter.
         if !onAC { memory = ChargeMemory() }
@@ -1169,12 +1203,39 @@ final class ChargeController {
         if announce { changed() }
     }
 
-    /// The safety net under the bookkeeping. macOS reporting the Mac off the adapter while the adapter is there is
-    /// what a charger cut looks like. With no discharge in force, a cut is expected for a minute or so after one
-    /// ends (macOS is slow to say it is charging again); longer than `chargerReconnectTime`, it is taken for a cut
-    /// nobody holds: the helper is asked to reconnect it and the warning shows, until a running helper says the
-    /// charger is connected (then not again for the same stretch) or macOS stops saying it.
-    private func noteCutLook(_ looksCut: Bool, now: Date) {
+    /// The charger switch, read at most once a tick: by the net and by the debt, whichever asks first, and by neither
+    /// when neither needs it (a discharge in force; the cable out with nothing owed; another account on screen with
+    /// nothing owed; off). Two calls into the SMC (about 0.2 ms together, measured on Mac17,9), no helper, no timer
+    /// of its own. A later pass of the same tick gets the first pass's reading: an answer that came back inside the
+    /// tick may have changed the switch, and the next tick sees that.
+    private func chargerSwitchThisTick() -> UInt8? {
+        if let read = switchRead, read.tick == tickSerial { return read.value }
+        let value = chargerSwitch()
+        switchRead = (tickSerial, value)
+        return value
+    }
+
+    /// Something only "the charger is connected" can settle: the debt, a lost cut, the net, or a stop that is due.
+    private var somethingToSettle: Bool {
+        cutOwed || cutLost || cutSeen || stopDue || settings.chargeCutUnconfirmed
+    }
+
+    /// The safety net under the bookkeeping: the charger looking cut with no discharge in force. A cut is expected
+    /// for a minute or so after one ends; longer than `chargerReconnectTime`, with none on its way either, it is
+    /// taken for a cut nobody holds: the helper is asked to reconnect it and the warning shows, until a running
+    /// helper says the charger is connected (then not again for the same stretch) or the look ends.
+    ///
+    /// What looks cut:
+    ///   * the charger switch reading cut (`AdapterCutKey.cut`), whatever macOS says. Measured on Mac17,9, macOS
+    ///     27.0: with a macOS limit below the battery level in force (limit 63, battery 100) the switch read cut for
+    ///     50 s and macOS said "on the adapter" throughout, so macOS's word alone would never see that cut;
+    ///   * macOS reporting the Mac off the adapter while the adapter is there (`macOSLook`), which is what a cut
+    ///     looks like with no limit holding the battery (measured: within 1 to 2 s of the cut). This is the route
+    ///     for a Mac whose switch cannot be read (nil). It is not believed against a switch that reads connected:
+    ///     there is then nothing to reconnect, and the helper is not woken to say so.
+    private func noteCutLook(switchReads read: UInt8?, macOSLook: Bool, now: Date) {
+        let switchCut = read == AdapterCutKey.cut
+        let looksCut = switchCut || (macOSLook && read != AdapterCutKey.connected)
         guard looksCut, appliedDischarge == nil else {
             cutLookSince = nil
             cutLookAnswered = false
@@ -1186,27 +1247,41 @@ final class ChargeController {
         guard !dischargeInFlight, !cutLookAnswered, !cutSeen,
               now.timeIntervalSince(since) > Self.chargerReconnectTime else { return }
         cutSeen = true
-        log("macOS has said the Mac is off the adapter, with the adapter there and no discharge running, for over "
-            + "\(Int(Self.chargerReconnectTime)) s: the charger may have been left cut; asking the helper to "
-            + "reconnect it")
+        let what = switchCut ? "the charger switch has read cut" : "macOS has said the Mac is off the adapter"
+        log("\(what), with the adapter there and no discharge running, for over \(Int(Self.chargerReconnectTime)) s: "
+            + "the charger may have been left cut; asking the helper to reconnect it")
     }
 
-    /// Evidence the charger IS connected, which needs no helper: macOS saying the Mac is on the adapter
-    /// (ExternalConnected) for longer than `chargerReconnectTime`, with no discharge in force or on its way. A cut
-    /// makes it say no within seconds (measured), so a minute and a half of yes proves there is none, and the debt,
-    /// a lost cut and the net are settled. Without this, a warning no helper can answer (none installed, one that
-    /// stopped answering) would stay for good. A discharge sent starts the count again; a stop does not.
-    private func noteConnected(_ externalConnected: Bool, now: Date) {
-        guard externalConnected, appliedDischarge == nil else {
+    /// Evidence the charger IS connected, which needs no helper, held for longer than `chargerReconnectTime` with no
+    /// discharge in force or on its way: the debt, a lost cut and the net are then settled. Without this, a warning
+    /// no helper can answer (none installed, one that stopped answering) would stay for good. Looked for only while
+    /// there is something to settle. A discharge sent starts the count again; a stop does not.
+    ///
+    /// The evidence is the charger switch reading connected (`AdapterCutKey.connected`), which is also all a
+    /// helper's yes to a stop rests on. Any other reading, Anode's cut or a value it never writes, is not: the debt
+    /// is never settled here while the switch reads anything else, whatever macOS says.
+    ///
+    /// Only where the switch cannot be read (nil) is macOS's word taken instead: the Mac on the adapter
+    /// (ExternalConnected) for as long. That is the weaker evidence, and no proof. Measured on Mac17,9, macOS 27.0:
+    /// with no macOS limit holding the battery a cut makes ExternalConnected read No within 1 to 2 s, but with a
+    /// limit below the battery level in force (limit 63, battery 100) it stayed Yes through 50 s of the switch
+    /// reading cut. It is kept because the other choice on such a Mac is a warning that never goes.
+    private func noteConnected(externalConnected: Bool, now: Date) {
+        guard appliedDischarge == nil, somethingToSettle else {
+            connectedSince = nil
+            return
+        }
+        let read = chargerSwitchThisTick()
+        guard read.map({ $0 == AdapterCutKey.connected }) ?? externalConnected else {
             connectedSince = nil
             return
         }
         let since = connectedSince ?? now
         connectedSince = since
-        guard now.timeIntervalSince(since) > Self.chargerReconnectTime, !dischargeInFlight,
-              cutOwed || settings.chargeCutUnconfirmed || cutLost || cutSeen || stopDue else { return }
-        settleWithoutTheHelper("macOS has said the Mac is on the adapter for over \(Int(Self.chargerReconnectTime)) s "
-                               + "with no discharge running: the charger is connected")
+        guard now.timeIntervalSince(since) > Self.chargerReconnectTime, !dischargeInFlight else { return }
+        let what = read != nil ? "the charger switch has read connected" : "macOS has said the Mac is on the adapter"
+        settleWithoutTheHelper("\(what) for over \(Int(Self.chargerReconnectTime)) s with no discharge running: the "
+                               + "charger is connected")
     }
 
     /// Apply `lastDecision` again after an answer came back, in case it changed while the request was on its way.

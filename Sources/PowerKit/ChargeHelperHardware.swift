@@ -333,7 +333,11 @@ public enum ChargeAC {
     ///
     /// `ExternalConnected` alone cannot tell a pulled cable from Anode's own
     /// cut, so it is read with `adapterPresent`
-    /// (`Battery.adapterPresent(fromProperties:)`), which can.
+    /// (`Battery.adapterPresent(fromProperties:)`), which can. (Measured
+    /// later: a cut made while a macOS charge limit below the battery level
+    /// was in force left `ExternalConnected` at Yes; see the table there.
+    /// Either answer saying yes is enough here, so that state reads as a
+    /// charger on the cable too.)
     ///
     /// - `true` when either says so: the flag on the charger, the details
     ///   during a cut. A Mac whose details are empty on the charger is still

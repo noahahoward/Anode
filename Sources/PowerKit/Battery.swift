@@ -371,8 +371,9 @@ public enum Battery {
         /// `onAC` it survives Anode's own charger cut: MEASURED on `Mac17,9`,
         /// macOS 27.0, `ExternalConnected` reads No 48 s into a cut with the
         /// cable in, and `AdapterDetails` is then what it was on the charger.
-        /// With the cable out it is `{"FamilyCode"=0}`. See
-        /// `Battery.adapterPresent(fromProperties:)`.
+        /// With the cable out it is `{"FamilyCode"=0}`. (A cut does not always
+        /// turn `ExternalConnected` to No: see the table at
+        /// `Battery.adapterPresent(fromProperties:)`.)
         ///
         /// Read by Charge Control's helper alone, to tell a pulled cable from
         /// its cut. `onAC` stays the flag, which the history, the drain
@@ -449,6 +450,20 @@ public enum Battery {
     ///
     /// So `ExternalConnected` cannot tell a pulled cable from Anode's own cut,
     /// and this can.
+    ///
+    /// `ExternalConnected` = Yes does not say there is no cut, either. MEASURED
+    /// later on the same Mac and macOS, `ExternalConnected` only:
+    ///
+    ///     state                                           ExternalConnected
+    ///     cut by CHIE = 08, no macOS charge limit in      No within 1 to 2 s
+    ///     force
+    ///     cut by CHIE = 08 while a macOS charge limit     Yes for all of the
+    ///     below the battery level was in force (limit     50 s that CHIE read
+    ///     63, battery 100, macOS draining to the limit)   08
+    ///
+    /// So whether the charger is cut is asked of `CHIE` itself wherever it can
+    /// be read (reading it needs no root), and of this flag only where it
+    /// cannot. `AdapterDetails` was not looked at in the second state.
     ///
     /// `FamilyCode` is published as an unsigned 64-bit number above `Int.max`,
     /// and `as? Int` on it is nil. It is read through `NSNumber`, and only
