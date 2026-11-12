@@ -19,6 +19,14 @@ import Darwin
 // grants nothing new (any user can set the limit through the system's own client), but a bad value must not become a
 // limit written to macOS or a process signalled.
 //
+// Because any local user can put anything at that path, the store trusts nothing about it. It opens the file once and
+// every check and every read and write goes through that descriptor, never a path again. A file it did not create is
+// opened without `O_CREAT`, never chmod-ed, and refused unless it is a regular file with one link (a second account
+// can make the path a hard link to a file the first owns, which `O_NOFOLLOW` does not stop: it would be made
+// world-writable and overwritten) and no larger than a record can be. A symbolic link at the file, the folder or the
+// folder above is refused, not followed. What it refuses it leaves exactly as it found it, and the controller then
+// keeps this account's own record, with one log line.
+//
 // Format (version 1):
 //
 //     {"version":1,
@@ -83,8 +91,8 @@ public final class ChargeRecordStore {
 
     public static let sharedDirectory = "/Users/Shared/Anode"
     public static let fileName = "charge-control.json"
-    /// A record is a few hundred bytes. Anything bigger is not one.
-    public static let maxBytes = 16 * 1024
+    /// A record is a few hundred bytes, and a full list of holders a couple of kilobytes. Anything bigger is not one.
+    public static let maxBytes = 4 * 1024
     static let maxHolders = 64
     static let limitRange = 20...100
 
@@ -171,11 +179,18 @@ public final class ChargeRecordStore {
         return try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
     }
 
-    /// Read-only: nothing is created and nothing is written. nil when the file is there but cannot be read.
+    /// Read-only: nothing is created and nothing is written. nil when the file is there but cannot be read, or is
+    /// refused (a symbolic link, a hard link, too big): it is then not a record, and it is not read.
     public func peek() -> Contents? {
+        switch directoryState(create: false) {
+        case .missing: return Contents.none
+        case .refused: return nil
+        case .ready: break
+        }
         let fd = open(path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
         if fd < 0 { return errno == ENOENT ? Contents.none : nil }
         defer { close(fd) }
+        guard refusal(of: fd) == nil else { return nil }
         guard lock(fd, shared: true) else { return nil }
         defer { flock(fd, LOCK_UN) }
         return Self.read(fd)
@@ -220,31 +235,24 @@ public final class ChargeRecordStore {
     /// the timeout, which is what a process that is stopped while holding it looks like. The timeout is short because
     /// the caller is the main thread: a restore holds the lock for as long as it waits for the helper.
     public func withExclusiveLock<T>(_ body: (Session) -> T) -> T? {
-        guard ensureDirectory() else { return nil }
-        let fd = open(path, O_RDWR | O_CREAT | O_NOFOLLOW | O_CLOEXEC, 0o666)
-        guard fd >= 0 else { return nil }
+        guard let fd = openChecked(create: true).fd else { return nil }
         defer { close(fd) }
-        // The umask may have narrowed it; the next account must be able to write what this one created. Only the
-        // owner can change it, and for anyone else it is already what it should be.
-        _ = fchmod(fd, 0o666)
-        var info = stat()
-        guard fstat(fd, &info) == 0, (info.st_mode & S_IFMT) == S_IFREG else { return nil }
         guard lock(fd, shared: false) else { return nil }
         defer { flock(fd, LOCK_UN) }
         return body(Session(fd: fd))
     }
 
-    /// Whether the file can be had at all: the folder made, the file made, both writable. How the controller finds
-    /// out that two accounts cannot be told apart on this Mac. It takes no lock: a file that is busy is usable, and
-    /// being busy for a moment must not look like being unusable.
-    public func isUsable() -> Bool {
-        guard ensureDirectory() else { return false }
-        let fd = open(path, O_RDWR | O_CREAT | O_NOFOLLOW | O_CLOEXEC, 0o666)
-        guard fd >= 0 else { return false }
-        defer { close(fd) }
-        var info = stat()
-        return fstat(fd, &info) == 0 && (info.st_mode & S_IFMT) == S_IFREG
+    /// Why the file cannot be used on this Mac, or nil when it can: the folder or the file cannot be made or written,
+    /// something is at the path that is not what this store makes (a symbolic link, a file with more than one link,
+    /// one that is too big), whatever the reason says. It takes no lock: a file that is busy is usable, and being busy
+    /// for a moment must not look like being unusable.
+    public func checkUsable() -> String? {
+        let opened = openChecked(create: true)
+        if let fd = opened.fd { close(fd) }
+        return opened.problem
     }
+
+    public func isUsable() -> Bool { checkUsable() == nil }
 
     // ── The decisions ───────────────────────────────────────────────────────
 
@@ -323,14 +331,74 @@ public final class ChargeRecordStore {
 
     // ── Plumbing ────────────────────────────────────────────────────────────
 
-    private func ensureDirectory() -> Bool {
+    private enum DirectoryState { case ready, missing, refused(String) }
+
+    /// The folder, and the one above it, must be real directories (`lstat`: a symbolic link is not one). When the
+    /// folder is not there and `create` is set, it is made here, sticky and open to everyone, like `/Users/Shared`
+    /// itself: a second account must be able to create the file if it is ever removed, and nobody can delete or rename
+    /// what another account made.
+    private func directoryState(create: Bool) -> DirectoryState {
         var info = stat()
-        if lstat(directory, &info) == 0 { return (info.st_mode & S_IFMT) == S_IFDIR }
-        // Sticky and open to everyone, like `/Users/Shared` itself: the next account must be able to write inside it,
-        // and nobody can remove what another account put there.
-        guard mkdir(directory, 0o1777) == 0 || errno == EEXIST else { return false }
+        let parent = (directory as NSString).deletingLastPathComponent
+        func problem(_ path: String, _ mode: mode_t) -> String {
+            (mode & S_IFMT) == S_IFLNK ? "\(path) is a symbolic link" : "\(path) is not a folder"
+        }
+        guard lstat(parent, &info) == 0 else { return .refused("\(parent) cannot be looked at") }
+        guard (info.st_mode & S_IFMT) == S_IFDIR else { return .refused(problem(parent, info.st_mode)) }
+        if lstat(directory, &info) == 0 {
+            return (info.st_mode & S_IFMT) == S_IFDIR ? .ready : .refused(problem(directory, info.st_mode))
+        }
+        guard errno == ENOENT else { return .refused("\(directory) cannot be looked at") }
+        guard create else { return .missing }
+        guard mkdir(directory, 0o1777) == 0 || errno == EEXIST else { return .refused("\(directory) cannot be made") }
+        // Made by this process (or by another one a moment ago): looked at again, not assumed.
+        guard lstat(directory, &info) == 0 else { return .refused("\(directory) cannot be looked at") }
+        guard (info.st_mode & S_IFMT) == S_IFDIR else { return .refused(problem(directory, info.st_mode)) }
         _ = chmod(directory, 0o1777)
-        return true
+        return .ready
+    }
+
+    /// Open the file, once, for reading and writing. An existing one is opened without `O_CREAT` and is never chmod-ed;
+    /// only a file this call creates (`O_EXCL`: it did not exist) is made open to everyone. Either way the descriptor
+    /// is looked at, not the path: it must be a regular file with one link and no larger than a record.
+    private func openChecked(create: Bool) -> (fd: Int32?, problem: String?) {
+        switch directoryState(create: create) {
+        case .refused(let why): return (nil, why)
+        case .missing: return (nil, "\(directory) is missing")
+        case .ready: break
+        }
+        var fd = open(path, O_RDWR | O_NOFOLLOW | O_CLOEXEC)
+        if fd < 0, errno == ENOENT, create {
+            fd = open(path, O_RDWR | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o666)
+            if fd >= 0 {
+                // Made here: the umask may have narrowed it, and the next account must be able to write what this one
+                // made. Nothing else is ever chmod-ed.
+                _ = fchmod(fd, 0o666)
+            } else if errno == EEXIST {
+                // Another account made it between the two opens.
+                fd = open(path, O_RDWR | O_NOFOLLOW | O_CLOEXEC)
+            }
+        }
+        guard fd >= 0 else {
+            let why = errno == ELOOP ? "is a symbolic link" : String(cString: strerror(errno))
+            return (nil, "\(path) \(why)")
+        }
+        if let problem = refusal(of: fd) {
+            close(fd)
+            return (nil, "\(path) \(problem)")
+        }
+        return (fd, nil)
+    }
+
+    /// Why the file behind this descriptor is not one to read or write, or nil. Looked at through the descriptor, so
+    /// what is checked is what is used.
+    private func refusal(of fd: Int32) -> String? {
+        var info = stat()
+        guard fstat(fd, &info) == 0 else { return "could not be looked at" }
+        guard (info.st_mode & S_IFMT) == S_IFREG else { return "is not a regular file" }
+        guard info.st_nlink == 1 else { return "has more than one link" }
+        guard info.st_size <= off_t(Self.maxBytes) else { return "is larger than a record can be" }
+        return nil
     }
 
     private func lock(_ fd: Int32, shared: Bool) -> Bool {

@@ -348,6 +348,148 @@ final class ChargeRecordStoreTests: XCTestCase {
         XCTAssertFalse(s.isUsable())
     }
 
+    // ── A folder any local user can write to ────────────────────────────────
+    //
+    // Another account can put anything at the file's path: a hard link to a file this account owns, a symbolic link, a
+    // file too big to be a record. The store never chmods or writes a file it did not create unless the descriptor it
+    // opened is a regular file with one link; it never follows a symbolic link at the file or the folder; and what it
+    // refuses it leaves exactly as it found it.
+
+    private var parent: String { (directory as NSString).deletingLastPathComponent }
+
+    private func mode(_ path: String) -> mode_t {
+        var info = stat()
+        XCTAssertEqual(lstat(path, &info), 0, path)
+        return info.st_mode & 0o7777
+    }
+
+    /// A private file of this account's, and what is made of it. Returns its path.
+    private func privateFile(_ text: String = "private") throws -> String {
+        let path = parent + "/private-\(UUID().uuidString.prefix(6)).txt"
+        try text.write(toFile: path, atomically: true, encoding: .utf8)
+        XCTAssertEqual(chmod(path, 0o600), 0)
+        return path
+    }
+
+    private func store(refusing directory: String) -> ChargeRecordStore {
+        ChargeRecordStore(directory: directory, uid: 501, pid: 100, isLive: { _ in true }, lockTimeout: 0.2)
+    }
+
+    /// Another account makes `charge-control.json` a HARD LINK to a file this account owns. Opening it and then
+    /// chmod-ing and writing it would make that private file world-writable and overwrite it. It is refused: the
+    /// other file's mode and contents are unchanged, and nothing is read from it either.
+    func testAHardLinkAtTheFilePathIsRefusedAndTheOtherFileIsUntouched() throws {
+        let secret = try privateFile("do not touch")
+        try FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true)
+        XCTAssertEqual(link(secret, directory + "/" + ChargeRecordStore.fileName), 0)
+        let s = store(refusing: directory)
+        XCTAssertNotNil(s.checkUsable())
+        XCTAssertTrue((s.checkUsable() ?? "").contains("link"), s.checkUsable() ?? "")
+        XCTAssertFalse(s.isUsable())
+        XCTAssertNil(s.acquire(readMacOS: { self.original }))
+        XCTAssertNil(s.release(restore: { _ in true }))
+        XCTAssertFalse(s.adopt(legacy: original))
+        XCTAssertNil(s.peek())
+        XCTAssertEqual(mode(secret), 0o600, "the other file was made accessible to everyone")
+        XCTAssertEqual(try String(contentsOfFile: secret, encoding: .utf8), "do not touch",
+                       "the other file was written")
+    }
+
+    /// A symbolic link at the file's path is not followed, for reading or writing.
+    func testASymbolicLinkAtTheFilePathIsRefusedAndItsTargetIsUntouched() throws {
+        let secret = try privateFile("do not touch")
+        try FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true)
+        XCTAssertEqual(symlink(secret, directory + "/" + ChargeRecordStore.fileName), 0)
+        let s = store(refusing: directory)
+        XCTAssertNotNil(s.checkUsable())
+        XCTAssertNil(s.acquire(readMacOS: { self.original }))
+        XCTAssertNil(s.peek())
+        XCTAssertEqual(mode(secret), 0o600)
+        XCTAssertEqual(try String(contentsOfFile: secret, encoding: .utf8), "do not touch")
+        // A symbolic link to nowhere is refused too, and nothing is created through it.
+        let dangling = parent + "/nowhere.txt"
+        try FileManager.default.removeItem(atPath: directory + "/" + ChargeRecordStore.fileName)
+        XCTAssertEqual(symlink(dangling, directory + "/" + ChargeRecordStore.fileName), 0)
+        XCTAssertNil(s.acquire(readMacOS: { self.original }))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: dangling), "a file was created through a symbolic link")
+    }
+
+    /// A symbolic link where the folder should be is not followed: nothing is made or written in what it points at.
+    func testASymbolicLinkAtTheFolderPathIsRefused() throws {
+        let real = parent + "/real"
+        try FileManager.default.createDirectory(atPath: real, withIntermediateDirectories: true)
+        XCTAssertEqual(symlink(real, directory), 0)
+        let s = store(refusing: directory)
+        XCTAssertNotNil(s.checkUsable())
+        XCTAssertTrue((s.checkUsable() ?? "").contains("symbolic link"), s.checkUsable() ?? "")
+        XCTAssertNil(s.acquire(readMacOS: { self.original }))
+        XCTAssertNil(s.peek())
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: real), [], "something was made through it")
+    }
+
+    /// The folder above it (`/Users/Shared`) must be a real directory too.
+    func testASymbolicLinkAsTheParentFolderIsRefused() throws {
+        let real = parent + "/real-parent"
+        try FileManager.default.createDirectory(atPath: real, withIntermediateDirectories: true)
+        let linked = parent + "/linked-parent"
+        XCTAssertEqual(symlink(real, linked), 0)
+        let s = store(refusing: linked + "/Anode")
+        XCTAssertNotNil(s.checkUsable())
+        XCTAssertNil(s.acquire(readMacOS: { self.original }))
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: real), [])
+    }
+
+    func testAFileWhereTheFolderShouldBeIsRefused() throws {
+        try "x".write(toFile: directory, atomically: true, encoding: .utf8)
+        let s = store(refusing: directory)
+        XCTAssertNotNil(s.checkUsable())
+        XCTAssertNil(s.acquire(readMacOS: { self.original }))
+    }
+
+    /// A file too big to be a record is refused, not read and not written over.
+    func testAnOversizedFileIsRefusedAndLeftAsItWas() throws {
+        try FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true)
+        let file = directory + "/" + ChargeRecordStore.fileName
+        let big = String(repeating: "a", count: ChargeRecordStore.maxBytes + 1)
+        try big.write(toFile: file, atomically: false, encoding: .utf8)
+        XCTAssertEqual(chmod(file, 0o666), 0)
+        let s = store(refusing: directory)
+        XCTAssertNotNil(s.checkUsable())
+        XCTAssertNil(s.acquire(readMacOS: { self.original }))
+        XCTAssertNil(s.release(restore: { _ in true }))
+        XCTAssertNil(s.peek())
+        XCTAssertEqual(try String(contentsOfFile: file, encoding: .utf8), big)
+    }
+
+    /// An existing file another account made, 0666 with one link, is used as it is: not chmod-ed, read, and updated
+    /// in place.
+    func testAFileAnotherAccountMadeIsUsedAndNotChmoded() throws {
+        try FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true)
+        let file = directory + "/" + ChargeRecordStore.fileName
+        let theirs = SharedChargeRecord(original: original, holders: [ChargeHolder(uid: 502, pid: 200)])
+        try XCTUnwrap(ChargeRecordStore.encode(theirs)).write(to: URL(fileURLWithPath: file))
+        XCTAssertEqual(chmod(file, 0o666), 0)
+        let s = store(refusing: directory)
+        XCTAssertNil(s.checkUsable())
+        XCTAssertEqual(s.acquire(readMacOS: { XCTFail("read macOS"); return nil }), .adopted(original))
+        XCTAssertEqual(mode(file), 0o666)
+        // One that is not 0666 is not made so by this account: only a file it created is.
+        XCTAssertEqual(chmod(file, 0o644), 0)
+        XCTAssertNotNil(s.acquire(readMacOS: { nil }))
+        XCTAssertEqual(mode(file), 0o644, "an existing file was chmod-ed")
+    }
+
+    /// A file this account creates is open to everyone, whatever its umask says, and the folder it makes is sticky.
+    func testANewFileIsOpenToEveryoneWhateverTheUmaskAndTheFolderIsSticky() {
+        let before = umask(0o077)
+        defer { umask(before) }
+        let s = store(refusing: directory)
+        XCTAssertNil(s.checkUsable())
+        _ = s.acquire(readMacOS: { self.original })
+        XCTAssertEqual(mode(directory + "/" + ChargeRecordStore.fileName), 0o666)
+        XCTAssertEqual(mode(directory), 0o1777)
+    }
+
     // ── Two at once ─────────────────────────────────────────────────────────
 
     /// Every writer reads the file, changes it and writes it back. Without the lock two of them read the same

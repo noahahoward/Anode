@@ -163,8 +163,8 @@ final class ChargeRecords {
             mode = .perAccount
             return nil
         }
-        guard store.isUsable() else {
-            fallBack("\(store.path) cannot be written")
+        if let why = store.checkUsable() {
+            fallBack(why)
             return nil
         }
         mode = .shared

@@ -470,6 +470,28 @@ final class ChargeSharedRecordTests: XCTestCase {
         XCTAssertNil(a.settings.chargeRestoreRecord)
     }
 
+    /// Another account made the shared file a hard link to one of this account's private files. It is refused, said in
+    /// one line, this account keeps its own record, and the private file is not made accessible or written.
+    func testAHardLinkAtTheSharedFileFallsBackAndLeavesThePrivateFileAlone() throws {
+        let secret = (directory as NSString).deletingLastPathComponent + "/private.txt"
+        try "do not touch".write(toFile: secret, atomically: true, encoding: .utf8)
+        XCTAssertEqual(chmod(secret, 0o600), 0)
+        try FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true)
+        XCTAssertEqual(link(secret, directory + "/" + ChargeRecordStore.fileName), 0)
+        let a = try account("A", uid: 501, limit: 85)
+        launch(a)
+        XCTAssertEqual(macOS.state?.mclLimit, 85)
+        XCTAssertEqual(a.lines.filter { $0.contains("cannot be told apart") }.count, 1, a.lines.joined(separator: "\n"))
+        XCTAssertTrue(a.lines.contains { $0.contains("more than one link") }, a.lines.joined(separator: "\n"))
+        XCTAssertNotNil(a.settings.chargeRestoreRecord, "this account did not keep its own record")
+        var info = stat()
+        XCTAssertEqual(stat(secret, &info), 0)
+        XCTAssertEqual(info.st_mode & 0o7777, 0o600)
+        XCTAssertEqual(try String(contentsOfFile: secret, encoding: .utf8), "do not touch")
+        quit(a)
+        XCTAssertEqual(macOS.state, macOSOwn)
+    }
+
     /// A per-account record an earlier build left is moved into the shared file once, with this account as a holder
     /// whose process is not known: the launch lifts the limit as for any run that did not quit, and nothing reads
     /// the per-account key afterwards.
