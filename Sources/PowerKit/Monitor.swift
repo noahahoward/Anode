@@ -616,12 +616,25 @@ public final class PowerMonitor {
     /// LEARN one, since the overnight session that sat at 80% for seven hours is
     /// precisely the evidence this is looking for.
     private let chargeLimits = ChargeLimitLearner()
+    /// Whether Charge Control is holding the charge back right now. Handed in by
+    /// the app, which owns the settings, rather than read here: this class has no
+    /// settings handle, the CLI links it too, and a `Settings` built per tick would
+    /// re-read every key. A closure rather than a Bool because the answer changes
+    /// while the monitor lives, and it is called on the sampling queue, so it must
+    /// be cheap and safe off the main thread. Fixed at `init`, so it cannot race
+    /// the ticks. See `ChargeLimitLearner.observe`.
+    private let anodeHolding: () -> Bool
 
     public var ioReportAvailable: Bool { ioreport != nil }
 
-    public init?(scale: BatteryScale? = nil) {
+    /// `anodeHolding` says whether Charge Control is holding the charge back, so the
+    /// charge-limit learner does not mistake that for a limit the Mac enforces. It
+    /// defaults to "not holding", which is right for anything that has no Charge
+    /// Control — the CLI, and tests.
+    public init?(scale: BatteryScale? = nil, anodeHolding: @escaping () -> Bool = { false }) {
         guard let s = scale ?? Battery.scale() else { return nil }
         self.scale = s
+        self.anodeHolding = anodeHolding
         self.lastPublished = PowerTelemetry.sample()
     }
 
@@ -910,7 +923,9 @@ public final class PowerMonitor {
         usbTracker.update(systemWatts: smoothed, systemQuiet: quiet,
                           onAC: battery?.onAC ?? false)
 
-        if let b = battery { chargeLimits.observe(b, percent: scale.chargePercent(b)) }
+        if let b = battery {
+            chargeLimits.observe(b, percent: scale.chargePercent(b), anodeHolding: anodeHolding())
+        }
 
         let usbMeasured = usbTracker.measuredWatts
         let memoryW = SubsystemRails.watts(smc, keys: SubsystemRails.memoryKeys)

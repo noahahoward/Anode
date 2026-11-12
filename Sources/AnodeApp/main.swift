@@ -276,7 +276,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         // keeps a stuck one from holding this app for long. Set on the system-wide element, it is the default
         // for every element made after.
         AXUIElementSetMessagingTimeout(AXUIElementCreateSystemWide(), 0.5)
-        monitor = PowerMonitor()
+        // Charge Control's own hold is not a limit the Mac enforces: tell the monitor, so the charge-limit
+        // learner does not learn it.
+        monitor = PowerMonitor(anodeHolding: { Settings.shared.chargeControlEnabled })
         store = HistoryStore()
         seedLiveGraphFromHistory()
         // The battery does not know the app restarted, so the trend must not

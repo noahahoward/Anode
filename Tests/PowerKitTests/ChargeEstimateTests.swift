@@ -294,6 +294,73 @@ final class ChargeEstimateTests: XCTestCase {
         XCTAssertEqual(l.limit, 80)
     }
 
+    // ── Charge Control's own hold is not the Mac's limit ────────────────────
+
+    /// Charge Control stops charging at a level Anode chose, and that looks exactly
+    /// like a limit the Mac enforces: on AC, not charging, a non-zero reason. If it
+    /// were learned, switching Charge Control off would leave "charging to 80 %"
+    /// behind for a Mac that charges to 100.
+    func testNoLearningWhileChargeControlHolds() {
+        let d = store()
+        let l = ChargeLimitLearner(defaults: d)
+        let s = holding(at: 80, scale: pack())
+        let t0 = Date(timeIntervalSinceReferenceDate: 0)
+
+        // Every minute for fifteen: three times the confirmation window.
+        for minute in 0...15 {
+            l.observe(s, percent: 80, at: t0 + Double(minute) * 60, anodeHolding: true)
+        }
+        XCTAssertNil(l.limit, "a hold Anode imposed says nothing about the Mac's own limit")
+        XCTAssertNil(ChargeLimitLearner(defaults: d).limit, "and nothing was stored")
+    }
+
+    /// A hold that began before Charge Control was switched on is the Mac's, but
+    /// time spent under Charge Control's limit must not be credited to it: the
+    /// clock is dropped, not paused, so the Mac has to show a full window of its
+    /// own again.
+    func testAHoldInProgressIsDroppedWhenChargeControlTakesOver() {
+        let l = ChargeLimitLearner(defaults: store())
+        let s = holding(at: 80, scale: pack())
+        let t0 = Date(timeIntervalSinceReferenceDate: 0)
+
+        l.observe(s, percent: 80, at: t0)                              // a hold begins
+        l.observe(s, percent: 80, at: t0 + 200)                        // 200 s in
+        l.observe(s, percent: 80, at: t0 + 250, anodeHolding: true)    // Charge Control on
+        l.observe(s, percent: 80, at: t0 + 400, anodeHolding: true)
+        l.observe(s, percent: 80, at: t0 + 500)                        // and off again
+        XCTAssertNil(l.limit,
+                     "500 s since the hold began, but the clock must not have run through Charge Control")
+
+        l.observe(s, percent: 80, at: t0 + 700)                        // 200 s into the new hold
+        XCTAssertNil(l.limit, "the new hold has not yet lasted the window")
+        l.observe(s, percent: 80, at: t0 + 800)                        // 300 s into it
+        XCTAssertEqual(l.limit, 80, "the Mac's own hold, once Charge Control is off, is learned as ever")
+    }
+
+    /// Charge Control does not take away what the Mac already taught. Even reaching
+    /// full on the adapter, which forgets a limit in the ordinary run of things, is
+    /// Charge Control's doing while it is on, and is not evidence about the Mac.
+    func testAnAlreadyLearnedLimitIsLeftAloneWhileChargeControlHolds() {
+        let d = store()
+        let l = ChargeLimitLearner(defaults: d)
+        learn(l, at: 80)
+        XCTAssertEqual(l.limit, 80)
+
+        let scale = pack()
+        let t0 = Date(timeIntervalSinceReferenceDate: 9000)
+        l.observe(holding(at: 60, scale: scale), percent: 60, at: t0, anodeHolding: true)
+        l.observe(holding(at: 60, scale: scale), percent: 60, at: t0 + 600, anodeHolding: true)
+        let full = Battery.State(percent: 100, isCharging: false, onAC: true,
+                                 cycleCount: 21, voltage_mV: 12900, amperage_mA: 0,
+                                 remainingCapacity_mAh: scale.fullChargeCapacity_mAh,
+                                 timeRemaining_min: nil,
+                                 notChargingReason: 0, fullyCharged: true)
+        l.observe(full, percent: 100, at: t0 + 700, anodeHolding: true)
+
+        XCTAssertEqual(l.limit, 80, "neither a hold nor a full pack under Charge Control changes it")
+        XCTAssertEqual(ChargeLimitLearner(defaults: d).limit, 80)
+    }
+
     /// The limit is worth nothing if it is forgotten at quit: the app is normally
     /// launched into a machine already sitting at its limit, where there is no
     /// stop to observe. Same bargain `USBPowerTracker` makes with device costs.

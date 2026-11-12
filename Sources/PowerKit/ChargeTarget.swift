@@ -9,15 +9,16 @@ import Foundation
 /// (Mac17,9, macOS 27) looking for a stated charge limit. There is no such key:
 /// nothing named `ChargeLimit`, `Optimized*`, `*Target*`, `*Threshold*` or
 /// `MaxCharge*` exists at any level, the `BatteryData` sub-dictionary carries only
-/// capacity fields, and `pmset` reports nothing either. The limit is enforced
-/// somewhere we cannot read.
+/// capacity fields. `pmset -g battlimit` and PowerUI report macOS's own manual
+/// limit; Charge Control reads that directly. This learner is the fallback for
+/// holds nothing reports.
 ///
 /// What the machine DOES publish is the consequence: `ChargerData` gains
 /// `NotChargingReason` = 128 while it sits on the adapter refusing to charge, with
-/// `FullyCharged` false and `IsCharging` false. So the limit is INFERRED, never
-/// read — the level at which the machine deliberately stops IS the limit, and it
-/// is learned by watching for that stop and remembered across launches (the same
-/// bargain `USBPowerTracker` makes with device costs).
+/// `FullyCharged` false and `IsCharging` false. So where nothing reports it the
+/// limit is INFERRED — the level at which the machine deliberately stops IS the
+/// limit, and it is learned by watching for that stop and remembered across
+/// launches (the same bargain `USBPowerTracker` makes with device costs).
 ///
 /// TRAP, verified: `NotChargingReason` keeps its last value after the adapter is
 /// unplugged. Read live at 83% on battery it still said 128. Every rule below is
@@ -241,9 +242,26 @@ public final class ChargeLimitLearner {
     /// Feed one battery reading. `percent` is on the mAh basis
     /// (`BatteryScale.chargePercent`), the same basis every projection in this app
     /// divides, so the learned limit and the headroom subtracted from it agree.
-    public func observe(_ s: Battery.State, percent: Double, at now: Date = Date()) {
+    ///
+    /// `anodeHolding` is true while Charge Control is the thing holding the charge
+    /// back. Its stop looks exactly like a limit the Mac enforces — on AC, not
+    /// charging, a non-zero reason — but it is Anode's own setting, and learning it
+    /// would leave "charging to 80 %" behind for a Mac that charges to 100 once
+    /// Charge Control is switched off. So while it is true nothing is counted and
+    /// nothing is forgotten: a hold already in progress is DROPPED rather than
+    /// paused (time spent under Charge Control's limit must never be credited to a
+    /// hold that began before it), and a limit already learned is left exactly as
+    /// it was.
+    public func observe(_ s: Battery.State, percent: Double, at now: Date = Date(),
+                        anodeHolding: Bool = false) {
         lock.lock()
         defer { lock.unlock() }
+
+        if anodeHolding {
+            holdSince = nil
+            holdAt = nil
+            return
+        }
 
         // The gate that makes the stale `NotChargingReason` harmless: off AC there
         // is nothing to refuse, so nothing here is evidence of anything.
