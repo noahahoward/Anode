@@ -17,7 +17,9 @@ final class ChargeControlFeature: BetaFeature {
     let summary = "Holds the battery at a charge limit you choose, and can drain it down to the limit while the Mac stays "
                 + "plugged in. The limit keeps working while Anode is closed. While Charge Control is on, Anode turns off "
                 + "Optimized Battery Charging, and puts it back as it was when you turn Charge Control off. Discharging "
-                + "needs the Anode helper, and so do limits other than 80, 85, 90, 95 and 100%."
+                + "needs the Anode helper, and so does holding the charge anywhere but 80, 85, 90, 95 or 100%, whether "
+                + "for your limit, Heat Protection, Sailing Mode or Stop charging when sleeping. Turn Charge Control off "
+                + "before removing Anode by hand: dragging it to the Trash puts nothing back."
     var layoutChanged: (() -> Void)?
 
     private let settings: Settings
@@ -74,6 +76,9 @@ final class ChargeControlFeature: BetaFeature {
     static let dischargeTip = "Run the Mac from the battery while it stays plugged in, until the charge is down to the "
         + "limit. Needs the Anode helper."
     static let dischargeBlockedTip = "Discharge needs the charger and a battery above the limit."
+    /// The three holds pause where the charge is, which macOS can do by itself only at its own steps.
+    static let holdNeedsHelperTip = "Without the Anode helper it can pause only at 80, 85, 90, 95 or 100%, and the "
+        + "Mac charges on to the next of those."
 
     /// What the status line needs besides the status: the battery and the discharge as the controller last saw them.
     struct Facts: Equatable {
@@ -191,17 +196,19 @@ final class ChargeControlFeature: BetaFeature {
         sailingCheckbox.target = self
         sailingCheckbox.action = #selector(sailingToggled)
         sailingCheckbox.toolTip = "Once the battery reaches the limit, let it drift down, and charge again only when it "
-            + "has fallen this far below the limit."
+            + "has fallen this far below the limit. " + Self.holdNeedsHelperTip
         sailingStepper.target = self
         sailingStepper.action = #selector(sailingGapStepped)
         heatCheckbox.target = self
         heatCheckbox.action = #selector(heatToggled)
-        heatCheckbox.toolTip = "Pause charging while the battery is this warm, and for five minutes after it cools."
+        heatCheckbox.toolTip = "Pause charging while the battery is this warm, and for five minutes after it cools. "
+            + Self.holdNeedsHelperTip
         heatStepper.target = self
         heatStepper.action = #selector(heatStepped)
         sleepCheckbox.target = self
         sleepCheckbox.action = #selector(sleepToggled)
-        sleepCheckbox.toolTip = "While the Mac sleeps on the adapter, the charge stays where it was."
+        sleepCheckbox.toolTip = "While the Mac sleeps on the adapter, the charge stays where it was. "
+            + Self.holdNeedsHelperTip
         autoDischargeCheckbox.target = self
         autoDischargeCheckbox.action = #selector(autoDischargeToggled)
         autoDischargeCheckbox.toolTip = "Whenever the battery is above the limit on the adapter, run from the battery "

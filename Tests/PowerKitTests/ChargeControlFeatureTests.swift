@@ -617,6 +617,22 @@ final class ChargeControlFeatureTests: XCTestCase {
         XCTAssertTrue(s.contains("turns off Optimized Battery Charging"), s)
         XCTAssertTrue(s.contains("puts it back"), s)
         XCTAssertTrue(s.contains("Discharging needs the Anode helper"), s)
+        // Which features need it besides: anything that holds the charge where macOS cannot by itself.
+        for feature in ["Heat Protection", "Sailing Mode", "Stop charging when sleeping"] {
+            XCTAssertTrue(s.contains(feature), "the summary does not say \(feature) can need the helper: \(s)")
+        }
+        // Removed by hand, Anode puts nothing back.
+        XCTAssertTrue(s.contains("Turn Charge Control off before removing Anode"), s)
+        XCTAssertTrue(s.contains("Trash"), s)
+    }
+
+    /// The three holds say on their own switch that they cannot pause everywhere without the helper.
+    func testTheHoldsSayTheyCanNeedTheHelper() throws {
+        let f = make(enabled: true)
+        _ = try XCTUnwrap(view)
+        for box in [f.heatCheckbox, f.sailingCheckbox, f.sleepCheckbox] {
+            XCTAssertTrue((box.toolTip ?? "").contains("Anode helper"), "\(box.title): \(box.toolTip ?? "")")
+        }
     }
 
     /// Ruling 1: no jargon and no watts in anything the section can show, the controller's sentences included.
@@ -657,6 +673,9 @@ final class ChargeControlFeatureTests: XCTestCase {
                   ChargeController.dischargeRefusedText("the SMC took the cut and the charger does not read as cut"),
                   ChargeController.limitRefusedText(63, "macOS did not take the charge limit"),
                   ChargeController.cutWarningText, ChargeController.cutWarningNoHelperText]
+        shown += reasons.map {
+            ChargeController.limitNeedsHelperText(for: ChargeDecision(osLimit: 63, dischargeTo: nil, reason: $0))
+        }
         // What an install started here can say under its button.
         shown += [FanControlPanel.waitingText, FanControlPanel.authorisationOnScreenText,
                   FanControlPanel.notBundledInstallText, FanControlPanel.cancelledText,

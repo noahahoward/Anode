@@ -62,7 +62,10 @@ public final class Settings {
         public static let dockPreviewsHoldDock = "dockPreviewsHoldDock"
         public static let dockRaisesTileGroup = "dockRaisesTileGroup"
         public static let fanControlEnabled = "fanControlEnabled"
-        public static let fanDisclosureSeen = "fanDisclosureSeen"
+        /// Versioned by its name: the sheet now says the helper also sets the charge limit and cuts the charger,
+        /// and someone who ticked "Don't show this again" on the fans-only words (stored as "fanDisclosureSeen")
+        /// has not read that. A new name shows it to them once more.
+        public static let fanDisclosureSeen = "fanDisclosureSeenWithCharger"
         public static let fanSyncEnabled = "fanSyncEnabled"
         public static let speedTestAgreed = "speedTestAgreed"
         public static let autoUpdateEnabled = "autoUpdateEnabled"

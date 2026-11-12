@@ -1497,6 +1497,19 @@ final class FanDisclosureTests: XCTestCase {
         XCTAssertTrue(s.fanDisclosureSeen,
                       "switching the feature off made the app forget it had explained itself")
     }
+
+    /// The sheet now also says the helper sets the charge limit and cuts the charger. Someone who ticked "Don't
+    /// show this again" on the fans-only words has not read that, so it shows once more; once read, it stays read.
+    func testHavingSeenTheFansOnlyWordsDoesNotCountForTheNewOnes() throws {
+        XCTAssertTrue(FanElevation.sessionDisclosure.contains("charger"))
+        let (defaults, name) = try TestDefaults.make(owner: "FanDisclosure")
+        defer { TestDefaults.destroy(defaults, name) }
+        defaults.set(true, forKey: "anode.fanDisclosureSeen")   // what the fans-only sheet left behind
+        let s = Settings(defaults: defaults)
+        XCTAssertFalse(s.fanDisclosureSeen, "the charger was never explained to someone who saw the old sheet")
+        s.fanDisclosureSeen = true
+        XCTAssertTrue(Settings(defaults: defaults).fanDisclosureSeen)
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
