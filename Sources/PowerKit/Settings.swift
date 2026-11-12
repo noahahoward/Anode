@@ -75,6 +75,16 @@ public final class Settings {
         public static let panelHidden = "panelHidden"
         /// Which lines the ledger screen's bottom (battery) graph draws.
         public static let ledgerGraphLines = "ledgerGraphLines"
+        /// Charge Control. Its restore record is stored too but is not listed: nothing may observe it, and
+        /// `chargeRestoreRecord` says why.
+        public static let chargeControlEnabled = "chargeControlEnabled"
+        public static let chargeLimit = "chargeLimit"
+        public static let chargeSailingEnabled = "chargeSailingEnabled"
+        public static let chargeSailingGap = "chargeSailingGap"
+        public static let chargeHeatProtectionEnabled = "chargeHeatProtectionEnabled"
+        public static let chargeMaxTemperatureC = "chargeMaxTemperatureC"
+        public static let chargeStopWhenSleeping = "chargeStopWhenSleeping"
+        public static let chargeAutomaticDischarge = "chargeAutomaticDischarge"
         /// Wildcard — an observer registered on this key fires for every change.
         public static let any = "*"
     }
@@ -88,6 +98,12 @@ public final class Settings {
     public static let minimumDisplayRange: ClosedRange<Double> = 0...1
     /// Cap the widget list so a corrupt plist can't flood the menu bar.
     public static let maxMenuBarWidgets = 12
+    /// Charge Control's three numbers. The limit and the gap take `ChargePolicy`'s own ranges, so what a person can
+    /// ask for is what the policy acts on. The temperature's is set here: the policy takes the maximum as given,
+    /// and this file is all that stands between a stored number and it.
+    public static let chargeLimitRange: ClosedRange<Int> = ChargePolicy.osLimitRange
+    public static let chargeSailingGapRange: ClosedRange<Int> = ChargePolicy.sailingGapRange
+    public static let chargeMaxTemperatureRange: ClosedRange<Double> = 25...50
 
     /// What the ledger graph drew before it was customizable: the drain line, its
     /// mean since the lid opened, and the battery level. The strings are the
@@ -186,6 +202,19 @@ public final class Settings {
         /// once, whatever macOS has granted.
         static let menuBarBackdropMode = MenuBarBackdropMode.off
         static let menuBarBackdropBlur = 0.5
+        /// OFF: it changes macOS's own charge limit and turns Optimized Battery Charging off, so the user turns it on.
+        static let chargeControlEnabled = false
+        /// 80 is the lowest of the five limits macOS takes from an ordinary app (`NativeChargeLimit.clientValues`,
+        /// measured), so Charge Control switched on and left alone needs no root helper.
+        static let chargeLimit = 80
+        /// OFF, all four: each changes when the battery charges or drains, so each is asked for.
+        static let chargeSailingEnabled = false
+        static let chargeHeatProtectionEnabled = false
+        static let chargeStopWhenSleeping = false
+        static let chargeAutomaticDischarge = false
+        /// The policy's own defaults (5 percent, 35 °C), so they are written down in one place.
+        static let chargeSailingGap = ChargePolicy.defaultSailingGap
+        static let chargeMaxTemperatureC = ChargePolicy.defaultMaxTemperatureC
         /// Matches what the status item shows today: smoothed drain + runtime.
         // Must be real, currently-registered metric IDs. Stale ones are invisible
         // in the picker and get preserved forever as "unknown" bindings.
@@ -253,6 +282,10 @@ public final class Settings {
         var menuBarHiderAutoCloseSeconds: Int
         var menuBarHiderArrangement: BarArrangement?
         var lidGlassIdleHz, lidGlassTriggerAngle: Double
+        var chargeControlEnabled, chargeSailingEnabled, chargeHeatProtectionEnabled,
+            chargeStopWhenSleeping, chargeAutomaticDischarge: Bool
+        var chargeLimit, chargeSailingGap: Int
+        var chargeMaxTemperatureC: Double
     }
     private var snapshot: Values
     private var defaultsObserver: NSObjectProtocol?
@@ -734,6 +767,118 @@ public final class Settings {
         notify(key)
     }
 
+    // ── Charge Control (Beta Features) ──────────────────────────────────────
+
+    /// Whether Charge Control is on (Beta Features). Off until asked for: it changes macOS's own charge limit and
+    /// turns Optimized Battery Charging off for as long as it runs.
+    public var chargeControlEnabled: Bool {
+        get { Settings.readBool(defaults, Key.chargeControlEnabled, Default.chargeControlEnabled) }
+        set { writeBool(Key.chargeControlEnabled, \.chargeControlEnabled, newValue, Default.chargeControlEnabled) }
+    }
+
+    /// The percent the battery charges to, 20 to 100.
+    ///
+    /// This number does not stay in the app. `ChargePolicy` hands it to macOS as the charge limit and drains to it
+    /// as given: the policy clamps the limit it sets but not the level a discharge stops at, so a stored 5 with
+    /// Automatic Discharge on would run the pack down to 10% on the adapter. That is why it is clamped on the read
+    /// as well as the write. The plist is also written by `defaults write` and by builds other than this one.
+    public var chargeLimit: Int {
+        get { Settings.readInt(defaults, Key.chargeLimit, Default.chargeLimit, Settings.chargeLimitRange) }
+        set { writeInt(Key.chargeLimit, \.chargeLimit, newValue, Default.chargeLimit, Settings.chargeLimitRange) }
+    }
+
+    /// Whether Sailing Mode is on: once the limit is reached the battery rests in a band below it, and is not
+    /// charged again until it has fallen through the band.
+    public var chargeSailingEnabled: Bool {
+        get { Settings.readBool(defaults, Key.chargeSailingEnabled, Default.chargeSailingEnabled) }
+        set { writeBool(Key.chargeSailingEnabled, \.chargeSailingEnabled, newValue, Default.chargeSailingEnabled) }
+    }
+
+    /// How deep that band is: how far below the limit the battery may fall before Sailing Mode charges it again,
+    /// 1 to 30 percent.
+    public var chargeSailingGap: Int {
+        get { Settings.readInt(defaults, Key.chargeSailingGap, Default.chargeSailingGap,
+                               Settings.chargeSailingGapRange) }
+        set { writeInt(Key.chargeSailingGap, \.chargeSailingGap, newValue, Default.chargeSailingGap,
+                       Settings.chargeSailingGapRange) }
+    }
+
+    /// Whether Heat Protection is on: charging is held while the pack is at or above `chargeMaxTemperatureC`, and
+    /// for five minutes after it has cooled.
+    public var chargeHeatProtectionEnabled: Bool {
+        get { Settings.readBool(defaults, Key.chargeHeatProtectionEnabled, Default.chargeHeatProtectionEnabled) }
+        set { writeBool(Key.chargeHeatProtectionEnabled, \.chargeHeatProtectionEnabled, newValue,
+                        Default.chargeHeatProtectionEnabled) }
+    }
+
+    /// The pack temperature, in °C, at or above which Heat Protection holds the charge. 25 to 50.
+    ///
+    /// The range matters more here than for any other number in this file. The policy compares the pack against
+    /// this as given, so a stored 0 would call every pack hot and hold charging for as long as the feature was on,
+    /// and a stored NaN would call none hot and switch the protection off without a word. Neither gets through the
+    /// setter and neither survives a read: out of range reads as the nearest end, and anything that is not a finite
+    /// number reads as the default.
+    public var chargeMaxTemperatureC: Double {
+        get { Settings.readDouble(defaults, Key.chargeMaxTemperatureC, Default.chargeMaxTemperatureC,
+                                  Settings.chargeMaxTemperatureRange) }
+        set { writeDouble(Key.chargeMaxTemperatureC, \.chargeMaxTemperatureC, newValue,
+                          Default.chargeMaxTemperatureC, Settings.chargeMaxTemperatureRange) }
+    }
+
+    /// Whether charging stops while the Mac sleeps on the adapter: the charge is held where it was when it slept.
+    public var chargeStopWhenSleeping: Bool {
+        get { Settings.readBool(defaults, Key.chargeStopWhenSleeping, Default.chargeStopWhenSleeping) }
+        set { writeBool(Key.chargeStopWhenSleeping, \.chargeStopWhenSleeping, newValue,
+                        Default.chargeStopWhenSleeping) }
+    }
+
+    /// Whether a battery above the limit is drained down to it on the adapter without being asked.
+    public var chargeAutomaticDischarge: Bool {
+        get { Settings.readBool(defaults, Key.chargeAutomaticDischarge, Default.chargeAutomaticDischarge) }
+        set { writeBool(Key.chargeAutomaticDischarge, \.chargeAutomaticDischarge, newValue,
+                        Default.chargeAutomaticDischarge) }
+    }
+
+    /// How macOS's own charge limit and Optimized Battery Charging were set before Charge Control first changed
+    /// them, as the JSON of a `NativeChargeState`. nil when there is nothing to put back.
+    ///
+    /// Written once, the first time Charge Control is switched on, and cleared once that state has been restored.
+    /// It is stored and not just held in memory because the limit outlives the app (macOS keeps it in its own
+    /// preferences, measured in plan 0), so the way back has to survive a quit or a crash as well.
+    ///
+    /// Bookkeeping rather than a preference, like `autoUpdateFailedCommit`: it has no observation key and a write
+    /// notifies nobody. Its one writer is Charge Control's own controller, in the middle of switching itself on or
+    /// off, and a notification there would call that controller back into a switch it has not finished.
+    ///
+    /// Clearing removes the key, so "no record" is one state on disk. Anything stored that is not a string reads as
+    /// nil too: `string(forKey:)` would hand a stray number back as text, the controller would take that for a
+    /// record it already has, and the real state would never be written down.
+    public var chargeRestoreRecord: String? {
+        get { defaults.object(forKey: Settings.chargeRestoreRecordKey) as? String }
+        set {
+            if let newValue {
+                defaults.set(newValue, forKey: Settings.chargeRestoreRecordKey)
+            } else {
+                defaults.removeObject(forKey: Settings.chargeRestoreRecordKey)
+            }
+        }
+    }
+    private static let chargeRestoreRecordKey = storageKey("chargeRestoreRecord")
+
+    /// Every charge setting `ChargePolicy` decides from, read together.
+    ///
+    /// The values come through the getters above, so they are already inside their ranges. That is the point of
+    /// building the snapshot here: the policy trusts `limit` and `maxTemperatureC` as given, and this is the one
+    /// place that hands them to it.
+    public func chargeSettingsSnapshot() -> ChargeSettingsSnapshot {
+        ChargeSettingsSnapshot(limit: chargeLimit,
+                               sailingEnabled: chargeSailingEnabled, sailingGap: chargeSailingGap,
+                               heatProtectionEnabled: chargeHeatProtectionEnabled,
+                               maxTemperatureC: chargeMaxTemperatureC,
+                               stopWhenSleeping: chargeStopWhenSleeping,
+                               automaticDischarge: chargeAutomaticDischarge)
+    }
+
     // ── Launch at login (SMAppService, macOS 13+) ───────────────────────────
 
     /// OS-truth status, mapped so callers don't need ServiceManagement.
@@ -972,6 +1117,14 @@ public final class Settings {
         }
         if old.menuBarWidgets != now.menuBarWidgets { notify(Key.menuBarWidgets) }
         if old.ledgerGraphLines != now.ledgerGraphLines { notify(Key.ledgerGraphLines) }
+        if old.chargeControlEnabled != now.chargeControlEnabled { notify(Key.chargeControlEnabled) }
+        if old.chargeLimit != now.chargeLimit { notify(Key.chargeLimit) }
+        if old.chargeSailingEnabled != now.chargeSailingEnabled { notify(Key.chargeSailingEnabled) }
+        if old.chargeSailingGap != now.chargeSailingGap { notify(Key.chargeSailingGap) }
+        if old.chargeHeatProtectionEnabled != now.chargeHeatProtectionEnabled { notify(Key.chargeHeatProtectionEnabled) }
+        if old.chargeMaxTemperatureC != now.chargeMaxTemperatureC { notify(Key.chargeMaxTemperatureC) }
+        if old.chargeStopWhenSleeping != now.chargeStopWhenSleeping { notify(Key.chargeStopWhenSleeping) }
+        if old.chargeAutomaticDischarge != now.chargeAutomaticDischarge { notify(Key.chargeAutomaticDischarge) }
     }
 
     // ── Plumbing ────────────────────────────────────────────────────────────
@@ -1006,12 +1159,53 @@ public final class Settings {
         if value != old { notify(key) }
     }
 
+    /// Int counterpart of `writeDouble`, with the same guards as `writeBool`. There is no NaN to refuse: every
+    /// Int clamps.
+    private func writeInt(_ key: String, _ path: WritableKeyPath<Values, Int>,
+                          _ value: Int, _ def: Int, _ range: ClosedRange<Int>) {
+        let clamped = min(max(value, range.lowerBound), range.upperBound)
+        let old = Settings.readInt(defaults, key, def, range)
+        let neverStored = defaults.object(forKey: Settings.storageKey(key)) == nil
+        guard clamped != old || neverStored else { return }
+        lock.lock(); snapshot[keyPath: path] = clamped; lock.unlock()
+        defaults.set(clamped, forKey: Settings.storageKey(key))
+        if clamped != old { notify(key) }
+    }
+
+    /// The number stored under a key, or nil when what is there is not one: nothing, a string, a date, NaN,
+    /// infinity (hand-edited plist garbage), or a Boolean.
+    ///
+    /// The Boolean is the one that needs saying. It bridges to `NSNumber`, so without the check a stored `true`
+    /// is 1 and clamps to the bottom of whatever range it lands in. For Charge Control that is a limit of 20, or
+    /// a maximum temperature of 25 °C. MEASURED 2026-11-11 on a Mac17,9: the pack read 27.0 to 31.8 °C, so Heat
+    /// Protection at 25 would have held the charge at every reading. A Boolean is no more a number than the
+    /// string "abc" is, and it reads as the default like one.
+    private static func storedNumber(_ d: UserDefaults, _ key: String) -> Double? {
+        guard let n = d.object(forKey: storageKey(key)) as? NSNumber,
+              CFGetTypeID(n) != CFBooleanGetTypeID() else { return nil }
+        let v = n.doubleValue
+        return v.isFinite ? v : nil
+    }
+
     private static func readDouble(_ d: UserDefaults, _ key: String,
                                    _ def: Double, _ range: ClosedRange<Double>) -> Double {
-        guard let n = d.object(forKey: storageKey(key)) as? NSNumber else { return def }
-        let v = n.doubleValue
-        guard v.isFinite else { return def }  // hand-edited plist garbage
+        guard let v = storedNumber(d, key) else { return def }
         return min(max(v, range.lowerBound), range.upperBound)
+    }
+
+    /// Int counterpart of `readDouble`, with the same answers: nothing stored, or something that is not a number,
+    /// reads as the default, and a number outside the range reads as the nearest end of it. A fraction reads as the
+    /// nearest whole number.
+    ///
+    /// It goes through `Double` because `integer(forKey:)` cannot refuse anything. MEASURED (macOS 27, arm64): it
+    /// reads a stored NaN and the text "abc" as 0, and +infinity and 1e300 as `Int.max`, so garbage would come
+    /// back as the bottom or the top of the range and nothing would show it had ever been garbage. Clamping as a
+    /// `Double` first also means `Int(_:)`, which traps on a value it cannot hold, only ever sees one that is
+    /// already inside the range.
+    private static func readInt(_ d: UserDefaults, _ key: String,
+                                _ def: Int, _ range: ClosedRange<Int>) -> Int {
+        guard let v = storedNumber(d, key) else { return def }
+        return Int(min(max(v, Double(range.lowerBound)), Double(range.upperBound)).rounded())
     }
 
     private static func readBool(_ d: UserDefaults, _ key: String, _ def: Bool) -> Bool {
@@ -1108,7 +1302,17 @@ public final class Settings {
                menuBarHiderArrangement: readArrangement(d),
                lidGlassIdleHz: readDouble(d, Key.lidGlassIdleHz, Default.lidGlassIdleHz, lidGlassIdleHzRange),
                lidGlassTriggerAngle: readDouble(d, Key.lidGlassTriggerAngle, Default.lidGlassTriggerAngle,
-                                                lidGlassTriggerRange))
+                                                lidGlassTriggerRange),
+               chargeControlEnabled: readBool(d, Key.chargeControlEnabled, Default.chargeControlEnabled),
+               chargeSailingEnabled: readBool(d, Key.chargeSailingEnabled, Default.chargeSailingEnabled),
+               chargeHeatProtectionEnabled: readBool(d, Key.chargeHeatProtectionEnabled,
+                                                     Default.chargeHeatProtectionEnabled),
+               chargeStopWhenSleeping: readBool(d, Key.chargeStopWhenSleeping, Default.chargeStopWhenSleeping),
+               chargeAutomaticDischarge: readBool(d, Key.chargeAutomaticDischarge, Default.chargeAutomaticDischarge),
+               chargeLimit: readInt(d, Key.chargeLimit, Default.chargeLimit, chargeLimitRange),
+               chargeSailingGap: readInt(d, Key.chargeSailingGap, Default.chargeSailingGap, chargeSailingGapRange),
+               chargeMaxTemperatureC: readDouble(d, Key.chargeMaxTemperatureC, Default.chargeMaxTemperatureC,
+                                                 chargeMaxTemperatureRange))
     }
 }
 
