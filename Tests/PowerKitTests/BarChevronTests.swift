@@ -53,4 +53,11 @@ final class BarChevronTests: XCTestCase {
         fire(m, at: index!)
         XCTAssertEqual(opened, 1)
     }
+
+    /// The owner found the square chevron far too wide (2026-11-11): it is a tall, narrow "‹", in an item only as wide as it.
+    func testTheChevronIsNarrow() {
+        XCTAssertEqual(BarChevron.symbolName, "chevron.compact.left")
+        XCTAssertLessThanOrEqual(BarChevron.length, 14)
+        XCTAssertNotEqual(BarChevron.length, NSStatusItem.squareLength)
+    }
 }
