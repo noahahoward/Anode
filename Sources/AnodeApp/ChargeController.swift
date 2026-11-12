@@ -120,6 +120,50 @@ final class ChargeController {
         + "back on. Start the Anode helper again from the Fans tab (Copy Start Command), or run AnodeHelper "
         + "--uninstall with sudo, to switch it back on."
 
+    /// A hold only the helper can set, named by the feature that wanted it: with the person's limit at 80, "limits
+    /// other than 80" would be no help. macOS holds the nearest value it takes above it meanwhile, so the Mac charges
+    /// on to that; the sentence says so.
+    static func limitNeedsHelperText(for d: ChargeDecision) -> String {
+        let p = d.osLimit, on = nearestClientValue(atOrAbove: d.osLimit)
+        switch d.reason {
+        case .heat: return "Pausing for heat at \(p)% needs the Anode helper; it charges on to \(on)%"
+        case .sleeping: return "Holding \(p)% while the Mac sleeps needs the Anode helper; it charges on to \(on)%"
+        case .sailing: return "Sailing at \(p)% needs the Anode helper; it charges on to \(on)%"
+        case .limit, .topUp, .discharging, .discharged: return limitNeedsHelperText
+        }
+    }
+
+    /// What the battery card is told Charge Control holds: the limit in force when the controller knows it (a hold
+    /// or Top Up included), else the person's own; nil while off. Safe from any thread.
+    static func limitForMonitor(settings: Settings, inForce: ChargeLimitInForce) -> Int? {
+        guard settings.chargeControlEnabled else { return nil }
+        return inForce.value ?? settings.chargeLimit
+    }
+
+    /// The launch argument `uninstall.sh` runs the app with: put macOS's own charge settings back, with no window,
+    /// and exit 0 if nothing of Charge Control's is left in force, 1 if something may be.
+    static let restoreArgument = "--restore-charge-settings"
+
+    /// What that argument does. The same as the Uninstall button's `restoreForUninstall`, on a controller that
+    /// starts nothing (Charge Control is never switched on to be switched off, whatever the setting says): the
+    /// record put back, the debt of an unconfirmed discharge asked about (waited for; only waited commands work
+    /// with no run loop, and they open the connection themselves), the setting turned off, and all of it flushed.
+    /// True when no record and no debt are left.
+    static func restoreForUninstall(settings: Settings,
+                                    makeClient: @escaping () -> ChargeLimitClient? = { PowerUIChargeClient() },
+                                    helper: ChargeHelperLink,
+                                    log: @escaping (String) -> Void = { FeatureLog.append("charge.log", $0) }) -> Bool {
+        let c = ChargeController(settings: settings, makeClient: makeClient, helper: helper, battery: { nil },
+                                 log: log, workspace: NotificationCenter(), limitInForce: ChargeLimitInForce(),
+                                 observing: false)
+        c.restoreForUninstall()
+        settings.flush()
+        let left = settings.chargeRestoreRecord != nil || settings.chargeCutUnconfirmed
+        log(left ? "uninstalling: something of Charge Control's may still be in force"
+                 : "uninstalling: macOS's own charge settings are back")
+        return !left
+    }
+
     static func dischargeRefusedText(_ why: String) -> String {
         "The Anode helper would not discharge: \(plainWords(why))"
     }
@@ -176,6 +220,15 @@ final class ChargeController {
     private let helper: ChargeHelperLink
     private let battery: () -> Battery.State?
     private let log: (String) -> Void
+    /// NSWorkspace's notification center: sleep, wake and account switches. A parameter for the tests.
+    private let workspace: NotificationCenter
+    /// What `limitForMonitor` reads from the monitor's queue; see `ChargeLimitInForce`.
+    private let limitInForce: ChargeLimitInForce
+    /// This account is the one on screen. The limit is the whole Mac's and each account has its own Anode, so only
+    /// the one on screen holds it; see `sessionResigned`.
+    private var sessionActive = true
+    /// While going to sleep, a limit only the helper can set is waited for, until this, rather than sent and left.
+    private var waitUntil: Date?
 
     private var client: ChargeLimitClient?
     private var memory = ChargeMemory()
@@ -185,8 +238,12 @@ final class ChargeController {
 
     // What is in force, as far as this controller knows. Applied values are booked only when macOS or the helper
     // said yes, so a refusal is tried again on a later tick.
-    private var appliedLimit: Int?
+    private var appliedLimit: Int? {
+        didSet { if appliedLimit != oldValue { limitInForce.set(appliedLimit) } }
+    }
     private var limitInFlight = false
+    /// Bumped when a waited limit overtakes one still on its way, so the late answer books nothing.
+    private var limitEpoch = 0
     /// A limit the helper refused, and why. Not sent again until the decision's limit changes, the Mac wakes, macOS
     /// is found changed, or the section looks again; meanwhile the nearest value macOS takes above it holds.
     private var refusedLimit: (value: Int, why: String)?
@@ -284,15 +341,29 @@ final class ChargeController {
         weak var value: Observation?
     }
 
-    init(settings: Settings, makeClient: @escaping () -> ChargeLimitClient? = { PowerUIChargeClient() },
-         helper: ChargeHelperLink, battery: @escaping () -> Battery.State? = { Battery.state() },
-         log: @escaping (String) -> Void = { FeatureLog.append("charge.log", $0) }) {
+    convenience init(settings: Settings, makeClient: @escaping () -> ChargeLimitClient? = { PowerUIChargeClient() },
+                     helper: ChargeHelperLink, battery: @escaping () -> Battery.State? = { Battery.state() },
+                     log: @escaping (String) -> Void = { FeatureLog.append("charge.log", $0) },
+                     workspace: NotificationCenter = NSWorkspace.shared.notificationCenter,
+                     limitInForce: ChargeLimitInForce = ChargeLimitInForce()) {
+        self.init(settings: settings, makeClient: makeClient, helper: helper, battery: battery, log: log,
+                  workspace: workspace, limitInForce: limitInForce, observing: true)
+    }
+
+    /// `observing` false: a controller that watches nothing and starts nothing, for the uninstall's restore with no
+    /// window (`restoreForUninstall(settings:...)`), which must not switch Charge Control on to switch it off.
+    private init(settings: Settings, makeClient: @escaping () -> ChargeLimitClient?, helper: ChargeHelperLink,
+                 battery: @escaping () -> Battery.State?, log: @escaping (String) -> Void,
+                 workspace: NotificationCenter, limitInForce: ChargeLimitInForce, observing: Bool) {
         self.settings = settings
         self.makeClient = makeClient
         self.helper = helper
         self.battery = battery
         self.log = log
+        self.workspace = workspace
+        self.limitInForce = limitInForce
         cutOwed = settings.chargeCutUnconfirmed
+        guard observing else { return }
         enabledToken = settings.observe(Settings.Key.chargeControlEnabled) { [weak self] in self?.applyEnabled() }
         applyEnabled()
         if !settings.chargeControlEnabled {
@@ -419,9 +490,14 @@ final class ChargeController {
             log("the helper had not finished what it was asked within \(Int(Self.stopTimeout)) s; it may land after "
                 + "this")
         }
-        guard let record = recordToRestore() else {
-            log("no record of macOS's own settings to put back")
-            return
+        let record: NativeChargeState
+        if let found = recordToRestore() {
+            record = found
+        } else {
+            // Lost while on (removed by hand, say): Charge Control's settings are not left in force for that.
+            log("no record of macOS's own settings to put back; putting back macOS's defaults: no limit, "
+                + "Optimized Battery Charging on")
+            record = Self.defaultRecord
         }
         var ok = restoreLimit(record.mclLimit, client: c) && settled
         ok = c.setLimitEnabled(record.mclEnabled) && ok
@@ -436,20 +512,26 @@ final class ChargeController {
         }
     }
 
+    /// The recorded limit itself, or false. Only the helper can put back one macOS does not take by itself; an
+    /// installed one is greeted for it even when nothing has talked to it this run (Charge Control off, or this is
+    /// the uninstall): the waited command opens the connection first. When the value cannot land, the nearest one
+    /// macOS takes at or above it is set, so the Mac can still charge at least that far, and false keeps the record
+    /// for the next launch to try again.
     private func restoreLimit(_ limit: Int, client c: ChargeLimitClient) -> Bool {
         if NativeChargeLimit.isClientSettable(limit) { return c.setLimit(limit) }
         let nearest = Self.nearestClientValue(atOrAbove: limit)
-        if helper.available {
+        let why: String
+        if helper.available || helper.installed {
             let r = helper.sendWaiting(.setChargeLimit(limit), timeout: Self.stopTimeout)
             if r?.ok == true { return true }
-            // Never left lower than it was meant to be put back to; the record says the rest.
-            log("the helper did not put the limit back to \(limit): "
-                + "\(r?.message ?? "no answer within \(Int(Self.stopTimeout)) s"); set \(nearest) for now")
-            _ = c.setLimit(nearest)
-            return false
+            why = "the helper did not put the limit back to \(limit): "
+                + (r?.message ?? "no answer within \(Int(Self.stopTimeout)) s")
+        } else {
+            why = "limit \(limit) needs the helper to put back, and none is installed"
         }
-        log("limit \(limit) needs the helper to put back; set \(nearest) instead")
-        return c.setLimit(nearest)
+        log("\(why); set \(nearest) for now, and the record is kept to try again at the next launch")
+        _ = c.setLimit(nearest)
+        return false
     }
 
     /// Forget everything this switch-on built. Leaves macOS as it is.
@@ -483,17 +565,58 @@ final class ChargeController {
         lookCount = 0
     }
 
-    /// The app is quitting. macOS's limit stays in force (it outlives the app by design); the helper link is let go,
-    /// and if nothing else holds it the helper's dead man's switch ends any discharge.
+    /// The app is quitting. The person's own limit stays in force (it outlives the app by design); a hold does
+    /// not (Heat Protection at 24%, a sleep or Sailing hold, Top Up's 100): the person's limit is put back over it.
+    /// A discharge is stopped and its end waited for, so nothing drains with nobody watching. Then the helper link
+    /// is let go. All the waiting together is `stopTimeout` at most.
     func shutdown() {
         enabledToken = nil
         endOffRetry()
-        guard running else { return }
+        guard running, let c = client else { return }
         switchingOff = true
         defer { switchingOff = false }
-        // Nothing is put back, but what is still on its way lands before the link is let go.
-        if limitInFlight || dischargeInFlight { _ = helper.drain(timeout: Self.stopTimeout) }
+        let deadline = Date().addingTimeInterval(Self.stopTimeout)
+        // The stop goes behind everything already sent; otherwise a drain: what is on its way lands first, so it
+        // cannot overtake what is put back below.
+        if appliedDischarge != nil || dischargeInFlight || cutOwed {
+            let r = waitedStop(timeout: Self.timeLeft(deadline))
+            log("discharge stopped (quitting): \(r?.message ?? "no answer in time")")
+        } else if limitInFlight {
+            _ = helper.drain(timeout: Self.timeLeft(deadline))
+        }
+        // Not when the record has gone: something else (an uninstall) has put macOS back since. Not while another
+        // account is on screen either: the limit in force is its Anode's, not a hold of this one.
+        let mine = settings.chargeLimit
+        if sessionActive, settings.chargeRestoreRecord != nil, appliedLimit != mine || limitInFlight {
+            putBackOwnLimit(mine, client: c, deadline: deadline)
+        }
         stop()
+    }
+
+    private func putBackOwnLimit(_ limit: Int, client c: ChargeLimitClient, deadline: Date) {
+        let from = appliedLimit.map(String.init) ?? "?"
+        if NativeChargeLimit.isClientSettable(limit) {
+            log(c.setLimit(limit) ? "limit \(from) -> \(limit) (quitting: a hold does not outlive Anode)"
+                                  : "macOS refused the limit \(limit) on the way out")
+            return
+        }
+        if helper.available || helper.installed {
+            let r = helper.sendWaiting(.setChargeLimit(limit), timeout: Self.timeLeft(deadline))
+            if r?.ok == true {
+                return log("limit \(from) -> \(limit) (quitting: a hold does not outlive Anode)")
+            }
+            log("the helper did not set the limit back to \(limit) on the way out: \(r?.message ?? "no answer in time")")
+        }
+        // Never lower than the person asked for: the nearest value macOS takes above it.
+        let nearest = Self.nearestClientValue(atOrAbove: limit)
+        if appliedLimit != nearest, c.setLimit(nearest) {
+            log("limit \(from) -> \(nearest) (quitting; \(limit) needs the helper)")
+        }
+    }
+
+    /// What is left of a wait that must end by `deadline`; never nothing, so a late step still gets a moment.
+    private static func timeLeft(_ deadline: Date) -> TimeInterval {
+        max(0.1, deadline.timeIntervalSinceNow)
     }
 
     /// Anode is being uninstalled: put macOS back now, waiting for the helper, and switch Charge Control off.
@@ -637,13 +760,21 @@ final class ChargeController {
         RunLoop.main.add(t, forMode: .common)
         timer = t
 
-        let ws = NSWorkspace.shared.notificationCenter
+        let ws = workspace
         workspaceObservers = [
             ws.addObserver(forName: NSWorkspace.willSleepNotification, object: nil, queue: .main) { [weak self] _ in
                 self?.willSleep()
             },
             ws.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
                 self?.didWake()
+            },
+            ws.addObserver(forName: NSWorkspace.sessionDidResignActiveNotification, object: nil,
+                           queue: .main) { [weak self] _ in
+                self?.sessionResigned()
+            },
+            ws.addObserver(forName: NSWorkspace.sessionDidBecomeActiveNotification, object: nil,
+                           queue: .main) { [weak self] _ in
+                self?.sessionBecameActive()
             },
         ]
 
@@ -663,7 +794,7 @@ final class ChargeController {
         keyTokens = []
         timer?.invalidate()
         timer = nil
-        for o in workspaceObservers { NSWorkspace.shared.notificationCenter.removeObserver(o) }
+        for o in workspaceObservers { workspace.removeObserver(o) }
         workspaceObservers = []
         if let source = powerSource {
             CFRunLoopRemoveSource(CFRunLoopGetMain(), source, .commonModes)
@@ -679,7 +810,8 @@ final class ChargeController {
     func periodicTick(now: Date = Date()) {
         guard running else { return }
         if appliedDischarge != nil { helper.refresh() }
-        checkDrift()
+        // Another account on screen holds the limit: its changes are not drift.
+        if sessionActive { checkDrift() }
         tick(now: now)
         lookAgainIfDue(now: now)
     }
@@ -706,7 +838,7 @@ final class ChargeController {
 
     private func lookAgainIfDue(now: Date) {
         // The timer's tolerance: a tick 30 s on may come a few seconds early.
-        guard running, helperMissedWhileNeeded, let due = lookDueAt,
+        guard running, sessionActive, helperMissedWhileNeeded, let due = lookDueAt,
               now >= due.addingTimeInterval(-5) else { return }
         lookCount += 1
         lookDueAt = now.addingTimeInterval(Self.lookAgainAfter[min(lookCount, Self.lookAgainAfter.count - 1)])
@@ -795,39 +927,79 @@ final class ChargeController {
 
     // ── Sleep ───────────────────────────────────────────────────────────────
 
-    /// The Mac is going to sleep. A running discharge is stopped, and the helper's answer awaited (2 s at most),
-    /// before this returns, whatever Stop Charging when Sleeping says: nothing watches the floor while the Mac
-    /// sleeps. A manual discharge ends here and does not come back; an automatic one comes back by itself after the
-    /// wake, through the policy. Then the sleeping decision is applied.
+    /// The Mac is going to sleep. A running discharge is stopped, and the helper's answer awaited, before this
+    /// returns, whatever Stop Charging when Sleeping says: nothing watches the floor while the Mac sleeps. A manual
+    /// discharge ends here and does not come back; an automatic one comes back by itself after the wake, through the
+    /// policy. Then the sleeping decision is applied, a limit only the helper can set waited for too: it must be in
+    /// force before the Mac sleeps, not on its way. All of it within `stopTimeout`.
     func willSleep() {
         guard running else { return }
+        let deadline = Date().addingTimeInterval(Self.stopTimeout)
         sleeping = true
-        if appliedDischarge != nil || dischargeInFlight || cutOwed {
-            let r = waitedStop(timeout: Self.stopTimeout)
-            log("discharge stopped for sleep: \(r?.message ?? "no answer within \(Int(Self.stopTimeout)) s")")
-            dischargeEpoch += 1
-            dischargeInFlight = false
-            appliedDischarge = nil
-            // Not answered yes: the cut may outlive the sleep. Asked again on every tick from the wake.
-            if r?.ok != true {
-                stopDue = true
-                cutLost = true
-            }
-        }
+        stopAndWait(for: "sleep", deadline: deadline)
         if isDischargeRequested {
             isDischargeRequested = false
             log("manual discharge ended by sleep")
             changed()
         }
+        waitUntil = deadline
         tick()
+        waitUntil = nil
     }
 
     func didWake() {
         guard running else { return }
         sleeping = false
         // The person may have changed macOS's settings while the Mac slept.
-        checkDrift()
+        if sessionActive { checkDrift() }
         // Asserted again after every sleep, whatever the books say.
+        appliedLimit = nil
+        refusedLimit = nil
+        tick()
+    }
+
+    /// A discharge this controller holds (or may hold) is stopped and the answer waited for: what comes next has
+    /// nobody watching the floor. Not answered yes, the cut may outlive it: asked again on every tick.
+    private func stopAndWait(for why: String, deadline: Date) {
+        guard appliedDischarge != nil || dischargeInFlight || cutOwed else { return }
+        let r = waitedStop(timeout: Self.timeLeft(deadline))
+        log("discharge stopped for \(why): \(r?.message ?? "no answer in time")")
+        dischargeEpoch += 1
+        dischargeInFlight = false
+        appliedDischarge = nil
+        if r?.ok != true {
+            stopDue = true
+            cutLost = true
+        }
+    }
+
+    // ── Two accounts ────────────────────────────────────────────────────────
+
+    /// Another account came on screen. macOS's limit is the whole Mac's, and each account has its own Anode and
+    /// settings: two of them asserting their own would put each other's back every 30 s. So only the account on
+    /// screen holds it. This one stops a discharge it started (waited for, as for sleep: nobody here watches it),
+    /// ends a manual one, and applies nothing and reads nothing back until it is on screen again. A stop it owes is
+    /// still asked: that is putting right, not holding.
+    func sessionResigned() {
+        guard running, sessionActive else { return }
+        sessionActive = false
+        log("another account is on screen; the charger is left to it until this one is back")
+        stopAndWait(for: "another account", deadline: Date().addingTimeInterval(Self.stopTimeout))
+        if isDischargeRequested {
+            isDischargeRequested = false
+            log("manual discharge ended: another account is on screen")
+            changed()
+        }
+        tick()
+    }
+
+    /// This account is on screen again: macOS is read back (the other account's Anode may have changed it) and the
+    /// limit asserted again, whatever the books say.
+    func sessionBecameActive() {
+        guard running, !sessionActive else { return }
+        sessionActive = true
+        log("this account is on screen again")
+        checkDrift()
         appliedLimit = nil
         refusedLimit = nil
         tick()
@@ -919,7 +1091,8 @@ final class ChargeController {
     }
 
     private func apply(_ d: ChargeDecision) {
-        applyLimit(d)
+        // Another account on screen holds the limit; only a stop that is owed still goes out.
+        if sessionActive { applyLimit(d) }
         applyDischarge(d)
     }
 
@@ -934,7 +1107,7 @@ final class ChargeController {
     /// stopped; and while a stop is owed, it is held for the stop. Nothing else keeps it open.
     private var linkNeeded: Bool {
         if appliedDischarge != nil || dischargeInFlight || stopDue || cutLost || cutSeen { return true }
-        guard let target = lastDecision?.dischargeTo, !sleeping, helper.available else { return false }
+        guard let target = lastDecision?.dischargeTo, !sleeping, sessionActive, helper.available else { return false }
         return blockedDischarge?.target != target
     }
 
@@ -943,29 +1116,30 @@ final class ChargeController {
     private func applyLimit(_ d: ChargeDecision) {
         let want = d.osLimit
         if let r = refusedLimit, r.value != want { refusedLimit = nil }
-        guard appliedLimit != want, !limitInFlight, let c = client else { return }
+        guard appliedLimit != want, let c = client else { return }
+        // One on its way is waited for, except going to sleep, when this one must land first (see below).
+        if limitInFlight && waitUntil == nil { return }
         if NativeChargeLimit.isClientSettable(want) {
             setClientLimit(want, client: c, reason: d.reason)
         } else if helper.available, refusedLimit == nil {
-            limitInFlight = true
             let from = appliedLimit
-            let mine = session
+            if let deadline = waitUntil {
+                // Going to sleep: in force before sleep is allowed. Queued behind anything still on its way, whose
+                // late answer then books nothing.
+                limitEpoch += 1
+                limitInFlight = false
+                let r = helper.sendWaiting(.setChargeLimit(want), timeout: Self.timeLeft(deadline))
+                limitAnswered(r, want: want, from: from, reason: d.reason)
+                return
+            }
+            limitInFlight = true
+            let mine = session, epoch = limitEpoch
             helper.send(.setChargeLimit(want)) { [weak self] r in
-                guard let self, self.session == mine else { return }
+                guard let self, self.session == mine, self.limitEpoch == epoch else { return }
                 self.limitInFlight = false
                 guard self.running else { return }
-                if r.ok {
-                    self.appliedLimit = want
-                    self.log("\(Self.limitChange(from, want)) (\(d.reason.rawValue))")
-                    self.reapply()
-                } else {
-                    self.log("the helper did not set the limit to \(want): \(r.message)")
-                    // Not sent again on every tick. A helper that stopped answering is unavailable now; one that
-                    // refused is not asked for this value again until something changes. Either way the nearest
-                    // value macOS takes above it holds meanwhile.
-                    if r.message != HelperConnection.stoppedAnswering { self.refusedLimit = (want, r.message) }
-                    self.reapply()
-                }
+                self.limitAnswered(r, want: want, from: from, reason: d.reason)
+                self.reapply()
             }
         } else {
             // Never lower than asked: the nearest value the client takes at or above it. Not before the helper has
@@ -975,6 +1149,21 @@ final class ChargeController {
             let nearest = Self.nearestClientValue(atOrAbove: want)
             guard appliedLimit != nearest else { return }
             setClientLimit(nearest, client: c, reason: d.reason, wanted: want)
+        }
+    }
+
+    /// The helper's answer to a limit: booked on a yes. Otherwise not sent again on every tick: a helper that
+    /// stopped answering is unavailable now, and one that refused is not asked for this value again until
+    /// something changes. Either way the nearest value macOS takes above it holds meanwhile. nil (no answer in
+    /// time, going to sleep) books nothing and refuses nothing.
+    private func limitAnswered(_ r: FanReply?, want: Int, from: Int?, reason: ChargeReason) {
+        guard let r else { return log("the helper did not answer the limit \(want) in time") }
+        if r.ok {
+            appliedLimit = want
+            log("\(Self.limitChange(from, want)) (\(reason.rawValue))")
+        } else {
+            log("the helper did not set the limit to \(want): \(r.message)")
+            if r.message != HelperConnection.stoppedAnswering { refusedLimit = (want, r.message) }
         }
     }
 
@@ -1015,7 +1204,7 @@ final class ChargeController {
             if appliedDischarge != nil || cutOwed { stopDischarge(why: d.reason.rawValue) }
             return
         }
-        guard target != appliedDischarge, helper.available else { return }
+        guard target != appliedDischarge, helper.available, sessionActive else { return }
         // Nothing watches the floor while the Mac sleeps, and the helper would refuse anyway.
         guard !sleeping, blockedDischarge == nil else { return }
         // A discharge lives on an open connection. Opening one answers through `helperChanged`, which ticks again;
@@ -1123,7 +1312,7 @@ final class ChargeController {
         } else if limitNotInForce, !helper.available {
             // Nothing is said about the helper until it has answered, or is known not to be installed.
             guard helper.known else { return }
-            setStatus(.needsHelper(missing ?? Self.limitNeedsHelperText))
+            setStatus(.needsHelper(missing ?? Self.limitNeedsHelperText(for: d)))
         } else if let target = d.dischargeTo, let b = blockedDischarge, b.target == target {
             setStatus(.refused(Self.dischargeRefusedText(b.why)))
         } else if d.dischargeTo != nil, !helper.available {
@@ -1357,5 +1546,27 @@ final class ChargeHelperAdapter: ChargeHelperLink {
         changed?()
         // An install or an uninstall has just finished: look again.
         if resumed, token != nil { look() }
+    }
+}
+
+/// The limit Charge Control has in force, for code on another thread to read: the battery card is drawn from the
+/// monitor's sampling queue, and the controller is main-thread only. This one value is all that crosses.
+final class ChargeLimitInForce: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored: Int?
+
+    init() {}
+
+    /// nil while Charge Control is off, or before macOS or the helper has said yes to a limit.
+    var value: Int? {
+        lock.lock()
+        defer { lock.unlock() }
+        return stored
+    }
+
+    func set(_ v: Int?) {
+        lock.lock()
+        stored = v
+        lock.unlock()
     }
 }

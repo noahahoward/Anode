@@ -81,7 +81,8 @@ run_install() {   # run_install HOME REPO
   OUT="$(HOME="$1" PATH="$T/shim:$PATH" ANODE_NO_LAUNCH=1 ANODE_REPO="$2" bash "$ROOT/install.sh" 2>&1)"; STATUS=$?
 }
 run_uninstall() { # run_uninstall HOME
-  OUT="$(HOME="$1" PATH="$T/shim:$PATH" bash "$1/.anode/source/uninstall.sh" --yes 2>&1 || true)"
+  # ANODE_NO_LAUNCH=1: a real built app (--full) must not be run to put back THIS Mac's charge settings.
+  OUT="$(HOME="$1" PATH="$T/shim:$PATH" ANODE_NO_LAUNCH=1 bash "$1/.anode/source/uninstall.sh" --yes 2>&1 || true)"
 }
 files_in() { ( cd "$1" && find . -mindepth 1 ! -path './Library/Keychains/.fl*' | sort ); }
 
@@ -175,6 +176,26 @@ else
   OUT="$(HOME="$H" PATH="$T/shim:$PATH" bash "$H/Developer/Anode/uninstall.sh" --yes 2>&1 || true)"
   check "an install in ~/Developer/Anode is found and removed" absent "$H/Developer/Anode"
   check "and its app"                                         absent "$H/Applications/Anode.app"
+
+  echo "6b. Charge Control's limit is put back before the app goes (a stub app answers)"
+  # The stub stands in for AnodeApp: it writes down how it was run, and whether its settings were still there.
+  stub_app() {  # stub_app HOME EXIT-STATUS
+    mkdir -p "$1/Applications/Anode.app/Contents/MacOS"
+    printf '#!/bin/sh\necho "$*" > "$HOME/restore-asked"\nexit %s\n' "$2" \
+      > "$1/Applications/Anode.app/Contents/MacOS/AnodeApp"
+    chmod +x "$1/Applications/Anode.app/Contents/MacOS/AnodeApp"
+  }
+  H="$(new_home 9)"; stub_app "$H" 1
+  OUT="$(HOME="$H" PATH="$T/shim:$PATH" bash "$ROOT/uninstall.sh" --yes 2>&1 || true)"
+  check "the app is asked to put macOS's charge settings back" grep -qx -- "--restore-charge-settings" "$H/restore-asked"
+  check "a failure says where to change the limit"            has "System Settings → Battery"
+  check "the app is still removed"                            absent "$H/Applications/Anode.app"
+  H="$(new_home 10)"; stub_app "$H" 0
+  OUT="$(HOME="$H" PATH="$T/shim:$PATH" bash "$ROOT/uninstall.sh" --yes 2>&1 || true)"
+  check "a restore that worked says nothing about it"         hasnt "System Settings → Battery"
+  H="$(new_home 11)"; stub_app "$H" 1
+  OUT="$(HOME="$H" PATH="$T/shim:$PATH" ANODE_NO_LAUNCH=1 bash "$ROOT/uninstall.sh" --yes 2>&1 || true)"
+  check "ANODE_NO_LAUNCH=1 runs no app"                       absent "$H/restore-asked"
 fi
 
 # ═══ 7. optional: the real thing ════════════════════════════════════════════

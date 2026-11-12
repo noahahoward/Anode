@@ -280,8 +280,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         AXUIElementSetMessagingTimeout(AXUIElementCreateSystemWide(), 0.5)
         // Charge Control's own hold is not a limit the Mac enforces: tell the monitor the limit it holds (nil
         // while it is off), so the charge-limit learner does not learn it and the card names it as the target.
+        // The limit actually in force (a hold or Top Up included) once the controller knows it: read through a
+        // locked box, because this closure runs on the monitor's sampling queue and the controller is main-only.
+        let chargeLimitInForce = ChargeLimitInForce()
         monitor = PowerMonitor(chargeControlLimit: {
-            Settings.shared.chargeControlEnabled ? Settings.shared.chargeLimit : nil
+            ChargeController.limitForMonitor(settings: .shared, inForce: chargeLimitInForce)
         })
         store = HistoryStore()
         seedLiveGraphFromHistory()
@@ -331,7 +334,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         LidGlass.current = lidGlass
         keepAwake = KeepAwakeController()
         KeepAwakeController.current = keepAwake
-        chargeControl = ChargeController(settings: .shared, helper: ChargeHelperAdapter())
+        chargeControl = ChargeController(settings: .shared, helper: ChargeHelperAdapter(),
+                                         limitInForce: chargeLimitInForce)
         ChargeController.current = chargeControl
         keyboardCleaner = KeyboardCleaner(tap: CleanerInputTap(), windows: CleanerWindows())
         KeyboardCleaner.current = keyboardCleaner
@@ -3050,6 +3054,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
             if label.toolTip != tip { label.toolTip = tip }
         }
     }
+}
+
+// `uninstall.sh` runs the app this way, with no window and before anything else starts, to put macOS's own charge
+// settings back before the app and its settings are deleted: the limit is macOS's and would outlive them.
+if CommandLine.arguments.contains(ChargeController.restoreArgument) {
+    exit(ChargeController.restoreForUninstall(settings: .shared, helper: ChargeHelperAdapter()) ? 0 : 1)
 }
 
 let app = NSApplication.shared
