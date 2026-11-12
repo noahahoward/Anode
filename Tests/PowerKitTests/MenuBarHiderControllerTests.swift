@@ -207,6 +207,20 @@ final class MenuBarHiderControllerTests: XCTestCase {
         XCTAssertFalse(pill.isShowing)
     }
 
+    /// On macOS 27 the chevron is drawn by MenuBarAgent, so a click on it reaches the pill's global monitor first: its mouse-down
+    /// closes the pill as a click away, then its mouse-up toggles. Seen on hardware 2026-11-11: the pill could be opened and
+    /// never closed with the chevron. A toggle that follows a click-away close at once is that same click: the pill stays shut.
+    func testChevronClickThatAlsoClickedAwayClosesThePill() {
+        turnOn()
+        controller.togglePill()
+        XCTAssertTrue(pill.isShowing)
+        controller.dismissPill()                                   // the click's mouse-down, seen as a click away
+        clock = clock.addingTimeInterval(0.15); controller.togglePill()   // the same click's mouse-up on the chevron
+        XCTAssertFalse(pill.isShowing)
+        clock = clock.addingTimeInterval(1); controller.togglePill()      // a later click opens it again
+        XCTAssertTrue(pill.isShowing)
+    }
+
     func testPillAutoClosesOnTick() {
         settings.menuBarHiderAutoCloseSeconds = 5
         turnOn()

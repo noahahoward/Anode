@@ -9,6 +9,9 @@ import PowerKit
 final class BarChevron: NSObject, ChevronPresenting {
 
     static let autosaveName = "AnodeHiderChevron"
+    /// A tall, narrow "‹" (the hidden icons are to the left), in an item no wider than it: a square chevron took too much room.
+    static let symbolName = "chevron.compact.left"
+    static let length: CGFloat = 12
 
     var onToggle: (() -> Void)?
     /// Builds the right-click menu for the state of the moment.
@@ -20,7 +23,7 @@ final class BarChevron: NSObject, ChevronPresenting {
     /// and the owner reaches the settings through Anode's other items or its window.
     func install() {
         guard item == nil else { return }
-        let created = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
+        let created = NSStatusBar.system.statusItem(withLength: Self.length)
         guard let button = created.button else {
             NSStatusBar.system.removeStatusItem(created)
             return
@@ -28,7 +31,7 @@ final class BarChevron: NSObject, ChevronPresenting {
         created.autosaveName = Self.autosaveName
         // Explicitly visible, every time: macOS saves `isVisible` per autosave name (see `MenuBarWidgetController.rebuild`).
         created.isVisible = true
-        let image = NSImage(systemSymbolName: "chevron.compact.down", accessibilityDescription: "Menu bar icons")
+        let image = NSImage(systemSymbolName: Self.symbolName, accessibilityDescription: "Menu bar icons")
         image?.isTemplate = true
         button.image = image
         button.setAccessibilityLabel("Menu bar icons")

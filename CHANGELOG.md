@@ -8,7 +8,7 @@ Nothing was bumped between 1.0.0 and 1.15.0. Those versions were assigned afterw
 git tags (`git show v1.7.0`); builds made before 1.15.0 still say 1.0.0 in their About box.
 
 ## 1.16.0 — 2026-11-11
-- Menu bar hider (Beta Features, off by default): a chevron in the menu bar tucks everything except battery, sound, Wi-Fi, Control Center and the clock out of sight. Press the chevron (or ⌃⌥⌘B) and a small panel under the notch shows the rest, each one clickable.
+- Menu bar hider (Beta Features, off by default): a chevron in the menu bar tucks other apps' icons out of sight, leaving macOS's own icons (Wi-Fi, sound, battery, the microphone light and the rest) and the ones you choose to keep. Press the chevron (or ⌃⌥⌘B) and a small panel under the notch shows the rest, each one clickable.
 - Icons macOS had parked off the left edge when the bar got too full (they could not be seen or clicked) are reachable from the panel too.
 - Choose what stays on the bar and what sits behind the chevron by dragging, in Beta Features. Anode's own menu bar widgets can be tucked away the same way.
 - Right-click the chevron to pick how long the panel stays open (5, 10 or 30 seconds, or until you close it). Turning the feature off, or quitting Anode, puts the bar back as it was.

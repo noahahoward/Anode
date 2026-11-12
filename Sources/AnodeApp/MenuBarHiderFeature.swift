@@ -61,7 +61,7 @@ final class BarListSource: NSObject, NSTableViewDataSource, NSTableViewDelegate 
 final class MenuBarHiderFeature: BetaFeature {
 
     let title = "Menu Bar Hider"
-    let summary = "Folds the menu bar down to the icons you pick (battery, sound and Wi-Fi to begin with) and a chevron. "
+    let summary = "Folds the menu bar down to macOS's own icons, the icons you pick, and a chevron. "
                 + "Press the chevron, or the shortcut, and every other icon appears in a small panel under the notch, "
                 + "each one clickable. Needs Accessibility to read the bar."
     var layoutChanged: (() -> Void)?
@@ -115,8 +115,8 @@ final class MenuBarHiderFeature: BetaFeature {
 
     // ── Pure parts ──────────────────────────────────────────────────────────
 
-    /// The two lists: on the bar (the pinned items in their order, then the locked ones: the clock and Control Center, which
-    /// are always there) and behind the chevron (in the pill's order).
+    /// The two lists: on the bar (the pinned items in their order, then the locked ones: every icon macOS draws
+    /// itself, which always stays) and behind the chevron (in the pill's order).
     static func rows(for arrangement: BarArrangement, items: [BarItem]) -> (onBar: [BarItem], behind: [BarItem]) {
         let pinned = arrangement.pinned.compactMap { key in items.first { $0.key == key && !$0.isLocked } }
         let locked = items.filter(\.isLocked)

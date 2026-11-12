@@ -109,7 +109,7 @@ final class AXBarReader: BarReading {
             let key = BarItemKey.make(bundleID: app.bundleID, appName: app.name, identifier: c.identifier, title: c.title,
                                       description: c.description, ordinal: ordinal)
             return BarItem(key: key, bundleID: app.bundleID, appName: app.name, title: clean(c.title) ?? clean(c.description) ?? clean(c.identifier) ?? "",
-                           frame: c.frame, isLocked: BarItem.isLockedItem(identifier: c.identifier, title: c.title ?? c.description),
+                           frame: c.frame, isLocked: BarItem.isLockedItem(bundleID: app.bundleID, identifier: c.identifier, title: c.title ?? c.description),
                            hasPress: c.hasPress, pid: app.pid)
         }
     }
@@ -193,7 +193,7 @@ final class AXBarReader: BarReading {
             noteFailure(apps: asked, results: results, silenceMatters: matters)
             DispatchQueue.main.async {
                 deadline.cancel()
-                _ = once.complete(found?.map(\.item))
+                _ = once.complete(found.map { BarItem.markingThoseUnderSystemItems($0.map(\.item)) })
             }
         }
     }
