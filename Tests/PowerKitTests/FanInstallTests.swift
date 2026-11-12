@@ -471,8 +471,9 @@ final class FanClientPinTests: XCTestCase {
     /// by anyone who can run codesign, IS ACCEPTED by the installed daemon. That
     /// is the price of an install that survives rebuilds without a Developer ID,
     /// it is stated in FanLink.swift, FanDaemon.swift, the helper's usage text
-    /// and the install sheet, and it is asserted here so nobody can later claim
-    /// the check is stronger than it is.
+    /// and the install sheet (`FanElevation.installDisclosure`, which names the
+    /// helper's whole vocabulary — fans AND charger), and it is asserted here so
+    /// nobody can later claim the check is stronger than it is.
     func testAnyProgramSignedUnderOurIdentifierIsAcceptedByTheDaemon() {
         let impostor = peer("ffff9999", identifier)
         XCTAssertEqual(FanAccess.decide(peer: impostor, ownerUID: 501,

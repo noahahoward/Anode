@@ -108,23 +108,30 @@ import Foundation
 // Before installing: nothing of this project runs as root, ever, unless the user
 // starts the session helper by hand.
 //
-// After installing: STILL NOTHING RUNS until fan control is used. launchd holds
+// After installing: STILL NOTHING RUNS until the helper is used. launchd holds
 // the socket and starts the helper on a connection; it leaves again once it has
-// been idle and is holding no fan. Not at boot, not while the app is closed, not
-// while fan control is off. The first draft of this made the daemon resident with
+// been idle, is holding no fan and is not discharging. Not at boot, not while the
+// app is closed. The first draft of this made the daemon resident with
 // RunAtLoad + KeepAlive, which was a permanent root process bought to save a
 // process launch — see `plistDictionary`.
 //
-// While it is up, its entire ability is to set a fan target within the range the
-// fan itself reports, on request from the uid that installed it. Anything running
-// as that user can ask. An attacker who takes it can make the machine loud, or
-// hold a fan where the firmware would also hold it — the SMC arbitrates and has
-// been observed clamping a written target upward. It cannot read anything, cannot
-// write any other SMC key, cannot run anything, and has no path or key name in
-// its input.
+// While it is up, its entire ability is five commands — set fan N to R rpm,
+// release the fans, set the macOS charge limit (20–100%), cut the charger to
+// discharge down to a percentage, and reconnect it — on request from the uid
+// that installed it. Anything running as that user can ask. What it writes is
+// exactly: the fan keys (`F<n>Tg`, `F<n>md`) within the range each fan reports;
+// the adapter-cut key `CHIE`, with 0x08 or 0x00 and no other value; and one
+// preference, `mclLimitValue` in com.apple.smartcharging.topoffprotection. An
+// attacker who takes it can make the machine loud, hold a fan where the firmware
+// would also hold it — the SMC arbitrates and has been observed clamping a
+// written target upward — stop charging at 20%, or run the battery down to 10%
+// with the cable in. It cannot read anything back to its caller, cannot write
+// any other SMC key or preference, cannot run anything, and has no path or key
+// name in its input.
 //
 // The undo is one button and removes every trace, including handing the fans
-// back. `FanHelperInstall.artifacts` is the list, and it is asserted complete.
+// back and reconnecting the charger. `FanHelperInstall.artifacts` is the list,
+// and it is asserted complete.
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Names, paths and versions for the installed fan daemon. One place, because a
@@ -304,8 +311,9 @@ public enum FanDaemon {
     /// rather than restating it.
     public static let socketActivationName = "FanControl"
 
-    /// How long the on-demand daemon waits, with no client and no fan held,
-    /// before exiting and letting launchd hold the socket again.
+    /// How long the on-demand daemon waits, with no client, no fan held and no
+    /// discharge running, before exiting and letting launchd hold the socket
+    /// again.
     ///
     /// It exists so the helper is not resident, and it is 90 seconds rather than
     /// something eager because leaving is not free: launchd has to start a new
@@ -313,10 +321,12 @@ public enum FanDaemon {
     /// tab is open and holds the connection between pings, so in practice this
     /// fires once, after the app has gone.
     ///
-    /// A HELPER HOLDING A FAN NEVER IDLE-EXITS, whatever this says. Exiting runs
-    /// the dead-man's switch and hands the fans back, which is right when the
-    /// app has crashed and wrong when it simply has nothing to say. `run()`
-    /// enforces that, not this constant.
+    /// A HELPER HOLDING A FAN, DISCHARGING, OR OWING A CHARGER RECONNECT NEVER
+    /// IDLE-EXITS, whatever this says. Exiting runs the dead-man's switch and
+    /// hands the fans back, which is right when the app has crashed and wrong
+    /// when it simply has nothing to say; and a discharge has to be watched to
+    /// its floor. `run()` enforces that (`FanHelperServer.isIdle`), not this
+    /// constant.
     public static let idleExit: TimeInterval = 90
 
     // ── The socket launchd is holding ───────────────────────────────────────
@@ -785,6 +795,27 @@ public enum FanDaemonInstall {
 
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// The helper's whole root surface, in the words every disclosure uses.
+///
+/// One list, so the sheets, the prompts and the helper's own printouts cannot
+/// drift from each other or from the code: the charge-limit range is read from
+/// the range the server enforces.
+public enum HelperVocabulary {
+    public static let commands: [String] = [
+        "set fan N to R rpm",
+        "release the fans",
+        "set the macOS charge limit (\(FanHelperServer.chargeLimitRange.lowerBound)–"
+            + "\(FanHelperServer.chargeLimitRange.upperBound)%)",
+        "cut the charger to discharge down to a percentage",
+        "reconnect it",
+    ]
+
+    /// "set fan N to R rpm, release the fans, …, and reconnect it".
+    public static var sentence: String {
+        commands.dropLast().joined(separator: ", ") + ", and " + (commands.last ?? "")
+    }
+}
+
 /// Getting one authorisation dialog, from an app that cannot become root.
 ///
 /// `do shell script … with administrator privileges` is the only mechanism left
@@ -853,15 +884,76 @@ public enum FanElevation {
     }
 
     /// The prompt the system dialog carries. Names the two paths, because the
-    /// objection to this mechanism is that it names none.
+    /// objection to this mechanism is that it names none, and what the helper
+    /// can do, because that is what the password is for.
     public static let installPrompt =
-        "Anode will install a fan helper that runs as root: "
+        "Anode will install a helper that runs as root and, on request, sets fan "
+        + "speeds, sets the macOS charge limit, and cuts or reconnects the charger: "
         + "\(FanDaemon.helperPath) and \(FanDaemon.plistPath). "
         + "Uninstalling from the Fans tab removes both."
 
     public static let uninstallPrompt =
-        "Anode will hand the fans back to macOS and remove everything it "
-        + "has installed as root."
+        "Anode will hand the fans back to macOS, reconnect the charger, and remove "
+        + "everything it has installed as root."
+
+    /// What the Fans tab says once the uninstall has run.
+    public static let uninstallDone =
+        "Removed. The fans are back on automatic, the charger is reconnected, and "
+        + "nothing of Anode runs as root."
+
+    // ── What the person is told before authorising ──────────────────────────
+    //
+    // Here rather than in the app so a test can hold every one of them to the
+    // helper's real vocabulary. Each names all five commands, in
+    // `HelperVocabulary.sentence`, because each is the last thing a person reads
+    // before giving a root process that power.
+
+    /// The sheet before the session helper is first started (the Terminal
+    /// route). One exact build can ask; it stops with ⌃C.
+    public static let sessionDisclosure = """
+    While you run the helper, one program can ask it to \(HelperVocabulary.sentence): \
+    this exact build of Anode, running as you. Fan speeds stay within the minimum \
+    and maximum the fan itself reports, and a discharge never goes below \
+    \(DischargeWatch.floor)%.
+
+    The helper is not installed and does not run in the background. Taking a \
+    slider opens a Terminal window with the command below; you read it, \
+    authenticate, and stop it with ⌃C. The fans go back to automatic control and \
+    the charger is reconnected when you do — or if Anode quits or crashes.
+
+    Anode is not signed with an Apple Developer ID, so nothing verifies \
+    the helper before it runs as root except you, when you read the path.
+    """
+
+    /// The sheet before Install raises the authorisation dialog.
+    public static let installDisclosure = """
+    This asks for your password ONCE and then never again — the helper keeps \
+    working after you rebuild Anode and after you restart the Mac.
+
+    It installs two files, both owned by root:
+      \(FanDaemon.helperPath)
+      \(FanDaemon.plistPath)
+
+    Nothing runs until you use it. launchd holds the socket and starts the \
+    helper when Anode asks for it; it stops again a minute or so after you are \
+    done, once no fan is held and no discharge is running. Not at boot, not \
+    while Anode is closed.
+
+    What you are giving up, plainly: while that helper is up, anything running \
+    as your user account can ask it to \(HelperVocabulary.sentence). Fan speeds \
+    stay within the minimum and maximum the fan itself reports, and a discharge \
+    never goes below \(DischargeWatch.floor)%. Anode has no Apple Developer ID, so \
+    it cannot prove to that process which program is asking — anything running \
+    as you can. Another user on this Mac cannot, and neither can anything at all \
+    before you install this.
+
+    The safer alternative is already on this strip: run the helper by hand \
+    when you want it, and stop it with ⌃C. It costs one command each session \
+    and it only ever trusts the exact build you started it beside.
+
+    "Uninstall Fan Helper" removes both files, unloads the daemon, hands the \
+    fans back and reconnects the charger.
+    """
 
     public static func osascriptArguments(command: String, prompt: String) -> [String] {
         ["-e", script(command: command, prompt: prompt)]

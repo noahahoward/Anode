@@ -133,13 +133,17 @@ sudo ~/Applications/Anode.app/Contents/MacOS/AnodeHelper
 
 It prints what it will accept and then waits. The app picks it up within a few
 seconds and the sliders come alive. Press ⌃C to stop it; the fans go back to
-automatic control when you do, and also if Anode quits or crashes — the
-helper hands them back the moment its client disappears.
+automatic control and the charger is reconnected when you do, and also if
+Anode quits or crashes — the helper hands them back the moment its client
+disappears.
 
-While it runs, exactly one program can set a fan speed: that build of
-Anode, run by you, within the minimum and maximum the fan itself reports.
-Another user cannot reach it (the socket is 0600 in a root-owned directory) and
-another program of yours cannot either (its cdhash will not match).
+While it runs, exactly one program can use it: that build of Anode, run by
+you. Its whole vocabulary is "set fan N to R rpm", "release the fans", "set the
+macOS charge limit (20–100%)", "cut the charger to discharge down to a
+percentage", and "reconnect it" — fan speeds within the minimum and maximum the
+fan itself reports, and a discharge never below 10%. Another user cannot reach
+it (the socket is 0600 in a root-owned directory) and another program of yours
+cannot either (its cdhash will not match).
 
 **Rebuilding invalidates it, by design.** The helper pins the app's code hash
 when it starts, and an ad-hoc signature changes on every build, so a helper left
@@ -149,14 +153,16 @@ privileged session ending, and declining to start another one leaves you with
 exactly the monitor you had before.
 
 There is one gap and it is worth knowing: if the helper is killed with `kill -9`
-nothing runs, so a fan left at a manual speed stays there. The way out is:
+nothing runs, so a fan left at a manual speed stays there, and a charger cut for
+a discharge stays cut until the next helper starts (it clears a cut nobody owns
+before serving). The way out is:
 
 ```sh
 sudo ~/Applications/Anode.app/Contents/MacOS/AnodeHelper --uninstall
 ```
 
-which hands every fan back unconditionally and removes everything this project
-has ever asked root to leave on the disk — including the launch daemon, helper
+which hands every fan back unconditionally, reconnects the charger, and removes
+everything this project has ever asked root to leave on the disk — including the launch daemon, helper
 binary and pinned-hash file that an earlier draft of this feature installed.
 
 ### Installing it instead, and what that costs
@@ -190,9 +196,9 @@ containing LaunchDaemons must be notarised.
 **Nothing is resident.** Installing does not put a root process on your machine.
 The job has no `RunAtLoad` and no `KeepAlive`; it declares a `Sockets` entry, so
 launchd holds `/var/run/anode-fan.sock` itself and starts the helper only
-when something connects. The helper exits again after 90 seconds with no client
-and no fan held. So: nothing at boot, nothing while Anode is closed,
-nothing while fan control is off.
+when something connects. The helper exits again after 90 seconds with no client,
+no fan held and no discharge running. So: nothing at boot, nothing while Anode
+is closed, nothing while fan and charge control are off.
 
 The socket launchd creates has the same owner and mode the session helper sets
 for itself — `SockPathOwner` is the installing uid and `SockPathMode` is 384,
@@ -204,7 +210,9 @@ Two rules keep that safe, and both are tested against a real socket rather than
 argued for. A helper never unlinks a socket it did not create, because launchd is
 still holding that path and it is how the *next* helper gets started. And a
 helper still holding fans it could not release never idle-exits, because leaving
-would drop the only record of where those fans belong.
+would drop the only record of where those fans belong — and neither does one
+that is discharging, or still owes the charger a reconnect, because nothing
+else would watch the floor.
 
 An idle helper costs nothing measurable either way: it blocks in `poll()` with no
 timeout, no threads and no timers, so it is not scheduled at all between
@@ -221,19 +229,25 @@ anybody can claim that identifier with one command:
 codesign --force --sign - -i dev.anode.app some-other-binary
 ```
 
-So after you install, **anything running as your user can set your fan speeds**,
-within the range the fan itself reports, until you uninstall. Another user on the
+So after you install, **anything running as your user can set your fan speeds,
+set the macOS charge limit, and discharge the battery on the charger**, until
+you uninstall. Another user on the
 Mac still cannot — that check is the kernel's and does not weaken — and nothing
 at all can before you install. There is no version of this that is airtight
 without a Developer ID, because an ad-hoc signature has no key an attacker cannot
 also use.
 
 What is left is a real but small boundary: the daemon's entire vocabulary is "set
-fan N to R rpm" and "release", every speed is re-clamped against limits read
-fresh from the fan, and there is no path or key name anywhere in its input.
+fan N to R rpm", "release the fans", "set the macOS charge limit (20–100%)",
+"cut the charger to discharge down to a percentage", and "reconnect it". Every
+speed is re-clamped against limits read fresh from the fan, a discharge never
+goes below 10% and the charger is reconnected on every exit the helper can see,
+and there is no path or key name anywhere in its input. Taken over, it can make
+the machine loud, stop charging at 20%, or run the battery down to 10% with the
+cable in.
 
-**Uninstall** removes both files, unloads the daemon, deletes the socket and
-hands the fans back to automatic. It is the **Uninstall Fan Helper…** button, or
+**Uninstall** removes both files, unloads the daemon, deletes the socket,
+hands the fans back to automatic and reconnects the charger. It is the **Uninstall Fan Helper…** button, or
 the same `--uninstall` command above.
 
 The full trust model, including what it does *not* protect against, is at the top

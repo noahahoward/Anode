@@ -152,8 +152,10 @@ final class FanSessionTests: XCTestCase {
 
     // ── ✕ ──────────────────────────────────────────────────────────────────
 
-    /// There is no per-fan release. The helper's whole privileged vocabulary is
-    /// "set one fan" and "release the fans", and faking a single-fan release by
+    /// There is no per-fan release. The helper's fan commands are "set fan N to
+    /// R rpm" and "release the fans" (the rest of its vocabulary is the
+    /// charger's: set the macOS charge limit, cut the charger to discharge, and
+    /// reconnect it), and faking a single-fan release by
     /// writing that fan its minimum would PIN it there — quietly — which is the
     /// exact failure this button exists to undo.
     func testTheCrossReleasesEveryFanBecauseThereIsNoOtherRelease() {

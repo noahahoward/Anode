@@ -319,6 +319,54 @@ public final class SMCFanHardware: FanHardware {
 
 // ── The server ──────────────────────────────────────────────────────────────
 
+/// What a client has sent that is not yet a whole request, and since when.
+///
+/// The helper never waits on a client: it reads what is there, keeps it here,
+/// and acts only on whole lines. The rules a slow client is held to live here,
+/// pure, so they can be tested without a socket: an unfinished line has a
+/// deadline counted from its FIRST byte — later bytes do not extend it — and no
+/// line may be longer than `FanWire.maxLineBytes`.
+struct RequestLines {
+    private(set) var pending = Data()
+    /// When the unfinished line at the front began arriving; nil when there is
+    /// none (nothing pending, or a whole line is waiting to be served).
+    private(set) var unfinishedSince: Date?
+
+    var hasLine: Bool { pending.contains(0x0A) }
+    /// More than a request can be, with no newline in it.
+    var tooLong: Bool { !hasLine && pending.count > FanWire.maxLineBytes }
+
+    mutating func append<S: Sequence>(_ bytes: S, at now: Date) where S.Element == UInt8 {
+        pending.append(contentsOf: bytes)
+        mark(now)
+    }
+
+    /// The next whole line, without its newline, or nil if there is none yet.
+    mutating func next(at now: Date) -> Data? {
+        guard let idx = pending.firstIndex(of: 0x0A) else { return nil }
+        let line = Data(pending[pending.startIndex..<idx])
+        pending.removeSubrange(pending.startIndex...idx)
+        mark(now)
+        return line
+    }
+
+    /// Has the unfinished line been unfinished for `deadline` or longer?
+    func stalled(at now: Date, after deadline: TimeInterval) -> Bool {
+        guard let unfinishedSince else { return false }
+        return now.timeIntervalSince(unfinishedSince) >= deadline
+    }
+
+    mutating func reset() {
+        pending.removeAll()
+        unfinishedSince = nil
+    }
+
+    private mutating func mark(_ now: Date) {
+        if pending.isEmpty || hasLine { unfinishedSince = nil }
+        else if unfinishedSince == nil { unfinishedSince = now }
+    }
+}
+
 /// The helper's socket, its access check, and the operations behind it: set fan
 /// N to R rpm, release the fans, set the macOS charge limit (20–100%), cut the
 /// charger to discharge down to a percentage, and reconnect it.
@@ -375,8 +423,16 @@ public final class FanHelperServer {
 
     private var listenFD: Int32 = -1
     private var clientFD: Int32 = -1
-    private var clientBuffer = Data()
+    private var lines = RequestLines()
     private var wakePipe: [Int32] = [-1, -1]
+
+    /// How long a client may take between the first byte of a request and its
+    /// newline before it is dropped (which reconnects the charger). The loop
+    /// never waits for those bytes — this only bounds how long a connection
+    /// that stopped mid-request is kept. A var only so a test can change it.
+    var requestLineDeadline: TimeInterval = 5
+    /// The most one reply may take to write, in total.
+    var replyWriteDeadline: TimeInterval = 2
 
     /// Did this process create the socket file, and may it therefore delete it?
     ///
@@ -426,18 +482,23 @@ public final class FanHelperServer {
     /// The percentage a discharge stops at, while this helper holds the charger
     /// cut. nil when it holds no cut.
     ///
-    /// Cleared only by a reconnect that succeeded: a failed one keeps it, so the
-    /// helper stays up (see `isIdle`) and the watch tries again.
+    /// Cleared only by a reconnect that READ BACK connected: a failed one keeps
+    /// it, so the helper stays up (see `isIdle`) and the watch tries again.
     public private(set) var dischargeTarget: Int?
 
-    /// A reconnect failed and is still owed. The watch retries it on every wake
-    /// whatever the battery says.
-    private var reconnectOwed = false
+    /// A reconnect failed and is still owed: this helper made the cut, or the
+    /// charger still reads cut after the writes. The watch retries it on every
+    /// wake whatever the battery says, and the helper is not idle until it lands.
+    private(set) var reconnectOwed = false
 
     /// How often a discharge looks at the battery. The only periodic wake this
     /// helper ever has, and only while the charger is cut. A var only so a test
     /// can shorten it; set it before `run()`.
     var dischargeWatchInterval: TimeInterval = 10
+
+    /// How hard each charger write is tried and read back. A var only so a test
+    /// can skip the pauses.
+    var chargeTiming: ChargeRelease.Timing = .standard
 
     public init(hardware: FanHardware,
                 configuration: Configuration,
@@ -449,10 +510,12 @@ public final class FanHelperServer {
         self.charge = charge
     }
 
-    /// Nothing connected, no fan held, and the charger not cut. Only then may an
-    /// on-demand daemon time out — exiting mid-discharge would leave the battery
-    /// draining with nobody watching the floor.
-    var isIdle: Bool { clientFD < 0 && holdings.isEmpty && dischargeTarget == nil }
+    /// Nothing connected, no fan held, the charger not cut, and no reconnect
+    /// owed. Only then may an on-demand daemon time out — exiting mid-discharge
+    /// would leave the battery draining with nobody watching the floor.
+    var isIdle: Bool {
+        clientFD < 0 && holdings.isEmpty && dischargeTarget == nil && !reconnectOwed
+    }
 
     /// Reconnect a charger cut that no live helper owns.
     ///
@@ -460,14 +523,22 @@ public final class FanHelperServer {
     /// `CHIE` = 08 and the charger disconnected. Only one helper serves the
     /// socket, so a cut found at startup belongs to a helper that died without
     /// its dead man's switch. Run by both `start` paths, before anything is
-    /// served. Writes nothing when the charger is already connected.
+    /// served. Writes nothing, and says nothing, when the charger reads
+    /// connected or the Mac has no such key.
     func clearOrphanedAdapterCut() {
-        guard let charge, charge.adapterCut() == true else { return }
-        if charge.setAdapterCut(false) {
+        guard charge != nil else { return }
+        let result = reconnectCharger()
+        switch result.outcome {
+        case .notCut, .noKey:
+            return
+        case .reconnected:
             log("cleared an adapter cut nobody owned")
-        } else {
+        case .stillCut:
             log("WARNING: found an adapter cut nobody owned and could not clear it — "
-              + "the charger is still disconnected")
+              + "\(result.message); retrying every \(Int(dischargeWatchInterval))s")
+        case .unconfirmed:
+            log("WARNING: the charger's cut key could not be read at startup — "
+              + "\(result.message)")
         }
     }
 
@@ -629,12 +700,24 @@ public final class FanHelperServer {
     /// cut the loop wakes every `dischargeWatchInterval` to look at the battery,
     /// because the floor has to hold whether or not the app is there to ask.
     /// It also never times out while discharging (`isIdle`).
+    ///
+    /// NOTHING A CLIENT DOES CAN HOLD THIS THREAD. The client socket is
+    /// non-blocking: a readable client gets one `read`, whole lines are served
+    /// one per pass, a half-sent line waits in `lines` (and is dropped after
+    /// `requestLineDeadline`), and a reply gets `replyWriteDeadline` in total.
+    /// So every pass reaches the floor check and the stop check whatever the
+    /// client is doing — slow, half-sent, or silent.
     public func run() {
         var idleSince: Date? = Date()
         while !stopping {
+            // A whole line already buffered is served before more is read: the
+            // client is left out of the poll, so a flood waits in ITS socket
+            // buffer instead of growing ours, and the poll does not wait.
+            let lineWaiting = clientFD >= 0 && lines.hasLine
+            let pollsClient = clientFD >= 0 && !lineWaiting
             var fds = [pollfd(fd: listenFD, events: Int16(POLLIN), revents: 0),
                        pollfd(fd: wakePipe[0], events: Int16(POLLIN), revents: 0)]
-            if clientFD >= 0 {
+            if pollsClient {
                 fds.append(pollfd(fd: clientFD, events: Int16(POLLIN), revents: 0))
             }
 
@@ -650,12 +733,17 @@ public final class FanHelperServer {
                       + "launchd starts a new helper when the app next connects.")
                     break
                 }
-                timeout = Int32((left * 1000).rounded(.up))
+                timeout = Self.milliseconds(left)
             }
-            if dischargeTarget != nil {
-                // Never idle while discharging, so this is the only timeout.
-                timeout = Int32((dischargeWatchInterval * 1000).rounded(.up))
+            if dischargeTarget != nil || reconnectOwed {
+                // Never idle while discharging or owing a reconnect.
+                timeout = Self.sooner(timeout, Self.milliseconds(dischargeWatchInterval))
             }
+            if let since = lines.unfinishedSince {
+                let left = requestLineDeadline - Date().timeIntervalSince(since)
+                timeout = Self.sooner(timeout, Self.milliseconds(left))
+            }
+            if lineWaiting { timeout = 0 }
 
             guard poll(&fds, nfds_t(fds.count), timeout) >= 0 || errno == EINTR else { break }
             if stopping { break }
@@ -664,7 +752,9 @@ public final class FanHelperServer {
                 var scratch = [UInt8](repeating: 0, count: 16)
                 _ = read(wakePipe[0], &scratch, scratch.count)
             }
-            if fds.count > 2, fds[2].revents != 0 { serveClientReadable() }
+            if pollsClient, fds[2].revents != 0 { readFromClient() }
+            serveOneLine()
+            dropAClientThatStalled()
             if fds[0].revents & Int16(POLLIN) != 0 { acceptOne() }
             // On every wake, not only the timed ones: a busy client must not be
             // able to starve the floor check.
@@ -673,20 +763,34 @@ public final class FanHelperServer {
         shutdownSocket()
     }
 
-    /// Reconnect the charger if the discharge has reached its floor, the
-    /// battery cannot be read, the cable is known to be out, or an earlier
-    /// reconnect failed. Does nothing when no cut is held.
+    private static func milliseconds(_ seconds: TimeInterval) -> Int32 {
+        Int32((max(0, seconds) * 1000).rounded(.up))
+    }
+
+    /// The earlier of two poll timeouts, where -1 is "no timeout".
+    private static func sooner(_ a: Int32, _ b: Int32) -> Int32 {
+        a < 0 ? b : min(a, b)
+    }
+
+    /// Reconnect the charger if a reconnect is owed, or if the discharge has
+    /// reached its floor, the battery cannot be read, or the cable is known to
+    /// be out. Does nothing when no cut is held and nothing is owed.
     func watchDischarge() {
-        guard let charge, let target = dischargeTarget else { return }
+        guard let charge else { return }
+        if reconnectOwed {
+            let result = reconnectCharger()
+            log(result.ok ? "\(result.message) (on a retry)"
+                          : "\(result.message) — retrying in \(Int(dischargeWatchInterval))s")
+            return
+        }
+        guard let target = dischargeTarget else { return }
         let percent = charge.batteryPercent()
-        guard reconnectOwed
-                || DischargeWatch.shouldRestore(target: target,
-                                                percent: percent,
-                                                onAC: charge.onAC()) else { return }
-        let why = reconnectOwed ? "retrying a failed reconnect"
-            : "discharge to \(target)% ended, battery "
-              + (percent.map { "\($0)%" } ?? "unreadable")
-        log(reconnectCharger(why: why).message)
+        guard DischargeWatch.shouldRestore(target: target,
+                                           percent: percent,
+                                           onAC: charge.onAC()) else { return }
+        let why = "discharge to \(target)% ended, battery "
+            + (percent.map { "\($0)%" } ?? "unreadable")
+        log("\(reconnectCharger().message) (\(why))")
     }
 
     /// Wake the loop and let it unwind. Safe to call from another thread — it
@@ -704,7 +808,10 @@ public final class FanHelperServer {
     private func acceptOne() {
         let fd = accept(listenFD, nil, nil)
         guard fd >= 0 else { return }
+        // configure first, for SO_NOSIGPIPE; then non-blocking, so no read or
+        // write on this client can hold the loop (see `run`).
         FanSocketIO.configure(fd, timeout: 5)
+        _ = fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK)
 
         guard let peer = FanPeer.of(socket: fd) else {
             refuse(fd, "the kernel would not identify the caller")
@@ -729,7 +836,7 @@ public final class FanHelperServer {
             return
         }
         clientFD = fd
-        clientBuffer.removeAll()
+        lines.reset()
         log("client connected")
     }
 
@@ -738,24 +845,52 @@ public final class FanHelperServer {
         // showing "the helper stopped answering", which is the same message a
         // crash produces and tells the user nothing about what to do.
         if let data = try? FanWire.encode(FanReply(ok: false, message: why)) {
-            _ = FanSocketIO.writeAll(fd, data)
+            _ = FanSocketIO.writeAll(fd, data, within: replyWriteDeadline)
         }
         close(fd)
     }
 
-    private func serveClientReadable() {
-        do {
-            let line = try FanSocketIO.readLine(clientFD, buffer: &clientBuffer)
-            let request = try FanWire.decode(FanRequest.self, from: line)
-            let reply = handle(request)
-            if let data = try? FanWire.encode(reply), !FanSocketIO.writeAll(clientFD, data) {
-                dropClient(reason: "the client stopped reading")
+    /// One `read` of whatever the client has sent — never a wait for more.
+    private func readFromClient() {
+        var chunk = [UInt8](repeating: 0, count: 1024)
+        let n = read(clientFD, &chunk, chunk.count)
+        if n > 0 {
+            lines.append(chunk[0..<n], at: Date())
+            if lines.tooLong {
+                dropClient(reason: "a request longer than \(FanWire.maxLineBytes) bytes")
             }
-        } catch FanWire.Failure.closed {
-            dropClient(reason: "the client disconnected")
+            return
+        }
+        if n < 0, errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR { return }
+        dropClient(reason: n == 0 ? "the client disconnected"
+                                  : "the client's socket failed: \(String(cString: strerror(errno)))")
+    }
+
+    /// Serve at most ONE whole line, so a client with many queued requests
+    /// still lets the loop reach the floor check between each of them.
+    private func serveOneLine() {
+        guard clientFD >= 0, let line = lines.next(at: Date()) else { return }
+        let request: FanRequest
+        do {
+            request = try FanWire.decode(FanRequest.self, from: line)
         } catch {
             dropClient(reason: "malformed request (\(error))")
+            return
         }
+        let reply = handle(request)
+        if let data = try? FanWire.encode(reply),
+           !FanSocketIO.writeAll(clientFD, data, within: replyWriteDeadline) {
+            dropClient(reason: "the client stopped reading")
+        }
+    }
+
+    /// A client that began a request and has not finished it is dropped once
+    /// `requestLineDeadline` has passed since its first byte, however slowly it
+    /// keeps dripping the rest.
+    private func dropAClientThatStalled() {
+        guard clientFD >= 0, lines.stalled(at: Date(), after: requestLineDeadline) else { return }
+        dropClient(reason: "it began a request and did not finish it within "
+                         + "\(Int(requestLineDeadline.rounded(.up)))s")
     }
 
     /// The client went away — quit, crashed, or was killed. Hand the fans back.
@@ -764,13 +899,18 @@ public final class FanHelperServer {
     /// socket on quit rather than sending a polite goodbye: the crash path and
     /// the ordinary-quit path are then the same path, so the one that matters
     /// gets exercised every day instead of never.
+    ///
+    /// RELEASE BEFORE THE FIRST LOG LINE. A log line is a write to whatever
+    /// stderr is, and the charger must be reconnected before anything that
+    /// could fail; `HelperLog` cannot end the process, and this order means it
+    /// would not matter if something someday could.
     private func dropClient(reason: String) {
         guard clientFD >= 0 else { return }
         close(clientFD)
         clientFD = -1
-        clientBuffer.removeAll()
-        log("client gone (\(reason))")
+        lines.reset()
         let reply = release()
+        log("client gone (\(reason))")
         log(reply.message)
     }
 
@@ -856,12 +996,17 @@ public final class FanHelperServer {
             else { why = "the battery is already at or below \(max(target, DischargeWatch.floor))%" }
             return FanReply(ok: false, message: "refused: \(why)")
         }
-        guard charge.setAdapterCut(true) else {
-            // A refused write is not proof that nothing changed. Reconnecting is
-            // the one write that cannot hurt.
-            _ = charge.setAdapterCut(false)
-            log("the SMC refused the adapter cut")
-            return FanReply(ok: false, message: "the SMC would not cut the charger")
+        // Read back: "accepted" is not "cut". A cut that cannot be confirmed is
+        // undone at once — with a write, whatever the key reads now, because a
+        // read straight after the cut may not show it yet.
+        let cut = ChargeRelease.cut(charge, timing: chargeTiming)
+        guard cut == .cut else {
+            let undo = reconnectCharger(alwaysWrite: true)
+            let why = cut == .refused
+                ? "the SMC would not cut the charger"
+                : "the SMC took the cut and the charger does not read as cut"
+            log("\(why); \(undo.message)")
+            return FanReply(ok: false, message: undo.ok ? why : "\(why); \(undo.message)")
         }
         dischargeTarget = target
         reconnectOwed = false
@@ -870,37 +1015,36 @@ public final class FanHelperServer {
     }
 
     private func stopDischarge() -> FanReply {
-        guard let charge else {
+        guard charge != nil else {
             return FanReply(ok: false, message: "this helper has no charge control")
         }
         // Asked to reconnect, it reconnects — including a cut it does not
-        // remember making. Reconnecting cannot hurt; refusing to could.
-        guard dischargeTarget != nil || charge.adapterCut() == true else {
-            return FanReply(ok: true, message: "the charger is not cut — nothing to reconnect")
+        // remember making. Reconnecting cannot hurt; refusing to could. A
+        // charger that reads connected is not written at all.
+        let result = reconnectCharger()
+        switch result.outcome {
+        case .notCut, .noKey: break
+        default: log("\(result.message) (asked to stop)")
         }
-        let reply = reconnectCharger(why: "asked to stop")
-        log(reply.message)
-        return reply
+        return FanReply(ok: result.ok, message: result.message)
     }
 
-    /// Reconnect the charger. A few tries a moment apart: this is the write
-    /// that must not be skipped. The target is cleared only on success, so a
-    /// failure keeps the helper up and the watch retrying.
-    private func reconnectCharger(why: String) -> FanReply {
-        guard let charge else {
-            return FanReply(ok: false, message: "this helper has no charge control")
+    /// Reconnect the charger through the one verified routine and keep this
+    /// helper's books: the target is cleared only by a reconnect that READ BACK
+    /// connected. A failure keeps the target and owes the reconnect — when this
+    /// helper made the cut, or the charger plainly still reads cut — so the
+    /// helper stays up (`isIdle`) and the watch retries it on every pass.
+    @discardableResult
+    private func reconnectCharger(alwaysWrite: Bool = false) -> ChargeRelease.Result {
+        guard let charge else { return ChargeRelease.Result(.noKey, writes: 0) }
+        let result = ChargeRelease.reconnect(charge, alwaysWrite: alwaysWrite, timing: chargeTiming)
+        if result.ok {
+            dischargeTarget = nil
+            reconnectOwed = false
+        } else if dischargeTarget != nil || result.outcome == .stillCut {
+            reconnectOwed = true
         }
-        for attempt in 0..<3 {
-            if attempt > 0 { usleep(100_000) }
-            if charge.setAdapterCut(false) {
-                dischargeTarget = nil
-                reconnectOwed = false
-                return FanReply(ok: true, message: "charger reconnected (\(why))")
-            }
-        }
-        reconnectOwed = dischargeTarget != nil
-        return FanReply(ok: false, message: "the charger did NOT reconnect (\(why)) — "
-                      + "it is still cut off")
+        return result
     }
 
     private func set(_ target: FanTarget) -> FanReply {
@@ -1051,18 +1195,21 @@ public final class FanHelperServer {
     /// Hand back everything this helper holds: the charger, then the fans.
     ///
     /// The one release path — `releaseAll`, the dead man's switch in
-    /// `dropClient`, and `shutdownSocket` (which SIGTERM and SIGINT reach
-    /// through `stop()`) all come here.
+    /// `dropClient`, and `shutdownSocket` (which every signal in
+    /// `HelperSignals.stop` reaches through `stop()`) all come here.
     @discardableResult
     private func release() -> FanReply {
         // The charger FIRST, and outside the fans' "nothing held" early return:
-        // the common case is a discharge with no fan held at all.
-        let charger = dischargeTarget != nil ? reconnectCharger(why: "released") : nil
+        // the common case is a discharge with no fan held at all. The fans are
+        // released whatever the charger did.
+        let charger: ChargeRelease.Result? =
+            dischargeTarget != nil || reconnectOwed ? reconnectCharger() : nil
         let hadFans = !holdings.isEmpty
         let fans = releaseFans()
         guard let charger else { return fans }
+        let chargerText = "\(charger.message) (released)"
         return FanReply(ok: charger.ok && fans.ok,
-                        message: hadFans ? "\(fans.message); \(charger.message)" : charger.message)
+                        message: hadFans ? "\(fans.message); \(chargerText)" : chargerText)
     }
 
     private func releaseFans() -> FanReply {

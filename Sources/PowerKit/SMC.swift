@@ -64,6 +64,35 @@ public final class SMC {
     }
 
     private func call(_ input: [UInt8]) -> [UInt8]? {
+        let (rc, out) = callRaw(input)
+        return rc == kIOReturnSuccess ? out : nil
+    }
+
+    /// `call`, and ALSO the SMC's own verdict.
+    ///
+    /// `kIOReturnSuccess` only says the request reached the driver. The SMC
+    /// reports its own result in byte 40, and an SMC-level refusal comes back
+    /// with the IOKit code still 0. MEASURED read-only on this Mac (macOS 27):
+    ///
+    ///     CHIE  key info rc 0 result 0     read rc 0 result 0
+    ///     ZZZZ  key info rc 0 result 132   read rc 0 result 132, data zeroed
+    ///
+    /// so a failed read of a one-byte key looks exactly like a read of 0x00 —
+    /// for `CHIE`, "the charger is connected" — unless this byte is checked.
+    /// Used by the charger's byte read and write only. The fan writes keep
+    /// `call` exactly as they were measured working.
+    private func callChecked(_ input: [UInt8]) -> [UInt8]? {
+        let (rc, out) = callRaw(input)
+        return Self.succeeded(rc: rc, output: out) ? out : nil
+    }
+
+    /// Did the call reach the SMC AND did the SMC say yes? Pure, so it can be
+    /// tested without an SMC.
+    static func succeeded(rc: kern_return_t, output: [UInt8]) -> Bool {
+        rc == kIOReturnSuccess && output.count == Off.total && output[Off.result] == 0
+    }
+
+    private func callRaw(_ input: [UInt8]) -> (kern_return_t, [UInt8]) {
         var out = [UInt8](repeating: 0, count: Off.total)
         var outSize = Off.total
         let rc = input.withUnsafeBytes { inPtr -> kern_return_t in
@@ -74,7 +103,7 @@ public final class SMC {
             }
         }
         lastError = rc
-        return rc == kIOReturnSuccess ? out : nil
+        return (rc, out)
     }
 
     private static func code(_ s: String) -> UInt32 {
@@ -264,9 +293,23 @@ public final class SMC {
     /// `read` decodes numbers and returns nil for anything else, so a `hex_` key
     /// such as the charger's `CHIE` is invisible to it. This answers only "what
     /// byte is there", and only for a key the SMC itself says is one byte long.
+    ///
+    /// nil unless the SMC itself reported success on both calls — see
+    /// `callChecked`: a refused read hands back a zeroed buffer, and for `CHIE`
+    /// zero means "connected".
     public func readByte(_ key: String) -> UInt8? {
-        guard let (bytes, _) = readRaw(Self.code(key)), bytes.count == 1 else { return nil }
-        return bytes[0]
+        let keyCode = Self.code(key)
+        var info = [UInt8](repeating: 0, count: Off.total)
+        Self.setU32(&info, Off.key, keyCode)
+        info[Off.data8] = Cmd.readKeyInfo.rawValue
+        guard let meta = callChecked(info), Self.u32(meta, Off.dataSize) == 1 else { return nil }
+
+        var r = [UInt8](repeating: 0, count: Off.total)
+        Self.setU32(&r, Off.key, keyCode)
+        Self.setU32(&r, Off.dataSize, 1)
+        r[Off.data8] = Cmd.readBytes.rawValue
+        guard let out = callChecked(r) else { return nil }
+        return out[Off.bytes]
     }
 
     /// Write a one-byte key, keeping the type the SMC declares for it.
@@ -276,12 +319,15 @@ public final class SMC {
     /// writes above: one byte, or nothing is written. The type sent with the
     /// write is the key's own, read a moment earlier, never one this code
     /// assumes.
+    ///
+    /// True only when the SMC itself reported success (`callChecked`). Even then
+    /// it is "accepted", not "applied": the caller reads the key back.
     @discardableResult
     public func writeByte(_ key: String, _ value: UInt8) -> Bool {
         var info = [UInt8](repeating: 0, count: Off.total)
         Self.setU32(&info, Off.key, Self.code(key))
         info[Off.data8] = Cmd.readKeyInfo.rawValue
-        guard let meta = call(info) else { return false }
+        guard let meta = callChecked(info) else { return false }
         guard Self.u32(meta, Off.dataSize) == 1 else { return false }
         let declaredType = Self.u32(meta, Off.dataType)
 
@@ -291,7 +337,7 @@ public final class SMC {
         Self.setU32(&buf, Off.dataType, declaredType)
         buf[Off.data8] = Cmd.writeBytes.rawValue
         buf[Off.bytes] = value
-        return call(buf) != nil
+        return callChecked(buf) != nil
     }
 
     public func scan() -> [Sensor] {

@@ -42,10 +42,18 @@ import PowerKit
 // everything any version of this project has ever asked root to leave on the
 // disk, including the retired LaunchDaemon from the first draft.
 
+// Before anything can write or be typed at: no SIGPIPE from a log reader that
+// died, and no ⌃Z suspending a process that may be holding the charger cut.
+// See `HelperSignals.ignored`.
+HelperSignals.ignoreTheOnesThatMustNotLand()
+
 let arguments = Array(CommandLine.arguments.dropFirst())
 
+/// stderr, best effort. `HelperLog.line` cannot throw, raise a signal, or
+/// block; a line that cannot be written is dropped. The old sink here,
+/// `FileHandle.standardError.write`, aborted the process on a closed Terminal.
 func printErr(_ s: String) {
-    FileHandle.standardError.write((s + "\n").data(using: .utf8)!)
+    HelperLog.line(s)
 }
 
 /// Give up before the server is running, and leave a trace someone can find.
@@ -66,8 +74,8 @@ func printErr(_ s: String) {
 ///
 /// finds it afterwards.
 func failedToStart(_ why: String) -> Never {
-    printErr("anode-helper: \(why)")
     fanLog.error("helper failed to start: \(why, privacy: .public)")
+    printErr("anode-helper: \(why)")
     exit(1)
 }
 
@@ -146,18 +154,12 @@ if arguments.contains("--uninstall") {
 
     // The charger, before the bootout. A cut outlives the process that made it
     // (measured: `kill -9` left the charger disconnected), and "an app that cut
-    // my charger has been deleted" is exactly what this command is for. Only
-    // written when it reads cut, or cannot be read.
+    // my charger has been deleted" is exactly what this command is for. The
+    // same verified routine the server uses: written unless it reads
+    // connected, read back, three tries, and "no such key" told apart from
+    // "could not reconnect".
     print("Reconnecting the charger…")
-    let charger = SystemChargeHardware()
-    switch charger.adapterCut() {
-    case false?:
-        print("  the charger was not cut — nothing to reconnect")
-    case true?, nil:
-        print(charger.setAdapterCut(false)
-              ? "  charger reconnected"
-              : "  FAILED to reconnect the charger — this Mac may have no such key")
-    }
+    print("  \(ChargeRelease.reconnect(SystemChargeHardware()).message)")
 
     // launchctl first: removing a plist does not unload a job that is already
     // running, and a bootout after the file is gone has nothing to name. Both
@@ -374,11 +376,20 @@ let server = FanHelperServer(
     // way to diagnose a path that cannot be exercised without root:
     //
     //     log show --predicate 'subsystem == "dev.anode.app"' --last 10m
+    //
+    // The unified log first: it is the record, and it cannot fail in a way
+    // that touches this process. stderr second, best effort (`HelperLog`).
     log: {
-        printErr("anode-helper: \($0)")
         fanLog.info("helper: \($0, privacy: .public)")
+        printErr("anode-helper: \($0)")
     },
     charge: SystemChargeHardware())
+
+// Every catchable signal that would end this process takes the ⌃C path:
+// `stop()`, then the loop's way out (`shutdownSocket`) reconnects the charger
+// and hands the fans back. Routed before `start`, so there is no moment when a
+// signal could end the process by its default action. See `HelperSignals`.
+let signalSources = HelperSignals.routeToStop { server.stop() }
 
 do {
     if isInstalledDaemon {
@@ -420,9 +431,9 @@ if isInstalledDaemon {
       user     uid \(ownerUID)
       socket   \(FanSocket.path)
 
-    Only that exact build, run by that user, can set a fan speed (only within the
-    min/max the fan itself reports), set the macOS charge limit (20–100%), or cut
-    the charger to discharge (never below 10%). Rebuild Anode and this helper will
+    Only that exact build, run by that user, can ask it to \(HelperVocabulary.sentence).
+    Fan speeds stay within the min/max the fan itself reports, and a discharge
+    never goes below \(DischargeWatch.floor)%. Rebuild Anode and this helper will
     stop recognising it; stop and start it again if you still want it.
 
     Press ⌃C to stop. The fans return to automatic control and the charger is
@@ -430,32 +441,13 @@ if isInstalledDaemon {
     """)
 }
 
-// DispatchSource rather than a signal(3) handler: the handler would run on the
-// interrupted thread with only async-signal-safe calls available, and `stop()`
-// is called from it. A dispatch source runs on an ordinary queue, so there is no
-// such rule to break. SIG_IGN first, or the default action kills us before the
-// source ever sees it.
-//
-// `stop()` ends the loop, and the loop's way out (`shutdownSocket`) is what
-// hands the fans back and reconnects the charger — so every signal here takes
-// the same path as ⌃C. SIGHUP too: closing the Terminal window a session
-// helper runs in sends it, and its default action would exit with the charger
-// still cut.
-signal(SIGINT, SIG_IGN)
-signal(SIGTERM, SIG_IGN)
-signal(SIGHUP, SIG_IGN)
-let sources = [SIGINT, SIGTERM, SIGHUP].map { sig -> DispatchSourceSignal in
-    let s = DispatchSource.makeSignalSource(signal: sig, queue: .global())
-    s.setEventHandler { server.stop() }
-    s.resume()
-    return s
-}
-_ = sources   // held for the life of the process; a released source stops firing
-
 server.run()
+withExtendedLifetime(signalSources) {}   // a released source stops firing
 // SIGKILL is the one exit this cannot cover: nothing runs, and a fan set
 // manually stays set until something writes it again — and a cut charger stays
-// cut (measured). The next helper to start clears that cut before serving, and
-// `--uninstall` is the way out of both; it is why that command releases
-// unconditionally.
+// cut (measured). SIGSTOP likewise cannot be caught. A crash is no better: no
+// handler here writes the SMC from a signal context, because nothing about an
+// SMC call is async-signal-safe. The next helper to start clears a cut nobody
+// owns before serving, and `--uninstall` is the way out of both; it is why that
+// command releases unconditionally.
 print("Fan and charge control stopped.")

@@ -4,11 +4,19 @@ import XCTest
 // The helper's three charge commands — set macOS's charge limit, cut the charger
 // to discharge, reconnect it — exercised against a fake. NOTHING here may build a
 // `SystemChargeHardware`: that writes the real SMC and the real root preferences,
-// and a cut outlives the process that made it.
+// and a cut outlives the process that made it. Reading its `static let`s is fine;
+// that constructs nothing.
+//
+// EVERY CLASS HERE IS NAMED `ChargeHelperTests…`, so that
+//
+//     swift test --filter ChargeHelperTests
+//
+// runs every charge-helper test. A class named otherwise is silently skipped by
+// that gate — which is how the dead man's switch test once went unrun by it.
 
-// ── Pure decisions ──────────────────────────────────────────────────────────
+// ── Pure decisions, and the exact root surface ──────────────────────────────
 
-final class DischargeWatchTests: XCTestCase {
+final class ChargeHelperTestsWatch: XCTestCase {
 
     func testWatchRestoresAtTarget() {
         XCTAssertTrue(DischargeWatch.shouldRestore(target: 40, percent: 40, onAC: true))
@@ -59,18 +67,441 @@ final class DischargeWatchTests: XCTestCase {
             XCTAssertEqual(try FanWire.decode(FanRequest.self, from: line), r)
         }
     }
+
+    /// The exact values root writes, and the exact bounds it enforces. Each one
+    /// is a measured fact or a decision the plan names; a typo in any of them is
+    /// a root process writing the wrong key, the wrong byte, or the wrong
+    /// preference, and nothing else in the suite would notice.
+    func testTheRootConstantsAreExactlyThePlans() {
+        XCTAssertEqual(AdapterCutKey.key, "CHIE")
+        XCTAssertEqual(AdapterCutKey.cut, 0x08)
+        XCTAssertEqual(AdapterCutKey.connected, 0x00)
+        XCTAssertEqual(SystemChargeHardware.limitDomain, "com.apple.smartcharging.topoffprotection")
+        XCTAssertEqual(SystemChargeHardware.limitKey, "mclLimitValue")
+        XCTAssertEqual(SystemChargeHardware.limitChanged, "com.apple.smartcharging.defaultschanged")
+        XCTAssertEqual(FanHelperServer.chargeLimitRange, 20...100)
+        XCTAssertEqual(FanHelperServer.dischargeTargetRange, 10...100)
+        XCTAssertEqual(DischargeWatch.floor, 10)
+    }
+}
+
+// ── The verified reconnect ──────────────────────────────────────────────────
+
+/// `ChargeRelease` is the ONE reconnect: the server's dead man's switch, its
+/// watch, its startup clear, `stopDischarge`, the failed-cut path and
+/// `--uninstall` all call it. Tested here the way `FanRelease` is.
+final class ChargeHelperTestsReconnect: XCTestCase {
+
+    private let now = ChargeRelease.Timing.immediate
+
+    func testACutChargerIsWrittenOnceAndReadBack() {
+        let hw = FakeChargeHardware(cut: true)
+        let r = ChargeRelease.reconnect(hw, timing: now)
+        XCTAssertEqual(r, ChargeRelease.Result(.reconnected, writes: 1))
+        XCTAssertTrue(r.ok)
+        XCTAssertEqual(hw.cutWrites, [false])
+        XCTAssertEqual(hw.isCut, false)
+    }
+
+    /// The everyday path — a helper starting, or `--uninstall`, on a charger
+    /// nobody cut — writes nothing.
+    func testAConnectedChargerIsNotWritten() {
+        let hw = FakeChargeHardware(cut: false)
+        let r = ChargeRelease.reconnect(hw, timing: now)
+        XCTAssertEqual(r.outcome, .notCut)
+        XCTAssertTrue(r.ok)
+        XCTAssertTrue(hw.cutWrites.isEmpty)
+    }
+
+    /// A key that EXISTS but cannot be read is written — reconnecting cannot
+    /// hurt — and the result says nobody knows, rather than claiming success.
+    func testAnUnreadableKeyIsWrittenAndReportedUnconfirmed() {
+        let hw = FakeChargeHardware(cut: true)
+        hw.cutUnreadable = true
+        let r = ChargeRelease.reconnect(hw, timing: now)
+        XCTAssertEqual(r.outcome, .unconfirmed)
+        XCTAssertFalse(r.ok)
+        XCTAssertEqual(hw.cutWrites, [false, false, false])
+        XCTAssertTrue(r.message.contains("may still be cut off"), r.message)
+    }
+
+    /// A Mac with no `CHIE` cannot have been cut by this helper. Nothing is
+    /// written and nothing is called a failure — `--uninstall` on such a Mac
+    /// used to print "FAILED to reconnect the charger".
+    func testAMacWithNoKeyIsNotAFailure() {
+        let hw = FakeChargeHardware()
+        hw.keyExists = false
+        let r = ChargeRelease.reconnect(hw, timing: now)
+        XCTAssertEqual(r.outcome, .noKey)
+        XCTAssertTrue(r.ok)
+        XCTAssertTrue(hw.cutWrites.isEmpty)
+    }
+
+    func testARefusedReconnectIsTriedThreeTimesAndReportedStillCut() {
+        let hw = FakeChargeHardware(cut: true)
+        hw.refuseRestore = true
+        let r = ChargeRelease.reconnect(hw, timing: now)
+        XCTAssertEqual(r, ChargeRelease.Result(.stillCut, writes: 3))
+        XCTAssertFalse(r.ok)
+        XCTAssertTrue(r.message.contains("did NOT reconnect"), r.message)
+    }
+
+    /// THE CASE THE READ-BACK EXISTS FOR: the SMC says yes to 0x00 and the
+    /// charger stays cut. Counting the write's return value would call this
+    /// reconnected and stop watching a charger that is still cut.
+    func testAReconnectTheSMCAcceptsAndDoesNotApplyIsNotDone() {
+        let hw = FakeChargeHardware(cut: true)
+        hw.ignoreRestore = true
+        let r = ChargeRelease.reconnect(hw, timing: now)
+        XCTAssertEqual(r.outcome, .stillCut)
+        XCTAssertFalse(r.ok)
+        XCTAssertEqual(hw.cutWrites, [false, false, false])
+        XCTAssertEqual(hw.isCut, true)
+    }
+
+    func testTheThirdTryCounts() {
+        let hw = FakeChargeHardware(cut: true)
+        hw.restoreRefusalsLeft = 2
+        XCTAssertEqual(ChargeRelease.reconnect(hw, timing: now),
+                       ChargeRelease.Result(.reconnected, writes: 3))
+        XCTAssertEqual(hw.isCut, false)
+    }
+
+    /// Straight after a cut attempt a read may still show the state from before
+    /// it, so the reconnect is written whatever the key reads.
+    func testAlwaysWriteWritesEvenWhenItReadsConnected() {
+        let hw = FakeChargeHardware(cut: false)
+        XCTAssertEqual(ChargeRelease.reconnect(hw, alwaysWrite: true, timing: now).outcome,
+                       .reconnected)
+        XCTAssertEqual(hw.cutWrites, [false])
+    }
+
+    /// The SMC is a microcontroller: a read in the same breath as the write can
+    /// still see the old value. The read-back looks again rather than writing
+    /// again.
+    func testTheReadBackWaitsForTheWriteToShow() {
+        let hw = LaggingCharge(cut: true, readsBeforeItShows: 2)
+        let timing = ChargeRelease.Timing(tries: 3, readsPerTry: 4, readPause: 0, retryPause: 0)
+        XCTAssertEqual(ChargeRelease.reconnect(hw, timing: timing),
+                       ChargeRelease.Result(.reconnected, writes: 1))
+        XCTAssertEqual(hw.writes, 1)
+    }
+
+    func testACutIsDoneOnlyWhenItReadsCut() {
+        XCTAssertEqual(ChargeRelease.cut(FakeChargeHardware(), timing: now), .cut)
+
+        let refusing = FakeChargeHardware()
+        refusing.refuseCut = true
+        XCTAssertEqual(ChargeRelease.cut(refusing, timing: now), .refused)
+
+        // Accepted and not applied: the reply must not say "discharging".
+        let ignoring = FakeChargeHardware()
+        ignoring.ignoreCut = true
+        XCTAssertEqual(ChargeRelease.cut(ignoring, timing: now), .notKept)
+        XCTAssertEqual(ignoring.isCut, false)
+    }
+
+    /// The SMC's own result byte, not only IOKit's return code. MEASURED
+    /// read-only on this Mac: a key that does not exist answers IOKit 0 with
+    /// result 132 (0x84) and a zeroed buffer, which `readByte` used to hand
+    /// back as 0x00 — for `CHIE`, "connected".
+    func testTheSMCsOwnResultByteIsChecked() {
+        var ok = [UInt8](repeating: 0, count: 80)
+        XCTAssertTrue(SMC.succeeded(rc: kIOReturnSuccess, output: ok))
+        ok[40] = 132
+        XCTAssertFalse(SMC.succeeded(rc: kIOReturnSuccess, output: ok),
+                       "an SMC-level 'no such key' passed as success")
+        ok[40] = 1
+        XCTAssertFalse(SMC.succeeded(rc: kIOReturnSuccess, output: ok))
+        XCTAssertFalse(SMC.succeeded(rc: kIOReturnNotPrivileged,
+                                     output: [UInt8](repeating: 0, count: 80)))
+        XCTAssertFalse(SMC.succeeded(rc: kIOReturnSuccess, output: [0, 0]))
+    }
+}
+
+/// A charger whose reads lag its writes by a few reads.
+private final class LaggingCharge: ChargeHardware {
+    private var cut: Bool
+    private var pending: Bool?
+    private var readsLeft = 0
+    private let lag: Int
+    private(set) var writes = 0
+
+    init(cut: Bool, readsBeforeItShows lag: Int) {
+        self.cut = cut
+        self.lag = lag
+    }
+
+    func adapterCut() -> Bool? {
+        if let pending {
+            if readsLeft == 0 { cut = pending; self.pending = nil } else { readsLeft -= 1 }
+        }
+        return cut
+    }
+    func setAdapterCut(_ on: Bool) -> Bool {
+        writes += 1
+        pending = on
+        readsLeft = lag
+        return true
+    }
+    func batteryPercent() -> Int? { 50 }
+    func onAC() -> Bool? { nil }
+    func writeChargeLimit(_ percent: Int) -> Bool { true }
+}
+
+// ── A client's bytes, before they are a request ─────────────────────────────
+
+final class ChargeHelperTestsLines: XCTestCase {
+
+    private let t0 = Date(timeIntervalSinceReferenceDate: 1_000)
+
+    func testAWholeLineIsServedAndTheRestKept() {
+        var lines = RequestLines()
+        lines.append(Array("{a}\n{b".utf8), at: t0)
+        XCTAssertTrue(lines.hasLine)
+        XCTAssertNil(lines.unfinishedSince, "a whole line is waiting; nothing is late")
+        XCTAssertEqual(lines.next(at: t0), Data("{a}".utf8))
+        XCTAssertNil(lines.next(at: t0))
+        XCTAssertEqual(lines.unfinishedSince, t0)
+    }
+
+    /// A client that drips a byte at a time does not keep extending its own
+    /// deadline. The old read restarted its 5 s timeout on every byte, so one
+    /// byte every few seconds held the helper's only thread for hours.
+    func testTheDeadlineCountsFromTheFirstByte() {
+        var lines = RequestLines()
+        lines.append([0x7B], at: t0)
+        lines.append([0x22], at: t0 + 3)
+        lines.append([0x22], at: t0 + 4.5)
+        XCTAssertFalse(lines.stalled(at: t0 + 4.9, after: 5))
+        XCTAssertTrue(lines.stalled(at: t0 + 5, after: 5))
+    }
+
+    func testAFinishedLineStopsTheClock() {
+        var lines = RequestLines()
+        lines.append(Array("{\"hel".utf8), at: t0)
+        lines.append(Array("lo\":{}}\n".utf8), at: t0 + 1)
+        XCTAssertNil(lines.unfinishedSince)
+        XCTAssertFalse(lines.stalled(at: t0 + 100, after: 5))
+    }
+
+    func testALineLongerThanARequestCanBeIsTooLong() {
+        var lines = RequestLines()
+        lines.append([UInt8](repeating: 0x20, count: FanWire.maxLineBytes), at: t0)
+        XCTAssertFalse(lines.tooLong)
+        lines.append([0x20], at: t0)
+        XCTAssertTrue(lines.tooLong)
+        lines.append([0x0A], at: t0)
+        XCTAssertFalse(lines.tooLong, "a finished line is served, not refused for length here")
+    }
+
+    func testResetForgetsEverything() {
+        var lines = RequestLines()
+        lines.append(Array("{\"x".utf8), at: t0)
+        lines.reset()
+        XCTAssertTrue(lines.pending.isEmpty)
+        XCTAssertNil(lines.unfinishedSince)
+    }
+}
+
+// ── The helper's process: its log sink and its signals ─────────────────────
+
+final class ChargeHelperTestsProcess: XCTestCase {
+
+    private var openFDs: [Int32] = []
+
+    override func tearDown() {
+        for fd in openFDs { close(fd) }
+        openFDs = []
+        super.tearDown()
+    }
+
+    private func makePipe() -> (read: Int32, write: Int32) {
+        var p: [Int32] = [-1, -1]
+        XCTAssertEqual(pipe(&p), 0)
+        openFDs += p
+        return (p[0], p[1])
+    }
+
+    func testTheLogSinkWritesALine() {
+        let p = makePipe()
+        XCTAssertTrue(HelperLog.line("anode-helper: hello", to: p.write))
+        var buf = [UInt8](repeating: 0, count: 64)
+        let n = read(p.read, &buf, buf.count)
+        XCTAssertEqual(String(decoding: buf[0..<max(n, 0)], as: UTF8.self), "anode-helper: hello\n")
+    }
+
+    /// `sudo AnodeHelper 2>&1 | tee log`, then ⌃C kills tee: the next line goes
+    /// to a pipe nobody reads. That used to be SIGPIPE — the process dead, the
+    /// charger cut. If this test process is still here to fail, it passed the
+    /// part that matters.
+    func testTheLogSinkSurvivesAReaderThatIsGone() {
+        let p = makePipe()
+        close(p.read)
+        openFDs.removeAll { $0 == p.read }
+        XCTAssertFalse(HelperLog.line("anode-helper: client gone", to: p.write))
+    }
+
+    /// A descriptor that is no longer there — the stand-in for a Terminal
+    /// window that closed (EIO from a hung-up tty). The old sink raised an
+    /// Objective-C exception here and the helper aborted.
+    func testTheLogSinkSurvivesADescriptorThatIsGone() {
+        let p = makePipe()
+        close(p.write)
+        openFDs.removeAll { $0 == p.write }
+        XCTAssertFalse(HelperLog.line("anode-helper: stopped", to: p.write))
+    }
+
+    /// stderr that nobody drains (`| less`, or ⌃S in the window) must not hold
+    /// the helper's only thread — the one that watches the discharge floor.
+    func testTheLogSinkDoesNotWaitOnAFullPipe() {
+        let p = makePipe()
+        _ = fcntl(p.write, F_SETNOSIGPIPE, 1)
+        let flags = fcntl(p.write, F_GETFL)
+        _ = fcntl(p.write, F_SETFL, flags | O_NONBLOCK)
+        var block = [UInt8](repeating: 0x2E, count: 4096)
+        while write(p.write, &block, block.count) > 0 {}
+        _ = fcntl(p.write, F_SETFL, flags)          // blocking again, like stderr
+
+        let done = expectation(description: "the sink returned")
+        let result = ResultBox()
+        let fd = p.write
+        Thread.detachNewThread {
+            result.set(HelperLog.line("anode-helper: discharge to 40% ended", to: fd))
+            done.fulfill()
+        }
+        let waited = XCTWaiter.wait(for: [done], timeout: 1)
+        if waited != .completed {
+            // Unstick it before failing, so the thread does not outlive the test.
+            close(p.read)
+            openFDs.removeAll { $0 == p.read }
+        }
+        XCTAssertEqual(waited, .completed, "the log sink blocked on a full pipe")
+        XCTAssertEqual(result.value, false)
+    }
+
+    /// ⌃\ and a stray `kill -USR1` used to end the session helper by their
+    /// default action, charger cut; ⌃Z suspended it, alive to every check and
+    /// enforcing nothing. Every one of them now either takes the ⌃C path or is
+    /// ignored.
+    func testSignalsThatWouldEndOrSuspendTheHelperAreHandled() {
+        XCTAssertEqual(Set(HelperSignals.stop),
+                       [SIGINT, SIGTERM, SIGHUP, SIGQUIT, SIGUSR1, SIGUSR2, SIGALRM, SIGXCPU, SIGXFSZ])
+        XCTAssertEqual(Set(HelperSignals.ignored), [SIGPIPE, SIGTSTP, SIGTTIN, SIGTTOU])
+
+        // Installed for real in this process, then put back exactly as found.
+        let all = HelperSignals.stop + HelperSignals.ignored
+        var saved: [Int32: sigaction] = [:]
+        for sig in all {
+            var old = sigaction()
+            sigaction(sig, nil, &old)
+            saved[sig] = old
+        }
+        let lock = NSLock()
+        var stops = 0
+        HelperSignals.ignoreTheOnesThatMustNotLand()
+        let sources = HelperSignals.routeToStop { lock.lock(); stops += 1; lock.unlock() }
+        defer {
+            sources.forEach { $0.cancel() }
+            for (sig, old) in saved {
+                var o = old
+                sigaction(sig, &o, nil)
+            }
+        }
+
+        for sig in all {
+            XCTAssertTrue(isIgnored(sig), "signal \(sig) still has its default action")
+        }
+        // Only sent once it is known to be ignored, so a regression fails here
+        // instead of killing or stopping the test runner. `kill`, not `raise`:
+        // ⌃\ and `kill` are process-directed, and a thread-directed `raise` of
+        // an ignored signal never reaches a dispatch source (measured).
+        guard isIgnored(SIGQUIT), isIgnored(SIGUSR1) else { return }
+        kill(getpid(), SIGQUIT)
+        kill(getpid(), SIGUSR1)
+        let deadline = Date().addingTimeInterval(2)
+        while Date() < deadline {
+            lock.lock(); let n = stops; lock.unlock()
+            if n >= 2 { break }
+            RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.01))
+        }
+        lock.lock(); let n = stops; lock.unlock()
+        XCTAssertEqual(n, 2, "SIGQUIT and SIGUSR1 must each reach stop()")
+    }
+
+    private func isIgnored(_ sig: Int32) -> Bool {
+        var now = sigaction()
+        guard sigaction(sig, nil, &now) == 0 else { return false }
+        return unsafeBitCast(now.__sigaction_u.__sa_handler, to: Int.self)
+            == unsafeBitCast(SIG_IGN, to: Int.self)
+    }
+
+    private final class ResultBox: @unchecked Sendable {
+        private let lock = NSLock()
+        private var stored: Bool?
+        func set(_ v: Bool) { lock.lock(); stored = v; lock.unlock() }
+        var value: Bool? { lock.lock(); defer { lock.unlock() }; return stored }
+    }
+}
+
+// ── What a person reads before authorising ─────────────────────────────────
+
+final class ChargeHelperTestsDisclosure: XCTestCase {
+
+    func testTheVocabularyIsTheHelpersWholeSurface() {
+        XCTAssertEqual(HelperVocabulary.commands, [
+            "set fan N to R rpm",
+            "release the fans",
+            "set the macOS charge limit (20–100%)",
+            "cut the charger to discharge down to a percentage",
+            "reconnect it",
+        ])
+        XCTAssertEqual(HelperVocabulary.sentence,
+                       "set fan N to R rpm, release the fans, set the macOS charge limit "
+                     + "(20–100%), cut the charger to discharge down to a percentage, "
+                     + "and reconnect it")
+    }
+
+    /// Both sheets that come before a root helper is authorised name all five
+    /// commands. They described a fan-only helper after the charger commands
+    /// were added, so a person agreed to one thing and installed another.
+    func testEverySheetBeforeAuthorisingNamesTheWholeVocabulary() {
+        let sheets = ["install sheet": FanElevation.installDisclosure,
+                      "session sheet": FanElevation.sessionDisclosure]
+        for (name, text) in sheets {
+            for command in HelperVocabulary.commands {
+                XCTAssertTrue(text.contains(command), "the \(name) does not say \"\(command)\"")
+            }
+            XCTAssertTrue(text.contains("never goes below 10%"), "the \(name) omits the floor")
+            XCTAssertTrue(text.contains("charger is reconnected") || text.contains("reconnects the charger"),
+                          "the \(name) does not say how the charger comes back")
+        }
+    }
+
+    func testTheSystemPromptsNameTheCharger() {
+        XCTAssertTrue(FanElevation.installPrompt.contains("charge limit"))
+        XCTAssertTrue(FanElevation.installPrompt.contains("cuts or reconnects the charger"))
+        XCTAssertTrue(FanElevation.uninstallPrompt.contains("reconnect the charger"))
+        XCTAssertTrue(FanElevation.uninstallDone.contains("the charger is reconnected"))
+    }
 }
 
 // ── The server, driven directly ─────────────────────────────────────────────
 
 final class ChargeHelperTests: XCTestCase {
 
-    private func makeServer(_ charge: FakeChargeHardware) -> FanHelperServer {
-        FanHelperServer(hardware: FakeFans([:]),
-                        configuration: .init(socketPath: NSTemporaryDirectory() + "bs-unused.sock",
-                                             ownerUID: getuid(),
-                                             pin: .signingIdentifier(FanDaemon.clientSigningIdentifier)),
-                        charge: charge)
+    private func makeServer(_ charge: FakeChargeHardware,
+                            fans: FakeFans = FakeFans([:]),
+                            log: @escaping (String) -> Void = { _ in }) -> FanHelperServer {
+        let server = FanHelperServer(
+            hardware: fans,
+            configuration: .init(socketPath: NSTemporaryDirectory() + "bs-unused.sock",
+                                 ownerUID: getuid(),
+                                 pin: .signingIdentifier(FanDaemon.clientSigningIdentifier)),
+            log: log,
+            charge: charge)
+        server.chargeTiming = .immediate
+        return server
     }
 
     func testSetChargeLimitWritesOnceAndRejectsOutOfRange() {
@@ -87,6 +518,32 @@ final class ChargeHelperTests: XCTestCase {
         }
         XCTAssertEqual(hw.limitWrites, [63], "an out-of-range limit reached the preferences")
         XCTAssertTrue(hw.cutWrites.isEmpty, "a limit write touched the charger")
+    }
+
+    /// Both ends of both ranges, through the server: an off-by-one at either
+    /// end is a limit the plan promises and root refuses, or one it forbids
+    /// and root writes.
+    func testTheEndsOfBothRangesAreAccepted() {
+        let hw = FakeChargeHardware(percent: 77)
+        let server = makeServer(hw)
+        XCTAssertTrue(server.handle(.command(.setChargeLimit(20))).ok)
+        XCTAssertTrue(server.handle(.command(.setChargeLimit(100))).ok)
+        XCTAssertEqual(hw.limitWrites, [20, 100])
+
+        XCTAssertTrue(server.handle(.command(.discharge(toPercent: 10))).ok,
+                      "the lowest target the plan allows was refused")
+        XCTAssertEqual(server.dischargeTarget, 10)
+        XCTAssertTrue(server.handle(.command(.stopDischarge)).ok)
+
+        // 100 is inside the range; it is refused only because the battery is
+        // always at or below it — and the reply must say THAT, not "out of range".
+        let top = server.handle(.command(.discharge(toPercent: 100)))
+        XCTAssertFalse(top.ok)
+        XCTAssertTrue(top.message.contains("already at or below 100%"), top.message)
+        for outside in [9, 101] {
+            let reply = server.handle(.command(.discharge(toPercent: outside)))
+            XCTAssertTrue(reply.message.contains("must be 10–100%"), "\(outside): \(reply.message)")
+        }
     }
 
     func testSetChargeLimitReportsAFailedWrite() {
@@ -140,6 +597,20 @@ final class ChargeHelperTests: XCTestCase {
         XCTAssertEqual(hw.cutWrites.last, false, "a failed cut was not followed by a reconnect")
     }
 
+    /// The SMC accepts the cut and the charger does not read cut. The reply
+    /// used to say "discharging to 40%" with nothing cut and a 10 s watch that
+    /// never ended; now it is a failed cut, undone with a reconnect.
+    func testACutTheSMCAcceptsAndDoesNotApplyIsRefusedAndUndone() {
+        let hw = FakeChargeHardware(percent: 77)
+        hw.ignoreCut = true
+        let server = makeServer(hw)
+        let reply = server.handle(.command(.discharge(toPercent: 40)))
+        XCTAssertFalse(reply.ok, reply.message)
+        XCTAssertNil(server.dischargeTarget)
+        XCTAssertEqual(hw.cutWrites, [true, false])
+        XCTAssertTrue(server.isIdle)
+    }
+
     func testStopDischargeRestores() {
         let hw = FakeChargeHardware(percent: 77, onAC: true)
         let server = makeServer(hw)
@@ -149,6 +620,34 @@ final class ChargeHelperTests: XCTestCase {
         XCTAssertEqual(hw.cutWrites, [true, false])
         XCTAssertEqual(hw.isCut, false)
         XCTAssertNil(server.dischargeTarget)
+    }
+
+    /// The SMC accepts the reconnect and the charger stays cut. The discharge is
+    /// NOT over: the target is kept, the helper stays up, the reply says so, and
+    /// the watch keeps writing until the key reads connected.
+    func testAReconnectTheSMCAcceptsAndDoesNotApplyIsKeptAndRetried() {
+        let hw = FakeChargeHardware(percent: 77)
+        var lines: [String] = []
+        let server = makeServer(hw, log: { lines.append($0) })
+        XCTAssertTrue(server.handle(.command(.discharge(toPercent: 40))).ok)
+
+        hw.ignoreRestore = true
+        let reply = server.handle(.command(.stopDischarge))
+        XCTAssertFalse(reply.ok)
+        XCTAssertTrue(reply.message.contains("did NOT reconnect"), reply.message)
+        XCTAssertEqual(server.dischargeTarget, 40)
+        XCTAssertTrue(server.reconnectOwed)
+        XCTAssertFalse(server.isIdle)
+
+        server.watchDischarge()
+        XCTAssertEqual(hw.isCut, true)
+        XCTAssertTrue(lines.last?.contains("retrying") ?? false, "\(lines)")
+
+        hw.ignoreRestore = false
+        server.watchDischarge()
+        XCTAssertEqual(hw.isCut, false)
+        XCTAssertNil(server.dischargeTarget)
+        XCTAssertTrue(server.isIdle)
     }
 
     /// Asked to reconnect, it reconnects — even a cut this helper does not
@@ -175,6 +674,52 @@ final class ChargeHelperTests: XCTestCase {
         XCTAssertTrue(server.handle(.command(.releaseAll)).ok)
         XCTAssertEqual(hw.isCut, false)
         XCTAssertNil(server.dischargeTarget)
+    }
+
+    private func oneFan() -> FakeFans {
+        let fans = FakeFans([0: .init(minRPM: 2317, maxRPM: 7826)])
+        fans.seedTarget(0, 0)
+        fans.seedMode(0, SMCFanMode.automatic)
+        return fans
+    }
+
+    /// A fan AND a discharge held at once: `releaseAll` hands back both, fans
+    /// as they were found and the charger reconnected.
+    func testReleaseAllHandsBackAHeldFanAndTheCharger() {
+        let hw = FakeChargeHardware(percent: 77)
+        let fans = oneFan()
+        let server = makeServer(hw, fans: fans)
+        XCTAssertTrue(server.handle(.command(.setTarget(FanTarget(index: 0, rpm: 5000)))).ok)
+        XCTAssertTrue(server.handle(.command(.discharge(toPercent: 40))).ok)
+
+        let reply = server.handle(.command(.releaseAll))
+        XCTAssertTrue(reply.ok, reply.message)
+        XCTAssertTrue(reply.message.contains("put back"), reply.message)
+        XCTAssertTrue(reply.message.contains("charger reconnected"), reply.message)
+        XCTAssertEqual(fans.targetWrites.map(\.rpm), [5000, 0])
+        XCTAssertEqual(fans.modeWrites.last?.mode, SMCFanMode.automatic)
+        XCTAssertFalse(server.hasWrittenATarget)
+        XCTAssertEqual(hw.isCut, false)
+        XCTAssertNil(server.dischargeTarget)
+    }
+
+    /// A charger that will not reconnect must not cost the fans their release:
+    /// the reply is not ok, the fans are back on automatic anyway, and the
+    /// discharge target is kept so the watch keeps trying.
+    func testAFailedReconnectStillReleasesTheFans() {
+        let hw = FakeChargeHardware(percent: 77)
+        let fans = oneFan()
+        let server = makeServer(hw, fans: fans)
+        XCTAssertTrue(server.handle(.command(.setTarget(FanTarget(index: 0, rpm: 5000)))).ok)
+        XCTAssertTrue(server.handle(.command(.discharge(toPercent: 40))).ok)
+
+        hw.refuseRestore = true
+        let reply = server.handle(.command(.releaseAll))
+        XCTAssertFalse(reply.ok, reply.message)
+        XCTAssertEqual(fans.targetWrites.map(\.rpm), [5000, 0], "the fans were skipped")
+        XCTAssertFalse(server.hasWrittenATarget)
+        XCTAssertEqual(server.dischargeTarget, 40)
+        XCTAssertEqual(hw.isCut, true)
     }
 
     /// A reconnect that fails keeps the target, so the helper stays up and tries
@@ -220,15 +765,34 @@ final class ChargeHelperTests: XCTestCase {
         XCTAssertEqual(hw.isCut, false)
     }
 
+    /// The fake answers as the hardware does: nothing can be told about the
+    /// cable while the charger is cut. A watch that read "unknown" as
+    /// "unplugged" would end every real discharge on its first pass.
+    func testAnUnknownCableKeepsADischargeRunning() {
+        let hw = FakeChargeHardware(percent: 77, onAC: true)
+        let server = makeServer(hw)
+        XCTAssertTrue(server.handle(.command(.discharge(toPercent: 40))).ok)
+        XCTAssertNil(hw.onAC(), "the fake must answer nil while cut, as the hardware does")
+        for _ in 0..<3 { server.watchDischarge() }
+        XCTAssertEqual(hw.isCut, true)
+        XCTAssertEqual(server.dischargeTarget, 40)
+    }
+
+    /// When the cable IS known to be out, the discharge ends.
+    func testAKnownUnpluggedCableEndsADischarge() {
+        let hw = FakeChargeHardware(percent: 77, onAC: true)
+        let server = makeServer(hw)
+        XCTAssertTrue(server.handle(.command(.discharge(toPercent: 40))).ok)
+        hw.acWhileCut = false
+        server.watchDischarge()
+        XCTAssertEqual(hw.isCut, false)
+        XCTAssertNil(server.dischargeTarget)
+    }
+
     func testStartupClearsOrphanedCut() {
         let hw = FakeChargeHardware(percent: 77, onAC: true, cut: true)
         var lines: [String] = []
-        let server = FanHelperServer(hardware: FakeFans([:]),
-                                     configuration: .init(socketPath: "/unused",
-                                                          ownerUID: getuid(),
-                                                          pin: .signingIdentifier("x")),
-                                     log: { lines.append($0) },
-                                     charge: hw)
+        let server = makeServer(hw, log: { lines.append($0) })
         server.clearOrphanedAdapterCut()
         XCTAssertEqual(hw.isCut, false)
         XCTAssertEqual(hw.cutWrites, [false])
@@ -237,21 +801,37 @@ final class ChargeHelperTests: XCTestCase {
 
     func testStartupLeavesAConnectedChargerAlone() {
         let hw = FakeChargeHardware(percent: 77, onAC: true, cut: false)
-        makeServer(hw).clearOrphanedAdapterCut()
+        var lines: [String] = []
+        makeServer(hw, log: { lines.append($0) }).clearOrphanedAdapterCut()
         XCTAssertTrue(hw.cutWrites.isEmpty, "the default path must write nothing")
+        XCTAssertTrue(lines.isEmpty, "the default path must say nothing")
     }
 
-    /// Both start paths run it, so neither mode can forget.
-    func testStartingTheServerClearsAnOrphanedCut() throws {
-        let hw = FakeChargeHardware(percent: 77, onAC: true, cut: true)
-        let path = NSTemporaryDirectory() + "bs-chg-\(UUID().uuidString.prefix(8)).sock"
-        let server = FanHelperServer(hardware: FakeFans([:]),
-                                     configuration: .init(socketPath: path, ownerUID: getuid(),
-                                                          pin: .signingIdentifier("x")),
-                                     charge: hw)
-        try server.start()
-        defer { server.stop(); server.run() }   // run() unwinds at once and cleans up
+    func testStartupOnAMacWithNoKeyWritesNothing() {
+        let hw = FakeChargeHardware()
+        hw.keyExists = false
+        var lines: [String] = []
+        makeServer(hw, log: { lines.append($0) }).clearOrphanedAdapterCut()
+        XCTAssertTrue(hw.cutWrites.isEmpty)
+        XCTAssertTrue(lines.isEmpty, "\(lines)")
+    }
+
+    /// A cut nobody owns that will not clear is not given up on: the helper
+    /// stays up and the watch retries it.
+    func testAnOrphanedCutThatWillNotClearIsRetried() {
+        let hw = FakeChargeHardware(cut: true)
+        hw.refuseRestore = true
+        var lines: [String] = []
+        let server = makeServer(hw, log: { lines.append($0) })
+        server.clearOrphanedAdapterCut()
+        XCTAssertTrue(lines.first?.hasPrefix("WARNING") ?? false, "\(lines)")
+        XCTAssertTrue(server.reconnectOwed)
+        XCTAssertFalse(server.isIdle)
+
+        hw.refuseRestore = false
+        server.watchDischarge()
         XCTAssertEqual(hw.isCut, false)
+        XCTAssertTrue(server.isIdle)
     }
 
     func testIdleRuleCountsADischargeAsHolding() {
@@ -272,6 +852,7 @@ final class ChargeHelperTests: XCTestCase {
                                                           pin: .signingIdentifier("x")))
         XCTAssertFalse(server.handle(.command(.setChargeLimit(80))).ok)
         XCTAssertFalse(server.handle(.command(.discharge(toPercent: 40))).ok)
+        XCTAssertFalse(server.handle(.command(.stopDischarge)).ok)
         XCTAssertNil(server.dischargeTarget)
     }
 }
@@ -280,33 +861,50 @@ final class ChargeHelperTests: XCTestCase {
 
 /// The dead man's switch only exists on the socket path: `dropClient` runs when
 /// a real connection goes away, and the shutdown release when the loop ends.
-final class ChargeHelperSocketTests: XCTestCase {
+final class ChargeHelperTestsSocket: XCTestCase {
 
     private var server: FanHelperServer!
     private var thread: Thread!
     private var link: FanControlLink!
+    private var socketPath: String!
+    /// Raw client sockets, and threads writing to them, cleaned up in order:
+    /// the writers finish before their descriptors are closed.
+    private var rawFDs: [Int32] = []
+    private var writers: [Thread] = []
 
     override func tearDown() {
         link?.disconnect()
+        spin(until: { self.writers.allSatisfy(\.isFinished) }, timeout: 3, failOnTimeout: false)
+        for fd in rawFDs { close(fd) }
+        rawFDs = []
         server?.stop()
         spin(until: { self.thread == nil || self.thread.isFinished }, timeout: 2)
         super.tearDown()
     }
 
-    private func start(_ hw: FakeChargeHardware, watchEvery interval: TimeInterval? = nil) throws {
-        let path = NSTemporaryDirectory() + "bs-chg-\(UUID().uuidString.prefix(8)).sock"
+    private func start(_ hw: FakeChargeHardware,
+                       fans: FakeFans = FakeFans([:]),
+                       watchEvery interval: TimeInterval? = nil,
+                       connectLink: Bool = true,
+                       log: ChargeLogRecorder? = nil,
+                       configure: (FanHelperServer) -> Void = { _ in }) throws {
+        socketPath = NSTemporaryDirectory() + "bs-chg-\(UUID().uuidString.prefix(8)).sock"
         guard let mine = ownCDHash() else {
             throw XCTSkip("no code identity available in this test environment")
         }
-        server = FanHelperServer(hardware: FakeFans([:]),
-                                 configuration: .init(socketPath: path, ownerUID: getuid(),
+        server = FanHelperServer(hardware: fans,
+                                 configuration: .init(socketPath: socketPath, ownerUID: getuid(),
                                                       pin: .exactBuild(cdhash: mine)),
+                                 log: { log?.record($0) },
                                  charge: hw)
+        server.chargeTiming = .immediate
         if let interval { server.dischargeWatchInterval = interval }
+        configure(server)
         try server.start()
         thread = Thread { [server] in server?.run() }
         thread.start()
-        link = FanControlLink(socketPath: path)
+        link = FanControlLink(socketPath: socketPath)
+        guard connectLink else { return }
         var status: FanControlLink.Status?
         link.connect { status = $0 }
         spin(until: { status != nil })
@@ -326,6 +924,45 @@ final class ChargeHelperSocketTests: XCTestCase {
         return result ?? FanReply(ok: false, message: "no reply")
     }
 
+    /// A client that talks to the socket directly, so a test can send half a
+    /// line — which `FanControlLink` never does.
+    private func rawClient() throws -> Int32 {
+        let fd = socket(AF_UNIX, SOCK_STREAM, 0)
+        guard fd >= 0, var addr = FanSocketIO.address(socketPath) else {
+            throw XCTSkip("could not make a client socket")
+        }
+        guard FanSocketIO.withAddress(&addr, { p, len in Darwin.connect(fd, p, len) }) == 0 else {
+            close(fd)
+            throw XCTSkip("could not connect: \(String(cString: strerror(errno)))")
+        }
+        FanSocketIO.configure(fd, timeout: 2)    // SO_NOSIGPIPE, and a bounded read
+        rawFDs.append(fd)
+        return fd
+    }
+
+    private func rawRequest(_ fd: Int32, _ request: FanRequest) -> FanReply? {
+        guard let data = try? FanWire.encode(request), FanSocketIO.writeAll(fd, data) else { return nil }
+        var buffer = Data()
+        guard let line = try? FanSocketIO.readLine(fd, buffer: &buffer) else { return nil }
+        return try? FanWire.decode(FanReply.self, from: line)
+    }
+
+    /// One `{` every `interval`, never a newline, for `duration`.
+    private func drip(_ fd: Int32, every interval: TimeInterval, for duration: TimeInterval) {
+        let t = Thread {
+            let end = Date().addingTimeInterval(duration)
+            while Date() < end {
+                var b: UInt8 = 0x7B
+                if write(fd, &b, 1) < 0 { return }
+                Thread.sleep(forTimeInterval: interval)
+            }
+        }
+        writers.append(t)
+        t.start()
+    }
+
+    // ── The dead man's switch ───────────────────────────────────────────────
+
     func testClientDropRestoresAdapterCut() throws {
         let hw = FakeChargeHardware(percent: 77, onAC: true)
         try start(hw)
@@ -335,11 +972,52 @@ final class ChargeHelperSocketTests: XCTestCase {
         link.disconnect()
         spin(until: { hw.isCut == false })
         XCTAssertEqual(hw.isCut, false, "the charger stayed cut after the app went away")
+
+        // And the target is gone with it: a target left set would keep an
+        // on-demand daemon up forever, and show up here as a third write when
+        // the helper stops.
+        server.stop()
+        spin(until: { self.thread.isFinished })
+        XCTAssertNil(server.dischargeTarget)
         XCTAssertEqual(hw.cutWrites, [true, false])
     }
 
+    /// RECONNECT FIRST, LOG AFTER. A log line is a write to whatever stderr is;
+    /// the old order logged "client gone" before reconnecting, and a sink that
+    /// failed there ended the process with the charger cut.
+    func testNothingIsLoggedOnADropWhileTheChargerIsStillCut() throws {
+        let hw = FakeChargeHardware(percent: 77)
+        let log = ChargeLogRecorder(hw)
+        try start(hw, log: log)
+        XCTAssertTrue(send(.discharge(toPercent: 40)).ok)
+        link.disconnect()
+        spin(until: { log.lines.contains { $0.hasPrefix("client gone") } })
+
+        let after = log.entries(after: "cut the charger")
+        XCTAssertFalse(after.isEmpty)
+        for entry in after {
+            XCTAssertFalse(entry.cut, "logged with the charger still cut: \(entry.line)")
+        }
+    }
+
+    func testNothingIsLoggedOnAStopWhileTheChargerIsStillCut() throws {
+        let hw = FakeChargeHardware(percent: 77)
+        let log = ChargeLogRecorder(hw)
+        try start(hw, log: log)
+        XCTAssertTrue(send(.discharge(toPercent: 40)).ok)
+        server.stop()
+        spin(until: { self.thread.isFinished })
+
+        let after = log.entries(after: "cut the charger")
+        XCTAssertTrue(after.contains { $0.line == "stopped" }, "\(after)")
+        for entry in after {
+            XCTAssertFalse(entry.cut, "logged with the charger still cut: \(entry.line)")
+        }
+    }
+
     /// The floor holds with the app connected and SILENT: the loop wakes on its
-    /// own timer, looks at the battery, and reconnects at the target.
+    /// own timer, looks at the battery, and reconnects at the target. The fake
+    /// answers "unknown" for the cable while cut, as the hardware does.
     func testTheLoopReconnectsAtTheTargetWithNoRequest() throws {
         let hw = FakeChargeHardware(percent: 77, onAC: true)
         try start(hw, watchEvery: 0.05)
@@ -364,7 +1042,7 @@ final class ChargeHelperSocketTests: XCTestCase {
         XCTAssertTrue(hw.cutWrites.isEmpty)
     }
 
-    /// SIGTERM and SIGINT reach the server as `stop()`.
+    /// Every signal in `HelperSignals.stop` reaches the server as `stop()`.
     func testStoppingTheHelperRestoresAdapterCut() throws {
         let hw = FakeChargeHardware(percent: 77, onAC: true)
         try start(hw)
@@ -373,6 +1051,175 @@ final class ChargeHelperSocketTests: XCTestCase {
         server.stop()
         spin(until: { self.thread.isFinished })
         XCTAssertEqual(hw.isCut, false, "the charger stayed cut after the helper stopped")
+    }
+
+    /// A fan AND a discharge, and the app goes away: both are handed back.
+    func testDroppingTheClientHandsBackAHeldFanAndTheCharger() throws {
+        let hw = FakeChargeHardware(percent: 77)
+        let fans = FakeFans([0: .init(minRPM: 2317, maxRPM: 7826)])
+        fans.seedTarget(0, 0)
+        fans.seedMode(0, SMCFanMode.automatic)
+        try start(hw, fans: fans)
+        XCTAssertTrue(send(.setTarget(FanTarget(index: 0, rpm: 5000))).ok)
+        XCTAssertTrue(send(.discharge(toPercent: 40)).ok)
+
+        link.disconnect()
+        spin(until: { hw.isCut == false && fans.targetWrites.count == 2 })
+        XCTAssertEqual(hw.isCut, false)
+        XCTAssertEqual(fans.targetWrites.map(\.rpm), [5000, 0], "the held fan was not handed back")
+        XCTAssertEqual(fans.modeWrites.last?.mode, SMCFanMode.automatic)
+    }
+
+    // ── A client cannot hold the loop ───────────────────────────────────────
+
+    /// THE FLOOR HOLDS WHILE A CLIENT DRIPS HALF A REQUEST. The old read waited
+    /// for the newline, restarting its 5 s timeout on every byte, so one byte
+    /// every few seconds kept the loop — and the floor check — away for hours.
+    /// The line deadline is set long here, so the reconnect can only have come
+    /// from the watch.
+    func testAHalfSentRequestDoesNotHoldTheFloorCheck() throws {
+        let hw = FakeChargeHardware(percent: 77)
+        let log = ChargeLogRecorder(hw)
+        try start(hw, watchEvery: 0.05, connectLink: false, log: log) {
+            $0.requestLineDeadline = 30
+        }
+        let fd = try rawClient()
+        XCTAssertEqual(rawRequest(fd, .command(.discharge(toPercent: 40)))?.ok, true)
+        drip(fd, every: 0.1, for: 2)
+        spin(until: { false }, timeout: 0.3, failOnTimeout: false)
+        XCTAssertEqual(hw.isCut, true)
+
+        hw.percent = 40
+        let began = Date()
+        spin(until: { hw.isCut == false }, timeout: 1.5)
+        XCTAssertLessThan(Date().timeIntervalSince(began), 1.0,
+                          "the floor check waited on a half-sent request")
+        XCTAssertFalse(log.lines.contains { $0.hasPrefix("client gone") },
+                       "the reconnect came from dropping the client, not from the watch")
+    }
+
+    /// A stop signal is acted on at once, whatever the client is doing.
+    func testStoppingIsPromptWhileARequestIsHalfSent() throws {
+        let hw = FakeChargeHardware(percent: 77)
+        try start(hw, connectLink: false) { $0.requestLineDeadline = 30 }
+        let fd = try rawClient()
+        XCTAssertEqual(rawRequest(fd, .command(.discharge(toPercent: 40)))?.ok, true)
+        var b: UInt8 = 0x7B
+        XCTAssertEqual(write(fd, &b, 1), 1)
+        spin(until: { false }, timeout: 0.2, failOnTimeout: false)
+
+        let began = Date()
+        server.stop()
+        spin(until: { self.thread.isFinished }, timeout: 3)
+        XCTAssertLessThan(Date().timeIntervalSince(began), 0.5, "stop() waited on the client")
+        XCTAssertEqual(hw.isCut, false)
+    }
+
+    /// A request that is never finished drops the client — counted from its
+    /// first byte, however slowly the rest keeps coming — and the drop
+    /// reconnects the charger.
+    func testAClientThatNeverFinishesARequestIsDropped() throws {
+        let hw = FakeChargeHardware(percent: 77)
+        let log = ChargeLogRecorder(hw)
+        try start(hw, connectLink: false, log: log) { $0.requestLineDeadline = 0.3 }
+        let fd = try rawClient()
+        XCTAssertEqual(rawRequest(fd, .command(.discharge(toPercent: 40)))?.ok, true)
+
+        let began = Date()
+        drip(fd, every: 0.05, for: 1.5)
+        spin(until: { hw.isCut == false }, timeout: 1.4)
+        XCTAssertLessThan(Date().timeIntervalSince(began), 1.0, "the drip kept extending its deadline")
+        XCTAssertTrue(log.lines.contains { $0.contains("did not finish it") }, "\(log.lines)")
+    }
+
+    /// A client that sends and never reads its replies: the reply write gets
+    /// one deadline, then the client is dropped and the charger reconnected.
+    func testAClientThatNeverReadsItsRepliesIsDropped() throws {
+        let hw = FakeChargeHardware(percent: 77)
+        let log = ChargeLogRecorder(hw)
+        try start(hw, connectLink: false, log: log) { $0.replyWriteDeadline = 0.2 }
+        let fd = try rawClient()
+        XCTAssertEqual(rawRequest(fd, .command(.discharge(toPercent: 40)))?.ok, true)
+
+        let hello = try FanWire.encode(FanRequest.hello)
+        let flood = Thread {
+            var sent = 0
+            while sent < 20_000, FanSocketIO.writeAll(fd, hello) { sent += 1 }
+        }
+        writers.append(flood)
+        flood.start()
+        spin(until: { hw.isCut == false }, timeout: 4)
+        XCTAssertEqual(hw.isCut, false)
+        XCTAssertTrue(log.lines.contains { $0.contains("stopped reading") }, "\(log.lines.suffix(3))")
+    }
+
+    // ── Both start paths, and the on-demand daemon ──────────────────────────
+
+    /// The session helper's start path, `start()`.
+    func testStartingTheSessionHelperClearsAnOrphanedCut() throws {
+        let hw = FakeChargeHardware(percent: 77, onAC: true, cut: true)
+        let path = NSTemporaryDirectory() + "bs-chg-\(UUID().uuidString.prefix(8)).sock"
+        let session = FanHelperServer(hardware: FakeFans([:]),
+                                      configuration: .init(socketPath: path, ownerUID: getuid(),
+                                                           pin: .signingIdentifier("x")),
+                                      charge: hw)
+        session.chargeTiming = .immediate
+        try session.start()
+        defer { session.stop(); session.run() }   // run() unwinds at once and cleans up
+        XCTAssertEqual(hw.isCut, false)
+        XCTAssertEqual(hw.cutWrites, [false])
+    }
+
+    /// The installed daemon's start path, `start(adopting:)`. After a `kill -9` mid-discharge this
+    /// is the only thing that reconnects the charger, the next time launchd
+    /// starts a helper.
+    func testAdoptingALaunchdSocketClearsAnOrphanedCut() throws {
+        let hw = FakeChargeHardware(percent: 77, cut: true)
+        let log = ChargeLogRecorder(hw)
+        let path = NSTemporaryDirectory() + "bs-chg-\(UUID().uuidString.prefix(8)).sock"
+        let listener = try XCTUnwrap(makeListeningSocket(at: path))
+        defer { close(listener); unlink(path) }
+        let adopting = FanHelperServer(hardware: FakeFans([:]),
+                                       configuration: .init(socketPath: path, ownerUID: getuid(),
+                                                            pin: .signingIdentifier("x")),
+                                       log: { log.record($0) },
+                                       charge: hw)
+        adopting.chargeTiming = .immediate
+        try adopting.start(adopting: listener)
+        XCTAssertEqual(hw.isCut, false)
+        XCTAssertEqual(hw.cutWrites, [false])
+        XCTAssertTrue(log.lines.contains("cleared an adapter cut nobody owned"), "\(log.lines)")
+        adopting.stop()
+    }
+
+    /// The RUN LOOP's idle rule, not only `isIdle`: an on-demand helper whose
+    /// reconnect is failing must not time out and leave the charger cut. It
+    /// leaves once the reconnect lands.
+    func testAnOnDemandHelperStaysUpUntilTheChargerIsReconnected() throws {
+        let hw = FakeChargeHardware(percent: 77)
+        try start(hw, watchEvery: 0.05) { $0.idleExit = 0.3 }
+        XCTAssertTrue(send(.discharge(toPercent: 40)).ok)
+
+        hw.refuseRestore = true
+        link.disconnect()
+        spin(until: { false }, timeout: 1.0, failOnTimeout: false)
+        XCTAssertFalse(thread.isFinished, "an on-demand helper exited with the charger still cut")
+        XCTAssertEqual(hw.isCut, true)
+
+        hw.refuseRestore = false
+        spin(until: { self.thread.isFinished }, timeout: 3)
+        XCTAssertTrue(thread.isFinished, "it never left once there was nothing to hold")
+        XCTAssertEqual(hw.isCut, false)
+    }
+
+    private func makeListeningSocket(at path: String) -> Int32? {
+        guard var addr = FanSocketIO.address(path) else { return nil }
+        unlink(path)
+        let fd = socket(AF_UNIX, SOCK_STREAM, 0)
+        guard fd >= 0 else { return nil }
+        guard FanSocketIO.withAddress(&addr, { p, len in Darwin.bind(fd, p, len) }) == 0,
+              listen(fd, 4) == 0 else { close(fd); return nil }
+        return fd
     }
 
     private func spin(until done: () -> Bool, timeout: TimeInterval = 3,
@@ -389,23 +1236,63 @@ final class ChargeHelperSocketTests: XCTestCase {
     }
 }
 
+/// Every log line the server writes, with whether the charger was cut at the
+/// moment it was written.
+final class ChargeLogRecorder {
+    private let lock = NSLock()
+    private let hw: FakeChargeHardware
+    private var recorded: [(line: String, cut: Bool)] = []
+
+    init(_ hw: FakeChargeHardware) { self.hw = hw }
+
+    func record(_ line: String) {
+        let cut = hw.isCut
+        lock.lock(); recorded.append((line, cut)); lock.unlock()
+    }
+
+    var lines: [String] {
+        lock.lock(); defer { lock.unlock() }
+        return recorded.map(\.line)
+    }
+
+    /// The lines after the first one starting with `prefix`.
+    func entries(after prefix: String) -> [(line: String, cut: Bool)] {
+        lock.lock(); defer { lock.unlock() }
+        guard let i = recorded.firstIndex(where: { $0.line.hasPrefix(prefix) }) else { return [] }
+        return Array(recorded[(i + 1)...])
+    }
+}
+
 // ── The fake ────────────────────────────────────────────────────────────────
 
 /// Charge hardware that records instead of writing. Locked because the socket
 /// tests touch it from the server's thread and inspect it from the main one.
+///
+/// It answers as the hardware does: while the charger is cut, `onAC()` is nil —
+/// nothing can be told about the cable (`ChargeAC.presence`) — unless a test
+/// sets `acWhileCut`.
 final class FakeChargeHardware: ChargeHardware {
     private let lock = NSLock()
     private var _percent: Int?
-    private var _onAC: Bool?
-    private var _cut: Bool?
+    /// The cable, as reported while the charger is connected.
+    private var _cable: Bool?
+    /// What `onAC()` answers while the charger is cut.
+    private var _acWhileCut: Bool?
+    /// What the charger is actually doing.
+    private var _cut: Bool
+    private var _unreadable = false
+    private var _keyExists = true
     private var _cutWrites: [Bool] = []
     private var _limitWrites: [Int] = []
     private var _refuseCut = false
     private var _refuseRestore = false
+    private var _ignoreCut = false
+    private var _ignoreRestore = false
+    private var _restoreRefusalsLeft = 0
     private var _refuseLimit = false
 
-    init(percent: Int? = 50, onAC: Bool? = true, cut: Bool? = false) {
-        _percent = percent; _onAC = onAC; _cut = cut
+    init(percent: Int? = 50, onAC: Bool? = true, cut: Bool = false) {
+        _percent = percent; _cable = onAC; _cut = cut
     }
 
     private func locked<T>(_ body: () -> T) -> T { lock.lock(); defer { lock.unlock() }; return body() }
@@ -414,9 +1301,24 @@ final class FakeChargeHardware: ChargeHardware {
         get { locked { _percent } }
         set { locked { _percent = newValue } }
     }
-    var isCut: Bool? { locked { _cut } }
+    var acWhileCut: Bool? {
+        get { locked { _acWhileCut } }
+        set { locked { _acWhileCut = newValue } }
+    }
+    /// The charger's real state, whatever a read would say.
+    var isCut: Bool { locked { _cut } }
     var cutWrites: [Bool] { locked { _cutWrites } }
     var limitWrites: [Int] { locked { _limitWrites } }
+    /// The key exists, and reads of it fail.
+    var cutUnreadable: Bool {
+        get { locked { _unreadable } }
+        set { locked { _unreadable = newValue } }
+    }
+    var keyExists: Bool {
+        get { locked { _keyExists } }
+        set { locked { _keyExists = newValue } }
+    }
+    /// The SMC says no, and nothing changes.
     var refuseCut: Bool {
         get { locked { _refuseCut } }
         set { locked { _refuseCut = newValue } }
@@ -425,22 +1327,45 @@ final class FakeChargeHardware: ChargeHardware {
         get { locked { _refuseRestore } }
         set { locked { _refuseRestore = newValue } }
     }
+    /// The SMC says yes, and nothing changes.
+    var ignoreCut: Bool {
+        get { locked { _ignoreCut } }
+        set { locked { _ignoreCut = newValue } }
+    }
+    var ignoreRestore: Bool {
+        get { locked { _ignoreRestore } }
+        set { locked { _ignoreRestore = newValue } }
+    }
+    /// Refuse this many reconnects, then take them.
+    var restoreRefusalsLeft: Int {
+        get { locked { _restoreRefusalsLeft } }
+        set { locked { _restoreRefusalsLeft = newValue } }
+    }
     var refuseLimitWrites: Bool {
         get { locked { _refuseLimit } }
         set { locked { _refuseLimit = newValue } }
     }
 
-    func adapterCut() -> Bool? { locked { _cut } }
+    func adapterCut() -> Bool? { locked { (_unreadable || !_keyExists) ? nil : _cut } }
     func setAdapterCut(_ on: Bool) -> Bool {
         locked {
             _cutWrites.append(on)
-            if on ? _refuseCut : _refuseRestore { return false }
+            guard _keyExists else { return false }
+            if on {
+                if _refuseCut { return false }
+                if _ignoreCut { return true }
+            } else {
+                if _restoreRefusalsLeft > 0 { _restoreRefusalsLeft -= 1; return false }
+                if _refuseRestore { return false }
+                if _ignoreRestore { return true }
+            }
             _cut = on
             return true
         }
     }
     func batteryPercent() -> Int? { locked { _percent } }
-    func onAC() -> Bool? { locked { _onAC } }
+    func onAC() -> Bool? { locked { _cut ? _acWhileCut : _cable } }
+    func adapterCutKeyExists() -> Bool { locked { _keyExists } }
     func writeChargeLimit(_ percent: Int) -> Bool {
         locked {
             _limitWrites.append(percent)

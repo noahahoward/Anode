@@ -247,8 +247,11 @@ signal whether that was deliberate. It is deliberate here:
   cannot pin a hash that changes on every rebuild, so it pins the signing
   IDENTIFIER, and anyone who can run `codesign -s - -i dev.anode.app` on their
   own binary satisfies it — verified, not assumed. Its real boundary is the uid
-  check, which is the kernel's, plus a vocabulary of two commands whose values
-  the fan firmware re-clamps.
+  check, which is the kernel's, plus a vocabulary of five commands — set fan N
+  to R rpm, release the fans, set the macOS charge limit (20–100%), cut the
+  charger to discharge down to a percentage, and reconnect it — whose fan
+  values the firmware re-clamps and whose charge values the helper range-checks
+  (a discharge never below 10%).
 
   Both models are written out in full where they are implemented — the trust
   model at the top of `Sources/PowerKit/FanLink.swift`, the install's reasoning

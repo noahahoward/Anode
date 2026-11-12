@@ -465,19 +465,9 @@ final class FanControlPanel: NSView {
     private func confirmTurnOn() -> Bool {
         let alert = NSAlert()
         alert.messageText = "Turn on fan control?"
-        alert.informativeText = """
-        While you run the fan helper, one program can set your fan speeds: this \
-        exact build of Anode, running as you, within the minimum and maximum \
-        the fan itself reports.
-
-        The helper is not installed and does not run in the background. Taking a \
-        slider opens a Terminal window with the command below; you read it, \
-        authenticate, and stop it with ⌃C. The fans go back to automatic control \
-        when you do — or if Anode quits or crashes.
-
-        Anode is not signed with an Apple Developer ID, so nothing verifies \
-        the helper before it runs as root except you, when you read the path.
-        """
+        // In PowerKit so a test holds it to the helper's whole vocabulary: the
+        // helper this starts also sets the charge limit and cuts the charger.
+        alert.informativeText = FanElevation.sessionDisclosure
         let command = NSTextField(labelWithString: Self.startCommand())
         command.font = Palette.Font.mono(11)
         command.isSelectable = true
@@ -567,8 +557,7 @@ final class FanControlPanel: NSView {
         elevate(command: FanElevation.uninstallCommand(helper: helper),
                 prompt: FanElevation.uninstallPrompt,
                 waiting: "Waiting for authorisation…",
-                done: "Removed. The fans are back on automatic and nothing of "
-                    + "Anode runs as root.")
+                done: FanElevation.uninstallDone)
     }
 
     /// One authorisation dialog, off the main thread.
@@ -617,33 +606,9 @@ final class FanControlPanel: NSView {
     private func confirmInstall(helper: String) -> Bool {
         let alert = NSAlert()
         alert.messageText = "Install the fan helper?"
-        alert.informativeText = """
-        This asks for your password ONCE and then never again — fan control keeps \
-        working after you rebuild Anode and after you restart the Mac.
-
-        It installs two files, both owned by root:
-          \(FanDaemon.helperPath)
-          \(FanDaemon.plistPath)
-
-        Nothing runs until you use fan control. launchd holds the socket and \
-        starts the helper when Anode asks for a fan; it stops again a \
-        minute or so after you are done. Not at boot, not while Anode is \
-        closed, not while fan control is off.
-
-        What you are giving up, plainly: while that helper is up it will set a \
-        fan speed on request from your user account, within the minimum and \
-        maximum the fan itself reports. Anode has no Apple Developer ID, \
-        so it cannot prove to that process which program is asking — anything \
-        running as you can. Another user on this Mac cannot, and neither can \
-        anything at all before you install this.
-
-        The safer alternative is already on this strip: run the helper by hand \
-        when you want it, and stop it with ⌃C. It costs one command each session \
-        and it only ever trusts the exact build you started it beside.
-
-        "Uninstall Fan Helper" removes both files, unloads the daemon and hands \
-        the fans back.
-        """
+        // In PowerKit so a test holds it to the helper's whole vocabulary — the
+        // installed helper also sets the charge limit and cuts the charger.
+        alert.informativeText = FanElevation.installDisclosure
         let command = NSTextField(
             labelWithString: FanElevation.installCommand(helper: helper, ownerUID: getuid()))
         command.font = Palette.Font.mono(11)

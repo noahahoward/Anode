@@ -496,6 +496,34 @@ enum FanSocketIO {
         }
     }
 
+    /// `writeAll` with ONE deadline for the whole write, for a NON-BLOCKING
+    /// descriptor — the helper's side of a client connection.
+    ///
+    /// The plain version leans on `SO_SNDTIMEO`, which restarts on every partial
+    /// write, so a peer that reads a byte now and then can hold the writer for
+    /// as long as it likes. In the helper the writer is the loop thread that
+    /// also watches the discharge floor; it gets `seconds` and no more.
+    static func writeAll(_ fd: Int32, _ data: Data, within seconds: TimeInterval) -> Bool {
+        let deadline = Date().addingTimeInterval(seconds)
+        var sent = 0
+        return data.withUnsafeBytes { raw -> Bool in
+            guard let base = raw.baseAddress else { return true }
+            while sent < raw.count {
+                let n = write(fd, base + sent, raw.count - sent)
+                if n > 0 { sent += n; continue }
+                if n < 0 && errno == EINTR { continue }
+                guard n < 0, errno == EAGAIN || errno == EWOULDBLOCK else { return false }
+                let left = deadline.timeIntervalSinceNow
+                guard left > 0 else { return false }
+                var p = pollfd(fd: fd, events: Int16(POLLOUT), revents: 0)
+                if poll(&p, 1, Int32((left * 1000).rounded(.up))) < 0, errno != EINTR {
+                    return false
+                }
+            }
+            return true
+        }
+    }
+
     /// Read one newline-terminated line, capped. Throws `.closed` at EOF so the
     /// caller can tell a clean hang-up from a protocol error — the difference
     /// between "the app quit" and "something is talking nonsense at a root
