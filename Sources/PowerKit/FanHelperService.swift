@@ -465,6 +465,10 @@ public final class FanHelperServer {
         /// Signalled once the loop has acted on it.
         case willSleep(answered: DispatchSemaphore)
         case didWake
+        /// The loop did not answer a will-sleep in time, so the sleep watch
+        /// wrote the reconnect itself (`noteSystemWillSleep`). The loop owes it
+        /// until its OWN read-back shows the charger connected.
+        case reconnectOwed
     }
 
     /// Notices posted from the sleep watch's queue, in the order they came,
@@ -475,8 +479,9 @@ public final class FanHelperServer {
     /// posted after that is answered at once: nothing is left to reconnect.
     private var loopEnded = false
 
-    /// The longest a will-sleep notice waits for the loop before macOS is
-    /// answered anyway, so a stuck loop can never hold up sleep.
+    /// The longest a will-sleep notice waits for the loop before the sleep
+    /// watch reconnects the charger itself and macOS is answered, so a stuck
+    /// loop can never hold up sleep — nor let it happen with the charger cut.
     ///
     /// Longer than one pass a slow client can hold up. The notice is acted on
     /// at the top of the loop's next pass, and the pass before it may still be
@@ -519,6 +524,13 @@ public final class FanHelperServer {
     /// refuses the charge commands.
     private let charge: ChargeHardware?
 
+    /// The charger as the sleep watch reaches it when the loop has not
+    /// answered in time — never touched by the loop thread. In the helper, a
+    /// second `SystemChargeHardware` with its own SMC connection, so a loop
+    /// stuck in a call on the first is not in the way and no SMC object is
+    /// shared between threads. nil exactly when `charge` is.
+    private let chargeWithoutTheLoop: ChargeHardware?
+
     /// The percentage a discharge stops at, while this helper holds the charger
     /// cut. nil when it holds no cut.
     ///
@@ -560,14 +572,23 @@ public final class FanHelperServer {
     /// was taken. Loop thread only.
     private var lastCutAttempt: Date?
 
+    /// `log` is called from the loop thread and, when the loop has not answered
+    /// a sleep notice in time, from the sleep watch's: it must be safe on both.
+    ///
+    /// `sleepCharge` is the charger the sleep watch writes when the loop has
+    /// not answered — a separate connection to the same charger. nil uses
+    /// `charge` itself, which is right only for a charger safe to call from
+    /// two threads (the tests' fake). Ignored without `charge`.
     public init(hardware: FanHardware,
                 configuration: Configuration,
                 log: @escaping (String) -> Void = { _ in },
-                charge: ChargeHardware? = nil) {
+                charge: ChargeHardware? = nil,
+                sleepCharge: ChargeHardware? = nil) {
         self.hardware = hardware
         self.config = configuration
         self.log = log
         self.charge = charge
+        self.chargeWithoutTheLoop = charge == nil ? nil : (sleepCharge ?? charge)
     }
 
     /// Nothing connected, no fan held, the charger not cut, and no reconnect
@@ -896,7 +917,10 @@ public final class FanHelperServer {
     /// For the sleep watch's queue, or any thread but the loop's. Nothing in
     /// this process runs while the Mac sleeps, so the charger must be
     /// reconnected before macOS is answered; and macOS must be answered whatever
-    /// the loop is doing, so the wait is bounded.
+    /// the loop is doing, so the wait is bounded. When the loop has not
+    /// answered by then, the charger is reconnected FROM HERE before this
+    /// returns (`reconnectWithoutTheLoop`): a loop stuck in a limit write must
+    /// not let the Mac sleep with the charger cut.
     @discardableResult
     public func noteSystemWillSleep(timeout: TimeInterval = sleepAnswerDeadline) -> Bool {
         // One semaphore per notice: a loop that answers one late must never
@@ -907,7 +931,51 @@ public final class FanHelperServer {
         powerNotices.append(.willSleep(answered: answered))
         stateLock.unlock()
         wakeLoop()
-        return answered.wait(timeout: .now() + timeout) == .success
+        if answered.wait(timeout: .now() + timeout) == .success { return true }
+        reconnectWithoutTheLoop(waited: timeout)
+        return false
+    }
+
+    /// The loop has not answered a will-sleep: reconnect the charger from the
+    /// sleep watch's thread, before macOS is answered.
+    ///
+    /// SELF-CONTAINED. It needs nothing from the loop thread and reads none of
+    /// its books — whether a discharge is held is the loop's to know, and the
+    /// loop is stuck — so it writes 0x00 whatever the key reads, and judges
+    /// that by reading it back (`ChargeRelease.reconnect(alwaysWrite:)`),
+    /// through `chargeWithoutTheLoop`, a connection the loop never uses. 0x00
+    /// is the one write that can never leave the charger cut.
+    ///
+    /// It changes no server state. The only thing it hands the loop goes
+    /// through `powerNotices`, under `stateLock`, as every notice does: the
+    /// reconnect is owed, so the loop writes it again on its next pass and
+    /// clears its books only on its own confirmed read-back. Not on a Mac the
+    /// SMC says has no such key: a reconnect that can never land would
+    /// otherwise keep an on-demand helper up for ever.
+    private func reconnectWithoutTheLoop(waited: TimeInterval) {
+        guard let charger = chargeWithoutTheLoop else { return }
+        let result = ChargeRelease.reconnect(charger, alwaysWrite: true, timing: chargeTiming)
+        var handedOver = false
+        if result.outcome != .noKey {
+            stateLock.lock()
+            // A loop that has ended has already reconnected on its way out.
+            if !loopEnded {
+                powerNotices.append(.reconnectOwed)
+                handedOver = true
+            }
+            stateLock.unlock()
+        }
+        if handedOver { wakeLoop() }
+        // Reconnect first, then log.
+        let why = "the loop did not answer a sleep notice within "
+            + String(format: "%g", waited) + "s"
+        if result.ok {
+            log("WARNING: \(why) — the sleep watch reconnected the charger itself "
+              + "(\(result.message)) before letting sleep through")
+        } else {
+            log("WARNING: \(why) — the sleep watch's own reconnect failed (\(result.message)); "
+              + "sleep was let through, and the loop retries it once it can")
+        }
     }
 
     /// The Mac has woken. For any thread but the loop's; does not wait.
@@ -932,7 +1000,25 @@ public final class FanHelperServer {
                 answered.signal()
             case .didWake:
                 systemDidWake()
+            case .reconnectOwed:
+                owesTheSleepWatchsReconnect()
             }
+        }
+    }
+
+    /// The sleep watch reconnected the charger without the loop. LOOP THREAD
+    /// ONLY. Its write is not this thread's read-back, so the reconnect is owed
+    /// — and made at once, before this pass serves anything: a read-back that
+    /// shows connected clears the target and the debt, as every reconnect
+    /// does; a failure stays owed and the watch retries it on every pass.
+    private func owesTheSleepWatchsReconnect() {
+        reconnectOwed = true
+        let result = reconnectCharger()
+        if result.ok {
+            log("\(result.message) (after the sleep watch's own reconnect)")
+        } else {
+            log("WARNING: \(result.message) after the sleep watch's own reconnect — "
+              + "retrying every \(Int(dischargeWatchInterval))s")
         }
     }
 

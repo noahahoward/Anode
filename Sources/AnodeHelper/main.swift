@@ -368,6 +368,12 @@ let ownerUID: uid_t = {
 
 // The server clears any charger cut nobody owns as the first thing either
 // `start` does, in both modes, before anything is served.
+//
+// Two connections to the charger. `charge` is the loop thread's. `sleepCharge`
+// is used only from the sleep watch's queue, and only when the loop has not
+// answered a will-sleep in time: its own SMC connection, so a loop stuck in a
+// call on the first is not in the way, and no SMC object is shared between
+// threads.
 let server = FanHelperServer(
     hardware: SMCFanHardware(),
     configuration: .init(ownerUID: ownerUID, pin: pin),
@@ -384,7 +390,8 @@ let server = FanHelperServer(
         fanLog.info("helper: \($0, privacy: .public)")
         printErr("anode-helper: \($0)")
     },
-    charge: SystemChargeHardware())
+    charge: SystemChargeHardware(),
+    sleepCharge: SystemChargeHardware())
 
 // Every catchable signal that would end this process takes the ⌃C path:
 // `stop()`, then the loop's way out (`shutdownSocket`) reconnects the charger
@@ -414,20 +421,17 @@ do {
 // Sleep, in both modes. Nothing in this process runs while the Mac sleeps, so a
 // charger cut left in place over sleep has nobody watching the floor. Each
 // will-sleep goes to the loop thread the way a stop signal does, and macOS is
-// answered once the loop has reconnected the charger, or after
-// `sleepAnswerDeadline`, whichever is first: a stuck loop never holds up sleep.
+// answered once the loop has reconnected the charger. A loop that has not
+// answered within `sleepAnswerDeadline` never holds up sleep, and never lets
+// it happen with the charger cut either: the sleep watch then writes the
+// reconnect itself, through `sleepCharge`, reads it back, and logs a WARNING,
+// all before macOS is answered (`FanHelperServer.noteSystemWillSleep`).
 // Made after `start`, which creates the pipe the notice wakes the loop through,
 // and before `run`, so a failure to register is known before anything is served:
 // without the notices nothing would reconnect the charger before sleep, and the
 // server then refuses every discharge.
 let sleepWatch = SystemSleepWatch(
-    willSleep: {
-        guard !server.noteSystemWillSleep() else { return }
-        let why = "the loop did not answer a sleep notice within "
-            + "\(Int(FanHelperServer.sleepAnswerDeadline))s — sleep was let through anyway"
-        fanLog.error("helper: WARNING: \(why, privacy: .public)")
-        printErr("anode-helper: WARNING: \(why)")
-    },
+    willSleep: { server.noteSystemWillSleep() },
     didWake: { server.noteSystemDidWake() })
 if sleepWatch == nil {
     server.sleepNoticesUnavailable = true

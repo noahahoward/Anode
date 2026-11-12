@@ -1899,6 +1899,8 @@ final class FakeChargeHardware: ChargeHardware {
     private var _failNextReads = 0
     private var _existsAnswersNo = false
     private var _unknownValue: UInt8?
+    private var _limitWriteGate: DispatchSemaphore?
+    private var _limitWritesWaiting = 0
 
     init(percent: Int? = 50, onAC: Bool? = true, cut: Bool = false) {
         _percent = percent; _cable = onAC; _cut = cut
@@ -2012,13 +2014,58 @@ final class FakeChargeHardware: ChargeHardware {
             return true
         }
     }
+    /// While set, a limit write waits on it before doing anything — the loop
+    /// thread stuck the way `CFPreferencesSynchronize` can stick it. The wait
+    /// is outside the lock, so everything else here still answers.
+    var limitWriteGate: DispatchSemaphore? {
+        get { locked { _limitWriteGate } }
+        set { locked { _limitWriteGate = newValue } }
+    }
+    /// Limit writes waiting at the gate right now.
+    var limitWritesWaiting: Int { locked { _limitWritesWaiting } }
+
     func batteryPercent() -> Int? { locked { _percent } }
     func onAC() -> Bool? { locked { _cut ? (_acWhileCut ?? _cable) : _cable } }
     func adapterCutKeyExists() -> Bool { locked { _keyExists && !_existsAnswersNo } }
     func writeChargeLimit(_ percent: Int) -> Bool {
-        locked {
+        if let gate = limitWriteGate {
+            locked { _limitWritesWaiting += 1 }
+            gate.wait()
+            locked { _limitWritesWaiting -= 1 }
+        }
+        return locked {
             _limitWrites.append(percent)
             return !_refuseLimit
         }
     }
+}
+
+/// A second way in to a `FakeChargeHardware`'s charger, the way a second
+/// process or a second SMC connection is. It records the writes that go
+/// through it, and `sever()` cuts it off: after that nothing it is asked
+/// reaches the charger — reads fail, writes are dropped — which, as far as the
+/// charger can tell, is the process behind it having been killed.
+final class ChargeLine: ChargeHardware {
+    private let hw: FakeChargeHardware
+    private let lock = NSLock()
+    private var _severed = false
+    private var _writes: [Bool] = []
+
+    init(_ hw: FakeChargeHardware) { self.hw = hw }
+
+    /// Every write asked of this line, whether or not it reached the charger.
+    var writes: [Bool] { lock.lock(); defer { lock.unlock() }; return _writes }
+    func sever() { lock.lock(); _severed = true; lock.unlock() }
+    private var severed: Bool { lock.lock(); defer { lock.unlock() }; return _severed }
+
+    func adapterCut() -> Bool? { severed ? nil : hw.adapterCut() }
+    func adapterCutValue() -> UInt8? { severed ? nil : hw.adapterCutValue() }
+    func setAdapterCut(_ on: Bool) -> Bool {
+        lock.lock(); _writes.append(on); let dead = _severed; lock.unlock()
+        return dead ? false : hw.setAdapterCut(on)
+    }
+    func batteryPercent() -> Int? { severed ? nil : hw.batteryPercent() }
+    func onAC() -> Bool? { severed ? nil : hw.onAC() }
+    func writeChargeLimit(_ percent: Int) -> Bool { severed ? false : hw.writeChargeLimit(percent) }
+    func adapterCutKeyExists() -> Bool { severed ? true : hw.adapterCutKeyExists() }
 }

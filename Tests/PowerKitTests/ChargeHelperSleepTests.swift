@@ -357,11 +357,216 @@ final class ChargeHelperSleepTests: XCTestCase {
         let waited = Date().timeIntervalSince(began)
         XCTAssertGreaterThanOrEqual(waited, 0.2)
         XCTAssertLessThan(waited, 1.0, "a stuck loop held up the answer")
+        XCTAssertEqual(hw.isCut, false, "sleep was answered with the charger still cut")
 
         // The way out still reconnects.
         server.stop()
         server.run()
         XCTAssertEqual(hw.isCut, false)
+    }
+
+    /// THE LOOP IS STUCK — inside a limit write that does not return, as
+    /// `CFPreferencesSynchronize` can — when the Mac says it will sleep. The
+    /// answer still goes at the deadline, and the charger reads reconnected
+    /// BEFORE it: the sleep watch writes the reconnect itself and reads it
+    /// back, needing nothing from the loop. It used to let the Mac sleep with
+    /// the charger cut.
+    ///
+    /// Once free, the loop settles its own books on its first pass, by its own
+    /// read-back: by the time the client goes, nothing is held or owed, so the
+    /// dead man's switch has nothing left to reconnect.
+    func testAStuckLoopHasTheChargerReconnectedBeforeSleepIsAnswered() throws {
+        guard let mine = ownCDHash() else {
+            throw XCTSkip("no code identity available in this test environment")
+        }
+        let hw = FakeChargeHardware(percent: 77, onAC: true)
+        let log = ChargeLogRecorder(hw)
+        let path = tempSocket()
+        let server = FanHelperServer(hardware: FakeFans([:]),
+                                     configuration: .init(socketPath: path, ownerUID: getuid(),
+                                                          pin: .exactBuild(cdhash: mine)),
+                                     log: { log.record($0) },
+                                     charge: hw)
+        server.chargeTiming = .immediate
+        // A minute, so only the notices and the client can move the loop.
+        server.dischargeWatchInterval = 60
+        try server.start()
+        let thread = Thread { server.run() }
+        thread.start()
+        let gate = DispatchSemaphore(value: 0)
+        let link = FanControlLink(socketPath: path)
+        defer {
+            hw.limitWriteGate = nil
+            gate.signal()
+            link.disconnect()
+            server.stop()
+            spin(until: { thread.isFinished })
+        }
+        var status: FanControlLink.Status?
+        link.connect { status = $0 }
+        spin(until: { status != nil })
+        XCTAssertEqual(send(link, .discharge(toPercent: 40)).ok, true)
+        XCTAssertEqual(hw.isCut, true)
+
+        // Stick the loop.
+        hw.limitWriteGate = gate
+        var limitReply: FanReply?
+        link.send(.setChargeLimit(80)) { limitReply = $0 }
+        spin(until: { hw.limitWritesWaiting == 1 })
+
+        let began = Date()
+        let answered = server.noteSystemWillSleep(timeout: 0.3)
+        let cutAtTheAnswer = hw.isCut
+        XCTAssertFalse(answered, "a stuck loop answered")
+        XCTAssertEqual(cutAtTheAnswer, false, "sleep was answered with the charger still cut")
+        XCTAssertEqual(hw.cutWrites, [true, false])
+        XCTAssertLessThan(Date().timeIntervalSince(began), 1.0)
+        XCTAssertEqual(hw.limitWritesWaiting, 1, "the loop was not stuck after all")
+        let warning = log.entries(after: "cut the charger").first { $0.line.hasPrefix("WARNING") }
+        XCTAssertNotNil(warning, "\(log.lines)")
+        XCTAssertEqual(warning?.cut, false, "logged before the reconnect")
+
+        // The Mac wakes, and the loop comes free.
+        server.noteSystemDidWake()
+        hw.limitWriteGate = nil
+        gate.signal()
+        spin(until: { limitReply != nil })
+        XCTAssertEqual(limitReply?.ok, true)
+        // A request served after the notices, so the pass that acted on them
+        // has finished before the client goes. One that leaves the charger's
+        // books alone: a stop would settle them itself.
+        XCTAssertEqual(send(link, .setChargeLimit(81)).ok, true)
+
+        let writesBeforeTheDrop = hw.cutWrites.count
+        link.disconnect()
+        spin(until: { log.lines.contains { $0.hasPrefix("client gone") } })
+        XCTAssertEqual(hw.cutWrites.count, writesBeforeTheDrop,
+                       "the loop still thought it held a cut: \(log.lines)")
+        XCTAssertFalse(log.lines.contains { $0.contains("(released)") }, "\(log.lines)")
+        XCTAssertEqual(hw.isCut, false)
+        XCTAssertEqual(Array(hw.cutWrites.dropFirst()).filter { $0 }, [], "something cut it again")
+    }
+
+    /// With no loop running at all, the sleep watch's own reconnect writes the
+    /// charger and touches nothing of the server's: until the loop runs, its
+    /// books still say discharging to 40%. Its first pass settles them with its
+    /// own read-back, and an on-demand helper then has nothing to stay up for.
+    func testTheSleepWatchsReconnectLeavesTheBooksToTheLoop() throws {
+        let hw = FakeChargeHardware(percent: 77, onAC: true)
+        let server = makeServer(hw, socketPath: tempSocket())
+        server.dischargeWatchInterval = 60
+        server.idleExit = 0.3
+        try server.start()
+        XCTAssertTrue(server.handle(.command(.discharge(toPercent: 40))).ok)
+
+        XCTAssertFalse(server.noteSystemWillSleep(timeout: 0.05))
+        XCTAssertEqual(hw.isCut, false, "sleep was answered with the charger still cut")
+        XCTAssertEqual(hw.cutWrites, [true, false])
+        XCTAssertEqual(server.dischargeTarget, 40, "the sleep watch changed the loop's books")
+        XCTAssertFalse(server.reconnectOwed, "the sleep watch changed the loop's books")
+        XCTAssertFalse(server.systemAsleep, "the sleep watch changed the loop's books")
+
+        server.noteSystemDidWake()
+        let thread = Thread { server.run() }
+        thread.start()
+        defer { server.stop(); spin(until: { thread.isFinished }) }
+        spin(until: { thread.isFinished }, timeout: 3)
+        XCTAssertTrue(thread.isFinished, "the loop never settled its books")
+        XCTAssertNil(server.dischargeTarget)
+        XCTAssertFalse(server.reconnectOwed)
+        XCTAssertFalse(server.systemAsleep, "a sleep and a wake were acted on out of order")
+        XCTAssertEqual(hw.isCut, false)
+        XCTAssertEqual(Array(hw.cutWrites.dropFirst()).filter { $0 }, [], "something cut it again")
+    }
+
+    /// A cut the loop's books do not show — the stuck pass had not recorded it
+    /// — and a reconnect from the sleep watch that does not take. The loop is
+    /// told it owes the reconnect, so an on-demand helper stays up and keeps
+    /// writing until a read shows connected, instead of idling out with the
+    /// charger cut and nobody watching.
+    func testAReconnectFromTheSleepWatchThatDidNotTakeIsOwedByTheLoop() throws {
+        let hw = FakeChargeHardware(percent: 77, onAC: true)
+        let server = makeServer(hw, socketPath: tempSocket())
+        server.dischargeWatchInterval = 0.05
+        server.idleExit = 0.3
+        try server.start()
+        XCTAssertTrue(hw.setAdapterCut(true))   // behind the books' back
+        XCTAssertTrue(server.isIdle)
+
+        hw.refuseRestore = true
+        XCTAssertFalse(server.noteSystemWillSleep(timeout: 0.05))
+        XCTAssertEqual(hw.cutWrites, [true, false, false, false], "the sleep watch wrote nothing")
+        XCTAssertFalse(server.reconnectOwed, "the sleep watch changed the loop's books")
+
+        server.noteSystemDidWake()
+        let thread = Thread { server.run() }
+        thread.start()
+        defer { server.stop(); spin(until: { thread.isFinished }) }
+        spin(until: { false }, timeout: 1.0, failOnTimeout: false)
+        XCTAssertFalse(thread.isFinished, "an on-demand helper idled out with the charger cut")
+        XCTAssertEqual(hw.isCut, true)
+        XCTAssertGreaterThan(hw.cutWrites.count, 5, "the loop did not keep writing the reconnect")
+
+        hw.refuseRestore = false
+        spin(until: { thread.isFinished }, timeout: 3)
+        XCTAssertTrue(thread.isFinished, "it never left once the charger read connected")
+        XCTAssertEqual(hw.isCut, false)
+        XCTAssertFalse(server.reconnectOwed)
+    }
+
+    /// The sleep watch writes through its OWN connection to the charger, never
+    /// the loop's: a loop stuck in a call on its connection is not in the way,
+    /// and no charger object is used from two threads. A helper with no charge
+    /// control writes nothing from the sleep watch either.
+    func testTheSleepWatchWritesThroughItsOwnConnection() throws {
+        let hw = FakeChargeHardware(percent: 77, onAC: true)
+        let loopSide = ChargeLine(hw), watchSide = ChargeLine(hw)
+        let server = FanHelperServer(hardware: FakeFans([:]),
+                                     configuration: .init(socketPath: tempSocket(), ownerUID: getuid(),
+                                                          pin: .signingIdentifier("x")),
+                                     charge: loopSide, sleepCharge: watchSide)
+        server.chargeTiming = .immediate
+        try server.start()
+        XCTAssertTrue(server.handle(.command(.discharge(toPercent: 40))).ok)
+
+        XCTAssertFalse(server.noteSystemWillSleep(timeout: 0.05))
+        XCTAssertEqual(loopSide.writes, [true], "the sleep watch used the loop's connection")
+        XCTAssertEqual(watchSide.writes, [false])
+        XCTAssertEqual(hw.isCut, false)
+        server.stop()
+        server.run()
+
+        let spare = ChargeLine(FakeChargeHardware(percent: 77, cut: true))
+        let bare = FanHelperServer(hardware: FakeFans([:]),
+                                   configuration: .init(socketPath: tempSocket(), ownerUID: getuid(),
+                                                        pin: .signingIdentifier("x")),
+                                   sleepCharge: spare)
+        try bare.start()
+        XCTAssertFalse(bare.noteSystemWillSleep(timeout: 0.05))
+        XCTAssertTrue(spare.writes.isEmpty, "a helper without charge control wrote the charger")
+        bare.stop()
+        bare.run()
+    }
+
+    /// On a Mac the SMC says has no adapter-cut key, the sleep watch's writes
+    /// cannot land and owe nothing: an on-demand helper is not kept up for
+    /// ever by a reconnect it can never read back.
+    func testASleepWatchReconnectOnAMacWithNoKeyOwesNothing() throws {
+        let hw = FakeChargeHardware(percent: 77, onAC: true)
+        hw.keyExists = false
+        let server = makeServer(hw, socketPath: tempSocket())
+        server.dischargeWatchInterval = 0.05
+        server.idleExit = 0.2
+        try server.start()
+
+        XCTAssertFalse(server.noteSystemWillSleep(timeout: 0.05))
+        server.noteSystemDidWake()
+        let thread = Thread { server.run() }
+        thread.start()
+        defer { server.stop(); spin(until: { thread.isFinished }) }
+        spin(until: { thread.isFinished }, timeout: 2)
+        XCTAssertTrue(thread.isFinished, "a reconnect that can never land kept the helper up")
+        XCTAssertFalse(server.reconnectOwed)
     }
 
     /// The bound on a sleep answer must outlast one loop pass a slow client can
@@ -404,6 +609,10 @@ final class ChargeHelperSleepTests: XCTestCase {
     /// Notices the loop could not get to are acted on IN ORDER when it does: a
     /// sleep then a wake leaves the helper awake, not refusing discharges for
     /// the rest of its life.
+    ///
+    /// The sleep it was too late for was answered with the sleep watch's own
+    /// reconnect; the loop then makes its own — for the held cut, and for the
+    /// reconnect it was told it owes — and the way out has nothing left to do.
     func testNoticesAreActedOnInTheOrderTheyCame() throws {
         let hw = FakeChargeHardware(percent: 77, onAC: true)
         let server = makeServer(hw, socketPath: tempSocket())
@@ -411,16 +620,18 @@ final class ChargeHelperSleepTests: XCTestCase {
         XCTAssertTrue(server.handle(.command(.discharge(toPercent: 40))).ok)
 
         XCTAssertFalse(server.noteSystemWillSleep(timeout: 0.05))
+        XCTAssertEqual(hw.cutWrites, [true, false], "the sleep watch did not reconnect")
         server.noteSystemDidWake()
 
         let thread = Thread { server.run() }
         thread.start()
-        spin(until: { hw.isCut == false })
+        spin(until: { hw.cutWrites.count == 4 })
         spin(until: { false }, timeout: 0.1, failOnTimeout: false)
         server.stop()
         spin(until: { thread.isFinished })
         XCTAssertFalse(server.systemAsleep, "a sleep and a wake were acted on out of order")
-        XCTAssertEqual(hw.cutWrites, [true, false])
+        XCTAssertEqual(hw.cutWrites, [true, false, false, false])
+        XCTAssertEqual(hw.isCut, false)
     }
 
     // ── The watch itself ────────────────────────────────────────────────────
