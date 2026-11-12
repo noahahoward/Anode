@@ -1024,6 +1024,41 @@ final class ChargeControllerTests: XCTestCase {
         XCTAssertEqual(c.dischargeInForce, 80)
     }
 
+    /// The controller tells the helper's refusals apart by the helper's own words: its transient set is made of
+    /// `ChargeRefusal` constants, never a copy that can drift, and every other refusal the helper publishes lasts —
+    /// shown, and not asked again on a tick — including one with a figure in it and a refused cut with its failed
+    /// undo after it. A refusal added to the helper, renamed or moved between the two kinds fails here.
+    func testTheControllersRefusalKindsAreTheHelpersOwnConstants() {
+        let published = [ChargeRefusal.noChargeControl, ChargeRefusal.noSleepNotices, ChargeRefusal.goingToSleep,
+                         ChargeRefusal.reconnectOwed, ChargeRefusal.targetOutOfRange, ChargeRefusal.batteryUnreadable,
+                         ChargeRefusal.noCharger, ChargeRefusal.atOrBelow(80), ChargeRefusal.switchedRecently,
+                         ChargeRefusal.cutRefused, ChargeRefusal.cutNotKept]
+        for why in ChargeController.transientDischargeRefusals {
+            XCTAssertTrue(published.contains(why), "\"\(why)\" is not one of the helper's ChargeRefusal constants")
+        }
+        XCTAssertEqual(ChargeController.transientDischargeRefusals,
+                       [ChargeRefusal.goingToSleep, ChargeRefusal.switchedRecently])
+
+        let lasting = published.filter { !ChargeController.transientDischargeRefusals.contains($0) }
+            + ["\(ChargeRefusal.cutRefused); \(ChargeRelease.Result(.stillCut, writes: 3).message)"]
+        XCTAssertEqual(lasting.count, 10)
+        battery = Self.state(90)
+        let c = make()
+        for (n, why) in lasting.enumerated() {
+            helper.answer = { cmd in
+                if case .discharge = cmd { return FanReply(ok: false, message: why) }
+                return FanReply(ok: true, message: "ok")
+            }
+            if n > 0 { c.pressDischarge() }   // cancel the one refused before
+            c.pressDischarge()
+            XCTAssertEqual(c.status, .refused(ChargeController.dischargeRefusedText(why)), why)
+            c.tick()
+            c.periodicTick()
+            c.tick()
+            XCTAssertEqual(discharges(helper.commands).count, n + 1, "a lasting refusal was asked again: \(why)")
+        }
+    }
+
     /// Every other refusal is shown, in plain words, and not asked again on a tick, the timer or a power change,
     /// until the person presses again.
     func testAnyOtherDischargeRefusalIsShownAndNotRetried() {

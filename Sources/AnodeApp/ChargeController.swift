@@ -184,16 +184,14 @@ final class ChargeController {
     static let tickInterval: TimeInterval = 30
     /// The longest anything waits for the helper: going to sleep, switching off, uninstalling.
     static let stopTimeout: TimeInterval = 2
-    /// What the helper says when it refuses a discharge because the Mac is going to sleep. Not an error, and not
-    /// logged: the next tick asks again.
-    static let goingToSleepRefusal = "the Mac is going to sleep"
     /// The helper's refusals of a discharge that pass by themselves, so the next tick asks again: the Mac going to
-    /// sleep, and the charger switched a moment ago (the helper waits 10 s between switches). Every other refusal is
-    /// shown, and not asked again until the person presses again or the decision changes. The one place these
-    /// sentences live in the app.
+    /// sleep (not an error, and not logged), and the charger switched a moment ago (the helper spaces its cuts
+    /// `FanHelperServer.cutSpacing` apart; a reconnect is never held back). Every other refusal is shown, and not
+    /// asked again until the person presses again or the decision changes. The sentences are the helper's own
+    /// `ChargeRefusal` constants, never a copy.
     static let transientDischargeRefusals: Set<String> = [
-        goingToSleepRefusal,
-        "the charger was switched a moment ago; try again shortly",
+        ChargeRefusal.goingToSleep,
+        ChargeRefusal.switchedRecently,
     ]
 
     /// How long after a discharge ends with the cable in that macOS may still show "not charging". Measured on
@@ -1263,7 +1261,7 @@ final class ChargeController {
                 }
                 if why != self.lastRefusal {
                     self.lastRefusal = why
-                    if why != Self.goingToSleepRefusal { self.log("discharge to \(target) refused: \(why)") }
+                    if why != ChargeRefusal.goingToSleep { self.log("discharge to \(target) refused: \(why)") }
                 }
                 self.settle()
             }
