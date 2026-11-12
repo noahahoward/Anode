@@ -394,6 +394,11 @@ final class ChargeController {
         }
     }
     private var startTimer: Timer?
+    /// Another account came on screen during the delay, so `sessionActive` is false until it goes (the controller is
+    /// not running, so the observers that normally say so are not installed: these two are).
+    private var startObservers: [NSObjectProtocol] = []
+    /// The delay ran out while another account was on screen: this account starts when it is back.
+    private var delayOver = false
 
     /// Charge Control is on in the setting but has not started: it is waiting out the delay after an unclean exit,
     /// and holds nothing.
@@ -497,6 +502,7 @@ final class ChargeController {
         removeTriggers()
         offRetryTimer?.invalidate()
         startTimer?.invalidate()
+        for o in startObservers { workspace.removeObserver(o) }
         // The connection is shared: a claim left behind would keep it open for good.
         if running { helper.letGo() }
     }
@@ -788,13 +794,20 @@ final class ChargeController {
     }
 
     /// One timer, once, on the main run loop (as the tick and the off-retry are); the controller does not run until it
-    /// fires, and `resumeIfDue` is the same step for the tests.
+    /// fires, and `resumeIfDue` is the same step for the tests. Meanwhile the two session notifications are heard, so
+    /// that it does not start into another account's limit (see `startNow`).
     private func waitToStart() {
         let due = Date().addingTimeInterval(startAfter)
         let t = Timer(fire: due, interval: 0, repeats: false) { [weak self] _ in self?.startNow() }
         t.tolerance = min(5, startAfter / 10)
         RunLoop.main.add(t, forMode: .common)
         startTimer = t
+        startObservers = [
+            workspace.addObserver(forName: NSWorkspace.sessionDidResignActiveNotification, object: nil,
+                                  queue: .main) { [weak self] _ in self?.sessionActive = false },
+            workspace.addObserver(forName: NSWorkspace.sessionDidBecomeActiveNotification, object: nil,
+                                  queue: .main) { [weak self] _ in self?.sessionBecameActiveWhileWaiting() },
+        ]
         startsAt = due
         setStatus(.waiting(Self.liftedText))
     }
@@ -805,16 +818,36 @@ final class ChargeController {
         startNow()
     }
 
+    /// Not while another account is on screen: macOS's limit is the whole Mac's and what it says now is that
+    /// account's, which switching on would write down as macOS's own and then fight over. The start waits for this
+    /// account to be back (`sessionBecameActiveWhileWaiting`).
     private func startNow() {
         guard startsAt != nil else { return }
+        guard sessionActive else {
+            if !delayOver { log("the delay after an unclean exit is over, but another account is on screen; "
+                                + "switching on when this one is back") }
+            delayOver = true
+            return
+        }
         endStartWait()
         log("the delay after an unclean exit is over; switching on")
         enable()
     }
 
+    private func sessionBecameActiveWhileWaiting() {
+        sessionActive = true
+        if delayOver { startNow() }
+    }
+
+    /// The delay is over or cancelled. This account is taken to be on screen again: it is whoever switches Charge
+    /// Control on next, or the one that has just started.
     private func endStartWait() {
         startTimer?.invalidate()
         startTimer = nil
+        for o in startObservers { workspace.removeObserver(o) }
+        startObservers = []
+        delayOver = false
+        if startsAt != nil { sessionActive = true }
         startsAt = nil
     }
 

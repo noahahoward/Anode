@@ -732,6 +732,57 @@ final class ChargeControllerTests: XCTestCase {
         XCTAssertEqual(client.state?.mclLimit, 85)
     }
 
+    /// Another account on screen holds the limit, so the delay does not end into it: macOS's current state is that
+    /// account's, and writing over it (or writing it down as "macOS's own") would corrupt the record and fight it every
+    /// 30 s. The start waits until this account is back.
+    func testTheDelayDoesNotEndWhileAnotherAccountIsOnScreen() {
+        crashedWhileHolding(limit: 85)
+        let c = make()
+        center.post(name: NSWorkspace.sessionDidResignActiveNotification, object: nil)
+        let theirs = NativeChargeState(mclEnabled: true, mclLimit: 95, optimizedChargingEnabled: false)
+        client.state = theirs
+        let writes = writesToMacOS
+        c.resumeIfDue(now: afterTheDelay)
+        XCTAssertTrue(c.isWaitingToStart, "the delay ended into another account's limit")
+        XCTAssertEqual(writesToMacOS, writes)
+        XCTAssertEqual(client.state, theirs)
+        XCTAssertNil(settings.chargeRestoreRecord, "the other account's state was written down as macOS's own")
+        XCTAssertFalse(helper.following)
+
+        center.post(name: NSWorkspace.sessionDidBecomeActiveNotification, object: nil)
+        XCTAssertFalse(c.isWaitingToStart, "the start did not come once this account was back")
+        XCTAssertEqual(client.state?.mclLimit, 85)
+        XCTAssertEqual(record, theirs, "macOS's state when this account came back is what is written down")
+        XCTAssertTrue(helper.following)
+        XCTAssertEqual(c.status, .active(ChargeDecision(osLimit: 85, dischargeTo: nil, reason: .limit)))
+    }
+
+    /// Away for part of the delay and back before it is over: nothing changes, and it ends on time.
+    func testAnAccountSwitchWithinTheDelayChangesNothing() {
+        crashedWhileHolding(limit: 85)
+        let c = make()
+        center.post(name: NSWorkspace.sessionDidResignActiveNotification, object: nil)
+        center.post(name: NSWorkspace.sessionDidBecomeActiveNotification, object: nil)
+        XCTAssertTrue(c.isWaitingToStart)
+        XCTAssertEqual(client.state, found)
+        c.resumeIfDue(now: afterTheDelay)
+        XCTAssertFalse(c.isWaitingToStart)
+        XCTAssertEqual(client.state?.mclLimit, 85)
+    }
+
+    /// Switched off while another account is on screen, and on again by hand later: the person is at the screen, so
+    /// the limit is held; the account that was away is not remembered as still away.
+    func testSwitchingOnAgainAfterAnAbsenceDuringTheDelayHoldsTheLimit() {
+        crashedWhileHolding(limit: 85)
+        make()
+        center.post(name: NSWorkspace.sessionDidResignActiveNotification, object: nil)
+        settings.chargeControlEnabled = false
+        center.post(name: NSWorkspace.sessionDidBecomeActiveNotification, object: nil)
+        settings.chargeControlEnabled = true
+        XCTAssertEqual(client.state?.mclLimit, 85)
+        XCTAssertEqual(record, found)
+    }
+
     /// The Uninstall button during the delay: nothing of Charge Control's is in force, so nothing is put back over
     /// what macOS has, and the delay is over.
     func testUninstallingDuringTheDelayPutsNothingBackOverMacOSsOwnSettings() {
