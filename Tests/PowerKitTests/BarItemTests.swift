@@ -93,4 +93,34 @@ final class BarItemTests: XCTestCase {
         XCTAssertFalse(BarItem.isLockedItem(bundleID: nil, identifier: nil, title: nil))
         XCTAssertFalse(BarItem.isLockedItem(bundleID: "com.applesauce.menu", identifier: nil, title: nil))
     }
+
+    /// Seen on hardware 2026-11-11: macOS folds an icon that does not fit into its own "Show Hidden Menu Bar Items" arrow, and
+    /// Accessibility still reports the icon at the arrow (ChatGPT at x 1025, 24 wide; the arrow at x 1039, 17 wide). The icon is
+    /// not drawn there: a capture of that spot is the arrow, and a cover there hides nothing of it. An icon a system item
+    /// overlaps is not on the bar.
+    func testAnIconUnderASystemItemIsNotOnTheBar() {
+        let screen = CGRect(x: 0, y: 0, width: 1800, height: 1169)
+        func it(_ key: String, _ x: CGFloat, _ w: CGFloat, locked: Bool) -> BarItem {
+            BarItem(key: key, bundleID: locked ? "com.apple.MenuBarAgent" : "x", appName: "A", title: "",
+                    frame: CGRect(x: x, y: locked ? 1 : 7, width: w, height: locked ? 36 : 24), isLocked: locked, hasPress: true, pid: 1)
+        }
+        let marked = BarItem.markingThoseUnderSystemItems([
+            it("chatgpt", 1025, 24, locked: false), it("arrow", 1039, 17.5, locked: true),
+            it("ram", 1063, 49, locked: false), it("wifi", 1496, 22, locked: true)])
+        XCTAssertFalse(marked[0].isOnBar(screens: [screen]), "folded into the arrow")
+        XCTAssertTrue(marked[1].isOnBar(screens: [screen]))
+        XCTAssertTrue(marked[2].isOnBar(screens: [screen]), "beside a system item, not under it")
+        XCTAssertTrue(marked[3].isOnBar(screens: [screen]))
+    }
+
+    /// Neighbours touch or overlap by a point or two; that is not "under".
+    func testANeighbourTouchingASystemItemIsStillOnTheBar() {
+        let screen = CGRect(x: 0, y: 0, width: 1800, height: 1169)
+        let marked = BarItem.markingThoseUnderSystemItems([
+            BarItem(key: "a", bundleID: "x", appName: "A", title: "", frame: CGRect(x: 1470, y: 7, width: 28, height: 24),
+                    isLocked: false, hasPress: true, pid: 1),
+            BarItem(key: "wifi", bundleID: "com.apple.MenuBarAgent", appName: "M", title: "", frame: CGRect(x: 1496, y: 0, width: 22, height: 39),
+                    isLocked: true, hasPress: false, pid: 2)])
+        XCTAssertTrue(marked[0].isOnBar(screens: [screen]))
+    }
 }

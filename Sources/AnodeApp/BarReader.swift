@@ -193,7 +193,7 @@ final class AXBarReader: BarReading {
             noteFailure(apps: asked, results: results, silenceMatters: matters)
             DispatchQueue.main.async {
                 deadline.cancel()
-                _ = once.complete(found?.map(\.item))
+                _ = once.complete(found.map { BarItem.markingThoseUnderSystemItems($0.map(\.item)) })
             }
         }
     }

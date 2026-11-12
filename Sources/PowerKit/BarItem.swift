@@ -15,6 +15,9 @@ public struct BarItem: Equatable {
     public var isLocked: Bool
     public var hasPress: Bool
     public var pid: pid_t?
+    /// Reported where a system item is drawn, so not drawn itself: macOS folds an icon that does not fit into its own
+    /// "Show Hidden Menu Bar Items" arrow and still reports it there. Set by `markingThoseUnderSystemItems`.
+    public var isUnderSystemItem = false
 
     public init(key: String, bundleID: String?, appName: String, title: String, frame: CGRect,
                 isLocked: Bool, hasPress: Bool, pid: pid_t?) {
@@ -28,12 +31,29 @@ public struct BarItem: Equatable {
         self.pid = pid
     }
 
+    /// `items` with every unlocked item that a locked (system) item covers by at least a third of its width marked
+    /// `isUnderSystemItem`. Neighbours that merely touch are left alone. Seen 2026-11-11: ChatGPT reported at x 1025, 24 wide,
+    /// under the overflow arrow at x 1039.
+    public static func markingThoseUnderSystemItems(_ items: [BarItem]) -> [BarItem] {
+        let system = items.filter(\.isLocked).map(\.frame)
+        return items.map { item in
+            guard !item.isLocked, item.frame.size.width > 0 else { return item }
+            var marked = item
+            marked.isUnderSystemItem = system.contains { s in
+                let overlap = s.intersection(item.frame)
+                return !overlap.isNull && overlap.width >= item.frame.width / 3
+            }
+            return marked
+        }
+    }
+
     /// How far down from the top of a screen an item can sit and still be on the bar.
     public static let barBand: CGFloat = 40
 
     /// Whether the item is drawn on a menu bar: it has a size, and at least half of it lies inside the top band of some
     /// screen. macOS parks items that do not fit off the bar (measured: x -1...7, y 1157), where they cannot be seen or clicked.
     public func isOnBar(screens: [CGRect]) -> Bool {
+        guard !isUnderSystemItem else { return false }
         // `size`, not `width`: CGRect.width is the absolute value, which would let a negative size through.
         guard frame.size.width > 0, frame.size.height > 0 else { return false }
         let area = frame.width * frame.height
