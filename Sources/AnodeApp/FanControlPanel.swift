@@ -131,6 +131,8 @@ final class FanControlPanel: NSView {
     /// stack two of them.
     private var elevating = false
     private let installSteps: InstallSteps
+    /// Told when an uninstall of the helper finished: Charge Control, in the app.
+    private let helperUninstalled: () -> Void
 
     private var daemonState: FanDaemon.State {
         FanDaemon.state(installed: installed,
@@ -164,11 +166,13 @@ final class FanControlPanel: NSView {
     private var boostButtons: [Int: NSButton] = [:]
     private var releaseButtons: [Int: NSButton] = [:]
 
-    /// `settings`, `link` and `installSteps` are the app's own except in tests.
-    init(frame: NSRect, settings: Settings, link: HelperConnection, installSteps: InstallSteps = .real) {
+    /// `settings`, `link`, `installSteps` and `helperUninstalled` are the app's own except in tests.
+    init(frame: NSRect, settings: Settings, link: HelperConnection, installSteps: InstallSteps = .real,
+         helperUninstalled: @escaping () -> Void = { ChargeController.current?.helperUninstalled() }) {
         self.settings = settings
         self.link = link
         self.installSteps = installSteps
+        self.helperUninstalled = helperUninstalled
         session = FanSession(enabled: settings.fanControlEnabled)
         seenResets = link.resets
         super.init(frame: frame)
@@ -648,16 +652,22 @@ final class FanControlPanel: NSView {
         session.enabled = true
     }
 
-    @objc private func uninstallTapped() {
+    @objc private func uninstallTapped() { uninstallHelper() }
+
+    /// The "Uninstall Fan Helper…" button. Internal for the tests.
+    func uninstallHelper() {
         guard !elevating else { return say(Self.authorisationOnScreenText) }
-        guard let helper = Self.bundledHelper() else {
+        guard let helper = installSteps.bundledHelper() else {
             return say("Only a bundled build can uninstall. Run "
                      + "`sudo <Anode.app>/Contents/MacOS/AnodeHelper --uninstall`.")
         }
+        // The uninstall reconnects the charger, and fails when it cannot (`FanElevation.uninstallEnd`): one that
+        // finished settles a discharge's end Charge Control could not confirm, with no helper left to ask.
         elevate(command: FanElevation.uninstallCommand(helper: helper),
                 prompt: FanElevation.uninstallPrompt,
                 waiting: Self.waitingText,
-                done: FanElevation.uninstallDone)
+                done: FanElevation.uninstallDone,
+                finishedBeforeResume: helperUninstalled)
     }
 
     /// One authorisation dialog, off the main thread.
@@ -671,10 +681,12 @@ final class FanControlPanel: NSView {
     /// answered (`suspend`/`resume`).
     ///
     /// `report`, when given, hears what the strip says: the waiting line, then how it ended. It hears the end even
-    /// if this strip has gone meanwhile.
+    /// if this strip has gone meanwhile. `finishedBeforeResume` runs when the command finished, before the shared
+    /// connection is opened again, even if this strip has gone.
     private func elevate(command: String, prompt: String, waiting: String, done: String,
                          report: ((String) -> Void)? = nil,
-                         onSuccess: ((FanControlPanel) -> Void)? = nil) {
+                         onSuccess: ((FanControlPanel) -> Void)? = nil,
+                         finishedBeforeResume: (() -> Void)? = nil) {
         elevating = true
         say(waiting)
         report?(waiting)
@@ -688,6 +700,9 @@ final class FanControlPanel: NSView {
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let result = authorise(command, prompt)
             DispatchQueue.main.async {
+                // First, so nothing greets the helper (or finds it gone)
+                // before what the command settled is settled.
+                if case .done = result { finishedBeforeResume?() }
                 // Whatever became of the strip: a suspended link would keep
                 // Charge Control off the helper for good.
                 link.resume()

@@ -902,6 +902,15 @@ public enum FanElevation {
         + "everything it has installed as root."
 
     /// What the Fans tab says once the uninstall has run.
+    /// How `AnodeHelper --uninstall` ends, by how its reconnect of the charger went: 0 when it is not Anode's cut
+    /// any more (or never was); otherwise a failure, after every other step is done, and the line it prints on
+    /// stderr, which is what the authorisation reports as the reason. The app takes a FINISHED uninstall to mean the
+    /// charger is connected, and settles a discharge's end it could not confirm (`FanControlPanel`), so an uninstall
+    /// that could not say so must not finish. Never in words `classify` would take for a cancel.
+    public static func uninstallEnd(charger: ChargeRelease.Result) -> (status: Int32, line: String?) {
+        charger.ok ? (0, nil) : (1, "The charger may still be switched off: \(charger.message).")
+    }
+
     public static let uninstallDone =
         "Removed. The fans are back on automatic, the charger is reconnected, and "
         + "nothing of Anode runs as root."

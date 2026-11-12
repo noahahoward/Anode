@@ -640,11 +640,40 @@ final class FanPanelSharingTests: XCTestCase {
     /// `confirm` without a dialog, and an authorisation that answers `authorise` without running anything.
     private func installingPanel(bundled: String? = "/Applications/Anode.app/Contents/MacOS/AnodeHelper",
                                  confirm: @escaping (String, FanControlPanel.InstallOrigin) -> Bool = { _, _ in true },
-                                 authorise: @escaping () -> FanElevation.Result) -> FanControlPanel {
+                                 authorise: @escaping () -> FanElevation.Result,
+                                 uninstalled: @escaping () -> Void = {}) -> FanControlPanel {
         FanControlPanel(frame: NSRect(x: 0, y: 0, width: 420, height: 200), settings: settings, link: connection,
                         installSteps: FanControlPanel.InstallSteps(bundledHelper: { bundled },
                                                                    confirm: confirm,
-                                                                   authorise: { _, _ in authorise() }))
+                                                                   authorise: { _, _ in authorise() }),
+                        helperUninstalled: uninstalled)
+    }
+
+    // ── Uninstalling the helper ─────────────────────────────────────────────
+
+    /// The helper's uninstall reconnects the charger, and fails when it cannot (`FanElevation.uninstallEnd`). So
+    /// one that finished tells Charge Control, which settles a discharge's end it could no longer confirm; and it
+    /// does so before the shared connection opens again, so nothing asks the gone helper first. One that was
+    /// cancelled or failed says nothing.
+    func testAHelperUninstallThatFinishedTellsChargeControlFirst() {
+        func uninstall(answering result: FanElevation.Result) -> [Bool] {
+            var told: [Bool] = []
+            let panel = installingPanel(authorise: { result },
+                                        uninstalled: { told.append(self.connection.suspended) })
+            panel.uninstallHelper()
+            XCTAssertTrue(connection.suspended)
+            let deadline = Date().addingTimeInterval(5)
+            while connection.suspended, Date() < deadline {
+                RunLoop.main.run(mode: .default, before: Date().addingTimeInterval(0.01))
+            }
+            XCTAssertFalse(connection.suspended, "the shared connection was left shut")
+            withExtendedLifetime(panel) {}
+            return told
+        }
+        XCTAssertEqual(uninstall(answering: .done("Reconnecting the charger…\n  charger reconnected\n")), [true],
+                       "Charge Control was not told, or was told after the connection opened again")
+        XCTAssertEqual(uninstall(answering: .cancelled), [])
+        XCTAssertEqual(uninstall(answering: .failed("The charger may still be switched off")), [])
     }
 
     /// A strip with fan control on, connected through the shared connection, holding fan 0.

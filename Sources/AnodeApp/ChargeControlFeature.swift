@@ -374,10 +374,13 @@ final class ChargeControlFeature: BetaFeature {
             facts.reconnecting = true
             redraw(after: left)
         }
-        statusLabel.stringValue = Self.statusText(status, facts)
-        statusLabel.textColor = unavailable || needsHelper || refused ? .systemOrange : .secondaryLabelColor
+        // Off, the one line that can show: a discharge's end never confirmed, so the charger may still be cut.
+        let offWarning = on ? nil : c?.offWarning
+        statusLabel.stringValue = offWarning ?? Self.statusText(status, facts)
+        statusLabel.textColor = unavailable || needsHelper || refused || offWarning != nil
+            ? .systemOrange : .secondaryLabelColor
         // A switched-on section with nothing to report yet (the controller has not answered) shows no line.
-        statusLabel.isHidden = !on || status == .off
+        statusLabel.isHidden = offWarning == nil && (!on || status == .off)
         installButton.isHidden = !on || !needsHelper
         // Kept once the helper is there and the button has gone (it says the install worked), not once switched off.
         if !on { installNote = nil }

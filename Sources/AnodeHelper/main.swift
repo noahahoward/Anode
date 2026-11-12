@@ -162,7 +162,8 @@ if arguments.contains("--uninstall") {
     // and "no such key" told apart from "could not reconnect". A value Anode
     // never writes is left alone and named.
     print("Reconnecting the charger…")
-    print("  \(ChargeRelease.reconnect(SystemChargeHardware()).message)")
+    let charger = ChargeRelease.reconnect(SystemChargeHardware())
+    print("  \(charger.message)")
 
     // launchctl first: removing a plist does not unload a job that is already
     // running, and a bootout after the file is gone has nothing to name. Both
@@ -191,7 +192,11 @@ if arguments.contains("--uninstall") {
     }
     print("Done. Nothing of this project runs as root any more.")
     print(FanElevation.chargeLimitOutlivesTheHelper)
-    exit(0)
+    // A charger it could not confirm reconnected fails the whole uninstall, everything else done: the app takes a
+    // finished one to mean the charger is connected (`FanElevation.uninstallEnd`).
+    let end = FanElevation.uninstallEnd(charger: charger)
+    if let line = end.line { printErr(line) }
+    exit(end.status)
 }
 
 // ── Install ─────────────────────────────────────────────────────────────────

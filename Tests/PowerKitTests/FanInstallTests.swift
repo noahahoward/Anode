@@ -653,6 +653,28 @@ final class FanElevationTests: XCTestCase {
         XCTAssertEqual(FanElevation.installCommand(helper: "/x/H", ownerUID: 501),
                        "'/x/H' --install --uid 501")
     }
+
+    /// `--uninstall` reconnects the charger and ends by how that went. One it could not confirm reconnected fails the
+    /// uninstall (every other step is still done), so the app, which takes a finished uninstall to mean the charger
+    /// is connected, hears the failure and shows why. Never in words the authorisation would take for a cancel.
+    func testAnUninstallThatCouldNotReconnectTheChargerFails() throws {
+        let fine: [ChargeRelease.Result.Outcome] = [.notCut, .noKey, .reconnected, .unrecognised(0x04)]
+        for outcome in fine {
+            let end = FanElevation.uninstallEnd(charger: ChargeRelease.Result(outcome, writes: 1))
+            XCTAssertEqual(end.status, 0, "\(outcome)")
+            XCTAssertNil(end.line)
+        }
+        let failing: [ChargeRelease.Result.Outcome] = [.stillCut, .unconfirmed]
+        for outcome in failing {
+            let r = ChargeRelease.Result(outcome, writes: 3)
+            let end = FanElevation.uninstallEnd(charger: r)
+            XCTAssertNotEqual(end.status, 0, "\(outcome)")
+            let line = try XCTUnwrap(end.line)
+            XCTAssertTrue(line.contains("may still be switched off"), line)
+            XCTAssertTrue(line.contains(r.message), line)
+            XCTAssertEqual(FanElevation.classify(status: end.status, output: "", error: line), .failed(line))
+        }
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

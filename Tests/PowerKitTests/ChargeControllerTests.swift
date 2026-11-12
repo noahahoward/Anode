@@ -971,6 +971,244 @@ final class ChargeControllerTests: XCTestCase {
         XCTAssertFalse(lines.contains { $0.contains("charger is connected") }, lines.joined(separator: "\n"))
     }
 
+    // ── What else settles the debt ──────────────────────────────────────────
+
+    /// A discharge running, then the helper uninstalled under it (the Fans tab's button): the stop finds nobody.
+    private func lostUnderAnUninstall() -> ChargeController {
+        battery = Self.state(90)
+        let c = make()
+        c.pressDischarge()
+        helper.gone = true
+        helper.installed = false
+        c.pressDischarge()   // Stop
+        XCTAssertEqual(c.status, .warning(ChargeController.cutWarningNoHelperText))
+        XCTAssertTrue(settings.chargeCutUnconfirmed)
+        return c
+    }
+
+    /// The helper's uninstall reconnects the charger itself, and fails when it could not. One that finished settles
+    /// the debt and the warning, and the stop is not asked again: no helper is left to answer it, ever.
+    func testAHelperUninstallThatFinishedSettlesTheDebtWhileOn() {
+        let c = lostUnderAnUninstall()
+        c.helperUninstalled()
+        XCTAssertFalse(settings.chargeCutUnconfirmed)
+        XCTAssertEqual(c.status, .active(ChargeDecision(osLimit: 80, dischargeTo: nil, reason: .limit)))
+        let asked = helper.stops()
+        c.tick()
+        c.periodicTick()
+        XCTAssertEqual(helper.stops(), asked, "the stop was asked again after the uninstall reconnected the charger")
+    }
+
+    /// The same while off: the flag goes, the section is told, and the retry ends.
+    func testAHelperUninstallThatFinishedSettlesTheDebtWhileOff() {
+        settings.chargeCutUnconfirmed = true
+        helper.gone = true
+        let c = make(enabled: false)
+        XCTAssertEqual(helper.stops(), 1)
+        var heard = 0
+        let token = c.observeChanges { heard += 1 }
+        c.helperUninstalled()
+        XCTAssertFalse(settings.chargeCutUnconfirmed)
+        XCTAssertNil(c.offWarning)
+        XCTAssertGreaterThan(heard, 0, "the section was not told")
+        c.retryOwedStopWhileOff()
+        XCTAssertEqual(helper.stops(), 1, "the stop was asked again after the uninstall reconnected the charger")
+        withExtendedLifetime(token) {}
+    }
+
+    /// A stop still on its way when the uninstall finished is answered "stopped answering" after it. That answer is
+    /// about a helper the uninstall has dealt with, and does not bring the warning back.
+    func testAStopAnsweredAfterTheUninstallDoesNotBringTheWarningBack() {
+        battery = Self.state(90)
+        let c = make()
+        c.pressDischarge()
+        helper.deferReplies = true
+        helper.answer = { _ in FanReply(ok: false, message: HelperConnection.stoppedAnswering) }
+        c.pressDischarge()   // Stop, on its way
+        helper.installed = false
+        c.helperUninstalled()
+        helper.flushReplies()
+        XCTAssertFalse(settings.chargeCutUnconfirmed)
+        XCTAssertEqual(c.status, .active(ChargeDecision(osLimit: 80, dischargeTo: nil, reason: .limit)))
+    }
+
+    /// Evidence the charger IS connected settles everything: macOS saying the Mac is on the adapter (its own flag,
+    /// not the adapter's details, which a cut leaves as they were) for more than 90 s, with no discharge in force or
+    /// on its way. A cut makes that flag read no within seconds, so a minute and a half of yes proves there is none.
+    /// With no helper left to answer a stop, nothing else could.
+    func testMacOSSayingOnTheAdapterForLongEnoughSettlesTheDebt() {
+        let c = lostUnderAnUninstall()
+        let t0 = Date()
+        c.tick(now: t0)
+        c.tick(now: t0.addingTimeInterval(60))
+        XCTAssertTrue(settings.chargeCutUnconfirmed, "a minute is not long enough")
+        XCTAssertEqual(c.status, .warning(ChargeController.cutWarningNoHelperText))
+        c.tick(now: t0.addingTimeInterval(91))
+        XCTAssertFalse(settings.chargeCutUnconfirmed)
+        XCTAssertEqual(c.status, .active(ChargeDecision(osLimit: 80, dischargeTo: nil, reason: .limit)))
+        let asked = helper.stops()
+        c.tick(now: t0.addingTimeInterval(120))
+        c.periodicTick(now: t0.addingTimeInterval(150))
+        XCTAssertEqual(helper.stops(), asked, "the stop was asked again after macOS showed the charger connected")
+    }
+
+    /// The same with a helper installed that is not answering: the evidence does not need one.
+    func testTheEvidenceNeedsNoHelper() {
+        battery = Self.state(90)
+        let c = make()
+        c.pressDischarge()
+        helper.gone = true
+        c.pressDischarge()
+        XCTAssertEqual(c.status, .warning(ChargeController.cutWarningText))
+        let t0 = Date()
+        c.tick(now: t0)
+        c.tick(now: t0.addingTimeInterval(91))
+        XCTAssertFalse(settings.chargeCutUnconfirmed)
+        XCTAssertNotEqual(c.status, .warning(ChargeController.cutWarningText))
+    }
+
+    /// Only macOS's own "on the adapter" counts, and it must last: the adapter's details say yes all through a cut,
+    /// and one reading of "off the adapter" starts the 90 s again.
+    func testOnlyMacOSsOwnOnTheAdapterCountsAndItMustLast() {
+        let c = lostUnderAnUninstall()
+        let t0 = Date()
+        battery = Self.state(90, ac: false, adapter: true)
+        c.tick(now: t0)
+        c.tick(now: t0.addingTimeInterval(200))
+        XCTAssertTrue(settings.chargeCutUnconfirmed, "the adapter's details were taken for a connected charger")
+        battery = Self.state(90)
+        c.tick(now: t0.addingTimeInterval(210))
+        battery = Self.state(90, ac: false, adapter: true)
+        c.tick(now: t0.addingTimeInterval(260))
+        battery = Self.state(90)
+        c.tick(now: t0.addingTimeInterval(270))
+        c.tick(now: t0.addingTimeInterval(330))
+        XCTAssertTrue(settings.chargeCutUnconfirmed, "the 90 s did not start again")
+        c.tick(now: t0.addingTimeInterval(361))
+        XCTAssertFalse(settings.chargeCutUnconfirmed)
+    }
+
+    /// A discharge in force, or one on its way, is never evidence however long macOS says "on the adapter": it may
+    /// cut the charger at any moment.
+    func testADischargeInForceOrOnItsWayIsNeverEvidence() {
+        battery = Self.state(90)
+        let t0 = Date()
+        let c = make()
+        c.pressDischarge()
+        XCTAssertEqual(c.dischargeInForce, 80)
+        c.tick(now: t0.addingTimeInterval(1))
+        c.tick(now: t0.addingTimeInterval(200))
+        XCTAssertTrue(settings.chargeCutUnconfirmed)
+        XCTAssertEqual(c.dischargeInForce, 80)
+
+        c.pressDischarge()   // stopped, and settled by the helper's yes
+        XCTAssertFalse(settings.chargeCutUnconfirmed)
+        helper.deferReplies = true
+        c.pressDischarge()   // asked again, and not answered yet
+        XCTAssertTrue(settings.chargeCutUnconfirmed)
+        c.tick(now: t0.addingTimeInterval(300))
+        c.tick(now: t0.addingTimeInterval(500))
+        XCTAssertTrue(settings.chargeCutUnconfirmed, "a discharge on its way was settled by macOS's word")
+    }
+
+    /// Another account on screen: its Anode may be discharging, and the helper's socket is its own, so this one could
+    /// not even ask. The net does not run there, and nothing is asserted: no stop, no warning. Back on screen, the
+    /// look starts again from nothing.
+    func testTheNetDoesNotRunWhileAnotherAccountIsOnScreen() {
+        let t0 = Date().addingTimeInterval(-1000)
+        let c = make()
+        center.post(name: NSWorkspace.sessionDidResignActiveNotification, object: nil)
+        helper.gone = true   // the socket is the other account's
+        battery = Self.state(70, ac: false, adapter: true)
+        c.tick(now: t0)
+        c.tick(now: t0.addingTimeInterval(91))
+        c.tick(now: t0.addingTimeInterval(400))
+        c.periodicTick(now: t0.addingTimeInterval(430))
+        XCTAssertEqual(helper.stops(), 0, "the net ran for an account not on screen")
+        XCTAssertNotEqual(c.status, .warning(ChargeController.cutWarningText))
+
+        center.post(name: NSWorkspace.sessionDidBecomeActiveNotification, object: nil)   // a tick, now
+        c.tick(now: t0.addingTimeInterval(1060))
+        XCTAssertEqual(helper.stops(), 0, "the look did not start again from nothing")
+        c.tick(now: t0.addingTimeInterval(1100))
+        XCTAssertGreaterThan(helper.stops(), 0)
+    }
+
+    /// A warning the net raised before the switch (its stop not answered, nothing of this Anode's owed) goes with it.
+    func testAWarningFromTheNetDoesNotOutliveAnAccountSwitch() {
+        let t0 = Date()
+        battery = Self.state(70, ac: false, adapter: true)
+        helper.gone = true
+        let c = make()
+        c.tick(now: t0)
+        c.tick(now: t0.addingTimeInterval(91))
+        XCTAssertEqual(c.status, .warning(ChargeController.cutWarningText))
+        XCTAssertFalse(settings.chargeCutUnconfirmed)
+        center.post(name: NSWorkspace.sessionDidResignActiveNotification, object: nil)
+        XCTAssertNotEqual(c.status, .warning(ChargeController.cutWarningText))
+        let asked = helper.stops()
+        c.tick(now: t0.addingTimeInterval(200))
+        c.periodicTick(now: t0.addingTimeInterval(230))
+        XCTAssertEqual(helper.stops(), asked)
+    }
+
+    /// Its own debt is still put right while another account is on screen: that is not holding the charger.
+    func testADebtOfItsOwnIsStillAskedAboutWhileAnotherAccountIsOnScreen() {
+        let c = lostUnderAnUninstall()
+        helper.installed = true
+        center.post(name: NSWorkspace.sessionDidResignActiveNotification, object: nil)
+        let asked = helper.stops()
+        battery = Self.state(90, ac: false, adapter: true)
+        c.tick()
+        XCTAssertGreaterThan(helper.stops(), asked)
+        XCTAssertTrue(settings.chargeCutUnconfirmed)
+    }
+
+    // ── While off ───────────────────────────────────────────────────────────
+
+    /// A session helper killed under a discharge, then Charge Control switched off: nothing can be greeted while
+    /// off, so the debt would be silent. The section shows a warning all the same, saying the charger may still be
+    /// switched off and how to get it back. Nothing is made or sent for it.
+    func testWhileOffADebtSaysSoAndHowToRecover() {
+        settings.chargeCutUnconfirmed = true
+        helper.installed = false
+        let c = make(enabled: false)
+        XCTAssertEqual(c.offWarning, ChargeController.cutWarningOffText)
+        XCTAssertEqual(c.status, .off)
+        XCTAssertTrue(helper.commands.isEmpty)
+        XCTAssertEqual(clientsMade, 0)
+        XCTAssertEqual(helper.follows, 0)
+        let text = ChargeController.cutWarningOffText
+        XCTAssertTrue(text.contains("may still be switched off"), text)
+        XCTAssertTrue(text.contains("Fans tab"), text)
+        XCTAssertTrue(text.contains("as it starts"), text)
+        // An installed helper is being asked every 30 s already: the line says that.
+        helper.installed = true
+        XCTAssertEqual(c.offWarning, ChargeController.cutWarningText)
+        // Nothing owed, nothing said.
+        settings.chargeCutUnconfirmed = false
+        XCTAssertNil(make(enabled: false).offWarning)
+    }
+
+    /// The section is told when the debt goes, while off as well as on: nothing else would redraw it.
+    func testTheSectionIsToldWhenTheDebtIsSettledWhileOff() {
+        battery = Self.state(90)
+        let c = make()
+        c.pressDischarge()
+        helper.gone = true
+        settings.chargeControlEnabled = false
+        XCTAssertTrue(settings.chargeCutUnconfirmed)
+        XCTAssertEqual(c.offWarning, ChargeController.cutWarningText)
+        var heard = 0
+        let token = c.observeChanges { heard += 1 }
+        helper.gone = false
+        c.retryOwedStopWhileOff()
+        XCTAssertFalse(settings.chargeCutUnconfirmed)
+        XCTAssertNil(c.offWarning)
+        XCTAssertGreaterThan(heard, 0, "the section was not told the debt was settled")
+        withExtendedLifetime(token) {}
+    }
+
     /// A discharge in force is not a cut left behind, however long it runs.
     func testADischargeInForceIsNotTakenForAnOrphanedCut() {
         let t0 = Date()

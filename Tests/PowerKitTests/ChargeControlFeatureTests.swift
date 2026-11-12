@@ -225,6 +225,28 @@ final class ChargeControlFeatureTests: XCTestCase {
         XCTAssertFalse(f.dischargeButton.isEnabled)
     }
 
+    /// Off, with a discharge's end never confirmed (a helper started by hand and killed under it, then Charge Control
+    /// switched off): the line still shows, in orange, under the switch alone, saying the charger may still be
+    /// switched off and how to get it back. It goes once the debt is settled.
+    func testWhileOffAnUnconfirmedDischargeEndStillShowsTheWarning() throws {
+        settings.chargeCutUnconfirmed = true
+        helper.installed = false
+        let f = make(enabled: false)
+        XCTAssertFalse(f.statusLabel.isHiddenOrHasHiddenAncestor, "the debt was silent while off")
+        XCTAssertEqual(f.statusLabel.stringValue, ChargeController.cutWarningOffText)
+        XCTAssertEqual(f.statusLabel.textColor, .systemOrange)
+        for v in controls(f) + [f.installButton] where v !== f.statusLabel {
+            XCTAssertTrue(v.isHiddenOrHasHiddenAncestor, "shown while off: \(v)")
+        }
+        XCTAssertTrue(helper.commands.isEmpty, "the line sent something")
+
+        // Switching on asks the helper (started again by now), whose yes settles it; switching off again is quiet.
+        settings.chargeControlEnabled = true
+        XCTAssertFalse(settings.chargeCutUnconfirmed)
+        settings.chargeControlEnabled = false
+        XCTAssertTrue(f.statusLabel.isHiddenOrHasHiddenAncestor)
+    }
+
     func testStatusTextForEachStatus() {
         typealias Facts = ChargeControlFeature.Facts
         func text(_ s: ChargeStatus, _ facts: Facts = Facts()) -> String { ChargeControlFeature.statusText(s, facts) }
@@ -672,7 +694,8 @@ final class ChargeControlFeatureTests: XCTestCase {
                   ChargeController.dischargeRefusedText("the SMC would not cut the charger"),
                   ChargeController.dischargeRefusedText("the SMC took the cut and the charger does not read as cut"),
                   ChargeController.limitRefusedText(63, "macOS did not take the charge limit"),
-                  ChargeController.cutWarningText, ChargeController.cutWarningNoHelperText]
+                  ChargeController.cutWarningText, ChargeController.cutWarningNoHelperText,
+                  ChargeController.cutWarningOffText]
         shown += reasons.map {
             ChargeController.limitNeedsHelperText(for: ChargeDecision(osLimit: 63, dischargeTo: nil, reason: $0))
         }
