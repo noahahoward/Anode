@@ -35,14 +35,13 @@ final class ChargeHelperWaitTests: XCTestCase {
         wire = FanControlLink(socketPath: stalling.path)
         connection = HelperConnection(wire: wire)
         adapter = ChargeHelperAdapter(connection: connection, isInstalled: { true })
-        client = FakeChargeLimitClient(state: NativeChargeState(mclEnabled: true, mclLimit: 80,
-                                                                optimizedChargingEnabled: false))
+        // macOS's own limit before Charge Control was one only the helper can put back, so every restore waits for
+        // the helper twice: the stop, then the limit. Switching on writes it down as the record; a record already in
+        // the settings at launch would be taken for the last run not having quit, and Charge Control would wait.
+        client = FakeChargeLimitClient(state: NativeChargeState(mclEnabled: true, mclLimit: 63,
+                                                                optimizedChargingEnabled: true))
         center = NotificationCenter()
         lines = []
-        // macOS's own limit before Charge Control was one only the helper can put back, so every restore waits for
-        // the helper twice: the stop, then the limit.
-        settings.chargeRestoreRecord = ChargeController.encodeRecord(
-            NativeChargeState(mclEnabled: true, mclLimit: 63, optimizedChargingEnabled: true))
     }
 
     override func tearDownWithError() throws {
@@ -136,6 +135,8 @@ final class ChargeHelperWaitTests: XCTestCase {
 
     /// The uninstall script's run with no window: a debt left over, and a record only the helper can put back.
     func testTheHeadlessRestoreDoesNotHoldTheMainThread() {
+        settings.chargeRestoreRecord = ChargeController.encodeRecord(
+            NativeChargeState(mclEnabled: true, mclLimit: 63, optimizedChargingEnabled: true))
         settings.chargeCutUnconfirmed = true
         stalling.answering = false
         var left = false
@@ -145,6 +146,21 @@ final class ChargeHelperWaitTests: XCTestCase {
         }
         XCTAssertLessThan(took, Self.bound, "the headless restore held the main thread \(took) s")
         XCTAssertTrue(left, "a restore nobody answered said nothing was left")
+    }
+
+    /// A launch after an unclean exit lifts the limit at once, with the same waits as a switch-off: a debt left over
+    /// and a helper that has stopped answering must not hold the main thread longer.
+    func testALaunchAfterACrashDoesNotHoldTheMainThread() {
+        settings.chargeRestoreRecord = ChargeController.encodeRecord(
+            NativeChargeState(mclEnabled: true, mclLimit: 63, optimizedChargingEnabled: true))
+        settings.chargeCutUnconfirmed = true
+        settings.chargeControlEnabled = true
+        stalling.answering = false
+        var c: ChargeController?
+        let took = measured { c = make() }
+        XCTAssertLessThan(took, Self.bound, "a launch after a crash held the main thread \(took) s")
+        XCTAssertEqual(c?.isWaitingToStart, true)
+        XCTAssertTrue(settings.chargeCutUnconfirmed, "a stop nobody answered settled the debt")
     }
 
     /// A helper that answers is still waited for: nothing above cut a healthy one short.

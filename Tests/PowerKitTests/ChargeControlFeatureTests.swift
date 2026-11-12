@@ -296,6 +296,44 @@ final class ChargeControlFeatureTests: XCTestCase {
         XCTAssertEqual(text(.refused(ChargeController.limitRefusedText(63, "macOS did not take the charge limit"))),
                        "The Anode helper did not set the limit to 63%: macOS did not take the charge limit")
         XCTAssertEqual(text(.off), "Off")
+        XCTAssertEqual(text(.waiting(ChargeController.liftedText)), ChargeController.liftedText)
+    }
+
+    /// After an unclean exit the section says plainly that the limit was lifted and when Charge Control starts again;
+    /// Discharge and Top Up wait with it, and everything is back when it starts.
+    func testWhileWaitingOutTheDelayTheLineSaysSo() throws {
+        settings.chargeRestoreRecord = ChargeController.encodeRecord(
+            NativeChargeState(mclEnabled: false, mclLimit: 100, optimizedChargingEnabled: true))
+        let f = make(enabled: true)
+        XCTAssertEqual(controller?.isWaitingToStart, true)
+        XCTAssertFalse(f.statusLabel.isHiddenOrHasHiddenAncestor)
+        XCTAssertEqual(f.statusLabel.stringValue,
+                       "Anode did not quit cleanly last time, so the limit was lifted. Charge Control starts again in "
+                       + "a minute.")
+        XCTAssertEqual(f.statusLabel.stringValue, ChargeController.liftedText)
+        XCTAssertFalse(f.dischargeButton.isEnabled)
+        XCTAssertFalse(f.topUpButton.isEnabled, "Top Up can be pressed while nothing is held")
+        // They do not claim the charger is missing: nothing is known about it yet.
+        XCTAssertEqual(f.topUpButton.toolTip, ChargeControlFeature.topUpTip)
+        XCTAssertEqual(f.dischargeButton.toolTip, ChargeControlFeature.dischargeTip)
+        XCTAssertTrue(f.enableCheckbox.state == .on)
+        XCTAssertTrue(f.limitSlider.isEnabled, "the limit can still be chosen for when it starts")
+
+        controller?.resumeIfDue(now: Date().addingTimeInterval(ChargeController.startDelay + 1))
+        XCTAssertEqual(f.statusLabel.stringValue, "Charging to 80% (your limit)")
+        XCTAssertTrue(f.topUpButton.isEnabled)
+    }
+
+    /// A discharge's end never confirmed is shown during the delay too, and first: the charger may be cut.
+    func testADebtIsShownDuringTheDelay() throws {
+        settings.chargeRestoreRecord = ChargeController.encodeRecord(
+            NativeChargeState(mclEnabled: false, mclLimit: 100, optimizedChargingEnabled: true))
+        settings.chargeCutUnconfirmed = true
+        helper.gone = true
+        let f = make(enabled: true)
+        XCTAssertEqual(controller?.isWaitingToStart, true)
+        XCTAssertEqual(f.statusLabel.stringValue, ChargeController.cutWarningText)
+        XCTAssertEqual(f.statusLabel.textColor, .systemOrange)
     }
 
     // ── Controls write their settings, and show them ────────────────────────
@@ -636,7 +674,9 @@ final class ChargeControlFeatureTests: XCTestCase {
     /// Ruling 5: the summary says what a person needs to know before switching it on.
     func testSummarySaysWhatItChangesAndWhatItNeeds() {
         let s = ChargeControlFeature().summary
-        XCTAssertTrue(s.contains("keeps working while Anode is closed"), s)
+        // The limit is in force only while Anode runs: it is lifted when Anode quits.
+        XCTAssertTrue(s.contains("The limit applies while Anode is running, and is lifted when Anode quits"), s)
+        XCTAssertFalse(s.contains("keeps working while Anode is closed"), s)
         XCTAssertTrue(s.contains("turns off Optimized Battery Charging"), s)
         XCTAssertTrue(s.contains("puts it back"), s)
         XCTAssertTrue(s.contains("Discharging needs the Anode helper"), s)
@@ -644,8 +684,8 @@ final class ChargeControlFeatureTests: XCTestCase {
         for feature in ["Heat Protection", "Sailing Mode", "Stop charging when sleeping"] {
             XCTAssertTrue(s.contains(feature), "the summary does not say \(feature) can need the helper: \(s)")
         }
-        // Removed by hand, Anode puts nothing back.
-        XCTAssertTrue(s.contains("Turn Charge Control off before removing Anode"), s)
+        // Removed by hand, Anode puts nothing back: quitting does, so quit first.
+        XCTAssertTrue(s.contains("Quit Anode before removing it by hand"), s)
         XCTAssertTrue(s.contains("Trash"), s)
     }
 
@@ -696,7 +736,7 @@ final class ChargeControlFeatureTests: XCTestCase {
                   ChargeController.dischargeRefusedText("the SMC took the cut and the charger does not read as cut"),
                   ChargeController.limitRefusedText(63, "macOS did not take the charge limit"),
                   ChargeController.cutWarningText, ChargeController.cutWarningNoHelperText,
-                  ChargeController.cutWarningOffText]
+                  ChargeController.cutWarningOffText, ChargeController.liftedText]
         shown += reasons.map {
             ChargeController.limitNeedsHelperText(for: ChargeDecision(osLimit: 63, dischargeTo: nil, reason: $0))
         }

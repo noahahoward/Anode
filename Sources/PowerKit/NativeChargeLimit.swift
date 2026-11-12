@@ -47,7 +47,8 @@ public enum NativeChargeLimit {
 /// 2026-11-11-charge-control-plan-0-results.md; probes in docs/superpowers/spikes/
 /// 2026-11-11-charge-control/). An unprivileged, ad-hoc signed probe read the limit and set 85
 /// through it, and the limit stayed in force after the probe exited: macOS keeps it in its own
-/// preferences, so it outlives Anode.
+/// preferences, so it outlives the process that set it. That is why Charge Control puts macOS's own settings back
+/// when Anode quits, and why the launch after a crash lifts the limit before anything else.
 ///
 /// IMPLEMENTATION NOTE: the methods are called through their IMPs, cast to C function types, the
 /// way the probes did. Before a cast the method's runtime type encoding must equal the one

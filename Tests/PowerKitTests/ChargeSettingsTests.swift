@@ -275,9 +275,9 @@ final class ChargeSettingsTests: XCTestCase {
 
     // ── The restore record ──────────────────────────────────────────────────
 
-    /// It has to outlive the process that wrote it: the limit stays in force after Anode quits, so the way back to
-    /// what macOS had before must still be there on the next launch. Cleared means the key is gone, so "no record" is
-    /// one state on disk and the next enable records afresh.
+    /// It has to outlive the process that wrote it: a crash leaves the limit in force, so the way back to what macOS
+    /// had before must still be there on the next launch, which is also how that launch knows the last run did not
+    /// quit. Cleared means the key is gone, so "no record" is one state on disk and the next enable records afresh.
     func testRestoreRecordRoundTripsAndClears() {
         let record = #"{"mclEnabled":true,"mclLimit":90,"optimizedChargingEnabled":true}"#
         let s = Settings(defaults: defaults)

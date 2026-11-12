@@ -2743,8 +2743,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
     func applicationWillTerminate(_ note: Notification) {
         RunTrace.cleanExit()
         fansPane.teardown()
-        // Leaves macOS's charge limit in force, which is the point of it, and lets go of the helper link; the
-        // last holder letting go is what ends a discharge.
+        // Puts macOS's own charge settings back (the limit is in force only while Anode runs: an Anode that breaks
+        // leaves the battery released, not held), stopping a discharge first, and lets go of the helper link; the
+        // last holder letting go is what ends a discharge. A crash or a kill never gets here: the next launch finds
+        // the record still there and lifts the limit then.
         chargeControl?.shutdown()
         // Never leave the lid held open behind a quit app.
         keepAwake?.shutdown()
@@ -3057,7 +3059,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
 }
 
 // `uninstall.sh` runs the app this way, with no window and before anything else starts, to put macOS's own charge
-// settings back before the app and its settings are deleted: the limit is macOS's and would outlive them.
+// settings back before the app and its settings are deleted. A quit does that already, but an Anode that crashed or
+// was killed never got to, and macOS keeps a limit it was given: it would outlive the app and its settings.
 if CommandLine.arguments.contains(ChargeController.restoreArgument) {
     exit(ChargeController.restoreForUninstall(settings: .shared, helper: ChargeHelperAdapter()) ? 0 : 1)
 }

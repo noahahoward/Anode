@@ -15,11 +15,12 @@ final class ChargeControlFeature: BetaFeature {
 
     let title = "Charge Control"
     let summary = "Holds the battery at a charge limit you choose, and can drain it down to the limit while the Mac stays "
-                + "plugged in. The limit keeps working while Anode is closed. While Charge Control is on, Anode turns off "
-                + "Optimized Battery Charging, and puts it back as it was when you turn Charge Control off. Discharging "
-                + "needs the Anode helper, and so does holding the charge anywhere but 80, 85, 90, 95 or 100%, whether "
-                + "for your limit, Heat Protection, Sailing Mode or Stop charging when sleeping. Turn Charge Control off "
-                + "before removing Anode by hand: dragging it to the Trash puts nothing back."
+                + "plugged in. The limit applies while Anode is running, and is lifted when Anode quits. While Charge "
+                + "Control is on, Anode turns off Optimized Battery Charging, and puts it back as it was when you turn "
+                + "Charge Control off or quit. Discharging needs the Anode helper, and so does holding the charge "
+                + "anywhere but 80, 85, 90, 95 or 100%, whether for your limit, Heat Protection, Sailing Mode or Stop "
+                + "charging when sleeping. Quit Anode before removing it by hand (if it ever stopped without quitting, "
+                + "open it and quit it once more first): dragging it to the Trash puts nothing back."
     var layoutChanged: (() -> Void)?
 
     private let settings: Settings
@@ -97,7 +98,7 @@ final class ChargeControlFeature: BetaFeature {
         switch s {
         case .off:
             return "Off"
-        case .unavailable(let why), .needsHelper(let why), .refused(let why), .warning(let why):
+        case .unavailable(let why), .needsHelper(let why), .refused(let why), .warning(let why), .waiting(let why):
             return why
         case .active(let d):
             let limit = d.osLimit, why = reasonText(d.reason)
@@ -315,7 +316,7 @@ final class ChargeControlFeature: BetaFeature {
         case .unavailable: unavailable = true
         case .needsHelper: needsHelper = true
         case .refused, .warning: refused = true
-        case .off, .active: break
+        case .off, .active, .waiting: break
         }
         // Off, or on but impossible on this Mac: nothing below the switch can do anything.
         let usable = on && !unavailable
@@ -340,7 +341,9 @@ final class ChargeControlFeature: BetaFeature {
         let aboveTarget = percent.map { $0 > ChargePolicy.dischargeTarget(limit: settings.chargeLimit) } ?? true
         let topUpCan = topUpRequested || cable
         let dischargeCan = dischargeRequested || (cable && aboveTarget)
-        let pressable = usable && c != nil
+        // Not while it waits out the delay after an unclean exit: it holds nothing yet, and a press would do nothing.
+        let waiting = c?.isWaitingToStart == true
+        let pressable = usable && c != nil && !waiting
         dischargeButton.title = dischargeRequested ? "Stop Discharge" : "Discharge"
         topUpButton.title = topUpRequested ? "Cancel Top Up" : "Top Up"
         dischargeButton.isEnabled = pressable && dischargeCan
@@ -374,8 +377,9 @@ final class ChargeControlFeature: BetaFeature {
             facts.reconnecting = true
             redraw(after: left)
         }
-        // Off, the one line that can show: a discharge's end never confirmed, so the charger may still be cut.
-        let offWarning = on ? nil : c?.offWarning
+        // Not running (off, or waiting out the delay after an unclean exit), the one line that can show besides the
+        // delay's own: a discharge's end never confirmed, so the charger may still be cut. It is shown first.
+        let offWarning = !on || waiting ? c?.offWarning : nil
         statusLabel.stringValue = offWarning ?? Self.statusText(status, facts)
         statusLabel.textColor = unavailable || needsHelper || refused || offWarning != nil
             ? .systemOrange : .secondaryLabelColor

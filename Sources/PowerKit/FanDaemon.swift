@@ -134,8 +134,8 @@ import Foundation
 // complete — hands the fans back and reconnects the charger. It does NOT put
 // back macOS's charge limit. That is macOS's own setting, written for every
 // user of the Mac, and a limit the helper set — as low as 20% — stays in force
-// after the helper is gone, until Charge Control is switched off or the limit
-// is changed in System Settings → Battery. Both sheets say so
+// after the helper is gone, until Anode quits, Charge Control is switched off or
+// the limit is changed in System Settings → Battery. Both sheets say so
 // (`FanElevation.chargeLimitOutlivesTheHelper`).
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -928,8 +928,8 @@ public enum FanElevation {
     A charge limit the helper sets is macOS's own setting, and stopping or \
     removing the helper does not undo it: that limit — as low as \
     \(FanHelperServer.chargeLimitRange.lowerBound)%, and for every user of this Mac \
-    — stays in force until you switch Charge Control off or change the limit in \
-    System Settings → Battery.
+    — stays in force until Anode quits, you switch Charge Control off, or you \
+    change the limit in System Settings → Battery.
     """
 
     /// The sheet before the session helper is first started (the Terminal

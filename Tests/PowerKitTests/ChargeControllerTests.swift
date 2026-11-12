@@ -66,7 +66,8 @@ final class ChargeControllerTests: XCTestCase {
     }
 
     @discardableResult
-    private func make(enabled: Bool = true) -> ChargeController {
+    private func make(enabled: Bool = true,
+                      startDelay: TimeInterval = ChargeController.startDelay) -> ChargeController {
         settings.chargeControlEnabled = enabled
         let c = ChargeController(settings: settings,
                                  makeClient: { [weak self] in
@@ -80,7 +81,7 @@ final class ChargeControllerTests: XCTestCase {
                                      return self?.chargerSwitch
                                  },
                                  log: { [weak self] in self?.lines.append($0) },
-                                 workspace: center, limitInForce: limitInForce)
+                                 workspace: center, limitInForce: limitInForce, startDelay: startDelay)
         controller = c
         return c
     }
@@ -92,6 +93,30 @@ final class ChargeControllerTests: XCTestCase {
     private func discharges(_ commands: [FanCommand]) -> [Int] {
         commands.compactMap { if case .discharge(let p) = $0 { return p } else { return nil } }
     }
+
+    /// What macOS says before Charge Control has ever touched it, for the tests that follow it through a quit or a
+    /// crash: a limit of 90 that is on, and Optimized Battery Charging on.
+    private let found = NativeChargeState(mclEnabled: true, mclLimit: 90, optimizedChargingEnabled: true)
+
+    /// A run that ended with no `shutdown` (a crash, a kill, the power going): the controller is dropped as it stands.
+    /// macOS keeps what Charge Control set, and the record and the setting stay on disk.
+    private func crash() {
+        controller = nil
+    }
+
+    /// The last run held a limit and then crashed: Charge Control was switched on over `found` and set `limit`.
+    private func crashedWhileHolding(limit: Int = 85) {
+        client.state = found
+        settings.chargeLimit = limit
+        make()
+        XCTAssertEqual(client.state?.mclLimit, limit, "the run before did not hold its limit")
+        XCTAssertNotNil(settings.chargeRestoreRecord)
+        crash()
+    }
+
+    /// A time after the delay that follows an unclean exit has run out, and one before.
+    private var afterTheDelay: Date { Date().addingTimeInterval(ChargeController.startDelay + 1) }
+    private var beforeTheDelayEnds: Date { Date().addingTimeInterval(ChargeController.startDelay - 10) }
 
     // ── Off ─────────────────────────────────────────────────────────────────
 
@@ -209,24 +234,35 @@ final class ChargeControllerTests: XCTestCase {
         XCTAssertEqual(json?["optimizedChargingEnabled"] as? Bool, true)
     }
 
-    /// A record from an earlier run is the state before Charge Control ever ran; a later enable must not replace it
-    /// with a state Charge Control itself made.
-    func testReEnableKeepsTheFirstRecord() {
-        client.state = NativeChargeState(mclEnabled: true, mclLimit: 90, optimizedChargingEnabled: true)
+    /// A record that is there is the state before Charge Control ever ran; a later switch-on must not replace it with a
+    /// state Charge Control itself made. Here a switch-off macOS refused leaves the record (and Charge Control's own
+    /// settings in force), and the person switches on again by hand.
+    func testSwitchingOnAgainKeepsTheFirstRecord() {
+        client.state = found
         make()
-        controller?.shutdown()
-        controller = nil
-        make()
-        XCTAssertEqual(record, NativeChargeState(mclEnabled: true, mclLimit: 90, optimizedChargingEnabled: true))
+        client.succeeds = false
+        settings.chargeControlEnabled = false
+        XCTAssertEqual(record, found, "a refused switch-off lost the record")
+        XCTAssertEqual(client.state?.mclLimit, 80, "macOS was not refusing")
+        client.succeeds = true
+        settings.chargeControlEnabled = true
+        XCTAssertEqual(record, found, "switching on again replaced the first record with a state Charge Control made")
     }
 
     /// A record that cannot be read may still be the only trace of the state before Charge Control ran, and the
     /// state found now may be one Charge Control made: it is never written over. Switching off puts back macOS's
-    /// defaults instead (no limit, Optimized Battery Charging on), says so, and then clears it.
+    /// defaults instead (no limit, Optimized Battery Charging on), says so, and then clears it. The only way such a
+    /// record meets a switch-on is by hand: at launch with Charge Control on it is put back at once (see
+    /// `testALaunchAfterACrashPutsBackTheDefaultsForAnUnreadableRecord`), so here macOS refuses that while Charge
+    /// Control is off, and the record is still there when the person switches on.
     func testUndecodableRecordIsKeptAndSwitchingOffPutsBackTheDefaults() {
         settings.chargeRestoreRecord = "{not a record"
         client.state = NativeChargeState(mclEnabled: true, mclLimit: 85, optimizedChargingEnabled: false)
-        let c = make()
+        client.succeeds = false
+        let c = make(enabled: false)
+        XCTAssertEqual(settings.chargeRestoreRecord, "{not a record", "a refused put-back cleared the record")
+        client.succeeds = true
+        settings.chargeControlEnabled = true
         XCTAssertEqual(settings.chargeRestoreRecord, "{not a record", "the unreadable record was written over")
         settings.chargeControlEnabled = false
         XCTAssertEqual(client.state, NativeChargeState(mclEnabled: false, mclLimit: 100, optimizedChargingEnabled: true))
@@ -341,8 +377,7 @@ final class ChargeControllerTests: XCTestCase {
 
     /// A limit only the helper can put back is waited for, and a refusal keeps the record.
     func testAHelperRestoreIsWaitedForAndARefusalKeepsTheRecord() {
-        settings.chargeRestoreRecord = ChargeController.encodeRecord(
-            NativeChargeState(mclEnabled: true, mclLimit: 63, optimizedChargingEnabled: true))
+        client.state = NativeChargeState(mclEnabled: true, mclLimit: 63, optimizedChargingEnabled: true)
         make()
         helper.answer = { cmd in
             if case .setChargeLimit(63) = cmd { return FanReply(ok: false, message: "macOS did not take the charge limit") }
@@ -355,8 +390,7 @@ final class ChargeControllerTests: XCTestCase {
     }
 
     func testAHelperRestoreThatSucceedsClearsTheRecord() {
-        settings.chargeRestoreRecord = ChargeController.encodeRecord(
-            NativeChargeState(mclEnabled: true, mclLimit: 63, optimizedChargingEnabled: true))
+        client.state = NativeChargeState(mclEnabled: true, mclLimit: 63, optimizedChargingEnabled: true)
         make()
         settings.chargeControlEnabled = false
         XCTAssertEqual(helper.waited, [.setChargeLimit(63)])
@@ -411,44 +445,61 @@ final class ChargeControllerTests: XCTestCase {
         XCTAssertFalse(helper.following, "the controller went away still holding its claim on the helper link")
     }
 
-    /// Quitting leaves macOS's limit in force (it outlives the app by design) and lets the helper link go.
-    func testShutdownLeavesTheLimitAndLetsGo() {
+    // ── Quitting ────────────────────────────────────────────────────────────
+
+    /// Charge Control's limit is in force only while Anode runs: quitting puts macOS's own settings back (the limit's
+    /// switch, the limit, Optimized Battery Charging) as switching off does, and clears the record. The setting and
+    /// what the person chose are not touched: the next launch switches on again.
+    func testQuittingPutsMacOSsOwnSettingsBackAndLetsGo() {
+        client.state = found
+        settings.chargeLimit = 85
+        settings.chargeSailingEnabled = true
+        settings.chargeHeatProtectionEnabled = true
         let c = make()
+        XCTAssertEqual(client.state?.mclLimit, 85)
+        XCTAssertEqual(client.state?.optimizedChargingEnabled, false)
         c.shutdown()
         XCTAssertFalse(helper.following)
-        XCTAssertEqual(client.state?.mclLimit, 80)
-        XCTAssertNotNil(settings.chargeRestoreRecord)
-        XCTAssertTrue(settings.chargeControlEnabled)
+        XCTAssertEqual(client.state, found, "Charge Control's settings were left in force after the quit")
+        XCTAssertNil(settings.chargeRestoreRecord, "the record outlived a restore that worked")
+        XCTAssertTrue(settings.chargeControlEnabled, "quitting is not switching off")
+        XCTAssertEqual(settings.chargeLimit, 85)
+        XCTAssertTrue(settings.chargeSailingEnabled)
+        XCTAssertTrue(settings.chargeHeatProtectionEnabled)
+        XCTAssertTrue(lines.contains { $0.hasPrefix("put back macOS's own settings") }, lines.joined(separator: "\n"))
     }
 
-    /// The person's limit outlives a quit; a hold does not. Hot at 24% the limit in force is 24: quitting puts the
-    /// person's 80 back, or the hold would stay macOS's limit for as long as Anode is closed.
-    func testShutdownPutsTheUserLimitBackOverATransientHold() {
+    /// A hold is a limit too (Heat Protection at 24%): it is not put back to the person's own, it is lifted with
+    /// the rest.
+    func testQuittingLiftsAHoldToo() {
         settings.chargeHeatProtectionEnabled = true
         battery = Self.state(24, temperature: 40)
         helper.landsOn = client
         let c = make()
         XCTAssertEqual(client.state?.mclLimit, 24)
         c.shutdown()
-        XCTAssertEqual(client.state?.mclLimit, 80, "a heat hold outlived the quit")
-        XCTAssertNotNil(settings.chargeRestoreRecord, "quitting is not switching off")
+        XCTAssertEqual(client.state, NativeChargeState(mclEnabled: false, mclLimit: 100, optimizedChargingEnabled: true),
+                       "a heat hold was left in force after the quit")
+        XCTAssertNil(settings.chargeRestoreRecord)
         XCTAssertTrue(settings.chargeControlEnabled)
         XCTAssertFalse(helper.following)
     }
 
     /// Top Up's 100 is a hold too.
-    func testShutdownEndsTopUp() {
+    func testQuittingEndsTopUp() {
         battery = Self.state(85)
         let c = make()
         c.pressTopUp()
         XCTAssertEqual(client.state?.mclLimit, 100)
         c.shutdown()
-        XCTAssertEqual(client.state?.mclLimit, 80)
+        XCTAssertEqual(client.state, NativeChargeState(mclEnabled: false, mclLimit: 100, optimizedChargingEnabled: true))
+        XCTAssertNil(settings.chargeRestoreRecord)
     }
 
-    /// A person's limit only the helper can set goes back through the helper, waited for.
-    func testShutdownPutsBackALimitOnlyTheHelperCanSet() {
-        settings.chargeLimit = 63
+    /// A limit only the helper can set that macOS had before Charge Control (set by another tool, say) goes back
+    /// through the helper, waited for; the record goes only once that landed.
+    func testQuittingPutsBackALimitOnlyTheHelperCanSet() {
+        client.state = NativeChargeState(mclEnabled: true, mclLimit: 63, optimizedChargingEnabled: true)
         battery = Self.state(70)
         helper.landsOn = client
         let c = make()
@@ -457,6 +508,364 @@ final class ChargeControllerTests: XCTestCase {
         c.shutdown()
         XCTAssertEqual(helper.waited, [.setChargeLimit(63)])
         XCTAssertEqual(client.state?.mclLimit, 63)
+        XCTAssertNil(settings.chargeRestoreRecord)
+    }
+
+    /// A discharge is stopped, and its end waited for, before macOS is put back: nothing drains with nobody watching,
+    /// and the stop goes behind everything the helper was already sent.
+    func testQuittingDuringADischargeStopsItFirstAndThenPutsMacOSsOwnSettingsBack() {
+        battery = Self.state(90)
+        let c = make()
+        c.pressDischarge()
+        XCTAssertEqual(discharges(helper.commands), [80])
+        var heldWhenStopped: NativeChargeState?
+        helper.beforeSend = { [unowned self] cmd in
+            if cmd == .stopDischarge { heldWhenStopped = self.client.state }
+        }
+        c.shutdown()
+        XCTAssertEqual(helper.waited, [.stopDischarge], "the stop was not waited for")
+        XCTAssertEqual(heldWhenStopped?.mclLimit, 80, "macOS was put back before the discharge was stopped")
+        XCTAssertEqual(client.state, NativeChargeState(mclEnabled: false, mclLimit: 100, optimizedChargingEnabled: true))
+        XCTAssertNil(settings.chargeRestoreRecord)
+        XCTAssertFalse(settings.chargeCutUnconfirmed, "the helper's yes to the stop was not heard")
+    }
+
+    /// A limit on its way to the helper lands before macOS is put back, or it would land after and stay.
+    func testQuittingLandsAfterAHelperLimitStillOnItsWay() {
+        settings.chargeLimit = 63
+        helper.landsOn = client
+        let c = make()
+        XCTAssertEqual(client.state?.mclLimit, 63)
+        helper.deferReplies = true
+        settings.chargeLimit = 62
+        c.shutdown()
+        helper.flushReplies()
+        XCTAssertEqual(client.state, NativeChargeState(mclEnabled: false, mclLimit: 100, optimizedChargingEnabled: true),
+                       "a limit still on its way to the helper landed after the quit's restore")
+        XCTAssertNil(settings.chargeRestoreRecord)
+    }
+
+    /// If macOS refuses part of it the record stays and a line says so; the next launch then takes the route of an
+    /// unclean exit and lifts the limit before anything else.
+    func testQuittingWhenMacOSRefusesTheRestoreKeepsTheRecordAndTheNextLaunchLiftsTheLimit() {
+        client.state = found
+        let c = make()
+        client.succeeds = false
+        c.shutdown()
+        XCTAssertNotNil(settings.chargeRestoreRecord, "a restore macOS refused cleared the record")
+        XCTAssertTrue(lines.contains { $0.contains("record is kept") }, lines.joined(separator: "\n"))
+        XCTAssertTrue(settings.chargeControlEnabled)
+
+        crash()
+        client.succeeds = true
+        let next = make()
+        XCTAssertEqual(client.state, found, "the launch after a refused restore did not lift the limit")
+        XCTAssertNil(settings.chargeRestoreRecord)
+        XCTAssertTrue(next.isWaitingToStart)
+    }
+
+    /// The helper not answering the stop on the way out: macOS is still put back, but not known to be, so the record
+    /// stays and the next launch takes the unclean route.
+    func testQuittingWithAHelperThatDoesNotAnswerKeepsTheRecord() {
+        battery = Self.state(90)
+        client.state = found
+        let c = make()
+        c.pressDischarge()
+        helper.gone = true
+        c.shutdown()
+        XCTAssertEqual(client.state, found)
+        XCTAssertNotNil(settings.chargeRestoreRecord)
+        XCTAssertTrue(settings.chargeCutUnconfirmed)
+    }
+
+    /// Quitting once the record has gone (an uninstall put macOS back) puts nothing back: with no record there is
+    /// nothing of Charge Control's to undo, and a restore would write macOS's defaults over whatever is there.
+    func testQuittingWithNoRecordPutsNothingBack() {
+        let c = make()
+        settings.chargeRestoreRecord = nil
+        client.state = NativeChargeState(mclEnabled: true, mclLimit: 95, optimizedChargingEnabled: true)
+        let calls = (client.limitCalls, client.limitEnabledCalls, client.optimizedChargingCalls)
+        c.shutdown()
+        XCTAssertEqual(client.limitCalls, calls.0)
+        XCTAssertEqual(client.limitEnabledCalls, calls.1)
+        XCTAssertEqual(client.optimizedChargingCalls, calls.2)
+        XCTAssertEqual(client.state, NativeChargeState(mclEnabled: true, mclLimit: 95, optimizedChargingEnabled: true))
+    }
+
+    /// The launch after a quit is a cold start: Charge Control comes on at once, writes down what macOS says now
+    /// (not what an earlier run found), and sets the person's limit. No delay.
+    func testTheLaunchAfterAQuitSwitchesOnAsFromAColdStart() {
+        client.state = found
+        settings.chargeLimit = 85
+        let c = make()
+        c.shutdown()
+        crash()
+        // The person changes macOS's own setting while Anode is closed.
+        let changed = NativeChargeState(mclEnabled: true, mclLimit: 95, optimizedChargingEnabled: true)
+        client.state = changed
+        let next = make()
+        XCTAssertFalse(next.isWaitingToStart, "a quit was taken for a crash")
+        XCTAssertEqual(record, changed, "macOS's own settings were not recorded afresh")
+        XCTAssertEqual(client.state?.mclLimit, 85, "the limit was not set at launch")
+        XCTAssertEqual(client.state?.mclEnabled, true)
+        XCTAssertEqual(client.state?.optimizedChargingEnabled, false)
+        XCTAssertTrue(helper.following)
+        XCTAssertEqual(next.status, .active(ChargeDecision(osLimit: 85, dischargeTo: nil, reason: .limit)))
+        XCTAssertFalse(lines.contains { $0.contains("did not quit cleanly") }, lines.joined(separator: "\n"))
+    }
+
+    // ── Launching after an unclean exit ─────────────────────────────────────
+
+    /// What was asked of macOS so far: the limits, the limit's switch and Optimized Battery Charging.
+    private var writesToMacOS: [Int] {
+        [client.limitCalls.count, client.limitEnabledCalls.count, client.optimizedChargingCalls.count]
+    }
+
+    /// A quit puts macOS back and clears the record, so a record still there at launch with Charge Control on means
+    /// the last run did not quit cleanly (a crash, a kill, the power going). The limit is lifted at once. It starts
+    /// again only after Anode has run for `startDelay`: an Anode that breaks on launch must leave the battery
+    /// released, not held.
+    func testALaunchAfterACrashLiftsTheLimitAtOnceAndStartsAgainAfterTheDelay() {
+        crashedWhileHolding(limit: 85)
+        XCTAssertEqual(client.state?.mclLimit, 85, "macOS keeps what the dead run set")
+        let c = make()
+
+        // At launch: macOS's own settings are back, the record is gone, and the section says why.
+        XCTAssertEqual(client.state, found, "the limit was not lifted at launch")
+        XCTAssertNil(settings.chargeRestoreRecord)
+        XCTAssertTrue(c.isWaitingToStart)
+        XCTAssertEqual(c.status, .waiting(ChargeController.liftedText))
+        XCTAssertTrue(lines.contains { $0.contains("did not quit cleanly") }, lines.joined(separator: "\n"))
+        XCTAssertFalse(helper.following, "the helper was followed while the delay runs")
+        XCTAssertTrue(settings.chargeControlEnabled, "the setting was changed")
+        XCTAssertEqual(settings.chargeLimit, 85, "the person's limit was changed")
+
+        // For the delay nothing is set, whatever happens: the limit changes, the Mac sleeps and wakes, the timer runs.
+        let writes = writesToMacOS
+        settings.chargeLimit = 95
+        c.tick()
+        c.willSleep()
+        c.didWake()
+        c.periodicTick()
+        c.resumeIfDue(now: beforeTheDelayEnds)
+        XCTAssertTrue(c.isWaitingToStart)
+        XCTAssertEqual(writesToMacOS, writes, "something was set during the delay")
+        XCTAssertEqual(client.state, found)
+
+        // After it: as from a cold start, with the limit as it is now, and macOS's own settings written down afresh.
+        c.resumeIfDue(now: afterTheDelay)
+        XCTAssertFalse(c.isWaitingToStart)
+        XCTAssertEqual(record, found)
+        XCTAssertEqual(client.state?.mclLimit, 95)
+        XCTAssertEqual(client.state?.mclEnabled, true)
+        XCTAssertEqual(client.state?.optimizedChargingEnabled, false)
+        XCTAssertTrue(helper.following)
+        XCTAssertEqual(c.status, .active(ChargeDecision(osLimit: 95, dischargeTo: nil, reason: .limit)))
+    }
+
+    /// The delay is a timer on the main run loop, not only something a test can call: it fires by itself.
+    func testTheDelayEndsByItself() {
+        crashedWhileHolding(limit: 85)
+        let c = make(startDelay: 0.05)
+        XCTAssertTrue(c.isWaitingToStart)
+        let deadline = Date().addingTimeInterval(5)
+        while c.isWaitingToStart, Date() < deadline {
+            RunLoop.main.run(mode: .default, before: Date().addingTimeInterval(0.01))
+        }
+        XCTAssertFalse(c.isWaitingToStart, "the delay never ended")
+        XCTAssertEqual(client.state?.mclLimit, 85)
+        XCTAssertEqual(c.status, .active(ChargeDecision(osLimit: 85, dischargeTo: nil, reason: .limit)))
+    }
+
+    /// The delay is a minute, and the sentence says "a minute".
+    func testTheDelayIsAMinute() {
+        XCTAssertEqual(ChargeController.startDelay, 60)
+        XCTAssertTrue(ChargeController.liftedText.contains("did not quit cleanly"))
+        XCTAssertTrue(ChargeController.liftedText.contains("in a minute"))
+    }
+
+    /// An Anode that stops again within the delay leaves the limit lifted: nothing was set, and the record is gone,
+    /// so macOS has its own settings whatever happens next.
+    func testStoppingBeforeTheDelayEndsLeavesMacOSsOwnSettingsInForce() {
+        crashedWhileHolding(limit: 85)
+        let c = make()
+        c.shutdown()
+        XCTAssertEqual(client.state, found)
+        XCTAssertNil(settings.chargeRestoreRecord)
+        XCTAssertFalse(c.isWaitingToStart)
+        XCTAssertTrue(settings.chargeControlEnabled)
+        let writes = writesToMacOS
+        c.resumeIfDue(now: afterTheDelay)
+        XCTAssertEqual(writesToMacOS, writes, "the delay ended after the controller had stopped")
+        XCTAssertFalse(helper.following)
+    }
+
+    /// The same when it crashes again: the limit is still lifted.
+    func testCrashingAgainDuringTheDelayLeavesTheLimitLifted() {
+        crashedWhileHolding(limit: 85)
+        make()
+        crash()
+        XCTAssertEqual(client.state, found, "a crash during the delay left a limit in force")
+        XCTAssertNil(settings.chargeRestoreRecord)
+    }
+
+    /// Switching Charge Control off during the delay cancels it: nothing starts when it runs out.
+    func testSwitchingOffDuringTheDelayCancelsIt() {
+        crashedWhileHolding(limit: 85)
+        let c = make()
+        XCTAssertTrue(c.isWaitingToStart)
+        settings.chargeControlEnabled = false
+        XCTAssertFalse(c.isWaitingToStart)
+        XCTAssertEqual(c.status, .off)
+        XCTAssertEqual(client.state, found)
+        XCTAssertNil(settings.chargeRestoreRecord)
+        let writes = writesToMacOS, made = clientsMade
+        c.resumeIfDue(now: afterTheDelay)
+        XCTAssertEqual(writesToMacOS, writes, "the delay ran out after Charge Control was switched off")
+        XCTAssertEqual(clientsMade, made)
+        XCTAssertEqual(c.status, .off)
+        XCTAssertFalse(helper.following)
+
+        // Switched on again by hand, it starts at once: nothing was left over to wait for.
+        settings.chargeControlEnabled = true
+        XCTAssertFalse(c.isWaitingToStart)
+        XCTAssertEqual(client.state?.mclLimit, 85)
+    }
+
+    /// The Uninstall button during the delay: nothing of Charge Control's is in force, so nothing is put back over
+    /// what macOS has, and the delay is over.
+    func testUninstallingDuringTheDelayPutsNothingBackOverMacOSsOwnSettings() {
+        crashedWhileHolding(limit: 85)
+        let c = make()
+        client.state = NativeChargeState(mclEnabled: true, mclLimit: 95, optimizedChargingEnabled: true)
+        let writes = writesToMacOS
+        c.restoreForUninstall()
+        XCTAssertFalse(c.isWaitingToStart)
+        XCTAssertFalse(settings.chargeControlEnabled)
+        XCTAssertEqual(writesToMacOS, writes)
+        XCTAssertEqual(client.state?.mclLimit, 95)
+    }
+
+    /// A cut debt is still dealt with first, and during the delay: the delay holds back the limit and new
+    /// discharges, never the reconnecting of a charger.
+    func testACutDebtAtLaunchIsStillPaidDuringTheDelay() {
+        crashedWhileHolding(limit: 85)
+        settings.chargeCutUnconfirmed = true
+        battery = Self.state(95)
+        settings.chargeAutomaticDischarge = true   // a discharge is wanted at 95% over a limit of 85
+        var heldWhenAsked: NativeChargeState?
+        helper.beforeSend = { [unowned self] cmd in
+            if cmd == .stopDischarge, heldWhenAsked == nil { heldWhenAsked = self.client.state }
+        }
+        helper.gone = true   // nobody answers at launch
+        let c = make()
+        XCTAssertTrue(c.isWaitingToStart)
+        XCTAssertTrue(helper.waited.contains(.stopDischarge), "the debt was not asked about at launch")
+        XCTAssertEqual(heldWhenAsked?.mclLimit, 85, "the debt was asked about after macOS was put back, not first")
+        XCTAssertTrue(settings.chargeCutUnconfirmed, "a stop nobody answered settled the debt")
+        XCTAssertNotNil(c.offWarning, "an unconfirmed discharge end is not shown during the delay")
+
+        // The helper is back: the next ask settles it, with the delay still running and nothing discharged.
+        helper.gone = false
+        helper.available = true
+        c.retryOwedStopWhileOff()
+        XCTAssertFalse(settings.chargeCutUnconfirmed, "the debt was not paid during the delay")
+        XCTAssertNil(c.offWarning)
+        XCTAssertTrue(c.isWaitingToStart)
+        XCTAssertTrue(discharges(helper.commands).isEmpty, "a discharge was started during the delay")
+
+        // After it, the discharge that is wanted is started.
+        c.resumeIfDue(now: afterTheDelay)
+        XCTAssertFalse(discharges(helper.commands).isEmpty, "Charge Control did not start after the delay")
+    }
+
+    /// A debt still owed when the delay ends is paid first, as at any launch.
+    func testADebtStillOwedWhenTheDelayEndsIsPaidFirst() {
+        crashedWhileHolding(limit: 85)
+        settings.chargeCutUnconfirmed = true
+        helper.gone = true
+        let c = make()
+        XCTAssertTrue(settings.chargeCutUnconfirmed)
+        helper.gone = false
+        helper.available = true
+        let before = helper.commands.count
+        c.resumeIfDue(now: afterTheDelay)
+        XCTAssertEqual(helper.commands.dropFirst(before).first, .stopDischarge, "\(helper.commands)")
+        XCTAssertFalse(settings.chargeCutUnconfirmed)
+    }
+
+    /// The battery card is told what Charge Control holds. During the delay it holds nothing.
+    func testTheMonitorIsToldNothingIsHeldDuringTheDelay() {
+        crashedWhileHolding(limit: 85)
+        let c = make()
+        XCTAssertNil(ChargeController.limitForMonitor(settings: settings, inForce: limitInForce),
+                     "the card was told a limit is held while it is lifted")
+        c.resumeIfDue(now: afterTheDelay)
+        XCTAssertEqual(ChargeController.limitForMonitor(settings: settings, inForce: limitInForce), 85)
+        c.shutdown()
+    }
+
+    /// Only a launch takes the unclean route. A record that is there when the person switches Charge Control on by
+    /// hand (a switch-off macOS refused) does not make the start wait.
+    func testSwitchingOnByHandWithARecordStillThereStartsAtOnce() {
+        settings.chargeRestoreRecord = ChargeController.encodeRecord(found)
+        client.state = NativeChargeState(mclEnabled: true, mclLimit: 80, optimizedChargingEnabled: false)
+        client.succeeds = false
+        let c = make(enabled: false)
+        XCTAssertNotNil(settings.chargeRestoreRecord, "the refused put-back at launch cleared the record")
+        client.succeeds = true
+        settings.chargeControlEnabled = true
+        XCTAssertFalse(c.isWaitingToStart)
+        XCTAssertEqual(client.state?.mclLimit, 80)
+        XCTAssertEqual(record, found, "the first record was replaced")
+        XCTAssertTrue(helper.following)
+    }
+
+    /// With Charge Control off a record left over is put back once, as before: no delay, nothing starts.
+    func testALeftoverRecordWhileOffIsNotTheUncleanRoute() {
+        settings.chargeRestoreRecord = ChargeController.encodeRecord(found)
+        client.state = NativeChargeState(mclEnabled: true, mclLimit: 80, optimizedChargingEnabled: false)
+        let c = make(enabled: false)
+        XCTAssertFalse(c.isWaitingToStart)
+        XCTAssertEqual(c.status, .off)
+        XCTAssertEqual(client.state, found)
+        XCTAssertFalse(lines.contains { $0.contains("did not quit cleanly") })
+    }
+
+    /// An unreadable record is put back as macOS's defaults, as at any put-back, and the launch waits all the same.
+    func testALaunchAfterACrashPutsBackTheDefaultsForAnUnreadableRecord() {
+        settings.chargeRestoreRecord = "{not a record"
+        client.state = NativeChargeState(mclEnabled: true, mclLimit: 85, optimizedChargingEnabled: false)
+        let c = make()
+        XCTAssertEqual(client.state, ChargeController.defaultRecord)
+        XCTAssertNil(settings.chargeRestoreRecord)
+        XCTAssertTrue(c.isWaitingToStart)
+        XCTAssertTrue(lines.contains { $0.contains("could not be read") && $0.contains("defaults") },
+                      lines.joined(separator: "\n"))
+    }
+
+    /// A Mac with no client has nothing to lift: the section says so, and there is nothing to wait for.
+    func testALaunchAfterACrashOnAMacWithNoClientSaysUnavailable() {
+        settings.chargeRestoreRecord = ChargeController.encodeRecord(found)
+        clientToMake = nil
+        let c = make()
+        XCTAssertEqual(c.status, .unavailable(ChargeController.unavailableText))
+        XCTAssertFalse(c.isWaitingToStart)
+    }
+
+    /// A limit macOS refuses to take back at launch: the record stays (the next launch tries again), the delay runs
+    /// all the same, and what starts after it keeps the first record.
+    func testALiftThatMacOSRefusesKeepsTheRecordAndTheDelayStillRuns() {
+        crashedWhileHolding(limit: 85)
+        client.succeeds = false
+        let c = make()
+        XCTAssertNotNil(settings.chargeRestoreRecord)
+        XCTAssertTrue(c.isWaitingToStart)
+        XCTAssertTrue(lines.contains { $0.contains("record is kept") }, lines.joined(separator: "\n"))
+        client.succeeds = true
+        c.resumeIfDue(now: afterTheDelay)
+        XCTAssertEqual(record, found, "the record was replaced by a state Charge Control made")
+        XCTAssertEqual(client.state?.mclLimit, 85)
     }
 
     /// The limit in force for other threads to read (the battery card, on the monitor's queue): the hold while
@@ -2200,16 +2609,22 @@ final class ChargeControllerTests: XCTestCase {
         XCTAssertEqual(client.state?.mclLimit, 85, "the account back on screen did not take up its limit")
     }
 
-    /// Quitting while another account is on screen puts nothing back over its limit: the limit in force is not a
-    /// hold of this Anode's.
-    func testQuittingWhileAnotherAccountIsOnScreenLeavesItsLimit() {
+    /// Quitting while another account is on screen puts nothing back over its limit: the limit in force is that
+    /// account's Anode's, not this one's. The record stays, so this account's next launch lifts whatever is then in
+    /// force and starts again after the delay.
+    func testQuittingWhileAnotherAccountIsOnScreenPutsNothingBack() {
         battery = Self.state(85)
         let c = make()
         c.pressTopUp()
         center.post(name: NSWorkspace.sessionDidResignActiveNotification, object: nil)
-        client.state?.mclLimit = 90   // the other account's
+        let theirs = NativeChargeState(mclEnabled: true, mclLimit: 90, optimizedChargingEnabled: false)
+        client.state = theirs   // the other account's
+        let writes = writesToMacOS
         c.shutdown()
-        XCTAssertEqual(client.state?.mclLimit, 90)
+        XCTAssertEqual(client.state, theirs, "this account's quit changed the other account's settings")
+        XCTAssertEqual(writesToMacOS, writes)
+        XCTAssertNotNil(settings.chargeRestoreRecord, "the record went though nothing was put back")
+        XCTAssertTrue(settings.chargeControlEnabled)
     }
 
     /// The same while off: nothing exists, so there is nothing to observe.
