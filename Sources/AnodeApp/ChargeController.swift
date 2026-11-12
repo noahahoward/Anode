@@ -26,9 +26,18 @@ import PowerKit
 // setting and stays in force while Anode is closed. While on, macOS is read back on the timer and after a wake, and
 // put back if something else changed it.
 //
+// A charger cut outlives the helper that made it (measured: a killed helper leaves it cut, and the installed daemon
+// is not kept alive; only a new connection to its socket starts a fresh helper, whose startup reconnects the
+// charger). So a discharge is never taken as ended until a RUNNING helper has answered a stop with yes. The debt is
+// written down (`Settings.chargeCutUnconfirmed`, flushed) before a discharge is asked for; a stop nobody answered,
+// a connection reset under a discharge, or macOS saying the Mac is off the adapter with the adapter there for more
+// than 90 s with no discharge running, all mean the cut may be left with nobody watching: the connection is opened
+// again at once and the stop asked again, then on every tick, with a warning, until a running helper says yes.
+//
 // While the setting is off nothing exists: no client, no timer, no observer but the one on the switch itself, no
-// helper connection and no helper command. The one exception is a record left over from a restore that did not
-// finish: it is put back once at launch (and before an uninstall), with a client made for that alone.
+// helper connection and no helper command. The exceptions are what an earlier run left unfinished: a restore record
+// is put back once at launch (and before an uninstall), with a client made for that alone; and that debt, which is
+// paid at launch through an installed helper, and asked again every 30 s until a running helper answers.
 //
 // Main thread throughout.
 
@@ -40,6 +49,8 @@ protocol ChargeHelperLink: AnyObject {
     var available: Bool { get }
     /// A helper answered, but one too old to know the charge commands.
     var outdated: Bool { get }
+    /// Installed as a daemon: a connection starts it, so it can be greeted even when it has not answered.
+    var installed: Bool { get }
     /// The helper has answered since `follow`, or is known not to be installed. Until then nothing is said about it.
     var known: Bool { get }
     /// The connection is open and this link is holding it.
@@ -59,11 +70,12 @@ protocol ChargeHelperLink: AnyObject {
     func recheck()
     /// Check that the connection kept open is still there, and reopen it if it is not. Only while kept open.
     func refresh()
-    /// Opens the connection if this link is not holding it, and lets it go after the answer unless it is kept open.
-    /// `done` is called on the main thread. A helper that is gone answers ok:false with
-    /// `HelperConnection.stoppedAnswering`; there is no "no answer".
+    /// Opens the connection if this link is not holding it, or if the one it holds is known to be gone (a command
+    /// found it gone), and lets it go after the answer unless it is kept open. `done` is called on the main thread.
+    /// A helper that is gone answers ok:false with `HelperConnection.stoppedAnswering`; there is no "no answer".
     func send(_ c: FanCommand, _ done: @escaping (FanReply) -> Void)
-    /// `send`, answered before it returns, or nil after `timeout`. Blocks the caller.
+    /// `send`, answered before it returns, or nil after `timeout`. Greets over the connection first, opening a new
+    /// one if the old one does not answer (for an installed helper that starts a fresh one). Blocks the caller.
     func sendWaiting(_ c: FanCommand, timeout: TimeInterval) -> FanReply?
     /// Wait until everything already sent has been exchanged with the helper (the answers may still be on their way
     /// to the main thread). False after `timeout`. Blocks the caller.
@@ -82,6 +94,9 @@ enum ChargeStatus: Equatable {
     case refused(String)
     /// Running, with the decision in force.
     case active(ChargeDecision)
+    /// Something may be wrong with the charger that Charge Control is still trying to put right; the sentence says
+    /// what, and what the person can do.
+    case warning(String)
 }
 
 final class ChargeController {
@@ -96,9 +111,28 @@ final class ChargeController {
     static let dischargeNeedsHelperText = "Discharge needs the Anode helper"
     static let helperOutdatedText = "The Anode helper needs updating to control charging"
 
-    static func dischargeRefusedText(_ why: String) -> String { "The Anode helper would not discharge: \(why)" }
+    /// A discharge's end has not been confirmed by a running helper, and Charge Control is still asking.
+    static let cutWarningText = "The charger may still be switched off. Reconnecting\u{2026}"
+    /// The same with no helper installed as a daemon: nothing will start a fresh one, and an unplug does not undo
+    /// the cut. The way out is what the Fans tab offers: start the helper (its startup switches the charger back
+    /// on), or its uninstall, which does the same.
+    static let cutWarningNoHelperText = "The charger may still be switched off, and unplugging it will not switch it "
+        + "back on. Start the Anode helper again from the Fans tab (Copy Start Command), or run AnodeHelper "
+        + "--uninstall with sudo, to switch it back on."
+
+    static func dischargeRefusedText(_ why: String) -> String {
+        "The Anode helper would not discharge: \(plainWords(why))"
+    }
     static func limitRefusedText(_ limit: Int, _ why: String) -> String {
-        "The Anode helper did not set the limit to \(limit)%: \(why)"
+        "The Anode helper did not set the limit to \(limit)%: \(plainWords(why))"
+    }
+
+    /// The helper's reasons are written for its log, and some name the part of the Mac it writes to. Shown in the
+    /// section, they are said plainly; the log keeps them as they came.
+    static func plainWords(_ why: String) -> String {
+        var s = why
+        if s.hasPrefix("refused: ") { s.removeFirst("refused: ".count) }
+        return s.replacingOccurrences(of: "the SMC", with: "the Mac").replacingOccurrences(of: "SMC", with: "the Mac")
     }
 
     /// How often the battery is looked at while on. Charging moves about 1% a minute at most, and every change
@@ -106,14 +140,16 @@ final class ChargeController {
     static let tickInterval: TimeInterval = 30
     /// The longest anything waits for the helper: going to sleep, switching off, uninstalling.
     static let stopTimeout: TimeInterval = 2
-    /// What the helper says when it refuses a discharge because the Mac is going to sleep. Not an error: the next
-    /// tick asks again.
+    /// What the helper says when it refuses a discharge because the Mac is going to sleep. Not an error, and not
+    /// logged: the next tick asks again.
     static let goingToSleepRefusal = "the Mac is going to sleep"
-    /// The helper's refusals of a discharge that do not pass by themselves. Asking again on every tick would only
-    /// be refused again.
-    static let lastingDischargeRefusals: Set<String> = [
-        "the charger may still be cut off from an earlier failure",
-        "this Mac cannot warn the helper before it sleeps",
+    /// The helper's refusals of a discharge that pass by themselves, so the next tick asks again: the Mac going to
+    /// sleep, and the charger switched a moment ago (the helper waits 10 s between switches). Every other refusal is
+    /// shown, and not asked again until the person presses again or the decision changes. The one place these
+    /// sentences live in the app.
+    static let transientDischargeRefusals: Set<String> = [
+        goingToSleepRefusal,
+        "the charger was switched a moment ago; try again shortly",
     ]
 
     /// How long after a discharge ends with the cable in that macOS may still show "not charging". Measured on
@@ -169,19 +205,59 @@ final class ChargeController {
     }
     /// When a discharge last ended with the cable in; see `chargerReconnectTimeLeft`.
     private var dischargeEndedAt: Date?
+    /// A discharge or a stop is on its way to the helper.
     private var dischargeInFlight = false
     /// Bumped when a discharge in flight is overtaken (going to sleep stops it), so its late answer is ignored.
     private var dischargeEpoch = 0
-    /// A discharge request was refused or went unanswered: the helper may be in a state this controller does not
-    /// know, so the next start stops first.
-    private var dischargeUncertain = false
-    /// A discharge the helper refused for a lasting reason, and the reason. Not asked for again until the person
-    /// presses again or the decision changes.
+    /// A discharge the helper refused for a reason that does not pass by itself, and the reason. Not asked for
+    /// again until the person presses again or the decision changes.
     private var blockedDischarge: (target: Int, why: String)?
     private var seenResets = 0
     private var lastRefusal: String?
     /// The last "changed outside Charge Control" line, so the same news is logged once.
     private var lastDrift: String?
+
+    // The charger cut, as far as anyone has confirmed it. See the note at the top of the file.
+
+    /// The debt: a discharge was asked for and no running helper has said the charger is connected since. Mirrors
+    /// `Settings.chargeCutUnconfirmed`, which is written (and flushed) before the discharge goes out.
+    private var cutOwed = false
+    /// A stop goes out before anything else, whatever the policy wants and whether or not the helper has answered:
+    /// the debt was found at launch, or the connection was reset under a discharge.
+    private var stopDue = false
+    /// A stop was not answered yes (the helper is gone, or could not reconnect the charger): the cut may be left
+    /// with nobody watching. The warning shows, and the stop is asked again once a tick until a running helper says
+    /// yes.
+    private var cutLost = false
+    /// macOS has said the Mac is off the adapter, with the adapter there and no discharge in force, for longer than
+    /// the end of a discharge takes: the look of a cut nobody holds. Treated like `cutLost` while it lasts.
+    private var cutSeen = false
+    /// When that look began; nil while macOS says otherwise or a discharge is in force.
+    private var cutLookSince: Date?
+    /// A running helper said the charger is connected during this stretch of that look: not asked again until it
+    /// ends, or a charger macOS reports oddly would wake the helper every tick.
+    private var cutLookAnswered = false
+    /// Counts the discharges sent: a stop's yes settles the debt only if no discharge went out after the stop.
+    private var dischargeSeq = 0
+    /// Counts calls to `tick`. A stop for a lost cut goes out at most once a tick, so a helper that keeps not
+    /// answering is asked every tick, not in a loop on its own answers.
+    private var tickSerial = 0
+    private var lostStopTick = -1
+    /// While switching off, quitting or uninstalling, the helper's news does not start a tick.
+    private var switchingOff = false
+
+    // Looking again for a helper that did not answer (a cold start slower than its hello), while something needs it.
+
+    /// When to look next; nil while nothing needs the helper, or it has answered.
+    private var lookDueAt: Date?
+    private var lookCount = 0
+    /// 30 s after the first miss, then 60 s, 120 s, and every five minutes after that.
+    static let lookAgainAfter: [TimeInterval] = [30, 60, 120, 300]
+
+    // While off, the debt is asked about on a timer of its own, which exists only while there is one.
+    private var offRetryTimer: Timer?
+    private var offStopInFlight = false
+    private var lastOffFailure: String?
 
     /// A tick asked for while one runs (the helper link can answer inside it) runs again after it, not inside it.
     private var ticking = false
@@ -216,15 +292,22 @@ final class ChargeController {
         self.helper = helper
         self.battery = battery
         self.log = log
+        cutOwed = settings.chargeCutUnconfirmed
         enabledToken = settings.observe(Settings.Key.chargeControlEnabled) { [weak self] in self?.applyEnabled() }
         applyEnabled()
-        // Off at launch, a record left over means macOS may still hold a limit Anode set while the switch shows
-        // off (a switch-off macOS partly refused, or the setting turned off while Anode was closed). Put back once.
-        if !settings.chargeControlEnabled { putBackLeftoverRecord(when: "at launch") }
+        if !settings.chargeControlEnabled {
+            // Off at launch, a record left over means macOS may still hold a limit Anode set while the switch shows
+            // off (a switch-off macOS partly refused, or the setting turned off while Anode was closed). Put back
+            // once.
+            putBackLeftoverRecord(when: "at launch")
+            // And a discharge whose end no running helper confirmed may have left the charger cut.
+            retryOwedStopWhileOff()
+        }
     }
 
     deinit {
         removeTriggers()
+        offRetryTimer?.invalidate()
         // The connection is shared: a claim left behind would keep it open for good.
         if running { helper.letGo() }
     }
@@ -287,6 +370,11 @@ final class ChargeController {
         }
         client = c
         session += 1
+        endOffRetry()
+        // A debt left from before (a quit, a crash, a switch-off the helper did not answer) is paid first.
+        cutOwed = settings.chargeCutUnconfirmed
+        stopDue = cutOwed
+        if cutOwed { log("a discharge's end was never confirmed; asking the helper to reconnect the charger") }
         // Two controllers on one charger would fight; Optimized Battery Charging comes back on when this goes off.
         if !c.setOptimizedCharging(false) { log("macOS would not turn Optimized Battery Charging off") }
         if !c.setLimitEnabled(true) { log("macOS would not turn its charge limit on") }
@@ -299,9 +387,13 @@ final class ChargeController {
 
     private func disable() {
         if running, let c = client {
+            switchingOff = true
             restore(client: c)
             stop()
+            switchingOff = false
             log("off")
+            // A stop the helper did not answer leaves the debt, which is asked about while off too.
+            retryOwedStopWhileOff()
         }
         setStatus(.off)
     }
@@ -316,8 +408,8 @@ final class ChargeController {
     private func restore(client c: ChargeLimitClient) {
         // A stop goes behind everything already sent on the same link, so its answer also says those have landed.
         let settled: Bool
-        if appliedDischarge != nil || dischargeInFlight || dischargeUncertain {
-            let r = helper.sendWaiting(.stopDischarge, timeout: Self.stopTimeout)
+        if appliedDischarge != nil || dischargeInFlight || cutOwed {
+            let r = waitedStop(timeout: Self.stopTimeout)
             log("discharge stopped (switching off): \(r?.message ?? "no answer within \(Int(Self.stopTimeout)) s")")
             settled = r != nil
         } else {
@@ -373,7 +465,6 @@ final class ChargeController {
         refusedLimit = nil
         appliedDischarge = nil
         dischargeInFlight = false
-        dischargeUncertain = false
         blockedDischarge = nil
         isDischargeRequested = false
         isTopUpRequested = false
@@ -382,13 +473,24 @@ final class ChargeController {
         dischargeEndedAt = nil
         lastRefusal = nil
         lastDrift = nil
+        // The debt itself (`cutOwed`) is on disk and outlives this; what was being done about it does not.
+        stopDue = false
+        cutLost = false
+        cutSeen = false
+        cutLookSince = nil
+        cutLookAnswered = false
+        lookDueAt = nil
+        lookCount = 0
     }
 
     /// The app is quitting. macOS's limit stays in force (it outlives the app by design); the helper link is let go,
     /// and if nothing else holds it the helper's dead man's switch ends any discharge.
     func shutdown() {
         enabledToken = nil
+        endOffRetry()
         guard running else { return }
+        switchingOff = true
+        defer { switchingOff = false }
         // Nothing is put back, but what is still on its way lands before the link is let go.
         if limitInFlight || dischargeInFlight { _ = helper.drain(timeout: Self.stopTimeout) }
         stop()
@@ -400,23 +502,124 @@ final class ChargeController {
     /// Anode was closed): once Anode is gone nothing could ever undo that hold.
     func restoreForUninstall() {
         if running, let c = client {
+            switchingOff = true
             restore(client: c)
             stop()
+            switchingOff = false
             log("off (uninstalling)")
-        } else {
-            putBackLeftoverRecord(when: "before uninstalling")
+        } else if !putBackLeftoverRecord(when: "before uninstalling"), cutOwed {
+            // Once Anode is gone nothing would ever pay the debt, so it is asked about now, and waited for. (A
+            // restore asks about it itself.)
+            let r = waitedStop(timeout: Self.stopTimeout)
+            log("discharge stopped (before uninstalling): "
+                + "\(r?.message ?? "no answer within \(Int(Self.stopTimeout)) s")")
         }
+        endOffRetry()
         setStatus(.off)
         settings.chargeControlEnabled = false
     }
 
     /// While off: put back a record that is left over, with a client made for that alone and let go at once (the
     /// only times a client exists while off: at launch, and before an uninstall). Nothing else starts: no timer, no
-    /// observer, no helper connection. `restore` logs how it went; a refusal keeps the record.
-    private func putBackLeftoverRecord(when: String) {
-        guard !running, settings.chargeRestoreRecord != nil, let c = makeClient() else { return }
+    /// observer, no helper connection. `restore` logs how it went; a refusal keeps the record. False when there was
+    /// nothing to put back, or no client to do it with.
+    @discardableResult
+    private func putBackLeftoverRecord(when: String) -> Bool {
+        guard !running, settings.chargeRestoreRecord != nil, let c = makeClient() else { return false }
         log("a record of macOS's own settings was left over while off; putting it back \(when)")
         restore(client: c)
+        return true
+    }
+
+    /// A stop, waited for, after a hello over the connection (a new one if the old one does not answer: for an
+    /// installed helper that starts a fresh one, whose startup reconnects the charger). A yes settles the debt.
+    private func waitedStop(timeout: TimeInterval) -> FanReply? {
+        let seq = dischargeSeq
+        let r = helper.sendWaiting(.stopDischarge, timeout: timeout)
+        if r?.ok == true { chargerConfirmed(stopSentAt: seq) }
+        return r
+    }
+
+    /// While off: a discharge's end that no running helper confirmed (a switch-off it did not answer, or a quit
+    /// or crash before it did) may have left the charger cut. Ask an installed helper to reconnect it, at launch
+    /// and then every 30 s, until one answers yes. Nothing else starts, and with no debt nothing at all exists.
+    ///
+    /// Internal so the tests can be the timer.
+    func retryOwedStopWhileOff() {
+        guard !running, cutOwed, helper.installed else { return endOffRetry() }
+        if offRetryTimer == nil {
+            let t = Timer(timeInterval: Self.tickInterval, repeats: true) { [weak self] _ in
+                self?.retryOwedStopWhileOff()
+            }
+            t.tolerance = 5
+            RunLoop.main.add(t, forMode: .common)
+            offRetryTimer = t
+        }
+        guard !offStopInFlight else { return }
+        offStopInFlight = true
+        let seq = dischargeSeq
+        helper.send(.stopDischarge) { [weak self] r in
+            guard let self else { return }
+            self.offStopInFlight = false
+            // Switched on meanwhile: the controller's own stop has this now.
+            guard !self.running else { return }
+            if r.ok {
+                self.chargerConfirmed(stopSentAt: seq)
+                self.log("the charger is connected: \(r.message)")
+                self.endOffRetry()
+            } else if r.message != self.lastOffFailure {
+                self.lastOffFailure = r.message
+                self.log("a discharge's end is still not confirmed: \(r.message); asking again every "
+                         + "\(Int(Self.tickInterval)) s")
+            }
+        }
+    }
+
+    private func endOffRetry() {
+        offRetryTimer?.invalidate()
+        offRetryTimer = nil
+        lastOffFailure = nil
+    }
+
+    // ── The debt ────────────────────────────────────────────────────────────
+
+    /// Written down, and flushed, before anything that can cut the charger goes out.
+    private func oweCut() {
+        guard !cutOwed else { return }
+        cutOwed = true
+        settings.chargeCutUnconfirmed = true
+        settings.flush()
+    }
+
+    /// A running helper answered a stop with yes: the charger is connected (or was never cut). Settles the debt,
+    /// unless a discharge went out after that stop.
+    private func chargerConfirmed(stopSentAt seq: Int) {
+        guard seq == dischargeSeq else { return }
+        let wasLost = cutLost || cutSeen
+        stopDue = false
+        cutLost = false
+        if cutSeen || cutLookSince != nil { cutLookAnswered = true }
+        cutSeen = false
+        if cutOwed || settings.chargeCutUnconfirmed {
+            cutOwed = false
+            settings.chargeCutUnconfirmed = false
+            settings.flush()
+        }
+        if wasLost { log("a running helper says the charger is connected") }
+    }
+
+    /// A stop was not answered yes: by a helper that is gone (or a link that heard nothing), or by one that could
+    /// not reconnect the charger. The cut may be left with nobody watching: warn, keep the connection, and ask
+    /// again at once (the link opens a new connection for it), then once a tick.
+    private func stopNotConfirmed(_ why: String) {
+        appliedDischarge = nil
+        stopDue = true
+        let news = !cutLost
+        cutLost = true
+        settle()
+        guard news, running else { return }
+        log("the charger may still be cut off, and nothing is watching it: \(why); asking the helper again")
+        stopDischarge(why: "asking again")
     }
 
     // ── Triggers ────────────────────────────────────────────────────────────
@@ -471,12 +674,43 @@ final class ChargeController {
     /// The 30 s timer. Internal so the tests can be the timer.
     ///
     /// It talks to the helper only while a discharge lives on the connection, to notice a helper that went away
-    /// under it. Otherwise the daemon is left asleep: a limit it set stays set without it.
+    /// under it, or while something needs a helper that has not answered (see `lookAgainIfDue`). Otherwise the
+    /// daemon is left asleep: a limit it set stays set without it.
     func periodicTick(now: Date = Date()) {
         guard running else { return }
         if appliedDischarge != nil { helper.refresh() }
         checkDrift()
         tick(now: now)
+        lookAgainIfDue(now: now)
+    }
+
+    /// Something needs the helper (a limit only it can set, not in force; or a discharge) and an installed one has
+    /// not answered: its cold start was slower than its hello, say. Looked for again 30 s, 60 s and 120 s apart,
+    /// then every five minutes. An outdated helper has answered, and is not woken to say so again.
+    private var helperMissedWhileNeeded: Bool {
+        guard let d = lastDecision, helper.known, !helper.available, !helper.outdated, helper.installed else {
+            return false
+        }
+        let limitWaits = !NativeChargeLimit.isClientSettable(d.osLimit) && appliedLimit != d.osLimit
+        return limitWaits || d.dischargeTo != nil
+    }
+
+    private func noteHelperNeed(now: Date) {
+        if !helperMissedWhileNeeded {
+            lookDueAt = nil
+            lookCount = 0
+        } else if lookDueAt == nil {
+            lookDueAt = now.addingTimeInterval(Self.lookAgainAfter[0])
+        }
+    }
+
+    private func lookAgainIfDue(now: Date) {
+        // The timer's tolerance: a tick 30 s on may come a few seconds early.
+        guard running, helperMissedWhileNeeded, let due = lookDueAt,
+              now >= due.addingTimeInterval(-5) else { return }
+        lookCount += 1
+        lookDueAt = now.addingTimeInterval(Self.lookAgainAfter[min(lookCount, Self.lookAgainAfter.count - 1)])
+        helper.recheck()
     }
 
     /// Read macOS back. If the limit's switch, the limit or Optimized Battery Charging is not what this controller
@@ -508,13 +742,20 @@ final class ChargeController {
     }
 
     /// The helper link came, went, answered, or was reset under a discharge.
+    ///
+    /// A reset under a discharge (or while its end is unconfirmed) does not end it: the helper that held the cut
+    /// may have died with the charger cut, or a live one may have reconnected it; nobody can tell which. So a stop
+    /// goes out before anything else, and a discharge still wanted is asked for again after its yes.
     private func helperChanged() {
-        guard running else { return }
+        guard running, !switchingOff else { return }
         if helper.resets != seenResets {
             seenResets = helper.resets
-            if appliedDischarge != nil {
-                log("the helper's connection was reset, which ends a discharge; asking again if it is still wanted")
+            if appliedDischarge != nil || cutOwed {
+                if appliedDischarge != nil {
+                    log("the helper's connection was reset under the discharge; stopping it before anything else")
+                }
                 appliedDischarge = nil
+                stopDue = true
             }
         }
         tick()
@@ -561,13 +802,17 @@ final class ChargeController {
     func willSleep() {
         guard running else { return }
         sleeping = true
-        if appliedDischarge != nil || dischargeInFlight || dischargeUncertain {
-            let r = helper.sendWaiting(.stopDischarge, timeout: Self.stopTimeout)
+        if appliedDischarge != nil || dischargeInFlight || cutOwed {
+            let r = waitedStop(timeout: Self.stopTimeout)
             log("discharge stopped for sleep: \(r?.message ?? "no answer within \(Int(Self.stopTimeout)) s")")
             dischargeEpoch += 1
             dischargeInFlight = false
             appliedDischarge = nil
-            dischargeUncertain = r?.ok != true
+            // Not answered yes: the cut may outlive the sleep. Asked again on every tick from the wake.
+            if r?.ok != true {
+                stopDue = true
+                cutLost = true
+            }
         }
         if isDischargeRequested {
             isDischargeRequested = false
@@ -592,7 +837,7 @@ final class ChargeController {
 
     /// Ask the policy, and apply what changed.
     func tick(now: Date = Date()) {
-        guard running else { return }
+        guard running, !switchingOff else { return }
         // The helper link may answer synchronously inside a tick (opening the connection, letting it go); that
         // news is acted on by one more pass afterwards, never by a tick inside this one.
         if ticking {
@@ -600,6 +845,7 @@ final class ChargeController {
             return
         }
         ticking = true
+        tickSerial += 1
         defer { ticking = false }
         var passes = 0
         repeat {
@@ -634,11 +880,35 @@ final class ChargeController {
             log(onAC ? "manual discharge finished" : "manual discharge ended: unplugged")
         }
         lastDecision = decision
+        noteCutLook(!b.onAC && b.adapterPresent, now: now)
         apply(decision)
         // Sailing and heat memory belong to one connection to the adapter.
         if !onAC { memory = ChargeMemory() }
         settle()
+        noteHelperNeed(now: now)
         if announce { changed() }
+    }
+
+    /// The safety net under the bookkeeping. macOS reporting the Mac off the adapter while the adapter is there is
+    /// what a charger cut looks like. With no discharge in force, a cut is expected for a minute or so after one
+    /// ends (macOS is slow to say it is charging again); longer than `chargerReconnectTime`, it is taken for a cut
+    /// nobody holds: the helper is asked to reconnect it and the warning shows, until a running helper says the
+    /// charger is connected (then not again for the same stretch) or macOS stops saying it.
+    private func noteCutLook(_ looksCut: Bool, now: Date) {
+        guard looksCut, appliedDischarge == nil else {
+            cutLookSince = nil
+            cutLookAnswered = false
+            cutSeen = false
+            return
+        }
+        let since = cutLookSince ?? now
+        cutLookSince = since
+        guard !dischargeInFlight, !cutLookAnswered, !cutSeen,
+              now.timeIntervalSince(since) > Self.chargerReconnectTime else { return }
+        cutSeen = true
+        log("macOS has said the Mac is off the adapter, with the adapter there and no discharge running, for over "
+            + "\(Int(Self.chargerReconnectTime)) s: the charger may have been left cut; asking the helper to "
+            + "reconnect it")
     }
 
     /// Apply `lastDecision` again after an answer came back, in case it changed while the request was on its way.
@@ -661,9 +931,9 @@ final class ChargeController {
     }
 
     /// A discharge lives on the connection (closing it ends the cut), from the moment one is wanted until it has
-    /// stopped. Nothing else keeps it open.
+    /// stopped; and while a stop is owed, it is held for the stop. Nothing else keeps it open.
     private var linkNeeded: Bool {
-        if appliedDischarge != nil || dischargeInFlight { return true }
+        if appliedDischarge != nil || dischargeInFlight || stopDue || cutLost || cutSeen { return true }
         guard let target = lastDecision?.dischargeTo, !sleeping, helper.available else { return false }
         return blockedDischarge?.target != target
     }
@@ -729,33 +999,42 @@ final class ChargeController {
     private func applyDischarge(_ d: ChargeDecision) {
         guard !dischargeInFlight else { return }
         let want = d.dischargeTo
-        // A lasting refusal holds until the decision changes.
+        // A refusal that does not pass by itself holds until the decision changes.
         if let b = blockedDischarge, b.target != want { blockedDischarge = nil }
-        guard want != appliedDischarge else { return }
-        guard helper.available else {
-            // Without the helper nothing of ours can be running: losing the link ended it.
-            if want == nil { appliedDischarge = nil }
+
+        // A stop that is owed goes first, whatever the policy wants, and whether or not the helper has answered
+        // lately: a helper that stopped answering is exactly the one that must be reached. A lost cut is asked
+        // about once a tick.
+        if stopDue || cutLost || cutSeen {
+            if (cutLost || cutSeen) && lostStopTick == tickSerial { return }
+            return stopDischarge(why: d.reason.rawValue)
+        }
+        guard let target = want else {
+            // Not wanted: a discharge in force is stopped, and so is one whose end no running helper confirmed (a
+            // refused or unanswered request may have cut the charger all the same).
+            if appliedDischarge != nil || cutOwed { stopDischarge(why: d.reason.rawValue) }
             return
         }
-        if let target = want {
-            // Nothing watches the floor while the Mac sleeps, and the helper would refuse anyway.
-            guard !sleeping, blockedDischarge == nil else { return }
-            // A discharge lives on an open connection. Opening one answers through `helperChanged`, which ticks
-            // again; a connection the Fans tab already holds is open at once.
-            if !helper.isOpen { helper.keepOpen(true) }
-            guard helper.isOpen else { return }
-            startDischarge(to: target)
-        } else {
-            stopDischarge(reason: d.reason)
-        }
+        guard target != appliedDischarge, helper.available else { return }
+        // Nothing watches the floor while the Mac sleeps, and the helper would refuse anyway.
+        guard !sleeping, blockedDischarge == nil else { return }
+        // A discharge lives on an open connection. Opening one answers through `helperChanged`, which ticks again;
+        // a connection the Fans tab already holds is open at once.
+        if !helper.isOpen { helper.keepOpen(true) }
+        guard helper.isOpen else { return }
+        startDischarge(to: target)
     }
 
     private func startDischarge(to target: Int) {
         let from = appliedDischarge
-        // The helper refuses a discharge while one runs, so a new target, or one after an unclear answer, stops
-        // first. The link's queue keeps the two in order.
-        let stopFirst = from != nil || dischargeUncertain
+        // A discharge running, or one whose end no running helper has confirmed, is stopped first: the charger is
+        // reconnected, and that confirmed, before it is cut again (the helper would otherwise cut over whatever it
+        // holds). The link's queue keeps the two in order.
+        let stopFirst = cutOwed
         dischargeInFlight = true
+        // The debt is on disk before anything that can cut the charger goes out.
+        oweCut()
+        dischargeSeq += 1
         let mine = session, epoch = dischargeEpoch, resetsAtSend = helper.resets
         if stopFirst {
             helper.send(.stopDischarge) { [log] r in
@@ -767,24 +1046,30 @@ final class ChargeController {
             self.dischargeInFlight = false
             guard self.running else { return }
             if r.ok {
-                self.dischargeUncertain = false
                 self.lastRefusal = nil
                 if self.helper.resets == resetsAtSend {
                     self.appliedDischarge = target
                     self.log(from.map { "discharge \($0) -> \(target)" } ?? "discharge to \(target) started")
                 } else {
-                    // Something reset the helper after this was sent: it is not running any more.
+                    // The connection was reset after this went out: the helper that cut may be gone, or may have
+                    // reconnected the charger. Neither running nor ended as far as anyone knows, so a stop goes
+                    // out before anything else.
                     self.appliedDischarge = nil
                     self.seenResets = self.helper.resets
+                    self.stopDue = true
+                    self.log("the helper's connection was reset as the discharge to \(target) started; stopping it "
+                             + "before anything else")
                 }
                 self.reapply()
+            } else if r.message == HelperConnection.stoppedAnswering {
+                // Not a refusal: the helper went away with this on its way, and may have cut the charger first.
+                self.stopNotConfirmed("the helper stopped answering as the discharge to \(target) went out")
             } else {
                 // A refusal starts nothing, and a stop sent first ended whatever ran.
                 self.appliedDischarge = nil
-                self.dischargeUncertain = true
                 let why = r.message
-                if Self.lastingDischargeRefusals.contains(why) {
-                    // Asked again only when the person presses again or the decision changes.
+                if !Self.transientDischargeRefusals.contains(why) {
+                    // Shown, and asked again only when the person presses again or the decision changes.
                     self.blockedDischarge = (target, why)
                 }
                 if why != self.lastRefusal {
@@ -796,26 +1081,29 @@ final class ChargeController {
         }
     }
 
-    private func stopDischarge(reason: ChargeReason) {
+    /// Ask the helper to reconnect the charger. Only a yes from a running helper ends a discharge (or settles a
+    /// debt); anything else is `stopNotConfirmed`.
+    private func stopDischarge(why: String) {
         let from = appliedDischarge
+        let lost = cutLost || cutSeen
         dischargeInFlight = true
-        let mine = session, epoch = dischargeEpoch
+        lostStopTick = tickSerial
+        let mine = session, epoch = dischargeEpoch, seq = dischargeSeq
         helper.send(.stopDischarge) { [weak self] r in
             guard let self, self.session == mine, self.dischargeEpoch == epoch else { return }
             self.dischargeInFlight = false
             guard self.running else { return }
-            let gone = r.message == HelperConnection.stoppedAnswering
-            if r.ok || gone {
-                // A helper that stopped answering has lost its client, and reconnects the charger when it does.
+            if r.ok {
                 self.appliedDischarge = nil
-                self.dischargeUncertain = !r.ok
-                self.log("discharge\(from.map { " to \($0)" } ?? "") stopped (\(reason.rawValue))"
-                         + (gone ? ": the helper stopped answering, which reconnects the charger" : ""))
+                self.chargerConfirmed(stopSentAt: seq)
+                if let from {
+                    self.log("discharge to \(from) stopped (\(why))")
+                } else if !lost {
+                    self.log("the charger is connected (\(why)): \(r.message)")
+                }
                 self.reapply()
             } else {
-                // Still booked as running, so the next tick asks again; the helper retries the reconnect itself too.
-                self.log("could not stop the discharge: \(r.message)")
-                self.settle()
+                self.stopNotConfirmed(r.message)
             }
         }
     }
@@ -824,6 +1112,10 @@ final class ChargeController {
 
     private func updateStatus() {
         guard running, let d = lastDecision else { return }
+        // First: the charger may be cut with nobody watching it.
+        if cutLost || cutSeen {
+            return setStatus(.warning(helper.installed ? Self.cutWarningText : Self.cutWarningNoHelperText))
+        }
         let missing = helper.outdated ? Self.helperOutdatedText : nil
         let limitNotInForce = !NativeChargeLimit.isClientSettable(d.osLimit) && appliedLimit != d.osLimit
         if limitNotInForce, let r = refusedLimit, r.value == d.osLimit, helper.available {
@@ -898,6 +1190,11 @@ final class ChargeHelperAdapter: ChargeHelperLink {
     private var claimed = false
     private var wantOpen = false
     private var inFlight = 0
+    /// Connects asked for and not answered yet.
+    private var connecting = 0
+    /// A command found the connection gone (the link has closed its socket), and nothing has opened one since:
+    /// the connection's own status may still say connected until its check comes back.
+    private var lost = false
     private var wasSuspended = false
 
     init(connection: HelperConnection = .shared, isInstalled: @escaping () -> Bool = { FanDaemon.isInstalled() }) {
@@ -906,6 +1203,7 @@ final class ChargeHelperAdapter: ChargeHelperLink {
     }
 
     var available: Bool { (version ?? 0) >= 2 }
+    var installed: Bool { isInstalled() }
     var outdated: Bool { version.map { $0 < 2 } ?? false }
     var isOpen: Bool { claimed && connection.isConnected }
     var resets: Int { connection.resets }
@@ -923,6 +1221,7 @@ final class ChargeHelperAdapter: ChargeHelperLink {
         wantOpen = false
         version = nil
         known = false
+        lost = false
         if claimed {
             claimed = false
             connection.release(.charge)
@@ -950,7 +1249,7 @@ final class ChargeHelperAdapter: ChargeHelperLink {
 
     func send(_ c: FanCommand, _ done: @escaping (FanReply) -> Void) {
         inFlight += 1
-        claim()
+        claim(reopenIfGone: true)
         connection.send(c) { [weak self] reply in
             self?.inFlight -= 1
             self?.learn(reply)
@@ -961,10 +1260,13 @@ final class ChargeHelperAdapter: ChargeHelperLink {
 
     func sendWaiting(_ c: FanCommand, timeout: TimeInterval) -> FanReply? {
         inFlight += 1
-        claim()
+        // Waited-for commands are the ones that cannot be asked twice (going to sleep, switching off, quitting,
+        // uninstalling): greet first, so a socket that died under the app is replaced before the command goes,
+        // rather than found dead by it.
+        claim(reopenIfGone: true, greetFirst: true)
         let reply = connection.sendWaiting(c, timeout: timeout)
         inFlight -= 1
-        if let reply { learn(reply) }
+        if let reply { learn(reply) } else { lost = true }
         settle()
         return reply
     }
@@ -989,21 +1291,29 @@ final class ChargeHelperAdapter: ChargeHelperLink {
         connect()
     }
 
-    /// Open the connection for this link if it is not holding it already. Commands sent after this queue behind
-    /// the open on the link's serial queue.
-    private func claim() {
-        guard !claimed else { return }
-        claimed = true
-        connect()
+    /// Open the connection for this link if it is not holding it already. For a command
+    /// (`reopenIfGone`), also when the one it holds is known to be gone, or (`greetFirst`) always greet over it:
+    /// the connect is idempotent, a hello over an open socket that answers, and a new socket only if it does not
+    /// (which starts a fresh installed helper). Commands sent after this queue behind it on the link's serial queue.
+    private func claim(reopenIfGone: Bool = false, greetFirst: Bool = false) {
+        guard claimed else {
+            claimed = true
+            return connect()
+        }
+        guard reopenIfGone, connecting == 0 else { return }
+        if greetFirst || lost || !connection.isConnected { connect() }
     }
 
     /// Greet over the shared connection, opening it if nobody has. Counted as in flight until answered, so the
     /// claim is not let go under it (which would close the socket and make the answer a stale one).
     private func connect() {
         inFlight += 1
+        connecting += 1
+        lost = false
         connection.connect(for: .charge) { [weak self] status in
             guard let self else { return }
             self.inFlight -= 1
+            self.connecting -= 1
             self.learn(status)
             self.settle()
         }
@@ -1027,11 +1337,13 @@ final class ChargeHelperAdapter: ChargeHelperLink {
         if was.0 != version || was.1 != known { changed?() }
     }
 
-    /// A reply says the helper is there, except "stopped answering", which says it is gone.
+    /// A reply says the helper is there, except "stopped answering", which says it is gone (and the link has
+    /// closed its socket: the next command opens a new one).
     private func learn(_ reply: FanReply) {
         guard !reply.ok, reply.message == HelperConnection.stoppedAnswering else { return }
         version = nil
         known = true
+        lost = true
     }
 
     private func connectionChanged() {

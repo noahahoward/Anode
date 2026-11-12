@@ -289,8 +289,8 @@ final class ChargeControlConnectionTests: XCTestCase {
     }
 
     @discardableResult
-    private func make() -> ChargeController {
-        settings.chargeControlEnabled = true
+    private func make(enabled: Bool = true) -> ChargeController {
+        settings.chargeControlEnabled = enabled
         let c = ChargeController(settings: settings, makeClient: { [weak self] in self?.client },
                                  helper: adapter, battery: { [weak self] in self?.battery },
                                  log: { [weak self] in self?.lines.append($0) })
@@ -404,6 +404,117 @@ final class ChargeControlConnectionTests: XCTestCase {
         c.tick()
         XCTAssertEqual(wire.sent, [.discharge(toPercent: 80), .stopDischarge])
         XCTAssertTrue(connection.holders.isEmpty, "the connection was kept after the discharge stopped")
+    }
+
+    // ── A helper that dies under a discharge ────────────────────────────────
+
+    /// Measured: a killed helper leaves the charger cut, and the installed daemon is not kept alive; only a new
+    /// connection to its socket starts a fresh helper, whose startup reconnects the charger. Stop pressed moments
+    /// after the death must open that connection and ask the new helper, not take the dead socket's silence for an
+    /// end.
+    func testAHelperThatDiesUnderADischargeIsGreetedAgain() {
+        battery = ChargeControllerTests.state(90)
+        let c = make()
+        c.pressDischarge()
+        XCTAssertEqual(wire.sent, [.discharge(toPercent: 80)])
+        let connects = wire.connectsAsked
+        wire.die()
+        c.pressDischarge()   // Stop
+        XCTAssertGreaterThan(wire.connectsAsked, connects, "nothing greeted the helper again")
+        XCTAssertEqual(wire.sent.last, .stopDischarge)
+        XCTAssertEqual(wire.reachedAHelper.last, true, "the stop was not asked of a fresh helper")
+        XCTAssertFalse(settings.chargeCutUnconfirmed, "the fresh helper's answer did not settle the debt")
+        XCTAssertNil(c.dischargeInForce)
+        XCTAssertEqual(c.status, .active(ChargeDecision(osLimit: 80, dischargeTo: nil, reason: .limit)))
+        XCTAssertTrue(connection.holders.isEmpty, "the connection was kept after the charger was confirmed connected")
+    }
+
+    /// The same when the target is reached instead, and the stop is Charge Control's own.
+    func testAHelperThatDiesBeforeTheTargetIsReachedIsGreetedAgain() {
+        battery = ChargeControllerTests.state(90)
+        let c = make()
+        c.pressDischarge()
+        wire.die()
+        battery = ChargeControllerTests.state(80)
+        c.tick()
+        XCTAssertEqual(wire.sent.last, .stopDischarge)
+        XCTAssertEqual(wire.reachedAHelper.last, true)
+        XCTAssertFalse(settings.chargeCutUnconfirmed)
+    }
+
+    /// Switching Charge Control off moments after the helper died: the waited stop opens a fresh connection rather
+    /// than going to the dead one.
+    func testSwitchingOffAfterTheHelperDiedStillReconnects() {
+        battery = ChargeControllerTests.state(90)
+        let c = make()
+        c.pressDischarge()
+        let connects = wire.connectsAsked
+        wire.die()
+        settings.chargeControlEnabled = false
+        XCTAssertGreaterThan(wire.connectsAsked, connects, "switching off did not greet the helper again")
+        XCTAssertEqual(wire.sent.last, .stopDischarge)
+        XCTAssertEqual(wire.reachedAHelper.last, true, "the stop went to the dead socket")
+        XCTAssertFalse(settings.chargeCutUnconfirmed, "the stop did not reach a running helper")
+        XCTAssertNil(settings.chargeRestoreRecord)
+        XCTAssertEqual(c.status, .off)
+        XCTAssertTrue(connection.holders.isEmpty)
+    }
+
+    /// A relaunch with Charge Control off and the debt left over greets the installed helper and asks it to
+    /// reconnect; then lets go.
+    func testARelaunchWhileOffWithTheDebtGreetsTheHelper() {
+        settings.chargeCutUnconfirmed = true
+        make(enabled: false)
+        XCTAssertGreaterThan(wire.connectsAsked, 0, "a relaunch while off never greeted the helper")
+        XCTAssertEqual(wire.sent, [.stopDischarge])
+        XCTAssertFalse(settings.chargeCutUnconfirmed)
+        XCTAssertTrue(connection.holders.isEmpty)
+    }
+
+    /// A helper that answered nothing at launch (a cold start slower than its hello) is looked for again while
+    /// something needs it: 30 s, 60 s and 120 s apart, then every five minutes.
+    func testAHelperMissingAtLaunchIsLookedForAgainWithBackoff() {
+        let t0 = Date()
+        wire.answerAtOnce = .notRunning
+        settings.chargeLimit = 60
+        let c = make()
+        XCTAssertEqual(wire.connectsAsked, 1)
+        func at(_ s: TimeInterval) { c.periodicTick(now: t0.addingTimeInterval(s)) }
+        at(31)
+        XCTAssertEqual(wire.connectsAsked, 2, "not looked for again 30 s later")
+        at(61)
+        XCTAssertEqual(wire.connectsAsked, 2, "looked for again too soon")
+        at(92)
+        XCTAssertEqual(wire.connectsAsked, 3)
+        at(152)
+        XCTAssertEqual(wire.connectsAsked, 3)
+        at(213)
+        XCTAssertEqual(wire.connectsAsked, 4)
+        at(400)
+        XCTAssertEqual(wire.connectsAsked, 4)
+        at(514)
+        XCTAssertEqual(wire.connectsAsked, 5)
+        at(815)
+        XCTAssertEqual(wire.connectsAsked, 6)
+
+        wire.answerAtOnce = .connected(fanCount: 1, version: 2)
+        at(1116)
+        XCTAssertEqual(c.status, .active(ChargeDecision(osLimit: 60, dischargeTo: nil, reason: .limit)))
+        XCTAssertEqual(wire.sent, [.setChargeLimit(60)])
+        let found = wire.connectsAsked
+        at(2000)
+        at(3000)
+        XCTAssertEqual(wire.connectsAsked, found, "looked for again after it was found")
+    }
+
+    /// Nothing is looked for when nothing needs the helper.
+    func testAHelperMissingWhileNothingNeedsItIsLeftAlone() {
+        let t0 = Date()
+        wire.answerAtOnce = .notRunning
+        let c = make()
+        let before = wire.connectsAsked
+        for s in stride(from: 30.0, through: 1200, by: 30) { c.periodicTick(now: t0.addingTimeInterval(s)) }
+        XCTAssertEqual(wire.connectsAsked, before)
     }
 
     // ── Looking again ───────────────────────────────────────────────────────
@@ -696,6 +807,8 @@ final class FanPanelSharingTests: XCTestCase {
 /// A wire that answers connects only when told to (or at once, with `answerAtOnce`), and records what it sent.
 final class ScriptedWire: HelperWire {
     private(set) var sent: [FanCommand] = []
+    /// For each command sent, whether a helper was there to take it (a socket open on a running one).
+    private(set) var reachedAHelper: [Bool] = []
     private(set) var disconnects = 0
     /// Every `ensureConnected`: each is a hello, and the first after a close starts the daemon.
     private(set) var connectsAsked = 0
@@ -725,10 +838,14 @@ final class ScriptedWire: HelperWire {
     }
     func send(_ command: FanCommand, _ done: @escaping (FanReply) -> Void) {
         sent.append(command)
+        reachedAHelper.append(answerAtOnce == nil || open)
         done(answer(command))
     }
+    /// Like `FanControlLink`: nothing, not a refusal, when there is no socket.
     func sendWaiting(_ command: FanCommand, timeout: TimeInterval) -> FanReply? {
         sent.append(command)
+        reachedAHelper.append(answerAtOnce == nil || open)
+        if answerAtOnce != nil, !open { return nil }
         return answer(command)
     }
     func drain(timeout: TimeInterval) -> Bool {
@@ -737,6 +854,12 @@ final class ScriptedWire: HelperWire {
     }
     func disconnect() {
         disconnects += 1
+        open = false
+    }
+
+    /// The helper was killed: the socket is dead under the app, which has not noticed. The next connect starts a
+    /// fresh helper (answered with `answerAtOnce`), as launchd does for the installed daemon.
+    func die() {
         open = false
     }
 

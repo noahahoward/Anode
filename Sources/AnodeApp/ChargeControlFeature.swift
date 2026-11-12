@@ -92,7 +92,7 @@ final class ChargeControlFeature: BetaFeature {
         switch s {
         case .off:
             return "Off"
-        case .unavailable(let why), .needsHelper(let why), .refused(let why):
+        case .unavailable(let why), .needsHelper(let why), .refused(let why), .warning(let why):
             return why
         case .active(let d):
             let limit = d.osLimit, why = reasonText(d.reason)
@@ -307,7 +307,7 @@ final class ChargeControlFeature: BetaFeature {
         switch status {
         case .unavailable: unavailable = true
         case .needsHelper: needsHelper = true
-        case .refused: refused = true
+        case .refused, .warning: refused = true
         case .off, .active: break
         }
         // Off, or on but impossible on this Mac: nothing below the switch can do anything.

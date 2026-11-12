@@ -589,7 +589,8 @@ final class ChargeControllerTests: XCTestCase {
         XCTAssertEqual(c.lastDecision?.reason, .discharging)
     }
 
-    /// The helper refuses a second discharge while one runs, so a new target is a stop and then a start.
+    /// A new target is a stop and then a start: the charger is reconnected, and that confirmed, before it is cut
+    /// again for the new target (the helper would re-cut over a running discharge without it).
     func testChangingTheTargetStopsFirst() {
         settings.chargeLimit = 85
         settings.chargeAutomaticDischarge = true
@@ -619,23 +620,244 @@ final class ChargeControllerTests: XCTestCase {
         XCTAssertEqual(discharges(helper.commands), [80, 80])
     }
 
-    /// The real link never answers "nothing": a socket that is gone comes back as a refusal saying the helper stopped
-    /// answering. For a stop that is as good as done (the helper reconnects the charger when its client goes), so
-    /// it is not asked again and again.
-    func testAStopThatFindsTheHelperGoneIsNotRepeated() {
+    /// Measured: a helper that dies leaves the charger cut, and nothing but a fresh helper switches it back on. So a
+    /// stop answered "stopped answering" is not a discharge that ended: it is asked again at once (the link opens a
+    /// new connection, which starts a fresh helper), then on every tick, with a warning, until a helper that is
+    /// running says the charger is connected. The debt is written down before the discharge is even asked for.
+    func testAStopThatFindsTheHelperGoneIsNotTakenForEnded() {
+        battery = Self.state(90)
+        var flagWhenSent: [Bool] = []
+        helper.beforeSend = { [weak self] cmd in
+            if case .discharge = cmd { flagWhenSent.append(self?.settings.chargeCutUnconfirmed ?? false) }
+        }
+        let c = make()
+        c.pressDischarge()
+        XCTAssertEqual(flagWhenSent, [true], "the discharge was asked for before the debt was written down")
+
+        helper.gone = true
+        c.pressDischarge()   // Stop, moments after the helper died
+        XCTAssertEqual(helper.commands, [.discharge(toPercent: 80), .stopDischarge, .stopDischarge],
+                       "a stop that found the helper gone was not sent again at once")
+        XCTAssertTrue(settings.chargeCutUnconfirmed, "a stop nobody answered cleared the debt")
+        XCTAssertNil(c.dischargeInForce)
+        XCTAssertEqual(c.status, .warning(ChargeController.cutWarningText))
+        XCTAssertEqual(helper.openRequests.last, true, "the connection was let go with the charger perhaps still cut")
+
+        c.tick()
+        c.periodicTick()
+        XCTAssertEqual(helper.stops(), 4, "not asked again on every tick")
+        XCTAssertEqual(c.status, .warning(ChargeController.cutWarningText))
+
+        helper.gone = false
+        helper.available = true
+        c.tick()
+        XCTAssertEqual(helper.stops(), 5)
+        XCTAssertFalse(settings.chargeCutUnconfirmed, "a helper said the charger is connected, and the debt stayed")
+        XCTAssertEqual(c.status, .active(ChargeDecision(osLimit: 80, dischargeTo: nil, reason: .limit)))
+        c.tick()
+        c.periodicTick()
+        XCTAssertEqual(helper.stops(), 5, "asked again after a helper had answered")
+        XCTAssertEqual(helper.openRequests.last, false)
+    }
+
+    /// Once a tick, however many times the tick applies the decision: an answer that comes back inside the tick (a
+    /// limit the helper set) applies it again, and must not ask about the cut a second time.
+    func testALostCutIsAskedAboutOnceATick() {
+        settings.chargeLimit = 63
         battery = Self.state(90)
         let c = make()
         c.pressDischarge()
         helper.answer = { cmd in
-            if case .stopDischarge = cmd { return FanReply(ok: false, message: "the fan helper stopped answering") }
+            cmd == .stopDischarge ? FanReply(ok: false, message: HelperConnection.stoppedAnswering)
+                                  : FanReply(ok: true, message: "ok")
+        }
+        c.pressDischarge()   // Stop: not answered, so the cut is lost
+        XCTAssertEqual(c.status, .warning(ChargeController.cutWarningText))
+        let before = helper.stops()
+        settings.chargeLimit = 64   // one tick, in which the helper also sets a limit and answers inside it
+        XCTAssertTrue(helper.commands.contains(.setChargeLimit(64)))
+        XCTAssertEqual(helper.stops(), before + 1, "a lost cut was asked about more than once in one tick")
+    }
+
+    /// The same for a discharge that went out just as the helper died: it may have cut the charger before it went.
+    func testADischargeThatFindsTheHelperGoneIsStoppedNotForgotten() {
+        battery = Self.state(90)
+        helper.gone = true
+        let c = make()
+        c.pressDischarge()
+        XCTAssertEqual(helper.commands.first, .discharge(toPercent: 80))
+        XCTAssertTrue(helper.commands.dropFirst().contains(.stopDischarge), "\(helper.commands)")
+        XCTAssertTrue(settings.chargeCutUnconfirmed)
+        XCTAssertEqual(c.status, .warning(ChargeController.cutWarningText))
+    }
+
+    /// With no helper installed as a daemon, nothing starts a fresh one, and unplugging does not undo the cut: the
+    /// warning says what does.
+    func testAWarningWithNoInstalledHelperSaysHowToRecover() {
+        battery = Self.state(90)
+        let c = make()
+        c.pressDischarge()
+        helper.gone = true
+        helper.installed = false
+        c.pressDischarge()
+        XCTAssertEqual(c.status, .warning(ChargeController.cutWarningNoHelperText))
+        let text = ChargeController.cutWarningNoHelperText
+        XCTAssertTrue(text.contains("unplugging"), text)
+        XCTAssertTrue(text.contains("Fans tab"), text)
+    }
+
+    /// The safety net. macOS saying the Mac is off the adapter while the adapter is there is what a charger cut looks
+    /// like; with no discharge in force for more than 90 s it is taken for a cut left behind. The helper is asked to
+    /// reconnect and the warning shows; once a running helper says the charger is connected, the same stretch is not
+    /// asked about again.
+    func testACutWithNoDischargeInForceIsTreatedAsOrphaned() {
+        let t0 = Date()
+        battery = Self.state(70, ac: false, adapter: true)
+        let c = make()
+        c.tick(now: t0.addingTimeInterval(60))
+        XCTAssertEqual(helper.stops(), 0, "a minute is still how long macOS takes after a discharge")
+        XCTAssertNotEqual(c.status, .warning(ChargeController.cutWarningText))
+
+        helper.gone = true
+        c.tick(now: t0.addingTimeInterval(91))
+        XCTAssertGreaterThan(helper.stops(), 0, "a cut nobody holds was left alone")
+        XCTAssertEqual(c.status, .warning(ChargeController.cutWarningText))
+
+        helper.gone = false
+        helper.available = true
+        c.tick(now: t0.addingTimeInterval(121))
+        XCTAssertNotEqual(c.status, .warning(ChargeController.cutWarningText))
+        let asked = helper.stops()
+        c.tick(now: t0.addingTimeInterval(400))
+        c.periodicTick(now: t0.addingTimeInterval(600))
+        XCTAssertEqual(helper.stops(), asked, "the helper was woken again over the same stretch")
+
+        // A real unplug and plug starts a new stretch.
+        battery = Self.state(70, ac: false, adapter: false)
+        c.tick(now: t0.addingTimeInterval(610))
+        battery = Self.state(70, ac: false, adapter: true)
+        c.tick(now: t0.addingTimeInterval(620))
+        c.tick(now: t0.addingTimeInterval(715))
+        XCTAssertEqual(helper.stops(), asked + 1)
+    }
+
+    /// A discharge in force is not a cut left behind, however long it runs.
+    func testADischargeInForceIsNotTakenForAnOrphanedCut() {
+        let t0 = Date()
+        battery = Self.state(90)
+        let c = make()
+        c.pressDischarge()
+        battery = Self.state(88, ac: false, adapter: true)
+        c.tick(now: t0.addingTimeInterval(200))
+        c.tick(now: t0.addingTimeInterval(400))
+        XCTAssertEqual(helper.commands, [.discharge(toPercent: 80)])
+        XCTAssertEqual(c.dischargeInForce, 80)
+    }
+
+    /// At launch, with Charge Control on and the debt left from last time, a stop goes out first, whatever the
+    /// policy wants, and nothing is said unless it fails.
+    func testALeftoverDischargeFlagIsSettledAtLaunchWhileOn() {
+        settings.chargeCutUnconfirmed = true
+        var shown: [ChargeStatus] = []
+        let c = make()
+        shown.append(c.status)
+        XCTAssertEqual(helper.commands.first, .stopDischarge)
+        XCTAssertFalse(settings.chargeCutUnconfirmed)
+        XCTAssertFalse(shown.contains(.warning(ChargeController.cutWarningText)))
+    }
+
+    /// Off at launch with the debt left over (Charge Control switched off while the helper could not be reached):
+    /// the helper is greeted and asked to reconnect, and asked again until it answers. Nothing else starts.
+    func testALeftoverDischargeFlagIsSettledAtLaunchEvenWhileOff() {
+        settings.chargeCutUnconfirmed = true
+        helper.gone = true
+        let c = make(enabled: false)
+        XCTAssertEqual(helper.commands, [.stopDischarge], "a relaunch while off never greeted the helper")
+        XCTAssertTrue(settings.chargeCutUnconfirmed)
+        XCTAssertEqual(clientsMade, 0)
+        XCTAssertEqual(helper.follows, 0)
+        XCTAssertEqual(c.status, .off)
+
+        c.retryOwedStopWhileOff()
+        XCTAssertEqual(helper.stops(), 2, "not asked again")
+        helper.gone = false
+        c.retryOwedStopWhileOff()
+        XCTAssertEqual(helper.stops(), 3)
+        XCTAssertFalse(settings.chargeCutUnconfirmed)
+        c.retryOwedStopWhileOff()
+        XCTAssertEqual(helper.stops(), 3, "asked again after it had answered")
+        XCTAssertEqual(clientsMade, 0)
+    }
+
+    /// No helper installed: nothing can be greeted while off, so nothing is sent.
+    func testALeftoverDischargeFlagWithNoInstalledHelperSendsNothingWhileOff() {
+        settings.chargeCutUnconfirmed = true
+        helper.installed = false
+        make(enabled: false)
+        XCTAssertTrue(helper.commands.isEmpty)
+    }
+
+    /// Only two refusals of a discharge pass by themselves: the Mac going to sleep, and the charger switched a
+    /// moment ago. Those are asked again on the next tick.
+    func testTheTransientRefusalsAreRetriedOnTheNextTick() {
+        XCTAssertEqual(ChargeController.transientDischargeRefusals,
+                       ["the Mac is going to sleep", "the charger was switched a moment ago; try again shortly"])
+        battery = Self.state(90)
+        helper.answer = { c in
+            if case .discharge = c {
+                return FanReply(ok: false, message: "the charger was switched a moment ago; try again shortly")
+            }
             return FanReply(ok: true, message: "ok")
         }
-        battery = Self.state(89, ac: false, adapter: false)
+        let c = make()
+        c.pressDischarge()
+        XCTAssertEqual(c.status, .active(ChargeDecision(osLimit: 80, dischargeTo: 80, reason: .discharging)))
+        helper.answer = { _ in FanReply(ok: true, message: "ok") }
         c.tick()
+        XCTAssertEqual(discharges(helper.commands), [80, 80])
+        XCTAssertEqual(c.dischargeInForce, 80)
+    }
+
+    /// Every other refusal is shown, in plain words, and not asked again on a tick, the timer or a power change,
+    /// until the person presses again.
+    func testAnyOtherDischargeRefusalIsShownAndNotRetried() {
+        let why = "refused: the battery is already at or below 80%"
+        battery = Self.state(90)
+        helper.answer = { cmd in
+            if case .discharge = cmd { return FanReply(ok: false, message: why) }
+            return FanReply(ok: true, message: "ok")
+        }
+        let c = make()
+        c.pressDischarge()
+        XCTAssertEqual(c.status, .refused(ChargeController.dischargeRefusedText(why)))
+        XCTAssertFalse(ChargeControlFeature.statusText(c.status).contains("refused:"), "\(c.status)")
         c.tick()
+        c.periodicTick()
         c.tick()
-        XCTAssertEqual(helper.commands, [.discharge(toPercent: 80), .stopDischarge],
-                       "a stop answered by a helper that is gone was sent again")
+        XCTAssertEqual(discharges(helper.commands), [80], "a refusal was asked again on its own")
+        c.pressDischarge()
+        c.pressDischarge()
+        XCTAssertEqual(discharges(helper.commands), [80, 80])
+    }
+
+    /// The helper's reasons can name parts of the Mac nobody needs to know about; they are said in plain words.
+    func testARefusalIsShownInPlainWords() {
+        let shown = ChargeController.dischargeRefusedText("the SMC would not cut the charger")
+        XCTAssertFalse(shown.contains("SMC"), shown)
+        XCTAssertTrue(shown.contains("would not cut the charger"), shown)
+    }
+
+    /// A discharge answered yes after the connection was reset: the helper it ran on may be gone. It is booked as
+    /// uncertain, so a stop goes out before anything else, and then the discharge is asked for again.
+    func testAnAnsweredDischargeAfterAResetIsStoppedNotForgotten() {
+        battery = Self.state(90)
+        let c = make()
+        helper.deferReplies = true
+        c.pressDischarge()
+        helper.reset()
+        helper.flushReplies()
+        XCTAssertEqual(helper.commands, [.discharge(toPercent: 80), .stopDischarge, .discharge(toPercent: 80)])
+        XCTAssertEqual(c.dischargeInForce, 80)
     }
 
     /// Two refusals from the helper do not pass by themselves: the charger may still be cut off from an earlier
@@ -1023,6 +1245,13 @@ final class ChargeControllerTests: XCTestCase {
 final class FakeHelperLink: ChargeHelperLink {
     var available = true
     var outdated = false
+    /// Installed as a daemon, so a connection starts it.
+    var installed = true
+    /// The helper is gone: every command is answered as the real link answers one with nobody there ("stopped
+    /// answering"), and a waited one gets nothing. It is unavailable from its first such answer.
+    var gone = false
+    /// Called with each command as it goes out, before it is answered.
+    var beforeSend: ((FanCommand) -> Void)?
     /// Set when `follow` answers (`answersAtOnce`), or by `firstAnswer`.
     private(set) var known = false
     private(set) var isOpen = false
@@ -1114,6 +1343,11 @@ final class FakeHelperLink: ChargeHelperLink {
 
     func send(_ c: FanCommand, _ done: @escaping (FanReply) -> Void) {
         commands.append(c)
+        beforeSend?(c)
+        if gone {
+            available = false
+            return done(FanReply(ok: false, message: HelperConnection.stoppedAnswering))
+        }
         let e = Exchange(c, done)
         if deferReplies {
             queue.append(e)
@@ -1126,11 +1360,18 @@ final class FakeHelperLink: ChargeHelperLink {
     func sendWaiting(_ c: FanCommand, timeout: TimeInterval) -> FanReply? {
         commands.append(c)
         waited.append(c)
+        beforeSend?(c)
+        if gone {
+            available = false
+            return nil
+        }
         queue.forEach { run($0) }
         let reply = answer(c)
         land(c, reply)
         return reply
     }
+
+    func stops() -> Int { commands.filter { $0 == .stopDischarge }.count }
 
     /// Everything sent so far has been exchanged; the answers still reach the main thread later.
     func drain(timeout: TimeInterval) -> Bool {

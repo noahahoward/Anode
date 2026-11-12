@@ -653,7 +653,10 @@ final class ChargeControlFeatureTests: XCTestCase {
                   ChargeController.limitNeedsHelperText, ChargeController.dischargeNeedsHelperText,
                   ChargeController.helperOutdatedText,
                   ChargeController.dischargeRefusedText("the charger may still be cut off from an earlier failure"),
-                  ChargeController.limitRefusedText(63, "macOS did not take the charge limit")]
+                  ChargeController.dischargeRefusedText("the SMC would not cut the charger"),
+                  ChargeController.dischargeRefusedText("the SMC took the cut and the charger does not read as cut"),
+                  ChargeController.limitRefusedText(63, "macOS did not take the charge limit"),
+                  ChargeController.cutWarningText, ChargeController.cutWarningNoHelperText]
         // What an install started here can say under its button.
         shown += [FanControlPanel.waitingText, FanControlPanel.authorisationOnScreenText,
                   FanControlPanel.notBundledInstallText, FanControlPanel.cancelledText,

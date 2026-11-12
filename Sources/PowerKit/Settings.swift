@@ -865,11 +865,32 @@ public final class Settings {
     }
     private static let chargeRestoreRecordKey = storageKey("chargeRestoreRecord")
 
+    /// True from just before Charge Control asks the helper to discharge until a helper that is running has said
+    /// the charger is connected. While it is true the charger may be cut off with nothing watching it.
+    ///
+    /// A cut outlives the helper that made it: a helper that dies leaves the charger off, the Mac draining on the
+    /// adapter, and only a fresh helper (started by the next connection to the installed daemon) switches it back
+    /// on. So the debt is written down, like `chargeRestoreRecord`, to survive a quit or a crash, and the next
+    /// launch pays it whether Charge Control is on or off.
+    ///
+    /// Bookkeeping, not a preference: no observation key, nothing is notified. Clearing removes the key.
+    public var chargeCutUnconfirmed: Bool {
+        get { (defaults.object(forKey: Settings.chargeCutUnconfirmedKey) as? Bool) ?? false }
+        set {
+            if newValue {
+                defaults.set(true, forKey: Settings.chargeCutUnconfirmedKey)
+            } else {
+                defaults.removeObject(forKey: Settings.chargeCutUnconfirmedKey)
+            }
+        }
+    }
+    private static let chargeCutUnconfirmedKey = storageKey("chargeCutUnconfirmed")
+
     /// Write what this handle holds to disk now rather than when `cfprefsd` gets to it.
     ///
-    /// For one caller: Charge Control stores `chargeRestoreRecord` and then changes macOS's own charge settings,
-    /// which outlive the app. If the app died between the two with the record still in memory, nothing would know
-    /// how to put those settings back.
+    /// For Charge Control's bookkeeping: it stores `chargeRestoreRecord` (or `chargeCutUnconfirmed`) and then
+    /// changes something that outlives the app. If the app died between the two with the note still in memory,
+    /// nothing would know how to put it back.
     public func flush() {
         defaults.synchronize()
     }
