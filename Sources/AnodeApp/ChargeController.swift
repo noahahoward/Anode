@@ -205,6 +205,9 @@ final class ChargeController {
         ChargeRefusal.switchedRecently,
     ]
 
+    /// The limit that is no limit. macOS turns its own limit switch off when it is set (see `checkDrift`).
+    static let noLimit = 100
+
     /// How long after a discharge ends with the cable in that macOS may still show "not charging". Measured on
     /// this Mac: about a minute before charging resumes; this leaves room.
     static let chargerReconnectTime: TimeInterval = 90
@@ -927,10 +930,16 @@ final class ChargeController {
     /// put in force (the person changed it in System Settings, or something else did), say so once, forget what
     /// was believed, and put all three back; the tick that follows sets the limit. Once per call, on the timer and
     /// after a wake, so a Mac that keeps refusing is asked again 30 s later, never in a loop.
+    ///
+    /// The switch reading off is not a change when 100 is what this controller put in force and 100 is what macOS
+    /// reads: macOS turns the switch off by itself once the limit is set to 100 (measured on Mac17,9, macOS 27.0:
+    /// "off, 100" read back seconds after 100 was set; taken for drift, 100 was set again every 30 s for as long as
+    /// the limit, or Top Up, was 100). Off with anything below 100 in force is still a change, as is any other limit.
     private func checkDrift() {
         guard let c = client, let found = c.read() else { return }
         var changed: [String] = []
-        if !found.mclEnabled { changed.append("the limit was turned off") }
+        let offByItself = appliedLimit == Self.noLimit && found.mclLimit == Self.noLimit
+        if !found.mclEnabled, !offByItself { changed.append("the limit was turned off") }
         if found.optimizedChargingEnabled { changed.append("Optimized Battery Charging was turned on") }
         if let mine = appliedLimit, !limitInFlight, found.mclLimit != mine {
             changed.append("the limit is \(found.mclLimit), not \(mine)")

@@ -1645,6 +1645,69 @@ final class ChargeControllerTests: XCTestCase {
         XCTAssertEqual(client.optimizedChargingCalls, [false, false])
     }
 
+    /// Measured on Mac17,9, macOS 27.0: once the limit is set to 100, macOS turns its own limit switch off and reads
+    /// back "off, 100". With 100 in force that is agreement, not a change made elsewhere: nothing is logged and
+    /// nothing is sent again, however many times the timer reads it back. (It was taken for drift, and 100 was set
+    /// again every 30 s for as long as the limit was 100.)
+    func testALimitOf100ReadBackAsOffIsAgreement() {
+        settings.chargeLimit = 100
+        let c = make()
+        XCTAssertEqual(client.limitCalls, [100])
+        client.state = NativeChargeState(mclEnabled: false, mclLimit: 100, optimizedChargingEnabled: false)
+        let said = lines
+        for _ in 0..<3 { c.periodicTick() }
+        XCTAssertEqual(client.limitCalls, [100], "100 was set again over macOS's own off-at-100")
+        XCTAssertEqual(client.limitEnabledCalls, [true], "the switch macOS turns off at 100 was turned on again")
+        XCTAssertEqual(client.optimizedChargingCalls, [false])
+        XCTAssertEqual(lines, said, "agreement was logged")
+        XCTAssertEqual(c.status, .active(ChargeDecision(osLimit: 100, dischargeTo: nil, reason: .limit)))
+        XCTAssertEqual(limitInForce.value, 100)
+    }
+
+    /// The same while Top Up holds 100 over the person's own limit.
+    func testTopUpsHundredReadBackAsOffIsAgreement() {
+        let c = make()
+        c.pressTopUp()
+        XCTAssertEqual(client.limitCalls, [80, 100])
+        client.state = NativeChargeState(mclEnabled: false, mclLimit: 100, optimizedChargingEnabled: false)
+        let said = lines
+        for _ in 0..<3 { c.periodicTick() }
+        XCTAssertEqual(client.limitCalls, [80, 100])
+        XCTAssertEqual(client.limitEnabledCalls, [true])
+        XCTAssertEqual(lines, said, "agreement was logged")
+    }
+
+    /// Off is agreement only at 100. With 80 in force, macOS reading back as it does with no limit at all (off, 100)
+    /// is a change made elsewhere, and is put back.
+    func testALimitBelow100ReadBackAsOffIsStillPutBack() {
+        let c = make()
+        client.state = NativeChargeState(mclEnabled: false, mclLimit: 100, optimizedChargingEnabled: false)
+        c.periodicTick()
+        XCTAssertEqual(client.state, NativeChargeState(mclEnabled: true, mclLimit: 80, optimizedChargingEnabled: false))
+        XCTAssertEqual(client.limitCalls, [80, 80])
+        XCTAssertEqual(client.limitEnabledCalls, [true, true])
+        XCTAssertEqual(lines.filter { $0.contains("changed outside Charge Control") }.count, 1,
+                       lines.joined(separator: "\n"))
+    }
+
+    /// With 100 in force, everything else is still drift: another limit value with the switch off, and Optimized
+    /// Battery Charging turned on.
+    func testAt100AnotherLimitOrOptimizedChargingIsStillDrift() {
+        settings.chargeLimit = 100
+        let c = make()
+        client.state = NativeChargeState(mclEnabled: false, mclLimit: 80, optimizedChargingEnabled: false)
+        c.periodicTick()
+        XCTAssertEqual(client.limitCalls, [100, 100], "a limit changed elsewhere was left, because the switch is off")
+        XCTAssertEqual(client.limitEnabledCalls, [true, true])
+
+        client.state = NativeChargeState(mclEnabled: false, mclLimit: 100, optimizedChargingEnabled: true)
+        c.periodicTick()
+        XCTAssertEqual(client.state?.optimizedChargingEnabled, false)
+        XCTAssertEqual(client.limitCalls, [100, 100, 100])
+        XCTAssertEqual(lines.filter { $0.contains("changed outside Charge Control") }.count, 2,
+                       lines.joined(separator: "\n"))
+    }
+
     /// 100 set in System Settings, while the status still says 80.
     func testTheTimerPutsBackALimitChangedElsewhere() {
         let c = make()
