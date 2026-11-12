@@ -230,6 +230,45 @@ final class ChargeHelperTestsReconnect: XCTestCase {
         XCTAssertEqual(flaky.isCut, false)
     }
 
+    /// ONLY 0x08 IS ANODE'S CUT. A reconnect that holds nothing — the startup
+    /// clear, a stop with no discharge held, `--uninstall` — clears the key
+    /// when it reads exactly that, and leaves any other non-zero value alone:
+    /// nobody here has measured what it means, and it used to be written over
+    /// with 0x00 as though Anode had put it there.
+    func testAValueAnodeNeverWritesIsLeftAloneWhenNothingIsHeld() {
+        for value: UInt8 in [0x01, 0x04, 0x09, 0x0C, 0x80, 0xFF] {
+            let hw = FakeChargeHardware()
+            hw.unknownValue = value
+            let r = ChargeRelease.reconnect(hw, timing: now)
+            XCTAssertEqual(r, ChargeRelease.Result(.unrecognised(value), writes: 0))
+            XCTAssertTrue(r.ok, r.message)
+            XCTAssertTrue(hw.cutWrites.isEmpty, "\(value) was written over")
+            XCTAssertTrue(r.message.contains(String(format: "0x%02X", value)), r.message)
+            XCTAssertEqual(hw.unknownValue, value)
+        }
+        // And 0x08 itself still is cleared.
+        let ours = FakeChargeHardware(cut: true)
+        XCTAssertEqual(ChargeRelease.reconnect(ours, timing: now),
+                       ChargeRelease.Result(.reconnected, writes: 1))
+    }
+
+    /// Holding a cut, owing a reconnect, or undoing a cut that did not read
+    /// back, the rule above does not apply: the reconnect is written whatever
+    /// the key reads, and judged by the read-back.
+    func testAHeldOrUndoneCutIsWrittenOverAnyValue() {
+        let held = FakeChargeHardware()
+        held.unknownValue = 0x0C
+        XCTAssertEqual(ChargeRelease.reconnect(held, holding: true, timing: now),
+                       ChargeRelease.Result(.reconnected, writes: 1))
+        XCTAssertEqual(held.cutWrites, [false])
+
+        let undo = FakeChargeHardware()
+        undo.unknownValue = 0x0C
+        XCTAssertEqual(ChargeRelease.reconnect(undo, alwaysWrite: true, timing: now),
+                       ChargeRelease.Result(.reconnected, writes: 1))
+        XCTAssertEqual(undo.cutWrites, [false])
+    }
+
     /// Not holding — the undo of a cut that did not read back — a Mac the SMC
     /// says has no `CHIE` is still `.noKey` after the writes, so a discharge
     /// asked of such a Mac does not leave a helper owing a reconnect for ever.
@@ -904,6 +943,55 @@ final class ChargeHelperTests: XCTestCase {
         makeServer(hw, log: { lines.append($0) }).clearOrphanedAdapterCut()
         XCTAssertTrue(hw.cutWrites.isEmpty)
         XCTAssertTrue(lines.isEmpty, "\(lines)")
+    }
+
+    /// Startup finds `CHIE` holding a value Anode never writes: nothing is
+    /// written, nothing is owed, and it is said once. A stop with no discharge
+    /// held, after that, writes nothing and says nothing new.
+    func testStartupLeavesAValueAnodeNeverWritesAloneAndSaysSoOnce() {
+        let hw = FakeChargeHardware(percent: 77)
+        hw.unknownValue = 0x04
+        var lines: [String] = []
+        let server = makeServer(hw, log: { lines.append($0) })
+        server.clearOrphanedAdapterCut()
+        XCTAssertTrue(hw.cutWrites.isEmpty, "a value nobody has measured was written over")
+        XCTAssertEqual(lines.count, 1, "\(lines)")
+        XCTAssertTrue(lines.first?.contains("0x04") ?? false, "\(lines)")
+        XCTAssertFalse(server.reconnectOwed)
+        XCTAssertTrue(server.isIdle)
+
+        for _ in 0..<2 {
+            let reply = server.handle(.command(.stopDischarge))
+            XCTAssertTrue(reply.ok, reply.message)
+            XCTAssertTrue(reply.message.contains("0x04"), reply.message)
+        }
+        XCTAssertTrue(hw.cutWrites.isEmpty, "a stop with nothing held wrote over it")
+        XCTAssertEqual(lines.count, 1, "said more than once: \(lines)")
+        XCTAssertEqual(hw.unknownValue, 0x04)
+    }
+
+    /// While a discharge is held, or a reconnect owed, the reconnect is written
+    /// whatever the key reads — exactly as before.
+    func testAHeldDischargeOrAnOwedReconnectIsWrittenWhateverTheKeyReads() {
+        let hw = FakeChargeHardware(percent: 77)
+        let server = makeServer(hw)
+        XCTAssertTrue(server.handle(.command(.discharge(toPercent: 40))).ok)
+        hw.unknownValue = 0x0C
+        XCTAssertTrue(server.handle(.command(.stopDischarge)).ok)
+        XCTAssertEqual(hw.cutWrites, [true, false])
+        XCTAssertNil(server.dischargeTarget)
+
+        let owing = FakeChargeHardware(cut: true)
+        owing.refuseRestore = true
+        let other = makeServer(owing)
+        other.clearOrphanedAdapterCut()
+        XCTAssertTrue(other.reconnectOwed)
+        owing.refuseRestore = false
+        owing.unknownValue = 0x02
+        other.watchDischarge()
+        XCTAssertEqual(owing.cutWrites.last, false)
+        XCTAssertEqual(owing.isCut, false)
+        XCTAssertFalse(other.reconnectOwed)
     }
 
     /// A cut nobody owns that will not clear is not given up on: the helper
@@ -1640,6 +1728,7 @@ final class FakeChargeHardware: ChargeHardware {
     private var _cutLandsButSaysNo = false
     private var _failNextReads = 0
     private var _existsAnswersNo = false
+    private var _unknownValue: UInt8?
 
     init(percent: Int? = 50, onAC: Bool? = true, cut: Bool = false) {
         _percent = percent; _cable = onAC; _cut = cut
@@ -1717,12 +1806,23 @@ final class FakeChargeHardware: ChargeHardware {
         get { locked { _existsAnswersNo } }
         set { locked { _existsAnswersNo = newValue } }
     }
+    /// The key holds a value Anode never writes — neither 0x00 nor 0x08 — and
+    /// reads answer it until a write lands. Whatever put it there, it was not
+    /// Anode.
+    var unknownValue: UInt8? {
+        get { locked { _unknownValue } }
+        set { locked { _unknownValue = newValue } }
+    }
 
-    func adapterCut() -> Bool? {
+    func adapterCutValue() -> UInt8? {
         locked {
             if _failNextReads > 0 { _failNextReads -= 1; return nil }
-            return (_unreadable || !_keyExists) ? nil : _cut
+            if _unreadable || !_keyExists { return nil }
+            return _unknownValue ?? (_cut ? AdapterCutKey.cut : AdapterCutKey.connected)
         }
+    }
+    func adapterCut() -> Bool? {
+        adapterCutValue().map { $0 != AdapterCutKey.connected }
     }
     func setAdapterCut(_ on: Bool) -> Bool {
         locked {
@@ -1731,13 +1831,14 @@ final class FakeChargeHardware: ChargeHardware {
             if on {
                 if _refuseCut { return false }
                 if _ignoreCut { return true }
-                if _cutLandsButSaysNo { _cut = true; return false }
+                if _cutLandsButSaysNo { _cut = true; _unknownValue = nil; return false }
             } else {
                 if _restoreRefusalsLeft > 0 { _restoreRefusalsLeft -= 1; return false }
                 if _refuseRestore { return false }
                 if _ignoreRestore { return true }
             }
             _cut = on
+            _unknownValue = nil
             return true
         }
     }

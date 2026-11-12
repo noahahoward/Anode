@@ -533,6 +533,10 @@ public final class FanHelperServer {
     /// not idle — and takes no new discharge — until a read shows it connected.
     private(set) var reconnectOwed = false
 
+    /// Values the adapter-cut key has been found holding that Anode never
+    /// writes, each already logged once. Loop thread only.
+    private var unrecognisedCutValuesSaid: Set<UInt8> = []
+
     /// How often a discharge looks at the battery. The only periodic wake this
     /// helper ever has, and only while the charger is cut. A var only so a test
     /// can shorten it; set it before `run()`.
@@ -566,12 +570,14 @@ public final class FanHelperServer {
     /// socket, so a cut found at startup belongs to a helper that died without
     /// its dead man's switch. Run by both `start` paths, before anything is
     /// served. Writes nothing, and says nothing, when the charger reads
-    /// connected or the Mac has no such key.
+    /// connected or the Mac has no such key. Clears ONLY Anode's own value,
+    /// 0x08: a value Anode never writes is left alone, and said once
+    /// (`reconnectCharger`).
     func clearOrphanedAdapterCut() {
         guard charge != nil else { return }
         let result = reconnectCharger()
         switch result.outcome {
-        case .notCut, .noKey:
+        case .notCut, .noKey, .unrecognised:
             return
         case .reconnected:
             log("cleared an adapter cut nobody owned")
@@ -1195,11 +1201,13 @@ public final class FanHelperServer {
             return FanReply(ok: false, message: "this helper has no charge control")
         }
         // Asked to reconnect, it reconnects — including a cut it does not
-        // remember making. Reconnecting cannot hurt; refusing to could. A
-        // charger that reads connected is not written at all.
+        // remember making, when the key reads 0x08, the value Anode writes.
+        // Reconnecting cannot hurt; refusing to could. A charger that reads
+        // connected is not written at all, and nor is a value Anode never
+        // writes.
         let result = reconnectCharger()
         switch result.outcome {
-        case .notCut, .noKey: break
+        case .notCut, .noKey, .unrecognised: break
         default: log("\(result.message) (asked to stop)")
         }
         return FanReply(ok: result.ok, message: result.message)
@@ -1222,6 +1230,12 @@ public final class FanHelperServer {
         let holding = dischargeTarget != nil || reconnectOwed
         let result = ChargeRelease.reconnect(charge, alwaysWrite: alwaysWrite,
                                              holding: holding, timing: chargeTiming)
+        // Said once per value for the helper's life, not on every stop the app
+        // sends: it is a fact about the Mac, and nothing here changes it.
+        if case .unrecognised(let value) = result.outcome,
+           unrecognisedCutValuesSaid.insert(value).inserted {
+            log(result.message)
+        }
         if result.ok {
             dischargeTarget = nil
             reconnectOwed = false

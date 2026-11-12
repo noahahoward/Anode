@@ -155,9 +155,10 @@ if arguments.contains("--uninstall") {
     // The charger, before the bootout. A cut outlives the process that made it
     // (measured: `kill -9` left the charger disconnected), and "an app that cut
     // my charger has been deleted" is exactly what this command is for. The
-    // same verified routine the server uses: written unless it reads
-    // connected, read back, three tries, and "no such key" told apart from
-    // "could not reconnect".
+    // same verified routine the server uses: written only when it reads 0x08,
+    // the one value Anode writes (or cannot be read), read back, three tries,
+    // and "no such key" told apart from "could not reconnect". A value Anode
+    // never writes is left alone and named.
     print("Reconnecting the charger…")
     print("  \(ChargeRelease.reconnect(SystemChargeHardware()).message)")
 

@@ -10,8 +10,14 @@ import notify
 /// fake. A cut made by a test on a real machine OUTLIVES the test process
 /// (measured: `kill -9` left `CHIE` = 08 and the charger disconnected).
 public protocol ChargeHardware: AnyObject {
-    /// Is the charger cut right now? nil when the key cannot be read.
+    /// Is the charger cut right now? nil when the key cannot be read. Any
+    /// non-zero value reads as cut: this is the question a READ-BACK asks.
     func adapterCut() -> Bool?
+    /// The byte the adapter-cut key holds right now, nil when it cannot be
+    /// read. Tells Anode's own cut — `AdapterCutKey.cut`, the only non-zero
+    /// value it writes — from a value nobody here has measured, which a
+    /// reconnect holding nothing leaves alone (`ChargeRelease.reconnect`).
+    func adapterCutValue() -> UInt8?
     /// Cut (true) or reconnect (false). The only two writes the helper makes to
     /// the charger. True means the SMC said yes to the write — neither that
     /// the charger changed nor, when false, that it did not: `ChargeRelease`
@@ -36,6 +42,12 @@ public extension ChargeHardware {
     /// The cautious answer: a key that might exist is treated as one that does,
     /// so a failure to reconnect is reported rather than explained away.
     func adapterCutKeyExists() -> Bool { true }
+
+    /// For a charger that can only say cut or not: a cut is taken to be
+    /// Anode's own value, so such a charger is reconnected exactly as before.
+    func adapterCutValue() -> UInt8? {
+        adapterCut().map { $0 ? AdapterCutKey.cut : AdapterCutKey.connected }
+    }
 }
 
 /// The adapter-cut key and the only two values ever written to it.
@@ -117,6 +129,12 @@ public enum ChargeRelease {
             case stillCut
             /// Written, and it could not be read back, so nobody knows.
             case unconfirmed
+            /// It reads a value Anode never writes — neither 0x00 nor 0x08 —
+            /// and this reconnect holds no cut and owes none, so nothing was
+            /// written. Not Anode's cut, and not Anode's to overwrite: nobody
+            /// here has measured what it means. Never the answer while a cut
+            /// is held or owed (`reconnect(holding:)`).
+            case unrecognised(UInt8)
         }
 
         public let outcome: Outcome
@@ -130,8 +148,8 @@ public enum ChargeRelease {
 
         public var ok: Bool {
             switch outcome {
-            case .notCut, .noKey, .reconnected: return true
-            case .stillCut, .unconfirmed:       return false
+            case .notCut, .noKey, .reconnected, .unrecognised: return true
+            case .stillCut, .unconfirmed:                      return false
             }
         }
 
@@ -140,6 +158,9 @@ public enum ChargeRelease {
             case .notCut:      return "the charger is not cut — nothing to reconnect"
             case .noKey:       return "this Mac has no adapter-cut key — nothing to reconnect"
             case .reconnected: return "charger reconnected"
+            case .unrecognised(let value):
+                return "the charger's cut key reads " + String(format: "0x%02X", value)
+                     + ", a value Anode never writes — left alone"
             case .stillCut:
                 return "the charger did NOT reconnect — it still reads as cut off after "
                      + "\(writes) tr\(writes == 1 ? "y" : "ies")"
@@ -152,11 +173,16 @@ public enum ChargeRelease {
 
     /// Reconnect the charger and confirm it.
     ///
-    /// Writes unless the key already reads connected, so the everyday path —
-    /// a helper starting on a charger nobody cut — writes nothing. A key that
-    /// cannot be read IS written, unless the SMC itself says there is no such
-    /// key (`adapterCutKeyExists`): reconnecting cannot hurt, and leaving a cut
-    /// in place because a read failed can.
+    /// Holding nothing — the startup clear, a stop with no discharge held,
+    /// `--uninstall` — it reads the key first and writes ONLY WHEN IT READS
+    /// ANODE'S OWN CUT, 0x08. So the everyday path, a helper starting on a
+    /// charger nobody cut, writes nothing; and a value Anode never writes is
+    /// left alone (`.unrecognised`) rather than written over with 0x00 as
+    /// though Anode had put it there. A key that cannot be read IS written,
+    /// unless the SMC itself says there is no such key
+    /// (`adapterCutKeyExists`): an unreadable key is not a value read, it may
+    /// be the cut a killed helper left, and reconnecting cannot hurt where
+    /// leaving that cut in place can.
     ///
     /// `alwaysWrite` skips that first read. It is for straight after a cut
     /// attempt, when a read may still show the state from before the write and
@@ -164,20 +190,28 @@ public enum ChargeRelease {
     ///
     /// `holding` is for a caller that holds a cut which READ BACK cut, or owes
     /// a reconnect: the key is known to exist. Then the reconnect is always
-    /// written, and the answer is never `.noKey` — not on a first read that
-    /// fails, and not after writes that cannot be read back. A failed read
-    /// there is a failed read, and the key-info question that would follow
-    /// can fail the same way and answer "no such key"; taking its word once
-    /// left a held cut unwritten, its target cleared, and nobody watching.
+    /// written, whatever the key reads, and the answer is never `.noKey` — not
+    /// on a first read that fails, and not after writes that cannot be read
+    /// back. A failed read there is a failed read, and the key-info question
+    /// that would follow can fail the same way and answer "no such key";
+    /// taking its word once left a held cut unwritten, its target cleared, and
+    /// nobody watching.
     public static func reconnect(_ charge: ChargeHardware,
                                  alwaysWrite: Bool = false,
                                  holding: Bool = false,
                                  timing: Timing = .standard) -> Result {
         if !alwaysWrite && !holding {
-            switch charge.adapterCut() {
-            case false?: return Result(.notCut, writes: 0)
-            case nil where !charge.adapterCutKeyExists(): return Result(.noKey, writes: 0)
-            default: break
+            switch charge.adapterCutValue() {
+            case .some(AdapterCutKey.connected):
+                return Result(.notCut, writes: 0)
+            case .some(AdapterCutKey.cut):
+                break
+            case .some(let other):
+                return Result(.unrecognised(other), writes: 0)
+            case nil where !charge.adapterCutKeyExists():
+                return Result(.noKey, writes: 0)
+            case nil:
+                break
             }
         }
         let tries = max(timing.tries, 1)
@@ -302,7 +336,11 @@ public final class SystemChargeHardware: ChargeHardware {
     }
 
     public func adapterCut() -> Bool? {
-        smc?.readByte(AdapterCutKey.key).map { $0 != AdapterCutKey.connected }
+        adapterCutValue().map { $0 != AdapterCutKey.connected }
+    }
+
+    public func adapterCutValue() -> UInt8? {
+        smc?.readByte(AdapterCutKey.key)
     }
 
     public func setAdapterCut(_ on: Bool) -> Bool {
