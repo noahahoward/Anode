@@ -366,6 +366,20 @@ public enum Battery {
         ///
         /// Defaulted for the fixtures, like `notChargingReason`.
         public var temperature_C: Double? = nil
+
+        /// Does `AdapterDetails` describe a charger on the cable? Unlike
+        /// `onAC` it survives Anode's own charger cut: MEASURED on `Mac17,9`,
+        /// macOS 27.0, `ExternalConnected` reads No 48 s into a cut with the
+        /// cable in, and `AdapterDetails` is then what it was on the charger.
+        /// With the cable out it is `{"FamilyCode"=0}`. See
+        /// `Battery.adapterPresent(fromProperties:)`.
+        ///
+        /// Read by Charge Control's helper alone, to tell a pulled cable from
+        /// its cut. `onAC` stays the flag, which the history, the drain
+        /// estimate and the rest of the app mean by "on power".
+        ///
+        /// Defaulted for the fixtures, like `temperature_C`.
+        public var adapterPresent: Bool = false
     }
 
     public static func state() -> State? {
@@ -411,7 +425,50 @@ public enum Battery {
         // keeps it. See `packProperties()`.
         state.temperature_C = Self.temperatureC(fromProperties: props)
             ?? Self.packProperties().flatMap(Self.temperatureC(fromProperties:))
+        // From the dictionary already in hand: no second registry read.
+        state.adapterPresent = Self.adapterPresent(fromProperties: props)
         return state
+    }
+
+    // ── The charger on the cable ────────────────────────────────────────────
+
+    /// Does `AdapterDetails`, a top-level key of the battery entry, describe a
+    /// charger? True when it is a dictionary whose `Watts` is above 0 or whose
+    /// `FamilyCode` is not 0. A missing key, a missing dictionary, another type
+    /// and a field that is not a number are all false.
+    ///
+    /// MEASURED on `Mac17,9`, macOS 27.0, in the Plan 0 snapshots:
+    ///
+    ///     state                           ExternalConnected  AdapterDetails
+    ///     cable out                       No                 {"FamilyCode"=0}
+    ///     on the charger                  Yes                {"Watts"=100,
+    ///                                     "AdapterVoltage"=20000,
+    ///                                     "FamilyCode"=18446744073172697098,…}
+    ///     charger cut by CHIE = 08,       No                 the same as on the
+    ///     cable in (48 s into the cut)                       charger
+    ///
+    /// So `ExternalConnected` cannot tell a pulled cable from Anode's own cut,
+    /// and this can.
+    ///
+    /// `FamilyCode` is published as an unsigned 64-bit number above `Int.max`,
+    /// and `as? Int` on it is nil. It is read through `NSNumber`, and only
+    /// asked whether it is 0, so a reader that took the charger's own code as
+    /// "no code" would find no charger on the Mac this was measured on.
+    ///
+    /// Not measured: how soon `AdapterDetails` clears after a cable is pulled
+    /// during a cut. The helper's watch looks again every few seconds.
+    static func adapterPresent(fromProperties props: [String: Any]) -> Bool {
+        guard let details = props["AdapterDetails"] as? [String: Any] else { return false }
+        // A registry boolean bridges to NSNumber, and `true` would read 1 W.
+        func number(_ key: String) -> NSNumber? {
+            guard let n = details[key] as? NSNumber, CFGetTypeID(n) != CFBooleanGetTypeID() else {
+                return nil
+            }
+            return n
+        }
+        if let watts = number("Watts"), watts.doubleValue > 0 { return true }
+        if let family = number("FamilyCode"), family.uint64Value != 0 { return true }
+        return false
     }
 
     // ── Pack temperature ────────────────────────────────────────────────────

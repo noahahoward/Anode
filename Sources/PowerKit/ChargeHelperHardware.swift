@@ -17,8 +17,9 @@ public protocol ChargeHardware: AnyObject {
     /// changed: `ChargeRelease` reads every write back.
     func setAdapterCut(_ on: Bool) -> Bool
     func batteryPercent() -> Int?
-    /// Is a charger attached? nil when that cannot be told — including while the
-    /// charger is cut, see `ChargeAC.presence`.
+    /// Is a charger on the cable? Answered the same while the charger is cut
+    /// as while it is not: Anode's own cut does not read as a pulled cable (see
+    /// `ChargeAC.presence`). nil only when the battery cannot be read at all.
     func onAC() -> Bool?
     /// Set macOS's own charge limit (`mclLimitValue`), 0…100.
     func writeChargeLimit(_ percent: Int) -> Bool
@@ -52,8 +53,8 @@ public struct DischargeWatch {
 
     /// True when the charger must be reconnected now: the battery cannot be
     /// read, it has reached `max(target, floor)`, or the cable is known to be
-    /// out. An UNKNOWN cable (`onAC == nil`) is not "out": that is what the
-    /// hardware reports for the whole of a cut.
+    /// out. An UNKNOWN cable (`onAC == nil`) is not "out": it is what the
+    /// hardware reports when the battery cannot be read at all.
     public static func shouldRestore(target: Int, percent: Int?, onAC: Bool?) -> Bool {
         guard let percent else { return true }
         if percent <= max(target, floor) { return true }
@@ -220,16 +221,32 @@ public enum ChargeRelease {
     }
 }
 
-/// What "is a charger attached" means while the helper may be cutting it.
+/// What "is a charger on the cable" means while the helper may be cutting it.
 public enum ChargeAC {
-    /// MEASURED: `ExternalConnected` reads No about 10 s after `CHIE` = 08,
-    /// with the cable still in (plan-0 results). So while the cut byte is
-    /// non-zero that flag says nothing about the cable, and the answer is
-    /// unknown. With the cut byte unreadable the flag is believed: if it then
-    /// says unplugged, the charger gets reconnected, which cannot hurt.
-    public static func presence(externalConnected: Bool?, cutByte: UInt8?) -> Bool? {
-        if let cutByte, cutByte != AdapterCutKey.connected { return nil }
-        return externalConnected
+    /// MEASURED on `Mac17,9`, macOS 27.0, in the Plan 0 snapshots:
+    ///
+    ///     state                           ExternalConnected  AdapterDetails
+    ///     cable out                       No                 {"FamilyCode"=0}
+    ///     on the charger                  Yes                {"Watts"=100,…}
+    ///     charger cut by CHIE = 08,       No                 the same as on the
+    ///     cable in (48 s into the cut)                       charger
+    ///
+    /// `ExternalConnected` alone cannot tell a pulled cable from Anode's own
+    /// cut, so it is read with `adapterPresent`
+    /// (`Battery.adapterPresent(fromProperties:)`), which can.
+    ///
+    /// - `true` when either says so: the flag on the charger, the details
+    ///   during a cut. A Mac whose details are empty on the charger is still
+    ///   on it.
+    /// - `false` when neither does: the cable is out, and a discharge ends.
+    /// - `nil` only when the battery cannot be read at all (both nil). A
+    ///   reading that says no with none that says yes is `false`, the
+    ///   direction that reconnects the charger and cannot hurt. It does not
+    ///   arise on the hardware, where both come from one `Battery.state()`.
+    public static func presence(externalConnected: Bool?, adapterPresent: Bool?) -> Bool? {
+        if externalConnected == true || adapterPresent == true { return true }
+        if externalConnected == nil && adapterPresent == nil { return nil }
+        return false
     }
 }
 
@@ -271,8 +288,10 @@ public final class SystemChargeHardware: ChargeHardware {
     }
 
     public func onAC() -> Bool? {
-        ChargeAC.presence(externalConnected: Battery.state()?.onAC,
-                          cutByte: smc?.readByte(AdapterCutKey.key))
+        // One read, so the two answers describe the same moment.
+        let state = Battery.state()
+        return ChargeAC.presence(externalConnected: state?.onAC,
+                                 adapterPresent: state?.adapterPresent)
     }
 
     public func writeChargeLimit(_ percent: Int) -> Bool {

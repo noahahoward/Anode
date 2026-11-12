@@ -30,25 +30,11 @@ final class ChargeHelperTestsWatch: XCTestCase {
         XCTAssertTrue(DischargeWatch.shouldRestore(target: 40, percent: 70, onAC: false))
     }
 
-    /// Unknown AC is not "unplugged". It is what the hardware reports while the
-    /// charger is cut (see `ChargeAC.presence`), and treating it as unplugged
-    /// would end every discharge on its first check.
+    /// Unknown AC is not "unplugged". It is what the hardware reports when the
+    /// battery cannot be read at all (see `ChargeAC.presence`), and treating it
+    /// as unplugged would end a discharge on a read that failed.
     func testUnknownACDoesNotEndADischarge() {
         XCTAssertFalse(DischargeWatch.shouldRestore(target: 40, percent: 70, onAC: nil))
-    }
-
-    /// MEASURED: `ExternalConnected` reads No about 10 s after `CHIE` = 08, with
-    /// the cable still in. While the charger is cut, that flag says nothing about
-    /// the cable, so it is reported as unknown.
-    func testACIsUnknownWhileTheChargerIsCut() {
-        XCTAssertNil(ChargeAC.presence(externalConnected: false, cutByte: 0x08))
-        XCTAssertNil(ChargeAC.presence(externalConnected: true, cutByte: 0x08))
-        XCTAssertEqual(ChargeAC.presence(externalConnected: true, cutByte: 0x00), true)
-        XCTAssertEqual(ChargeAC.presence(externalConnected: false, cutByte: 0x00), false)
-        // Cut state unreadable: believe the flag. If it says unplugged, the
-        // charger is reconnected, which is the direction that cannot hurt.
-        XCTAssertEqual(ChargeAC.presence(externalConnected: false, cutByte: nil), false)
-        XCTAssertNil(ChargeAC.presence(externalConnected: nil, cutByte: 0x00))
     }
 
     func testProtocolVersionIsTwo() {
@@ -767,28 +753,47 @@ final class ChargeHelperTests: XCTestCase {
         XCTAssertEqual(hw.isCut, false)
     }
 
-    /// The fake answers as the hardware does: nothing can be told about the
-    /// cable while the charger is cut. A watch that read "unknown" as
-    /// "unplugged" would end every real discharge on its first pass.
-    func testAnUnknownCableKeepsADischargeRunning() {
+    /// The fake answers as the hardware does: while the charger is cut, the
+    /// cable being in is still reported as in (`ChargeAC.presence` reads the
+    /// charger's own details, not the flag the cut clears). A watch that ended
+    /// a discharge on the cut itself would end every real one on its first pass.
+    func testCableStillInKeepsDischarging() {
         let hw = FakeChargeHardware(percent: 77, onAC: true)
         let server = makeServer(hw)
         XCTAssertTrue(server.handle(.command(.discharge(toPercent: 40))).ok)
-        XCTAssertNil(hw.onAC(), "the fake must answer nil while cut, as the hardware does")
+        XCTAssertEqual(hw.onAC(), true, "the cable is in, and the hardware says so while cut")
         for _ in 0..<3 { server.watchDischarge() }
         XCTAssertEqual(hw.isCut, true)
         XCTAssertEqual(server.dischargeTarget, 40)
     }
 
-    /// When the cable IS known to be out, the discharge ends.
-    func testAKnownUnpluggedCableEndsADischarge() {
+    /// The cable pulled in the middle of a discharge: the next watch pass
+    /// reconnects the charger and clears the target. Before the helper could
+    /// tell a pulled cable from its own cut it answered unknown, and kept the
+    /// charger cut.
+    func testPulledCableEndsTheDischarge() {
         let hw = FakeChargeHardware(percent: 77, onAC: true)
         let server = makeServer(hw)
         XCTAssertTrue(server.handle(.command(.discharge(toPercent: 40))).ok)
-        hw.acWhileCut = false
+        server.watchDischarge()
+        XCTAssertEqual(hw.isCut, true, "still cut with the cable in")
+
+        hw.cable = false
+        XCTAssertEqual(hw.onAC(), false)
         server.watchDischarge()
         XCTAssertEqual(hw.isCut, false)
         XCTAssertNil(server.dischargeTarget)
+    }
+
+    /// A cable that cannot be told either way is not a pulled one.
+    func testAnUnreadableCableKeepsADischargeRunning() {
+        let hw = FakeChargeHardware(percent: 77, onAC: true)
+        let server = makeServer(hw)
+        XCTAssertTrue(server.handle(.command(.discharge(toPercent: 40))).ok)
+        hw.cable = nil
+        for _ in 0..<3 { server.watchDischarge() }
+        XCTAssertEqual(hw.isCut, true)
+        XCTAssertEqual(server.dischargeTarget, 40)
     }
 
     func testStartupClearsOrphanedCut() {
@@ -1019,7 +1024,7 @@ final class ChargeHelperTestsSocket: XCTestCase {
 
     /// The floor holds with the app connected and SILENT: the loop wakes on its
     /// own timer, looks at the battery, and reconnects at the target. The fake
-    /// answers "unknown" for the cable while cut, as the hardware does.
+    /// keeps answering that the cable is in while cut, as the hardware does.
     func testTheLoopReconnectsAtTheTargetWithNoRequest() throws {
         let hw = FakeChargeHardware(percent: 77, onAC: true)
         try start(hw, watchEvery: 0.05)
@@ -1270,15 +1275,17 @@ final class ChargeLogRecorder {
 /// Charge hardware that records instead of writing. Locked because the socket
 /// tests touch it from the server's thread and inspect it from the main one.
 ///
-/// It answers as the hardware does: while the charger is cut, `onAC()` is nil —
-/// nothing can be told about the cable (`ChargeAC.presence`) — unless a test
-/// sets `acWhileCut`.
+/// It answers as the hardware does: `onAC()` is whether the cable is in, cut or
+/// not (`ChargeAC.presence` reads the charger's own details, which a cut leaves
+/// alone). A test pulls the cable by setting `cable`; `acWhileCut` overrides the
+/// answer for a cut alone.
 final class FakeChargeHardware: ChargeHardware {
     private let lock = NSLock()
     private var _percent: Int?
-    /// The cable, as reported while the charger is connected.
+    /// Whether the cable is in; nil when that cannot be read.
     private var _cable: Bool?
-    /// What `onAC()` answers while the charger is cut.
+    /// What `onAC()` answers while the charger is cut, when that is not the
+    /// cable's.
     private var _acWhileCut: Bool?
     /// What the charger is actually doing.
     private var _cut: Bool
@@ -1302,6 +1309,10 @@ final class FakeChargeHardware: ChargeHardware {
     var percent: Int? {
         get { locked { _percent } }
         set { locked { _percent = newValue } }
+    }
+    var cable: Bool? {
+        get { locked { _cable } }
+        set { locked { _cable = newValue } }
     }
     var acWhileCut: Bool? {
         get { locked { _acWhileCut } }
@@ -1366,7 +1377,7 @@ final class FakeChargeHardware: ChargeHardware {
         }
     }
     func batteryPercent() -> Int? { locked { _percent } }
-    func onAC() -> Bool? { locked { _cut ? _acWhileCut : _cable } }
+    func onAC() -> Bool? { locked { _cut ? (_acWhileCut ?? _cable) : _cable } }
     func adapterCutKeyExists() -> Bool { locked { _keyExists } }
     func writeChargeLimit(_ percent: Int) -> Bool {
         locked {
