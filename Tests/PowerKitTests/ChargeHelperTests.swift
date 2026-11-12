@@ -1077,6 +1077,40 @@ final class ChargeHelperTests: XCTestCase {
         XCTAssertTrue(server.isIdle)
     }
 
+    /// No new discharge while a reconnect is owed. An SMC refusing every
+    /// charger write, on a charger that reads cut: the cut is refused and
+    /// still reads 0x08, which counts as a cut. That used to answer
+    /// "discharging to 50%" and clear the owed flag, hiding a reconnect known
+    /// to be failing. Now it is refused, nothing is written, and the reconnect
+    /// stays owed until a read shows it landed; then a discharge is taken again.
+    func testADischargeIsRefusedWhileAReconnectIsOwed() {
+        let hw = FakeChargeHardware(percent: 77, onAC: true, cut: true)
+        hw.refuseRestore = true
+        hw.refuseCut = true
+        let server = makeServer(hw)
+        server.clearOrphanedAdapterCut()
+        XCTAssertTrue(server.reconnectOwed)
+        let writesBefore = hw.cutWrites
+
+        let reply = server.handle(.command(.discharge(toPercent: 50)))
+        XCTAssertFalse(reply.ok, reply.message)
+        XCTAssertEqual(reply.message, "the charger may still be cut off from an earlier failure")
+        XCTAssertEqual(hw.cutWrites, writesBefore, "a refused discharge wrote to the charger")
+        XCTAssertTrue(server.reconnectOwed, "the owed reconnect was forgotten")
+        XCTAssertNil(server.dischargeTarget)
+        XCTAssertFalse(server.isIdle)
+
+        hw.refuseRestore = false
+        hw.refuseCut = false
+        server.watchDischarge()
+        XCTAssertEqual(hw.isCut, false)
+        XCTAssertFalse(server.reconnectOwed)
+
+        XCTAssertTrue(server.handle(.command(.discharge(toPercent: 50))).ok)
+        XCTAssertEqual(hw.cutWrites.last, true)
+        XCTAssertEqual(server.dischargeTarget, 50)
+    }
+
     // ── A cut is judged by reading it back ─────────────────────────────────
 
     /// The result byte of a good `CHIE` write has never been measured. A cut

@@ -190,6 +190,44 @@ final class ChargeHelperSleepTests: XCTestCase {
         XCTAssertTrue(server.isIdle)
     }
 
+    /// A helper the system would not register for sleep notices has no way to
+    /// reconnect the charger before the Mac sleeps, so it takes no discharge at
+    /// all. Nothing is written. The limit, the fans and a reconnect still work.
+    func testWithoutSleepNoticesADischargeIsRefusedAndNothingElseIs() {
+        let hw = FakeChargeHardware(percent: 77, onAC: true)
+        let fans = FakeFans([0: .init(minRPM: 2317, maxRPM: 7826)])
+        fans.seedTarget(0, 0)
+        fans.seedMode(0, SMCFanMode.automatic)
+        let server = makeServer(hw, fans: fans)
+        server.sleepNoticesUnavailable = true
+
+        let reply = server.handle(.command(.discharge(toPercent: 40)))
+        XCTAssertFalse(reply.ok, reply.message)
+        XCTAssertEqual(reply.message, "this Mac cannot warn the helper before it sleeps")
+        XCTAssertTrue(hw.cutWrites.isEmpty, "a refused discharge wrote to the charger")
+        XCTAssertNil(server.dischargeTarget)
+        XCTAssertTrue(server.isIdle)
+
+        XCTAssertTrue(server.handle(.command(.setChargeLimit(80))).ok)
+        XCTAssertEqual(hw.limitWrites, [80])
+        XCTAssertTrue(server.handle(.command(.setTarget(FanTarget(index: 0, rpm: 5000)))).ok)
+        XCTAssertEqual(fans.targetWrites.map(\.rpm), [5000])
+        XCTAssertTrue(server.handle(.command(.releaseAll)).ok)
+
+        // A reconnect is never refused.
+        let cut = FakeChargeHardware(percent: 77, onAC: true, cut: true)
+        let other = makeServer(cut)
+        other.sleepNoticesUnavailable = true
+        XCTAssertTrue(other.handle(.command(.stopDischarge)).ok)
+        XCTAssertEqual(cut.isCut, false)
+    }
+
+    /// The default takes discharges: a server nobody told otherwise is not
+    /// refusing them.
+    func testSleepNoticesAreAssumedUnlessTheEntrySaysOtherwise() {
+        XCTAssertFalse(makeServer(FakeChargeHardware()).sleepNoticesUnavailable)
+    }
+
     /// A cut this helper owes a reconnect for — one nobody owned that would not
     /// clear at startup — is a cut all the same, and is tried again before sleep.
     func testWillSleepRetriesAnOwedReconnect() {
@@ -320,6 +358,18 @@ final class ChargeHelperSleepTests: XCTestCase {
         server.stop()
         server.run()
         XCTAssertEqual(hw.isCut, false)
+    }
+
+    /// The bound on a sleep answer must outlast one loop pass a slow client can
+    /// hold up: a reply write that stalls for its whole deadline, then the
+    /// reconnect's read-back (about 0.65 s). When it was equal to the reply
+    /// deadline, that pass could overrun it and the Mac was let sleep with the
+    /// charger still cut. It must also stay well inside the ~30 s macOS waits.
+    func testTheSleepAnswerOutlastsAStalledReplyAndAReconnect() {
+        let server = makeServer(FakeChargeHardware())
+        XCTAssertGreaterThanOrEqual(FanHelperServer.sleepAnswerDeadline,
+                                    server.replyWriteDeadline + 3)
+        XCTAssertLessThan(FanHelperServer.sleepAnswerDeadline, 30)
     }
 
     /// A stop that lands while a sleep notice waits answers it on the way out,

@@ -415,7 +415,10 @@ do {
 // will-sleep goes to the loop thread the way a stop signal does, and macOS is
 // answered once the loop has reconnected the charger, or after
 // `sleepAnswerDeadline`, whichever is first: a stuck loop never holds up sleep.
-// Made after `start`, which creates the pipe the notice wakes the loop through.
+// Made after `start`, which creates the pipe the notice wakes the loop through,
+// and before `run`, so a failure to register is known before anything is served:
+// without the notices nothing would reconnect the charger before sleep, and the
+// server then refuses every discharge.
 let sleepWatch = SystemSleepWatch(
     willSleep: {
         guard !server.noteSystemWillSleep() else { return }
@@ -426,8 +429,9 @@ let sleepWatch = SystemSleepWatch(
     },
     didWake: { server.noteSystemDidWake() })
 if sleepWatch == nil {
-    let why = "could not register for sleep notices — a discharge is not stopped "
-        + "before sleep by this helper"
+    server.sleepNoticesUnavailable = true
+    let why = "could not register for sleep notices — nothing would reconnect the "
+        + "charger before sleep, so this helper refuses every discharge"
     fanLog.error("helper: WARNING: \(why, privacy: .public)")
     printErr("anode-helper: WARNING: \(why)")
 }

@@ -477,11 +477,28 @@ public final class FanHelperServer {
 
     /// The longest a will-sleep notice waits for the loop before macOS is
     /// answered anyway, so a stuck loop can never hold up sleep.
-    public static let sleepAnswerDeadline: TimeInterval = 2
+    ///
+    /// Longer than one pass a slow client can hold up. The notice is acted on
+    /// at the top of the loop's next pass, and the pass before it may still be
+    /// writing a reply to a client that stopped reading — up to
+    /// `replyWriteDeadline` (2 s) — before the reconnect's own read-back (about
+    /// 0.65 s, `ChargeRelease.Timing.standard`). Equal to the reply deadline,
+    /// as it once was, that could overrun it, and the Mac was let sleep with the
+    /// charger still cut. So it is at least the reply deadline plus a 3 s
+    /// margin, which a test pins. A longer bound costs nothing: a healthy loop
+    /// answers in milliseconds, and macOS waits about 30 s for the answer.
+    public static let sleepAnswerDeadline: TimeInterval = 6
 
     /// Between a will-sleep and the next wake. A discharge is refused for the
     /// whole of it. Touched only on the loop thread.
     private(set) var systemAsleep = false
+
+    /// The system would not register this helper for sleep notices, so nothing
+    /// would reconnect the charger before the Mac sleeps. While true, every
+    /// discharge is refused; limit writes, fan commands and reconnects are not.
+    /// Set by the helper's entry when `SystemSleepWatch` fails, before `run()`.
+    /// Off by default: a server nobody tells otherwise takes discharges.
+    public var sleepNoticesUnavailable = false
 
     /// The fans this helper has taken, and where each was before it did.
     ///
@@ -513,7 +530,7 @@ public final class FanHelperServer {
     /// undo of a cut that did not read back could not be read back either, or
     /// the charger still reads cut after the writes. The watch retries it on
     /// every wake whatever the battery says, always writing, and the helper is
-    /// not idle until a read shows it connected.
+    /// not idle — and takes no new discharge — until a read shows it connected.
     private(set) var reconnectOwed = false
 
     /// How often a discharge looks at the battery. The only periodic wake this
@@ -1117,10 +1134,23 @@ public final class FanHelperServer {
         guard let charge else {
             return FanReply(ok: false, message: "this helper has no charge control")
         }
+        // No sleep notices, so nothing would reconnect the charger before the
+        // Mac sleeps. Refused for this helper's whole life; it will not change.
+        guard !sleepNoticesUnavailable else {
+            return FanReply(ok: false, message: "this Mac cannot warn the helper before it sleeps")
+        }
         // Nothing here runs while the Mac sleeps, so nothing would watch the
         // floor. Refused until the wake; the reconnect is never refused.
         guard !systemAsleep else {
             return FanReply(ok: false, message: "the Mac is going to sleep")
+        }
+        // A reconnect known to be failing is not hidden behind a new cut. On a
+        // charger stuck at 0x08, even a refused cut reads back as one, and
+        // taking it would clear the debt and answer "discharging". Refused,
+        // with nothing written, until the watch reads the charger connected.
+        guard !reconnectOwed else {
+            return FanReply(ok: false,
+                            message: "the charger may still be cut off from an earlier failure")
         }
         guard Self.dischargeTargetRange.contains(target) else {
             return FanReply(ok: false, message: "refused: a discharge target must be "
