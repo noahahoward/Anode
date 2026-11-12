@@ -265,11 +265,20 @@ final class ChargeController {
     }
 
     /// Anode is being uninstalled: put macOS back now, waiting for the helper, and switch Charge Control off.
+    ///
+    /// Also while off, if a record is left over (a switch-off macOS partly refused, or the setting turned off while
+    /// Anode was closed): once Anode is gone nothing could ever undo that hold. The one time a client is made while
+    /// off, and it is let go at once.
     func restoreForUninstall() {
         if running {
             restore(waiting: true)
             stop()
             log("off (uninstalling)")
+        } else if Self.decodeRecord(settings.chargeRestoreRecord) != nil, let c = makeClient() {
+            client = c
+            restore(waiting: true)
+            client = nil
+            log("put back a leftover record before uninstalling")
         }
         setStatus(.off)
         settings.chargeControlEnabled = false
@@ -455,7 +464,7 @@ final class ChargeController {
                 guard self.running else { return }
                 if r?.ok == true {
                     self.appliedLimit = want
-                    self.log("\(Self.limitChange(from, want)) (\(d.reason.rawValue), through the helper)")
+                    self.log("\(Self.limitChange(from, want)) (\(d.reason.rawValue))")
                     self.reapply()
                 } else {
                     self.log("the helper did not set the limit to \(want): \(r?.message ?? "no answer")")

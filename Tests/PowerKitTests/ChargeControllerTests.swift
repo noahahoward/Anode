@@ -222,6 +222,22 @@ final class ChargeControllerTests: XCTestCase {
         XCTAssertEqual(c.status, .off)
     }
 
+    /// A record left over while off (a switch-off macOS partly refused, or the setting turned off while Anode was
+    /// closed) is put back before an uninstall: once Anode is gone nothing could undo the hold.
+    func testUninstallPutsBackALeftoverRecordEvenWhileOff() {
+        let found = NativeChargeState(mclEnabled: true, mclLimit: 90, optimizedChargingEnabled: true)
+        settings.chargeRestoreRecord = ChargeController.encodeRecord(found)
+        client.state = NativeChargeState(mclEnabled: true, mclLimit: 80, optimizedChargingEnabled: false)
+        let c = make(enabled: false)
+        XCTAssertEqual(clientsMade, 0)
+        c.restoreForUninstall()
+        XCTAssertEqual(client.state, found)
+        XCTAssertNil(settings.chargeRestoreRecord)
+        XCTAssertEqual(c.status, .off)
+        c.tick()
+        XCTAssertEqual(client.limitCalls, [90], "the client outlived the restore")
+    }
+
     /// Quitting leaves macOS's limit in force (it outlives the app by design) and lets the helper link go.
     func testShutdownLeavesTheLimitAndLetsGo() {
         let c = make()
@@ -547,6 +563,8 @@ final class ChargeControllerTests: XCTestCase {
         XCTAssertTrue(lines.contains("discharge to 80 started"), lines.joined(separator: "\n"))
         settings.chargeLimit = 85
         XCTAssertTrue(lines.contains("limit 80 -> 85 (discharging)"), lines.joined(separator: "\n"))
+        settings.chargeLimit = 63
+        XCTAssertTrue(lines.contains("limit 85 -> 63 (discharging)"), lines.joined(separator: "\n"))
     }
 }
 
