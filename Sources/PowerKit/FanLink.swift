@@ -710,6 +710,17 @@ public final class FanControlLink {
         }
     }
 
+    /// `disconnect`, without waiting: the socket is closed on this link's queue, after everything already handed
+    /// to it, and this returns at once. For a caller on the main thread, which must not wait out exchanges still
+    /// queued for a helper that has stopped answering (each can take the socket's 2 s timeout, and a reconnect
+    /// another). Anything handed to the link afterwards goes after the close, as it would after `disconnect`.
+    public func disconnectWithoutWaiting() {
+        queue.async { [self] in
+            if fd >= 0 { close(fd); fd = -1 }
+            buffer.removeAll()
+        }
+    }
+
     // ── on the queue ────────────────────────────────────────────────────────
 
     private func openAndGreet() -> Status {

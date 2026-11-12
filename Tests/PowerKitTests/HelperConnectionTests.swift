@@ -869,6 +869,8 @@ final class ScriptedWire: HelperWire {
         disconnects += 1
         open = false
     }
+    /// Nothing is ever queued here, so there is nothing not to wait for.
+    func disconnectWithoutWaiting() { disconnect() }
 
     /// The helper was killed: the socket is dead under the app, which has not noticed. The next connect starts a
     /// fresh helper (answered with `answerAtOnce`), as launchd does for the installed daemon.

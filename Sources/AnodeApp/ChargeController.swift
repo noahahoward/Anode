@@ -472,19 +472,21 @@ final class ChargeController {
     /// Put macOS back as the record says: the limit, the limit's switch and Optimized Battery Charging, after a
     /// running discharge is stopped and after everything already on its way to the helper has landed (a limit it
     /// is still setting would otherwise land after this and stay, with nothing left to undo it). The helper's parts
-    /// are waited for, `stopTimeout` at most each, on this thread.
+    /// are waited for on this thread, `stopTimeout` at most for all of them together: a helper that has stopped
+    /// answering must not hold the main thread once for each.
     ///
     /// The record is cleared only when every step is known to have worked. Otherwise it is kept and that is logged,
     /// so the next switch-off tries again from the true original rather than from what is left.
     private func restore(client c: ChargeLimitClient) {
+        let deadline = Date().addingTimeInterval(Self.stopTimeout)
         // A stop goes behind everything already sent on the same link, so its answer also says those have landed.
         let settled: Bool
         if appliedDischarge != nil || dischargeInFlight || cutOwed {
-            let r = waitedStop(timeout: Self.stopTimeout)
+            let r = waitedStop(timeout: Self.timeLeft(deadline))
             log("discharge stopped (switching off): \(r?.message ?? "no answer within \(Int(Self.stopTimeout)) s")")
             settled = r != nil
         } else {
-            settled = helper.drain(timeout: Self.stopTimeout)
+            settled = helper.drain(timeout: Self.timeLeft(deadline))
         }
         if !settled {
             log("the helper had not finished what it was asked within \(Int(Self.stopTimeout)) s; it may land after "
@@ -499,7 +501,7 @@ final class ChargeController {
                 + "Optimized Battery Charging on")
             record = Self.defaultRecord
         }
-        var ok = restoreLimit(record.mclLimit, client: c) && settled
+        var ok = restoreLimit(record.mclLimit, client: c, deadline: deadline) && settled
         ok = c.setLimitEnabled(record.mclEnabled) && ok
         ok = c.setOptimizedCharging(record.optimizedChargingEnabled) && ok
         if ok {
@@ -516,16 +518,15 @@ final class ChargeController {
     /// installed one is greeted for it even when nothing has talked to it this run (Charge Control off, or this is
     /// the uninstall): the waited command opens the connection first. When the value cannot land, the nearest one
     /// macOS takes at or above it is set, so the Mac can still charge at least that far, and false keeps the record
-    /// for the next launch to try again.
-    private func restoreLimit(_ limit: Int, client c: ChargeLimitClient) -> Bool {
+    /// for the next launch to try again. The helper is waited for until `deadline`, the restore's own.
+    private func restoreLimit(_ limit: Int, client c: ChargeLimitClient, deadline: Date) -> Bool {
         if NativeChargeLimit.isClientSettable(limit) { return c.setLimit(limit) }
         let nearest = Self.nearestClientValue(atOrAbove: limit)
         let why: String
         if helper.available || helper.installed {
-            let r = helper.sendWaiting(.setChargeLimit(limit), timeout: Self.stopTimeout)
+            let r = helper.sendWaiting(.setChargeLimit(limit), timeout: Self.timeLeft(deadline))
             if r?.ok == true { return true }
-            why = "the helper did not put the limit back to \(limit): "
-                + (r?.message ?? "no answer within \(Int(Self.stopTimeout)) s")
+            why = "the helper did not put the limit back to \(limit): " + (r?.message ?? "no answer in time")
         } else {
             why = "limit \(limit) needs the helper to put back, and none is installed"
         }

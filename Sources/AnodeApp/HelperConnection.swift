@@ -32,6 +32,8 @@ protocol HelperWire: AnyObject {
     func sendWaiting(_ command: FanCommand, timeout: TimeInterval) -> FanReply?
     func drain(timeout: TimeInterval) -> Bool
     func disconnect()
+    /// Close after everything already sent, without waiting for it: see `FanControlLink.disconnectWithoutWaiting`.
+    func disconnectWithoutWaiting()
 }
 
 extension FanControlLink: HelperWire {}
@@ -127,9 +129,12 @@ final class HelperConnection {
         connect(for: anyone) { _ in }
     }
 
+    /// Closed without waiting: everything here runs on the main thread (letting go while quitting, switching Charge
+    /// Control off, an install), and a helper that has stopped answering would otherwise hold it for every exchange
+    /// still queued. The close still lands after them, in order, and every answer to them is already stale (`epoch`).
     private func close() {
         epoch += 1
-        wire.disconnect()
+        wire.disconnectWithoutWaiting()
         record(.disconnected)
     }
 
