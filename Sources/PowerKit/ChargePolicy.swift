@@ -101,7 +101,8 @@ public struct ChargeDecision: Equatable {
 ///
 ///  1. Unplugged: Top Up and a manual discharge both end; back to the user's limit.
 ///  2. Top Up: charge to 100 until the adapter is unplugged.
-///  3. Heat: while the pack is hot, and for five minutes after it cools, hold the charge where it is.
+///  3. Heat: while the pack is hot, and for five minutes after it cools, hold the charge where it is, or at the
+///     limit if it is above it.
 ///  4. Sleeping with Stop Charging when Sleeping: hold at the current charge.
 ///  5. Discharge (manual, or automatic above the limit): drain to the limit.
 ///  6. Sailing: once the limit is reached, rest inside the band below it.
@@ -164,9 +165,11 @@ public enum ChargePolicy {
                     }
                 }
             }
-            // No reading: neither hot nor confirmed cool, so a pause holds and its clock stands still.
+            // No reading: neither hot nor confirmed cool, so a pause holds and its clock stands still. Held where
+            // the charge is, but never above the person's own limit: above it, the pause would let the Mac charge
+            // further while hot (and without the helper macOS rounds a held 91 up to 95).
             if m.heatPausedSince != nil {
-                return decision(i.percent, .heat)
+                return decision(min(s.limit, i.percent), .heat)
             }
         } else {
             m.heatPausedSince = nil

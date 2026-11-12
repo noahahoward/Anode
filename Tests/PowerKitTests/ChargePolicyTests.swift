@@ -129,6 +129,21 @@ final class ChargePolicyTests: XCTestCase {
         XCTAssertNil(m.coolSince)
     }
 
+    /// A pause never raises the limit: hot at 91% with a limit of 80 holds 80, not 91 (which macOS would round up to
+    /// 95 without the helper, and the Mac would charge while hot).
+    func testHeatNeverRaisesTheLimit() {
+        var (s, i) = base()
+        var m = ChargeMemory()
+        s.heatProtectionEnabled = true
+        s.limit = 80
+        i.percent = 91
+        i.temperatureC = 40
+        let d = ChargePolicy.decide(s, i, &m)
+        XCTAssertEqual(d.reason, .heat)
+        XCTAssertEqual(d.osLimit, 80, "Heat Protection raised the limit above the person's own")
+        XCTAssertNil(d.dischargeTo)
+    }
+
     func testHeatPauseNeverBelowTwenty() {
         var (s, i) = base()
         var m = ChargeMemory()
