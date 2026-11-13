@@ -150,7 +150,8 @@ final class UltraLowPowerFeatureTests: XCTestCase {
         XCTAssertEqual(UltraLowPowerFeature.describe([.keyboardLight]),
                        ["This Mac's keyboard light could not be read or switched off, so it was left as it was."])
         // A Mac with no built-in screen gets this line every time: it says what could not be done, and blames nothing.
-        XCTAssertTrue(UltraLowPowerFeature.describe([.ceilingRefused])[0].contains("held at half"))
+        XCTAssertEqual(UltraLowPowerFeature.describe([.ceilingRefused]),
+                       ["The screen's brightness could not be held at a quarter, so it was left as it was."])
         // A Mac without efficiency cores (an Intel one) says so, and says what was done instead.
         XCTAssertEqual(UltraLowPowerFeature.describe([.noEfficiencyCores]),
                        ["This Mac has no efficiency cores, so work was left on the cores it has."])
@@ -196,28 +197,60 @@ final class UltraLowPowerFeatureTests: XCTestCase {
         XCTAssertFalse(note.contains("hour"), note)
     }
 
-    /// What freezing does is said as what it does, and what a frozen app loses is said as what may happen to it.
-    func testTheNoteSaysWhatFreezingDoesAndWhatItCosts() {
+    /// At rest the refresh rate, Low Power Mode and freezing measured nothing that can be told from noise, but with something
+    /// running they save a great deal: the note says so, and no longer says they save "little or nothing".
+    func testTheNoteNoLongerSaysTheOtherPartsSaveLittleOrNothing() {
         let note = UltraLowPowerFeature.note
-        XCTAssertTrue(note.contains("Freezing stops the frozen apps from starting a burst of work in the background, and "
-                                    + "Low Power Mode limits heavy work (what that saves under a heavy load was not measured)."), note)
-        XCTAssertTrue(note.contains("Frozen apps stop keeping their network connections going, so some may drop."), note)
-        XCTAssertFalse(note.contains("nothing in the background can start"), "not every part of the background is frozen")
-        XCTAssertFalse(note.contains("lose their network connections"), note)
+        XCTAssertFalse(note.contains("little or nothing"), note)
+        XCTAssertTrue(note.contains("a great deal"), note)
     }
 
-    func testTheNoteDoesNotSellTheRefreshRate() {
-        XCTAssertTrue(UltraLowPowerFeature.note.contains("little or nothing"))
+    /// What it says, in the order the owner reads it: at rest only a darker screen lowers the draw; what saves when something
+    /// is running, with the figures; what it costs (slower, and the disk and the network); what frozen apps lose; what is left
+    /// running; and that no running time is promised.
+    func testTheNoteSaysItsPartsInOrder() throws {
+        let note = UltraLowPowerFeature.note
+        let parts = ["only a darker screen lowers the draw",
+                     "the black backdrop",
+                     "a quarter",
+                     "a busy app frozen in the background",
+                     "7.5 W down to 3.2 W",
+                     "kept on the efficiency cores",
+                     "27 W down to 5 W",
+                     "Low Power Mode alone",
+                     "13 W",
+                     "lowest refresh rate",
+                     "about 2 W",
+                     "while a video played",
+                     "Work is slower in this mode",
+                     "disk and network use by the apps left running is slowed too",
+                     "Frozen apps stop keeping their network connections going, so some may drop",
+                     "An app with a part Anode cannot freeze is left running",
+                     "no running time is promised"]
+        var from = note.startIndex
+        for part in parts {
+            let found = try XCTUnwrap(note.range(of: part, range: from..<note.endIndex), "\"\(part)\" comes next in: \(note)")
+            from = found.upperBound
+        }
     }
 
-    /// Every number in the note is one the spike measured (10.4, 4.3 and 2.8 W, rounded), and what was not measured is said so.
+    /// At rest only a darker screen lowers the draw, and the note does not say the other parts do.
+    func testTheNoteSaysThatAtRestOnlyADarkerScreenHelps() {
+        let note = UltraLowPowerFeature.note
+        XCTAssertTrue(note.hasPrefix("At rest, only a darker screen lowers the draw"), note)
+        XCTAssertFalse(note.contains("half"), "the ceiling is a quarter now: \(note)")
+    }
+
+    /// Every number in the note is one the trial measured on the owner's 14-inch MacBook Pro, and none is a promise.
     func testTheNoteGivesOnlyTheMeasuredFigures() {
         let note = UltraLowPowerFeature.note
-        for figure in ["about 10 W", "about 4 W", "about 3 W"] { XCTAssertTrue(note.contains(figure), figure) }
-        XCTAssertTrue(note.contains("14-inch MacBook Pro"))
-        XCTAssertTrue(note.contains("was not measured"), "Low Power Mode under a heavy load was not measured")
-        XCTAssertTrue(note.contains("cannot freeze"))
+        XCTAssertTrue(note.contains("14-inch MacBook Pro"), note)
+        for figure in ["7.5 W", "3.2 W", "27 W", "5 W", "13 W", "about 2 W"] { XCTAssertTrue(note.contains(figure), figure) }
+        // The figures of the first note (10, 4 and 3 W by brightness) are not in it any more.
+        for figure in ["about 10 W", "about 4 W", "about 3 W"] { XCTAssertFalse(note.contains(figure), figure) }
         XCTAssertNil(note.range(of: #"\d+\s?%"#, options: .regularExpression), "no percentage was measured")
+        XCTAssertFalse(note.contains("was not measured"), "the figures are the measurements")
+        XCTAssertTrue(note.contains("cannot freeze"))
     }
 
     func testReadableNamesForTheAlwaysKeepList() {
@@ -362,10 +395,16 @@ final class UltraLowPowerFeatureTests: XCTestCase {
 
     /// A box whose `present` and `dismiss` only write down that they were called, so nothing is shown.
     private final class BoxRig {
-        let box = UltraConfirmPanel()
+        /// What the box is told to say about the screen. It is asked at every ask, so a test can change it between two.
+        final class Words { var text = "The screen is held at a quarter brightness or lower." }
+        let words = Words()
+        let box: UltraConfirmPanel
         var events: [String] = []
         var answers: [Bool] = []
         init() {
+            // The words come from here, so the box never reads the owner's settings.
+            let words = self.words
+            box = UltraConfirmPanel(screenText: { words.text })
             _ = NSApplication.shared
             box.present = { [unowned self] _ in events.append("present") }
             box.dismiss = { [unowned self] _ in events.append("dismiss") }
@@ -410,20 +449,78 @@ final class UltraLowPowerFeatureTests: XCTestCase {
 
     func testTheBoxShowsTheHeadlineTheScreenLineAndTheNamesToBeFrozen() throws {
         let r = BoxRig()
+        r.words.text = UltraConfirmPanel.screenLine(backdrop: false, efficiencyCores: false, hasEfficiencyCores: true)
         r.ask(kept: ["Editor", "Meetings"], frozen: ["Browser", "Sync", "Database"])
         XCTAssertEqual(r.box.headline.stringValue,
                        "Keeps Editor and Meetings. Freezes 3 apps and tools until you turn this off.")
-        XCTAssertEqual(UltraConfirmPanel.screenLine, "The screen is held at half brightness or lower, and Low Power Mode is switched on "
-                       + "if Anode's helper is installed.")
         let stack = try XCTUnwrap(r.box.panel?.contentView as? NSStackView)
         XCTAssertTrue(stack.arrangedSubviews[0] === r.box.headline)
         XCTAssertTrue(stack.arrangedSubviews[1] === r.box.screenLabel, "under the headline")
-        XCTAssertEqual(r.box.screenLabel.stringValue, UltraConfirmPanel.screenLine)
+        XCTAssertEqual(r.box.screenLabel.stringValue,
+                       "The screen is held at a quarter brightness or lower, and Low Power Mode is switched on if Anode's helper "
+                       + "is installed.")
         XCTAssertFalse(r.box.screenLabel.isHidden)
         XCTAssertEqual(r.box.listedNames, ["Browser", "Sync", "Database"])
         r.ask(kept: ["Editor"], frozen: [])
         XCTAssertEqual(r.box.headline.stringValue, "Keeps Editor. Nothing else is running that can be frozen.")
         XCTAssertEqual(r.box.listedNames, [])
+    }
+
+    /// The line is asked for at each ask, not once when the box is made: the choices may change between two questions.
+    func testTheBoxSaysWhatIsAboutToHappenAtEachAsk() {
+        let r = BoxRig()
+        let both = UltraConfirmPanel.screenLine(backdrop: true, efficiencyCores: true, hasEfficiencyCores: true)
+        let neither = UltraConfirmPanel.screenLine(backdrop: false, efficiencyCores: false, hasEfficiencyCores: true)
+        r.words.text = both
+        r.ask()
+        XCTAssertEqual(r.box.screenLabel.stringValue, both)
+        r.box.cancelButton.performClick(nil)
+        r.words.text = neither
+        r.ask()
+        XCTAssertEqual(r.box.screenLabel.stringValue, neither)
+    }
+
+    /// One sentence, built from what will happen: each clause is there when its part is on, and only then. The cores clause
+    /// needs both the owner's choice and a Mac that has efficiency cores: all eight combinations of the three inputs.
+    func testTheScreenLineNamesEachPartThatWillHappen() {
+        let head = "The screen is held at a quarter brightness or lower"
+        let tail = ", and Low Power Mode is switched on if Anode's helper is installed."
+        for backdrop in [false, true] {
+            for choice in [false, true] {
+                for hasCores in [false, true] {
+                    var expected = head
+                    if backdrop { expected += ", the desktop goes black" }
+                    if choice && hasCores { expected += ", what still runs is kept on the efficiency cores" }
+                    XCTAssertEqual(UltraConfirmPanel.screenLine(backdrop: backdrop, efficiencyCores: choice, hasEfficiencyCores: hasCores),
+                                   expected + tail, "backdrop \(backdrop), choice \(choice), cores \(hasCores)")
+                }
+            }
+        }
+    }
+
+    /// The two lines the owner is given, word for word.
+    func testTheScreenLineInTheWordsTheOwnerIsGiven() {
+        XCTAssertEqual(UltraConfirmPanel.screenLine(backdrop: true, efficiencyCores: true, hasEfficiencyCores: true),
+                       "The screen is held at a quarter brightness or lower, the desktop goes black, what still runs is kept on the "
+                       + "efficiency cores, and Low Power Mode is switched on if Anode's helper is installed.")
+        XCTAssertEqual(UltraConfirmPanel.screenLine(backdrop: false, efficiencyCores: false, hasEfficiencyCores: true),
+                       "The screen is held at a quarter brightness or lower, and Low Power Mode is switched on if Anode's helper "
+                       + "is installed.")
+        // A Mac with no efficiency cores is not told they are in use, whatever the box says.
+        XCTAssertEqual(UltraConfirmPanel.screenLine(backdrop: true, efficiencyCores: true, hasEfficiencyCores: false),
+                       "The screen is held at a quarter brightness or lower, the desktop goes black, and Low Power Mode is switched on "
+                       + "if Anode's helper is installed.")
+    }
+
+    func testTheScreenLineNeverSaysHalf() {
+        for backdrop in [false, true] {
+            for choice in [false, true] {
+                for hasCores in [false, true] {
+                    let line = UltraConfirmPanel.screenLine(backdrop: backdrop, efficiencyCores: choice, hasEfficiencyCores: hasCores)
+                    XCTAssertFalse(line.contains("half"), line)
+                }
+            }
+        }
     }
 
     func testTheCloseButtonAndAnyOtherClosingAnswerNoOnce() {
@@ -702,12 +799,12 @@ final class UltraLowPowerFeatureTests: XCTestCase {
     }
 
     /// What is left running (the always-keep list, apps with a part Anode cannot freeze, what the guard let go, macOS's own
-    /// services) is why the summary may not say "every app", and the screen is held at half brightness or lower, not just dim.
+    /// services) is why the summary may not say "every app", and the screen is held at a quarter brightness or lower, not just dim.
     func testTheSummarySaysOnlyWhatIsTrueAndNamesTheShortcut() throws {
         let probe = Probe()
         probe.shortcutLabel = "⌃⌥⌘J"
         let (f, _) = try section(probe)
-        XCTAssertTrue(f.summary.hasPrefix("Freezes the apps and tools you are not using, and holds the screen at half "
+        XCTAssertTrue(f.summary.hasPrefix("Freezes the apps and tools you are not using, and holds the screen at a quarter "
                                           + "brightness or lower, until you turn it off."), f.summary)
         XCTAssertFalse(f.summary.contains("every app"), f.summary)
         XCTAssertFalse(f.summary.contains("dim"), f.summary)
@@ -719,7 +816,7 @@ final class UltraLowPowerFeatureTests: XCTestCase {
         let probe = Probe()
         probe.shortcutLabel = nil
         let (f, _) = try section(probe)
-        XCTAssertTrue(f.summary.hasPrefix("Freezes the apps and tools you are not using, and holds the screen at half "
+        XCTAssertTrue(f.summary.hasPrefix("Freezes the apps and tools you are not using, and holds the screen at a quarter "
                                           + "brightness or lower, until you turn it off."), f.summary)
         XCTAssertTrue(f.summary.contains("press Start (or choose it from a menu) and confirm"), f.summary)
         XCTAssertFalse(f.summary.contains("⌃"), f.summary)

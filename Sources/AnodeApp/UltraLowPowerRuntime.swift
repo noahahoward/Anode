@@ -180,7 +180,14 @@ final class UltraLowPowerRuntime {
             throttler: LiveProcessThrottler(), hasEfficiencyCores: LiveProcessThrottler.hasEfficiencyCores,
             hider: LiveAppHider(), backlight: DisplayServicesBacklight(), ownBrightness: OwnBrightness.shared, rate: LiveDisplayRate(),
             keyboard: LiveKeyboardBacklight(), power: HelperPowerMode(), watchdog: LiveUltraWatchdog(recordURL: url, log: log),
-            store: UltraRecordFile(url: url), confirm: UltraConfirmPanel(), backdrop: LiveUltraBackdrop(), load: LiveLoadReader(), widgets: widgets, icon: icon,
+            store: UltraRecordFile(url: url),
+            // What the box says is what will happen: the owner's choices, and whether this Mac has the cores to keep work on.
+            confirm: UltraConfirmPanel(screenText: {
+                UltraConfirmPanel.screenLine(backdrop: Settings.shared.ultraLowPowerBlackBackdrop,
+                                             efficiencyCores: Settings.shared.ultraLowPowerEfficiencyCores,
+                                             hasEfficiencyCores: LiveProcessThrottler.hasEfficiencyCores)
+            }),
+            backdrop: LiveUltraBackdrop(), load: LiveLoadReader(), widgets: widgets, icon: icon,
             presentMenu: { menu, button in
                 // popUp, not a menu on the item plus a click: that re-enters the item's own action (as `BarChevron` found).
                 menu.popUp(positioning: nil, at: NSPoint(x: 0, y: button.bounds.height + 5), in: button)

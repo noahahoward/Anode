@@ -129,7 +129,7 @@ final class UltraRecordTests: XCTestCase {
         let record = try XCTUnwrap(UltraRecordFile(url: url).load(), "an old record is still a record")
         XCTAssertNil(record.throttled)
         XCTAssertEqual(record.groups.map(\.id), ["com.example.notes"])
-        XCTAssertEqual(UltraRecovery.actions(for: record, brightnessNow: 0.5),
+        XCTAssertEqual(UltraRecovery.actions(for: record, brightnessNow: 0.25),
                        [.resume(pid: 20, startTime: 200), .brightness(0.8), .restoreRate])
     }
 
@@ -166,7 +166,7 @@ final class UltraRecordTests: XCTestCase {
         record.keyboardBefore = 0.35
         record.powerModeBefore = 1
 
-        let actions = UltraRecovery.actions(for: record, brightnessNow: 0.5)
+        let actions = UltraRecovery.actions(for: record, brightnessNow: 0.25)
         // Every process is continued before anything that has to ask another app to do something, and before settings.
         XCTAssertEqual(actions, [resume(20), resume(21), resume(30), resume(40),
                                  .unhide(pid: 20), .unhide(pid: 30),
@@ -185,7 +185,7 @@ final class UltraRecordTests: XCTestCase {
         record.keyboardBefore = 0.35
         record.powerModeBefore = 1
 
-        XCTAssertEqual(UltraRecovery.actions(for: record, brightnessNow: 0.5),
+        XCTAssertEqual(UltraRecovery.actions(for: record, brightnessNow: 0.25),
                        [resume(20), resume(21), resume(30),
                         unthrottle(10), unthrottle(11), unthrottle(40),
                         .unhide(pid: 20), .unhide(pid: 30),
@@ -217,18 +217,18 @@ final class UltraRecordTests: XCTestCase {
         XCTAssertNil(record.keyboardBefore)
         XCTAssertNil(record.powerModeBefore)
 
-        // The screen reads half, but the mode never lowered it: it is not the mode's to touch.
-        XCTAssertEqual(UltraRecovery.actions(for: record, brightnessNow: 0.5), [resume(20), resume(21)])
-        XCTAssertEqual(UltraRecovery.actions(for: UltraRecord(), brightnessNow: 0.5), [])
+        // The screen reads a quarter, but the mode never lowered it: it is not the mode's to touch.
+        XCTAssertEqual(UltraRecovery.actions(for: record, brightnessNow: 0.25), [resume(20), resume(21)])
+        XCTAssertEqual(UltraRecovery.actions(for: UltraRecord(), brightnessNow: 0.25), [])
     }
 
     func testBrightnessIsRestoredThroughTheCeilingRule() {
         var record = UltraRecord()
         record.brightnessBefore = 0.8
 
-        XCTAssertEqual(UltraRecovery.actions(for: record, brightnessNow: 0.5), [.brightness(0.8)],
+        XCTAssertEqual(UltraRecovery.actions(for: record, brightnessNow: 0.25), [.brightness(0.8)],
                        "still at the ceiling: the mode's doing, so it is put back")
-        XCTAssertEqual(UltraRecovery.actions(for: record, brightnessNow: 0.3), [],
+        XCTAssertEqual(UltraRecovery.actions(for: record, brightnessNow: 0.15), [],
                        "the owner went dimmer since: left alone")
         XCTAssertEqual(UltraRecovery.actions(for: record, brightnessNow: nil), [],
                        "unreadable: no way to tell the owner did not go dimmer")

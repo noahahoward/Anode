@@ -174,7 +174,7 @@ final class UltraWatchdogTests: XCTestCase {
     /// released; nothing is ever put under it by the watchdog.
     func testUndoLiftsThePolicyFromEveryProcessTheRecordNames() {
         let throttler = FakeThrottler()
-        UltraWatchdog.undo(record: sessionRecord(), freezer: FakeFreezer(), throttler: throttler, backlight: FakeBacklight(0.5))
+        UltraWatchdog.undo(record: sessionRecord(), freezer: FakeFreezer(), throttler: throttler, backlight: FakeBacklight(BrightnessCeiling.ceiling))
         XCTAssertEqual(throttler.lifted, [.init(pid: 70, startTime: 7_000), .init(pid: 71, startTime: 7_010),
                                           .init(pid: 600, startTime: 6_000)])
         XCTAssertTrue(throttler.throttled.isEmpty)
@@ -184,10 +184,10 @@ final class UltraWatchdogTests: XCTestCase {
         let throttler = FakeThrottler()
         var record = sessionRecord()
         record.throttled = nil
-        UltraWatchdog.undo(record: record, freezer: FakeFreezer(), throttler: throttler, backlight: FakeBacklight(0.5))
+        UltraWatchdog.undo(record: record, freezer: FakeFreezer(), throttler: throttler, backlight: FakeBacklight(BrightnessCeiling.ceiling))
         record.throttled = []
-        UltraWatchdog.undo(record: record, freezer: FakeFreezer(), throttler: throttler, backlight: FakeBacklight(0.5))
-        UltraWatchdog.undo(record: UltraRecord(), freezer: FakeFreezer(), throttler: throttler, backlight: FakeBacklight(0.5))
+        UltraWatchdog.undo(record: record, freezer: FakeFreezer(), throttler: throttler, backlight: FakeBacklight(BrightnessCeiling.ceiling))
+        UltraWatchdog.undo(record: UltraRecord(), freezer: FakeFreezer(), throttler: throttler, backlight: FakeBacklight(BrightnessCeiling.ceiling))
         XCTAssertTrue(throttler.lifted.isEmpty)
     }
 
@@ -195,13 +195,13 @@ final class UltraWatchdogTests: XCTestCase {
     func testThePolicyIsLiftedWhenThereIsNoBrightnessToPutBack() {
         let throttler = FakeThrottler()
         UltraWatchdog.undo(record: sessionRecord(brightnessBefore: nil), freezer: FakeFreezer(), throttler: throttler,
-                           backlight: FakeBacklight(0.5))
+                           backlight: FakeBacklight(BrightnessCeiling.ceiling))
         XCTAssertEqual(throttler.lifted.count, 3)
     }
 
     func testUndoLeavesTheBrightnessAloneWhenTheOwnerMovedIt() {
         let freezer = FakeFreezer()
-        let dimmer = FakeBacklight(0.3)
+        let dimmer = FakeBacklight(0.15)
         UltraWatchdog.undo(record: sessionRecord(), freezer: freezer, throttler: FakeThrottler(), backlight: dimmer)
         XCTAssertTrue(dimmer.sets.isEmpty, "the owner went dimmer: not the mode's to change")
         XCTAssertEqual(freezer.resumed.count, 3, "the processes are continued all the same")
@@ -215,7 +215,7 @@ final class UltraWatchdogTests: XCTestCase {
         // No record on disk.
         let missing = FakeStore(nil)
         let freezer = FakeFreezer()
-        let panel = FakeBacklight(0.5)
+        let panel = FakeBacklight(BrightnessCeiling.ceiling)
         let throttler = FakeThrottler()
         UltraWatchdog.undo(from: missing, freezer: freezer, throttler: throttler, backlight: panel)
         XCTAssertEqual(missing.loads, 1)
@@ -235,7 +235,7 @@ final class UltraWatchdogTests: XCTestCase {
     func testUndoReadsTheRecordFromTheStoreAndLeavesItForTheNextLaunch() {
         let store = FakeStore(sessionRecord())
         let freezer = FakeFreezer()
-        UltraWatchdog.undo(from: store, freezer: freezer, throttler: FakeThrottler(), backlight: FakeBacklight(0.5))
+        UltraWatchdog.undo(from: store, freezer: freezer, throttler: FakeThrottler(), backlight: FakeBacklight(BrightnessCeiling.ceiling))
         XCTAssertEqual(freezer.resumed.count, 3)
         // The next launch reads the record to finish what the watchdog does not do (unhide, rate, keyboard, power mode).
         XCTAssertEqual(store.clears, 0)
@@ -259,7 +259,7 @@ final class UltraWatchdogTests: XCTestCase {
 
     func testTheBacklightIsNeverBuiltWhenThereIsNoBrightnessToPutBack() {
         var built = 0
-        func makePanel() -> BacklightControl { built += 1; return FakeBacklight(0.5) }
+        func makePanel() -> BacklightControl { built += 1; return FakeBacklight(BrightnessCeiling.ceiling) }
         let freezer = FakeFreezer()
         UltraWatchdog.undo(from: FakeStore(sessionRecord(brightnessBefore: nil)), freezer: freezer, throttler: FakeThrottler(),
                            backlight: makePanel())

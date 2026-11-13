@@ -645,10 +645,10 @@ final class UltraLowPowerWiringTests: XCTestCase {
         let r = try rig(ticked: true); defer { done(r) }
         r.backlight.value = 0.9
         start(r)
-        XCTAssertEqual(r.backlight.value, 0.5)
+        XCTAssertEqual(r.backlight.value, 0.25)
         r.backlight.value = 0.8   // a key press
         r.ticker.active[0].fire()
-        XCTAssertEqual(r.backlight.value, 0.5, "pulled back by the watch")
+        XCTAssertEqual(r.backlight.value, 0.25, "pulled back by the watch")
     }
 
     // ── The readings and the icon ───────────────────────────────────────────
@@ -914,11 +914,17 @@ final class UltraLowPowerWiringTests: XCTestCase {
                        "KeybindCenter.shared.unregister(owner: shortcutOwner)",
                        "widgets: widgets, icon: icon",
                        "backdrop: LiveUltraBackdrop()",                       // the black desktop behind the windows
+                       "UltraConfirmPanel(screenText: {",                     // the box says what will happen
+                       "backdrop: Settings.shared.ultraLowPowerBlackBackdrop",
+                       "efficiencyCores: Settings.shared.ultraLowPowerEfficiencyCores, hasEfficiencyCores: LiveProcessThrottler.hasEfficiencyCores",
                        "throttler: LiveProcessThrottler()",                   // what still runs is kept on the efficiency cores
                        "hasEfficiencyCores: LiveProcessThrottler.hasEfficiencyCores",
                        "windows: liveWindows"] {
             XCTAssertTrue(body.contains(needed), "live() no longer has: \(needed)")
         }
+        // The controller and the confirm box are each told whether this Mac has efficiency cores: the box must not say the cores
+        // are used on a Mac that has none, and the controller must not say it skipped a part the box named.
+        XCTAssertEqual(body.components(separatedBy: "hasEfficiencyCores: LiveProcessThrottler.hasEfficiencyCores").count - 1, 2)
         // One file for the record: the store reads and writes it, and the watchdog is told where it is.
         XCTAssertEqual(body.components(separatedBy: "let url = recordURL").count - 1, 1)
         XCTAssertTrue(body.contains("UltraRecordFile(url: url)"), "the store is on the record's url")

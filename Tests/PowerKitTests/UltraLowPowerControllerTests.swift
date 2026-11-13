@@ -649,8 +649,8 @@ final class UltraLowPowerControllerTests: XCTestCase {
 
     func testConfirmAppliesCeilingRateKeyboardAndLowPower() {
         start()
-        XCTAssertEqual(backlight.sets, [0.5])
-        XCTAssertEqual(backlight.value, 0.5)
+        XCTAssertEqual(backlight.sets, [0.25])
+        XCTAssertEqual(backlight.value, 0.25)
         XCTAssertEqual(rate.lowered, 1)
         XCTAssertEqual(keyboard.sets, [0])
         XCTAssertEqual(power.entered, 1)
@@ -674,8 +674,8 @@ final class UltraLowPowerControllerTests: XCTestCase {
         XCTAssertEqual(keyboardOnDisk, 0.6)
     }
 
-    func testBrightnessBelowHalfIsNotTouchedOrRemembered() {
-        backlight.value = 0.4
+    func testBrightnessBelowTheCeilingIsNotTouchedOrRemembered() {
+        backlight.value = 0.2
         start()
         XCTAssertEqual(backlight.sets, [])
         XCTAssertNil(store.record?.brightnessBefore)
@@ -705,7 +705,7 @@ final class UltraLowPowerControllerTests: XCTestCase {
         XCTAssertTrue(logged.contains { $0.contains("brightness") }, "\(logged)")
         XCTAssertEqual(own.forget("lid"), 0.9, "this feature lowered nothing, so it does not hold the screen: the lid is the last one out")
         controller.turnOff()
-        XCTAssertEqual(backlight.sets, [0.5], "the one refused try; nothing 'restored'")
+        XCTAssertEqual(backlight.sets, [0.25], "the one refused try; nothing 'restored'")
         XCTAssertNil(own.forget("ultra"))
     }
 
@@ -717,7 +717,7 @@ final class UltraLowPowerControllerTests: XCTestCase {
         XCTAssertNil(store.record?.powerModeBefore)
         // Everything else is done.
         XCTAssertEqual(controller.state, .on)
-        XCTAssertEqual(backlight.value, 0.5)
+        XCTAssertEqual(backlight.value, 0.25)
         XCTAssertEqual(rate.lowered, 1)
         XCTAssertEqual(keyboard.sets, [0])
         XCTAssertEqual(freezer.stops, [20, 21, 30])
@@ -912,11 +912,11 @@ final class UltraLowPowerControllerTests: XCTestCase {
         logged = []
         controller.turnOff()
         XCTAssertEqual(logged.filter { $0.contains("brightness") }.count, 1, "\(logged)")
-        XCTAssertEqual(backlight.sets, [0.5], "nothing was set at the end")
+        XCTAssertEqual(backlight.sets, [0.25], "nothing was set at the end")
         XCTAssertEqual(controller.state, .off, "and the rest is done all the same")
 
         // Nothing lowered, so nothing to put back and nothing to say.
-        backlight.value = 0.4
+        backlight.value = 0.2
         start()
         backlight.value = nil
         logged = []
@@ -926,18 +926,18 @@ final class UltraLowPowerControllerTests: XCTestCase {
 
     func testTurnOffLeavesAScreenTheOwnerChangedAlone() {
         start()
-        backlight.value = 0.3   // the owner went dimmer
+        backlight.value = 0.15   // the owner went dimmer
         controller.turnOff()
-        XCTAssertEqual(backlight.sets, [0.5], "only the ceiling; 0.3 is the owner's")
-        XCTAssertEqual(backlight.value, 0.3)
+        XCTAssertEqual(backlight.sets, [0.25], "only the ceiling; 0.15 is the owner's")
+        XCTAssertEqual(backlight.value, 0.15)
     }
 
     func testAnotherFeatureHoldingTheScreenDownKeepsItDown() {
         own.remember(0.9, for: "lid")   // the lid dimmer got there first and holds the owner's brightness
         start()
-        XCTAssertEqual(backlight.value, 0.5)
+        XCTAssertEqual(backlight.value, 0.25)
         controller.turnOff()
-        XCTAssertEqual(backlight.sets, [0.5], "the value is the lid's to put back, when it lets go")
+        XCTAssertEqual(backlight.sets, [0.25], "the value is the lid's to put back, when it lets go")
         XCTAssertEqual(own.forget("lid"), 0.9)
     }
 
@@ -980,7 +980,7 @@ final class UltraLowPowerControllerTests: XCTestCase {
         start()
         holdWork = true
         controller.turnOff()
-        XCTAssertEqual(backlight.value, 0.5, "queued, not done")
+        XCTAssertEqual(backlight.value, 0.25, "queued, not done")
         controller.shutdown()
         XCTAssertEqual(controller.state, .off)
         XCTAssertEqual(backlight.value, 0.8, "quit cannot wait for the queue, and the owner's brightness was taken only once")
@@ -1020,7 +1020,7 @@ final class UltraLowPowerControllerTests: XCTestCase {
         XCTAssertEqual(heldWork.count, 1)
         controller.shutdown()
         runHeldWork()
-        XCTAssertEqual(backlight.sets, [0.5], "the check was for a mode that is over: the screen is not held down after the quit")
+        XCTAssertEqual(backlight.sets, [0.25], "the check was for a mode that is over: the screen is not held down after the quit")
         XCTAssertEqual(backlight.value, 0.9)
     }
 
@@ -1066,11 +1066,11 @@ final class UltraLowPowerControllerTests: XCTestCase {
         XCTAssertEqual(heldWork.count, 1, "a display that is slow to answer is not asked again and again")
         backlight.value = 0.9
         runHeldWork()
-        XCTAssertEqual(backlight.sets, [0.5, 0.5], "the one check pulled it back")
+        XCTAssertEqual(backlight.sets, [0.25, 0.25], "the one check pulled it back")
         // And when that one is done, the next is taken.
         backlight.value = 0.9
         controller.brightnessMayHaveChanged()
-        XCTAssertEqual(backlight.sets, [0.5, 0.5, 0.5])
+        XCTAssertEqual(backlight.sets, [0.25, 0.25, 0.25])
     }
 
     // ── Hide that takes its time; power that takes its time ─────────────────
@@ -1467,16 +1467,16 @@ final class UltraLowPowerControllerTests: XCTestCase {
         start()
         backlight.value = 0.9   // the keys, or auto-brightness
         controller.brightnessMayHaveChanged()
-        XCTAssertEqual(backlight.sets, [0.5, 0.5])
-        XCTAssertEqual(backlight.value, 0.5)
+        XCTAssertEqual(backlight.sets, [0.25, 0.25])
+        XCTAssertEqual(backlight.value, 0.25)
         // Going dimmer is always allowed, and a reading within the panel's rounding is not a rise.
-        backlight.value = 0.3
+        backlight.value = 0.15
         controller.brightnessMayHaveChanged()
-        backlight.value = 0.505
+        backlight.value = 0.255
         controller.brightnessMayHaveChanged()
-        XCTAssertEqual(backlight.sets, [0.5, 0.5])
+        XCTAssertEqual(backlight.sets, [0.25, 0.25])
         // At the end the earlier brightness comes back: the screen is where the mode held it.
-        backlight.value = 0.5
+        backlight.value = 0.25
         controller.turnOff()
         XCTAssertEqual(backlight.value, 0.8)
     }
@@ -1489,7 +1489,7 @@ final class UltraLowPowerControllerTests: XCTestCase {
         controller.turnOff()
         backlight.value = 0.9
         controller.brightnessMayHaveChanged()
-        XCTAssertEqual(backlight.sets, [0.5, 0.9], "lowered, then put back; the later 0.9 was not held")
+        XCTAssertEqual(backlight.sets, [0.25, 0.9], "lowered, then put back; the later 0.9 was not held")
     }
 
     // ── Quitting, and a session nobody ended ────────────────────────────────
@@ -1540,7 +1540,7 @@ final class UltraLowPowerControllerTests: XCTestCase {
         record.keyboardBefore = 0.6
         record.powerModeBefore = 1
         store.record = record
-        backlight.value = 0.5
+        backlight.value = 0.25
 
         controller.recoverAtLaunch()
 

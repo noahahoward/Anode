@@ -8,31 +8,38 @@ final class UltraScreenTests: XCTestCase {
 
     // ── Brightness ──────────────────────────────────────────────────────────
 
-    func testBrightnessAboveHalfIsPulledToHalf() {
-        XCTAssertEqual(BrightnessCeiling.clamp(0.8), 0.5)
-        XCTAssertEqual(BrightnessCeiling.clamp(1.0), 0.5)
-        XCTAssertEqual(BrightnessCeiling.clamp(0.52), 0.5, "past what the display's rounding can explain")
+    /// A quarter of the slider (measured, whole Mac: 0.375 about 3.2 W, 0.25 2.8 W, 0.125 2.65 W, and no gain below that).
+    func testTheCeilingIsAQuarterOfTheSlider() {
+        XCTAssertEqual(BrightnessCeiling.ceiling, 0.25)
+        XCTAssertEqual(BrightnessCeiling.slack, 0.01)
     }
 
-    func testBrightnessAtOrBelowHalfIsLeftAlone() {
-        XCTAssertNil(BrightnessCeiling.clamp(0.5))
-        XCTAssertNil(BrightnessCeiling.clamp(0.505), "the display reports the half it was given a little high")
-        XCTAssertNil(BrightnessCeiling.clamp(0.2))
+    func testBrightnessAboveAQuarterIsPulledToAQuarter() {
+        XCTAssertEqual(BrightnessCeiling.clamp(0.8), 0.25)
+        XCTAssertEqual(BrightnessCeiling.clamp(1.0), 0.25)
+        XCTAssertEqual(BrightnessCeiling.clamp(0.5), 0.25, "0.5 is above the ceiling now")
+        XCTAssertEqual(BrightnessCeiling.clamp(0.27), 0.25, "past what the display's rounding can explain")
+    }
+
+    func testBrightnessAtOrBelowAQuarterIsLeftAlone() {
+        XCTAssertNil(BrightnessCeiling.clamp(0.25))
+        XCTAssertNil(BrightnessCeiling.clamp(0.255), "the display reports the quarter it was given a little high")
+        XCTAssertNil(BrightnessCeiling.clamp(0.1))
         XCTAssertNil(BrightnessCeiling.clamp(0))
     }
 
     func testOldBrightnessComesBackWhenStillAtTheCeiling() {
-        XCTAssertEqual(BrightnessCeiling.restore(before: 0.8, now: 0.5), 0.8)
-        XCTAssertEqual(BrightnessCeiling.restore(before: 0.8, now: 0.505), 0.8)
-        XCTAssertEqual(BrightnessCeiling.restore(before: 0.8, now: 0.495), 0.8)
+        XCTAssertEqual(BrightnessCeiling.restore(before: 0.8, now: 0.25), 0.8)
+        XCTAssertEqual(BrightnessCeiling.restore(before: 0.8, now: 0.255), 0.8)
+        XCTAssertEqual(BrightnessCeiling.restore(before: 0.8, now: 0.245), 0.8)
     }
 
     func testBrightnessIsNotRaisedBackWhenTheOwnerWentDimmer() {
-        XCTAssertNil(BrightnessCeiling.restore(before: 0.8, now: 0.3))
+        XCTAssertNil(BrightnessCeiling.restore(before: 0.8, now: 0.15))
     }
 
     func testNothingToRestoreWhenTheModeDidNotLowerIt() {
-        XCTAssertNil(BrightnessCeiling.restore(before: nil, now: 0.5))
+        XCTAssertNil(BrightnessCeiling.restore(before: nil, now: 0.25))
         XCTAssertNil(BrightnessCeiling.restore(before: nil, now: nil))
     }
 

@@ -38,9 +38,15 @@ final class UltraPendingAnswer {
 final class UltraConfirmPanel: NSObject, UltraConfirming, NSWindowDelegate {
 
     static let title = "Ultra Low Power Mode"
-    /// What the box says about the screen and Low Power Mode, under the headline.
-    static let screenLine = "The screen is held at half brightness or lower, and Low Power Mode is switched on if Anode's helper "
-        + "is installed."
+    /// What the box says about the screen, the desktop, the cores and Low Power Mode, under the headline: one sentence, with a
+    /// clause for each part that will happen and none for a part that will not. The cores are named only when the owner asked
+    /// for them (`efficiencyCores`) and this Mac has some (`hasEfficiencyCores`); a Mac that has none is told so by the section.
+    static func screenLine(backdrop: Bool, efficiencyCores: Bool, hasEfficiencyCores: Bool) -> String {
+        var line = "The screen is held at a quarter brightness or lower"
+        if backdrop { line += ", the desktop goes black" }
+        if efficiencyCores && hasEfficiencyCores { line += ", what still runs is kept on the efficiency cores" }
+        return line + ", and Low Power Mode is switched on if Anode's helper is installed."
+    }
 
     /// Put the panel on screen, and take it off. The tests replace them: a panel built and never shown is not on screen.
     var present: (NSPanel) -> Void = { $0.orderFrontRegardless(); $0.makeKey() }
@@ -48,16 +54,23 @@ final class UltraConfirmPanel: NSObject, UltraConfirming, NSWindowDelegate {
     static let width: CGFloat = 420
     private static let inset: CGFloat = 20
 
+    /// What the box says about the screen, the cores and Low Power Mode; asked at each ask, so it is always what is about to happen.
+    private let screenText: () -> String
     private let pending = UltraPendingAnswer()
     private(set) var panel: NSPanel?
     let headline = NSTextField(wrappingLabelWithString: "")
-    let screenLabel = NSTextField(wrappingLabelWithString: UltraConfirmPanel.screenLine)
+    let screenLabel = NSTextField(wrappingLabelWithString: "")
     private let caption = NSTextField(labelWithString: "Will be frozen:")
     private let list = NSTextView.scrollableTextView()
     private var listHeight: NSLayoutConstraint?
     let cancelButton = NSButton(title: "Cancel", target: nil, action: nil)
     let confirmButton = NSButton(title: "Confirm", target: nil, action: nil)
     private var content: NSStackView?
+
+    init(screenText: @escaping () -> String) {
+        self.screenText = screenText
+        super.init()
+    }
 
     // ── Asking ──────────────────────────────────────────────────────────────
 
@@ -88,6 +101,7 @@ final class UltraConfirmPanel: NSObject, UltraConfirming, NSWindowDelegate {
 
     private func fill(kept: [String], frozen: [String]) {
         headline.stringValue = UltraMenu.confirmText(kept: kept, frozenCount: frozen.count)
+        screenLabel.stringValue = screenText()
         (list.documentView as? NSTextView)?.string = frozen.joined(separator: "\n")
         // The list is only shown when there is something in it, and no taller than a screenful of rows.
         caption.isHidden = frozen.isEmpty

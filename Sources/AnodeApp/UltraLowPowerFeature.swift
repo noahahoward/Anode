@@ -209,7 +209,7 @@ final class UltraLowPowerFeature: BetaFeature {
     /// they have cleared it.
     var summary: String {
         let key = shortcutLabel().map { ", or press \($0)" } ?? ""
-        return "Freezes the apps and tools you are not using, and holds the screen at half brightness or lower, until you turn "
+        return "Freezes the apps and tools you are not using, and holds the screen at a quarter brightness or lower, until you turn "
             + "it off. Ticking the box only makes it available: it starts when you press Start (or choose it from a menu\(key)) "
             + "and confirm the list of what is kept and what is frozen."
     }
@@ -279,15 +279,20 @@ final class UltraLowPowerFeature: BetaFeature {
         store.shortcut(for: ShortcutCommands.ultraToggle)?.label
     }
 
-    /// What was measured, on the owner's 14-inch MacBook Pro (10.4, 4.3 and 2.8 W, rounded), and what was not. The mode
-    /// keeps the Mac at rest; it does not lower the draw at rest, and nothing here says it does.
-    static let note = "Dimming the screen is what saves the most. On the 14-inch MacBook Pro this was measured on, the whole Mac "
-        + "drew about 10 W with the brightness slider at full, about 4 W at half and about 3 W at a quarter. With the Mac at "
-        + "rest, the lower refresh rate, Low Power Mode and freezing apps saved little or nothing. What they do is keep the "
-        + "Mac at rest. Freezing stops the frozen apps from starting a burst of work in the background, and Low Power Mode "
-        + "limits heavy work (what that saves under a heavy load was not measured). Frozen apps stop keeping their network "
-        + "connections going, so some may drop. An app with a part Anode cannot freeze is left running. How long the "
-        + "battery lasts depends on what you do, so no running time is promised."
+    /// What was measured on the owner's 14-inch MacBook Pro in the trial (whole-Mac power), and what it says about each part: at
+    /// rest only a darker screen lowers the draw (the mode as first built read 2.73 W on and 2.88 W off, no saving that can be
+    /// told from noise), and with something running the other parts save a great deal. A busy browser frozen read 3.2 W
+    /// against 7.5 W; four busy threads read 27.4 W normally, 5.0 W kept on the efficiency cores and 12.8 W under Low Power Mode
+    /// alone; the lowest refresh rate read 5.6 W against 7.6 W while a video played. Rounded as the figures are given. What
+    /// the black backdrop saves depends on how much of the screen the windows leave uncovered, and the note says so.
+    static let note = "At rest, only a darker screen lowers the draw: the black backdrop (it blacks out only what your windows "
+        + "leave uncovered) and the brightness held at a quarter or lower. When something is running, the other parts save a "
+        + "great deal. On the 14-inch MacBook Pro this was measured on, a busy app frozen in the background took the whole Mac "
+        + "from 7.5 W down to 3.2 W. A heavy job kept on the efficiency cores took it from 27 W down to 5 W, where the same job "
+        + "under Low Power Mode alone took it to 13 W. The lowest refresh rate saved about 2 W while a video played. Work is "
+        + "slower in this mode, and disk and network use by the apps left running is slowed too. Frozen apps stop keeping "
+        + "their network connections going, so some may drop. An app with a part Anode cannot freeze is left running. How long "
+        + "the battery lasts depends on what you do, so no running time is promised."
 
     /// The parts a Mac may not do, in the order the controller's enum declares them.
     private static let skippedOrder: [UltraSkipped] = [.lowPowerNoHelper, .lowPowerOldHelper, .oneRefreshRate, .keyboardLight,
@@ -311,7 +316,7 @@ final class UltraLowPowerFeature: BetaFeature {
             case .rateRefused:
                 return "The screen would not take the lower refresh rate, so it was left as it was."
             case .ceilingRefused:
-                return "The screen's brightness could not be held at half, so it was left as it was."
+                return "The screen's brightness could not be held at a quarter, so it was left as it was."
             case .keyboardLight:
                 return "This Mac's keyboard light could not be read or switched off, so it was left as it was."
             case .noEfficiencyCores:

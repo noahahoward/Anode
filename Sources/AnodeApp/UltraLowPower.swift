@@ -431,7 +431,7 @@ final class UltraLowPowerController {
                 self.skipped.append(.ceilingRefused)
                 return next()
             }
-            // At or below half already: nothing to lower, nothing to put back.
+            // At or below the ceiling already: nothing to lower, nothing to put back.
             guard let target = BrightnessCeiling.clamp(current) else { return next() }
             // Noted and written before it is lowered, so a crash in between finds both.
             self.ownBrightness.remember(current, for: Self.ownerName)

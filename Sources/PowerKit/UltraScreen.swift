@@ -5,9 +5,10 @@ import Foundation
 
 // ── Brightness ──────────────────────────────────────────────────────────────
 
-/// The most the mode lets the screen be: half of the slider.
+/// The most the mode lets the screen be: a quarter of the slider. Measured, whole Mac, with the slider at 0.375: about 3.2 W;
+/// at 0.25: 2.8 W; at 0.125: 2.65 W; and no gain below that.
 public enum BrightnessCeiling {
-    public static let ceiling: Float = 0.5
+    public static let ceiling: Float = 0.25
     /// What the display's own rounding can add or take away when brightness is read back.
     public static let slack: Float = 0.01
 
