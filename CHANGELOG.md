@@ -7,13 +7,15 @@ feature or a visible change in how something works, the first only for a rewrite
 Nothing was bumped between 1.0.0 and 1.15.0. Those versions were assigned afterwards from the history and exist as
 git tags (`git show v1.7.0`); builds made before 1.15.0 still say 1.0.0 in their About box.
 
-## 1.17.0 — 2026-11-12
+## 1.17.0 — 2026-11-13
 - Charge Control (Beta Features, off by default): hold the battery at a charge limit you choose, from 20% to 100%. The limit applies while Anode is running: quitting Anode, or turning Charge Control off, puts macOS's own charging settings back as they were, and opening Anode again brings your limit back.
 - If Anode ever stops without quitting, the next time it opens it lifts the limit first and waits a minute before setting it again, so an Anode that is not working does not hold your battery.
-- Discharge runs the Mac from the battery down to your limit while it stays plugged in, and Top Up charges to 100% once and returns to your limit when you unplug.
-- Sailing Mode lets the battery drift a few percent below the limit before recharging. Heat Protection pauses charging while the battery is hot. Charging can also pause while the Mac sleeps, and discharge can start by itself whenever the battery is above the limit.
-- Limits other than 80, 85, 90, 95 or 100%, and discharging, need the Anode helper (the same one the fans use). The helper always reconnects the charger: when Anode quits, before the Mac sleeps, when the cable is pulled, and when it next starts after being stopped.
+- Ready By: choose a time of day, and while the Mac is plugged in Anode holds the battery where it is, then charges it so it is at your limit by that time. It only waits when the time is within the next 12 hours, never waits below 30%, and wakes a sleeping Mac once to start charging.
+- Drain to Limit runs the Mac from the battery down to your limit while it stays plugged in, and Charge to Full charges to 100% once and returns to your limit when you unplug.
+- Drift Below the Limit lets the battery fall a few percent below the limit before recharging. Pause When Hot pauses charging while the battery is hot. Hold Level During Sleep keeps the level where it is while the Mac sleeps, and Drain Automatically Above the Limit drains whenever the battery is above the limit.
+- Limits other than 80, 85, 90, 95 or 100%, draining and Ready By need the Anode helper (the same one the fans use). The helper reconnects the charger when Anode quits, before the Mac sleeps and when the cable is pulled, and a helper that was stopped part-way reconnects it when it next starts.
 - The main card's "charging to" and "held at" lines follow Charge Control's limit while it is on.
+- Uninstalling Anode puts macOS's own charging settings back before anything is removed, and stops if Anode is still running.
 
 ## 1.16.0 — 2026-11-11
 - Menu bar hider (Beta Features, off by default): a chevron in the menu bar tucks other apps' icons out of sight, leaving macOS's own icons (Wi-Fi, sound, battery, the microphone light and the rest) and the ones you choose to keep. Press the chevron (or ⌃⌥⌘B) and a small panel under the notch shows the rest, each one clickable.
