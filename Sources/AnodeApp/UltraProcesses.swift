@@ -26,20 +26,10 @@ protocol ProcessFreezing: AnyObject {
     func resume(pid: pid_t, startTime: UInt64) -> Bool
 }
 
-/// What putting a process under the background policy came to. Only `.done` leaves the process on the record: what was not
-/// changed by this mode is never put back by it.
-enum ThrottleResult: Equatable {
-    case done
-    /// It was under the policy before the mode asked: not this mode's to put back.
-    case alreadyBackground
-    /// The pid is gone or is not that process any more (its start time differs), its policy could not be read, or the system
-    /// refused.
-    case failed
-}
-
 protocol ProcessThrottling: AnyObject {
-    /// Puts the process under the background policy (all of its threads on the efficiency cores).
-    func throttle(pid: pid_t, startTime: UInt64) -> ThrottleResult
+    /// Puts the process under the background policy (all of its threads on the efficiency cores). false when the pid is gone or
+    /// is not that process any more (its start time differs), or the system refused.
+    func throttle(pid: pid_t, startTime: UInt64) -> Bool
     /// Lifts it, under the same checks.
     func unthrottle(pid: pid_t, startTime: UInt64) -> Bool
 }
@@ -323,13 +313,18 @@ final class LiveProcessList: ProcessListing {
         return nil
     }
 
-    /// The kernel's table as plain processes: pid, parent, start time and little else, with no path, no signature and no call
-    /// into another process, so it is cheap and cannot stall. It is what a walk down the children of a process needs, read fresh
-    /// at the moment of the walk. nil when the table cannot be read.
+    /// The kernel's table as plain processes, for the end of a session: pid, parent, start time, the file each runs from and the
+    /// process macOS holds responsible for each of the owner's, and nothing that is a call into another process or an app (no
+    /// app lookup, no signature, no `launchctl`), so it is cheap, cannot stall, and can be read on the thread that quits. What
+    /// a full snapshot knows of the processes it saw is put back with `UltraThrottle.merged`. nil when the table cannot be read.
     static func processTable() -> [UltraProcess]? {
-        kernelRows()?.map { row in
-            UltraProcess(pid: row.pid, parent: row.parent, uid: row.uid, startTime: row.startTime, path: row.path, name: row.command)
+        guard var rows = kernelRows() else { return nil }
+        let me = getuid()
+        for i in rows.indices {
+            rows[i].path = ProcessSampler.path(of: rows[i].pid)
+            if rows[i].uid == me { rows[i].responsible = responsiblePID(of: rows[i].pid) }
         }
+        return assemble(kernel: rows, apps: [:], tapOwners: [], audioInput: [], labels: [:], teams: [:], user: me)
     }
 
     private static func row(from entry: kinfo_proc) -> KernelRow? {
@@ -532,47 +527,32 @@ final class LiveProcessFreezer: ProcessFreezing {
 final class LiveProcessThrottler: ProcessThrottling {
     private let startTimeOf: (pid_t) -> UInt64?
     private let setPolicy: (pid_t, Bool) -> Bool
-    private let isBackground: (pid_t) -> Bool?
 
-    /// `setPolicy` and `isBackground` are the system's calls; tests replace both, and nothing in the test target reads or
-    /// changes a real process's policy.
+    /// `setPolicy` is the system's call; tests replace it, and nothing in the test target changes a real process's policy.
     init(startTimeOf: @escaping (pid_t) -> UInt64? = LiveProcessList.startTime,
-         setPolicy: @escaping (pid_t, Bool) -> Bool = LiveProcessThrottler.setBackground,
-         isBackground: @escaping (pid_t) -> Bool? = LiveProcessThrottler.readBackground) {
+         setPolicy: @escaping (pid_t, Bool) -> Bool = LiveProcessThrottler.setBackground) {
         self.startTimeOf = startTimeOf
         self.setPolicy = setPolicy
-        self.isBackground = isBackground
     }
 
-    /// The policy is read first: a process that is under it already was not put there by this mode, so it is left as it is, and
-    /// it is the one answer ("already") that says nothing was changed and nothing is to be put back.
-    func throttle(pid: pid_t, startTime: UInt64) -> ThrottleResult {
-        guard canChange(pid, startTime) else { return .failed }
-        guard let already = isBackground(pid) else { return .failed }
-        if already { return .alreadyBackground }
-        return setPolicy(pid, true) ? .done : .failed
-    }
+    // Nothing is read before the policy is set, and that is deliberate. Asked about another process, the system answers "not in the
+    // background" whatever its state; the task priority does tell, but more than half of the owner's processes already read as
+    // background at rest (idle services), so it cannot say who put one there. And a process that put ITSELF in the background keeps
+    // that setting when this mode lifts its own, so setting and lifting never undo what a process chose for itself. So every
+    // process is set, named on the record, and lifted at the end.
+    func throttle(pid: pid_t, startTime: UInt64) -> Bool { change(pid, startTime, to: true) }
 
-    func unthrottle(pid: pid_t, startTime: UInt64) -> Bool { canChange(pid, startTime) && setPolicy(pid, false) }
+    func unthrottle(pid: pid_t, startTime: UInt64) -> Bool { change(pid, startTime, to: false) }
 
-    /// Only the process the snapshot saw is read or changed, as the freezer signals only that one. Between the check and the call
-    /// a process can still end and its pid be reused; that window is a few microseconds and cannot be closed from outside the
-    /// kernel.
-    private func canChange(_ pid: pid_t, _ startTime: UInt64) -> Bool {
+    /// Changes the policy only of the process the snapshot saw, as the freezer signals only that one. Between the check and the
+    /// call a process can still end and its pid be reused; that window is a few microseconds and cannot be closed from outside
+    /// the kernel.
+    private func change(_ pid: pid_t, _ startTime: UInt64, to on: Bool) -> Bool {
         // The pids the freezer never touches: 0 and below mean something else to the system, 1 is launchd, and Anode itself is
         // never slowed (it is the one that lifts the policy again).
         guard pid > 1, pid != getpid() else { return false }
-        return startTimeOf(pid) == startTime
-    }
-
-    /// The policy now, read from the system: nil when it cannot be read (the process has ended, or is not the owner's). The
-    /// system answers 1 for a process under the background policy and 0 for one that is not, and -1 with an error otherwise.
-    static func readBackground(_ pid: pid_t) -> Bool? {
-        guard let who = id_t(exactly: pid) else { return nil }
-        errno = 0
-        let value = getpriority(PRIO_DARWIN_PROCESS, who)
-        if value == -1 && errno != 0 { return nil }
-        return value != 0
+        guard startTimeOf(pid) == startTime else { return false }
+        return setPolicy(pid, on)
     }
 
     static func setBackground(_ pid: pid_t, _ on: Bool) -> Bool {

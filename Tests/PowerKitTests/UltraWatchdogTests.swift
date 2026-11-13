@@ -44,10 +44,10 @@ final class UltraWatchdogTests: XCTestCase {
         var lifted: [Call] = []
         private let log: CallLog?
         init(log: CallLog? = nil) { self.log = log }
-        func throttle(pid: pid_t, startTime: UInt64) -> ThrottleResult {
+        func throttle(pid: pid_t, startTime: UInt64) -> Bool {
             throttled.append(Call(pid: pid, startTime: startTime))
             log?.entries.append("throttle \(pid)")
-            return .done
+            return true
         }
         func unthrottle(pid: pid_t, startTime: UInt64) -> Bool {
             lifted.append(Call(pid: pid, startTime: startTime))

@@ -59,6 +59,24 @@ public enum UltraThrottle {
         return found.sorted { $0.pid < $1.pid }
     }
 
+    /// A fresh read of the process table is light (pid, parent, start time, path, the process held responsible and little else);
+    /// a full snapshot knows more of the processes it saw (the app, its bundle id, its name, its launchd label). This puts what the
+    /// snapshot knew back on the same process (by pid and start time) in the fresh read, so that a process born since the snapshot
+    /// can be placed in a group (by the process held responsible for it, which the snapshot does know) with the same function as a
+    /// full one. The fresh read's parent and responsible process win: they may have changed since.
+    public static func merged(fresh: [UltraProcess], known: [UltraProcess]) -> [UltraProcess] {
+        var seen: [Identity: UltraProcess] = [:]
+        for process in known where seen[Identity(pid: process.pid, startTime: process.startTime)] == nil {
+            seen[Identity(pid: process.pid, startTime: process.startTime)] = process
+        }
+        return fresh.map { row in
+            guard var process = seen[Identity(pid: row.pid, startTime: row.startTime)] else { return row }
+            process.parent = row.parent
+            process.responsible = row.responsible ?? process.responsible
+            return process
+        }
+    }
+
     /// A process is its pid with its start time: a recycled pid is another process.
     private struct Identity: Hashable {
         let pid: pid_t

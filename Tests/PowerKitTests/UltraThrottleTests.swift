@@ -146,4 +146,52 @@ final class UltraThrottleTests: XCTestCase {
         let table = [row(10, parent: 1), row(11, parent: 10, startTime: 424_242)]
         XCTAssertEqual(UltraThrottle.descendants(of: [member(10)], in: table), [FreezeGroup.Member(pid: 11, startTime: 424_242)])
     }
+
+    // ── A fresh table, and what a full snapshot knew ────────────────────────
+
+    /// What a full snapshot holds of the editor, and a fresh read of the table holds none of.
+    private var editorKnown: UltraProcess {
+        UltraProcess(pid: 10, parent: 1, uid: 501, startTime: 100, path: "/Applications/Editor.app/Contents/MacOS/Editor",
+                     responsible: nil, app: .regular, bundleID: "com.example.editor", name: "Editor", launchdLabel: "label",
+                     team: "TEAM", ownsEventTap: true, usesMicOrCamera: true)
+    }
+
+    func testAFreshTableGetsBackWhatTheSnapshotKnewOfTheSameProcess() {
+        let fresh = [UltraProcess(pid: 10, parent: 1, uid: 501, startTime: 100, path: "/Applications/Editor.app/Contents/MacOS/Editor",
+                                  name: "Editor"), row(15, parent: 1)]
+        let merged = UltraThrottle.merged(fresh: fresh, known: [editorKnown])
+        XCTAssertEqual(merged.map(\.pid), [10, 15], "the same processes, in the order the fresh read has them")
+        XCTAssertEqual(merged[0].app, .regular)
+        XCTAssertEqual(merged[0].bundleID, "com.example.editor")
+        XCTAssertEqual(merged[0].name, "Editor")
+        XCTAssertEqual(merged[0].launchdLabel, "label")
+        XCTAssertEqual(merged[0].team, "TEAM")
+        XCTAssertTrue(merged[0].ownsEventTap)
+        XCTAssertTrue(merged[0].usesMicOrCamera)
+        XCTAssertEqual(merged[1], row(15, parent: 1), "a process born since the snapshot stays as it was read")
+    }
+
+    func testTheFreshParentAndResponsibleProcessWin() {
+        var known = editorKnown
+        known.parent = 5
+        known.responsible = 7
+        let moved = UltraProcess(pid: 10, parent: 1, uid: 501, startTime: 100, path: "", responsible: 9, name: "p10")
+        XCTAssertEqual(UltraThrottle.merged(fresh: [moved], known: [known])[0].parent, 1, "reparented since")
+        XCTAssertEqual(UltraThrottle.merged(fresh: [moved], known: [known])[0].responsible, 9)
+        let silent = UltraProcess(pid: 10, parent: 1, uid: 501, startTime: 100, path: "", name: "p10")
+        XCTAssertEqual(UltraThrottle.merged(fresh: [silent], known: [known])[0].responsible, 7,
+                       "a fresh read that could not say keeps what the snapshot said")
+    }
+
+    /// A recycled pid is another process: it gets nothing of the old one's.
+    func testARecycledPidGetsNothingOfTheOldOne() {
+        let fresh = [row(10, parent: 1, startTime: 99_999)]
+        XCTAssertEqual(UltraThrottle.merged(fresh: fresh, known: [editorKnown]), fresh)
+    }
+
+    func testNothingKnownIsTheFreshTableAsItIs() {
+        let fresh = [row(10, parent: 1), row(11, parent: 10)]
+        XCTAssertEqual(UltraThrottle.merged(fresh: fresh, known: []), fresh)
+        XCTAssertEqual(UltraThrottle.merged(fresh: [], known: [editorKnown]), [])
+    }
 }

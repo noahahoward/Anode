@@ -129,12 +129,12 @@ final class UltraLowPowerController {
     private var throttling = false
     /// The ids of the groups the plan kept. They keep running, so they are kept on the efficiency cores, new parts included.
     private var keptIDs: Set<String> = []
-    /// Processes the sweep must not ask about again: the system refused them, or they were under the policy before the mode (the
-    /// latter are in `leftAlone` too). Each by its start time: a pid that was reused is a new process.
+    /// Processes the sweep must not ask about again because the system refused them, each by its start time: a pid that was reused
+    /// is a new process.
     private var throttleSkipped: [pid_t: UInt64] = [:]
-    /// Processes that were under the background policy before the mode asked. They are not on the record, so not lifted at the end,
-    /// and not lifted as children of something the mode did put under it.
-    private var leftAlone: [pid_t: UInt64] = [:]
+    /// The latest full snapshot of the process list (the start's, then each sweep's): what the end of a session knows of the apps
+    /// when it places the processes born since in their groups.
+    private var known: [UltraProcess] = []
     /// The app with windows of each group that was asked to hide, by group id, so that bringing it forward finds its
     /// group whether or not Anode hid it and whether or not its own stop worked. Not what is unhidden at the end: that
     /// is `appPID` on the record, set only for an app Anode hid.
@@ -222,6 +222,7 @@ final class UltraLowPowerController {
     /// light, Low Power Mode, then `.on`.
     private func begin(_ plan: FreezePlan, _ list: [UltraProcess], token: Int) {
         leftRunning = plan.leftRunning
+        known = list
         load.read { [weak self] before in
             guard let self, self.session == token else { return }
             var record = UltraRecord()
@@ -342,60 +343,22 @@ final class UltraLowPowerController {
 
     /// The one place a process is put under the policy, for the start, an app brought back and the sweep. The record names the
     /// processes first, and when it cannot be written none of them is touched: a process slowed with no record is slowed for
-    /// good if Anode dies. Only a process the mode really put under the policy stays on the record: one the system refused, or
-    /// that was under it before the mode, is taken off again, so that only what this mode changed is ever lifted.
-    ///
-    /// "Under it already" is not always from before the mode. A child started by a process the mode had put under the policy
-    /// follows it, so a process that descends from one the record named (`recordedBefore`, the record as this began, and a table
-    /// of processes, read only when there is a process to judge) got it from the mode: it stays named, and is lifted at the end.
-    /// At the start the record is empty, so everything that is under the policy then is from before the mode.
-    private func throttle(_ members: [FreezeGroup.Member], table: [UltraProcess]? = nil, recordedBefore: [UltraRecord.Member]? = nil) {
+    /// good if Anode dies. One the system refuses is taken off the record again, so that only what was done is lifted.
+    private func throttle(_ members: [FreezeGroup.Member]) {
         guard !members.isEmpty else { return }
-        let before = recordedBefore ?? live?.throttled ?? []
         let named = record(mustSave: true) { $0.throttled = ($0.throttled ?? []) + members.map(Self.recordMember) }
         guard named else {
             log("ultra: the record could not take the processes to keep on the efficiency cores, so they were left as they are")
             return
         }
-        var inheritors: [pid_t: UInt64]?
-        func inherited(_ member: FreezeGroup.Member) -> Bool {
-            guard !before.isEmpty else { return false }
-            if inheritors == nil {
-                let found = descendantsOfRecorded(before, in: table ?? processTable())
-                inheritors = Dictionary(found.map { ($0.pid, $0.startTime) }, uniquingKeysWith: { first, _ in first })
-            }
-            return inheritors?[member.pid] == member.startTime
-        }
-        var notDone: [UltraRecord.Member] = []
-        for member in members {
-            switch throttler.throttle(pid: member.pid, startTime: member.startTime) {
-            case .done:
-                continue
-            case .alreadyBackground:
-                if inherited(member) {
-                    log("ultra: \(member.pid) already follows the efficiency-core limit of the process that started it")
-                    continue
-                }
-                log("ultra: \(member.pid) was in the background already, so it was left as it is")
-                leftAlone[member.pid] = member.startTime
-            case .failed:
-                log("ultra: could not keep \(member.pid) on the efficiency cores")
-            }
+        var refused: [UltraRecord.Member] = []
+        for member in members where !throttler.throttle(pid: member.pid, startTime: member.startTime) {
+            log("ultra: could not keep \(member.pid) on the efficiency cores")
             throttleSkipped[member.pid] = member.startTime
-            notDone.append(Self.recordMember(member))
+            refused.append(Self.recordMember(member))
         }
-        guard !notDone.isEmpty else { return }
-        record { $0.throttled?.removeAll { notDone.contains($0) } }
-    }
-
-    /// Every living descendant, in `table`, of the processes the record names: what they started and what that started. The walk
-    /// does not go through a process the mode saw in the background before it began, since what it started follows that
-    /// process's policy and not the mode's. nil table (it could not be read) finds nothing.
-    private func descendantsOfRecorded(_ recorded: [UltraRecord.Member], in table: [UltraProcess]?) -> [FreezeGroup.Member] {
-        guard let table else { return [] }
-        let walkable = table.filter { leftAlone[$0.pid] != $0.startTime }
-        let roots = recorded.map { FreezeGroup.Member(pid: $0.pid, startTime: $0.startTime) }
-        return UltraThrottle.descendants(of: roots, in: walkable)
+        guard !refused.isEmpty else { return }
+        record { $0.throttled?.removeAll { refused.contains($0) } }
     }
 
     /// The sweep's part for what keeps running: the kept groups, the groups left running and the groups the owner or the guard
@@ -427,10 +390,7 @@ final class UltraLowPowerController {
         let underPolicy = live?.throttled ?? []
         let isUnderPolicy: (FreezeGroup.Member) -> Bool = { member in underPolicy.contains(Self.recordMember(member)) }
         liftFromGroupsOnACall(onACall, underPolicy: isUnderPolicy, in: list, groupOf: groupOf, own: own)
-        // Judged against the record as this sweep began, so that a part that inherited the policy from a process just lifted for a
-        // call is still the mode's.
-        throttle(notOnACall.filter { !isUnderPolicy($0) && throttleSkipped[$0.pid] != $0.startTime }, table: list,
-                 recordedBefore: underPolicy)
+        throttle(notOnACall.filter { !isUnderPolicy($0) && throttleSkipped[$0.pid] != $0.startTime })
     }
 
     private func liftFromGroupsOnACall(_ groups: [FreezeGroup], underPolicy: (FreezeGroup.Member) -> Bool, in list: [UltraProcess],
@@ -440,7 +400,7 @@ final class UltraLowPowerController {
         let onACall = Set(groups.map(\.id))
         // What they started since the last sweep, but not what belongs to another app that keeps running: that one is looked
         // after by its own group, and is not on a call.
-        let children = descendantsOfRecorded(roots.map(Self.recordMember), in: list).filter { child in
+        let children = UltraThrottle.descendants(of: roots, in: list).filter { child in
             !own.contains(child.pid) && (groupOf[child.pid].map { onACall.contains($0) || !wantedGroup($0) } ?? true)
         }
         var lifted: [UltraRecord.Member] = []
@@ -745,17 +705,27 @@ final class UltraLowPowerController {
         }
     }
 
-    /// Lifts the background policy from every process the record names, then from every living descendant of one of them, found
-    /// in a process table read now (a child started after the last sweep inherited the policy and is on no record; left alone it
-    /// stays on the efficiency cores until it exits). Only descendants of what the record names: a process that is not one is
-    /// never touched, nor is one the mode saw in the background before it began (nor what that one started), nor Anode and its
-    /// watchdog.
+    /// Lifts the background policy from every process the record names, from every living descendant of one of them, and, in a
+    /// session, from every current member of the groups the session kept on the efficiency cores. The last two come from one
+    /// process table read now.
+    ///
+    ///  · A child started after the last sweep inherited the policy and is on no record (and keeps it when its parent is lifted).
+    ///  · A long-lived process whose short-lived parent has gone (a build daemon a script started) belongs to launchd, so no walk
+    ///    down the children can reach it; the group it belongs to can, by the process macOS holds responsible for it. The groups
+    ///    are those the sweep keeps (the kept ones, the ones left running, the ones the owner brought back), placed with the same
+    ///    function the sweep uses, on the table merged with the latest full snapshot. No exception for a call: lifting is always
+    ///    safe, and lifting a process that was never set changes nothing.
+    ///  · A frozen group, a system process and anything of Anode's own are never touched. A launch after a crash has the record
+    ///    only: it does not know which groups were kept, and has no snapshot to place a process in a group with, so it lifts what
+    ///    the record names and what those started, as the watchdog does.
     ///
     /// The table is read on this thread: it is the kernel's own, with no call into another process, and a quit cannot wait for
-    /// a queue. A false is logged once for a pid, however often it comes up.
+    /// a queue. A process is lifted once, and a false is logged once for a pid.
     private func liftTheLimit(_ actions: [UltraRecovery.Action], names: [pid_t: String]) {
         var notLifted: Set<pid_t> = []
+        var lifted: [pid_t: Set<UInt64>] = [:]
         func lift(_ pid: pid_t, _ startTime: UInt64) {
+            guard lifted[pid, default: []].insert(startTime).inserted else { return }
             guard !throttler.unthrottle(pid: pid, startTime: startTime), notLifted.insert(pid).inserted else { return }
             log("ultra: could not lift the efficiency-core limit from \(names[pid] ?? "a process") (\(pid)): it has ended, or is not that process any more")
         }
@@ -764,15 +734,21 @@ final class UltraLowPowerController {
             lift(pid, startTime)
             roots.append(FreezeGroup.Member(pid: pid, startTime: startTime))
         }
-        guard !roots.isEmpty else { return }
-        guard let table = processTable() else {
+        guard !roots.isEmpty || throttling else { return }
+        guard let fresh = processTable() else {
             log("ultra: the process table could not be read, so what the kept apps started was not lifted")
             return
         }
+        let table = UltraThrottle.merged(fresh: fresh, known: known)
         let own = anodes()
-        let named = roots.map(Self.recordMember)
-        for child in descendantsOfRecorded(named, in: table) where !own.contains(child.pid) {
+        for child in UltraThrottle.descendants(of: roots, in: table) where !own.contains(child.pid) {
             lift(child.pid, child.startTime)
+        }
+        guard throttling else { return }
+        let groupOf = FreezePlanner.groupIDs(processes: table, user: user, ownPIDs: own)
+        for process in table.sorted(by: { $0.pid < $1.pid }) {
+            guard let id = groupOf[process.pid], wantedGroup(id) else { continue }
+            lift(process.pid, process.startTime)
         }
     }
 
@@ -841,6 +817,7 @@ final class UltraLowPowerController {
                 self.log("ultra: the process list could not be read, so the sweep did nothing")
                 return finish()
             }
+            self.known = list
             // What keeps running is looked at first and on its own: nothing is stopped for it, so no reading of the load.
             self.keepRunningOnEfficiencyCores(in: list)
             // A pid is known only while it is still the process that was tried: a pid that was reused is a new process.
@@ -1046,7 +1023,7 @@ final class UltraLowPowerController {
         throttling = false
         keptIDs = []
         throttleSkipped = [:]
-        leftAlone = [:]
+        known = []
         appOfGroup = [:]
         sweeping = false
         adjustingBrightness = false
