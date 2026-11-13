@@ -61,7 +61,8 @@ final class BetaFeaturesWindowController: NSWindowController {
         if hasLidSensor { list.append(LidGlassFeature(settings: settings)) }
         list += [KeepAwakeFeature(settings: settings), KeyboardCleanerFeature(settings: settings),
                  LiveWallpaperFeature(settings: settings), GameModeFeature(settings: settings),
-                 MenuBarHiderFeature(settings: settings), ChargeControlFeature(settings: settings)]
+                 MenuBarHiderFeature(settings: settings), ChargeControlFeature(settings: settings),
+                 UltraLowPowerFeature(settings: settings)]
         return list
     }
 

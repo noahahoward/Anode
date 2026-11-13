@@ -78,6 +78,16 @@ final class ShortcutsTests: XCTestCase {
         XCTAssertEqual(Set(all.map { $0.defaultShortcut }).count, all.count, "every default shortcut is distinct")
     }
 
+    func testUltraShortcutIsControlOptionCommandU() {
+        XCTAssertEqual(ShortcutCommands.ultraToggle.defaultShortcut.label, "⌃⌥⌘U")
+        XCTAssertEqual(ShortcutCommands.ultraToggle.id, "ultra.toggle")
+        XCTAssertEqual(ShortcutCommands.ultraToggle.title, "Ultra Low Power Mode")
+        XCTAssertEqual(ShortcutCommands.ultraToggle.section, "Ultra Low Power Mode")
+        XCTAssertEqual(ShortcutCommands.ultra.map(\.id), ["ultra.toggle"])
+        XCTAssertTrue(all.contains(ShortcutCommands.ultraToggle))
+        XCTAssertEqual(Set(all.map { $0.defaultShortcut }).count, all.count, "every default shortcut is distinct")
+    }
+
     func testChoosingAShortcutReplacesTheDefaultAndPersists() {
         let defaults = TestDefaults.throwaway("shortcuts")
         let s = ShortcutStore(defaults: defaults)

@@ -145,7 +145,13 @@ enum ShortcutCommands {
         defaultShortcut: Shortcut(key: kVK_ANSI_B, carbon: controlKey | optionKey | cmdKey))
     static var hider: [ShortcutCommand] { [hiderToggle] }
 
-    static var all: [ShortcutCommand] { window + groups + cleaner + wallpaper + hider }
+    /// Ultra Low Power Mode: ask to start it, or turn it off. ⌃⌥⌘U, listened for only while its box in Beta Features is ticked.
+    static let ultraToggle = ShortcutCommand(
+        id: "ultra.toggle", title: "Ultra Low Power Mode", section: "Ultra Low Power Mode",
+        defaultShortcut: Shortcut(key: kVK_ANSI_U, carbon: controlKey | optionKey | cmdKey))
+    static var ultra: [ShortcutCommand] { [ultraToggle] }
+
+    static var all: [ShortcutCommand] { window + groups + cleaner + wallpaper + hider + ultra }
 }
 
 /// The user's choices: each command's shortcut, its default unless changed, or none.

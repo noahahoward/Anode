@@ -1,0 +1,643 @@
+import XCTest
+import AppKit
+@testable import AnodeApp
+@testable import PowerKit
+
+/// What the owner sees and touches of Ultra Low Power Mode: the confirm box's words and its one-answer rule, the menu, the
+/// section in Beta Features, the status icon's constants and the app menu's entry. No panel is shown, no status item is made
+/// and no real setting is read: the pure functions are called, the menu's items are performed as a click would, and the
+/// section runs on throwaway settings over a controller built from the controller tests' fakes.
+final class UltraLowPowerFeatureTests: XCTestCase {
+
+    private typealias Fakes = UltraLowPowerControllerTests
+
+    private func group(_ id: String, _ name: String, pid: pid_t = 100) -> FreezeGroup {
+        FreezeGroup(id: id, name: name, members: [FreezeGroup.Member(pid: pid, startTime: UInt64(pid))])
+    }
+
+    // ── The confirm box's words ─────────────────────────────────────────────
+
+    func testConfirmTextNamesWhatIsKeptAndCountsWhatFreezes() {
+        XCTAssertEqual(UltraMenu.confirmText(kept: ["Editor", "Meetings"], frozenCount: 9),
+                       "Keeps Editor and Meetings. Freezes 9 apps and tools until you turn this off.")
+    }
+
+    func testConfirmTextJoinsTheKeptNamesInPlainEnglish() {
+        XCTAssertTrue(UltraMenu.confirmText(kept: ["Editor"], frozenCount: 2).hasPrefix("Keeps Editor. "))
+        XCTAssertTrue(UltraMenu.confirmText(kept: ["A", "B", "C"], frozenCount: 2).hasPrefix("Keeps A, B and C. "))
+        XCTAssertTrue(UltraMenu.confirmText(kept: ["A", "B", "C", "D"], frozenCount: 2).hasPrefix("Keeps A, B, C and D. "))
+    }
+
+    func testConfirmTextWithNothingKeptSaysSo() {
+        XCTAssertEqual(UltraMenu.confirmText(kept: [], frozenCount: 3),
+                       "Keeps nothing in particular. Freezes 3 apps and tools until you turn this off.")
+    }
+
+    func testConfirmTextForOneAndForNothingToFreeze() {
+        XCTAssertEqual(UltraMenu.confirmText(kept: ["Editor"], frozenCount: 1),
+                       "Keeps Editor. Freezes 1 app or tool until you turn this off.")
+        XCTAssertEqual(UltraMenu.confirmText(kept: ["Editor"], frozenCount: 0),
+                       "Keeps Editor. Nothing else is running that can be frozen.")
+    }
+
+    // ── The menu ────────────────────────────────────────────────────────────
+
+    private func menu(_ state: UltraLowPowerController.State, frozen: [FreezeGroup] = [], leftRunning: [FreezeGroup] = [],
+                      released: [String] = [], names: [String: String] = [:], start: @escaping () -> Void = {},
+                      off: @escaping () -> Void = {}, release: @escaping (String) -> Void = { _ in },
+                      beta: @escaping () -> Void = {}) -> NSMenu {
+        UltraMenu.build(state: state, frozen: frozen, leftRunning: leftRunning, releasedForLoad: released, names: names,
+                        onStart: start, onTurnOff: off, onRelease: release, onOpenBeta: beta)
+    }
+
+    private func titles(_ menu: NSMenu) -> [String] { menu.items.map { $0.isSeparatorItem ? "-" : $0.title } }
+
+    /// `performActionForItem` does nothing without a menu on screen; performing the item's action on its target is what a click does.
+    private func fire(_ menu: NSMenu, at index: Int) {
+        guard let item = menu.item(at: index), let action = item.action else { return XCTFail("no item at \(index)") }
+        _ = (item.target as? NSObject)?.perform(action)
+    }
+
+    func testMenuWhenOffOffersToStart() {
+        var started = 0
+        let m = menu(.off, start: { started += 1 })
+        XCTAssertEqual(titles(m), ["Ultra Low Power Mode…"])
+        XCTAssertTrue(m.items[0].isEnabled)
+        fire(m, at: 0)
+        XCTAssertEqual(started, 1)
+    }
+
+    /// An item with a target and an action is switched on again by the menu itself unless the menu is told not to.
+    func testMenuWhileTheBoxIsUpShowsTheSameItemSwitchedOff() {
+        let m = menu(.confirming)
+        XCTAssertEqual(titles(m), ["Ultra Low Power Mode…"])
+        XCTAssertFalse(m.items[0].isEnabled)
+        XCTAssertFalse(m.autoenablesItems, "the menu must not switch the item back on")
+    }
+
+    func testMenuWhenOnListsTurnOffAndEveryFrozenGroup() {
+        let frozen = [group("com.example.browser", "Browser"), group("job:db", "db"), group("exe:node", "node")]
+        let m = menu(.on, frozen: frozen)
+        XCTAssertEqual(titles(m), ["Turn off", "-", "Frozen (click to bring back):", "Browser", "db", "node", "-",
+                                   "Open Beta Features…"])
+        XCTAssertFalse(m.items[2].isEnabled, "the header is a label")
+        XCTAssertTrue(m.items[3...5].allSatisfy(\.isEnabled))
+    }
+
+    func testTurnOffAndOpenBetaRunTheirClosures() {
+        var off = 0, beta = 0
+        let m = menu(.on, frozen: [group("a", "A")], off: { off += 1 }, beta: { beta += 1 })
+        fire(m, at: 0)
+        fire(m, at: m.items.count - 1)
+        XCTAssertEqual([off, beta], [1, 1])
+    }
+
+    func testChoosingAFrozenGroupReleasesIt() {
+        var released: [String] = []
+        let m = menu(.on, frozen: [group("com.example.browser", "Browser"), group("job:db", "db")], release: { released.append($0) })
+        fire(m, at: 4)
+        fire(m, at: 3)
+        XCTAssertEqual(released, ["job:db", "com.example.browser"])
+    }
+
+    /// The group's name is only what is read; what is released is its id, which two groups may not share by name.
+    func testTwoGroupsWithOneNameAreReleasedByTheirOwnIds() {
+        var released: [String] = []
+        let m = menu(.on, frozen: [group("job:one", "Helper"), group("job:two", "Helper")], release: { released.append($0) })
+        fire(m, at: 4)
+        XCTAssertEqual(released, ["job:two"])
+    }
+
+    func testTheMenuSaysWhenNothingIsFrozenAnyMore() {
+        let m = menu(.on, frozen: [])
+        XCTAssertEqual(titles(m), ["Turn off", "-", "Nothing is frozen now.", "-", "Open Beta Features…"])
+        XCTAssertFalse(m.items[2].isEnabled)
+    }
+
+    func testTheMenuNamesAppsLeftRunning() {
+        let m = menu(.on, frozen: [group("com.example.browser", "Browser")], leftRunning: [group("com.example.cloud", "Cloud")],
+                     released: ["com.example.sync"], names: ["com.example.sync": "Sync"])
+        XCTAssertEqual(titles(m), ["Turn off", "-", "Frozen (click to bring back):", "Browser",
+                                   "Left running: Cloud (it has a part Anode cannot freeze).",
+                                   "Left running: Sync (it reacted badly to being frozen).", "-", "Open Beta Features…"])
+        XCTAssertFalse(m.items[4].isEnabled)
+        XCTAssertFalse(m.items[5].isEnabled)
+    }
+
+    // ── The section's lines ─────────────────────────────────────────────────
+
+    func testEachSkippedPartHasAPlainLine() {
+        let all: [UltraSkipped] = [.lowPowerNoHelper, .lowPowerOldHelper, .oneRefreshRate, .keyboardLight, .lowPowerRefused,
+                                   .rateRefused, .ceilingRefused]
+        let lines = UltraLowPowerFeature.describe(all)
+        XCTAssertEqual(lines.count, all.count)
+        XCTAssertEqual(Set(lines).count, all.count, "each part has its own words")
+        for line in lines {
+            XCTAssertTrue(line.hasSuffix("."), line)
+            XCTAssertFalse(line.contains("\n"), line)
+        }
+        // A missing helper names the helper and says what to do about it, by the route Charge Control already offers.
+        let noHelper = UltraLowPowerFeature.describe([.lowPowerNoHelper])[0]
+        XCTAssertTrue(noHelper.contains("Anode helper"), noHelper)
+        XCTAssertTrue(noHelper.contains("Install Helper…"), noHelper)
+        let oldHelper = UltraLowPowerFeature.describe([.lowPowerOldHelper])[0]
+        XCTAssertTrue(oldHelper.contains("older"), oldHelper)
+        XCTAssertTrue(oldHelper.contains("Install Helper…"), oldHelper)
+        XCTAssertTrue(UltraLowPowerFeature.describe([.oneRefreshRate])[0].contains("one refresh rate"))
+        // A Mac with no built-in screen gets this line every time: it says what could not be done, and blames nothing.
+        XCTAssertTrue(UltraLowPowerFeature.describe([.ceilingRefused])[0].contains("held at half"))
+    }
+
+    func testSkippedLinesComeInTheOrderOfTheEnumAndNeverRepeat() {
+        let shuffled: [UltraSkipped] = [.ceilingRefused, .keyboardLight, .lowPowerNoHelper, .keyboardLight, .oneRefreshRate,
+                                        .ceilingRefused]
+        XCTAssertEqual(UltraLowPowerFeature.describe(shuffled),
+                       UltraLowPowerFeature.describe([.lowPowerNoHelper, .oneRefreshRate, .keyboardLight, .ceilingRefused]))
+        XCTAssertEqual(UltraLowPowerFeature.describe([]), [])
+    }
+
+    func testAppsLeftRunningAreNamedWithTheReason() {
+        let cloud = group("com.example.cloud", "Cloud"), sync = group("com.example.sync", "Sync")
+        XCTAssertEqual(UltraLowPowerFeature.leftRunningLines(leftRunning: [sync], releasedForLoad: [], names: [:]),
+                       ["Left running: Sync (it has a part Anode cannot freeze)."])
+        XCTAssertEqual(UltraLowPowerFeature.leftRunningLines(leftRunning: [cloud, sync], releasedForLoad: [], names: [:]),
+                       ["Left running: Cloud, Sync (each has a part Anode cannot freeze)."])
+        XCTAssertEqual(UltraLowPowerFeature.leftRunningLines(leftRunning: [], releasedForLoad: ["com.example.sync"],
+                                                             names: ["com.example.sync": "Sync"]),
+                       ["Left running: Sync (it reacted badly to being frozen)."])
+        XCTAssertEqual(UltraLowPowerFeature.leftRunningLines(leftRunning: [], releasedForLoad: ["a", "b"], names: ["a": "A", "b": "B"]),
+                       ["Left running: A, B (each reacted badly to being frozen)."])
+        // Both, the part Anode cannot freeze first.
+        XCTAssertEqual(UltraLowPowerFeature.leftRunningLines(leftRunning: [cloud], releasedForLoad: ["com.example.sync"],
+                                                             names: ["com.example.sync": "Sync"]),
+                       ["Left running: Cloud (it has a part Anode cannot freeze).",
+                        "Left running: Sync (it reacted badly to being frozen)."])
+        XCTAssertEqual(UltraLowPowerFeature.leftRunningLines(leftRunning: [], releasedForLoad: [], names: [:]), [])
+    }
+
+    /// A group the guard continued is no longer in the frozen list, so nothing may know its name: it is read from its id.
+    func testAGroupReleasedForLoadWithNoNameIsReadFromItsId() {
+        XCTAssertEqual(UltraLowPowerFeature.leftRunningLines(leftRunning: [], releasedForLoad: ["job:com.example.indexer"], names: [:]),
+                       ["Left running: com.example.indexer (it reacted badly to being frozen)."])
+    }
+
+    func testTheNoteMakesNoPromiseOfRunningTime() {
+        let note = UltraLowPowerFeature.note
+        XCTAssertTrue(note.contains("no running time is promised"), note)
+        XCTAssertFalse(note.contains("hours"), note)
+        XCTAssertFalse(note.contains("hour"), note)
+    }
+
+    func testTheNoteDoesNotSellTheRefreshRate() {
+        XCTAssertTrue(UltraLowPowerFeature.note.contains("little or nothing"))
+    }
+
+    /// Every number in the note is one the spike measured (10.4, 4.3 and 2.8 W, rounded), and what was not measured is said so.
+    func testTheNoteGivesOnlyTheMeasuredFigures() {
+        let note = UltraLowPowerFeature.note
+        for figure in ["about 10 W", "about 4 W", "about 3 W"] { XCTAssertTrue(note.contains(figure), figure) }
+        XCTAssertTrue(note.contains("14-inch MacBook Pro"))
+        XCTAssertTrue(note.contains("was not measured"), "Low Power Mode under a heavy load was not measured")
+        XCTAssertTrue(note.contains("network connections"))
+        XCTAssertTrue(note.contains("cannot freeze"))
+        XCTAssertNil(note.range(of: #"\d+\s?%"#, options: .regularExpression), "no percentage was measured")
+    }
+
+    func testReadableNamesForTheAlwaysKeepList() {
+        let resolve: (String) -> String? = { $0 == "com.example.editor" ? "Editor" : nil }
+        XCTAssertEqual(UltraLowPowerFeature.displayName(forGroupID: "com.example.editor", appName: resolve), "Editor")
+        XCTAssertEqual(UltraLowPowerFeature.displayName(forGroupID: "com.example.gone", appName: resolve), "com.example.gone")
+        XCTAssertEqual(UltraLowPowerFeature.displayName(forGroupID: "job:homebrew.mxcl.postgresql", appName: resolve),
+                       "homebrew.mxcl.postgresql")
+        XCTAssertEqual(UltraLowPowerFeature.displayName(forGroupID: "exe:node", appName: resolve), "node")
+        XCTAssertEqual(UltraLowPowerFeature.displayName(forGroupID: "exe:", appName: resolve), "exe:", "nothing to read: the id")
+    }
+
+    func testOnlyGroupsNotAlreadyKeptAreOfferedToAdd() {
+        let all = [group("a", "A"), group("b", "B"), group("c", "C")]
+        XCTAssertEqual(UltraLowPowerFeature.addable(all, keeping: ["b"]).map(\.id), ["a", "c"])
+        XCTAssertEqual(UltraLowPowerFeature.addable(all, keeping: []).map(\.id), ["a", "b", "c"])
+        XCTAssertEqual(UltraLowPowerFeature.addable([], keeping: ["b"]).map(\.id), [])
+    }
+
+    func testTheStartButtonFollowsTheStateAndTheBox() {
+        typealias Look = UltraLowPowerFeature.ButtonLook
+        XCTAssertEqual(UltraLowPowerFeature.buttonLook(ticked: true, state: .off), Look(title: "Start…", isEnabled: true))
+        XCTAssertEqual(UltraLowPowerFeature.buttonLook(ticked: true, state: .confirming), Look(title: "Start…", isEnabled: false))
+        XCTAssertEqual(UltraLowPowerFeature.buttonLook(ticked: true, state: .on), Look(title: "Turn Off", isEnabled: true))
+        XCTAssertEqual(UltraLowPowerFeature.buttonLook(ticked: false, state: .off), Look(title: "Start…", isEnabled: false))
+        XCTAssertEqual(UltraLowPowerFeature.buttonLook(ticked: true, state: nil), Look(title: "Start…", isEnabled: false),
+                       "with no controller there is nothing to start")
+        // Unticking while the mode runs must not take the way out away.
+        XCTAssertEqual(UltraLowPowerFeature.buttonLook(ticked: false, state: .on), Look(title: "Turn Off", isEnabled: true))
+    }
+
+    // ── What a press does, and the app menu's entry ─────────────────────────
+
+    func testPressStartsWhenOffTurnsOffWhenOnAndDoesNothingWhileTheBoxIsUp() {
+        XCTAssertEqual(UltraMenu.press(for: .off), .start)
+        XCTAssertEqual(UltraMenu.press(for: .on), .turnOff)
+        XCTAssertNil(UltraMenu.press(for: .confirming))
+    }
+
+    func testTheAppMenuEntryIsShownOnlyWhileTheBoxIsTicked() {
+        typealias Entry = UltraMenu.AppEntry
+        XCTAssertEqual(UltraMenu.appEntry(ticked: false, state: .off),
+                       Entry(title: "Ultra Low Power Mode…", isHidden: true, isEnabled: true))
+        XCTAssertEqual(UltraMenu.appEntry(ticked: true, state: .off),
+                       Entry(title: "Ultra Low Power Mode…", isHidden: false, isEnabled: true))
+        XCTAssertEqual(UltraMenu.appEntry(ticked: true, state: .on),
+                       Entry(title: "Turn Off Ultra Low Power Mode", isHidden: false, isEnabled: true))
+        XCTAssertEqual(UltraMenu.appEntry(ticked: true, state: .confirming),
+                       Entry(title: "Ultra Low Power Mode…", isHidden: false, isEnabled: false))
+        XCTAssertEqual(UltraMenu.appEntry(ticked: true, state: nil),
+                       Entry(title: "Ultra Low Power Mode…", isHidden: false, isEnabled: false))
+    }
+
+    /// The mode may be running when the box is unticked; the entry that ends it stays until it has.
+    func testARunningModeKeepsItsEntryEvenUnticked() {
+        XCTAssertEqual(UltraMenu.appEntry(ticked: false, state: .on),
+                       UltraMenu.AppEntry(title: "Turn Off Ultra Low Power Mode", isHidden: false, isEnabled: true))
+        XCTAssertTrue(UltraMenu.appEntry(ticked: false, state: .confirming).isHidden)
+    }
+
+    /// The menu is built once, so the entry is there from the start, hidden until the box is ticked.
+    func testTheAppMenuCarriesTheEntryHiddenToBeginWith() {
+        NSApplication.shared.setActivationPolicy(.prohibited)
+        let delegate = AppDelegate()
+        NSApp.mainMenu = nil
+        delegate.buildMenu()
+        let anode = NSApp.mainMenu?.items.first?.submenu
+        let item = anode?.items.first { $0.identifier == UltraMenu.appEntryID }
+        XCTAssertNotNil(item, "Anode → Ultra Low Power Mode…")
+        XCTAssertTrue(item?.isHidden ?? false)
+        XCTAssertTrue(item?.target === delegate)
+        XCTAssertNotNil(item?.action)
+        XCTAssertTrue(anode?.delegate === delegate, "the menu asks before it opens whether to show the entry")
+        XCTAssertEqual(NSApp.mainMenu?.items.compactMap { $0.submenu }.flatMap(\.items).filter { $0.identifier == UltraMenu.appEntryID }.count, 1)
+    }
+
+    // ── The status icon ─────────────────────────────────────────────────────
+
+    func testTheIconIsASmallTemplateSymbolWithAPlainLabel() {
+        XCTAssertEqual(UltraIcon.accessibilityLabel, "Ultra Low Power Mode")
+        XCTAssertNotNil(NSImage(systemSymbolName: UltraIcon.symbolName, accessibilityDescription: nil),
+                        "the symbol exists on the oldest macOS Anode supports")
+        XCTAssertFalse(UltraIcon.autosaveName.isEmpty)
+        XCTAssertNotEqual(UltraIcon.autosaveName, BarChevron.autosaveName)
+    }
+
+    // ── The confirm box's one answer ────────────────────────────────────────
+
+    func testTheBoxAnswersExactlyOnce() {
+        var answers: [Bool] = []
+        let pending = UltraPendingAnswer()
+        pending.replace { answers.append($0) }
+        XCTAssertTrue(pending.isPending)
+        pending.give(true)
+        pending.give(false)      // closing the box after Confirm: nobody is waiting any more
+        pending.give(true)
+        XCTAssertEqual(answers, [true])
+        XCTAssertFalse(pending.isPending)
+    }
+
+    func testAnyOtherWayOfClosingAnswersNo() {
+        var answers: [Bool] = []
+        let pending = UltraPendingAnswer()
+        pending.replace { answers.append($0) }
+        pending.give(false)      // the close button, or the system closing the window
+        pending.give(false)
+        XCTAssertEqual(answers, [false])
+    }
+
+    func testAskingAgainWhileOpenAnswersTheOldOneNoAndLeavesTheNewOnePending() {
+        var first: [Bool] = [], second: [Bool] = []
+        let pending = UltraPendingAnswer()
+        pending.replace { first.append($0) }
+        pending.replace { second.append($0) }
+        XCTAssertEqual(first, [false])
+        XCTAssertEqual(second, [])
+        XCTAssertTrue(pending.isPending)
+        pending.give(true)
+        XCTAssertEqual(first, [false], "the old one is never answered twice")
+        XCTAssertEqual(second, [true])
+    }
+
+    /// The old answer runs after the new one is in place: when it answers again (a controller told No may ask once more), the
+    /// new question is the one that hears it, and the old one is not answered twice.
+    func testTheNewQuestionIsInPlaceBeforeTheOldOneIsAnswered() {
+        var first: [Bool] = [], second: [Bool] = []
+        let pending = UltraPendingAnswer()
+        pending.replace { first.append($0); pending.give(true) }
+        pending.replace { second.append($0) }
+        XCTAssertEqual(first, [false])
+        XCTAssertEqual(second, [true])
+        XCTAssertFalse(pending.isPending)
+    }
+
+    func testNothingPendingMeansNothingToAnswer() {
+        let pending = UltraPendingAnswer()
+        pending.give(true)
+        XCTAssertFalse(pending.isPending)
+    }
+
+    func testTheBoxIsCentredOnTheScreenWithTheMenuBar() {
+        let area = NSRect(x: 0, y: 40, width: 1440, height: 860)
+        let frame = UltraConfirmPanel.centred(NSSize(width: 420, height: 300), in: area)
+        XCTAssertEqual(frame, NSRect(x: 510, y: 320, width: 420, height: 300))
+        // Larger than the area: the corner stays on screen.
+        let big = UltraConfirmPanel.centred(NSSize(width: 2000, height: 1200), in: area)
+        XCTAssertEqual(big.minX, area.minX)
+        XCTAssertEqual(big.maxY, area.maxY)
+    }
+
+    // ── The section ─────────────────────────────────────────────────────────
+
+    /// What the injected closures were asked, and what they answer.
+    private final class Probe {
+        var controller: UltraLowPowerController?
+        var candidates: [FreezeGroup] = []
+        var candidateAsks = 0
+        var installAsks = 0
+        var installReport: ((String) -> Void)?
+        var appNames: [String: String] = [:]
+    }
+
+    private func section(_ probe: Probe = Probe(), ticked: Bool = false, buildView: Bool = true) throws
+        -> (feature: UltraLowPowerFeature, settings: Settings) {
+        _ = NSApplication.shared
+        let settings = try throwawaySettings(owner: "UltraLowPowerFeature", test: name)
+        settings.ultraLowPowerEnabled = ticked
+        let feature = UltraLowPowerFeature(
+            settings: settings,
+            controller: { probe.controller },
+            candidates: { done in probe.candidateAsks += 1; done(probe.candidates) },
+            appName: { probe.appNames[$0] },
+            installHelper: { report in probe.installAsks += 1; probe.installReport = report })
+        if buildView { _ = feature.makeView() }
+        return (feature, settings)
+    }
+
+    /// A controller over a made-up Mac, as the controller's own tests have it. `work` runs inline and nothing is scheduled.
+    private final class ControllerRig {
+        let calls = Fakes.Calls()
+        let confirm = Fakes.FakeConfirm()
+        let power: Fakes.FakePower
+        let controller: UltraLowPowerController
+
+        private static func proc(_ pid: pid_t, uid: uid_t = 501, path: String, app: AppKind = .none, bundle: String? = nil,
+                                 name: String) -> UltraProcess {
+            UltraProcess(pid: pid, parent: 1, uid: uid, startTime: UInt64(pid) * 10, path: path, app: app, bundleID: bundle, name: name)
+        }
+
+        /// Anode (1000); the editor in front (10); a browser (20) that freezes; a cloud app (40) with a part that is root's (41).
+        static let world: [UltraProcess] = [
+            proc(1000, path: "/Applications/Anode.app/Contents/MacOS/Anode", app: .regular, bundle: "dev.example.self", name: "Anode"),
+            proc(10, path: "/Applications/Editor.app/Contents/MacOS/Editor", app: .regular, bundle: "com.example.editor", name: "Editor"),
+            proc(20, path: "/Applications/Browser.app/Contents/MacOS/Browser", app: .regular, bundle: "com.example.browser", name: "Browser"),
+            proc(40, path: "/Applications/Cloud.app/Contents/MacOS/Cloud", app: .regular, bundle: "com.example.cloud", name: "Cloud"),
+            proc(41, uid: 0, path: "/Applications/Cloud.app/Contents/Library/clouddaemon", name: "clouddaemon")]
+
+        init(settings: Settings) {
+            power = Fakes.FakePower(calls)
+            controller = UltraLowPowerController(
+                settings: settings, processes: Fakes.FakeProcesses(Self.world), freezer: Fakes.FakeFreezer(calls),
+                hider: Fakes.FakeHider(calls), backlight: Fakes.FakeBacklight(calls), ownBrightness: OwnBrightness(),
+                rate: Fakes.FakeRate(calls), keyboard: Fakes.FakeKeyboard(calls), power: power,
+                watchdog: Fakes.FakeWatchdog(calls), store: Fakes.FakeStore(calls), confirm: confirm, load: Fakes.FakeLoad(calls),
+                lastOtherFrontApp: { 10 }, ownPIDs: { [1000] }, user: 501, work: { $0() }, schedule: { _, _ in }, log: { _ in })
+        }
+    }
+
+    private func press(_ button: NSButton) { button.performClick(nil) }
+
+    func testSectionIsInTheBetaFeaturesList() throws {
+        let list = BetaFeaturesWindowController.defaultFeatures(hasLidSensor: false,
+                                                               settings: try throwawaySettings(owner: "UltraLowPowerFeature", test: name))
+        XCTAssertTrue(list.contains { $0 is UltraLowPowerFeature })
+        XCTAssertEqual(list.first { $0 is UltraLowPowerFeature }?.title, "Ultra Low Power Mode")
+    }
+
+    func testTheSectionIsUntickedByDefaultAndTheCheckboxWritesTheSetting() throws {
+        let probe = Probe()
+        let (f, settings) = try section(probe)
+        XCTAssertEqual(f.enableCheckbox.state, .off)
+        XCTAssertFalse(settings.ultraLowPowerEnabled)
+        press(f.enableCheckbox)
+        XCTAssertTrue(settings.ultraLowPowerEnabled)
+        XCTAssertEqual(f.enableCheckbox.state, .on)
+        press(f.enableCheckbox)
+        XCTAssertFalse(settings.ultraLowPowerEnabled)
+    }
+
+    func testTickingTheBoxNeverStartsTheMode() throws {
+        let probe = Probe()
+        let (f, settings) = try section(probe)
+        let rig = ControllerRig(settings: settings)
+        probe.controller = rig.controller
+        press(f.enableCheckbox)
+        XCTAssertEqual(rig.controller.state, .off)
+        XCTAssertTrue(rig.confirm.keptNames.isEmpty, "nobody was asked anything")
+    }
+
+    func testWithNoControllerTheSectionShowsTheCheckboxAndADisabledButton() throws {
+        let (f, _) = try section(ticked: true)
+        XCTAssertEqual(f.enableCheckbox.state, .on)
+        XCTAssertEqual(f.startButton.title, "Start…")
+        XCTAssertFalse(f.startButton.isEnabled)
+    }
+
+    func testTheButtonIsDisabledWhileUntickedAndStartsTheMode() throws {
+        let probe = Probe()
+        let (f, settings) = try section(probe)
+        let rig = ControllerRig(settings: settings)
+        probe.controller = rig.controller
+        f.refresh()
+        XCTAssertFalse(f.startButton.isEnabled, "unticked")
+        press(f.enableCheckbox)
+        XCTAssertTrue(f.startButton.isEnabled)
+        press(f.startButton)
+        XCTAssertEqual(rig.controller.state, .confirming)
+        XCTAssertEqual(rig.confirm.keptNames, [["Editor"]], "the box was asked, by names")
+        XCTAssertEqual(rig.confirm.frozenNames, [["Browser"]])
+        XCTAssertFalse(f.startButton.isEnabled, "the box is up")
+        rig.confirm.press(false)
+        XCTAssertEqual(rig.controller.state, .off)
+        XCTAssertTrue(f.startButton.isEnabled)
+    }
+
+    func testTheButtonTurnsTheModeOff() throws {
+        let probe = Probe()
+        let (f, settings) = try section(probe, ticked: true)
+        let rig = ControllerRig(settings: settings)
+        probe.controller = rig.controller
+        f.refresh()
+        press(f.startButton)
+        rig.confirm.press(true)
+        XCTAssertEqual(rig.controller.state, .on)
+        XCTAssertEqual(f.startButton.title, "Turn Off")
+        XCTAssertTrue(f.startButton.isEnabled)
+        press(f.startButton)
+        XCTAssertEqual(rig.controller.state, .off)
+        XCTAssertEqual(f.startButton.title, "Start…")
+    }
+
+    /// Unticked while the mode runs: the section still has a way out.
+    func testUntickingWhileTheModeRunsLeavesTurnOffEnabled() throws {
+        let probe = Probe()
+        let (f, settings) = try section(probe, ticked: true)
+        let rig = ControllerRig(settings: settings)
+        probe.controller = rig.controller
+        f.refresh()
+        press(f.startButton)
+        rig.confirm.press(true)
+        press(f.enableCheckbox)
+        XCTAssertFalse(settings.ultraLowPowerEnabled)
+        XCTAssertEqual(f.startButton.title, "Turn Off")
+        XCTAssertTrue(f.startButton.isEnabled)
+    }
+
+    func testTheSectionNamesWhatTheModeSkippedAndWhatItLeftRunning() throws {
+        let probe = Probe()
+        let (f, settings) = try section(probe, ticked: true)
+        let rig = ControllerRig(settings: settings)
+        rig.power.availability = .noHelper
+        probe.controller = rig.controller
+        f.refresh()
+        XCTAssertTrue(f.skippedLabel.isHidden)
+        XCTAssertTrue(f.leftRunningLabel.isHidden)
+        XCTAssertTrue(f.installButton.isHidden)
+        press(f.startButton)
+        rig.confirm.press(true)
+        XCTAssertEqual(rig.controller.state, .on)
+        XCTAssertFalse(f.skippedLabel.isHidden)
+        XCTAssertEqual(f.skippedLabel.stringValue, UltraLowPowerFeature.describe([.lowPowerNoHelper]).joined(separator: "\n"))
+        XCTAssertEqual(f.leftRunningLabel.stringValue, "Left running: Cloud (it has a part Anode cannot freeze).")
+        XCTAssertFalse(f.installButton.isHidden, "a missing helper comes with the way to install it")
+        // Ending the mode takes the lines away with it.
+        press(f.startButton)
+        XCTAssertTrue(f.skippedLabel.isHidden)
+        XCTAssertTrue(f.leftRunningLabel.isHidden)
+        XCTAssertTrue(f.installButton.isHidden)
+    }
+
+    func testTheInstallButtonUsesTheRouteChargeControlUsesAndShowsWhatItReports() throws {
+        let probe = Probe()
+        let (f, settings) = try section(probe, ticked: true)
+        let rig = ControllerRig(settings: settings)
+        rig.power.availability = .oldHelper
+        probe.controller = rig.controller
+        f.refresh()
+        press(f.startButton)
+        rig.confirm.press(true)
+        XCTAssertFalse(f.installButton.isHidden)
+        XCTAssertTrue(f.installNoteLabel.isHidden)
+        press(f.installButton)
+        XCTAssertEqual(probe.installAsks, 1)
+        probe.installReport?("The Anode helper is installed. Fan control is as it was.")
+        XCTAssertEqual(f.installNoteLabel.stringValue, "The Anode helper is installed. Fan control is as it was.")
+        XCTAssertFalse(f.installNoteLabel.isHidden)
+    }
+
+    func testTheSectionListensForTheControllerOnlyOnceItsViewExists() throws {
+        let probe = Probe()
+        let (f, settings) = try section(probe, ticked: true, buildView: false)
+        let rig = ControllerRig(settings: settings)
+        probe.controller = rig.controller
+        settings.ultraLowPowerEnabled = false
+        f.enableCheckbox.state = .on                        // stale on screen
+        NotificationCenter.default.post(name: UltraLowPowerController.didChange, object: nil)
+        XCTAssertEqual(f.enableCheckbox.state, .on, "no view yet: nothing is listening")
+        _ = f.makeView()
+        XCTAssertEqual(f.enableCheckbox.state, .off)
+        f.enableCheckbox.state = .on
+        NotificationCenter.default.post(name: UltraLowPowerController.didChange, object: nil)
+        XCTAssertEqual(f.enableCheckbox.state, .off, "now it follows")
+    }
+
+    func testTheSectionFollowsTheSettings() throws {
+        let (f, settings) = try section()
+        settings.ultraLowPowerEnabled = true
+        XCTAssertEqual(f.enableCheckbox.state, .on)
+        settings.ultraLowPowerAlwaysKeep = ["job:db"]
+        XCTAssertEqual(f.keptNames, ["db"])
+    }
+
+    func testTheNoteIsOnTheSectionAndSaysWhatWasMeasured() throws {
+        let (f, _) = try section()
+        XCTAssertEqual(f.noteLabel.stringValue, UltraLowPowerFeature.note)
+        XCTAssertFalse(f.summary.isEmpty)
+        XCTAssertFalse(f.summary.contains("hours"))
+    }
+
+    // ── The always-keep list ────────────────────────────────────────────────
+
+    func testTheListShowsEachStoredIdByAReadableName() throws {
+        let probe = Probe()
+        probe.appNames = ["com.example.editor": "Editor"]
+        let (f, settings) = try section(probe)
+        settings.ultraLowPowerAlwaysKeep = ["com.example.editor", "job:homebrew.mxcl.postgresql", "exe:node", "com.example.unknown"]
+        XCTAssertEqual(f.keptNames, ["Editor", "homebrew.mxcl.postgresql", "node", "com.example.unknown"])
+        XCTAssertEqual(f.removeButtons.count, 4, "a remove button for each row")
+    }
+
+    func testANameSeenInTheCandidatesIsRememberedForTheList() throws {
+        let probe = Probe()
+        probe.candidates = [group("com.example.browser", "Browser")]
+        let (f, settings) = try section(probe)
+        settings.ultraLowPowerAlwaysKeep = ["com.example.browser"]
+        XCTAssertEqual(f.keptNames, ["Browser"], "the app is not running by a name macOS gives, but the picker knew it")
+    }
+
+    func testAddingAndRemovingWriteTheSetting() throws {
+        let probe = Probe()
+        probe.candidates = [group("com.example.browser", "Browser"), group("job:db", "db")]
+        let (f, settings) = try section(probe)
+        settings.ultraLowPowerAlwaysKeep = ["com.example.editor"]
+        f.refresh()
+        XCTAssertEqual(f.addChoices, ["Browser", "db"])
+        choose("db", in: f)
+        XCTAssertEqual(settings.ultraLowPowerAlwaysKeep, ["com.example.editor", "job:db"])
+        XCTAssertEqual(f.addChoices, ["Browser"], "an app already kept is not offered again")
+        XCTAssertEqual(f.keptNames, ["com.example.editor", "db"])
+        press(f.removeButtons[0])
+        XCTAssertEqual(settings.ultraLowPowerAlwaysKeep, ["job:db"])
+        XCTAssertEqual(f.keptNames, ["db"])
+    }
+
+    func testAddingWhatIsAlreadyThereChangesNothing() throws {
+        let (f, settings) = try section()
+        settings.ultraLowPowerAlwaysKeep = ["a", "b"]
+        f.add(groupID: "a", name: "A")
+        XCTAssertEqual(settings.ultraLowPowerAlwaysKeep, ["a", "b"])
+    }
+
+    func testWithNothingToAddThePopupSaysSo() throws {
+        let (f, _) = try section()
+        f.refresh()
+        XCTAssertEqual(f.addPopup.menu?.items.map(\.title), ["Add…", "Nothing else is running"])
+        XCTAssertEqual(f.addChoices, [])
+        XCTAssertEqual(f.addPopup.menu?.items.last?.isEnabled, false)
+    }
+
+    func testTheCandidatesAreAskedForWhenTheWindowComesForwardNotOnEveryChange() throws {
+        let probe = Probe()
+        let (f, settings) = try section(probe)
+        let before = probe.candidateAsks
+        settings.ultraLowPowerAlwaysKeep = ["a"]
+        settings.ultraLowPowerEnabled = true
+        NotificationCenter.default.post(name: UltraLowPowerController.didChange, object: nil)
+        XCTAssertEqual(probe.candidateAsks, before, "a change redraws; it does not read the process list again")
+        f.refresh()
+        XCTAssertEqual(probe.candidateAsks, before + 1)
+    }
+
+    private func choose(_ name: String, in f: UltraLowPowerFeature) {
+        guard let item = f.addPopup.menu?.items.first(where: { $0.title == name && $0.representedObject != nil }),
+              let action = item.action else {
+            return XCTFail("\(name) is not offered")
+        }
+        // The section is not an NSObject: the application sends the action, as a click on the item would.
+        XCTAssertTrue(NSApp.sendAction(action, to: item.target, from: item))
+    }
+}

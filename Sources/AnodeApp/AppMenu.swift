@@ -1,4 +1,5 @@
 import AppKit
+import PowerKit
 
 // ── Main menu ───────────────────────────────────────────────────────────────
 //
@@ -42,10 +43,13 @@ extension AppDelegate {
 
     private func appMenuItem() -> NSMenuItem {
         submenu("Anode") { m in
+            // Asked just before the menu opens whether the Ultra Low Power Mode entry is shown (see `menuNeedsUpdate`).
+            m.delegate = self
             let about = NSMenuItem(title: "About Anode",
                                    action: #selector(showAbout(_:)), keyEquivalent: "")
             about.target = self
             m.addItem(about)
+            m.addItem(ultraLowPowerItem())
             m.addItem(.separator())
 
             // Settings is NOT here.
@@ -74,6 +78,31 @@ extension AppDelegate {
             m.addItem(withTitle: "Quit Anode",
                       action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         }
+    }
+
+    // ── Ultra Low Power Mode ────────────────────────────────────────────────
+
+    /// "Ultra Low Power Mode…" (beta): asks to start the mode, and once it is on becomes "Turn Off Ultra Low Power Mode".
+    ///
+    /// Built once like the rest of this menu, so it is there from the start and hidden: whether it shows, and what it says,
+    /// is settled each time the menu is about to open (`menuNeedsUpdate`), from the box in Beta Features and the mode's
+    /// state. Hiding it from `validateMenuItem` instead would be one-way if AppKit does not validate hidden items.
+    private func ultraLowPowerItem() -> NSMenuItem {
+        let item = NSMenuItem(title: UltraMenu.startTitle, action: #selector(toggleUltraLowPower(_:)), keyEquivalent: "")
+        item.target = self
+        item.identifier = UltraMenu.appEntryID
+        item.isHidden = true
+        return item
+    }
+
+    /// Nothing happens without a controller (the app has not made one) or while the confirm box is up.
+    @objc func toggleUltraLowPower(_ sender: Any?) {
+        guard let controller = UltraLowPowerController.current else { return }
+        UltraMenu.toggle(controller)
+    }
+
+    private func ultraEntry() -> UltraMenu.AppEntry {
+        UltraMenu.appEntry(ticked: Settings.shared.ultraLowPowerEnabled, state: UltraLowPowerController.current?.state)
     }
 
     // ── Settings ────────────────────────────────────────────────────────────
@@ -299,9 +328,22 @@ extension AppDelegate {
     }
 }
 
+extension AppDelegate: NSMenuDelegate {
+    /// The Anode menu is about to open: the Ultra Low Power Mode entry shows only while its box in Beta Features is ticked (or
+    /// the mode is running), and says what pressing it will do.
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        guard let item = menu.items.first(where: { $0.identifier == UltraMenu.appEntryID }) else { return }
+        let entry = ultraEntry()
+        item.title = entry.title
+        item.isHidden = entry.isHidden
+    }
+}
+
 extension AppDelegate: NSMenuItemValidation {
     func validateMenuItem(_ item: NSMenuItem) -> Bool {
         switch item.action {
+        case #selector(toggleUltraLowPower(_:)):
+            return ultraEntry().isEnabled
         case #selector(showLens(_:)):
             // A tick beside the lens on screen, so the menu answers "where am I"
             // as well as "where can I go".
