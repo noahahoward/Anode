@@ -70,7 +70,7 @@ Before starting: message the other session to pause its builds, and tell the own
 
 ```swift
 func testDefaultsAreOffAndEmpty()                 // false, []
-func testAlwaysKeepRoundTrips()                   // ["com.example.vpn", "job:homebrew.db"] survives a new Settings on the same suite
+func testAlwaysKeepRoundTrips()                   // ["com.example.vpn", "job:com.example.database"] survives a new Settings on the same suite
 func testGarbageInTheKeepListReadsAsEmpty()       // defaults.set("not json", forKey: "anode.ultraLowPowerAlwaysKeep") → []
 func testObserversFireForEachKey()
 ```
@@ -146,8 +146,8 @@ func testARootProcessInsideTheSameBundleProtectsTheGroup()     // no team on eit
 func testARootProcessOfAnotherTeamProtectsNothing()
 func testSystemRootServicesDoNotProtectAnApp()                 // team nil on both, different bundles → still frozen
 func testAnAppUsingTheMicrophoneIsKeptAndListedAsKept()
-func testAlwaysKeepTakesAppsAndBackgroundTools()         // "com.example.vpn", "job:homebrew.db"
-func testABackgroundToolWithNoAppIsFrozenUnderItsJobName() // parent 1, label "homebrew.db" → id "job:homebrew.db"
+func testAlwaysKeepTakesAppsAndBackgroundTools()         // "com.example.vpn", "job:com.example.database"
+func testABackgroundToolWithNoAppIsFrozenUnderItsJobName() // parent 1, label "com.example.database" → id "job:com.example.database"
 func testAToolWithNoLabelIsGroupedByExecutableName()     // id "exe:devserver"
 func testExtensionsOfAFrozenAppAreLeftRunning()          // path …/Some.appex/… not a member
 func testNoFrontAppStillPlans()                          // front nil
