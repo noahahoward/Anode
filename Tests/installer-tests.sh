@@ -123,6 +123,15 @@ EOF
 printf '#!/bin/sh\necho "$*" >> "%s"\nexit 0\n' "$T/launchctl-asked" > "$T/shim/launchctl"
 # Nothing the scripts under test run may open an app, signal a process, change a privacy approval or the power
 # settings, or become root.
+# ps shows only the processes this test started (their pids are in test-pids): the Anode that really runs on the Mac
+# that runs the tests is not one of a scenario's, and the uninstaller must not see it. Scenarios that need a process
+# table of their own put another ps first on the path (shim-running, below).
+cat > "$T/shim/ps" <<EOF
+#!/bin/sh
+pids=\$(tr '\\n' ',' < "$T/test-pids" 2>/dev/null)
+[ -n "\$pids" ] || exit 0
+exec /bin/ps -p "\${pids%,}" -o pid=,comm=
+EOF
 for tool in open pkill killall tccutil pmset sudo; do
   printf '#!/bin/sh\necho "%s $*" >> "%s"\nexit 0\n' "$tool" "$T/other-asked" > "$T/shim/$tool"
 done
@@ -157,6 +166,8 @@ run_anode() {   # run_anode HOME SCRIPT [ARGS…]: prints the script's output; r
     got="$(env -u BASH_ENV -u ENV "${e[@]}" bash -c 'command -v "$1"' _ "$tool" 2>/dev/null)"
     [ "$got" = "$T/shim/$tool" ] || { guard_fail "the $tool stub is not what the script would run (found '$got')"; return 1; }
   done
+  got="$(env -u BASH_ENV -u ENV "${e[@]}" bash -c 'command -v ps' 2>/dev/null)"
+  case "$got" in "$T"/*) ;; *) guard_fail "ps is '$got', not a stand-in inside the test's own folder (the real Anode would be seen)"; return 1 ;; esac
   for var in $GUARDED_FOLDERS; do
     got="$(env -u BASH_ENV -u ENV "${e[@]}" bash -c 'printf %s "${!1:-}"' _ "$var" 2>/dev/null)"
     case "$got" in "$T"/*) ;; *) guard_fail "$var is '$got', which is not inside the test's own folder"; return 1 ;; esac
@@ -368,6 +379,7 @@ n=\$(cat "$T/ps-calls" 2>/dev/null || echo 0); n=\$((n + 1)); echo "\$n" > "$T/p
 limit=\$(cat "$T/ps-running-for" 2>/dev/null || echo 999999)
 echo "   101 /usr/sbin/cfprefsd"
 cat "$T/ps-extra" 2>/dev/null
+case "\$*" in *"-A"*) cat "$T/ps-extra-all" 2>/dev/null ;; esac
 [ "\$n" -le "\$limit" ] || exit 0
 while IFS= read -r bin; do
   [ -n "\$bin" ] || continue
@@ -379,7 +391,7 @@ exit 0
 EOF
 printf '#!/bin/sh\nexit 0\n' > "$T/shim-running/sleep"
 chmod +x "$T/shim-running/ps" "$T/shim-running/sleep"
-ps_reset() { rm -f "$T/ps-asked" "$T/ps-calls" "$T/ps-running-for" "$T/running-bins" "$T/ps-extra"; }
+ps_reset() { rm -f "$T/ps-asked" "$T/ps-calls" "$T/ps-running-for" "$T/running-bins" "$T/ps-extra" "$T/ps-extra-all"; }
 ps_calls() { cat "$T/ps-calls" 2>/dev/null || echo 0; }
 H="$(new_home 12)"; stub_app "$H" 0
 ps_reset; printf '%s\n' "$H/Applications/Anode.app/Contents/MacOS/AnodeApp" > "$T/running-bins"
@@ -437,45 +449,107 @@ OUT="$(run_anode "$H" "$ROOT/uninstall.sh" --yes 2>&1 || true)"
 SCENARIO_PATH=""
 check "a second copy that quits slowly is waited for"       [ "$(ps_calls)" -ge 4 ]
 check "and then both copies are removed"                    [ ! -e "$H/Applications/Anode.app" ] && [ ! -e "$ANODE_SYSTEM_APPLICATIONS_DIR/Anode.app" ]
-# Look-alikes are not Anode: the same path with something after it, or a folder in the middle.
+# Look-alikes are not Anode: the same path with something after it. (A program called AnodeApp from anywhere else is,
+# below: the check goes by the file name, because a relative path or a link hides the installed path.)
 H="$(new_home 23)"; two_copies "$H"
 ps_reset; : > "$T/running-bins"
-printf '  4300 %s\n  4301 %s\n' "$SYSTEM_BIN-old" "$(dirname "$SYSTEM_BIN")/x/AnodeApp" > "$T/ps-extra"
+printf '  4300 %s\n  4301 %s\n' "$SYSTEM_BIN-old" "/usr/bin/AnodeApp-helper" > "$T/ps-extra"
 SCENARIO_PATH="$T/shim-running"
 OUT="$(run_anode "$H" "$ROOT/uninstall.sh" --yes 2>&1 || true)"
 SCENARIO_PATH=""
 check "a process that only looks like Anode's path does not stop it" hasnt "still running"
 check "and the copies are removed"                          [ ! -e "$H/Applications/Anode.app" ] && [ ! -e "$ANODE_SYSTEM_APPLICATIONS_DIR/Anode.app" ]
+# An AnodeApp from a folder that is not an installed copy's (a build folder, a link, a relative path) is a running Anode.
+H="$(new_home 23b)"; two_copies "$H"
+ps_reset; : > "$T/running-bins"
+printf '  4300 %s\n' "/somewhere/else/AnodeApp" > "$T/ps-extra"
+SCENARIO_PATH="$T/shim-running"
+RUNNING_STATUS=0; OUT="$(run_anode "$H" "$ROOT/uninstall.sh" --yes 2>&1)" || RUNNING_STATUS=$?
+SCENARIO_PATH=""
+check "an AnodeApp started from anywhere else stops it"     [ "$RUNNING_STATUS" != 0 ] && has "still running"
+check "and is named as ps shows it"                         has "(/somewhere/else/AnodeApp)"
+check "and nothing is removed"                              present "$H/Applications/Anode.app"
+# Another user's Anode counts only when the copy in the system Applications folder is to be removed.
+H="$(new_home 23c)"; two_copies "$H"
+ps_reset; : > "$T/running-bins"
+printf '  4400 %s\n' "/Users/someone-else/Applications/Anode.app/Contents/MacOS/AnodeApp" > "$T/ps-extra-all"
+SCENARIO_PATH="$T/shim-running"
+RUNNING_STATUS=0; OUT="$(run_anode "$H" "$ROOT/uninstall.sh" --yes 2>&1)" || RUNNING_STATUS=$?
+SCENARIO_PATH=""
+check "another user's Anode stops the removal of the system copy" [ "$RUNNING_STATUS" != 0 ] && has "someone-else"
+check "and it was looked for among every user's processes"  grep -q -- "^-A " "$T/ps-asked"
+rm -rf "$ANODE_SYSTEM_APPLICATIONS_DIR/Anode.app"   # (the scenarios above left it: they stopped before removing anything)
+H="$(new_home 23d)"; stub_app "$H" 0
+ps_reset; : > "$T/running-bins"
+printf '  4400 %s\n' "/Users/someone-else/Applications/Anode.app/Contents/MacOS/AnodeApp" > "$T/ps-extra-all"
+SCENARIO_PATH="$T/shim-running"
+OUT="$(run_anode "$H" "$ROOT/uninstall.sh" --yes 2>&1 || true)"
+SCENARIO_PATH=""
+check "with no copy in the system folder it is not this user's to wait for" hasnt "still running"
+check "and only this user's processes were looked at"       only_this_user
+check "the app is removed"                                  absent "$H/Applications/Anode.app"
 ps_reset
 
-echo "6b2a. A home folder with a + ( ) or . in its name: the path is matched as text, not as a pattern (real processes)"
-# A real program that sleeps, so `ps` lists it by its own path; compiled here (the Command Line Tools have the compiler).
-printf '#include <unistd.h>\n#include <stdlib.h>\nint main(int c, char **v) { sleep(c > 1 ? atoi(v[1]) : 30); return 0; }\n' > "$T/hold.c"
+echo "6b2a. A running Anode is found by its file name, however it was started (real processes)"
+# A real program that sleeps, so `ps` lists it by the path it was started with; compiled here (the Command Line Tools
+# have the compiler). It writes its own pid to the file named second, so the scenario knows which process is the program
+# and not a shell that started it.
+printf '#include <unistd.h>\n#include <stdio.h>\n#include <stdlib.h>\nint main(int c, char **v) { if (c > 2) { FILE *f = fopen(v[2], "w"); if (f) { fprintf(f, "%%d\\n", (int)getpid()); fclose(f); } } sleep(c > 1 ? atoi(v[1]) : 30); return 0; }\n' > "$T/hold.c"
 mkdir -p "$T/shim-nosleep"; printf '#!/bin/sh\nexit 0\n' > "$T/shim-nosleep/sleep"; chmod +x "$T/shim-nosleep/sleep"
 if cc -o "$T/hold" "$T/hold.c" 2>/dev/null; then
-  live_anode() {  # live_anode HOME: the app there is a real process that stays up until killed; sets LIVE_PID
-    local bin="$1/Applications/Anode.app/Contents/MacOS/AnodeApp"
-    mkdir -p "$(dirname "$bin")"; cp "$T/hold" "$bin"
-    "$bin" 60 & LIVE_PID=$!; REAL_PIDS+=("$LIVE_PID")
-    sleep 0.3   # (the shell's own, not the stub: this is not in a run_anode)
+  live_anode() {  # live_anode HOME [relative]: the app there is a real process that stays up until killed; sets LIVE_PID
+    local bin="$1/Applications/Anode.app/Contents/MacOS/AnodeApp" pidfile="$T/live-pid"
+    mkdir -p "$(dirname "$bin")"; cp "$T/hold" "$bin"; rm -f "$pidfile"
+    if [ "${2:-}" = relative ]; then
+      # Started from inside its own folder as ./AnodeApp: ps shows "./AnodeApp", not the installed path.
+      ( cd "$(dirname "$bin")" && ./AnodeApp 60 "$pidfile" ) &
+    else
+      "$bin" 60 "$pidfile" &
+    fi
+    local waited=0
+    while [ ! -s "$pidfile" ] && [ "$waited" -lt 50 ]; do sleep 0.1; waited=$((waited + 1)); done   # (the shell's own sleep, not the stub: this is not in a run_anode)
+    LIVE_PID="$(cat "$pidfile")"; REAL_PIDS+=("$LIVE_PID"); echo "$LIVE_PID" >> "$T/test-pids"
   }
+  stop_live() { kill "$LIVE_PID" 2>/dev/null; wait "$LIVE_PID" 2>/dev/null; : > "$T/test-pids"; }
+  : > "$T/test-pids"
   H="$(new_home 'a+(b).c')"; live_anode "$H"
   SCENARIO_PATH="$T/shim-nosleep"
   RUNNING_STATUS=0; OUT="$(run_anode "$H" "$ROOT/uninstall.sh" --yes 2>&1)" || RUNNING_STATUS=$?
   SCENARIO_PATH=""
   check "a copy running from a home named a+(b).c is found"   [ "$RUNNING_STATUS" != 0 ] && has "still running"
   check "and kept"                                            present "$H/Applications/Anode.app"
-  kill "$LIVE_PID" 2>/dev/null; wait "$LIVE_PID" 2>/dev/null
+  check "and named by the path it was started with"           has "$H/Applications/Anode.app/Contents/MacOS/AnodeApp"
+  stop_live
   SCENARIO_PATH="$T/shim-nosleep"; OUT="$(run_anode "$H" "$ROOT/uninstall.sh" --yes 2>&1 || true)"; SCENARIO_PATH=""
   check "gone, it is removed"                                 absent "$H/Applications/Anode.app"
-  # Another home whose name the first one's name would match as a pattern (a+ = one or more a, (b) = b, . = any):
-  # its Anode running is not this one's.
+  # Started through a relative path, ps shows ./AnodeApp and not the installed path.
+  H="$(new_home 'relative')"; live_anode "$H" relative
+  SCENARIO_PATH="$T/shim-nosleep"
+  RUNNING_STATUS=0; OUT="$(run_anode "$H" "$ROOT/uninstall.sh" --yes 2>&1)" || RUNNING_STATUS=$?
+  SCENARIO_PATH=""
+  check "a copy started through a relative path is found"     [ "$RUNNING_STATUS" != 0 ] && has "still running"
+  check "and kept"                                            present "$H/Applications/Anode.app"
+  stop_live
+  SCENARIO_PATH="$T/shim-nosleep"; OUT="$(run_anode "$H" "$ROOT/uninstall.sh" --yes 2>&1 || true)"; SCENARIO_PATH=""
+  check "gone, it is removed"                                 absent "$H/Applications/Anode.app"
+  # A path with spaces in it (the usual home folder is not far from one).
+  H="$(new_home 'with some spaces')"; live_anode "$H"
+  SCENARIO_PATH="$T/shim-nosleep"
+  RUNNING_STATUS=0; OUT="$(run_anode "$H" "$ROOT/uninstall.sh" --yes 2>&1)" || RUNNING_STATUS=$?
+  SCENARIO_PATH=""
+  check "a copy running from a path with spaces is found"     [ "$RUNNING_STATUS" != 0 ] && has "still running"
+  check "and named whole"                                     has "($H/Applications/Anode.app/Contents/MacOS/AnodeApp)"
+  stop_live
+  # Another home's Anode of this user is counted too: a link or a relative path hides which copy a process is, so the
+  # check is conservative. (Its path is not read as a pattern: the first scenario's name is made of pattern characters.)
   OTHER="$(new_home 'abZc')"; live_anode "$OTHER"
   H="$(new_home 'a+(b).c')"; stub_app "$H" 0
-  SCENARIO_PATH="$T/shim-nosleep"; OUT="$(run_anode "$H" "$ROOT/uninstall.sh" --yes 2>&1 || true)"; SCENARIO_PATH=""
-  check "another home's Anode, which only matches as a pattern, is not waited for" hasnt "still running"
-  check "and this one is removed"                             absent "$H/Applications/Anode.app"
-  kill "$LIVE_PID" 2>/dev/null; wait "$LIVE_PID" 2>/dev/null
+  SCENARIO_PATH="$T/shim-nosleep"
+  RUNNING_STATUS=0; OUT="$(run_anode "$H" "$ROOT/uninstall.sh" --yes 2>&1)" || RUNNING_STATUS=$?
+  SCENARIO_PATH=""
+  check "another home's Anode of this user stops it too"      [ "$RUNNING_STATUS" != 0 ] && has "$OTHER/Applications/Anode.app/Contents/MacOS/AnodeApp"
+  check "and nothing is removed"                              present "$H/Applications/Anode.app"
+  stop_live
 else
   echo "    skip  no C compiler here (xcode-select --install), so no real process to look for"
 fi
@@ -584,6 +658,75 @@ rm -f "$T/defaults-asked"
 H="$(new_home 27)"; stub_app "$H" 1
 OUT="$(run_anode "$H" "$ROOT/uninstall.sh" --yes 2>&1 || true)"
 check "without --data a failed restore says nothing about settings being kept" hasnt "kept     Anode's settings"
+
+echo "6e. Every installed copy is asked in turn until one has put macOS's charge settings back"
+system_stub() {  # system_stub EXIT-STATUS [VERSION: default 1.17.0; "none" writes no Info.plist]: a stub app in the system Applications folder
+  local dir="$ANODE_SYSTEM_APPLICATIONS_DIR/Anode.app"
+  rm -rf "$dir"; mkdir -p "$dir/Contents/MacOS"
+  printf '#!/bin/sh\n# anode-test-stub\necho "$*" > "$HOME/restore-asked-system"\nexit %s\n' "$1" > "$dir/Contents/MacOS/AnodeApp"
+  chmod +x "$dir/Contents/MacOS/AnodeApp"
+  if [ "${2:-1.17.0}" != "none" ]; then
+    printf '<?xml version="1.0" encoding="UTF-8"?>\n<plist version="1.0"><dict><key>CFBundleShortVersionString</key><string>%s</string></dict></plist>\n' \
+      "${2:-1.17.0}" > "$dir/Contents/Info.plist"
+  fi
+}
+# An older copy first (skipped as too old) and a current one second: the current one is asked, both are removed, and
+# --data clears the settings because the restore was done.
+rm -f "$T/defaults-asked"
+H="$(new_home 30)"; stub_app "$H" 1 1.16.0; system_stub 0; data_home "$H"
+OUT="$(run_anode "$H" "$ROOT/uninstall.sh" --yes --data 2>&1 || true)"
+check "the older copy is not run"                           absent "$H/restore-asked"
+check "and the current one, second, is asked"               grep -qx -- "--restore-charge-settings" "$H/restore-asked-system"
+check "the skip of the older one is said, naming it"        has "older than 1.17.0, the first that can put macOS's own charge settings back, so that step was skipped for $H/Applications/Anode.app"
+check "nothing is said about a restore that failed"         hasnt "could not put back"
+check "both copies are removed"                             [ ! -e "$H/Applications/Anode.app" ] && [ ! -e "$ANODE_SYSTEM_APPLICATIONS_DIR/Anode.app" ]
+check "--data clears the settings, as the restore was done" grep -qx "delete com.anode.settings" "$T/defaults-asked"
+check "and says nothing about keeping them"                 hasnt "kept     Anode's settings"
+# A copy whose version cannot be read, first, is skipped the same way.
+H="$(new_home 31)"; stub_app "$H" 1 none; system_stub 0
+OUT="$(run_anode "$H" "$ROOT/uninstall.sh" --yes 2>&1 || true)"
+check "a copy whose version cannot be read does not stop the next being asked" grep -qx -- "--restore-charge-settings" "$H/restore-asked-system"
+# A copy that fails first and a second that succeeds: the second has done it, so nothing is said to have failed.
+rm -f "$T/defaults-asked"
+H="$(new_home 32)"; stub_app "$H" 1; system_stub 0; data_home "$H"
+OUT="$(run_anode "$H" "$ROOT/uninstall.sh" --yes --data 2>&1 || true)"
+check "the first copy was asked and failed"                 grep -qx -- "--restore-charge-settings" "$H/restore-asked"
+check "the second was asked after it"                       grep -qx -- "--restore-charge-settings" "$H/restore-asked-system"
+check "and since it did it, no failure is said"             hasnt "could not put back"
+check "and --data clears the settings"                      grep -qx "delete com.anode.settings" "$T/defaults-asked"
+# The first one that has done it is the last asked.
+H="$(new_home 33)"; stub_app "$H" 0; system_stub 0
+OUT="$(run_anode "$H" "$ROOT/uninstall.sh" --yes 2>&1 || true)"
+check "a first copy that did it means the second is not asked" absent "$H/restore-asked-system"
+# Another account's limit left in force is a restore that has been dealt with.
+H="$(new_home 34)"; stub_app "$H" 2; system_stub 0
+OUT="$(run_anode "$H" "$ROOT/uninstall.sh" --yes 2>&1 || true)"
+check "another account's limit ends the asking too"         absent "$H/restore-asked-system"
+# Nothing could be asked: all too old. The restore did not happen, so --data keeps the settings.
+rm -f "$T/defaults-asked"
+H="$(new_home 35)"; stub_app "$H" 1 1.16.0; system_stub 1 1.15.0; data_home "$H"
+OUT="$(run_anode "$H" "$ROOT/uninstall.sh" --yes --data 2>&1 || true)"
+check "neither is run"                                      [ ! -e "$H/restore-asked" ] && [ ! -e "$H/restore-asked-system" ]
+check "--data keeps the settings"                           absent "$T/defaults-asked"
+check "and says why"                                        has "kept     Anode's settings: Anode could not put macOS's own charge settings back"
+check "the apps and the rest of the data go as asked"       [ ! -e "$H/Applications/Anode.app" ] && [ ! -e "$ANODE_SYSTEM_APPLICATIONS_DIR/Anode.app" ] && [ ! -e "$H/Library/Application Support/Anode/history.sqlite" ]
+# The same for copies whose versions cannot be read.
+rm -f "$T/defaults-asked"
+H="$(new_home 36)"; stub_app "$H" 1 none; system_stub 1 none; data_home "$H"
+OUT="$(run_anode "$H" "$ROOT/uninstall.sh" --yes --data 2>&1 || true)"
+check "copies with unreadable versions: --data keeps the settings" absent "$T/defaults-asked"
+# Both ran and both failed: said once, and --data keeps the settings.
+rm -f "$T/defaults-asked"
+H="$(new_home 37)"; stub_app "$H" 1; system_stub 1; data_home "$H"
+OUT="$(run_anode "$H" "$ROOT/uninstall.sh" --yes --data 2>&1 || true)"
+check "both were asked"                                     [ -e "$H/restore-asked" ] && [ -e "$H/restore-asked-system" ]
+check "the failure is said once"                            [ "$(printf '%s\n' "$OUT" | grep -c "could not put back macOS's own charge settings")" = 1 ]
+check "and --data keeps the settings"                       absent "$T/defaults-asked"
+# Without --data a restore nobody could do says nothing about settings being kept.
+H="$(new_home 38)"; stub_app "$H" 1 1.16.0
+OUT="$(run_anode "$H" "$ROOT/uninstall.sh" --yes 2>&1 || true)"
+check "without --data nothing is said about keeping settings" hasnt "kept     Anode's settings"
+rm -rf "$ANODE_SYSTEM_APPLICATIONS_DIR/Anode.app"
 
 # ═══ 7. optional: the real thing ════════════════════════════════════════════
 if [ "$FULL" = 1 ]; then

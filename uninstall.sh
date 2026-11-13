@@ -194,9 +194,14 @@ sleep 1
 # the uninstall, with nothing removed: the restore would clear the record while the live app held its limit and set it
 # again, and that limit would outlive the deleted app, with nothing left that could put it back.
 #
-# "Running" is a process of this user whose executable is exactly this path: `ps` prints it as the comm column, and it
-# is compared as a string. A pattern (`pgrep -f`) would read a `+`, `(` or `.` in a home folder's name as part of the
-# pattern, and miss the copy or match another.
+# "Running" is conservative: any process of this user whose executable's file name is AnodeApp counts, wherever it
+# was started from, and so does such a process of any user when the copy in the system Applications folder is among
+# the things to remove (it is every account's). `ps` prints the executable as it was exec'd, so an Anode started
+# through a relative path (./AnodeApp) or a symbolic link shows that way and not as the installed path; matching only
+# the installed paths would miss it, delete the app under it, and leave its limit in force with nothing to put it
+# back. The line names each process as `ps` shows it, which is the installed path where it was started from there.
+# The file name is compared as a string, never as a pattern (`pgrep -f` would read a `+`, `(` or `.` in a home folder's
+# name as part of the pattern).
 #
 # An installed app older than the one that knows the argument is not run: it would start its whole interface, and this
 # script would wait on it. Such a version has no Charge Control, so there is nothing of it to put back; the line says
@@ -212,18 +217,25 @@ version_at_least() {  # version_at_least FOUND NEEDED: both MAJOR.MINOR.PATCH, c
   done
   return 0
 }
-anode_running() {  # anode_running EXECUTABLE: is a process of this user running exactly that file?
-  local line
+running_anodes() {  # running_anodes SCOPE: how each running Anode is shown by `ps`, one a line. SCOPE: user | all
+  local line cmd
+  local -a who=(-U "$(id -u)")
+  if [ "$1" = all ]; then who=(-A); fi
   while IFS= read -r line; do
     line="${line#"${line%%[![:space:]]*}"}"   # the pid column's leading blanks
-    [ "${line#* }" = "$1" ] && return 0
-  done < <(ps -U "$(id -u)" -o pid=,comm= 2>/dev/null || true)
-  return 1
+    cmd="${line#* }"
+    [ "${cmd##*/}" = "AnodeApp" ] && printf '%s\n' "$cmd"
+  done < <(ps "${who[@]}" -o pid=,comm= 2>/dev/null || true)
+  return 0
 }
-# Set when the app could not put macOS's own settings back: --data then keeps Anode's settings (below).
+# Set when no installed copy could put macOS's own settings back: --data then keeps Anode's settings (below).
 RESTORE_FAILED=0
-put_charge_settings_back() {  # put_charge_settings_back APP: runs it once, and says what is left, if anything
+# What put_charge_settings_back found for the copy it was given: done (it ran, and the limit is put back or is another
+# account's to put back), skipped (not run, and the reason was said), or failed (it ran and something may be left).
+RESTORE_RESULT=""
+put_charge_settings_back() {  # put_charge_settings_back APP: runs it once; sets RESTORE_RESULT
   local app="$1" bin="$1/Contents/MacOS/AnodeApp" version="" restore_status=0
+  RESTORE_RESULT="skipped"
   # PlistBuddy on a file that is not there prints a sentence of its own instead of failing quietly, so the file is
   # checked first, and anything that is not a version number is no answer.
   if [ -f "$app/Contents/Info.plist" ]; then
@@ -239,37 +251,40 @@ put_charge_settings_back() {  # put_charge_settings_back APP: runs it once, and 
   fi
   if ! version_at_least "$version" "$RESTORE_ARGUMENT_SINCE"; then
     echo "The installed Anode is version $version, older than $RESTORE_ARGUMENT_SINCE, the first that can put macOS's" \
-      "own charge settings back, so that step was skipped. If macOS holds a charge limit you did not choose, change" \
-      "it in System Settings → Battery."
+      "own charge settings back, so that step was skipped for $app. If macOS holds a charge limit you did not choose," \
+      "change it in System Settings → Battery."
     return 0
   fi
   "$bin" --restore-charge-settings >/dev/null 2>&1 || restore_status=$?
   case "$restore_status" in
-    0) ;;
+    0) RESTORE_RESULT="done" ;;
     2)
+      RESTORE_RESULT="done"
       echo "Another account's Anode is holding macOS's charge limit, so it was left in force: that Anode puts it back" \
         "when it quits. If that account no longer uses Anode, change the limit in System Settings → Battery."
       ;;
-    *)
-      RESTORE_FAILED=1
-      echo "Anode could not put back macOS's own charge settings, so macOS may still hold a charge limit: change it" \
-        "in System Settings → Battery. If the battery is not charging on the charger, Anode's helper reconnects it: run" \
-        "'sudo /Library/PrivilegedHelperTools/$DAEMON_LABEL --uninstall' if that helper is installed (it reconnects" \
-        "the charger, then removes itself), or install Anode again, switch Charge Control on and press Install Helper…"
-      ;;
+    *) RESTORE_RESULT="failed" ;;
   esac
 }
+say_restore_failed() {
+  echo "Anode could not put back macOS's own charge settings, so macOS may still hold a charge limit: change it" \
+    "in System Settings → Battery. If the battery is not charging on the charger, Anode's helper reconnects it: run" \
+    "'sudo /Library/PrivilegedHelperTools/$DAEMON_LABEL --uninstall' if that helper is installed (it reconnects" \
+    "the charger, then removes itself), or install Anode again, switch Charge Control on and press Install Helper…"
+}
 
+# Processes of any user count when the system Applications copy is among the things to remove: it is every account's.
+SCOPE=user
+for path in "${FOUND[@]:-}"; do
+  [ "$path" = "${APP_COPIES[1]}" ] && SCOPE=all
+done
 BINS=()
 for app in "${APP_COPIES[@]}"; do
   [ -x "$app/Contents/MacOS/AnodeApp" ] && BINS+=("$app/Contents/MacOS/AnodeApp")
 done
 RUNNING=""
 for _ in 1 2 3 4 5; do
-  RUNNING=""
-  for bin in "${BINS[@]:-}"; do
-    [ -n "$bin" ] && anode_running "$bin" && RUNNING="${RUNNING:+$RUNNING, }$bin"
-  done
+  RUNNING="$(running_anodes "$SCOPE" | sort -u | awk 'NR > 1 { printf ", " } { printf "%s", $0 }')"
   [ -z "$RUNNING" ] && break
   sleep 1
 done
@@ -278,11 +293,24 @@ if [ -n "$RUNNING" ]; then
     "would outlive the deleted app. Quit Anode and run this again." >&2
   exit 1
 fi
-# The first installed copy puts it back: the limit is the Mac's, not a copy's.
+# Each installed copy is asked in turn until one has put it back: the limit is the Mac's, not a copy's, and a copy that
+# cannot be asked (too old, or its version unreadable) or that fails is no reason not to ask the next. When none has,
+# the restore failed for what follows (--data keeps the settings), and a failure that ran is said once, at the end.
 if [ "${ANODE_NO_LAUNCH:-0}" != "1" ]; then
-  for app in "${APP_COPIES[@]}"; do
-    if [ -x "$app/Contents/MacOS/AnodeApp" ]; then put_charge_settings_back "$app"; break; fi
+  asked=0 restored=0 failed=0
+  for bin in "${BINS[@]:-}"; do
+    [ -n "$bin" ] || continue
+    asked=1
+    put_charge_settings_back "${bin%/Contents/MacOS/AnodeApp}"
+    case "$RESTORE_RESULT" in
+      done) restored=1; break ;;
+      failed) failed=1 ;;
+    esac
   done
+  if [ "$asked" = 1 ] && [ "$restored" != 1 ]; then
+    RESTORE_FAILED=1
+    [ "$failed" = 1 ] && say_restore_failed
+  fi
 fi
 
 # The shared record goes with --data only when it holds no record: the restore above empties it when this Anode was
