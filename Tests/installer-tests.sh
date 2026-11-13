@@ -19,6 +19,9 @@
 #
 # The uninstaller also names /Applications/Anode.app, an absolute path no HOME can stand in for; it takes the folder
 # from ANODE_SYSTEM_APPLICATIONS_DIR, which run_anode checks is this test's own, so the real one is never looked at.
+# It also READS Anode's settings (`defaults read`, which the stub passes to the real tool, and which does not go by
+# HOME), to see whether Charge Control left something; it takes the domain from ANODE_SETTINGS_DOMAIN, which run_anode
+# checks is a path of this test's own, so the real account's settings are never read.
 #
 # Two nets keep a mistake in this file itself off the real machine, and section 0 tries both with bad input, so a
 # change that weakens either fails there: a static check of this file's own text (a line that runs a script or a
@@ -53,6 +56,10 @@ export ANODE_SHARED_CHARGE_DIR="$T/shared-charge"
 export ANODE_LAUNCH_DAEMONS_DIR="$T/no-launch-daemons"
 # And /Applications, the second place an Anode can be installed.
 export ANODE_SYSTEM_APPLICATIONS_DIR="$T/system-applications"
+# And the settings the uninstaller reads to see whether Charge Control may have left something: a settings file of the
+# test's own that is not there, so no scenario reads the real account's. A scenario that needs settings points it at a
+# file it wrote (SCENARIO_ENV=(ANODE_SETTINGS_DOMAIN=…)).
+export ANODE_SETTINGS_DOMAIN="$T/no-settings/com.anode.settings"
 
 # `defaults`, `launchctl` and `security` do not go by HOME: they talk to the settings service, to launchd and to the
 # keychain service of the person running the tests. An uninstall --data scenario with the real `defaults` once deleted
@@ -172,7 +179,8 @@ cd "$T" || exit 1
 # BEGIN GUARD
 exec 3>&2   # the real stderr: a scenario captures the script's own with 2>&1, and the reason for stopping must not go there
 GUARDED_TOOLS="osascript getconf defaults launchctl security open pkill killall tccutil pmset sudo"
-GUARDED_FOLDERS="HOME ANODE_SHARED_CHARGE_DIR ANODE_LAUNCH_DAEMONS_DIR ANODE_SYSTEM_APPLICATIONS_DIR"
+# (ANODE_SETTINGS_DOMAIN is a settings file rather than a folder, and has to be inside the test's own all the same.)
+GUARDED_FOLDERS="HOME ANODE_SHARED_CHARGE_DIR ANODE_LAUNCH_DAEMONS_DIR ANODE_SYSTEM_APPLICATIONS_DIR ANODE_SETTINGS_DOMAIN"
 # Folders that may be empty (the script then uses its own default, which is inside HOME) but are the test's when set.
 OPTIONAL_FOLDERS="ANODE_SRC ANODE_REPO"
 T_PHYSICAL="$(cd "$T" && pwd -P)"
@@ -426,6 +434,9 @@ try_no_stubs()          { SCENARIO_PATH="$T/decoy"; run_anode "$T/home-selftest"
 try_shared_outside()    { export ANODE_SHARED_CHARGE_DIR="$OUTSIDE"; run_anode "$T/home-selftest" "$T/probe-script"; }
 try_daemons_outside()   { export ANODE_LAUNCH_DAEMONS_DIR="$OUTSIDE"; run_anode "$T/home-selftest" "$T/probe-script"; }
 try_system_apps_outside() { export ANODE_SYSTEM_APPLICATIONS_DIR="$OUTSIDE"; run_anode "$T/home-selftest" "$T/probe-script"; }
+try_settings_outside()  { export ANODE_SETTINGS_DOMAIN="$OUTSIDE/com.anode.settings"; run_anode "$T/home-selftest" "$T/probe-script"; }
+try_settings_real()     { export ANODE_SETTINGS_DOMAIN="com.anode.settings"; run_anode "$T/home-selftest" "$T/probe-script"; }
+try_settings_unset()    { unset ANODE_SETTINGS_DOMAIN; run_anode "$T/home-selftest" "$T/probe-script"; }
 try_src_outside()       { export ANODE_SRC="$OUTSIDE/src"; run_anode "$T/home-selftest" "$T/probe-script"; }
 try_repo_outside()      { SCENARIO_ENV=(ANODE_REPO="$OUTSIDE"); run_anode "$T/home-selftest" "$T/probe-script"; }
 try_install_no_repo()   { run_anode "$T/home-selftest" "$T/probe-dir/install.sh"; }
@@ -440,6 +451,9 @@ must_stop "a PATH where the stubs are not first"                     try_no_stub
 must_stop "a shared charge folder outside the test's folder"         try_shared_outside
 must_stop "a LaunchDaemons folder outside the test's folder"         try_daemons_outside
 must_stop "a system Applications folder outside the test's folder"   try_system_apps_outside
+must_stop "a settings file outside the test's folder"                try_settings_outside
+must_stop "the real settings domain by name"                         try_settings_real
+must_stop "no settings file named at all (the script's default is the real domain)" try_settings_unset
 must_stop "ANODE_SRC outside the test's folder"                      try_src_outside
 must_stop "ANODE_REPO outside the test's folder"                     try_repo_outside
 must_stop "install.sh with no clone source of the test's own"        try_install_no_repo
@@ -973,6 +987,108 @@ H="$(new_home 38)"; stub_app "$H" 1 1.16.0
 OUT="$(run_anode "$H" "$ROOT/uninstall.sh" --yes 2>&1 || true)"
 check "without --data nothing is said about keeping settings" hasnt "kept     Anode's settings"
 rm -rf "$ANODE_SYSTEM_APPLICATIONS_DIR/Anode.app"
+
+echo "6f. No installed copy can be asked: said when Charge Control may have left something, and not otherwise"
+# The settings the uninstaller reads here are files of the test's own, one for each state, each at a path of its own (the
+# settings service remembers a file it has read). The real account's settings are never read: run_anode holds
+# ANODE_SETTINGS_DOMAIN to this test's folder, and a scenario that needs settings points it at one of these.
+settings_file() {  # settings_file NAME KEYS: a settings file holding KEYS (plist keys and values); prints its path
+  printf '<?xml version="1.0" encoding="UTF-8"?>\n<plist version="1.0"><dict>%s</dict></plist>\n' "$2" > "$T/settings-$1.plist"
+  printf '%s\n' "$T/settings-$1.plist"
+}
+SETTINGS_OFF="$(settings_file off '<key>anode.chargeControlEnabled</key><false/><key>anode.chargeLimit</key><integer>80</integer>')"
+SETTINGS_ON="$(settings_file on '<key>anode.chargeControlEnabled</key><true/>')"
+SETTINGS_CUT="$(settings_file cut '<key>anode.chargeCutUnconfirmed</key><true/>')"
+SETTINGS_PENDING="$(settings_file pending '<key>anode.chargeStartPending</key><true/>')"
+SETTINGS_RECORD="$(settings_file record '<key>anode.chargeRestoreRecord</key><string>{"limit":90}</string>')"
+uninstall_with_settings() {  # uninstall_with_settings HOME SETTINGS-FILE [ARGS...]: the uninstaller reading that file
+  local h="$1" file="$2"; shift 2
+  SCENARIO_ENV=(ANODE_SETTINGS_DOMAIN="$file")
+  OUT="$(run_anode "$h" "$ROOT/uninstall.sh" --yes "$@" 2>&1 || true)"
+  SCENARIO_ENV=()
+}
+shared_record_empty() { mkdir -p "$ANODE_SHARED_CHARGE_DIR"; : > "$ANODE_SHARED_CHARGE_DIR/charge-control.json"; }
+shared_record_held()  { mkdir -p "$ANODE_SHARED_CHARGE_DIR"; printf '{"version":1}' > "$ANODE_SHARED_CHARGE_DIR/charge-control.json"; }
+# A bundle that cannot be run: the stub, its marker in place (so the run is not kept from running apps), made not executable.
+broken_app() { stub_app "$1" 0; chmod -x "$1/Applications/Anode.app/Contents/MacOS/AnodeApp"; }
+NOBODY="No installed Anode could be asked to put macOS's own charge settings back"
+KEPT="kept     Anode's settings: Anode could not put macOS's own charge settings back"
+says_nobody_was_asked() { has "$NOBODY"; }
+keeps_the_settings() {  # keeps_the_settings HOME: --data left the settings alone, and said so, and the rest went
+  has "$KEPT" && absent "$T/defaults-asked" && present "$1/Library/Preferences/com.anode.settings.plist" \
+    && absent "$1/Library/Application Support/Anode/history.sqlite"
+}
+
+# Nothing to suggest Charge Control left anything: silent, and --data clears the settings as it always did.
+shared_record_empty
+for kind in none broken; do
+  for state in absent off; do
+    if [ "$state" = off ]; then file="$SETTINGS_OFF"; else file="$ANODE_SETTINGS_DOMAIN"; fi
+    rm -f "$T/defaults-asked"
+    H="$(new_home "f-quiet-$kind-$state")"; data_home "$H"
+    [ "$kind" = broken ] && broken_app "$H"
+    uninstall_with_settings "$H" "$file" --data
+    check "$kind copy, settings $state, no shared record: nothing is said" hasnt "No installed Anode"
+    check "  and nothing is said about keeping settings"         hasnt "kept     Anode's settings"
+    check "  --data clears the settings as before"               grep -qx "delete com.anode.settings" "$T/defaults-asked"
+    check "  and the app is removed"                             absent "$H/Applications/Anode.app"
+  done
+done
+
+# A shared record that holds something: said, and --data keeps the settings (and the record).
+for kind in none broken; do
+  shared_record_held; rm -f "$T/defaults-asked"
+  H="$(new_home "f-record-$kind")"; data_home "$H"
+  [ "$kind" = broken ] && broken_app "$H"
+  OUT="$(run_anode "$H" "$ROOT/uninstall.sh" --yes --data 2>&1 || true)"
+  check "$kind copy, a shared record that holds something: says nobody could be asked" says_nobody_was_asked
+  check "  and where to change a limit by hand"                  has "System Settings → Battery"
+  check "  no helper is installed, so no sudo line"              hasnt "sudo /Library/PrivilegedHelperTools"
+  check "  --data keeps the settings, with the usual reason, and removes the rest" keeps_the_settings "$H"
+  check "  and keeps the shared record"                          present "$ANODE_SHARED_CHARGE_DIR/charge-control.json"
+  check "  the app is still removed"                             absent "$H/Applications/Anode.app"
+  check "  and it is said that Anode was removed"                has "Anode has been removed"
+done
+
+# The settings say Charge Control is switched on, or carry a note that something was left.
+shared_record_empty
+for state in on cut pending record; do
+  case "$state" in on) file="$SETTINGS_ON" ;; cut) file="$SETTINGS_CUT" ;; pending) file="$SETTINGS_PENDING" ;; record) file="$SETTINGS_RECORD" ;; esac
+  for kind in none broken; do
+    rm -f "$T/defaults-asked"
+    H="$(new_home "f-$state-$kind")"; data_home "$H"
+    [ "$kind" = broken ] && broken_app "$H"
+    uninstall_with_settings "$H" "$file" --data
+    check "$kind copy, settings '$state': says nobody could be asked" says_nobody_was_asked
+    check "  --data keeps the settings, and removes the rest"    keeps_the_settings "$H"
+  done
+done
+rm -f "$T/defaults-asked"
+H="$(new_home f-on-without-data)"; data_home "$H"
+uninstall_with_settings "$H" "$SETTINGS_ON"
+check "without --data it is still said"                          says_nobody_was_asked
+check "and nothing is said about keeping settings (they are kept anyway)" hasnt "kept     Anode's settings"
+check "and nothing was cleared"                                  absent "$T/defaults-asked"
+
+# The helper's launchd job is there: the way to reconnect a charger it may have left cut is given too.
+mkdir -p "$T/launch-daemons"; : > "$T/launch-daemons/dev.anode.app.fanhelper.plist"
+H="$(new_home f-helper)"
+SCENARIO_ENV=(ANODE_SETTINGS_DOMAIN="$SETTINGS_ON" ANODE_LAUNCH_DAEMONS_DIR="$T/launch-daemons")
+OUT="$(run_anode "$H" "$ROOT/uninstall.sh" --yes 2>&1 || true)"
+SCENARIO_ENV=()
+check "with the helper installed it says what reconnects the charger" \
+                                                                 has "Anode's helper reconnects it: run 'sudo /Library/PrivilegedHelperTools/dev.anode.app.fanhelper --uninstall'"
+H="$(new_home f-no-helper)"
+uninstall_with_settings "$H" "$SETTINGS_ON"
+check "with none installed it gives no sudo line"                hasnt "sudo /Library/PrivilegedHelperTools"
+
+# A copy that can be asked is asked, whatever the evidence, and nothing is said about nobody being asked.
+shared_record_held; rm -f "$T/defaults-asked"
+H="$(new_home f-asked)"; stub_app "$H" 0; data_home "$H"
+uninstall_with_settings "$H" "$SETTINGS_ON" --data
+check "a copy that can be run is asked"                          grep -qx -- "--restore-charge-settings" "$H/restore-asked"
+check "and nothing is said about nobody being asked"             hasnt "No installed Anode"
+shared_record_empty
 
 # ═══ 7. optional: the real thing ════════════════════════════════════════════
 if [ "$FULL" = 1 ]; then

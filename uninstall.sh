@@ -37,6 +37,9 @@ SUPPORT="$HOME/Library/Application Support/Anode"
 # ANODE_SHARED_CHARGE_DIR is for the tests, which must not touch the real one.
 SHARED_DIR="${ANODE_SHARED_CHARGE_DIR:-/Users/Shared/Anode}"
 SHARED_RECORD="$SHARED_DIR/charge-control.json"
+# Where Anode's settings are READ from, to see whether Charge Control was switched on or left a note (below): a defaults
+# domain, or the path of a settings file. ANODE_SETTINGS_DOMAIN is for the tests, which must not read the real one.
+SETTINGS_DOMAIN="${ANODE_SETTINGS_DOMAIN:-com.anode.settings}"
 DAEMON_LABEL="dev.anode.app.fanhelper"
 # The two places an Anode can be installed. ANODE_SYSTEM_APPLICATIONS_DIR is for the tests, which must not look at, or
 # delete, the real /Applications.
@@ -272,6 +275,28 @@ say_restore_failed() {
     "'sudo /Library/PrivilegedHelperTools/$DAEMON_LABEL --uninstall' if that helper is installed (it reconnects" \
     "the charger, then removes itself), or install Anode again, switch Charge Control on and press Install Helper…"
 }
+# Whether Charge Control may have left something that only an Anode can put back: the shared record of macOS's own charge
+# settings holds something, or the settings say Charge Control is switched on, or they carry a note that a limit was
+# held or the charger cut and not yet put right (anode.chargeRestoreRecord, anode.chargeCutUnconfirmed,
+# anode.chargeStartPending). Only `defaults read` is used, and a key that is not there reads as nothing.
+charge_control_may_have_left_something() {
+  [ -s "$SHARED_RECORD" ] && return 0
+  local key value
+  for key in chargeControlEnabled chargeCutUnconfirmed chargeStartPending; do
+    value="$(defaults read "$SETTINGS_DOMAIN" "anode.$key" 2>/dev/null || true)"
+    [ "$value" = "1" ] && return 0
+  done
+  value="$(defaults read "$SETTINGS_DOMAIN" "anode.chargeRestoreRecord" 2>/dev/null || true)"
+  [ -n "$value" ]
+}
+say_nobody_to_ask() {
+  echo "No installed Anode could be asked to put macOS's own charge settings back, and Charge Control may have left" \
+    "something. If macOS holds a charge limit you did not choose, change it in System Settings → Battery."
+  if [ -e "$LAUNCH_DAEMONS_DIR/$DAEMON_LABEL.plist" ]; then
+    echo "If the battery is not charging on the charger, Anode's helper reconnects it: run" \
+      "'sudo /Library/PrivilegedHelperTools/$DAEMON_LABEL --uninstall' (it reconnects the charger, then removes itself)."
+  fi
+}
 
 # Processes of any user count when the system Applications copy is among the things to remove: it is every account's.
 SCOPE=user
@@ -296,6 +321,11 @@ fi
 # Each installed copy is asked in turn until one has put it back: the limit is the Mac's, not a copy's, and a copy that
 # cannot be asked (too old, or its version unreadable) or that fails is no reason not to ask the next. When none has,
 # the restore failed for what follows (--data keeps the settings), and a failure that ran is said once, at the end.
+#
+# With no copy that has an executable AnodeApp (a bundle that is broken, or an app dragged to the Trash earlier) nobody
+# is asked, and that is said, and counts as a restore not done, when Charge Control may have left something behind
+# (charge_control_may_have_left_something). With nothing to suggest it did, nothing is said, as before. That does not
+# depend on ANODE_NO_LAUNCH, which only keeps a copy that is there from being run.
 if [ "${ANODE_NO_LAUNCH:-0}" != "1" ]; then
   asked=0 restored=0 failed=0
   for bin in "${BINS[@]:-}"; do
@@ -311,6 +341,10 @@ if [ "${ANODE_NO_LAUNCH:-0}" != "1" ]; then
     RESTORE_FAILED=1
     [ "$failed" = 1 ] && say_restore_failed
   fi
+fi
+if [ ${#BINS[@]} -eq 0 ] && charge_control_may_have_left_something; then
+  RESTORE_FAILED=1
+  say_nobody_to_ask
 fi
 
 # The shared record goes with --data only when it holds no record: the restore above empties it when this Anode was
