@@ -58,23 +58,56 @@ final class ChargeRateTests: XCTestCase {
     /// What one band learns is not another's.
     func testBandsLearnApart() {
         var r = ChargeRate()
-        r.record(2.0, for: .over65)
+        r.record(1.4, for: .over65)
         XCTAssertEqual(r.rate(for: .from30to65), 0.8, "the middle band was never measured")
         XCTAssertEqual(r.rate(for: .under30), 0.3)
         r.record(0.6, for: .from30to65)
-        XCTAssertEqual(r.rate(for: .over65), 2.0)
+        XCTAssertEqual(r.rate(for: .over65), 1.4)
         XCTAssertEqual(r.rate(for: .from30to65), 0.6)
     }
 
-    func testAMeasurementIsClampedToTheRangeTheEstimateLivesIn() {
+    /// One bad first sample started the charge hours late: a gauge that jumped 15 points in five minutes is 3.0 a minute
+    /// on a charger that charges at 0.3, and the first measurement for a band replaced the guess outright. A measurement
+    /// moves the rate by a factor of 1.5 at most, up or down, so the first is bounded around the band's guess.
+    func testTheFirstMeasurementIsBoundedAroundTheGuess() {
+        var slow = ChargeRate()
+        XCTAssertTrue(slow.record(3.0, for: .under30), "3.0 a minute is not more than 3")
+        XCTAssertEqual(slow.rate(for: .under30), 0.3 * 1.5, accuracy: 1e-12, "the guess times 1.5, not the jump")
+        var fast = ChargeRate()
+        XCTAssertTrue(fast.record(0.2, for: .over65))
+        XCTAssertEqual(fast.rate(for: .over65), 1.0 / 1.5, accuracy: 1e-12, "the guess over 1.5, not the dip")
+        var inside = ChargeRate()
+        inside.record(1.3, for: .over65)
+        XCTAssertEqual(inside.rate(for: .over65), 1.3, accuracy: 1e-12, "a believable first sample is taken as it is")
+    }
+
+    /// An average that took twenty measurements to build is not pulled far by one: the measurement is bounded around it
+    /// first, and then averaged in.
+    func testAnEstablishedAverageCannotBeYanked() {
         var r = ChargeRate()
-        r.record(9, for: .over65)
-        XCTAssertEqual(r.rate(for: .over65), 3, "faster than 3 is a misreading, and counts as the fastest there is")
-        r.record(0.01, for: .under30)
-        XCTAssertEqual(r.rate(for: .under30), 0.1, "slower than 0.1 counts as the slowest")
+        for _ in 0..<ChargeRate.averagedOver { r.record(1.0, for: .over65) }
+        r.record(3.0, for: .over65)
+        XCTAssertEqual(r.rate(for: .over65), 1.0 + (1.5 - 1.0) / Double(ChargeRate.averagedOver), accuracy: 1e-12)
+        var low = ChargeRate()
+        for _ in 0..<ChargeRate.averagedOver { low.record(1.0, for: .over65) }
+        low.record(0.1, for: .over65)
+        XCTAssertEqual(low.rate(for: .over65), 1.0 + (1.0 / 1.5 - 1.0) / Double(ChargeRate.averagedOver), accuracy: 1e-12)
+    }
+
+    /// A span in which the charge rose by more than a charger can give for its length is a misreading and is dropped,
+    /// not clamped to the fastest there is: it says nothing about the charger.
+    func testAMeasurementAboveThreeAMinuteIsDroppedNotClamped() {
+        var r = ChargeRate()
+        XCTAssertFalse(r.record(3.5, for: .over65))
+        XCTAssertFalse(r.record(9, for: .under30))
+        XCTAssertFalse(r.hasLearned(.over65))
+        XCTAssertFalse(r.hasLearned(.under30))
+        XCTAssertEqual(r.rate(for: .over65), 1.0, "still the guess")
+        r.record(1.2, for: .over65)
+        XCTAssertFalse(r.record(3.0000001, for: .over65))
+        XCTAssertEqual(r.rate(for: .over65), 1.2, accuracy: 1e-12, "and an estimate is not touched by one")
         for band in ChargeRate.Band.allCases {
-            let v = r.rate(for: band)
-            XCTAssertTrue(ChargePolicy.chargeRateRange.contains(v), "\(band): \(v)")
+            XCTAssertTrue(ChargePolicy.chargeRateRange.contains(r.rate(for: band)), "\(band)")
         }
     }
 

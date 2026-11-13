@@ -73,13 +73,23 @@ public struct ChargeRate: Equatable, Codable {
     /// Whether anything has been learned for this band.
     public func hasLearned(_ band: Band) -> Bool { learned[band.rawValue] != nil }
 
+    /// The most a measurement may move the rate in one step, as a factor up or down. A gauge that jumps, a span that
+    /// caught a taper or a plug-in make single measurements that are far from the truth, and an overestimate is the
+    /// dangerous direction (the charge starts late); an underestimate only starts it early. So no one measurement is
+    /// believed beyond this: the first is bounded around the band's guess, a later one around the average so far.
+    public static let stepFactor = 1.5
+
     /// Fold one measurement into the band's average. A rate that is not a positive number (a battery that lost charge
-    /// while "charging", a gauge that jumped) is no measurement and is dropped; one that is, is clamped to
-    /// `ChargePolicy.chargeRateRange`, so a nonsense reading never becomes the estimate. True when it was taken.
+    /// while "charging", a gauge that jumped) is no measurement and is dropped, and so is one above the fastest a
+    /// charger gives (`ChargePolicy.chargeRateRange`), which says nothing about the charger. One that is left is
+    /// bounded to within `stepFactor` of the rate now counted on (the band's guess, before anything is learned) and kept
+    /// inside the range. True when it was taken.
     @discardableResult
     public mutating func record(_ measured: Double, for band: Band) -> Bool {
-        guard measured.isFinite, measured > 0 else { return false }
-        let r = min(max(measured, ChargePolicy.chargeRateRange.lowerBound), ChargePolicy.chargeRateRange.upperBound)
+        guard measured.isFinite, measured > 0, measured <= ChargePolicy.chargeRateRange.upperBound else { return false }
+        let basis = rate(for: band)
+        let bounded = min(max(measured, basis / Self.stepFactor), basis * Self.stepFactor)
+        let r = min(max(bounded, ChargePolicy.chargeRateRange.lowerBound), ChargePolicy.chargeRateRange.upperBound)
         guard var l = learned[band.rawValue] else {
             learned[band.rawValue] = Learned(rate: r, samples: 1)
             return true

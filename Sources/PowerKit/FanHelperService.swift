@@ -1453,6 +1453,8 @@ public final class FanHelperServer {
         }
         let plan = ChargePlan(limit: limit, at: at, wakeAt: wakeAt)
         chargePlan = plan
+        planTries = 0
+        planRetryAt = nil
         armPlanTimer(for: plan)
         log("planned: set the macOS charge limit to \(limit)% at \(when), with a wake at that time")
         return FanReply(ok: true, message: "charge limit \(limit)% planned for \(when)")
@@ -1476,6 +1478,8 @@ public final class FanHelperServer {
     private func dropPlan(because why: String) -> Bool {
         guard let plan = chargePlan else { return true }
         chargePlan = nil
+        planTries = 0
+        planRetryAt = nil
         planGeneration += 1
         wakeTimer.disarm()
         let removed = powerEvents?.cancelWake(at: plan.wakeAt) ?? true
@@ -1505,7 +1509,12 @@ public final class FanHelperServer {
     /// wait for the moment again.
     private func planTimerFired() {
         guard let plan = chargePlan else { return }
-        if now() >= plan.at.addingTimeInterval(-Self.chargePlanSlack) {
+        if let retry = planRetryAt, now() < retry {
+            // A try is waiting for its time (the timer was early, or the clock moved).
+            planGeneration += 1
+            let generation = planGeneration
+            wakeTimer.arm(at: retry) { [weak self] in self?.postPlanDue(generation) }
+        } else if now() >= plan.at.addingTimeInterval(-Self.chargePlanSlack) {
             writeThePlannedLimit(plan)
         } else {
             armPlanTimer(for: plan)
@@ -1515,26 +1524,61 @@ public final class FanHelperServer {
     /// A wake notice, or any pass of the loop that asks: write the plan's limit if its moment has come.
     func firePlanIfDue() {
         guard let plan = chargePlan, now() >= plan.at.addingTimeInterval(-Self.chargePlanSlack) else { return }
+        // Not before the next try is due: every wake and every pass of the loop asks, and the tries are for the timer.
+        if let retry = planRetryAt, now() < retry { return }
         writeThePlannedLimit(plan)
     }
 
+    /// How many times the plan's limit is tried at its moment, and how long apart. A battery that cannot be read, or a
+    /// write the SMC refuses, right at the wake is no reason to give up the night: it is tried again a few seconds on,
+    /// with the plan and its wake kept, until a try goes or the tries run out.
+    public static let chargePlanTries = 5
+    public static let chargePlanTryGap: TimeInterval = 3
+    /// The tries made at this plan's moment, and when the next may be made (nil when none is waiting). Loop thread only.
+    private var planTries = 0
+    private var planRetryAt: Date?
+
     /// The moment has come: with a charger on the cable, write the limit through the one routine every limit goes
-    /// through; then, however that went, remove the wake and forget the plan. Without a charger, or with a battery
-    /// that cannot be read, nothing is written: a charger pulled while the Mac slept ended what the plan was for.
+    /// through, and the plan and its wake are done with. No charger on the cable ends it at once (a charger pulled while
+    /// the Mac slept ended what the plan was for). A battery that cannot be read, or a write that fails, is tried again
+    /// (`chargePlanTries`, `chargePlanTryGap`, on the plan's own wall-clock timer, never a loop that polls) and ends the
+    /// plan with a warning only when the tries have run out.
     private func writeThePlannedLimit(_ plan: ChargePlan) {
-        chargePlan = nil
-        planGeneration += 1
-        wakeTimer.disarm()
-        if charge?.onAC() == true {
+        planTries += 1
+        let failure: String
+        switch charge?.onAC() {
+        case false?:
+            log("the planned moment has come, and no charger is on the cable: the macOS charge limit was not changed")
+            return endPlan(plan)
+        case true?:
             if charge?.writeChargeLimit(plan.limit) == true {
                 log("the planned moment has come: set the macOS charge limit to \(plan.limit)%")
-            } else {
-                log("WARNING: the planned moment has come, and the macOS charge limit could not be set to \(plan.limit)%")
+                return endPlan(plan)
             }
-        } else {
-            log("the planned moment has come, and no charger is on the cable (or the battery cannot be read): "
-              + "the macOS charge limit was not changed")
+            failure = "the macOS charge limit could not be set to \(plan.limit)%"
+        default:
+            failure = "the battery cannot be read, so it is not known whether a charger is on the cable"
         }
+        guard planTries < Self.chargePlanTries else {
+            log("WARNING: the planned moment came, and after \(planTries) tries \(failure)")
+            return endPlan(plan)
+        }
+        let again = now().addingTimeInterval(Self.chargePlanTryGap)
+        planRetryAt = again
+        log("the planned moment has come, and \(failure) (try \(planTries) of \(Self.chargePlanTries)); trying again in "
+            + "\(Int(Self.chargePlanTryGap)) s")
+        planGeneration += 1
+        let generation = planGeneration
+        wakeTimer.arm(at: again) { [weak self] in self?.postPlanDue(generation) }
+    }
+
+    /// The plan is done with, whichever way it went: the timer, the tries and the wake go with it.
+    private func endPlan(_ plan: ChargePlan) {
+        chargePlan = nil
+        planTries = 0
+        planRetryAt = nil
+        planGeneration += 1
+        wakeTimer.disarm()
         if powerEvents?.cancelWake(at: plan.wakeAt) == false {
             log("WARNING: the wake for the plan could not be cancelled; it has done its work and wakes the Mac no more "
               + "than the once")

@@ -561,6 +561,9 @@ final class ChargeController {
     }
     /// The plan the helper holds for this controller, if it has said yes to one and nothing has cancelled it since.
     private(set) var wakePlan: WakePlan?
+    /// For the sleep that is starting: the helper did not take the plan, so Ready By is not holding (`sendThePlan`). Ends
+    /// with the wake, or when Charge Control stops.
+    private var readyBySetAside = false
     /// A plan is on its way to the helper, waited for.
     private var planSending = false
     /// When the one-shot timer for the start moment fires, while awake; nil when none is set.
@@ -1142,6 +1145,7 @@ final class ChargeController {
         lastDrift = nil
         // A plan the helper holds is cancelled before this (`cancelPlan`); what is forgotten here is this side's book.
         wakePlan = nil
+        readyBySetAside = false
         planSending = false
         readyByTimer?.invalidate()
         readyByTimer = nil
@@ -1812,7 +1816,7 @@ final class ChargeController {
         waitUntil = deadline
         tick(now: now)
         waitUntil = nil
-        sendThePlan(deadline: deadline)
+        sendThePlan(deadline: deadline, now: now)
     }
 
     /// While a hold is in force and the Mac is about to sleep, the helper is told when to wake it and what to raise the
@@ -1823,7 +1827,15 @@ final class ChargeController {
     /// Sent again before every sleep, whatever was sent before: the helper replaces a plan with the same plan, and one
     /// it has lost (a restart, a reconnect) is then back. Only to a helper that speaks protocol 3: an older one closes
     /// the connection on a command it does not know.
-    private func sendThePlan(deadline: Date) {
+    ///
+    /// A plan that is not in place when the Mac is about to sleep is not left as the hold: nothing would raise the limit
+    /// until someone woke the Mac after the time, and the battery would sit at the hold level all night. Ready By is set
+    /// aside for this sleep (`readyBySetAside`), the decision is made again without it, and the person's own limit is put
+    /// in force before the Mac sleeps, inside the same budget (a limit only the helper can set is waited for, as for
+    /// any sleep). On the wake Ready By is back. A plan send that timed out can still land at the helper: that is
+    /// harmless, since it only raises to the person's own limit at its moment, and it dies with the connection, which is
+    /// let go.
+    private func sendThePlan(deadline: Date, now: Date?) {
         guard sessionActive, helper.speaksReadyBy, lastDecision?.reason == .readyBy,
               let hold = lastDecision?.readyBy, let raiseAt = hold.raiseAt else { return }
         planSending = true
@@ -1834,10 +1846,24 @@ final class ChargeController {
         if r?.ok == true {
             wakePlan = WakePlan(by: hold.by, limit: hold.raiseTo, raiseAt: raiseAt)
             log("the helper will wake the Mac and raise the limit to \(hold.raiseTo)% at \(Self.logTime(raiseAt))")
-        } else {
-            wakePlan = nil
-            log("the helper did not take the plan to raise the limit to \(hold.raiseTo)% at "
-                + "\(Self.logTime(raiseAt)): \(r?.message ?? "no answer in time")")
+            settle()
+            return
+        }
+        wakePlan = nil
+        log("the helper did not take the plan to raise the limit to \(hold.raiseTo)% at "
+            + "\(Self.logTime(raiseAt)): \(r?.message ?? "no answer in time")")
+        // The link is let go first (nothing is pending), then the limit is decided again without Ready By.
+        readyBySetAside = true
+        settle()
+        waitUntil = deadline
+        tick(now: now)
+        waitUntil = nil
+        let limit = lastDecision?.osLimit
+        log("the Mac sleeps with the battery charging as usual, to \(limit.map { "\($0)%" } ?? "its limit"), because no "
+            + "wake could be arranged for Ready By; it is back when the Mac wakes")
+        if let limit, appliedLimit != limit {
+            log("the charge limit of \(limit)% could not be confirmed in force before the Mac sleeps; the battery may "
+                + "charge past it, and the limit is asserted again on the wake")
         }
         settle()
     }
@@ -1910,6 +1936,7 @@ final class ChargeController {
         guard running else { return }
         let t = now ?? clock()
         sleeping = false
+        readyBySetAside = false
         // The helper may have raised the limit by itself while the Mac slept, at the plan's moment: that is its plan
         // working, not a change someone else made. The decision below raises it too, and cancels the plan.
         if let p = wakePlan, t.addingTimeInterval(FanHelperServer.chargePlanSlack) >= p.raiseAt { appliedLimit = nil }
@@ -2032,7 +2059,7 @@ final class ChargeController {
         // Ready By needs a helper that can wake the Mac: without one (or with one too old to know how) it is not in
         // force and the battery charges to the limit as usual. Holding without it would only stop at the nearest limit
         // macOS takes, which may be below the person's own.
-        let readyBy = snapshot.readyByEnabled && helper.speaksReadyBy
+        let readyBy = snapshot.readyByEnabled && helper.speaksReadyBy && !readyBySetAside
             ? Self.nextReadyBy(after: now, minutes: snapshot.readyByMinutes, calendar: calendar()) : nil
         let inputs = ChargeInputs(percent: b.percent, onAC: onAC,
                                   temperatureC: b.temperature_C.flatMap { $0.isFinite ? $0 : nil },

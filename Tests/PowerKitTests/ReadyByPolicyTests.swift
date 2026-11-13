@@ -298,6 +298,25 @@ final class ReadyByPolicyTests: XCTestCase {
         XCTAssertEqual(down.readyBy?.raiseAt, first.readyBy?.raiseAt)
     }
 
+    /// The level is remembered, and the limit can be lowered under it: with 60 remembered and the limit moved to 58, the
+    /// battery was held at 60 and charged past the limit. The hold never sits above the limit that is in force.
+    func testARememberedLevelAboveALoweredLimitIsHeldAtTheLimit() {
+        let by = t0.addingTimeInterval(8 * hour)
+        var m = ChargeMemory()
+        XCTAssertEqual(ChargePolicy.decide(settings(), inputs(percent: 60, by: by), &m).osLimit, 60)
+        XCTAssertEqual(m.readyBy?.level, 60)
+        // The person lowers the limit to 58 with the battery at 55, below it.
+        let lowered = ChargePolicy.decide(settings(limit: 58), inputs(percent: 55, at: t0.addingTimeInterval(60), by: by), &m)
+        XCTAssertEqual(lowered.reason, .readyBy)
+        XCTAssertEqual(lowered.osLimit, 58, "held above the limit, so the battery charges past it")
+        XCTAssertEqual(m.readyBy?.level, 58, "the memory still holds the old level")
+        XCTAssertEqual(lowered.readyBy?.raiseTo, 58)
+        XCTAssertEqual(lowered.readyBy?.raiseAt, by.addingTimeInterval(-lead(level: 58, limit: 58)))
+        // Raised again, the remembered level is not found again: it follows the limit down and stays there.
+        let raised = ChargePolicy.decide(settings(limit: 80), inputs(percent: 55, at: t0.addingTimeInterval(120), by: by), &m)
+        XCTAssertEqual(raised.osLimit, 58)
+    }
+
     /// A hold is a hold only while Ready By is what decides: if something else decided in between, the next hold
     /// starts from where the battery is then.
     func testAnotherRuleDecidingEndsTheHoldAndTheNextOneStartsFromTheChargeThen() {

@@ -364,7 +364,9 @@ public enum ChargePolicy {
         guard by.timeIntervalSince(i.now) <= readyByWindow else { return nil }
 
         let floor = min(readyByFloor, s.limit)
-        let level = m.readyBy?.level ?? min(s.limit, max(i.percent, floor))
+        // Never above the limit that is in force: a level remembered while the limit was higher is not held above one
+        // that was lowered since.
+        let level = min(s.limit, m.readyBy?.level ?? max(i.percent, floor))
         // From the level it holds at, which is where the battery is heading: a battery below it (on its way up to the
         // floor, or sagged a point under load) is charged back to it, and holds there.
         let lead = minutesToCharge(from: level, to: s.limit, rate: i.chargeRate) * 60 + readyByMargin

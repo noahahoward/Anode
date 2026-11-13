@@ -138,6 +138,12 @@ final class ChargeHelperPlanTests: XCTestCase {
         return server
     }
 
+    /// The timer fires on its own queue and hands the news to the loop, which acts on it.
+    private func timerFires(_ server: FanHelperServer) {
+        timer.fireNow()
+        server.actOnPowerNotices()
+    }
+
     private func plan(_ server: FanHelperServer, _ limit: Int = 80, in seconds: TimeInterval = 8 * 3600) -> FanReply {
         server.handle(.command(.scheduleChargeLimit(limit: limit, at: t0.addingTimeInterval(seconds))))
     }
@@ -422,27 +428,125 @@ final class ChargeHelperPlanTests: XCTestCase {
         XCTAssertTrue(lines.contains { $0.contains("no charger") }, "\(lines)")
     }
 
-    /// A battery that cannot be read cannot say a charger is there.
-    func testAnUnreadableBatteryIsNoChargerEither() {
+    /// A battery that cannot be read cannot say a charger is there: nothing is written for it, however many times it is
+    /// tried, and the plan ends with the warning when the tries run out.
+    func testABatteryThatCannotBeReadWritesNothingAndEndsThePlanWhenTheTriesRunOut() {
         let server = makeServer()
         XCTAssertTrue(plan(server).ok)
         hw.cable = nil
         clock = t0.addingTimeInterval(8 * hour)
         server.systemDidWake()
+        for _ in 1..<FanHelperServer.chargePlanTries {
+            XCTAssertNotNil(server.chargePlan)
+            clock = clock.addingTimeInterval(FanHelperServer.chargePlanTryGap)
+            timerFires(server)
+        }
         XCTAssertTrue(hw.limitWrites.isEmpty)
         XCTAssertNil(server.chargePlan)
+        XCTAssertTrue(events.pending.isEmpty)
+        XCTAssertTrue(lines.contains { $0.contains("WARNING") && $0.contains("cannot be read") }, "\(lines)")
     }
 
-    func testALimitWriteThatFailsIsSaidAndThePlanStillEnds() {
+    /// One attempt at the planned moment ended the plan: an unreadable battery or a write the SMC refused right at the
+    /// wake lost the whole night. They are tried again a few times, a few seconds apart, with the plan and its wake kept,
+    /// until one goes or the tries run out; then the plan ends with the warning, as before.
+    func testALimitWriteThatFailsIsTriedAgainAndThePlanEndsWithTheWarningWhenTheTriesRunOut() {
         let server = makeServer()
         XCTAssertTrue(plan(server).ok)
         hw.refuseLimitWrites = true
         clock = t0.addingTimeInterval(8 * hour)
         server.systemDidWake()
         XCTAssertEqual(hw.limitWrites, [80], "it tried")
+        XCTAssertNotNil(server.chargePlan, "the plan ended on the first failure")
+        XCTAssertEqual(events.pending.count, 1, "the wake went with the first failure")
+        XCTAssertEqual(timer.armedAt, clock.addingTimeInterval(FanHelperServer.chargePlanTryGap),
+                       "the next try is for the timer, a few seconds on")
+        XCTAssertFalse(lines.contains { $0.contains("WARNING") }, "a warning before the tries ran out: \(lines)")
+        // A loop pass inside the gap does not try again (the plan is due, but its next try is not).
+        server.firePlanIfDue()
+        XCTAssertEqual(hw.limitWrites, [80])
+        for n in 2..<FanHelperServer.chargePlanTries {
+            clock = clock.addingTimeInterval(FanHelperServer.chargePlanTryGap)
+            timerFires(server)
+            XCTAssertEqual(hw.limitWrites.count, n, "try \(n)")
+            XCTAssertNotNil(server.chargePlan, "gave up after \(n) tries")
+        }
+        clock = clock.addingTimeInterval(FanHelperServer.chargePlanTryGap)
+        timerFires(server)
+        XCTAssertEqual(hw.limitWrites, Array(repeating: 80, count: FanHelperServer.chargePlanTries))
+        XCTAssertNil(server.chargePlan)
+        XCTAssertTrue(events.pending.isEmpty, "the wake outlived the plan")
+        XCTAssertNil(timer.armedAt)
+        XCTAssertTrue(lines.contains { $0.contains("WARNING") && $0.contains("80%") && $0.contains("\(FanHelperServer.chargePlanTries)") },
+                      "\(lines)")
+    }
+
+    /// A try that goes ends it: the plan, the wake and the timer are gone, and nothing more is written.
+    func testALimitThatGoesOnARetryEndsThePlanThereAndNothingMoreIsWritten() {
+        let server = makeServer()
+        XCTAssertTrue(plan(server).ok)
+        hw.refuseLimitWrites = true
+        clock = t0.addingTimeInterval(8 * hour)
+        server.systemDidWake()
+        hw.refuseLimitWrites = false
+        clock = clock.addingTimeInterval(FanHelperServer.chargePlanTryGap)
+        timerFires(server)
+        XCTAssertEqual(hw.limitWrites, [80, 80])
         XCTAssertNil(server.chargePlan)
         XCTAssertTrue(events.pending.isEmpty)
-        XCTAssertTrue(lines.contains { $0.contains("WARNING") && $0.contains("80%") }, "\(lines)")
+        XCTAssertNil(timer.armedAt)
+        XCTAssertFalse(lines.contains { $0.contains("WARNING") }, "\(lines)")
+        clock = clock.addingTimeInterval(60)
+        server.firePlanIfDue()
+        XCTAssertEqual(hw.limitWrites.count, 2)
+    }
+
+    /// A battery that cannot be read at the wake is the same: tried again, not an end.
+    func testAnUnreadableBatteryAtTheMomentIsTriedAgain() {
+        let server = makeServer()
+        XCTAssertTrue(plan(server).ok)
+        hw.cable = nil
+        clock = t0.addingTimeInterval(8 * hour)
+        server.systemDidWake()
+        XCTAssertNotNil(server.chargePlan)
+        XCTAssertTrue(hw.limitWrites.isEmpty, "wrote with no charger known to be there")
+        hw.cable = true
+        clock = clock.addingTimeInterval(FanHelperServer.chargePlanTryGap)
+        timerFires(server)
+        XCTAssertEqual(hw.limitWrites, [80])
+        XCTAssertNil(server.chargePlan)
+    }
+
+    /// No charger on the cable still ends the plan at once: there is nothing to charge from.
+    func testNoChargerOnTheCableStillEndsThePlanAtOnce() {
+        let server = makeServer()
+        XCTAssertTrue(plan(server).ok)
+        hw.cable = false
+        clock = t0.addingTimeInterval(8 * hour)
+        server.systemDidWake()
+        XCTAssertNil(server.chargePlan)
+        XCTAssertTrue(events.pending.isEmpty)
+        XCTAssertTrue(hw.limitWrites.isEmpty)
+        XCTAssertNil(timer.armedAt)
+    }
+
+    /// A new plan, or a cancel, while a try is waiting, starts from nothing: the old plan's tries are not the new one's.
+    func testANewPlanStartsItsTriesAgain() {
+        let server = makeServer()
+        XCTAssertTrue(plan(server, 80, in: 8 * hour).ok)
+        hw.refuseLimitWrites = true
+        clock = t0.addingTimeInterval(8 * hour)
+        server.systemDidWake()
+        XCTAssertEqual(hw.limitWrites.count, 1)
+        XCTAssertTrue(server.handle(.command(.cancelScheduledChargeLimit)).ok)
+        XCTAssertNil(server.chargePlan)
+        XCTAssertNil(timer.armedAt)
+        XCTAssertTrue(events.pending.isEmpty)
+        XCTAssertTrue(server.handle(.command(.scheduleChargeLimit(limit: 70, at: clock.addingTimeInterval(3600)))).ok)
+        clock = clock.addingTimeInterval(3600)
+        server.systemDidWake()
+        XCTAssertEqual(hw.limitWrites.count, 2, "the new plan was tried")
+        XCTAssertNotNil(server.chargePlan, "it had the old plan's tries counted against it")
     }
 
     /// Sleeping is not an end: the helper's own will-sleep notice leaves the plan alone.
