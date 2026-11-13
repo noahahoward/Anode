@@ -69,10 +69,12 @@ One administrator prompt set the battery power mode to 1 and back to 2. Slider a
 
 A stopped throwaway app, the Mac put to sleep and woken 327 s later: the process was still there and still stopped, and came back with its window when continued. (Logout is still to be checked in the last task.)
 
-## Step 6: holding the brightness ceiling. NOT TESTED.
+## Step 6: holding the brightness ceiling. Works; what it looks like with the keys is still unknown.
 
-The hold ran for 120 s and never had to act: the level stayed at 0.47, so no key press or sensor change arrived. To be repeated with the owner pressing brightness-up.
+- **The mechanism works.** With the hold running (a read every 50 ms), another process set the brightness to 0.8, 1.0 and 0.62: each was back at 0.5 within 0.05 to 0.06 s.
+- **With the owner's keys: no data.** The hold ran twice for 120 s for the owner to press brightness-up and cover the light sensor; in neither run did the level ever read above the ceiling, so no key press or sensor change arrived. Whether a held key shows as a flicker is to be seen in the last task's real session. Auto-brightness did not raise the level in four minutes.
+- Rule kept as the spec has it: hold the ceiling. A 50 ms read is far more often than needed; the builder picks the cheapest way to notice a change.
 
 ## State left behind
 
-Power mode 2 (as before), brightness 0.468 (as before), 120 Hz, no process stopped, the throwaway app quit.
+Power mode 2 (as before), brightness 0.5 (the owner's own level at the last run), 120 Hz, no process stopped, the throwaway app quit.
