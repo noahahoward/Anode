@@ -47,11 +47,29 @@ Stopped at once, the window stays on screen as a dead picture (it went away when
 
 `KeyboardBrightnessClient` in the private CoreBrightness framework reads and sets the level without root (`copyKeyboardBacklightIDs`, `brightnessForKeyboard:`, `setBrightness:forKeyboard:`). Set to 0, read back 0, restored to 0.372. Auto-brightness for the keyboard was on and did not fight the change within 2 s.
 
-## Not done yet (need the owner at the Mac)
+## Step 2: Low Power Mode and the floor. No saving at rest.
 
-- **Step 2, Low Power Mode and the floor:** the password box was not answered within 150 s; the run stopped and changed nothing.
-- **Step 5, sleep with a stopped app.**
-- **Step 6, holding the brightness ceiling against the keys and auto-brightness.**
+One administrator prompt set the battery power mode to 1 and back to 2. Slider at 0.47 throughout, Mac left alone.
+
+| Stretch | Whole Mac (median) | Processor rail (median) |
+|---|---|---|
+| Before (password box on screen) | 4.14 W | 0.34 W |
+| Low Power Mode alone, 90 s | 3.52 W | 0.21 W |
+| Low Power Mode, lowest refresh rate, 12 processes stopped, 115 s | 3.73 W | 0.21 W |
+| After: High Power, 120 Hz, nothing stopped, 45 s | 3.33 W | 0.19 W |
+
+- On a Mac at rest, Low Power Mode, the lowest refresh rate and the freeze together read no lower than the Mac left as it was. The differences are inside the run-to-run spread of about 0.3 W.
+- So the resting floor on this Mac is about 3.3 to 3.7 W at this brightness, whatever else is switched. Only brightness moves it (0.25 of the slider read 2.8 W in the first session).
+- What Low Power Mode does under load (a build, a busy tab) was not measured. That, and stopping bursts, is where these parts can matter; the section's note must say so and must not claim a saving at rest.
+- The sync client's group was left out of the stopped set, following Step 1.
+
+## Step 5: sleep with a stopped app. GO.
+
+A stopped throwaway app, the Mac put to sleep and woken 327 s later: the process was still there and still stopped, and came back with its window when continued. (Logout is still to be checked in the last task.)
+
+## Step 6: holding the brightness ceiling. NOT TESTED.
+
+The hold ran for 120 s and never had to act: the level stayed at 0.47, so no key press or sensor change arrived. To be repeated with the owner pressing brightness-up.
 
 ## State left behind
 
