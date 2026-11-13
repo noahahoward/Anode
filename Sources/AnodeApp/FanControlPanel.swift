@@ -56,7 +56,7 @@ import PowerKit
 /// just a socket write, with no prompt of any kind.
 ///
 /// ─────────────────────────────────────────────────────────────────────────────
-/// AND THE OTHER BUTTON: INSTALL FAN HELPER.
+/// AND THE OTHER BUTTON: INSTALL ANODE HELPER.
 ///
 /// Everything above is the SESSION path and it has not changed. What was added is
 /// an explicit, one-time install — the button, not the slider — that puts the
@@ -765,7 +765,7 @@ final class FanControlPanel: NSView {
         let alert = NSAlert()
         // From Charge Control it is the same helper, asked for something other than fans; the body below lists
         // everything it can do.
-        alert.messageText = origin == .fansTab ? "Install the Anode helper?" : "Install the Anode helper?"
+        alert.messageText = "Install the Anode helper?"
         // In PowerKit so a test holds it to the helper's whole vocabulary — the
         // installed helper also sets the charge limit and cuts the charger.
         alert.informativeText = FanElevation.installDisclosure
@@ -815,7 +815,7 @@ final class FanControlPanel: NSView {
             statusLabel.stringValue = installed
                 ? "Fan control is off — macOS is deciding. "
                 + "The sliders are live readings; take one to turn it on."
-                : "Fan control is off — macOS is deciding. Install the fan "
+                : "Fan control is off — macOS is deciding. Install the Anode "
                 + "helper to take control of the fans."
             // The orphan warning belongs HERE, in the state that offers to
             // install. The first version put it in a branch that requires the new

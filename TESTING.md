@@ -168,7 +168,7 @@ binary and pinned-hash file that an earlier draft of this feature installed.
 ### Installing it instead, and what that costs
 
 Typing a `sudo` line every session is fine while you are working on Anode
-and tiresome otherwise, so there is an **Install Fan Helper…** button. It asks
+and tiresome otherwise, so there is an **Install Anode Helper…** button. It asks
 for your password once and then fan control works with no prompt of any kind —
 after a rebuild, after a reboot, forever, until you uninstall.
 
@@ -247,7 +247,7 @@ the machine loud, stop charging at 20%, or run the battery down to 10% with the
 cable in.
 
 **Uninstall** removes both files, unloads the daemon, deletes the socket,
-hands the fans back to automatic and reconnects the charger. It is the **Uninstall Fan Helper…** button, or
+hands the fans back to automatic and reconnects the charger. It is the **Uninstall Anode Helper…** button, or
 the same `--uninstall` command above.
 
 The full trust model, including what it does *not* protect against, is at the top

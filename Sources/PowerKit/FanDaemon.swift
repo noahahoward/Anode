@@ -4,12 +4,12 @@ import Foundation
 // ─────────────────────────────────────────────────────────────────────────────
 // ONE BUTTON, ONE AUTHORISATION, AND THEN IT KEEPS WORKING.
 //
-// The question this file answers: Stats has a single "Install Anode Helper" button
+// The question this file answers: other menu bar apps have a single install button
 // that asks for a password once and then works forever, with no Terminal. How,
 // without an Apple Developer ID — which this project is never getting, and any
 // design beginning "obtain a Developer ID" is not a design.
 //
-// Stats does it with SMJobBless: launchd verifies a Developer ID signature and
+// They do it with SMJobBless: launchd verifies a Developer ID signature and
 // installs a privileged LaunchDaemon. That specific mechanism is closed to us.
 // The USER EXPERIENCE is not, and this is the part worth being precise about.
 //
@@ -830,15 +830,19 @@ public enum FanDaemonInstall {
 /// drift from each other or from the code: the charge-limit range is read from
 /// the range the server enforces.
 public enum HelperVocabulary {
+    // Each command by name, so the list people read (`commands`) and the parts of the app they belong to (`uses`) are
+    // built from the same words and cannot point at different ones when a command is added or moved.
+    static let setFan = "set fan N to R rpm"
+    static let releaseFans = "release the fans"
+    static let setChargeLimit = "set the macOS charge limit (\(FanHelperServer.chargeLimitRange.lowerBound)–"
+        + "\(FanHelperServer.chargeLimitRange.upperBound)%)"
+    static let wakeForTheLimit = "wake the Mac at a time Anode gives it to raise the charge limit"
+    static let lowPowerMode = "switch macOS's Low Power Mode on and put it back"
+    static let cutTheCharger = "cut the charger to discharge down to a percentage"
+    static let reconnectTheCharger = "reconnect it"
+
     public static let commands: [String] = [
-        "set fan N to R rpm",
-        "release the fans",
-        "set the macOS charge limit (\(FanHelperServer.chargeLimitRange.lowerBound)–"
-            + "\(FanHelperServer.chargeLimitRange.upperBound)%)",
-        "wake the Mac at a time Anode gives it to raise the charge limit",
-        "switch macOS's Low Power Mode on and put it back",
-        "cut the charger to discharge down to a percentage",
-        "reconnect it",
+        setFan, releaseFans, setChargeLimit, wakeForTheLimit, lowPowerMode, cutTheCharger, reconnectTheCharger,
     ]
 
     /// "set fan N to R rpm, release the fans, …, and reconnect it".
@@ -850,9 +854,9 @@ public enum HelperVocabulary {
     /// command belongs to exactly one (a test checks), so a command cannot be added without the line people read being
     /// looked at.
     public static let uses: [(name: String, commands: [String])] = [
-        ("fans", [commands[0], commands[1]]),
-        ("Charge Control", [commands[2], commands[3], commands[5], commands[6]]),
-        ("Low Power Mode", [commands[4]]),
+        ("fans", [setFan, releaseFans]),
+        ("Charge Control", [setChargeLimit, wakeForTheLimit, cutTheCharger, reconnectTheCharger]),
+        ("Low Power Mode", [lowPowerMode]),
     ]
 
     /// "One helper for fans, Charge Control and Low Power Mode." Said wherever a part of the app tells the person the
