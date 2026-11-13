@@ -194,7 +194,7 @@ public enum FreezePlanner {
     }
 
     /// Every folder on the path that ends in ".app/", outermost first. A path with none has no bundle (and "" never does).
-    private static func bundlePrefixes(of path: String) -> [String] {
+    static func bundlePrefixes(of path: String) -> [String] {
         var prefixes: [String] = []
         var from = path.startIndex
         while let found = path.range(of: ".app/", range: from..<path.endIndex) {

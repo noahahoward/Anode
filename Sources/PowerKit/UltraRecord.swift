@@ -117,20 +117,12 @@ public enum UltraRecovery {
         }
         actions += open.compactMap { group in group.appPID.map { Action.unhide(pid: $0) } }
 
-        if let brightness = restoredBrightness(before: record.brightnessBefore, now: brightnessNow) {
+        if let brightness = BrightnessCeiling.restore(before: record.brightnessBefore, now: brightnessNow) {
             actions.append(.brightness(brightness))
         }
         if record.rateLowered { actions.append(.restoreRate) }
         if let keyboard = record.keyboardBefore { actions.append(.keyboard(keyboard)) }
         if let mode = record.powerModeBefore { actions.append(.powerMode(mode)) }
         return actions
-    }
-
-    /// The earlier brightness comes back only when the mode lowered it and the screen is still where the mode left it
-    /// (at the ceiling, give or take what the display reports). Dimmer than that is the owner's choice, and unreadable
-    /// leaves no way to tell.
-    private static func restoredBrightness(before: Float?, now: Float?) -> Float? {
-        guard let before, let now, abs(now - 0.5) <= 0.01 else { return nil }
-        return before
     }
 }
