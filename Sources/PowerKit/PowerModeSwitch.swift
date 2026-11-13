@@ -11,8 +11,9 @@ import Foundation
 // remembers, what is owed and what the client was last told are the loop's alone (`FanHelperServer`). `enterLowPowerMode` and
 // `restorePowerMode` answer at once ("started"), and the client asks `powerModeResult` for how it ended.
 //
-// WHAT RUNS. Exactly one program, at an absolute path, never through a shell, with a bounded wait and its output captured,
-// through one runner the server is handed (`PowerModeRunner`). Only the helper's own `main` hands it the real one
+// WHAT RUNS. Exactly one program, at an absolute path, never through a shell, with an empty environment, a bounded wait and
+// its output captured to a bound (a call that prints more is a failed call), through one runner the server is handed
+// (`PowerModeRunner`). Only the helper's own `main` hands it the real one
 // (`SystemPowerModeRunner`); a server built anywhere else, a test least of all, has no runner and refuses the commands.
 // The arguments are built here and nowhere else, from closed sets: `-g custom` to read; to write, `-b` or `-c`, one of two
 // key names, and one digit that has been checked against that key. Nothing in a command line comes from what the tool
@@ -381,12 +382,22 @@ public final class SystemPowerModeRunner: PowerModeRunner {
     /// whole process group, and pid 1 is launchd: none of them is ever a child of this.
     static func mayBeSignalled(_ pid: Int32) -> Bool { pid > 1 }
 
+    /// The most of what the tool prints that is kept.
+    static let outputLimit = 64 * 1024
+
     private let path: String
+    private let log: (String) -> Void
 
-    public init() { path = Self.tool }
+    public init() {
+        path = Self.tool
+        log = { fanLog.error("helper: \($0, privacy: .public)") }
+    }
 
-    /// For the tests alone, which hand it a harmless program of their own.
-    init(path: String) { self.path = path }
+    /// For the tests alone, which hand it a harmless program of their own, and take what it says.
+    init(path: String, log: @escaping (String) -> Void = { _ in }) {
+        self.path = path
+        self.log = log
+    }
 
     /// Ask `child` to end; if it is still running when the grace is up (`exitedWithin` waits for it to end for that
     /// long, and says whether it did), kill it, and wait for it to be gone for `killWait`: if it is still there then, say
@@ -411,6 +422,9 @@ public final class SystemPowerModeRunner: PowerModeRunner {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: path)
         process.arguments = arguments
+        // The tool is run by absolute path and needs nothing the helper was started with, so the root child is given none
+        // of it.
+        process.environment = [:]
         let pipe = Pipe()
         process.standardOutput = pipe
         process.standardError = FileHandle.nullDevice
@@ -418,12 +432,16 @@ public final class SystemPowerModeRunner: PowerModeRunner {
 
         let exited = DispatchSemaphore(value: 0)
         process.terminationHandler = { _ in exited.signal() }
-        do { try process.run() } catch { return nil }
+        do { try process.run() } catch {
+            log("\(name) could not be started: \(error.localizedDescription)")
+            return nil
+        }
 
         // Read with the call that throws: an error is no answer. (`availableData` raises an exception on a read error,
         // and nothing can catch that.) The pipe is held until the reader is done, so its descriptor is never closed under
-        // a read that is still waiting for a child that has been killed.
-        let output = Output()
+        // a read that is still waiting for a child that has been killed. What is kept is bounded (`Output`); what is read
+        // past the bound is read and dropped, so the child is never left blocked on a full pipe.
+        let output = Output(limit: Self.outputLimit)
         let atEnd = DispatchSemaphore(value: 0)
         DispatchQueue.global(qos: .userInitiated).async {
             do {
@@ -440,12 +458,26 @@ public final class SystemPowerModeRunner: PowerModeRunner {
         guard atEnd.wait(timeout: deadline) == .success, exited.wait(timeout: deadline) == .success else {
             Self.end(RunningProcess(process),
                      exitedWithin: { exited.wait(timeout: .now() + $0) == .success },
-                     log: { line in fanLog.error("helper: \(line, privacy: .public)") })
+                     log: log)
             return nil
         }
         guard !output.failed else { return nil }
-        return PowerModeRun(status: process.terminationStatus, output: String(decoding: output.data, as: UTF8.self))
+        let status = process.terminationStatus
+        // A tool that printed more than is kept has not given an answer that can be read: a failed call, the same result
+        // as a non-zero exit.
+        if output.overflowed {
+            log("\(name) printed more than \(Self.outputLimit) bytes; the call is treated as failed")
+            return PowerModeRun(status: Self.overflowStatus, output: "")
+        }
+        if status != 0 { log("\(([name] + arguments).joined(separator: " ")) ended with status \(status)") }
+        return PowerModeRun(status: status, output: String(decoding: output.data, as: UTF8.self))
     }
+
+    /// What a call that printed too much is reported as ending with. Not a status a process can have (0...255).
+    static let overflowStatus: Int32 = -1
+
+    /// What the tool is called in a line the helper logs.
+    private var name: String { URL(fileURLWithPath: path).lastPathComponent }
 
     private final class RunningProcess: PowerModeChild {
         private let process: Process
@@ -460,13 +492,24 @@ public final class SystemPowerModeRunner: PowerModeRunner {
         }
     }
 
+    /// What the tool printed, kept up to `limit` bytes. Past that nothing more is kept and the call is marked: what is read
+    /// after it is dropped, so the pipe keeps draining.
     private final class Output {
         private let lock = NSLock()
+        private let limit: Int
         private var bytes = Data()
         private var failedRead = false
-        func append(_ chunk: Data) { lock.lock(); bytes.append(chunk); lock.unlock() }
+        private var tooMuch = false
+        init(limit: Int) { self.limit = limit }
+        func append(_ chunk: Data) {
+            lock.lock(); defer { lock.unlock() }
+            let room = max(0, limit - bytes.count)
+            if chunk.count > room { tooMuch = true }
+            bytes.append(chunk.prefix(room))
+        }
         func fail() { lock.lock(); failedRead = true; lock.unlock() }
         var data: Data { lock.lock(); defer { lock.unlock() }; return bytes }
         var failed: Bool { lock.lock(); defer { lock.unlock() }; return failedRead }
+        var overflowed: Bool { lock.lock(); defer { lock.unlock() }; return tooMuch }
     }
 }

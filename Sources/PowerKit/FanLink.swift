@@ -66,10 +66,15 @@ public let fanLog = Logger(subsystem: "dev.anode.app", category: "fan")
 // everything else anyway; if they can run code as you, they must ALSO be running
 // from a binary whose cdhash matches your Anode build to be heard at all. The
 // helper's entire vocabulary is "set fan N to R rpm", "release the fans", "set
-// the macOS charge limit (20–100%)", "cut the charger to discharge down to a
-// percentage", and "reconnect it". R is re-clamped against limits read fresh
-// from the hardware, a discharge never goes below 10%, and it can read and
-// write nothing else.
+// the macOS charge limit (20–100%)", "wake the Mac at a time to raise that limit
+// and cancel that wake", "cut the charger to discharge down to a percentage",
+// "reconnect it", "switch macOS's Low Power Mode on", "put the power mode back"
+// and "how did that end". R is re-clamped against limits read fresh from the
+// hardware, a discharge never goes below 10%, and it can read nothing back but
+// the Mac's power mode (a number from 0 to 22) and write nothing else. Putting
+// the power mode back is the crash-recovery path, so it does not ask the caller
+// to have switched anything on: a caller can set a power source that reads low
+// power to automatic or to high power.
 //
 // WHAT IT IS NOT: it is not the guarantee SMJobBless gives, because nothing
 // verified the helper binary itself before it ran as root. The user did, by
@@ -127,8 +132,9 @@ public let fanLog = Logger(subsystem: "dev.anode.app", category: "fan")
 // make your machine loud, to hold a fan at a speed the firmware would also hold
 // it at (the SMC arbitrates and has been observed clamping a written target
 // UPWARD), to stop charging at 20%, to run the battery down to 10% with the
-// cable in, or to put the Mac in Low Power Mode. It is a nuisance, not a
-// foothold.
+// cable in, to put the Mac in Low Power Mode, or to take a source that reads low
+// power out of it, without having put it there (the put-back is the crash-recovery
+// path and does not ask). It is a nuisance, not a foothold.
 //
 // If that trade is not worth it — and for a developer rebuilding all day it is
 // not — do not install. `sudo AnodeHelper` still works exactly as it always

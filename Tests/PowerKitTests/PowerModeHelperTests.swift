@@ -293,6 +293,26 @@ final class PowerModeHelperTests: XCTestCase {
         }
     }
 
+    /// A switch-on that is refused leaves one line in the helper's log, whatever the reason, and the line says the reason:
+    /// what the app is told is only whether it was done, so the log is the one place the reason is kept.
+    func testEveryRefusedSwitchOnIsLoggedOnceWithItsReason() {
+        let scenarios: [(why: PowerModeRefusal, table: FakePmset)] = [
+            (.noLowPowerMode, FakePmset(key: nil)),
+            (.unreadable, { let t = FakePmset(); t.readExits(with: 1); return t }()),
+            (.unreadable, { let t = FakePmset(); t.neverAnswers = true; return t }()),
+            (.notUnderstood, FakePmset(key: "powermode", battery: 3, charger: 0)),
+            (.notTaken, { let t = FakePmset(); t.refuseWrites(to: "-c"); return t }()),
+        ]
+        for (why, table) in scenarios {
+            pmset = table
+            lines = []
+            let server = makeServer()
+            XCTAssertEqual(enter(server), FanReply(ok: false, message: why.message), "\(why)")
+            XCTAssertEqual(lines.filter { $0.contains(why.message) }.count, 1, "\(why): \(lines)")
+            XCTAssertEqual(lines.count, 1, "\(why): one job, one line: \(lines)")
+        }
+    }
+
     /// The second source is refused: the first is put back, the reply is a refusal, and nothing is held.
     func testAWriteThatIsRefusedIsRolledBackAndNothingIsHeld() {
         pmset.refuseWrites(to: "-c")
@@ -473,10 +493,10 @@ final class PowerModeHelperTests: XCTestCase {
         for call in pmset.calls { XCTAssertEqual(call.limit, PowerModeSwitch.callLimit) }
     }
 
-    /// The link answers within 2 s of a request or closes the socket, which hands everything back. An enter that goes
-    /// through, and a restore that works, make three calls each (a read and two writes); when every call finishes in the
-    /// time it is given, they fit inside it.
-    func testAnEnterAndARestoreInWhichEveryCallFinishesMakeThreeCallsAndSoFitInsideTheLinksTwoSeconds() {
+    /// The worker's time for a job. An enter that goes through, and a restore that works, make three calls each (a read and
+    /// two writes); when every call finishes in the time it is given, the job takes less than two seconds of the worker.
+    /// (The loop never waits for it: it answers "started" at once and the job runs on the worker.)
+    func testAnEnterAndARestoreInWhichEveryCallFinishesMakeThreeCallsAndTakeTheWorkerUnderTwoSeconds() {
         let server = makeServer()
         _ = enter(server)
         let enterCalls = pmset.calls.count
@@ -488,9 +508,10 @@ final class PowerModeHelperTests: XCTestCase {
     }
 
     /// A restore whose writes hang is three calls too (a read and two writes, each source tried), but two of them can each
-    /// take `slowestCall`: 0.6 + 1.0 + 1.0 = 2.6 s, past the link's two seconds. The link closes the socket then, and what
-    /// the helper holds is still held: the put-back on close is what finishes the job.
-    func testARestoreWithHungWritesCanRunPastTheLinksTwoSecondsAndWhatIsHeldIsKeptForTheClose() {
+    /// take `slowestCall`: 0.6 + 1.0 + 1.0 = 2.6 s of the worker, which is the bound of what the helper's stop waits for it
+    /// (`powerModeStopWait`). A restore that fails keeps what the helper holds, so whatever the stop could not wait out is
+    /// still owed and is tried again.
+    func testARestoreWithHungWritesTakesTheWorkerLongerThanTwoSecondsAndWhatIsHeldIsKept() {
         let server = makeServer()
         _ = enter(server)
         let before = pmset.calls.count
@@ -517,14 +538,14 @@ final class PowerModeHelperTests: XCTestCase {
 
     /// Six when it did: a write the tool was cut off after it had done the work is reported failed and is on, so the
     /// put-back writes both sources. Six is the most a command makes (two writes before the failure, two after, and a read
-    /// each side). Each call can take `PowerModeSwitch.slowestCall`, so this is the command the link may not wait for; the
-    /// link closes the socket and the helper's own put-back on close runs, and nothing is left on.
+    /// each side). Each call can take `PowerModeSwitch.slowestCall`, so this is the job that holds the worker longest, and
+    /// longer than the stop waits for it (`powerModeStopWait`); the job itself puts everything back, and nothing is left on.
     func testAFailedEnterWhoseFailedWriteHadLandedMakesSixCallsAndLeavesNothingOn() {
         pmset.writesLandButFail(for: "-c")
         let server = makeServer()
         XCTAssertFalse(enter(server).ok)
         XCTAssertEqual(pmset.calls.count, 6, "\(pmset.calls.map(\.arguments))")
-        XCTAssertGreaterThan(PowerModeSwitch.slowestRolledBackEnter, 2.0, "this is the case the link may not wait for")
+        XCTAssertGreaterThan(PowerModeSwitch.slowestRolledBackEnter, 2.0, "this is the job that holds the worker longest")
         XCTAssertEqual(pmset.battery, 2)
         XCTAssertEqual(pmset.charger, 0)
         XCTAssertNil(server.heldPowerModes)

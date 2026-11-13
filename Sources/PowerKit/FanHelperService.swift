@@ -1846,8 +1846,9 @@ public final class FanHelperServer {
         switch (job.kind, outcome) {
         case (_, .on(let before)):
             log("switched macOS's Low Power Mode on (before: battery \(before.battery), charger \(before.charger))")
-        case (.enter, .refused(.notTaken, _)):
-            log("could not switch macOS's Low Power Mode on")
+        case (.enter, .refused(let why, _)):
+            // Whatever the reason: the app is only told whether it was done, so this line is where the reason is kept.
+            log("could not switch macOS's Low Power Mode on: \(why.message)")
         case (.restore, .putBack):
             log("put the macOS power mode back")
         case (.restore, .refused(let why, _)):

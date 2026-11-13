@@ -378,6 +378,77 @@ final class UltraPowerModePureTests: XCTestCase {
     func testAProgramThatIsNotThereIsNoAnswerRatherThanACrash() {
         XCTAssertNil(SystemPowerModeRunner(path: "/no/such/tool-\(UUID().uuidString)").run([], within: 1))
     }
+
+    // ── What the runner keeps, what it passes on, and what it says ──────────
+
+    /// One call through the real runner, on a harmless program, with every line the runner says collected.
+    private func real(_ path: String, _ arguments: [String] = [], within limit: TimeInterval = 10)
+        -> (run: PowerModeRun?, said: [String]) {
+        var said: [String] = []
+        let runner = SystemPowerModeRunner(path: path, log: { said.append($0) })
+        let run = runner.run(arguments, within: limit)
+        return (run, said)
+    }
+
+    /// The tool is run by its absolute path and needs nothing the helper was started with, so the root child gets none of
+    /// it: `env` prints what it was given, and it was given nothing.
+    func testTheToolIsRunWithAnEmptyEnvironment() {
+        XCTAssertFalse(ProcessInfo.processInfo.environment.isEmpty, "the test is only meaningful with something to leak")
+        let r = real("/usr/bin/env")
+        XCTAssertEqual(r.run, PowerModeRun(status: 0, output: ""))
+        XCTAssertEqual(r.said, [])
+    }
+
+    /// Up to 64 KiB of what the tool prints is kept, and a call that prints exactly that is a call like any other.
+    func testOutputUpToSixtyFourKiBIsKept() {
+        XCTAssertEqual(SystemPowerModeRunner.outputLimit, 64 * 1024)
+        let r = real("/bin/dd", ["if=/dev/zero", "bs=65536", "count=1"])
+        XCTAssertEqual(r.run?.status, 0)
+        XCTAssertEqual(r.run?.output.utf8.count, 64 * 1024)
+        XCTAssertEqual(r.said, [])
+    }
+
+    /// One byte more is a failed call, the same result as a non-zero exit, and nothing of it is kept.
+    func testOutputPastSixtyFourKiBIsAFailedCallAndSaidOnce() {
+        let r = real("/bin/dd", ["if=/dev/zero", "bs=65537", "count=1"])
+        guard let run = r.run else { return XCTFail("a tool that printed too much is a failed call, not a missing answer") }
+        XCTAssertNotEqual(run.status, 0)
+        XCTAssertEqual(run.output, "")
+        XCTAssertEqual(r.said.count, 1, "\(r.said)")
+        XCTAssertTrue(r.said.first?.contains("65536") == true, "\(r.said)")
+    }
+
+    /// The pipe is still drained after the limit, so a tool that prints far more than a pipe holds is not left blocked on a
+    /// write until its time runs out: it finishes, and the answer is the failed call, not a timeout.
+    func testAToolThatPrintsFarMoreThanThePipeHoldsIsStillDrainedAndFinishes() {
+        let started = Date()
+        let r = real("/bin/dd", ["if=/dev/zero", "bs=1048576", "count=4"], within: 20)
+        XCTAssertNotNil(r.run, "the child blocked on a full pipe and the call timed out")
+        XCTAssertNotEqual(r.run?.status, 0)
+        XCTAssertLessThan(Date().timeIntervalSince(started), 10)
+    }
+
+    /// A program that cannot be started is said once, with why, and is no answer.
+    func testAProgramThatCannotBeStartedIsSaidOnce() {
+        let r = real("/no/such/tool-\(UUID().uuidString)")
+        XCTAssertNil(r.run)
+        XCTAssertEqual(r.said.count, 1, "\(r.said)")
+        XCTAssertTrue(r.said.first?.contains("could not be started") == true, "\(r.said)")
+    }
+
+    /// A non-zero exit still reaches the caller as it did, and is said once with its status.
+    func testANonZeroExitIsSaidOnceWithItsStatus() {
+        let r = real("/usr/bin/false")
+        XCTAssertEqual(r.run?.status, 1)
+        XCTAssertEqual(r.said.count, 1, "\(r.said)")
+        XCTAssertTrue(r.said.first?.contains("status 1") == true, "\(r.said)")
+    }
+
+    func testACallThatWorkedSaysNothing() {
+        let r = real("/bin/echo", ["fine"])
+        XCTAssertEqual(r.run, PowerModeRun(status: 0, output: "fine\n"))
+        XCTAssertEqual(r.said, [])
+    }
 }
 
 // ── The app's side: HelperPowerMode over the shared connection ──────────────

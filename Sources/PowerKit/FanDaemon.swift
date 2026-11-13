@@ -136,7 +136,10 @@ import Foundation
 // firmware would also hold it — the SMC arbitrates and has been observed
 // clamping a written target upward — stop charging at 20%, run the battery down
 // to 10% with the cable in, wake the Mac once at a time within the next 13
-// hours, or put the Mac in Low Power Mode. It cannot read anything back to its
+// hours, switch the Mac's Low Power Mode on, or — through `restorePowerMode`,
+// the crash-recovery path, which does not ask the caller to have switched
+// anything on first — set a power source that reads low power back to automatic
+// or to high power. It cannot read anything back to its
 // caller but the power mode it found (a number from 0 to 22), cannot write any
 // other SMC key or preference, cannot schedule any other power event, cannot run
 // anything but that one program with a command line the helper builds itself
