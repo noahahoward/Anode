@@ -7,12 +7,13 @@ import PowerKit
 // charger are SMC writes — and so does writing macOS's charge limit for the
 // machine. Everything else in Anode is deliberately unprivileged.
 //
-// The whole privileged surface is six operations: set fan N to R rpm, release
+// The whole privileged surface is seven operations: set fan N to R rpm, release
 // the fans, set the macOS charge limit (20–100%), wake the Mac at a time it is
-// given to raise that limit, cut the charger to discharge down to a percentage,
-// and reconnect it. It is small enough to audit in one
-// sitting, and that is the point — a root daemon you cannot read in full is a
-// root daemon you cannot trust.
+// given to raise that limit, switch macOS's Low Power Mode on and put it back
+// (through /usr/bin/pmset, the one program it runs), cut the charger to
+// discharge down to a percentage, and reconnect it. It is small enough to audit
+// in one sitting, and that is the point — a root daemon you cannot read in full
+// is a root daemon you cannot trust.
 //
 // IT RUNS TWO WAYS, and the default installs nothing.
 //
@@ -120,12 +121,13 @@ that changes on every rebuild. It pins the signing identifier instead, and anyon
 who can run `codesign -s - -i dev.anode.app` on their own binary satisfies
 that. So while it is up, ANYTHING RUNNING AS YOU can set your fan speeds, within
 the range the fan itself reports, set the macOS charge limit, wake the Mac once
-at a time Anode gives it to raise that limit, and discharge the battery on the
-charger (never below 10%). Nothing else can: other users are
-refused by the kernel, and the daemon's whole vocabulary is "set fan N to R
-rpm", "release the fans", "set the macOS charge limit (20–100%)", "wake the Mac
-at a time Anode gives it to raise the charge limit", "cut the charger to
-discharge down to a percentage", and "reconnect it".
+at a time Anode gives it to raise that limit, switch macOS's Low Power Mode on,
+and discharge the battery on the charger (never below 10%). Nothing else can:
+other users are refused by the kernel, and the daemon's whole vocabulary is "set
+fan N to R rpm", "release the fans", "set the macOS charge limit (20–100%)",
+"wake the Mac at a time Anode gives it to raise the charge limit", "switch
+macOS's Low Power Mode on and put it back", "cut the charger to discharge down
+to a percentage", and "reconnect it".
 """
 
 func value(after flag: String) -> String? {
@@ -264,7 +266,8 @@ if arguments.contains(FanDaemon.installArgument) {
     While it is up it will, on request from uid \(installFor): set fan N to R rpm
     (within the range the fan itself reports), release the fans, set the macOS
     charge limit (20–100%), wake the Mac at a time Anode gives it to raise that
-    limit (never more than 13 hours ahead), cut the charger to discharge down to
+    limit (never more than 13 hours ahead), switch macOS's Low Power Mode on and
+    put it back (by running /usr/bin/pmset), cut the charger to discharge down to
     a percentage (never below 10%), and reconnect it. Anything running as that
     user can ask —
     this build has no Apple Developer ID, so nothing can tell your Anode
@@ -407,7 +410,9 @@ let server = FanHelperServer(
     sleepCharge: SystemChargeHardware(),
     // The one place the real scheduler is made: a wake is a root-only event kept on disk by the system, so nothing
     // else may be handed one.
-    powerEvents: SystemPowerEventScheduler())
+    powerEvents: SystemPowerEventScheduler(),
+    // And the one place the real runner for `pmset` is made, for the same reason: nothing else can run it.
+    powerMode: SystemPowerModeRunner())
 
 // Every catchable signal that would end this process takes the ⌃C path:
 // `stop()`, then the loop's way out (`shutdownSocket`) reconnects the charger

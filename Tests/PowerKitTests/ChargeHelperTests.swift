@@ -58,6 +58,19 @@ final class ChargeHelperTestsWatch: XCTestCase {
         }
     }
 
+    /// 4 adds Low Power Mode; the commands before it are written as they were (`UltraPowerModeTests` pins each), so a
+    /// helper at 2 or 3 still serves them.
+    func testTheLowPowerModeCommandsRoundTripThroughTheWire() throws {
+        let requests: [FanRequest] = [.command(.enterLowPowerMode), .command(.restorePowerMode(before: 21))]
+        for r in requests {
+            var line = try FanWire.encode(r)
+            XCTAssertEqual(line.last, 0x0A)
+            line.removeLast()
+            XCTAssertFalse(line.contains(0x0A))
+            XCTAssertEqual(try FanWire.decode(FanRequest.self, from: line), r)
+        }
+    }
+
     /// The exact values root writes, and the exact bounds it enforces. Each one
     /// is a measured fact or a decision the plan names; a typo in any of them is
     /// a root process writing the wrong key, the wrong byte, or the wrong
@@ -581,17 +594,19 @@ final class ChargeHelperTestsDisclosure: XCTestCase {
             "release the fans",
             "set the macOS charge limit (20–100%)",
             "wake the Mac at a time Anode gives it to raise the charge limit",
+            "switch macOS's Low Power Mode on and put it back",
             "cut the charger to discharge down to a percentage",
             "reconnect it",
         ])
         XCTAssertEqual(HelperVocabulary.sentence,
                        "set fan N to R rpm, release the fans, set the macOS charge limit "
                      + "(20–100%), wake the Mac at a time Anode gives it to raise the charge limit, "
+                     + "switch macOS's Low Power Mode on and put it back, "
                      + "cut the charger to discharge down to a percentage, "
                      + "and reconnect it")
     }
 
-    /// Both sheets that come before a root helper is authorised name all six
+    /// Both sheets that come before a root helper is authorised name all seven
     /// commands. They described a fan-only helper after the charger commands
     /// were added, so a person agreed to one thing and installed another.
     func testEverySheetBeforeAuthorisingNamesTheWholeVocabulary() {
@@ -643,8 +658,28 @@ final class ChargeHelperTestsDisclosure: XCTestCase {
         XCTAssertFalse(wake.contains("\\"), "a line continuation leaked into the text")
     }
 
+    /// The helper can switch Low Power Mode on. Both sheets say so in plain words, say that it is the whole Mac's, and say
+    /// what puts it back: the mode ending, Anode quitting or stopping, and the helper stopping.
+    func testEverySheetBeforeAuthorisingSaysTheHelperCanSwitchLowPowerModeOnAndPutsItBack() {
+        let sheets = ["install sheet": FanElevation.installDisclosure,
+                      "session sheet": FanElevation.sessionDisclosure]
+        for (name, text) in sheets {
+            XCTAssertTrue(text.contains("switch macOS's Low Power Mode on and put it back"), "the \(name) does not say it")
+            XCTAssertTrue(text.contains(FanElevation.lowPowerModeAndBack), "the \(name) omits the paragraph about it")
+        }
+        let p = FanElevation.lowPowerModeAndBack
+        XCTAssertTrue(p.contains("switch macOS's Low Power Mode on, for the battery and for the charger"), p)
+        XCTAssertTrue(p.contains("Ultra Low Power Mode"), "the person knows the feature by its name: \(p)")
+        XCTAssertTrue(p.contains("when that mode ends"), p)
+        XCTAssertTrue(p.contains("when you quit Anode or Anode stops"), p)
+        XCTAssertTrue(p.contains("when you stop or remove the helper"), p)
+        XCTAssertTrue(p.contains("left as you made it"), "a choice the person made meanwhile is theirs: \(p)")
+        XCTAssertFalse(p.contains("\\"), "a line continuation leaked into the text")
+    }
+
     func testTheSystemPromptsNameTheCharger() {
         XCTAssertTrue(FanElevation.installPrompt.contains("charge limit"))
+        XCTAssertTrue(FanElevation.installPrompt.contains("switches macOS's Low Power Mode on and puts it back"))
         XCTAssertTrue(FanElevation.installPrompt.contains("wakes the Mac at a time Anode gives it"))
         XCTAssertTrue(FanElevation.installPrompt.contains("cuts or reconnects the charger"))
         XCTAssertTrue(FanElevation.uninstallPrompt.contains("reconnect the charger"))

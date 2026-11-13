@@ -53,6 +53,9 @@ final class HelperConnection {
     enum Holder: Hashable {
         case fans
         case charge
+        /// Low Power Mode, from a successful switch-on until it is put back: the helper puts the mode back itself when
+        /// the socket closes, so the socket is kept open for that long.
+        case powerMode
     }
 
     private let wire: HelperWire
@@ -97,6 +100,16 @@ final class HelperConnection {
         if case .connected(_, let version) = status { return (version ?? 1) >= 2 }
         return false
     }
+
+    /// Connected to a helper that knows the Low Power Mode commands: protocol 4 or later. A helper that speaks less closes
+    /// the connection on a command it cannot decode, which hands the fans back, ends a discharge and drops the Ready By
+    /// plan, so these commands go only to a helper that has just said 4.
+    var speaksPowerMode: Bool {
+        if case .connected(_, let version) = status { return Self.speaksPowerMode(version: version) }
+        return false
+    }
+
+    static func speaksPowerMode(version: Int?) -> Bool { (version ?? 1) >= 4 }
 
     // ── Claims ──────────────────────────────────────────────────────────────
 

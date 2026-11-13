@@ -254,7 +254,8 @@ final class UltraLowPowerFeature: BetaFeature {
          appName: @escaping (String) -> String? = { UltraLowPowerFeature.runningAppName(bundleID: $0) },
          shortcutLabel: @escaping () -> String? = { UltraLowPowerFeature.keyLabel(in: .shared) },
          installHelper: @escaping (@escaping (String) -> Void) -> Void = { report in
-             (NSApplication.shared.delegate as? AppDelegate)?.fansPane.control.installHelper(report: report)
+             (NSApplication.shared.delegate as? AppDelegate)?.fansPane.control.installHelper(report: report,
+                                                                                              from: .ultraLowPower)
          }) {
         self.settings = settings
         self.controller = controller

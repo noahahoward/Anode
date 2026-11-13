@@ -583,9 +583,11 @@ final class ChargeHelperPlanTests: XCTestCase {
         }
     }
 
-    func testTheProtocolIsVersionThreeAndTheHelloSaysSo() {
-        XCTAssertEqual(FanDaemon.protocolVersion, 3)
-        XCTAssertEqual(makeServer().handle(.hello).version, 3)
+    /// 4 adds Low Power Mode and nothing the plan depends on (`PowerModeHelperTests` pins the version itself): a helper
+    /// that says 3 or more serves these two commands, as one that says 3 does.
+    func testTheProtocolIsAtLeastThreeAndTheHelloSaysSo() {
+        XCTAssertGreaterThanOrEqual(FanDaemon.protocolVersion, 3)
+        XCTAssertEqual(makeServer().handle(.hello).version, FanDaemon.protocolVersion)
     }
 
     func testAFanSessionTracksNothingForThePlanCommands() {

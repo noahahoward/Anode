@@ -368,8 +368,10 @@ struct RequestLines {
 }
 
 /// The helper's socket, its access check, and the operations behind it: set fan
-/// N to R rpm, release the fans, set the macOS charge limit (20–100%), cut the
-/// charger to discharge down to a percentage, and reconnect it.
+/// N to R rpm, release the fans, set the macOS charge limit (20–100%), wake the
+/// Mac at a time it is given to raise that limit, switch macOS's Low Power Mode
+/// on and put it back, cut the charger to discharge down to a percentage, and
+/// reconnect it.
 ///
 /// Lives in PowerKit rather than in the helper executable so the test suite can
 /// run a real server, over a real socket, against fake hardware, as an ordinary
@@ -538,6 +540,15 @@ public final class FanHelperServer {
     private let powerEvents: PowerEventScheduler?
     private let wakeTimer: WallClockTimer
 
+    /// The tool that changes macOS's power mode. nil refuses both commands for this helper's whole life.
+    private let powerMode: PowerModeSwitch?
+
+    /// The power mode of the battery and of the charger as they were when this client switched Low Power Mode on, kept
+    /// until they are put back. Remembered before the first write, so a write that half worked is still owed its undo;
+    /// cleared only by a put-back that was taken. Loop thread only. (Not a term of `isIdle`: it lives with its client,
+    /// whose connection keeps the helper up, and a put-back that failed is tried again when the helper stops.)
+    private(set) var heldPowerModes: PowerModes?
+
     /// The plan this helper holds: a limit to write at a moment, with a wake scheduled for it. One at a time. Only
     /// the loop thread touches it.
     private(set) var chargePlan: ChargePlan?
@@ -611,13 +622,17 @@ public final class FanHelperServer {
     /// server gets that is not told otherwise, refuses plans: only the helper's own `main` hands over the real one,
     /// so nothing that builds a server, a test least of all, can schedule a wake by accident. `wakeTimer` is its own
     /// wall-clock timer for the same moment.
+    ///
+    /// `powerMode` is how this helper runs `pmset` (`PowerModeSwitch`). nil, which is what every server gets that is not
+    /// told otherwise, refuses the Low Power Mode commands: only the helper's own `main` hands over the real runner.
     public init(hardware: FanHardware,
                 configuration: Configuration,
                 log: @escaping (String) -> Void = { _ in },
                 charge: ChargeHardware? = nil,
                 sleepCharge: ChargeHardware? = nil,
                 powerEvents: PowerEventScheduler? = nil,
-                wakeTimer: WallClockTimer = DispatchWallClockTimer()) {
+                wakeTimer: WallClockTimer = DispatchWallClockTimer(),
+                powerMode: PowerModeRunner? = nil) {
         self.hardware = hardware
         self.config = configuration
         self.log = log
@@ -625,6 +640,7 @@ public final class FanHelperServer {
         self.chargeWithoutTheLoop = charge == nil ? nil : (sleepCharge ?? charge)
         self.powerEvents = powerEvents
         self.wakeTimer = wakeTimer
+        self.powerMode = powerMode.map { PowerModeSwitch(runner: $0) }
     }
 
     /// Nothing connected, no fan held, the charger not cut, and no reconnect
@@ -1238,6 +1254,8 @@ public final class FanHelperServer {
         // The plan lives on the connection, like a discharge: whoever asked for it is gone, so nothing is written for
         // it and the Mac is not woken for it.
         dropPlan(because: "the client went away")
+        // And the power mode it switched on: put back last of the three, because it runs a tool that can take a moment.
+        dropPowerMode(because: "the client went away")
         log("client gone (\(reason))")
         log(reply.message)
     }
@@ -1250,6 +1268,8 @@ public final class FanHelperServer {
         // Whatever stopped the helper (a signal, an uninstall, its own exit), no wake is left behind and nothing is
         // written afterwards.
         dropPlan(because: "the helper is stopping")
+        // A put-back that was refused when the client went gets one more try here.
+        dropPowerMode(because: "the helper is stopping")
         answerPowerNoticesOnTheWayOut()
         if listenFD >= 0 { close(listenFD); listenFD = -1 }
         // Only if we made it. launchd's socket outlives this process on purpose:
@@ -1285,6 +1305,10 @@ public final class FanHelperServer {
             return scheduleChargeLimit(limit, at: at)
         case .command(.cancelScheduledChargeLimit):
             return cancelScheduledChargeLimit()
+        case .command(.enterLowPowerMode):
+            return enterLowPowerMode()
+        case .command(.restorePowerMode(let before)):
+            return restorePowerMode(before: before)
         }
     }
 
@@ -1665,6 +1689,70 @@ public final class FanHelperServer {
         log("gave up reconnecting a charger this helper never saw cut: the adapter-cut key could not be read back "
             + "after \(Self.unheldRetryLimit) retries over \(Int(Self.unheldGiveUpAfter)) s, so this Mac probably "
             + "has no such key")
+    }
+
+    // ── Low Power Mode ──────────────────────────────────────────────────────
+
+    /// Switch Low Power Mode on for the battery and the charger, and reply with what each was. See `FanCommand` and
+    /// `PowerModeSwitch`. What was read is remembered BEFORE the first write; any write that is not taken is put back, and
+    /// what is not forgotten until that has worked. Asked again by the client that already holds it, the first "before"
+    /// stays: what the Mac reads now is this client's own work.
+    private func enterLowPowerMode() -> FanReply {
+        guard let powerMode else { return FanReply(ok: false, message: PowerModeRefusal.cannotChange.message) }
+        let reading: PowerModeReading
+        switch powerMode.read() {
+        case .failure(let why): return FanReply(ok: false, message: why.message)
+        case .success(let seen): reading = seen
+        }
+        let before: PowerModes
+        if let held = heldPowerModes {
+            before = held
+        } else if let seen = reading.modes {
+            before = seen
+            heldPowerModes = seen
+        } else {
+            return FanReply(ok: false, message: PowerModeRefusal.notUnderstood.message)
+        }
+        guard powerMode.lower(reading) else {
+            if case .success = powerMode.putBack(before) { heldPowerModes = nil }
+            log("could not switch macOS's Low Power Mode on")
+            return FanReply(ok: false, message: PowerModeRefusal.notTaken.message)
+        }
+        log("switched macOS's Low Power Mode on (before: battery \(before.battery), charger \(before.charger))")
+        return FanReply(ok: true, message: "Low Power Mode is on", powerModeBefore: before.packed)
+    }
+
+    /// Put the power mode back to what the app says it was. Checked before anything runs. A source that no longer reads
+    /// low power is the owner's, and is left as it is.
+    private func restorePowerMode(before packed: Int) -> FanReply {
+        guard let powerMode else { return FanReply(ok: false, message: PowerModeRefusal.cannotChange.message) }
+        guard let modes = PowerModes(packed: packed) else {
+            return FanReply(ok: false, message: PowerModeRefusal.badValue.message)
+        }
+        switch powerMode.putBack(modes) {
+        case .failure(let why):
+            log("could not put the macOS power mode back: \(why.message)")
+            return FanReply(ok: false, message: why.message)
+        case .success:
+            heldPowerModes = nil
+            log("put the macOS power mode back")
+            return FanReply(ok: true, message: "power mode put back")
+        }
+    }
+
+    /// The client that switched Low Power Mode on is gone, or the helper is stopping: put it back, writing nothing to a
+    /// source the owner has changed since. Does nothing, and says nothing, when this client switched nothing on. A
+    /// put-back that is refused leaves the memory, so the next close or the helper stopping tries again. LOOP THREAD ONLY.
+    private func dropPowerMode(because why: String) {
+        guard let powerMode, let held = heldPowerModes else { return }
+        switch powerMode.putBack(held) {
+        case .success:
+            heldPowerModes = nil
+            log("put the macOS power mode back (\(why))")
+        case .failure(let refusal):
+            log("WARNING: could not put the macOS power mode back (\(why)): \(refusal.message); "
+              + "it is tried again when the helper stops")
+        }
     }
 
     private func set(_ target: FanTarget) -> FanReply {

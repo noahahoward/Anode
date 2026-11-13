@@ -96,13 +96,14 @@ import Foundation
 //          Identifier=dev.anode.app   Signature=adhoc   valid on disk
 //
 //      So the installed daemon's real boundary is the uid check, which is the
-//      kernel's and cannot be forged, plus a vocabulary of six commands — set
+//      kernel's and cannot be forged, plus a vocabulary of seven commands — set
 //      fan N to R rpm, release the fans, set the macOS charge limit (20–100%),
-//      wake the Mac at a time it is given to raise that limit, cut the charger
-//      to discharge down to a percentage, and reconnect it — whose fan values
-//      the firmware clamps and whose charge values the helper range-checks
-//      (never below 10%, a wake never more than 13 hours ahead). It is not
-//      "only this app". Saying
+//      wake the Mac at a time it is given to raise that limit, switch macOS's
+//      Low Power Mode on and put it back, cut the charger to discharge down to
+//      a percentage, and reconnect it — whose fan values the firmware clamps
+//      and whose charge values the helper range-checks (never below 10%, a wake
+//      never more than 13 hours ahead, a power mode only a digit the helper has
+//      checked). It is not "only this app". Saying
 //      it were would be the overstatement this project keeps refusing to make.
 //
 // ── WHAT A USER IS AGREEING TO ──────────────────────────────────────────────
@@ -117,23 +118,30 @@ import Foundation
 // RunAtLoad + KeepAlive, which was a permanent root process bought to save a
 // process launch — see `plistDictionary`.
 //
-// While it is up, its entire ability is six commands — set fan N to R rpm,
+// While it is up, its entire ability is seven commands — set fan N to R rpm,
 // release the fans, set the macOS charge limit (20–100%), wake the Mac at a
-// time it is given to raise that limit, cut the charger to discharge down to a
-// percentage, and reconnect it — on request from the uid that installed it.
+// time it is given to raise that limit, switch macOS's Low Power Mode on and
+// put it back, cut the charger to discharge down to a percentage, and
+// reconnect it — on request from the uid that installed it.
 // Anything running as that user can ask. What it writes is exactly: the fan keys
 // (`F<n>Tg`, `F<n>md`) within the range each fan reports; the adapter-cut key
 // `CHIE`, with 0x08 or 0x00 and no other value; one preference, `mclLimitValue`
-// in com.apple.smartcharging.topoffprotection; and one scheduled wake in the
+// in com.apple.smartcharging.topoffprotection; one scheduled wake in the
 // system's own list, under the helper's own name, which it removes again when
 // the moment has come, when the plan is cancelled, when the client goes away
-// and when the helper stops. An attacker who takes it can make the machine
-// loud, hold a fan where the firmware would also hold it — the SMC arbitrates
-// and has been observed clamping a written target upward — stop charging at
-// 20%, run the battery down to 10% with the cable in, or wake the Mac once at a
-// time within the next 13 hours. It cannot read anything back to its caller,
-// cannot write any other SMC key or preference, cannot schedule any other
-// power event, cannot run anything, and has no path or key name in its input.
+// and when the helper stops; and the power mode of the battery and of the
+// charger, through `/usr/bin/pmset` and nothing else, which it puts back when
+// the client asks, when the client goes away and when the helper stops. An
+// attacker who takes it can make the machine loud, hold a fan where the
+// firmware would also hold it — the SMC arbitrates and has been observed
+// clamping a written target upward — stop charging at 20%, run the battery down
+// to 10% with the cable in, wake the Mac once at a time within the next 13
+// hours, or put the Mac in Low Power Mode. It cannot read anything back to its
+// caller but the power mode it found (a number from 0 to 22), cannot write any
+// other SMC key or preference, cannot schedule any other power event, cannot run
+// anything but that one program with a command line the helper builds itself
+// from fixed strings and digits it has checked, never through a shell, and has
+// no path or key name in its input.
 //
 // The undo is one button. It removes every file and launchd job this project
 // installed — `FanHelperInstall.artifacts` is the list, and it is asserted
@@ -311,7 +319,11 @@ public enum FanDaemon {
     /// 3: adds `scheduleChargeLimit` and `cancelScheduledChargeLimit`, for Ready By. A helper that speaks 2 closes the
     /// connection on a command it does not know, which ends a discharge and hands the fans back, so the app sends
     /// them only to a helper that has said 3.
-    public static let protocolVersion = 3
+    /// 4: adds `enterLowPowerMode` and `restorePowerMode`, for Ultra Low Power Mode. A helper that speaks 3 closes the
+    /// connection on a command it does not know, with the same consequences, so the app sends these only to a helper
+    /// that has said 4. Nothing a helper at 2 or 3 serves is changed: the version is a plain increasing number, and the
+    /// app asks "does it speak at least N" of each feature.
+    public static let protocolVersion = 4
 
     /// The argument that tells the helper it is the installed daemon rather than
     /// a session helper. The difference is the pin, and where the socket comes
@@ -821,6 +833,7 @@ public enum HelperVocabulary {
         "set the macOS charge limit (\(FanHelperServer.chargeLimitRange.lowerBound)–"
             + "\(FanHelperServer.chargeLimitRange.upperBound)%)",
         "wake the Mac at a time Anode gives it to raise the charge limit",
+        "switch macOS's Low Power Mode on and put it back",
         "cut the charger to discharge down to a percentage",
         "reconnect it",
     ]
@@ -904,7 +917,8 @@ public enum FanElevation {
     public static let installPrompt =
         "Anode will install a helper that runs as root and, on request, sets fan "
         + "speeds, sets the macOS charge limit, wakes the Mac at a time Anode gives "
-        + "it to raise that limit, and cuts or reconnects the charger: "
+        + "it to raise that limit, switches macOS's Low Power Mode on and puts it "
+        + "back, and cuts or reconnects the charger: "
         + "\(FanDaemon.helperPath) and \(FanDaemon.plistPath). "
         + "Uninstalling from the Fans tab removes both."
 
@@ -955,7 +969,7 @@ public enum FanElevation {
     // ── What the person is told before authorising ──────────────────────────
     //
     // Here rather than in the app so a test can hold every one of them to the
-    // helper's real vocabulary. Each names all six commands, in
+    // helper's real vocabulary. Each names all seven commands, in
     // `HelperVocabulary.sentence`, because each is the last thing a person reads
     // before giving a root process that power.
 
@@ -978,6 +992,15 @@ public enum FanElevation {
     it, the wake is cancelled and nothing is written.
     """
 
+    /// What the Low Power Mode change comes to, in plain words, in both sheets. It is a setting of the whole Mac, and the
+    /// helper puts it back itself on every way out it can see.
+    public static let lowPowerModeAndBack = """
+    The helper can also switch macOS's Low Power Mode on, for the battery and for the \
+    charger, when Ultra Low Power Mode asks it to. It puts each back as it was when that \
+    mode ends, when you quit Anode or Anode stops running, and when you stop or remove the \
+    helper; one you changed yourself in the meantime is left as you made it.
+    """
+
     /// The sheet before the session helper is first started (the Terminal
     /// route). One exact build can ask; it stops with ⌃C.
     public static let sessionDisclosure = """
@@ -992,6 +1015,8 @@ public enum FanElevation {
     the charger is reconnected when you do — or if Anode quits or crashes.
 
     \(wakeForTheLimit)
+
+    \(lowPowerModeAndBack)
 
     \(chargeLimitOutlivesTheHelper)
 
@@ -1028,6 +1053,8 @@ public enum FanElevation {
     and it only ever trusts the exact build you started it beside.
 
     \(wakeForTheLimit)
+
+    \(lowPowerModeAndBack)
 
     "Uninstall Fan Helper…" in the Fans tab removes both files, unloads the \
     daemon, hands the fans back and reconnects the charger. \

@@ -65,8 +65,10 @@ public final class Settings {
         /// Versioned by its name: the sheet now says the helper also sets the charge limit and cuts the charger,
         /// and someone who ticked "Don't show this again" on the fans-only words (stored as "fanDisclosureSeen")
         /// has not read that. A new name shows it to them once more. Renamed again when the sheet began to say the
-        /// helper can wake the Mac at a time Anode gives it (stored as "fanDisclosureSeenWithCharger" before).
-        public static let fanDisclosureSeen = "fanDisclosureSeenWithWake"
+        /// helper can wake the Mac at a time Anode gives it (stored as "fanDisclosureSeenWithCharger" before). Renamed
+        /// again when it began to say the helper can switch macOS's Low Power Mode on and puts it back (stored as
+        /// "fanDisclosureSeenWithWake" before).
+        public static let fanDisclosureSeen = "fanDisclosureSeenWithWakeAndPowerMode"
         public static let fanSyncEnabled = "fanSyncEnabled"
         public static let speedTestAgreed = "speedTestAgreed"
         public static let autoUpdateEnabled = "autoUpdateEnabled"

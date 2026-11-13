@@ -595,6 +595,9 @@ final class FanControlPanel: NSView {
     static let waitingText = "Waiting for authorisation\u{2026}"
     static let cancelledText = "Cancelled \u{2014} nothing was changed."
     static let installedForChargeControlText = "The Anode helper is installed. Fan control is as it was."
+    /// The same from Ultra Low Power Mode's section, where fan control is not the subject.
+    static let installedForUltraLowPowerText = "The Anode helper is installed. Low Power Mode will be switched on the next "
+        + "time Ultra Low Power Mode starts."
     /// An install started from Charge Control that failed, as Charge Control says it: the strip shows the reason
     /// alone, under its own button; the section names what did not happen.
     static func notInstalledText(_ why: String) -> String { "The Anode helper was not installed: \(why)" }
@@ -605,13 +608,18 @@ final class FanControlPanel: NSView {
         case fansTab
         /// Charge Control's "Install Helper…" in Beta Features.
         case chargeControl
+        /// Ultra Low Power Mode's "Install Helper…" in Beta Features.
+        case ultraLowPower
     }
 
-    /// The install flow for a caller outside the Fans tab: Charge Control's "Install Helper…" in Beta Features.
+    /// The install flow for a caller outside the Fans tab: Charge Control's "Install Helper…" in Beta Features, or
+    /// Ultra Low Power Mode's (`origin`).
     /// The same confirmation and authorisation as this strip's own button. What it says, it says on this strip and
     /// to `report` (on the main thread), because the caller cannot see this strip: that it is waiting, that a dialog
     /// is already up, that this is not a bundled build, and how it ended. A "no" to the confirmation says nothing.
-    func installHelper(report: @escaping (String) -> Void) { install(from: .chargeControl, report: report) }
+    func installHelper(report: @escaping (String) -> Void, from origin: InstallOrigin = .chargeControl) {
+        install(from: origin, report: report)
+    }
 
     @objc private func installTapped() { install(from: .fansTab) }
 
@@ -623,11 +631,17 @@ final class FanControlPanel: NSView {
         guard !elevating else { return tell(Self.authorisationOnScreenText) }
         guard let helper = installSteps.bundledHelper() else { return tell(Self.notBundledInstallText) }
         guard installSteps.confirm(helper, origin) else { return }
-        let done = origin == .fansTab
-            ? "Fan control is installed and ON. Drag a slider or press ❄︎ to "
+        let done: String
+        switch origin {
+        case .fansTab:
+            done = "Fan control is installed and ON. Drag a slider or press ❄︎ to "
                 + "take a fan. It keeps working after you rebuild and after a "
                 + "reboot, with no more prompts."
-            : Self.installedForChargeControlText
+        case .chargeControl:
+            done = Self.installedForChargeControlText
+        case .ultraLowPower:
+            done = Self.installedForUltraLowPowerText
+        }
         elevate(command: FanElevation.installCommand(helper: helper, ownerUID: getuid()),
                 prompt: FanElevation.installPrompt,
                 waiting: Self.waitingText,

@@ -884,7 +884,7 @@ final class ChargeControlFeatureTests: XCTestCase {
     /// What the helper's sheets and refusals say; the section shows some of it and points at the rest.
     private func theHelperSays() -> [String] {
         [FanElevation.sessionDisclosure, FanElevation.installDisclosure, FanElevation.chargeLimitOutlivesTheHelper,
-         FanElevation.wakeForTheLimit, FanElevation.installPrompt, ChargeRefusal.cannotWake,
+         FanElevation.wakeForTheLimit, FanElevation.lowPowerModeAndBack, FanElevation.installPrompt, ChargeRefusal.cannotWake,
          ChargeRefusal.planNotInTheFuture, ChargeRefusal.planTooFarAway, ChargeRefusal.wakeNotScheduled,
          FanElevation.uninstallPrompt, FanElevation.uninstallDone, HelperVocabulary.sentence,
          ChargeRefusal.noChargeControl, ChargeRefusal.noSleepNotices, ChargeRefusal.goingToSleep,

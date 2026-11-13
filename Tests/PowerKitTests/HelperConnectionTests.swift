@@ -938,6 +938,49 @@ final class FanPanelSharingTests: XCTestCase {
         XCTAssertEqual(heard, [])
     }
 
+    /// "Install Helper…" in Ultra Low Power Mode's section takes the same route, and says what is true of this feature:
+    /// nothing about fans, and what the helper will now do. Fan control stays off; what the other two say is unchanged.
+    func testAnInstallStartedFromTheLowPowerSectionSaysSoWithoutTalkingAboutFans() {
+        settings.fanControlEnabled = false
+        var origins: [FanControlPanel.InstallOrigin] = []
+        let panel = installingPanel(confirm: { _, origin in origins.append(origin); return true },
+                                    authorise: { .done("") })
+        var heard: [String] = []
+        let finished = expectation(description: "the install finished")
+        panel.installHelper(report: { text in
+            heard.append(text)
+            if heard.count == 2 { finished.fulfill() }
+        }, from: .ultraLowPower)
+        wait(for: [finished], timeout: 5)
+        XCTAssertEqual(heard, ["Waiting for authorisation\u{2026}",
+                               "The Anode helper is installed. Low Power Mode will be switched on the next time "
+                               + "Ultra Low Power Mode starts."])
+        XCTAssertEqual(heard.last, FanControlPanel.installedForUltraLowPowerText)
+        XCTAssertFalse(FanControlPanel.installedForUltraLowPowerText.localizedCaseInsensitiveContains("fan"))
+        XCTAssertEqual(origins, [.ultraLowPower])
+        XCTAssertFalse(settings.fanControlEnabled, "installing for Low Power Mode turned fan control on")
+        XCTAssertFalse(panel.session.enabled)
+        XCTAssertFalse(connection.suspended, "the shared connection was left shut")
+        // The other two are as they were.
+        XCTAssertEqual(FanControlPanel.installedForChargeControlText, "The Anode helper is installed. Fan control is as it was.")
+        let alert = FanControlPanel.installAlert(helper: "/x", origin: .ultraLowPower)
+        XCTAssertEqual(alert.messageText, "Install the Anode helper?")
+        XCTAssertTrue(alert.informativeText.contains("switch macOS's Low Power Mode on and put it back"), alert.informativeText)
+    }
+
+    /// The helper installed before this release speaks 3, and this app speaks 4. The strip does not turn it away: it
+    /// connects, a fan can be taken, and all it says about the helper is its own line that a newer one can be installed.
+    func testAHelperThatSpeaksThreeStillDrivesTheFans() {
+        wire.answerAtOnce = .connected(fanCount: 1, version: 3)
+        wire.pingStatus = .connected(fanCount: 1, version: 3)
+        let panel = panelHoldingAFan()
+        XCTAssertEqual(panel.session.helper, .connected(fanCount: 1))
+        XCTAssertEqual(panel.session.mode, .manual(fans: 1))
+        XCTAssertTrue(panel.isDriving)
+        XCTAssertEqual(FanDaemon.state(installed: true, answered: true, helloVersion: 3), .installedButOlder(daemonVersion: 3))
+        XCTAssertTrue(FanDaemon.summary(.installedButOlder(daemonVersion: 3)).contains("Install it again"))
+    }
+
     /// The Fans tab's own install still is.
     func testAnInstallFromTheFansTabTurnsFanControlOn() {
         settings.fanControlEnabled = false

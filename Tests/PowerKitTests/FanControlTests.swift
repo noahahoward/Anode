@@ -1537,8 +1537,23 @@ final class FanDisclosureTests: XCTestCase {
         XCTAssertFalse(s.fanDisclosureSeen, "the wake was never explained to someone who saw the earlier sheet")
         s.fanDisclosureSeen = true
         XCTAssertTrue(Settings(defaults: defaults).fanDisclosureSeen)
-        XCTAssertEqual(defaults.object(forKey: "anode.fanDisclosureSeenWithWake") as? Bool, true,
+    }
+
+    /// The sheet now also says the helper can switch Low Power Mode on and puts it back. Someone who ticked "Don't show
+    /// this again" on the words before that (stored as "fanDisclosureSeenWithWake") has not read it, so it shows once
+    /// more; once read, it stays read, under the name these words have.
+    func testHavingSeenTheWordsBeforeLowPowerModeDoesNotCountForTheNewOnes() throws {
+        XCTAssertTrue(FanElevation.sessionDisclosure.contains("Low Power Mode"))
+        let (defaults, name) = try TestDefaults.make(owner: "FanDisclosure")
+        defer { TestDefaults.destroy(defaults, name) }
+        defaults.set(true, forKey: "anode.fanDisclosureSeenWithWake")   // what the sheet with the wake left behind
+        let s = Settings(defaults: defaults)
+        XCTAssertFalse(s.fanDisclosureSeen, "Low Power Mode was never explained to someone who saw the earlier sheet")
+        s.fanDisclosureSeen = true
+        XCTAssertTrue(Settings(defaults: defaults).fanDisclosureSeen)
+        XCTAssertEqual(defaults.object(forKey: "anode.fanDisclosureSeenWithWakeAndPowerMode") as? Bool, true,
                        "stored under the name the new words have")
+        XCTAssertEqual(Settings.Key.fanDisclosureSeen, "fanDisclosureSeenWithWakeAndPowerMode")
     }
 }
 

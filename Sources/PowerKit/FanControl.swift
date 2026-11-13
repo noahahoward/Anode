@@ -45,8 +45,8 @@ public struct FanTarget: Codable, Equatable {
 /// What the helper is allowed to be asked to do. Deliberately tiny: the whole
 /// privileged surface is "set fan N to R rpm", "release the fans", "set the
 /// macOS charge limit (20–100%)", "wake the Mac at a time and set the limit
-/// then", "cut the charger to discharge down to a percentage", and "reconnect
-/// it".
+/// then", "switch macOS's Low Power Mode on and put it back", "cut the charger
+/// to discharge down to a percentage", and "reconnect it".
 public enum FanCommand: Codable, Equatable {
     case setTarget(FanTarget)
     case releaseAll
@@ -66,6 +66,14 @@ public enum FanCommand: Codable, Equatable {
     case scheduleChargeLimit(limit: Int, at: Date)
     /// Protocol 3. Drop the plan, and the wake it scheduled, writing nothing. Nothing planned is not a failure.
     case cancelScheduledChargeLimit
+    /// Protocol 4. Switch macOS's Low Power Mode on, for the battery and for the charger, remembering what each was; the
+    /// reply carries those as one number (`FanReply.powerModeBefore`). A source already in low power is left as it is.
+    /// Kept only while the client that sent it stays connected: put back, wherever it still reads low power, when that
+    /// client goes or the helper stops.
+    case enterLowPowerMode
+    /// Protocol 4. Put the power mode back to `before` (`battery + 10 * charger`, each digit 0…2), wherever a source still
+    /// reads low power and was not in it before. Checked before anything runs; a value that is not a power mode is refused.
+    case restorePowerMode(before: Int)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -416,7 +424,8 @@ public struct FanSession: Equatable {
             if !ok { held[t.index] = nil }
         case .releaseAll:
             if ok { held.removeAll() }
-        case .setChargeLimit, .discharge, .stopDischarge, .scheduleChargeLimit, .cancelScheduledChargeLimit:
+        case .setChargeLimit, .discharge, .stopDischarge, .scheduleChargeLimit, .cancelScheduledChargeLimit,
+             .enterLowPowerMode, .restorePowerMode:
             // Not a fan command; nothing a fan session tracks.
             break
         }

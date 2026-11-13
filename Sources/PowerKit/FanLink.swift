@@ -106,24 +106,28 @@ public let fanLog = Logger(subsystem: "dev.anode.app", category: "fan")
 //
 // So, in plain words, WHAT INSTALLING GIVES UP: from the moment you install,
 // anything running as your user can set your fan speeds, set the macOS charge
-// limit, and discharge the battery on the charger, at any time, until you
-// uninstall. Not another user, and nothing at all before you install — but the
-// "it must be exactly this app" claim is gone, and no amount of code brings it
-// back without a Developer ID, because an ad-hoc signature has no key an attacker
-// cannot also use.
+// limit, discharge the battery on the charger, and switch macOS's Low Power
+// Mode on, at any time, until you uninstall. Not another user, and nothing at
+// all before you install — but the "it must be exactly this app" claim is gone,
+// and no amount of code brings it back without a Developer ID, because an
+// ad-hoc signature has no key an attacker cannot also use.
 //
 // WHAT IS LEFT AS THE ACTUAL BOUNDARY, and it is not nothing: the vocabulary is
-// five commands — set fan N to R rpm, release the fans, set the macOS charge
-// limit (20–100%), cut the charger to discharge down to a percentage, and
-// reconnect it. Every speed is re-clamped against limits read fresh from the fan
-// itself, so the reachable range is the range the hardware already permits its
-// own controller. The charge limit is range-checked by the helper, and a
-// discharge never goes below 10% and reconnects the charger on every exit the
-// helper can see. There is no key-name input, no path input, and nothing to
-// read back. An attacker who takes it gets to make your machine loud, to hold a
-// fan at a speed the firmware would also hold it at (the SMC arbitrates and has
-// been observed clamping a written target UPWARD), to stop charging at 20%, or
-// to run the battery down to 10% with the cable in. It is a nuisance, not a
+// a short list of commands — set fan N to R rpm, release the fans, set the macOS
+// charge limit (20–100%), wake the Mac at a time it is given to raise that
+// limit, switch macOS's Low Power Mode on and put it back, cut the charger to
+// discharge down to a percentage, and reconnect it. Every speed is re-clamped
+// against limits read fresh from the fan itself, so the reachable range is the
+// range the hardware already permits its own controller. The charge limit is
+// range-checked by the helper, and a discharge never goes below 10% and
+// reconnects the charger on every exit the helper can see. There is no key-name
+// input, no path input, and nothing to read back but the Mac's power mode: the
+// one program it runs is /usr/bin/pmset, with a command line it builds itself
+// from fixed strings and digits it has checked. An attacker who takes it gets to
+// make your machine loud, to hold a fan at a speed the firmware would also hold
+// it at (the SMC arbitrates and has been observed clamping a written target
+// UPWARD), to stop charging at 20%, to run the battery down to 10% with the
+// cable in, or to put the Mac in Low Power Mode. It is a nuisance, not a
 // foothold.
 //
 // If that trade is not worth it — and for a developer rebuilding all day it is
@@ -167,12 +171,17 @@ public struct FanReply: Codable, Equatable {
     /// and offer to reinstall, instead of failing in some way nobody can read.
     /// nil is an older helper, which by definition speaks version 1.
     public let version: Int?
+    /// The power mode the Mac was in before `enterLowPowerMode` switched Low Power Mode on, as `battery + 10 * charger`.
+    /// Set only on a yes to that command; nil elsewhere, and left out of the line when nil, so every other reply is
+    /// written as it always was.
+    public let powerModeBefore: Int?
 
-    public init(ok: Bool, message: String, fanCount: Int? = nil, version: Int? = nil) {
+    public init(ok: Bool, message: String, fanCount: Int? = nil, version: Int? = nil, powerModeBefore: Int? = nil) {
         self.ok = ok
         self.message = message
         self.fanCount = fanCount
         self.version = version
+        self.powerModeBefore = powerModeBefore
     }
 }
 
