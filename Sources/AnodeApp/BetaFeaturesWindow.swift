@@ -62,7 +62,7 @@ final class BetaFeaturesWindowController: NSWindowController {
         list += [KeepAwakeFeature(settings: settings), KeyboardCleanerFeature(settings: settings),
                  LiveWallpaperFeature(settings: settings), GameModeFeature(settings: settings),
                  MenuBarHiderFeature(settings: settings), ChargeControlFeature(settings: settings),
-                 UltraLowPowerFeature(settings: settings)]
+                 UltraLowPowerFeature(settings: settings, candidates: UltraLowPowerRuntime.candidatesNow)]
         return list
     }
 

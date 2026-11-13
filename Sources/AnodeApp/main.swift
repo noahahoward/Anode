@@ -63,6 +63,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
     var keyboardCleaner: KeyboardCleaner?
     var gameMode: GameModeController?
     var menuBarHider: MenuBarHiderRuntime?
+    /// Ultra Low Power Mode. Exists for the app's whole life; while its box is unticked it holds nothing but an observer.
+    var ultraLowPower: UltraLowPowerRuntime?
     var temperatureAlarm = TemperatureAlarm()
     var windowSnapper: WindowSnapper?
     var windowGroups: WindowGroupController?
@@ -436,6 +438,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         widgets.onPanelVisibilityChange = { [weak self] _ in self?.refresh() }
         // Nothing of the hider exists until its setting is on (Beta Features).
         menuBarHider = MenuBarHiderRuntime.live(widgets: widgets, openBetaFeatures: { [weak self] in self?.betaFeaturesWindow.show() })
+        // Made after Keep Awake, whose own recovery has put the screen back by now. A session a crash left is undone here, and
+        // nothing else of the mode exists until its box is ticked (Beta Features).
+        ultraLowPower = UltraLowPowerRuntime.live(widgets: widgets, openBetaFeatures: { [weak self] in self?.betaFeaturesWindow.show() })
         widgets.onPlacementChange = { [weak self] placement in
             self?.menuBarPlacementChanged(placement)
         }
@@ -2788,6 +2793,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
     /// runs until it matters. AppKit does not call this for a crash or a SIGKILL,
     /// which is exactly why the release cannot live only here.
     func applicationWillTerminate(_ note: Notification) {
+        // First, before the rest of the app tears down: a mode that is on has other apps stopped and the screen held down,
+        // and they are continued and put back before anything below runs (the helper link goes below).
+        ultraLowPower?.shutdown()
         RunTrace.cleanExit()
         fansPane.teardown()
         // Puts macOS's own charge settings back (the limit is in force only while Anode runs: an Anode that breaks

@@ -454,7 +454,8 @@ public final class MenuBarWidgetController: NSObject, NSMenuDelegate {
 
     public var configs: [WidgetConfig] { storedConfigs }
 
-    /// The buttons of the status items now on the bar, for tests.
+    /// The buttons of the status items now on the bar. The tests read them, and so does Ultra Low Power Mode, which shows
+    /// its own icon only when there are none.
     var statusButtons: [NSStatusBarButton] { items.compactMap { $0.item.button } }
 
     /// `onClick` is the integrator's "open the main window", told WHICH widget was
