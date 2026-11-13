@@ -958,47 +958,95 @@ final class ChargeHelperTests: XCTestCase {
     }
 
     /// The key reads again just as the bound is reached, and says cut: from then on it is a cut that was seen, and
-    /// it is owed until it reads connected.
+    /// it is owed until it reads connected. This is the final read of the key before giving up
+    /// (`countAFailedRetry`): nothing before it has read the charger as cut and no cut write was ever taken, because the
+    /// debt comes from the undo of a cut the SMC refused, and the reads that failed during the retry itself were the
+    /// last the bound saw. The clock moves 30 s a retry, past `unheldGiveUpAfter`, so the bound is really reached.
     func testAChargerThatReadsCutWhenTheBoundIsReachedIsNeverGivenUp() {
-        let hw = FakeChargeHardware(percent: 77, onAC: true)
-        hw.cutUnreadable = true       // every read fails, so nothing is ever read as cut on the way
+        // Already cut by something else; the cut asked for is refused; the key cannot be read, so the undo cannot be
+        // confirmed and is owed. Nothing here ever read it as cut.
+        let hw = FakeChargeHardware(percent: 77, onAC: true, cut: true)
+        hw.refuseCut = true
+        hw.cutUnreadable = true
         hw.ignoreRestore = true
-        let server = makeServer(hw)
+        var lines: [String] = []
+        let server = makeServer(hw, log: { lines.append($0) })
         let clock = ChargeTestClock()
         server.now = { clock.now }
         XCTAssertFalse(server.handle(.command(.discharge(toPercent: 40))).ok)
         XCTAssertTrue(server.reconnectOwed)
+        XCTAssertNil(server.dischargeTarget)
+        // Retries 1 to 5, each 30 s apart: the count is not yet reached.
         for _ in 0..<(FanHelperServer.unheldRetryLimit - 1) { server.watchDischarge(); clock.advance(30) }
-        hw.cutUnreadable = false      // the key reads again at the bound, and says cut
+        XCTAssertTrue(server.reconnectOwed)
+        XCTAssertGreaterThanOrEqual(30 * Double(FanHelperServer.unheldRetryLimit - 1), FanHelperServer.unheldGiveUpAfter)
+        // At the bound: the retry's own reads still fail (its three read-backs), and the read after them says cut.
+        hw.cutUnreadable = false
+        hw.failNextReads = 3
         server.watchDischarge()
         XCTAssertTrue(hw.isCut)
-        XCTAssertTrue(server.reconnectOwed, "a charger that reads cut was given up on")
+        XCTAssertTrue(server.reconnectOwed, "a charger that reads cut at the bound was given up on")
+        XCTAssertFalse(lines.contains { $0.contains("gave up") }, lines.joined(separator: "\n"))
+        // And it stays owed however long it goes on.
+        for _ in 0..<(FanHelperServer.unheldRetryLimit * 3) { server.watchDischarge(); clock.advance(30) }
+        XCTAssertTrue(server.reconnectOwed)
     }
 
     /// The bound is for a cut nobody ever held. A cut this helper made (or ever read as cut) is owed until it reads
-    /// connected, however long that takes: the charger really is cut, and giving up would leave it so.
+    /// connected, however long that takes: the charger really is cut, and giving up would leave it so. The clock moves
+    /// past the bound's time as well as its count, so it is the cut that was held that keeps it owed, not the count
+    /// (`countAFailedRetry` neither counts a retry while a target is held nor once a cut was held).
     func testAReconnectOwedForACutThatWasHeldIsNeverGivenUp() {
         let hw = FakeChargeHardware(percent: 77, onAC: true)
         let server = makeServer(hw)
+        let clock = ChargeTestClock()
+        server.now = { clock.now }
         XCTAssertTrue(server.handle(.command(.discharge(toPercent: 40))).ok)
         hw.refuseRestore = true
         XCTAssertFalse(server.handle(.command(.stopDischarge)).ok)
-        for _ in 0..<(FanHelperServer.unheldRetryLimit * 3) { server.watchDischarge() }
+        for _ in 0..<(FanHelperServer.unheldRetryLimit * 3) { server.watchDischarge(); clock.advance(30) }
         XCTAssertTrue(server.reconnectOwed, "a held cut was given up")
         XCTAssertNotNil(server.dischargeTarget)
         XCTAssertTrue(hw.isCut)
     }
 
-    /// A charger found cut and then not reconnected (stuck at 0x08, with no cut of this helper's) is a real cut too.
+    /// A charger found cut and then not reconnected (stuck at 0x08, with no cut of this helper's) is a real cut too:
+    /// the retry read it as cut, so it is a cut that was seen (`everHeldOrSawACut`), and it is never given up even when
+    /// the retries run past the bound in count and in time.
     func testAReconnectOwedForACutThatWasReadAsCutIsNeverGivenUp() {
         let hw = FakeChargeHardware(percent: 77, onAC: true, cut: true)
         hw.refuseRestore = true
         let server = makeServer(hw)
+        let clock = ChargeTestClock()
+        server.now = { clock.now }
         XCTAssertFalse(server.handle(.command(.stopDischarge)).ok, "stuck: it reads cut after the writes")
         XCTAssertTrue(server.reconnectOwed)
-        for _ in 0..<(FanHelperServer.unheldRetryLimit * 3) { server.watchDischarge() }
+        for _ in 0..<(FanHelperServer.unheldRetryLimit * 3) { server.watchDischarge(); clock.advance(30) }
         XCTAssertTrue(server.reconnectOwed, "a charger read as cut was given up on")
         XCTAssertTrue(hw.isCut)
+    }
+
+    /// A cut the SMC took (the write was answered yes) and that never read back: the key cannot be read, so the undo
+    /// cannot be confirmed either, and the target was never set. The cut may well be in force, so the reconnect is owed
+    /// until it reads connected, however long that takes. Counted from the write, not from a read-back that never came.
+    /// (A write the SMC refuses, as a Mac with no such key refuses every one, is not that: see
+    /// `testAReconnectOwedForACutNeverHeldIsGivenUpAfterABoundedNumberOfRetries`.)
+    func testACutTheSMCTookButNeverReadBackIsNeverGivenUp() {
+        let hw = FakeChargeHardware(percent: 77, onAC: true)
+        hw.cutUnreadable = true       // the key is there and takes writes; every read of it fails
+        hw.ignoreRestore = true       // the undo is answered yes and does nothing
+        var lines: [String] = []
+        let server = makeServer(hw, log: { lines.append($0) })
+        let clock = ChargeTestClock()
+        server.now = { clock.now }
+        XCTAssertFalse(server.handle(.command(.discharge(toPercent: 40))).ok, "a cut that cannot be read back")
+        XCTAssertTrue(hw.isCut, "the write landed")
+        XCTAssertTrue(server.reconnectOwed)
+        XCTAssertNil(server.dischargeTarget)
+        for _ in 0..<(FanHelperServer.unheldRetryLimit * 4) { server.watchDischarge(); clock.advance(30) }
+        XCTAssertTrue(server.reconnectOwed, "a cut the SMC took was given up on after the bound")
+        XCTAssertFalse(lines.contains { $0.contains("gave up") }, lines.joined(separator: "\n"))
+        XCTAssertFalse(server.isIdle)
     }
 
     func testTheWatchReconnectsAtTheTarget() {

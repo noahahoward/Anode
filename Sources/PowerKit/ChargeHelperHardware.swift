@@ -278,8 +278,13 @@ public enum ChargeRelease {
     /// must be followed by `reconnect(alwaysWrite: true)`: a write that did not
     /// provably cut may still land, and a value other than 0x08 that it left is
     /// written back to 0x00 that way, and judged by that read-back.
-    public static func cut(_ charge: ChargeHardware, timing: Timing = .standard) -> CutOutcome {
+    ///
+    /// `taken` is called as soon as the SMC has answered the write yes, before the read-back: from then on there may be
+    /// a cut, whatever the read-back says or whether it can be made at all.
+    public static func cut(_ charge: ChargeHardware, timing: Timing = .standard,
+                           taken: (() -> Void)? = nil) -> CutOutcome {
         let accepted = charge.setAdapterCut(true)
+        if accepted { taken?() }
         let readsCut = readBackValue(charge, expecting: AdapterCutKey.cut, timing: timing) == AdapterCutKey.cut
         switch (readsCut, accepted) {
         case (true, true):   return .cut

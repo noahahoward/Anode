@@ -567,8 +567,8 @@ public final class FanHelperServer {
     /// Failed retries of the reconnect owed now, and when the first was, counted only while no cut was held or seen.
     private var unheldRetries = 0
     private var unheldSince: Date?
-    /// This helper has held a cut, or something it read said the charger was cut: a reconnect owed after that is
-    /// never given up, because the charger really may be cut.
+    /// This helper has held a cut, or something it read said the charger was cut, or the SMC took a write that cuts it
+    /// (`startDischarge`): a reconnect owed after that is never given up, because the charger really may be cut.
     private var everHeldOrSawACut = false
     private var saidGaveUp = false
 
@@ -1349,7 +1349,10 @@ public final class FanHelperServer {
         // trusted. A cut that cannot be confirmed is undone at once — with a
         // write, whatever the key reads now, because a read straight after the
         // cut may not show it yet.
-        let cut = ChargeRelease.cut(charge, timing: chargeTiming)
+        // A write the SMC took may have cut the charger, whether or not it can be read back (a key that cannot be
+        // read, a read that came too early): from the write on, a reconnect owed is never given up. A write the SMC
+        // refuses, as a Mac with no such key refuses every one, cut nothing, and the bound on its undo stands.
+        let cut = ChargeRelease.cut(charge, timing: chargeTiming, taken: { [self] in everHeldOrSawACut = true })
         guard cut.isCut else {
             let undo = reconnectCharger(alwaysWrite: true)
             let why = cut == .refused ? ChargeRefusal.cutRefused : ChargeRefusal.cutNotKept

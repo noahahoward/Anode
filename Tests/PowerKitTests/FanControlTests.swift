@@ -588,6 +588,20 @@ final class FanHelperServerTests: XCTestCase {
         second.disconnect()
     }
 
+    /// `FanControlLink.closeSocket` shuts the socket down at once; the descriptor itself is closed later, by the
+    /// watcher's cancel handler. The helper serves one client at a time, so a link that reopens (a new `connect`
+    /// closes the old socket first) is only let back in if the helper has seen the first socket close before the
+    /// second arrives. Without the shutdown the old descriptor stays open until the cancel handler gets round to it,
+    /// which is after the new connection has been made, and the helper turns the reopened link away as a second client.
+    func testAReopenedLinkIsNotTurnedAwayAsASecondClient() throws {
+        try start(twoFans())
+        XCTAssertEqual(connect(), .connected(fanCount: 2, version: FanDaemon.protocolVersion))
+        for round in 1...3 {
+            XCTAssertEqual(connect(), .connected(fanCount: 2, version: FanDaemon.protocolVersion),
+                           "reopen \(round): the helper still held the old connection when the new one arrived")
+        }
+    }
+
     func testNothingIsListeningIsNotAnError() {
         let orphan = FanControlLink(socketPath: NSTemporaryDirectory() + "bs-fan-absent.sock")
         var status: FanControlLink.Status?
