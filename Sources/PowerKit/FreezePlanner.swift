@@ -103,11 +103,17 @@ public enum FreezePlanner {
     }
 
     /// The owner of `p`, or nil when that owner is not the planner's to decide about: not the user's (it could not be
-    /// signalled), Anode's own, or the system's.
+    /// signalled), Anode's own, the system's, or one nothing is known about.
+    ///
+    /// Nothing is known about a process that is no app and whose path could not be read: it may well be a system daemon,
+    /// and unrelated ones of the same name would become one "exe:" group. Left alone, never frozen. This is only about
+    /// an OWNER. A member with no readable path that is tied to an app by `responsible` or by its parents is still
+    /// frozen with that app (a blind spot we accept: it could in theory be a system helper that app is held responsible for).
     private static func touchableOwner(of p: UltraProcess, index: ProcessIndex, user: uid_t,
                                        ownPIDs: Set<pid_t>) -> UltraProcess? {
         let owner = index.owner(of: p)
         if owner.uid != user || ownPIDs.contains(owner.pid) || isSystem(owner) { return nil }
+        if owner.app == .none && owner.path.isEmpty { return nil }
         return owner
     }
 

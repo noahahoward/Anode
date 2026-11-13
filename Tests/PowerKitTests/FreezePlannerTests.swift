@@ -323,9 +323,23 @@ final class FreezePlannerTests: XCTestCase {
         XCTAssertEqual(pids(p.frozen, "exe:devserver"), [130, 131])
     }
 
-    func testAToolWithNoReadablePathIsGroupedByItsName() {
-        let p = plan([editor(), proc(130, parent: 1, path: "", name: "devserver")], front: 10)
-        XCTAssertEqual(ids(p.frozen), ["exe:devserver"])
+    func testAToolWithNoReadablePathAndNoAppIsLeftAlone() {
+        // Nothing is known about it: it may be a system daemon whose path could not be read, and two unrelated ones of
+        // the same name must not become one group.
+        let list = [editor(), proc(130, parent: 1, path: "", name: "devserver"), proc(131, parent: 1, path: "", name: "devserver")]
+        let p = plan(list, front: 10)
+        XCTAssertTrue(p.frozen.isEmpty)
+        XCTAssertTrue(p.leftRunning.isEmpty)
+        XCTAssertEqual(ids(p.kept), ["com.example.editor"])
+    }
+
+    func testAProcessWithNoReadablePathStillBelongsToTheAppItIsTiedTo() {
+        // Unknown only as an owner: tied to an app by `responsible` or by its parent, it is that app's member.
+        let list = [editor(), browser(),
+                    proc(21, parent: 1, path: "", responsible: 20),
+                    proc(22, parent: 20, path: "")]
+        let p = plan(list, front: 10)
+        XCTAssertEqual(pids(p.frozen, "com.example.browser"), [20, 21, 22])
     }
 
     func testADetachedToolIsItsOwnGroupEvenWhenItsResponsibleIsItself() {
@@ -501,6 +515,16 @@ final class FreezePlannerTests: XCTestCase {
     func testANewSystemToolOfTheNameOfAFrozenToolIsNotAnAddition() {
         let list = [proc(140, path: "/opt/tools/bin/runner"), proc(141, path: "/usr/bin/runner")]
         XCTAssertEqual(additions(list, frozen: ["exe:runner"], known: [140]), [])
+    }
+
+    func testANewToolWithNoReadablePathAndNoAppIsNotAnAddition() {
+        let list = [proc(140, path: "/opt/tools/bin/runner"), proc(141, path: "", name: "runner")]
+        XCTAssertEqual(additions(list, frozen: ["exe:runner"], known: [140]), [])
+    }
+
+    func testANewProcessWithNoReadablePathTiedToAFrozenAppIsAnAddition() {
+        let list = [browser(), proc(23, parent: 20, path: "")]
+        XCTAssertEqual(additions(list, frozen: ["com.example.browser"], known: [20]).flatMap(\.members).map(\.pid), [23])
     }
 
     func testANewExtensionOfAFrozenAppIsNotAnAddition() {
