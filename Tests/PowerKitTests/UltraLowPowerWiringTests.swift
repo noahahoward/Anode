@@ -162,7 +162,7 @@ final class UltraLowPowerWiringTests: XCTestCase {
         let workspace = CountingCenter(), center = CountingCenter(), env = Env()
         let runtime = UltraLowPowerRuntime(
             settings: settings, processes: processes, freezer: freezer, throttler: Fakes.FakeThrottler(calls),
-            hasEfficiencyCores: true, hider: Fakes.FakeHider(calls), backlight: backlight,
+            processTable: { Self.world }, hasEfficiencyCores: true, hider: Fakes.FakeHider(calls), backlight: backlight,
             ownBrightness: OwnBrightness(), rate: Fakes.FakeRate(calls), keyboard: Fakes.FakeKeyboard(calls),
             power: Fakes.FakePower(calls), watchdog: watchdog, store: store, confirm: confirm,
             backdrop: Fakes.FakeBackdrop(calls), load: Fakes.FakeLoad(calls), widgets: widgets, icon: icon,
@@ -918,6 +918,7 @@ final class UltraLowPowerWiringTests: XCTestCase {
                        "backdrop: Settings.shared.ultraLowPowerBlackBackdrop",
                        "efficiencyCores: Settings.shared.ultraLowPowerEfficiencyCores, hasEfficiencyCores: LiveProcessThrottler.hasEfficiencyCores",
                        "throttler: LiveProcessThrottler()",                   // what still runs is kept on the efficiency cores
+                       "processTable: LiveProcessList.processTable",          // and its children are found when it is lifted
                        "hasEfficiencyCores: LiveProcessThrottler.hasEfficiencyCores",
                        "windows: liveWindows"] {
             XCTAssertTrue(body.contains(needed), "live() no longer has: \(needed)")
@@ -945,6 +946,7 @@ final class UltraLowPowerWiringTests: XCTestCase {
         let text = rest[..<end.lowerBound]
         XCTAssertTrue(text.contains("freezer: LiveProcessFreezer()"), "\(text)")
         XCTAssertTrue(text.contains("throttler: LiveProcessThrottler()"), "\(text)")
+        XCTAssertTrue(text.contains("processTable: LiveProcessList.processTable"), "its own read of the process table: \(text)")
     }
 
     func testMainWiresTheRuntimeAndShutsItDown() throws {

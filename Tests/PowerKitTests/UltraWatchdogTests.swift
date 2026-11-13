@@ -44,10 +44,10 @@ final class UltraWatchdogTests: XCTestCase {
         var lifted: [Call] = []
         private let log: CallLog?
         init(log: CallLog? = nil) { self.log = log }
-        func throttle(pid: pid_t, startTime: UInt64) -> Bool {
+        func throttle(pid: pid_t, startTime: UInt64) -> ThrottleResult {
             throttled.append(Call(pid: pid, startTime: startTime))
             log?.entries.append("throttle \(pid)")
-            return true
+            return .done
         }
         func unthrottle(pid: pid_t, startTime: UInt64) -> Bool {
             lifted.append(Call(pid: pid, startTime: startTime))
@@ -106,6 +106,18 @@ final class UltraWatchdogTests: XCTestCase {
         return record
     }
 
+    /// One row of the process table as the walk down the children reads it: pid, parent and start time.
+    private func row(_ pid: pid_t, parent: pid_t, startTime: UInt64? = nil) -> UltraProcess {
+        UltraProcess(pid: pid, parent: parent, uid: 501, startTime: startTime ?? UInt64(pid) * 100, path: "", name: "p\(pid)")
+    }
+
+    /// The kept app's processes (70, 71, as the record has them) and, born since the last sweep, a child of 70 (72) with a child of
+    /// its own (73), and a stranger. The children inherited the policy and are on no record.
+    private var tableWithChildren: [UltraProcess] {
+        [row(70, parent: 1, startTime: 7_000), row(71, parent: 1, startTime: 7_010), row(72, parent: 70), row(73, parent: 72),
+         row(90, parent: 1)]
+    }
+
     // ── The command line ────────────────────────────────────────────────────
 
     func testWatchdogArgumentsAreParsed() throws {
@@ -161,7 +173,7 @@ final class UltraWatchdogTests: XCTestCase {
         let freezer = FakeFreezer()
         let throttler = FakeThrottler()
         let panel = FakeBacklight(BrightnessCeiling.ceiling)   // still where the mode left it
-        UltraWatchdog.undo(record: sessionRecord(), freezer: freezer, throttler: throttler, backlight: panel)
+        UltraWatchdog.undo(record: sessionRecord(), freezer: freezer, throttler: throttler, processTable: { nil }, backlight: panel)
 
         // Every member of the groups still frozen, by pid AND start time; a released group is not continued again.
         XCTAssertEqual(freezer.resumed, [.init(pid: 400, startTime: 4_000), .init(pid: 401, startTime: 4_010),
@@ -174,7 +186,7 @@ final class UltraWatchdogTests: XCTestCase {
     /// released; nothing is ever put under it by the watchdog.
     func testUndoLiftsThePolicyFromEveryProcessTheRecordNames() {
         let throttler = FakeThrottler()
-        UltraWatchdog.undo(record: sessionRecord(), freezer: FakeFreezer(), throttler: throttler, backlight: FakeBacklight(BrightnessCeiling.ceiling))
+        UltraWatchdog.undo(record: sessionRecord(), freezer: FakeFreezer(), throttler: throttler, processTable: { nil }, backlight: FakeBacklight(BrightnessCeiling.ceiling))
         XCTAssertEqual(throttler.lifted, [.init(pid: 70, startTime: 7_000), .init(pid: 71, startTime: 7_010),
                                           .init(pid: 600, startTime: 6_000)])
         XCTAssertTrue(throttler.throttled.isEmpty)
@@ -184,30 +196,80 @@ final class UltraWatchdogTests: XCTestCase {
         let throttler = FakeThrottler()
         var record = sessionRecord()
         record.throttled = nil
-        UltraWatchdog.undo(record: record, freezer: FakeFreezer(), throttler: throttler, backlight: FakeBacklight(BrightnessCeiling.ceiling))
+        UltraWatchdog.undo(record: record, freezer: FakeFreezer(), throttler: throttler, processTable: { nil }, backlight: FakeBacklight(BrightnessCeiling.ceiling))
         record.throttled = []
-        UltraWatchdog.undo(record: record, freezer: FakeFreezer(), throttler: throttler, backlight: FakeBacklight(BrightnessCeiling.ceiling))
-        UltraWatchdog.undo(record: UltraRecord(), freezer: FakeFreezer(), throttler: throttler, backlight: FakeBacklight(BrightnessCeiling.ceiling))
+        UltraWatchdog.undo(record: record, freezer: FakeFreezer(), throttler: throttler, processTable: { nil }, backlight: FakeBacklight(BrightnessCeiling.ceiling))
+        UltraWatchdog.undo(record: UltraRecord(), freezer: FakeFreezer(), throttler: throttler, processTable: { nil }, backlight: FakeBacklight(BrightnessCeiling.ceiling))
         XCTAssertTrue(throttler.lifted.isEmpty)
     }
 
     /// The policy comes off even when there is no brightness to put back: the backlight is not what decides it.
     func testThePolicyIsLiftedWhenThereIsNoBrightnessToPutBack() {
         let throttler = FakeThrottler()
-        UltraWatchdog.undo(record: sessionRecord(brightnessBefore: nil), freezer: FakeFreezer(), throttler: throttler,
+        UltraWatchdog.undo(record: sessionRecord(brightnessBefore: nil), freezer: FakeFreezer(), throttler: throttler, processTable: { nil },
                            backlight: FakeBacklight(BrightnessCeiling.ceiling))
         XCTAssertEqual(throttler.lifted.count, 3)
+    }
+
+    /// A child started after the last sweep inherited the policy and is on no record: the watchdog finds it in a table it reads
+    /// itself, when it undoes, and lifts the policy from it too. A stranger is not touched.
+    func testAChildBornAfterTheLastSweepIsLiftedByTheWatchdogToo() {
+        let throttler = FakeThrottler()
+        UltraWatchdog.undo(record: sessionRecord(), freezer: FakeFreezer(), throttler: throttler,
+                           processTable: { self.tableWithChildren }, backlight: FakeBacklight(BrightnessCeiling.ceiling))
+        XCTAssertEqual(throttler.lifted, [.init(pid: 70, startTime: 7_000), .init(pid: 71, startTime: 7_010),
+                                          .init(pid: 600, startTime: 6_000), .init(pid: 72, startTime: 7_200),
+                                          .init(pid: 73, startTime: 7_300)],
+                       "what the record names, then every living child of one of them, by the start time the table says")
+    }
+
+    /// A recorded pid that has been recycled is another process: it is not a root, and what is its child is not walked.
+    func testTheChildrenOfARecycledPidAreNotWalked() {
+        let throttler = FakeThrottler()
+        let table = [row(70, parent: 1, startTime: 9_999), row(72, parent: 70), row(71, parent: 1, startTime: 7_010), row(74, parent: 71)]
+        UltraWatchdog.undo(record: sessionRecord(), freezer: FakeFreezer(), throttler: throttler, processTable: { table },
+                           backlight: FakeBacklight(BrightnessCeiling.ceiling))
+        XCTAssertFalse(throttler.lifted.contains { $0.pid == 72 }, "the child of a process that is not the recorded one")
+        XCTAssertTrue(throttler.lifted.contains(.init(pid: 74, startTime: 7_400)), "the child of the one that is")
+    }
+
+    func testAParentCycleInTheTableEndsTheWalk() {
+        let throttler = FakeThrottler()
+        let table = [row(70, parent: 72, startTime: 7_000), row(72, parent: 70), row(71, parent: 71, startTime: 7_010)]
+        UltraWatchdog.undo(record: sessionRecord(), freezer: FakeFreezer(), throttler: throttler, processTable: { table },
+                           backlight: FakeBacklight(BrightnessCeiling.ceiling))
+        XCTAssertEqual(throttler.lifted.filter { $0.pid == 72 }.count, 1)
+    }
+
+    /// A table that cannot be read leaves the recorded processes lifted all the same.
+    func testATableThatCannotBeReadStillLiftsWhatTheRecordNames() {
+        let throttler = FakeThrottler()
+        UltraWatchdog.undo(record: sessionRecord(), freezer: FakeFreezer(), throttler: throttler, processTable: { nil },
+                           backlight: FakeBacklight(BrightnessCeiling.ceiling))
+        XCTAssertEqual(throttler.lifted.count, 3)
+    }
+
+    /// With nothing under the policy there is no walk and no table to read.
+    func testTheTableIsReadOnlyWhenTheRecordNamesProcessesUnderThePolicy() {
+        var reads = 0
+        var record = sessionRecord()
+        record.throttled = nil
+        UltraWatchdog.undo(record: record, freezer: FakeFreezer(), throttler: FakeThrottler(),
+                           processTable: { reads += 1; return nil }, backlight: FakeBacklight(BrightnessCeiling.ceiling))
+        UltraWatchdog.undo(record: UltraRecord(), freezer: FakeFreezer(), throttler: FakeThrottler(),
+                           processTable: { reads += 1; return nil }, backlight: FakeBacklight(BrightnessCeiling.ceiling))
+        XCTAssertEqual(reads, 0)
     }
 
     func testUndoLeavesTheBrightnessAloneWhenTheOwnerMovedIt() {
         let freezer = FakeFreezer()
         let dimmer = FakeBacklight(0.15)
-        UltraWatchdog.undo(record: sessionRecord(), freezer: freezer, throttler: FakeThrottler(), backlight: dimmer)
+        UltraWatchdog.undo(record: sessionRecord(), freezer: freezer, throttler: FakeThrottler(), processTable: { nil }, backlight: dimmer)
         XCTAssertTrue(dimmer.sets.isEmpty, "the owner went dimmer: not the mode's to change")
         XCTAssertEqual(freezer.resumed.count, 3, "the processes are continued all the same")
 
         let unreadable = FakeBacklight(nil)
-        UltraWatchdog.undo(record: sessionRecord(), freezer: FakeFreezer(), throttler: FakeThrottler(), backlight: unreadable)
+        UltraWatchdog.undo(record: sessionRecord(), freezer: FakeFreezer(), throttler: FakeThrottler(), processTable: { nil }, backlight: unreadable)
         XCTAssertTrue(unreadable.sets.isEmpty, "no way to tell the owner did not go dimmer")
     }
 
@@ -217,7 +279,7 @@ final class UltraWatchdogTests: XCTestCase {
         let freezer = FakeFreezer()
         let panel = FakeBacklight(BrightnessCeiling.ceiling)
         let throttler = FakeThrottler()
-        UltraWatchdog.undo(from: missing, freezer: freezer, throttler: throttler, backlight: panel)
+        UltraWatchdog.undo(from: missing, freezer: freezer, throttler: throttler, processTable: { nil }, backlight: panel)
         XCTAssertEqual(missing.loads, 1)
         XCTAssertTrue(freezer.resumed.isEmpty)
         XCTAssertTrue(throttler.lifted.isEmpty)
@@ -226,7 +288,7 @@ final class UltraWatchdogTests: XCTestCase {
         XCTAssertEqual(missing.clears, 0)
 
         // A record of a session that changed nothing.
-        UltraWatchdog.undo(record: UltraRecord(), freezer: freezer, throttler: throttler, backlight: panel)
+        UltraWatchdog.undo(record: UltraRecord(), freezer: freezer, throttler: throttler, processTable: { nil }, backlight: panel)
         XCTAssertTrue(freezer.resumed.isEmpty)
         XCTAssertTrue(throttler.lifted.isEmpty)
         XCTAssertTrue(panel.sets.isEmpty)
@@ -235,7 +297,7 @@ final class UltraWatchdogTests: XCTestCase {
     func testUndoReadsTheRecordFromTheStoreAndLeavesItForTheNextLaunch() {
         let store = FakeStore(sessionRecord())
         let freezer = FakeFreezer()
-        UltraWatchdog.undo(from: store, freezer: freezer, throttler: FakeThrottler(), backlight: FakeBacklight(BrightnessCeiling.ceiling))
+        UltraWatchdog.undo(from: store, freezer: freezer, throttler: FakeThrottler(), processTable: { nil }, backlight: FakeBacklight(BrightnessCeiling.ceiling))
         XCTAssertEqual(freezer.resumed.count, 3)
         // The next launch reads the record to finish what the watchdog does not do (unhide, rate, keyboard, power mode).
         XCTAssertEqual(store.clears, 0)
@@ -243,7 +305,7 @@ final class UltraWatchdogTests: XCTestCase {
         XCTAssertEqual(store.record, sessionRecord())
     }
 
-    func testUndoResumesEveryProcessAndLiftsThePolicyBeforeTouchingTheBacklight() {
+    func testUndoResumesEveryProcessAndLiftsThePolicyFromThemAndTheirChildrenBeforeTouchingTheBacklight() {
         // The Mac is least responsive when Anode died with the lid shut or the display asleep; the backlight's start-up
         // and its first read must not hold up a single continue, nor a process left slow.
         let log = CallLog()
@@ -251,9 +313,11 @@ final class UltraWatchdogTests: XCTestCase {
         let throttler = FakeThrottler(log: log)
         let panel = FakeBacklight(BrightnessCeiling.ceiling, log: log)
         func makePanel() -> BacklightControl { log.entries.append("backlight built"); return panel }
-        UltraWatchdog.undo(from: FakeStore(sessionRecord()), freezer: freezer, throttler: throttler, backlight: makePanel())
+        UltraWatchdog.undo(from: FakeStore(sessionRecord()), freezer: freezer, throttler: throttler,
+                           processTable: { log.entries.append("table read"); return self.tableWithChildren }, backlight: makePanel())
         XCTAssertEqual(log.entries, ["resume 400@4000", "resume 401@4010", "resume 500@5000",
                                      "unthrottle 70@7000", "unthrottle 71@7010", "unthrottle 600@6000",
+                                     "table read", "unthrottle 72@7200", "unthrottle 73@7300",
                                      "backlight built", "brightness()", "setBrightness(0.8)"])
     }
 
@@ -261,10 +325,10 @@ final class UltraWatchdogTests: XCTestCase {
         var built = 0
         func makePanel() -> BacklightControl { built += 1; return FakeBacklight(BrightnessCeiling.ceiling) }
         let freezer = FakeFreezer()
-        UltraWatchdog.undo(from: FakeStore(sessionRecord(brightnessBefore: nil)), freezer: freezer, throttler: FakeThrottler(),
+        UltraWatchdog.undo(from: FakeStore(sessionRecord(brightnessBefore: nil)), freezer: freezer, throttler: FakeThrottler(), processTable: { nil },
                            backlight: makePanel())
         XCTAssertEqual(freezer.resumed.count, 3)
-        UltraWatchdog.undo(from: FakeStore(nil), freezer: freezer, throttler: FakeThrottler(), backlight: makePanel())
+        UltraWatchdog.undo(from: FakeStore(nil), freezer: freezer, throttler: FakeThrottler(), processTable: { nil }, backlight: makePanel())
         XCTAssertEqual(built, 0)
     }
 

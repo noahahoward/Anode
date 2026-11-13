@@ -88,4 +88,62 @@ final class UltraThrottleTests: XCTestCase {
     func testNothingKeptAndNothingLeftRunningIsNothing() {
         XCTAssertEqual(UltraThrottle.members(kept: [], leftRunning: [], processes: [process(1)]), [])
     }
+
+    // ── Children of what is under the policy ────────────────────────────────
+
+    /// A row of the process table as the walk reads it: pid, parent and start time (which follows the pid, as in `member`).
+    private func row(_ pid: pid_t, parent: pid_t, startTime: UInt64? = nil) -> UltraProcess {
+        UltraProcess(pid: pid, parent: parent, uid: 501, startTime: startTime ?? UInt64(pid) * 10, path: "", name: "p\(pid)")
+    }
+
+    /// A process started by one that is under the background policy follows it, and is on no record: it is found by its parent
+    /// pid, children and children's children, in a table read at the moment.
+    func testEveryLivingDescendantOfARootIsFound() {
+        let table = [row(10, parent: 1), row(11, parent: 10), row(12, parent: 11), row(13, parent: 10), row(20, parent: 1),
+                     row(21, parent: 20)]
+        XCTAssertEqual(UltraThrottle.descendants(of: [member(10)], in: table), [member(11), member(12), member(13)],
+                       "sorted by pid, and nothing of the other app's")
+        XCTAssertEqual(UltraThrottle.descendants(of: [member(10), member(20)], in: table),
+                       [member(11), member(12), member(13), member(21)])
+    }
+
+    func testARootIsNotItsOwnDescendantAndIsNeverRepeated() {
+        // 11 is a root and a child of the root 10: it is in the list of roots already, so it is not in the list of children.
+        let table = [row(10, parent: 1), row(11, parent: 10), row(12, parent: 11)]
+        XCTAssertEqual(UltraThrottle.descendants(of: [member(10), member(11)], in: table), [member(12)])
+        XCTAssertEqual(UltraThrottle.descendants(of: [member(10), member(10)], in: table), [member(11), member(12)], "no repeats")
+    }
+
+    /// A recorded pid is a root only if it is still the process that was recorded: a recycled pid is another process, and its
+    /// children are not the recorded one's.
+    func testARecycledRootIsNotWalked() {
+        let table = [row(10, parent: 1, startTime: 99_999), row(11, parent: 10), row(20, parent: 1), row(21, parent: 20)]
+        XCTAssertEqual(UltraThrottle.descendants(of: [member(10), member(20)], in: table), [member(21)])
+    }
+
+    /// A root that has ended has no children to find: what it started was given to launchd, and is not its own any more.
+    func testARootThatIsNotInTheTableIsNotWalked() {
+        let table = [row(11, parent: 1), row(21, parent: 20)]
+        XCTAssertEqual(UltraThrottle.descendants(of: [member(10), member(20)], in: table), [])
+        XCTAssertEqual(UltraThrottle.descendants(of: [], in: table), [])
+        XCTAssertEqual(UltraThrottle.descendants(of: [member(10)], in: []), [])
+    }
+
+    /// A table is the kernel's, but a made-up one may loop: a process that is its own parent, or two that are each other's.
+    func testAParentCycleEndsTheWalk() {
+        let table = [row(10, parent: 12), row(11, parent: 10), row(12, parent: 11), row(13, parent: 13)]
+        XCTAssertEqual(UltraThrottle.descendants(of: [member(10)], in: table), [member(11), member(12)])
+        XCTAssertEqual(UltraThrottle.descendants(of: [member(13)], in: table), [], "a process that is its own parent")
+    }
+
+    /// Whatever the table says, the process with the pid of launchd, or lower, is never one of them.
+    func testLaunchdAndTheKernelAreNeverDescendants() {
+        let table = [row(10, parent: 1), row(1, parent: 10), row(0, parent: 10)]
+        XCTAssertEqual(UltraThrottle.descendants(of: [member(10)], in: table), [])
+    }
+
+    func testAChildIsReportedWithTheStartTimeTheTableSaysNow() {
+        let table = [row(10, parent: 1), row(11, parent: 10, startTime: 424_242)]
+        XCTAssertEqual(UltraThrottle.descendants(of: [member(10)], in: table), [FreezeGroup.Member(pid: 11, startTime: 424_242)])
+    }
 }

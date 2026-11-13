@@ -288,22 +288,34 @@ final class UltraProcessesTests: XCTestCase {
 
     // ── The efficiency cores ────────────────────────────────────────────────
 
-    /// What the system was asked, in place of the system: nothing here changes a real process's policy.
+    /// What the system was asked, in place of the system: nothing here reads or changes a real process's policy.
     private final class PolicyRecorder {
         struct Change: Equatable { let pid: pid_t; let on: Bool }
         var sets: [Change] = []
         var result = true
+        /// Whether each pid is under the policy now, as the system would say; a pid that is not here cannot be read.
+        var background: [pid_t: Bool] = [:]
+        private(set) var reads: [pid_t] = []
         func set(_ pid: pid_t, _ on: Bool) -> Bool { sets.append(Change(pid: pid, on: on)); return result }
+        func read(_ pid: pid_t) -> Bool? { reads.append(pid); return background[pid] }
     }
 
     private func throttler(_ recorder: PolicyRecorder, startTimes: [pid_t: UInt64]) -> LiveProcessThrottler {
-        LiveProcessThrottler(startTimeOf: { startTimes[$0] }, setPolicy: { recorder.set($0, $1) })
+        LiveProcessThrottler(startTimeOf: { startTimes[$0] }, setPolicy: { recorder.set($0, $1) },
+                             isBackground: { recorder.read($0) })
+    }
+
+    /// A process that is not under the policy reads as such.
+    private func recorder(notInTheBackground pids: [pid_t]) -> PolicyRecorder {
+        let recorder = PolicyRecorder()
+        for pid in pids { recorder.background[pid] = false }
+        return recorder
     }
 
     func testThrottleAsksForThePolicyAndUnthrottleLiftsIt() {
-        let recorder = PolicyRecorder()
+        let recorder = recorder(notInTheBackground: [4242])
         let t = throttler(recorder, startTimes: [4242: 100])
-        XCTAssertTrue(t.throttle(pid: 4242, startTime: 100))
+        XCTAssertEqual(t.throttle(pid: 4242, startTime: 100), .done)
         XCTAssertTrue(t.unthrottle(pid: 4242, startTime: 100))
         XCTAssertEqual(recorder.sets, [.init(pid: 4242, on: true), .init(pid: 4242, on: false)])
     }
@@ -311,41 +323,82 @@ final class UltraProcessesTests: XCTestCase {
     /// The load-bearing one: a pid that was recycled since the snapshot is another process, and it is never given the policy
     /// (nor has it taken off, since it never had it from this mode).
     func testARecycledPidIsNeverGivenThePolicyOrHasItLifted() {
-        let recorder = PolicyRecorder()
+        let recorder = recorder(notInTheBackground: [4242])
         // The snapshot saw pid 4242 start at 100; now 4242 is another process that started at 200.
         let t = throttler(recorder, startTimes: [4242: 200])
-        XCTAssertFalse(t.throttle(pid: 4242, startTime: 100))
+        XCTAssertEqual(t.throttle(pid: 4242, startTime: 100), .failed)
         XCTAssertFalse(t.unthrottle(pid: 4242, startTime: 100))
         XCTAssertEqual(recorder.sets, [])
+        XCTAssertEqual(recorder.reads, [], "nothing is asked of a process that is not the recorded one")
     }
 
     func testAGonePidIsNotGivenThePolicy() {
-        let recorder = PolicyRecorder()
+        let recorder = recorder(notInTheBackground: [4242])
         let t = throttler(recorder, startTimes: [:])
-        XCTAssertFalse(t.throttle(pid: 4242, startTime: 100))
+        XCTAssertEqual(t.throttle(pid: 4242, startTime: 100), .failed)
         XCTAssertFalse(t.unthrottle(pid: 4242, startTime: 100))
         XCTAssertEqual(recorder.sets, [])
     }
 
     func testAPolicyTheSystemRefusesIsAFailureNotASuccess() {
-        let recorder = PolicyRecorder()
+        let recorder = recorder(notInTheBackground: [4242])
         recorder.result = false
         let t = throttler(recorder, startTimes: [4242: 100])
-        XCTAssertFalse(t.throttle(pid: 4242, startTime: 100))
+        XCTAssertEqual(t.throttle(pid: 4242, startTime: 100), .failed)
         XCTAssertFalse(t.unthrottle(pid: 4242, startTime: 100))
         XCTAssertEqual(recorder.sets.count, 2, "it was asked; it said no")
+    }
+
+    /// A process that was under the policy before the mode asked is not this mode's to put back: it is told apart from one that
+    /// is gone, and nothing is set on it.
+    func testAProcessThatWasInTheBackgroundAlreadyIsLeftAsItWasAndSaidSo() {
+        let recorder = PolicyRecorder()
+        recorder.background[4242] = true
+        let t = throttler(recorder, startTimes: [4242: 100])
+        XCTAssertEqual(t.throttle(pid: 4242, startTime: 100), .alreadyBackground)
+        XCTAssertEqual(recorder.sets, [], "nothing was changed, so nothing is put back")
+    }
+
+    /// A policy that cannot be read says nothing about whether the mode would be changing it.
+    func testAPolicyThatCannotBeReadIsNotAGoAhead() {
+        let recorder = PolicyRecorder()   // reads nothing for 4242
+        let t = throttler(recorder, startTimes: [4242: 100])
+        XCTAssertEqual(t.throttle(pid: 4242, startTime: 100), .failed)
+        XCTAssertEqual(recorder.reads, [4242])
+        XCTAssertEqual(recorder.sets, [])
+    }
+
+    /// The policy is read for one thing only: whether to put a process under it. Lifting it is not preceded by a read.
+    func testLiftingTheLimitReadsNothing() {
+        let recorder = PolicyRecorder()
+        let t = throttler(recorder, startTimes: [4242: 100])
+        XCTAssertTrue(t.unthrottle(pid: 4242, startTime: 100))
+        XCTAssertEqual(recorder.reads, [])
     }
 
     /// The same pids the freezer never touches: 0 and -1 mean something else to the system, 1 is launchd, and Anode's own
     /// process is never slowed (it is the one that lifts the policy again).
     func testAProcessGroupEveryProcessLaunchdAndAnodeItselfNeverGetThePolicy() {
         let recorder = PolicyRecorder()
+        for pid in [0, 1, -1, getpid()] { recorder.background[pid] = false }
         let t = throttler(recorder, startTimes: [0: 5, 1: 5, -1: 5, getpid(): 5])
         for pid in [0, 1, -1, getpid()] {
-            XCTAssertFalse(t.throttle(pid: pid, startTime: 5))
+            XCTAssertEqual(t.throttle(pid: pid, startTime: 5), .failed)
             XCTAssertFalse(t.unthrottle(pid: pid, startTime: 5))
         }
         XCTAssertEqual(recorder.sets, [])
+        XCTAssertEqual(recorder.reads, [])
+    }
+
+    /// The table a walk down the children reads has the parent of each process: it is the kernel's own, read here for this
+    /// test process (a read, nothing is changed).
+    func testTheProcessTableHasEachProcessWithItsParentAndStartTime() throws {
+        let table = try XCTUnwrap(LiveProcessList.processTable())
+        let me = try XCTUnwrap(table.first { $0.pid == getpid() }, "this process is in the table")
+        XCTAssertEqual(me.parent, getppid())
+        XCTAssertEqual(me.startTime, LiveProcessList.startTime(getpid()), "the start time the freezer and the throttler check against")
+        XCTAssertFalse(table.contains { $0.pid <= 0 }, "the kernel is not a process")
+        XCTAssertEqual(table.map(\.pid).count, Set(table.map(\.pid)).count, "one row for each process")
     }
 
     // ── Hiding ──────────────────────────────────────────────────────────────

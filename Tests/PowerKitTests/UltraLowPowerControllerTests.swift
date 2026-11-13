@@ -53,21 +53,28 @@ final class UltraLowPowerControllerTests: XCTestCase {
 
     final class FakeThrottler: ProcessThrottling {
         let calls: Calls
+        /// Pids the system will not put under the policy (gone, or it said no).
         var refuse: Set<pid_t> = []
+        /// Pids that were under the policy before the mode asked.
+        var alreadyBackground: Set<pid_t> = []
         var refuseLift: Set<pid_t> = []
         /// Called as a process is put under the policy, before the answer: lets a test look at the record at that moment.
         var onThrottle: ((pid_t) -> Void)?
+        /// Called as the policy is lifted from a process, before the answer.
+        var onLift: ((pid_t) -> Void)?
         private(set) var throttled: [pid_t] = []
         private(set) var lifted: [pid_t] = []
         /// The start time each call carried, by pid: the one the snapshot saw.
         private(set) var startTimes: [pid_t: UInt64] = [:]
+        private(set) var liftStartTimes: [pid_t: UInt64] = [:]
         init(_ calls: Calls) { self.calls = calls }
-        func throttle(pid: pid_t, startTime: UInt64) -> Bool {
+        func throttle(pid: pid_t, startTime: UInt64) -> ThrottleResult {
             calls.add("throttle \(pid)"); throttled.append(pid); startTimes[pid] = startTime; onThrottle?(pid)
-            return !refuse.contains(pid)
+            if alreadyBackground.contains(pid) { return .alreadyBackground }
+            return refuse.contains(pid) ? .failed : .done
         }
         func unthrottle(pid: pid_t, startTime: UInt64) -> Bool {
-            calls.add("unthrottle \(pid)"); lifted.append(pid)
+            calls.add("unthrottle \(pid)"); lifted.append(pid); liftStartTimes[pid] = startTime; onLift?(pid)
             return !refuseLift.contains(pid)
         }
     }
@@ -258,6 +265,10 @@ final class UltraLowPowerControllerTests: XCTestCase {
     private var load: FakeLoad!
     private var controller: UltraLowPowerController!
 
+    /// The process table the controller reads at the end of a session, fresh each time: what the fake system holds, unless a test
+    /// gives its own reader (one that cannot read the table, say). `tableReads` says how often it was read.
+    private var tableReader: (() -> [UltraProcess]?)?
+    private var tableReads = 0
     /// Whether this Mac has efficiency cores, as the controller is told when it is made.
     private var hasEfficiencyCores = true
     /// What the fake system answers to "who is in front" and "which processes are Anode's".
@@ -288,6 +299,11 @@ final class UltraLowPowerControllerTests: XCTestCase {
     private func makeController() -> UltraLowPowerController {
         UltraLowPowerController(
             settings: settings, processes: processes, freezer: freezer, throttler: throttler,
+            processTable: { [unowned self] in
+                self.tableReads += 1
+                if let reader = self.tableReader { return reader() }
+                return self.processes.list
+            },
             hasEfficiencyCores: hasEfficiencyCores, hider: hider, backlight: backlight,
             ownBrightness: own, rate: rate, keyboard: keyboard, power: power, watchdog: watchdog, store: store,
             confirm: confirm, backdrop: backdrop, load: load,
@@ -1653,13 +1669,15 @@ final class UltraLowPowerControllerTests: XCTestCase {
         XCTAssertEqual(throttler.lifted, [], "never put under it, so nothing to lift")
     }
 
-    func testAProcessTheSystemRefusedIsTakenOffTheRecordAndNotLiftedLater() {
+    func testAProcessTheSystemRefusedIsTakenOffTheRecordAndReachedAtTheEndOnlyAsAChild() {
         throttler.refuse = [11]
         start()
         XCTAssertEqual(throttler.throttled, [10, 11], "both were asked")
         XCTAssertEqual(namedThrottled, [10], "the record names only what was done")
         controller.turnOff()
-        XCTAssertEqual(throttler.lifted, [10])
+        // 11 is a child of 10, which was put under the policy, so the end's walk down the children asks about it too: a process
+        // that follows its parent's policy has to be lifted with it. (It never had the policy from this mode: nothing changes.)
+        XCTAssertEqual(throttler.lifted, [10, 11])
     }
 
     func testWithTheSettingOffNothingIsThrottledAndNothingIsSaid() {
@@ -1827,29 +1845,127 @@ final class UltraLowPowerControllerTests: XCTestCase {
         XCTAssertEqual(throttler.lifted, [10, 11, 20, 21, 22])
     }
 
-    func testTheSweepLeavesANewPartOfAGroupOnACallAloneAndDoesNotTakeItForNewAfterTheCall() {
+    /// While the call lasts a new part of the app is left at full speed too, and once it is over the next sweep puts all of the
+    /// app on the efficiency cores again: what was lifted for the call, and what started during it.
+    func testANewPartOfAGroupOnACallIsLeftAloneWhileItLastsAndKeptOnTheEfficiencyCoresAfter() {
         start()
         processes.list = worldOnACall + [proc(12, parent: 10, path: "/bin/zsh")]
         fire(30)
-        XCTAssertEqual(throttler.throttled, [10, 11], "its app is on a call: a call's audio and video must not stutter")
-        // The call ends. 12 was left alone then, and is not slowed now: it would stay slow through the next call.
+        XCTAssertEqual(throttler.throttled, [10, 11], "12 is new, but its app is on a call: a call's audio and video must not stutter")
         processes.list = world + [proc(12, parent: 10, path: "/bin/zsh")]
         fire(30)
-        XCTAssertEqual(throttler.throttled, [10, 11])
+        XCTAssertEqual(throttler.throttled, [10, 11, 10, 11, 12], "the call is over: all of the app, new part included")
+        XCTAssertEqual(namedThrottled, [10, 11, 12])
     }
 
-    /// The same for a group that was on a call when the mode began: it was kept, and left at full speed, and the end of the
-    /// call does not make all of it new.
-    func testAGroupOnACallAtTheStartIsNotSlowedWhenTheCallEnds() {
+    /// A group that was on a call when the mode began was left at full speed. It is not left so for the rest of the session: the
+    /// sweep after the call is over puts it on the efficiency cores.
+    func testAGroupOnACallAtTheStartIsKeptOnTheEfficiencyCoresByASweepOnceTheCallEnds() {
         processes.list = worldOnACall
         start()
         XCTAssertEqual(throttler.throttled, [], "the only kept app is on a call")
-        XCTAssertNil(namedThrottled?.first)
+        XCTAssertNil(namedThrottled)
+        fire(30)
+        XCTAssertEqual(throttler.throttled, [], "still on the call")
+        XCTAssertEqual(throttler.lifted, [], "and nothing was under the policy to lift")
         processes.list = world
         fire(30)
-        XCTAssertEqual(throttler.throttled, [])
+        XCTAssertEqual(throttler.throttled, [10, 11])
+        XCTAssertEqual(namedThrottled, [10, 11])
         controller.turnOff()
-        XCTAssertEqual(throttler.lifted, [])
+        XCTAssertEqual(throttler.lifted, [10, 11])
+    }
+
+    // A call that starts and stops during the session
+
+    func testAKeptGroupThatStartsACallIsLiftedAtTheNextSweepAndTakenOffTheRecordAfterTheLift() {
+        start()
+        var namedWhenLifted: [pid_t: Bool] = [:]
+        throttler.onLift = { [unowned self] pid in namedWhenLifted[pid] = self.namedThrottled?.contains(pid) ?? false }
+        processes.list = worldOnACall
+        fire(30)
+        XCTAssertEqual(throttler.lifted, [10, 11], "the app's own processes, each by the start time the record has")
+        XCTAssertEqual(throttler.liftStartTimes, [10: 100, 11: 110])
+        XCTAssertEqual(namedWhenLifted, [10: true, 11: true], "still named when the lift is done: the record changes after it")
+        XCTAssertEqual(namedThrottled, [], "and not any more once it is")
+        XCTAssertEqual(controller.state, .on)
+    }
+
+    func testItIsNotPutBackUnderThePolicyWhileItStillUsesTheMicrophoneOrCamera() {
+        start()
+        processes.list = worldOnACall
+        fire(30)
+        fire(30)
+        fire(30)
+        XCTAssertEqual(throttler.throttled, [10, 11], "not again while the call lasts")
+        XCTAssertEqual(throttler.lifted, [10, 11], "and nothing to lift a second time")
+        XCTAssertEqual(namedThrottled, [])
+    }
+
+    func testWhenTheCallStopsALaterSweepKeepsItOnTheEfficiencyCoresAgain() {
+        start()
+        processes.list = worldOnACall
+        fire(30)
+        processes.list = world
+        fire(30)
+        XCTAssertEqual(throttler.throttled, [10, 11, 10, 11])
+        XCTAssertEqual(namedThrottled, [10, 11])
+        // And the next call is lifted again.
+        processes.list = worldOnACall
+        fire(30)
+        XCTAssertEqual(throttler.lifted, [10, 11, 10, 11])
+        XCTAssertEqual(namedThrottled, [])
+        controller.turnOff()
+        XCTAssertEqual(throttler.lifted, [10, 11, 10, 11], "nothing is under the policy at the end")
+    }
+
+    /// A part of the app that started after the last sweep followed the policy and is on no record. It is the likeliest one to be
+    /// the part on the call (a new tab's process), so it is lifted with the app.
+    func testAChildOfTheAppThatInheritedThePolicyIsLiftedWhenTheAppStartsACall() {
+        start()
+        processes.list = worldOnACall + [proc(12, parent: 10, path: "/bin/zsh"), proc(13, parent: 12, path: "/bin/zsh")]
+        fire(30)
+        XCTAssertEqual(throttler.lifted, [10, 11, 12, 13])
+        XCTAssertEqual(throttler.throttled, [10, 11], "and none of the new parts is put under it during the call")
+        XCTAssertEqual(namedThrottled, [])
+    }
+
+    /// Only the app on a call is lifted: the others stay under the policy.
+    func testAnotherAppThatIsNotOnACallStaysUnderThePolicy() {
+        processes.list = world + cloud
+        start()
+        XCTAssertEqual(throttler.throttled, [10, 11, 40])
+        processes.list = worldOnACall + cloud
+        fire(30)
+        XCTAssertEqual(throttler.lifted, [10, 11])
+        XCTAssertEqual(namedThrottled, [40])
+    }
+
+    /// A lift the system refused leaves the process on the record, so that the end lifts it again and the next sweep tries.
+    func testAProcessWhoseLiftWasRefusedStaysOnTheRecordAndIsTriedAgain() {
+        start()
+        throttler.refuseLift = [11]
+        processes.list = worldOnACall
+        fire(30)
+        XCTAssertEqual(throttler.lifted, [10, 11])
+        XCTAssertEqual(namedThrottled, [11])
+        fire(30)
+        XCTAssertEqual(throttler.lifted, [10, 11, 11])
+        throttler.refuseLift = []
+        controller.turnOff()
+        XCTAssertEqual(throttler.lifted, [10, 11, 11, 11])
+    }
+
+    /// A pid on the record that is not the recorded process now (recycled) is not the app's, whatever it is doing.
+    func testARecycledPidOnTheRecordIsNotLiftedBecauseOfWhatThePidDoesNow() {
+        start()
+        var other = worldOnACall
+        let editor = other.firstIndex { $0.pid == 11 }!
+        other[editor] = UltraProcess(pid: 11, parent: 1, uid: 501, startTime: 99_999, path: "/bin/zsh", name: "zsh")
+        processes.list = other
+        fire(30)
+        XCTAssertEqual(throttler.lifted, [10], "11 is another process now: not lifted, and still on the record as it was")
+        XCTAssertEqual(namedThrottled, [11])
     }
 
     func testARefusedThrottleIsNotRetriedByEverySweep() {
@@ -1892,7 +2008,8 @@ final class UltraLowPowerControllerTests: XCTestCase {
         controller.release(groupID: "com.example.sync")
         calls.list.removeAll()
         controller.turnOff()
-        XCTAssertEqual(throttler.lifted, [10, 11, 12, 30])
+        XCTAssertEqual(throttler.lifted, [10, 11, 12, 30, 31],
+                       "what the record names, then the extension (31), a child of 30 that the table shows at the end")
         XCTAssertEqual(freezer.resumes, [30, 20, 21], "the released group was continued by the release, the rest at the end")
         assertAllBefore("resume", "unthrottle")
         assertAllBefore("unthrottle", "unhide")
@@ -2137,6 +2254,232 @@ final class UltraLowPowerControllerTests: XCTestCase {
         start()
         XCTAssertEqual(backdrop.shows, 2)
         XCTAssertTrue(backdrop.shown)
+    }
+
+    // ── Children of what was put under the policy ───────────────────────────
+
+    /// The world, and after the last sweep a tool the editor started (12) with a tool of its own (13): both inherited the policy
+    /// and are on no record.
+    private var worldWithChildren: [UltraProcess] {
+        world + [proc(12, parent: 10, path: "/bin/zsh"), proc(13, parent: 12, path: "/bin/zsh")]
+    }
+
+    func testAChildBornAfterTheLastSweepIsLiftedAtTurnOff() {
+        start()
+        processes.list = worldWithChildren
+        XCTAssertEqual(tableReads, 0, "nothing reads the table before the end")
+        calls.list.removeAll()
+        controller.turnOff()
+        XCTAssertEqual(throttler.lifted, [10, 11, 12, 13], "what the record names, then every living descendant of one of them")
+        XCTAssertEqual(throttler.liftStartTimes[12], 120, "by the start time the table has now")
+        XCTAssertEqual(tableReads, 1)
+        assertAllBefore("resume", "unthrottle")
+        assertAllBefore("unthrottle", "unhide")
+        assertAllBefore("unthrottle", "brightness")
+        XCTAssertEqual(controller.state, .off)
+    }
+
+    func testAChildBornAfterTheLastSweepIsLiftedAtShutdownOnTheCallingThread() {
+        start()
+        processes.list = worldWithChildren
+        let workBefore = workRuns
+        calls.list.removeAll()
+        controller.shutdown()
+        XCTAssertEqual(throttler.lifted, [10, 11, 12, 13])
+        XCTAssertEqual(workRuns, workBefore, "quit cannot wait for a queue")
+        assertAllBefore("resume", "unthrottle")
+        assertAllBefore("unthrottle", "unhide")
+    }
+
+    func testAChildBornAfterTheLastSweepIsLiftedAtRecoveryFromTheRecord() {
+        // A session that was not ended: the record names the editor's processes, and a tool it started since is in the table.
+        var record = UltraRecord()
+        record.groups = [UltraRecord.Group(id: "com.example.browser", name: "Browser", members: [.init(pid: 20, startTime: 200)])]
+        record.throttled = [.init(pid: 10, startTime: 100), .init(pid: 11, startTime: 110)]
+        store.record = record
+        processes.list = worldWithChildren
+        // Whatever the settings are now, and whether or not this Mac says it has the cores: the record is what is undone.
+        settings.ultraLowPowerEfficiencyCores = false
+        hasEfficiencyCores = false
+        controller = makeController()
+        controller.recoverAtLaunch()
+        XCTAssertEqual(throttler.lifted, [10, 11, 12, 13])
+        XCTAssertEqual(freezer.resumes, [20])
+        assertAllBefore("resume", "unthrottle")
+        XCTAssertNil(store.record)
+    }
+
+    /// Only what started under something the mode put under the policy inherited it: a child of an app that was frozen, a stranger
+    /// and anything under launchd are none of it.
+    func testAProcessThatIsNoDescendantOfARecordedProcessIsNeverTouched() {
+        start()
+        processes.list = worldWithChildren + [proc(60, parent: 20, path: "/usr/bin/helper-of-the-frozen-browser"),
+                                             proc(61, parent: 1, path: "/usr/bin/stranger"),
+                                             proc(62, parent: 61, path: "/usr/bin/stranger-child")]
+        controller.turnOff()
+        XCTAssertEqual(throttler.lifted, [10, 11, 12, 13])
+    }
+
+    /// A recorded pid that is not the recorded process any more has no children of the recorded one to find.
+    func testTheChildrenOfARecycledRecordedPidAreNotWalked() {
+        var record = UltraRecord()
+        record.throttled = [.init(pid: 10, startTime: 999), .init(pid: 20, startTime: 200)]   // 10 started at 100: it is another process
+        store.record = record
+        processes.list = worldWithChildren
+        controller.recoverAtLaunch()
+        XCTAssertEqual(throttler.lifted, [10, 20, 21],
+                       "10 is asked about as the record has it (the throttler refuses it); its tools are not walked, 20's helper is")
+        XCTAssertFalse(throttler.lifted.contains(12))
+        XCTAssertFalse(throttler.lifted.contains(13))
+    }
+
+    func testAnodeAndItsWatchdogAreNeverTakenForChildren() {
+        start()
+        watchdog.pid = 900
+        // Anode was run from a terminal that is under the policy, and the watchdog is Anode's child.
+        processes.list = world.filter { $0.pid != 1000 } + [proc(1000, parent: 10, path: "/Applications/Anode.app/Contents/MacOS/Anode"),
+                                                            proc(900, parent: 1000, path: "/var/tmp/watchdog-copy")]
+        controller.turnOff()
+        XCTAssertEqual(throttler.lifted, [10, 11])
+    }
+
+    func testATableThatCannotBeReadStillLiftsWhatTheRecordNamesAndSaysSoOnce() {
+        start()
+        tableReader = { nil }
+        controller.turnOff()
+        XCTAssertEqual(throttler.lifted, [10, 11])
+        XCTAssertEqual(controller.state, .off)
+        XCTAssertEqual(logged.filter { $0.contains("process table") }.count, 1, "\(logged)")
+    }
+
+    func testTheTableIsNotReadWhenNothingWasPutUnderThePolicy() {
+        settings.ultraLowPowerEfficiencyCores = false
+        start()
+        controller.turnOff()
+        XCTAssertEqual(tableReads, 0)
+        start()
+        controller.shutdown()
+        XCTAssertEqual(tableReads, 0)
+    }
+
+    func testAChildWhoseLiftFailedIsLoggedOnce() {
+        start()
+        processes.list = worldWithChildren
+        throttler.refuseLift = [12]
+        controller.turnOff()
+        XCTAssertEqual(throttler.lifted, [10, 11, 12, 13])
+        XCTAssertEqual(logged.filter { $0.contains("12") }.count, 1, "\(logged)")
+        XCTAssertEqual(controller.state, .off)
+    }
+
+    // A process that was under the policy before the mode
+
+    func testAProcessAlreadyInTheBackgroundIsNotRecordedAndNotLiftedAtTheEnd() {
+        throttler.alreadyBackground = [11]
+        start()
+        XCTAssertEqual(throttler.throttled, [10, 11], "both were asked")
+        XCTAssertEqual(namedThrottled, [10], "the record names only what this mode changed")
+        XCTAssertTrue(logged.contains { $0.contains("11") && $0.contains("background") }, "\(logged)")
+        XCTAssertEqual(controller.skipped, [], "nothing the owner needs to be told")
+        controller.turnOff()
+        XCTAssertEqual(throttler.lifted, [10], "11 was in the background before: it is left there")
+    }
+
+    func testAnAlreadyBackgroundProcessIsNotAskedAboutAgainByEverySweep() {
+        throttler.alreadyBackground = [11]
+        start()
+        processes.list = world + [proc(14, parent: 11, path: "/bin/zsh")]
+        fire(30)
+        fire(30)
+        XCTAssertEqual(throttler.throttled.filter { $0 == 11 }.count, 1)
+        XCTAssertEqual(namedThrottled, [10, 14], "14 is a part of the editor, which the sweep put under the policy and named")
+        controller.turnOff()
+        // 11 is a child of 10, which the mode did put under the policy: it is not lifted as one, because it was in the background
+        // before the mode and is not the mode's to put back.
+        XCTAssertEqual(throttler.lifted, [10, 14])
+    }
+
+    // What a child inherits from the mode is not "in the background already"
+
+    /// A child the kept app started after the last sweep inherited the policy. When the sweep finds it and asks to put it under
+    /// the policy, the system says it is under it: that policy came from the mode, so it stays named, and is lifted at the end.
+    /// (The live throttler would answer exactly that; the fake is told so for this pid.)
+    func testAChildThatInheritedThePolicyFromTheModeStaysOnTheRecordAndIsLiftedAtTheEnd() {
+        start()
+        throttler.alreadyBackground = [12]
+        processes.list = world + [proc(12, parent: 10, path: "/bin/zsh")]
+        fire(30)
+        XCTAssertEqual(throttler.throttled, [10, 11, 12])
+        XCTAssertEqual(namedThrottled, [10, 11, 12], "it is under the policy by the mode, so it is the mode's to lift")
+        fire(30)
+        XCTAssertEqual(throttler.throttled.filter { $0 == 12 }.count, 1, "and not asked about again")
+        controller.turnOff()
+        XCTAssertEqual(throttler.lifted, [10, 11, 12])
+    }
+
+    /// The same child, found at the end by the walk and not by a sweep.
+    func testAChildThatInheritedThePolicyIsLiftedByTheWalkAtShutdownToo() {
+        start()
+        throttler.alreadyBackground = [12]
+        processes.list = world + [proc(12, parent: 10, path: "/bin/zsh")]
+        fire(30)
+        processes.list = world + [proc(12, parent: 10, path: "/bin/zsh"), proc(13, parent: 12, path: "/bin/zsh")]
+        controller.shutdown()
+        XCTAssertEqual(throttler.lifted, [10, 11, 12, 13])
+    }
+
+    /// A process that says it is in the background and is no descendant of anything the record names did not get that from the
+    /// mode: it is the owner's (or another tool's), named nowhere and lifted by nobody.
+    func testANewProcessInTheBackgroundThatDescendsFromNothingOnTheRecordIsLeftAlone() {
+        start()
+        // Part of the editor's group because macOS holds the editor responsible for it, started by launchd.
+        let tool = UltraProcess(pid: 14, parent: 1, uid: 501, startTime: 140, path: "/Users/someone/bin/tool", responsible: 10,
+                                name: "tool")
+        throttler.alreadyBackground = [14]
+        processes.list = world + [tool]
+        fire(30)
+        XCTAssertEqual(throttler.throttled, [10, 11, 14], "it is asked about")
+        XCTAssertEqual(namedThrottled, [10, 11])
+        controller.turnOff()
+        XCTAssertEqual(throttler.lifted, [10, 11])
+    }
+
+    /// An app brought back whose new part (stopped by a sweep) is a child of something the mode put under the policy inherited
+    /// it before it was stopped: it is not "in the background already" either.
+    func testAnAppBroughtBackWhoseNewPartInheritedThePolicyKeepsItOnTheRecord() {
+        start()
+        // Part of the browser's group (macOS holds the browser responsible), started by the editor, which is under the policy.
+        let part = UltraProcess(pid: 22, parent: 10, uid: 501, startTime: 220, path: "/Users/someone/bin/browser-part", responsible: 20,
+                                name: "part")
+        processes.list = world + [part]
+        fire(30)
+        XCTAssertTrue(freezer.stops.contains(22), "a new part of a frozen group is stopped")
+        throttler.alreadyBackground = [22]
+        controller.release(groupID: "com.example.browser")
+        XCTAssertEqual(namedThrottled, [10, 11, 20, 21, 22])
+        controller.turnOff()
+        XCTAssertEqual(throttler.lifted, [10, 11, 20, 21, 22])
+    }
+
+    /// A child of a process that was in the background before the mode inherited that process's policy, not the mode's: the
+    /// walk does not go through the one the mode saw in the background, so it does not reach what that one started.
+    func testTheWalkDoesNotGoThroughAProcessThatWasInTheBackgroundBeforeTheMode() {
+        throttler.alreadyBackground = [11]
+        start()
+        XCTAssertEqual(namedThrottled, [10])
+        processes.list = world + [proc(16, parent: 11, path: "/bin/zsh")]
+        controller.turnOff()
+        XCTAssertEqual(throttler.lifted, [10], "11 was in the background before; 16 follows it, not the mode")
+    }
+
+    func testAnAppBroughtBackKeepsAnAlreadyBackgroundMemberOffTheRecord() {
+        throttler.alreadyBackground = [21]
+        start()
+        controller.release(groupID: "com.example.browser")
+        XCTAssertEqual(throttler.throttled, [10, 11, 20, 21])
+        XCTAssertEqual(namedThrottled, [10, 11, 20])
+        controller.turnOff()
+        XCTAssertEqual(throttler.lifted, [10, 11, 20])
     }
 
     // ── The spin guard ──────────────────────────────────────────────────────

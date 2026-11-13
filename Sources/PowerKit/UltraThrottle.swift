@@ -28,6 +28,37 @@ public enum UltraThrottle {
         return members.sorted { ($0.pid, $0.startTime) < ($1.pid, $1.startTime) }
     }
 
+    /// Every living descendant of `roots`, found by parent pid in one read of the process table: what a process under the
+    /// background policy started has inherited the policy (a child follows its parent), and is on no record, so left alone it
+    /// stays on the efficiency cores until it exits.
+    ///
+    /// A root counts only if the table holds that pid with that start time: a recorded pid that was recycled since is another
+    /// process, and what it started is nobody's the mode knows. A root that has ended has no children to find (the system gave
+    /// them to launchd). The roots themselves are not in the answer, however they are related: the caller has them. Sorted by pid,
+    /// no repeats, and a table that loops (a process its own parent, two the parent of each other) ends the walk.
+    public static func descendants(of roots: [FreezeGroup.Member], in processes: [UltraProcess]) -> [FreezeGroup.Member] {
+        var held: [pid_t: UltraProcess] = [:]
+        for process in processes where held[process.pid] == nil { held[process.pid] = process }
+        var children: [pid_t: [UltraProcess]] = [:]
+        for process in held.values { children[process.parent, default: []].append(process) }
+
+        // Every root that is still the recorded process is seen before the walk begins, so a root that is also the child of another
+        // is not in the answer, and a loop in the table runs into a pid already seen.
+        var seen: Set<pid_t> = []
+        var pending: [pid_t] = []
+        for root in roots where held[root.pid]?.startTime == root.startTime {
+            if seen.insert(root.pid).inserted { pending.append(root.pid) }
+        }
+        var found: [FreezeGroup.Member] = []
+        while let next = pending.popLast() {
+            for child in children[next] ?? [] where child.pid > 1 && seen.insert(child.pid).inserted {
+                pending.append(child.pid)
+                found.append(FreezeGroup.Member(pid: child.pid, startTime: child.startTime))
+            }
+        }
+        return found.sorted { $0.pid < $1.pid }
+    }
+
     /// A process is its pid with its start time: a recycled pid is another process.
     private struct Identity: Hashable {
         let pid: pid_t

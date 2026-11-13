@@ -630,7 +630,8 @@ final class UltraLowPowerFeatureTests: XCTestCase {
             power = Fakes.FakePower(calls)
             controller = UltraLowPowerController(
                 settings: settings, processes: Fakes.FakeProcesses(Self.world), freezer: Fakes.FakeFreezer(calls),
-                throttler: Fakes.FakeThrottler(calls), hasEfficiencyCores: hasEfficiencyCores, hider: Fakes.FakeHider(calls), backlight: Fakes.FakeBacklight(calls), ownBrightness: OwnBrightness(),
+                throttler: Fakes.FakeThrottler(calls), processTable: { Self.world }, hasEfficiencyCores: hasEfficiencyCores,
+                hider: Fakes.FakeHider(calls), backlight: Fakes.FakeBacklight(calls), ownBrightness: OwnBrightness(),
                 rate: Fakes.FakeRate(calls), keyboard: Fakes.FakeKeyboard(calls), power: power,
                 watchdog: Fakes.FakeWatchdog(calls), store: Fakes.FakeStore(calls), confirm: confirm,
                 backdrop: Fakes.FakeBackdrop(calls), load: Fakes.FakeLoad(calls),

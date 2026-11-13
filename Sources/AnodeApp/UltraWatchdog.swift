@@ -8,9 +8,10 @@ import PowerKit
 /// Anode starts itself again with `--ultra-watchdog <its pid> <the record's path>`. That process does nothing and
 /// costs nothing until Anode's pid exits (it sleeps in the kernel until the event arrives, it does not poll). Then it
 /// reads the record and undoes what it can without a window, an app or any setting of Anode's: continuing what the
-/// record names, lifting the background policy that kept the apps on the efficiency cores, and putting the brightness
-/// back. Unhiding, the keyboard light and the power mode are left for the next launch, which reads the same record; the
-/// refresh rate needs nothing, the system takes it back with the process.
+/// record names, lifting the background policy that kept the apps on the efficiency cores (from what the record names and from
+/// what those processes started since, found in a process table it reads itself), and putting the brightness back. Unhiding,
+/// the keyboard light and the power mode are left for the next launch, which reads the same record; the refresh rate needs
+/// nothing, the system takes it back with the process.
 ///
 /// A normal end is Anode's job, not the watchdog's: `stop()` ends it with SIGTERM and it exits without undoing.
 
@@ -156,7 +157,8 @@ enum UltraWatchdog {
             // The backlight is built only when its turn comes, after every continue: its start-up and its first read
             // can stall on a Mac that is asleep, and nothing may hold up a continue.
             undo(from: UltraRecordFile(url: URL(fileURLWithPath: request.recordPath)),
-                 freezer: LiveProcessFreezer(), throttler: LiveProcessThrottler(), backlight: DisplayServicesBacklight())
+                 freezer: LiveProcessFreezer(), throttler: LiveProcessThrottler(),
+                 processTable: LiveProcessList.processTable, backlight: DisplayServicesBacklight())
             exit(0)
         case .timedOut, .failed:
             // The kernel would not say when Anode ends. Undoing now, with Anode very likely alive, would continue
@@ -182,21 +184,31 @@ enum UltraWatchdog {
         current != given
     }
 
-    /// Continues what the record names, lifts the background policy from every process it names, and puts the brightness
-    /// back; the rest of the record is for the next launch. Nothing here clears the record: the next launch reads it to
-    /// finish the undo (lifting the policy again from a process that is free of it already changes nothing).
+    /// Continues what the record names, lifts the background policy from every process it names and from every living child of
+    /// one (a table read here finds them), and puts the brightness back; the rest of the record is for the next launch.
+    /// Nothing here clears the record: the next launch reads it to finish the undo (lifting the policy again from a process
+    /// that is free of it already changes nothing).
     ///
     /// Every continue comes first, then the policy, which a kept app would otherwise carry for as long as it runs. The
     /// backlight is a parameter that is not evaluated until the brightness step, and the step is left out when the record
     /// has no brightness to put back.
     static func undo(record: UltraRecord, freezer: ProcessFreezing, throttler: ProcessThrottling,
-                     backlight: @autoclosure () -> BacklightControl) {
+                     processTable: () -> [UltraProcess]?, backlight: @autoclosure () -> BacklightControl) {
         let actions = UltraRecovery.actions(for: record, brightnessNow: nil)
         for case .resume(let pid, let startTime) in actions {
             _ = freezer.resume(pid: pid, startTime: startTime)
         }
+        var lifted: [FreezeGroup.Member] = []
         for case .unthrottle(let pid, let startTime) in actions {
             _ = throttler.unthrottle(pid: pid, startTime: startTime)
+            lifted.append(FreezeGroup.Member(pid: pid, startTime: startTime))
+        }
+        // What those processes started since the last sweep inherited the policy and is on no record: the table is read now, here,
+        // and every living child of a process the record names (identity checked by start time) is lifted too.
+        if !lifted.isEmpty, let table = processTable() {
+            for child in UltraThrottle.descendants(of: lifted, in: table) {
+                _ = throttler.unthrottle(pid: child.pid, startTime: child.startTime)
+            }
         }
         guard record.brightnessBefore != nil else { return }
         let panel = backlight()
@@ -207,9 +219,9 @@ enum UltraWatchdog {
 
     /// The same, from where the record is kept. No record, or one that cannot be read, is nothing to undo.
     static func undo(from store: UltraRecordStoring, freezer: ProcessFreezing, throttler: ProcessThrottling,
-                     backlight: @autoclosure () -> BacklightControl) {
+                     processTable: () -> [UltraProcess]?, backlight: @autoclosure () -> BacklightControl) {
         guard let record = store.load() else { return }
-        undo(record: record, freezer: freezer, throttler: throttler, backlight: backlight())
+        undo(record: record, freezer: freezer, throttler: throttler, processTable: processTable, backlight: backlight())
     }
 
     /// Blocks until `pid` ends, with a kernel event (`kqueue`, `NOTE_EXIT`): the process sleeps until the kernel says so
