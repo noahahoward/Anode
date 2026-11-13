@@ -693,6 +693,49 @@ final class ChargeControlConnectionTests: XCTestCase {
         XCTAssertTrue(connection.holders.isEmpty)
     }
 
+    /// An install from anywhere (the Fans tab, another section) resumes the shared connection the moment it ends, and
+    /// launchd may not have the helper up in that instant. Seen: the helper was installed from another section with
+    /// Ready By on, the one look found nothing, and Charge Control went on saying Ready By needs the helper. The link
+    /// looks again a moment later, by itself.
+    func testAnInstallWhoseHelperIsNotUpInThatInstantIsLookedForAgain() {
+        installed = false
+        wire.answerAtOnce = .notRunning
+        settings.chargeLimit = 100
+        settings.chargeReadyByEnabled = true
+        let c = make()
+        XCTAssertFalse(adapter.available)
+        XCTAssertEqual(c.status, .needsHelper(ChargeController.readyByNeedsHelperText))
+        adapter.looksAfterAnInstall = [0.05, 0.15]
+
+        connection.suspend()
+        installed = true            // the install has ended, and the helper is not answering yet
+        connection.resume()
+        XCTAssertFalse(adapter.available, "the helper answered before launchd had it up")
+
+        wire.answerAtOnce = .connected(fanCount: 1, version: 3)     // now it is up
+        let waited = expectation(description: "the link looked again")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { waited.fulfill() }
+        wait(for: [waited], timeout: 2)
+        XCTAssertTrue(adapter.available, "nothing looked for the helper again after the install")
+        XCTAssertNotEqual(c.status, .needsHelper(ChargeController.readyByNeedsHelperText))
+    }
+
+    /// The section being shown looks for a helper that has not answered even while this link holds the connection.
+    func testALookWhenTheSectionIsShownIsMadeEvenWhileTheLinkIsHeld() {
+        installed = false
+        wire.answerAtOnce = .notRunning
+        settings.chargeLimit = 100
+        settings.chargeReadyByEnabled = true
+        let c = make()
+        adapter.keepOpen(true)
+        installed = true
+        wire.answerAtOnce = .connected(fanCount: 1, version: 3)
+        XCTAssertFalse(adapter.available)
+        c.recheckHelper()
+        XCTAssertTrue(adapter.available)
+        adapter.keepOpen(false)
+    }
+
     /// The real link answers a socket that is gone with "stopped answering", never with nothing. That helper is
     /// unavailable until it answers again, and the limit falls back to the nearest value macOS takes above it.
     func testAHelperThatStoppedAnsweringIsUnavailable() {

@@ -2850,6 +2850,12 @@ final class ChargeHelperAdapter: ChargeHelperLink {
     /// the connection's own status may still say connected until its check comes back.
     private var lost = false
     private var wasSuspended = false
+    /// When the helper is looked for again after an install or an uninstall has ended, in seconds: launchd has only
+    /// just been given (or lost) it, and the look made in the instant the connection resumes can find a helper that is
+    /// installed and not up yet. Seen on a Mac: installed from another section with Ready By on, and Charge Control went
+    /// on saying Ready By needs the helper. Internal for the tests.
+    var looksAfterAnInstall: [TimeInterval] = [1.5, 4]
+    private var resumes = 0
 
     init(connection: HelperConnection = .shared, isInstalled: @escaping () -> Bool = { FanDaemon.isInstalled() }) {
         self.connection = connection
@@ -2890,8 +2896,10 @@ final class ChargeHelperAdapter: ChargeHelperLink {
     }
 
     func recheck() {
-        guard token != nil, !claimed else { return }
-        // A helper that answered is not woken to say so again; an uninstall since is a file check away.
+        guard token != nil else { return }
+        // A helper that answered is not woken to say so again; an uninstall since is a file check away. One that has
+        // not answered is looked for whether or not this link is holding the connection: holding it open is no sign
+        // that a helper is on the other end.
         if available, isInstalled() { return }
         look()
     }
@@ -3010,8 +3018,20 @@ final class ChargeHelperAdapter: ChargeHelperLink {
         let resumed = wasSuspended && !connection.suspended
         wasSuspended = connection.suspended
         changed?()
-        // An install or an uninstall has just finished: look again.
-        if resumed, token != nil { look() }
+        // An install or an uninstall has just finished, from wherever it was started (the Fans tab, this section,
+        // another one): look now, and again shortly if no helper that knows the charge commands has answered.
+        if resumed, token != nil {
+            look()
+            resumes += 1
+            let mine = resumes
+            for delay in looksAfterAnInstall {
+                DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+                    guard let self, self.token != nil, self.resumes == mine else { return }
+                    if self.available, self.isInstalled() { return }
+                    self.look()
+                }
+            }
+        }
     }
 }
 
