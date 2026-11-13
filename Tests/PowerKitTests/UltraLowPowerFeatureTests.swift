@@ -76,9 +76,9 @@ final class UltraLowPowerFeatureTests: XCTestCase {
     }
 
     func testMenuWhenOnListsTurnOffAndEveryFrozenGroup() {
-        let frozen = [group("com.example.browser", "Browser"), group("job:db", "db"), group("exe:node", "node")]
+        let frozen = [group("com.example.browser", "Browser"), group("job:db", "db"), group("exe:worker", "worker")]
         let m = menu(.on, frozen: frozen)
-        XCTAssertEqual(titles(m), ["Turn off", "-", "Frozen (click to bring back):", "Browser", "db", "node", "-",
+        XCTAssertEqual(titles(m), ["Turn off", "-", "Frozen (click to bring back):", "Browser", "db", "worker", "-",
                                    "Open Beta Features…"])
         XCTAssertFalse(m.items[2].isEnabled, "the header is a label")
         XCTAssertTrue(m.items[3...5].allSatisfy(\.isEnabled))
@@ -143,7 +143,11 @@ final class UltraLowPowerFeatureTests: XCTestCase {
         let oldHelper = UltraLowPowerFeature.describe([.lowPowerOldHelper])[0]
         XCTAssertTrue(oldHelper.contains("older"), oldHelper)
         XCTAssertTrue(oldHelper.contains("Install Helper…"), oldHelper)
-        XCTAssertTrue(UltraLowPowerFeature.describe([.oneRefreshRate])[0].contains("one refresh rate"))
+        // Lines a Mac without the hardware gets every session say so, and do not blame the Mac or the screen.
+        XCTAssertEqual(UltraLowPowerFeature.describe([.oneRefreshRate]),
+                       ["The screen's refresh rate was left as it was: it offers only one, or this Mac has no built-in screen."])
+        XCTAssertEqual(UltraLowPowerFeature.describe([.keyboardLight]),
+                       ["This Mac's keyboard light could not be read or switched off, so it was left as it was."])
         // A Mac with no built-in screen gets this line every time: it says what could not be done, and blames nothing.
         XCTAssertTrue(UltraLowPowerFeature.describe([.ceilingRefused])[0].contains("held at half"))
     }
@@ -188,6 +192,16 @@ final class UltraLowPowerFeatureTests: XCTestCase {
         XCTAssertFalse(note.contains("hour"), note)
     }
 
+    /// What freezing does is said as what it does, and what a frozen app loses is said as what may happen to it.
+    func testTheNoteSaysWhatFreezingDoesAndWhatItCosts() {
+        let note = UltraLowPowerFeature.note
+        XCTAssertTrue(note.contains("Freezing stops the frozen apps from starting a burst of work in the background, and "
+                                    + "Low Power Mode limits heavy work (what that saves under a heavy load was not measured)."), note)
+        XCTAssertTrue(note.contains("Frozen apps stop keeping their network connections going, so some may drop."), note)
+        XCTAssertFalse(note.contains("nothing in the background can start"), "not every part of the background is frozen")
+        XCTAssertFalse(note.contains("lose their network connections"), note)
+    }
+
     func testTheNoteDoesNotSellTheRefreshRate() {
         XCTAssertTrue(UltraLowPowerFeature.note.contains("little or nothing"))
     }
@@ -198,7 +212,6 @@ final class UltraLowPowerFeatureTests: XCTestCase {
         for figure in ["about 10 W", "about 4 W", "about 3 W"] { XCTAssertTrue(note.contains(figure), figure) }
         XCTAssertTrue(note.contains("14-inch MacBook Pro"))
         XCTAssertTrue(note.contains("was not measured"), "Low Power Mode under a heavy load was not measured")
-        XCTAssertTrue(note.contains("network connections"))
         XCTAssertTrue(note.contains("cannot freeze"))
         XCTAssertNil(note.range(of: #"\d+\s?%"#, options: .regularExpression), "no percentage was measured")
     }
@@ -207,9 +220,9 @@ final class UltraLowPowerFeatureTests: XCTestCase {
         let resolve: (String) -> String? = { $0 == "com.example.editor" ? "Editor" : nil }
         XCTAssertEqual(UltraLowPowerFeature.displayName(forGroupID: "com.example.editor", appName: resolve), "Editor")
         XCTAssertEqual(UltraLowPowerFeature.displayName(forGroupID: "com.example.gone", appName: resolve), "com.example.gone")
-        XCTAssertEqual(UltraLowPowerFeature.displayName(forGroupID: "job:homebrew.mxcl.postgresql", appName: resolve),
-                       "homebrew.mxcl.postgresql")
-        XCTAssertEqual(UltraLowPowerFeature.displayName(forGroupID: "exe:node", appName: resolve), "node")
+        XCTAssertEqual(UltraLowPowerFeature.displayName(forGroupID: "job:com.example.database", appName: resolve),
+                       "com.example.database")
+        XCTAssertEqual(UltraLowPowerFeature.displayName(forGroupID: "exe:worker", appName: resolve), "worker")
         XCTAssertEqual(UltraLowPowerFeature.displayName(forGroupID: "exe:", appName: resolve), "exe:", "nothing to read: the id")
     }
 
@@ -341,6 +354,117 @@ final class UltraLowPowerFeatureTests: XCTestCase {
         XCTAssertFalse(pending.isPending)
     }
 
+    // ── The confirm box itself (built, and never put on screen) ─────────────
+
+    /// A box whose `present` and `dismiss` only write down that they were called, so nothing is shown.
+    private final class BoxRig {
+        let box = UltraConfirmPanel()
+        var events: [String] = []
+        var answers: [Bool] = []
+        init() {
+            _ = NSApplication.shared
+            box.present = { [unowned self] _ in events.append("present") }
+            box.dismiss = { [unowned self] _ in events.append("dismiss") }
+        }
+        func ask(kept: [String] = ["Editor"], frozen: [String] = ["Browser", "Sync"]) {
+            box.ask(kept: kept, frozen: frozen) { [unowned self] yes in answers.append(yes) }
+        }
+    }
+
+    func testTheBoxIsANonActivatingPanelThatDoesNotHideWhenAnodeIsNotActive() {
+        let r = BoxRig()
+        r.ask()
+        guard let panel = r.box.panel else { return XCTFail("no panel was built") }
+        // The load-bearing one: without it, asking would make Anode the front app and take the owner's app out of front.
+        XCTAssertTrue(panel.styleMask.contains(.nonactivatingPanel))
+        XCTAssertFalse(panel.hidesOnDeactivate, "Anode is never the active app while the box is up")
+        XCTAssertEqual(panel.level, .floating)
+        XCTAssertTrue(panel.delegate === r.box, "the window closing on its own account must reach the box")
+        XCTAssertFalse(panel.isVisible, "the test never shows it")
+        XCTAssertEqual(r.events, ["present"])
+    }
+
+    func testConfirmAnswersYesAndCancelAnswersNoEachOnce() {
+        let r = BoxRig()
+        r.ask()
+        r.box.confirmButton.performClick(nil)
+        r.box.confirmButton.performClick(nil)
+        r.box.cancelButton.performClick(nil)
+        XCTAssertEqual(r.answers, [true])
+        r.ask()
+        r.box.cancelButton.performClick(nil)
+        r.box.confirmButton.performClick(nil)
+        XCTAssertEqual(r.answers, [true, false])
+    }
+
+    func testCancelIsEscapeAndReturnDoesNotConfirm() {
+        let r = BoxRig()
+        r.ask()
+        XCTAssertEqual(r.box.cancelButton.keyEquivalent, "\u{1b}")
+        XCTAssertEqual(r.box.confirmButton.keyEquivalent, "", "a stray Return while typing must not freeze the Mac")
+    }
+
+    func testTheBoxShowsTheHeadlineTheScreenLineAndTheNamesToBeFrozen() throws {
+        let r = BoxRig()
+        r.ask(kept: ["Editor", "Meetings"], frozen: ["Browser", "Sync", "Database"])
+        XCTAssertEqual(r.box.headline.stringValue,
+                       "Keeps Editor and Meetings. Freezes 3 apps and tools until you turn this off.")
+        XCTAssertEqual(UltraConfirmPanel.screenLine, "The screen is held at half brightness or lower, and Low Power Mode is switched on.")
+        let stack = try XCTUnwrap(r.box.panel?.contentView as? NSStackView)
+        XCTAssertTrue(stack.arrangedSubviews[0] === r.box.headline)
+        XCTAssertTrue(stack.arrangedSubviews[1] === r.box.screenLabel, "under the headline")
+        XCTAssertEqual(r.box.screenLabel.stringValue, UltraConfirmPanel.screenLine)
+        XCTAssertFalse(r.box.screenLabel.isHidden)
+        XCTAssertEqual(r.box.listedNames, ["Browser", "Sync", "Database"])
+        r.ask(kept: ["Editor"], frozen: [])
+        XCTAssertEqual(r.box.headline.stringValue, "Keeps Editor. Nothing else is running that can be frozen.")
+        XCTAssertEqual(r.box.listedNames, [])
+    }
+
+    func testTheCloseButtonAndAnyOtherClosingAnswerNoOnce() {
+        let r = BoxRig()
+        r.ask()
+        // The close button asks first, and the box answers and goes by itself.
+        XCTAssertFalse(r.box.windowShouldClose(r.box.panel!), "the box is put away, not closed")
+        XCTAssertEqual(r.answers, [false])
+        XCTAssertEqual(r.events, ["present", "dismiss"])
+        // The system closing the window: nobody is waiting any more.
+        r.box.windowWillClose(Notification(name: NSWindow.willCloseNotification))
+        XCTAssertEqual(r.answers, [false])
+        r.ask()
+        r.box.windowWillClose(Notification(name: NSWindow.willCloseNotification))
+        r.box.windowWillClose(Notification(name: NSWindow.willCloseNotification))
+        XCTAssertEqual(r.answers, [false, false], "one answer for the second question, however often it closes")
+    }
+
+    func testAskingAgainWhileOpenAnswersTheOldQuestionNoAndKeepsTheNew() {
+        let r = BoxRig()
+        var second: [Bool] = []
+        r.ask()
+        r.box.ask(kept: ["Editor"], frozen: ["Sync"]) { second.append($0) }
+        XCTAssertEqual(r.answers, [false])
+        XCTAssertEqual(second, [])
+        r.box.confirmButton.performClick(nil)
+        XCTAssertEqual(r.answers, [false])
+        XCTAssertEqual(second, [true])
+    }
+
+    /// The box is put away first and the answer given after: an answer that asks again is then the last thing to happen to the
+    /// panel, and the new question stays on screen.
+    func testAnAnswerThatAsksAgainLeavesTheNewQuestionOnScreen() {
+        let r = BoxRig()
+        var again: [Bool] = []
+        r.box.ask(kept: ["Editor"], frozen: ["Browser"]) { [unowned r] yes in
+            r.events.append("answer \(yes)")
+            r.box.ask(kept: ["Editor"], frozen: ["Sync"]) { again.append($0) }
+        }
+        r.box.confirmButton.performClick(nil)
+        XCTAssertEqual(r.events, ["present", "dismiss", "answer true", "present"],
+                       "the last thing done to the panel is to show it, or the new question has no box")
+        r.box.cancelButton.performClick(nil)
+        XCTAssertEqual(again, [false], "and the new question can still be answered")
+    }
+
     func testTheBoxIsCentredOnTheScreenWithTheMenuBar() {
         let area = NSRect(x: 0, y: 40, width: 1440, height: 860)
         let frame = UltraConfirmPanel.centred(NSSize(width: 420, height: 300), in: area)
@@ -361,6 +485,7 @@ final class UltraLowPowerFeatureTests: XCTestCase {
         var installAsks = 0
         var installReport: ((String) -> Void)?
         var appNames: [String: String] = [:]
+        var shortcutLabel = "⌃⌥⌘U"
     }
 
     private func section(_ probe: Probe = Probe(), ticked: Bool = false, buildView: Bool = true) throws
@@ -373,6 +498,7 @@ final class UltraLowPowerFeatureTests: XCTestCase {
             controller: { probe.controller },
             candidates: { done in probe.candidateAsks += 1; done(probe.candidates) },
             appName: { probe.appNames[$0] },
+            shortcutLabel: { probe.shortcutLabel },
             installHelper: { report in probe.installAsks += 1; probe.installReport = report })
         if buildView { _ = feature.makeView() }
         return (feature, settings)
@@ -566,8 +692,20 @@ final class UltraLowPowerFeatureTests: XCTestCase {
     func testTheNoteIsOnTheSectionAndSaysWhatWasMeasured() throws {
         let (f, _) = try section()
         XCTAssertEqual(f.noteLabel.stringValue, UltraLowPowerFeature.note)
-        XCTAssertFalse(f.summary.isEmpty)
         XCTAssertFalse(f.summary.contains("hours"))
+    }
+
+    /// What is left running (the always-keep list, apps with a part Anode cannot freeze, what the guard let go, macOS's own
+    /// services) is why the summary may not say "every app", and the screen is held at half brightness or lower, not just dim.
+    func testTheSummarySaysOnlyWhatIsTrueAndNamesTheShortcut() throws {
+        let probe = Probe()
+        probe.shortcutLabel = "⌃⌥⌘J"
+        let (f, _) = try section(probe)
+        XCTAssertTrue(f.summary.hasPrefix("Freezes the apps and tools you are not using, and holds the screen at half "
+                                          + "brightness or lower, until you turn it off."), f.summary)
+        XCTAssertFalse(f.summary.contains("every app"), f.summary)
+        XCTAssertFalse(f.summary.contains("dim"), f.summary)
+        XCTAssertTrue(f.summary.contains("⌃⌥⌘J"), "the key the owner has chosen: \(f.summary)")
     }
 
     // ── The always-keep list ────────────────────────────────────────────────
@@ -576,8 +714,8 @@ final class UltraLowPowerFeatureTests: XCTestCase {
         let probe = Probe()
         probe.appNames = ["com.example.editor": "Editor"]
         let (f, settings) = try section(probe)
-        settings.ultraLowPowerAlwaysKeep = ["com.example.editor", "job:homebrew.mxcl.postgresql", "exe:node", "com.example.unknown"]
-        XCTAssertEqual(f.keptNames, ["Editor", "homebrew.mxcl.postgresql", "node", "com.example.unknown"])
+        settings.ultraLowPowerAlwaysKeep = ["com.example.editor", "job:com.example.database", "exe:worker", "com.example.unknown"]
+        XCTAssertEqual(f.keptNames, ["Editor", "com.example.database", "worker", "com.example.unknown"])
         XCTAssertEqual(f.removeButtons.count, 4, "a remove button for each row")
     }
 

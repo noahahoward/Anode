@@ -205,9 +205,12 @@ final class UltraIcon: NSObject, UltraIconPresenting {
 final class UltraLowPowerFeature: BetaFeature {
 
     let title = "Ultra Low Power Mode"
-    let summary = "Freezes every app and tool you are not using and keeps the screen dim, until you turn it off. Ticking the box "
-                + "only makes it available: it starts when you press Start (or choose it from a menu, or use the shortcut) and "
-                + "confirm the list of what is kept and what is frozen."
+    /// Read once, when the window is built, so it names the key the owner has chosen at that time.
+    var summary: String {
+        "Freezes the apps and tools you are not using, and holds the screen at half brightness or lower, until you turn it "
+            + "off. Ticking the box only makes it available: it starts when you press Start (or choose it from a menu, or "
+            + "press \(shortcutLabel())) and confirm the list of what is kept and what is frozen."
+    }
     var layoutChanged: (() -> Void)?
 
     static let startTitle = "Start…"
@@ -219,6 +222,7 @@ final class UltraLowPowerFeature: BetaFeature {
     private let controller: () -> UltraLowPowerController?
     private let candidates: (@escaping ([FreezeGroup]) -> Void) -> Void
     private let appName: (String) -> String?
+    private let shortcutLabel: () -> String
     private let installHelper: (@escaping (String) -> Void) -> Void
     private var tokens: [AnyObject] = []
     private var changeObserver: NSObjectProtocol?
@@ -245,6 +249,7 @@ final class UltraLowPowerFeature: BetaFeature {
          controller: @escaping () -> UltraLowPowerController? = { UltraLowPowerController.current },
          candidates: @escaping (@escaping ([FreezeGroup]) -> Void) -> Void = { $0([]) },
          appName: @escaping (String) -> String? = { UltraLowPowerFeature.runningAppName(bundleID: $0) },
+         shortcutLabel: @escaping () -> String = { UltraLowPowerFeature.liveShortcutLabel() },
          installHelper: @escaping (@escaping (String) -> Void) -> Void = { report in
              (NSApplication.shared.delegate as? AppDelegate)?.fansPane.control.installHelper(report: report)
          }) {
@@ -252,6 +257,7 @@ final class UltraLowPowerFeature: BetaFeature {
         self.controller = controller
         self.candidates = candidates
         self.appName = appName
+        self.shortcutLabel = shortcutLabel
         self.installHelper = installHelper
     }
 
@@ -261,15 +267,19 @@ final class UltraLowPowerFeature: BetaFeature {
 
     // ── Words ───────────────────────────────────────────────────────────────
 
+    static func liveShortcutLabel() -> String {
+        (ShortcutStore.shared.shortcut(for: ShortcutCommands.ultraToggle) ?? ShortcutCommands.ultraToggle.defaultShortcut).label
+    }
+
     /// What was measured, on the owner's 14-inch MacBook Pro (10.4, 4.3 and 2.8 W, rounded), and what was not. The mode
     /// keeps the Mac at rest; it does not lower the draw at rest, and nothing here says it does.
     static let note = "Dimming the screen is what saves the most. On the 14-inch MacBook Pro this was measured on, the whole Mac "
         + "drew about 10 W with the brightness slider at full, about 4 W at half and about 3 W at a quarter. With the Mac at "
         + "rest, the lower refresh rate, Low Power Mode and freezing apps saved little or nothing. What they do is keep the "
-        + "Mac at rest: nothing in the background can start a burst of work, and Low Power Mode caps heavy work (what that "
-        + "saves under a heavy load was not measured). Frozen apps lose their network connections, and an app with a part "
-        + "Anode cannot freeze is left running. How long the battery lasts depends on what you do, so no running time is "
-        + "promised."
+        + "Mac at rest. Freezing stops the frozen apps from starting a burst of work in the background, and Low Power Mode "
+        + "limits heavy work (what that saves under a heavy load was not measured). Frozen apps stop keeping their network "
+        + "connections going, so some may drop. An app with a part Anode cannot freeze is left running. How long the "
+        + "battery lasts depends on what you do, so no running time is promised."
 
     /// The parts a Mac may not do, in the order the controller's enum declares them.
     private static let skippedOrder: [UltraSkipped] = [.lowPowerNoHelper, .lowPowerOldHelper, .oneRefreshRate, .keyboardLight,
@@ -289,13 +299,13 @@ final class UltraLowPowerFeature: BetaFeature {
             case .lowPowerRefused:
                 return "The Anode helper could not switch Low Power Mode on, so it was left as it was."
             case .oneRefreshRate:
-                return "This screen has only one refresh rate, so there was nothing to lower."
+                return "The screen's refresh rate was left as it was: it offers only one, or this Mac has no built-in screen."
             case .rateRefused:
                 return "The screen would not take the lower refresh rate, so it was left as it was."
             case .ceilingRefused:
                 return "The screen's brightness could not be held at half, so it was left as it was."
             case .keyboardLight:
-                return "The keyboard light could not be switched off, so it was left as it was."
+                return "This Mac's keyboard light could not be read or switched off, so it was left as it was."
             }
         }
     }

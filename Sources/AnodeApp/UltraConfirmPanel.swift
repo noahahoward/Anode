@@ -38,17 +38,24 @@ final class UltraPendingAnswer {
 final class UltraConfirmPanel: NSObject, UltraConfirming, NSWindowDelegate {
 
     static let title = "Ultra Low Power Mode"
+    /// What the box says about the screen and Low Power Mode, under the headline.
+    static let screenLine = "The screen is held at half brightness or lower, and Low Power Mode is switched on."
+
+    /// Put the panel on screen, and take it off. The tests replace them: a panel built and never shown is not on screen.
+    var present: (NSPanel) -> Void = { $0.orderFrontRegardless(); $0.makeKey() }
+    var dismiss: (NSPanel) -> Void = { $0.orderOut(nil) }
     static let width: CGFloat = 420
     private static let inset: CGFloat = 20
 
     private let pending = UltraPendingAnswer()
-    private var panel: NSPanel?
-    private let headline = NSTextField(wrappingLabelWithString: "")
+    private(set) var panel: NSPanel?
+    let headline = NSTextField(wrappingLabelWithString: "")
+    let screenLabel = NSTextField(wrappingLabelWithString: UltraConfirmPanel.screenLine)
     private let caption = NSTextField(labelWithString: "Will be frozen:")
     private let list = NSTextView.scrollableTextView()
     private var listHeight: NSLayoutConstraint?
-    private let cancelButton = NSButton(title: "Cancel", target: nil, action: nil)
-    private let confirmButton = NSButton(title: "Confirm", target: nil, action: nil)
+    let cancelButton = NSButton(title: "Cancel", target: nil, action: nil)
+    let confirmButton = NSButton(title: "Confirm", target: nil, action: nil)
     private var content: NSStackView?
 
     // ── Asking ──────────────────────────────────────────────────────────────
@@ -67,8 +74,7 @@ final class UltraConfirmPanel: NSObject, UltraConfirming, NSWindowDelegate {
         panel.setContentSize(size)
         let area = NSScreen.screens.first?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
         panel.setFrame(Self.centred(panel.frame.size, in: area), display: false)
-        panel.orderFrontRegardless()
-        panel.makeKey()
+        present(panel)
     }
 
     /// Where a box of `size` sits: in the middle of `area` (the visible part of the screen that carries the menu bar). One
@@ -94,14 +100,27 @@ final class UltraConfirmPanel: NSObject, UltraConfirming, NSWindowDelegate {
     @objc private func confirmPressed() { finish(true) }
     @objc private func cancelPressed() { finish(false) }
 
-    /// The answer first, then the box goes: the window closing on its own account (`windowWillClose`) can then only find the
-    /// question already answered.
+    /// The box goes first, then the answer is given. An answer may ask again (a second question takes this same panel and
+    /// shows it): if the box were put away after the answer, it would hide that new question, and nothing would be left on
+    /// screen to answer it. (`orderOut` does not post `windowWillClose`, so putting it away first cannot answer anything.)
     private func finish(_ yes: Bool) {
+        if let panel { dismiss(panel) }
         pending.give(yes)
-        panel?.orderOut(nil)
     }
 
-    /// The close button, or the system closing the window: that is a No.
+    /// The names the box lists as to be frozen.
+    var listedNames: [String] {
+        ((list.documentView as? NSTextView)?.string ?? "").split(separator: "\n").map(String.init)
+    }
+
+    /// The close button: a No, and the box is put away the way Cancel puts it away rather than closed, so that an answer which
+    /// asks again finds the panel still there to show.
+    func windowShouldClose(_ sender: NSWindow) -> Bool {
+        finish(false)
+        return false
+    }
+
+    /// The system closing the window by some other route: that is a No too.
     func windowWillClose(_ notification: Notification) { pending.give(false) }
 
     // ── The panel ───────────────────────────────────────────────────────────
@@ -122,6 +141,9 @@ final class UltraConfirmPanel: NSObject, UltraConfirming, NSWindowDelegate {
         let textWidth = Self.width - 2 * Self.inset
         headline.font = .systemFont(ofSize: NSFont.systemFontSize, weight: .medium)
         headline.preferredMaxLayoutWidth = textWidth
+        screenLabel.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        screenLabel.textColor = .secondaryLabelColor
+        screenLabel.preferredMaxLayoutWidth = textWidth
         caption.font = .boldSystemFont(ofSize: NSFont.smallSystemFontSize)
         caption.textColor = .secondaryLabelColor
         list.hasVerticalScroller = true
@@ -152,7 +174,7 @@ final class UltraConfirmPanel: NSObject, UltraConfirming, NSWindowDelegate {
         buttons.translatesAutoresizingMaskIntoConstraints = false
         buttons.widthAnchor.constraint(equalToConstant: textWidth).isActive = true
 
-        let stack = NSStackView(views: [headline, caption, list, buttons])
+        let stack = NSStackView(views: [headline, screenLabel, caption, list, buttons])
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 10
