@@ -47,6 +47,23 @@ final class FakePowerEvents: PowerEventScheduler {
         _pending.remove(date)
         return true
     }
+
+    private var _cancelAlls = 0
+    /// How many times every wake under the helper's name was asked to go.
+    var cancelAlls: Int { lock.lock(); defer { lock.unlock() }; return _cancelAlls }
+    /// Wakes a helper that was killed left in the system's list, as `IOPMSchedulePowerEvent` keeps them on disk.
+    func leaveBehind(_ dates: [Date]) {
+        lock.lock(); _pending.formUnion(dates); lock.unlock()
+    }
+
+    func cancelAllWakes() -> (removed: Int, failed: Int) {
+        lock.lock(); defer { lock.unlock() }
+        _cancelAlls += 1
+        guard !_refuseCancel else { return (0, _pending.count) }
+        let n = _pending.count
+        _pending.removeAll()
+        return (n, 0)
+    }
 }
 
 /// A wall-clock timer the test fires by hand.
@@ -493,6 +510,78 @@ final class ChargeHelperPlanTests: XCTestCase {
         XCTAssertNil(timer.armedAt)
         XCTAssertTrue(hw.limitWrites.isEmpty)
         XCTAssertTrue(lines.contains { $0.contains("the helper is stopping") }, "\(lines)")
+    }
+
+    // ── A wake a killed helper left behind ──────────────────────────────────
+
+    /// SIGKILL runs nothing: the wake the helper scheduled stays in the system's own list, on disk, and wakes the Mac
+    /// for a plan that nobody holds. The next helper to start removes every wake under its own name, before it serves.
+    func testStartingRemovesTheWakesAKilledHelperLeftBehind() throws {
+        events.leaveBehind([t0.addingTimeInterval(3 * hour), t0.addingTimeInterval(9 * hour)])
+        let path = NSTemporaryDirectory() + "bs-orphanwake-\(UUID().uuidString.prefix(8)).sock"
+        let server = FanHelperServer(hardware: FakeFans([:]),
+                                     configuration: .init(socketPath: path, ownerUID: getuid(),
+                                                          pin: .signingIdentifier(FanDaemon.clientSigningIdentifier)),
+                                     log: { [weak self] in self?.lines.append($0) },
+                                     charge: hw, powerEvents: events, wakeTimer: timer)
+        server.now = { [weak self] in self?.clock ?? Date() }
+        XCTAssertEqual(events.pending.count, 2)
+        try server.start()
+        XCTAssertTrue(events.pending.isEmpty, "wakes a dead helper scheduled were left in the system's list")
+        XCTAssertEqual(events.cancelAlls, 1)
+        XCTAssertTrue(lines.contains { $0.contains("2") && $0.contains("left behind") }, "\(lines)")
+        // Nothing was written or planned for it, and a plan made now is the helper's own and is left alone.
+        XCTAssertTrue(hw.limitWrites.isEmpty)
+        XCTAssertTrue(plan(server).ok)
+        XCTAssertEqual(events.pending.count, 1)
+        server.stop()
+        server.run()
+    }
+
+    /// The same under launchd, which hands the helper its socket (`start(adopting:)`): before anything is served.
+    func testAdoptingLaunchdsSocketRemovesThemToo() throws {
+        events.leaveBehind([t0.addingTimeInterval(5 * hour)])
+        let path = NSTemporaryDirectory() + "bs-orphanwake2-\(UUID().uuidString.prefix(8)).sock"
+        // A listening unix socket of the test's own stands in for the one launchd hands over.
+        let fd = socket(AF_UNIX, SOCK_STREAM, 0)
+        XCTAssertGreaterThanOrEqual(fd, 0)
+        var addr = try XCTUnwrap(FanSocketIO.address(path))
+        XCTAssertEqual(FanSocketIO.withAddress(&addr, { p, len in Darwin.bind(fd, p, len) }), 0)
+        XCTAssertEqual(listen(fd, 1), 0)
+        defer { unlink(path) }
+        let server = FanHelperServer(hardware: FakeFans([:]),
+                                     configuration: .init(socketPath: path, ownerUID: getuid(),
+                                                          pin: .signingIdentifier(FanDaemon.clientSigningIdentifier)),
+                                     log: { [weak self] in self?.lines.append($0) },
+                                     charge: hw, powerEvents: events, wakeTimer: timer)
+        try server.start(adopting: fd)
+        XCTAssertTrue(events.pending.isEmpty, "wakes a dead helper scheduled were left in the system's list")
+        XCTAssertEqual(events.cancelAlls, 1)
+        server.stop()
+        server.run()
+    }
+
+    func testNothingLeftBehindSaysNothing() {
+        let server = makeServer()
+        server.clearOrphanedWakes()
+        XCTAssertEqual(events.cancelAlls, 1)
+        XCTAssertFalse(lines.contains { $0.contains("left behind") }, "\(lines)")
+    }
+
+    /// A system that will not take them away is a warning, said once, and the helper still starts.
+    func testWakesThatCannotBeRemovedAreAWarningNotAFailure() {
+        events.leaveBehind([t0.addingTimeInterval(hour)])
+        events.refuseCancel = true
+        let server = makeServer()
+        server.clearOrphanedWakes()
+        XCTAssertTrue(lines.contains { $0.contains("WARNING") && $0.contains("could not be removed") }, "\(lines)")
+    }
+
+    /// A helper that cannot wake the Mac has no power events to clear.
+    func testAHelperWithNoPowerEventsClearsNothing() {
+        let server = makeServer(withEvents: false)
+        server.clearOrphanedWakes()
+        XCTAssertEqual(events.cancelAlls, 0)
     }
 
     func testTheRealSchedulerCarriesTheHelpersOwnName() {

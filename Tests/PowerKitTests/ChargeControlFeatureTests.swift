@@ -89,8 +89,8 @@ final class ChargeControlFeatureTests: XCTestCase {
 
     // ── The brief's four ────────────────────────────────────────────────────
 
-    func testRegisteredInDefaultFeatures() {
-        let list = BetaFeaturesWindowController.defaultFeatures(hasLidSensor: false)
+    func testRegisteredInDefaultFeatures() throws {
+        let list = BetaFeaturesWindowController.defaultFeatures(hasLidSensor: false, settings: try throwawaySettings(owner: "ChargeControlFeature"))
         XCTAssertTrue(list.contains { $0 is ChargeControlFeature })
         XCTAssertEqual(list.first { $0 is ChargeControlFeature }?.title, "Charge Control")
     }

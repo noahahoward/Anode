@@ -371,8 +371,8 @@ final class LiveWallpaperFeatureTests: XCTestCase {
         XCTAssertTrue(r.feature.shortcutNote.stringValue.contains("⌃⌥⌘W"))
     }
 
-    func testTheFeatureIsInTheBetaFeaturesWindow() {
-        XCTAssertTrue(BetaFeaturesWindowController().features.contains { $0 is LiveWallpaperFeature })
+    func testTheFeatureIsInTheBetaFeaturesWindow() throws {
+        XCTAssertTrue(try throwawayBetaWindow(owner: "LiveWallpaperFeature").features.contains { $0 is LiveWallpaperFeature })
     }
 }
 

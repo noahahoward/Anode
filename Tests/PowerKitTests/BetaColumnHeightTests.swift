@@ -3,9 +3,9 @@ import AppKit
 @testable import AnodeApp
 
 final class BetaColumnHeightTests: XCTestCase {
-    func testColumnsKeepTheirNaturalHeight() {
+    func testColumnsKeepTheirNaturalHeight() throws {
         _ = NSApplication.shared
-        let c = BetaFeaturesWindowController()
+        let c = try throwawayBetaWindow(owner: "BetaColumnHeight")
         c.window!.contentView!.layoutSubtreeIfNeeded()
         var stacks: [NSStackView] = []
         func walk(_ v: NSView, _ depth: Int) {

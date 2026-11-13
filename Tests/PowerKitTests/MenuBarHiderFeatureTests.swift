@@ -159,7 +159,7 @@ final class MenuBarHiderFeatureTests: XCTestCase {
         XCTAssertTrue(r.feature.coverNote.stringValue.contains("top-left corner of the screen"), r.feature.coverNote.stringValue)
     }
 
-    func testFeatureIsInDefaultList() {
-        XCTAssertTrue(BetaFeaturesWindowController.defaultFeatures(hasLidSensor: false).contains { $0 is MenuBarHiderFeature })
+    func testFeatureIsInDefaultList() throws {
+        XCTAssertTrue(BetaFeaturesWindowController.defaultFeatures(hasLidSensor: false, settings: try throwawaySettings(owner: "MenuBarHiderFeature")).contains { $0 is MenuBarHiderFeature })
     }
 }

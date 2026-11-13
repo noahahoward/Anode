@@ -263,8 +263,8 @@ final class DockPreviewsTests: XCTestCase {
         XCTAssertTrue(f.accessButton.isHidden)
     }
 
-    func testTheBetaWindowListsIt() {
-        XCTAssertTrue(BetaFeaturesWindowController().features.contains { $0 is DockPreviewFeature })
+    func testTheBetaWindowListsIt() throws {
+        XCTAssertTrue(try throwawayBetaWindow(owner: "DockPreviews").features.contains { $0 is DockPreviewFeature })
     }
 }
 

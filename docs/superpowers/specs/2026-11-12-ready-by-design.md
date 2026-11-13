@@ -76,7 +76,10 @@ full wake; the display may light, and the Mac returns to sleep on its own idle t
 2. `ChargeRate` (pure + a small store): the learner above.
 3. `ChargeController`: computes the next moment (calendar-correct across time zone and daylight-saving changes),
    feeds the policy, schedules a tick for the start moment while awake, sends the plan to the helper before sleep
-   (waited, like the sleep hold), cancels it on wake, on unplug, on switching off, on quit.
+   (waited, like the sleep hold), and cancels it when the hold ends for a real reason: unplugged, Ready By or Charge
+   Control switched off, the time or the limit changed, Charge to Full pressed, or quitting; not merely because the Mac
+   woke (see "Asleep": on a wake it looks again, raises the limit itself if the moment has come, and otherwise leaves
+   the plan where it is).
 4. Helper: two commands (`scheduleChargeLimit(limit, at)`, `cancelScheduledChargeLimit`), protocol version 3, the
    wake scheduled and cancelled through an injectable power-event interface, the plan dropped when the client
    disconnects, the disclosure texts naming the new ability (it wakes the Mac at a time Anode gives it).

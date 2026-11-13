@@ -48,9 +48,9 @@ final class BetaLayoutTests: XCTestCase {
     }
 
     /// The reported problem: with every feature, the window was taller than the screen.
-    func testTheRealWindowFitsTheScreen() {
+    func testTheRealWindowFitsTheScreen() throws {
         _ = NSApplication.shared
-        let c = BetaFeaturesWindowController()
+        let c = try throwawayBetaWindow(owner: "BetaLayout")
         let screen = (NSScreen.main ?? NSScreen.screens[0]).visibleFrame
         let frame = c.window!.frame
         XCTAssertLessThanOrEqual(frame.height, screen.height, "no taller than the screen")

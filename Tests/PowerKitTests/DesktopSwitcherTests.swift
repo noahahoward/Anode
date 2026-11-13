@@ -187,8 +187,8 @@ final class DesktopSwitcherTests: XCTestCase {
         XCTAssertFalse(f.resetButton.isHidden)
     }
 
-    func testTheBetaWindowListsIt() {
-        XCTAssertTrue(BetaFeaturesWindowController().features.contains { $0 is DesktopSwitcherFeature })
+    func testTheBetaWindowListsIt() throws {
+        XCTAssertTrue(try throwawayBetaWindow(owner: "DesktopSwitcher").features.contains { $0 is DesktopSwitcherFeature })
     }
 
     /// The reported bug: the panel was still up while the desktop slid. Nothing shown, nothing to wait for.

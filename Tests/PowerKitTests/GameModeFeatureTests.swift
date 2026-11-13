@@ -107,7 +107,7 @@ final class GameModeFeatureTests: XCTestCase {
         XCTAssertTrue(r.feature.hotCornerNote.stringValue.lowercased().contains("click"), r.feature.hotCornerNote.stringValue)
     }
 
-    func testSectionIsInTheWindowsList() {
-        XCTAssertTrue(BetaFeaturesWindowController().features.contains { $0 is GameModeFeature })
+    func testSectionIsInTheWindowsList() throws {
+        XCTAssertTrue(try throwawayBetaWindow(owner: "GameModeFeature").features.contains { $0 is GameModeFeature })
     }
 }

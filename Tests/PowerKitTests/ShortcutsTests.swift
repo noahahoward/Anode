@@ -162,11 +162,12 @@ final class ShortcutsTests: XCTestCase {
 
     // ── The window ──
 
-    func testTheWindowShowsTheSelectedCommandsShortcutAndOffersTheRest() {
+    func testTheWindowShowsTheSelectedCommandsShortcutAndOffersTheRest() throws {
         _ = NSApplication.shared
         let s = store()
         s.assign(Shortcut(key: kVK_ANSI_J, modifiers: Shortcut.control | Shortcut.command), to: left, among: all)
-        let c = ShortcutsWindowController(store: s, prefs: WindowPrefs(defaults: UserDefaults(suiteName: "t-\(UUID())")!), commands: all)
+        let c = ShortcutsWindowController(store: s, prefs: WindowPrefs(defaults: UserDefaults(suiteName: "t-\(UUID())")!), commands: all,
+                                        settings: try throwawaySettings(owner: "Shortcuts"))
         func buttons(_ v: NSView) -> [NSButton] { ([v as? NSButton].compactMap { $0 }) + v.subviews.flatMap(buttons) }
         XCTAssertEqual(c.selectedID, all.first?.id, "the first command is shown")
         var titles = buttons(c.window!.contentView!).map(\.title)

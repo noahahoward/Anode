@@ -65,7 +65,9 @@ final class ChargeEstimateTests: XCTestCase {
     /// written against. Every call now reuses one domain and empties it first, so
     /// the tests stay isolated from each other without leaving a trail.
     private func store(_ test: String = #function) -> UserDefaults {
-        (try? TestDefaults.make(owner: "ChargeEstimate", test: test).defaults) ?? .standard
+        // Never the process's standard defaults, whatever goes wrong: a suite of its own, or a loud failure.
+        (try? TestDefaults.make(owner: "ChargeEstimate", test: test).defaults)
+            ?? UserDefaults(suiteName: "com.anode.tests.ChargeEstimate.fallback")!
     }
 
     // ── The target ──────────────────────────────────────────────────────────

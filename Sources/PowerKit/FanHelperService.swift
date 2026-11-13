@@ -667,10 +667,27 @@ public final class FanHelperServer {
         }
     }
 
+    /// Take away the wakes a helper that was killed left behind. A plan's wake lives in the system's own list, on disk,
+    /// under this helper's name, and SIGKILL runs nothing: the plan went with the process, the wake did not, and it
+    /// would wake the Mac for nothing at its moment. This helper holds no plan when it starts, so every wake under its
+    /// name is one nobody holds. Run by both `start` paths, before anything is served.
+    func clearOrphanedWakes() {
+        guard let powerEvents else { return }
+        let r = powerEvents.cancelAllWakes()
+        if r.removed > 0 {
+            log("removed \(r.removed) scheduled wake\(r.removed == 1 ? "" : "s") a helper that was killed left behind")
+        }
+        if r.failed > 0 {
+            log("WARNING: \(r.failed) scheduled wake\(r.failed == 1 ? "" : "s") left behind by a helper that was "
+              + "killed could not be removed; each wakes the Mac once, and nothing is written")
+        }
+    }
+
     /// Bind and listen. Separate from `run()` so a caller — or a test — knows the
     /// socket is ready before anything tries to connect to it.
     public func start() throws {
         clearOrphanedAdapterCut()
+        clearOrphanedWakes()
         guard var addr = FanSocketIO.address(config.socketPath) else {
             throw Failure.badPath(config.socketPath)
         }
@@ -731,6 +748,7 @@ public final class FanHelperServer {
     /// we think it is would mean a root process serving something unexamined.
     public func start(adopting fd: Int32) throws {
         clearOrphanedAdapterCut()
+        clearOrphanedWakes()
         guard fd >= 0 else { throw Failure.socketFailed("launchd offered no descriptor") }
 
         // It must be a unix stream socket. That is the whole of what this side

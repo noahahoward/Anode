@@ -400,9 +400,10 @@ final class FanControlPanelTests: XCTestCase {
 
     /// The strip renders in the state a fresh install is in — control off — and
     /// asks for a sane height. It must never connect to anything to do that.
-    func testItRendersWithFanControlOffAndWithoutTouchingASocket() {
+    func testItRendersWithFanControlOffAndWithoutTouchingASocket() throws {
         _ = appKitForTests
-        let panel = FanControlPanel(frame: NSRect(x: 0, y: 0, width: 500, height: 80))
+        let panel = FanControlPanel(frame: NSRect(x: 0, y: 0, width: 500, height: 80),
+                                    settings: try throwawaySettings(owner: "FanControlPanel"), link: .shared)
         panel.update(fans: [FanInfo(index: 0, currentRPM: 0, minRPM: 2317,
                                     maxRPM: 7826, targetRPM: 2317)])
         XCTAssertGreaterThan(panel.preferredHeight, 0)
@@ -921,9 +922,9 @@ final class MenuBarBackdropAppearanceTests: XCTestCase {
 
     /// With no widget to read the appearance from, the backdrop must still come up (on the system
     /// appearance) and must not need a status item of its own.
-    func testItComesUpWithNoWidgetButtonAtAll() {
+    func testItComesUpWithNoWidgetButtonAtAll() throws {
         _ = appKitForTests
-        let backdrop = MenuBarBackdrop(appearanceButton: { nil })
+        let backdrop = MenuBarBackdrop(settings: try throwawaySettings(owner: "MenuBarBackdropAppearance"), appearanceButton: { nil })
         XCTAssertNotNil(backdrop)
     }
 }

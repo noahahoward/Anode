@@ -21,7 +21,9 @@ import XCTest
 /// and shows up only as a gray panel on a screen someone happens to look at.
 final class GroupMenuTests: XCTestCase {
 
-    private func buildMenu() -> NSMenu { MenuBarWidgetController.buildGroupMenu() }
+    private func buildMenu() throws -> NSMenu {
+        MenuBarWidgetController.buildGroupMenu(settings: try throwawaySettings(owner: "GroupMenu"))
+    }
 
     /// Every item is a row (name TAB value in the title — also what VoiceOver
     /// reads); the panel has no headers and no separators, by decision below.
@@ -40,8 +42,8 @@ final class GroupMenuTests: XCTestCase {
     /// The regression this file exists for: every row must render through a
     /// view, because any attributed-title route hands the ink back to the
     /// menu's disabled-item dimming.
-    func testEveryRowRendersThroughAViewAppKitCannotDim() {
-        let rows = rows(buildMenu())
+    func testEveryRowRendersThroughAViewAppKitCannotDim() throws {
+        let rows = rows(try buildMenu())
         XCTAssertGreaterThan(rows.count, 5,
                              "an empty menu would pass every per-row assertion "
                              + "below vacuously")
@@ -76,8 +78,8 @@ final class GroupMenuTests: XCTestCase {
     /// Every row's fields carry that ink — a reading in the straight ink, a
     /// missing reading (the em-dash placeholder) at 45 % of the same ink, so it
     /// dims relative to its row and not into the menu material.
-    func testRowFieldsCarryTheStraightInk() {
-        for row in rows(buildMenu()) {
+    func testRowFieldsCarryTheStraightInk() throws {
+        for row in rows(try buildMenu()) {
             guard let view = row.view as? MetricRowView else { continue }
             XCTAssertEqual(view.nameField.textColor, MenuBarWidgetController.rowInk,
                            "name of \"\(row.title)\" lost the straight ink")
@@ -94,8 +96,8 @@ final class GroupMenuTests: XCTestCase {
     /// self-labelling, and the headers and dividers were each other's redundancy
     /// (every header sat on a divider, both announcing the same break). Grouping
     /// survives in the registry's category ORDER, not in chrome.
-    func testPanelIsASingleUngroupedColumn() {
-        let menu = buildMenu()
+    func testPanelIsASingleUngroupedColumn() throws {
+        let menu = try buildMenu()
         XCTAssertFalse(menu.items.contains { $0.isSeparatorItem },
                        "a separator crept back into the panel")
         XCTAssertEqual(rows(menu).count, menu.items.count,
@@ -105,8 +107,8 @@ final class GroupMenuTests: XCTestCase {
     /// Rows stay disabled: they are readings, not commands. The view carries the
     /// ink, so disabling costs nothing — and enabled rows would highlight on
     /// hover and read as buttons that do nothing.
-    func testRowsRemainDisabled() {
-        for item in buildMenu().items where !item.isSeparatorItem {
+    func testRowsRemainDisabled() throws {
+        for item in try buildMenu().items where !item.isSeparatorItem {
             XCTAssertFalse(item.isEnabled, "\"\(item.title)\" became enabled")
         }
     }

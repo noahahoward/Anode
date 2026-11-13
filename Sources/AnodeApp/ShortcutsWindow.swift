@@ -210,6 +210,7 @@ final class ShortcutsWindowController: NSWindowController, NSTableViewDataSource
     }
 
     private let store: ShortcutStore
+    private let settings: Settings
     private let prefs: WindowPrefs
     private let commands: [ShortcutCommand]
     private var items: [Item] = []
@@ -223,7 +224,9 @@ final class ShortcutsWindowController: NSWindowController, NSTableViewDataSource
     private var zoneGrid: ZonePickerView?
     private(set) var selectedID: String?
 
-    init(store: ShortcutStore = .shared, prefs: WindowPrefs = .shared, commands: [ShortcutCommand] = ShortcutCommands.all) {
+    init(store: ShortcutStore = .shared, prefs: WindowPrefs = .shared, commands: [ShortcutCommand] = ShortcutCommands.all,
+         settings: Settings = .shared) {
+        self.settings = settings
         self.store = store
         self.prefs = prefs
         self.commands = commands
@@ -485,7 +488,7 @@ final class ShortcutsWindowController: NSWindowController, NSTableViewDataSource
             let hint = caption("Click the edges and corners of the screen that should do this when a window is dragged "
                                + "there. Grey ones belong to other actions; clicking one takes it.")
             let off = caption("Snapping by dragging is switched off in Beta Features.", color: .systemOrange)
-            off.isHidden = Settings.shared.windowDragSnapEnabled
+            off.isHidden = settings.windowDragSnapEnabled
             views.append(CardView(title: "Activation area for dragging", content: [grid, hint, off]))
             newZoneGrid = grid
         }

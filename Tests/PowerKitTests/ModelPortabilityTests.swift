@@ -221,8 +221,8 @@ final class OpenPanelSamplingTests: XCTestCase {
     /// Rows carry their metric so an OPEN panel can be updated in place — an
     /// NSMenu cannot have its items swapped while it is on screen, and the panel
     /// has to keep moving while someone is looking at it.
-    func testEveryPanelRowKnowsWhichMetricItIs() {
-        let menu = MenuBarWidgetController.buildGroupMenu()
+    func testEveryPanelRowKnowsWhichMetricItIs() throws {
+        let menu = MenuBarWidgetController.buildGroupMenu(settings: try throwawaySettings(owner: "ModelPortability"))
         XCTAssertFalse(menu.items.isEmpty)
         for item in menu.items {
             XCTAssertNotNil(item.representedObject as? MetricID, "row '\(item.title)'")

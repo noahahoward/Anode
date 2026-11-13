@@ -260,7 +260,8 @@ final class InstallIsDeliberateTests: XCTestCase {
     func testThereIsNoControlSurfaceWithoutTheHelper() throws {
         try XCTSkipIf(FanDaemon.isInstalled(),
                       "this machine has the helper installed; the state under test is the other one")
-        let panel = FanControlPanel(frame: NSRect(x: 0, y: 0, width: 420, height: 200))
+        let panel = FanControlPanel(frame: NSRect(x: 0, y: 0, width: 420, height: 200),
+                                    settings: try throwawaySettings(owner: "RenameMigration"), link: .shared)
         panel.update(fans: fans)
         XCTAssertEqual(panel.controlRowCount, 0,
                        "the fan control interface is on screen with no helper behind it")

@@ -203,8 +203,8 @@ final class WindowSwitcherTests: XCTestCase {
         XCTAssertTrue(f.accessStatus.stringValue.contains("⌘Tab"))
     }
 
-    func testTheBetaWindowListsTheSwitcher() {
-        let c = BetaFeaturesWindowController()
+    func testTheBetaWindowListsTheSwitcher() throws {
+        let c = try throwawayBetaWindow(owner: "WindowSwitcher")
         XCTAssertTrue(c.features.contains { $0 is WindowSwitcherFeature })
     }
 }

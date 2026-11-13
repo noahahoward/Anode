@@ -148,7 +148,7 @@ final class WindowSnappingTests: XCTestCase {
         XCTAssertEqual(WindowAction.leftHalf.shortcut.label, "⌃⌥←")
     }
 
-    func testTheSettingDefaultsToOffAndTheSectionListsEveryShortcut() {
+    func testTheSettingDefaultsToOffAndTheSectionListsEveryShortcut() throws {
         let defaults = UserDefaults(suiteName: "window-actions-\(UUID().uuidString)")!
         let s = Settings(defaults: defaults)
         XCTAssertFalse(s.windowSnapperEnabled)
@@ -156,6 +156,6 @@ final class WindowSnappingTests: XCTestCase {
         XCTAssertTrue(Settings(defaults: defaults).windowSnapperEnabled)
         let list = WindowActionsFeature.shortcutList()
         for a in WindowAction.allCases { XCTAssertTrue(list.contains(a.title)) }
-        XCTAssertTrue(BetaFeaturesWindowController().features.contains { $0 is WindowActionsFeature })
+        XCTAssertTrue(try throwawayBetaWindow(owner: "WindowSnapping").features.contains { $0 is WindowActionsFeature })
     }
 }

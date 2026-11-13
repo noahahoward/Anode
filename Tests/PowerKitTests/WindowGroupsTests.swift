@@ -104,13 +104,13 @@ final class WindowGroupsTests: XCTestCase {
         XCTAssertTrue(w.isDisjoint(with: Set(g)), "a group key that is also a window action would fire both")
     }
 
-    func testTheSettingDefaultsToOffAndTheSectionIsListed() {
+    func testTheSettingDefaultsToOffAndTheSectionIsListed() throws {
         let defaults = UserDefaults(suiteName: "window-groups-\(UUID().uuidString)")!
         let s = Settings(defaults: defaults)
         XCTAssertFalse(s.windowGroupsEnabled)
         s.windowGroupsEnabled = true
         XCTAssertTrue(Settings(defaults: defaults).windowGroupsEnabled)
-        XCTAssertTrue(BetaFeaturesWindowController().features.contains { $0 is WindowGroupsFeature })
+        XCTAssertTrue(try throwawayBetaWindow(owner: "WindowGroups").features.contains { $0 is WindowGroupsFeature })
         let f = WindowGroupsFeature(settings: s, accessibilityAllowed: { true }, controller: { nil })
         _ = f.makeView()
         XCTAssertEqual(f.groupList.stringValue, "No groups yet.")

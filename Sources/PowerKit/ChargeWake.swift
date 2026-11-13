@@ -23,6 +23,9 @@ public protocol PowerEventScheduler: AnyObject {
     func scheduleWake(at date: Date) -> Bool
     /// Remove the wake this scheduler made for exactly `date`. True when it is gone: removed, or never there.
     func cancelWake(at date: Date) -> Bool
+    /// Remove every wake under this scheduler's own name, whatever its date: the ones a helper that was killed left in
+    /// the system's list. `removed` went, `failed` could not be taken away.
+    func cancelAllWakes() -> (removed: Int, failed: Int)
 }
 
 /// The real one: `IOPMSchedulePowerEvent` and `IOPMCancelScheduledPowerEvent`, which need root and put an event in the
@@ -44,6 +47,21 @@ public final class SystemPowerEventScheduler: PowerEventScheduler {
         let r = IOPMCancelScheduledPowerEvent(date as CFDate, Self.owner as CFString, Self.type)
         // An event that is not there is as cancelled as one that was removed.
         return r == kIOReturnSuccess || r == kIOReturnNotFound
+    }
+
+    /// Every event in the system's list that carries this name and is a wake, cancelled by its own date. Events the
+    /// person made, or another program, carry other names and are not touched.
+    public func cancelAllWakes() -> (removed: Int, failed: Int) {
+        guard let list = IOPMCopyScheduledPowerEvents()?.takeRetainedValue() as? [[String: Any]] else { return (0, 0) }
+        var removed = 0, failed = 0
+        for event in list {
+            guard event[kIOPMPowerEventAppNameKey] as? String == Self.owner,
+                  event[kIOPMPowerEventTypeKey] as? String == Self.type as String,
+                  let time = event[kIOPMPowerEventTimeKey] as? Date else { continue }
+            let r = IOPMCancelScheduledPowerEvent(time as CFDate, Self.owner as CFString, Self.type)
+            if r == kIOReturnSuccess { removed += 1 } else if r != kIOReturnNotFound { failed += 1 }
+        }
+        return (removed, failed)
     }
 }
 

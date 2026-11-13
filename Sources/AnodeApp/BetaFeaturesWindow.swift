@@ -50,13 +50,24 @@ final class BetaFeaturesWindowController: NSWindowController {
     /// The sections this Mac gets, in order. Lid Glass is left out where there is no lid-angle sensor
     /// (a MacBook Neo, a desktop Mac): a section whose only message is "not supported on this Mac" is
     /// clutter, and its Screen Recording request would be for an effect that can never run.
-    static func defaultFeatures(hasLidSensor: Bool = LidGlassFeature.isSupportedHere) -> [BetaFeature] {
-        var list: [BetaFeature] = [BackdropFeature(), WindowSwitcherFeature(), DesktopSwitcherFeature(),
-                                   DockPreviewFeature(), WindowActionsFeature(), WindowGroupsFeature()]
-        if hasLidSensor { list.append(LidGlassFeature()) }
-        list += [KeepAwakeFeature(), KeyboardCleanerFeature(), LiveWallpaperFeature(), GameModeFeature(), MenuBarHiderFeature(),
-                 ChargeControlFeature()]
+    ///
+    /// `settings` is the app's own unless a test gives it a throwaway one: the sections read, and some write, their
+    /// settings, and a test that built them over the shared ones would be reading and writing the person's.
+    static func defaultFeatures(hasLidSensor: Bool = LidGlassFeature.isSupportedHere,
+                                settings: Settings = .shared) -> [BetaFeature] {
+        var list: [BetaFeature] = [BackdropFeature(settings: settings), WindowSwitcherFeature(settings: settings),
+                                   DesktopSwitcherFeature(settings: settings), DockPreviewFeature(settings: settings),
+                                   WindowActionsFeature(settings: settings), WindowGroupsFeature(settings: settings)]
+        if hasLidSensor { list.append(LidGlassFeature(settings: settings)) }
+        list += [KeepAwakeFeature(settings: settings), KeyboardCleanerFeature(settings: settings),
+                 LiveWallpaperFeature(settings: settings), GameModeFeature(settings: settings),
+                 MenuBarHiderFeature(settings: settings), ChargeControlFeature(settings: settings)]
         return list
+    }
+
+    /// The window over the default sections, built on `settings`.
+    convenience init(settings: Settings) {
+        self.init(features: Self.defaultFeatures(settings: settings))
     }
 
     init(features: [BetaFeature] = BetaFeaturesWindowController.defaultFeatures()) {

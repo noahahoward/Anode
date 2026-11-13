@@ -489,9 +489,10 @@ final class MenuBarBackdrop {
         tickWindows ?? (CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements],
                                                    kCGNullWindowID) as? [[String: Any]] ?? [])
     }
-    private let settings = Settings.shared
+    private let settings: Settings
 
-    init(appearanceButton: @escaping () -> NSStatusBarButton? = { nil }) {
+    init(settings: Settings = .shared, appearanceButton: @escaping () -> NSStatusBarButton? = { nil }) {
+        self.settings = settings
         self.appearanceButton = appearanceButton
         bindAppearance()
         refresh()
