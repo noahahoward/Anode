@@ -19,13 +19,21 @@
 #
 # The uninstaller also names /Applications/Anode.app, an absolute path no HOME can stand in for; it takes the folder
 # from ANODE_SYSTEM_APPLICATIONS_DIR, which run_anode checks is this test's own, so the real one is never looked at.
+#
+# Two nets keep a mistake in this file itself off the real machine, and section 0 tries both with bad input, so a
+# change that weakens either fails there: a static check of this file's own text (a line that runs a script or a
+# tool other than through the one door is refused before anything runs), and the runtime guard in run_anode. Under
+# both, the stubs are first on PATH and HOME, the folders and the ANODE_* variables the scripts read, and the working
+# directory, are the test's own for the whole file, so a spelling the static check cannot read still lands on a stub.
+# `ps` shows only the processes the tests started, so the Anode really running on the Mac that runs them is never seen.
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
 FULL=0; [ "${1:-}" = "--full" ] && FULL=1
 T="$(mktemp -d)"
 REAL_PIDS=()
-trap 'for p in ${REAL_PIDS[@]+"${REAL_PIDS[@]}"}; do kill "$p" 2>/dev/null; done; rm -rf "$T"' EXIT
+OUTSIDE=""   # (a folder of the self-test's that is not the test's own; see section 0)
+trap 'for p in ${REAL_PIDS[@]+"${REAL_PIDS[@]}"}; do kill "$p" 2>/dev/null; done; rm -rf "$T" ${OUTSIDE:+"$OUTSIDE"}' EXIT
 
 PASS=0; FAIL=0
 ok()    { PASS=$((PASS + 1)); printf '    ok    %s\n' "$1"; }
@@ -92,7 +100,7 @@ verb="\$1"
 case "\$verb" in
   list-keychains|default-keychain|login-keychain)
     for a in "\$@"; do
-      case "\$a" in -s|-S) echo "\$*" >> "$T/security-asked"; exit 0 ;; esac
+      case "\$a" in -*[sS]*) echo "\$*" >> "$T/security-asked"; exit 0 ;; esac
     done
     exec /usr/bin/security "\$@" ;;
   find-identity)
@@ -138,28 +146,46 @@ done
 chmod +x "$T"/shim/*
 # END STUBS
 
+# ── Everything from here on lands on the stubs, whatever a scenario does ────
+# The stubs are first on PATH and HOME and the folders the scripts can be pointed at are the test's own for the WHOLE
+# file, not only inside run_anode: a line that gets past the static check below (a spelling it cannot read) can run a
+# script or a tool, and it then reaches a stub and a throwaway home instead of this Mac's account. The ANODE_* variables
+# the scripts read are cleared, so a caller's environment (ANODE_SRC, say, which puts the installer's clone anywhere)
+# cannot send a script somewhere real. The working directory is the test's folder.
+export PATH="$T/shim:$PATH"
+mkdir -p "$T/home-file"; export HOME="$T/home-file"
+unset ANODE_SRC ANODE_REPO ANODE_ADHOC ANODE_KEEP_TERMINAL ANODE_NO_ACTOOL ANODE_SLOW_BUILD ANODE_NO_LAUNCH
+cd "$T" || exit 1
+
 # ── The one door ────────────────────────────────────────────────────────────
 # Every run of install.sh, uninstall.sh, update.sh, build-app.sh or make-signing-identity.sh in this file goes through
 # run_anode. It puts the stubs first on PATH itself, checks inside the very environment the script will get (with
 # `command -v`, the same lookup the script does) that each guarded tool resolves to a stub, that HOME and the folders
-# the scripts can be pointed at are the test's own, and sets ANODE_NO_LAUNCH=1 so a real built app is never run to put
-# back this Mac's charge settings; only when the scenario has put a stub app in place (a script marked
-# "# anode-test-stub") is it left unset, so that the restore can be asked of it. A check that fails ends the whole run.
+# the scripts can be pointed at are the test's own, that the working directory is, and that a checkout a script is
+# pointed at is (update.sh pulls the one it is given, or the one it sits in; install.sh clones ANODE_REPO), and sets
+# ANODE_NO_LAUNCH=1 so a real built app is never run to put back this Mac's charge settings; only when the scenario
+# has put a stub app in place (a script marked "# anode-test-stub") is it left unset, so that the restore can be asked
+# of it. A check that fails ends the whole run (GUARD_STOPS names what is stopped; the self-test below points it
+# at a stand-in, to see that the guard really stops).
 #
 #   SCENARIO_ENV   extra NAME=value pairs for the next run (ANODE_REPO=…); SCENARIO_PATH   directories put before the stubs.
 # BEGIN GUARD
 exec 3>&2   # the real stderr: a scenario captures the script's own with 2>&1, and the reason for stopping must not go there
 GUARDED_TOOLS="osascript getconf defaults launchctl security open pkill killall tccutil pmset sudo"
 GUARDED_FOLDERS="HOME ANODE_SHARED_CHARGE_DIR ANODE_LAUNCH_DAEMONS_DIR ANODE_SYSTEM_APPLICATIONS_DIR"
+# Folders that may be empty (the script then uses its own default, which is inside HOME) but are the test's when set.
+OPTIONAL_FOLDERS="ANODE_SRC ANODE_REPO"
+T_PHYSICAL="$(cd "$T" && pwd -P)"
 SCENARIO_ENV=(); SCENARIO_PATH=""
 guard_fail() {
   printf '✗ %s; refusing to run, so nothing real is touched\n' "$1" >&3
-  kill -TERM $$   # the main shell, also from inside $( ): the whole run ends here
+  kill -TERM "${GUARD_STOPS:-$$}"   # the main shell, also from inside $( ): the whole run ends here
   return 1
 }
+inside_t() { case "$1" in "$T"/*|"$T_PHYSICAL"/*) return 0 ;; esac; return 1; }
 run_anode() {   # run_anode HOME SCRIPT [ARGS…]: prints the script's output; returns its exit status
   local home="$1" script="$2"; shift 2
-  local app="$home/Applications/Anode.app/Contents/MacOS/AnodeApp" got tool var
+  local app="$home/Applications/Anode.app/Contents/MacOS/AnodeApp" got tool var checkout
   local -a e
   e=(HOME="$home" PATH="${SCENARIO_PATH:+$SCENARIO_PATH:}$T/shim:$PATH" ${SCENARIO_ENV[@]+"${SCENARIO_ENV[@]}"})
   for tool in $GUARDED_TOOLS; do
@@ -167,43 +193,260 @@ run_anode() {   # run_anode HOME SCRIPT [ARGS…]: prints the script's output; r
     [ "$got" = "$T/shim/$tool" ] || { guard_fail "the $tool stub is not what the script would run (found '$got')"; return 1; }
   done
   got="$(env -u BASH_ENV -u ENV "${e[@]}" bash -c 'command -v ps' 2>/dev/null)"
-  case "$got" in "$T"/*) ;; *) guard_fail "ps is '$got', not a stand-in inside the test's own folder (the real Anode would be seen)"; return 1 ;; esac
+  inside_t "$got" || { guard_fail "ps is '$got', not a stand-in inside the test's own folder (the real Anode would be seen)"; return 1; }
   for var in $GUARDED_FOLDERS; do
     got="$(env -u BASH_ENV -u ENV "${e[@]}" bash -c 'printf %s "${!1:-}"' _ "$var" 2>/dev/null)"
-    case "$got" in "$T"/*) ;; *) guard_fail "$var is '$got', which is not inside the test's own folder"; return 1 ;; esac
+    inside_t "$got" || { guard_fail "$var is '$got', which is not inside the test's own folder"; return 1; }
   done
+  for var in $OPTIONAL_FOLDERS; do
+    got="$(env -u BASH_ENV -u ENV "${e[@]}" bash -c 'printf %s "${!1:-}"' _ "$var" 2>/dev/null)"
+    [ -z "$got" ] || inside_t "$got" || { guard_fail "$var is '$got', which is not inside the test's own folder"; return 1; }
+  done
+  inside_t "$(pwd -P)/" || { guard_fail "the working directory is '$(pwd -P)', not inside the test's own folder"; return 1; }
+  case "$script" in
+    */update.sh)
+      # It pulls the checkout it is given, or else the one it sits in: this Mac's own, for $ROOT/update.sh.
+      checkout="${1:-$(dirname "$script")}"
+      inside_t "$(cd "$checkout" 2>/dev/null && pwd -P)/" \
+        || { guard_fail "update.sh would pull '$checkout', which is not inside the test's own folder"; return 1; } ;;
+    */install.sh)
+      got="$(env -u BASH_ENV -u ENV "${e[@]}" bash -c 'printf %s "${ANODE_REPO:-}"' _ 2>/dev/null)"
+      inside_t "$got" || { guard_fail "ANODE_REPO is '$got': install.sh would clone from somewhere real"; return 1; } ;;
+  esac
   if [ -f "$app" ] && grep -qx '# anode-test-stub' "$app" 2>/dev/null; then
     env -u BASH_ENV -u ENV -u ANODE_NO_LAUNCH "${e[@]}" bash "$script" "$@"
   else
     env -u BASH_ENV -u ENV "${e[@]}" ANODE_NO_LAUNCH=1 bash "$script" "$@"
   fi
 }
-# The same, read from the text of this file, so a scenario added later cannot forget. It fails closed: outside the two
-# marked regions, a line that names one of the scripts has to be a comment or a call of the form
-# `run_anode "$VAR" "…/script.sh"` with nothing else on it that runs a program, and no line may start a shell, `exec`,
-# `source` or `eval` of its own, and no script name is put together from a variable.
-static_check() {
+# The same, read from the text of the file it is given (this one), so a scenario added later cannot forget. It fails
+# closed: outside the marked regions (the stubs, this guard, and the self-test below, which holds bad lines on purpose),
+#   * a line that names one of the scripts has to be a comment or a call of the form `run_anode "$VAR" "…/script.sh"`
+#     with nothing else on it that runs a program, and has to name no more scripts than it has calls: a second call
+#     after `;`, `&&` or `||`, or a direct one, is one the guard does not see. The name is read with quotes and
+#     backslashes taken out, so "uninstall"".sh" and unin\\stall.sh are read as uninstall.sh;
+#   * no word in a path names a script by a pattern (`unins*`, `uninstal?.sh`, `*.sh`);
+#   * no `run_anode` is called with a script that is not named in the call, and none of run_anode, guard_fail or
+#     static_check is defined again;
+#   * no line starts a shell, `exec`, `source` or `eval` of its own, and no script name is put together from a
+#     variable (`$s.sh`);
+#   * defaults, launchctl, open, pkill, killall, osascript, security, tccutil, pmset, sudo, or the app binary, is not
+#     a command by its bare name anywhere in the body (call a stub by its explicit path, as the section on the stubs
+#     does).
+# What it cannot read stays possible: a script path put together at run time without any of its name on the line (a
+# glob over a bare `*`, a name read from a file), a copy made under another name and then run, a tool called from a
+# script the scenario wrote. Those still land on the stubs, in the throwaway home, with the test's folders, because
+# of the exports above.
+static_check() {  # static_check FILE: prints the lines it does not accept; fails if there are any
   awk '
-    /^# BEGIN (GUARD|STUBS)/ { skip = 1; next }
-    /^# END (GUARD|STUBS)/   { skip = 0; next }
+    function count(str, re,    n) { n = 0; while (match(str, re) && RLENGTH > 0) { n++; str = substr(str, RSTART + RLENGTH) } return n }
+    function globre(g,    out, i, c, inb) {
+      out = "^"; inb = 0
+      for (i = 1; i <= length(g); i++) {
+        c = substr(g, i, 1)
+        if (inb) { out = out c; if (c == "]") inb = 0 }
+        else if (c == "[") { if (index(substr(g, i + 1), "]") > 0) { out = out c; inb = 1 } else out = out "[[]" }
+        else if (c == "*") out = out ".*"
+        else if (c == "?") out = out "."
+        else if (c == ".") out = out "[.]"
+        else if (c == "-") out = out "[-]"
+        else out = out c
+      }
+      return out "$"
+    }
+    function globs_a_script(text,    t, n, parts, i, comp, k, lits, j, ch) {
+      t = text; gsub(/[;|&()<>=,:{}]/, " ", t)
+      n = split(t, parts, /[[:space:]]+/)
+      for (i = 1; i <= n; i++) {
+        comp = parts[i]; sub(/^.*\//, "", comp)
+        if (comp !~ /[*?[]/) continue
+        lits = 0
+        for (j = 1; j <= length(comp); j++) { ch = substr(comp, j, 1); if (ch !~ /[*?]/ && ch != "[" && ch != "]") lits++ }
+        if (lits < 3) continue
+        for (k = 1; k <= NS; k++) if (SCRIPTS[k] ~ globre(comp)) return 1
+      }
+      return 0
+    }
+    BEGIN { NS = split("install.sh uninstall.sh update.sh build-app.sh make-signing-identity.sh", SCRIPTS, " ") }
+    /^# BEGIN (GUARD|STUBS|SELFTEST)/ { skip = 1; next }
+    /^# END (GUARD|STUBS|SELFTEST)/   { skip = 0; next }
     skip || /^[[:space:]]*#/ { next }
     {
-      names = ($0 ~ /(^|[^A-Za-z0-9_-])(install|uninstall|update|build-app|make-signing-identity)\.sh/)
-      callform = ($0 ~ /run_anode +"\$[A-Za-z_0-9{}]+" +"[^"]*\.sh"/)
-      other = ($0 ~ /(^|[^A-Za-z0-9_\/.-])(bash|sh|zsh|dash|ksh|source|eval|exec|env|command|xargs|nohup|open|PATH=|HOME=)([[:space:]]|$|=)/)
-      if (names && !(callform && !other)) { print NR ": " $0; bad = 1 }
-      else if ($0 ~ /(^|[;&|({`]|\$\(|(then|do|else)[[:space:]])[[:space:]]*(bash|sh|zsh|dash|ksh|source|eval|exec)[[:space:]]/) { print NR ": " $0; bad = 1 }
-      else if ($0 ~ /\$\{?[A-Za-z_][A-Za-z_0-9]*\}?\.sh/) { print NR ": " $0; bad = 1 }
+      line = $0
+      flat = line; gsub(/"/, "", flat); gsub(/\047/, "", flat); gsub(/\\/, "", flat)
+      scripts_re = "(^|[^A-Za-z0-9_-])(install|uninstall|update|build-app|make-signing-identity)[.]sh"
+      names = count(flat, scripts_re)
+      calls = count(line, "run_anode +\"[$][A-Za-z_0-9{}]+\" +\"[^\"]*(install|uninstall|update|build-app|make-signing-identity)[.]sh\"")
+      runs = count(line, "(^|[^A-Za-z0-9_])run_anode([^A-Za-z0-9_]|$)")
+      other = (line ~ /(^|[^A-Za-z0-9_\/.-])(bash|sh|zsh|dash|ksh|source|eval|exec|env|command|xargs|nohup|open|PATH=|HOME=)([[:space:]]|$|=)/)
+      bad = 0
+      if (names > 0 && (names != calls || other)) bad = 1
+      else if (runs > calls) bad = 1
+      else if (line ~ /(^|[;&|({`]|\$\(|(then|do|else)[[:space:]])[[:space:]]*(bash|sh|zsh|dash|ksh|source|eval|exec)[[:space:]]/) bad = 1
+      else if (flat ~ /\$\{?[A-Za-z_][A-Za-z_0-9]*\}?[.]sh/) bad = 1
+      else if (globs_a_script(flat)) bad = 1
+      else if (line ~ /(^|[^A-Za-z0-9_])(function[[:space:]]+)?(run_anode|guard_fail|static_check)[[:space:]]*[(][)]/ \
+               || line ~ /(^|[;&|({][[:space:]]*)(alias|readonly|unset[[:space:]]+-f)[[:space:]]+(run_anode|guard_fail|static_check)/) bad = 1
+      else {
+        cmd = line
+        while (cmd ~ /^[[:space:]]*[A-Za-z_][A-Za-z_0-9]*=[A-Za-z0-9_.\/:-]*[[:space:]]+/) sub(/^[[:space:]]*[A-Za-z_][A-Za-z_0-9]*=[A-Za-z0-9_.\/:-]*[[:space:]]+/, "", cmd)
+        if (cmd ~ /(^|[;&|(`]|\$\(|[[:space:]](then|do|else|exec|command|env|xargs|nohup|sudo)[[:space:]])[[:space:]]*"?(defaults|launchctl|open|pkill|killall|osascript|security|tccutil|pmset|sudo)"?([[:space:]]|$)/ \
+            || cmd ~ /(^|[;&|`]|\$\()[[:space:]]*"?[^[:space:]"]*AnodeApp"?([[:space:])]|$)/ \
+            || line ~ /\/(usr|bin|sbin)(\/(bin|sbin))?\/(defaults|launchctl|open|pkill|killall|osascript|security|tccutil|pmset|sudo)([[:space:]]|$)/) bad = 1
+      }
+      if (bad) { print NR ": " $0; any = 1 }
     }
-    END { exit bad }' "$0"
+    END { exit any }' "$1"
 }
 # END GUARD
-if ! BAD_LINES="$(static_check)"; then
-  echo "✗ a line runs one of the scripts, or a shell, other than through run_anode:" >&2
+SELF="$ROOT/Tests/$(basename "$0")"
+if ! BAD_LINES="$(static_check "$SELF")"; then
+  echo "✗ a line runs one of the scripts, or a shell, or a tool that is not a stub, other than through the one door:" >&2
   printf '%s\n' "$BAD_LINES" >&2
   exit 1
 fi
-KEYCHAINS_BEFORE="$(security list-keychains 2>/dev/null)"
+KEYCHAINS_BEFORE="$("$T/shim/security" list-keychains 2>/dev/null)"
+
+# ═══ 0. the safety nets themselves ══════════════════════════════════════════
+# The static check and the runtime guard are what keep this file off the real machine, so each has to be seen to catch
+# what it is for: a copy of this file with static_check made to accept everything, or guard_fail made a no-op, must fail
+# here, not pass quietly. The bad lines are held below as data and are only ever read by awk; the guard is tried with
+# stand-in scripts that write a marker file and nothing else, one of them named update.sh in a folder that is not this
+# test's, so even a guard that fails to stop a run runs nothing real.
+# BEGIN SELFTEST
+echo "0. The safety nets stop what they are there to stop"
+cat > "$T/selftest-bad-lines" <<'BADLINES'
+bash "$ROOT/uninstall.sh" --yes
+"$ROOT/uninstall.sh" --yes
+$ROOT/uninstall.sh --yes
+sh -c "$ROOT/update.sh"
+source "$ROOT/uninstall.sh"
+. "$ROOT/uninstall.sh"
+eval "$cmd"
+run_anode "$H" "$ROOT/uninstall"".sh" --yes
+run_anode "$H" "$ROOT/uninst""all.sh" --yes
+run_anode "$H" "$ROOT/uninstall"'.sh' --yes
+run_anode "$H" "$ROOT/unin\stall.sh" --yes
+run_anode "$H" "$ROOT"/unins* --yes
+run_anode "$H" "$ROOT/unins"* --yes
+run_anode "$H" "$ROOT/uninstal?.sh" --yes
+run_anode "$H" "$ROOT"/*.sh
+run_anode "$H" "$ROOT"/uninstall.s[h]
+run_anode "$H" "$ROOT/$s".sh --yes
+run_anode "$H" "$ROOT/${s}.sh"
+cp "$ROOT/uninstall.sh" "$T/u" && run_anode "$H" "$T/u"
+ln -s "$ROOT/uninstall.sh" "$T/u"
+run_anode "$H" "$ROOT/uninstall.sh" ; "$ROOT/uninstall.sh"
+run_anode "$H" "$ROOT/uninstall.sh" && bash "$ROOT/update.sh"
+run_anode "$H" "$ROOT/uninstall.sh" || "$ROOT/update.sh"
+run_anode "$H" "$ROOT/uninstall.sh" ; run_anode "$H" "$T/some-copy"
+run_anode "$H" "$T/some-copy"
+run_anode() { "$@"; }
+function run_anode { "$@"; }
+guard_fail() { :; }
+static_check() { :; }
+unset -f run_anode
+alias run_anode=true
+defaults delete com.anode.settings
+  defaults write com.anode.settings key -int 1
+sudo rm -rf /
+launchctl bootout gui/501/x
+open -a Anode
+pkill -x AnodeApp
+killall AnodeApp
+osascript -e 'quit app "Anode"'
+security delete-keychain x
+tccutil reset All dev.anode.app
+pmset schedule wake "11/13/26 07:00:00"
+OUT="$(security list-keychains -s /tmp/x 2>&1)"
+if true; then defaults delete com.anode.settings; fi
+FOO=bar defaults delete com.anode.settings
+echo x | sudo tee /etc/x
+/usr/bin/defaults delete com.anode.settings
+/usr/bin/security list-keychains -s /tmp/x
+"$H/Applications/Anode.app/Contents/MacOS/AnodeApp" --restore-charge-settings
+x=$("$ROOT/Anode.app/Contents/MacOS/AnodeApp")
+BADLINES
+cat > "$T/selftest-good-lines" <<'GOODLINES'
+OUT="$(run_anode "$H" "$ROOT/uninstall.sh" --yes 2>&1 || true)"
+run_anode "$1" "$ROOT/make-signing-identity.sh" >/dev/null 2>&1
+OUT="$(run_anode "$H" "$H/Developer/Anode/uninstall.sh" --yes 2>&1 || true)"
+check "defaults read goes to the real tool" read_reaches_real_defaults
+"$T/shim/defaults" delete "$NEVER" >/dev/null 2>&1
+KEYCHAINS_BEFORE="$("$T/shim/security" list-keychains 2>/dev/null)"
+check "--data asks for the settings to be cleared" grep -qx "delete com.anode.settings" "$T/defaults-asked"
+rm -f "$T/security-refused"
+GOODLINES
+selftest_lines() {  # selftest_lines FILE WANT: static_check each line of FILE alone; WANT is "flagged" or "accepted"
+  local file="$1" want="$2" line status wrong=""
+  while IFS= read -r line; do
+    printf '%s\n' "$line" > "$T/selftest-one-line"
+    static_check "$T/selftest-one-line" >/dev/null 2>&1; status=$?
+    if [ "$want" = flagged ] && [ "$status" -eq 0 ]; then wrong="$wrong$line"$'\n'; fi
+    if [ "$want" = accepted ] && [ "$status" -ne 0 ]; then wrong="$wrong$line"$'\n'; fi
+  done < "$file"
+  [ -z "$wrong" ] && return 0
+  printf '%s' "$wrong" > "$T/selftest-wrong"; return 1
+}
+if selftest_lines "$T/selftest-good-lines" accepted; then ok "the static check accepts the lines a scenario is made of"
+else bad "the static check refuses lines it should accept" "$(cat "$T/selftest-wrong")"; fi
+if selftest_lines "$T/selftest-bad-lines" flagged; then ok "the static check flags every bad spelling (quotes, globs, variables, a second call, copies, redefinitions, bare tools)"
+else bad "the static check let these through" "$(cat "$T/selftest-wrong")"; fi
+
+# The guard, with stand-ins. GUARD_STOPS points guard_fail at a sleeping process of the self-test's own instead of the
+# main shell: the run it stops is the one that would have been this file.
+OUTSIDE="$(mktemp -d)"   # a folder that is not this test's
+mkdir -p "$T/home-selftest" "$T/probe-dir"
+printf '#!/bin/sh\n: > "%s"\n' "$T/probe-ran" > "$T/probe-script"
+printf '#!/bin/sh\n: > "%s"\n' "$T/probe-ran" > "$OUTSIDE/update.sh"
+printf '#!/bin/sh\n: > "%s"\n' "$T/probe-ran" > "$T/probe-dir/update.sh"
+printf '#!/bin/sh\n: > "%s"\n' "$T/probe-ran" > "$T/probe-dir/install.sh"
+mkdir -p "$T/decoy"; printf '#!/bin/sh\nexit 0\n' > "$T/decoy/defaults"; chmod +x "$T/decoy/defaults"
+must_stop() {  # must_stop WHAT TRY…: the guard has to stop the run, and the script must not have run
+  local what="$1" victim alive=0 i; shift
+  rm -f "$T/probe-ran"
+  { sleep 60 & victim=$!; } 2>/dev/null
+  ( GUARD_STOPS="$victim"; "$@" ) >/dev/null 2>&1 3>/dev/null
+  for i in 1 2 3 4 5 6 7 8 9 10; do kill -0 "$victim" 2>/dev/null || break; sleep 0.1; done
+  kill -0 "$victim" 2>/dev/null && alive=1
+  kill "$victim" 2>/dev/null; wait "$victim" 2>/dev/null
+  if [ "$alive" = 0 ] && [ ! -e "$T/probe-ran" ]; then ok "$what: the run is stopped"; else bad "$what: the run was let through"; fi
+} 2>/dev/null
+must_go() {  # must_go WHAT TRY…: an ordinary run is not refused
+  local what="$1"; shift
+  rm -f "$T/probe-ran"
+  ( "$@" ) >/dev/null 2>&1 3>/dev/null
+  if [ -e "$T/probe-ran" ]; then ok "$what: the run goes through"; else bad "$what: the run was refused"; fi
+}
+try_ordinary()          { run_anode "$T/home-selftest" "$T/probe-script"; }
+try_update_inside()     { run_anode "$T/home-selftest" "$T/probe-dir/update.sh" "$T/probe-dir"; }
+try_install_inside()    { SCENARIO_ENV=(ANODE_REPO="$T/probe-dir"); run_anode "$T/home-selftest" "$T/probe-dir/install.sh"; }
+try_bad_home()          { run_anode "/Users/not-the-tests-home" "$T/probe-script"; }
+try_no_stubs()          { SCENARIO_PATH="$T/decoy"; run_anode "$T/home-selftest" "$T/probe-script"; }
+try_shared_outside()    { export ANODE_SHARED_CHARGE_DIR="$OUTSIDE"; run_anode "$T/home-selftest" "$T/probe-script"; }
+try_daemons_outside()   { export ANODE_LAUNCH_DAEMONS_DIR="$OUTSIDE"; run_anode "$T/home-selftest" "$T/probe-script"; }
+try_system_apps_outside() { export ANODE_SYSTEM_APPLICATIONS_DIR="$OUTSIDE"; run_anode "$T/home-selftest" "$T/probe-script"; }
+try_src_outside()       { export ANODE_SRC="$OUTSIDE/src"; run_anode "$T/home-selftest" "$T/probe-script"; }
+try_repo_outside()      { SCENARIO_ENV=(ANODE_REPO="$OUTSIDE"); run_anode "$T/home-selftest" "$T/probe-script"; }
+try_install_no_repo()   { run_anode "$T/home-selftest" "$T/probe-dir/install.sh"; }
+try_cwd_outside()       { cd "$OUTSIDE" || return 1; run_anode "$T/home-selftest" "$T/probe-script"; }
+try_update_own_dir()    { run_anode "$T/home-selftest" "$OUTSIDE/update.sh"; }
+try_update_given_dir()  { run_anode "$T/home-selftest" "$T/probe-dir/update.sh" "$OUTSIDE"; }
+must_go   "an ordinary run"                                          try_ordinary
+must_go   "update.sh on a checkout of the test's own"                 try_update_inside
+must_go   "install.sh with a clone source of the test's own"          try_install_inside
+must_stop "a HOME that is not the test's"                            try_bad_home
+must_stop "a PATH where the stubs are not first"                     try_no_stubs
+must_stop "a shared charge folder outside the test's folder"         try_shared_outside
+must_stop "a LaunchDaemons folder outside the test's folder"         try_daemons_outside
+must_stop "a system Applications folder outside the test's folder"   try_system_apps_outside
+must_stop "ANODE_SRC outside the test's folder"                      try_src_outside
+must_stop "ANODE_REPO outside the test's folder"                     try_repo_outside
+must_stop "install.sh with no clone source of the test's own"        try_install_no_repo
+must_stop "a working directory outside the test's folder"            try_cwd_outside
+must_stop "update.sh sitting in a checkout that is not the test's"   try_update_own_dir
+must_stop "update.sh given a checkout that is not the test's"        try_update_given_dir
+# END SELFTEST
 
 # ── The source the installer will clone: this working tree, as a local git repo ──
 BASE="$T/base"
@@ -502,12 +745,15 @@ if cc -o "$T/hold" "$T/hold.c" 2>/dev/null; then
     mkdir -p "$(dirname "$bin")"; cp "$T/hold" "$bin"; rm -f "$pidfile"
     if [ "${2:-}" = relative ]; then
       # Started from inside its own folder as ./AnodeApp: ps shows "./AnodeApp", not the installed path.
-      ( cd "$(dirname "$bin")" && ./AnodeApp 60 "$pidfile" ) &
+      # (The program is this test's own stand-in, compiled from hold.c, not the app; it is run by a name held in a
+      # variable because the static check refuses the app binary as a command.)
+      local stand_in=./AnodeApp
+      ( cd "$(dirname "$bin")" && "$stand_in" 60 "$pidfile" ) &
     else
       "$bin" 60 "$pidfile" &
     fi
     local waited=0
-    while [ ! -s "$pidfile" ] && [ "$waited" -lt 50 ]; do sleep 0.1; waited=$((waited + 1)); done   # (the shell's own sleep, not the stub: this is not in a run_anode)
+    while [ ! -s "$pidfile" ] && [ "$waited" -lt 50 ]; do sleep 0.1; waited=$((waited + 1)); done   # (the shell's own sleep: there is no stub for it)
     LIVE_PID="$(cat "$pidfile")"; REAL_PIDS+=("$LIVE_PID"); echo "$LIVE_PID" >> "$T/test-pids"
   }
   stop_live() { kill "$LIVE_PID" 2>/dev/null; wait "$LIVE_PID" 2>/dev/null; : > "$T/test-pids"; }
@@ -754,7 +1000,7 @@ for verb_args in "delete $NEVER" "write $NEVER key -string v" "import $NEVER /de
   "$T/shim/defaults" $verb_args >/dev/null 2>&1
   check "defaults $verb_args is written down"                 grep -qxF -- "$verb_args" "$T/defaults-asked"
 done
-check "and none of them reached the real settings"            [ -z "$(/usr/bin/defaults domains | tr ',' '\n' | grep -F "$NEVER")" ]
+check "and none of them reached the real settings"            [ -z "$("$T/shim/defaults" domains | tr ',' '\n' | grep -F "$NEVER")" ]
 read_reaches_real_defaults() { local out; out="$("$T/shim/defaults" read "$NEVER" 2>&1)"; printf '%s' "$out" | grep -qE "not found|does not exist"; }
 check "defaults read goes to the real tool"                   read_reaches_real_defaults
 check "…and is not written down as a change"                  [ -z "$(grep -F -- "read $NEVER" "$T/defaults-asked")" ]
@@ -767,12 +1013,13 @@ done
 rm -f "$T/security-refused"   # the two refusals just made on purpose
 for verb_args in "unlock-keychain -p x $T/k.keychain-db" "set-keychain-settings $T/k.keychain-db" "import /dev/null -k $T/k.keychain-db" \
                  "set-key-partition-list -S apple: -s $T/k.keychain-db" "add-generic-password -s anode-test -a x -w y" \
-                 "default-keychain -s $T/k.keychain-db" "list-keychains -s $T/k.keychain-db" "set-keychain-password x" "frobnicate"; do
+                 "default-keychain -s $T/k.keychain-db" "list-keychains -s $T/k.keychain-db" "set-keychain-password x" "frobnicate" \
+                 "list-keychains -sd user" "list-keychains -ds user" "default-keychain -dS user" "login-keychain -S $T/k.keychain-db"; do
   # shellcheck disable=SC2086
   "$T/shim/security" $verb_args >/dev/null 2>&1
   check "security $verb_args is written down, not run"        grep -qxF -- "$verb_args" "$T/security-asked"
 done
-check "none of them changed the keychain search list"         [ "$(security list-keychains 2>/dev/null)" = "$KEYCHAINS_BEFORE" ]
+check "none of them changed the keychain search list"         [ "$("$T/shim/security" list-keychains 2>/dev/null)" = "$KEYCHAINS_BEFORE" ]
 "$T/shim/security" create-keychain -p x "$T/placeholder.keychain-db" >/dev/null 2>&1
 check "a keychain made inside the test's folder is a placeholder file" grep -q anode-test-keychain "$T/placeholder.keychain-db"
 placeholder_has_identity() { local out; out="$("$T/shim/security" find-identity -p codesigning "$T/placeholder.keychain-db")"; printf '%s' "$out" | grep -q "Anode Local Signing"; }
@@ -783,7 +1030,7 @@ check "no keychain verb named a path outside the test's folder" absent "$T/secur
 check "and nothing opened an app, signalled a process, or changed privacy or power settings" absent "$T/other-asked"
 
 echo
-check "the real login keychain list was not changed by any of this" [ "$(security list-keychains 2>/dev/null)" = "$KEYCHAINS_BEFORE" ]
+check "the real login keychain list was not changed by any of this" [ "$("$T/shim/security" list-keychains 2>/dev/null)" = "$KEYCHAINS_BEFORE" ]
 echo
 echo "$PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
