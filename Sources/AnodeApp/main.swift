@@ -3062,6 +3062,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
     }
 }
 
+// Ultra Low Power Mode's watchdog is this same program started with `--ultra-watchdog`. It must be the first thing that
+// runs: with that flag the program waits for Anode to end, continues what Anode froze, and exits, and never gets to
+// anything below (no app, no window, no settings).
+UltraWatchdog.runIfRequested(CommandLine.arguments)
+
 // `uninstall.sh` runs the app this way, with no window and before anything else starts, to put macOS's own charge
 // settings back before the app and its settings are deleted. A quit does that already, but an Anode that crashed or
 // was killed never got to, and macOS keeps a limit it was given: it would outlive the app and its settings.

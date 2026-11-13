@@ -15,7 +15,9 @@ import IOKit
 //   · the moment it dims, the value to restore is written to disk, and removed only after the restore is confirmed;
 //   · at every launch `release()` runs first, so a crash or a force-quit while dimmed is undone by the next start;
 //   · a restore that fails is retried on every poll until it works;
-//   · a panel that is already dark when the lid closes is left alone, and a Mac with no lid sensor is never touched.
+//   · a panel that is already dark when the lid closes is left alone, and a Mac with no lid sensor is never touched;
+//   · the brightness the owner had is kept in `OwnBrightness`, shared with every other feature that lowers the screen,
+//     so two features lowering it at once cannot each take the other's lowered level for the owner's own.
 //
 // The lid and the backlight are behind protocols; every sequence is played in the tests without either.
 
@@ -31,9 +33,44 @@ public protocol BacklightControl: AnyObject {
     func setBrightness(_ value: Float) -> Bool
 }
 
+/// The brightness the owner had before any feature lowered it, kept once for every feature that lowers the screen.
+///
+/// The first feature to lower it notes what the owner had. A second, finding the screen already lower, would read the
+/// first one's level as the owner's own; so only the earliest value is kept, and every feature that lowers the screen
+/// is noted as an owner of it. The value comes back only to the last to leave: while another still wants the screen
+/// lowered, leaving must not raise it.
+public final class OwnBrightness {
+
+    public static let shared = OwnBrightness()
+
+    private let lock = NSLock()
+    private var value: Float?
+    private var owners: Set<String> = []
+
+    public init() {}
+
+    /// Notes `owner`, and keeps `value` as the owner's brightness only if nothing is remembered yet.
+    public func remember(_ value: Float, for owner: String) {
+        lock.lock(); defer { lock.unlock() }
+        if self.value == nil { self.value = value }
+        owners.insert(owner)
+    }
+
+    /// Takes `owner` out. The remembered brightness comes back only when nobody else is left; nil while another
+    /// feature still holds the screen lowered, and for one that was never noted.
+    public func forget(_ owner: String) -> Float? {
+        lock.lock(); defer { lock.unlock() }
+        guard owners.remove(owner) != nil, owners.isEmpty else { return nil }
+        defer { value = nil }
+        return value
+    }
+}
+
 public final class LidDimmer {
 
     static let savedKey = "keepAwake.savedBrightness"
+    /// The name this dimmer is noted under in `OwnBrightness`.
+    static let ownerName = "lid"
     /// Brightness at or below this counts as already dark: nothing to save, nothing to restore.
     static let darkThreshold: Float = 0.02
     /// A closed lid's dimming is tried this many times per closing before giving up (a sleeping panel can refuse).
@@ -44,6 +81,7 @@ public final class LidDimmer {
     private let lid: LidStateReader
     private let backlight: BacklightControl
     private let defaults: UserDefaults
+    private let ownBrightness: OwnBrightness
     private let log: (String) -> Void
 
     private var lastOpenBrightness: Float?
@@ -51,10 +89,11 @@ public final class LidDimmer {
     private var dimAttempts = 0
 
     public init(lid: LidStateReader, backlight: BacklightControl, defaults: UserDefaults = .standard,
-                log: @escaping (String) -> Void = { _ in }) {
+                ownBrightness: OwnBrightness = .shared, log: @escaping (String) -> Void = { _ in }) {
         self.lid = lid
         self.backlight = backlight
         self.defaults = defaults
+        self.ownBrightness = ownBrightness
         self.log = log
     }
 
@@ -93,24 +132,34 @@ public final class LidDimmer {
             return
         }
         guard current > Self.darkThreshold else { return }
-        // Write down what to restore BEFORE changing anything.
+        // Write down what to restore BEFORE changing anything. The saved value stays on disk because it is what a launch
+        // after a crash has to go by; the shared record is only in memory.
         defaults.set(current, forKey: Self.savedKey)
+        ownBrightness.remember(current, for: Self.ownerName)
         if backlight.setBrightness(0) {
             log(String(format: "lid closed: brightness %.2f → 0", current))
         } else {
             defaults.removeObject(forKey: Self.savedKey)
+            // Not an owner of a screen it did not lower, or the other feature's `forget` would never get the value back.
+            _ = ownBrightness.forget(Self.ownerName)
             log("lid closed: the panel refused brightness 0 (attempt \(dimAttempts))")
         }
     }
 
     @discardableResult
     private func restore() -> Bool {
-        guard let value = saved else { return true }
+        guard let saved else { return true }
+        // The owner's own brightness when no other feature still holds the screen lowered. Otherwise the level the
+        // screen had when the lid shut, which is the other feature's: never black, never the owner's while that
+        // feature is still on.
+        let value = ownBrightness.forget(Self.ownerName) ?? saved
         if backlight.setBrightness(value) {
             defaults.removeObject(forKey: Self.savedKey)
             log(String(format: "lid open / stopped: brightness restored to %.2f", value))
             return true
         }
+        // `forget` already took the lid out; put it back so the retry finds the same record and goes to the same level.
+        ownBrightness.remember(value, for: Self.ownerName)
         log("restoring brightness \(value) failed; will retry")
         return false
     }
