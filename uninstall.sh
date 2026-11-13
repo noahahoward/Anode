@@ -244,7 +244,7 @@ for app in "$HOME/Applications/Anode.app" "/Applications/Anode.app"; do
       echo "Anode could not put back macOS's own charge settings, so macOS may still hold a charge limit: change it" \
         "in System Settings → Battery. If the battery is not charging on the charger, Anode's helper reconnects it: run" \
         "'sudo /Library/PrivilegedHelperTools/$DAEMON_LABEL --uninstall' if that helper is installed (it reconnects" \
-        "the charger, then removes itself), or install Anode again and press Install Helper… in Charge Control."
+        "the charger, then removes itself), or install Anode again, switch Charge Control on and press Install Helper…"
       ;;
   esac
   break

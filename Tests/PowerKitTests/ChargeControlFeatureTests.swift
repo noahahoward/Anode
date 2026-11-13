@@ -991,6 +991,8 @@ final class ChargeControlFeatureTests: XCTestCase {
         for line in ["Drain to Limit pressed", "Charge to Full pressed"] {
             XCTAssertTrue(logLines.contains(line), "\(line) is not what the log says: \(logLines)")
         }
-        XCTAssertTrue(uninstall.contains { $0.contains("press Install Helper\u{2026} in Charge Control") })
+        XCTAssertTrue(uninstall.contains { $0.contains("install Anode again, switch Charge Control on and press Install Helper\u{2026}") },
+                      "the way back must say the button is shown once Charge Control is on")
+        XCTAssertFalse(uninstall.contains { $0.contains("press Install Helper\u{2026} in Charge Control") })
     }
 }

@@ -388,6 +388,21 @@ final class ChargeController {
         return on ? c.liftNow() : c.putBackLeftoverRecord(when: "at the top of the program")
     }
 
+    /// A reason for a limit in the words the charge log uses, which a person reads. The enum's raw values are names in the
+    /// code ("fullCharge") and are stored nowhere.
+    static func logWords(_ reason: ChargeReason) -> String {
+        switch reason {
+        case .limit: return "limit"
+        case .fullCharge: return "charge to full"
+        case .heat: return "pause when hot"
+        case .sleeping: return "hold during sleep"
+        case .drift: return "drift"
+        case .draining: return "draining"
+        case .drained: return "drained"
+        case .readyBy: return "ready by"
+        }
+    }
+
     static func drainRefusedText(_ why: String) -> String {
         "The Anode helper would not start the drain: \(plainWords(why))"
     }
@@ -2194,7 +2209,7 @@ final class ChargeController {
         if r.ok {
             appliedLimit = want
             macOSRefusedLimit = nil
-            log("\(Self.limitChange(from, want)) (\(reason.rawValue))")
+            log("\(Self.limitChange(from, want)) (\(Self.logWords(reason)))")
             // Once more now that the value has landed: what macOS does to a switch turned on while it still held 100
             // was not measured, and the cost of asking again is one call that changes nothing if it is on.
             if let c = client { switchOnForTheHelper(from: from, client: c, afterTheYes: true) }
@@ -2221,7 +2236,7 @@ final class ChargeController {
             appliedLimit = value
             macOSRefusedLimit = nil
             let note = wanted.map { "; \($0) needs the helper" } ?? ""
-            log("\(Self.limitChange(from, value)) (\(reason.rawValue)\(note))")
+            log("\(Self.limitChange(from, value)) (\(Self.logWords(reason))\(note))")
         } else {
             macOSRefusedLimit = value
             log("macOS refused the limit \(value)")
@@ -2245,12 +2260,12 @@ final class ChargeController {
         // about once a tick.
         if stopDue || cutLost || cutSeen {
             if (cutLost || cutSeen) && lostStopTick == tickSerial { return }
-            return stopDischarge(why: d.reason.rawValue)
+            return stopDischarge(why: Self.logWords(d.reason))
         }
         guard let target = want else {
             // Not wanted: a discharge in force is stopped, and so is one whose end no running helper confirmed (a
             // refused or unanswered request may have cut the charger all the same).
-            if appliedDischarge != nil || cutOwed { stopDischarge(why: d.reason.rawValue) }
+            if appliedDischarge != nil || cutOwed { stopDischarge(why: Self.logWords(d.reason)) }
             return
         }
         guard target != appliedDischarge, helper.available, sessionActive else { return }
