@@ -17,14 +17,15 @@
 # to the real tool and write down every change they were asked for, naming any domain or keychain. The login
 # keychain list is compared before and after.
 #
-# The uninstaller also names /Applications/Anode.app, an absolute path no HOME can stand in for; where that
-# exists the uninstall scenarios are skipped rather than risk deleting it.
+# The uninstaller also names /Applications/Anode.app, an absolute path no HOME can stand in for; it takes the folder
+# from ANODE_SYSTEM_APPLICATIONS_DIR, which run_anode checks is this test's own, so the real one is never looked at.
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
 FULL=0; [ "${1:-}" = "--full" ] && FULL=1
 T="$(mktemp -d)"
-trap 'rm -rf "$T"' EXIT
+REAL_PIDS=()
+trap 'for p in ${REAL_PIDS[@]+"${REAL_PIDS[@]}"}; do kill "$p" 2>/dev/null; done; rm -rf "$T"' EXIT
 
 PASS=0; FAIL=0
 ok()    { PASS=$((PASS + 1)); printf '    ok    %s\n' "$1"; }
@@ -42,6 +43,8 @@ mkdir -p "$T/shim" "$T/cache" "$T/tmp" "$T/shared-charge"
 export ANODE_SHARED_CHARGE_DIR="$T/shared-charge"
 # Likewise the helper's launchd job: where a helper is installed on this Mac must not change what a scenario prints.
 export ANODE_LAUNCH_DAEMONS_DIR="$T/no-launch-daemons"
+# And /Applications, the second place an Anode can be installed.
+export ANODE_SYSTEM_APPLICATIONS_DIR="$T/system-applications"
 
 # `defaults`, `launchctl` and `security` do not go by HOME: they talk to the settings service, to launchd and to the
 # keychain service of the person running the tests. An uninstall --data scenario with the real `defaults` once deleted
@@ -138,7 +141,7 @@ chmod +x "$T"/shim/*
 # BEGIN GUARD
 exec 3>&2   # the real stderr: a scenario captures the script's own with 2>&1, and the reason for stopping must not go there
 GUARDED_TOOLS="osascript getconf defaults launchctl security open pkill killall tccutil pmset sudo"
-GUARDED_FOLDERS="HOME ANODE_SHARED_CHARGE_DIR ANODE_LAUNCH_DAEMONS_DIR"
+GUARDED_FOLDERS="HOME ANODE_SHARED_CHARGE_DIR ANODE_LAUNCH_DAEMONS_DIR ANODE_SYSTEM_APPLICATIONS_DIR"
 SCENARIO_ENV=(); SCENARIO_PATH=""
 guard_fail() {
   printf '✗ %s; refusing to run, so nothing real is touched\n' "$1" >&3
@@ -296,159 +299,291 @@ check "and still succeeds"                                    [ "$STATUS" -eq 0 
 
 # ═══ 5. uninstall removes all of it ═════════════════════════════════════════
 echo "5. Uninstalling that install"
-if [ -e /Applications/Anode.app ]; then
-  echo "    skip  /Applications/Anode.app exists on this Mac, and the uninstaller names it by absolute path"
-else
-  echo precious > "$H/keep-me.txt"; mkdir -p "$H/Documents"; echo precious > "$H/Documents/keep-me-too.txt"
-  mkdir -p "$T/cache/dev.anode.app" "$T/cache/other.app"   # the test's own per-user cache folder (see getconf stub)
-  run_anode "$H" "$ROOT/make-signing-identity.sh" >/dev/null 2>&1   # a real keychain to remove
-  check "(the keychain exists before)"                        present "$H/Library/Keychains/anode-signing.keychain-db"
-  run_uninstall "$H"
-  check "the app is gone"                                     absent "$H/Applications/Anode.app"
-  check "the source is gone"                                  absent "$H/.anode/source"
-  check "the hidden folder is gone"                           absent "$H/.anode"
-  check "the signing keychain is gone"                        absent "$H/Library/Keychains/anode-signing.keychain-db"
-  check "the install log is gone"                             absent "$H/Library/Logs/Anode-install.log"
-  check "Anode's cache folder is gone"                        absent "$T/cache/dev.anode.app"
-  check "another app's cache folder is NOT touched"           present "$T/cache/other.app"
-  check "the user's own files are NOT touched"                [ -f "$H/keep-me.txt" ] && [ -f "$H/Documents/keep-me-too.txt" ]
-  check "says it removed Anode"                               has "Anode has been removed"
+echo precious > "$H/keep-me.txt"; mkdir -p "$H/Documents"; echo precious > "$H/Documents/keep-me-too.txt"
+mkdir -p "$T/cache/dev.anode.app" "$T/cache/other.app"   # the test's own per-user cache folder (see getconf stub)
+run_anode "$H" "$ROOT/make-signing-identity.sh" >/dev/null 2>&1   # a real keychain to remove
+check "(the keychain exists before)"                        present "$H/Library/Keychains/anode-signing.keychain-db"
+run_uninstall "$H"
+check "the app is gone"                                     absent "$H/Applications/Anode.app"
+check "the source is gone"                                  absent "$H/.anode/source"
+check "the hidden folder is gone"                           absent "$H/.anode"
+check "the signing keychain is gone"                        absent "$H/Library/Keychains/anode-signing.keychain-db"
+check "the install log is gone"                             absent "$H/Library/Logs/Anode-install.log"
+check "Anode's cache folder is gone"                        absent "$T/cache/dev.anode.app"
+check "another app's cache folder is NOT touched"           present "$T/cache/other.app"
+check "the user's own files are NOT touched"                [ -f "$H/keep-me.txt" ] && [ -f "$H/Documents/keep-me-too.txt" ]
+check "says it removed Anode"                               has "Anode has been removed"
 
-  echo "6. Uninstalling a clone with work in it, and one an earlier version made"
-  H="$(new_home 6)"
-  run_install "$H" "$T/repo-succeeds"
-  echo "work in progress" > "$H/.anode/source/uncommitted.txt"
-  run_uninstall "$H"
-  check "a clone with uncommitted work is KEPT"               present "$H/.anode/source/uncommitted.txt"
-  check "and says why"                                        has "KEPT"
-  check "the app is still removed"                            absent "$H/Applications/Anode.app"
+echo "6. Uninstalling a clone with work in it, and one an earlier version made"
+H="$(new_home 6)"
+run_install "$H" "$T/repo-succeeds"
+echo "work in progress" > "$H/.anode/source/uncommitted.txt"
+run_uninstall "$H"
+check "a clone with uncommitted work is KEPT"               present "$H/.anode/source/uncommitted.txt"
+check "and says why"                                        has "KEPT"
+check "the app is still removed"                            absent "$H/Applications/Anode.app"
 
-  H="$(new_home 7)"
-  mkdir -p "$H/Developer"; git clone -q "$T/repo-succeeds" "$H/Developer/Anode"
-  mkdir -p "$H/Applications/Anode.app"
-  OUT="$(run_anode "$H" "$H/Developer/Anode/uninstall.sh" --yes 2>&1 || true)"
-  check "an install in ~/Developer/Anode is found and removed" absent "$H/Developer/Anode"
-  check "and its app"                                         absent "$H/Applications/Anode.app"
+H="$(new_home 7)"
+mkdir -p "$H/Developer"; git clone -q "$T/repo-succeeds" "$H/Developer/Anode"
+mkdir -p "$H/Applications/Anode.app"
+OUT="$(run_anode "$H" "$H/Developer/Anode/uninstall.sh" --yes 2>&1 || true)"
+check "an install in ~/Developer/Anode is found and removed" absent "$H/Developer/Anode"
+check "and its app"                                         absent "$H/Applications/Anode.app"
 
-  echo "6b. Charge Control's limit is put back before the app goes (a stub app answers)"
-  # The stub stands in for AnodeApp: it writes down how it was run, and whether its settings were still there.
-  stub_app() {  # stub_app HOME EXIT-STATUS [VERSION: default 1.17.0, the first that takes the argument; "none" writes no Info.plist]
-    mkdir -p "$1/Applications/Anode.app/Contents/MacOS"
-    printf '#!/bin/sh\n# anode-test-stub\necho "$*" > "$HOME/restore-asked"\nexit %s\n' "$2" \
-      > "$1/Applications/Anode.app/Contents/MacOS/AnodeApp"
-    chmod +x "$1/Applications/Anode.app/Contents/MacOS/AnodeApp"
-    if [ "${3:-1.17.0}" != "none" ]; then
-      printf '<?xml version="1.0" encoding="UTF-8"?>\n<plist version="1.0"><dict><key>CFBundleShortVersionString</key><string>%s</string></dict></plist>\n' \
-        "${3:-1.17.0}" > "$1/Applications/Anode.app/Contents/Info.plist"
-    fi
+echo "6b. Charge Control's limit is put back before the app goes (a stub app answers)"
+# The stub stands in for AnodeApp: it writes down how it was run, and whether its settings were still there.
+stub_app() {  # stub_app HOME EXIT-STATUS [VERSION: default 1.17.0, the first that takes the argument; "none" writes no Info.plist]
+  mkdir -p "$1/Applications/Anode.app/Contents/MacOS"
+  printf '#!/bin/sh\n# anode-test-stub\necho "$*" > "$HOME/restore-asked"\nexit %s\n' "$2" \
+    > "$1/Applications/Anode.app/Contents/MacOS/AnodeApp"
+  chmod +x "$1/Applications/Anode.app/Contents/MacOS/AnodeApp"
+  if [ "${3:-1.17.0}" != "none" ]; then
+    printf '<?xml version="1.0" encoding="UTF-8"?>\n<plist version="1.0"><dict><key>CFBundleShortVersionString</key><string>%s</string></dict></plist>\n' \
+      "${3:-1.17.0}" > "$1/Applications/Anode.app/Contents/Info.plist"
+  fi
+}
+H="$(new_home 9)"; stub_app "$H" 1
+OUT="$(run_anode "$H" "$ROOT/uninstall.sh" --yes 2>&1 || true)"
+check "the app is asked to put macOS's charge settings back" grep -qx -- "--restore-charge-settings" "$H/restore-asked"
+check "a failure says macOS may still hold a charge limit"  has "macOS may still hold a charge limit"
+check "a failure says where to change the limit"            has "System Settings → Battery"
+check "a failure says what reconnects a charger left off"   has "sudo /Library/PrivilegedHelperTools/dev.anode.app.fanhelper --uninstall"
+check "and does not promise that a restart reconnects it"   hasnt "restarting the Mac"
+check "and says the other way: install again, switch Charge Control on, then Install Helper…" \
+                                                            has "install Anode again, switch Charge Control on and press Install Helper…"
+check "and no longer says the button is there with Charge Control off" \
+                                                            hasnt "press Install Helper… in Charge Control"
+check "and does not send a Charge Control user to the Fans tab" hasnt "start its helper from the Fans tab"
+check "a restore that ran says nothing about Anode running" hasnt "still running"
+check "the app is still removed"                            absent "$H/Applications/Anode.app"
+# Anode does not finish quitting: a `ps` that lists the programs in $T/running-bins as this user's processes (and
+# writes down how it was asked), for as many asks as $T/ps-running-for says (forever when it is absent), and a sleep
+# that does not wait, so the scenario takes no time. Whatever else it lists is not Anode's: the uninstaller must go by
+# the executable's exact path, and the lines that only look like it must not count.
+mkdir -p "$T/shim-running"
+cat > "$T/shim-running/ps" <<EOF
+#!/bin/sh
+echo "\$*" >> "$T/ps-asked"
+n=\$(cat "$T/ps-calls" 2>/dev/null || echo 0); n=\$((n + 1)); echo "\$n" > "$T/ps-calls"
+limit=\$(cat "$T/ps-running-for" 2>/dev/null || echo 999999)
+echo "   101 /usr/sbin/cfprefsd"
+cat "$T/ps-extra" 2>/dev/null
+[ "\$n" -le "\$limit" ] || exit 0
+while IFS= read -r bin; do
+  [ -n "\$bin" ] || continue
+  printf '%6d %s\n' 4242 "\$bin"
+  printf '%6d %s\n' 4243 "\$bin-old"
+  printf '%6d %s\n' 4244 "\$(dirname "\$bin")/x/\$(basename "\$bin")"
+done < "$T/running-bins"
+exit 0
+EOF
+printf '#!/bin/sh\nexit 0\n' > "$T/shim-running/sleep"
+chmod +x "$T/shim-running/ps" "$T/shim-running/sleep"
+ps_reset() { rm -f "$T/ps-asked" "$T/ps-calls" "$T/ps-running-for" "$T/running-bins" "$T/ps-extra"; }
+ps_calls() { cat "$T/ps-calls" 2>/dev/null || echo 0; }
+H="$(new_home 12)"; stub_app "$H" 0
+ps_reset; printf '%s\n' "$H/Applications/Anode.app/Contents/MacOS/AnodeApp" > "$T/running-bins"
+RUNNING_STATUS=0
+SCENARIO_PATH="$T/shim-running"
+OUT="$(run_anode "$H" "$ROOT/uninstall.sh" --yes 2>&1)" || RUNNING_STATUS=$?
+SCENARIO_PATH=""
+check "Anode still running after the wait is said, in one line" [ "$(printf '%s\n' "$OUT" | grep -c "still running")" = 1 ]
+check "and it stops, with a failing exit status"            [ "$RUNNING_STATUS" != 0 ]
+check "and says to quit Anode and run it again"             has "Quit Anode and run this again"
+check "and names the copy that is running"                  has "$H/Applications/Anode.app/Contents/MacOS/AnodeApp"
+check "and removes nothing (the live app would set its limit again)" present "$H/Applications/Anode.app"
+check "and does not run the restore against the live app"   absent "$H/restore-asked"
+check "and does not claim it removed Anode"                 hasnt "Anode has been removed"
+only_this_user() { [ -s "$T/ps-asked" ] && ! grep -qv -- "^-U $(id -u) " "$T/ps-asked"; }
+check "only this user's Anode is waited for"                only_this_user
+check "it was waited for, not given up on at the first look" [ "$(ps_calls)" -ge 5 ]
+
+echo "6b1. Every installed copy is looked at before anything is removed, and a slow quit is waited for"
+# Both places an Anode can be installed (the second is the test's own folder: see ANODE_SYSTEM_APPLICATIONS_DIR).
+two_copies() {  # two_copies HOME: a stub app in ~/Applications and another in the system Applications folder
+  stub_app "$1" 0
+  rm -rf "$ANODE_SYSTEM_APPLICATIONS_DIR/Anode.app"
+  mkdir -p "$ANODE_SYSTEM_APPLICATIONS_DIR/Anode.app/Contents/MacOS"
+  printf '#!/bin/sh\n# anode-test-stub\nexit 0\n' > "$ANODE_SYSTEM_APPLICATIONS_DIR/Anode.app/Contents/MacOS/AnodeApp"
+  chmod +x "$ANODE_SYSTEM_APPLICATIONS_DIR/Anode.app/Contents/MacOS/AnodeApp"
+}
+SYSTEM_BIN="$ANODE_SYSTEM_APPLICATIONS_DIR/Anode.app/Contents/MacOS/AnodeApp"
+H="$(new_home 20)"; two_copies "$H"
+ps_reset; printf '%s\n' "$SYSTEM_BIN" > "$T/running-bins"
+RUNNING_STATUS=0
+SCENARIO_PATH="$T/shim-running"
+OUT="$(run_anode "$H" "$ROOT/uninstall.sh" --yes 2>&1)" || RUNNING_STATUS=$?
+SCENARIO_PATH=""
+check "the second copy running stops the uninstall"         [ "$RUNNING_STATUS" != 0 ]
+check "and is named"                                        has "$SYSTEM_BIN"
+check "and nothing is removed: not that copy"               present "$ANODE_SYSTEM_APPLICATIONS_DIR/Anode.app"
+check "not the first copy either"                           present "$H/Applications/Anode.app"
+check "and the restore was not run"                         absent "$H/restore-asked"
+# The first copy quits slowly: running for the first two looks, gone at the third.
+H="$(new_home 21)"; two_copies "$H"
+ps_reset; printf '%s\n' "$H/Applications/Anode.app/Contents/MacOS/AnodeApp" > "$T/running-bins"; echo 2 > "$T/ps-running-for"
+SCENARIO_PATH="$T/shim-running"
+OUT="$(run_anode "$H" "$ROOT/uninstall.sh" --yes 2>&1 || true)"
+SCENARIO_PATH=""
+check "a first copy that quits slowly is waited for"        [ "$(ps_calls)" -ge 3 ]
+check "and then both copies are removed"                    [ ! -e "$H/Applications/Anode.app" ] && [ ! -e "$ANODE_SYSTEM_APPLICATIONS_DIR/Anode.app" ]
+check "after the restore was asked of the first copy"       grep -qx -- "--restore-charge-settings" "$H/restore-asked"
+check "and it says nothing about a copy still running"      hasnt "still running"
+# The second copy quits slowly.
+H="$(new_home 22)"; two_copies "$H"
+ps_reset; printf '%s\n' "$SYSTEM_BIN" > "$T/running-bins"; echo 3 > "$T/ps-running-for"
+SCENARIO_PATH="$T/shim-running"
+OUT="$(run_anode "$H" "$ROOT/uninstall.sh" --yes 2>&1 || true)"
+SCENARIO_PATH=""
+check "a second copy that quits slowly is waited for"       [ "$(ps_calls)" -ge 4 ]
+check "and then both copies are removed"                    [ ! -e "$H/Applications/Anode.app" ] && [ ! -e "$ANODE_SYSTEM_APPLICATIONS_DIR/Anode.app" ]
+# Look-alikes are not Anode: the same path with something after it, or a folder in the middle.
+H="$(new_home 23)"; two_copies "$H"
+ps_reset; : > "$T/running-bins"
+printf '  4300 %s\n  4301 %s\n' "$SYSTEM_BIN-old" "$(dirname "$SYSTEM_BIN")/x/AnodeApp" > "$T/ps-extra"
+SCENARIO_PATH="$T/shim-running"
+OUT="$(run_anode "$H" "$ROOT/uninstall.sh" --yes 2>&1 || true)"
+SCENARIO_PATH=""
+check "a process that only looks like Anode's path does not stop it" hasnt "still running"
+check "and the copies are removed"                          [ ! -e "$H/Applications/Anode.app" ] && [ ! -e "$ANODE_SYSTEM_APPLICATIONS_DIR/Anode.app" ]
+ps_reset
+
+echo "6b2a. A home folder with a + ( ) or . in its name: the path is matched as text, not as a pattern (real processes)"
+# A real program that sleeps, so `ps` lists it by its own path; compiled here (the Command Line Tools have the compiler).
+printf '#include <unistd.h>\n#include <stdlib.h>\nint main(int c, char **v) { sleep(c > 1 ? atoi(v[1]) : 30); return 0; }\n' > "$T/hold.c"
+mkdir -p "$T/shim-nosleep"; printf '#!/bin/sh\nexit 0\n' > "$T/shim-nosleep/sleep"; chmod +x "$T/shim-nosleep/sleep"
+if cc -o "$T/hold" "$T/hold.c" 2>/dev/null; then
+  live_anode() {  # live_anode HOME: the app there is a real process that stays up until killed; sets LIVE_PID
+    local bin="$1/Applications/Anode.app/Contents/MacOS/AnodeApp"
+    mkdir -p "$(dirname "$bin")"; cp "$T/hold" "$bin"
+    "$bin" 60 & LIVE_PID=$!; REAL_PIDS+=("$LIVE_PID")
+    sleep 0.3   # (the shell's own, not the stub: this is not in a run_anode)
   }
-  H="$(new_home 9)"; stub_app "$H" 1
-  OUT="$(run_anode "$H" "$ROOT/uninstall.sh" --yes 2>&1 || true)"
-  check "the app is asked to put macOS's charge settings back" grep -qx -- "--restore-charge-settings" "$H/restore-asked"
-  check "a failure says macOS may still hold a charge limit"  has "macOS may still hold a charge limit"
-  check "a failure says where to change the limit"            has "System Settings → Battery"
-  check "a failure says what reconnects a charger left off"   has "sudo /Library/PrivilegedHelperTools/dev.anode.app.fanhelper --uninstall"
-  check "and does not promise that a restart reconnects it"   hasnt "restarting the Mac"
-  check "and says the other way: install again, switch Charge Control on, then Install Helper…" \
-                                                              has "install Anode again, switch Charge Control on and press Install Helper…"
-  check "and no longer says the button is there with Charge Control off" \
-                                                              hasnt "press Install Helper… in Charge Control"
-  check "and does not send a Charge Control user to the Fans tab" hasnt "start its helper from the Fans tab"
-  check "a restore that ran says nothing about Anode running" hasnt "still running"
-  check "the app is still removed"                            absent "$H/Applications/Anode.app"
-  # Anode does not finish quitting: a pgrep that always finds it (and writes down how it was asked), and a sleep
-  # that does not wait, so the scenario takes no time.
-  mkdir -p "$T/shim-running"
-  printf '#!/bin/sh\necho "$*" >> "$HOME/pgrep-asked"\nexit 0\n' > "$T/shim-running/pgrep"
-  printf '#!/bin/sh\nexit 0\n' > "$T/shim-running/sleep"
-  chmod +x "$T/shim-running/pgrep" "$T/shim-running/sleep"
-  H="$(new_home 12)"; stub_app "$H" 0
-  RUNNING_STATUS=0
-  SCENARIO_PATH="$T/shim-running"
-  OUT="$(run_anode "$H" "$ROOT/uninstall.sh" --yes 2>&1)" || RUNNING_STATUS=$?
+  H="$(new_home 'a+(b).c')"; live_anode "$H"
+  SCENARIO_PATH="$T/shim-nosleep"
+  RUNNING_STATUS=0; OUT="$(run_anode "$H" "$ROOT/uninstall.sh" --yes 2>&1)" || RUNNING_STATUS=$?
   SCENARIO_PATH=""
-  check "Anode still running after the wait is said, in one line" [ "$(printf '%s\n' "$OUT" | grep -c "still running")" = 1 ]
-  check "and it stops, with a failing exit status"            [ "$RUNNING_STATUS" != 0 ]
-  check "and says to quit Anode and run it again"             has "Quit Anode and run this again"
-  check "and removes nothing (the live app would set its limit again)" present "$H/Applications/Anode.app"
-  check "and does not run the restore against the live app"   absent "$H/restore-asked"
-  check "and does not claim it removed Anode"                 hasnt "Anode has been removed"
-  only_this_user() { [ -s "$H/pgrep-asked" ] && ! grep -qv -- "-U $(id -u) " "$H/pgrep-asked"; }
-  check "only this user's Anode is waited for"                only_this_user
-  H="$(new_home 10)"; stub_app "$H" 0
-  OUT="$(run_anode "$H" "$ROOT/uninstall.sh" --yes 2>&1 || true)"
-  check "a restore that worked says nothing about it"         hasnt "System Settings → Battery"
-  H="$(new_home 11)"; stub_app "$H" 1
-  SCENARIO_ENV=(ANODE_NO_LAUNCH=1)
-  OUT="$(run_anode "$H" "$ROOT/uninstall.sh" --yes 2>&1 || true)"
-  SCENARIO_ENV=()
-  check "ANODE_NO_LAUNCH=1 runs no app"                       absent "$H/restore-asked"
-
-  echo "6b2. An installed app too old to take --restore-charge-settings is not run"
-  # An older app would start its whole interface for the unknown argument, and the script would wait on it.
-  for old in 1.16.0 1.9.9 0.9.0; do
-    H="$(new_home "old-$old")"; stub_app "$H" 1 "$old"
-    OUT="$(run_anode "$H" "$ROOT/uninstall.sh" --yes 2>&1 || true)"
-    check "$old is not run"                                   absent "$H/restore-asked"
-    check "$old: says what was skipped, and why"              has "The installed Anode is version $old, older than 1.17.0"
-    check "$old: says where to change a limit by hand"        has "System Settings → Battery"
-    check "$old: the app is still removed"                    absent "$H/Applications/Anode.app"
-  done
-  for new in 1.17.0 1.17.1 1.18.0 1.100.0 2.0.0; do
-    H="$(new_home "new-$new")"; stub_app "$H" 0 "$new"
-    OUT="$(run_anode "$H" "$ROOT/uninstall.sh" --yes 2>&1 || true)"
-    check "$new is asked to put the charge settings back"     grep -qx -- "--restore-charge-settings" "$H/restore-asked"
-    check "$new: says nothing was skipped"                    hasnt "older than 1.17.0"
-  done
-  H="$(new_home no-plist)"; stub_app "$H" 1 none
-  OUT="$(run_anode "$H" "$ROOT/uninstall.sh" --yes 2>&1 || true)"
-  check "an app whose version cannot be read is not run"      absent "$H/restore-asked"
-  check "and says so"                                         has "Could not tell which version of Anode is installed"
-  check "the app is still removed"                            absent "$H/Applications/Anode.app"
-
-  echo "6b3. The helper that is still installed is removed by its own uninstall, which reconnects the charger"
-  mkdir -p "$T/launch-daemons"; : > "$T/launch-daemons/dev.anode.app.fanhelper.plist"
-  H="$(new_home 17)"; mkdir -p "$H/Applications/Anode.app"
-  SCENARIO_ENV=(ANODE_LAUNCH_DAEMONS_DIR="$T/launch-daemons")
-  OUT="$(run_anode "$H" "$ROOT/uninstall.sh" --yes 2>&1 || true)"
-  SCENARIO_ENV=()
-  check "tells the helper's own uninstall"                    has "sudo /Library/PrivilegedHelperTools/dev.anode.app.fanhelper --uninstall"
-  check "and that it reconnects the charger first"            has "reconnects the charger if Anode had switched it off, then removes itself"
-  check "and no longer tells to delete the helper by hand"    hasnt "sudo rm -f"
-  check "nor to boot it out first"                            hasnt "launchctl bootout system"
-  H="$(new_home 18)"; mkdir -p "$H/Applications/Anode.app"
-  OUT="$(run_anode "$H" "$ROOT/uninstall.sh" --yes 2>&1 || true)"
-  check "with no helper installed it says nothing about one"  hasnt "fan helper is still installed"
-
-  echo "6c. A limit another account's Anode holds is left alone, and said so; the shared record goes only when empty"
-  # Exit status 2 from the restore: the limit in force is another account's running Anode's.
-  H="$(new_home 13)"; stub_app "$H" 2
-  OUT="$(run_anode "$H" "$ROOT/uninstall.sh" --yes 2>&1 || true)"
-  check "says another account's Anode is holding the limit"   has "Another account's Anode is holding macOS's charge limit"
-  check "and that it was left in force"                       has "left in force"
-  check "and does not claim the restore failed"               hasnt "could not put back"
-  check "and does not tell the sudo command for the charger"  hasnt "sudo /Library/PrivilegedHelperTools"
-  check "the app is still removed"                            absent "$H/Applications/Anode.app"
-  # --data and the shared record.
-  mkdir -p "$ANODE_SHARED_CHARGE_DIR"
-  : > "$ANODE_SHARED_CHARGE_DIR/charge-control.json"
-  H="$(new_home 14)"; stub_app "$H" 0
-  OUT="$(run_anode "$H" "$ROOT/uninstall.sh" --yes --data 2>&1 || true)"
-  check "--data removes the shared record when it is empty"   absent "$ANODE_SHARED_CHARGE_DIR/charge-control.json"
-  check "and says so"                                         has "removed  $ANODE_SHARED_CHARGE_DIR/charge-control.json"
-  check "the list says the shared record goes only if empty"  has "but only if it holds no record"
-  check "--data asks for the settings to be cleared"          grep -qx "delete com.anode.settings" "$T/defaults-asked"
-  check "and the app's own domain"                            grep -qx "delete dev.anode.app" "$T/defaults-asked"
-  mkdir -p "$ANODE_SHARED_CHARGE_DIR"
-  printf '{"version":1}' > "$ANODE_SHARED_CHARGE_DIR/charge-control.json"
-  H="$(new_home 15)"; stub_app "$H" 2
-  OUT="$(run_anode "$H" "$ROOT/uninstall.sh" --yes --data 2>&1 || true)"
-  check "--data keeps a shared record that holds a record"    present "$ANODE_SHARED_CHARGE_DIR/charge-control.json"
-  check "and says why"                                        has "kept     $ANODE_SHARED_CHARGE_DIR/charge-control.json"
-  H="$(new_home 16)"; stub_app "$H" 0
-  OUT="$(run_anode "$H" "$ROOT/uninstall.sh" --yes 2>&1 || true)"
-  check "without --data the shared record is not touched"     present "$ANODE_SHARED_CHARGE_DIR/charge-control.json"
+  check "a copy running from a home named a+(b).c is found"   [ "$RUNNING_STATUS" != 0 ] && has "still running"
+  check "and kept"                                            present "$H/Applications/Anode.app"
+  kill "$LIVE_PID" 2>/dev/null; wait "$LIVE_PID" 2>/dev/null
+  SCENARIO_PATH="$T/shim-nosleep"; OUT="$(run_anode "$H" "$ROOT/uninstall.sh" --yes 2>&1 || true)"; SCENARIO_PATH=""
+  check "gone, it is removed"                                 absent "$H/Applications/Anode.app"
+  # Another home whose name the first one's name would match as a pattern (a+ = one or more a, (b) = b, . = any):
+  # its Anode running is not this one's.
+  OTHER="$(new_home 'abZc')"; live_anode "$OTHER"
+  H="$(new_home 'a+(b).c')"; stub_app "$H" 0
+  SCENARIO_PATH="$T/shim-nosleep"; OUT="$(run_anode "$H" "$ROOT/uninstall.sh" --yes 2>&1 || true)"; SCENARIO_PATH=""
+  check "another home's Anode, which only matches as a pattern, is not waited for" hasnt "still running"
+  check "and this one is removed"                             absent "$H/Applications/Anode.app"
+  kill "$LIVE_PID" 2>/dev/null; wait "$LIVE_PID" 2>/dev/null
+else
+  echo "    skip  no C compiler here (xcode-select --install), so no real process to look for"
 fi
+
+H="$(new_home 10)"; stub_app "$H" 0
+OUT="$(run_anode "$H" "$ROOT/uninstall.sh" --yes 2>&1 || true)"
+check "a restore that worked says nothing about it"         hasnt "System Settings → Battery"
+H="$(new_home 11)"; stub_app "$H" 1
+SCENARIO_ENV=(ANODE_NO_LAUNCH=1)
+OUT="$(run_anode "$H" "$ROOT/uninstall.sh" --yes 2>&1 || true)"
+SCENARIO_ENV=()
+check "ANODE_NO_LAUNCH=1 runs no app"                       absent "$H/restore-asked"
+
+echo "6b2. An installed app too old to take --restore-charge-settings is not run"
+# An older app would start its whole interface for the unknown argument, and the script would wait on it.
+for old in 1.16.0 1.9.9 0.9.0; do
+  H="$(new_home "old-$old")"; stub_app "$H" 1 "$old"
+  OUT="$(run_anode "$H" "$ROOT/uninstall.sh" --yes 2>&1 || true)"
+  check "$old is not run"                                   absent "$H/restore-asked"
+  check "$old: says what was skipped, and why"              has "The installed Anode is version $old, older than 1.17.0"
+  check "$old: says where to change a limit by hand"        has "System Settings → Battery"
+  check "$old: the app is still removed"                    absent "$H/Applications/Anode.app"
+done
+for new in 1.17.0 1.17.1 1.18.0 1.100.0 2.0.0; do
+  H="$(new_home "new-$new")"; stub_app "$H" 0 "$new"
+  OUT="$(run_anode "$H" "$ROOT/uninstall.sh" --yes 2>&1 || true)"
+  check "$new is asked to put the charge settings back"     grep -qx -- "--restore-charge-settings" "$H/restore-asked"
+  check "$new: says nothing was skipped"                    hasnt "older than 1.17.0"
+done
+H="$(new_home no-plist)"; stub_app "$H" 1 none
+OUT="$(run_anode "$H" "$ROOT/uninstall.sh" --yes 2>&1 || true)"
+check "an app whose version cannot be read is not run"      absent "$H/restore-asked"
+check "and says so"                                         has "Could not tell which version of Anode is installed"
+check "the app is still removed"                            absent "$H/Applications/Anode.app"
+
+echo "6b3. The helper that is still installed is removed by its own uninstall, which reconnects the charger"
+mkdir -p "$T/launch-daemons"; : > "$T/launch-daemons/dev.anode.app.fanhelper.plist"
+H="$(new_home 17)"; mkdir -p "$H/Applications/Anode.app"
+SCENARIO_ENV=(ANODE_LAUNCH_DAEMONS_DIR="$T/launch-daemons")
+OUT="$(run_anode "$H" "$ROOT/uninstall.sh" --yes 2>&1 || true)"
+SCENARIO_ENV=()
+check "tells the helper's own uninstall"                    has "sudo /Library/PrivilegedHelperTools/dev.anode.app.fanhelper --uninstall"
+check "and that it reconnects the charger first"            has "reconnects the charger if Anode had switched it off, then removes itself"
+check "and no longer tells to delete the helper by hand"    hasnt "sudo rm -f"
+check "nor to boot it out first"                            hasnt "launchctl bootout system"
+H="$(new_home 18)"; mkdir -p "$H/Applications/Anode.app"
+OUT="$(run_anode "$H" "$ROOT/uninstall.sh" --yes 2>&1 || true)"
+check "with no helper installed it says nothing about one"  hasnt "fan helper is still installed"
+
+echo "6c. A limit another account's Anode holds is left alone, and said so; the shared record goes only when empty"
+# Exit status 2 from the restore: the limit in force is another account's running Anode's.
+H="$(new_home 13)"; stub_app "$H" 2
+OUT="$(run_anode "$H" "$ROOT/uninstall.sh" --yes 2>&1 || true)"
+check "says another account's Anode is holding the limit"   has "Another account's Anode is holding macOS's charge limit"
+check "and that it was left in force"                       has "left in force"
+check "and does not claim the restore failed"               hasnt "could not put back"
+check "and does not tell the sudo command for the charger"  hasnt "sudo /Library/PrivilegedHelperTools"
+check "the app is still removed"                            absent "$H/Applications/Anode.app"
+# --data and the shared record.
+mkdir -p "$ANODE_SHARED_CHARGE_DIR"
+: > "$ANODE_SHARED_CHARGE_DIR/charge-control.json"
+H="$(new_home 14)"; stub_app "$H" 0
+OUT="$(run_anode "$H" "$ROOT/uninstall.sh" --yes --data 2>&1 || true)"
+check "--data removes the shared record when it is empty"   absent "$ANODE_SHARED_CHARGE_DIR/charge-control.json"
+check "and says so"                                         has "removed  $ANODE_SHARED_CHARGE_DIR/charge-control.json"
+check "the list says the shared record goes only if empty"  has "but only if it holds no record"
+check "--data asks for the settings to be cleared"          grep -qx "delete com.anode.settings" "$T/defaults-asked"
+check "and the app's own domain"                            grep -qx "delete dev.anode.app" "$T/defaults-asked"
+mkdir -p "$ANODE_SHARED_CHARGE_DIR"
+printf '{"version":1}' > "$ANODE_SHARED_CHARGE_DIR/charge-control.json"
+H="$(new_home 15)"; stub_app "$H" 2
+OUT="$(run_anode "$H" "$ROOT/uninstall.sh" --yes --data 2>&1 || true)"
+check "--data keeps a shared record that holds a record"    present "$ANODE_SHARED_CHARGE_DIR/charge-control.json"
+check "and says why"                                        has "kept     $ANODE_SHARED_CHARGE_DIR/charge-control.json"
+H="$(new_home 16)"; stub_app "$H" 0
+OUT="$(run_anode "$H" "$ROOT/uninstall.sh" --yes 2>&1 || true)"
+check "without --data the shared record is not touched"     present "$ANODE_SHARED_CHARGE_DIR/charge-control.json"
+
+echo "6d. --data after a restore that failed keeps Anode's settings, which remember a charger that may still be off"
+data_home() {  # data_home HOME: settings files and a history in the places --data clears
+  mkdir -p "$1/Library/Preferences" "$1/Library/Application Support/Anode"
+  : > "$1/Library/Preferences/com.anode.settings.plist"; : > "$1/Library/Preferences/dev.anode.app.plist"
+  : > "$1/Library/Application Support/Anode/history.sqlite"
+}
+rm -f "$T/defaults-asked"
+H="$(new_home 24)"; stub_app "$H" 1; data_home "$H"
+OUT="$(run_anode "$H" "$ROOT/uninstall.sh" --yes --data 2>&1 || true)"
+check "the app is still removed"                            absent "$H/Applications/Anode.app"
+check "and the rest of the data (the history)"              absent "$H/Library/Application Support/Anode/history.sqlite"
+check "no settings were cleared"                            absent "$T/defaults-asked"
+check "nor their files deleted"                             present "$H/Library/Preferences/com.anode.settings.plist"
+check "it says the settings were kept, and why"             has "kept     Anode's settings: Anode could not put macOS's own charge settings back"
+check "and how to remove them later, naming the domains"    has "'defaults delete <domain>' for each of: com.anode.settings"
+check "and does not say they were removed"                  hasnt "removed  settings:"
+rm -f "$T/defaults-asked"
+H="$(new_home 25)"; stub_app "$H" 0; data_home "$H"
+OUT="$(run_anode "$H" "$ROOT/uninstall.sh" --yes --data 2>&1 || true)"
+check "a restore that worked clears them as before"         grep -qx "delete com.anode.settings" "$T/defaults-asked"
+check "and their files"                                     absent "$H/Library/Preferences/com.anode.settings.plist"
+check "and says nothing about keeping them"                 hasnt "kept     Anode's settings"
+rm -f "$T/defaults-asked"
+H="$(new_home 26)"; stub_app "$H" 2; data_home "$H"
+OUT="$(run_anode "$H" "$ROOT/uninstall.sh" --yes --data 2>&1 || true)"
+check "another account's limit left in force clears this account's settings" grep -qx "delete com.anode.settings" "$T/defaults-asked"
+rm -f "$T/defaults-asked"
+H="$(new_home 27)"; stub_app "$H" 1
+OUT="$(run_anode "$H" "$ROOT/uninstall.sh" --yes 2>&1 || true)"
+check "without --data a failed restore says nothing about settings being kept" hasnt "kept     Anode's settings"
 
 # ═══ 7. optional: the real thing ════════════════════════════════════════════
 if [ "$FULL" = 1 ]; then
@@ -461,11 +596,9 @@ if [ "$FULL" = 1 ]; then
   # signing key and signs ad hoc; the app must still be signed and verify. Signing with the local identity is
   # what ./make-signing-identity.sh makes, and is not exercised here.
   check "it is signed, and the signature verifies"            codesign --verify --strict "$H/Applications/Anode.app"
-  if [ ! -e /Applications/Anode.app ]; then
-    run_uninstall "$H"
-    check "uninstall removes the app and the source"          [ ! -e "$H/Applications/Anode.app" ] && [ ! -e "$H/.anode" ]
-    check "and the signing keychain"                          absent "$H/Library/Keychains/anode-signing.keychain-db"
-  fi
+  run_uninstall "$H"
+  check "uninstall removes the app and the source"            [ ! -e "$H/Applications/Anode.app" ] && [ ! -e "$H/.anode" ]
+  check "and the signing keychain"                            absent "$H/Library/Keychains/anode-signing.keychain-db"
 fi
 
 echo

@@ -38,6 +38,10 @@ SUPPORT="$HOME/Library/Application Support/Anode"
 SHARED_DIR="${ANODE_SHARED_CHARGE_DIR:-/Users/Shared/Anode}"
 SHARED_RECORD="$SHARED_DIR/charge-control.json"
 DAEMON_LABEL="dev.anode.app.fanhelper"
+# The two places an Anode can be installed. ANODE_SYSTEM_APPLICATIONS_DIR is for the tests, which must not look at, or
+# delete, the real /Applications.
+SYSTEM_APPS_DIR="${ANODE_SYSTEM_APPLICATIONS_DIR:-/Applications}"
+APP_COPIES=("$HOME/Applications/Anode.app" "$SYSTEM_APPS_DIR/Anode.app")
 # Where the helper's launchd job lives. ANODE_LAUNCH_DAEMONS_DIR is for the tests, which must not read the real one.
 LAUNCH_DAEMONS_DIR="${ANODE_LAUNCH_DAEMONS_DIR:-/Library/LaunchDaemons}"
 # The first version of the app that takes --restore-charge-settings. An older app would start its whole interface
@@ -61,8 +65,8 @@ DOMAINS=(com.anode.settings com.betterstats.settings dev.anode.app dev.noah.anod
 # Candidates, existence-checked below. Quoted throughout: every one of these
 # contains a space on a normal Mac.
 CANDIDATES=(
-  "$HOME/Applications/Anode.app"
-  "/Applications/Anode.app"
+  "${APP_COPIES[0]}"
+  "${APP_COPIES[1]}"
   "$HOME/Library/LaunchAgents/dev.anode.app.loginagent.plist"
   "$HOME/Library/LaunchAgents/dev.noah.anode.loginagent.plist"
   "$HOME/Library/LaunchAgents/dev.noah.betterstats.loginagent.plist"
@@ -183,11 +187,16 @@ sleep 1
 # the limit in force is another account's running Anode's, which is left alone and said, and 1 when something may
 # be left). After the quit, so the running copy cannot set its limit again, once it has finished quitting. Only this
 # user's copy is waited for: an Anode another account is running from /Applications is not this one's to wait on.
-# ANODE_NO_LAUNCH=1 skips it.
+# ANODE_NO_LAUNCH=1 skips running the app (it is not a reason to skip looking for a running one).
 #
-# An Anode that is still running after the wait stops the uninstall, with nothing removed: the restore would clear the
-# record while the live app held its limit and set it again, and that limit would outlive the deleted app, with nothing
-# left that could put it back.
+# EVERY installed copy is looked at, not only the first: with one in ~/Applications and one in /Applications, a
+# running second one would be deleted while it holds its limit. An Anode that is still running after the wait stops
+# the uninstall, with nothing removed: the restore would clear the record while the live app held its limit and set it
+# again, and that limit would outlive the deleted app, with nothing left that could put it back.
+#
+# "Running" is a process of this user whose executable is exactly this path: `ps` prints it as the comm column, and it
+# is compared as a string. A pattern (`pgrep -f`) would read a `+`, `(` or `.` in a home folder's name as part of the
+# pattern, and miss the copy or match another.
 #
 # An installed app older than the one that knows the argument is not run: it would start its whole interface, and this
 # script would wait on it. Such a version has no Charge Control, so there is nothing of it to put back; the line says
@@ -203,18 +212,20 @@ version_at_least() {  # version_at_least FOUND NEEDED: both MAJOR.MINOR.PATCH, c
   done
   return 0
 }
-for app in "$HOME/Applications/Anode.app" "/Applications/Anode.app"; do
-  bin="$app/Contents/MacOS/AnodeApp"
-  { [ -x "$bin" ] && [ "${ANODE_NO_LAUNCH:-0}" != "1" ]; } || continue
-  for _ in 1 2 3 4 5; do pgrep -U "$(id -u)" -f "$bin" >/dev/null || break; sleep 1; done
-  if pgrep -U "$(id -u)" -f "$bin" >/dev/null; then
-    echo "Anode is still running, so nothing was removed: while it runs it holds its charge limit, and that would" \
-      "outlive the deleted app. Quit Anode and run this again." >&2
-    exit 1
-  fi
+anode_running() {  # anode_running EXECUTABLE: is a process of this user running exactly that file?
+  local line
+  while IFS= read -r line; do
+    line="${line#"${line%%[![:space:]]*}"}"   # the pid column's leading blanks
+    [ "${line#* }" = "$1" ] && return 0
+  done < <(ps -U "$(id -u)" -o pid=,comm= 2>/dev/null || true)
+  return 1
+}
+# Set when the app could not put macOS's own settings back: --data then keeps Anode's settings (below).
+RESTORE_FAILED=0
+put_charge_settings_back() {  # put_charge_settings_back APP: runs it once, and says what is left, if anything
+  local app="$1" bin="$1/Contents/MacOS/AnodeApp" version="" restore_status=0
   # PlistBuddy on a file that is not there prints a sentence of its own instead of failing quietly, so the file is
   # checked first, and anything that is not a version number is no answer.
-  version=""
   if [ -f "$app/Contents/Info.plist" ]; then
     version="$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$app/Contents/Info.plist" \
       2>/dev/null || true)"
@@ -224,15 +235,14 @@ for app in "$HOME/Applications/Anode.app" "/Applications/Anode.app"; do
     echo "Could not tell which version of Anode is installed in $app, so it was not asked to put macOS's own charge" \
       "settings back (an app older than $RESTORE_ARGUMENT_SINCE cannot do it). If macOS holds a charge limit you did" \
       "not choose, change it in System Settings → Battery."
-    break
+    return 0
   fi
   if ! version_at_least "$version" "$RESTORE_ARGUMENT_SINCE"; then
     echo "The installed Anode is version $version, older than $RESTORE_ARGUMENT_SINCE, the first that can put macOS's" \
       "own charge settings back, so that step was skipped. If macOS holds a charge limit you did not choose, change" \
       "it in System Settings → Battery."
-    break
+    return 0
   fi
-  restore_status=0
   "$bin" --restore-charge-settings >/dev/null 2>&1 || restore_status=$?
   case "$restore_status" in
     0) ;;
@@ -241,14 +251,39 @@ for app in "$HOME/Applications/Anode.app" "/Applications/Anode.app"; do
         "when it quits. If that account no longer uses Anode, change the limit in System Settings → Battery."
       ;;
     *)
+      RESTORE_FAILED=1
       echo "Anode could not put back macOS's own charge settings, so macOS may still hold a charge limit: change it" \
         "in System Settings → Battery. If the battery is not charging on the charger, Anode's helper reconnects it: run" \
         "'sudo /Library/PrivilegedHelperTools/$DAEMON_LABEL --uninstall' if that helper is installed (it reconnects" \
         "the charger, then removes itself), or install Anode again, switch Charge Control on and press Install Helper…"
       ;;
   esac
-  break
+}
+
+BINS=()
+for app in "${APP_COPIES[@]}"; do
+  [ -x "$app/Contents/MacOS/AnodeApp" ] && BINS+=("$app/Contents/MacOS/AnodeApp")
 done
+RUNNING=""
+for _ in 1 2 3 4 5; do
+  RUNNING=""
+  for bin in "${BINS[@]:-}"; do
+    [ -n "$bin" ] && anode_running "$bin" && RUNNING="${RUNNING:+$RUNNING, }$bin"
+  done
+  [ -z "$RUNNING" ] && break
+  sleep 1
+done
+if [ -n "$RUNNING" ]; then
+  echo "Anode is still running ($RUNNING), so nothing was removed: while it runs it holds its charge limit, and that" \
+    "would outlive the deleted app. Quit Anode and run this again." >&2
+  exit 1
+fi
+# The first installed copy puts it back: the limit is the Mac's, not a copy's.
+if [ "${ANODE_NO_LAUNCH:-0}" != "1" ]; then
+  for app in "${APP_COPIES[@]}"; do
+    if [ -x "$app/Contents/MacOS/AnodeApp" ]; then put_charge_settings_back "$app"; break; fi
+  done
+fi
 
 # The shared record goes with --data only when it holds no record: the restore above empties it when this Anode was
 # the last to hold the limit (or nothing ever recorded). A record that is still there is what another account's Anode
@@ -279,7 +314,14 @@ done
 # The hidden folder install.sh made to hold the clone, once it is empty. rmdir refuses otherwise.
 rmdir "$HOME/.anode" 2>/dev/null && echo "removed  $HOME/.anode" || true
 
-if [ "$REMOVE_DATA" = "1" ]; then
+if [ "$REMOVE_DATA" = "1" ] && [ "$RESTORE_FAILED" = "1" ]; then
+  # What remembers that the charger may still be switched off, and what macOS held before Charge Control, is in these
+  # settings: a reinstalled Anode reads them to put both right. Deleting them after a restore that failed would lose the
+  # reminder with the app that could have used it. (The app and the rest of the data go as asked.)
+  echo "kept     Anode's settings: Anode could not put macOS's own charge settings back, and they are what a reinstalled" \
+    "Anode would use to put the charger and the limit right. Once those are right, remove them with" \
+    "'defaults delete <domain>' for each of: ${DOMAINS[*]}"
+elif [ "$REMOVE_DATA" = "1" ]; then
   # Clear the domain first, THEN delete the file. macOS keeps a copy of the
   # settings in memory (cfprefsd) which can write the file straight back, so
   # removing only the .plist is not removal. The app was quit above; deleting
