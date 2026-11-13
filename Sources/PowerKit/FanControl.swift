@@ -44,8 +44,9 @@ public struct FanTarget: Codable, Equatable {
 
 /// What the helper is allowed to be asked to do. Deliberately tiny: the whole
 /// privileged surface is "set fan N to R rpm", "release the fans", "set the
-/// macOS charge limit (20–100%)", "cut the charger to discharge down to a
-/// percentage", and "reconnect it".
+/// macOS charge limit (20–100%)", "wake the Mac at a time and set the limit
+/// then", "cut the charger to discharge down to a percentage", and "reconnect
+/// it".
 public enum FanCommand: Codable, Equatable {
     case setTarget(FanTarget)
     case releaseAll
@@ -57,6 +58,14 @@ public enum FanCommand: Codable, Equatable {
     case discharge(toPercent: Int)
     /// Reconnect the charger.
     case stopDischarge
+    /// Protocol 3. Wake the Mac at `at` and set macOS's charge limit to `limit` (20…100) then, whichever of the
+    /// system's wake notice and the helper's own wall-clock timer says so first, unless no charger is on the
+    /// cable by then. One plan at a time: a new one replaces the old. Kept only while the client that sent it stays
+    /// connected, and dropped, with its wake, when that client goes or the helper stops. `at` is in the future and
+    /// no more than `FanHelperServer.chargePlanReach` away.
+    case scheduleChargeLimit(limit: Int, at: Date)
+    /// Protocol 3. Drop the plan, and the wake it scheduled, writing nothing. Nothing planned is not a failure.
+    case cancelScheduledChargeLimit
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -407,7 +416,7 @@ public struct FanSession: Equatable {
             if !ok { held[t.index] = nil }
         case .releaseAll:
             if ok { held.removeAll() }
-        case .setChargeLimit, .discharge, .stopDischarge:
+        case .setChargeLimit, .discharge, .stopDischarge, .scheduleChargeLimit, .cancelScheduledChargeLimit:
             // Not a fan command; nothing a fan session tracks.
             break
         }

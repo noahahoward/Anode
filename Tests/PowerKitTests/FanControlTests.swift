@@ -1510,6 +1510,22 @@ final class FanDisclosureTests: XCTestCase {
         s.fanDisclosureSeen = true
         XCTAssertTrue(Settings(defaults: defaults).fanDisclosureSeen)
     }
+
+    /// The sheet now also says the helper can wake the Mac at a time Anode gives it. Someone who ticked "Don't show
+    /// this again" on the words before that (stored under the name those words had) has not read it, so it shows once
+    /// more.
+    func testHavingSeenTheWordsBeforeTheWakeDoesNotCountForTheNewOnes() throws {
+        XCTAssertTrue(FanElevation.sessionDisclosure.contains("wake the Mac"))
+        let (defaults, name) = try TestDefaults.make(owner: "FanDisclosure")
+        defer { TestDefaults.destroy(defaults, name) }
+        defaults.set(true, forKey: "anode.fanDisclosureSeenWithCharger")   // what the charger-only sheet left behind
+        let s = Settings(defaults: defaults)
+        XCTAssertFalse(s.fanDisclosureSeen, "the wake was never explained to someone who saw the earlier sheet")
+        s.fanDisclosureSeen = true
+        XCTAssertTrue(Settings(defaults: defaults).fanDisclosureSeen)
+        XCTAssertEqual(defaults.object(forKey: "anode.fanDisclosureSeenWithWake") as? Bool, true,
+                       "stored under the name the new words have")
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

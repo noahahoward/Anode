@@ -469,6 +469,10 @@ public final class FanHelperServer {
         /// wrote the reconnect itself (`noteSystemWillSleep`). The loop owes it
         /// until its OWN read-back shows the charger connected.
         case reconnectOwed
+        /// The wall-clock timer for the plan's moment fired. Carries the
+        /// arming it belongs to, so one that was already on its way when the
+        /// plan was replaced or cancelled is ignored.
+        case planDue(generation: Int)
     }
 
     /// Notices posted from the sleep watch's queue, in the order they came,
@@ -530,6 +534,13 @@ public final class FanHelperServer {
     /// stuck in a call on the first is not in the way and no SMC object is
     /// shared between threads. nil exactly when `charge` is.
     private let chargeWithoutTheLoop: ChargeHardware?
+
+    private let powerEvents: PowerEventScheduler?
+    private let wakeTimer: WallClockTimer
+
+    /// The plan this helper holds: a limit to write at a moment, with a wake scheduled for it. One at a time. Only
+    /// the loop thread touches it.
+    private(set) var chargePlan: ChargePlan?
 
     /// The percentage a discharge stops at, while this helper holds the charger
     /// cut. nil when it holds no cut.
@@ -595,23 +606,38 @@ public final class FanHelperServer {
     /// not answered — a separate connection to the same charger. nil uses
     /// `charge` itself, which is right only for a charger safe to call from
     /// two threads (the tests' fake). Ignored without `charge`.
+    ///
+    /// `powerEvents` is how this helper wakes the Mac for a plan (`scheduleChargeLimit`). nil, which is what every
+    /// server gets that is not told otherwise, refuses plans: only the helper's own `main` hands over the real one,
+    /// so nothing that builds a server, a test least of all, can schedule a wake by accident. `wakeTimer` is its own
+    /// wall-clock timer for the same moment.
     public init(hardware: FanHardware,
                 configuration: Configuration,
                 log: @escaping (String) -> Void = { _ in },
                 charge: ChargeHardware? = nil,
-                sleepCharge: ChargeHardware? = nil) {
+                sleepCharge: ChargeHardware? = nil,
+                powerEvents: PowerEventScheduler? = nil,
+                wakeTimer: WallClockTimer = DispatchWallClockTimer()) {
         self.hardware = hardware
         self.config = configuration
         self.log = log
         self.charge = charge
         self.chargeWithoutTheLoop = charge == nil ? nil : (sleepCharge ?? charge)
+        self.powerEvents = powerEvents
+        self.wakeTimer = wakeTimer
     }
 
     /// Nothing connected, no fan held, the charger not cut, and no reconnect
     /// owed. Only then may an on-demand daemon time out — exiting mid-discharge
     /// would leave the battery draining with nobody watching the floor.
+    ///
+    /// Nor while a plan is pending: the plan is a wake and a write the helper
+    /// has promised, and an on-demand helper that exited would break the
+    /// promise without a word. (A plan only lives while its client is
+    /// connected, which already keeps the helper up; this says it in its own
+    /// right.)
     var isIdle: Bool {
-        clientFD < 0 && holdings.isEmpty && dischargeTarget == nil && !reconnectOwed
+        clientFD < 0 && holdings.isEmpty && dischargeTarget == nil && !reconnectOwed && chargePlan == nil
     }
 
     /// Reconnect a charger cut that no live helper owns.
@@ -1005,7 +1031,7 @@ public final class FanHelperServer {
 
     /// Act on every posted notice, oldest first: a sleep then a wake the loop
     /// was too busy to see must leave the helper awake, not asleep.
-    private func actOnPowerNotices() {
+    func actOnPowerNotices() {
         stateLock.lock()
         let notices = powerNotices
         powerNotices.removeAll()
@@ -1019,6 +1045,8 @@ public final class FanHelperServer {
                 systemDidWake()
             case .reconnectOwed:
                 owesTheSleepWatchsReconnect()
+            case .planDue(let generation):
+                if generation == planGeneration { planTimerFired() }
             }
         }
     }
@@ -1073,8 +1101,13 @@ public final class FanHelperServer {
 
     /// The Mac is awake. LOOP THREAD ONLY. A discharge is NOT resumed: the app
     /// decides again, and asks.
+    ///
+    /// Every wake is a look at the plan: if its moment has come the limit is
+    /// written now, whichever of this notice and the plan's own timer got here
+    /// first. A wake before the moment leaves the plan where it is.
     func systemDidWake() {
         systemAsleep = false
+        firePlanIfDue()
     }
 
     // ── Connections ─────────────────────────────────────────────────────────
@@ -1184,6 +1217,9 @@ public final class FanHelperServer {
         clientFD = -1
         lines.reset()
         let reply = release()
+        // The plan lives on the connection, like a discharge: whoever asked for it is gone, so nothing is written for
+        // it and the Mac is not woken for it.
+        dropPlan(because: "the client went away")
         log("client gone (\(reason))")
         log(reply.message)
     }
@@ -1193,6 +1229,9 @@ public final class FanHelperServer {
         // take the socket away so nothing can reconnect mid-teardown.
         if clientFD >= 0 { dropClient(reason: "the helper is stopping") }
         else { log(release().message) }
+        // Whatever stopped the helper (a signal, an uninstall, its own exit), no wake is left behind and nothing is
+        // written afterwards.
+        dropPlan(because: "the helper is stopping")
         answerPowerNoticesOnTheWayOut()
         if listenFD >= 0 { close(listenFD); listenFD = -1 }
         // Only if we made it. launchd's socket outlives this process on purpose:
@@ -1224,6 +1263,10 @@ public final class FanHelperServer {
             return discharge(to: target)
         case .command(.stopDischarge):
             return stopDischarge()
+        case .command(.scheduleChargeLimit(let limit, let at)):
+            return scheduleChargeLimit(limit, at: at)
+        case .command(.cancelScheduledChargeLimit):
+            return cancelScheduledChargeLimit()
         }
     }
 
@@ -1322,6 +1365,159 @@ public final class FanHelperServer {
         everHeldOrSawACut = true
         log("cut the charger: discharging to \(target)% from \(percent.map { "\($0)%" } ?? "?")")
         return FanReply(ok: true, message: "discharging to \(target)%")
+    }
+
+    /// How far ahead a plan may be: the app's 12 hour window and an hour over for a clock that moved.
+    public static let chargePlanReach: TimeInterval = 13 * 3600
+
+    /// How close to the moment a wake notice or a timer counts as the moment. The system's wake lands within a second
+    /// of what it was asked for, either side; a limit raised a few seconds early costs nothing, and one missed because
+    /// the notice came a second before the moment would cost the whole night.
+    static let chargePlanSlack: TimeInterval = 5
+
+    /// Arm counter for the plan's own timer. Loop thread only.
+    private var planGeneration = 0
+
+    private static let logTime: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime]
+        return f
+    }()
+
+    /// Plan: at `at`, set macOS's charge limit to `limit`, with the Mac woken for it. See `FanCommand`.
+    private func scheduleChargeLimit(_ limit: Int, at: Date) -> FanReply {
+        guard charge != nil else {
+            return FanReply(ok: false, message: ChargeRefusal.noChargeControl)
+        }
+        guard let powerEvents else {
+            return FanReply(ok: false, message: ChargeRefusal.cannotWake)
+        }
+        guard Self.chargeLimitRange.contains(limit) else {
+            return FanReply(ok: false, message: "refused: a charge limit must be "
+                          + "\(Self.chargeLimitRange.lowerBound)–\(Self.chargeLimitRange.upperBound)%")
+        }
+        // A moment that is gone cannot be woken for, and one that is days off is a plan nobody should be holding a
+        // root process up for. (NaN is not after now.)
+        let ahead = at.timeIntervalSince(now())
+        guard ahead > 0 else {
+            return FanReply(ok: false, message: ChargeRefusal.planNotInTheFuture)
+        }
+        guard ahead <= Self.chargePlanReach else {
+            return FanReply(ok: false, message: ChargeRefusal.planTooFarAway)
+        }
+        let when = Self.logTime.string(from: at)
+        // The system keeps whole seconds, so the wake is at the next one: never before the moment.
+        let wakeAt = Date(timeIntervalSince1970: at.timeIntervalSince1970.rounded(.up))
+
+        if var plan = chargePlan, plan.wakeAt == wakeAt {
+            // The same wake again (the app says its plan before every sleep): nothing to schedule twice.
+            plan.limit = limit
+            plan.at = at
+            chargePlan = plan
+            armPlanTimer(for: plan)
+            log("kept the plan: set the macOS charge limit to \(limit)% at \(when), with a wake at that time")
+            return FanReply(ok: true, message: "charge limit \(limit)% planned for \(when)")
+        }
+        guard powerEvents.scheduleWake(at: wakeAt) else {
+            log("the Mac would not take a wake for \(when); no plan was made")
+            return FanReply(ok: false, message: ChargeRefusal.wakeNotScheduled)
+        }
+        // Replaced: the old plan's wake goes now that the new one is in. (Before it, a wake the system refused
+        // would have left no plan at all.)
+        if let old = chargePlan {
+            if !powerEvents.cancelWake(at: old.wakeAt) {
+                log("WARNING: could not cancel the wake for the plan this one replaces; it will wake the Mac once, "
+                  + "and write nothing")
+            }
+        }
+        let plan = ChargePlan(limit: limit, at: at, wakeAt: wakeAt)
+        chargePlan = plan
+        armPlanTimer(for: plan)
+        log("planned: set the macOS charge limit to \(limit)% at \(when), with a wake at that time")
+        return FanReply(ok: true, message: "charge limit \(limit)% planned for \(when)")
+    }
+
+    /// Drop the plan and its wake, writing nothing. Nothing planned is not a failure.
+    private func cancelScheduledChargeLimit() -> FanReply {
+        guard chargePlan != nil else {
+            return FanReply(ok: true, message: "no charge limit was planned")
+        }
+        let clean = dropPlan(because: "the app cancelled it")
+        return FanReply(ok: true, message: clean
+            ? "plan cancelled"
+            : "plan cancelled; its wake could not be removed and will wake the Mac once, writing nothing")
+    }
+
+    /// Forget the plan: the timer stopped, the wake taken away, nothing written. False when the wake could not be
+    /// taken away (it then wakes the Mac once, with nothing to do). Does nothing, and says nothing, when there is no
+    /// plan. LOOP THREAD ONLY.
+    @discardableResult
+    private func dropPlan(because why: String) -> Bool {
+        guard let plan = chargePlan else { return true }
+        chargePlan = nil
+        planGeneration += 1
+        wakeTimer.disarm()
+        let removed = powerEvents?.cancelWake(at: plan.wakeAt) ?? true
+        log("dropped the plan to set the macOS charge limit to \(plan.limit)% at \(Self.logTime.string(from: plan.at)) "
+          + "(\(why)); nothing was written, and its wake is cancelled")
+        if !removed {
+            log("WARNING: the wake for that plan could not be cancelled; it will wake the Mac once and do nothing")
+        }
+        return removed
+    }
+
+    private func armPlanTimer(for plan: ChargePlan) {
+        planGeneration += 1
+        let generation = planGeneration
+        wakeTimer.arm(at: plan.at) { [weak self] in self?.postPlanDue(generation) }
+    }
+
+    /// From the timer's queue: hand the news to the loop, the way a sleep notice is, and write nothing here.
+    private func postPlanDue(_ generation: Int) {
+        stateLock.lock()
+        powerNotices.append(.planDue(generation: generation))
+        stateLock.unlock()
+        wakeLoop()
+    }
+
+    /// The plan's timer fired, on the loop. At the moment, write; before it (the clock moved, or the timer was early),
+    /// wait for the moment again.
+    private func planTimerFired() {
+        guard let plan = chargePlan else { return }
+        if now() >= plan.at.addingTimeInterval(-Self.chargePlanSlack) {
+            writeThePlannedLimit(plan)
+        } else {
+            armPlanTimer(for: plan)
+        }
+    }
+
+    /// A wake notice, or any pass of the loop that asks: write the plan's limit if its moment has come.
+    func firePlanIfDue() {
+        guard let plan = chargePlan, now() >= plan.at.addingTimeInterval(-Self.chargePlanSlack) else { return }
+        writeThePlannedLimit(plan)
+    }
+
+    /// The moment has come: with a charger on the cable, write the limit through the one routine every limit goes
+    /// through; then, however that went, remove the wake and forget the plan. Without a charger, or with a battery
+    /// that cannot be read, nothing is written: a charger pulled while the Mac slept ended what the plan was for.
+    private func writeThePlannedLimit(_ plan: ChargePlan) {
+        chargePlan = nil
+        planGeneration += 1
+        wakeTimer.disarm()
+        if charge?.onAC() == true {
+            if charge?.writeChargeLimit(plan.limit) == true {
+                log("the planned moment has come: set the macOS charge limit to \(plan.limit)%")
+            } else {
+                log("WARNING: the planned moment has come, and the macOS charge limit could not be set to \(plan.limit)%")
+            }
+        } else {
+            log("the planned moment has come, and no charger is on the cable (or the battery cannot be read): "
+              + "the macOS charge limit was not changed")
+        }
+        if powerEvents?.cancelWake(at: plan.wakeAt) == false {
+            log("WARNING: the wake for the plan could not be cancelled; it has done its work and wakes the Mac no more "
+              + "than the once")
+        }
     }
 
     private func stopDischarge() -> FanReply {

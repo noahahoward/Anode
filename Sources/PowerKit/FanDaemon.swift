@@ -96,11 +96,13 @@ import Foundation
 //          Identifier=dev.anode.app   Signature=adhoc   valid on disk
 //
 //      So the installed daemon's real boundary is the uid check, which is the
-//      kernel's and cannot be forged, plus a vocabulary of five commands — set
+//      kernel's and cannot be forged, plus a vocabulary of six commands — set
 //      fan N to R rpm, release the fans, set the macOS charge limit (20–100%),
-//      cut the charger to discharge down to a percentage, and reconnect it —
-//      whose fan values the firmware clamps and whose charge values the helper
-//      range-checks (never below 10%). It is not "only this app". Saying
+//      wake the Mac at a time it is given to raise that limit, cut the charger
+//      to discharge down to a percentage, and reconnect it — whose fan values
+//      the firmware clamps and whose charge values the helper range-checks
+//      (never below 10%, a wake never more than 13 hours ahead). It is not
+//      "only this app". Saying
 //      it were would be the overstatement this project keeps refusing to make.
 //
 // ── WHAT A USER IS AGREEING TO ──────────────────────────────────────────────
@@ -115,19 +117,23 @@ import Foundation
 // RunAtLoad + KeepAlive, which was a permanent root process bought to save a
 // process launch — see `plistDictionary`.
 //
-// While it is up, its entire ability is five commands — set fan N to R rpm,
-// release the fans, set the macOS charge limit (20–100%), cut the charger to
-// discharge down to a percentage, and reconnect it — on request from the uid
-// that installed it. Anything running as that user can ask. What it writes is
-// exactly: the fan keys (`F<n>Tg`, `F<n>md`) within the range each fan reports;
-// the adapter-cut key `CHIE`, with 0x08 or 0x00 and no other value; and one
-// preference, `mclLimitValue` in com.apple.smartcharging.topoffprotection. An
-// attacker who takes it can make the machine loud, hold a fan where the firmware
-// would also hold it — the SMC arbitrates and has been observed clamping a
-// written target upward — stop charging at 20%, or run the battery down to 10%
-// with the cable in. It cannot read anything back to its caller, cannot write
-// any other SMC key or preference, cannot run anything, and has no path or key
-// name in its input.
+// While it is up, its entire ability is six commands — set fan N to R rpm,
+// release the fans, set the macOS charge limit (20–100%), wake the Mac at a
+// time it is given to raise that limit, cut the charger to discharge down to a
+// percentage, and reconnect it — on request from the uid that installed it.
+// Anything running as that user can ask. What it writes is exactly: the fan keys
+// (`F<n>Tg`, `F<n>md`) within the range each fan reports; the adapter-cut key
+// `CHIE`, with 0x08 or 0x00 and no other value; one preference, `mclLimitValue`
+// in com.apple.smartcharging.topoffprotection; and one scheduled wake in the
+// system's own list, under the helper's own name, which it removes again when
+// the moment has come, when the plan is cancelled, when the client goes away
+// and when the helper stops. An attacker who takes it can make the machine
+// loud, hold a fan where the firmware would also hold it — the SMC arbitrates
+// and has been observed clamping a written target upward — stop charging at
+// 20%, run the battery down to 10% with the cable in, or wake the Mac once at a
+// time within the next 13 hours. It cannot read anything back to its caller,
+// cannot write any other SMC key or preference, cannot schedule any other
+// power event, cannot run anything, and has no path or key name in its input.
 //
 // The undo is one button. It removes every file and launchd job this project
 // installed — `FanHelperInstall.artifacts` is the list, and it is asserted
@@ -302,7 +308,10 @@ public enum FanDaemon {
     /// older than this build" and offer to reinstall.
     ///
     /// 2: adds `setChargeLimit`, `discharge` and `stopDischarge`.
-    public static let protocolVersion = 2
+    /// 3: adds `scheduleChargeLimit` and `cancelScheduledChargeLimit`, for Ready By. A helper that speaks 2 closes the
+    /// connection on a command it does not know, which ends a discharge and hands the fans back, so the app sends
+    /// them only to a helper that has said 3.
+    public static let protocolVersion = 3
 
     /// The argument that tells the helper it is the installed daemon rather than
     /// a session helper. The difference is the pin, and where the socket comes
@@ -811,6 +820,7 @@ public enum HelperVocabulary {
         "release the fans",
         "set the macOS charge limit (\(FanHelperServer.chargeLimitRange.lowerBound)–"
             + "\(FanHelperServer.chargeLimitRange.upperBound)%)",
+        "wake the Mac at a time Anode gives it to raise the charge limit",
         "cut the charger to discharge down to a percentage",
         "reconnect it",
     ]
@@ -893,7 +903,8 @@ public enum FanElevation {
     /// can do, because that is what the password is for.
     public static let installPrompt =
         "Anode will install a helper that runs as root and, on request, sets fan "
-        + "speeds, sets the macOS charge limit, and cuts or reconnects the charger: "
+        + "speeds, sets the macOS charge limit, wakes the Mac at a time Anode gives "
+        + "it to raise that limit, and cuts or reconnects the charger: "
         + "\(FanDaemon.helperPath) and \(FanDaemon.plistPath). "
         + "Uninstalling from the Fans tab removes both."
 
@@ -944,7 +955,7 @@ public enum FanElevation {
     // ── What the person is told before authorising ──────────────────────────
     //
     // Here rather than in the app so a test can hold every one of them to the
-    // helper's real vocabulary. Each names all five commands, in
+    // helper's real vocabulary. Each names all six commands, in
     // `HelperVocabulary.sentence`, because each is the last thing a person reads
     // before giving a root process that power.
 
@@ -956,6 +967,15 @@ public enum FanElevation {
     \(FanHelperServer.chargeLimitRange.lowerBound)%, and for every user of this Mac \
     — stays in force until Anode quits, you switch Charge Control off, or you \
     change the limit in System Settings → Battery.
+    """
+
+    /// What the wake the helper can make comes to, in plain words, in both sheets. The wake is the helper's to make
+    /// and to keep only while Anode is connected, and it is one event the helper takes away again itself.
+    public static let wakeForTheLimit = """
+    The helper can also wake the Mac, once, at a time Anode gives it, to raise \
+    the charge limit then (Charge Control's Ready By). It keeps that wake only \
+    while Anode stays connected: if you quit Anode, stop the helper or remove \
+    it, the wake is cancelled and nothing is written.
     """
 
     /// The sheet before the session helper is first started (the Terminal
@@ -970,6 +990,8 @@ public enum FanElevation {
     slider opens a Terminal window with the command below; you read it, \
     authenticate, and stop it with ⌃C. The fans go back to automatic control and \
     the charger is reconnected when you do — or if Anode quits or crashes.
+
+    \(wakeForTheLimit)
 
     \(chargeLimitOutlivesTheHelper)
 
@@ -1004,6 +1026,8 @@ public enum FanElevation {
     The safer alternative is in the Fans tab: run the Anode helper by hand \
     when you want it, and stop it with ⌃C. It costs one command each session \
     and it only ever trusts the exact build you started it beside.
+
+    \(wakeForTheLimit)
 
     "Uninstall Fan Helper…" in the Fans tab removes both files, unloads the \
     daemon, hands the fans back and reconnects the charger. \

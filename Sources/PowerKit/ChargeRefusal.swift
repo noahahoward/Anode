@@ -57,4 +57,16 @@ public enum ChargeRefusal {
     /// cut (exactly 0x08): connected, unreadable, or some other value, which
     /// the undo writes back to 0x00.
     public static let cutNotKept = "the SMC took the cut and the charger does not read as cut"
+
+    /// A plan for a wake the helper cannot make: it was built without a way to schedule one. Lasts its whole life.
+    public static let cannotWake = "this helper cannot wake the Mac"
+
+    /// The plan's moment is not after now.
+    public static let planNotInTheFuture = "refused: the time to raise the charge limit is not in the future"
+
+    /// The plan's moment is further off than `FanHelperServer.chargePlanReach`.
+    public static let planTooFarAway = "refused: the time to raise the charge limit is too far away"
+
+    /// The system would not take the wake. Nothing was planned.
+    public static let wakeNotScheduled = "the Mac would not take the wake, so nothing was planned"
 }

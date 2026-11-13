@@ -37,8 +37,10 @@ final class ChargeHelperTestsWatch: XCTestCase {
         XCTAssertFalse(DischargeWatch.shouldRestore(target: 40, percent: 70, onAC: nil))
     }
 
-    func testProtocolVersionIsTwo() {
-        XCTAssertEqual(FanDaemon.protocolVersion, 2)
+    /// 3 adds the plan for Ready By; the commands before it are the same, so a protocol 2 helper still serves them
+    /// (`ChargeHelperPlanTests` pins the version itself and what 3 adds).
+    func testProtocolVersionIsAtLeastTwo() {
+        XCTAssertGreaterThanOrEqual(FanDaemon.protocolVersion, 2)
     }
 
     func testWireRoundTripOfChargeCommands() throws {
@@ -578,16 +580,18 @@ final class ChargeHelperTestsDisclosure: XCTestCase {
             "set fan N to R rpm",
             "release the fans",
             "set the macOS charge limit (20–100%)",
+            "wake the Mac at a time Anode gives it to raise the charge limit",
             "cut the charger to discharge down to a percentage",
             "reconnect it",
         ])
         XCTAssertEqual(HelperVocabulary.sentence,
                        "set fan N to R rpm, release the fans, set the macOS charge limit "
-                     + "(20–100%), cut the charger to discharge down to a percentage, "
+                     + "(20–100%), wake the Mac at a time Anode gives it to raise the charge limit, "
+                     + "cut the charger to discharge down to a percentage, "
                      + "and reconnect it")
     }
 
-    /// Both sheets that come before a root helper is authorised name all five
+    /// Both sheets that come before a root helper is authorised name all six
     /// commands. They described a fan-only helper after the charger commands
     /// were added, so a person agreed to one thing and installed another.
     func testEverySheetBeforeAuthorisingNamesTheWholeVocabulary() {
@@ -621,8 +625,27 @@ final class ChargeHelperTestsDisclosure: XCTestCase {
         XCTAssertFalse(FanElevation.installDisclosure.contains("every trace"))
     }
 
+    /// The helper can wake the Mac. Both sheets say so in plain words, say when, and say what ends the wake: it is the
+    /// one thing the helper does that nobody is watching happen.
+    func testEverySheetBeforeAuthorisingSaysTheHelperCanWakeTheMac() {
+        let sheets = ["install sheet": FanElevation.installDisclosure,
+                      "session sheet": FanElevation.sessionDisclosure]
+        for (name, text) in sheets {
+            XCTAssertTrue(text.contains("wake the Mac at a time Anode gives it"), "the \(name) does not say it")
+            XCTAssertTrue(text.contains(FanElevation.wakeForTheLimit), "the \(name) omits the paragraph about the wake")
+        }
+        let wake = FanElevation.wakeForTheLimit
+        XCTAssertTrue(wake.contains("wake the Mac, once, at a time Anode gives it"), wake)
+        XCTAssertTrue(wake.contains("raise the charge limit"), wake)
+        XCTAssertTrue(wake.contains("only while Anode stays connected"), wake)
+        XCTAssertTrue(wake.contains("the wake is cancelled and nothing is written"), wake)
+        XCTAssertTrue(wake.contains("Ready By"), "the person knows the feature by its name: \(wake)")
+        XCTAssertFalse(wake.contains("\\"), "a line continuation leaked into the text")
+    }
+
     func testTheSystemPromptsNameTheCharger() {
         XCTAssertTrue(FanElevation.installPrompt.contains("charge limit"))
+        XCTAssertTrue(FanElevation.installPrompt.contains("wakes the Mac at a time Anode gives it"))
         XCTAssertTrue(FanElevation.installPrompt.contains("cuts or reconnects the charger"))
         XCTAssertTrue(FanElevation.uninstallPrompt.contains("reconnect the charger"))
         XCTAssertTrue(FanElevation.uninstallDone.contains("the charger is reconnected"))
