@@ -23,6 +23,21 @@ final class UninstallDataTests: XCTestCase {
         XCTAssertTrue(plan.data.isEmpty)
     }
 
+    /// The settings the script clears and the ones the app's plan clears are the same list, in the same order. A
+    /// domain added to one and not the other is a setting that "remove my data" leaves behind.
+    func testTheScriptClearsTheSameSettingsDomains() throws {
+        let script = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("uninstall.sh")
+        let text = try String(contentsOf: script, encoding: .utf8)
+        let line = try XCTUnwrap(text.split(separator: "\n").first { $0.hasPrefix("DOMAINS=(") },
+                                 "uninstall.sh has no DOMAINS=(…) line")
+        let inside = try XCTUnwrap(line.split(separator: "(").last?.split(separator: ")").first)
+        let domains = inside.split(separator: " ").map(String.init)
+        XCTAssertEqual(domains, Uninstall.defaultsDomainNames,
+                       "uninstall.sh clears a different list of settings domains than the app's uninstall plan")
+    }
+
     func testTheScriptRemovesTheSameFiles() throws {
         let script = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
