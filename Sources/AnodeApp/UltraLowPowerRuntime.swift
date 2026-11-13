@@ -84,6 +84,7 @@ final class UltraLowPowerRuntime {
     private let workspace: NotificationCenter
     private let center: NotificationCenter
     private let appPID: (Notification) -> pid_t?
+    private let appBundleID: (Notification) -> String?
     private let frontmostPID: () -> pid_t?
     private let ownPIDs: () -> Set<pid_t>
     private let lastOtherFront: () -> pid_t?
@@ -113,14 +114,15 @@ final class UltraLowPowerRuntime {
     var isWatchingBrightness: Bool { stopBrightnessWatch != nil }
 
     init(settings: Settings, processes: ProcessListing, freezer: ProcessFreezing, throttler: ProcessThrottling,
-         processTable: @escaping () -> [UltraProcess]?, hasEfficiencyCores: Bool, hider: AppHiding, backlight: BacklightControl,
+         processTable: @escaping () -> [UltraProcess]?, startTime: @escaping (pid_t) -> UInt64?, hasEfficiencyCores: Bool,
+         hider: AppHiding, backlight: BacklightControl,
          ownBrightness: OwnBrightness, rate: DisplayRateControlling, keyboard: KeyboardBacklightControlling,
          power: PowerModeControlling, watchdog: UltraWatchdogging, store: UltraRecordStoring, confirm: UltraConfirming,
          backdrop: BackdropPresenting, load: LoadReading, widgets: UltraReadingHosting, icon: UltraIconPresenting,
          presentMenu: @escaping (NSMenu, NSStatusBarButton) -> Void, openBetaFeatures: @escaping () -> Void,
          registerShortcut: @escaping (@escaping () -> Void) -> Void, unregisterShortcut: @escaping () -> Void,
          work: UltraWorkRunning, startTicker: @escaping UltraTicker, workspace: NotificationCenter, center: NotificationCenter,
-         appPID: @escaping (Notification) -> pid_t?, frontmostPID: @escaping () -> pid_t?, windows: @escaping () -> [UltraWindow], ownPID: pid_t, user: uid_t,
+         appPID: @escaping (Notification) -> pid_t?, appBundleID: @escaping (Notification) -> String?, frontmostPID: @escaping () -> pid_t?, windows: @escaping () -> [UltraWindow], ownPID: pid_t, user: uid_t,
          log: @escaping (String) -> Void, schedule: @escaping (TimeInterval, @escaping () -> Void) -> Void,
          alert: @escaping () -> Void) {
         self.settings = settings
@@ -137,6 +139,7 @@ final class UltraLowPowerRuntime {
         self.workspace = workspace
         self.center = center
         self.appPID = appPID
+        self.appBundleID = appBundleID
         self.frontmostPID = frontmostPID
         self.user = user
         self.log = log
@@ -155,7 +158,7 @@ final class UltraLowPowerRuntime {
         self.lastOtherFront = lastOtherFront
         controller = UltraLowPowerController(
             settings: settings, processes: processes, freezer: freezer, throttler: throttler,
-            processTable: processTable, hasEfficiencyCores: hasEfficiencyCores, hider: hider, backlight: backlight,
+            processTable: processTable, startTime: startTime, hasEfficiencyCores: hasEfficiencyCores, hider: hider, backlight: backlight,
             ownBrightness: ownBrightness, rate: rate, keyboard: keyboard, power: power, watchdog: watchdog, store: store,
             confirm: confirm, backdrop: backdrop, load: load, lastOtherFrontApp: lastOtherFront, ownPIDs: ownPIDs, user: user,
             work: { work.run($0) }, waitForWork: { work.waitUntilIdle(limit: $0) }, schedule: schedule, alert: alert, log: log)
@@ -177,6 +180,7 @@ final class UltraLowPowerRuntime {
         let runtime = UltraLowPowerRuntime(
             settings: .shared, processes: LiveProcessList(), freezer: LiveProcessFreezer(),
             throttler: LiveProcessThrottler(), processTable: LiveProcessList.processTable,
+            startTime: { LiveProcessList.startTime($0) },
             hasEfficiencyCores: LiveProcessThrottler.hasEfficiencyCores,
             hider: LiveAppHider(), backlight: DisplayServicesBacklight(), ownBrightness: OwnBrightness.shared, rate: LiveDisplayRate(),
             keyboard: LiveKeyboardBacklight(), power: HelperPowerMode(), watchdog: LiveUltraWatchdog(recordURL: url, log: log),
@@ -199,6 +203,7 @@ final class UltraLowPowerRuntime {
             unregisterShortcut: { KeybindCenter.shared.unregister(owner: shortcutOwner) },
             work: UltraWorkQueue(), startTicker: liveTicker,
             workspace: NSWorkspace.shared.notificationCenter, center: .default, appPID: liveAppPID,
+            appBundleID: liveAppBundleID,
             frontmostPID: { NSWorkspace.shared.frontmostApplication?.processIdentifier }, windows: liveWindows, ownPID: getpid(), user: getuid(),
             log: log, schedule: { delay, work in DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work) },
             alert: { NSSound.beep() })
@@ -224,6 +229,10 @@ final class UltraLowPowerRuntime {
 
     static func liveAppPID(_ note: Notification) -> pid_t? {
         (note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication)?.processIdentifier
+    }
+
+    static func liveAppBundleID(_ note: Notification) -> String? {
+        (note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication)?.bundleIdentifier
     }
 
     /// The app to keep when no other app has come forward since the box was ticked (Anode's own window was in front when it was
@@ -287,7 +296,7 @@ final class UltraLowPowerRuntime {
         }
         activationToken = observe(workspace, NSWorkspace.didActivateApplicationNotification) { [weak self] note in
             guard let pid = self?.appPID(note) else { return }
-            self?.activated(pid)
+            self?.activated(pid, bundleID: self?.appBundleID(note))
         }
         // Paused for as long as the mode is on, window open or not: the numbers would be hours old and look live.
         widgets.isPaused = { UltraQuiet.isOn }
@@ -308,8 +317,8 @@ final class UltraLowPowerRuntime {
 
     /// An app came forward. One the mode has frozen is let go first (its Dock icon, the app switcher); any other that is not
     /// Anode's own is the app to keep if the mode is asked for next.
-    private func activated(_ pid: pid_t) {
-        controller.appActivated(pid: pid)
+    private func activated(_ pid: pid_t, bundleID: String?) {
+        controller.appActivated(pid: pid, bundleID: bundleID)
         if !ownPIDs().contains(pid) { front.pid = pid }
     }
 

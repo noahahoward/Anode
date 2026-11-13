@@ -173,7 +173,12 @@ final class UltraLowPowerControllerTests: XCTestCase {
         private(set) var started = 0
         private(set) var stopped = 0
         init(_ calls: Calls) { self.calls = calls }
-        func start() -> Bool { calls.add("watchdog start"); started += 1; return startResult }
+        func start() -> Bool {
+            calls.add("watchdog start"); started += 1
+            // A watchdog that started is running, under a pid of its own; one already running is left as it is.
+            if startResult, pid == nil { pid = pid_t(1000 + started) }
+            return startResult
+        }
         func stop() { calls.add("watchdog stop"); stopped += 1 }
     }
 
@@ -284,6 +289,10 @@ final class UltraLowPowerControllerTests: XCTestCase {
     /// gives its own reader (one that cannot read the table, say). `tableReads` says how often it was read.
     private var tableReader: (() -> [UltraProcess]?)?
     private var tableReads = 0
+    /// What the fake system says a pid's start time is: `proc` gives each process pid * 10. A pid in `recycled` is another process
+    /// now (a different start time); one in `gone` is not there.
+    private var recycled: [pid_t: UInt64] = [:]
+    private var gone: Set<pid_t> = []
     /// Whether this Mac has efficiency cores, as the controller is told when it is made.
     private var hasEfficiencyCores = true
     /// What the fake system answers to "who is in front" and "which processes are Anode's".
@@ -326,6 +335,7 @@ final class UltraLowPowerControllerTests: XCTestCase {
                 if let reader = self.tableReader { return reader() }
                 return self.processes.list
             },
+            startTime: { [unowned self] pid in self.gone.contains(pid) ? nil : (self.recycled[pid] ?? UInt64(pid) * 10) },
             hasEfficiencyCores: hasEfficiencyCores, hider: hider, backlight: backlight,
             ownBrightness: own, rate: rate, keyboard: keyboard, power: power, watchdog: watchdog, store: store,
             confirm: confirm, backdrop: backdrop, load: load,
@@ -3074,5 +3084,173 @@ final class UltraLowPowerControllerTests: XCTestCase {
         XCTAssertEqual(controller.state, .confirming)
         XCTAssertNotNil(store.record)
         XCTAssertEqual(watchdog.stopped, 0)
+    }
+
+    // ── What the mode leaves alone: a reopened app, an activation by group, a recycled pid, the watchdog ─
+
+    /// The browser quit (killed) and opened again since the start: a new app process, and a helper of it.
+    private var worldWithTheBrowserReopened: [UltraProcess] {
+        world.filter { ![20, 21].contains($0.pid) } + [
+            proc(22, path: "/Applications/Browser.app/Contents/MacOS/Browser", app: .regular, bundle: "com.example.browser", name: "Browser"),
+            helper(23, of: 22, in: "Browser")]
+    }
+
+    func testAFrozenAppThatWasQuitAndOpenedAgainIsReleasedAtTheSweepAndNotFrozenAgain() {
+        start()
+        processes.list = worldWithTheBrowserReopened
+        fire(30)
+        XCTAssertEqual(groupIDs(controller.frozen), ["com.example.sync"], "the browser is the owner's again")
+        XCTAssertEqual(freezer.stops, [20, 21, 30], "neither the new app nor its new helper is stopped")
+        XCTAssertEqual(freezer.resumes, [20, 21], "its old members are continued, as a release does")
+        XCTAssertEqual(store.record?.groups.first { $0.id == "com.example.browser" }?.released, true)
+        XCTAssertFalse(controller.isFrozen(pid: 22))
+        XCTAssertFalse(controller.isFrozen(pid: 23))
+        XCTAssertEqual(controller.releasedForLoad, [], "the owner did this, not the guard")
+        XCTAssertTrue(logged.contains { $0.contains("Browser") && $0.contains("opened again") }, "\(logged)")
+    }
+
+    func testAReopenedAppIsKeptOnTheEfficiencyCoresInTheSameSweep() {
+        start()
+        processes.list = worldWithTheBrowserReopened
+        fire(30)
+        XCTAssertTrue(throttler.throttled.contains(22), "the new app is what keeps running now: \(throttler.throttled)")
+        XCTAssertTrue(throttler.throttled.contains(23))
+        XCTAssertEqual(namedThrottled?.contains(22), true, "named before it was slowed")
+    }
+
+    func testAReopenedAppIsNotLoadedAgainOrGuardedAsAFreezeStep() {
+        start()
+        processes.list = worldWithTheBrowserReopened
+        let reads = load.reads
+        fire(30)
+        XCTAssertEqual(load.reads, reads, "nothing was stopped, so no 'before' reading")
+    }
+
+    func testANewHelperOfAFrozenAppThatWasNotReopenedIsStillStopped() {
+        start()
+        processes.list = world + [helper(22, of: 20, in: "Browser")]
+        fire(30)
+        XCTAssertEqual(freezer.stops, [20, 21, 30, 22])
+        XCTAssertEqual(groupIDs(controller.frozen), ["com.example.browser", "com.example.sync"])
+        XCTAssertEqual(freezer.resumes, [])
+    }
+
+    func testAReopenedAppAndANewHelperOfAnotherFrozenAppAreEachDealtWithAtTheSameSweep() {
+        start()
+        processes.list = worldWithTheBrowserReopened + [helper(32, of: 30, in: "Sync")]
+        fire(30)
+        XCTAssertEqual(groupIDs(controller.frozen), ["com.example.sync"])
+        XCTAssertEqual(freezer.stops, [20, 21, 30, 32], "the sync agent's new part is stopped; the browser's is not")
+    }
+
+    func testActivationUnderANewPidReleasesTheGroupByItsBundleId() {
+        start()
+        controller.appActivated(pid: 22, bundleID: "com.example.browser")   // the reopened browser, which no list has seen
+        XCTAssertEqual(groupIDs(controller.frozen), ["com.example.sync"])
+        XCTAssertEqual(freezer.resumes, [20, 21])
+        XCTAssertEqual(store.record?.groups.first { $0.id == "com.example.browser" }?.released, true)
+    }
+
+    func testActivationUnderAPidTheLastListPlacedInAFrozenGroupReleasesItWhateverThePid() {
+        start()
+        // 31 is an extension macOS hosts for the sync agent: in its group, never stopped, so not one of its members.
+        XCTAssertFalse(controller.isFrozen(pid: 31))
+        controller.appActivated(pid: 31)
+        XCTAssertEqual(groupIDs(controller.frozen), ["com.example.browser"])
+        XCTAssertEqual(freezer.resumes, [30])
+    }
+
+    func testActivationUnderAPidNobodyKnowsAndNoBundleIdReleasesNothing() {
+        start()
+        controller.appActivated(pid: 22)
+        controller.appActivated(pid: 22, bundleID: "com.example.unrelated")
+        controller.appActivated(pid: 10, bundleID: "com.example.editor")   // the kept editor: not frozen
+        XCTAssertEqual(groupIDs(controller.frozen), ["com.example.browser", "com.example.sync"])
+        XCTAssertEqual(freezer.resumes, [])
+    }
+
+    func testActivationIsPlacedWithTheLatestListTheSweepRead() {
+        start()
+        processes.list = world + [helper(22, of: 20, in: "Browser")]
+        fire(30)        // 22 was stopped and is a member now; the next one is a part the sweep read but did not stop
+        freezer.refuse = [24]
+        processes.list = world + [helper(22, of: 20, in: "Browser"), helper(24, of: 30, in: "Sync")]
+        fire(30)
+        controller.appActivated(pid: 24)
+        XCTAssertEqual(groupIDs(controller.frozen), ["com.example.browser"], "24 belongs to the sync agent, which is released")
+    }
+
+    func testAnAppWhosePidWasReusedSinceThePlanWasMadeIsNotHidden() {
+        controller.request()
+        recycled[20] = 999          // the box was up for minutes; the browser quit and another process took its pid
+        confirm.press(true)
+        XCTAssertEqual(hider.hidden, [], "an app that is not the one that was planned is not hidden")
+        XCTAssertNil(store.record?.groups.first { $0.id == "com.example.browser" }?.appPID)
+        XCTAssertEqual(controller.state, .on, "and the start goes on")
+        XCTAssertTrue(logged.contains { $0.contains("not hidden") && $0.contains("20") }, "\(logged)")
+        controller.turnOff()
+        XCTAssertEqual(hider.unhidden, [], "only what Anode hid is ever unhidden")
+    }
+
+    func testAnAppThatIsGoneBeforeItWouldBeHiddenIsNotHidden() {
+        controller.request()
+        gone = [20]
+        confirm.press(true)
+        XCTAssertEqual(hider.hidden, [])
+        XCTAssertEqual(controller.state, .on)
+    }
+
+    func testAnAppThatIsStillTheSameProcessIsHidden() {
+        start()
+        XCTAssertEqual(hider.hidden, [20])
+        XCTAssertEqual(store.record?.groups.first { $0.id == "com.example.browser" }?.appPID, 20)
+    }
+
+    func testAWatchdogThatEndedIsStartedAgainAtTheNextSweepAndOnlyThen() {
+        start()
+        XCTAssertEqual(watchdog.started, 1)
+        fire(30)
+        XCTAssertEqual(watchdog.started, 1, "it is running: nothing to do")
+        watchdog.pid = nil          // it died
+        XCTAssertEqual(watchdog.started, 1, "nothing looks until the sweep does")
+        fire(30)
+        XCTAssertEqual(watchdog.started, 2)
+        XCTAssertNotNil(watchdog.pid)
+        XCTAssertEqual(logged.filter { $0.contains("watchdog") }.count, 1, "one line for the one restart: \(logged)")
+        fire(30)
+        XCTAssertEqual(watchdog.started, 2)
+        XCTAssertEqual(logged.filter { $0.contains("watchdog") }.count, 1)
+    }
+
+    func testTheNewWatchdogIsAnodesOwnAndIsNeverStopped() {
+        start()
+        watchdog.pid = nil
+        fire(30)                    // restarted, under a pid of its own
+        guard let pid = watchdog.pid else { return XCTFail("no watchdog") }
+        processes.list = world + [proc(pid, parent: 20, path: "/var/tmp/watchdog-copy")]
+        fire(30)
+        XCTAssertFalse(freezer.stops.contains(pid), "a child of a frozen app that is Anode's own watchdog is not frozen")
+    }
+
+    func testAWatchdogThatCannotBeStartedAgainIsSaidAndTheSessionGoesOn() {
+        start()
+        watchdog.pid = nil
+        watchdog.startResult = false
+        processes.list = world + [helper(22, of: 20, in: "Browser")]
+        fire(30)
+        XCTAssertEqual(watchdog.started, 2, "it was tried")
+        XCTAssertTrue(logged.contains { $0.contains("watchdog") && $0.contains("could not") }, "\(logged)")
+        XCTAssertEqual(controller.state, .on)
+        XCTAssertTrue(freezer.stops.contains(22), "the sweep did the rest of its work")
+        XCTAssertTrue(scheduled.contains { $0.delay == 30 }, "and goes on looking")
+    }
+
+    func testTheSweepOfAnEndedModeDoesNotLookAtTheWatchdog() {
+        start()
+        watchdog.pid = nil
+        controller.turnOff()
+        let started = watchdog.started
+        controller.sweep()
+        XCTAssertEqual(watchdog.started, started)
     }
 }

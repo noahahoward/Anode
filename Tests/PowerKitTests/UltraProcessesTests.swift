@@ -13,9 +13,9 @@ final class UltraProcessesTests: XCTestCase {
     // ── Fixtures ────────────────────────────────────────────────────────────
 
     private func kernel(_ pid: pid_t, parent: pid_t = 1, uid: uid_t = 501, start: UInt64? = nil, command: String = "",
-                        path: String = "", responsible: pid_t? = nil) -> LiveProcessList.KernelRow {
+                        path: String = "", responsible: pid_t? = nil, stopped: Bool = false) -> LiveProcessList.KernelRow {
         LiveProcessList.KernelRow(pid: pid, parent: parent, uid: uid, startTime: start ?? UInt64(pid) * 10,
-                                  command: command, path: path, responsible: responsible)
+                                  command: command, path: path, responsible: responsible, stopped: stopped)
     }
 
     private func assemble(_ rows: [LiveProcessList.KernelRow], apps: [pid_t: LiveProcessList.AppRow] = [:],
@@ -51,6 +51,23 @@ final class UltraProcessesTests: XCTestCase {
                          app: .none, bundleID: nil, name: "devserver", launchdLabel: "com.example.devserver",
                          team: "TEAM2", ownsEventTap: false, usesMicOrCamera: false),
         ])
+    }
+
+    /// What the kernel says about a process that was stopped before the mode was: it is carried through, so the plan can leave it
+    /// alone.
+    func testAProcessTheKernelHadStoppedAppearsAsStopped() {
+        let list = assemble([kernel(10, path: editorPath, stopped: true), kernel(11, parent: 10)])
+        XCTAssertEqual(list.map(\.stopped), [true, false])
+    }
+
+    func testOnlyTheKernelsStoppedStatusMeansStopped() {
+        XCTAssertTrue(LiveProcessList.isStopped(status: CChar(SSTOP)))
+        for other in [SIDL, SRUN, SSLEEP, SZOMB] { XCTAssertFalse(LiveProcessList.isStopped(status: CChar(other)), "status \(other)") }
+    }
+
+    func testThisProcessIsNotReadAsStopped() {
+        let me = getpid()
+        XCTAssertEqual(LiveProcessList.kernelRows()?.first { $0.pid == me }?.stopped, false)
     }
 
     func testAProcessWithNoReadablePathStillAppears() {

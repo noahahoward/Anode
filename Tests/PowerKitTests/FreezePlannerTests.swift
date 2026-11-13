@@ -12,11 +12,11 @@ final class FreezePlannerTests: XCTestCase {
     /// A process with ids made up for the test. The start time follows the pid so two processes never look alike.
     private func proc(_ pid: pid_t, parent: pid_t = 1, uid: uid_t = 501, path: String = "", responsible: pid_t? = nil,
                       app: AppKind = .none, bundle: String? = nil, name: String? = nil, label: String? = nil,
-                      team: String? = nil, tap: Bool = false, mic: Bool = false) -> UltraProcess {
+                      team: String? = nil, tap: Bool = false, mic: Bool = false, stopped: Bool = false) -> UltraProcess {
         let leaf = path.split(separator: "/").last.map(String.init) ?? "p\(pid)"
         return UltraProcess(pid: pid, parent: parent, uid: uid, startTime: UInt64(pid) * 10, path: path,
                             responsible: responsible, app: app, bundleID: bundle, name: name ?? leaf,
-                            launchdLabel: label, team: team, ownsEventTap: tap, usesMicOrCamera: mic)
+                            launchdLabel: label, team: team, ownsEventTap: tap, usesMicOrCamera: mic, stopped: stopped)
     }
 
     private func app(_ pid: pid_t, _ id: String, _ name: String, kind: AppKind = .regular, parent: pid_t = 1,
@@ -49,6 +49,74 @@ final class FreezePlannerTests: XCTestCase {
         XCTAssertTrue(p.kept.isEmpty, "kept: \(p.kept)", file: file, line: line)
         XCTAssertTrue(p.frozen.isEmpty, "frozen: \(p.frozen)", file: file, line: line)
         XCTAssertTrue(p.leftRunning.isEmpty, "leftRunning: \(p.leftRunning)", file: file, line: line)
+    }
+
+    // ── Input methods ───────────────────────────────────────────────────────
+
+    /// Stopping the one that is in use stalls typing in every app, so it is the system's wherever its file is.
+    func testAnInputMethodIsSystemWhereverItsFolderIs() {
+        for folder in ["/Library/Input Methods/", "/Users/someone/Library/Input Methods/", "/Applications/Suite.app/Contents/Input Methods/"] {
+            let method = proc(40, path: folder + "Kana.app/Contents/MacOS/Kana", app: .accessory, bundle: "com.example.kana", name: "Kana")
+            XCTAssertTrue(FreezePlanner.isSystem(method), folder)
+            assertNowhere(plan([editor(), method], front: 10).withoutKept())
+        }
+    }
+
+    func testAnInputMethodThatIsAnAppWithADockIconOrNoAppAtAllIsSystemToo() {
+        let regular = proc(41, path: "/Library/Input Methods/Pinyin.app/Contents/MacOS/Pinyin", app: .regular, bundle: "com.example.pinyin", name: "Pinyin")
+        let tool = proc(42, path: "/Users/someone/Library/Input Methods/helper", app: .none, name: "helper")
+        XCTAssertTrue(FreezePlanner.isSystem(regular))
+        XCTAssertTrue(FreezePlanner.isSystem(tool))
+        XCTAssertEqual(ids(plan([editor(), regular, tool], front: 10).frozen), [])
+    }
+
+    /// Only the folder by that name: a path that merely starts the same is an ordinary app's.
+    func testAFolderThatOnlyStartsLikeInputMethodsIsNotSystem() {
+        let near = proc(43, path: "/Library/Input MethodsX/Thing.app/Contents/MacOS/Thing", app: .regular, bundle: "com.example.thing", name: "Thing")
+        let other = proc(44, path: "/Library/MyInput Methods/Thing.app/Contents/MacOS/Thing", app: .regular, bundle: "com.example.other", name: "Other")
+        XCTAssertFalse(FreezePlanner.isSystem(near))
+        XCTAssertFalse(FreezePlanner.isSystem(other))
+        XCTAssertEqual(ids(plan([editor(), near, other], front: 10).frozen).sorted(), ["com.example.other", "com.example.thing"])
+    }
+
+    /// An input method that macOS holds an app responsible for is not frozen with that app.
+    func testAnInputMethodHeldAgainstAnAppIsNotOneOfItsMembers() {
+        let method = proc(45, path: "/Library/Input Methods/Kana.app/Contents/MacOS/Kana", responsible: 20, app: .accessory,
+                          bundle: "com.example.kana", name: "Kana")
+        let list = [editor(), browser(), method]
+        XCTAssertEqual(pids(plan(list, front: 10).frozen, "com.example.browser"), [20])
+        XCTAssertEqual(additions(list, frozen: ["com.example.browser"], known: [20]), [])
+    }
+
+    // ── A process that was stopped already ──────────────────────────────────
+
+    /// The group is still frozen; that one is simply not Anode's: it is never signalled, so never continued at the end.
+    func testAMemberThatWasAlreadyStoppedIsLeftOutOfAFrozenGroup() {
+        let list = [editor(),
+                    browser(),
+                    proc(21, parent: 20, path: "/Applications/Browser.app/Contents/Frameworks/Helper", stopped: true),
+                    proc(22, parent: 20, path: "/Applications/Browser.app/Contents/Frameworks/Renderer")]
+        let p = plan(list, front: 10)
+        XCTAssertEqual(ids(p.frozen), ["com.example.browser"])
+        XCTAssertEqual(pids(p.frozen, "com.example.browser"), [20, 22])
+    }
+
+    func testAGroupWhoseEveryMemberWasStoppedAlreadyIsLeftAlone() {
+        let list = [editor(), proc(20, path: "/Applications/Browser.app/Contents/MacOS/Browser", app: .regular, bundle: "com.example.browser",
+                                   name: "Browser", stopped: true)]
+        assertNowhere(plan(list, front: 10).withoutKept())
+    }
+
+    func testAKeptGroupNamesEveryProcessWhetherOrNotItWasStopped() {
+        let list = [proc(10, path: "/Applications/Editor.app/Contents/MacOS/Editor", app: .regular, bundle: "com.example.editor",
+                         name: "Editor", stopped: true)]
+        XCTAssertEqual(pids(plan(list, front: 10).kept, "com.example.editor"), [10], "nothing is signalled in a kept group")
+    }
+
+    func testANewMemberThatWasStoppedAlreadyIsNotAnAddition() {
+        let list = [editor(), browser(), proc(30, parent: 20, path: "/Applications/Browser.app/Contents/Frameworks/Helper", stopped: true),
+                    proc(31, parent: 20, path: "/Applications/Browser.app/Contents/Frameworks/Renderer")]
+        XCTAssertEqual(pids(additions(list, frozen: ["com.example.browser"], known: [20]), "com.example.browser"), [31])
     }
 
     // ── The front app and what belongs to it ────────────────────────────────
@@ -614,4 +682,9 @@ final class FreezePlannerTests: XCTestCase {
         XCTAssertEqual(ids(adds), ["com.example.alpha", "com.example.zeta"])
         XCTAssertEqual(adds.last?.members.map(\.pid), [310, 320])
     }
+}
+
+private extension FreezePlan {
+    /// What the plan would stop or leave running: the same plan with the kept pile emptied, for tests that only ask about the rest.
+    func withoutKept() -> FreezePlan { FreezePlan(kept: [], frozen: frozen, leftRunning: leftRunning) }
 }

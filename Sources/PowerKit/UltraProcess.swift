@@ -36,10 +36,12 @@ public struct UltraProcess: Equatable {
     /// Owns an ENABLED event tap that is not listen-only (a disabled tap does not count): stopping it can stall input.
     public var ownsEventTap: Bool
     public var usesMicOrCamera: Bool
+    /// Already stopped (SIGSTOP or a debugger) when it was read: not Anode's to stop, and not Anode's to continue.
+    public var stopped: Bool
 
     public init(pid: pid_t, parent: pid_t, uid: uid_t, startTime: UInt64, path: String, responsible: pid_t? = nil,
                 app: AppKind = .none, bundleID: String? = nil, name: String, launchdLabel: String? = nil,
-                team: String? = nil, ownsEventTap: Bool = false, usesMicOrCamera: Bool = false) {
+                team: String? = nil, ownsEventTap: Bool = false, usesMicOrCamera: Bool = false, stopped: Bool = false) {
         self.pid = pid
         self.parent = parent
         self.uid = uid
@@ -53,6 +55,7 @@ public struct UltraProcess: Equatable {
         self.team = team
         self.ownsEventTap = ownsEventTap
         self.usesMicOrCamera = usesMicOrCamera
+        self.stopped = stopped
     }
 }
 

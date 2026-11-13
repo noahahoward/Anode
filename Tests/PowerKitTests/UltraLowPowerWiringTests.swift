@@ -163,7 +163,7 @@ final class UltraLowPowerWiringTests: XCTestCase {
         let workspace = CountingCenter(), center = CountingCenter(), env = Env()
         let runtime = UltraLowPowerRuntime(
             settings: settings, processes: processes, freezer: freezer, throttler: Fakes.FakeThrottler(calls),
-            processTable: { Self.world }, hasEfficiencyCores: true, hider: Fakes.FakeHider(calls), backlight: backlight,
+            processTable: { Self.world }, startTime: { UInt64($0) * 10 }, hasEfficiencyCores: true, hider: Fakes.FakeHider(calls), backlight: backlight,
             ownBrightness: OwnBrightness(), rate: Fakes.FakeRate(calls), keyboard: Fakes.FakeKeyboard(calls),
             power: Fakes.FakePower(calls), watchdog: watchdog, store: store, confirm: confirm,
             backdrop: Fakes.FakeBackdrop(calls), load: Fakes.FakeLoad(calls), widgets: widgets, icon: icon,
@@ -173,6 +173,7 @@ final class UltraLowPowerWiringTests: XCTestCase {
             unregisterShortcut: { calls.add("shortcut unregister"); shortcut.unregister() },
             work: work, startTicker: ticker.start,
             workspace: workspace, center: center, appPID: { $0.userInfo?["pid"] as? pid_t },
+            appBundleID: { $0.userInfo?["bundle"] as? String },
             frontmostPID: { env.frontmost }, windows: { env.readWindows() }, ownPID: 1000, user: 501,
             log: { env.logged.append($0) },
             schedule: { delay, job in env.scheduled.append((delay, job)) },
@@ -192,8 +193,10 @@ final class UltraLowPowerWiringTests: XCTestCase {
         r.confirm.press(true)
     }
 
-    private func activate(_ pid: pid_t, in r: Rig) {
-        r.workspace.post(name: NSWorkspace.didActivateApplicationNotification, object: nil, userInfo: ["pid": pid])
+    private func activate(_ pid: pid_t, bundle: String? = nil, in r: Rig) {
+        var info: [String: Any] = ["pid": pid]
+        if let bundle { info["bundle"] = bundle }
+        r.workspace.post(name: NSWorkspace.didActivateApplicationNotification, object: nil, userInfo: info)
     }
 
     private func powerOff(_ r: Rig) {
@@ -665,6 +668,17 @@ final class UltraLowPowerWiringTests: XCTestCase {
         activate(1000, in: r)
         activate(10, in: r)   // the editor was never frozen
         XCTAssertEqual(r.controller.frozen.map(\.id), ["com.example.sync"])
+    }
+
+    /// The app was quit and opened again: its new pid is in no list yet, and the notification's bundle id is what names its group.
+    func testActivationOfAnAppUnderANewPidReleasesItsFrozenGroupByTheBundleIdTheNotificationCarries() throws {
+        let r = try rig(ticked: true); defer { done(r) }
+        start(r)
+        activate(22, in: r)
+        XCTAssertEqual(r.controller.frozen.map(\.id), ["com.example.browser", "com.example.sync"], "a pid nobody knows, and no bundle id")
+        activate(22, bundle: "com.example.browser", in: r)
+        XCTAssertEqual(r.controller.frozen.map(\.id), ["com.example.sync"])
+        XCTAssertEqual(r.freezer.resumes, [20, 21])
     }
 
     func testTheSweepAndBrightnessWatchRunOnlyWhileOn() throws {

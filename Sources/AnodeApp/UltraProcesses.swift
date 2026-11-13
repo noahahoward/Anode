@@ -84,6 +84,8 @@ final class LiveProcessList: ProcessListing {
         var path: String
         /// Raw: nil when it was not asked (another user's process) or the call is missing; judged in `assemble`.
         var responsible: pid_t?
+        /// The kernel says it was stopped (SIGSTOP, a debugger) when the table was read.
+        var stopped: Bool = false
     }
 
     /// What `NSRunningApplication` says about a process that is an application.
@@ -197,7 +199,8 @@ final class LiveProcessList: ProcessListing {
                 launchdLabel: mine ? labels[row.pid] : nil,
                 team: teams[row.pid],
                 ownsEventTap: mine && tapOwners.contains(row.pid),
-                usesMicOrCamera: mine && audioInput.contains(row.pid))
+                usesMicOrCamera: mine && audioInput.contains(row.pid),
+                stopped: row.stopped)
         }
     }
 
@@ -344,8 +347,12 @@ final class LiveProcessList: ProcessListing {
         guard pid > 0 else { return nil }
         let command = withUnsafeBytes(of: &entry.kp_proc.p_comm) { String(decoding: $0.prefix { $0 != 0 }, as: UTF8.self) }
         return KernelRow(pid: pid, parent: entry.kp_eproc.e_ppid, uid: entry.kp_eproc.e_ucred.cr_uid,
-                         startTime: startTime(of: entry), command: command, path: "", responsible: nil)
+                         startTime: startTime(of: entry), command: command, path: "", responsible: nil,
+                         stopped: isStopped(status: entry.kp_proc.p_stat))
     }
+
+    /// The kernel's process state is "stopped" (`SSTOP`): not running, and not asleep.
+    static func isStopped(status: CChar) -> Bool { Int32(status) == SSTOP }
 
     /// The start time `LiveProcessFreezer` checks against: read again from the kernel at the moment of the signal, in
     /// the same unit the snapshot put in `UltraProcess.startTime`. nil when no such process exists.

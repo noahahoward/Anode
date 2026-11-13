@@ -38,8 +38,10 @@ public enum FreezePlanner {
             // One process that owns a tap keeps the whole app running: a stopped tap owner can stall the keyboard and
             // pointer for the whole Mac until the tap times out.
             if draft.processes.contains(where: \.ownsEventTap) { continue }
-            // Extensions that macOS hosts for an app are left running even when the app is stopped.
-            let members = draft.processes.filter { !isExtension($0) }
+            // Extensions that macOS hosts for an app are left running even when the app is stopped. A process that was stopped
+            // already is not Anode's: it is never signalled, so it is never continued at the end. The group is still frozen
+            // for the rest of its members.
+            let members = draft.processes.filter { !isExtension($0) && !$0.stopped }
             if members.isEmpty { continue }
             if others.shareAProduct(with: draft.processes) {
                 leftRunning.append(draft.group(of: members))
@@ -60,7 +62,7 @@ public enum FreezePlanner {
             // it: ask them of the process itself. Stopping a new tap owner, or a helper that has just started on a
             // call, would do what those rules exist to prevent.
             let fresh = draft.processes.filter {
-                !known.contains($0.pid) && !isExtension($0) && !$0.ownsEventTap && !$0.usesMicOrCamera
+                !known.contains($0.pid) && !isExtension($0) && !$0.ownsEventTap && !$0.usesMicOrCamera && !$0.stopped
             }
             if !fresh.isEmpty { result.append(draft.group(of: fresh)) }
         }
@@ -84,7 +86,11 @@ public enum FreezePlanner {
     ///
     /// A background service that is no app and carries Apple's id or job label is system wherever its file is: the
     /// developer tools keep theirs under /Library/Developer, outside the system folders, and an IDE that is kept needs them.
+    ///
+    /// An input method is system wherever its file is (its folder is "Input Methods", in the system's library or the owner's): the
+    /// one in use takes every key that is typed in every app, and stopping it stalls them all.
     public static func isSystem(_ p: UltraProcess) -> Bool {
+        if isInputMethod(p) { return true }
         if let id = p.bundleID, systemBundles.contains(id) { return true }
         switch p.app {
         case .none:
@@ -97,6 +103,8 @@ public enum FreezePlanner {
 
     // ── Groups ──────────────────────────────────────────────────────────────
 
+    private static func isInputMethod(_ p: UltraProcess) -> Bool { p.path.contains("/Input Methods/") }
+
     private static let systemRoots = ["/System/", "/usr/", "/bin/", "/sbin/", "/Library/Apple/"]
     private static let systemBundles: Set<String> = ["com.apple.finder", "com.apple.dock", "com.apple.loginwindow"]
 
@@ -105,7 +113,8 @@ public enum FreezePlanner {
     /// never one group: neither's flags can decide for the other.
     private static func groups(_ processes: [UltraProcess], index: ProcessIndex, user: uid_t, ownPIDs: Set<pid_t>) -> [Draft] {
         var drafts: [String: Draft] = [:]
-        for p in processes where p.uid == user && !ownPIDs.contains(p.pid) {
+        // An input method is no member of any group either, whoever macOS holds responsible for it.
+        for p in processes where p.uid == user && !ownPIDs.contains(p.pid) && !isInputMethod(p) {
             guard let owner = touchableOwner(of: p, index: index, user: user, ownPIDs: ownPIDs) else { continue }
             let id = groupID(owner)
             var draft = drafts[id] ?? Draft(id: id, name: owner.name, namedBy: owner.pid)

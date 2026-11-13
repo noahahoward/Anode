@@ -81,6 +81,7 @@ final class UltraLowPowerController {
     private let freezer: ProcessFreezing
     private let throttler: ProcessThrottling
     private let processTable: () -> [UltraProcess]?
+    private let startTime: (pid_t) -> UInt64?
     private let hasEfficiencyCores: Bool
     private let hider: AppHiding
     private let backlight: BacklightControl
@@ -165,7 +166,8 @@ final class UltraLowPowerController {
     private var brightnessToPutBack: Float?
 
     init(settings: Settings, processes: ProcessListing, freezer: ProcessFreezing, throttler: ProcessThrottling,
-         processTable: @escaping () -> [UltraProcess]?, hasEfficiencyCores: Bool, hider: AppHiding, backlight: BacklightControl,
+         processTable: @escaping () -> [UltraProcess]?, startTime: @escaping (pid_t) -> UInt64?, hasEfficiencyCores: Bool,
+         hider: AppHiding, backlight: BacklightControl,
          ownBrightness: OwnBrightness, rate: DisplayRateControlling, keyboard: KeyboardBacklightControlling,
          power: PowerModeControlling, watchdog: UltraWatchdogging, store: UltraRecordStoring, confirm: UltraConfirming,
          backdrop: BackdropPresenting, load: LoadReading, lastOtherFrontApp: @escaping () -> pid_t?, ownPIDs: @escaping () -> Set<pid_t>, user: uid_t,
@@ -177,6 +179,7 @@ final class UltraLowPowerController {
         self.freezer = freezer
         self.throttler = throttler
         self.processTable = processTable
+        self.startTime = startTime
         self.hasEfficiencyCores = hasEfficiencyCores
         self.hider = hider
         self.backlight = backlight
@@ -307,6 +310,11 @@ final class UltraLowPowerController {
             self.freeze(rest, in: list, token: token, then: done)
         }
         guard let app = Self.appToHide(in: group, among: list) else { return proceed(nil) }
+        // The plan can be minutes old (the box was up): a pid that has been reused since is another process, and is not hidden.
+        guard startTime(app) == group.members.first(where: { $0.pid == app })?.startTime else {
+            log("ultra: \(group.name) (\(app)) is not the process that was planned any more, so it was not hidden")
+            return proceed(nil)
+        }
         appOfGroup[group.id] = app
         guard nameHiddenApp(app, of: group.id, mustSave: true) else {
             log("ultra: the record could not take the hidden app, so it was not hidden")
@@ -897,11 +905,14 @@ final class UltraLowPowerController {
     /// The owner took this group back (the menu): it is continued and stays running for the rest of the session.
     func release(groupID: String) { releaseGroup(groupID, forLoad: false) }
 
-    /// An app was brought forward (its Dock icon, the app switcher): if it is in a frozen group, that group is released.
-    func appActivated(pid: pid_t) {
+    /// An app was brought forward (its Dock icon, the app switcher): if it is in a frozen group, that group is released, whatever
+    /// its pid. The group is the one the process was placed in by the latest list (an extension, a part the sweep read and could
+    /// not stop), or, for a pid no list has seen yet (an app quit and opened again), the one the app's bundle id names.
+    func appActivated(pid: pid_t, bundleID: String? = nil) {
         guard state == .on, !ending else { return }
+        let placed = FreezePlanner.groupIDs(processes: known, user: user, ownPIDs: anodes())[pid] ?? bundleID
         let group = frozen.first { group in
-            group.members.contains { $0.pid == pid } || appOfGroup[group.id] == pid
+            group.members.contains { $0.pid == pid } || appOfGroup[group.id] == pid || group.id == placed
         }
         if let group { releaseGroup(group.id, forLoad: false) }
     }
@@ -945,6 +956,7 @@ final class UltraLowPowerController {
     /// New parts of what keeps running are put on the efficiency cores. Anything else that is new is left alone.
     func sweep() {
         guard state == .on, !ending, !sweeping else { return }
+        restartWatchdogIfItEnded()
         sweeping = true
         let token = session
         let finish = { [weak self] in
@@ -958,13 +970,22 @@ final class UltraLowPowerController {
                 return finish()
             }
             self.known = list
-            // What keeps running is looked at first and on its own: nothing is stopped for it, so no reading of the load.
-            self.keepRunningOnEfficiencyCores(in: list)
             // A pid is known only while it is still the process that was tried: a pid that was reused is a new process.
             let startTimes = Dictionary(list.map { ($0.pid, $0.startTime) }, uniquingKeysWith: { first, _ in first })
             let known = Set(self.attempted.filter { startTimes[$0.key] == $0.value }.keys)
-            let additions = FreezePlanner.additions(processes: list, user: self.user, frozenGroups: Set(self.frozen.map(\.id)),
+            var additions = FreezePlanner.additions(processes: list, user: self.user, frozenGroups: Set(self.frozen.map(\.id)),
                                                     known: known, ownPIDs: self.anodes())
+            // A frozen app that was quit and opened again has a new app process, which the mode did not stop: the owner is using
+            // it. The group is released as the owner's own bringing it back would, and none of its new parts are stopped.
+            let regular = Set(list.filter { $0.app == .regular }.map(\.pid))
+            for add in additions where add.members.contains(where: { regular.contains($0.pid) }) {
+                self.log("ultra: \(add.name) was opened again, so it is not frozen again")
+                self.releaseGroup(add.id, forLoad: false)
+            }
+            additions.removeAll { add in !self.frozen.contains { $0.id == add.id } }
+            // What keeps running is looked at on its own: nothing is stopped for it, so no reading of the load. After the
+            // releases, so that an app just brought back is kept on the efficiency cores in this same sweep.
+            self.keepRunningOnEfficiencyCores(in: list)
             guard !additions.isEmpty else { return finish() }
             // This step's own reading from before it, as the start has one.
             self.load.read { [weak self] before in
@@ -972,6 +993,18 @@ final class UltraLowPowerController {
                 self.freezeNewcomers(additions, before: before, token: token)
                 finish()
             }
+        }
+    }
+
+    /// The watchdog is what continues everything if Anode dies, so a session that has lost it is not left without: it is started
+    /// again (the same call as at the start), once per time it is found ended. One that cannot be started is said, and the session
+    /// goes on: the record is on disk, and the next launch still finishes the undo.
+    private func restartWatchdogIfItEnded() {
+        guard watchdog.pid == nil else { return }
+        if watchdog.start() {
+            log("ultra: the watchdog had ended, so it was started again")
+        } else {
+            log("ultra: the watchdog had ended and could not be started again; the session goes on")
         }
     }
 

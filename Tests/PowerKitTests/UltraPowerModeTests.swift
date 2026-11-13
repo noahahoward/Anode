@@ -1195,7 +1195,7 @@ final class UltraPowerModeSessionTests: XCTestCase {
                      proc(20, "/Applications/Browser.app/Contents/MacOS/Browser", "com.example.browser", "Browser")]
         let controller = UltraLowPowerController(
             settings: Settings(defaults: defaults), processes: Rig.FakeProcesses(world), freezer: Rig.FakeFreezer(calls),
-            throttler: Rig.FakeThrottler(calls), processTable: { world }, hasEfficiencyCores: true, hider: Rig.FakeHider(calls), backlight: Rig.FakeBacklight(calls), ownBrightness: OwnBrightness(),
+            throttler: Rig.FakeThrottler(calls), processTable: { world }, startTime: { UInt64($0) * 10 }, hasEfficiencyCores: true, hider: Rig.FakeHider(calls), backlight: Rig.FakeBacklight(calls), ownBrightness: OwnBrightness(),
             rate: Rig.FakeRate(calls), keyboard: Rig.FakeKeyboard(calls), power: power, watchdog: Rig.FakeWatchdog(calls),
             store: store, confirm: confirm, backdrop: Rig.FakeBackdrop(calls), load: Rig.FakeLoad(calls), lastOtherFrontApp: { 10 }, ownPIDs: { [1000] },
             user: 501, work: { $0() }, waitForWork: { _ in true }, schedule: { _, _ in }, alert: {}, log: { _ in })
