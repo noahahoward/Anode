@@ -318,6 +318,11 @@ final class WindowDragSnapper {
         }
     }
 
+    /// Whether a click on a window of `pid` has its window looked up through accessibility. Not for an app Ultra Low Power Mode
+    /// has stopped: it can still have a window on screen (its hide was refused or late), the question would wait for the whole
+    /// timeout, and every click in any app comes through here on one serial queue. Pure.
+    static func looksUpWindow(ofApp pid: pid_t, isFrozen: (pid_t) -> Bool) -> Bool { !isFrozen(pid) }
+
     private func began(_ event: Sample) {
         reset()
         footprint.hide()
@@ -328,6 +333,8 @@ final class WindowDragSnapper {
         var id = event.windowUnder
         if id == 0 { id = Self.windowID(at: p) ?? 0 }
         guard id != 0, let info = Self.windowInfo(id), info.layer == 0 else { return }
+        // Read here, on the main thread, where the controller's state lives: the lookup below runs on `axQueue`.
+        guard Self.looksUpWindow(ofApp: info.pid, isFrozen: UltraQuiet.isFrozen(pid:)) else { return }
         windowID = id
         startFrame = info.bounds
         lastFrame = info.bounds

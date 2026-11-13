@@ -48,7 +48,8 @@ enum WindowCatalog {
     /// The windows on the current Space worth switching to, front to back, which is close
     /// to most-recently-used. `regularPIDs` are the apps that have a Dock tile: an app with
     /// none (a menu bar extra, an agent) is not something a user Command-Tabs to. An app `isFrozen` says Ultra Low Power Mode
-    /// has stopped is left out too: it is not asked anything, and its windows are hidden anyway. Pure.
+    /// has stopped is left out too: it is not asked anything (its windows are usually hidden, but a hide can be refused or
+    /// late). Pure.
     static func switchable(windowInfo: [[String: Any]], regularPIDs: Set<pid_t>,
                            isFrozen: (pid_t) -> Bool = { _ in false }) -> [SwitchableWindow] {
         windowInfo.compactMap { entry in

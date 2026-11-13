@@ -511,6 +511,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
             forName: NSWindow.didChangeOcclusionStateNotification,
             object: main.window, queue: .main) { [weak self] _ in
                 guard let self else { return }
+                // With the mode on there may be no tick, and the tick is the net under the lid notifications
+                // (`ScreenWatch`): a missed one would leave `windowIsWorthDrawing` reading a stale "nobody can see it" and
+                // an opened window would not get its timer. Looked at again here, before the answer is read. Not asked with
+                // the mode off, where the tick is that net, so nothing differs there.
+                if UltraQuiet.isOn { ScreenWatch.shared.update() }
                 let awake = self.windowIsWorthDrawing
                 self.restartTimer(hidden: !awake)
                 if awake { self.refresh() }
@@ -521,6 +526,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         NotificationCenter.default.addObserver(
             forName: UltraLowPowerController.didChange, object: nil, queue: .main) { [weak self] _ in
                 guard let self else { return }
+                // The mode may have just ended with the tick stopped, so there is no tick to be the net under the lid
+                // notifications (`ScreenWatch`): look again before `windowIsWorthDrawing` is read below.
+                ScreenWatch.shared.update()
                 let wasTicking = self.timer != nil
                 self.gameMode?.reevaluate()
                 self.restartTimer(hidden: !self.windowIsWorthDrawing)

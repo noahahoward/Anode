@@ -71,6 +71,15 @@ final class UltraQuietTests: XCTestCase {
         XCTAssertEqual(WindowCatalog.switchable(windowInfo: info, regularPIDs: [1, 2]).map(\.id), [3, 1, 2])
     }
 
+    /// Every mouse-down comes to the drag snapper, and its lookup of the window's accessibility element runs on one serial
+    /// queue: for an app the mode stopped (its hide was refused or late, so a window is still on screen) each click would hold
+    /// that queue for the whole timeout.
+    func testADragOnAStoppedAppsWindowIsNotLookedUp() {
+        XCTAssertFalse(WindowDragSnapper.looksUpWindow(ofApp: 20, isFrozen: { $0 == 20 }))
+        XCTAssertTrue(WindowDragSnapper.looksUpWindow(ofApp: 10, isFrozen: { $0 == 20 }), "another app's window is looked up as always")
+        XCTAssertTrue(WindowDragSnapper.looksUpWindow(ofApp: 20, isFrozen: { _ in false }))
+    }
+
     /// Nothing creates the controller yet, and while there is none (or the mode is off) every question gets the answer it got
     /// before the mode existed.
     func testWithNoControllerNothingIsFrozenAndTheModeIsOff() throws {
