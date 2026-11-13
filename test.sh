@@ -165,7 +165,7 @@ await "$TEST_PID" || ended_by_a_watchdog
 TEST_STATUS="$AWAITED"
 kill "$WATCH_PID" 2>/dev/null || true
 wait "$WATCH_PID" 2>/dev/null || true
-kill_tree "$OVERALL_PID"
+{ kill_tree "$OVERALL_PID"; wait "$OVERALL_PID"; } 2>/dev/null || true   # (the shell's "Terminated" notice is not news)
 WATCH_PID=""; TEST_PID=""; OVERALL_PID=""
 if [ "$TEST_STATUS" -eq 0 ]; then
   grep -E "Executed [0-9]+ tests" "$LOG" | tail -1 | sed 's/^[[:space:]]*//'
