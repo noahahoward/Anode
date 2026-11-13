@@ -456,6 +456,10 @@ final class ChargeController {
         s += inForce.map { "; the limit in force is \($0)%" } ?? "; no limit of Charge Control's is in force"
         return s
     }
+    /// macOS shows another limit than the one that was set, three passes running.
+    static func notHoldingText(wanted: Int, inForce: Int) -> String {
+        "macOS is not holding the charge limit of \(wanted)%: \(inForce)% is in force. Change the limit to try again."
+    }
     static func limitRefusedText(_ limit: Int, _ why: String) -> String {
         "The Anode helper did not set the limit to \(limit)%: \(plainWords(why))"
     }
@@ -641,6 +645,13 @@ final class ChargeController {
     private var lastRefusal: String?
     /// The last "changed outside Charge Control" line, so the same news is logged once.
     private var lastDrift: String?
+    /// How many passes in a row found the same difference after it was put back, and, once that is three, the limit
+    /// macOS will not hold and what it holds in its place. While set, the limit is not sent again (the same answer
+    /// every 30 s for ever helps nobody) and the section says so; it clears when macOS shows the wanted limit, when
+    /// what it shows changes, or when the wanted limit changes.
+    private var driftRepeats = 0
+    private var notHolding: (wanted: Int, inForce: Int)?
+    static let driftTries = 3
 
     // The charger cut, as far as anyone has confirmed it. See the note at the top of the file.
 
@@ -1162,6 +1173,8 @@ final class ChargeController {
         appliedLimit = nil
         limitInFlight = false
         refusedLimit = nil
+        driftRepeats = 0
+        notHolding = nil
         appliedDischarge = nil
         dischargeInFlight = false
         blockedDischarge = nil
@@ -1741,6 +1754,8 @@ final class ChargeController {
         }
         guard !changed.isEmpty else {
             lastDrift = nil
+            driftRepeats = 0
+            if notHolding != nil { notHolding = nil; updateStatus() }
             return
         }
         // The same news every 30 s is one line, not one a tick.
@@ -1749,6 +1764,23 @@ final class ChargeController {
         let news = line != lastDrift
         if news { log(line) }
         lastDrift = line
+        // The same difference again after it was put back: macOS is not taking it. Three times, then stop sending and
+        // say so, until something changes.
+        if news {
+            driftRepeats = 0
+            notHolding = nil
+        } else if let mine = appliedLimit, !limitInFlight, found.mclLimit != mine {
+            driftRepeats += 1
+            if driftRepeats >= Self.driftTries {
+                if notHolding == nil {
+                    log("macOS still shows a limit of \(found.mclLimit)%, not \(mine)%, after it was put back "
+                        + "\(Self.driftTries) times; not setting it again until the limit changes")
+                }
+                notHolding = (mine, found.mclLimit)
+                updateStatus()
+                return
+            }
+        }
         appliedLimit = nil
         refusedLimit = nil
         // The limit itself is put back by the tick that follows, which sets it (that turns the switch on).
@@ -2498,6 +2530,10 @@ final class ChargeController {
     private func applyLimit(_ d: ChargeDecision) {
         let want = d.osLimit
         if let r = refusedLimit, r.value != want { refusedLimit = nil }
+        if let n = notHolding, n.wanted != want {
+            notHolding = nil
+            driftRepeats = 0
+        }
         guard appliedLimit != want, let c = client else { return }
         // One on its way is waited for, except going to sleep, when this one must land first (see below).
         if limitInFlight && waitUntil == nil { return }
@@ -2566,8 +2602,17 @@ final class ChargeController {
     /// switch on and a limit booked, the helper alone is asked.
     private func standInForTheHelper(_ want: Int, client c: ChargeLimitClient) {
         if appliedLimit != nil, c.read()?.mclEnabled == true { return }
-        let nearest = Self.nearestClientValue(atOrAbove: want)
-        if !c.setLimit(nearest) { log("macOS would not take \(nearest)% ahead of the helper's \(want)%") }
+        let standIn = Self.standInValue(for: want)
+        if !c.setLimit(standIn) { log("macOS would not take \(standIn)% ahead of the helper's \(want)%") }
+    }
+
+    /// The value set through macOS itself to turn the switch on ahead of a helper's `want`: the nearest it takes at or
+    /// above. For 96 to 99 that would be 100, and setting 100 turns the switch OFF (measured), which would leave the
+    /// helper's value stored and not enforced; so there it is 95, the highest that keeps the switch on, for the moment
+    /// before the helper's value lands.
+    static func standInValue(for want: Int) -> Int {
+        let nearest = nearestClientValue(atOrAbove: want)
+        return nearest == noLimit ? 95 : nearest
     }
 
     private func setClientLimit(_ value: Int, client c: ChargeLimitClient, reason: ChargeReason, wanted: Int? = nil) {
@@ -2717,6 +2762,9 @@ final class ChargeController {
         // The value macOS would have to take for this decision, when it is macOS and not the helper that holds it:
         // not in force because macOS refused it. (A refusal of an earlier value, or of one the helper has since set,
         // is not this.)
+        if let n = notHolding, n.wanted == d.osLimit {
+            return setStatus(.refused(Self.notHoldingText(wanted: n.wanted, inForce: n.inForce)))
+        }
         let viaMacOS = NativeChargeLimit.isClientSettable(d.osLimit) || !(helper.available && refusedLimit == nil)
         let viaMacOSValue = NativeChargeLimit.isClientSettable(d.osLimit) ? d.osLimit
             : Self.nearestClientValue(atOrAbove: d.osLimit)

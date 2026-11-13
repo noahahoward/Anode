@@ -320,26 +320,34 @@ final class ReadyBySectionTests: XCTestCase {
         XCTAssertTrue(f.installButton.isHiddenOrHasHiddenAncestor)
     }
 
-    /// Not only at the moment a helper-only value is wanted: a switch that needs the helper, with none, shows it.
-    func testAnySwitchThatNeedsTheHelperShowsTheButtonWhenThereIsNone() {
+    /// With no helper answering, the button is there whenever Charge Control is on: at a plain limit of 80 with nothing
+    /// else switched on the section used to show none, and there was no way to install the helper from it.
+    func testWithNoHelperTheButtonIsThereWhateverIsSwitchedOn() {
         helper.available = false
         helper.installed = false
         helper.speaksReadyBy = false
         battery = ReadyByControllerTests.plugged(80)    // at the limit, so nothing is asked of the helper yet
         let f = make()
-        XCTAssertTrue(f.installButton.isHiddenOrHasHiddenAncestor, "nothing switched on needs it")
+        XCTAssertFalse(f.installButton.isHiddenOrHasHiddenAncestor, "no helper, and no button to install one")
+        XCTAssertEqual(f.installButton.toolTip, ChargeControlFeature.installTip)
         for (name, flip) in [("Drift Below the Limit", { self.settings.chargeDriftEnabled = true }),
                              ("Pause When Hot", { self.settings.chargePauseWhenHotEnabled = true }),
                              ("Hold Level During Sleep", { self.settings.chargeHoldDuringSleep = true }),
                              ("Drain Automatically Above the Limit", { self.settings.chargeDrainAutomatically = true })] {
-            settings.chargeDriftEnabled = false
-            settings.chargePauseWhenHotEnabled = false
-            settings.chargeHoldDuringSleep = false
-            settings.chargeDrainAutomatically = false
-            XCTAssertTrue(f.installButton.isHiddenOrHasHiddenAncestor, "\(name): shown before it was switched on")
             flip()
             XCTAssertFalse(f.installButton.isHiddenOrHasHiddenAncestor, "\(name) needs a helper and none is installed")
         }
+        // Switched off, there is nothing to install it for (a charger that may be cut is another test).
+        settings.chargeControlEnabled = false
+        XCTAssertTrue(f.installButton.isHiddenOrHasHiddenAncestor)
+    }
+
+    /// A helper that knows the charge commands, with nothing switched on that needs more: no button.
+    func testWithAHelperAndNothingThatNeedsMoreThereIsNoButton() {
+        helper.speaksReadyBy = false
+        battery = ReadyByControllerTests.plugged(80)
+        let f = make()
+        XCTAssertTrue(f.installButton.isHiddenOrHasHiddenAncestor)
     }
 
     func testTheButtonWaitsUntilTheHelperHasAnswered() {

@@ -88,6 +88,8 @@ final class ChargeControlFeature: BetaFeature {
     // ── Words ───────────────────────────────────────────────────────────────
 
     static let fullChargeTip = "Charge to 100% this once. It ends when you unplug."
+    static let installTip = "The Anode helper is needed for Drain to Limit, Ready By, and holding the charge anywhere but "
+        + "80, 85, 90, 95 or 100%."
     static let fullChargeBlockedTip = "Charge to Full needs the charger."
     static let drainTip = "Run the Mac from the battery while it stays plugged in, until the charge is down to the "
         + "limit. Needs the Anode helper."
@@ -273,6 +275,7 @@ final class ChargeControlFeature: BetaFeature {
         installButton.controlSize = .small
         installButton.target = self
         installButton.action = #selector(installPressed)
+        installButton.toolTip = Self.installTip
 
         driftCheckbox.target = self
         driftCheckbox.action = #selector(driftToggled)
@@ -375,6 +378,27 @@ final class ChargeControlFeature: BetaFeature {
             // is owed for is looked at now (it asks only when there is a debt, and only an installed helper).
             self?.controller()?.recheckHelper()
             self?.redraw()
+            // And again shortly: launchd has only just been given the helper, and a look made in the same instant can
+            // find nothing there. Without this the line saying the helper is needed, and this button, stayed on screen
+            // beside the note saying it was installed.
+            self?.lookAgainAfterAnInstall()
+        }
+    }
+
+    /// When the looks after an install's report are made, in seconds. Internal for the tests.
+    static let looksAfterAnInstall: [TimeInterval] = [1.5, 4]
+    private var installLooks = 0
+
+    private func lookAgainAfterAnInstall() {
+        installLooks += 1
+        let mine = installLooks
+        for delay in Self.looksAfterAnInstall {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+                // Only for the latest report: an install says several things as it goes.
+                guard let self, self.installLooks == mine else { return }
+                self.controller()?.recheckHelper()
+                self.redraw()
+            }
         }
     }
 
@@ -501,9 +525,15 @@ final class ChargeControlFeature: BetaFeature {
         // And whenever something switched on needs more of the helper than there is: none installed, or one too old
         // (Ready By needs a newer one than a drain does). Not before the helper has answered, and not for a helper
         // that is there and knows enough.
+        // Also with nothing switched on that needs it, when no helper answers at all: a person who wants to drain, or a
+        // limit other than the five macOS takes itself, has to be able to install it first, and found no button here.
         var helperFallsShort = false
-        if usable, let reach = c?.helperReach, let needed = ChargeController.helperNeeded(by: settings) {
-            helperFallsShort = reach < needed
+        if usable, let reach = c?.helperReach {
+            if reach == .none {
+                helperFallsShort = true
+            } else if let needed = ChargeController.helperNeeded(by: settings) {
+                helperFallsShort = reach < needed
+            }
         }
         installButton.isHidden = !((on && needsHelper) || offersInstallForCut || helperFallsShort)
         // Kept once the helper is there and the button has gone (it says the install worked), not once switched off.
