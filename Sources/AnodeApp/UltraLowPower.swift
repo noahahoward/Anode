@@ -77,6 +77,7 @@ final class UltraLowPowerController {
     private let watchdog: UltraWatchdogging
     private let store: UltraRecordStoring
     private let confirm: UltraConfirming
+    private let backdrop: BackdropPresenting
     private let load: LoadReading
     private let lastOtherFrontApp: () -> pid_t?
     private let ownPIDs: () -> Set<pid_t>
@@ -145,7 +146,7 @@ final class UltraLowPowerController {
          hasEfficiencyCores: Bool, hider: AppHiding, backlight: BacklightControl,
          ownBrightness: OwnBrightness, rate: DisplayRateControlling, keyboard: KeyboardBacklightControlling,
          power: PowerModeControlling, watchdog: UltraWatchdogging, store: UltraRecordStoring, confirm: UltraConfirming,
-         load: LoadReading, lastOtherFrontApp: @escaping () -> pid_t?, ownPIDs: @escaping () -> Set<pid_t>, user: uid_t,
+         backdrop: BackdropPresenting, load: LoadReading, lastOtherFrontApp: @escaping () -> pid_t?, ownPIDs: @escaping () -> Set<pid_t>, user: uid_t,
          work: @escaping (@escaping () -> Void) -> Void,
          schedule: @escaping (TimeInterval, @escaping () -> Void) -> Void, log: @escaping (String) -> Void) {
         self.settings = settings
@@ -162,6 +163,7 @@ final class UltraLowPowerController {
         self.watchdog = watchdog
         self.store = store
         self.confirm = confirm
+        self.backdrop = backdrop
         self.load = load
         self.lastOtherFrontApp = lastOtherFrontApp
         self.ownPIDs = ownPIDs
@@ -241,7 +243,11 @@ final class UltraLowPowerController {
     }
 
     private func becomeOn(before: LoadSample?, token: Int) {
+        guard session == token else { return }
         state = .on
+        // Only now, with the mode on: a start that did not finish never darkens the desktop. Nothing is recorded, as the window
+        // is Anode's own and goes with it; `reset` takes it away on every path that ends the session.
+        if settings.ultraLowPowerBlackBackdrop { backdrop.show() }
         changed()
         scheduleSweep(token: token)
         guardStep(before: before, groups: Set(frozen.map(\.id)), token: token)
@@ -558,6 +564,8 @@ final class UltraLowPowerController {
     /// thread owns.
     func shutdown() {
         guard state != .off else { return }
+        // The window is Anode's own and goes first: whatever the put-back does, a quit leaves nothing of the mode on screen.
+        backdrop.hide()
         end(inline: true)
     }
 
@@ -931,6 +939,7 @@ final class UltraLowPowerController {
     private func reset() {
         counter.increment()
         state = .off
+        backdrop.hide()
         frozen = []
         skipped = []
         leftRunning = []

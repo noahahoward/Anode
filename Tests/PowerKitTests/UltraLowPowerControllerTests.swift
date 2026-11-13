@@ -199,6 +199,20 @@ final class UltraLowPowerControllerTests: XCTestCase {
         func press(_ yes: Bool) { answer?(yes) }
     }
 
+    final class FakeBackdrop: BackdropPresenting {
+        let calls: Calls
+        /// Called as the backdrop is shown: lets a test look at the controller at that moment.
+        var onShow: (() -> Void)?
+        private(set) var shown = false
+        private(set) var shows = 0
+        private(set) var hides = 0
+        init(_ calls: Calls) { self.calls = calls }
+        /// Only the show is on the shared log, to say where it came in the order; a hide is counted and not logged, since it is
+        /// asked for on every path that ends a session, a start that never began included.
+        func show() { calls.add("backdrop show"); shows += 1; shown = true; onShow?() }
+        func hide() { hides += 1; shown = false }
+    }
+
     final class FakeLoad: LoadReading {
         let calls: Calls
         /// What the next reads answer, in order; `fallback` after that.
@@ -240,6 +254,7 @@ final class UltraLowPowerControllerTests: XCTestCase {
     private var watchdog: FakeWatchdog!
     private var store: FakeStore!
     private var confirm: FakeConfirm!
+    private var backdrop: FakeBackdrop!
     private var load: FakeLoad!
     private var controller: UltraLowPowerController!
 
@@ -264,7 +279,7 @@ final class UltraLowPowerControllerTests: XCTestCase {
         freezer = FakeFreezer(calls); throttler = FakeThrottler(calls); hider = FakeHider(calls)
         backlight = FakeBacklight(calls); own = OwnBrightness()
         rate = FakeRate(calls); keyboard = FakeKeyboard(calls); power = FakePower(calls); watchdog = FakeWatchdog(calls)
-        store = FakeStore(calls); confirm = FakeConfirm(); load = FakeLoad(calls)
+        store = FakeStore(calls); confirm = FakeConfirm(); backdrop = FakeBackdrop(calls); load = FakeLoad(calls)
         controller = makeController()
     }
 
@@ -275,7 +290,7 @@ final class UltraLowPowerControllerTests: XCTestCase {
             settings: settings, processes: processes, freezer: freezer, throttler: throttler,
             hasEfficiencyCores: hasEfficiencyCores, hider: hider, backlight: backlight,
             ownBrightness: own, rate: rate, keyboard: keyboard, power: power, watchdog: watchdog, store: store,
-            confirm: confirm, load: load,
+            confirm: confirm, backdrop: backdrop, load: load,
             lastOtherFrontApp: { [unowned self] in self.front }, ownPIDs: { [unowned self] in self.ownPIDs }, user: 501,
             work: { [unowned self] job in
                 if self.holdWork || self.workLimit.map({ self.workRuns >= $0 }) == true {
@@ -1986,6 +2001,142 @@ final class UltraLowPowerControllerTests: XCTestCase {
         start()
         XCTAssertEqual(namedThrottled, [10, 11], "the new session's record starts empty and names its own")
         XCTAssertEqual(throttler.throttled, [10, 11, 10, 11])
+    }
+
+    // ── The black backdrop ──────────────────────────────────────────────────
+
+    func testTheBackdropIsShownOnceTheModeIsOnAndAfterTheScreensParts() {
+        var stateWhenShown: UltraLowPowerController.State?
+        backdrop.onShow = { [unowned self] in stateWhenShown = self.controller.state }
+        start()
+        XCTAssertEqual(backdrop.shows, 1)
+        XCTAssertTrue(backdrop.shown)
+        XCTAssertEqual(stateWhenShown, .on, "not while the mode is still being started")
+        assertAllBefore("rate lower", "backdrop show")
+        assertAllBefore("power enter", "backdrop show")
+    }
+
+    func testNothingIsShownWhileTheBoxIsUpOrBeforeConfirm() {
+        controller.request()
+        XCTAssertEqual(backdrop.shows, 0)
+        confirm.press(false)
+        XCTAssertEqual(backdrop.shows, 0)
+        XCTAssertEqual(controller.state, .off)
+    }
+
+    func testWithTheSettingOffTheBackdropIsNeverShown() {
+        settings.ultraLowPowerBlackBackdrop = false
+        start()
+        XCTAssertEqual(controller.state, .on)
+        XCTAssertEqual(backdrop.shows, 0)
+        controller.turnOff()
+        XCTAssertFalse(backdrop.shown)
+    }
+
+    func testTurnOffTakesTheBackdropAway() {
+        start()
+        XCTAssertTrue(backdrop.shown)
+        controller.turnOff()
+        XCTAssertEqual(controller.state, .off)
+        XCTAssertFalse(backdrop.shown)
+    }
+
+    func testShutdownTakesTheBackdropAway() {
+        start()
+        controller.shutdown()
+        XCTAssertFalse(backdrop.shown)
+        XCTAssertGreaterThan(backdrop.hides, 0)
+    }
+
+    /// A turn-off whose settings are still being put back leaves the state on, and the backdrop with it: it goes when the
+    /// state does, and a quit that overtakes it takes it away at once.
+    func testAQuitThatOvertakesATurnOffStillTakesItAway() {
+        start()
+        holdWork = true
+        controller.turnOff()
+        XCTAssertEqual(controller.state, .on, "still being put back")
+        controller.shutdown()
+        XCTAssertFalse(backdrop.shown)
+        runHeldWork()
+        XCTAssertFalse(backdrop.shown)
+    }
+
+    func testAStartThatFailedNeverShowsTheBackdrop() {
+        store.refuseSave = { _ in true }
+        start()
+        XCTAssertEqual(controller.state, .off)
+        XCTAssertEqual(backdrop.shows, 0)
+
+        // The watchdog did not start.
+        store.refuseSave = { _ in false }
+        watchdog.startResult = false
+        start()
+        XCTAssertEqual(backdrop.shows, 0)
+
+        // The process list could not be read.
+        processes.list = nil
+        controller.request()
+        XCTAssertEqual(backdrop.shows, 0)
+        XCTAssertFalse(backdrop.shown)
+    }
+
+    func testAStartThatWasCancelledNeverShowsTheBackdropWhenTheLateAnswersArrive() {
+        // While an app is being hidden.
+        hider.hold = true
+        start()
+        controller.turnOff()
+        hider.held.forEach { $0() }
+        XCTAssertEqual(backdrop.shows, 0)
+
+        // While the helper is answering.
+        hider.hold = false
+        power.hold = true
+        start()
+        XCTAssertEqual(controller.state, .confirming)
+        controller.turnOff()
+        power.held.forEach { $0(0) }
+        XCTAssertEqual(backdrop.shows, 0)
+        XCTAssertEqual(controller.state, .off)
+        XCTAssertFalse(backdrop.shown)
+
+        // Quit before the load comes back.
+        power.hold = false
+        controller.request()
+        load.holdNext = 1
+        confirm.press(true)
+        controller.shutdown()
+        load.answerHeld()
+        XCTAssertEqual(backdrop.shows, 0)
+    }
+
+    func testAStartTurnedOffWhileTheScreenIsBeingLoweredNeverShowsTheBackdrop() {
+        for n in [1, 2, 3, 4, 5] {
+            workLimit = n - 1
+            heldWork = []
+            workRuns = 0
+            start()
+            controller.turnOff()
+            runHeldWork()
+            XCTAssertEqual(backdrop.shows, 0, "call \(n) was on the queue")
+            XCTAssertFalse(backdrop.shown, "call \(n) was on the queue")
+            XCTAssertEqual(controller.state, .off)
+        }
+    }
+
+    func testARecoveryOfALeftoverRecordNeverShowsTheBackdrop() {
+        var record = UltraRecord()
+        record.groups = [UltraRecord.Group(id: "com.example.browser", name: "Browser", members: [.init(pid: 20, startTime: 200)])]
+        store.record = record
+        controller.recoverAtLaunch()
+        XCTAssertEqual(backdrop.shows, 0)
+    }
+
+    func testASecondSessionShowsTheBackdropAgain() {
+        start()
+        controller.turnOff()
+        start()
+        XCTAssertEqual(backdrop.shows, 2)
+        XCTAssertTrue(backdrop.shown)
     }
 
     // ── The spin guard ──────────────────────────────────────────────────────

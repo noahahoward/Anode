@@ -239,6 +239,7 @@ final class UltraLowPowerFeature: BetaFeature {
     // Internal, so the tests can drive them as a click would.
     let enableCheckbox = NSButton(checkboxWithTitle: "Allow Ultra Low Power Mode", target: nil, action: nil)
     let efficiencyCheckbox = NSButton(checkboxWithTitle: "Keep everything on the efficiency cores (slower)", target: nil, action: nil)
+    let backdropCheckbox = NSButton(checkboxWithTitle: "Black out the desktop behind your windows", target: nil, action: nil)
     let startButton = NSButton(title: UltraLowPowerFeature.startTitle, target: nil, action: nil)
     let keepList = NSStackView()
     let addPopup = NSPopUpButton(frame: .zero, pullsDown: true)
@@ -385,6 +386,8 @@ final class UltraLowPowerFeature: BetaFeature {
         enableCheckbox.action = #selector(toggled)
         efficiencyCheckbox.target = self
         efficiencyCheckbox.action = #selector(efficiencyToggled)
+        backdropCheckbox.target = self
+        backdropCheckbox.action = #selector(backdropToggled)
         startButton.target = self
         startButton.action = #selector(startPressed)
         installButton.target = self
@@ -402,7 +405,7 @@ final class UltraLowPowerFeature: BetaFeature {
 
         let keepCaption = NSTextField(labelWithString: "Always keep running")
         keepCaption.font = .boldSystemFont(ofSize: NSFont.smallSystemFontSize)
-        let column = NSStackView(views: [enableCheckbox, efficiencyCheckbox, startButton, keepCaption, keepList, addPopup, skippedLabel,
+        let column = NSStackView(views: [enableCheckbox, efficiencyCheckbox, backdropCheckbox, startButton, keepCaption, keepList, addPopup, skippedLabel,
                                          leftRunningLabel, installButton, installNoteLabel, noteLabel])
         column.orientation = .vertical
         column.alignment = .leading
@@ -411,7 +414,7 @@ final class UltraLowPowerFeature: BetaFeature {
         // Listening starts with the view: a section that was never shown has nothing to keep up to date.
         if tokens.isEmpty {
             tokens = [Settings.Key.ultraLowPowerEnabled, Settings.Key.ultraLowPowerAlwaysKeep,
-                      Settings.Key.ultraLowPowerEfficiencyCores].map { key in
+                      Settings.Key.ultraLowPowerEfficiencyCores, Settings.Key.ultraLowPowerBlackBackdrop].map { key in
                 settings.observe(key) { [weak self] in self?.redraw() }
             }
         }
@@ -428,6 +431,8 @@ final class UltraLowPowerFeature: BetaFeature {
     @objc private func toggled() { settings.ultraLowPowerEnabled = enableCheckbox.state == .on }
 
     @objc private func efficiencyToggled() { settings.ultraLowPowerEfficiencyCores = efficiencyCheckbox.state == .on }
+
+    @objc private func backdropToggled() { settings.ultraLowPowerBlackBackdrop = backdropCheckbox.state == .on }
 
     @objc private func startPressed() {
         guard let c = controller() else { return }
@@ -508,7 +513,8 @@ final class UltraLowPowerFeature: BetaFeature {
         let c = controller()
         enableCheckbox.state = ticked ? .on : .off
         efficiencyCheckbox.state = settings.ultraLowPowerEfficiencyCores ? .on : .off
-        efficiencyCheckbox.isEnabled = Self.optionsEnabled(state: c?.state)
+        backdropCheckbox.state = settings.ultraLowPowerBlackBackdrop ? .on : .off
+        for choice in [efficiencyCheckbox, backdropCheckbox] { choice.isEnabled = Self.optionsEnabled(state: c?.state) }
         let look = Self.buttonLook(ticked: ticked, state: c?.state)
         startButton.title = look.title
         startButton.isEnabled = look.isEnabled

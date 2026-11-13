@@ -164,8 +164,8 @@ final class UltraLowPowerWiringTests: XCTestCase {
             settings: settings, processes: processes, freezer: freezer, throttler: Fakes.FakeThrottler(calls),
             hasEfficiencyCores: true, hider: Fakes.FakeHider(calls), backlight: backlight,
             ownBrightness: OwnBrightness(), rate: Fakes.FakeRate(calls), keyboard: Fakes.FakeKeyboard(calls),
-            power: Fakes.FakePower(calls), watchdog: watchdog, store: store, confirm: confirm, load: Fakes.FakeLoad(calls),
-            widgets: widgets, icon: icon,
+            power: Fakes.FakePower(calls), watchdog: watchdog, store: store, confirm: confirm,
+            backdrop: Fakes.FakeBackdrop(calls), load: Fakes.FakeLoad(calls), widgets: widgets, icon: icon,
             presentMenu: { menu, button in env.menus.append((menu, button)) },
             openBetaFeatures: { env.betaOpened += 1 },
             registerShortcut: { fire in calls.add("shortcut register"); shortcut.register(fire) },
@@ -913,6 +913,7 @@ final class UltraLowPowerWiringTests: XCTestCase {
                        "KeybindCenter.shared.register(owner: shortcutOwner, commands: ShortcutCommands.ultra)",
                        "KeybindCenter.shared.unregister(owner: shortcutOwner)",
                        "widgets: widgets, icon: icon",
+                       "backdrop: LiveUltraBackdrop()",                       // the black desktop behind the windows
                        "throttler: LiveProcessThrottler()",                   // what still runs is kept on the efficiency cores
                        "hasEfficiencyCores: LiveProcessThrottler.hasEfficiencyCores",
                        "windows: liveWindows"] {

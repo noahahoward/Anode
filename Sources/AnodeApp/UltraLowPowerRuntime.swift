@@ -118,7 +118,7 @@ final class UltraLowPowerRuntime {
          hasEfficiencyCores: Bool, hider: AppHiding, backlight: BacklightControl,
          ownBrightness: OwnBrightness, rate: DisplayRateControlling, keyboard: KeyboardBacklightControlling,
          power: PowerModeControlling, watchdog: UltraWatchdogging, store: UltraRecordStoring, confirm: UltraConfirming,
-         load: LoadReading, widgets: UltraReadingHosting, icon: UltraIconPresenting,
+         backdrop: BackdropPresenting, load: LoadReading, widgets: UltraReadingHosting, icon: UltraIconPresenting,
          presentMenu: @escaping (NSMenu, NSStatusBarButton) -> Void, openBetaFeatures: @escaping () -> Void,
          registerShortcut: @escaping (@escaping () -> Void) -> Void, unregisterShortcut: @escaping () -> Void,
          work: UltraWorkRunning, startTicker: @escaping UltraTicker, workspace: NotificationCenter, center: NotificationCenter,
@@ -158,7 +158,7 @@ final class UltraLowPowerRuntime {
             settings: settings, processes: processes, freezer: freezer, throttler: throttler,
             hasEfficiencyCores: hasEfficiencyCores, hider: hider, backlight: backlight,
             ownBrightness: ownBrightness, rate: rate, keyboard: keyboard, power: power, watchdog: watchdog, store: store,
-            confirm: confirm, load: load, lastOtherFrontApp: lastOtherFront, ownPIDs: ownPIDs, user: user,
+            confirm: confirm, backdrop: backdrop, load: load, lastOtherFrontApp: lastOtherFront, ownPIDs: ownPIDs, user: user,
             work: { work.run($0) }, schedule: schedule, log: log)
         controller.onChange = { [weak self] in self?.controllerChanged() }
 
@@ -180,7 +180,7 @@ final class UltraLowPowerRuntime {
             throttler: LiveProcessThrottler(), hasEfficiencyCores: LiveProcessThrottler.hasEfficiencyCores,
             hider: LiveAppHider(), backlight: DisplayServicesBacklight(), ownBrightness: OwnBrightness.shared, rate: LiveDisplayRate(),
             keyboard: LiveKeyboardBacklight(), power: HelperPowerMode(), watchdog: LiveUltraWatchdog(recordURL: url, log: log),
-            store: UltraRecordFile(url: url), confirm: UltraConfirmPanel(), load: LiveLoadReader(), widgets: widgets, icon: icon,
+            store: UltraRecordFile(url: url), confirm: UltraConfirmPanel(), backdrop: LiveUltraBackdrop(), load: LiveLoadReader(), widgets: widgets, icon: icon,
             presentMenu: { menu, button in
                 // popUp, not a menu on the item plus a click: that re-enters the item's own action (as `BarChevron` found).
                 menu.popUp(positioning: nil, at: NSPoint(x: 0, y: button.bounds.height + 5), in: button)

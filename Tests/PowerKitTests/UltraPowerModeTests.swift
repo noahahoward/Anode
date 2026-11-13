@@ -1126,7 +1126,7 @@ final class UltraPowerModeSessionTests: XCTestCase {
             settings: Settings(defaults: defaults), processes: Rig.FakeProcesses(world), freezer: Rig.FakeFreezer(calls),
             throttler: Rig.FakeThrottler(calls), hasEfficiencyCores: true, hider: Rig.FakeHider(calls), backlight: Rig.FakeBacklight(calls), ownBrightness: OwnBrightness(),
             rate: Rig.FakeRate(calls), keyboard: Rig.FakeKeyboard(calls), power: power, watchdog: Rig.FakeWatchdog(calls),
-            store: store, confirm: confirm, load: Rig.FakeLoad(calls), lastOtherFrontApp: { 10 }, ownPIDs: { [1000] },
+            store: store, confirm: confirm, backdrop: Rig.FakeBackdrop(calls), load: Rig.FakeLoad(calls), lastOtherFrontApp: { 10 }, ownPIDs: { [1000] },
             user: 501, work: { $0() }, schedule: { _, _ in }, log: { _ in })
         return Session(controller: controller, confirm: confirm, store: store)
     }

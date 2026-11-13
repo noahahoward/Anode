@@ -34,6 +34,17 @@ final class UltraLowPowerSettingsTests: XCTestCase {
         XCTAssertTrue(Settings(defaults: defaults).ultraLowPowerEfficiencyCores)
     }
 
+    /// On: with the other apps frozen and hidden, what is lit is the kept app's windows, and a black desktop behind them is
+    /// what a darker screen costs the owner least.
+    func testTheBlackBackdropIsOnByDefaultAndTheSettingRoundTrips() {
+        XCTAssertTrue(Settings(defaults: defaults).ultraLowPowerBlackBackdrop)
+        Settings(defaults: defaults).ultraLowPowerBlackBackdrop = false
+        XCTAssertFalse(Settings(defaults: defaults).ultraLowPowerBlackBackdrop, "a new handle on the same suite")
+        XCTAssertTrue(Settings(defaults: defaults).ultraLowPowerEfficiencyCores, "a separate key")
+        Settings(defaults: defaults).ultraLowPowerBlackBackdrop = true
+        XCTAssertTrue(Settings(defaults: defaults).ultraLowPowerBlackBackdrop)
+    }
+
     func testAlwaysKeepRoundTrips() {
         let keep = ["com.example.vpn", "job:com.example.database"]
         Settings(defaults: defaults).ultraLowPowerAlwaysKeep = keep
@@ -74,10 +85,11 @@ final class UltraLowPowerSettingsTests: XCTestCase {
 
     func testObserversFireForEachKey() {
         let s = Settings(defaults: defaults)
-        var enabled = 0, keep = 0, cores = 0
+        var enabled = 0, keep = 0, cores = 0, backdrop = 0
         let t1 = s.observe(Settings.Key.ultraLowPowerEnabled) { enabled += 1 }
         let t2 = s.observe(Settings.Key.ultraLowPowerAlwaysKeep) { keep += 1 }
         let t3 = s.observe(Settings.Key.ultraLowPowerEfficiencyCores) { cores += 1 }
+        let t4 = s.observe(Settings.Key.ultraLowPowerBlackBackdrop) { backdrop += 1 }
 
         // Through the handle itself: once per change, none for a write that changes nothing.
         s.ultraLowPowerEnabled = true
@@ -86,7 +98,9 @@ final class UltraLowPowerSettingsTests: XCTestCase {
         s.ultraLowPowerAlwaysKeep = ["com.example.vpn"]
         s.ultraLowPowerEfficiencyCores = false
         s.ultraLowPowerEfficiencyCores = false
-        XCTAssertEqual([enabled, keep, cores], [1, 1, 1])
+        s.ultraLowPowerBlackBackdrop = false
+        s.ultraLowPowerBlackBackdrop = false
+        XCTAssertEqual([enabled, keep, cores, backdrop], [1, 1, 1, 1])
 
         // Through another handle on the same suite, which is how the Beta Features window reaches a feature that
         // watches its own: `reconcile()` carries it across, and a key left out of it fails without a sound.
@@ -94,7 +108,8 @@ final class UltraLowPowerSettingsTests: XCTestCase {
         other.ultraLowPowerEnabled = false
         other.ultraLowPowerAlwaysKeep = ["com.example.vpn", "job:com.example.database"]
         other.ultraLowPowerEfficiencyCores = true
-        XCTAssertEqual([enabled, keep, cores], [2, 2, 2])
-        _ = (t1, t2, t3)
+        other.ultraLowPowerBlackBackdrop = true
+        XCTAssertEqual([enabled, keep, cores, backdrop], [2, 2, 2, 2])
+        _ = (t1, t2, t3, t4)
     }
 }

@@ -99,6 +99,8 @@ public final class Settings {
         public static let ultraLowPowerAlwaysKeep = "ultraLowPowerAlwaysKeep"
         /// Ultra Low Power Mode: keep everything that still runs on the efficiency cores.
         public static let ultraLowPowerEfficiencyCores = "ultraLowPowerEfficiencyCores"
+        /// Ultra Low Power Mode: a black backdrop behind every app window.
+        public static let ultraLowPowerBlackBackdrop = "ultraLowPowerBlackBackdrop"
         /// Wildcard — an observer registered on this key fires for every change.
         public static let any = "*"
     }
@@ -239,6 +241,10 @@ public final class Settings {
         /// ON: the mode is slower by design, and this is what keeps what still runs from burning power in bursts. The owner
         /// ticks it off to keep the apps at full speed.
         static let ultraLowPowerEfficiencyCores = true
+        /// ON: with the other apps frozen and hidden, what is lit is the kept app's windows, and a black desktop behind them
+        /// lowers the draw (a fully black screen read 0.5 to 0.7 W under ordinary content). The owner ticks it off to keep the
+        /// desktop picture.
+        static let ultraLowPowerBlackBackdrop = true
         /// Matches what the status item shows today: smoothed drain + runtime.
         // Must be real, currently-registered metric IDs. Stale ones are invisible
         // in the picker and get preserved forever as "unknown" bindings.
@@ -410,6 +416,7 @@ public final class Settings {
         var ultraLowPowerEnabled: Bool
         var ultraLowPowerAlwaysKeep: [String]
         var ultraLowPowerEfficiencyCores: Bool
+        var ultraLowPowerBlackBackdrop: Bool
     }
     private var snapshot: Values
     private var defaultsObserver: NSObjectProtocol?
@@ -1138,6 +1145,13 @@ public final class Settings {
         set { writeBool(Key.ultraLowPowerEfficiencyCores, \.ultraLowPowerEfficiencyCores, newValue, Default.ultraLowPowerEfficiencyCores) }
     }
 
+    /// Whether the mode puts a black backdrop behind every app window, over the desktop picture and icons. On until the owner
+    /// turns it off.
+    public var ultraLowPowerBlackBackdrop: Bool {
+        get { Settings.readBool(defaults, Key.ultraLowPowerBlackBackdrop, Default.ultraLowPowerBlackBackdrop) }
+        set { writeBool(Key.ultraLowPowerBlackBackdrop, \.ultraLowPowerBlackBackdrop, newValue, Default.ultraLowPowerBlackBackdrop) }
+    }
+
     private static func readAlwaysKeep(_ d: UserDefaults) -> [String] {
         guard let text = d.string(forKey: storageKey(Key.ultraLowPowerAlwaysKeep)),
               let data = text.data(using: .utf8),
@@ -1396,6 +1410,7 @@ public final class Settings {
         if old.ultraLowPowerEnabled != now.ultraLowPowerEnabled { notify(Key.ultraLowPowerEnabled) }
         if old.ultraLowPowerAlwaysKeep != now.ultraLowPowerAlwaysKeep { notify(Key.ultraLowPowerAlwaysKeep) }
         if old.ultraLowPowerEfficiencyCores != now.ultraLowPowerEfficiencyCores { notify(Key.ultraLowPowerEfficiencyCores) }
+        if old.ultraLowPowerBlackBackdrop != now.ultraLowPowerBlackBackdrop { notify(Key.ultraLowPowerBlackBackdrop) }
     }
 
     // ── Plumbing ────────────────────────────────────────────────────────────
@@ -1599,7 +1614,8 @@ public final class Settings {
                                              chargeReadyByMinutesRange),
                ultraLowPowerEnabled: readBool(d, Key.ultraLowPowerEnabled, Default.ultraLowPowerEnabled),
                ultraLowPowerAlwaysKeep: readAlwaysKeep(d),
-               ultraLowPowerEfficiencyCores: readBool(d, Key.ultraLowPowerEfficiencyCores, Default.ultraLowPowerEfficiencyCores))
+               ultraLowPowerEfficiencyCores: readBool(d, Key.ultraLowPowerEfficiencyCores, Default.ultraLowPowerEfficiencyCores),
+               ultraLowPowerBlackBackdrop: readBool(d, Key.ultraLowPowerBlackBackdrop, Default.ultraLowPowerBlackBackdrop))
     }
 }
 

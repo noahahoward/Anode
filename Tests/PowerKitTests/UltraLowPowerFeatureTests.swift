@@ -535,7 +535,8 @@ final class UltraLowPowerFeatureTests: XCTestCase {
                 settings: settings, processes: Fakes.FakeProcesses(Self.world), freezer: Fakes.FakeFreezer(calls),
                 throttler: Fakes.FakeThrottler(calls), hasEfficiencyCores: hasEfficiencyCores, hider: Fakes.FakeHider(calls), backlight: Fakes.FakeBacklight(calls), ownBrightness: OwnBrightness(),
                 rate: Fakes.FakeRate(calls), keyboard: Fakes.FakeKeyboard(calls), power: power,
-                watchdog: Fakes.FakeWatchdog(calls), store: Fakes.FakeStore(calls), confirm: confirm, load: Fakes.FakeLoad(calls),
+                watchdog: Fakes.FakeWatchdog(calls), store: Fakes.FakeStore(calls), confirm: confirm,
+                backdrop: Fakes.FakeBackdrop(calls), load: Fakes.FakeLoad(calls),
                 lastOtherFrontApp: { 10 }, ownPIDs: { [1000] }, user: 501, work: { $0() }, schedule: { _, _ in }, log: { _ in })
         }
     }
@@ -759,11 +760,33 @@ final class UltraLowPowerFeatureTests: XCTestCase {
         XCTAssertEqual(f.efficiencyCheckbox.state, .on)
     }
 
-    func testTheEfficiencyCoresBoxIsUnderTheEnableBox() throws {
+    func testTheChoicesAreUnderTheEnableBox() throws {
         let (f, _) = try section(buildView: false)
         let column = try XCTUnwrap(f.makeView() as? NSStackView)
         XCTAssertTrue(column.arrangedSubviews[0] === f.enableCheckbox)
         XCTAssertTrue(column.arrangedSubviews[1] === f.efficiencyCheckbox)
+        XCTAssertTrue(column.arrangedSubviews[2] === f.backdropCheckbox)
+    }
+
+    func testTheBackdropBoxSaysWhatItDoesAndWritesItsSetting() throws {
+        let (f, settings) = try section()
+        XCTAssertEqual(f.backdropCheckbox.title, "Black out the desktop behind your windows")
+        XCTAssertEqual(f.backdropCheckbox.state, .on, "on by default")
+        XCTAssertTrue(settings.ultraLowPowerBlackBackdrop)
+        press(f.backdropCheckbox)
+        XCTAssertFalse(settings.ultraLowPowerBlackBackdrop)
+        XCTAssertEqual(f.backdropCheckbox.state, .off)
+        XCTAssertTrue(settings.ultraLowPowerEfficiencyCores, "a separate setting")
+        press(f.backdropCheckbox)
+        XCTAssertTrue(settings.ultraLowPowerBlackBackdrop)
+    }
+
+    func testTheBackdropBoxFollowsTheSettingWhenItChangesElsewhere() throws {
+        let (f, settings) = try section()
+        settings.ultraLowPowerBlackBackdrop = false
+        XCTAssertEqual(f.backdropCheckbox.state, .off)
+        settings.ultraLowPowerBlackBackdrop = true
+        XCTAssertEqual(f.backdropCheckbox.state, .on)
     }
 
     /// The choices are read when the mode starts, so they are not changed under it: not while the box is up (it lists what is
@@ -775,21 +798,25 @@ final class UltraLowPowerFeatureTests: XCTestCase {
         XCTAssertFalse(UltraLowPowerFeature.optionsEnabled(state: .on))
     }
 
-    func testTheEfficiencyCoresBoxIsDisabledWhileTheModeRunsAndEnabledAgainAfter() throws {
+    func testTheChoiceBoxesAreDisabledWhileTheModeRunsAndEnabledAgainAfter() throws {
         let probe = Probe()
         let (f, settings) = try section(probe, ticked: true)
         let rig = ControllerRig(settings: settings)
         probe.controller = rig.controller
         f.refresh()
         XCTAssertTrue(f.efficiencyCheckbox.isEnabled)
+        XCTAssertTrue(f.backdropCheckbox.isEnabled)
         press(f.startButton)
         XCTAssertFalse(f.efficiencyCheckbox.isEnabled, "the box is up")
+        XCTAssertFalse(f.backdropCheckbox.isEnabled, "the box is up")
         rig.confirm.press(true)
         XCTAssertEqual(rig.controller.state, .on)
         XCTAssertFalse(f.efficiencyCheckbox.isEnabled)
+        XCTAssertFalse(f.backdropCheckbox.isEnabled)
         press(f.startButton)
         XCTAssertEqual(rig.controller.state, .off)
         XCTAssertTrue(f.efficiencyCheckbox.isEnabled)
+        XCTAssertTrue(f.backdropCheckbox.isEnabled)
     }
 
     func testTheSectionNamesAMacWithoutEfficiencyCores() throws {
