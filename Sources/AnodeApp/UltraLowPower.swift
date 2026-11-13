@@ -15,8 +15,8 @@ import PowerKit
 //     reverse. When a record cannot be written, what it would have named is not done;
 //   · every piece of work that waits (a hidden app, the load, a call that can block, a helper) is tagged with the session
 //     it belongs to and does nothing if that session is over. Ending bumps the number;
-//   · ending continues every process first, then puts the settings back, and only then takes the watchdog and the record
-//     away.
+//   · ending continues every process first, then lifts the background policy from every process the record names, then puts
+//     the settings back, and only then takes the watchdog and the record away.
 
 enum PowerModeAvailability: Equatable { case ready, noHelper, oldHelper }
 
@@ -44,6 +44,8 @@ enum UltraSkipped: Equatable {
     case rateRefused
     /// The brightness could not be read or set, so the ceiling is not held.
     case ceilingRefused
+    /// This Mac has no efficiency cores, so what still runs was left on the cores it has.
+    case noEfficiencyCores
 }
 
 final class UltraLowPowerController {
@@ -64,6 +66,8 @@ final class UltraLowPowerController {
     private let settings: Settings
     private let processes: ProcessListing
     private let freezer: ProcessFreezing
+    private let throttler: ProcessThrottling
+    private let hasEfficiencyCores: Bool
     private let hider: AppHiding
     private let backlight: BacklightControl
     private let ownBrightness: OwnBrightness
@@ -117,6 +121,15 @@ final class UltraLowPowerController {
     private var live: UltraRecord?
     /// Every process this session tried to stop, with its start time: the sweep must not try the same one again.
     private var attempted: [pid_t: UInt64] = [:]
+    /// Decided once, at Confirm: the setting is on and this Mac has efficiency cores. The sweep and a release follow it, so a
+    /// setting changed under a running session changes nothing in it.
+    private var throttling = false
+    /// The ids of the groups the plan kept. They keep running, so they are kept on the efficiency cores, new parts included.
+    private var keptIDs: Set<String> = []
+    /// Every process the mode has decided about for the efficiency cores, with its start time: put under the policy, or left at
+    /// full speed on purpose (its app is on a call). The sweep must not decide about the same one again, or a process left alone
+    /// during one call would be slowed after it and stay slow through the next. A pid that was reused is a new process.
+    private var throttleDecided: [pid_t: UInt64] = [:]
     /// The app with windows of each group that was asked to hide, by group id, so that bringing it forward finds its
     /// group whether or not Anode hid it and whether or not its own stop worked. Not what is unhidden at the end: that
     /// is `appPID` on the record, set only for an app Anode hid.
@@ -128,7 +141,8 @@ final class UltraLowPowerController {
     private var brightnessTaken = false
     private var brightnessToPutBack: Float?
 
-    init(settings: Settings, processes: ProcessListing, freezer: ProcessFreezing, hider: AppHiding, backlight: BacklightControl,
+    init(settings: Settings, processes: ProcessListing, freezer: ProcessFreezing, throttler: ProcessThrottling,
+         hasEfficiencyCores: Bool, hider: AppHiding, backlight: BacklightControl,
          ownBrightness: OwnBrightness, rate: DisplayRateControlling, keyboard: KeyboardBacklightControlling,
          power: PowerModeControlling, watchdog: UltraWatchdogging, store: UltraRecordStoring, confirm: UltraConfirming,
          load: LoadReading, lastOtherFrontApp: @escaping () -> pid_t?, ownPIDs: @escaping () -> Set<pid_t>, user: uid_t,
@@ -137,6 +151,8 @@ final class UltraLowPowerController {
         self.settings = settings
         self.processes = processes
         self.freezer = freezer
+        self.throttler = throttler
+        self.hasEfficiencyCores = hasEfficiencyCores
         self.hider = hider
         self.backlight = backlight
         self.ownBrightness = ownBrightness
@@ -195,7 +211,8 @@ final class UltraLowPowerController {
     // ── Starting ────────────────────────────────────────────────────────────
 
     /// The owner pressed Confirm, on the plan they were shown. In this order: the load, the record, the watchdog, each
-    /// group hidden and stopped, the screen, the refresh rate, the keyboard light, Low Power Mode, then `.on`.
+    /// group hidden and stopped, what keeps running put on the efficiency cores, the screen, the refresh rate, the keyboard
+    /// light, Low Power Mode, then `.on`.
     private func begin(_ plan: FreezePlan, _ list: [UltraProcess], token: Int) {
         leftRunning = plan.leftRunning
         load.read { [weak self] before in
@@ -215,6 +232,7 @@ final class UltraLowPowerController {
                 return
             }
             self.freeze(plan.frozen[...], in: list, token: token) { [weak self] in
+                self?.keepOnEfficiencyCores(plan, list, token: token)
                 self?.lowerScreenAndPower(token: token) { [weak self] in
                     self?.becomeOn(before: before, token: token)
                 }
@@ -290,6 +308,78 @@ final class UltraLowPowerController {
         }
         if let appLeftBehind { hider.unhide(pid: appLeftBehind) }
         return stopped
+    }
+
+    // ── The efficiency cores ────────────────────────────────────────────────
+
+    /// What keeps running (the kept apps, and the apps left running whole because they have a part Anode cannot stop) is put
+    /// under the system's background policy, which on Apple silicon keeps all of a process's threads on the efficiency cores.
+    /// Nothing that can block is called: it is a call on a pid, as a signal is.
+    ///
+    /// The choice is made here, once: whether the owner asked for it, and whether this Mac has such cores to keep it on.
+    private func keepOnEfficiencyCores(_ plan: FreezePlan, _ list: [UltraProcess], token: Int) {
+        guard session == token, settings.ultraLowPowerEfficiencyCores else { return }
+        guard hasEfficiencyCores else {
+            skipped.append(.noEfficiencyCores)
+            return
+        }
+        throttling = true
+        keptIDs = Set(plan.kept.map(\.id))
+        // Everything these groups hold now is decided about, put under the policy or left alone on purpose; only what comes
+        // after it is new to the sweep.
+        for group in plan.kept + plan.leftRunning {
+            for member in group.members { throttleDecided[member.pid] = member.startTime }
+        }
+        throttle(UltraThrottle.members(kept: plan.kept, leftRunning: plan.leftRunning, processes: list))
+    }
+
+    /// The one place a process is put under the policy, for the start, an app brought back and the sweep. The record names the
+    /// processes first, and when it cannot be written none of them is touched: a process slowed with no record is slowed for
+    /// good if Anode dies. One the system refuses is taken off the record again, so that only what was done is lifted.
+    private func throttle(_ members: [FreezeGroup.Member]) {
+        guard !members.isEmpty else { return }
+        let named = record(mustSave: true) { $0.throttled = ($0.throttled ?? []) + members.map(Self.recordMember) }
+        guard named else {
+            log("ultra: the record could not take the processes to keep on the efficiency cores, so they were left as they are")
+            return
+        }
+        var refused: [UltraRecord.Member] = []
+        for member in members {
+            throttleDecided[member.pid] = member.startTime
+            if !throttler.throttle(pid: member.pid, startTime: member.startTime) {
+                log("ultra: could not keep \(member.pid) on the efficiency cores")
+                refused.append(Self.recordMember(member))
+            }
+        }
+        guard !refused.isEmpty else { return }
+        record { $0.throttled?.removeAll { refused.contains($0) } }
+    }
+
+    /// New parts of the groups that keep running (a helper the kept app started, a tool its terminal ran) and of an app the owner
+    /// brought back are put under the policy too: a process started by one that is under it follows it, but not every part does.
+    /// A group on a call is left at full speed (and what is new in it now is not slowed later either).
+    private func keepNewcomersOnEfficiencyCores(in list: [UltraProcess]) {
+        guard throttling else { return }
+        var wanted = keptIDs.union(leftRunning.map(\.id))
+        wanted.formUnion(live?.groups.filter(\.released).map(\.id) ?? [])
+        guard !wanted.isEmpty else { return }
+        let groupOf = FreezePlanner.groupIDs(processes: list, user: user, ownPIDs: anodes())
+        var held: [String: [FreezeGroup.Member]] = [:]
+        for process in list {
+            guard let id = groupOf[process.pid], wanted.contains(id) else { continue }
+            held[id, default: []].append(FreezeGroup.Member(pid: process.pid, startTime: process.startTime))
+        }
+        // Whole groups, so that the rule about a call is read over every part of one and not only over its new parts.
+        let groups = held.map { FreezeGroup(id: $0.key, name: $0.key, members: $0.value) }
+        let decided = throttleDecided
+        let isNew: (FreezeGroup.Member) -> Bool = { decided[$0.pid] != $0.startTime }
+        let eligible = UltraThrottle.members(kept: groups, leftRunning: [], processes: list).filter(isNew)
+        for group in groups {
+            for member in group.members where isNew(member) && !eligible.contains(member) {
+                throttleDecided[member.pid] = member.startTime
+            }
+        }
+        throttle(eligible)
     }
 
     // ── The screen, the keyboard light, the power mode ──────────────────────
@@ -523,6 +613,15 @@ final class UltraLowPowerController {
         for case .resume(let pid, let startTime) in actions where !freezer.resume(pid: pid, startTime: startTime) {
             log("ultra: could not continue \(groupOf[pid] ?? "a process") (\(pid)): it has ended, or is not that process any more")
         }
+        // Right after the continues, before anything that asks another app for something: what was slowed is lifted from
+        // every process the record names, and from nothing else. Not tied to the setting or to this Mac's cores: a record is
+        // undone whatever the owner has changed since. Said once for a pid, however often the record names it.
+        var notLifted: Set<pid_t> = []
+        for case .unthrottle(let pid, let startTime) in actions where !throttler.unthrottle(pid: pid, startTime: startTime) {
+            if notLifted.insert(pid).inserted {
+                log("ultra: could not lift the efficiency-core limit from \(groupOf[pid] ?? "a process") (\(pid)): it has ended, or is not that process any more")
+            }
+        }
         for case .unhide(let pid) in actions { hider.unhide(pid: pid) }
 
         // What each step could not do, to be logged where the log is safe to write.
@@ -545,7 +644,7 @@ final class UltraLowPowerController {
                     rate.restore()
                 case .keyboard(let level):
                     if !keyboard.set(level) { failed.append("ultra: the keyboard light could not be put back") }
-                case .resume, .unhide, .brightness, .powerMode:
+                case .resume, .unthrottle, .unhide, .brightness, .powerMode:
                     break
                 }
             }
@@ -606,6 +705,9 @@ final class UltraLowPowerController {
             record.groups[i].released = true
         }
         if forLoad { releasedForLoad.append(id) }
+        // It runs again for the rest of the session, so it is kept on the efficiency cores with the rest of what runs (an app the
+        // guard let go included). Only what was continued: a process that is gone, or not that process any more, is not.
+        if throttling { throttle(group.members.filter { !notContinued.contains($0.pid) }) }
         changed()
     }
 
@@ -620,7 +722,7 @@ final class UltraLowPowerController {
     }
 
     /// New parts of groups that are frozen (a respawned updater, a new helper) are stopped too, without hiding anything.
-    /// Anything else that is new is left alone.
+    /// New parts of what keeps running are put on the efficiency cores. Anything else that is new is left alone.
     func sweep() {
         guard state == .on, !ending, !sweeping else { return }
         sweeping = true
@@ -635,6 +737,8 @@ final class UltraLowPowerController {
                 self.log("ultra: the process list could not be read, so the sweep did nothing")
                 return finish()
             }
+            // What keeps running is looked at first and on its own: nothing is stopped for it, so no reading of the load.
+            self.keepNewcomersOnEfficiencyCores(in: list)
             // A pid is known only while it is still the process that was tried: a pid that was reused is a new process.
             let startTimes = Dictionary(list.map { ($0.pid, $0.startTime) }, uniquingKeysWith: { first, _ in first })
             let known = Set(self.attempted.filter { startTimes[$0.key] == $0.value }.keys)
@@ -834,6 +938,9 @@ final class UltraLowPowerController {
         asked = nil
         live = nil
         attempted = [:]
+        throttling = false
+        keptIDs = []
+        throttleDecided = [:]
         appOfGroup = [:]
         sweeping = false
         adjustingBrightness = false

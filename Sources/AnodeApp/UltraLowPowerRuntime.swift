@@ -114,7 +114,8 @@ final class UltraLowPowerRuntime {
 
     var isWatchingBrightness: Bool { stopBrightnessWatch != nil }
 
-    init(settings: Settings, processes: ProcessListing, freezer: ProcessFreezing, hider: AppHiding, backlight: BacklightControl,
+    init(settings: Settings, processes: ProcessListing, freezer: ProcessFreezing, throttler: ProcessThrottling,
+         hasEfficiencyCores: Bool, hider: AppHiding, backlight: BacklightControl,
          ownBrightness: OwnBrightness, rate: DisplayRateControlling, keyboard: KeyboardBacklightControlling,
          power: PowerModeControlling, watchdog: UltraWatchdogging, store: UltraRecordStoring, confirm: UltraConfirming,
          load: LoadReading, widgets: UltraReadingHosting, icon: UltraIconPresenting,
@@ -154,7 +155,8 @@ final class UltraLowPowerRuntime {
         }
         self.lastOtherFront = lastOtherFront
         controller = UltraLowPowerController(
-            settings: settings, processes: processes, freezer: freezer, hider: hider, backlight: backlight,
+            settings: settings, processes: processes, freezer: freezer, throttler: throttler,
+            hasEfficiencyCores: hasEfficiencyCores, hider: hider, backlight: backlight,
             ownBrightness: ownBrightness, rate: rate, keyboard: keyboard, power: power, watchdog: watchdog, store: store,
             confirm: confirm, load: load, lastOtherFrontApp: lastOtherFront, ownPIDs: ownPIDs, user: user,
             work: { work.run($0) }, schedule: schedule, log: log)
@@ -174,8 +176,9 @@ final class UltraLowPowerRuntime {
         let log: (String) -> Void = { FeatureLog.append("ultra.log", $0) }
         let icon = UltraIcon()
         let runtime = UltraLowPowerRuntime(
-            settings: .shared, processes: LiveProcessList(), freezer: LiveProcessFreezer(), hider: LiveAppHider(),
-            backlight: DisplayServicesBacklight(), ownBrightness: OwnBrightness.shared, rate: LiveDisplayRate(),
+            settings: .shared, processes: LiveProcessList(), freezer: LiveProcessFreezer(),
+            throttler: LiveProcessThrottler(), hasEfficiencyCores: LiveProcessThrottler.hasEfficiencyCores,
+            hider: LiveAppHider(), backlight: DisplayServicesBacklight(), ownBrightness: OwnBrightness.shared, rate: LiveDisplayRate(),
             keyboard: LiveKeyboardBacklight(), power: HelperPowerMode(), watchdog: LiveUltraWatchdog(recordURL: url, log: log),
             store: UltraRecordFile(url: url), confirm: UltraConfirmPanel(), load: LiveLoadReader(), widgets: widgets, icon: icon,
             presentMenu: { menu, button in

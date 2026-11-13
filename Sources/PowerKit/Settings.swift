@@ -97,6 +97,8 @@ public final class Settings {
         /// Ultra Low Power Mode: the switch, and the group ids the owner always wants kept running.
         public static let ultraLowPowerEnabled = "ultraLowPowerEnabled"
         public static let ultraLowPowerAlwaysKeep = "ultraLowPowerAlwaysKeep"
+        /// Ultra Low Power Mode: keep everything that still runs on the efficiency cores.
+        public static let ultraLowPowerEfficiencyCores = "ultraLowPowerEfficiencyCores"
         /// Wildcard — an observer registered on this key fires for every change.
         public static let any = "*"
     }
@@ -234,6 +236,9 @@ public final class Settings {
         static let chargeReadyByMinutes = ChargePolicy.defaultReadyByMinutes
         /// OFF: it freezes background apps and dims the screen, so the owner turns it on.
         static let ultraLowPowerEnabled = false
+        /// ON: the mode is slower by design, and this is what keeps what still runs from burning power in bursts. The owner
+        /// ticks it off to keep the apps at full speed.
+        static let ultraLowPowerEfficiencyCores = true
         /// Matches what the status item shows today: smoothed drain + runtime.
         // Must be real, currently-registered metric IDs. Stale ones are invisible
         // in the picker and get preserved forever as "unknown" bindings.
@@ -404,6 +409,7 @@ public final class Settings {
         var chargeReadyByMinutes: Int
         var ultraLowPowerEnabled: Bool
         var ultraLowPowerAlwaysKeep: [String]
+        var ultraLowPowerEfficiencyCores: Bool
     }
     private var snapshot: Values
     private var defaultsObserver: NSObjectProtocol?
@@ -1125,6 +1131,13 @@ public final class Settings {
         }
     }
 
+    /// Whether the mode keeps everything that still runs on the efficiency cores (slower, and much less power under load).
+    /// On until the owner turns it off; it only does anything on a Mac that has efficiency cores.
+    public var ultraLowPowerEfficiencyCores: Bool {
+        get { Settings.readBool(defaults, Key.ultraLowPowerEfficiencyCores, Default.ultraLowPowerEfficiencyCores) }
+        set { writeBool(Key.ultraLowPowerEfficiencyCores, \.ultraLowPowerEfficiencyCores, newValue, Default.ultraLowPowerEfficiencyCores) }
+    }
+
     private static func readAlwaysKeep(_ d: UserDefaults) -> [String] {
         guard let text = d.string(forKey: storageKey(Key.ultraLowPowerAlwaysKeep)),
               let data = text.data(using: .utf8),
@@ -1382,6 +1395,7 @@ public final class Settings {
         if old.chargeReadyByMinutes != now.chargeReadyByMinutes { notify(Key.chargeReadyByMinutes) }
         if old.ultraLowPowerEnabled != now.ultraLowPowerEnabled { notify(Key.ultraLowPowerEnabled) }
         if old.ultraLowPowerAlwaysKeep != now.ultraLowPowerAlwaysKeep { notify(Key.ultraLowPowerAlwaysKeep) }
+        if old.ultraLowPowerEfficiencyCores != now.ultraLowPowerEfficiencyCores { notify(Key.ultraLowPowerEfficiencyCores) }
     }
 
     // ── Plumbing ────────────────────────────────────────────────────────────
@@ -1584,7 +1598,8 @@ public final class Settings {
                chargeReadyByMinutes: readInt(d, Key.chargeReadyByMinutes, Default.chargeReadyByMinutes,
                                              chargeReadyByMinutesRange),
                ultraLowPowerEnabled: readBool(d, Key.ultraLowPowerEnabled, Default.ultraLowPowerEnabled),
-               ultraLowPowerAlwaysKeep: readAlwaysKeep(d))
+               ultraLowPowerAlwaysKeep: readAlwaysKeep(d),
+               ultraLowPowerEfficiencyCores: readBool(d, Key.ultraLowPowerEfficiencyCores, Default.ultraLowPowerEfficiencyCores))
     }
 }
 

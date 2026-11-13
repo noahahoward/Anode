@@ -36,6 +36,10 @@ final class UltraRecordTests: XCTestCase {
         .resume(pid: pid, startTime: member(pid).startTime)
     }
 
+    private func unthrottle(_ pid: Int32) -> UltraRecovery.Action {
+        .unthrottle(pid: pid, startTime: member(pid).startTime)
+    }
+
     // ── The file ────────────────────────────────────────────────────────────
 
     func testRecordRoundTripsThroughAFile() {
@@ -47,6 +51,7 @@ final class UltraRecordTests: XCTestCase {
         record.rateLowered = true
         record.keyboardBefore = 0.35
         record.powerModeBefore = 1
+        record.throttled = [member(10), member(30)]
 
         // A folder that does not exist yet: the record must still be written.
         let url = directory.appendingPathComponent("not-yet").appendingPathComponent("record.json")
@@ -114,6 +119,32 @@ final class UltraRecordTests: XCTestCase {
         XCTAssertEqual(store.load(), record)
     }
 
+    /// A record written by a build that had no efficiency-cores part has no such key. It must still load, or a session that
+    /// build left behind could not be undone by this one.
+    func testARecordWrittenBeforeTheEfficiencyCoresPartStillLoadsAndLiftsNothing() throws {
+        let old = #"{"groups":[{"id":"com.example.notes","name":"Notes","members":[{"pid":20,"startTime":200}],"released":false}],"#
+            + #""brightnessBefore":0.8,"rateLowered":true}"#
+        let url = directory.appendingPathComponent("old.json")
+        try Data(old.utf8).write(to: url)
+        let record = try XCTUnwrap(UltraRecordFile(url: url).load(), "an old record is still a record")
+        XCTAssertNil(record.throttled)
+        XCTAssertEqual(record.groups.map(\.id), ["com.example.notes"])
+        XCTAssertEqual(UltraRecovery.actions(for: record, brightnessNow: 0.5),
+                       [.resume(pid: 20, startTime: 200), .brightness(0.8), .restoreRate])
+    }
+
+    func testTheProcessesPutUnderThePolicyRoundTripThroughAFile() {
+        var record = UltraRecord()
+        XCTAssertNil(record.throttled, "nothing named until the mode names something")
+        record.throttled = [member(10), member(11)]
+        let store = UltraRecordFile(url: directory.appendingPathComponent("record.json"))
+        XCTAssertTrue(store.save(record))
+        XCTAssertEqual(store.load()?.throttled, [member(10), member(11)])
+        record.throttled = []
+        XCTAssertTrue(store.save(record))
+        XCTAssertEqual(store.load()?.throttled, [], "a list with nothing in it is not the same as no list, and both lift nothing")
+    }
+
     // ── Undoing a session ───────────────────────────────────────────────────
 
     func testRecoveryContinuesOnlyWhatTheRecordNames() {
@@ -140,6 +171,42 @@ final class UltraRecordTests: XCTestCase {
         XCTAssertEqual(actions, [resume(20), resume(21), resume(30), resume(40),
                                  .unhide(pid: 20), .unhide(pid: 30),
                                  .brightness(0.8), .restoreRate, .keyboard(0.35), .powerMode(1)])
+    }
+
+    /// The policy comes off every process the record names, after every continue (a process that is stopped cannot be
+    /// helped by it, and that is the part that must not wait) and before anything is unhidden or any setting is put back.
+    func testThePolicyIsLiftedAfterTheContinuesAndBeforeTheUnhide() {
+        var record = UltraRecord()
+        record.groups = [group("com.example.notes", [20, 21], appPID: 20),
+                         group("com.example.mail", [30], appPID: 30)]
+        record.throttled = [member(10), member(11), member(40)]
+        record.brightnessBefore = 0.8
+        record.rateLowered = true
+        record.keyboardBefore = 0.35
+        record.powerModeBefore = 1
+
+        XCTAssertEqual(UltraRecovery.actions(for: record, brightnessNow: 0.5),
+                       [resume(20), resume(21), resume(30),
+                        unthrottle(10), unthrottle(11), unthrottle(40),
+                        .unhide(pid: 20), .unhide(pid: 30),
+                        .brightness(0.8), .restoreRate, .keyboard(0.35), .powerMode(1)])
+    }
+
+    /// Whatever the record names is lifted, whether or not the group it came from was released: a released group is the very
+    /// one that was put under the policy when it came back.
+    func testAReleasedGroupIsNotContinuedAgainButWhatWasPutUnderThePolicyIsLifted() {
+        var record = UltraRecord()
+        record.groups = [group("com.example.sync", [10, 11], released: true)]
+        record.throttled = [member(10), member(11)]
+        XCTAssertEqual(UltraRecovery.actions(for: record, brightnessNow: nil), [unthrottle(10), unthrottle(11)])
+    }
+
+    func testARecordThatNamesNothingUnderThePolicyLiftsNothing() {
+        var record = UltraRecord()
+        record.groups = [group("com.example.notes", [20])]
+        XCTAssertEqual(UltraRecovery.actions(for: record, brightnessNow: nil), [resume(20)])
+        record.throttled = []
+        XCTAssertEqual(UltraRecovery.actions(for: record, brightnessNow: nil), [resume(20)])
     }
 
     func testNothingChangedMeansNothingRestored() {

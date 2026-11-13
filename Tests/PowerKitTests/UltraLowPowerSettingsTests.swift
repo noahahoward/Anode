@@ -1,7 +1,8 @@
 import XCTest
 @testable import PowerKit
 
-/// Ultra Low Power Mode's two settings: whether the feature is on, and the groups the owner always wants kept running.
+/// Ultra Low Power Mode's settings: whether the feature is on, the groups the owner always wants kept running, and what the
+/// mode does besides freezing.
 final class UltraLowPowerSettingsTests: XCTestCase {
 
     private var suiteName: String!
@@ -20,6 +21,17 @@ final class UltraLowPowerSettingsTests: XCTestCase {
         let s = Settings(defaults: defaults)
         XCTAssertFalse(s.ultraLowPowerEnabled)
         XCTAssertEqual(s.ultraLowPowerAlwaysKeep, [])
+    }
+
+    /// Slower by design, and on: it is what keeps what still runs from burning power in bursts, so the owner turns it off to
+    /// keep the apps at full speed.
+    func testEfficiencyCoresAreOnByDefaultAndTheSettingRoundTrips() {
+        XCTAssertTrue(Settings(defaults: defaults).ultraLowPowerEfficiencyCores)
+        Settings(defaults: defaults).ultraLowPowerEfficiencyCores = false
+        XCTAssertFalse(Settings(defaults: defaults).ultraLowPowerEfficiencyCores, "a new handle on the same suite")
+        XCTAssertFalse(Settings(defaults: defaults).ultraLowPowerEnabled, "a separate key")
+        Settings(defaults: defaults).ultraLowPowerEfficiencyCores = true
+        XCTAssertTrue(Settings(defaults: defaults).ultraLowPowerEfficiencyCores)
     }
 
     func testAlwaysKeepRoundTrips() {
@@ -62,23 +74,27 @@ final class UltraLowPowerSettingsTests: XCTestCase {
 
     func testObserversFireForEachKey() {
         let s = Settings(defaults: defaults)
-        var enabled = 0, keep = 0
+        var enabled = 0, keep = 0, cores = 0
         let t1 = s.observe(Settings.Key.ultraLowPowerEnabled) { enabled += 1 }
         let t2 = s.observe(Settings.Key.ultraLowPowerAlwaysKeep) { keep += 1 }
+        let t3 = s.observe(Settings.Key.ultraLowPowerEfficiencyCores) { cores += 1 }
 
         // Through the handle itself: once per change, none for a write that changes nothing.
         s.ultraLowPowerEnabled = true
         s.ultraLowPowerEnabled = true
         s.ultraLowPowerAlwaysKeep = ["com.example.vpn"]
         s.ultraLowPowerAlwaysKeep = ["com.example.vpn"]
-        XCTAssertEqual([enabled, keep], [1, 1])
+        s.ultraLowPowerEfficiencyCores = false
+        s.ultraLowPowerEfficiencyCores = false
+        XCTAssertEqual([enabled, keep, cores], [1, 1, 1])
 
         // Through another handle on the same suite, which is how the Beta Features window reaches a feature that
         // watches its own: `reconcile()` carries it across, and a key left out of it fails without a sound.
         let other = Settings(defaults: defaults)
         other.ultraLowPowerEnabled = false
         other.ultraLowPowerAlwaysKeep = ["com.example.vpn", "job:com.example.database"]
-        XCTAssertEqual([enabled, keep], [2, 2])
-        _ = (t1, t2)
+        other.ultraLowPowerEfficiencyCores = true
+        XCTAssertEqual([enabled, keep, cores], [2, 2, 2])
+        _ = (t1, t2, t3)
     }
 }

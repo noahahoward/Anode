@@ -26,6 +26,14 @@ protocol ProcessFreezing: AnyObject {
     func resume(pid: pid_t, startTime: UInt64) -> Bool
 }
 
+protocol ProcessThrottling: AnyObject {
+    /// Puts the process under the background policy (all of its threads on the efficiency cores). false when the pid is gone
+    /// or is not that process any more (its start time differs), or the system refused.
+    func throttle(pid: pid_t, startTime: UInt64) -> Bool
+    /// Lifts it, under the same checks.
+    func unthrottle(pid: pid_t, startTime: UInt64) -> Bool
+}
+
 protocol AppHiding: AnyObject {
     /// Hides the app and calls back on the main queue, once, when it is hidden or `hideWait` has passed, whichever is
     /// first. `hidByUs` is true when the app was not hidden before the call and the request was taken, even if the app
@@ -495,6 +503,50 @@ final class LiveProcessFreezer: ProcessFreezing {
         guard pid > 1, pid != getpid() else { return false }
         guard startTimeOf(pid) == startTime else { return false }
         return signal(pid, sig) == 0
+    }
+}
+
+// ── The efficiency cores ────────────────────────────────────────────────────
+
+/// The system's background policy on a process: on Apple silicon it confines all of the process's threads to the efficiency
+/// cores (measured: four busy threads cost 27.4 W normally and 5.0 W this way), and slows its disk and network use too.
+final class LiveProcessThrottler: ProcessThrottling {
+    private let startTimeOf: (pid_t) -> UInt64?
+    private let setPolicy: (pid_t, Bool) -> Bool
+
+    /// `setPolicy` is the system's call; tests replace it, and nothing in the test target changes a real process's policy.
+    init(startTimeOf: @escaping (pid_t) -> UInt64? = LiveProcessList.startTime,
+         setPolicy: @escaping (pid_t, Bool) -> Bool = LiveProcessThrottler.setBackground) {
+        self.startTimeOf = startTimeOf
+        self.setPolicy = setPolicy
+    }
+
+    func throttle(pid: pid_t, startTime: UInt64) -> Bool { change(pid, startTime, to: true) }
+
+    func unthrottle(pid: pid_t, startTime: UInt64) -> Bool { change(pid, startTime, to: false) }
+
+    /// Changes the policy only of the process the snapshot saw, as the freezer signals only that one. Between the check and the
+    /// call a process can still end and its pid be reused; that window is a few microseconds and cannot be closed from outside
+    /// the kernel.
+    private func change(_ pid: pid_t, _ startTime: UInt64, to on: Bool) -> Bool {
+        // The pids the freezer never touches: 0 and below mean something else to the system, 1 is launchd, and Anode itself is
+        // never slowed (it is the one that lifts the policy again).
+        guard pid > 1, pid != getpid() else { return false }
+        guard startTimeOf(pid) == startTime else { return false }
+        return setPolicy(pid, on)
+    }
+
+    static func setBackground(_ pid: pid_t, _ on: Bool) -> Bool {
+        guard let who = id_t(exactly: pid) else { return false }
+        return setpriority(PRIO_DARWIN_PROCESS, who, on ? PRIO_DARWIN_BG : 0) == 0
+    }
+
+    /// Detected from the processor's performance levels, not from a model list. A Mac that does not say has none.
+    static var hasEfficiencyCores: Bool {
+        var levels: Int32 = 0
+        var size = MemoryLayout<Int32>.size
+        guard sysctlbyname("hw.nperflevels", &levels, &size, nil, 0) == 0 else { return false }
+        return UltraThrottle.hasEfficiencyCores(performanceLevels: Int(levels))
     }
 }
 

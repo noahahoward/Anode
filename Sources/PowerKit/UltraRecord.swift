@@ -46,6 +46,9 @@ public struct UltraRecord: Codable, Equatable {
     public var keyboardBefore: Float?
     /// macOS's power mode before the mode changed it; nil when this feature did not change it.
     public var powerModeBefore: Int?
+    /// Every process the mode put under the background policy, named before the policy was applied. Optional so that a record
+    /// written by a build that had no such part still loads (as nil, which lifts nothing).
+    public var throttled: [Member]?
 
     /// Nothing frozen, nothing changed.
     public init() {
@@ -54,6 +57,7 @@ public struct UltraRecord: Codable, Equatable {
         rateLowered = false
         keyboardBefore = nil
         powerModeBefore = nil
+        throttled = nil
     }
 }
 
@@ -109,6 +113,8 @@ public final class UltraRecordFile: UltraRecordStoring {
 public enum UltraRecovery {
     public enum Action: Equatable {
         case resume(pid: Int32, startTime: UInt64)
+        /// Lifts the background policy from a process the mode put it on.
+        case unthrottle(pid: Int32, startTime: UInt64)
         case unhide(pid: Int32)
         case brightness(Float)
         case restoreRate
@@ -119,13 +125,16 @@ public enum UltraRecovery {
     /// What undoes `record`, in order: processes first.
     ///
     /// Only what the record names is continued, and only the groups not released already. Every process is continued
-    /// before any app is asked to unhide (a stopped app cannot answer, and a call into another app can stall), and all
-    /// of that before any setting. `brightnessNow` is the screen's brightness as read now, nil when it cannot be read.
+    /// before the background policy is lifted from every process the record names (released groups included: a group that
+    /// came back is the one that was put under it), and both before any app is asked to unhide (a stopped app cannot answer,
+    /// and a call into another app can stall), and all of that before any setting. `brightnessNow` is the screen's
+    /// brightness as read now, nil when it cannot be read.
     public static func actions(for record: UltraRecord, brightnessNow: Float?) -> [Action] {
         let open = record.groups.filter { !$0.released }
         var actions: [Action] = open.flatMap { group in
             group.members.map { Action.resume(pid: $0.pid, startTime: $0.startTime) }
         }
+        actions += (record.throttled ?? []).map { Action.unthrottle(pid: $0.pid, startTime: $0.startTime) }
         actions += open.compactMap { group in group.appPID.map { Action.unhide(pid: $0) } }
 
         if let brightness = BrightnessCeiling.restore(before: record.brightnessBefore, now: brightnessNow) {

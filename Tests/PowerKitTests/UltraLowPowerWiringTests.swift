@@ -161,7 +161,8 @@ final class UltraLowPowerWiringTests: XCTestCase {
         let widgets = FakeWidgets(), icon = FakeIcon(), work = FakeWork(calls), ticker = FakeTicker(), shortcut = Shortcut()
         let workspace = CountingCenter(), center = CountingCenter(), env = Env()
         let runtime = UltraLowPowerRuntime(
-            settings: settings, processes: processes, freezer: freezer, hider: Fakes.FakeHider(calls), backlight: backlight,
+            settings: settings, processes: processes, freezer: freezer, throttler: Fakes.FakeThrottler(calls),
+            hasEfficiencyCores: true, hider: Fakes.FakeHider(calls), backlight: backlight,
             ownBrightness: OwnBrightness(), rate: Fakes.FakeRate(calls), keyboard: Fakes.FakeKeyboard(calls),
             power: Fakes.FakePower(calls), watchdog: watchdog, store: store, confirm: confirm, load: Fakes.FakeLoad(calls),
             widgets: widgets, icon: icon,
@@ -912,6 +913,8 @@ final class UltraLowPowerWiringTests: XCTestCase {
                        "KeybindCenter.shared.register(owner: shortcutOwner, commands: ShortcutCommands.ultra)",
                        "KeybindCenter.shared.unregister(owner: shortcutOwner)",
                        "widgets: widgets, icon: icon",
+                       "throttler: LiveProcessThrottler()",                   // what still runs is kept on the efficiency cores
+                       "hasEfficiencyCores: LiveProcessThrottler.hasEfficiencyCores",
                        "windows: liveWindows"] {
             XCTAssertTrue(body.contains(needed), "live() no longer has: \(needed)")
         }
@@ -919,6 +922,22 @@ final class UltraLowPowerWiringTests: XCTestCase {
         XCTAssertEqual(body.components(separatedBy: "let url = recordURL").count - 1, 1)
         XCTAssertTrue(body.contains("UltraRecordFile(url: url)"), "the store is on the record's url")
         XCTAssertTrue(body.contains("LiveUltraWatchdog(recordURL: url"), "the watchdog is given the same url")
+    }
+
+    /// The watchdog is the one that lifts the policy when Anode dies, and it is never run in a test, so its call is read from its
+    /// text: a throttler left out of it would leave every kept app on the efficiency cores for good after a crash.
+    func testTheWatchdogsRealUndoLiftsThePolicyThroughTheRealThrottler() throws {
+        let source = try String(contentsOf: URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent().appendingPathComponent("Sources/AnodeApp/UltraWatchdog.swift"), encoding: .utf8)
+        let code = source.split(separator: "\n", omittingEmptySubsequences: false)
+            .filter { !$0.trimmingCharacters(in: .whitespaces).hasPrefix("//") }.joined(separator: " ")
+            .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+        let call = try XCTUnwrap(code.range(of: "undo(from: UltraRecordFile("), "the watchdog undoes from the record file")
+        let rest = code[call.lowerBound...]
+        let end = try XCTUnwrap(rest.range(of: "exit(0)"))
+        let text = rest[..<end.lowerBound]
+        XCTAssertTrue(text.contains("freezer: LiveProcessFreezer()"), "\(text)")
+        XCTAssertTrue(text.contains("throttler: LiveProcessThrottler()"), "\(text)")
     }
 
     func testMainWiresTheRuntimeAndShutsItDown() throws {

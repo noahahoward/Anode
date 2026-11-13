@@ -238,6 +238,7 @@ final class UltraLowPowerFeature: BetaFeature {
 
     // Internal, so the tests can drive them as a click would.
     let enableCheckbox = NSButton(checkboxWithTitle: "Allow Ultra Low Power Mode", target: nil, action: nil)
+    let efficiencyCheckbox = NSButton(checkboxWithTitle: "Keep everything on the efficiency cores (slower)", target: nil, action: nil)
     let startButton = NSButton(title: UltraLowPowerFeature.startTitle, target: nil, action: nil)
     let keepList = NSStackView()
     let addPopup = NSPopUpButton(frame: .zero, pullsDown: true)
@@ -289,7 +290,7 @@ final class UltraLowPowerFeature: BetaFeature {
 
     /// The parts a Mac may not do, in the order the controller's enum declares them.
     private static let skippedOrder: [UltraSkipped] = [.lowPowerNoHelper, .lowPowerOldHelper, .oneRefreshRate, .keyboardLight,
-                                                       .lowPowerRefused, .rateRefused, .ceilingRefused]
+                                                       .lowPowerRefused, .rateRefused, .ceilingRefused, .noEfficiencyCores]
 
     /// One plain sentence for each part that was not done, in the enum's order and without repeats. A missing or old helper
     /// points at the button the section shows with the line, the route Charge Control uses.
@@ -312,6 +313,8 @@ final class UltraLowPowerFeature: BetaFeature {
                 return "The screen's brightness could not be held at half, so it was left as it was."
             case .keyboardLight:
                 return "This Mac's keyboard light could not be read or switched off, so it was left as it was."
+            case .noEfficiencyCores:
+                return "This Mac has no efficiency cores, so work was left on the cores it has."
             }
         }
     }
@@ -368,11 +371,20 @@ final class UltraLowPowerFeature: BetaFeature {
         }
     }
 
+    /// Whether the choices under the box can be changed. They are read when the mode starts, so they stay as they were chosen
+    /// from the question until the mode is off again: the box lists what is about to happen, and a session is not changed
+    /// under itself.
+    static func optionsEnabled(state: UltraLowPowerController.State?) -> Bool {
+        state == nil || state == .off
+    }
+
     // ── View ────────────────────────────────────────────────────────────────
 
     func makeView() -> NSView {
         enableCheckbox.target = self
         enableCheckbox.action = #selector(toggled)
+        efficiencyCheckbox.target = self
+        efficiencyCheckbox.action = #selector(efficiencyToggled)
         startButton.target = self
         startButton.action = #selector(startPressed)
         installButton.target = self
@@ -390,7 +402,7 @@ final class UltraLowPowerFeature: BetaFeature {
 
         let keepCaption = NSTextField(labelWithString: "Always keep running")
         keepCaption.font = .boldSystemFont(ofSize: NSFont.smallSystemFontSize)
-        let column = NSStackView(views: [enableCheckbox, startButton, keepCaption, keepList, addPopup, skippedLabel,
+        let column = NSStackView(views: [enableCheckbox, efficiencyCheckbox, startButton, keepCaption, keepList, addPopup, skippedLabel,
                                          leftRunningLabel, installButton, installNoteLabel, noteLabel])
         column.orientation = .vertical
         column.alignment = .leading
@@ -398,7 +410,8 @@ final class UltraLowPowerFeature: BetaFeature {
 
         // Listening starts with the view: a section that was never shown has nothing to keep up to date.
         if tokens.isEmpty {
-            tokens = [Settings.Key.ultraLowPowerEnabled, Settings.Key.ultraLowPowerAlwaysKeep].map { key in
+            tokens = [Settings.Key.ultraLowPowerEnabled, Settings.Key.ultraLowPowerAlwaysKeep,
+                      Settings.Key.ultraLowPowerEfficiencyCores].map { key in
                 settings.observe(key) { [weak self] in self?.redraw() }
             }
         }
@@ -413,6 +426,8 @@ final class UltraLowPowerFeature: BetaFeature {
     // ── Actions ─────────────────────────────────────────────────────────────
 
     @objc private func toggled() { settings.ultraLowPowerEnabled = enableCheckbox.state == .on }
+
+    @objc private func efficiencyToggled() { settings.ultraLowPowerEfficiencyCores = efficiencyCheckbox.state == .on }
 
     @objc private func startPressed() {
         guard let c = controller() else { return }
@@ -492,6 +507,8 @@ final class UltraLowPowerFeature: BetaFeature {
         let ticked = settings.ultraLowPowerEnabled
         let c = controller()
         enableCheckbox.state = ticked ? .on : .off
+        efficiencyCheckbox.state = settings.ultraLowPowerEfficiencyCores ? .on : .off
+        efficiencyCheckbox.isEnabled = Self.optionsEnabled(state: c?.state)
         let look = Self.buttonLook(ticked: ticked, state: c?.state)
         startButton.title = look.title
         startButton.isEnabled = look.isEnabled

@@ -129,7 +129,7 @@ final class UltraLowPowerFeatureTests: XCTestCase {
 
     func testEachSkippedPartHasAPlainLine() {
         let all: [UltraSkipped] = [.lowPowerNoHelper, .lowPowerOldHelper, .oneRefreshRate, .keyboardLight, .lowPowerRefused,
-                                   .rateRefused, .ceilingRefused]
+                                   .rateRefused, .ceilingRefused, .noEfficiencyCores]
         let lines = UltraLowPowerFeature.describe(all)
         XCTAssertEqual(lines.count, all.count)
         XCTAssertEqual(Set(lines).count, all.count, "each part has its own words")
@@ -151,6 +151,9 @@ final class UltraLowPowerFeatureTests: XCTestCase {
                        ["This Mac's keyboard light could not be read or switched off, so it was left as it was."])
         // A Mac with no built-in screen gets this line every time: it says what could not be done, and blames nothing.
         XCTAssertTrue(UltraLowPowerFeature.describe([.ceilingRefused])[0].contains("held at half"))
+        // A Mac without efficiency cores (an Intel one) says so, and says what was done instead.
+        XCTAssertEqual(UltraLowPowerFeature.describe([.noEfficiencyCores]),
+                       ["This Mac has no efficiency cores, so work was left on the cores it has."])
     }
 
     func testSkippedLinesComeInTheOrderOfTheEnumAndNeverRepeat() {
@@ -526,11 +529,11 @@ final class UltraLowPowerFeatureTests: XCTestCase {
             proc(40, path: "/Applications/Cloud.app/Contents/MacOS/Cloud", app: .regular, bundle: "com.example.cloud", name: "Cloud"),
             proc(41, uid: 0, path: "/Applications/Cloud.app/Contents/Library/clouddaemon", name: "clouddaemon")]
 
-        init(settings: Settings) {
+        init(settings: Settings, hasEfficiencyCores: Bool = true) {
             power = Fakes.FakePower(calls)
             controller = UltraLowPowerController(
                 settings: settings, processes: Fakes.FakeProcesses(Self.world), freezer: Fakes.FakeFreezer(calls),
-                hider: Fakes.FakeHider(calls), backlight: Fakes.FakeBacklight(calls), ownBrightness: OwnBrightness(),
+                throttler: Fakes.FakeThrottler(calls), hasEfficiencyCores: hasEfficiencyCores, hider: Fakes.FakeHider(calls), backlight: Fakes.FakeBacklight(calls), ownBrightness: OwnBrightness(),
                 rate: Fakes.FakeRate(calls), keyboard: Fakes.FakeKeyboard(calls), power: power,
                 watchdog: Fakes.FakeWatchdog(calls), store: Fakes.FakeStore(calls), confirm: confirm, load: Fakes.FakeLoad(calls),
                 lastOtherFrontApp: { 10 }, ownPIDs: { [1000] }, user: 501, work: { $0() }, schedule: { _, _ in }, log: { _ in })
@@ -731,6 +734,74 @@ final class UltraLowPowerFeatureTests: XCTestCase {
         XCTAssertEqual(UltraLowPowerFeature.keyLabel(in: store), "⌃⌘J")
         store.assign(nil, to: ShortcutCommands.ultraToggle, among: ShortcutCommands.all)
         XCTAssertNil(UltraLowPowerFeature.keyLabel(in: store), "cleared: the default must not come back")
+    }
+
+    // ── What the mode does besides freezing ─────────────────────────────────
+
+    func testTheEfficiencyCoresBoxSaysWhatItCostsAndWritesItsSetting() throws {
+        let (f, settings) = try section()
+        XCTAssertEqual(f.efficiencyCheckbox.title, "Keep everything on the efficiency cores (slower)")
+        XCTAssertEqual(f.efficiencyCheckbox.state, .on, "on by default")
+        XCTAssertTrue(settings.ultraLowPowerEfficiencyCores)
+        press(f.efficiencyCheckbox)
+        XCTAssertFalse(settings.ultraLowPowerEfficiencyCores)
+        XCTAssertEqual(f.efficiencyCheckbox.state, .off)
+        press(f.efficiencyCheckbox)
+        XCTAssertTrue(settings.ultraLowPowerEfficiencyCores)
+        XCTAssertFalse(settings.ultraLowPowerEnabled, "a separate setting")
+    }
+
+    func testTheEfficiencyCoresBoxFollowsTheSettingWhenItChangesElsewhere() throws {
+        let (f, settings) = try section()
+        settings.ultraLowPowerEfficiencyCores = false
+        XCTAssertEqual(f.efficiencyCheckbox.state, .off)
+        settings.ultraLowPowerEfficiencyCores = true
+        XCTAssertEqual(f.efficiencyCheckbox.state, .on)
+    }
+
+    func testTheEfficiencyCoresBoxIsUnderTheEnableBox() throws {
+        let (f, _) = try section(buildView: false)
+        let column = try XCTUnwrap(f.makeView() as? NSStackView)
+        XCTAssertTrue(column.arrangedSubviews[0] === f.enableCheckbox)
+        XCTAssertTrue(column.arrangedSubviews[1] === f.efficiencyCheckbox)
+    }
+
+    /// The choices are read when the mode starts, so they are not changed under it: not while the box is up (it lists what is
+    /// about to happen) and not while it runs.
+    func testTheChoicesAreSwitchedOffExactlyWhileTheModeIsAskedForOrRuns() {
+        XCTAssertTrue(UltraLowPowerFeature.optionsEnabled(state: .off))
+        XCTAssertTrue(UltraLowPowerFeature.optionsEnabled(state: nil), "no controller: nothing is running")
+        XCTAssertFalse(UltraLowPowerFeature.optionsEnabled(state: .confirming))
+        XCTAssertFalse(UltraLowPowerFeature.optionsEnabled(state: .on))
+    }
+
+    func testTheEfficiencyCoresBoxIsDisabledWhileTheModeRunsAndEnabledAgainAfter() throws {
+        let probe = Probe()
+        let (f, settings) = try section(probe, ticked: true)
+        let rig = ControllerRig(settings: settings)
+        probe.controller = rig.controller
+        f.refresh()
+        XCTAssertTrue(f.efficiencyCheckbox.isEnabled)
+        press(f.startButton)
+        XCTAssertFalse(f.efficiencyCheckbox.isEnabled, "the box is up")
+        rig.confirm.press(true)
+        XCTAssertEqual(rig.controller.state, .on)
+        XCTAssertFalse(f.efficiencyCheckbox.isEnabled)
+        press(f.startButton)
+        XCTAssertEqual(rig.controller.state, .off)
+        XCTAssertTrue(f.efficiencyCheckbox.isEnabled)
+    }
+
+    func testTheSectionNamesAMacWithoutEfficiencyCores() throws {
+        let probe = Probe()
+        let (f, settings) = try section(probe, ticked: true)
+        let rig = ControllerRig(settings: settings, hasEfficiencyCores: false)
+        probe.controller = rig.controller
+        f.refresh()
+        press(f.startButton)
+        rig.confirm.press(true)
+        XCTAssertEqual(f.skippedLabel.stringValue, "This Mac has no efficiency cores, so work was left on the cores it has.")
+        XCTAssertFalse(f.skippedLabel.isHidden)
     }
 
     // ── The always-keep list ────────────────────────────────────────────────
