@@ -128,6 +128,33 @@ final class FreezePlannerTests: XCTestCase {
                 XCTAssertTrue(FreezePlanner.isSystem(proc(1, path: "/Applications/X.app/x", app: kind, bundle: id)), "\(id) \(kind)")
             }
         }
+        // A background service that is no app and carries Apple's id or job label is the system's, wherever its file is
+        // (the developer tools keep theirs under /Library/Developer, outside the system folders).
+        let tool = "/Library/Developer/Tools/svc"
+        XCTAssertTrue(FreezePlanner.isSystem(proc(1, path: tool, label: "com.apple.devtool.service")))
+        XCTAssertTrue(FreezePlanner.isSystem(proc(1, path: tool, bundle: "com.apple.devtool.service")))
+        XCTAssertTrue(FreezePlanner.isSystem(proc(1, path: "", label: "com.apple.devtool.service")))
+        XCTAssertFalse(FreezePlanner.isSystem(proc(1, path: tool, label: "com.example.devtool.service")))
+        XCTAssertFalse(FreezePlanner.isSystem(proc(1, path: tool, label: "org.com.apple.devtool")), "begins with, not contains")
+        // An app of Apple's that the owner opened stays freezable, whatever its job label says.
+        XCTAssertFalse(FreezePlanner.isSystem(proc(1, path: tool, app: .regular, bundle: "com.apple.mail", label: "com.apple.mail.job")))
+        XCTAssertFalse(FreezePlanner.isSystem(proc(1, path: tool, app: .regular, label: "com.apple.devtool.service")))
+    }
+
+    func testASystemServiceOutsideTheSystemFoldersIsInNoPile() {
+        let path = "/Library/Developer/Tools/svc"
+        for service in [proc(60, path: path, label: "com.apple.devtool.service"),      // by its job label
+                        proc(60, path: path, bundle: "com.apple.devtool.service")] {    // by its bundle id
+            let p = plan([editor(), service], front: 10)
+            XCTAssertEqual(ids(p.kept), ["com.example.editor"])
+            XCTAssertTrue(p.frozen.isEmpty, "frozen: \(p.frozen)")
+            XCTAssertTrue(p.leftRunning.isEmpty, "leftRunning: \(p.leftRunning)")
+        }
+    }
+
+    func testABackgroundToolWithAnotherLabelIsStillFrozen() {
+        let p = plan([editor(), proc(60, path: "/Library/Developer/Tools/svc", label: "com.example.devtool.service")], front: 10)
+        XCTAssertEqual(ids(p.frozen), ["job:com.example.devtool.service"])
     }
 
     func testOtherUsersProcessesAreNeverFrozen() {

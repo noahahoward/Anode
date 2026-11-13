@@ -175,6 +175,18 @@ final class UltraProcessesTests: XCTestCase {
                        [913: "com.example.devserver", 1020: "application.not.numbered", 1021: "com.example.a"])
     }
 
+    func testAnonymousLaunchctlLabelsAreDropped() {
+        // A label made for a process that checked in with launchd without a job of its own embeds an address: a group
+        // named by it would be a different group for every process and every boot, and no keep list could name it.
+        let output = "PID\tStatus\tLabel\n"
+            + "1030\t0\t0x600002f4c000.anonymous.zsh\n"
+            + "1031\t0\tcom.example.anonymous.service\n"      // a word in a real label is not the address form
+            + "1032\t0\t0x600002f4c000.anonymous.zsh\n"
+            + "1032\t0\tcom.example.shell\n"                  // a process with a real label besides keeps that one
+        XCTAssertEqual(LiveProcessList.toolLabels(fromLaunchctl: output),
+                       [1031: "com.example.anonymous.service", 1032: "com.example.shell"])
+    }
+
     // ── A process's start time ──────────────────────────────────────────────
 
     func testStartTimeIsTheSameNumberTheSnapshotReports() {
@@ -350,8 +362,8 @@ final class UltraProcessesTests: XCTestCase {
     func testBusyCoresAndAProcessAtHalfACore() {
         let key = ProcessKey(pid: 77, startAbsTime: 9)
         // 2 s on 10 cores. The user ticks wrap past the top of their 32 bits, which a plain subtraction would not survive.
-        let previous = Reading(ticks: ticks(UInt32.max - 50, 40, 5_000, 10), cores: 10, cpuSeconds: [key: 10.0])
-        let current = Reading(ticks: ticks(49, 90, 5_850, 10), cores: 10, cpuSeconds: [key: 11.0])
+        let previous = Reading(ticks: ticks(UInt32.max - 50, 40, 5_000, 10), cores: 10, takenAt: 1_000, cpuSeconds: [key: 10.0])
+        let current = Reading(ticks: ticks(49, 90, 5_850, 10), cores: 10, takenAt: 3_000, cpuSeconds: [key: 11.0])
         // busy: user 100 + system 50 + nice 0 of 1000 ticks = 15%, of 10 cores = 1.5 cores
         let sample = LiveLoadReader.delta(previous: previous, current: current, elapsed: 2)
         XCTAssertEqual(sample?.busyCores ?? -1, 1.5, accuracy: 1e-9)
@@ -362,14 +374,15 @@ final class UltraProcessesTests: XCTestCase {
     func testAProcessThatAppearedBetweenReadsCountsFromZero() {
         let old = ProcessKey(pid: 77, startAbsTime: 9)
         let recycled = ProcessKey(pid: 80, startAbsTime: 500)
-        let previous = Reading(ticks: ticks(0, 0, 0), cores: 4,
+        // The previous reading was taken at 450: both new keys started after it.
+        let previous = Reading(ticks: ticks(0, 0, 0), cores: 4, takenAt: 450,
                                cpuSeconds: [old: 5.0, ProcessKey(pid: 80, startAbsTime: 400): 900.0, ProcessKey(pid: 99, startAbsTime: 1): 1.0])
-        let current = Reading(ticks: ticks(100, 0, 100), cores: 4,
+        let current = Reading(ticks: ticks(100, 0, 100), cores: 4, takenAt: 700,
                               cpuSeconds: [old: 5.0, recycled: 1.5, ProcessKey(pid: 81, startAbsTime: 600): 3.0])
         let sample = LiveLoadReader.delta(previous: previous, current: current, elapsed: 2)
         XCTAssertEqual(sample?.busyCores ?? -1, 2.0, accuracy: 1e-9)
         XCTAssertEqual(sample?.byProcess[77] ?? -1, 0, accuracy: 1e-9)
-        // never seen before: all of its CPU time happened in this interval
+        // never seen before, and started after the last reading: all of its CPU time happened in this interval
         XCTAssertEqual(sample?.byProcess[81] ?? -1, 1.5, accuracy: 1e-9)
         // the same pid under a new start time is another process, not 900 s of the old one taken away
         XCTAssertEqual(sample?.byProcess[80] ?? -1, 0.75, accuracy: 1e-9)
@@ -377,10 +390,28 @@ final class UltraProcessesTests: XCTestCase {
         XCTAssertNil(sample?.byProcess[99])
     }
 
+    func testALongLivedProcessMissingFromTheLastReadingIsLeftOut() {
+        let steady = ProcessKey(pid: 77, startAbsTime: 9)
+        // Running since long before the last reading (taken at 450), but that reading did not get it (a read that failed
+        // once): its lifetime of CPU is not this interval's, and 4000 s over 2 s would be a burner of 2000 cores.
+        let missed = ProcessKey(pid: 90, startAbsTime: 100)
+        let previous = Reading(ticks: ticks(0, 0, 0), cores: 4, takenAt: 450, cpuSeconds: [steady: 5.0])
+        let current = Reading(ticks: ticks(100, 0, 100), cores: 4, takenAt: 700,
+                              cpuSeconds: [steady: 6.0, missed: 4_000.0])
+        let sample = LiveLoadReader.delta(previous: previous, current: current, elapsed: 2)
+        XCTAssertNil(sample?.byProcess[90], "left out for this interval; the next one has it")
+        XCTAssertEqual(sample?.byProcess[77] ?? -1, 0.5, accuracy: 1e-9)
+        XCTAssertEqual(sample?.byProcess.count, 1)
+        // Started at the very moment of the last reading is not after it: left out too, never counted too high.
+        let edge = ProcessKey(pid: 91, startAbsTime: 450)
+        let atEdge = Reading(ticks: ticks(100, 0, 100), cores: 4, takenAt: 700, cpuSeconds: [steady: 6.0, edge: 0.4])
+        XCTAssertNil(LiveLoadReader.delta(previous: previous, current: atEdge, elapsed: 2)?.byProcess[91])
+    }
+
     func testNoLoadWhenNoTimeOrNoTicksPassed() {
-        let r = Reading(ticks: ticks(1, 1, 1), cores: 4, cpuSeconds: [:])
+        let r = Reading(ticks: ticks(1, 1, 1), cores: 4, takenAt: 1, cpuSeconds: [:])
         XCTAssertNil(LiveLoadReader.delta(previous: r, current: r, elapsed: 2), "no tick passed")
-        let later = Reading(ticks: ticks(5, 5, 5), cores: 4, cpuSeconds: [:])
+        let later = Reading(ticks: ticks(5, 5, 5), cores: 4, takenAt: 2, cpuSeconds: [:])
         XCTAssertNil(LiveLoadReader.delta(previous: r, current: later, elapsed: 0))
     }
 

@@ -70,10 +70,15 @@ public enum FreezePlanner {
     /// What macOS itself is, as against an app the owner opened: system files that are not an app, the system's agents
     /// that are apps without a Dock icon, and the three that hold the screen together (Finder, the Dock, the login window).
     /// A regular app of Apple's (the mail app, the browser) is not system: the owner opened it.
+    ///
+    /// A background service that is no app and carries Apple's id or job label is system wherever its file is: the
+    /// developer tools keep theirs under /Library/Developer, outside the system folders, and an IDE that is kept needs them.
     public static func isSystem(_ p: UltraProcess) -> Bool {
         if let id = p.bundleID, systemBundles.contains(id) { return true }
         switch p.app {
-        case .none: return systemRoots.contains { p.path.hasPrefix($0) }
+        case .none:
+            if p.bundleID?.hasPrefix("com.apple.") == true || p.launchdLabel?.hasPrefix("com.apple.") == true { return true }
+            return systemRoots.contains { p.path.hasPrefix($0) }
         case .accessory: return p.bundleID?.hasPrefix("com.apple.") == true
         case .regular: return false
         }

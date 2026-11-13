@@ -194,6 +194,7 @@ final class LiveProcessList: ProcessListing {
 
     /// pid to launchd label from `launchctl list` (columns: pid, status, label), for jobs that are running and are not an
     /// app. An app's label is `application.<bundle id>.<numbers>`: it names the app, which the bundle id already does.
+    /// An anonymous one (`0x<address>.anonymous.<name>`) is dropped too, so the planner names the tool by its executable.
     /// When one process has several labels the smallest is kept, so a group's id does not change between snapshots.
     static func toolLabels(fromLaunchctl output: String) -> [pid_t: String] {
         var labels: [pid_t: String] = [:]
@@ -202,11 +203,19 @@ final class LiveProcessList: ProcessListing {
             // "-" is a job that is not running, and the header's "PID" is not a number.
             guard columns.count == 3, let pid = pid_t(columns[0]), pid > 0 else { continue }
             let label = String(columns[2])
-            if isAppLabel(label) { continue }
+            if isAppLabel(label) || isAnonymousLabel(label) { continue }
             if let have = labels[pid], have <= label { continue }
             labels[pid] = label
         }
         return labels
+    }
+
+    /// The label launchd makes up for a process that checked in without a job of its own. It embeds an address, so it is
+    /// different for every process and every boot: a group named by it could never be named again in a keep list.
+    static func isAnonymousLabel(_ label: String) -> Bool {
+        let parts = label.split(separator: ".", maxSplits: 2, omittingEmptySubsequences: false)
+        guard parts.count == 3, parts[1] == "anonymous", parts[0].hasPrefix("0x"), parts[0].count > 2 else { return false }
+        return parts[0].dropFirst(2).allSatisfy(\.isHexDigit)
     }
 
     static func isAppLabel(_ label: String) -> Bool {
@@ -550,6 +559,9 @@ final class LiveLoadReader: LoadReading {
     struct Reading {
         var ticks: HostTicks
         var cores: Int
+        /// `mach_absolute_time()` when the reading was complete: the same clock as a process's start time (measured: the
+        /// sampler's `startAbsTime` agrees with it, and not with `mach_continuous_time()`, which also counts sleep).
+        var takenAt: UInt64
         /// Keyed by pid AND start time: a pid that was reused is another process.
         var cpuSeconds: [ProcessKey: Double]
     }
@@ -580,7 +592,7 @@ final class LiveLoadReader: LoadReading {
             // The sampler's "_ns" fields are mach time units: MachTime converts them (dividing by 1e9 reads 41.7 times low).
             seconds[key] = MachTime.seconds(units: process.userTime_ns &+ process.systemTime_ns)
         }
-        let current = Reading(ticks: ticks, cores: MachTime.activeCores, cpuSeconds: seconds)
+        let current = Reading(ticks: ticks, cores: MachTime.activeCores, takenAt: mach_absolute_time(), cpuSeconds: seconds)
         defer { previous = (current, at) }
         guard let before = previous else { return nil }
         return Self.delta(previous: before.reading, current: current, elapsed: Double(at &- before.at) / 1e9)
@@ -601,9 +613,19 @@ final class LiveLoadReader: LoadReading {
         var byProcess: [pid_t: Double] = [:]
         byProcess.reserveCapacity(current.cpuSeconds.count)
         for (key, now) in current.cpuSeconds {
-            // A process that was not there before (or whose pid was reused) started inside this interval, so all the CPU
-            // time it has is this interval's: it counts from zero.
-            let before = previous.cpuSeconds[key] ?? 0
+            let before: Double
+            if let seen = previous.cpuSeconds[key] {
+                before = seen
+            } else if key.startAbsTime > previous.takenAt {
+                // Not there before, and started after that reading (or its pid was reused): all the CPU time it has is
+                // this interval's, so it counts from zero.
+                before = 0
+            } else {
+                // Older than the last reading but missing from it (a read of it failed once): its lifetime of CPU time is
+                // not this interval's, and counted as if it were it would look like a process burning hundreds of cores.
+                // Left out for this interval; the next one has it.
+                continue
+            }
             byProcess[key.pid] = Swift.max(0, now - before) / elapsed
         }
         return LoadSample(busyCores: busyCores, byProcess: byProcess)
