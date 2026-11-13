@@ -34,6 +34,8 @@ final class ChargeControllerTests: XCTestCase {
     /// Why `makeClient` gave nothing, when `clientToMake` is nil. The tests that say only "no client" mean a Mac that
     /// is too old for it.
     private var noClientReason = ChargeController.NoClientReason(unsupportedMac: true, step: nil)
+    /// Whether this account is the one on screen when the controller is made; nil = the session cannot be read.
+    private var onConsole: Bool? = true
 
     override func setUpWithError() throws {
         (defaults, suiteName) = try TestDefaults.make(owner: "ChargeController", test: name)
@@ -92,7 +94,8 @@ final class ChargeControllerTests: XCTestCase {
                                  noClientBecause: { [weak self] in
                                      self?.noClientReason ?? ChargeController.NoClientReason(unsupportedMac: true,
                                                                                             step: nil)
-                                 })
+                                 },
+                                 onConsole: { [weak self] in self?.onConsole })
         controller = c
         return c
     }
@@ -1060,15 +1063,68 @@ final class ChargeControllerTests: XCTestCase {
         XCTAssertFalse(settings.chargeStartPending)
     }
 
-    /// Off, a record left over is the controller's to put back (once, at launch); the lift is for Charge Control on.
-    func testTheEarlyLiftDoesNothingWhileChargeControlIsOff() {
+    /// Off, a record left over (a switch-off macOS partly refused, or the setting turned off while Anode was closed) is
+    /// put back at the top of the program too: left to the controller, in the middle of launch, an Anode that crashes
+    /// before it never releases it. No wait and no pending start: nothing is switched on again.
+    func testTheEarlyLiftWhileOffPutsBackALeftoverRecordWithNoWaitAndNoPendingStart() {
         settings.chargeRestoreRecord = ChargeController.encodeRecord(found)
+        client.state = NativeChargeState(mclEnabled: true, mclLimit: 80, optimizedChargingEnabled: false)
+        settings.chargeControlEnabled = false
+        XCTAssertTrue(liftAtLaunch())
+        XCTAssertEqual(client.state, found, "the leftover limit was not lifted at the top of the program")
+        XCTAssertNil(settings.chargeRestoreRecord)
+        XCTAssertFalse(settings.chargeStartPending, "nothing is switched on again, so nothing is pending")
+        XCTAssertFalse(settings.chargeControlEnabled, "the setting was changed")
+        XCTAssertEqual(helper.follows, 0)
+        XCTAssertTrue(lines.contains { $0.contains("left over while off; putting it back at the top of the program") },
+                      lines.joined(separator: "\n"))
+        // The controller, built later and told the lift ran, does not ask macOS again.
+        let made = clientsMade
+        let c = make(enabled: false, liftedAtLaunch: true)
+        XCTAssertEqual(clientsMade, made, "macOS was asked to put the same record back a second time")
+        XCTAssertEqual(c.status, .off)
+    }
+
+    /// With a stale pending start and no record, nothing is left in force and nothing is built.
+    func testTheEarlyLiftWhileOffWithOnlyAStalePendingStartMakesNothing() {
         settings.chargeStartPending = true
         settings.chargeControlEnabled = false
         XCTAssertFalse(liftAtLaunch())
         XCTAssertEqual(clientsMade, 0)
         XCTAssertEqual(helpersMade, 0)
+        XCTAssertTrue(lines.isEmpty, lines.joined(separator: "\n"))
+    }
+
+    /// The normal launch with Charge Control off: no record and nothing pending builds nothing and logs nothing.
+    func testTheEarlyLiftWhileOffWithNeitherMakesNothing() {
+        settings.chargeControlEnabled = false
+        XCTAssertFalse(liftAtLaunch())
+        XCTAssertEqual(clientsMade, 0)
+        XCTAssertEqual(helpersMade, 0, "a helper link was built for a launch with nothing to lift")
+        XCTAssertTrue(lines.isEmpty, lines.joined(separator: "\n"))
+        XCTAssertFalse(settings.chargeStartPending)
+    }
+
+    /// A refusal while off keeps the record, as at any other time, and no start is pending for it.
+    func testARefusedEarlyLiftWhileOffKeepsTheRecord() {
+        settings.chargeRestoreRecord = ChargeController.encodeRecord(found)
+        settings.chargeControlEnabled = false
+        client.succeeds = false
+        XCTAssertTrue(liftAtLaunch())
         XCTAssertNotNil(settings.chargeRestoreRecord)
+        XCTAssertFalse(settings.chargeStartPending)
+        XCTAssertTrue(lines.contains { $0.contains("record is kept") }, lines.joined(separator: "\n"))
+    }
+
+    /// The line says "while off" only when the setting is off: before an uninstall the setting may be on.
+    func testTheLeftoverLineDoesNotSayOffWhenChargeControlIsOn() {
+        settings.chargeRestoreRecord = ChargeController.encodeRecord(found)
+        settings.chargeControlEnabled = true
+        ChargeController.restoreForUninstall(settings: settings, makeClient: { [client] in client },
+                                             helper: helper, log: { [weak self] in self?.lines.append($0) })
+        XCTAssertTrue(lines.contains { $0.contains("was left over; putting it back before uninstalling") },
+                      lines.joined(separator: "\n"))
+        XCTAssertFalse(lines.contains { $0.contains("while off") }, lines.joined(separator: "\n"))
     }
 
     /// A restore macOS refuses keeps the record, and the pending start is on disk all the same.
@@ -1431,8 +1487,9 @@ final class ChargeControllerTests: XCTestCase {
     }
 
     /// When 45 cannot land (no helper installed), macOS is set to the nearest value at or above it, so the Mac can
-    /// charge at least that far; the record is kept for the next launch, and that is logged once.
-    func testARestoreThatCannotLandKeepsTheRecord() {
+    /// charge at least that far. That is the best this Mac can do, so the record is cleared and the line says what
+    /// was put back and what could not be, once (the record was once kept, and every launch then waited 60 s).
+    func testARestoreThatCannotLandWithNoHelperInstalledIsTheBestThereIsAndClearsTheRecord() {
         settings.chargeRestoreRecord = ChargeController.encodeRecord(
             NativeChargeState(mclEnabled: true, mclLimit: 45, optimizedChargingEnabled: true))
         helper.available = false
@@ -1440,7 +1497,7 @@ final class ChargeControllerTests: XCTestCase {
         make(enabled: false)
         XCTAssertTrue(helper.commands.isEmpty)
         XCTAssertEqual(client.state?.mclLimit, 80)
-        XCTAssertNotNil(settings.chargeRestoreRecord, "a limit that did not land cleared the record")
+        XCTAssertNil(settings.chargeRestoreRecord, "the record was kept for a restore nothing will ever complete")
         XCTAssertEqual(lines.filter { $0.contains("45") && $0.contains("needs the helper") }.count, 1,
                        lines.joined(separator: "\n"))
     }
@@ -3520,7 +3577,7 @@ final class ChargeControllerTests: XCTestCase {
         let c = ChargeController(settings: settings, makeClient: { [client] in client }, helper: adapter,
                                  battery: { [weak self] in self?.battery }, chargerSwitch: { nil },
                                  log: { [weak self] in self?.lines.append($0) }, workspace: center,
-                                 limitInForce: limitInForce)
+                                 limitInForce: limitInForce, onConsole: { true })
         controller = c
         c.pressDischarge()
         XCTAssertEqual(c.dischargeInForce, 80)
@@ -3691,6 +3748,142 @@ final class ChargeControllerTests: XCTestCase {
         c.tick()
         XCTAssertNotNil(c.chargerReconnectTimeLeft(now: Date().addingTimeInterval(55)))
         XCTAssertNil(c.chargerReconnectTimeLeft(now: Date().addingTimeInterval(91)))
+    }
+
+    // ── A restore that can never complete ───────────────────────────────────
+
+    /// The original limit is one only the helper can set (left by another tool before Charge Control was switched on)
+    /// and no helper is installed: the nearest value macOS takes, at or above it, goes in, the switch and Optimized
+    /// Battery Charging go back as recorded, and that is the best this Mac can do. The record is cleared, with a line
+    /// that says exactly what was put back and what could not be. It used to keep the record, so every launch took the
+    /// unclean route and waited 60 s, for ever.
+    func testARestoreOnlyTheHelperCouldCompleteWithNoHelperInstalledIsTheBestThereIsAndClearsTheRecord() {
+        client.state = NativeChargeState(mclEnabled: true, mclLimit: 63, optimizedChargingEnabled: true)
+        helper.installed = false
+        helper.available = false
+        let c = make()
+        settings.chargeControlEnabled = false
+        XCTAssertEqual(client.state, NativeChargeState(mclEnabled: true, mclLimit: 80, optimizedChargingEnabled: true),
+                       "the nearest value above 63, with the switch and Optimized Battery Charging as they were")
+        XCTAssertNil(settings.chargeRestoreRecord, "the record stayed, and every launch would wait 60 s again")
+        XCTAssertTrue(helper.waited.isEmpty, "a helper that is not installed was asked")
+        let said = lines.first { $0.contains("as much of macOS's own settings as this Mac can") } ?? ""
+        XCTAssertTrue(said.contains("limit 80 on"), said)
+        XCTAssertTrue(said.contains("was 63"), said)
+        XCTAssertTrue(said.contains("Optimized Battery Charging on"), said)
+        XCTAssertTrue(said.contains("needs the helper"), said)
+        XCTAssertFalse(lines.contains { $0.contains("record is kept") }, lines.joined(separator: "\n"))
+        // The next launch finds nothing to lift.
+        XCTAssertFalse(settings.chargeStartPending)
+        let next = ChargeRecords(settings: settings)
+        XCTAssertFalse(next.hasRecord)
+        XCTAssertFalse(next.lastRunDidNotRelease(), "the next launch would take this for an unclean exit")
+        withExtendedLifetime(c) {}
+    }
+
+    /// The same at a launch that lifts after a crash, and before an uninstall: one rule, wherever the restore runs.
+    func testTheLaunchLiftWithNoHelperInstalledClearsAnUnsettableRecordToo() {
+        settings.chargeRestoreRecord = ChargeController.encodeRecord(
+            NativeChargeState(mclEnabled: true, mclLimit: 63, optimizedChargingEnabled: false))
+        client.state = NativeChargeState(mclEnabled: true, mclLimit: 100, optimizedChargingEnabled: false)
+        helper.installed = false
+        helper.available = false
+        let c = make(enabled: false)
+        XCTAssertEqual(client.state, NativeChargeState(mclEnabled: true, mclLimit: 80, optimizedChargingEnabled: false))
+        XCTAssertNil(settings.chargeRestoreRecord)
+        c.restoreForUninstall()
+    }
+
+    /// A helper that is installed and did not answer is not "none installed": it may answer next time, so the record
+    /// is kept, as before, and the nearest value holds meanwhile.
+    func testARestoreWithAnInstalledHelperThatDidNotAnswerKeepsTheRecord() {
+        client.state = NativeChargeState(mclEnabled: true, mclLimit: 63, optimizedChargingEnabled: true)
+        let c = make()
+        helper.gone = true
+        settings.chargeControlEnabled = false
+        XCTAssertNotNil(settings.chargeRestoreRecord, "an installed helper that was only silent lost the record")
+        XCTAssertTrue(lines.contains { $0.contains("record is kept") }, lines.joined(separator: "\n"))
+        XCTAssertFalse(lines.contains { $0.contains("as much of macOS's own settings as this Mac can") })
+        XCTAssertEqual(client.state?.mclLimit, 80)
+        withExtendedLifetime(c) {}
+    }
+
+    /// Not clearing anything on a best effort that did not land: macOS refusing the nearest value is a failure.
+    func testABestEffortMacOSRefusesKeepsTheRecord() {
+        client.state = NativeChargeState(mclEnabled: true, mclLimit: 63, optimizedChargingEnabled: true)
+        helper.installed = false
+        helper.available = false
+        let c = make()
+        client.succeeds = false
+        settings.chargeControlEnabled = false
+        XCTAssertNotNil(settings.chargeRestoreRecord)
+        XCTAssertFalse(lines.contains { $0.contains("as much of macOS's own settings as this Mac can") })
+        withExtendedLifetime(c) {}
+    }
+
+    // ── Launched while another account is on screen ─────────────────────────
+
+    /// `sessionActive` started true. An Anode launched while its account is not the one on screen (relaunched by an
+    /// update while switched away, say) took the whole Mac's limit and ran the left-over-cut net, over the Anode of
+    /// the account that is. It starts from the session's own answer.
+    func testLaunchedWhileAnotherAccountIsOnScreenItAssertsNothingAndLooksForNothing() {
+        onConsole = false
+        battery = Self.state(90)
+        chargerSwitch = AdapterCutKey.cut
+        client.state = found
+        let c = make()
+        XCTAssertEqual(client.limitCalls, [], "the limit was asserted over the account on screen")
+        XCTAssertEqual(client.limitEnabledCalls, [], "the limit's switch was turned on over the account on screen")
+        XCTAssertEqual(client.optimizedChargingCalls, [], "Optimized Battery Charging was turned off over it")
+        XCTAssertEqual(client.state, found, "macOS's settings were touched")
+        XCTAssertTrue(helper.commands.isEmpty)
+        // The net does not run: a cut look for longer than it takes is another Anode's, through a helper this one
+        // cannot reach.
+        let later = Date().addingTimeInterval(ChargeController.chargerReconnectTime + 5)
+        c.tick(now: Date())
+        c.tick(now: later)
+        XCTAssertEqual(switchReads, 0, "the net looked at the charger while another account is on screen")
+        XCTAssertFalse(settings.chargeCutUnconfirmed)
+        XCTAssertTrue(helper.commands.isEmpty)
+        c.periodicTick()
+        XCTAssertEqual(client.limitCalls, [])
+
+        // Back on screen: the limit goes in, as a switch-on does, and that is not someone else's change.
+        center.post(name: NSWorkspace.sessionDidBecomeActiveNotification, object: nil)
+        XCTAssertEqual(client.state?.mclLimit, 80, "this account's limit was not asserted once it was on screen")
+        XCTAssertEqual(client.state?.mclEnabled, true)
+        XCTAssertEqual(client.state?.optimizedChargingEnabled, false)
+        XCTAssertFalse(lines.contains { $0.contains("changed outside") }, lines.joined(separator: "\n"))
+    }
+
+    /// An account on screen at launch, or one whose session cannot be read, is the ordinary case.
+    func testLaunchedOnScreenOrWithNoSessionAnswerItHoldsTheLimit() {
+        for answer in [true, nil] as [Bool?] {
+            setUpClean()
+            onConsole = answer
+            _ = make()
+            XCTAssertEqual(client.state?.mclLimit, 80, "not held for \(String(describing: answer))")
+        }
+    }
+
+    /// The session's dictionary says whether this account is on the console; anything else is no answer.
+    func testTheSessionDictionaryIsReadForTheConsoleKey() {
+        let key = kCGSessionOnConsoleKey as String
+        XCTAssertEqual(ChargeController.onConsole(fromSession: [key: true]), true)
+        XCTAssertEqual(ChargeController.onConsole(fromSession: [key: false]), false)
+        XCTAssertNil(ChargeController.onConsole(fromSession: [:]))
+        XCTAssertNil(ChargeController.onConsole(fromSession: nil))
+        XCTAssertNil(ChargeController.onConsole(fromSession: [key: "yes"]))
+    }
+
+    private func setUpClean() {
+        controller?.shutdown()
+        controller = nil
+        client = FakeChargeLimitClient(state: NativeChargeState(mclEnabled: false, mclLimit: 100,
+                                                                optimizedChargingEnabled: true))
+        clientToMake = client
+        settings.chargeRestoreRecord = nil
+        lines = []
     }
 }
 

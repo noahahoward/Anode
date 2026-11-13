@@ -94,7 +94,8 @@ final class ChargeSharedRecordTests: XCTestCase {
         let c = ChargeController(settings: a.settings, records: a.records, makeClient: { [macOS] in macOS },
                                  helper: a.helper, battery: { a.battery }, chargerSwitch: { nil },
                                  log: { [weak a] in a?.lines.append($0) }, workspace: a.center,
-                                 limitInForce: ChargeLimitInForce(), startDelay: startDelay, liftedAtLaunch: lifted)
+                                 limitInForce: ChargeLimitInForce(), startDelay: startDelay, liftedAtLaunch: lifted,
+                                 onConsole: { true })
         a.controller = c
         return c
     }
@@ -286,6 +287,37 @@ final class ChargeSharedRecordTests: XCTestCase {
         XCTAssertTrue(a.settings.chargeStartPending)
     }
 
+    /// Off, a record left over is put back at the top of the program as well, by the same holder rule. A's setting was
+    /// turned off while Anode was closed (it crashed holding the limit): nobody else holds it, so it goes back at
+    /// once, with no wait and nothing pending.
+    func testTheEarlyLiftWhileOffPutsMacOSBackWhenNobodyElseHolds() throws {
+        let a = try account("A", uid: 501, limit: 85)
+        launch(a)
+        crash(a)
+        XCTAssertEqual(macOS.state?.mclLimit, 85)
+        a.settings.chargeControlEnabled = false
+        let again = launch(a)
+        XCTAssertEqual(macOS.state, macOSOwn, "the leftover limit was not lifted at the top of the program")
+        XCTAssertFalse(again.isWaitingToStart)
+        XCTAssertFalse(a.settings.chargeStartPending)
+        assertNoRecord()
+        XCTAssertTrue(a.lines.contains { $0.contains("at the top of the program") }, a.lines.joined(separator: "\n"))
+    }
+
+    /// Another account's live Anode holds the limit: A, off, leaves it to that Anode, as at any other time.
+    func testTheEarlyLiftWhileOffLeavesALimitAnotherAccountHolds() throws {
+        let a = try account("A", uid: 501, limit: 85)
+        let b = try account("B", uid: 502, limit: 90)
+        launch(a)
+        launch(b)
+        crash(a)
+        let held = macOS.state
+        a.settings.chargeControlEnabled = false
+        launch(a)
+        XCTAssertEqual(macOS.state, held, "A lifted the limit B's Anode holds")
+        XCTAssertTrue(holders().map(\.uid).contains(502), "B's entry went")
+    }
+
     /// Switching on after a quit is a cold start, whoever else is running: the second account joins a record that
     /// stands, the first one that finds none writes macOS's own.
     func testASecondAccountSwitchedOnByHandJoinsTheRecordThatStands() throws {
@@ -460,7 +492,7 @@ final class ChargeSharedRecordTests: XCTestCase {
         let c = ChargeController(settings: a.settings, records: a.records, makeClient: { [macOS] in macOS },
                                  helper: a.helper, battery: { a.battery }, chargerSwitch: { nil },
                                  log: { [weak a] in a?.lines.append($0) }, workspace: a.center,
-                                 limitInForce: ChargeLimitInForce())
+                                 limitInForce: ChargeLimitInForce(), onConsole: { true })
         a.controller = c
         XCTAssertEqual(macOS.state?.mclLimit, 85)
         XCTAssertEqual(a.lines.filter { $0.contains("cannot be told apart") }.count, 1, a.lines.joined(separator: "\n"))

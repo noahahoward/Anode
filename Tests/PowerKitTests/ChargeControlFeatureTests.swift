@@ -53,7 +53,8 @@ final class ChargeControlFeatureTests: XCTestCase {
                                           chargerSwitch: { nil },
                                           log: { _ in },
                                           noClientBecause: { ChargeController.NoClientReason(unsupportedMac: true,
-                                                                                            step: nil) })
+                                                                                            step: nil) },
+                                          onConsole: { true })
         }
         let c = controller
         let f = ChargeControlFeature(settings: settings, controller: { c },

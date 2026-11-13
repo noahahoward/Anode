@@ -325,7 +325,8 @@ final class ChargeControlConnectionTests: XCTestCase {
         settings.chargeControlEnabled = enabled
         let c = ChargeController(settings: settings, makeClient: { [weak self] in self?.client },
                                  helper: adapter, battery: { [weak self] in self?.battery },
-                                 chargerSwitch: { nil }, log: { [weak self] in self?.lines.append($0) })
+                                 chargerSwitch: { nil }, log: { [weak self] in self?.lines.append($0) },
+                                 onConsole: { true })
         controller = c
         return c
     }
