@@ -767,7 +767,7 @@ final class ChargeControlFeatureTests: XCTestCase {
 
     /// Ruling 5: the summary says what a person needs to know before switching it on.
     func testSummarySaysWhatItChangesAndWhatItNeeds() {
-        let s = ChargeControlFeature().summary
+        let s = ChargeControlFeature(settings: settings, controller: { nil }, installHelper: { _ in }).summary
         // The limit is in force only while Anode runs: it is lifted when Anode quits.
         XCTAssertTrue(s.contains("The limit applies while Anode is running, and is lifted when Anode quits, unless "
                                  + "another account's Anode is holding one."), s)

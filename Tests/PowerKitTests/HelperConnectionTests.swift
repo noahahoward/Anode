@@ -255,6 +255,33 @@ final class HelperConnectionTests: XCTestCase {
         XCTAssertFalse(c.isConnected)
     }
 
+    /// What the real adapter takes a helper to speak, from what it says in its hello. The plan commands go only to one that
+    /// has said 3: an older helper cannot decode them, closes the connection, and so ends a drain and hands the fans back.
+    func testTheAdapterSpeaksReadyByOnlyFromProtocolThree() {
+        let cases: [(version: Int?, available: Bool, readyBy: Bool, outdated: Bool)] = [
+            (nil, false, false, true), (1, false, false, true),
+            (2, true, false, false), (3, true, true, false), (4, true, true, false),
+        ]
+        for c in cases {
+            let wire = ScriptedWire()
+            wire.answerAtOnce = .connected(fanCount: 2, version: c.version)
+            let adapter = ChargeHelperAdapter(connection: HelperConnection(wire: wire), isInstalled: { true })
+            adapter.follow {}
+            let label = "protocol \(c.version.map(String.init) ?? "none")"
+            XCTAssertEqual(adapter.available, c.available, label)
+            XCTAssertEqual(adapter.speaksReadyBy, c.readyBy, label)
+            XCTAssertEqual(adapter.outdated, c.outdated, label)
+            adapter.letGo()
+        }
+        // And one that is not there, or has stopped answering, speaks nothing.
+        let wire = ScriptedWire()
+        wire.answerAtOnce = .notRunning
+        let adapter = ChargeHelperAdapter(connection: HelperConnection(wire: wire), isInstalled: { true })
+        adapter.follow {}
+        XCTAssertFalse(adapter.speaksReadyBy)
+        adapter.letGo()
+    }
+
     func testAnOlderHelperDoesNotSpeakCharge() {
         let wire = ScriptedWire()
         let c = HelperConnection(wire: wire)
@@ -332,6 +359,72 @@ final class ChargeControlConnectionTests: XCTestCase {
     }
 
     private var traffic: [Int] { [wire.connectsAsked, wire.pings, wire.sent.count] }
+
+    // ── Ready By, over the real adapter ─────────────────────────────────────
+
+    private func isPlan(_ c: FanCommand) -> Bool {
+        if case .scheduleChargeLimit = c { return true } else { return false }
+    }
+
+    /// Charge Control holding at 54 for Ready By, at 23:00 UTC with 7:00 to be ready by, the helper saying `version`.
+    @discardableResult
+    private func makeReadyBy(helperSpeaks version: Int) -> ChargeController {
+        wire.answerAtOnce = .connected(fanCount: 1, version: version)
+        settings.chargeReadyByEnabled = true
+        settings.chargeControlEnabled = true
+        battery = ReadyByControllerTests.plugged(54)
+        var utc = Calendar(identifier: .gregorian)
+        utc.timeZone = TimeZone(identifier: "UTC")!
+        let c = ChargeController(settings: settings, makeClient: { [weak self] in self?.client },
+                                 helper: adapter, battery: { [weak self] in self?.battery },
+                                 chargerSwitch: { nil }, log: { [weak self] in self?.lines.append($0) },
+                                 onConsole: { true }, rateStore: MemoryRateStore(),
+                                 now: { ISO8601DateFormatter().date(from: "2026-11-12T23:00:00Z")! },
+                                 calendar: { utc })
+        controller = c
+        return c
+    }
+
+    /// The plan goes out on a connection that stays open, and is let go when the plan is cancelled: the link would
+    /// otherwise close the socket after the waited command, and the helper drops a plan with its connection. (The
+    /// controller asks for the connection to be held before the waited send; so would the news of it opening. What is
+    /// pinned here is that it is still open afterwards, and that it goes with the plan.)
+    func testThePlanSurvivesTheLinkLettingGoAfterItsCommand() {
+        let c = makeReadyBy(helperSpeaks: 3)
+        XCTAssertEqual(c.lastDecision?.reason, .readyBy)
+        XCTAssertTrue(connection.holders.isEmpty, "nothing is pending before the Mac sleeps")
+        let disconnects = wire.disconnects
+        c.willSleep()
+        XCTAssertEqual(wire.sent.filter(isPlan).count, 1, "\(wire.sent)")
+        XCTAssertNotNil(c.wakePlan)
+        XCTAssertEqual(wire.disconnects, disconnects, "the socket the plan went out on was closed")
+        XCTAssertTrue(connection.holders.contains(.charge), "the connection is not held for the plan")
+        XCTAssertTrue(wire.open)
+        c.didWake(now: ISO8601DateFormatter().date(from: "2026-11-13T01:00:00Z")!)
+        XCTAssertTrue(wire.open, "a wake before the moment closed the connection the plan lives on")
+        XCTAssertEqual(wire.sent.filter { $0 == .cancelScheduledChargeLimit }.count, 0)
+
+        settings.chargeReadyByEnabled = false
+        XCTAssertEqual(wire.sent.filter { $0 == .cancelScheduledChargeLimit }.count, 1)
+        XCTAssertTrue(connection.holders.isEmpty, "the connection is held for a plan that is gone")
+        XCTAssertFalse(wire.open)
+    }
+
+    /// A helper that speaks 2 would close the connection on a command it cannot decode, which ends a drain and hands
+    /// the fans back. It is never sent one: not the plan, and not the cancel.
+    func testAProtocolTwoHelperIsNeverSentAPlanOrACancelOverTheRealLink() {
+        let c = makeReadyBy(helperSpeaks: 2)
+        XCTAssertEqual(c.lastDecision?.reason, .limit, "Ready By is not in force without a helper that can wake the Mac")
+        c.willSleep()
+        c.didWake(now: ISO8601DateFormatter().date(from: "2026-11-13T01:00:00Z")!)
+        settings.chargeReadyByEnabled = false
+        settings.chargeReadyByEnabled = true
+        c.pressFullCharge()
+        c.pressFullCharge()
+        c.shutdown()
+        XCTAssertTrue(wire.sent.filter(isPlan).isEmpty, "\(wire.sent)")
+        XCTAssertFalse(wire.sent.contains(.cancelScheduledChargeLimit), "\(wire.sent)")
+    }
 
     // ── Launch ──────────────────────────────────────────────────────────────
 

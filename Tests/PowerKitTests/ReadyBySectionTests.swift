@@ -217,7 +217,7 @@ final class ReadyBySectionTests: XCTestCase {
     // ── The summary ─────────────────────────────────────────────────────────
 
     func testTheSummaryHasOneSentenceAboutReadyBy() {
-        let s = ChargeControlFeature().summary
+        let s = ChargeControlFeature(settings: settings, controller: { nil }, installHelper: { _ in }).summary
         let sentence = "Ready By holds the battery where it is and charges it to the limit by a time you choose, waking "
             + "the Mac if it has to; it needs the Anode helper."
         XCTAssertTrue(s.contains(sentence), s)
