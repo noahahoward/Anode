@@ -61,9 +61,9 @@ the wrong sibling, an empty pill, build-app.sh ending silently). All fixed with 
 - **Found on hardware and fixed:** with "any timeout fails the read", `universalaccessd` (no menu bar items) answered
   `AXError -25204` on every read and the hider never collapsed (`stand down: layoutUnreadable`). Now an app's silence fails
   the read only for the system's owners, Anode, and apps seen with items before.
-- **Re-test:** collapsed with 2 covers: Sound (test arrangement) and AlDente, started since the last pass, which appeared on
+- **Re-test:** collapsed with 2 covers: Sound (test arrangement) and another app's icon, started since the last pass, which appeared on
   the bar at x 1393 and went behind the chevron by default. Both covers seamless; the chevron was recognised by its label.
-  The pill showed Sound and AlDente as captured pictures on black. Settings put back; the bar came back whole, AlDente included.
+  The pill showed Sound and that icon as captured pictures on black. Settings put back; the bar came back whole, that icon included.
 - **macOS 27.0 has no overflow arrow here** (read-only probe: no `AXOverflowButton`, no arrow child or hit), so a parked
   icon's menu keeps opening at the top-left; the Beta Features section now says so.
 - **Unmeasured risk (from Thaw's source):** AXPress on a parked item may leave MenuBarAgent keeping the bar shown in
