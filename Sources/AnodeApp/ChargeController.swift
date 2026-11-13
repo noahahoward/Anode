@@ -247,6 +247,37 @@ final class ChargeController {
         return NoClientReason(unsupportedMac: !fits, step: PowerUIChargeClient.lastFailure)
     }
 
+    /// What the helper has said it can do, for the section to compare with what is switched on.
+    enum HelperReach: Int, Comparable {
+        /// No helper is answering (none installed, or one too old to know the charge commands).
+        case none = 0
+        /// Protocol 2: limits, drains and holds.
+        case charge = 1
+        /// Protocol 3: and a plan for Ready By.
+        case readyBy = 2
+
+        static func < (a: HelperReach, b: HelperReach) -> Bool { a.rawValue < b.rawValue }
+    }
+
+    /// nil until the helper has answered, or is known not to be installed: nothing is said about it before then.
+    var helperReach: HelperReach? {
+        guard running, helper.known else { return nil }
+        if helper.speaksReadyBy { return .readyBy }
+        return helper.available ? .charge : HelperReach.none
+    }
+
+    /// The least a helper must do for everything switched on in `settings` to work, or nil when nothing switched on needs
+    /// one. Ready By needs a plan, which is protocol 3; a drain, and any hold that may have to rest anywhere but at 80,
+    /// 85, 90, 95 or 100%, need protocol 2, and so does a limit of the person's own that macOS does not take by itself.
+    static func helperNeeded(by settings: Settings) -> HelperReach? {
+        if settings.chargeReadyByEnabled { return .readyBy }
+        if settings.chargeDrainAutomatically || settings.chargeDriftEnabled || settings.chargePauseWhenHotEnabled
+            || settings.chargeHoldDuringSleep || !NativeChargeLimit.isClientSettable(settings.chargeLimit) {
+            return .charge
+        }
+        return nil
+    }
+
     /// Whether this account is the one on screen, from the session's own dictionary
     /// (`CGSessionCopyCurrentDictionary`): nil when it says nothing, which the controller takes as on screen.
     static func onConsole(fromSession session: [String: Any]?) -> Bool? {

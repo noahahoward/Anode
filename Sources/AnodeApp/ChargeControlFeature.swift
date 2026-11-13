@@ -3,8 +3,8 @@ import PowerKit
 
 // ── Charge Control (Beta Features) ──────────────────────────────────────────
 
-/// The Charge Control section: the switch, the limit, Drain to Limit and Charge to Full, the four modes, and a line
-/// saying what is happening now (see `ChargeController`).
+/// The Charge Control section: the switch, the limit, Drain to Limit and Charge to Full, the four modes, Ready By with
+/// its time of day, and a line saying what is happening now (see `ChargeController`).
 ///
 /// Every control writes straight to `Settings`, which the controller observes; the two buttons press the controller
 /// itself. What the section shows is read back from `Settings` and the controller in `redraw`, which runs when any
@@ -19,7 +19,9 @@ final class ChargeControlFeature: BetaFeature {
                 + "another account's Anode is holding one. While Charge Control is on, Anode turns off Optimized "
                 + "Battery Charging, and puts it back as it was when you turn Charge Control off or quit. Draining "
                 + "needs the Anode helper, and so does holding the charge anywhere but 80, 85, 90, 95 or 100%, whether "
-                + "for your limit, Pause When Hot, Drift Below the Limit or Hold Level During Sleep. Quit Anode before "
+                + "for your limit, Pause When Hot, Drift Below the Limit or Hold Level During Sleep. Ready By holds the "
+                + "battery where it is and charges it to the limit by a time you choose, waking the Mac if it has to; "
+                + "it needs the Anode helper. Quit Anode before "
                 + "removing it by hand (if it ever stopped without quitting, open it and quit it once more first): "
                 + "dragging it to the Trash puts nothing back."
     var layoutChanged: (() -> Void)?
@@ -56,6 +58,9 @@ final class ChargeControlFeature: BetaFeature {
                                                        Settings.chargeMaxTemperatureRange.upperBound)
     let sleepCheckbox = NSButton(checkboxWithTitle: "Hold Level During Sleep", target: nil, action: nil)
     let drainAutomaticallyCheckbox = NSButton(checkboxWithTitle: "Drain Automatically Above the Limit", target: nil, action: nil)
+    let readyByCheckbox = NSButton(checkboxWithTitle: "Ready By", target: nil, action: nil)
+    /// The time of day, hours and minutes, in the person's own format (12 or 24 hour, as their Mac shows it).
+    let readyByTimePicker = ChargeControlFeature.makeTimePicker()
     let statusLabel = BetaFeaturesWindowController.wrapping("")
     let installButton = NSButton(title: "Install Helper\u{2026}", target: nil, action: nil)
     /// What the install started here last said: it runs in the Fans tab's flow, whose own strip is not on screen.
@@ -82,6 +87,9 @@ final class ChargeControlFeature: BetaFeature {
     static let holdNeedsHelperTip = "Without the Anode helper it can pause only at 80, 85, 90, 95 or 100%, and the "
         + "Mac charges on to the next of those."
 
+    static let readyByTip = "While the Mac is on the charger and below the limit, hold the charge where it is until it "
+        + "has to charge to be at the limit by this time every day. Needs the Anode helper."
+
     /// What the status line needs besides the status: the battery and the drain as the controller last saw them.
     struct Facts: Equatable {
         /// The charge; nil when not known.
@@ -95,7 +103,8 @@ final class ChargeControlFeature: BetaFeature {
 
     /// The status line. macOS's limit is a ceiling, so the words say where the charge is against it: "charging to"
     /// below it, "holding" only at it. A drain is described by what the helper runs, not what was asked for.
-    static func statusText(_ s: ChargeStatus, _ facts: Facts = Facts()) -> String {
+    static func statusText(_ s: ChargeStatus, _ facts: Facts = Facts(),
+                           time: (Date) -> String = { ChargeControlFeature.shortTime($0) }) -> String {
         switch s {
         case .off:
             return "Off"
@@ -108,6 +117,7 @@ final class ChargeControlFeature: BetaFeature {
             }
             if d.dischargeTo != nil { return "Starting to drain\u{2026}" }
             if !facts.cablePresent { return "On battery; charging stops at \(limit)%" }
+            if let r = d.readyBy { return readyByText(d, r, facts, time: time) }
             guard let p = facts.percent else { return "Charging stops at \(limit)% (\(why))" }
             if p < limit {
                 // Measured: after a drain macOS shows "not charging" for about a minute. Nothing is wrong.
@@ -116,6 +126,30 @@ final class ChargeControlFeature: BetaFeature {
             if p == limit { return "Holding \(limit)% (\(why))" }
             return "Not charging: \(p)% is above \(limit)% (\(why))"
         }
+    }
+
+    /// What Ready By is doing, in words, with its times on the person's own clock: holding until the moment to start,
+    /// or charging to be at the limit by the time they chose. A battery still below the level it is to hold at (it is
+    /// charging up to the lowest it holds) says so first.
+    private static func readyByText(_ d: ChargeDecision, _ r: ReadyByState, _ facts: Facts,
+                                    time: (Date) -> String) -> String {
+        let by = "reach \(r.raiseTo)% by \(time(r.by))"
+        guard let raiseAt = r.raiseAt else { return "Charging to \(by)" }
+        if let p = facts.percent, p + 1 < d.osLimit {
+            return "Charging to \(d.osLimit)%, then holding until \(time(raiseAt)), then charging to \(by)"
+        }
+        return "Holding at \(d.osLimit)% until \(time(raiseAt)), then charging to \(by)"
+    }
+
+    /// A time of day in the person's own short format: "7:00 AM" on a Mac set to 12 hours in the US, "07:00" on one set
+    /// to 24. `locale` and `timeZone` are parameters for the tests.
+    static func shortTime(_ date: Date, locale: Locale = .current, timeZone: TimeZone = .current) -> String {
+        let f = DateFormatter()
+        f.locale = locale
+        f.timeZone = timeZone
+        f.dateStyle = .none
+        f.timeStyle = .short
+        return f.string(from: date)
     }
 
     /// Why the limit is what it is, in the words the section uses for the setting behind it.
@@ -158,6 +192,38 @@ final class ChargeControlFeature: BetaFeature {
         return s
     }
 
+    /// Hours and minutes, and nothing else. The date it holds is a day that has no daylight saving, in a calendar and a
+    /// zone of its own (UTC), so that what it shows is exactly the number of minutes after midnight and a change of the
+    /// Mac's time zone never moves it; the locale is the person's, so its format is theirs.
+    private static func makeTimePicker() -> NSDatePicker {
+        let p = NSDatePicker()
+        p.datePickerStyle = .textFieldAndStepper
+        p.datePickerElements = .hourMinute
+        p.datePickerMode = .single
+        p.calendar = utcCalendar
+        p.timeZone = utcCalendar.timeZone
+        p.locale = .current
+        p.dateValue = pickerDate(minutes: ChargePolicy.defaultReadyByMinutes)
+        return p
+    }
+
+    private static let utcCalendar: Calendar = {
+        var c = Calendar(identifier: .gregorian)
+        c.timeZone = TimeZone(identifier: "UTC") ?? .current
+        return c
+    }()
+
+    /// The picker's date for a time of day: 1 January 2001, UTC, at that time.
+    static func pickerDate(minutes: Int) -> Date {
+        Date(timeIntervalSinceReferenceDate: TimeInterval(minutes * 60))
+    }
+
+    /// The time of day a picker date shows, in minutes after midnight. Whatever day the picker has stepped onto.
+    static func minutes(ofPickerDate d: Date) -> Int {
+        let c = utcCalendar.dateComponents([.hour, .minute], from: d)
+        return (c.hour ?? 0) * 60 + (c.minute ?? 0)
+    }
+
     private static func makeStepper(_ min: Double, _ max: Double) -> NSStepper {
         let s = NSStepper()
         s.minValue = min
@@ -184,6 +250,7 @@ final class ChargeControlFeature: BetaFeature {
         limitSlider.setAccessibilityLabel("Charge limit")
         driftStepper.setAccessibilityLabel("Drift Below the Limit: how far below the limit to recharge")
         heatStepper.setAccessibilityLabel("Pause When Hot: temperature to pause at")
+        readyByTimePicker.setAccessibilityLabel("Ready By: the time of day the battery is to be at the limit")
 
         drainButton.target = self
         drainButton.action = #selector(drainPressed)
@@ -212,6 +279,12 @@ final class ChargeControlFeature: BetaFeature {
         sleepCheckbox.action = #selector(sleepToggled)
         sleepCheckbox.toolTip = "While the Mac sleeps on the adapter, the charge stays where it was. "
             + Self.holdNeedsHelperTip
+        readyByCheckbox.target = self
+        readyByCheckbox.action = #selector(readyByToggled)
+        readyByCheckbox.toolTip = Self.readyByTip
+        readyByTimePicker.target = self
+        readyByTimePicker.action = #selector(readyByTimeChanged)
+        readyByTimePicker.toolTip = Self.readyByTip
         drainAutomaticallyCheckbox.target = self
         drainAutomaticallyCheckbox.action = #selector(drainAutomaticallyToggled)
         drainAutomaticallyCheckbox.toolTip = "Whenever the battery is above the limit on the adapter, run from the battery "
@@ -227,7 +300,8 @@ final class ChargeControlFeature: BetaFeature {
         let buttonRow = row([drainButton, fullChargeButton])
         let driftRow = row([driftCheckbox, driftLabel, driftStepper])
         let heatRow = row([heatCheckbox, heatLabel, heatStepper])
-        rows = [limitRow, buttonRow, driftRow, heatRow, sleepCheckbox, drainAutomaticallyCheckbox]
+        let readyByRow = row([readyByCheckbox, readyByTimePicker])
+        rows = [limitRow, buttonRow, driftRow, heatRow, sleepCheckbox, drainAutomaticallyCheckbox, readyByRow]
 
         let column = NSStackView(views: [enableCheckbox] + rows + [statusLabel, installButton, installNoteLabel])
         column.orientation = .vertical
@@ -237,7 +311,8 @@ final class ChargeControlFeature: BetaFeature {
         let keys = [Settings.Key.chargeControlEnabled, Settings.Key.chargeLimit, Settings.Key.chargeDriftEnabled,
                     Settings.Key.chargeDriftGap, Settings.Key.chargePauseWhenHotEnabled,
                     Settings.Key.chargeMaxTemperatureC, Settings.Key.chargeHoldDuringSleep,
-                    Settings.Key.chargeDrainAutomatically]
+                    Settings.Key.chargeDrainAutomatically, Settings.Key.chargeReadyByEnabled,
+                    Settings.Key.chargeReadyByMinutes]
         tokens = keys.map { settings.observe($0) { [weak self] in self?.redraw() } }
         redraw()
         return column
@@ -297,6 +372,10 @@ final class ChargeControlFeature: BetaFeature {
     @objc private func heatStepped() { settings.chargeMaxTemperatureC = heatStepper.doubleValue.rounded() }
     @objc private func sleepToggled() { settings.chargeHoldDuringSleep = sleepCheckbox.state == .on }
     @objc private func drainAutomaticallyToggled() { settings.chargeDrainAutomatically = drainAutomaticallyCheckbox.state == .on }
+    @objc private func readyByToggled() { settings.chargeReadyByEnabled = readyByCheckbox.state == .on }
+    @objc private func readyByTimeChanged() {
+        settings.chargeReadyByMinutes = Self.minutes(ofPickerDate: readyByTimePicker.dateValue)
+    }
 
     // ── Showing ─────────────────────────────────────────────────────────────
 
@@ -375,6 +454,13 @@ final class ChargeControlFeature: BetaFeature {
         sleepCheckbox.isEnabled = usable
         drainAutomaticallyCheckbox.state = settings.chargeDrainAutomatically ? .on : .off
         drainAutomaticallyCheckbox.isEnabled = usable
+        readyByCheckbox.state = settings.chargeReadyByEnabled ? .on : .off
+        readyByCheckbox.isEnabled = usable
+        // Not while it is being edited with the keyboard to the value it already holds: only a time that differs.
+        if Self.minutes(ofPickerDate: readyByTimePicker.dateValue) != settings.chargeReadyByMinutes {
+            readyByTimePicker.dateValue = Self.pickerDate(minutes: settings.chargeReadyByMinutes)
+        }
+        readyByTimePicker.isEnabled = usable && settings.chargeReadyByEnabled
 
         for r in rows { r.isHidden = !on }
         var facts = Facts(percent: percent, cablePresent: cable, dischargeInForce: c?.dischargeInForce)
@@ -395,7 +481,14 @@ final class ChargeControlFeature: BetaFeature {
         // unless fan control is on (or blocked).
         let offersInstallForCut = ChargeController.cutWarningsThatOfferInstall.contains(statusLabel.stringValue)
             && !statusLabel.isHidden
-        installButton.isHidden = !((on && needsHelper) || offersInstallForCut)
+        // And whenever something switched on needs more of the helper than there is: none installed, or one too old
+        // (Ready By needs a newer one than a drain does). Not before the helper has answered, and not for a helper
+        // that is there and knows enough.
+        var helperFallsShort = false
+        if usable, let reach = c?.helperReach, let needed = ChargeController.helperNeeded(by: settings) {
+            helperFallsShort = reach < needed
+        }
+        installButton.isHidden = !((on && needsHelper) || offersInstallForCut || helperFallsShort)
         // Kept once the helper is there and the button has gone (it says the install worked), not once switched off.
         if !on, !offersInstallForCut { installNote = nil }
         installNoteLabel.stringValue = installNote ?? ""

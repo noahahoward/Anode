@@ -77,13 +77,14 @@ final class ChargeControlFeatureTests: XCTestCase {
     private func controls(_ f: ChargeControlFeature) -> [NSView] {
         [f.limitLabel, f.limitSlider, f.limitValueLabel, f.drainButton, f.fullChargeButton,
          f.driftCheckbox, f.driftLabel, f.driftStepper, f.heatCheckbox, f.heatLabel, f.heatStepper,
-         f.sleepCheckbox, f.drainAutomaticallyCheckbox, f.statusLabel]
+         f.sleepCheckbox, f.drainAutomaticallyCheckbox, f.readyByCheckbox, f.readyByTimePicker, f.statusLabel]
     }
 
     /// The controls a person changes, which `.unavailable` disables.
     private func inputs(_ f: ChargeControlFeature) -> [NSControl] {
         [f.limitSlider, f.drainButton, f.fullChargeButton, f.driftCheckbox, f.driftStepper,
-         f.heatCheckbox, f.heatStepper, f.sleepCheckbox, f.drainAutomaticallyCheckbox]
+         f.heatCheckbox, f.heatStepper, f.sleepCheckbox, f.drainAutomaticallyCheckbox, f.readyByCheckbox,
+         f.readyByTimePicker]
     }
 
     // ── The brief's four ────────────────────────────────────────────────────
@@ -204,6 +205,8 @@ final class ChargeControlFeatureTests: XCTestCase {
         XCTAssertEqual(f.limitSlider.accessibilityLabel(), "Charge limit")
         XCTAssertEqual(f.driftStepper.accessibilityLabel(), "Drift Below the Limit: how far below the limit to recharge")
         XCTAssertEqual(f.heatStepper.accessibilityLabel(), "Pause When Hot: temperature to pause at")
+        XCTAssertEqual(f.readyByTimePicker.accessibilityLabel(),
+                       "Ready By: the time of day the battery is to be at the limit")
     }
 
     func testControlsHiddenWhileOff() {
@@ -824,6 +827,19 @@ final class ChargeControlFeatureTests: XCTestCase {
                 }
             }
         }
+        // Ready By's line, holding, charging up to the lowest it holds at, and charging for the moment.
+        let moment = Date(timeIntervalSince1970: 1_800_000_000)
+        for raiseAt in [moment.addingTimeInterval(-2400), nil] as [Date?] {
+            let state = ReadyByState(by: moment, raiseAt: raiseAt, raiseTo: 80)
+            for level in [30, 54] {
+                shown += facts.map {
+                    ChargeControlFeature.statusText(
+                        .active(ChargeDecision(osLimit: raiseAt == nil ? 80 : level, dischargeTo: nil, reason: .readyBy,
+                                               readyBy: state)), $0)
+                }
+            }
+        }
+        shown += [ChargeControlFeature.readyByTip, ChargeController.readyByNeedsHelperText]
         shown += [ChargeController.unavailableText, ChargeController.clientMissingText,
                   ChargeController.unreadableText, ChargeController.noBatteryText,
                   ChargeController.limitNeedsHelperText, ChargeController.drainNeedsHelperText,
@@ -969,7 +985,7 @@ final class ChargeControlFeatureTests: XCTestCase {
         // And what they are called now is there, so a gap in what was collected cannot pass for a clean section.
         for name in ["Drain to Limit", "Stop Draining", "Draining to", "Charge to Full", "Cancel Charge to Full",
                      "Drift Below the Limit", "Pause When Hot", "Hold Level During Sleep",
-                     "Drain Automatically Above the Limit"] {
+                     "Drain Automatically Above the Limit", "Ready By"] {
             XCTAssertTrue(section.contains { $0.contains(name) }, "\(name) is not shown by the section")
         }
         for line in ["Drain to Limit pressed", "Charge to Full pressed"] {
