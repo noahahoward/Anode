@@ -561,10 +561,45 @@ final class ReadyByControllerTests: XCTestCase {
         XCTAssertEqual(count(cancel), 0, "a cancel was sent to a helper that does not know it")
     }
 
-    func testAProtocolTwoHelperSaysItNeedsUpdating() {
+    /// A protocol 2 helper does control charging, so the status does not say it cannot: it is what the features that
+    /// work make it, and the one thing Ready By needs is said apart (`readyByNeedsNewerHelper`), in its own sentence.
+    func testAProtocolTwoHelperIsNotSaidToBeUnableToControlCharging() {
+        helper.speaksReadyBy = false
+        let c = make()
+        if case .active = c.status {} else { XCTFail("the status was replaced by \(c.status)") }
+        XCTAssertTrue(c.readyByNeedsNewerHelper)
+        XCTAssertEqual(ChargeController.readyByNeedsNewerHelperText,
+                       "Ready By needs a newer Anode helper. Press Install Helper\u{2026} to update it.")
+        XCTAssertNotEqual(ChargeController.readyByNeedsNewerHelperText, ChargeController.helperOutdatedText)
+        // Ready By off: nothing is said about it.
+        settings.chargeReadyByEnabled = false
+        XCTAssertFalse(c.readyByNeedsNewerHelper)
+        settings.chargeReadyByEnabled = true
+        XCTAssertTrue(c.readyByNeedsNewerHelper)
+    }
+
+    /// A helper too old for any charge command keeps the old sentence, and has no Ready By sentence of its own.
+    func testAHelperTooOldForAnyChargeCommandKeepsTheOldSentence() {
+        helper.available = false
+        helper.outdated = true
         helper.speaksReadyBy = false
         let c = make()
         XCTAssertEqual(c.status, .needsHelper(ChargeController.helperOutdatedText))
+        XCTAssertFalse(c.readyByNeedsNewerHelper)
+    }
+
+    /// The section is told when the sentence appears, though the status stays as it was.
+    func testTheSectionIsToldWhenTheNewerHelperSentenceAppears() {
+        helper.speaksReadyBy = false
+        helper.answersAtOnce = false   // the helper has not answered yet
+        let c = make()
+        XCTAssertFalse(c.readyByNeedsNewerHelper, "said before the helper answered")
+        var heard = 0
+        let token = c.observeChanges { heard += 1 }
+        helper.firstAnswer()
+        XCTAssertTrue(c.readyByNeedsNewerHelper)
+        XCTAssertGreaterThan(heard, 0)
+        withExtendedLifetime(token) {}
     }
 
     /// The features that need only protocol 2 keep working with a protocol 2 helper, Ready By on or off.

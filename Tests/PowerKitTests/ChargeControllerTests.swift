@@ -1494,8 +1494,9 @@ final class ChargeControllerTests: XCTestCase {
             NativeChargeState(mclEnabled: true, mclLimit: 45, optimizedChargingEnabled: true))
         helper.available = false
         helper.installed = false
+        helper.gone = true   // and nothing answers at the socket when it is tried
         make(enabled: false)
-        XCTAssertTrue(helper.commands.isEmpty)
+        XCTAssertEqual(helper.commands, [.setChargeLimit(45)], "the socket is tried once, and nothing else is sent")
         XCTAssertEqual(client.state?.mclLimit, 80)
         XCTAssertNil(settings.chargeRestoreRecord, "the record was kept for a restore nothing will ever complete")
         XCTAssertEqual(lines.filter { $0.contains("45") && $0.contains("needs the helper") }.count, 1,
@@ -4085,12 +4086,15 @@ final class ChargeControllerTests: XCTestCase {
         client.state = NativeChargeState(mclEnabled: true, mclLimit: 63, optimizedChargingEnabled: true)
         helper.installed = false
         helper.available = false
+        helper.gone = true   // nothing answers at the socket either
         let c = make()
         settings.chargeControlEnabled = false
         XCTAssertEqual(client.state, NativeChargeState(mclEnabled: true, mclLimit: 80, optimizedChargingEnabled: true),
                        "the nearest value above 63, with the switch and Optimized Battery Charging as they were")
         XCTAssertNil(settings.chargeRestoreRecord, "the record stayed, and every launch would wait 60 s again")
-        XCTAssertTrue(helper.waited.isEmpty, "a helper that is not installed was asked")
+        XCTAssertEqual(helper.waited, [.setChargeLimit(63)], "the socket was tried once, and only once")
+        XCTAssertLessThanOrEqual(helper.waitedTimeouts.first ?? 99, ChargeController.helperProbeTimeout,
+                                 "the try for a helper nobody had greeted was not bounded to a fraction of a second")
         let said = lines.first { $0.contains("as much of macOS's own settings as this Mac can") } ?? ""
         XCTAssertTrue(said.contains("limit 80 on"), said)
         XCTAssertTrue(said.contains("was 63"), said)
@@ -4112,10 +4116,61 @@ final class ChargeControllerTests: XCTestCase {
         client.state = NativeChargeState(mclEnabled: true, mclLimit: 100, optimizedChargingEnabled: false)
         helper.installed = false
         helper.available = false
+        helper.gone = true
         let c = make(enabled: false)
         XCTAssertEqual(client.state, NativeChargeState(mclEnabled: true, mclLimit: 80, optimizedChargingEnabled: false))
         XCTAssertNil(settings.chargeRestoreRecord)
         c.restoreForUninstall()
+    }
+
+    /// A helper started by hand (no installed daemon) counted as "no helper" at the early lift, because nothing had
+    /// connected yet: a record whose original limit only a helper can set was cleared with a stand-in left in force, and
+    /// the person's original was lost. The helper's socket is tried once, bounded, and a helper that answers puts the
+    /// original back.
+    func testAHandStartedHelperIsTriedBeforeTheRecordIsClearedWithAStandIn() {
+        settings.chargeRestoreRecord = ChargeController.encodeRecord(
+            NativeChargeState(mclEnabled: true, mclLimit: 63, optimizedChargingEnabled: false))
+        client.state = NativeChargeState(mclEnabled: true, mclLimit: 100, optimizedChargingEnabled: false)
+        helper.installed = false   // no daemon
+        helper.available = false   // nothing has connected yet
+        helper.landsOn = client
+        let lifted = liftAtLaunch()
+        XCTAssertTrue(lifted, "a leftover record, put back at the top of the program")
+        XCTAssertEqual(client.state?.mclLimit, 63, "the person's own limit was lost to a stand-in")
+        XCTAssertEqual(helper.waited, [.setChargeLimit(63)])
+        XCTAssertLessThanOrEqual(helper.waitedTimeouts.first ?? 99, ChargeController.helperProbeTimeout)
+        XCTAssertNil(settings.chargeRestoreRecord)
+        XCTAssertFalse(lines.contains { $0.contains("as much of macOS's own settings as this Mac can") },
+                       lines.joined(separator: "\n"))
+        XCTAssertTrue(lines.contains { $0.contains("limit 63") }, lines.joined(separator: "\n"))
+    }
+
+    /// The same helper answering no is a helper that is there: the record is kept for the next launch, with the nearest
+    /// value holding meanwhile, and nothing says "none is installed".
+    func testAHandStartedHelperThatRefusesKeepsTheRecord() {
+        settings.chargeRestoreRecord = ChargeController.encodeRecord(
+            NativeChargeState(mclEnabled: true, mclLimit: 63, optimizedChargingEnabled: false))
+        client.state = NativeChargeState(mclEnabled: true, mclLimit: 100, optimizedChargingEnabled: false)
+        helper.installed = false
+        helper.available = false
+        helper.answer = { _ in FanReply(ok: false, message: "refused: not the build it was started for") }
+        _ = make(enabled: false)
+        XCTAssertNotNil(settings.chargeRestoreRecord, "a helper that answered was taken for none")
+        XCTAssertEqual(client.state?.mclLimit, 80)
+        XCTAssertTrue(lines.contains { $0.contains("record is kept") }, lines.joined(separator: "\n"))
+        XCTAssertFalse(lines.contains { $0.contains("none is installed") }, lines.joined(separator: "\n"))
+    }
+
+    /// A limit macOS takes by itself needs no helper, and none is asked.
+    func testALimitMacOSTakesIsNotAskedOfAHelperAtAll() {
+        settings.chargeRestoreRecord = ChargeController.encodeRecord(
+            NativeChargeState(mclEnabled: true, mclLimit: 85, optimizedChargingEnabled: false))
+        client.state = NativeChargeState(mclEnabled: true, mclLimit: 100, optimizedChargingEnabled: false)
+        helper.installed = false
+        helper.available = false
+        _ = make(enabled: false)
+        XCTAssertEqual(client.state?.mclLimit, 85)
+        XCTAssertTrue(helper.waited.isEmpty)
     }
 
     /// A helper that is installed and did not answer is not "none installed": it may answer next time, so the record
@@ -4137,6 +4192,7 @@ final class ChargeControllerTests: XCTestCase {
         client.state = NativeChargeState(mclEnabled: true, mclLimit: 63, optimizedChargingEnabled: true)
         helper.installed = false
         helper.available = false
+        helper.gone = true
         let c = make()
         client.succeeds = false
         settings.chargeControlEnabled = false
@@ -4262,9 +4318,10 @@ final class ChargeControllerTests: XCTestCase {
     func testAClientLimitMacOSRefusesIsShownAsRefusedWhileItIsNotInForce() {
         client.succeeds = false
         let c = make()
-        XCTAssertEqual(c.status, .refused(ChargeController.macOSRefusedLimitText(80)))
+        XCTAssertEqual(c.status, .refused(ChargeController.macOSRefusedLimitText(wanted: 80, refused: 80, inForce: nil)))
         XCTAssertEqual(ChargeControlFeature.statusText(c.status),
-                       "macOS did not take the charge limit of 80%, so the battery is not held there")
+                       "macOS did not take the charge limit of 80%, so the battery is not held there; "
+                       + "no limit of Charge Control's is in force")
         client.succeeds = true
         c.periodicTick()
         XCTAssertEqual(client.state?.mclLimit, 80)
@@ -4279,7 +4336,31 @@ final class ChargeControllerTests: XCTestCase {
         helper.installed = false
         client.succeeds = false
         let c = make()
-        XCTAssertEqual(c.status, .refused(ChargeController.macOSRefusedLimitText(80)))
+        XCTAssertEqual(c.status, .refused(ChargeController.macOSRefusedLimitText(wanted: 63, refused: 80, inForce: nil)))
+    }
+
+    /// With no helper, a limit of 87 goes to macOS as 90, and the words named 90, a number the person never chose, and
+    /// not what holds the battery. They say the person's own limit, the value macOS refused, and what is in force.
+    func testTheRefusedStandInIsNamedBesideThePersonsOwnLimit() {
+        settings.chargeLimit = 87
+        helper.available = false
+        helper.installed = false
+        client.succeeds = false
+        let c = make()
+        XCTAssertEqual(c.status, .refused(ChargeController.macOSRefusedLimitText(wanted: 87, refused: 90, inForce: nil)))
+        let text = ChargeControlFeature.statusText(c.status)
+        XCTAssertTrue(text.contains("87%"), text)
+        XCTAssertTrue(text.contains("90%"), text)
+        XCTAssertFalse(text.hasPrefix("macOS did not take the charge limit of 90%"), text)
+        XCTAssertEqual(text, "macOS did not take 90%, the nearest charge limit it accepts to 87%, so the battery is "
+                       + "not held at 87%; no limit of Charge Control's is in force")
+        // With a limit of Charge Control's in force (an earlier one macOS took), the line says which.
+        XCTAssertEqual(ChargeController.macOSRefusedLimitText(wanted: 87, refused: 90, inForce: 85),
+                       "macOS did not take 90%, the nearest charge limit it accepts to 87%, so the battery is not held "
+                       + "at 87%; the limit in force is 85%")
+        XCTAssertEqual(ChargeController.macOSRefusedLimitText(wanted: 80, refused: 80, inForce: 85),
+                       "macOS did not take the charge limit of 80%, so the battery is not held there; the limit in "
+                       + "force is 85%")
     }
 
     /// A refusal of an earlier value says nothing about the one that is wanted now, nor about one the helper took.
@@ -4287,7 +4368,7 @@ final class ChargeControllerTests: XCTestCase {
         helper.landsOn = client
         client.succeeds = false
         let c = make()
-        XCTAssertEqual(c.status, .refused(ChargeController.macOSRefusedLimitText(80)))
+        XCTAssertEqual(c.status, .refused(ChargeController.macOSRefusedLimitText(wanted: 80, refused: 80, inForce: nil)))
         // The person moves the limit to one the helper sets, and the helper takes it.
         settings.chargeLimit = 63
         XCTAssertEqual(c.lastDecision?.osLimit, 63)
@@ -4341,8 +4422,9 @@ final class FakeHelperLink: ChargeHelperLink {
     var opensAtOnce = true
     private(set) var resets = 0
     private(set) var commands: [FanCommand] = []
-    /// The commands sent through `sendWaiting`, in order.
+    /// The commands sent through `sendWaiting`, in order, and how long each was willing to wait.
     private(set) var waited: [FanCommand] = []
+    private(set) var waitedTimeouts: [TimeInterval] = []
     private(set) var follows = 0
     private(set) var letGos = 0
     private(set) var refreshes = 0
@@ -4441,6 +4523,7 @@ final class FakeHelperLink: ChargeHelperLink {
     func sendWaiting(_ c: FanCommand, timeout: TimeInterval) -> FanReply? {
         commands.append(c)
         waited.append(c)
+        waitedTimeouts.append(timeout)
         beforeSend?(c)
         if gone {
             available = false

@@ -240,11 +240,33 @@ final class ReadyBySectionTests: XCTestCase {
         XCTAssertEqual(client.state?.mclLimit, 80, "the battery charges to the limit as usual")
     }
 
-    func testWithAnOlderHelperItSaysItNeedsUpdatingAndOffersTheInstall() {
+    /// A protocol 2 helper controls charging: the status is not "needs updating to control charging", it is the ordinary
+    /// line, and one more line under the Ready By row says what Ready By needs, with the button there.
+    func testWithAnOlderHelperItSaysReadyByNeedsANewerOneBesideTheStatusAndOffersTheInstall() {
         helper.speaksReadyBy = false      // protocol 2: it still serves a drain
         let f = make()
         settings.chargeReadyByEnabled = true
+        XCTAssertNotEqual(f.statusLabel.stringValue, ChargeController.helperOutdatedText)
+        XCTAssertNotEqual(f.statusLabel.stringValue, ChargeController.readyByNeedsHelperText,
+                          "the status of what works was replaced by a sentence about the helper")
+        XCTAssertFalse(f.statusLabel.stringValue.contains("control charging"), f.statusLabel.stringValue)
+        XCTAssertFalse(f.readyByNoteLabel.isHiddenOrHasHiddenAncestor)
+        XCTAssertEqual(f.readyByNoteLabel.stringValue,
+                       "Ready By needs a newer Anode helper. Press Install Helper\u{2026} to update it.")
+        XCTAssertFalse(f.installButton.isHiddenOrHasHiddenAncestor)
+        settings.chargeReadyByEnabled = false
+        XCTAssertTrue(f.readyByNoteLabel.isHiddenOrHasHiddenAncestor, "said with Ready By off")
+    }
+
+    /// A helper too old for any charge command keeps the old sentence as the status.
+    func testWithAHelperTooOldForAnyChargeCommandTheStatusKeepsTheOldSentence() {
+        helper.available = false
+        helper.outdated = true
+        helper.speaksReadyBy = false
+        let f = make()
+        settings.chargeReadyByEnabled = true
         XCTAssertEqual(f.statusLabel.stringValue, ChargeController.helperOutdatedText)
+        XCTAssertTrue(f.readyByNoteLabel.isHiddenOrHasHiddenAncestor)
         XCTAssertFalse(f.installButton.isHiddenOrHasHiddenAncestor)
     }
 
@@ -312,6 +334,7 @@ final class ReadyBySectionTests: XCTestCase {
                      f.readyByCheckbox.toolTip ?? "", f.readyByTimePicker.toolTip ?? "",
                      f.readyByTimePicker.accessibilityLabel() ?? "", ChargeControlFeature.readyByTip,
                      ChargeController.readyByNeedsHelperText, ChargeController.helperOutdatedText,
+                     ChargeController.readyByNeedsNewerHelperText, f.readyByNoteLabel.stringValue,
                      FanElevation.sessionDisclosure, FanElevation.installDisclosure, FanElevation.wakeForTheLimit,
                      FanElevation.installPrompt, HelperVocabulary.sentence]
         shown += HelperVocabulary.commands

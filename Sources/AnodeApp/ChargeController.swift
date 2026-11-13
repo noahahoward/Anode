@@ -171,6 +171,9 @@ final class ChargeController {
     static let drainNeedsHelperText = "Draining to the limit needs the Anode helper"
     static let helperOutdatedText = "The Anode helper needs updating to control charging"
     static let readyByNeedsHelperText = "Ready By needs the Anode helper"
+    /// The helper that answered knows the charge commands (protocol 2: limits, drains, holds) but not the ones that plan a
+    /// wake: Ready By needs a newer one, and nothing else is wrong with it.
+    static let readyByNeedsNewerHelperText = "Ready By needs a newer Anode helper. Press Install Helper\u{2026} to update it."
     /// The record of macOS's own settings is another Anode's to finish at the moment (its lock is held), so switching
     /// on changed nothing.
     static let recordUnreachableText = "Charge Control could not reach the record of macOS's own charge settings, so "
@@ -268,6 +271,14 @@ final class ChargeController {
 
         static func < (a: HelperReach, b: HelperReach) -> Bool { a.rawValue < b.rawValue }
     }
+
+    /// Ready By is switched on, and the helper that answered speaks protocol 2: it does control charging, so the status
+    /// stays what the other features make it, and the section adds this one sentence about Ready By
+    /// (`readyByNeedsNewerHelperText`).
+    var readyByNeedsNewerHelper: Bool {
+        running && settings.chargeReadyByEnabled && helper.known && helper.available && !helper.speaksReadyBy
+    }
+    private var shownReadyByNeedsNewerHelper = false
 
     /// nil until the helper has answered, or is known not to be installed: nothing is said about it before then.
     var helperReach: HelperReach? {
@@ -417,8 +428,18 @@ final class ChargeController {
         "The Anode helper would not start the drain: \(plainWords(why))"
     }
     /// A limit macOS takes by itself and refused: not in force, so the status says so instead of "Charging stops at".
-    static func macOSRefusedLimitText(_ limit: Int) -> String {
-        "macOS did not take the charge limit of \(limit)%, so the battery is not held there"
+    ///
+    /// `wanted` is the limit that was asked for (the person's own, when it is the limit that rules), `refused` the value
+    /// macOS was given for it (the same, or the nearest it takes at or above: 87 goes to macOS as 90), and `inForce` the
+    /// limit of Charge Control's that is in force, if there is one. Saying only "90%" for a limit of 87 named a number
+    /// the person never chose and left out what holds the battery.
+    static func macOSRefusedLimitText(wanted: Int, refused: Int, inForce: Int?) -> String {
+        var s = wanted == refused
+            ? "macOS did not take the charge limit of \(wanted)%, so the battery is not held there"
+            : "macOS did not take \(refused)%, the nearest charge limit it accepts to \(wanted)%, so the battery is "
+              + "not held at \(wanted)%"
+        s += inForce.map { "; the limit in force is \($0)%" } ?? "; no limit of Charge Control's is in force"
+        return s
     }
     static func limitRefusedText(_ limit: Int, _ why: String) -> String {
         "The Anode helper did not set the limit to \(limit)%: \(plainWords(why))"
@@ -437,6 +458,9 @@ final class ChargeController {
     static let tickInterval: TimeInterval = 30
     /// The longest anything waits for the helper: going to sleep, switching off, uninstalling.
     static let stopTimeout: TimeInterval = 2
+    /// How long the restore waits for a helper nobody has greeted (none installed, none answering yet): a socket that is
+    /// there answers at once, and one that is not is known at once.
+    static let helperProbeTimeout: TimeInterval = 0.5
     /// The helper's refusals of a discharge that pass by themselves, so the next tick asks again: the Mac going to
     /// sleep (not an error, and not logged), and the charger switched a moment ago (the helper spaces its cuts
     /// `FanHelperServer.cutSpacing` apart; a reconnect is never held back). Every other refusal is shown, and not
@@ -1061,22 +1085,30 @@ final class ChargeController {
     /// The recorded limit itself, or the best this Mac can do. Only the helper can put back one macOS does not take by
     /// itself; an installed one is greeted for it even when nothing has talked to it this run (Charge Control off, or
     /// this is the uninstall): the waited command opens the connection first. When the value cannot land, the nearest
-    /// one macOS takes at or above it is set, so the Mac can still charge at least that far. With no helper installed
+    /// one macOS takes at or above it is set, so the Mac can still charge at least that far. With no helper
     /// that is the end of it (`bestThisMacCanDo`, when it went in): nothing will ever do better, and a record kept for
-    /// it would send every launch down the unclean route for ever. With one installed that did not answer, or refused,
-    /// the record is kept for the next launch to try again. The helper is waited for until `deadline`, the restore's
-    /// own.
+    /// it would send every launch down the unclean route for ever. With one that did not answer, or refused, the
+    /// record is kept for the next launch to try again. The helper is waited for until `deadline`, the restore's own.
+    ///
+    /// "No helper" is not read off `installed` and `available` alone: at the early lift at launch nothing has connected
+    /// yet, so a helper started by hand (no installed daemon) looks absent only because nobody has asked it, and its
+    /// record would be cleared with a stand-in left in force and the person's original lost. So its socket is tried
+    /// once, as the stop for a cut debt is: the same waited command, bounded to `helperProbeTimeout`. Only when nothing
+    /// answers is there no helper; an answer, even a refusal, is one.
     private func restoreLimit(_ limit: Int, client c: ChargeLimitClient, deadline: Date) -> LimitRestore {
         if NativeChargeLimit.isClientSettable(limit) { return c.setLimit(limit) ? .restored : .kept }
         let nearest = Self.nearestClientValue(atOrAbove: limit)
+        var noHelper = !(helper.available || helper.installed)
+        let r = helper.sendWaiting(.setChargeLimit(limit),
+                                   timeout: noHelper ? min(Self.timeLeft(deadline), Self.helperProbeTimeout)
+                                                     : Self.timeLeft(deadline))
+        if r?.ok == true { return .restored }
         let why: String
-        let noHelper = !(helper.available || helper.installed)
-        if !noHelper {
-            let r = helper.sendWaiting(.setChargeLimit(limit), timeout: Self.timeLeft(deadline))
-            if r?.ok == true { return .restored }
-            why = "the helper did not put the limit back to \(limit): " + (r?.message ?? "no answer in time")
-        } else {
+        if noHelper, r == nil {
             why = "limit \(limit) needs the helper to put back, and none is installed"
+        } else {
+            noHelper = false
+            why = "the helper did not put the limit back to \(limit): " + (r?.message ?? "no answer in time")
         }
         let landed = c.setLimit(nearest)
         if noHelper, landed { return .bestThisMacCanDo(nearest) }
@@ -2220,6 +2252,11 @@ final class ChargeController {
     private func settle() {
         guard running else { return }
         updateStatus()
+        // The sentence beside the status can change with no change of status.
+        if readyByNeedsNewerHelper != shownReadyByNeedsNewerHelper {
+            shownReadyByNeedsNewerHelper = readyByNeedsNewerHelper
+            changed()
+        }
         reconcilePlan()
         syncReadyByTimer()
         helper.keepOpen(linkNeeded)
@@ -2456,7 +2493,8 @@ final class ChargeController {
         let viaMacOSValue = NativeChargeLimit.isClientSettable(d.osLimit) ? d.osLimit
             : Self.nearestClientValue(atOrAbove: d.osLimit)
         if viaMacOS, let refused = macOSRefusedLimit, refused == viaMacOSValue, appliedLimit != viaMacOSValue {
-            return setStatus(.refused(Self.macOSRefusedLimitText(refused)))
+            return setStatus(.refused(Self.macOSRefusedLimitText(wanted: d.osLimit, refused: refused,
+                                                                 inForce: appliedLimit)))
         }
         let missing = helper.outdated ? Self.helperOutdatedText : nil
         let limitNotInForce = !NativeChargeLimit.isClientSettable(d.osLimit) && appliedLimit != d.osLimit
@@ -2471,12 +2509,13 @@ final class ChargeController {
         } else if d.dischargeTo != nil, !helper.available {
             guard helper.known else { return }
             setStatus(.needsHelper(missing ?? Self.drainNeedsHelperText))
-        } else if settings.chargeReadyByEnabled, !helper.speaksReadyBy {
+        } else if settings.chargeReadyByEnabled, !helper.speaksReadyBy, !helper.available {
             // Switched on and not in force: it needs a helper that knows how to wake the Mac, and the battery charges to
-            // the limit as usual meanwhile. Nothing is said about the helper until it has answered.
+            // the limit as usual meanwhile. Nothing is said about the helper until it has answered. A helper too old for
+            // any charge command says so in the old words; one that speaks protocol 2 does control charging, and says
+            // only what Ready By needs (`readyByNeedsNewerHelper`), beside the status of what works.
             guard helper.known else { return }
-            setStatus(.needsHelper(helper.available || helper.outdated ? Self.helperOutdatedText
-                                                                         : Self.readyByNeedsHelperText))
+            setStatus(.needsHelper(helper.outdated ? Self.helperOutdatedText : Self.readyByNeedsHelperText))
         } else {
             setStatus(.active(d))
         }

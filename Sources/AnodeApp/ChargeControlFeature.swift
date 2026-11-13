@@ -62,6 +62,9 @@ final class ChargeControlFeature: BetaFeature {
     /// The time of day, hours and minutes, in the person's own format (12 or 24 hour, as their Mac shows it).
     let readyByTimePicker = ChargeControlFeature.makeTimePicker()
     let statusLabel = BetaFeaturesWindowController.wrapping("")
+    /// One more line under the Ready By row, for a helper that controls charging but is too old for Ready By: the status
+    /// above stays what the features that work make it.
+    let readyByNoteLabel = BetaFeaturesWindowController.wrapping("", color: .systemOrange)
     let installButton = NSButton(title: "Install Helper\u{2026}", target: nil, action: nil)
     /// What the install started here last said: it runs in the Fans tab's flow, whose own strip is not on screen.
     let installNoteLabel = BetaFeaturesWindowController.wrapping("", color: .secondaryLabelColor)
@@ -301,7 +304,8 @@ final class ChargeControlFeature: BetaFeature {
         let driftRow = row([driftCheckbox, driftLabel, driftStepper])
         let heatRow = row([heatCheckbox, heatLabel, heatStepper])
         let readyByRow = row([readyByCheckbox, readyByTimePicker])
-        rows = [limitRow, buttonRow, driftRow, heatRow, sleepCheckbox, drainAutomaticallyCheckbox, readyByRow]
+        rows = [limitRow, buttonRow, driftRow, heatRow, sleepCheckbox, drainAutomaticallyCheckbox, readyByRow,
+                readyByNoteLabel]
 
         let column = NSStackView(views: [enableCheckbox] + rows + [statusLabel, installButton, installNoteLabel])
         column.orientation = .vertical
@@ -463,6 +467,9 @@ final class ChargeControlFeature: BetaFeature {
         readyByTimePicker.isEnabled = usable && settings.chargeReadyByEnabled
 
         for r in rows { r.isHidden = !on }
+        let readyByNote = usable && c?.readyByNeedsNewerHelper == true
+        readyByNoteLabel.stringValue = readyByNote ? ChargeController.readyByNeedsNewerHelperText : ""
+        readyByNoteLabel.isHidden = !readyByNote
         var facts = Facts(percent: percent, cablePresent: cable, dischargeInForce: c?.dischargeInForce)
         if let left = c?.chargerReconnectTimeLeft() {
             facts.reconnecting = true
