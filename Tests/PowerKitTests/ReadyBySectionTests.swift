@@ -36,6 +36,9 @@ final class ReadyBySectionTests: XCTestCase {
         TestDefaults.destroy(defaults, suite)
     }
 
+    /// The zone the section writes its times in; the tests move it as the Mac's own zone moves when it is carried.
+    private var zone = TimeZone(identifier: "UTC")!
+
     private func make(enabled: Bool = true, withController: Bool = true) -> ChargeControlFeature {
         settings.chargeControlEnabled = enabled
         var utc = Calendar(identifier: .gregorian)
@@ -46,7 +49,8 @@ final class ReadyBySectionTests: XCTestCase {
                                  onConsole: { true }, rateStore: MemoryRateStore(),
                                  now: { [weak self] in self?.clockNow ?? Date() }, calendar: { utc })
         controller = c
-        let f = ChargeControlFeature(settings: settings, controller: { c }, installHelper: { _ in })
+        let f = ChargeControlFeature(settings: settings, controller: { c }, installHelper: { _ in },
+                                     timeZone: { [weak self] in self?.zone ?? .current })
         view = f.makeView()
         return f
     }
@@ -82,6 +86,46 @@ final class ReadyBySectionTests: XCTestCase {
         send(f.readyByCheckbox)
         XCTAssertFalse(settings.chargeReadyByEnabled)
         XCTAssertFalse(f.readyByTimePicker.isEnabled)
+    }
+
+    /// The controller works the moment out with the calendar that follows the Mac's zone (`Calendar.autoupdatingCurrent`),
+    /// and the line formatted its times in `TimeZone.current`, which does not: carried to another zone, the section
+    /// said a different time from the one the controller acts on. Both come from one zone now, and a change of zone is
+    /// shown at the next redraw.
+    func testTheStatusLineFollowsAChangeOfTimeZone() throws {
+        settings.chargeReadyByEnabled = true
+        let f = make()
+        let raiseAt = try XCTUnwrap(controller?.lastDecision?.readyBy?.raiseAt)
+        let inUTC = ChargeControlFeature.shortTime(raiseAt, timeZone: TimeZone(identifier: "UTC")!)
+        let inTokyo = ChargeControlFeature.shortTime(raiseAt, timeZone: TimeZone(identifier: "Asia/Tokyo")!)
+        XCTAssertNotEqual(inUTC, inTokyo)
+        XCTAssertTrue(f.statusLabel.stringValue.contains(inUTC), f.statusLabel.stringValue)
+        zone = TimeZone(identifier: "Asia/Tokyo")!
+        f.refresh()
+        XCTAssertTrue(f.statusLabel.stringValue.contains(inTokyo), f.statusLabel.stringValue)
+        XCTAssertFalse(f.statusLabel.stringValue.contains(inUTC), f.statusLabel.stringValue)
+    }
+
+    /// The default is the zone the controller's own calendar follows, not a snapshot of it.
+    func testTheDefaultZoneIsTheAutoUpdatingOne() {
+        XCTAssertEqual(ChargeControlFeature.shortTime(Date(), locale: Locale(identifier: "en_GB")),
+                       ChargeControlFeature.shortTime(Date(), locale: Locale(identifier: "en_GB"),
+                                                      timeZone: Calendar.autoupdatingCurrent.timeZone))
+    }
+
+    /// The tip says what a person needs to know: it waits only when the time is within the next 12 hours, and never below
+    /// 30% (it charges to 30% first).
+    func testTheTipSaysTheWindowAndTheFloor() {
+        let tip = ChargeControlFeature.readyByTip
+        XCTAssertTrue(tip.contains("12 hours"), tip)
+        XCTAssertTrue(tip.contains("30%"), tip)
+        XCTAssertTrue(tip.contains("charges to 30% first"), tip)
+        XCTAssertTrue(tip.contains("Anode helper"), tip)
+        XCTAssertEqual(ChargePolicy.readyByWindow, 12 * 3600)
+        XCTAssertEqual(ChargePolicy.readyByFloor, 30)
+        let f = make()
+        XCTAssertEqual(f.readyByCheckbox.toolTip, tip)
+        XCTAssertEqual(f.readyByTimePicker.toolTip, tip)
     }
 
     func testTheTimeWritesMinutesAfterMidnight() {
@@ -199,8 +243,8 @@ final class ReadyBySectionTests: XCTestCase {
         let f = make()
         settings.chargeReadyByEnabled = true
         let line = f.statusLabel.stringValue
-        let moment = ChargeControlFeature.shortTime(at("2026-11-13T07:00:00Z"))
-        let start = ChargeControlFeature.shortTime(at("2026-11-13T06:19:00Z"))
+        let moment = ChargeControlFeature.shortTime(at("2026-11-13T07:00:00Z"), timeZone: zone)
+        let start = ChargeControlFeature.shortTime(at("2026-11-13T06:19:00Z"), timeZone: zone)
         XCTAssertEqual(line, "Holding at 54% until \(start), then charging to reach 80% by \(moment)")
         XCTAssertFalse(f.statusLabel.isHiddenOrHasHiddenAncestor)
     }

@@ -429,6 +429,185 @@ final class ReadyByControllerTests: XCTestCase {
         XCTAssertEqual(client.state?.mclLimit, 80)
     }
 
+    // ── Going to sleep paused for heat ──────────────────────────────────────
+
+    /// Pause When Hot is the rule above Ready By, so a hot pack at the moment of sleep made the decision the heat pause,
+    /// no plan was sent, and nothing raised the limit asleep: Ready By was lost for the night. Going to sleep paused for
+    /// heat, with Ready By on, the battery below the limit and the moment inside its window, the plan is sent all the
+    /// same, for the later of the start moment and half an hour from now (`ChargeController.heatCoolingTime`), so the
+    /// pack has cooled asleep.
+    private func hotAtNight(_ celsius: Double = 40) {
+        settings.chargePauseWhenHotEnabled = true
+        settings.chargeMaxTemperatureC = 35
+        battery?.temperature_C = celsius
+    }
+
+    private func plannedAt() -> Date? {
+        for case .scheduleChargeLimit(_, let at) in helper.waited { return at }
+        return nil
+    }
+
+    func testAHotPackAtSleepStillGetsAPlanForTheStartMoment() throws {
+        hotAtNight()
+        let c = make()
+        XCTAssertEqual(c.lastDecision?.reason, .heat, "the fixture is not paused for heat")
+        c.willSleep()
+        let plan = try XCTUnwrap(c.wakePlan, "no plan for a hot pack at sleep")
+        XCTAssertEqual(plan.limit, 80)
+        XCTAssertEqual(plan.by, by)
+        XCTAssertEqual(plan.raiseAt, raiseAt, "the start moment is later than half an hour from now")
+        XCTAssertEqual(plannedAt(), raiseAt)
+        XCTAssertEqual(helper.waited.last, .scheduleChargeLimit(limit: 80, at: raiseAt))
+        XCTAssertEqual(ChargeController.heatCoolingTime, 30 * 60)
+        // Awake behaviour is unchanged: heat still outranks Ready By, and the plan stays while the pack is still hot.
+        c.didWake(now: clockNow.addingTimeInterval(3600))
+        XCTAssertEqual(c.lastDecision?.reason, .heat)
+        XCTAssertNotNil(c.wakePlan, "the plan was cancelled by a wake with the pack still hot")
+        XCTAssertEqual(count(cancel), 0)
+    }
+
+    /// Ready By had started charging and heat paused it: the start moment has passed, so the plan is for half an hour
+    /// from now.
+    func testAHotPackAfterTheStartMomentIsPlannedForHalfAnHourFromNow() throws {
+        clockNow = raiseAt.addingTimeInterval(10 * 60)
+        let c = make()
+        XCTAssertEqual(c.lastDecision?.reason, .readyBy, "Ready By has started charging")
+        hotAtNight()
+        c.tick()
+        XCTAssertEqual(c.lastDecision?.reason, .heat)
+        c.willSleep()
+        let plan = try XCTUnwrap(c.wakePlan)
+        XCTAssertEqual(plan.raiseAt, clockNow.addingTimeInterval(ChargeController.heatCoolingTime))
+        XCTAssertEqual(plannedAt(), clockNow.addingTimeInterval(30 * 60))
+    }
+
+    /// A start moment sooner than half an hour from now is put back to half an hour: the pack has to cool.
+    func testAStartMomentSoonerThanTheCoolingTimeIsPutBackToIt() throws {
+        clockNow = raiseAt.addingTimeInterval(-5 * 60)
+        hotAtNight()
+        let c = make()
+        XCTAssertEqual(c.lastDecision?.reason, .heat)
+        c.willSleep()
+        let plan = try XCTUnwrap(c.wakePlan)
+        XCTAssertEqual(plan.raiseAt, clockNow.addingTimeInterval(ChargeController.heatCoolingTime))
+    }
+
+    func testAHotPackWithReadyByOffGetsNoPlan() {
+        hotAtNight()
+        settings.chargeReadyByEnabled = false
+        let c = make()
+        c.willSleep()
+        XCTAssertNil(c.wakePlan)
+        XCTAssertTrue(schedules.isEmpty)
+    }
+
+    /// At or above the limit there is nothing to charge: no plan.
+    func testAHotPackAtTheLimitGetsNoPlan() {
+        battery = Self.plugged(80)
+        hotAtNight()
+        let c = make()
+        c.willSleep()
+        XCTAssertNil(c.wakePlan)
+        XCTAssertTrue(schedules.isEmpty)
+    }
+
+    /// A moment outside its window (more than 12 hours off) gets none either, as without heat.
+    func testAHotPackWithTheMomentBeyondTheWindowGetsNoPlan() {
+        clockNow = Self.utc("2026-11-12T15:00:00Z")   // 16 hours before 07:00
+        hotAtNight()
+        let c = make()
+        c.willSleep()
+        XCTAssertNil(c.wakePlan)
+        XCTAssertTrue(schedules.isEmpty)
+    }
+
+    /// The pack cools while the Mac is awake before the moment: Ready By decides again, and the plan, made for the same
+    /// moment and limit, stands.
+    func testThePlanStandsWhenThePackCoolsAndReadyByHoldsAgain() {
+        hotAtNight()
+        let c = make()
+        c.willSleep()
+        let plan = c.wakePlan
+        battery?.temperature_C = 25
+        c.didWake(now: clockNow.addingTimeInterval(3600))
+        XCTAssertEqual(c.lastDecision?.reason, .heat, "heat resumes only after the pack has been cool for a while")
+        XCTAssertEqual(c.wakePlan, plan)
+        c.tick(now: clockNow.addingTimeInterval(3600 + ChargePolicy.heatResumeAfter + 1))
+        XCTAssertEqual(c.lastDecision?.reason, .readyBy)
+        XCTAssertEqual(c.wakePlan, plan, "the plan was dropped for a hold that is the same one")
+        XCTAssertEqual(count(cancel), 0)
+    }
+
+    // ── The helper's write at the moment, with the Mac awake ────────────────
+
+    /// Awake with a plan pending, the helper's own timer writes the limit at the moment. The app's 30 s pass found macOS
+    /// holding 80 where it had put 54, called it "changed outside Charge Control" and put things back. At the moment
+    /// the planned limit is the app's own.
+    func testTheHelpersWriteAtTheMomentIsNotTakenForSomeoneElsesChange() {
+        let c = awakeWithAPlan()
+        lines = []
+        client.state?.mclLimit = 80   // what the helper's timer wrote
+        c.periodicTick(now: raiseAt.addingTimeInterval(1))
+        XCTAssertFalse(lines.contains { $0.contains("changed outside") }, lines.joined(separator: "\n"))
+        XCTAssertEqual(client.state?.mclLimit, 80)
+        XCTAssertEqual(c.lastDecision?.readyBy?.raiseAt, nil, "Ready By is charging now")
+        XCTAssertEqual(count(cancel), 1, "the plan is cancelled once the app has raised the limit itself")
+        XCTAssertNil(c.wakePlan)
+    }
+
+    /// Only at the moment: the same limit written before it, by anyone, is still a change.
+    func testTheSameLimitBeforeTheMomentIsStillAChange() {
+        let c = awakeWithAPlan()
+        lines = []
+        client.state?.mclLimit = 80
+        c.periodicTick(now: raiseAt.addingTimeInterval(-600))
+        XCTAssertTrue(lines.contains { $0.contains("changed outside") && $0.contains("the limit is 80, not 54") },
+                      lines.joined(separator: "\n"))
+    }
+
+    /// And only the planned limit: another value at the moment is a change like any other.
+    func testAnotherLimitAtTheMomentIsStillAChange() {
+        let c = awakeWithAPlan()
+        lines = []
+        client.state?.mclLimit = 70
+        c.periodicTick(now: raiseAt.addingTimeInterval(1))
+        XCTAssertTrue(lines.contains { $0.contains("changed outside") }, lines.joined(separator: "\n"))
+    }
+
+    // ── Guards that a gate upstream masked ──────────────────────────────────
+
+    /// `sendThePlan` has a protocol guard of its own: the tick's gate (no moment for a helper that speaks 2) means the
+    /// decision is never Ready By then, so through `willSleep` the guard is never the one that decides. Asked directly,
+    /// with a decision that is Ready By and a helper that no longer speaks 3, nothing is sent.
+    func testThePlanIsNotSentToAHelperThatDoesNotKnowIt() {
+        let c = holding()
+        XCTAssertEqual(c.lastDecision?.reason, .readyBy)
+        helper.speaksReadyBy = false
+        c.sendThePlan(deadline: Date().addingTimeInterval(2), now: nil)
+        XCTAssertTrue(schedules.isEmpty, "a plan was sent to a helper that closes the connection on it")
+        XCTAssertNil(c.wakePlan)
+        XCTAssertEqual(helper.waited.count, 0)
+        helper.speaksReadyBy = true
+        c.sendThePlan(deadline: Date().addingTimeInterval(2), now: nil)
+        XCTAssertEqual(schedules.count, 1, "and with protocol 3 it goes")
+    }
+
+    /// The one-shot timer for the start moment is really set for it: the date the run loop will fire it at, not only the
+    /// date the controller says it asked for.
+    func testTheStartMomentTimerReallyFiresAtTheStartMoment() throws {
+        let c = holding()
+        XCTAssertEqual(c.readyByTimerAt, raiseAt)
+        let fire = try XCTUnwrap(c.readyByTimerFireDate, "no timer is scheduled")
+        XCTAssertEqual(fire.timeIntervalSince(raiseAt), 0, accuracy: 0.5)
+        // A changed time moves it with the moment.
+        settings.chargeReadyByMinutes = 480
+        let later = try XCTUnwrap(c.readyByTimerFireDate)
+        XCTAssertEqual(later.timeIntervalSince(raiseAt), 3600, accuracy: 0.5, "the timer did not follow the new time")
+        // And none while it has no moment to fire for.
+        settings.chargeReadyByEnabled = false
+        XCTAssertNil(c.readyByTimerFireDate)
+    }
+
     func testTheSameHoldIsPlannedAgainBeforeEverySleep() {
         let c = holding()
         c.willSleep()
@@ -680,6 +859,49 @@ final class ReadyByControllerTests: XCTestCase {
         settings.chargeLimit = 80
         c.pressDrain()
         XCTAssertTrue(helper.commands.contains(.discharge(toPercent: 80)), "a drain no longer works: \(helper.commands)")
+    }
+
+    /// A helper that stopped answering left Ready By silently off until the Beta Features window was next shown: only a
+    /// limit waiting for the helper, or a drain, counted as needing it. Ready By switched on does, so the helper is
+    /// looked for again with the same back-off, 30 s, 60 s, 120 s and then every five minutes.
+    func testAHelperThatStoppedAnsweringIsLookedForAgainWhileReadyByIsOn() {
+        helper.available = false
+        helper.speaksReadyBy = false
+        let c = make()
+        XCTAssertEqual(helper.rechecks, 0)
+        func at(_ s: TimeInterval) { c.periodicTick(now: clockNow.addingTimeInterval(s)) }
+        at(31)
+        XCTAssertEqual(helper.rechecks, 1, "not looked for again 30 s later")
+        at(61)
+        XCTAssertEqual(helper.rechecks, 1, "looked for again too soon")
+        at(92)
+        XCTAssertEqual(helper.rechecks, 2)
+        at(213)
+        XCTAssertEqual(helper.rechecks, 3)
+        at(300)
+        XCTAssertEqual(helper.rechecks, 3)
+        at(514)
+        XCTAssertEqual(helper.rechecks, 4)
+    }
+
+    /// With Ready By off nothing needs the helper, and it is left asleep.
+    func testAHelperThatStoppedAnsweringIsLeftAloneWithReadyByOff() {
+        helper.available = false
+        helper.speaksReadyBy = false
+        settings.chargeReadyByEnabled = false
+        let c = make()
+        for s in [31.0, 92, 213, 514, 1000] { c.periodicTick(now: clockNow.addingTimeInterval(s)) }
+        XCTAssertEqual(helper.rechecks, 0)
+    }
+
+    /// A helper that answered but is too old is not woken to say so again, as for any other need.
+    func testAnOutdatedHelperIsNotLookedForAgain() {
+        helper.available = false
+        helper.outdated = true
+        helper.speaksReadyBy = false
+        let c = make()
+        for s in [31.0, 92, 213] { c.periodicTick(now: clockNow.addingTimeInterval(s)) }
+        XCTAssertEqual(helper.rechecks, 0)
     }
 
     func testWithNoHelperTheSectionSaysSoAndTheBatteryChargesToTheLimit() {

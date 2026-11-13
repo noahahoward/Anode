@@ -73,11 +73,17 @@ final class ChargeControlFeature: BetaFeature {
          controller: @escaping () -> ChargeController? = { ChargeController.current },
          installHelper: @escaping (@escaping (String) -> Void) -> Void = { report in
              (NSApplication.shared.delegate as? AppDelegate)?.fansPane.control.installHelper(report: report)
-         }) {
+         },
+         timeZone: @escaping () -> TimeZone = { Calendar.autoupdatingCurrent.timeZone }) {
         self.settings = settings
         self.controller = controller
         self.installHelper = installHelper
+        self.zone = timeZone
     }
+
+    /// The zone the times in the status line are written in: the one the controller's calendar follows
+    /// (`Calendar.autoupdatingCurrent`), asked each time, so the line says the time the controller acts on.
+    private let zone: () -> TimeZone
 
     // ── Words ───────────────────────────────────────────────────────────────
 
@@ -91,7 +97,8 @@ final class ChargeControlFeature: BetaFeature {
         + "Mac charges on to the next of those."
 
     static let readyByTip = "While the Mac is on the charger and below the limit, hold the charge where it is until it "
-        + "has to charge to be at the limit by this time every day. Needs the Anode helper."
+        + "has to charge to be at the limit by this time every day. It only waits when that time is within the next "
+        + "12 hours, and never below 30%: it charges to 30% first. Needs the Anode helper."
 
     /// What the status line needs besides the status: the battery and the drain as the controller last saw them.
     struct Facts: Equatable {
@@ -146,7 +153,8 @@ final class ChargeControlFeature: BetaFeature {
 
     /// A time of day in the person's own short format: "7:00 AM" on a Mac set to 12 hours in the US, "07:00" on one set
     /// to 24. `locale` and `timeZone` are parameters for the tests.
-    static func shortTime(_ date: Date, locale: Locale = .current, timeZone: TimeZone = .current) -> String {
+    static func shortTime(_ date: Date, locale: Locale = .autoupdatingCurrent,
+                          timeZone: TimeZone = Calendar.autoupdatingCurrent.timeZone) -> String {
         let f = DateFormatter()
         f.locale = locale
         f.timeZone = timeZone
@@ -478,7 +486,9 @@ final class ChargeControlFeature: BetaFeature {
         // Not running (off, or waiting out the delay after an unclean exit), the one line that can show besides the
         // delay's own: a drain's end never confirmed, so the charger may still be cut. It is shown first.
         let offWarning = !on || waiting ? c?.offWarning : nil
-        statusLabel.stringValue = offWarning ?? Self.statusText(status, facts)
+        statusLabel.stringValue = offWarning ?? Self.statusText(status, facts, time: { [zone] in
+            Self.shortTime($0, timeZone: zone())
+        })
         statusLabel.textColor = unavailable || needsHelper || refused || offWarning != nil
             ? .systemOrange : .secondaryLabelColor
         // A switched-on section with nothing to report yet (the controller has not answered) shows no line.

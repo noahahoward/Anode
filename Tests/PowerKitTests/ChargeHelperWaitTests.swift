@@ -127,6 +127,30 @@ final class ChargeHelperWaitTests: XCTestCase {
         XCTAssertLessThan(took, Self.bound, "going to sleep held the main thread \(took) s")
     }
 
+    /// Going to sleep with a Ready By hold, against a helper that answered the hold and then stops: the plan's send waits
+    /// out the sleep's own budget, and the fall back to charging as usual (the person's limit, waited for) runs inside the
+    /// same budget; the whole of it holds the main thread no longer than any other sleep.
+    func testGoingToSleepWithAReadyByHoldAgainstAStalledHelperStaysInTheBudget() {
+        stalling.helloVersion = 3
+        settings.chargeLimit = 87   // a limit only the helper sets: it is waited for too
+        settings.chargeReadyByEnabled = true
+        let sixHoursOn = Calendar.current.dateComponents([.hour, .minute], from: Date().addingTimeInterval(6 * 3600))
+        settings.chargeReadyByMinutes = (sixHoursOn.hour ?? 0) * 60 + (sixHoursOn.minute ?? 0)
+        settings.chargeControlEnabled = true
+        let c = ChargeController(settings: settings, makeClient: { [client] in client }, helper: adapter,
+                                 battery: { ChargeControllerTests.state(54) }, chargerSwitch: { nil },
+                                 log: { [weak self] in self?.lines.append($0) },
+                                 workspace: center, limitInForce: ChargeLimitInForce(), onConsole: { true })
+        controller = c
+        spin(until: { c.lastDecision?.reason == .readyBy && c.status == .active(c.lastDecision!) })
+        stalling.answering = false
+        let took = measured { c.willSleep() }
+        XCTAssertLessThan(took, Self.bound, "going to sleep with a Ready By hold held the main thread \(took) s")
+        XCTAssertNil(c.wakePlan, "a plan nobody answered was booked")
+        XCTAssertTrue(lines.contains { $0.contains("no answer in time") }, lines.joined(separator: "\n"))
+        XCTAssertTrue(lines.contains { $0.contains("charging as usual") }, lines.joined(separator: "\n"))
+    }
+
     func testAnAccountSwitchDoesNotHoldTheMainThread() {
         dischargingThenStalled()
         let took = measured { center.post(name: NSWorkspace.sessionDidResignActiveNotification, object: nil) }
@@ -231,6 +255,7 @@ final class StallingHelper {
     private let listener: Int32
     private let lock = NSLock()
     private var _answering = true
+    private var _helloVersion = 2
     private var _commandDelay: TimeInterval = 0
     private var _stopping = false
     private var _commands: [FanCommand] = []
@@ -252,6 +277,12 @@ final class StallingHelper {
         }
         listener = fd
         Thread.detachNewThread { [self] in serve() }
+    }
+
+    /// The protocol the hello says: 2 knows the charge commands, 3 the ones that plan a wake (Ready By).
+    var helloVersion: Int {
+        get { lock.lock(); defer { lock.unlock() }; return _helloVersion }
+        set { lock.lock(); _helloVersion = newValue; lock.unlock() }
     }
 
     var answering: Bool {
@@ -342,7 +373,7 @@ final class StallingHelper {
                     let reply: FanReply
                     switch request {
                     case .hello:
-                        reply = FanReply(ok: true, message: "hello", fanCount: 0, version: 2)
+                        reply = FanReply(ok: true, message: "hello", fanCount: 0, version: helloVersion)
                     case .command(let c):
                         let delay = commandDelay
                         if delay > 0, sleepUnlessDropped(delay) {
