@@ -1121,7 +1121,7 @@ final class ReadyByControllerTests: XCTestCase {
         if case .active = c.status {} else { XCTFail("the status was replaced by \(c.status)") }
         XCTAssertTrue(c.readyByNeedsNewerHelper)
         XCTAssertEqual(ChargeController.readyByNeedsNewerHelperText,
-                       "Ready By needs a newer Anode helper. Press Install Helper\u{2026} to update it.")
+                       "Ready By needs a newer Anode helper. Press Install Anode Helper\u{2026} to update it.")
         XCTAssertNotEqual(ChargeController.readyByNeedsNewerHelperText, ChargeController.helperOutdatedText)
         // Ready By off: nothing is said about it.
         settings.chargeReadyByEnabled = false

@@ -4,7 +4,7 @@ import AppKit
 @testable import PowerKit
 
 /// Ready By in the Charge Control section: its switch, its time of day, the line that says what it is doing in the
-/// person's own time format, the sentence in the summary, and the Install Helper… button that now shows whenever
+/// person's own time format, the sentence in the summary, and the Install Anode Helper… button that now shows whenever
 /// something switched on needs more of the helper than there is. The controller is a real one on fakes; no helper,
 /// charge limit or install dialog is reached.
 final class ReadyBySectionTests: XCTestCase {
@@ -296,7 +296,7 @@ final class ReadyBySectionTests: XCTestCase {
         XCTAssertFalse(f.statusLabel.stringValue.contains("control charging"), f.statusLabel.stringValue)
         XCTAssertFalse(f.readyByNoteLabel.isHiddenOrHasHiddenAncestor)
         XCTAssertEqual(f.readyByNoteLabel.stringValue,
-                       "Ready By needs a newer Anode helper. Press Install Helper\u{2026} to update it.")
+                       "Ready By needs a newer Anode helper. Press Install Anode Helper\u{2026} to update it.")
         XCTAssertFalse(f.installButton.isHiddenOrHasHiddenAncestor)
         settings.chargeReadyByEnabled = false
         XCTAssertTrue(f.readyByNoteLabel.isHiddenOrHasHiddenAncestor, "said with Ready By off")

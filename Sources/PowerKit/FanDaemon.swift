@@ -4,7 +4,7 @@ import Foundation
 // ─────────────────────────────────────────────────────────────────────────────
 // ONE BUTTON, ONE AUTHORISATION, AND THEN IT KEEPS WORKING.
 //
-// The question this file answers: Stats has a single "Install Fan Helper" button
+// The question this file answers: Stats has a single "Install Anode Helper" button
 // that asks for a password once and then works forever, with no Terminal. How,
 // without an Apple Developer ID — which this project is never getting, and any
 // design beginning "obtain a Developer ID" is not a design.
@@ -250,7 +250,7 @@ public enum FanDaemon {
                                         installed: String = helperPath) -> String? {
         guard installedBuildMatchesBundle(bundled: bundled,
                                           installed: installed) == false else { return nil }
-        return "The installed fan helper is from a different build of Anode. "
+        return "The installed Anode helper is from a different build of Anode. "
              + "Reinstall it — rebuilding the app does not replace the copy running as root."
     }
 
@@ -265,7 +265,7 @@ public enum FanDaemon {
     public static var orphanNote: String? {
         let found = previousInstallsPresent
         guard !found.isEmpty else { return nil }
-        let subject = found.count == 1 ? "A fan helper" : "\(found.count) fan helpers"
+        let subject = found.count == 1 ? "An Anode helper" : "\(found.count) Anode helpers"
         let verb = found.count == 1 ? "is" : "are"
         return "\(subject) from an earlier name of this app \(verb) still installed as "
              + "root. Remove \(found.count == 1 ? "it" : "them") before installing this "
@@ -315,7 +315,7 @@ public enum FanDaemon {
     /// This exists because of a real consequence of the design above: the
     /// installed daemon is a FROZEN COPY, so an app rebuilt six months later
     /// talks to a helper built today. Without a version on the wire that goes
-    /// wrong silently. With one, the app can say "the installed fan helper is
+    /// wrong silently. With one, the app can say "the installed Anode helper is
     /// older than this build" and offer to reinstall.
     ///
     /// 2: adds `setChargeLimit`, `discharge` and `stopDischarge`.
@@ -482,14 +482,14 @@ public enum FanDaemon {
     public static func summary(_ state: State) -> String {
         switch state {
         case .notInstalled:
-            return "The fan helper is not installed. Nothing of Anode runs as root."
+            return "The Anode helper is not installed. Nothing of Anode runs as root."
         case .running:
-            return "The fan helper is installed and running."
+            return "The Anode helper is installed and running. " + HelperVocabulary.whatItIsFor
         case .installedAndIdle:
-            return "The fan helper is installed. Nothing runs until you take a fan — "
-                 + "launchd starts it on demand and it stops again when you are done."
+            return "The Anode helper is installed. " + HelperVocabulary.whatItIsFor + " Nothing of it runs until "
+                 + "Anode needs it: launchd starts it on demand and it stops again when it is done."
         case .installedButOlder(let v):
-            return "The installed fan helper is older than this build "
+            return "The installed Anode helper is older than this build "
                  + "(version \(v), this app speaks \(protocolVersion)). "
                  + "Install it again to replace it."
         }
@@ -845,6 +845,22 @@ public enum HelperVocabulary {
     public static var sentence: String {
         commands.dropLast().joined(separator: ", ") + ", and " + (commands.last ?? "")
     }
+
+    /// What the one helper is for, by the part of Anode that uses it, each with the commands it stands for. Every
+    /// command belongs to exactly one (a test checks), so a command cannot be added without the line people read being
+    /// looked at.
+    public static let uses: [(name: String, commands: [String])] = [
+        ("fans", [commands[0], commands[1]]),
+        ("Charge Control", [commands[2], commands[3], commands[5], commands[6]]),
+        ("Low Power Mode", [commands[4]]),
+    ]
+
+    /// "One helper for fans, Charge Control and Low Power Mode." Said wherever a part of the app tells the person the
+    /// helper is installed: there is one helper, whichever part installed it.
+    public static var whatItIsFor: String {
+        let names = uses.map(\.name)
+        return "One helper for " + names.dropLast().joined(separator: ", ") + " and " + (names.last ?? "") + "."
+    }
 }
 
 /// Getting one authorisation dialog, from an app that cannot become root.
@@ -1059,7 +1075,7 @@ public enum FanElevation {
 
     \(lowPowerModeAndBack)
 
-    "Uninstall Fan Helper…" in the Fans tab removes both files, unloads the \
+    "Uninstall Anode Helper…" in the Fans tab removes both files, unloads the \
     daemon, hands the fans back and reconnects the charger. \
     \(chargeLimitOutlivesTheHelper)
     """

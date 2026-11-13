@@ -771,7 +771,7 @@ public final class Settings {
                         Default.menuBarWidgetsEnabled) }
     }
 
-    /// Whether the app will talk to a fan helper at all.
+    /// Whether the app will talk to an Anode helper at all.
     ///
     /// Off means the app never opens the helper's socket and never asks for a
     /// write — not "asks and is refused". A user who leaves this alone is on a

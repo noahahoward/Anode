@@ -176,7 +176,7 @@ final class ChargeController {
     static let readyByNeedsHelperText = "Ready By needs the Anode helper"
     /// The helper that answered knows the charge commands (protocol 2: limits, drains, holds) but not the ones that plan a
     /// wake: Ready By needs a newer one, and nothing else is wrong with it.
-    static let readyByNeedsNewerHelperText = "Ready By needs a newer Anode helper. Press Install Helper\u{2026} to update it."
+    static let readyByNeedsNewerHelperText = "Ready By needs a newer Anode helper. Press Install Anode Helper\u{2026} to update it."
     /// The record of macOS's own settings is another Anode's to finish at the moment (its lock is held), so switching
     /// on changed nothing.
     static let recordUnreachableText = "Charge Control could not reach the record of macOS's own charge settings, so "
@@ -194,18 +194,18 @@ final class ChargeController {
         + "back on; Anode asks it again every \(Int(tickInterval)) seconds, and this line goes when the charger "
         + "reads connected."
     /// The same with no helper installed as a daemon: nothing will start a fresh one, and an unplug does not undo
-    /// the cut. The way out is the section's own Install Helper\u{2026} button, shown with this line
+    /// the cut. The way out is the section's own Install Anode Helper\u{2026} button, shown with this line
     /// (`cutWarningsThatOfferInstall`): the installed helper starts on the first connection, and its startup switches
     /// the charger back on (`FanHelperServer.clearOrphanedAdapterCut`).
     static let cutWarningNoHelperText = "The charger may still be switched off, and unplugging it will not switch it "
-        + "back on. Press Install Helper\u{2026} below: the helper switches the charger back on as it starts."
+        + "back on. Press Install Anode Helper\u{2026} below: the helper switches the charger back on as it starts."
 
     /// The same while Charge Control is not running (off, or waiting out the delay after an unclean exit), with no
     /// helper installed: nothing is cutting the charger from here, so the line also says what else clears it. While
     /// not running, the section reads the charger switch once whenever it is shown (`recheckHelper`), and the line goes
     /// when that reads connected; while running, the net does the same after 90 s.
     static let cutWarningOffText = "The charger may still be switched off, and unplugging it will not switch it "
-        + "back on. Press Install Helper\u{2026} below: the helper switches the charger back on as it starts. This "
+        + "back on. Press Install Anode Helper\u{2026} below: the helper switches the charger back on as it starts. This "
         + "line also goes when Anode finds the charger connected."
 
     /// A helper was installed after the debt arose, while Charge Control was not running, and nothing has asked it
@@ -213,7 +213,7 @@ final class ChargeController {
     static let cutWarningInstalledText = "The charger may still be switched off, and unplugging it will not switch it "
         + "back on. The Anode helper is installed now, and Anode will ask it to switch the charger back on."
 
-    /// The cut warnings that point at the section's Install Helper\u{2026} button: the section shows the button
+    /// The cut warnings that point at the section's Install Anode Helper\u{2026} button: the section shows the button
     /// whenever the line it shows is one of these.
     static let cutWarningsThatOfferInstall: Set<String> = [cutWarningNoHelperText, cutWarningOffText]
 

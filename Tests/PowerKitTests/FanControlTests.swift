@@ -992,7 +992,7 @@ final class FanOnDemandTests: XCTestCase {
         let fd = socket(AF_INET, SOCK_STREAM, 0)
         defer { close(fd) }
         XCTAssertThrowsError(try server.start(adopting: fd),
-                             "adopted a TCP socket as the fan helper's listener")
+                             "adopted a TCP socket as the Anode helper's listener")
     }
 
     func testADatagramSocketIsRefused() throws {
@@ -1678,5 +1678,19 @@ final class FanReadbackTimingTests: XCTestCase {
                                                          wanted: 5000),
                            "a write that never landed was accepted")
         }
+    }
+}
+
+
+/// The line that says what the one helper is for cannot drift from what the helper can do.
+final class HelperVocabularyUsesTests: XCTestCase {
+    func testEveryCommandBelongsToExactlyOneUse() {
+        let listed = HelperVocabulary.uses.flatMap(\.commands)
+        XCTAssertEqual(listed.sorted(), HelperVocabulary.commands.sorted(),
+                       "a command was added or removed without the line people read being looked at")
+    }
+
+    func testTheLineNamesEveryUse() {
+        XCTAssertEqual(HelperVocabulary.whatItIsFor, "One helper for fans, Charge Control and Low Power Mode.")
     }
 }

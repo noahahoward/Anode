@@ -1853,7 +1853,7 @@ final class ChargeControllerTests: XCTestCase {
         XCTAssertEqual(c.status, .warning(ChargeController.cutWarningNoHelperText))
         let text = ChargeController.cutWarningNoHelperText
         XCTAssertTrue(text.contains("unplugging"), text)
-        XCTAssertTrue(text.contains("Install Helper\u{2026}"), text)
+        XCTAssertTrue(text.contains("Install Anode Helper\u{2026}"), text)
         XCTAssertFalse(text.contains("Fans tab"), "the Fans tab has no button for this with fan control off: " + text)
     }
 
@@ -2976,7 +2976,7 @@ final class ChargeControllerTests: XCTestCase {
         XCTAssertEqual(helper.follows, 0)
         let text = ChargeController.cutWarningOffText
         XCTAssertTrue(text.contains("may still be switched off"), text)
-        XCTAssertTrue(text.contains("Install Helper\u{2026}"), text)
+        XCTAssertTrue(text.contains("Install Anode Helper\u{2026}"), text)
         XCTAssertFalse(text.contains("Fans tab"), "the Fans tab has no button for this with fan control off: " + text)
         XCTAssertTrue(text.contains("as it starts"), text)
         // With an installed helper at launch, not answering yet, it is asked every 30 s: the line says that.
@@ -4635,7 +4635,7 @@ final class ChargeControllerTests: XCTestCase {
 // ── Fakes ───────────────────────────────────────────────────────────────────
 
 /// The helper as Charge Control sees it, scripted. Replies come back at once unless `deferReplies` is set. Like the
-/// real link it never answers "nothing": a helper that is gone answers ok:false, "the fan helper stopped answering".
+/// real link it never answers "nothing": a helper that is gone answers ok:false, "the Anode helper stopped answering".
 final class FakeHelperLink: ChargeHelperLink {
     var available = true
     /// The helper has said protocol 3, which knows the plan commands (`FanCommand.scheduleChargeLimit`). A test of a

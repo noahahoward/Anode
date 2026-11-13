@@ -251,7 +251,7 @@ if arguments.contains(FanDaemon.installArgument) {
     }
 
     print("""
-    Installing the Anode fan helper as a launch daemon.
+    Installing the Anode helper as a launch daemon.
 
       helper   \(FanDaemon.helperPath)   (root:wheel 0755, copied from this build)
       plist    \(FanDaemon.plistPath)    (root:wheel 0644)
@@ -315,7 +315,7 @@ let isInstalledDaemon = arguments.contains(FanDaemon.serveArgument)
 // whichever process won a race. Refused, with the way out.
 if !isInstalledDaemon, FanDaemon.isInstalled() {
     printErr("""
-    The fan helper is already INSTALLED as a launch daemon. launchd is holding \
+    The Anode helper is already INSTALLED as a launch daemon. launchd is holding \
     \(FanSocket.path) and starts the helper when the app connects. Starting a \
     second one by hand would unlink that socket and bind its own, and launchd \
     would never start another helper — the path it is waiting on would be gone.

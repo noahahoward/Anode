@@ -370,7 +370,7 @@ public struct FanSession: Equatable {
             // the first one would leave a knob sitting at a speed nothing was
             // ever told about.
             pending[index] = safe
-            return .nothing("Waiting for the fan helper — finish the prompt in Terminal.")
+            return .nothing("Waiting for the Anode helper — finish the prompt in Terminal.")
         case .refused(let why):
             return .nothing(why)
         }

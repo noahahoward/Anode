@@ -48,7 +48,7 @@ final class HelperConnection {
 
     /// What `FanControlLink` answers a command with when there is no socket, or the helper closed it without
     /// answering. The link never answers "nothing": this refusal is how a helper that is gone shows up.
-    static let stoppedAnswering = "the fan helper stopped answering"
+    static let stoppedAnswering = "the Anode helper stopped answering"
 
     enum Holder: Hashable {
         case fans

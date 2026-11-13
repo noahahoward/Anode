@@ -27,7 +27,7 @@ DIRTY=""
 if ! git diff --quiet HEAD 2>/dev/null; then DIRTY="+"; fi
 
 echo "› building ($CONFIG)…"
-# The fan helper ships beside the app but is NEVER started by it: it runs as root
+# The Anode helper ships beside the app but is NEVER started by it: it runs as root
 # and the user starts it themselves with sudo when they want fan control. It is
 # in the bundle so there is one obvious path to type, and so it and the app it
 # will only ever talk to are rebuilt together — the helper pins the app's cdhash
@@ -186,7 +186,7 @@ PLIST
 # and compares it to the caller's, so a broken seal is a fan control that refuses
 # every connection with an identity mismatch nobody can explain.
 codesign --force --sign - "$APP/Contents/MacOS/$HELPER" 2>/dev/null \
-  || echo "  (ad-hoc signing of the fan helper skipped)"
+  || echo "  (ad-hoc signing of the Anode helper skipped)"
 
 # The APP is signed with the local identity when one exists, and ad-hoc when not.
 #
@@ -329,7 +329,7 @@ if [ "${ANODE_NO_LAUNCH:-0}" != "1" ]; then
     open -a "$INSTALL_DIR/Anode.app"
 
     # The copy that is RUNNING must be the copy just installed. Seen 2026-11-11: a copy started from the old files while they
-    # were being swapped kept running, so the disk said the new build while the process was the old one, and the fan helper
+    # were being swapped kept running, so the disk said the new build while the process was the old one, and the Anode helper
     # refused it ("caller has no readable code signature": the code on disk did not match what was running). Checking the
     # build commit on disk cannot see that; asking the system whether the process still matches its files can.
     # `|| true` everywhere: under `set -euo pipefail` a pgrep that finds nothing would end the whole install silently.

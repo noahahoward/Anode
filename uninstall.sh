@@ -15,7 +15,7 @@
 #     for years. The ONE exception is the clone install.sh makes (~/.anode/source, or
 #     ~/Developer/Anode where an earlier version put it) — and even that only when git says it has no uncommitted, stashed or
 #     unpushed work. Otherwise it is left and the reason is printed.
-#   * It never runs sudo. The fan helper is a root daemon and removing it needs a
+#   * It never runs sudo. The Anode helper is a root daemon and removing it needs a
 #     password; this project's rule is that anything needing root is a command
 #     you read and type yourself, so it prints that command at the end.
 #   * It keeps your history and settings unless you ask for --data. A reinstall
@@ -273,7 +273,7 @@ say_restore_failed() {
   echo "Anode could not put back macOS's own charge settings, so macOS may still hold a charge limit: change it" \
     "in System Settings → Battery. If the battery is not charging on the charger, Anode's helper reconnects it: run" \
     "'sudo /Library/PrivilegedHelperTools/$DAEMON_LABEL --uninstall' if that helper is installed (it reconnects" \
-    "the charger, then removes itself), or install Anode again, switch Charge Control on and press Install Helper…"
+    "the charger, then removes itself), or install Anode again, switch Charge Control on and press Install Anode Helper…"
 }
 # Whether Charge Control may have left something that only an Anode can put back: the shared record of macOS's own charge
 # settings holds something, or the settings say Charge Control is switched on, or they carry a note that a limit was
@@ -399,7 +399,7 @@ if [ -e "$LAUNCH_DAEMONS_DIR/$DAEMON_LABEL.plist" ]; then
   # The helper's own uninstall, not its files deleted by hand: a drain may have left the charger switched off,
   # and the helper reconnects it before it removes itself (deleting it would leave the charger cut for good).
   cat <<EOF
-The fan helper is still installed and runs as ROOT. It cannot be removed from
+The Anode helper is still installed and runs as ROOT. It cannot be removed from
 here without a password. To remove it, run:
 
   sudo /Library/PrivilegedHelperTools/$DAEMON_LABEL --uninstall

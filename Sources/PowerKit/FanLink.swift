@@ -567,7 +567,7 @@ enum FanSocketIO {
 
 // ── The app's end ───────────────────────────────────────────────────────────
 
-/// The app's connection to a running fan helper.
+/// The app's connection to a running Anode helper.
 ///
 /// All socket work happens on a private serial queue and every answer is
 /// delivered on the main thread, because the alternative is a blocking write to
@@ -659,7 +659,7 @@ public final class FanControlLink {
         queue.async { [self] in
             fanLog.info("sending \(String(describing: command), privacy: .public)")
             let reply = exchange(.command(command))
-                ?? FanReply(ok: false, message: "the fan helper stopped answering")
+                ?? FanReply(ok: false, message: "the Anode helper stopped answering")
             fanLog.info("reply ok=\(reply.ok) — \(reply.message, privacy: .public)")
             DispatchQueue.main.async { done(reply) }
         }
@@ -861,7 +861,7 @@ public final class FanControlLink {
 
         guard let reply = exchange(.hello) else {
             fanLog.error("connected, but the helper closed without answering hello")
-            return .refused("the fan helper closed the connection without answering")
+            return .refused("the Anode helper closed the connection without answering")
         }
         guard reply.ok else {
             fanLog.error("helper REFUSED this app: \(reply.message, privacy: .public)")

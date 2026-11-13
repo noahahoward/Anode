@@ -65,7 +65,7 @@ final class ChargeControlFeature: BetaFeature {
     /// One more line under the Ready By row, for a helper that controls charging but is too old for Ready By: the status
     /// above stays what the features that work make it.
     let readyByNoteLabel = BetaFeaturesWindowController.wrapping("", color: .systemOrange)
-    let installButton = NSButton(title: "Install Helper\u{2026}", target: nil, action: nil)
+    let installButton = NSButton(title: "Install Anode Helper\u{2026}", target: nil, action: nil)
     /// What the install started here last said: it runs in the Fans tab's flow, whose own strip is not on screen.
     let installNoteLabel = BetaFeaturesWindowController.wrapping("", color: .secondaryLabelColor)
 

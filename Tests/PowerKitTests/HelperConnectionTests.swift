@@ -899,7 +899,7 @@ final class FanPanelSharingTests: XCTestCase {
 
     // ── Installing from Charge Control ──────────────────────────────────────
 
-    /// "Install Helper…" in Charge Control installs the helper; it is not a request for fan control.
+    /// "Install Anode Helper…" in Charge Control installs the helper; it is not a request for fan control.
     func testAnInstallFromChargeControlDoesNotTurnFanControlOn() {
         settings.fanControlEnabled = false
         let panel = FanControlPanel(frame: NSRect(x: 0, y: 0, width: 420, height: 200),
@@ -924,7 +924,8 @@ final class FanPanelSharingTests: XCTestCase {
         }
         wait(for: [finished], timeout: 5)
         XCTAssertEqual(heard, ["Waiting for authorisation\u{2026}",
-                               "The Anode helper is installed. Fan control is as it was."])
+                               "The Anode helper is installed. One helper for fans, Charge Control and Low Power Mode. "
+                                   + "Fan control is as it was."])
         XCTAssertEqual(origins, [.chargeControl])
         XCTAssertFalse(settings.fanControlEnabled, "installing for Charge Control turned fan control on")
         XCTAssertFalse(panel.session.enabled)
@@ -981,7 +982,7 @@ final class FanPanelSharingTests: XCTestCase {
         XCTAssertEqual(heard, [])
     }
 
-    /// "Install Helper…" in Ultra Low Power Mode's section takes the same route, and says what is true of this feature:
+    /// "Install Anode Helper…" in Ultra Low Power Mode's section takes the same route, and says what is true of this feature:
     /// nothing about fans, and what the helper will now do. Fan control stays off; what the other two say is unchanged.
     func testAnInstallStartedFromTheLowPowerSectionSaysSoWithoutTalkingAboutFans() {
         settings.fanControlEnabled = false
@@ -996,16 +997,20 @@ final class FanPanelSharingTests: XCTestCase {
         }, from: .ultraLowPower)
         wait(for: [finished], timeout: 5)
         XCTAssertEqual(heard, ["Waiting for authorisation\u{2026}",
-                               "The Anode helper is installed. Low Power Mode will be switched on the next time "
-                               + "Ultra Low Power Mode starts."])
+                               "The Anode helper is installed. One helper for fans, Charge Control and Low Power "
+                               + "Mode. Low Power Mode will be switched on the next time Ultra Low Power Mode starts."])
         XCTAssertEqual(heard.last, FanControlPanel.installedForUltraLowPowerText)
-        XCTAssertFalse(FanControlPanel.installedForUltraLowPowerText.localizedCaseInsensitiveContains("fan"))
+        // It says what the one helper is for (fans among the rest), and nothing about the state of fan control.
+        XCTAssertTrue(FanControlPanel.installedForUltraLowPowerText.contains(HelperVocabulary.whatItIsFor))
+        XCTAssertFalse(FanControlPanel.installedForUltraLowPowerText.contains("Fan control"))
         XCTAssertEqual(origins, [.ultraLowPower])
         XCTAssertFalse(settings.fanControlEnabled, "installing for Low Power Mode turned fan control on")
         XCTAssertFalse(panel.session.enabled)
         XCTAssertFalse(connection.suspended, "the shared connection was left shut")
         // The other two are as they were.
-        XCTAssertEqual(FanControlPanel.installedForChargeControlText, "The Anode helper is installed. Fan control is as it was.")
+        XCTAssertEqual(FanControlPanel.installedForChargeControlText,
+                       "The Anode helper is installed. One helper for fans, Charge Control and Low Power Mode. "
+                           + "Fan control is as it was.")
         let alert = FanControlPanel.installAlert(helper: "/x", origin: .ultraLowPower)
         XCTAssertEqual(alert.messageText, "Install the Anode helper?")
         XCTAssertTrue(alert.informativeText.contains("switch macOS's Low Power Mode on and put it back"), alert.informativeText)
@@ -1034,7 +1039,7 @@ final class FanPanelSharingTests: XCTestCase {
         XCTAssertTrue(panel.session.enabled)
     }
 
-    /// The confirmation names the helper; from Charge Control it does not call it the fan helper. The body lists
+    /// The confirmation names the helper; from Charge Control it does not call it the Anode helper. The body lists
     /// everything the helper can do either way.
     func testTheConfirmationFromChargeControlIsNotAboutFans() {
         let charge = FanControlPanel.installAlert(helper: "/Applications/Anode.app/Contents/MacOS/AnodeHelper",
@@ -1044,7 +1049,7 @@ final class FanPanelSharingTests: XCTestCase {
         XCTAssertTrue(charge.informativeText.contains("set the macOS charge limit"), charge.informativeText)
         XCTAssertTrue(charge.informativeText.contains("cut the charger"), charge.informativeText)
         let fansTab = FanControlPanel.installAlert(helper: "/x", origin: .fansTab)
-        XCTAssertEqual(fansTab.messageText, "Install the fan helper?")
+        XCTAssertEqual(fansTab.messageText, "Install the Anode helper?")
     }
 
     /// The body is the same from both places, so it is true from both: it does not point at "this strip" (from
@@ -1055,7 +1060,7 @@ final class FanPanelSharingTests: XCTestCase {
             let body = FanControlPanel.installAlert(helper: "/x", origin: origin).informativeText
             XCTAssertFalse(body.contains("strip"), body)
             XCTAssertTrue(body.contains("the Anode helper"), body)
-            XCTAssertTrue(body.contains("\"Uninstall Fan Helper\u{2026}\" in the Fans tab"), body)
+            XCTAssertTrue(body.contains("\"Uninstall Anode Helper\u{2026}\" in the Fans tab"), body)
             XCTAssertTrue(body.contains("The safer alternative is in the Fans tab"), body)
         }
     }

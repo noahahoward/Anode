@@ -617,10 +617,10 @@ check "a failure says macOS may still hold a charge limit"  has "macOS may still
 check "a failure says where to change the limit"            has "System Settings → Battery"
 check "a failure says what reconnects a charger left off"   has "sudo /Library/PrivilegedHelperTools/dev.anode.app.fanhelper --uninstall"
 check "and does not promise that a restart reconnects it"   hasnt "restarting the Mac"
-check "and says the other way: install again, switch Charge Control on, then Install Helper…" \
-                                                            has "install Anode again, switch Charge Control on and press Install Helper…"
+check "and says the other way: install again, switch Charge Control on, then Install Anode Helper…" \
+                                                            has "install Anode again, switch Charge Control on and press Install Anode Helper…"
 check "and no longer says the button is there with Charge Control off" \
-                                                            hasnt "press Install Helper… in Charge Control"
+                                                            hasnt "press Install Anode Helper… in Charge Control"
 check "and does not send a Charge Control user to the Fans tab" hasnt "start its helper from the Fans tab"
 check "a restore that ran says nothing about Anode running" hasnt "still running"
 check "the app is still removed"                            absent "$H/Applications/Anode.app"
@@ -857,7 +857,7 @@ check "and no longer tells to delete the helper by hand"    hasnt "sudo rm -f"
 check "nor to boot it out first"                            hasnt "launchctl bootout system"
 H="$(new_home 18)"; mkdir -p "$H/Applications/Anode.app"
 OUT="$(run_anode "$H" "$ROOT/uninstall.sh" --yes 2>&1 || true)"
-check "with no helper installed it says nothing about one"  hasnt "fan helper is still installed"
+check "with no helper installed it says nothing about one"  hasnt "Anode helper is still installed"
 
 echo "6c. A limit another account's Anode holds is left alone, and said so; the shared record goes only when empty"
 # Exit status 2 from the restore: the limit in force is another account's running Anode's.

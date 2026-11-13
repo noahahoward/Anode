@@ -6,7 +6,7 @@
 # Also what the Update button in Anode's settings runs — in a visible Terminal
 # window, deliberately. Rebuilding replaces the running app, and an app that
 # quietly replaces itself while you are looking at it is a worse thing to ship
-# than one extra window. The same reasoning as the fan helper's install: if the
+# than one extra window. The same reasoning as the Anode helper's install: if the
 # app is going to run a command on your behalf, you get to watch it.
 #
 # The one exception is opt-in: with "update automatically" switched on in

@@ -2169,7 +2169,7 @@ public enum FanHelperInstall {
                 root.appendingPathComponent("Library/PrivilegedHelperTools/\(retiredDaemonLabel)"),
                 root.appendingPathComponent("Library/Application Support/Anode/client.cdhash"),
                 // The current optional install: a plist and a root-owned copy of
-                // the helper. Absent unless the user pressed Install Fan Helper.
+                // the helper. Absent unless the user pressed Install Anode Helper.
                 root.appendingPathComponent(String(FanDaemon.plistPath.dropFirst())),
                 root.appendingPathComponent(String(FanDaemon.helperPath.dropFirst())),
                 // Created by whichever helper is running, and only while it runs.

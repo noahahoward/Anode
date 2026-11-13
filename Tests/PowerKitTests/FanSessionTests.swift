@@ -78,7 +78,7 @@ final class FanSessionTests: XCTestCase {
         var session = automatic()
         _ = session.apply(.setSpeed(index: 1, rpm: 6000, limits: realLimits))
         let second = session.apply(.setSpeed(index: 0, rpm: 3000, limits: realLimits))
-        XCTAssertEqual(second, .nothing("Waiting for the fan helper — finish the prompt in Terminal."))
+        XCTAssertEqual(second, .nothing("Waiting for the Anode helper — finish the prompt in Terminal."))
         XCTAssertEqual(session.helperBecame(.connected(fanCount: 2)),
                        [.setTarget(FanTarget(index: 0, rpm: 3000)),
                         .setTarget(FanTarget(index: 1, rpm: 6000))])

@@ -444,7 +444,7 @@ private final class GeneralPane: Pane {
 
     /// Runs `update.sh` in a VISIBLE Terminal window.
     ///
-    /// The same rule the fan helper's install follows, for a stronger reason: this
+    /// The same rule the Anode helper's install follows, for a stronger reason: this
     /// one quits the running app, rebuilds it and launches the replacement. An app
     /// that silently replaces itself while you are looking at it is not something
     /// to ship to be tidy. Opened through LaunchServices rather than Apple events,

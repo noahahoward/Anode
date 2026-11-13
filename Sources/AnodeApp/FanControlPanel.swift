@@ -497,7 +497,7 @@ final class FanControlPanel: NSView {
         if let deadline = startDeadline, Date() > deadline {
             endPolling()
             session.helperBecame(.absent)
-            say("The fan helper did not start. Nothing was written — "
+            say("The Anode helper did not start. Nothing was written — "
               + "the fans are on automatic.")
             return render()
         }
@@ -594,10 +594,11 @@ final class FanControlPanel: NSView {
         + "and open ~/Applications/Anode.app."
     static let waitingText = "Waiting for authorisation\u{2026}"
     static let cancelledText = "Cancelled \u{2014} nothing was changed."
-    static let installedForChargeControlText = "The Anode helper is installed. Fan control is as it was."
+    static let installedForChargeControlText = "The Anode helper is installed. " + HelperVocabulary.whatItIsFor
+        + " Fan control is as it was."
     /// The same from Ultra Low Power Mode's section, where fan control is not the subject.
-    static let installedForUltraLowPowerText = "The Anode helper is installed. Low Power Mode will be switched on the next "
-        + "time Ultra Low Power Mode starts."
+    static let installedForUltraLowPowerText = "The Anode helper is installed. " + HelperVocabulary.whatItIsFor
+        + " Low Power Mode will be switched on the next time Ultra Low Power Mode starts."
     /// An install started from Charge Control that failed, as Charge Control says it: the strip shows the reason
     /// alone, under its own button; the section names what did not happen.
     static func notInstalledText(_ why: String) -> String { "The Anode helper was not installed: \(why)" }
@@ -606,13 +607,13 @@ final class FanControlPanel: NSView {
     enum InstallOrigin {
         /// This strip's own button.
         case fansTab
-        /// Charge Control's "Install Helper…" in Beta Features.
+        /// Charge Control's "Install Anode Helper…" in Beta Features.
         case chargeControl
-        /// Ultra Low Power Mode's "Install Helper…" in Beta Features.
+        /// Ultra Low Power Mode's "Install Anode Helper…" in Beta Features.
         case ultraLowPower
     }
 
-    /// The install flow for a caller outside the Fans tab: Charge Control's "Install Helper…" in Beta Features, or
+    /// The install flow for a caller outside the Fans tab: Charge Control's "Install Anode Helper…" in Beta Features, or
     /// Ultra Low Power Mode's (`origin`).
     /// The same confirmation and authorisation as this strip's own button. What it says, it says on this strip and
     /// to `report` (on the main thread), because the caller cannot see this strip: that it is waiting, that a dialog
@@ -668,7 +669,7 @@ final class FanControlPanel: NSView {
 
     @objc private func uninstallTapped() { uninstallHelper() }
 
-    /// The "Uninstall Fan Helper…" button. Internal for the tests.
+    /// The "Uninstall Anode Helper…" button. Internal for the tests.
     func uninstallHelper() {
         guard !elevating else { return say(Self.authorisationOnScreenText) }
         guard let helper = installSteps.bundledHelper() else {
@@ -764,7 +765,7 @@ final class FanControlPanel: NSView {
         let alert = NSAlert()
         // From Charge Control it is the same helper, asked for something other than fans; the body below lists
         // everything it can do.
-        alert.messageText = origin == .fansTab ? "Install the fan helper?" : "Install the Anode helper?"
+        alert.messageText = origin == .fansTab ? "Install the Anode helper?" : "Install the Anode helper?"
         // In PowerKit so a test holds it to the helper's whole vocabulary — the
         // installed helper also sets the charge limit and cuts the charger.
         alert.informativeText = FanElevation.installDisclosure
@@ -820,7 +821,7 @@ final class FanControlPanel: NSView {
             // install. The first version put it in a branch that requires the new
             // daemon to be installed already — which is precisely the machine that
             // does not need telling. Reported as the app simply asking to install
-            // the fan helper, with no sign it had noticed the old one.
+            // the Anode helper, with no sign it had noticed the old one.
             hintField.stringValue = FanDaemon.orphanNote ?? ""
             // NO "Turn On Fan Control" button. It did exactly what grabbing a
             // slider does — same sheet, same setting, and `gesture()` then
@@ -837,8 +838,8 @@ final class FanControlPanel: NSView {
         case .automatic:
             if case .connected(let count) = session.helper {
                 statusLabel.stringValue = count == 0
-                    ? "Fan helper connected, but it found no fan it can control."
-                    : "Fan helper connected. No fan is held — macOS is still deciding. "
+                    ? "Anode helper connected, but it found no fan it can control."
+                    : "Anode helper connected. No fan is held — macOS is still deciding. "
                     + "Take a slider or press ❄︎ to change that."
                 hintField.stringValue = [installed ? FanDaemon.summary(daemonState) : nil,
                                          FanDaemon.staleInstallNote(bundled: bundledHelperURL())]
@@ -860,7 +861,7 @@ final class FanControlPanel: NSView {
                 setButtons([("Turn Off", #selector(disableTapped))])
             } else {
                 statusLabel.stringValue = "Fan control is on and macOS is deciding. "
-                                        + "Install the fan helper to take control of a fan."
+                                        + "Install the Anode helper to take control of a fan."
                 // Same reason: this is the other state that leads to an install.
                 hintField.stringValue = FanDaemon.orphanNote ?? Self.startCommand()
                 setButtons([("Copy Start Command", #selector(copyCommandTapped)),
@@ -868,7 +869,7 @@ final class FanControlPanel: NSView {
             }
 
         case .starting:
-            statusLabel.stringValue = "Waiting for the fan helper — a Terminal window is open. "
+            statusLabel.stringValue = "Waiting for the Anode helper — a Terminal window is open. "
                                     + "Read the command, authenticate, and this connects on its own."
             hintField.stringValue = Self.startCommand()
             // An authorisation is already on screen; a second one to install
@@ -891,7 +892,7 @@ final class FanControlPanel: NSView {
             setButtons([("Turn Off", #selector(disableTapped))], offeringInstall: false)
 
         case .blocked(let why):
-            statusLabel.stringValue = "The fan helper refused this app: \(why)"
+            statusLabel.stringValue = "The Anode helper refused this app: \(why)"
             // THE SESSION-HELPER COMMAND IS WRONG ADVICE ON AN INSTALLED
             // MACHINE. `AnodeHelper` with no arguments refuses to start at all
             // while a daemon is installed — it would unlink launchd's socket and
@@ -911,7 +912,7 @@ final class FanControlPanel: NSView {
             if installed {
                 hintField.stringValue = "The daemon running as root is not serving this "
                                       + "app. Reinstall it to replace it with this build."
-                setButtons([("Reinstall Fan Helper…", #selector(installTapped)),
+                setButtons([("Reinstall Anode Helper…", #selector(installTapped)),
                             ("Turn Off", #selector(disableTapped))],
                            offeringInstall: false)
             } else {
@@ -933,8 +934,8 @@ final class FanControlPanel: NSView {
     /// that at the end of a row would be a strange choice.
     private func withInstall(_ items: [(String, Selector)]) -> [(String, Selector)] {
         switch FanDaemon.button(installed: installed, bundled: Self.bundledHelper() != nil) {
-        case .install:   return [("Install Fan Helper…", #selector(installTapped))] + items
-        case .uninstall: return [("Uninstall Fan Helper…", #selector(uninstallTapped))] + items
+        case .install:   return [("Install Anode Helper…", #selector(installTapped))] + items
+        case .uninstall: return [("Uninstall Anode Helper…", #selector(uninstallTapped))] + items
         case .none:      return items
         }
     }
@@ -1006,7 +1007,7 @@ final class FanControlPanel: NSView {
             boost.tag = f.index
             boost.contentTintColor = Palette.blue
             boost.toolTip = "Run fan \(f.index + 1) flat out (100% of its reported range). "
-                          + "Starts the fan helper first if it is not running."
+                          + "Starts the Anode helper first if it is not running."
             boost.setAccessibilityLabel("Set fan \(f.index + 1) to full speed")
 
             let stop = symbolButton("xmark", fallback: "✕",

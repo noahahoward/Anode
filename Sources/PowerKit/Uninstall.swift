@@ -190,7 +190,7 @@ public enum Uninstall {
                        + "Tick the box to remove those too.")
         }
         if plan.rootDaemonCommand != nil {
-            lines.append("\nThe fan helper runs as root and cannot be removed from here. "
+            lines.append("\nThe Anode helper runs as root and cannot be removed from here. "
                        + "The command to remove it is printed at the end.")
         }
         if let checkout = plan.installedCheckout {

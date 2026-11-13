@@ -7,7 +7,7 @@ import AppKit
 ///
 /// The controller is a real `ChargeController` built on fakes: `FakeChargeLimitClient` for macOS's charge limit,
 /// `FakeHelperLink` for the helper, and a battery the test sets. No PowerUI client, helper socket or install dialog is
-/// reached: the "Install Helper…" button is handed a closure that counts.
+/// reached: the "Install Anode Helper…" button is handed a closure that counts.
 final class ChargeControlFeatureTests: XCTestCase {
 
     private var defaults: UserDefaults!
@@ -21,7 +21,7 @@ final class ChargeControlFeatureTests: XCTestCase {
     private var installs = 0
     /// What the controller wrote to its log.
     private var logLines: [String] = []
-    /// What the last "Install Helper…" press was handed to say how the install is going.
+    /// What the last "Install Anode Helper…" press was handed to say how the install is going.
     private var installReport: ((String) -> Void)?
     /// What `makeView` returned for the last section made.
     private var view: NSView?
@@ -602,7 +602,7 @@ final class ChargeControlFeatureTests: XCTestCase {
         XCTAssertTrue(f.limitSlider.isEnabled)
         XCTAssertFalse(f.installButton.isHiddenOrHasHiddenAncestor)
         XCTAssertTrue(f.installButton.isEnabled)
-        XCTAssertEqual(f.installButton.title, "Install Helper\u{2026}")
+        XCTAssertEqual(f.installButton.title, "Install Anode Helper\u{2026}")
         f.installButton.performClick(nil)
         XCTAssertEqual(installs, 1)
 
@@ -649,14 +649,14 @@ final class ChargeControlFeatureTests: XCTestCase {
     /// default and stays off when the helper is installed from here.
     func testTheCutWarningsPointAtTheButtonAndNotAtTheFansTab() {
         for text in ChargeController.cutWarningsThatOfferInstall {
-            XCTAssertTrue(text.contains("Press Install Helper\u{2026} below"), text)
+            XCTAssertTrue(text.contains("Press Install Anode Helper\u{2026} below"), text)
             XCTAssertFalse(text.contains("Fans tab"), text)
             XCTAssertFalse(text.contains("Copy Start Command"), text)
             XCTAssertFalse(text.contains("sudo"), text)
         }
         // The lines that are shown with the helper installed do not send anyone to a button that is not there.
         for text in [ChargeController.cutWarningText, ChargeController.cutWarningInstalledText] {
-            XCTAssertFalse(text.contains("Install Helper"), text)
+            XCTAssertFalse(text.contains("Install Anode Helper"), text)
             XCTAssertFalse(text.contains("Fans tab"), text)
         }
         XCTAssertEqual(ChargeController.cutWarningsThatOfferInstall,
@@ -992,8 +992,8 @@ final class ChargeControlFeatureTests: XCTestCase {
         for line in ["Drain to Limit pressed", "Charge to Full pressed"] {
             XCTAssertTrue(logLines.contains(line), "\(line) is not what the log says: \(logLines)")
         }
-        XCTAssertTrue(uninstall.contains { $0.contains("install Anode again, switch Charge Control on and press Install Helper\u{2026}") },
+        XCTAssertTrue(uninstall.contains { $0.contains("install Anode again, switch Charge Control on and press Install Anode Helper\u{2026}") },
                       "the way back must say the button is shown once Charge Control is on")
-        XCTAssertFalse(uninstall.contains { $0.contains("press Install Helper\u{2026} in Charge Control") })
+        XCTAssertFalse(uninstall.contains { $0.contains("press Install Anode Helper\u{2026} in Charge Control") })
     }
 }
