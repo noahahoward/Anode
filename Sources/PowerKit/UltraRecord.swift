@@ -61,7 +61,10 @@ public struct UltraRecord: Codable, Equatable {
 public protocol UltraRecordStoring: AnyObject {
     /// nil when there is no record, or what is there cannot be read.
     func load() -> UltraRecord?
-    func save(_ record: UltraRecord)
+    /// False when the record did not reach the disk; true only after it has been written. The caller must not freeze
+    /// anything on a false: stopped processes with no record are stopped for good if Anode dies.
+    @discardableResult
+    func save(_ record: UltraRecord) -> Bool
     func clear()
 }
 
@@ -82,11 +85,19 @@ public final class UltraRecordFile: UltraRecordStoring {
         return try? JSONDecoder().decode(UltraRecord.self, from: data)
     }
 
-    public func save(_ record: UltraRecord) {
-        guard let data = try? JSONEncoder().encode(record) else { return }
-        // The folder may not exist yet on the first freeze; a record that cannot be written is a freeze nobody can undo.
-        try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try? data.write(to: url, options: .atomic)
+    @discardableResult
+    public func save(_ record: UltraRecord) -> Bool {
+        do {
+            let data = try JSONEncoder().encode(record)
+            // The folder may not exist yet on the first freeze.
+            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try data.write(to: url, options: .atomic)
+            return true
+        } catch {
+            // A record that cannot be written is a freeze nobody can undo, so the caller is told. What was on the disk
+            // before is left as it was: the write is atomic.
+            return false
+        }
     }
 
     public func clear() {

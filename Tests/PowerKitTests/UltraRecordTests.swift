@@ -53,12 +53,12 @@ final class UltraRecordTests: XCTestCase {
         let store = UltraRecordFile(url: url)
         XCTAssertNil(store.load(), "nothing is there yet")
 
-        store.save(record)
+        XCTAssertTrue(store.save(record))
         XCTAssertEqual(store.load(), record)
         XCTAssertEqual(UltraRecordFile(url: url).load(), record, "a new object reads what the first one wrote")
 
         record.groups[1].released = true
-        store.save(record)
+        XCTAssertTrue(store.save(record))
         XCTAssertEqual(store.load(), record, "a second save replaces the first")
 
         store.clear()
@@ -83,7 +83,34 @@ final class UltraRecordTests: XCTestCase {
         // It is not stuck: a good record replaces the garbage.
         var record = UltraRecord()
         record.rateLowered = true
-        store.save(record)
+        XCTAssertTrue(store.save(record))
+        XCTAssertEqual(store.load(), record)
+    }
+
+    func testARecordThatCannotBeSavedSaysSo() throws {
+        var record = UltraRecord()
+        record.groups = [group("com.example.notes", [20])]
+
+        // The folder the record belongs in is a plain file: it can be neither made nor written into.
+        let blocker = directory.appendingPathComponent("blocker")
+        try Data("a file".utf8).write(to: blocker)
+        let blocked = UltraRecordFile(url: blocker.appendingPathComponent("record.json"))
+        XCTAssertFalse(blocked.save(record), "a record that is not on the disk must not be reported as saved")
+        XCTAssertNil(blocked.load())
+
+        // The place for the file is a folder.
+        let taken = directory.appendingPathComponent("taken", isDirectory: true)
+        try FileManager.default.createDirectory(at: taken, withIntermediateDirectories: true)
+        XCTAssertFalse(UltraRecordFile(url: taken).save(record))
+
+        // A record that cannot be encoded (a brightness that is not a number) is not saved either, and the record
+        // already on disk is left whole.
+        let url = directory.appendingPathComponent("record.json")
+        let store = UltraRecordFile(url: url)
+        XCTAssertTrue(store.save(record))
+        var unwritable = record
+        unwritable.brightnessBefore = .nan
+        XCTAssertFalse(store.save(unwritable))
         XCTAssertEqual(store.load(), record)
     }
 

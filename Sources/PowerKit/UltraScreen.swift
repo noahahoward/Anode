@@ -100,6 +100,11 @@ public enum SpinGuard {
     /// `ownBefore` and `ownAfter`: load of the user's own processes, in cores. `busyCoresBefore` and `busyCoresAfter`:
     /// the whole Mac. `kept`: every process the mode left running by choice. `frozen`: the groups still stopped
     /// (a released group is not in it).
+    ///
+    /// Anything of the user's that is running and is in neither `kept` nor a stopped group is judged as a possible
+    /// burner. So the caller must put Anode's own pids, its watchdog child and the processes of groups already
+    /// released in `kept` (or leave them out of `ownAfter`): their ordinary work would read as a spin and undo the
+    /// freeze for nothing.
     public static func verdict(ownBefore: [pid_t: Double], ownAfter: [pid_t: Double], busyCoresBefore: Double,
                                busyCoresAfter: Double, kept: Set<pid_t>, frozen: [FreezeGroup],
                                processes: [UltraProcess]) -> Verdict {

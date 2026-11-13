@@ -270,7 +270,9 @@ final class UltraScreenTests: XCTestCase {
     }
 
     func testTheLineForBurningAndForTheRise() {
-        // At the line counts; just under does not. (0.5, 0.9 and their difference are exact in binary.)
+        // At the line counts; just under does not. 0.9 - 0.5 has no rounding error (the two are within a factor of two),
+        // and it comes out as the very Double that 0.4 is, so `>= rise` holds exactly at the line. That is true of
+        // this pair only: choose the pair again if either number changes.
         XCTAssertEqual(verdict(before: [:], after: [90: 0.5]), .release(["com.example.sync"]))
         XCTAssertEqual(verdict(before: [:], after: [90: 0.45]), .fine)
         XCTAssertEqual(verdict(before: [90: 0.5], after: [90: 0.9]), .release(["com.example.sync"]))
