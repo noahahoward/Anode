@@ -231,6 +231,8 @@ struct AccessibleWindow {
     /// The window with keyboard focus in the front app, if it is one that can be moved.
     static func front() -> AccessibleWindow? {
         guard let app = NSWorkspace.shared.frontmostApplication else { return nil }
+        // A stopped app answers nothing: asking it for its focused window waits until it times out.
+        if UltraQuiet.isFrozen(pid: app.processIdentifier) { return nil }
         if app.processIdentifier == ownPID {
             return onMain {
                 guard let w = NSApp.keyWindow ?? NSApp.mainWindow, w.isVisible, !w.isSheet,

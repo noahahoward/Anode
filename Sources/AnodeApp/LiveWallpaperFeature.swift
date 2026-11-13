@@ -407,6 +407,7 @@ final class LiveWallpaperFeature: BetaFeature {
         case .userPaused:     return "paused by you"
         case .displaysAsleep: return "display asleep"
         case .screenLocked:   return "screen locked"
+        case .ultraLowPower:  return "Ultra Low Power Mode"
         case .lowPowerMode:   return "Low Power Mode"
         case .onBattery:      return "on battery"
         case .tooHot:         return "the Mac is hot"

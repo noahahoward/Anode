@@ -32,7 +32,7 @@ final class WallpaperConditionsSource {
                                   // A shut lid with nothing else plugged in is a display nobody can see, and Always Stay
                                   // Awake keeps the panel lit (at brightness 0) so the system never says it is asleep.
                                   displaysAsleep: displaysAsleep || !ScreenWatch.shared.isWatched,
-                                  screenLocked: screenLocked, userPaused: false)
+                                  screenLocked: screenLocked, userPaused: false, ultraLowPower: UltraQuiet.isOn)
     }
 
     static func isOnBattery() -> Bool {
@@ -71,6 +71,8 @@ final class WallpaperConditionsSource {
         watch(nc, NSApplication.didChangeScreenParametersNotification, refresh: true)
         watch(nc, Notification.Name.NSProcessInfoPowerStateDidChange)
         watch(nc, ProcessInfo.thermalStateDidChangeNotification)
+        // Ultra Low Power Mode starting or ending: the wallpaper stands still, or plays again.
+        watch(nc, UltraLowPowerController.didChange)
 
         // Plugging in or unplugging the charger.
         let context = Unmanaged.passUnretained(self).toOpaque()

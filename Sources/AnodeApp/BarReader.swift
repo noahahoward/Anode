@@ -67,6 +67,19 @@ final class AXBarReader: BarReading {
 
     static func inBarOrder(_ items: [BarItem]) -> [BarItem] { items.sorted(by: precedes) }
 
+    /// The apps a read asks: not those that said they have no extras menu bar, and not those Ultra Low Power Mode has stopped
+    /// (a call into a stopped process waits until it times out).
+    static func appsToAsk(_ apps: [App], frozen: Set<pid_t>, skips: (pid_t) -> Bool) -> [App] {
+        apps.filter { !skips($0.pid) && !frozen.contains($0.pid) }
+    }
+
+    /// The items of the stopped apps that were not asked, as `previous` (the last complete read) had them, unchanged: the
+    /// hider's covers stay where they were. An app no longer in `running` has quit, and its items go. An app `previous` never
+    /// saw has none, which is also how a silent app that was never seen with items is treated.
+    static func reuse(previous: [BarItem], frozen: Set<pid_t>, running: Set<pid_t>) -> [BarItem] {
+        previous.filter { item in item.pid.map { frozen.contains($0) && running.contains($0) } ?? false }
+    }
+
     /// Which of `now` (a fresh read of the target's app) a press on `target` (from an earlier read) goes to, or nil for none.
     /// Unnamed items are keyed by their order, so when a sibling parks, comes or goes the keys shift and the key alone would
     /// open the other icon's menu. The item must also still be where it was, within `tolerance` points (x and y, so a parked
@@ -165,6 +178,9 @@ final class AXBarReader: BarReading {
     private var noBar = NoBarCache(neverSkipped: AXBarReader.systemOwners)
     /// The apps seen with items in a read, so their silence later fails the read (`silenceMatters`). Touched on `queue` only.
     private var knownOwners: Set<pid_t> = []
+    /// The items of the last read that was complete (before `markingThoseUnderSystemItems`), for the apps the mode has stopped
+    /// and a read does not ask. Touched on `queue` only.
+    private var lastComplete: [BarItem] = []
 
     init(log: @escaping (String) -> Void = { FeatureLog.append("menubarhider.log", $0) }) {
         self.log = log
@@ -174,13 +190,15 @@ final class AXBarReader: BarReading {
         guard AXIsProcessTrusted() else { DispatchQueue.main.async { completion(nil) }; return }
         // The app list is read here, on the main thread; the accessibility work happens on the queue.
         let apps = NSWorkspace.shared.runningApplications.map { (bundleID: $0.bundleIdentifier, name: $0.localizedName ?? "?", pid: $0.processIdentifier) }
+        // Asked here too, because the controller's state is main-thread state.
+        let frozen = Set(apps.map(\.pid).filter(UltraQuiet.isFrozen(pid:)))
         // The deadline is kept on THIS side: a scan stuck on a hung app cannot be cut short, but its answer can be refused.
         let once = OnceCompletion(completion)
         let deadline = DispatchWorkItem { _ = once.complete(nil) }
         DispatchQueue.main.asyncAfter(deadline: .now() + Self.budget, execute: deadline)
         queue.async { [self] in
             noBar.sync(running: Set(apps.map(\.pid)), now: Date())
-            let asked = apps.filter { !noBar.skips($0.pid) }
+            let asked = Self.appsToAsk(apps, frozen: frozen, skips: noBar.skips)
             let results = Self.scan(apps: asked)
             knownOwners.formIntersection(Set(apps.map(\.pid)))
             for (app, result) in zip(asked, results) {
@@ -191,9 +209,15 @@ final class AXBarReader: BarReading {
             let matters = asked.map { Self.silenceMatters(pid: $0.pid, bundleID: $0.bundleID, knownOwners: owners, ownPID: me) }
             let found = Self.combine(results, silenceMatters: matters)
             noteFailure(apps: asked, results: results, silenceMatters: matters)
+            // The stopped apps' items come from the last complete read; a read that failed leaves that read as it was.
+            var items = found.map { $0.map(\.item) }
+            if !frozen.isEmpty, let fresh = items {
+                items = Self.inBarOrder(fresh + Self.reuse(previous: lastComplete, frozen: frozen, running: Set(apps.map(\.pid))))
+            }
+            if let items { lastComplete = items }
             DispatchQueue.main.async {
                 deadline.cancel()
-                _ = once.complete(found.map { BarItem.markingThoseUnderSystemItems($0.map(\.item)) })
+                _ = once.complete(items.map(BarItem.markingThoseUnderSystemItems))
             }
         }
     }
@@ -203,6 +227,8 @@ final class AXBarReader: BarReading {
     func press(_ item: BarItem) {
         guard AXIsProcessTrusted(), let pid = item.pid,
               let app = NSRunningApplication(processIdentifier: pid) else { return }
+        // The owner picked this app's item: if the mode has it stopped it is continued first, not asked while stopped.
+        UltraQuiet.activated(pid: pid)
         let log = self.log
         guard Self.isStillTheApp(bundleID: app.bundleIdentifier, name: app.localizedName, of: item) else {
             log("press: \(item.key) not pressed, pid \(pid) is now another app")

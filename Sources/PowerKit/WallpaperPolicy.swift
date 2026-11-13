@@ -11,6 +11,9 @@ public enum WallpaperPauseReason: Equatable {
     case userPaused
     case displaysAsleep
     case screenLocked
+    /// Ultra Low Power Mode is on. It turns macOS's Low Power Mode on too, so it sits above that reason: the one given is the
+    /// mode's, and it holds whatever the owner's "pause when" switches say.
+    case ultraLowPower
     case lowPowerMode
     case onBattery
     case tooHot
@@ -26,11 +29,15 @@ public struct WallpaperGlobalConditions: Equatable {
     public var displaysAsleep = false
     public var screenLocked = false
     public var userPaused = false
+    /// Ultra Low Power Mode is on (not merely being asked for).
+    public var ultraLowPower = false
 
     public init(onBattery: Bool = false, lowPowerMode: Bool = false, thermalHot: Bool = false,
-                displaysAsleep: Bool = false, screenLocked: Bool = false, userPaused: Bool = false) {
+                displaysAsleep: Bool = false, screenLocked: Bool = false, userPaused: Bool = false,
+                ultraLowPower: Bool = false) {
         self.onBattery = onBattery; self.lowPowerMode = lowPowerMode; self.thermalHot = thermalHot
         self.displaysAsleep = displaysAsleep; self.screenLocked = screenLocked; self.userPaused = userPaused
+        self.ultraLowPower = ultraLowPower
     }
 }
 
@@ -43,13 +50,14 @@ public struct WallpaperDisplayConditions: Equatable {
 }
 
 public enum WallpaperPolicy {
-    /// The reason to pause, or nil to play. Sleep, lock and the user's own pause apply whatever the preferences say; the
-    /// rest each need their preference on.
+    /// The reason to pause, or nil to play. Sleep, lock, the user's own pause and Ultra Low Power Mode apply whatever the
+    /// preferences say; the rest each need their preference on.
     public static func pauseReason(prefs: WallpaperPrefs, global g: WallpaperGlobalConditions,
                                    display d: WallpaperDisplayConditions) -> WallpaperPauseReason? {
         if g.userPaused { return .userPaused }
         if g.displaysAsleep { return .displaysAsleep }
         if g.screenLocked { return .screenLocked }
+        if g.ultraLowPower { return .ultraLowPower }
         if g.lowPowerMode && prefs.pauseInLowPower { return .lowPowerMode }
         if g.onBattery && prefs.pauseOnBattery { return .onBattery }
         if g.thermalHot && prefs.pauseWhenHot { return .tooHot }

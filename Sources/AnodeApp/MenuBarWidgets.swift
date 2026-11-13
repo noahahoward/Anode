@@ -81,6 +81,20 @@ public final class MenuBarWidgetController: NSObject, NSMenuDelegate {
     /// re-pace itself without waiting out the 8 s hidden interval.
     public var onPanelVisibilityChange: ((Bool) -> Void)?
 
+    /// What every reading says while Ultra Low Power Mode has the app's measuring stopped: the numbers behind them would be
+    /// hours old and look live.
+    static let pausedText = "Paused"
+
+    /// What a reading shows: its value, or `pausedText` while paused. Pure.
+    static func shownValue(paused: Bool, value: String) -> String { paused ? pausedText : value }
+
+    /// Is the app's measuring stopped? Asked at every redraw, on the main thread. The app sets it; until it does, nothing is.
+    var isPaused: () -> Bool = { false }
+
+    /// A click on any reading while paused goes here, with the reading that was clicked, and not to the usual action: there is
+    /// nothing live to open the window onto, and the owner's way out of the mode is on this reading.
+    var onPausedClick: ((NSStatusBarButton) -> Void)?
+
     /// The panel currently on screen, so its rows can be updated in place. Weak:
     /// NSMenu owns itself while shown and this must not keep it alive after.
     private weak var openPanel: NSMenu?
@@ -478,6 +492,13 @@ public final class MenuBarWidgetController: NSObject, NSMenuDelegate {
                 self.rememberedDensity.removeAll()
                 self.density = .full
                 self.rebuild()
+            })
+        // The mode starting has to show on the bar now: no tick is coming to redraw it. The mode ending needs no redraw
+        // here; the tick the app starts again does it, with fresh numbers instead of the ones from before the pause.
+        observers.append(center.addObserver(
+            forName: UltraLowPowerController.didChange, object: nil, queue: .main) { [weak self] _ in
+                guard let self, self.isPaused() else { return }
+                self.refresh()
             })
         // Turning collapsing off puts the full layout back at once.
         collapseToken = Settings.shared.observe(Settings.Key.menuBarWidgetsCollapse) { [weak self] in
@@ -973,7 +994,15 @@ public final class MenuBarWidgetController: NSObject, NSMenuDelegate {
                        in: sender)
             return
         }
-        onClick(metric)
+        Self.routeLeftClick(on: sender, metric: metric, paused: isPaused(),
+                            onClick: onClick, onPausedClick: onPausedClick)
+    }
+
+    /// A left click on a reading. While paused it goes to `onPausedClick` and the usual action is not taken; with nobody
+    /// listening for it the usual action is taken, so a click is never lost. Pure.
+    static func routeLeftClick(on button: NSStatusBarButton, metric: MetricID?, paused: Bool,
+                               onClick: (MetricID?) -> Void, onPausedClick: ((NSStatusBarButton) -> Void)?) {
+        if paused, let onPausedClick { onPausedClick(button) } else { onClick(metric) }
     }
 
     /// Which widget a button belongs to. Matched by object identity, not by
@@ -1007,8 +1036,10 @@ public final class MenuBarWidgetController: NSObject, NSMenuDelegate {
         // yet, or honestly unavailable — e.g. time remaining on AC). Both render as
         // a placeholder, not an error.
         let value = descriptor == nil ? nil : registry.value(for: id)
+        // Read once: one redraw is all paused or all not.
+        let paused = isPaused()
 
-        if entry.config.style == .sparkline, let v = value?.value, v.isFinite {
+        if entry.config.style == .sparkline, !paused, let v = value?.value, v.isFinite {
             var h = history[entry.config.metricID, default: []]
             h.append(v)
             if h.count > Self.historyCap { h.removeFirst(h.count - Self.historyCap) }
@@ -1046,7 +1077,11 @@ public final class MenuBarWidgetController: NSObject, NSMenuDelegate {
             // thrown away for a menu nobody had opened. The delegate defers that
             // to the moment it is actually needed, which is also the moment its
             // values are guaranteed current.
-            if entry.item.menu == nil {
+            // While paused it has none: AppKit hands the click to a menu when there is one, and the click has to reach
+            // `widgetClicked`, which routes it (the list behind it would show readings from before the pause).
+            if paused {
+                if entry.item.menu != nil { entry.item.menu = nil }
+            } else if entry.item.menu == nil {
                 let menu = NSMenu()
                 menu.delegate = self
                 entry.item.menu = menu
@@ -1054,7 +1089,7 @@ public final class MenuBarWidgetController: NSObject, NSMenuDelegate {
             // A plain group's glyph is constant, so it is drawn once. A group
             // bound to a real metric is the single-item fallback, which carries
             // that metric's reading beside the glyph and redraws when it moves.
-            let headline = id == .groupPlaceholder ? nil : (value?.text ?? "\u{2014}")
+            let headline = id == .groupPlaceholder ? nil : Self.shownValue(paused: paused, value: value?.text ?? "\u{2014}")
             let key = "group\u{1}\(headline ?? "")"
             if lastRendered[entry.config.metricID] != key {
                 lastRendered[entry.config.metricID] = key
@@ -1076,7 +1111,7 @@ public final class MenuBarWidgetController: NSObject, NSMenuDelegate {
             // item, so it stays legible on any wallpaper in either appearance.
             let label = entry.config.style == .textWithLabel
                 ? (value?.label ?? descriptor?.shortTitle ?? "?") : nil
-            let text = value?.text ?? "\u{2014}"
+            let text = Self.shownValue(paused: paused, value: value?.text ?? "\u{2014}")
             let key = "\(label ?? "")\u{1}\(text)"
             guard lastRendered[entry.config.metricID] != key else { return }
             lastRendered[entry.config.metricID] = key
@@ -1102,9 +1137,11 @@ public final class MenuBarWidgetController: NSObject, NSMenuDelegate {
         case .bar, .sparkline, .dot:
             button.attributedTitle = NSAttributedString()
             button.imagePosition = .imageOnly
-            button.image = WidgetRenderer.image(
-                style: entry.config.style, descriptor: descriptor, value: value,
-                history: history[entry.config.metricID] ?? [])
+            // A bar, a dot or a sparkline has no text to say it, so a paused one is drawn as the word.
+            button.image = paused
+                ? WidgetRenderer.textImage(label: nil, value: Self.pausedText, compact: density == .compact)
+                : WidgetRenderer.image(style: entry.config.style, descriptor: descriptor, value: value,
+                                       history: history[entry.config.metricID] ?? [])
         }
     }
 
@@ -1574,10 +1611,14 @@ extension MenuBarWidgetController: WidgetFolding {
     /// the lens that explains the number, exactly as a click on the status item would.
     func openWidgetMenu(metricID: String) {
         guard let config = configs.first(where: { $0.metricID == metricID }) else { return }
-        if config.style == .group {
+        if config.style == .group, !isPaused() {
             let menu = NSMenu()
             menu.delegate = self
             menu.popUp(positioning: nil, at: NSEvent.mouseLocation, in: nil)
+        } else if config.style == .group {
+            // Paused: the list would show readings from before the pause. The pill has no reading to open the mode's menu
+            // from, so this opens the window, which is also what starts the measuring again.
+            onClick(nil)
         } else {
             onClick(MetricID(rawValue: metricID))
         }
@@ -1590,8 +1631,10 @@ extension MenuBarWidgetController: WidgetFolding {
         let id = MetricID(rawValue: metricID)
         let descriptor = MetricRegistry.shared.descriptor(for: id)
         let value = descriptor == nil ? nil : MetricRegistry.shared.value(for: id)
-        if let image = WidgetRenderer.image(style: config.style, descriptor: descriptor, value: value, history: []) { return image }
+        // Paused, the pill says so as the bar does.
+        let paused = isPaused()
+        if !paused, let image = WidgetRenderer.image(style: config.style, descriptor: descriptor, value: value, history: []) { return image }
         let label = config.style == .textWithLabel ? (value?.label ?? descriptor?.shortTitle ?? "?") : nil
-        return WidgetRenderer.textImage(label: label, value: value?.text ?? "\u{2014}")
+        return WidgetRenderer.textImage(label: label, value: Self.shownValue(paused: paused, value: value?.text ?? "\u{2014}"))
     }
 }

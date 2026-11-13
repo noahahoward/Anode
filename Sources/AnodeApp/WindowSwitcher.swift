@@ -47,12 +47,14 @@ enum WindowCatalog {
 
     /// The windows on the current Space worth switching to, front to back, which is close
     /// to most-recently-used. `regularPIDs` are the apps that have a Dock tile: an app with
-    /// none (a menu bar extra, an agent) is not something a user Command-Tabs to. Pure.
-    static func switchable(windowInfo: [[String: Any]], regularPIDs: Set<pid_t>) -> [SwitchableWindow] {
+    /// none (a menu bar extra, an agent) is not something a user Command-Tabs to. An app `isFrozen` says Ultra Low Power Mode
+    /// has stopped is left out too: it is not asked anything, and its windows are hidden anyway. Pure.
+    static func switchable(windowInfo: [[String: Any]], regularPIDs: Set<pid_t>,
+                           isFrozen: (pid_t) -> Bool = { _ in false }) -> [SwitchableWindow] {
         windowInfo.compactMap { entry in
             guard (entry[kCGWindowLayer as String] as? Int) == 0,
                   (entry[kCGWindowAlpha as String] as? Double ?? 1) > 0,
-                  let pid = entry[kCGWindowOwnerPID as String] as? Int32, regularPIDs.contains(pid),
+                  let pid = entry[kCGWindowOwnerPID as String] as? Int32, regularPIDs.contains(pid), !isFrozen(pid),
                   let number = entry[kCGWindowNumber as String] as? Int,
                   let dict = entry[kCGWindowBounds as String] as? NSDictionary,
                   let bounds = CGRect(dictionaryRepresentation: dict),
@@ -129,6 +131,8 @@ enum WindowCatalog {
     }
 
     static func windows(of app: NSRunningApplication) -> [SwitchableWindow] {
+        // Asking a stopped app for its windows waits until it times out.
+        if UltraQuiet.isFrozen(pid: app.processIdentifier) { return [] }
         let info = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements],
                                               kCGNullWindowID) as? [[String: Any]] ?? []
         let pid = app.processIdentifier
@@ -149,7 +153,7 @@ enum WindowCatalog {
                                               kCGNullWindowID) as? [[String: Any]] ?? []
         let regular = Set(NSWorkspace.shared.runningApplications
             .filter { $0.activationPolicy == .regular }.map(\.processIdentifier))
-        return switchable(windowInfo: info, regularPIDs: regular)
+        return switchable(windowInfo: info, regularPIDs: regular, isFrozen: UltraQuiet.isFrozen(pid:))
     }
 }
 
@@ -350,6 +354,9 @@ enum WindowActivator {
         "_SLPSSetFrontProcessWithOptions").map { unsafeBitCast($0, to: SetFront.self) }
 
     static func bringForward(_ window: SwitchableWindow) {
+        // The owner picked this window: if the mode has its app stopped it is continued first, so nothing below calls into a
+        // stopped process.
+        UltraQuiet.activated(pid: window.pid)
         // A window on another desktop: go there first, the way the desktop switcher does, and bring the
         // window forward once the desktop has slid in (accessibility can see it only then).
         if let space = window.spaceID, let steps = SpaceCatalog.stepsToDesktop(space), steps != 0 {
@@ -483,7 +490,7 @@ enum WindowActivator {
     }
 
     private static func axWindow(_ window: SwitchableWindow) -> AXUIElement? {
-        guard window.pid != AccessibleWindow.ownPID, let getWindow else { return nil }
+        guard window.pid != AccessibleWindow.ownPID, let getWindow, !UltraQuiet.isFrozen(pid: window.pid) else { return nil }
         let app = AXUIElementCreateApplication(window.pid)
         var value: CFTypeRef?
         guard AXUIElementCopyAttributeValue(app, kAXWindowsAttribute as CFString, &value) == .success,

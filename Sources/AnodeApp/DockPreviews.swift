@@ -499,6 +499,9 @@ final class DockPreviews {
     /// press also closes an open one) and does not come back while the pointer stays on that icon.
     private func iconPressed() {
         guard let hover = currentHover(requirePointer: true) else { return }
+        // The owner is opening this app: if Ultra Low Power Mode has it stopped it is continued now, before anything asks it
+        // for windows. (Its preview never opens while it is stopped: `WindowCatalog.windows(of:)` lists none for it.)
+        UltraQuiet.activated(pid: hover.pid)
         suppressed = hover
         pending = nil
         showTimer?.invalidate()

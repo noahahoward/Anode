@@ -54,6 +54,22 @@ final class WallpaperPolicyTests: XCTestCase {
         XCTAssertEqual(reason(p, g), .userPaused)
     }
 
+    /// The mode turns macOS's Low Power Mode on too, and the owner may have switched every "pause when" off: the wallpaper
+    /// stands still all the same, and the reason given is the mode's. Sleep, lock and the owner's own pause still come first.
+    func testWallpaperPausesForUltraLowPowerWhateverThePreferences() {
+        var p = WallpaperPrefs()
+        p.pauseOnBattery = false; p.pauseInLowPower = false; p.pauseWhenCovered = false; p.pauseWhenHot = false
+        var g = WallpaperGlobalConditions(ultraLowPower: true)
+        XCTAssertEqual(reason(p, g), .ultraLowPower)
+        p = WallpaperPrefs()
+        g.lowPowerMode = true; g.onBattery = true; g.thermalHot = true
+        XCTAssertEqual(reason(p, g, covered: true), .ultraLowPower)
+        g.screenLocked = true
+        XCTAssertEqual(reason(p, g, covered: true), .screenLocked)
+        g.ultraLowPower = false; g.screenLocked = false
+        XCTAssertEqual(reason(p, g, covered: true), .lowPowerMode, "without the mode the rules are as they were")
+    }
+
     func testPriorityWhenSeveralHold() {
         var g = WallpaperGlobalConditions(onBattery: true, lowPowerMode: true, thermalHot: true,
                                           displaysAsleep: true, screenLocked: true, userPaused: true)

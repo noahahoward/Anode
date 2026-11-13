@@ -41,6 +41,7 @@ final class GameModeControllerTests: XCTestCase {
     private var readings: [MetricID: MetricValue] = [:]
     private var clock = Date(timeIntervalSince1970: 1_000_000)
     private var appleGameModeOn = false
+    private var ultraOn = false
     private var controller: GameModeController!
 
     private let game = FrontmostApp(bundleID: "com.x.game", category: "public.app-category.games", fullscreen: true,
@@ -66,7 +67,8 @@ final class GameModeControllerTests: XCTestCase {
                                         frontmost: { [unowned self] in frontmostCalls += 1; return app },
                                         value: { [unowned self] in readings[$0] },
                                         now: { [unowned self] in clock }, log: log,
-                                        appleGameMode: { [unowned self] in appleGameModeOn }, hotCorner: hotCorner)
+                                        appleGameMode: { [unowned self] in appleGameModeOn }, hotCorner: hotCorner,
+                                        ultraOn: { [unowned self] in ultraOn })
     }
 
     /// Settings changes reach the controller through the main queue, as the cleaner's do.
@@ -281,6 +283,33 @@ final class GameModeControllerTests: XCTestCase {
 
     private let otherScreen = FrontmostApp(bundleID: nil, category: nil, fullscreen: true,
                                            screenFrame: CGRect(x: 1800, y: -200, width: 1920, height: 1080), safeTop: 0, menuBarHeight: 24)
+
+    /// Ultra Low Power Mode stops the app's measuring, so there is nothing to put on a strip, and a strip left up would
+    /// show numbers that stopped moving. It stays down for a game, a preview and a peek alike, and the app re-evaluates when the
+    /// mode starts or ends.
+    func testTheGameStripDoesNotShowWhileTheModeIsOn() {
+        settings.gameHUDEnabled = true
+        app = game
+        ultraOn = true
+        makeController()
+        XCTAssertTrue(presenter.shows.isEmpty)
+        XCTAssertFalse(controller.isShowing)
+        XCTAssertEqual(controller.needs, [])
+        controller.preview()
+        controller.peek(on: game)
+        XCTAssertTrue(presenter.shows.isEmpty, "neither a preview nor a hot-corner peek puts it up")
+
+        clock = clock.addingTimeInterval(60)   // the preview and the peek have run out
+        ultraOn = false
+        controller.reevaluate()
+        XCTAssertTrue(controller.isShowing, "the mode ended: the game in front gets its strip")
+
+        ultraOn = true
+        controller.reevaluate()
+        XCTAssertFalse(controller.isShowing, "the mode began with the strip up: it comes down")
+        XCTAssertEqual(presenter.hideCount, 1)
+        XCTAssertEqual(controller.needs, [])
+    }
 
     func testHotCornerIsShownOnlyWhileItsSettingIsOn() {
         settings.gameHUDHotCorner = true

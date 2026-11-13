@@ -76,6 +76,8 @@ final class GameModeController {
     private let now: () -> Date
     private let appleGameMode: () -> Bool
     private let hotCorner: HotCornerPresenting
+    /// Is Ultra Low Power Mode on? The app measures nothing then, so there is nothing to put on the strip.
+    private let ultraOn: () -> Bool
 
     private let log: (String) -> Void
     private var lastNote = ""
@@ -91,8 +93,10 @@ final class GameModeController {
          now: @escaping () -> Date = Date.init,
          log: @escaping (String) -> Void = { FeatureLog.append("gamemode.log", $0) },
          appleGameMode: @escaping () -> Bool = { false },
-         hotCorner: HotCornerPresenting = NoHotCorner()) {
+         hotCorner: HotCornerPresenting = NoHotCorner(),
+         ultraOn: @escaping () -> Bool = { false }) {
         self.settings = settings
+        self.ultraOn = ultraOn
         self.hotCorner = hotCorner
         self.appleGameMode = appleGameMode
         self.log = log
@@ -169,6 +173,8 @@ final class GameModeController {
 
     /// Whether the strip should be up, and why in a few words (for the log).
     private func decision(for app: FrontmostApp?) -> (show: Bool, reason: String) {
+        // Before a preview or a peek too: with the app's measuring stopped the numbers would not move.
+        if ultraOn() { return (false, "Ultra Low Power Mode is on") }
         guard let app else { return (false, "no frontmost app") }
         if previewUntil != nil { return (true, previewTarget != nil ? "hot corner" : "preview") }
         guard settings.gameHUDEnabled else { return (false, "disabled") }

@@ -251,6 +251,7 @@ final class WindowGroupController {
         store.prune(alive: Self.allWindowNumbers())
         guard let group = store.group(containing: id) else { return }
         currentGroupID = group.id
+        // `current()` leaves out the windows of apps Ultra Low Power Mode has stopped, so none of those is raised.
         let onScreen = Set(WindowCatalog.current().map(\.id))
         for m in WindowGroupStore.raiseOrder(front: id, group: group, onScreen: onScreen) {
             if let w = AccessibleWindow.find(id: m.id, pid: m.pid) {
@@ -338,7 +339,8 @@ final class WindowGroupController {
         guard let group = (target().flatMap { store.group(containing: $0.id) }) ?? currentGroupID.flatMap({ store.group(withID: $0) })
         else { NSSound.beep(); return false }
         let place = { [group] in
-            for m in group.members {
+            // A member whose app Ultra Low Power Mode has stopped is left where it is: asking it waits until it times out.
+            for m in group.members where !UltraQuiet.isFrozen(pid: m.pid) {
                 if let w = AccessibleWindow.find(id: m.id, pid: m.pid) { w.setFrame(m.frame) }
             }
         }
@@ -354,7 +356,7 @@ final class WindowGroupController {
     func rememberLayout() {
         guard let id = (target().flatMap { store.group(containing: $0.id)?.id }) ?? currentGroupID else { NSSound.beep(); return }
         var frames: [CGWindowID: CGRect] = [:]
-        for m in store.group(withID: id)?.members ?? [] {
+        for m in store.group(withID: id)?.members ?? [] where !UltraQuiet.isFrozen(pid: m.pid) {
             if let f = AccessibleWindow.find(id: m.id, pid: m.pid)?.frame { frames[m.id] = f }
         }
         store.remember(frames: frames, in: id)

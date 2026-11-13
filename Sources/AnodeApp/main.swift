@@ -345,7 +345,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         KeyboardCleaner.current = keyboardCleaner
         gameMode = GameModeController(presenter: GameHUDWindow(), observer: WorkspaceActivationObserver(),
                                       frontmost: RealFrontmost.current, value: { MetricRegistry.shared.value(for: $0) },
-                                      appleGameMode: AppleGameModeReader.isOn, hotCorner: HotCornerWindows())
+                                      appleGameMode: AppleGameModeReader.isOn, hotCorner: HotCornerWindows(),
+                                      ultraOn: { UltraQuiet.isOn })
         GameModeController.current = gameMode
         // The strip going up or down changes how fast the sampler must run, and the timer is only re-read on a tick.
         gameMode?.onChange = { [weak self] in
@@ -513,6 +514,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
                 let awake = self.windowIsWorthDrawing
                 self.restartTimer(hidden: !awake)
                 if awake { self.refresh() }
+            }
+        // Ultra Low Power Mode starting or ending decides whether the tick runs at all, and whether the game strip may be up.
+        // Posted for every change the controller makes, so this is only a re-read: the timer is rebuilt or removed only when
+        // the answer moved.
+        NotificationCenter.default.addObserver(
+            forName: UltraLowPowerController.didChange, object: nil, queue: .main) { [weak self] _ in
+                guard let self else { return }
+                let wasTicking = self.timer != nil
+                self.gameMode?.reevaluate()
+                self.restartTimer(hidden: !self.windowIsWorthDrawing)
+                // The tick is back after a pause: read now, so the bar stops saying "Paused" with fresh numbers rather than
+                // at the first interval.
+                if !wasTicking, self.timer != nil { self.refresh() }
             }
         // The lid shutting or opening. The tick re-reads the same answer, so this is about promptness: back to the fast
         // rate, and a fresh reading, the moment the lid opens rather than at the next slow tick. Asynchronous because
@@ -725,7 +739,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
     /// rebuild the timer when the rate actually needs to change.
     private var timerInterval: TimeInterval = 0
 
+    /// Whether the sampling tick runs at all, by `MeasurementPause`: while Ultra Low Power Mode is on it runs only for a window
+    /// that is being drawn, or while fans are driven. `chargeWatching` is false: Charge Control watches the floor with its own
+    /// timer and its own battery read, and nothing in it waits on this tick (it keeps both in every case, as do fan control
+    /// and Keep Awake).
+    private func tickRuns(windowDrawn: Bool) -> Bool {
+        MeasurementPause.ticks(ultraOn: UltraQuiet.isOn, windowWorthDrawing: windowDrawn,
+                               drivingFans: fansPane.isDrivingFans, chargeWatching: false)
+    }
+
+    /// No timer at all, not a slow one: nothing wakes the app to measure. `timerInterval` goes back to 0 so the next
+    /// `restartTimer(at:)` builds one whatever its interval.
+    private func stopTimer() {
+        timer?.invalidate()
+        timer = nil
+        timerInterval = 0
+    }
+
     func restartTimer(hidden: Bool = false) {
+        guard tickRuns(windowDrawn: !hidden) else { stopTimer(); return }
         // Every caller passes "nobody is looking at the window"; a strip over a game is somebody looking.
         let hidden = Self.tickIsHidden(visible: !hidden, panelOpen: false, gameShowing: gameMode?.isShowing ?? false)
         restartTimer(at: Self.cadence(hidden: hidden,
@@ -863,6 +895,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         // decides which subsystems this tick pays for — see `visibleNeeds`.
         // An open panel is a reader too — see `MenuBarWidgetController.isPanelOpen`.
         let panelOpen = (widgets?.isPanelOpen ?? false) && ScreenWatch.shared.isWatched
+        // Ultra Low Power Mode with nothing on screen to read it: nothing is sampled and nothing is written to history. A tick
+        // already queued when the mode began lands here, as does a caller that did not ask the timer first.
+        guard tickRuns(windowDrawn: visible || panelOpen) else { stopTimer(); return }
         let needs = Self.samplingNeeds(base: visible ? visibleNeeds : hiddenNeeds, gameShowing: gameMode?.isShowing ?? false)
         // Main-thread state for the same reason: the widget configs live here.
         let widgetNeedsFull = Settings.shared.menuBarWidgetsEnabled

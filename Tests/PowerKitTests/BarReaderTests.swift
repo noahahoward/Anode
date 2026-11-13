@@ -276,4 +276,27 @@ final class BarReaderTests: XCTestCase {
         XCTAssertTrue(AXBarReader.silenceMatters(pid: 7, bundleID: "com.apple.MenuBarAgent", knownOwners: known, ownPID: 1))
         XCTAssertTrue(AXBarReader.silenceMatters(pid: 1, bundleID: "dev.anode.app", knownOwners: known, ownPID: 1))
     }
+
+    // ── While Ultra Low Power Mode has an app stopped ────────────────────────
+
+    private func item(_ key: String, pid: pid_t, x: CGFloat) -> BarItem {
+        BarItem(key: key, bundleID: "com.example.\(pid)", appName: "App \(pid)", title: key,
+                frame: CGRect(x: x, y: 0, width: 22, height: 39), isLocked: false, hasPress: true, pid: pid)
+    }
+
+    /// A stopped app is not asked (a call into it waits until it times out), so its items are the ones the last complete read
+    /// saw, unchanged: the hider's covers stay where they were. One that has gone from the process list is dropped.
+    func testAFrozenAppsBarItemsAreReusedNotAsked() {
+        let before = [item("a|#0", pid: 10, x: 800), item("b|#0", pid: 20, x: 900), item("b|#1", pid: 20, x: 930),
+                      item("c|#0", pid: 30, x: 1000), item("d|#0", pid: 40, x: 1100)]
+        let kept = AXBarReader.reuse(previous: before, frozen: [20, 30], running: [10, 20, 40])
+        XCTAssertEqual(kept, [before[1], before[2]], "pid 20 is frozen and running; 30 is frozen but gone; 10 and 40 are asked")
+        XCTAssertEqual(AXBarReader.reuse(previous: before, frozen: [], running: [10, 20, 30, 40]), [])
+        XCTAssertEqual(AXBarReader.reuse(previous: [], frozen: [20], running: [20]), [], "an app never seen with items has none to reuse")
+        // The apps a read asks: not the frozen one, and still not the ones that said they have no bar.
+        let apps: [AXBarReader.App] = [(bundleID: "a", name: "A", pid: 10), (bundleID: "b", name: "B", pid: 20),
+                                       (bundleID: "c", name: "C", pid: 40)]
+        XCTAssertEqual(AXBarReader.appsToAsk(apps, frozen: [20], skips: { $0 == 40 }).map(\.pid), [10])
+        XCTAssertEqual(AXBarReader.appsToAsk(apps, frozen: [], skips: { _ in false }).map(\.pid), [10, 20, 40])
+    }
 }
