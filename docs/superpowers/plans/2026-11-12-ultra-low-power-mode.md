@@ -103,11 +103,14 @@ public struct UltraProcess: Equatable {
     public var bundleID: String?
     public var name: String                 // app name, else executable name
     public var launchdLabel: String?
-    public var ownsEventTap: Bool, usesMicOrCamera: Bool
+    public var team: String?                // signing team; nil for the system's own code and for unsigned code
+    public var ownsEventTap: Bool           // an ENABLED tap that is not listen-only (a disabled tap does not count)
+    public var usesMicOrCamera: Bool
 }
 public struct FreezeGroup: Equatable { public var id: String; public var name: String; public var members: [Member]
     public struct Member: Equatable { public var pid: pid_t; public var startTime: UInt64 } }
-public struct FreezePlan: Equatable { public var kept: [FreezeGroup]; public var frozen: [FreezeGroup] }
+public struct FreezePlan: Equatable { public var kept: [FreezeGroup]; public var frozen: [FreezeGroup]
+    public var leftRunning: [FreezeGroup] }   // would be frozen, but has a part Anode cannot stop (rule 7)
 public enum FreezePlanner {
     public static func plan(processes: [UltraProcess], user: uid_t, front: pid_t?, alwaysKeep: Set<String>,
                             ownPIDs: Set<pid_t>) -> FreezePlan
@@ -125,6 +128,7 @@ Rules, in this order (the spec's "What the mode does", section 1):
 4. **"Belongs to" wins over the path:** a system-located process whose owner is a freezable app is in that app's group.
 5. **Kept:** the group of `front`; groups whose id is in `alwaysKeep`; a group in which any process `usesMicOrCamera`.
 6. **Frozen:** every other group of the user's. `kept` in the plan lists only the three kinds in rule 5 (it is what the confirm box names).
+7. **Cannot be frozen whole → left running.** `processes` holds every process on the Mac, other users' too. A group goes to `leftRunning`, not `frozen`, when a process with `uid != user` belongs to the same product: its path is inside the same bundle as a member's, or it has the same non-nil `team` as a member. Measured in Task 1: with only the user's part of a file-sync client stopped, its root daemon spun at 100 to 200% of a core and the Mac drew four times more. The owner's decision: such an app is left running.
 
 - [ ] **Step 1: Write the failing tests** (fixture: a helper `proc(pid, parent:, path:, app:, bundle:, responsible:, …)` with `uid: 501`, `startTime: UInt64(pid) * 10`)
 
@@ -137,6 +141,10 @@ func testSystemServicesAreNeverFrozen()                  // /usr/libexec/x, .acc
 func testOtherUsersProcessesAreNeverFrozen()             // uid 0
 func testAnodeAndItsHelpersAreNeverFrozen()              // ownPIDs
 func testAnEventTapOwnerKeepsItsWholeGroupRunning()
+func testAnAppWithARootCompanionOfTheSameTeamIsLeftRunning()   // user daemon team "T1", uid 0 process team "T1" elsewhere on disk → leftRunning, not frozen
+func testARootProcessInsideTheSameBundleProtectsTheGroup()     // no team on either
+func testARootProcessOfAnotherTeamProtectsNothing()
+func testSystemRootServicesDoNotProtectAnApp()                 // team nil on both, different bundles → still frozen
 func testAnAppUsingTheMicrophoneIsKeptAndListedAsKept()
 func testAlwaysKeepTakesAppsAndBackgroundTools()         // "com.example.vpn", "job:homebrew.db"
 func testABackgroundToolWithNoAppIsFrozenUnderItsJobName() // parent 1, label "homebrew.db" → id "job:homebrew.db"
@@ -230,6 +238,15 @@ public enum MeasurementPause {
     /// Whether Anode's sampling tick runs. Never paused while fans are driven or the charge floor is being watched.
     public static func ticks(ultraOn: Bool, windowWorthDrawing: Bool, drivingFans: Bool, chargeWatching: Bool) -> Bool
 }
+/// After a freeze: did it make something burn? The mode must never make the Mac draw more than before.
+public enum SpinGuard {
+    public enum Verdict: Equatable { case fine, release([String]), releaseAll }
+    public static let burning = 0.5      // cores
+    public static let rise = 0.4         // cores above the reading before the freeze
+    /// `own`: load of the user's own processes, in cores. `busyCores`: the whole Mac.
+    public static func verdict(ownBefore: [pid_t: Double], ownAfter: [pid_t: Double], busyCoresBefore: Double, busyCoresAfter: Double,
+                               kept: Set<pid_t>, frozen: [FreezeGroup], processes: [UltraProcess]) -> Verdict
+}
 ```
 
 - [ ] **Step 1: Write the failing tests**
@@ -248,6 +265,12 @@ func testTickRunsNormallyWhenTheModeIsOff()
 func testTickStopsWhenOnAndTheWindowIsClosed()
 func testTickRunsWhileTheWindowIsOpen()
 func testTickNeverStopsWhileFansAreDrivenOrTheChargeFloorIsWatched()
+func testNothingBurningIsFine()
+func testAProcessThatStartedBurningReleasesTheGroupOfItsProduct()   // 0.02 → 1.4 cores, same team as frozen group "sync" → .release(["sync"])
+func testABurnerTiedToNoGroupReleasesEverything()
+func testAKeptAppWorkingHardIsNotASpin()                            // the editor at 2 cores → .fine
+func testAnUnexplainedRiseOfTheWholeMacReleasesEverything()         // busy cores 0.3 → 1.6, own processes flat (a root process spinning) → .releaseAll
+func testAProcessAlreadyBusyBeforeTheFreezeIsNotBlamed()            // 1.2 → 1.3
 ```
 
 - [ ] **Step 2: Run** `swift test --filter UltraScreenTests`. Expected: FAIL, no type `BrightnessCeiling`.
@@ -283,10 +306,13 @@ protocol AppHiding: AnyObject {
 }
 final class LiveProcessList: ProcessListing { static let budget: TimeInterval = 2.0 }
 final class LiveProcessFreezer: ProcessFreezing { init(startTimeOf: @escaping (pid_t) -> UInt64? = LiveProcessList.startTime, signal: @escaping (pid_t, Int32) -> Int32 = kill) }
-final class LiveAppHider: AppHiding { static let hideWait: TimeInterval = 1.0 }   // the delay Task 1 step 4 measured, if longer
+final class LiveAppHider: AppHiding { static let hideWait: TimeInterval = 1.0 }   // checks `isHidden` every 50 ms; measured: true within 0.2 s
+struct LoadSample: Equatable { var busyCores: Double; var byProcess: [pid_t: Double] }   // whole Mac; and the user's own processes, in cores
+protocol LoadReading: AnyObject { func read(completion: @escaping (LoadSample?) -> Void) }   // since the previous call; nil the first time
+final class LiveLoadReader: LoadReading
 ```
 
-`LiveProcessList` reads on a background queue: `proc_listallpids`, `proc_pidinfo(PROC_PIDTBSDINFO)` for parent, uid and start time, `proc_pidpath`, the responsible pid through `dlsym`, `NSRunningApplication` for kind, bundle id and name, the launchd label, tap owners and audio input as Task 1 found them. Its assembling step is a pure static function so it is tested without the system.
+`LiveProcessList` reads on a background queue: `sysctl(KERN_PROC_ALL)` for every process on the Mac with parent, uid and start time (`proc_pidinfo` cannot read other users' processes; measured), `proc_pidpath` (readable for other users' too), the signing team through `SecCodeCopyGuestWithAttributes` and `SecCodeCopySigningInformation` (works on root processes without root; remembered per executable path), the responsible pid through `dlsym`, `NSRunningApplication` for kind, bundle id and name, the launchd label, tap owners and audio input as Task 1 found them. Its assembling step is a pure static function so it is tested without the system.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -297,6 +323,10 @@ func testResponsibleEqualToItselfIsNil()
 func testARecycledPidIsNeverSignalled()                  // startTimeOf returns another value → stop and resume return false, signal never called
 func testStopSendsStopAndResumeSendsContinue()           // recorded (pid, SIGSTOP), (pid, SIGCONT) through the injected `signal`
 func testAGonePidIsNotSignalled()                        // startTimeOf nil
+func testADisabledOrListenOnlyTapIsNotAnOwner()          // LiveProcessList.tapOwners(from:) on stub tap records
+func testOtherUsersProcessesAreListedWithTheirTeam()     // assemble keeps uid 0 rows; team carried through
+func testHideCallsBackAsSoonAsTheAppIsHidden()           // injected isHidden turns true on the 3rd check → completion after 3 checks, not 20
+func testHideGivesUpAfterTheWait()
 ```
 
 - [ ] **Step 2: Run** `swift test --filter UltraProcessesTests`. Expected: FAIL, no type `LiveProcessList`.
@@ -381,12 +411,15 @@ final class UltraLowPowerController {
     static var current: UltraLowPowerController?
     init(settings: Settings, processes: ProcessListing, freezer: ProcessFreezing, hider: AppHiding, backlight: BacklightControl,
          rate: DisplayRateControlling, keyboard: KeyboardBacklightControlling, power: PowerModeControlling,
-         watchdog: UltraWatchdogging, store: UltraRecordStoring, confirm: UltraConfirming,
+         watchdog: UltraWatchdogging, store: UltraRecordStoring, confirm: UltraConfirming, load: LoadReading,
          lastOtherFrontApp: @escaping () -> pid_t?, ownPIDs: @escaping () -> Set<pid_t>, user: uid_t,
          schedule: @escaping (TimeInterval, @escaping () -> Void) -> Void, log: @escaping (String) -> Void)
     private(set) var state: State
     private(set) var frozen: [FreezeGroup]            // still frozen
     private(set) var skipped: [UltraSkipped]
+    private(set) var leftRunning: [FreezeGroup]       // has a part Anode cannot stop (from the plan)
+    private(set) var releasedForLoad: [String]        // group ids the spin guard continued this session; never frozen again in it
+    static let guardDelays: [TimeInterval] = [5, 15]  // after each freeze step; the sweep checks again
     var onChange: (() -> Void)?
     func request()                      // off → confirming; no-op otherwise
     func turnOff()                      // on → off
@@ -400,7 +433,7 @@ final class UltraLowPowerController {
 }
 ```
 
-Order when Confirm is pressed: save the record; start the watchdog; for each group, hide (regular apps), then stop, updating the record; brightness ceiling; rate; keyboard; Low Power Mode; state `.on`. Turning off runs `UltraRecovery.actions` on the live record through the same parts, then stops the watchdog and clears the record.
+Order when Confirm is pressed: read the load; save the record; start the watchdog; for each group, hide (regular apps), then stop, updating the record; brightness ceiling; rate; keyboard; Low Power Mode; state `.on`; then the spin guard at each of `guardDelays` (`SpinGuard.verdict` on a fresh load reading and snapshot). Turning off runs `UltraRecovery.actions` on the live record through the same parts, then stops the watchdog and clears the record.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -425,6 +458,11 @@ func testRequestWhileOnOrConfirmingDoesNothing()
 func testShutdownEndsTheSession()
 func testRecoverAtLaunchUndoesALeftoverRecordAndStaysOff()
 func testAGroupWhoseStopFailedIsNotListedAsFrozen()
+func testGroupsThatCannotBeFrozenWholeAreLeftRunningAndListed()
+func testTheGuardReleasesAGroupThatMadeSomethingBurnAndRemembersIt()   // load fake: sync's partner at 1.4 cores 5 s after the freeze
+func testAnUnexplainedRiseReleasesEverythingFrozenInThatStep()
+func testAGroupReleasedForLoadIsNotFrozenAgainByTheSweep()
+func testAFailedLoadReadingChangesNothing()                           // nil sample → no release, logged
 ```
 
 - [ ] **Step 2: Run** `swift test --filter UltraLowPowerControllerTests`. Expected: FAIL, no type `UltraLowPowerController`.
@@ -503,6 +541,7 @@ func testMenuWhenOffOffersToStart()                       // titles: "Ultra Low 
 func testMenuWhenOnListsTurnOffAndEveryFrozenGroup()      // "Turn off", then one item per group, by name
 func testChoosingAFrozenGroupReleasesIt()                 // the item's action calls onRelease with the group id
 func testEachSkippedPartHasAPlainLine()                   // .lowPowerNoHelper → a line that names the helper and what to do
+func testAppsLeftRunningAreNamedWithTheReason()           // "Left running: Sync (it has a part Anode cannot freeze)"; and "(it reacted badly to being frozen)"
 func testTheNoteMakesNoPromiseOfRunningTime()             // contains "no running time is promised"; does not contain "hours"
 func testTheNoteDoesNotSellTheRefreshRate()               // contains "little or nothing"
 func testSectionIsInTheBetaFeaturesList()

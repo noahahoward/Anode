@@ -88,6 +88,14 @@ Through Anode's existing root helper, as one new command; the earlier power mode
 - **Brightness has one owner.** Keep Awake's lid dimmer and this ceiling both save and restore brightness; they share one record of the owner's own brightness, and the lower limit applies.
 - **Anode's features that call into other apps** (the window switcher, Dock previews, window groups, the menu bar hider) must never call into a stopped process: frozen apps are skipped, and choosing one in a switcher un-freezes it first.
 
+### What the measured test changed (2026-11-12; details in `docs/superpowers/plans/2026-11-12-ultra-low-power-mode-results.md`)
+
+- **An app with a part Anode cannot stop is left running, whole.** Stopping only the user's part of a file-sync client made its root-owned daemon spin, and the Mac drew four times more (3.4 W to 14.4 W). The owner's decision: "leave it running", rather than stopping the root part through the helper. Such apps are named in the section and the menu as left running.
+- **A guard after every freeze.** A process that was quiet and starts burning means something it needs was stopped: the app it belongs to is continued and stays so for the session; if it can be tied to none, everything frozen in that step is continued. The mode must never make the Mac draw more.
+- Only an enabled tap that is not listen-only protects its owner. An app is stopped once it reports itself hidden (0.2 s was enough). macOS does report a stopped app being brought forward, so that route works. Sleep with stopped apps is safe. The keyboard light can be switched without root.
+- **At rest, only brightness lowers the draw.** Low Power Mode, the lowest refresh rate and the freeze together read no lower than the Mac left alone (3.3 to 3.7 W near half brightness, which is already about 5% an hour). The mode's worth is keeping the Mac at rest: no background bursts, and heavy work capped. The section's note says exactly this.
+- The owner used the editor through five minutes with the other apps frozen and it felt normal.
+
 ## The switch
 
 - **Beta Features section "Ultra Low Power Mode":** the button that starts and ends the mode; the "always keep" list (add and remove apps); a line for each part that cannot work on this Mac (no helper, one refresh rate only); and the honest note below.
