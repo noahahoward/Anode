@@ -680,7 +680,9 @@ final class ChargeControlConnectionTests: XCTestCase {
         XCTAssertFalse(adapter.available)
         settings.chargeLimit = 62
         XCTAssertEqual(c.status, .needsHelper(ChargeController.limitNeedsHelperText))
-        XCTAssertEqual(client.limitCalls, [80])
+        // 80 twice: once ahead of the helper's 63 at switch-on (that is what turns macOS's limit on), once as the
+        // nearest value macOS takes itself now that no helper can set 62.
+        XCTAssertEqual(client.limitCalls, [80, 80])
 
         connection.suspend()
         installed = true
@@ -700,7 +702,8 @@ final class ChargeControlConnectionTests: XCTestCase {
         settings.chargeLimit = 64
         XCTAssertFalse(adapter.available)
         XCTAssertEqual(c.status, .needsHelper(ChargeController.limitNeedsHelperText))
-        XCTAssertEqual(client.limitCalls, [80], "the limit was not held at the nearest value above it")
+        // 80 ahead of the helper's 63 at switch-on, then 80 as the fall-back for 64.
+        XCTAssertEqual(client.limitCalls, [80, 80], "the limit was not held at the nearest value above it")
     }
 
     /// The same when the hello still answered and the command did not.
@@ -711,7 +714,7 @@ final class ChargeControlConnectionTests: XCTestCase {
         settings.chargeLimit = 64
         XCTAssertFalse(adapter.available)
         XCTAssertEqual(c.status, .needsHelper(ChargeController.limitNeedsHelperText))
-        XCTAssertEqual(client.limitCalls, [80])
+        XCTAssertEqual(client.limitCalls, [80, 80])   // ahead of the helper's 63, then the fall-back for 64
         XCTAssertTrue(connection.holders.isEmpty)
     }
 
