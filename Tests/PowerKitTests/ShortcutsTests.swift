@@ -5,7 +5,7 @@ import Carbon.HIToolbox
 
 final class ShortcutsTests: XCTestCase {
     private func store() -> ShortcutStore {
-        ShortcutStore(defaults: UserDefaults(suiteName: "shortcuts-\(UUID().uuidString)")!)
+        ShortcutStore(defaults: TestDefaults.throwaway("shortcuts"))
     }
     private let left = WindowAction.leftHalf.command, right = WindowAction.rightHalf.command, top = WindowAction.topHalf.command
     private let all = ShortcutCommands.all
@@ -79,7 +79,7 @@ final class ShortcutsTests: XCTestCase {
     }
 
     func testChoosingAShortcutReplacesTheDefaultAndPersists() {
-        let defaults = UserDefaults(suiteName: "shortcuts-\(UUID().uuidString)")!
+        let defaults = TestDefaults.throwaway("shortcuts")
         let s = ShortcutStore(defaults: defaults)
         let mine = Shortcut(key: kVK_ANSI_J, modifiers: Shortcut.control | Shortcut.command)
         XCTAssertNil(s.assign(mine, to: left, among: all))
@@ -92,7 +92,7 @@ final class ShortcutsTests: XCTestCase {
     }
 
     func testClearingLeavesACommandWithNoShortcutAndThatIsRemembered() {
-        let defaults = UserDefaults(suiteName: "shortcuts-\(UUID().uuidString)")!
+        let defaults = TestDefaults.throwaway("shortcuts")
         let s = ShortcutStore(defaults: defaults)
         s.assign(nil, to: left, among: all)
         XCTAssertNil(s.shortcut(for: left))
@@ -166,7 +166,7 @@ final class ShortcutsTests: XCTestCase {
         _ = NSApplication.shared
         let s = store()
         s.assign(Shortcut(key: kVK_ANSI_J, modifiers: Shortcut.control | Shortcut.command), to: left, among: all)
-        let c = ShortcutsWindowController(store: s, prefs: WindowPrefs(defaults: UserDefaults(suiteName: "t-\(UUID())")!), commands: all,
+        let c = ShortcutsWindowController(store: s, prefs: WindowPrefs(defaults: TestDefaults.throwaway("t")), commands: all,
                                         settings: try throwawaySettings(owner: "Shortcuts"))
         func buttons(_ v: NSView) -> [NSButton] { ([v as? NSButton].compactMap { $0 }) + v.subviews.flatMap(buttons) }
         XCTAssertEqual(c.selectedID, all.first?.id, "the first command is shown")

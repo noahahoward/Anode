@@ -245,7 +245,7 @@ final class DockPreviewsTests: XCTestCase {
     // ── Setting and section ──
 
     func testTheSettingDefaultsToOffAndRoundTrips() {
-        let defaults = UserDefaults(suiteName: "dock-previews-\(UUID().uuidString)")!
+        let defaults = TestDefaults.throwaway("dock-previews")
         let s = Settings(defaults: defaults)
         XCTAssertFalse(s.dockPreviewsEnabled)
         s.dockPreviewsEnabled = true
@@ -253,7 +253,7 @@ final class DockPreviewsTests: XCTestCase {
     }
 
     func testTheCheckboxWritesTheSetting() {
-        let defaults = UserDefaults(suiteName: "dock-previews-\(UUID().uuidString)")!
+        let defaults = TestDefaults.throwaway("dock-previews")
         let s = Settings(defaults: defaults)
         let f = DockPreviewFeature(settings: s, accessibilityAllowed: { true })
         _ = f.makeView()
@@ -274,7 +274,7 @@ final class DockHoldTests: XCTestCase {
     private var calls: [Bool] = []
 
     override func setUp() {
-        defaults = UserDefaults(suiteName: "dock-hold-\(UUID().uuidString)")!
+        defaults = TestDefaults.throwaway("dock-hold")
         autoHide = true
         calls = []
     }

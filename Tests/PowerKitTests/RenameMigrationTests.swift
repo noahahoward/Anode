@@ -115,8 +115,7 @@ final class RenameMigrationTests: XCTestCase {
 
         XCTAssertEqual(fresh.bool(forKey: "anode.startInMenuBarOnly"), true)
         XCTAssertEqual(fresh.double(forKey: "anode.sampleInterval"), 9.5)
-        XCTAssertNotNil(UserDefaults(suiteName: oldName)?
-            .object(forKey: "betterstats.sampleInterval"),
+        XCTAssertNotNil(old.object(forKey: "betterstats.sampleInterval"),
             "the old domain was consumed, so reverting would lose these")
     }
 

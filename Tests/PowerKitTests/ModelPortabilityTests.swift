@@ -474,7 +474,7 @@ final class TimeRemainingOnACTests: XCTestCase {
 final class USBSharedStepTests: XCTestCase {
 
     private func tracker() -> USBPowerTracker {
-        let d = UserDefaults(suiteName: "usb-shared-step-\(UUID().uuidString)")!
+        let d = TestDefaults.throwaway("usb-shared-step")
         return USBPowerTracker(defaults: d)
     }
 
@@ -491,8 +491,7 @@ final class USBSharedStepTests: XCTestCase {
     /// so keeping a v1 figure would drag every future observation halfway back to
     /// a number that was never measured.
     func testTheOldStoreKeyIsNotRead() {
-        let suite = "usb-v1-\(UUID().uuidString)"
-        let d = UserDefaults(suiteName: suite)!
+        let d = TestDefaults.throwaway("usb-v1")
         d.set(["CalDigit Thunderbolt 3 Audio": 7.885062932608093,
                "Card Reader": 7.885062932608093],
               forKey: "com.anode.usb.deviceWatts.v1")

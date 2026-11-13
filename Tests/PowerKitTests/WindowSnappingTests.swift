@@ -149,7 +149,7 @@ final class WindowSnappingTests: XCTestCase {
     }
 
     func testTheSettingDefaultsToOffAndTheSectionListsEveryShortcut() throws {
-        let defaults = UserDefaults(suiteName: "window-actions-\(UUID().uuidString)")!
+        let defaults = TestDefaults.throwaway("window-actions")
         let s = Settings(defaults: defaults)
         XCTAssertFalse(s.windowSnapperEnabled)
         s.windowSnapperEnabled = true

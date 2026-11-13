@@ -484,7 +484,7 @@ final class BetaFeaturesWindowTests: XCTestCase {
 final class BackdropFeatureTests: XCTestCase {
     private func make(allowed: Bool = true) -> (BackdropFeature, Settings) {
         _ = appKitForTests
-        let defaults = UserDefaults(suiteName: "backdrop-feature-\(UUID().uuidString)")!
+        let defaults = TestDefaults.throwaway("backdrop-feature")
         let settings = Settings(defaults: defaults)
         let feature = BackdropFeature(settings: settings, screenRecordingAllowed: { allowed })
         _ = feature.makeView()
@@ -732,7 +732,7 @@ final class MenuBarBackdropModeTests: XCTestCase {
     }
 
     func testTheModeRoundTripsThroughSettings() {
-        let defaults = UserDefaults(suiteName: "backdrop-mode-\(UUID().uuidString)")!
+        let defaults = TestDefaults.throwaway("backdrop-mode")
         let s = Settings(defaults: defaults)
         XCTAssertEqual(s.menuBarBackdropMode, .off, "a beta feature is off until the user turns it on")
         for m in MenuBarBackdropMode.allCases {
@@ -1000,7 +1000,7 @@ final class BackdropShowOnDesktopTests: XCTestCase {
     private let screen = CGRect(x: 0, y: 0, width: 1800, height: 1169)
 
     func testItDefaultsToOnAndRoundTrips() {
-        let defaults = UserDefaults(suiteName: "show-on-desktop-\(UUID().uuidString)")!
+        let defaults = TestDefaults.throwaway("show-on-desktop")
         let s = Settings(defaults: defaults)
         XCTAssertTrue(s.menuBarBackdropShowOnDesktop, "the bar has always been drawn over the desktop")
         s.menuBarBackdropShowOnDesktop = false
@@ -1031,7 +1031,7 @@ final class BackdropShowOnDesktopTests: XCTestCase {
 
     func testTheCheckboxWritesTheSettingAndFollowsTheMode() {
         _ = appKitForTests
-        let defaults = UserDefaults(suiteName: "show-on-desktop-ui-\(UUID().uuidString)")!
+        let defaults = TestDefaults.throwaway("show-on-desktop-ui")
         let settings = Settings(defaults: defaults)
         let feature = BackdropFeature(settings: settings, screenRecordingAllowed: { true })
         _ = feature.makeView()

@@ -67,7 +67,7 @@ final class ChargeEstimateTests: XCTestCase {
     private func store(_ test: String = #function) -> UserDefaults {
         // Never the process's standard defaults, whatever goes wrong: a suite of its own, or a loud failure.
         (try? TestDefaults.make(owner: "ChargeEstimate", test: test).defaults)
-            ?? UserDefaults(suiteName: "com.anode.tests.ChargeEstimate.fallback")!
+            ?? TestDefaults.throwaway("ChargeEstimateFallback")
     }
 
     // ── The target ──────────────────────────────────────────────────────────

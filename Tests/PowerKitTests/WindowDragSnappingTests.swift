@@ -161,7 +161,7 @@ final class WindowDragSnappingTests: XCTestCase {
     }
 
     func testTheSettingDefaultsToOffAndTheSectionWarnsAboutMacOSTiling() {
-        let defaults = UserDefaults(suiteName: "drag-snap-\(UUID().uuidString)")!
+        let defaults = TestDefaults.throwaway("drag-snap")
         let s = Settings(defaults: defaults)
         XCTAssertFalse(s.windowDragSnapEnabled)
         s.windowDragSnapEnabled = true

@@ -42,10 +42,35 @@ enum TestDefaults {
                      file: StaticString = #filePath, line: UInt = #line)
         throws -> (defaults: UserDefaults, name: String) {
         let name = "com.anode.tests.\(owner).\(suffix(test))"
+        // Registered before the suite is opened: whether its file was there already is decided by this.
+        TestSuiteRegistry.shared.register(name)
         let defaults = try XCTUnwrap(UserDefaults(suiteName: name), file: file, line: line)
         // A previous run may have died before its teardown.
         defaults.removePersistentDomain(forName: name)
         return (defaults, name)
+    }
+
+    /// A suite of exactly this name (it has to be under `com.anode.tests.`), emptied, and removed when the test ends.
+    static func named(_ name: String) -> UserDefaults {
+        precondition(name.hasPrefix("com.anode.tests."), "a throwaway suite is named under com.anode.tests.")
+        TestSuiteRegistry.shared.register(name)
+        guard let defaults = UserDefaults(suiteName: name) else {
+            preconditionFailure("a throwaway settings suite could not be made")
+        }
+        defaults.removePersistentDomain(forName: name)
+        return defaults
+    }
+
+    /// A suite of its own for a test that needs one more than `make` gives, or a name per call (a `UUID` in it): removed
+    /// when the test ends like any other. `UserDefaults(suiteName: "x-\(UUID())")` left one file in the preferences
+    /// folder per call, thousands of them, because nothing ever removed it.
+    static func throwaway(_ owner: String) -> UserDefaults {
+        let name = "com.anode.tests.adhoc.\(owner).\(UUID().uuidString)"
+        TestSuiteRegistry.shared.register(name)
+        guard let defaults = UserDefaults(suiteName: name) else {
+            preconditionFailure("a throwaway settings suite could not be made")
+        }
+        return defaults
     }
 
     /// "-[PowerKitTests.StartupSettingsTests testX]" or "testX()" -> "testX".
@@ -79,6 +104,71 @@ enum TestDefaults {
         }
         return out.filter { fm.fileExists(atPath: $0.path) }
     }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Every suite a test of this process made through `TestDefaults`, and the promise that each is gone: removed when its
+/// test ends (a test's own teardown is welcome to do it first and need not), and its file taken away again when the
+/// process exits (`Settings.noteThrowawaySuiteForExit`), after the preferences service has finished writing. A suite is a file in the test runner's preferences folder, and a test that forgot its teardown, or a name
+/// with a `UUID` in it, left one behind every run.
+///
+/// Only files this process made are removed. A suite whose file was already in the folder when the process first
+/// named it (an earlier run's, with the same fixed name) is emptied and its file left where it is: what is in the
+/// owner's preferences folder from before is not for a test run to delete.
+final class TestSuiteRegistry: NSObject, XCTestObservation {
+    static let shared = TestSuiteRegistry()
+
+    private let lock = NSLock()
+    private var pending: [String] = []
+    private var seen: Set<String> = []
+    private var everRegistered: [String] = []
+    private var alreadyThere: Set<String> = []
+    private var installed = false
+
+    func register(_ name: String) {
+        lock.lock()
+        pending.append(name)
+        if seen.insert(name).inserted {
+            everRegistered.append(name)
+            if !TestDefaults.plistURLs(named: name).isEmpty {
+                alreadyThere.insert(name)
+            } else {
+                Settings.noteThrowawaySuiteForExit(name)
+            }
+        }
+        let install = !installed
+        installed = true
+        lock.unlock()
+        if install { XCTestObservationCenter.shared.addTestObserver(self) }
+    }
+
+    /// Whether the suite's file was in the preferences folder before this process first named it.
+    func wasThereBeforeThisRun(_ name: String) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        return alreadyThere.contains(name)
+    }
+
+    /// Everything registered and not yet removed is removed now (a suite that was there before this run is emptied).
+    func sweep() {
+        lock.lock()
+        let names = pending
+        pending = []
+        let kept = alreadyThere
+        lock.unlock()
+        for name in names {
+            if kept.contains(name) { Settings.emptyThrowawaySuite(named: name) } else { Settings.removeThrowawaySuite(named: name) }
+        }
+    }
+
+    /// Every name registered by this process so far, removed or not.
+    func allRegistered() -> [String] {
+        lock.lock(); defer { lock.unlock() }
+        return everRegistered
+    }
+
+    func testCaseDidFinish(_ testCase: XCTestCase) { sweep() }
+    func testBundleDidFinish(_ testBundle: Bundle) { sweep() }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

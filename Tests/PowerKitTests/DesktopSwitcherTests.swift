@@ -156,7 +156,7 @@ final class DesktopSwitcherTests: XCTestCase {
     // ── Setting and section ──
 
     func testTheSettingDefaultsToOffAndRoundTrips() {
-        let defaults = UserDefaults(suiteName: "desktop-switcher-\(UUID().uuidString)")!
+        let defaults = TestDefaults.throwaway("desktop-switcher")
         let s = Settings(defaults: defaults)
         XCTAssertFalse(s.desktopSwitcherEnabled)
         s.desktopSwitcherEnabled = true
@@ -164,7 +164,7 @@ final class DesktopSwitcherTests: XCTestCase {
     }
 
     func testTheCheckboxWritesTheSetting() {
-        let defaults = UserDefaults(suiteName: "desktop-switcher-\(UUID().uuidString)")!
+        let defaults = TestDefaults.throwaway("desktop-switcher")
         let s = Settings(defaults: defaults)
         let f = DesktopSwitcherFeature(settings: s, accessibilityAllowed: { true })
         _ = f.makeView()

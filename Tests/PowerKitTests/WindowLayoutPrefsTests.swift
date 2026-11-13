@@ -6,7 +6,7 @@ import PowerKit
 final class WindowLayoutPrefsTests: XCTestCase {
     private let area = CGRect(x: 0, y: 39, width: 1800, height: 1130)
 
-    private func prefs() -> WindowPrefs { WindowPrefs(defaults: UserDefaults(suiteName: "prefs-\(UUID().uuidString)")!) }
+    private func prefs() -> WindowPrefs { WindowPrefs(defaults: TestDefaults.throwaway("prefs")) }
 
     // ── Gaps ──
 
@@ -186,7 +186,7 @@ final class SampleMailboxTests: XCTestCase {
 
 final class WidgetCollapseSettingTests: XCTestCase {
     func testCollapsingIsOnUntilTheUserSwitchesItOffAndTheChoiceSurvives() {
-        let defaults = UserDefaults(suiteName: "collapse-\(UUID().uuidString)")!
+        let defaults = TestDefaults.throwaway("collapse")
         let s = Settings(defaults: defaults)
         XCTAssertTrue(s.menuBarWidgetsCollapse, "other Macs keep the existing behaviour")
         var told = 0

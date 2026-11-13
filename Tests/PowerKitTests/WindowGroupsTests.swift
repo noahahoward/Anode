@@ -105,7 +105,7 @@ final class WindowGroupsTests: XCTestCase {
     }
 
     func testTheSettingDefaultsToOffAndTheSectionIsListed() throws {
-        let defaults = UserDefaults(suiteName: "window-groups-\(UUID().uuidString)")!
+        let defaults = TestDefaults.throwaway("window-groups")
         let s = Settings(defaults: defaults)
         XCTAssertFalse(s.windowGroupsEnabled)
         s.windowGroupsEnabled = true

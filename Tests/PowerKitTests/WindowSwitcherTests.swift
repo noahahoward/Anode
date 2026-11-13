@@ -104,7 +104,7 @@ final class WindowSwitcherTests: XCTestCase {
     // ── Setting and section ──
 
     func testTheSettingDefaultsToOffAndRoundTrips() {
-        let defaults = UserDefaults(suiteName: "switcher-\(UUID().uuidString)")!
+        let defaults = TestDefaults.throwaway("switcher")
         let s = Settings(defaults: defaults)
         XCTAssertFalse(s.windowSwitcherEnabled, "it takes over a system shortcut, so the user turns it on")
         s.windowSwitcherEnabled = true
@@ -112,7 +112,7 @@ final class WindowSwitcherTests: XCTestCase {
     }
 
     func testTheCheckboxWritesTheSettingAndTheStatusFollowsPermission() {
-        let defaults = UserDefaults(suiteName: "switcher-\(UUID().uuidString)")!
+        let defaults = TestDefaults.throwaway("switcher")
         let s = Settings(defaults: defaults)
         var allowed = true
         let f = WindowSwitcherFeature(settings: s, accessibilityAllowed: { allowed }, screenRecordingAllowed: { true })
@@ -138,7 +138,7 @@ final class WindowSwitcherTests: XCTestCase {
 
     /// The reported ⌘Tab with only app icons: the section must say why and offer the fix.
     func testThePreviewNoteAndButtonFollowThePermission() {
-        let defaults = UserDefaults(suiteName: "switcher-\(UUID().uuidString)")!
+        let defaults = TestDefaults.throwaway("switcher")
         let s = Settings(defaults: defaults)
         s.windowSwitcherEnabled = true
         var granted = false, failing = false
@@ -159,7 +159,7 @@ final class WindowSwitcherTests: XCTestCase {
     // ── The keys that open it ──
 
     func testCommandOptionTabIsTheDefaultAndLeavesCommandTabToTheSystem() {
-        let defaults = UserDefaults(suiteName: "switcher-trigger-\(UUID().uuidString)")!
+        let defaults = TestDefaults.throwaway("switcher-trigger")
         let s = Settings(defaults: defaults)
         XCTAssertEqual(s.windowSwitcherTrigger, .commandOption)
         let cmd: CGEventFlags = [.maskCommand], cmdOpt: CGEventFlags = [.maskCommand, .maskAlternate]
@@ -188,7 +188,7 @@ final class WindowSwitcherTests: XCTestCase {
     }
 
     func testTheSectionOffersBothAndWritesTheChoice() {
-        let defaults = UserDefaults(suiteName: "switcher-trigger-\(UUID().uuidString)")!
+        let defaults = TestDefaults.throwaway("switcher-trigger")
         let s = Settings(defaults: defaults)
         let f = WindowSwitcherFeature(settings: s, accessibilityAllowed: { true }, screenRecordingAllowed: { true },
                                       previewsFailing: { false })

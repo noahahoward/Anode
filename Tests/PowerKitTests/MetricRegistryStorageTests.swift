@@ -56,8 +56,7 @@ final class MetricRegistryStorageTests: XCTestCase {
     private func scratchDefaults() -> UserDefaults {
         scratchCount += 1
         let name = "com.anode.tests.Storage.\(TestDefaults.suffix(self.name)).\(scratchCount)"
-        let d = UserDefaults(suiteName: name)!
-        d.removePersistentDomain(forName: name)   // a run that died before its teardown
+        let d = TestDefaults.named(name)   // emptied, in case a run died before its teardown
         addTeardownBlock { TestDefaults.destroy(d, name) }
         return d
     }

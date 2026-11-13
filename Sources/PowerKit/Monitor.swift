@@ -658,7 +658,7 @@ public final class PowerMonitor {
     /// as root (`effectiveUID` 0), which reads root's settings and not the person's, so the app's Charge Control would
     /// read as off however it is set. `defaults` and `effectiveUID` are parameters for the tests.
     public static func forCommandLine(scale: BatteryScale? = nil,
-                                      defaults: UserDefaults? = UserDefaults(suiteName: Settings.suiteName),
+                                      defaults: UserDefaults? = Settings.appDefaults(),
                                       effectiveUID: uid_t = geteuid()) -> PowerMonitor? {
         guard let defaults, effectiveUID != 0 else {
             return PowerMonitor(scale: scale, chargeControlLimit: { nil }, learnsChargeLimit: false)
