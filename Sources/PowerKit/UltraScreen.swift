@@ -29,7 +29,12 @@ public enum BrightnessCeiling {
         case aboveTheCeiling
         /// It is at or above the earlier level already: the end never lowers the screen.
         case alreadyAtTheEarlierLevel
+        /// Left on purpose: it is at or under the lid dimmer's dark threshold, and the caller cannot ask who holds it down.
+        case screenIsDark
     }
+
+    /// At or under this the screen is dark: the lid dimmer holds it at 0 with the lid shut and calls anything under it nothing to save.
+    public static let darkAtOrBelow: Float = LidDimmer.darkThreshold
 
     /// What the end of a session does about the screen, from the level before the mode (`before`; nil when the mode did not
     /// lower it) and the level now. The ceiling is what the mode left it at, so:
@@ -39,17 +44,21 @@ public enum BrightnessCeiling {
     ///    0.2184, measured), and the owner's own level is what they get back;
     ///  · above the ceiling: somebody else raised it since, and it is not the mode's to change;
     ///  · at or above `before` already: the end never lowers the screen;
-    ///  · unreadable: no way to tell where it is.
-    public static func decide(before: Float?, now: Float?) -> Restoration {
+    ///  · unreadable: no way to tell where it is;
+    ///  · dark, when `leavingADarkScreen`: the lid dimmer holds the screen at 0 with the lid shut. The mode's own turning off asks
+    ///    `OwnBrightness` whether another feature holds the screen; the watchdog and a launch after a crash cannot (a new process has
+    ///    noted nothing), so they leave a dark screen to whatever put it there.
+    public static func decide(before: Float?, now: Float?, leavingADarkScreen: Bool = false) -> Restoration {
         guard let before else { return .nothingWasLowered }
         guard let now else { return .couldNotBeRead }
+        if leavingADarkScreen, now <= darkAtOrBelow { return .screenIsDark }
         guard now <= ceiling + slack else { return .aboveTheCeiling }
         return before > now ? .putBack(before) : .alreadyAtTheEarlierLevel
     }
 
     /// The brightness to put back at the end, or nil when the screen is to be left as it is (see `decide`).
-    public static func restore(before: Float?, now: Float?) -> Float? {
-        if case .putBack(let level) = decide(before: before, now: now) { return level }
+    public static func restore(before: Float?, now: Float?, leavingADarkScreen: Bool = false) -> Float? {
+        if case .putBack(let level) = decide(before: before, now: now, leavingADarkScreen: leavingADarkScreen) { return level }
         return nil
     }
 }

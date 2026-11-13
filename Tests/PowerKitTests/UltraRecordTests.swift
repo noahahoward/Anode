@@ -156,23 +156,59 @@ final class UltraRecordTests: XCTestCase {
         }
     }
 
-    /// Putting the screen back has to wait for Low Power Mode to be off when the mode is what switched it on (it was not the
-    /// owner's own) and there is a screen to put back: macOS raises the screen when Low Power Mode ends, by an amount that
-    /// depends on the level, so a level set before that is lost.
-    func testTheScreenWaitsForLowPowerOnlyWhenTheModeSwitchedItOnAndThereIsAScreenToPutBack() {
+    /// Putting the screen back has to wait for Low Power Mode to be off when the session asked the helper for it and it was not the
+    /// owner's own (`lowPowerBefore` is written before the helper is asked, so `false` means exactly that) and there is a screen to
+    /// put back: macOS raises the screen when Low Power Mode ends, by an amount that depends on the level, so a level set before that
+    /// is lost. It does not depend on the helper's answer: a cancel, a quit or a crash during the helper step leaves Low Power Mode
+    /// possibly on with no `powerModeBefore` on the record.
+    func testTheScreenWaitsForLowPowerWhenTheHelperWasAskedAndItWasNotTheOwnersOwn() {
         var record = UltraRecord()
         XCTAssertFalse(record.waitsForLowPowerToEnd, "nothing was done")
         record.brightnessBefore = 0.8
-        XCTAssertFalse(record.waitsForLowPowerToEnd, "no helper: Low Power Mode was never switched on by the mode")
-        record.powerModeBefore = 0
-        XCTAssertTrue(record.waitsForLowPowerToEnd, "a record from before it was named: not known to be the owner's own")
+        XCTAssertFalse(record.waitsForLowPowerToEnd, "the helper was never asked: no helper, or an old one")
         record.lowPowerBefore = false
-        XCTAssertTrue(record.waitsForLowPowerToEnd)
+        XCTAssertTrue(record.waitsForLowPowerToEnd, "asked, and no answer on the record yet")
+        record.powerModeBefore = 0
+        XCTAssertTrue(record.waitsForLowPowerToEnd, "asked and answered")
         record.lowPowerBefore = true
         XCTAssertFalse(record.waitsForLowPowerToEnd, "it was the owner's own, and stays on")
+        record.lowPowerBefore = nil
+        XCTAssertFalse(record.waitsForLowPowerToEnd, "a record from before it was named: not asked, as far as it can tell")
         record.lowPowerBefore = false
         record.brightnessBefore = nil
         XCTAssertFalse(record.waitsForLowPowerToEnd, "nothing to put back, so nothing to wait for")
+    }
+
+    /// What a launch has left to do once the watchdog has undone what it can. The watchdog continues every process the record names
+    /// and lifts every limit, puts the screen back and leaves the power mode to the helper (it puts it back itself when Anode's
+    /// connection closes); it does not unhide an app, put the refresh rate back or write the keyboard light.
+    func testARecordLeavesNothingForALaunchWhenOnlyTheWatchdogsPartsAreNamed() {
+        XCTAssertTrue(UltraRecord().leavesNothingForALaunch)
+        // What a quit leaves for the watchdog: the screen, and what says whether to wait for Low Power Mode.
+        var trimmed = UltraRecord()
+        trimmed.brightnessBefore = 0.4375
+        trimmed.powerModeBefore = 0
+        trimmed.lowPowerBefore = false
+        XCTAssertTrue(trimmed.leavesNothingForALaunch, "the power mode needs no launch")
+        var frozen = trimmed
+        frozen.groups = [group("com.example.notes", [20])]
+        frozen.throttled = [member(70)]
+        XCTAssertTrue(frozen.leavesNothingForALaunch, "continued and lifted by the watchdog itself")
+        var released = frozen
+        released.groups = [group("com.example.mail", [30], appPID: 30, released: true)]
+        XCTAssertTrue(released.leavesNothingForALaunch, "a released group's app was unhidden when it was released")
+    }
+
+    func testARecordWithAnAppToUnhideARefreshRateOrAKeyboardLightLeavesSomethingForALaunch() {
+        var hidden = UltraRecord()
+        hidden.groups = [group("com.example.browser", [20], appPID: 20)]
+        XCTAssertFalse(hidden.leavesNothingForALaunch, "the watchdog does not unhide")
+        var rate = UltraRecord()
+        rate.rateLowered = true
+        XCTAssertFalse(rate.leavesNothingForALaunch)
+        var keyboard = UltraRecord()
+        keyboard.keyboardBefore = 0.4
+        XCTAssertFalse(keyboard.leavesNothingForALaunch)
     }
 
     func testTheProcessesPutUnderThePolicyRoundTripThroughAFile() {

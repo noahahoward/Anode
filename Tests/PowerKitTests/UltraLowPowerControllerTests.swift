@@ -1528,6 +1528,95 @@ final class UltraLowPowerControllerTests: XCTestCase {
         XCTAssertEqual(watchdog.stopped, 1)
     }
 
+    func testAQuitLeavesTheScreenToTheWatchdogOnlyWhileOneIsRunning() {
+        theMacAsMeasured()
+        start()
+        watchdog.pid = nil                    // it ended, or never could be started again
+        controller.shutdown()
+        XCTAssertEqual(backlight.sets, [0.25, 0.4375], "nobody would put it back: the app does, now")
+        XCTAssertEqual(logged.filter { $0.contains("watchdog is not running") }.count, 1, "\(logged)")
+        XCTAssertEqual(logged.filter { $0.contains("left for the watchdog") }.count, 0, "\(logged)")
+        XCTAssertEqual(controller.state, .off)
+        XCTAssertNil(store.record, "finished: the record is not left for a watchdog that is not there")
+        XCTAssertEqual(watchdog.stopped, 1)
+    }
+
+    /// The helper was asked (the record names that Low Power Mode was off before) and has not answered: a turning off in that moment
+    /// finds no `powerModeBefore`, and macOS may have switched Low Power Mode on all the same.
+    func testAHelperThatWasAskedAndHasNotAnsweredLeavesTheScreenWaitingForLowPowerToBeOff() {
+        theMacAsMeasured()
+        power.hold = true
+        start()
+        XCTAssertEqual(controller.state, .confirming, "waiting for the helper")
+        XCTAssertEqual(store.record?.lowPowerBefore, false)
+        XCTAssertNil(store.record?.powerModeBefore, "no answer yet")
+
+        controller.turnOff()
+        XCTAssertEqual(controller.state, .confirming, "not finished: the screen waits for Low Power Mode")
+        fireStartDeadline(poll)               // still on
+        fireStartDeadline(poll)
+        XCTAssertEqual(backlight.sets, [0.25], "not set while Low Power Mode reads on")
+        lowPower.goOff()
+        fireStartDeadline(poll)
+        XCTAssertEqual(backlight.sets, [0.25])
+        fireStartDeadline(settle)
+        XCTAssertEqual(backlight.sets, [0.25, 0.4375])
+        XCTAssertEqual(controller.state, .off)
+        XCTAssertNil(store.record)
+        // The helper's answer comes late: Low Power Mode it switched on is switched off again, and nothing else happens.
+        power.held.forEach { $0(0) }
+        XCTAssertEqual(power.restored, [0])
+        XCTAssertEqual(backlight.sets, [0.25, 0.4375])
+    }
+
+    // The screen at launch, and the lid.
+
+    /// With the lid shut the lid dimmer holds the screen at 0, and a launch after a crash cannot ask `OwnBrightness` who holds it.
+    func testRecoveryAtLaunchLeavesADarkScreenAndSaysSo() {
+        var record = UltraRecord()
+        record.brightnessBefore = 0.8
+        store.record = record
+        backlight.value = 0
+        controller.recoverAtLaunch()
+        XCTAssertEqual(backlight.sets, [])
+        XCTAssertEqual(logged.filter { $0.contains("screen is dark, so it was left") }.count, 1, "\(logged)")
+        XCTAssertNil(store.record, "and the record is done with")
+
+        backlight.value = 0.02
+        store.record = record
+        controller.recoverAtLaunch()
+        XCTAssertEqual(backlight.sets, [], "at the threshold")
+
+        backlight.value = 0.15
+        store.record = record
+        controller.recoverAtLaunch()
+        XCTAssertEqual(backlight.sets, [0.8], "dim, but not dark: put back")
+    }
+
+    func testRecoveryAtLaunchLeavesADarkScreenAfterTheWaitToo() {
+        var record = UltraRecord()
+        record.brightnessBefore = 0.8
+        record.lowPowerBefore = false
+        record.powerModeBefore = 0
+        store.record = record
+        lowPower.on = false
+        backlight.value = 0
+        controller.recoverAtLaunch()
+        fire(settle)
+        XCTAssertEqual(backlight.sets, [])
+        XCTAssertEqual(logged.filter { $0.contains("screen is dark, so it was left") }.count, 1, "\(logged)")
+        XCTAssertNil(store.record)
+    }
+
+    /// The mode's own turning off asks `OwnBrightness` (a feature that holds the screen is named there), so it is unchanged.
+    func testTheModesOwnTurnOffPutsBackADarkScreenLikeAnyOther() {
+        start()
+        backlight.value = 0
+        controller.turnOff()
+        XCTAssertEqual(backlight.sets, [0.25, 0.8])
+        XCTAssertEqual(logged.filter { $0.contains("screen is dark") }.count, 0)
+    }
+
     // The wait, recovering.
 
     func testRecoveryAtLaunchPutsThePowerBackThenWaitsThenSetsTheScreen() throws {
@@ -2136,12 +2225,13 @@ final class UltraLowPowerControllerTests: XCTestCase {
         record.rateLowered = true
         record.keyboardBefore = 0.6
         record.powerModeBefore = 1
+        record.lowPowerBefore = false
         store.record = record
         backlight.value = 0.25
         lowPower.on = false   // the helper put the power mode back when Anode's connection closed
 
         controller.recoverAtLaunch()
-        // A record that does not say whether Low Power Mode was the owner's own is waited for; it is off already, so only the settle.
+        // The session asked for Low Power Mode and it was not the owner's own, so it is waited for; it is off already, so only the settle.
         fire(UltraLowPowerController.brightnessSettleSeconds)
 
         XCTAssertEqual(freezer.resumes, [20, 21], "only what the record names, and not what was released already")

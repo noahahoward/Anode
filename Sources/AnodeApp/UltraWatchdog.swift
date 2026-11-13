@@ -9,9 +9,10 @@ import PowerKit
 /// costs nothing until Anode's pid exits (it sleeps in the kernel until the event arrives, it does not poll). Then it
 /// reads the record and undoes what it can without a window, an app or any setting of Anode's: continuing what the
 /// record names, lifting the background policy that kept the apps on the efficiency cores (from what the record names and from
-/// what those processes started since, found in a process table it reads itself), and putting the brightness back. Unhiding,
-/// the keyboard light and the power mode are left for the next launch, which reads the same record; the refresh rate needs
-/// nothing, the system takes it back with the process.
+/// what those processes started since, found in a process table it reads itself), and putting the brightness back (after Low Power
+/// Mode is off, when the mode asked for it). Unhiding, the refresh rate and the keyboard light are left for the next launch, which
+/// reads the same record; the power mode is the helper's, which puts it back itself when Anode's connection closes. A record that
+/// names nothing for a launch to do is taken away once the screen is done, so that a launch days later does not replay it.
 ///
 /// A normal end is Anode's job, not the watchdog's: `stop()` ends it with SIGTERM and it exits without undoing.
 
@@ -167,7 +168,8 @@ enum UltraWatchdog {
             undo(from: UltraRecordFile(url: URL(fileURLWithPath: request.recordPath)),
                  freezer: LiveProcessFreezer(), throttler: LiveProcessThrottler(),
                  processTable: LiveProcessList.processTable, lowPowerOn: { ProcessInfo.processInfo.isLowPowerModeEnabled },
-                 sleep: { Thread.sleep(forTimeInterval: $0) }, backlight: DisplayServicesBacklight())
+                 sleep: { Thread.sleep(forTimeInterval: $0) }, log: { FeatureLog.append("ultra.log", $0) },
+                 backlight: DisplayServicesBacklight())
             exit(0)
         case .timedOut, .failed:
             // The kernel would not say when Anode ends. Undoing now, with Anode very likely alive, would continue
@@ -195,17 +197,20 @@ enum UltraWatchdog {
 
     /// Continues what the record names, lifts the background policy from every process it names and from every living child of
     /// one (a table read here finds them), and puts the brightness back; the rest of the record is for the next launch.
-    /// Nothing here clears the record: the next launch reads it to finish the undo (lifting the policy again from a process
-    /// that is free of it already changes nothing).
+    /// Returns whether a launch has nothing left to do (`UltraRecord.leavesNothingForALaunch`, and everything under the policy
+    /// lifted, and the screen done: put back, or left on purpose), which is what lets `undo(from:)` take the record away.
     ///
     /// Every continue comes first, then the policy, which a kept app would otherwise carry for as long as it runs. The brightness
-    /// comes last: when the mode switched Low Power Mode on, it is looked at every `lowPowerPollSeconds` until it is off (or
+    /// comes last: when the mode asked for Low Power Mode, it is looked at every `lowPowerPollSeconds` until it is off (or
     /// `lowPowerWaitSeconds` have passed) and macOS is given `brightnessSettleSeconds` to finish its own ramp first. `lowPowerOn`
-    /// and `sleep` are given, so that a test reads a made-up Low Power Mode and never sleeps. The backlight is a parameter that is
-    /// not evaluated until the brightness step, and the step is left out when the record has no brightness to put back.
+    /// and `sleep` are given, so that a test reads a made-up Low Power Mode and never sleeps. A screen that is dark is left (with the
+    /// lid shut the lid dimmer holds it at 0, and the watchdog has no `OwnBrightness` to ask), and `log` says so. The backlight is a
+    /// parameter that is not evaluated until the brightness step, and the step is left out when the record has no brightness to put
+    /// back.
+    @discardableResult
     static func undo(record: UltraRecord, freezer: ProcessFreezing, throttler: ProcessThrottling,
                      processTable: () -> [UltraProcess]?, lowPowerOn: () -> Bool, sleep: (TimeInterval) -> Void,
-                     backlight: @autoclosure () -> BacklightControl) {
+                     log: (String) -> Void, backlight: @autoclosure () -> BacklightControl) -> Bool {
         let actions = UltraRecovery.actions(for: record, brightnessNow: nil)
         for case .resume(let pid, let startTime) in actions {
             _ = freezer.resume(pid: pid, startTime: startTime)
@@ -216,15 +221,22 @@ enum UltraWatchdog {
             lifted.append(FreezeGroup.Member(pid: pid, startTime: startTime))
         }
         // What those processes started since the last sweep inherited the policy and is on no record: the table is read now, here,
-        // and every living child of a process the record names (identity checked by start time) is lifted too.
-        if !lifted.isEmpty, let table = processTable() {
-            for child in UltraThrottle.descendants(of: lifted, in: table) {
-                _ = throttler.unthrottle(pid: child.pid, startTime: child.startTime)
+        // and every living child of a process the record names (identity checked by start time) is lifted too. A table that cannot
+        // be read leaves those children under it for a launch to lift.
+        var childrenLifted = true
+        if !lifted.isEmpty {
+            if let table = processTable() {
+                for child in UltraThrottle.descendants(of: lifted, in: table) {
+                    _ = throttler.unthrottle(pid: child.pid, startTime: child.startTime)
+                }
+            } else {
+                childrenLifted = false
             }
         }
-        guard record.brightnessBefore != nil else { return }
+        let nothingLeftForALaunch = childrenLifted && record.leavesNothingForALaunch
+        guard let before = record.brightnessBefore else { return nothingLeftForALaunch }
         // The screen is last, after Low Power Mode is off: macOS raises it when Low Power Mode ends, so a level set before that is
-        // lost. Nothing is waited for when Low Power Mode was the owner's own, or no helper switched it on.
+        // lost. Nothing is waited for when Low Power Mode was the owner's own, or the helper was never asked.
         if record.waitsForLowPowerToEnd {
             var waited: TimeInterval = 0
             while lowPowerOn(), waited < lowPowerWaitSeconds {
@@ -234,19 +246,48 @@ enum UltraWatchdog {
             sleep(brightnessSettleSeconds)
         }
         let panel = backlight()
-        for case .brightness(let value) in UltraRecovery.actions(for: record, brightnessNow: panel.brightness()) {
-            _ = panel.setBrightness(value)
+        let now = panel.brightness()
+        switch BrightnessCeiling.decide(before: before, now: now, leavingADarkScreen: true) {
+        case .putBack(let level):
+            // Refused: the screen is still where it was, and a launch can try again.
+            guard panel.setBrightness(level) else {
+                log("ultra watchdog: the screen did not take \(level2(level)), so it was not put back")
+                return false
+            }
+            log("ultra watchdog: the screen was put back to \(level2(level))")
+        case .couldNotBeRead:
+            // No way to tell where it is; a launch may be able to read it.
+            log("ultra watchdog: the screen could not be read, so it was not put back")
+            return false
+        case .screenIsDark:
+            log("ultra watchdog: the screen is dark, so it was left")
+        case .aboveTheCeiling:
+            log("ultra watchdog: the screen was left at \(level2(now ?? 0)): it is above the ceiling, so something else raised it")
+        case .alreadyAtTheEarlierLevel:
+            log("ultra watchdog: the screen was left at \(level2(now ?? 0)): it is not dimmer than it was before the mode")
+        case .nothingWasLowered:
+            break
         }
+        return nothingLeftForALaunch
     }
 
-    /// The same, from where the record is kept. No record, or one that cannot be read, is nothing to undo.
+    /// The same, from where the record is kept. No record, or one that cannot be read, is nothing to undo. When a launch has nothing
+    /// left to do the record is taken away, after the screen step and never before it: left, it would be replayed at the next launch,
+    /// possibly days later (switching off a Low Power Mode the owner has turned on since, or raising a screen the owner has dimmed since).
+    /// Only the record that was undone is taken: the screen step can last seconds, and a session started in that time has written its
+    /// own. A record that names something for a launch (an app to unhide, the refresh rate, the keyboard light) is left, as it always was.
     static func undo(from store: UltraRecordStoring, freezer: ProcessFreezing, throttler: ProcessThrottling,
                      processTable: () -> [UltraProcess]?, lowPowerOn: () -> Bool, sleep: (TimeInterval) -> Void,
-                     backlight: @autoclosure () -> BacklightControl) {
+                     log: (String) -> Void, backlight: @autoclosure () -> BacklightControl) {
         guard let record = store.load() else { return }
-        undo(record: record, freezer: freezer, throttler: throttler, processTable: processTable, lowPowerOn: lowPowerOn, sleep: sleep,
-             backlight: backlight())
+        let done = undo(record: record, freezer: freezer, throttler: throttler, processTable: processTable, lowPowerOn: lowPowerOn,
+                        sleep: sleep, log: log, backlight: backlight())
+        guard done, store.load() == record else { return }
+        store.clear()
     }
+
+    /// A brightness for the log, with two decimals.
+    private static func level2(_ value: Float) -> String { String(format: "%.2f", value) }
 
     /// Blocks until `pid` ends, with a kernel event (`kqueue`, `NOTE_EXIT`): the process sleeps until the kernel says so
     /// and uses no time of its own. A `pid` that is already gone counts as ended. `timeout` nil waits forever.

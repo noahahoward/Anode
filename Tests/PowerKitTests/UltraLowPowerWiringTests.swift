@@ -1118,6 +1118,8 @@ final class UltraLowPowerWiringTests: XCTestCase {
         // The wait for Low Power Mode before the screen is put back reads the real one and really sleeps; neither is made in a test.
         XCTAssertTrue(text.contains("lowPowerOn: { ProcessInfo.processInfo.isLowPowerModeEnabled }"), "the real Low Power Mode: \(text)")
         XCTAssertTrue(text.contains("sleep: { Thread.sleep(forTimeInterval: $0) }"), "a real sleep between the looks: \(text)")
+        // What the watchdog did to the screen is told to the feature's log, which is the only place a crash's undo can be read.
+        XCTAssertTrue(text.contains("log: { FeatureLog.append(\"ultra.log\", $0) }"), "its words go to ultra.log: \(text)")
     }
 
     func testMainWiresTheRuntimeAndShutsItDown() throws {

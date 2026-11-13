@@ -336,9 +336,11 @@ final class UltraLowPowerRuntime {
     private func powerOffNotice() { endSession() }
 
     /// What a quit or a power-off cannot leave to a queue: the controller continues everything here, first, and puts the
-    /// screen and the rest back on the work queue, which it waits for (`UltraLowPowerController.shutdownWaitSeconds`). That queue
-    /// is serial, so what is put back comes after any job already inside a display or keyboard call, and no job that has not
-    /// started runs once the session has ended. A session that has ended already is not ended again.
+    /// refresh rate and the keyboard light back on the work queue, which it waits for (`UltraLowPowerController.shutdownWaitSeconds`).
+    /// That queue is serial, so what is put back comes after any job already inside a display or keyboard call, and no job that has
+    /// not started runs once the session has ended. The screen is in that job too, unless the mode switched Low Power Mode on and it is
+    /// still on: macOS raises the screen when it ends, and a quit cannot wait for that, so the screen is left to the watchdog (the
+    /// record is cut down to it), which waits and puts it back once Anode has gone. A session that has ended already is not ended again.
     private func endSession() { controller.shutdown() }
 
     /// The controller says something changed (the state, the groups): what the mode needs while on is there exactly then.

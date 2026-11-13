@@ -67,10 +67,20 @@ public struct UltraRecord: Codable, Equatable {
 
     /// Whether putting the screen back has to wait for Low Power Mode to be off. macOS raises the screen when Low Power Mode ends,
     /// by an amount that depends on the level (measured: 0.12 became 0.1516, 0.80 became 0.9225), so a level set before that is
-    /// lost and the screen has to be put back after it. That is so when the mode switched Low Power Mode on (it was not the
-    /// owner's own, which stays on) and there is a screen to put back.
+    /// lost and the screen has to be put back after it. That is so when there is a screen to put back and the session asked the helper
+    /// for Low Power Mode and it was not the owner's own: `lowPowerBefore` is written before the helper is asked, so `false` means
+    /// exactly that, whether or not the helper's answer reached the record (a cancel, a quit or a crash during the helper step leaves
+    /// Low Power Mode possibly on and `powerModeBefore` empty). Where it never went on, the wait is only the settle.
     public var waitsForLowPowerToEnd: Bool {
-        brightnessBefore != nil && powerModeBefore != nil && lowPowerBefore != true
+        brightnessBefore != nil && lowPowerBefore == false
+    }
+
+    /// Whether nothing is left in this record for a launch to do once the watchdog has undone what it can. The watchdog continues
+    /// every process the record names, lifts every limit it names, puts the screen back, and leaves the power mode to the helper (which
+    /// puts it back itself when Anode's connection closes). It does not unhide an app (one it hid and the owner has not brought back),
+    /// put the refresh rate back or write the keyboard light: those wait for a launch, and a record that names one is kept.
+    public var leavesNothingForALaunch: Bool {
+        !rateLowered && keyboardBefore == nil && !groups.contains { !$0.released && $0.appPID != nil }
     }
 }
 

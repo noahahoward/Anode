@@ -73,6 +73,27 @@ final class UltraScreenTests: XCTestCase {
         XCTAssertEqual(BrightnessCeiling.decide(before: 0.25, now: 0.25), .alreadyAtTheEarlierLevel)
     }
 
+    /// With the lid shut the lid dimmer holds the screen at 0, and the undo that has no `OwnBrightness` to ask (the watchdog, a launch
+    /// after a crash) must not raise it: a screen at or under the lid dimmer's dark threshold is left, when the caller says so.
+    func testADarkScreenIsLeftWhenTheCallerAsksForIt() {
+        XCTAssertEqual(BrightnessCeiling.darkAtOrBelow, LidDimmer.darkThreshold, "the same threshold the lid dimmer calls dark")
+        XCTAssertEqual(BrightnessCeiling.darkAtOrBelow, 0.02)
+        XCTAssertEqual(BrightnessCeiling.decide(before: 0.8, now: 0, leavingADarkScreen: true), .screenIsDark)
+        XCTAssertEqual(BrightnessCeiling.decide(before: 0.8, now: 0.02, leavingADarkScreen: true), .screenIsDark, "at the threshold")
+        XCTAssertEqual(BrightnessCeiling.decide(before: 0.8, now: 0.021, leavingADarkScreen: true), .putBack(0.8), "above it")
+        XCTAssertNil(BrightnessCeiling.restore(before: 0.8, now: 0, leavingADarkScreen: true))
+        XCTAssertEqual(BrightnessCeiling.restore(before: 0.8, now: 0.15, leavingADarkScreen: true), 0.8)
+        // Nothing to put back, or no reading, is still said as that.
+        XCTAssertEqual(BrightnessCeiling.decide(before: nil, now: 0, leavingADarkScreen: true), .nothingWasLowered)
+        XCTAssertEqual(BrightnessCeiling.decide(before: 0.8, now: nil, leavingADarkScreen: true), .couldNotBeRead)
+    }
+
+    /// The mode's own turning off asks `OwnBrightness`, so for it a dark screen is put back like any other: the default is unchanged.
+    func testADarkScreenIsPutBackUnlessTheCallerAsksOtherwise() {
+        XCTAssertEqual(BrightnessCeiling.decide(before: 0.8, now: 0), .putBack(0.8))
+        XCTAssertEqual(BrightnessCeiling.restore(before: 0.8, now: 0.01), 0.8)
+    }
+
     // ── Refresh rate ────────────────────────────────────────────────────────
 
     private func mode(_ index: Int, _ rate: Double, size: (Int, Int) = (1800, 1169), pixels: (Int, Int) = (3600, 2338),
