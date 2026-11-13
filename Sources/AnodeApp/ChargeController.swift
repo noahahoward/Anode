@@ -149,7 +149,7 @@ final class ChargeController {
     static let unreadableText = "macOS did not report its charge settings, so Charge Control changed nothing"
     static let noBatteryText = "Anode could not read the battery"
     static let limitNeedsHelperText = "Limits other than 80, 85, 90, 95 or 100% need the Anode helper"
-    static let dischargeNeedsHelperText = "Discharge needs the Anode helper"
+    static let drainNeedsHelperText = "Discharge needs the Anode helper"
     static let helperOutdatedText = "The Anode helper needs updating to control charging"
     /// The record of macOS's own settings is another Anode's to finish at the moment (its lock is held), so switching
     /// on changed nothing.
@@ -190,8 +190,8 @@ final class ChargeController {
         switch d.reason {
         case .heat: return "Pausing for heat at \(p)% needs the Anode helper; it charges on to \(on)%"
         case .sleeping: return "Holding \(p)% while the Mac sleeps needs the Anode helper; it charges on to \(on)%"
-        case .sailing: return "Sailing at \(p)% needs the Anode helper; it charges on to \(on)%"
-        case .limit, .topUp, .discharging, .discharged: return limitNeedsHelperText
+        case .drift: return "Sailing at \(p)% needs the Anode helper; it charges on to \(on)%"
+        case .limit, .fullCharge, .discharging, .discharged: return limitNeedsHelperText
         }
     }
 
@@ -337,7 +337,7 @@ final class ChargeController {
         return on ? c.liftNow() : c.putBackLeftoverRecord(when: "at the top of the program")
     }
 
-    static func dischargeRefusedText(_ why: String) -> String {
+    static func drainRefusedText(_ why: String) -> String {
         "The Anode helper would not discharge: \(plainWords(why))"
     }
     /// A limit macOS takes by itself and refused: not in force, so the status says so instead of "Charging stops at".
@@ -391,9 +391,9 @@ final class ChargeController {
     private(set) var lastDecision: ChargeDecision?
     private(set) var status: ChargeStatus = .off
     /// The person pressed Discharge and it has not finished, been cancelled, or been ended by an unplug or a sleep.
-    private(set) var isDischargeRequested = false
+    private(set) var isDrainRequested = false
     /// The person pressed Top Up and has not unplugged or cancelled it.
-    private(set) var isTopUpRequested = false
+    private(set) var isFullChargeRequested = false
     /// The charge the last tick saw; nil while off.
     private(set) var batteryPercent: Int?
     /// Whether the cable was in at the last tick: on the adapter, or cut off from it by Anode's own discharge
@@ -964,8 +964,8 @@ final class ChargeController {
         appliedDischarge = nil
         dischargeInFlight = false
         blockedDischarge = nil
-        isDischargeRequested = false
-        isTopUpRequested = false
+        isDrainRequested = false
+        isFullChargeRequested = false
         batteryPercent = nil
         isCablePresent = false
         isCharging = false
@@ -1353,9 +1353,9 @@ final class ChargeController {
     // ── Triggers ────────────────────────────────────────────────────────────
 
     private func installTriggers() {
-        let keys = [Settings.Key.chargeLimit, Settings.Key.chargeSailingEnabled, Settings.Key.chargeSailingGap,
-                    Settings.Key.chargeHeatProtectionEnabled, Settings.Key.chargeMaxTemperatureC,
-                    Settings.Key.chargeStopWhenSleeping, Settings.Key.chargeAutomaticDischarge]
+        let keys = [Settings.Key.chargeLimit, Settings.Key.chargeDriftEnabled, Settings.Key.chargeDriftGap,
+                    Settings.Key.chargePauseWhenHotEnabled, Settings.Key.chargeMaxTemperatureC,
+                    Settings.Key.chargeHoldDuringSleep, Settings.Key.chargeDrainAutomatically]
         keyTokens = keys.map { settings.observe($0) { [weak self] in self?.tick() } }
 
         let t = Timer(timeInterval: Self.tickInterval, repeats: true) { [weak self] _ in
@@ -1527,23 +1527,23 @@ final class ChargeController {
     // ── The person ──────────────────────────────────────────────────────────
 
     /// Discharge to the limit on the adapter; pressed again, cancel. Cancels Top Up, which would otherwise outrank it.
-    func pressDischarge() {
+    func pressDrain() {
         guard running else { return }
-        isDischargeRequested.toggle()
-        if isDischargeRequested { isTopUpRequested = false }
+        isDrainRequested.toggle()
+        if isDrainRequested { isFullChargeRequested = false }
         // Pressing again is asking again, whatever the helper said last time.
         blockedDischarge = nil
-        log(isDischargeRequested ? "Discharge pressed" : "Discharge cancelled")
+        log(isDrainRequested ? "Discharge pressed" : "Discharge cancelled")
         tick()
         changed()
     }
 
     /// Charge to 100% until unplugged; pressed again, cancel. Cancels a manual discharge.
-    func pressTopUp() {
+    func pressFullCharge() {
         guard running else { return }
-        isTopUpRequested.toggle()
-        if isTopUpRequested { isDischargeRequested = false }
-        log(isTopUpRequested ? "Top Up pressed" : "Top Up cancelled")
+        isFullChargeRequested.toggle()
+        if isFullChargeRequested { isDrainRequested = false }
+        log(isFullChargeRequested ? "Top Up pressed" : "Top Up cancelled")
         tick()
         changed()
     }
@@ -1560,8 +1560,8 @@ final class ChargeController {
         let deadline = Date().addingTimeInterval(Self.stopTimeout)
         sleeping = true
         stopAndWait(for: "sleep", deadline: deadline)
-        if isDischargeRequested {
-            isDischargeRequested = false
+        if isDrainRequested {
+            isDrainRequested = false
             log("manual discharge ended by sleep")
             changed()
         }
@@ -1620,8 +1620,8 @@ final class ChargeController {
             cutLost = false
             stopDue = false
         }
-        if isDischargeRequested {
-            isDischargeRequested = false
+        if isDrainRequested {
+            isDrainRequested = false
             log("manual discharge ended: another account is on screen")
             changed()
         }
@@ -1684,12 +1684,12 @@ final class ChargeController {
         }
         let inputs = ChargeInputs(percent: b.percent, onAC: onAC,
                                   temperatureC: b.temperature_C.flatMap { $0.isFinite ? $0 : nil },
-                                  sleeping: sleeping, topUp: isTopUpRequested,
-                                  manualDischarge: isDischargeRequested, now: now)
+                                  sleeping: sleeping, fullCharge: isFullChargeRequested,
+                                  manualDrain: isDrainRequested, now: now)
         let decision = ChargePolicy.decide(settings.chargeSettingsSnapshot(), inputs, &memory)
-        if decision.endTopUp && isTopUpRequested { isTopUpRequested = false; announce = true }
-        if decision.endManualDischarge && isDischargeRequested {
-            isDischargeRequested = false
+        if decision.endFullCharge && isFullChargeRequested { isFullChargeRequested = false; announce = true }
+        if decision.endManualDrain && isDrainRequested {
+            isDrainRequested = false
             announce = true
             log(onAC ? "manual discharge finished" : "manual discharge ended: unplugged")
         }
@@ -2095,10 +2095,10 @@ final class ChargeController {
             guard helper.known else { return }
             setStatus(.needsHelper(missing ?? Self.limitNeedsHelperText(for: d)))
         } else if let target = d.dischargeTo, let b = blockedDischarge, b.target == target {
-            setStatus(.refused(Self.dischargeRefusedText(b.why)))
+            setStatus(.refused(Self.drainRefusedText(b.why)))
         } else if d.dischargeTo != nil, !helper.available {
             guard helper.known else { return }
-            setStatus(.needsHelper(missing ?? Self.dischargeNeedsHelperText))
+            setStatus(.needsHelper(missing ?? Self.drainNeedsHelperText))
         } else {
             setStatus(.active(d))
         }

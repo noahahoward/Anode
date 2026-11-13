@@ -13,11 +13,11 @@ final class ChargePolicyTests: XCTestCase {
     /// Limit 80, gap 5, 35 °C, every feature off, 50 % on the adapter at 25 °C.
     private func base() -> (ChargeSettingsSnapshot, ChargeInputs) {
         (ChargeSettingsSnapshot(limit: 80,
-                                sailingEnabled: false, sailingGap: 5,
-                                heatProtectionEnabled: false, maxTemperatureC: 35,
-                                stopWhenSleeping: false, automaticDischarge: false),
+                                driftEnabled: false, driftGap: 5,
+                                pauseWhenHotEnabled: false, maxTemperatureC: 35,
+                                holdDuringSleep: false, drainAutomatically: false),
          ChargeInputs(percent: 50, onAC: true, temperatureC: 25,
-                      sleeping: false, topUp: false, manualDischarge: false, now: t0))
+                      sleeping: false, fullCharge: false, manualDrain: false, now: t0))
     }
 
     // ── The limit ───────────────────────────────────────────────────────────
@@ -29,8 +29,8 @@ final class ChargePolicyTests: XCTestCase {
         XCTAssertEqual(d.osLimit, 80)
         XCTAssertEqual(d.reason, .limit)
         XCTAssertNil(d.dischargeTo)
-        XCTAssertFalse(d.endTopUp)
-        XCTAssertFalse(d.endManualDischarge)
+        XCTAssertFalse(d.endFullCharge)
+        XCTAssertFalse(d.endManualDrain)
     }
 
     func testLowLimitAllowed() {
@@ -56,49 +56,49 @@ final class ChargePolicyTests: XCTestCase {
 
     // ── Unplug and Top Up ───────────────────────────────────────────────────
 
-    func testTopUpWinsUntilUnplug() {
+    func testFullChargeWinsUntilUnplug() {
         let (s, start) = base()
         var i = start
         var m = ChargeMemory()
-        i.topUp = true
+        i.fullCharge = true
         let on = ChargePolicy.decide(s, i, &m)
         XCTAssertEqual(on.osLimit, 100)
-        XCTAssertEqual(on.reason, .topUp)
-        XCTAssertFalse(on.endTopUp)
+        XCTAssertEqual(on.reason, .fullCharge)
+        XCTAssertFalse(on.endFullCharge)
 
         i.onAC = false
         let off = ChargePolicy.decide(s, i, &m)
-        XCTAssertTrue(off.endTopUp)
+        XCTAssertTrue(off.endFullCharge)
         XCTAssertEqual(off.osLimit, 80, "unplugged falls straight back to the user's limit")
     }
 
-    func testUnplugEndsDischargeAndTopUp() {
+    func testUnplugEndsDrainAndFullCharge() {
         var (s, i) = base()
         var m = ChargeMemory()
-        i.manualDischarge = true
-        i.topUp = true
+        i.manualDrain = true
+        i.fullCharge = true
         i.onAC = false
         i.percent = 90
-        s.automaticDischarge = true
+        s.drainAutomatically = true
         let d = ChargePolicy.decide(s, i, &m)
-        XCTAssertTrue(d.endTopUp)
-        XCTAssertTrue(d.endManualDischarge)
+        XCTAssertTrue(d.endFullCharge)
+        XCTAssertTrue(d.endManualDrain)
         XCTAssertNil(d.dischargeTo)
         XCTAssertEqual(d.reason, .limit)
     }
 
-    func testTopUpBeatsHeatSleepAndDischarge() {
+    func testFullChargeBeatsHeatSleepAndDrain() {
         var (s, i) = base()
         var m = ChargeMemory()
-        s.heatProtectionEnabled = true
-        s.stopWhenSleeping = true
+        s.pauseWhenHotEnabled = true
+        s.holdDuringSleep = true
         i.temperatureC = 40
         i.sleeping = true
-        i.manualDischarge = true
-        i.topUp = true
+        i.manualDrain = true
+        i.fullCharge = true
         let d = ChargePolicy.decide(s, i, &m)
         XCTAssertEqual(d.osLimit, 100)
-        XCTAssertEqual(d.reason, .topUp)
+        XCTAssertEqual(d.reason, .fullCharge)
         XCTAssertNil(d.dischargeTo)
     }
 
@@ -107,7 +107,7 @@ final class ChargePolicyTests: XCTestCase {
     func testHeatPausesAtCurrentAndHasFiveMinuteHysteresis() {
         var (s, i) = base()
         var m = ChargeMemory()
-        s.heatProtectionEnabled = true
+        s.pauseWhenHotEnabled = true
         i.percent = 60
 
         i.temperatureC = 36
@@ -135,7 +135,7 @@ final class ChargePolicyTests: XCTestCase {
     func testHeatNeverRaisesTheLimit() {
         var (s, i) = base()
         var m = ChargeMemory()
-        s.heatProtectionEnabled = true
+        s.pauseWhenHotEnabled = true
         s.limit = 80
         i.percent = 91
         i.temperatureC = 40
@@ -148,7 +148,7 @@ final class ChargePolicyTests: XCTestCase {
     func testHeatPauseNeverBelowTwenty() {
         var (s, i) = base()
         var m = ChargeMemory()
-        s.heatProtectionEnabled = true
+        s.pauseWhenHotEnabled = true
         i.percent = 12
         i.temperatureC = 40
         XCTAssertEqual(ChargePolicy.decide(s, i, &m).osLimit, 20)
@@ -157,7 +157,7 @@ final class ChargePolicyTests: XCTestCase {
     func testReheatingRestartsTheCoolClock() {
         var (s, i) = base()
         var m = ChargeMemory()
-        s.heatProtectionEnabled = true
+        s.pauseWhenHotEnabled = true
         i.percent = 60
 
         i.temperatureC = 36
@@ -182,12 +182,12 @@ final class ChargePolicyTests: XCTestCase {
     func testHeatPausesAtExactlyTheMaximum() {
         var (s, i) = base()
         var m = ChargeMemory()
-        s.heatProtectionEnabled = true
+        s.pauseWhenHotEnabled = true
         i.temperatureC = 35
         XCTAssertEqual(ChargePolicy.decide(s, i, &m).reason, .heat)
     }
 
-    func testHotButHeatProtectionOffChargesNormally() {
+    func testHotButPauseWhenHotOffChargesNormally() {
         let (s, start) = base()
         var i = start
         var m = ChargeMemory()
@@ -200,7 +200,7 @@ final class ChargePolicyTests: XCTestCase {
     func testNoTemperatureReadingNeverStartsAPause() {
         var (s, i) = base()
         var m = ChargeMemory()
-        s.heatProtectionEnabled = true
+        s.pauseWhenHotEnabled = true
         i.temperatureC = nil
         XCTAssertEqual(ChargePolicy.decide(s, i, &m).reason, .limit)
     }
@@ -208,7 +208,7 @@ final class ChargePolicyTests: XCTestCase {
     func testNoTemperatureReadingHoldsAPauseWithoutMovingItsClock() {
         var (s, i) = base()
         var m = ChargeMemory()
-        s.heatProtectionEnabled = true
+        s.pauseWhenHotEnabled = true
         i.temperatureC = 40
         _ = ChargePolicy.decide(s, i, &m)
         i.temperatureC = nil
@@ -217,37 +217,37 @@ final class ChargePolicyTests: XCTestCase {
         XCTAssertNil(m.coolSince)
     }
 
-    func testTurningHeatProtectionOffForgetsAPause() {
+    func testTurningPauseWhenHotOffForgetsAPause() {
         var (s, i) = base()
         var m = ChargeMemory()
-        s.heatProtectionEnabled = true
+        s.pauseWhenHotEnabled = true
         i.temperatureC = 40
         _ = ChargePolicy.decide(s, i, &m)
         XCTAssertNotNil(m.heatPausedSince)
 
-        s.heatProtectionEnabled = false
+        s.pauseWhenHotEnabled = false
         _ = ChargePolicy.decide(s, i, &m)
         XCTAssertNil(m.heatPausedSince)
 
         // Back on and cool: no leftover pause from before.
-        s.heatProtectionEnabled = true
+        s.pauseWhenHotEnabled = true
         i.temperatureC = 25
         i.now = t0.addingTimeInterval(3_600)
         XCTAssertEqual(ChargePolicy.decide(s, i, &m).reason, .limit)
     }
 
-    func testHeatBeatsDischarge() {
+    func testHeatBeatsDrain() {
         var (s, i) = base()
         var m = ChargeMemory()
-        s.heatProtectionEnabled = true
+        s.pauseWhenHotEnabled = true
         i.temperatureC = 40
         i.percent = 77
-        i.manualDischarge = true
+        i.manualDrain = true
         let d = ChargePolicy.decide(s, i, &m)
         XCTAssertEqual(d.reason, .heat)
         XCTAssertNil(d.dischargeTo)
         XCTAssertEqual(d.osLimit, 77)
-        XCTAssertFalse(d.endManualDischarge, "the discharge is waiting, not finished")
+        XCTAssertFalse(d.endManualDrain, "the discharge is waiting, not finished")
     }
 
     /// Heat outranks sleeping: both hold at the charge, so the limit is the same, but the reason is what the section
@@ -255,8 +255,8 @@ final class ChargePolicyTests: XCTestCase {
     func testHeatBeatsSleeping() {
         var (s, i) = base()
         var m = ChargeMemory()
-        s.heatProtectionEnabled = true
-        s.stopWhenSleeping = true
+        s.pauseWhenHotEnabled = true
+        s.holdDuringSleep = true
         i.temperatureC = 40
         i.sleeping = true
         i.percent = 77
@@ -271,7 +271,7 @@ final class ChargePolicyTests: XCTestCase {
     func testSleepingHoldsAtCurrent() {
         var (s, i) = base()
         var m = ChargeMemory()
-        s.stopWhenSleeping = true
+        s.holdDuringSleep = true
         i.sleeping = true
         let d = ChargePolicy.decide(s, i, &m)
         XCTAssertEqual(d.osLimit, 50)
@@ -281,7 +281,7 @@ final class ChargePolicyTests: XCTestCase {
     func testSleepingAboveTheLimitHoldsAtTheLimit() {
         var (s, i) = base()
         var m = ChargeMemory()
-        s.stopWhenSleeping = true
+        s.holdDuringSleep = true
         i.sleeping = true
         i.percent = 90
         XCTAssertEqual(ChargePolicy.decide(s, i, &m).osLimit, 80)
@@ -290,7 +290,7 @@ final class ChargePolicyTests: XCTestCase {
     func testSleepingNeverHoldsBelowTwenty() {
         var (s, i) = base()
         var m = ChargeMemory()
-        s.stopWhenSleeping = true
+        s.holdDuringSleep = true
         i.sleeping = true
         i.percent = 8
         XCTAssertEqual(ChargePolicy.decide(s, i, &m).osLimit, 20)
@@ -299,7 +299,7 @@ final class ChargePolicyTests: XCTestCase {
     func testWakeReturnsToUserLimit() {
         var (s, i) = base()
         var m = ChargeMemory()
-        s.stopWhenSleeping = true
+        s.holdDuringSleep = true
         i.sleeping = true
         XCTAssertEqual(ChargePolicy.decide(s, i, &m).reason, .sleeping)
 
@@ -312,21 +312,21 @@ final class ChargePolicyTests: XCTestCase {
     func testSleepingWithTheFeatureOffChargesNormally() {
         var (s, i) = base()
         var m = ChargeMemory()
-        s.stopWhenSleeping = false
+        s.holdDuringSleep = false
         i.sleeping = true
         let d = ChargePolicy.decide(s, i, &m)
         XCTAssertEqual(d.osLimit, 80)
         XCTAssertEqual(d.reason, .limit)
     }
 
-    func testSleepingBeatsDischarge() {
+    func testSleepingBeatsDrain() {
         var (s, i) = base()
         var m = ChargeMemory()
-        s.stopWhenSleeping = true
+        s.holdDuringSleep = true
         i.sleeping = true
         i.percent = 77
         s.limit = 40
-        i.manualDischarge = true
+        i.manualDrain = true
         let d = ChargePolicy.decide(s, i, &m)
         XCTAssertEqual(d.reason, .sleeping)
         XCTAssertNil(d.dischargeTo)
@@ -334,17 +334,17 @@ final class ChargePolicyTests: XCTestCase {
 
     /// Sleeping outranks sailing: asleep, the charge is held where it is, and sailing's own phase is not consulted, so
     /// it does not rest or resume on a charge nobody is watching.
-    func testSleepingBeatsSailing() {
+    func testSleepingBeatsDrift() {
         var (s, i) = base()
         var m = ChargeMemory()
-        s.sailingEnabled = true
-        s.stopWhenSleeping = true
+        s.driftEnabled = true
+        s.holdDuringSleep = true
         i.sleeping = true
         i.percent = 80          // at the limit: awake, sailing would rest here
         let d = ChargePolicy.decide(s, i, &m)
         XCTAssertEqual(d.reason, .sleeping)
         XCTAssertEqual(d.osLimit, 80)
-        XCTAssertFalse(m.sailingPhase, "sailing was consulted while asleep")
+        XCTAssertFalse(m.driftPhase, "sailing was consulted while asleep")
         i.percent = 78
         let lower = ChargePolicy.decide(s, i, &m)
         XCTAssertEqual(lower.reason, .sleeping)
@@ -353,36 +353,36 @@ final class ChargePolicyTests: XCTestCase {
 
     // ── Discharge ───────────────────────────────────────────────────────────
 
-    func testManualDischargeToLimit() {
+    func testManualDrainToLimit() {
         var (s, i) = base()
         var m = ChargeMemory()
         s.limit = 40
         i.percent = 77
-        i.manualDischarge = true
+        i.manualDrain = true
         let d = ChargePolicy.decide(s, i, &m)
         XCTAssertEqual(d.dischargeTo, 40)
         XCTAssertEqual(d.osLimit, 40)
         XCTAssertEqual(d.reason, .discharging)
-        XCTAssertFalse(d.endManualDischarge)
+        XCTAssertFalse(d.endManualDrain)
     }
 
     func testDischargeNotStartedAtOrBelowTarget() {
         var (s, i) = base()
         var m = ChargeMemory()
         s.limit = 40
-        i.manualDischarge = true
+        i.manualDrain = true
 
         i.percent = 40
         let atTarget = ChargePolicy.decide(s, i, &m)
         XCTAssertNil(atTarget.dischargeTo)
-        XCTAssertTrue(atTarget.endManualDischarge)
+        XCTAssertTrue(atTarget.endManualDrain)
         XCTAssertEqual(atTarget.reason, .discharged)
         XCTAssertEqual(atTarget.osLimit, 40)
 
         i.percent = 33
         let below = ChargePolicy.decide(s, i, &m)
         XCTAssertNil(below.dischargeTo)
-        XCTAssertTrue(below.endManualDischarge)
+        XCTAssertTrue(below.endManualDrain)
     }
 
     func testDischargeFloorIsTen() {
@@ -396,16 +396,16 @@ final class ChargePolicyTests: XCTestCase {
         var m = ChargeMemory()
         s.limit = 20
         i.percent = 77
-        i.manualDischarge = true
+        i.manualDrain = true
         let d = ChargePolicy.decide(s, i, &m)
         XCTAssertEqual(d.dischargeTo, 20)
         XCTAssertGreaterThanOrEqual(d.dischargeTo ?? 0, 10)
     }
 
-    func testAutomaticDischargeOnlyAboveLimit() {
+    func testAutomaticDrainOnlyAboveLimit() {
         var (s, i) = base()
         var m = ChargeMemory()
-        s.automaticDischarge = true
+        s.drainAutomatically = true
 
         i.percent = 85
         let above = ChargePolicy.decide(s, i, &m)
@@ -416,13 +416,13 @@ final class ChargePolicyTests: XCTestCase {
         let at = ChargePolicy.decide(s, i, &m)
         XCTAssertNil(at.dischargeTo)
         XCTAssertEqual(at.reason, .limit)
-        XCTAssertFalse(at.endManualDischarge, "automatic discharge has no pending request to end")
+        XCTAssertFalse(at.endManualDrain, "automatic discharge has no pending request to end")
     }
 
-    func testAutomaticDischargeOffNeverDischarges() {
+    func testAutomaticDrainOffNeverDrains() {
         var (s, i) = base()
         var m = ChargeMemory()
-        s.automaticDischarge = false
+        s.drainAutomatically = false
         i.percent = 95
         let d = ChargePolicy.decide(s, i, &m)
         XCTAssertNil(d.dischargeTo)
@@ -431,101 +431,101 @@ final class ChargePolicyTests: XCTestCase {
 
     // ── Sailing ─────────────────────────────────────────────────────────────
 
-    func testSailingBand() {
+    func testDriftBand() {
         var (s, i) = base()
         var m = ChargeMemory()
-        s.sailingEnabled = true
+        s.driftEnabled = true
 
         i.percent = 80
         let top = ChargePolicy.decide(s, i, &m)
-        XCTAssertTrue(m.sailingPhase)
+        XCTAssertTrue(m.driftPhase)
         XCTAssertEqual(top.osLimit, 80)
-        XCTAssertEqual(top.reason, .sailing)
+        XCTAssertEqual(top.reason, .drift)
 
         i.percent = 77
         let inside = ChargePolicy.decide(s, i, &m)
         XCTAssertEqual(inside.osLimit, 77, "resting: the limit follows the charge down so it does not recharge")
-        XCTAssertEqual(inside.reason, .sailing)
+        XCTAssertEqual(inside.reason, .drift)
 
         i.percent = 75
         let bottom = ChargePolicy.decide(s, i, &m)
-        XCTAssertFalse(m.sailingPhase)
+        XCTAssertFalse(m.driftPhase)
         XCTAssertEqual(bottom.osLimit, 80)
         XCTAssertEqual(bottom.reason, .limit)
     }
 
-    func testSailingDoesNotRestBeforeReachingTheLimit() {
+    func testDriftDoesNotRestBeforeReachingTheLimit() {
         var (s, i) = base()
         var m = ChargeMemory()
-        s.sailingEnabled = true
+        s.driftEnabled = true
         i.percent = 78
         let d = ChargePolicy.decide(s, i, &m)
-        XCTAssertFalse(m.sailingPhase)
+        XCTAssertFalse(m.driftPhase)
         XCTAssertEqual(d.osLimit, 80)
         XCTAssertEqual(d.reason, .limit)
     }
 
-    func testSailingOffForgetsItsPhase() {
+    func testDriftOffForgetsItsPhase() {
         var (s, i) = base()
         var m = ChargeMemory()
-        s.sailingEnabled = true
+        s.driftEnabled = true
         i.percent = 80
         _ = ChargePolicy.decide(s, i, &m)
-        XCTAssertTrue(m.sailingPhase)
+        XCTAssertTrue(m.driftPhase)
 
-        s.sailingEnabled = false
+        s.driftEnabled = false
         i.percent = 77
         let d = ChargePolicy.decide(s, i, &m)
-        XCTAssertFalse(m.sailingPhase)
+        XCTAssertFalse(m.driftPhase)
         XCTAssertEqual(d.osLimit, 80)
         XCTAssertEqual(d.reason, .limit)
     }
 
     /// A discharge outranks sailing: above the limit with a discharge wanted, the discharge runs, and sailing does not
     /// begin its rest at the limit it passes on the way down.
-    func testDischargeBeatsSailing() {
+    func testDrainBeatsDrift() {
         var (s, i) = base()
         var m = ChargeMemory()
-        s.sailingEnabled = true
-        i.manualDischarge = true
+        s.driftEnabled = true
+        i.manualDrain = true
         i.percent = 90
         let d = ChargePolicy.decide(s, i, &m)
         XCTAssertEqual(d.reason, .discharging)
         XCTAssertEqual(d.dischargeTo, ChargePolicy.dischargeTarget(limit: 80))
         XCTAssertEqual(d.osLimit, 80)
-        XCTAssertFalse(m.sailingPhase, "sailing was consulted while a discharge ran")
+        XCTAssertFalse(m.driftPhase, "sailing was consulted while a discharge ran")
     }
 
     /// A gap of 0 (a bad setting) is clamped to 1, so the band is not empty: the charge rests at the limit and
     /// recharges one below it. With whole-number charges the clamp cannot be told apart from no clamp at all (the
     /// recharge test `percent <= limit - gap` and the rest test `percent >= limit` meet either way), so this pins the
     /// band's behaviour at the bad values, and it is not a mutation check of the clamp.
-    func testSailingGapIsClampedToOneFromBelow() {
+    func testDriftGapIsClampedToOneFromBelow() {
         for bad in [0, -5] {
             var (s, i) = base()
             var m = ChargeMemory()
-            s.sailingEnabled = true
-            s.sailingGap = bad
+            s.driftEnabled = true
+            s.driftGap = bad
             i.percent = 80
-            XCTAssertEqual(ChargePolicy.decide(s, i, &m).reason, .sailing, "gap \(bad): not resting at the limit")
-            XCTAssertTrue(m.sailingPhase)
+            XCTAssertEqual(ChargePolicy.decide(s, i, &m).reason, .drift, "gap \(bad): not resting at the limit")
+            XCTAssertTrue(m.driftPhase)
             i.percent = 79
             let d = ChargePolicy.decide(s, i, &m)
             XCTAssertEqual(d.reason, .limit, "gap \(bad): not charging one below the limit")
-            XCTAssertFalse(m.sailingPhase)
+            XCTAssertFalse(m.driftPhase)
             XCTAssertEqual(d.osLimit, 80)
         }
     }
 
-    func testSailingGapIsClampedToThirty() {
+    func testDriftGapIsClampedToThirty() {
         var (s, i) = base()
         var m = ChargeMemory()
-        s.sailingEnabled = true
-        s.sailingGap = 99                                       // clamps to 30: the band is 50…80
+        s.driftEnabled = true
+        s.driftGap = 99                                       // clamps to 30: the band is 50…80
         i.percent = 80
         _ = ChargePolicy.decide(s, i, &m)
         i.percent = 55
-        XCTAssertEqual(ChargePolicy.decide(s, i, &m).reason, .sailing)
+        XCTAssertEqual(ChargePolicy.decide(s, i, &m).reason, .drift)
         i.percent = 50
         XCTAssertEqual(ChargePolicy.decide(s, i, &m).reason, .limit)
     }

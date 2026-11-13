@@ -33,12 +33,12 @@ final class ChargeSettingsTests: XCTestCase {
     private func observeEveryChargeKey(of s: Settings, _ report: @escaping (String) -> Void) -> [AnyObject] {
         [(Settings.Key.chargeControlEnabled, "enabled"),
          (Settings.Key.chargeLimit, "limit"),
-         (Settings.Key.chargeSailingEnabled, "sailing"),
-         (Settings.Key.chargeSailingGap, "gap"),
-         (Settings.Key.chargeHeatProtectionEnabled, "heat"),
+         (Settings.Key.chargeDriftEnabled, "drift"),
+         (Settings.Key.chargeDriftGap, "gap"),
+         (Settings.Key.chargePauseWhenHotEnabled, "heat"),
          (Settings.Key.chargeMaxTemperatureC, "temperature"),
-         (Settings.Key.chargeStopWhenSleeping, "sleeping"),
-         (Settings.Key.chargeAutomaticDischarge, "automatic")]
+         (Settings.Key.chargeHoldDuringSleep, "sleeping"),
+         (Settings.Key.chargeDrainAutomatically, "automatic")]
             .map { key, name in s.observe(key) { report(name) } }
     }
 
@@ -46,12 +46,12 @@ final class ChargeSettingsTests: XCTestCase {
     private func changeEverything(through s: Settings) {
         s.chargeControlEnabled = true
         s.chargeLimit = 63
-        s.chargeSailingEnabled = true
-        s.chargeSailingGap = 9
-        s.chargeHeatProtectionEnabled = true
+        s.chargeDriftEnabled = true
+        s.chargeDriftGap = 9
+        s.chargePauseWhenHotEnabled = true
         s.chargeMaxTemperatureC = 41.5
-        s.chargeStopWhenSleeping = true
-        s.chargeAutomaticDischarge = true
+        s.chargeHoldDuringSleep = true
+        s.chargeDrainAutomatically = true
     }
 
     // ── Defaults ────────────────────────────────────────────────────────────
@@ -62,12 +62,12 @@ final class ChargeSettingsTests: XCTestCase {
         let s = Settings(defaults: defaults)
         XCTAssertFalse(s.chargeControlEnabled, "off until asked for: it changes macOS's own charge limit")
         XCTAssertEqual(s.chargeLimit, 80)
-        XCTAssertFalse(s.chargeSailingEnabled)
-        XCTAssertEqual(s.chargeSailingGap, 5)
-        XCTAssertFalse(s.chargeHeatProtectionEnabled)
+        XCTAssertFalse(s.chargeDriftEnabled)
+        XCTAssertEqual(s.chargeDriftGap, 5)
+        XCTAssertFalse(s.chargePauseWhenHotEnabled)
         XCTAssertEqual(s.chargeMaxTemperatureC, 35)
-        XCTAssertFalse(s.chargeStopWhenSleeping)
-        XCTAssertFalse(s.chargeAutomaticDischarge)
+        XCTAssertFalse(s.chargeHoldDuringSleep)
+        XCTAssertFalse(s.chargeDrainAutomatically)
         XCTAssertNil(s.chargeRestoreRecord)
     }
 
@@ -94,14 +94,14 @@ final class ChargeSettingsTests: XCTestCase {
 
     func testGapAndTemperatureClamp() {
         let s = Settings(defaults: defaults)
-        s.chargeSailingGap = 0
-        XCTAssertEqual(s.chargeSailingGap, 1, "a gap of 0 leaves Sailing Mode no band to rest in")
-        XCTAssertEqual(stored("chargeSailingGap") as? Int, 1)
-        s.chargeSailingGap = 99
-        XCTAssertEqual(s.chargeSailingGap, 30)
-        XCTAssertEqual(stored("chargeSailingGap") as? Int, 30)
-        s.chargeSailingGap = 7
-        XCTAssertEqual(s.chargeSailingGap, 7)
+        s.chargeDriftGap = 0
+        XCTAssertEqual(s.chargeDriftGap, 1, "a gap of 0 leaves Sailing Mode no band to rest in")
+        XCTAssertEqual(stored("chargeDriftGap") as? Int, 1)
+        s.chargeDriftGap = 99
+        XCTAssertEqual(s.chargeDriftGap, 30)
+        XCTAssertEqual(stored("chargeDriftGap") as? Int, 30)
+        s.chargeDriftGap = 7
+        XCTAssertEqual(s.chargeDriftGap, 7)
 
         s.chargeMaxTemperatureC = 10
         XCTAssertEqual(s.chargeMaxTemperatureC, 25, "a maximum no pack is ever below would hold charging for good")
@@ -175,9 +175,9 @@ final class ChargeSettingsTests: XCTestCase {
             (Double.nan, 5), (Double.infinity, 5), (-Double.infinity, 5),
         ]
         for (raw, want) in gaps {
-            store(17, as: "chargeSailingGap")
-            store(raw, as: "chargeSailingGap")
-            XCTAssertEqual(Settings(defaults: defaults).chargeSailingGap, want, "chargeSailingGap stored as \(raw)")
+            store(17, as: "chargeDriftGap")
+            store(raw, as: "chargeDriftGap")
+            XCTAssertEqual(Settings(defaults: defaults).chargeDriftGap, want, "chargeDriftGap stored as \(raw)")
         }
 
         let temperatures: [(stored: Any, want: Double)] = [
@@ -206,10 +206,10 @@ final class ChargeSettingsTests: XCTestCase {
     func testEachSwitchIsStoredOnItsOwn() {
         let switches: [(name: String, path: ReferenceWritableKeyPath<Settings, Bool>)] = [
             ("chargeControlEnabled", \.chargeControlEnabled),
-            ("chargeSailingEnabled", \.chargeSailingEnabled),
-            ("chargeHeatProtectionEnabled", \.chargeHeatProtectionEnabled),
-            ("chargeStopWhenSleeping", \.chargeStopWhenSleeping),
-            ("chargeAutomaticDischarge", \.chargeAutomaticDischarge),
+            ("chargeDriftEnabled", \.chargeDriftEnabled),
+            ("chargePauseWhenHotEnabled", \.chargePauseWhenHotEnabled),
+            ("chargeHoldDuringSleep", \.chargeHoldDuringSleep),
+            ("chargeDrainAutomatically", \.chargeDrainAutomatically),
         ]
         let s = Settings(defaults: defaults)
         for (name, path) in switches {
@@ -224,14 +224,14 @@ final class ChargeSettingsTests: XCTestCase {
     func testNumbersPersistAcrossHandlesUnderTheirOwnKeys() {
         let s = Settings(defaults: defaults)
         s.chargeLimit = 63
-        s.chargeSailingGap = 9
+        s.chargeDriftGap = 9
         s.chargeMaxTemperatureC = 41.5
         let again = Settings(defaults: defaults)
         XCTAssertEqual(again.chargeLimit, 63)
-        XCTAssertEqual(again.chargeSailingGap, 9)
+        XCTAssertEqual(again.chargeDriftGap, 9)
         XCTAssertEqual(again.chargeMaxTemperatureC, 41.5)
         XCTAssertEqual(stored("chargeLimit") as? Int, 63)
-        XCTAssertEqual(stored("chargeSailingGap") as? Int, 9)
+        XCTAssertEqual(stored("chargeDriftGap") as? Int, 9)
         XCTAssertEqual(stored("chargeMaxTemperatureC") as? Double, 41.5)
     }
 
@@ -245,7 +245,7 @@ final class ChargeSettingsTests: XCTestCase {
         let tokens = observeEveryChargeKey(of: s) { fired.append($0) }
 
         changeEverything(through: s)
-        XCTAssertEqual(fired, ["enabled", "limit", "sailing", "gap", "heat", "temperature", "sleeping", "automatic"])
+        XCTAssertEqual(fired, ["enabled", "limit", "drift", "gap", "heat", "temperature", "sleeping", "automatic"])
 
         // The same values again tell nobody anything.
         fired = []
@@ -269,7 +269,7 @@ final class ChargeSettingsTests: XCTestCase {
 
         changeEverything(through: Settings(defaults: defaults))
 
-        XCTAssertEqual(fired, ["enabled", "limit", "sailing", "gap", "heat", "temperature", "sleeping", "automatic"])
+        XCTAssertEqual(fired, ["enabled", "limit", "drift", "gap", "heat", "temperature", "sleeping", "automatic"])
         XCTAssertEqual(tokens.count, 8)
     }
 
@@ -343,52 +343,52 @@ final class ChargeSettingsTests: XCTestCase {
     // ── What the policy is handed ───────────────────────────────────────────
 
     /// Each field of the snapshot comes from its own setting. Two arrangements, so that no two switches agree in
-    /// both: a snapshot that took `stopWhenSleeping` from the automatic-discharge switch would pass either alone.
+    /// both: a snapshot that took `holdDuringSleep` from the automatic-discharge switch would pass either alone.
     func testSnapshotReadsEachFieldFromItsOwnSetting() {
         let s = Settings(defaults: defaults)
         XCTAssertEqual(s.chargeSettingsSnapshot(),
-                       ChargeSettingsSnapshot(limit: 80, sailingEnabled: false, sailingGap: 5,
-                                              heatProtectionEnabled: false, maxTemperatureC: 35,
-                                              stopWhenSleeping: false, automaticDischarge: false))
+                       ChargeSettingsSnapshot(limit: 80, driftEnabled: false, driftGap: 5,
+                                              pauseWhenHotEnabled: false, maxTemperatureC: 35,
+                                              holdDuringSleep: false, drainAutomatically: false))
         s.chargeLimit = 63
-        s.chargeSailingEnabled = true
-        s.chargeSailingGap = 9
+        s.chargeDriftEnabled = true
+        s.chargeDriftGap = 9
         s.chargeMaxTemperatureC = 41.5
-        s.chargeStopWhenSleeping = true
+        s.chargeHoldDuringSleep = true
         XCTAssertEqual(s.chargeSettingsSnapshot(),
-                       ChargeSettingsSnapshot(limit: 63, sailingEnabled: true, sailingGap: 9,
-                                              heatProtectionEnabled: false, maxTemperatureC: 41.5,
-                                              stopWhenSleeping: true, automaticDischarge: false))
-        s.chargeSailingEnabled = false
-        s.chargeHeatProtectionEnabled = true
-        s.chargeStopWhenSleeping = false
-        s.chargeAutomaticDischarge = true
+                       ChargeSettingsSnapshot(limit: 63, driftEnabled: true, driftGap: 9,
+                                              pauseWhenHotEnabled: false, maxTemperatureC: 41.5,
+                                              holdDuringSleep: true, drainAutomatically: false))
+        s.chargeDriftEnabled = false
+        s.chargePauseWhenHotEnabled = true
+        s.chargeHoldDuringSleep = false
+        s.chargeDrainAutomatically = true
         XCTAssertEqual(s.chargeSettingsSnapshot(),
-                       ChargeSettingsSnapshot(limit: 63, sailingEnabled: false, sailingGap: 9,
-                                              heatProtectionEnabled: true, maxTemperatureC: 41.5,
-                                              stopWhenSleeping: false, automaticDischarge: true))
+                       ChargeSettingsSnapshot(limit: 63, driftEnabled: false, driftGap: 9,
+                                              pauseWhenHotEnabled: true, maxTemperatureC: 41.5,
+                                              holdDuringSleep: false, drainAutomatically: true))
     }
 
     /// The snapshot is what `ChargePolicy` decides from, and the policy trusts the limit and the maximum temperature
     /// as given. So what is on disk out of range must already be inside the range by the time it is in a snapshot.
     func testSnapshotCarriesClampedValues() {
         store(150, as: "chargeLimit")
-        store(0, as: "chargeSailingGap")
+        store(0, as: "chargeDriftGap")
         store(10.0, as: "chargeMaxTemperatureC")
-        store(true, as: "chargeSailingEnabled")
-        store(true, as: "chargeHeatProtectionEnabled")
+        store(true, as: "chargeDriftEnabled")
+        store(true, as: "chargePauseWhenHotEnabled")
         XCTAssertEqual(Settings(defaults: defaults).chargeSettingsSnapshot(),
-                       ChargeSettingsSnapshot(limit: 100, sailingEnabled: true, sailingGap: 1,
-                                              heatProtectionEnabled: true, maxTemperatureC: 25,
-                                              stopWhenSleeping: false, automaticDischarge: false))
+                       ChargeSettingsSnapshot(limit: 100, driftEnabled: true, driftGap: 1,
+                                              pauseWhenHotEnabled: true, maxTemperatureC: 25,
+                                              holdDuringSleep: false, drainAutomatically: false))
 
         store(5, as: "chargeLimit")
-        store(99, as: "chargeSailingGap")
+        store(99, as: "chargeDriftGap")
         store("hot", as: "chargeMaxTemperatureC")
         XCTAssertEqual(Settings(defaults: defaults).chargeSettingsSnapshot(),
-                       ChargeSettingsSnapshot(limit: 20, sailingEnabled: true, sailingGap: 30,
-                                              heatProtectionEnabled: true, maxTemperatureC: 35,
-                                              stopWhenSleeping: false, automaticDischarge: false))
+                       ChargeSettingsSnapshot(limit: 20, driftEnabled: true, driftGap: 30,
+                                              pauseWhenHotEnabled: true, maxTemperatureC: 35,
+                                              holdDuringSleep: false, drainAutomatically: false))
     }
 
     /// Why the limit is clamped here and not left to the policy. The policy clamps the limit it gives macOS, but a
@@ -396,11 +396,11 @@ final class ChargeSettingsTests: XCTestCase {
     /// would run a battery at 60% down to 10% on the adapter; read as 20, the drain stops at 20.
     func testAStoredLimitBelowTheRangeCannotDrainThePackBelowIt() {
         store(5, as: "chargeLimit")
-        store(true, as: "chargeAutomaticDischarge")
+        store(true, as: "chargeDrainAutomatically")
         var memory = ChargeMemory()
         let decision = ChargePolicy.decide(Settings(defaults: defaults).chargeSettingsSnapshot(),
                                            ChargeInputs(percent: 60, onAC: true, temperatureC: 30,
-                                                        sleeping: false, topUp: false, manualDischarge: false,
+                                                        sleeping: false, fullCharge: false, manualDrain: false,
                                                         now: Date(timeIntervalSince1970: 0)),
                                            &memory)
         XCTAssertEqual(decision, ChargeDecision(osLimit: 20, dischargeTo: 20, reason: .discharging))
@@ -412,11 +412,11 @@ final class ChargeSettingsTests: XCTestCase {
     /// charges to the limit.
     func testAStoredMaximumOfZeroDoesNotCallEveryPackHot() {
         store(0, as: "chargeMaxTemperatureC")
-        store(true, as: "chargeHeatProtectionEnabled")
+        store(true, as: "chargePauseWhenHotEnabled")
         var memory = ChargeMemory()
         let decision = ChargePolicy.decide(Settings(defaults: defaults).chargeSettingsSnapshot(),
                                            ChargeInputs(percent: 50, onAC: true, temperatureC: 24,
-                                                        sleeping: false, topUp: false, manualDischarge: false,
+                                                        sleeping: false, fullCharge: false, manualDrain: false,
                                                         now: Date(timeIntervalSince1970: 0)),
                                            &memory)
         XCTAssertEqual(decision, ChargeDecision(osLimit: 80, dischargeTo: nil, reason: .limit))
@@ -426,11 +426,11 @@ final class ChargeSettingsTests: XCTestCase {
     /// switch Heat Protection off without saying so. It reads as 35, and a pack at 40 °C is held where it is.
     func testAStoredMaximumThatIsNotANumberStillProtects() {
         store(Double.nan, as: "chargeMaxTemperatureC")
-        store(true, as: "chargeHeatProtectionEnabled")
+        store(true, as: "chargePauseWhenHotEnabled")
         var memory = ChargeMemory()
         let decision = ChargePolicy.decide(Settings(defaults: defaults).chargeSettingsSnapshot(),
                                            ChargeInputs(percent: 50, onAC: true, temperatureC: 40,
-                                                        sleeping: false, topUp: false, manualDischarge: false,
+                                                        sleeping: false, fullCharge: false, manualDrain: false,
                                                         now: Date(timeIntervalSince1970: 0)),
                                            &memory)
         XCTAssertEqual(decision, ChargeDecision(osLimit: 50, dischargeTo: nil, reason: .heat))

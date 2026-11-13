@@ -425,7 +425,7 @@ final class ChargeControlConnectionTests: XCTestCase {
     func testADischargeKeepsTheConnectionUntilItStops() {
         battery = ChargeControllerTests.state(90)
         let c = make()
-        c.pressDischarge()
+        c.pressDrain()
         XCTAssertEqual(wire.sent, [.discharge(toPercent: 80)])
         XCTAssertTrue(connection.holders.contains(.charge))
         let closes = wire.disconnects
@@ -448,11 +448,11 @@ final class ChargeControlConnectionTests: XCTestCase {
     func testAHelperThatDiesUnderADischargeIsGreetedAgain() {
         battery = ChargeControllerTests.state(90)
         let c = make()
-        c.pressDischarge()
+        c.pressDrain()
         XCTAssertEqual(wire.sent, [.discharge(toPercent: 80)])
         let connects = wire.connectsAsked
         wire.die()
-        c.pressDischarge()   // Stop
+        c.pressDrain()   // Stop
         XCTAssertGreaterThan(wire.connectsAsked, connects, "nothing greeted the helper again")
         XCTAssertEqual(wire.sent.last, .stopDischarge)
         XCTAssertEqual(wire.reachedAHelper.last, true, "the stop was not asked of a fresh helper")
@@ -466,7 +466,7 @@ final class ChargeControlConnectionTests: XCTestCase {
     func testAHelperThatDiesBeforeTheTargetIsReachedIsGreetedAgain() {
         battery = ChargeControllerTests.state(90)
         let c = make()
-        c.pressDischarge()
+        c.pressDrain()
         wire.die()
         battery = ChargeControllerTests.state(80)
         c.tick()
@@ -480,7 +480,7 @@ final class ChargeControlConnectionTests: XCTestCase {
     func testSwitchingOffAfterTheHelperDiedStillReconnects() {
         battery = ChargeControllerTests.state(90)
         let c = make()
-        c.pressDischarge()
+        c.pressDrain()
         let connects = wire.connectsAsked
         wire.die()
         settings.chargeControlEnabled = false

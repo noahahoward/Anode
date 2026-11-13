@@ -44,18 +44,18 @@ final class ChargeControlFeature: BetaFeature {
     let limitLabel = NSTextField(labelWithString: "Limit")
     let limitSlider = ChargeControlFeature.makeLimitSlider()
     let limitValueLabel = NSTextField(labelWithString: "")
-    let dischargeButton = NSButton(title: "Discharge", target: nil, action: nil)
-    let topUpButton = NSButton(title: "Top Up", target: nil, action: nil)
-    let sailingCheckbox = NSButton(checkboxWithTitle: "Sailing Mode", target: nil, action: nil)
-    let sailingLabel = NSTextField(labelWithString: "")
-    let sailingStepper = ChargeControlFeature.makeStepper(Double(Settings.chargeSailingGapRange.lowerBound),
-                                                          Double(Settings.chargeSailingGapRange.upperBound))
+    let drainButton = NSButton(title: "Discharge", target: nil, action: nil)
+    let fullChargeButton = NSButton(title: "Top Up", target: nil, action: nil)
+    let driftCheckbox = NSButton(checkboxWithTitle: "Sailing Mode", target: nil, action: nil)
+    let driftLabel = NSTextField(labelWithString: "")
+    let driftStepper = ChargeControlFeature.makeStepper(Double(Settings.chargeDriftGapRange.lowerBound),
+                                                          Double(Settings.chargeDriftGapRange.upperBound))
     let heatCheckbox = NSButton(checkboxWithTitle: "Heat Protection", target: nil, action: nil)
     let heatLabel = NSTextField(labelWithString: "")
     let heatStepper = ChargeControlFeature.makeStepper(Settings.chargeMaxTemperatureRange.lowerBound,
                                                        Settings.chargeMaxTemperatureRange.upperBound)
     let sleepCheckbox = NSButton(checkboxWithTitle: "Stop charging when sleeping", target: nil, action: nil)
-    let autoDischargeCheckbox = NSButton(checkboxWithTitle: "Discharge automatically to the limit", target: nil, action: nil)
+    let drainAutomaticallyCheckbox = NSButton(checkboxWithTitle: "Discharge automatically to the limit", target: nil, action: nil)
     let statusLabel = BetaFeaturesWindowController.wrapping("")
     let installButton = NSButton(title: "Install Helper\u{2026}", target: nil, action: nil)
     /// What the install started here last said: it runs in the Fans tab's flow, whose own strip is not on screen.
@@ -73,11 +73,11 @@ final class ChargeControlFeature: BetaFeature {
 
     // ── Words ───────────────────────────────────────────────────────────────
 
-    static let topUpTip = "Charge to 100% this once. It ends when you unplug."
-    static let topUpBlockedTip = "Top Up needs the charger."
-    static let dischargeTip = "Run the Mac from the battery while it stays plugged in, until the charge is down to the "
+    static let fullChargeTip = "Charge to 100% this once. It ends when you unplug."
+    static let fullChargeBlockedTip = "Top Up needs the charger."
+    static let drainTip = "Run the Mac from the battery while it stays plugged in, until the charge is down to the "
         + "limit. Needs the Anode helper."
-    static let dischargeBlockedTip = "Discharge needs the charger and a battery above the limit."
+    static let drainBlockedTip = "Discharge needs the charger and a battery above the limit."
     /// The three holds pause where the charge is, which macOS can do by itself only at its own steps.
     static let holdNeedsHelperTip = "Without the Anode helper it can pause only at 80, 85, 90, 95 or 100%, and the "
         + "Mac charges on to the next of those."
@@ -122,17 +122,17 @@ final class ChargeControlFeature: BetaFeature {
     static func reasonText(_ r: ChargeReason) -> String {
         switch r {
         case .limit: return "your limit"
-        case .topUp: return "Top Up"
+        case .fullCharge: return "Top Up"
         case .heat: return "Heat Protection"
         case .sleeping: return "sleeping"
-        case .sailing: return "sailing"
+        case .drift: return "sailing"
         case .discharging: return "discharging"
         case .discharged: return "discharged"
         }
     }
 
     /// "at": the policy charges again once the charge is down to the limit minus the gap, not only below it.
-    static func sailingText(gap: Int) -> String { "recharge at limit \u{2212} \(gap)%" }
+    static func driftText(gap: Int) -> String { "recharge at limit \u{2212} \(gap)%" }
 
     /// "at": the policy pauses once the pack reaches the temperature, not only above it.
     static func heatText(maxC: Double) -> String {
@@ -181,26 +181,26 @@ final class ChargeControlFeature: BetaFeature {
         limitValueLabel.widthAnchor.constraint(equalToConstant: 44).isActive = true
         // The slider and the steppers have no title of their own for VoiceOver to read.
         limitSlider.setAccessibilityLabel("Charge limit")
-        sailingStepper.setAccessibilityLabel("Sailing Mode: how far below the limit to recharge")
+        driftStepper.setAccessibilityLabel("Sailing Mode: how far below the limit to recharge")
         heatStepper.setAccessibilityLabel("Heat Protection: temperature to pause at")
 
-        dischargeButton.target = self
-        dischargeButton.action = #selector(dischargePressed)
-        dischargeButton.toolTip = Self.dischargeTip
-        topUpButton.target = self
-        topUpButton.action = #selector(topUpPressed)
-        topUpButton.toolTip = Self.topUpTip
-        for b in [dischargeButton, topUpButton, installButton] { b.bezelStyle = .rounded }
+        drainButton.target = self
+        drainButton.action = #selector(drainPressed)
+        drainButton.toolTip = Self.drainTip
+        fullChargeButton.target = self
+        fullChargeButton.action = #selector(fullChargePressed)
+        fullChargeButton.toolTip = Self.fullChargeTip
+        for b in [drainButton, fullChargeButton, installButton] { b.bezelStyle = .rounded }
         installButton.controlSize = .small
         installButton.target = self
         installButton.action = #selector(installPressed)
 
-        sailingCheckbox.target = self
-        sailingCheckbox.action = #selector(sailingToggled)
-        sailingCheckbox.toolTip = "Once the battery reaches the limit, let it drift down, and charge again only when it "
+        driftCheckbox.target = self
+        driftCheckbox.action = #selector(driftToggled)
+        driftCheckbox.toolTip = "Once the battery reaches the limit, let it drift down, and charge again only when it "
             + "has fallen this far below the limit. " + Self.holdNeedsHelperTip
-        sailingStepper.target = self
-        sailingStepper.action = #selector(sailingGapStepped)
+        driftStepper.target = self
+        driftStepper.action = #selector(driftGapStepped)
         heatCheckbox.target = self
         heatCheckbox.action = #selector(heatToggled)
         heatCheckbox.toolTip = "Pause charging while the battery is this warm, and for five minutes after it cools. "
@@ -211,9 +211,9 @@ final class ChargeControlFeature: BetaFeature {
         sleepCheckbox.action = #selector(sleepToggled)
         sleepCheckbox.toolTip = "While the Mac sleeps on the adapter, the charge stays where it was. "
             + Self.holdNeedsHelperTip
-        autoDischargeCheckbox.target = self
-        autoDischargeCheckbox.action = #selector(autoDischargeToggled)
-        autoDischargeCheckbox.toolTip = "Whenever the battery is above the limit on the adapter, run from the battery "
+        drainAutomaticallyCheckbox.target = self
+        drainAutomaticallyCheckbox.action = #selector(drainAutomaticallyToggled)
+        drainAutomaticallyCheckbox.toolTip = "Whenever the battery is above the limit on the adapter, run from the battery "
             + "until it is down to the limit. Needs the Anode helper."
 
         func row(_ views: [NSView]) -> NSStackView {
@@ -223,20 +223,20 @@ final class ChargeControlFeature: BetaFeature {
             return r
         }
         let limitRow = row([limitLabel, limitSlider, limitValueLabel])
-        let buttonRow = row([dischargeButton, topUpButton])
-        let sailingRow = row([sailingCheckbox, sailingLabel, sailingStepper])
+        let buttonRow = row([drainButton, fullChargeButton])
+        let driftRow = row([driftCheckbox, driftLabel, driftStepper])
         let heatRow = row([heatCheckbox, heatLabel, heatStepper])
-        rows = [limitRow, buttonRow, sailingRow, heatRow, sleepCheckbox, autoDischargeCheckbox]
+        rows = [limitRow, buttonRow, driftRow, heatRow, sleepCheckbox, drainAutomaticallyCheckbox]
 
         let column = NSStackView(views: [enableCheckbox] + rows + [statusLabel, installButton, installNoteLabel])
         column.orientation = .vertical
         column.alignment = .leading
         column.spacing = 8
 
-        let keys = [Settings.Key.chargeControlEnabled, Settings.Key.chargeLimit, Settings.Key.chargeSailingEnabled,
-                    Settings.Key.chargeSailingGap, Settings.Key.chargeHeatProtectionEnabled,
-                    Settings.Key.chargeMaxTemperatureC, Settings.Key.chargeStopWhenSleeping,
-                    Settings.Key.chargeAutomaticDischarge]
+        let keys = [Settings.Key.chargeControlEnabled, Settings.Key.chargeLimit, Settings.Key.chargeDriftEnabled,
+                    Settings.Key.chargeDriftGap, Settings.Key.chargePauseWhenHotEnabled,
+                    Settings.Key.chargeMaxTemperatureC, Settings.Key.chargeHoldDuringSleep,
+                    Settings.Key.chargeDrainAutomatically]
         tokens = keys.map { settings.observe($0) { [weak self] in self?.redraw() } }
         redraw()
         return column
@@ -275,8 +275,8 @@ final class ChargeControlFeature: BetaFeature {
         limitValueLabel.stringValue = "\(settings.chargeLimit)%"
     }
 
-    @objc private func dischargePressed() { controller()?.pressDischarge(); redraw() }
-    @objc private func topUpPressed() { controller()?.pressTopUp(); redraw() }
+    @objc private func drainPressed() { controller()?.pressDrain(); redraw() }
+    @objc private func fullChargePressed() { controller()?.pressFullCharge(); redraw() }
     /// The install says how it is going here, as it goes: waiting, a dialog already up, how it ended.
     @objc private func installPressed() {
         installNote = nil
@@ -290,12 +290,12 @@ final class ChargeControlFeature: BetaFeature {
         }
     }
 
-    @objc private func sailingToggled() { settings.chargeSailingEnabled = sailingCheckbox.state == .on }
-    @objc private func sailingGapStepped() { settings.chargeSailingGap = sailingStepper.integerValue }
-    @objc private func heatToggled() { settings.chargeHeatProtectionEnabled = heatCheckbox.state == .on }
+    @objc private func driftToggled() { settings.chargeDriftEnabled = driftCheckbox.state == .on }
+    @objc private func driftGapStepped() { settings.chargeDriftGap = driftStepper.integerValue }
+    @objc private func heatToggled() { settings.chargePauseWhenHotEnabled = heatCheckbox.state == .on }
     @objc private func heatStepped() { settings.chargeMaxTemperatureC = heatStepper.doubleValue.rounded() }
-    @objc private func sleepToggled() { settings.chargeStopWhenSleeping = sleepCheckbox.state == .on }
-    @objc private func autoDischargeToggled() { settings.chargeAutomaticDischarge = autoDischargeCheckbox.state == .on }
+    @objc private func sleepToggled() { settings.chargeHoldDuringSleep = sleepCheckbox.state == .on }
+    @objc private func drainAutomaticallyToggled() { settings.chargeDrainAutomatically = drainAutomaticallyCheckbox.state == .on }
 
     // ── Showing ─────────────────────────────────────────────────────────────
 
@@ -341,27 +341,27 @@ final class ChargeControlFeature: BetaFeature {
         // cable is out, and a discharge ends at the limit. One already pressed can always be pressed again to stop.
         let cable = c?.isCablePresent ?? false
         let percent = c?.batteryPercent
-        let topUpRequested = c?.isTopUpRequested == true, dischargeRequested = c?.isDischargeRequested == true
+        let fullChargeRequested = c?.isFullChargeRequested == true, drainRequested = c?.isDrainRequested == true
         let aboveTarget = percent.map { $0 > ChargePolicy.dischargeTarget(limit: settings.chargeLimit) } ?? true
-        let topUpCan = topUpRequested || cable
-        let dischargeCan = dischargeRequested || (cable && aboveTarget)
+        let fullChargeCan = fullChargeRequested || cable
+        let drainCan = drainRequested || (cable && aboveTarget)
         // Not while it waits out the delay after an unclean exit: it holds nothing yet, and a press would do nothing.
         let waiting = c?.isWaitingToStart == true
         let pressable = usable && c != nil && !waiting
-        dischargeButton.title = dischargeRequested ? "Stop Discharge" : "Discharge"
-        topUpButton.title = topUpRequested ? "Cancel Top Up" : "Top Up"
-        dischargeButton.isEnabled = pressable && dischargeCan
-        topUpButton.isEnabled = pressable && topUpCan
-        dischargeButton.toolTip = pressable && !dischargeCan ? Self.dischargeBlockedTip : Self.dischargeTip
-        topUpButton.toolTip = pressable && !topUpCan ? Self.topUpBlockedTip : Self.topUpTip
+        drainButton.title = drainRequested ? "Stop Discharge" : "Discharge"
+        fullChargeButton.title = fullChargeRequested ? "Cancel Top Up" : "Top Up"
+        drainButton.isEnabled = pressable && drainCan
+        fullChargeButton.isEnabled = pressable && fullChargeCan
+        drainButton.toolTip = pressable && !drainCan ? Self.drainBlockedTip : Self.drainTip
+        fullChargeButton.toolTip = pressable && !fullChargeCan ? Self.fullChargeBlockedTip : Self.fullChargeTip
 
-        let sailing = settings.chargeSailingEnabled, heat = settings.chargeHeatProtectionEnabled
-        sailingCheckbox.state = sailing ? .on : .off
-        sailingCheckbox.isEnabled = usable
-        sailingStepper.integerValue = settings.chargeSailingGap
-        sailingStepper.isEnabled = usable && sailing
-        sailingLabel.stringValue = Self.sailingText(gap: settings.chargeSailingGap)
-        sailingLabel.textColor = usable && sailing ? .labelColor : .disabledControlTextColor
+        let drift = settings.chargeDriftEnabled, heat = settings.chargePauseWhenHotEnabled
+        driftCheckbox.state = drift ? .on : .off
+        driftCheckbox.isEnabled = usable
+        driftStepper.integerValue = settings.chargeDriftGap
+        driftStepper.isEnabled = usable && drift
+        driftLabel.stringValue = Self.driftText(gap: settings.chargeDriftGap)
+        driftLabel.textColor = usable && drift ? .labelColor : .disabledControlTextColor
 
         heatCheckbox.state = heat ? .on : .off
         heatCheckbox.isEnabled = usable
@@ -370,10 +370,10 @@ final class ChargeControlFeature: BetaFeature {
         heatLabel.stringValue = Self.heatText(maxC: settings.chargeMaxTemperatureC)
         heatLabel.textColor = usable && heat ? .labelColor : .disabledControlTextColor
 
-        sleepCheckbox.state = settings.chargeStopWhenSleeping ? .on : .off
+        sleepCheckbox.state = settings.chargeHoldDuringSleep ? .on : .off
         sleepCheckbox.isEnabled = usable
-        autoDischargeCheckbox.state = settings.chargeAutomaticDischarge ? .on : .off
-        autoDischargeCheckbox.isEnabled = usable
+        drainAutomaticallyCheckbox.state = settings.chargeDrainAutomatically ? .on : .off
+        drainAutomaticallyCheckbox.isEnabled = usable
 
         for r in rows { r.isHidden = !on }
         var facts = Facts(percent: percent, cablePresent: cable, dischargeInForce: c?.dischargeInForce)

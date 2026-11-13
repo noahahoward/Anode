@@ -5,25 +5,25 @@ import Foundation
 public struct ChargeSettingsSnapshot: Equatable {
     /// The person's charge limit, 20…100.
     public var limit: Int
-    public var sailingEnabled: Bool
+    public var driftEnabled: Bool
     /// How far below the limit Sailing Mode rests before charging again, 1…30.
-    public var sailingGap: Int
-    public var heatProtectionEnabled: Bool
+    public var driftGap: Int
+    public var pauseWhenHotEnabled: Bool
     public var maxTemperatureC: Double
-    public var stopWhenSleeping: Bool
-    public var automaticDischarge: Bool
+    public var holdDuringSleep: Bool
+    public var drainAutomatically: Bool
 
     public init(limit: Int,
-                sailingEnabled: Bool, sailingGap: Int,
-                heatProtectionEnabled: Bool, maxTemperatureC: Double,
-                stopWhenSleeping: Bool, automaticDischarge: Bool) {
+                driftEnabled: Bool, driftGap: Int,
+                pauseWhenHotEnabled: Bool, maxTemperatureC: Double,
+                holdDuringSleep: Bool, drainAutomatically: Bool) {
         self.limit = limit
-        self.sailingEnabled = sailingEnabled
-        self.sailingGap = sailingGap
-        self.heatProtectionEnabled = heatProtectionEnabled
+        self.driftEnabled = driftEnabled
+        self.driftGap = driftGap
+        self.pauseWhenHotEnabled = pauseWhenHotEnabled
         self.maxTemperatureC = maxTemperatureC
-        self.stopWhenSleeping = stopWhenSleeping
-        self.automaticDischarge = automaticDischarge
+        self.holdDuringSleep = holdDuringSleep
+        self.drainAutomatically = drainAutomatically
     }
 }
 
@@ -35,19 +35,19 @@ public struct ChargeInputs: Equatable {
     /// True between willSleep and didWake.
     public var sleeping: Bool
     /// The person pressed Top Up and has not unplugged since.
-    public var topUp: Bool
+    public var fullCharge: Bool
     /// The person pressed Discharge and it has not finished.
-    public var manualDischarge: Bool
+    public var manualDrain: Bool
     public var now: Date
 
     public init(percent: Int, onAC: Bool, temperatureC: Double?,
-                sleeping: Bool, topUp: Bool, manualDischarge: Bool, now: Date) {
+                sleeping: Bool, fullCharge: Bool, manualDrain: Bool, now: Date) {
         self.percent = percent
         self.onAC = onAC
         self.temperatureC = temperatureC
         self.sleeping = sleeping
-        self.topUp = topUp
-        self.manualDischarge = manualDischarge
+        self.fullCharge = fullCharge
+        self.manualDrain = manualDrain
         self.now = now
     }
 }
@@ -57,7 +57,7 @@ public struct ChargeInputs: Equatable {
 public struct ChargeMemory: Equatable {
     /// True = resting inside the sail band. Needed because "rest until the charge falls to the
     /// bottom of the band" cannot be read off one percentage.
-    public var sailingPhase: Bool = false
+    public var driftPhase: Bool = false
     /// Set while Heat Protection is holding the charge.
     public var heatPausedSince: Date? = nil
     /// When the pack was first seen cool again after a pause; the five minutes run from here.
@@ -66,7 +66,7 @@ public struct ChargeMemory: Equatable {
 }
 
 public enum ChargeReason: String {
-    case limit, topUp, heat, sleeping, sailing, discharging, discharged
+    case limit, fullCharge, heat, sleeping, drift, discharging, discharged
 }
 
 public struct ChargeDecision: Equatable {
@@ -76,17 +76,17 @@ public struct ChargeDecision: Equatable {
     public var dischargeTo: Int?
     public var reason: ChargeReason
     /// The controller should clear its Top Up flag.
-    public var endTopUp: Bool
+    public var endFullCharge: Bool
     /// The controller should clear its manual-discharge flag.
-    public var endManualDischarge: Bool
+    public var endManualDrain: Bool
 
     public init(osLimit: Int, dischargeTo: Int?, reason: ChargeReason,
-                endTopUp: Bool = false, endManualDischarge: Bool = false) {
+                endFullCharge: Bool = false, endManualDrain: Bool = false) {
         self.osLimit = osLimit
         self.dischargeTo = dischargeTo
         self.reason = reason
-        self.endTopUp = endTopUp
-        self.endManualDischarge = endManualDischarge
+        self.endFullCharge = endFullCharge
+        self.endManualDrain = endManualDrain
     }
 }
 
@@ -117,8 +117,8 @@ public enum ChargePolicy {
     /// How long the pack must stay cool before Heat Protection lets charging resume. Without
     /// it a pack hovering at the threshold would flip the charger on and off every reading.
     public static let heatResumeAfter: TimeInterval = 300
-    public static let defaultSailingGap = 5
-    public static let sailingGapRange = 1...30
+    public static let defaultDriftGap = 5
+    public static let driftGapRange = 1...30
     public static let defaultMaxTemperatureC = 35.0
     /// A discharge never drains below this, whatever the limit.
     public static let dischargeFloor = 10
@@ -133,26 +133,26 @@ public enum ChargePolicy {
         func clamped(_ p: Int) -> Int { min(max(p, osLimitRange.lowerBound), osLimitRange.upperBound) }
         // Every holding rule below passes the raw charge or limit; this is where the 20…100 range is enforced.
         func decision(_ osLimit: Int, _ reason: ChargeReason, dischargeTo: Int? = nil,
-                      endManualDischarge: Bool = false) -> ChargeDecision {
+                      endManualDrain: Bool = false) -> ChargeDecision {
             ChargeDecision(osLimit: clamped(osLimit), dischargeTo: dischargeTo, reason: reason,
-                           endManualDischarge: endManualDischarge)
+                           endManualDrain: endManualDrain)
         }
 
         // 1. Unplugged. Nothing can charge or discharge through the adapter, and both requests
         //    were for this connection only.
         guard i.onAC else {
             return ChargeDecision(osLimit: clamped(s.limit), dischargeTo: nil, reason: .limit,
-                                  endTopUp: true, endManualDischarge: true)
+                                  endFullCharge: true, endManualDrain: true)
         }
 
         // 2. Top Up.
-        if i.topUp {
-            return decision(100, .topUp)
+        if i.fullCharge {
+            return decision(100, .fullCharge)
         }
 
         // 3. Heat. A paused state must not outlive the setting, or turning it back on later
         //    would resume a stale pause on a pack that is cool.
-        if s.heatProtectionEnabled {
+        if s.pauseWhenHotEnabled {
             if let t = i.temperatureC {
                 if t >= s.maxTemperatureC {
                     if m.heatPausedSince == nil { m.heatPausedSince = i.now }
@@ -177,32 +177,32 @@ public enum ChargePolicy {
         }
 
         // 4. Sleeping.
-        if s.stopWhenSleeping && i.sleeping {
+        if s.holdDuringSleep && i.sleeping {
             return decision(min(s.limit, i.percent), .sleeping)
         }
 
         // 5. Discharge.
-        if i.manualDischarge || (s.automaticDischarge && i.percent > s.limit) {
+        if i.manualDrain || (s.drainAutomatically && i.percent > s.limit) {
             let target = dischargeTarget(limit: s.limit)
             if i.percent > target {
                 return decision(s.limit, .discharging, dischargeTo: target)
             }
-            return decision(s.limit, .discharged, endManualDischarge: true)
+            return decision(s.limit, .discharged, endManualDrain: true)
         }
 
         // 6. Sailing. The gap is clamped so a bad setting cannot make the band empty or endless.
-        if s.sailingEnabled {
-            let gap = min(max(s.sailingGap, sailingGapRange.lowerBound), sailingGapRange.upperBound)
+        if s.driftEnabled {
+            let gap = min(max(s.driftGap, driftGapRange.lowerBound), driftGapRange.upperBound)
             if i.percent >= s.limit {
-                m.sailingPhase = true
+                m.driftPhase = true
             } else if i.percent <= s.limit - gap {
-                m.sailingPhase = false
+                m.driftPhase = false
             }
-            if m.sailingPhase {
-                return decision(min(s.limit, i.percent), .sailing)
+            if m.driftPhase {
+                return decision(min(s.limit, i.percent), .drift)
             }
         } else {
-            m.sailingPhase = false
+            m.driftPhase = false
         }
 
         // 7. Otherwise.

@@ -82,12 +82,12 @@ public final class Settings {
         /// `chargeRestoreRecord` says why.
         public static let chargeControlEnabled = "chargeControlEnabled"
         public static let chargeLimit = "chargeLimit"
-        public static let chargeSailingEnabled = "chargeSailingEnabled"
-        public static let chargeSailingGap = "chargeSailingGap"
-        public static let chargeHeatProtectionEnabled = "chargeHeatProtectionEnabled"
+        public static let chargeDriftEnabled = "chargeDriftEnabled"
+        public static let chargeDriftGap = "chargeDriftGap"
+        public static let chargePauseWhenHotEnabled = "chargePauseWhenHotEnabled"
         public static let chargeMaxTemperatureC = "chargeMaxTemperatureC"
-        public static let chargeStopWhenSleeping = "chargeStopWhenSleeping"
-        public static let chargeAutomaticDischarge = "chargeAutomaticDischarge"
+        public static let chargeHoldDuringSleep = "chargeHoldDuringSleep"
+        public static let chargeDrainAutomatically = "chargeDrainAutomatically"
         /// Wildcard — an observer registered on this key fires for every change.
         public static let any = "*"
     }
@@ -105,7 +105,7 @@ public final class Settings {
     /// ask for is what the policy acts on. The temperature's is set here: the policy takes the maximum as given,
     /// and this file is all that stands between a stored number and it.
     public static let chargeLimitRange: ClosedRange<Int> = ChargePolicy.osLimitRange
-    public static let chargeSailingGapRange: ClosedRange<Int> = ChargePolicy.sailingGapRange
+    public static let chargeDriftGapRange: ClosedRange<Int> = ChargePolicy.driftGapRange
     public static let chargeMaxTemperatureRange: ClosedRange<Double> = 25...50
 
     /// What the ledger graph drew before it was customizable: the drain line, its
@@ -211,12 +211,12 @@ public final class Settings {
         /// measured), so Charge Control switched on and left alone needs no root helper.
         static let chargeLimit = 80
         /// OFF, all four: each changes when the battery charges or drains, so each is asked for.
-        static let chargeSailingEnabled = false
-        static let chargeHeatProtectionEnabled = false
-        static let chargeStopWhenSleeping = false
-        static let chargeAutomaticDischarge = false
+        static let chargeDriftEnabled = false
+        static let chargePauseWhenHotEnabled = false
+        static let chargeHoldDuringSleep = false
+        static let chargeDrainAutomatically = false
         /// The policy's own defaults (5 percent, 35 °C), so they are written down in one place.
-        static let chargeSailingGap = ChargePolicy.defaultSailingGap
+        static let chargeDriftGap = ChargePolicy.defaultDriftGap
         static let chargeMaxTemperatureC = ChargePolicy.defaultMaxTemperatureC
         /// Matches what the status item shows today: smoothed drain + runtime.
         // Must be real, currently-registered metric IDs. Stale ones are invisible
@@ -285,9 +285,9 @@ public final class Settings {
         var menuBarHiderAutoCloseSeconds: Int
         var menuBarHiderArrangement: BarArrangement?
         var lidGlassIdleHz, lidGlassTriggerAngle: Double
-        var chargeControlEnabled, chargeSailingEnabled, chargeHeatProtectionEnabled,
-            chargeStopWhenSleeping, chargeAutomaticDischarge: Bool
-        var chargeLimit, chargeSailingGap: Int
+        var chargeControlEnabled, chargeDriftEnabled, chargePauseWhenHotEnabled,
+            chargeHoldDuringSleep, chargeDrainAutomatically: Bool
+        var chargeLimit, chargeDriftGap: Int
         var chargeMaxTemperatureC: Double
     }
     private var snapshot: Values
@@ -792,26 +792,26 @@ public final class Settings {
 
     /// Whether Sailing Mode is on: once the limit is reached the battery rests in a band below it, and is not
     /// charged again until it has fallen through the band.
-    public var chargeSailingEnabled: Bool {
-        get { Settings.readBool(defaults, Key.chargeSailingEnabled, Default.chargeSailingEnabled) }
-        set { writeBool(Key.chargeSailingEnabled, \.chargeSailingEnabled, newValue, Default.chargeSailingEnabled) }
+    public var chargeDriftEnabled: Bool {
+        get { Settings.readBool(defaults, Key.chargeDriftEnabled, Default.chargeDriftEnabled) }
+        set { writeBool(Key.chargeDriftEnabled, \.chargeDriftEnabled, newValue, Default.chargeDriftEnabled) }
     }
 
     /// How deep that band is: how far below the limit the battery may fall before Sailing Mode charges it again,
     /// 1 to 30 percent.
-    public var chargeSailingGap: Int {
-        get { Settings.readInt(defaults, Key.chargeSailingGap, Default.chargeSailingGap,
-                               Settings.chargeSailingGapRange) }
-        set { writeInt(Key.chargeSailingGap, \.chargeSailingGap, newValue, Default.chargeSailingGap,
-                       Settings.chargeSailingGapRange) }
+    public var chargeDriftGap: Int {
+        get { Settings.readInt(defaults, Key.chargeDriftGap, Default.chargeDriftGap,
+                               Settings.chargeDriftGapRange) }
+        set { writeInt(Key.chargeDriftGap, \.chargeDriftGap, newValue, Default.chargeDriftGap,
+                       Settings.chargeDriftGapRange) }
     }
 
     /// Whether Heat Protection is on: charging is held while the pack is at or above `chargeMaxTemperatureC`, and
     /// for five minutes after it has cooled.
-    public var chargeHeatProtectionEnabled: Bool {
-        get { Settings.readBool(defaults, Key.chargeHeatProtectionEnabled, Default.chargeHeatProtectionEnabled) }
-        set { writeBool(Key.chargeHeatProtectionEnabled, \.chargeHeatProtectionEnabled, newValue,
-                        Default.chargeHeatProtectionEnabled) }
+    public var chargePauseWhenHotEnabled: Bool {
+        get { Settings.readBool(defaults, Key.chargePauseWhenHotEnabled, Default.chargePauseWhenHotEnabled) }
+        set { writeBool(Key.chargePauseWhenHotEnabled, \.chargePauseWhenHotEnabled, newValue,
+                        Default.chargePauseWhenHotEnabled) }
     }
 
     /// The pack temperature, in °C, at or above which Heat Protection holds the charge. 25 to 50.
@@ -829,17 +829,17 @@ public final class Settings {
     }
 
     /// Whether charging stops while the Mac sleeps on the adapter: the charge is held where it was when it slept.
-    public var chargeStopWhenSleeping: Bool {
-        get { Settings.readBool(defaults, Key.chargeStopWhenSleeping, Default.chargeStopWhenSleeping) }
-        set { writeBool(Key.chargeStopWhenSleeping, \.chargeStopWhenSleeping, newValue,
-                        Default.chargeStopWhenSleeping) }
+    public var chargeHoldDuringSleep: Bool {
+        get { Settings.readBool(defaults, Key.chargeHoldDuringSleep, Default.chargeHoldDuringSleep) }
+        set { writeBool(Key.chargeHoldDuringSleep, \.chargeHoldDuringSleep, newValue,
+                        Default.chargeHoldDuringSleep) }
     }
 
     /// Whether a battery above the limit is drained down to it on the adapter without being asked.
-    public var chargeAutomaticDischarge: Bool {
-        get { Settings.readBool(defaults, Key.chargeAutomaticDischarge, Default.chargeAutomaticDischarge) }
-        set { writeBool(Key.chargeAutomaticDischarge, \.chargeAutomaticDischarge, newValue,
-                        Default.chargeAutomaticDischarge) }
+    public var chargeDrainAutomatically: Bool {
+        get { Settings.readBool(defaults, Key.chargeDrainAutomatically, Default.chargeDrainAutomatically) }
+        set { writeBool(Key.chargeDrainAutomatically, \.chargeDrainAutomatically, newValue,
+                        Default.chargeDrainAutomatically) }
     }
 
     /// How macOS's own charge limit and Optimized Battery Charging were set before Charge Control first changed
@@ -936,11 +936,11 @@ public final class Settings {
     /// place that hands them to it.
     public func chargeSettingsSnapshot() -> ChargeSettingsSnapshot {
         ChargeSettingsSnapshot(limit: chargeLimit,
-                               sailingEnabled: chargeSailingEnabled, sailingGap: chargeSailingGap,
-                               heatProtectionEnabled: chargeHeatProtectionEnabled,
+                               driftEnabled: chargeDriftEnabled, driftGap: chargeDriftGap,
+                               pauseWhenHotEnabled: chargePauseWhenHotEnabled,
                                maxTemperatureC: chargeMaxTemperatureC,
-                               stopWhenSleeping: chargeStopWhenSleeping,
-                               automaticDischarge: chargeAutomaticDischarge)
+                               holdDuringSleep: chargeHoldDuringSleep,
+                               drainAutomatically: chargeDrainAutomatically)
     }
 
     // ── Launch at login (SMAppService, macOS 13+) ───────────────────────────
@@ -1183,12 +1183,12 @@ public final class Settings {
         if old.ledgerGraphLines != now.ledgerGraphLines { notify(Key.ledgerGraphLines) }
         if old.chargeControlEnabled != now.chargeControlEnabled { notify(Key.chargeControlEnabled) }
         if old.chargeLimit != now.chargeLimit { notify(Key.chargeLimit) }
-        if old.chargeSailingEnabled != now.chargeSailingEnabled { notify(Key.chargeSailingEnabled) }
-        if old.chargeSailingGap != now.chargeSailingGap { notify(Key.chargeSailingGap) }
-        if old.chargeHeatProtectionEnabled != now.chargeHeatProtectionEnabled { notify(Key.chargeHeatProtectionEnabled) }
+        if old.chargeDriftEnabled != now.chargeDriftEnabled { notify(Key.chargeDriftEnabled) }
+        if old.chargeDriftGap != now.chargeDriftGap { notify(Key.chargeDriftGap) }
+        if old.chargePauseWhenHotEnabled != now.chargePauseWhenHotEnabled { notify(Key.chargePauseWhenHotEnabled) }
         if old.chargeMaxTemperatureC != now.chargeMaxTemperatureC { notify(Key.chargeMaxTemperatureC) }
-        if old.chargeStopWhenSleeping != now.chargeStopWhenSleeping { notify(Key.chargeStopWhenSleeping) }
-        if old.chargeAutomaticDischarge != now.chargeAutomaticDischarge { notify(Key.chargeAutomaticDischarge) }
+        if old.chargeHoldDuringSleep != now.chargeHoldDuringSleep { notify(Key.chargeHoldDuringSleep) }
+        if old.chargeDrainAutomatically != now.chargeDrainAutomatically { notify(Key.chargeDrainAutomatically) }
     }
 
     // ── Plumbing ────────────────────────────────────────────────────────────
@@ -1378,13 +1378,13 @@ public final class Settings {
                lidGlassTriggerAngle: readDouble(d, Key.lidGlassTriggerAngle, Default.lidGlassTriggerAngle,
                                                 lidGlassTriggerRange),
                chargeControlEnabled: readBool(d, Key.chargeControlEnabled, Default.chargeControlEnabled),
-               chargeSailingEnabled: readBool(d, Key.chargeSailingEnabled, Default.chargeSailingEnabled),
-               chargeHeatProtectionEnabled: readBool(d, Key.chargeHeatProtectionEnabled,
-                                                     Default.chargeHeatProtectionEnabled),
-               chargeStopWhenSleeping: readBool(d, Key.chargeStopWhenSleeping, Default.chargeStopWhenSleeping),
-               chargeAutomaticDischarge: readBool(d, Key.chargeAutomaticDischarge, Default.chargeAutomaticDischarge),
+               chargeDriftEnabled: readBool(d, Key.chargeDriftEnabled, Default.chargeDriftEnabled),
+               chargePauseWhenHotEnabled: readBool(d, Key.chargePauseWhenHotEnabled,
+                                                     Default.chargePauseWhenHotEnabled),
+               chargeHoldDuringSleep: readBool(d, Key.chargeHoldDuringSleep, Default.chargeHoldDuringSleep),
+               chargeDrainAutomatically: readBool(d, Key.chargeDrainAutomatically, Default.chargeDrainAutomatically),
                chargeLimit: readInt(d, Key.chargeLimit, Default.chargeLimit, chargeLimitRange),
-               chargeSailingGap: readInt(d, Key.chargeSailingGap, Default.chargeSailingGap, chargeSailingGapRange),
+               chargeDriftGap: readInt(d, Key.chargeDriftGap, Default.chargeDriftGap, chargeDriftGapRange),
                chargeMaxTemperatureC: readDouble(d, Key.chargeMaxTemperatureC, Default.chargeMaxTemperatureC,
                                                  chargeMaxTemperatureRange))
     }

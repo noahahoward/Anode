@@ -70,7 +70,7 @@ final class ChargeHelperWaitTests: XCTestCase {
     @discardableResult
     private func dischargingThenStalled() -> ChargeController {
         let c = holdingALimitOnlyTheHelperSets()
-        c.pressDischarge()
+        c.pressDrain()
         spin(until: { c.dischargeInForce != nil })
         XCTAssertEqual(c.dischargeInForce, 63, "the discharge did not start: \(lines)")
         XCTAssertTrue(settings.chargeCutUnconfirmed)
@@ -210,7 +210,7 @@ final class ChargeHelperWaitTests: XCTestCase {
     /// A helper that answers is still waited for: nothing above cut a healthy one short.
     func testAHealthyHelperIsStillWaitedForOnTheWayOff() {
         let c = holdingALimitOnlyTheHelperSets()
-        c.pressDischarge()
+        c.pressDrain()
         spin(until: { c.dischargeInForce != nil })
         settings.chargeControlEnabled = false
         XCTAssertFalse(settings.chargeCutUnconfirmed, "the helper's yes to the stop was not heard")
