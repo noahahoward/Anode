@@ -173,7 +173,8 @@ for tool in open pkill killall; do
   printf '#!/bin/sh\necho "%s $*" >> "%s"\nexit 0\n' "$tool" "$T/other-asked" > "$T/shim/$tool"
 done
 # pmset: only the read `pmset -g` is answered, and from a file of the test's own ($T/pmset-sleepdisabled; 0 when it is not
-# there), never from this Mac. Anything else is written down in pmset-asked and not run. The uninstaller changes power
+# there), never from this Mac. Anything else is written down in pmset-asked (which a scenario may clear) and in
+# pmset-asked-all (which nothing clears, and which the end of this file reads), and not run. The uninstaller changes power
 # settings only through sudo (whose stub sets the same file), so a line in pmset-asked is a call it must not make.
 cat > "$T/shim/pmset" <<EOF
 #!/bin/sh
@@ -185,13 +186,16 @@ if [ "\$#" = 1 ] && [ "\$1" = "-g" ]; then
   exit 0
 fi
 echo "\$*" >> "$T/pmset-asked"
+echo "\$*" >> "$T/pmset-asked-all"
 exit 0
 EOF
-# tccutil: writes down what it was asked (tccutil-asked) and changes nothing. It fails, as the real one does for an
+# tccutil: writes down what it was asked (tccutil-asked, which a scenario may clear; tccutil-asked-all, which nothing clears,
+# and which the end of this file reads) and changes nothing. It fails, as the real one does for an
 # identifier it cannot reset, for each identifier named (one a line) in $T/tccutil-fails.
 cat > "$T/shim/tccutil" <<EOF
 #!/bin/sh
 echo "\$*" >> "$T/tccutil-asked"
+echo "\$*" >> "$T/tccutil-asked-all"
 if [ -f "$T/tccutil-fails" ] && grep -qxF -- "\$3" "$T/tccutil-fails"; then
   echo "tccutil: Failed to reset \$2 approval status for \$3" >&2
   exit 70
@@ -987,6 +991,8 @@ root_run() {  # root_run HOME [NAME=value…]
   OUT="$(run_anode "$h" "$ROOT/uninstall.sh" --yes ${UNINSTALL_ARGS[@]+"${UNINSTALL_ARGS[@]}"} 2>&1)"; ROOT_STATUS=$?
   SCENARIO_ENV=()
 }
+listing_part() { printf '%s\n' "$OUT" | awk '/^ Uninstalling Anode$/ { seen = 1; next } seen && /^[^ ]/ { n++; next } n == 1 { print } n >= 2 { exit }'; }   # the list before the question: between the rules that close the title and the list
+in_listing() { listing_part | grep -qF -- "$1"; }
 yourself_part() { printf '%s\n' "$OUT" | sed -n '/Run these yourself/,$p'; }   # what is printed for the person to run, and after it
 says_to_run() { yourself_part | grep -qF -- "$1"; }
 says_not_to_run() { ! says_to_run "$1"; }
@@ -1257,7 +1263,7 @@ check "nothing is left to run by hand"                      hasnt "$YOURSELF"
 check "the rest was removed as well"                        absent "$H/Applications/Anode.app"
 check "and the exit status is 0"                            [ "$ROOT_STATUS" = 0 ]
 check "the script itself removed nothing of the helper's (no rm of it, no bootout)" sudo_called_exactly -v "$HELPER_BIN --uninstall" "rm -f $KEEP_RULE"
-check_all "the list before the question names what needs the password" has "$HELPER_BIN" -- has "$KEEP_RULE"
+check_all "the list before the question names what needs the password" in_listing "$HELPER_PLIST" -- in_listing "$HELPER_BIN" -- in_listing "$HELPER_SOCKET" -- in_listing "$KEEP_RULE"
 
 root_reset; root_helper
 H="$(new_home g-helper-only)"
@@ -1375,6 +1381,149 @@ check_all "a running Anode: the uninstall stops, and sudo is never called" [ "$R
 check_all "and the helper and the rule are still there"         present "$HELPER_BIN" -- present "$KEEP_RULE"
 root_reset
 
+echo "6h. What macOS keeps for Anode that was still left behind: WebKit caches, privacy approvals, other settings domains, crash records"
+IDS="dev.anode.app dev.noah.anode dev.noah.betterstats"
+WEBKIT_KINDS="GPU Networking WebContent"
+webkit_caches() {  # webkit_caches: the three WebKit folders for each of Anode's identifiers, and look-alikes that are not Anode's
+  rm -rf "$T/cache"; mkdir -p "$T/cache"
+  local id kind
+  for id in $IDS; do
+    for kind in $WEBKIT_KINDS; do mkdir -p "$T/cache/com.apple.WebKit.$kind+$id"; done
+  done
+  mkdir -p "$T/cache/com.apple.WebKit.GPU+com.example.other" "$T/cache/com.apple.WebKit.GPU+dev.anode.app.extra" \
+           "$T/cache/com.apple.WebKit.WebContent+dev.anode.application" "$T/cache/com.apple.WebKit.Networking"
+}
+webkit_all_gone() {
+  local id kind
+  for id in $IDS; do
+    for kind in $WEBKIT_KINDS; do [ ! -e "$T/cache/com.apple.WebKit.$kind+$id" ] || return 1; done
+  done
+  return 0
+}
+tcc_asked_exactly() { [ "$(cat "$T/tccutil-asked" 2>/dev/null)" = "$(printf '%s\n' "$@")" ]; }
+RESET_SAYS="Accessibility, Screen Recording and the other approvals were reset: a reinstalled Anode will ask for them again."
+reset_says_once() { [ "$(printf '%s\n' "$OUT" | grep -cF -- "$RESET_SAYS")" = 1 ]; }
+fresh_run() {  # fresh_run HOME [ARGS]: nothing of the last scenario's asks or answers is left, then the uninstaller runs
+  local h="$1"; shift
+  rm -f "$T/tccutil-asked" "$T/tccutil-fails" "$T/defaults-asked" "$T/launchctl-asked"
+  OUT="$(run_anode "$h" "$ROOT/uninstall.sh" --yes "$@" 2>&1)"; ROOT_STATUS=$?
+}
+root_reset
+webkit_caches
+H="$(new_home h-webkit)"
+fresh_run "$H"
+check "the three WebKit folders of every identifier are gone, without --data" webkit_all_gone
+check_all "look-alikes are not touched"                      present "$T/cache/com.apple.WebKit.GPU+com.example.other" -- present "$T/cache/com.apple.WebKit.GPU+dev.anode.app.extra" -- present "$T/cache/com.apple.WebKit.WebContent+dev.anode.application" -- present "$T/cache/com.apple.WebKit.Networking"
+check "each is said"                                         has "removed  $T/cache/com.apple.WebKit.GPU+dev.anode.app"
+check "tccutil reset All was asked once for each identifier, and for nothing else" \
+                                                             tcc_asked_exactly "reset All dev.anode.app" "reset All dev.noah.anode" "reset All dev.noah.betterstats"
+check_all "each reset is said, in the script's style"        has "reset    privacy approvals: dev.anode.app" -- has "reset    privacy approvals: dev.noah.anode" -- has "reset    privacy approvals: dev.noah.betterstats"
+check "and the one line that says what it means is said once" reset_says_once
+check "the list before the question says the approvals are reset" in_listing "privacy approvals macOS holds for Anode"
+check "the exit status is 0"                                 [ "$ROOT_STATUS" = 0 ]
+# One that fails says nothing for itself; the others are said; the line is there while any was reset.
+printf '%s\n' dev.noah.anode > "$T/tccutil-fails.keep"
+rm -f "$T/tccutil-asked" "$T/defaults-asked" "$T/launchctl-asked"; cp "$T/tccutil-fails.keep" "$T/tccutil-fails"
+H="$(new_home h-tcc-one-fails)"
+OUT="$(run_anode "$H" "$ROOT/uninstall.sh" --yes 2>&1)"
+check_all "an identifier that cannot be reset is not said"  hasnt "reset    privacy approvals: dev.noah.anode" -- has "reset    privacy approvals: dev.anode.app"
+check "and all three were still tried"                       tcc_asked_exactly "reset All dev.anode.app" "reset All dev.noah.anode" "reset All dev.noah.betterstats"
+check "the closing line is still said once"                  reset_says_once
+printf '%s\n' dev.anode.app dev.noah.anode dev.noah.betterstats > "$T/tccutil-fails"
+OUT="$(run_anode "$H" "$ROOT/uninstall.sh" --yes 2>&1)"
+check_all "when every reset fails nothing is said about approvals" hasnt "reset    privacy approvals" -- hasnt "$RESET_SAYS"
+rm -f "$T/tccutil-fails" "$T/tccutil-fails.keep"
+# A running Anode stops everything before any of it.
+H="$(new_home h-running)"; stub_app "$H" 0; webkit_caches
+ps_reset; printf '%s\n' "$H/Applications/Anode.app/Contents/MacOS/AnodeApp" > "$T/running-bins"
+rm -f "$T/tccutil-asked"
+SCENARIO_PATH="$T/shim-running"
+OUT="$(run_anode "$H" "$ROOT/uninstall.sh" --yes 2>&1)" || ROOT_STATUS=$?
+SCENARIO_PATH=""; ps_reset
+check_all "an Anode that is still running: no approval is reset, no cache removed" absent "$T/tccutil-asked" -- present "$T/cache/com.apple.WebKit.GPU+dev.anode.app"
+# The login agents are still booted out, and only they.
+H="$(new_home h-agent)"; mkdir -p "$H/Library/LaunchAgents" "$H/Library/Application Support/CrashReporter"
+: > "$H/Library/LaunchAgents/dev.anode.app.loginagent.plist"; : > "$H/Library/Application Support/CrashReporter/AnodeApp_1234.plist"
+fresh_run "$H" --data
+check "the login agent is booted out by its label"            grep -qxF -- "bootout gui/$(id -u)/dev.anode.app.loginagent" "$T/launchctl-asked"
+check "a crash record that is a .plist is not taken for a launchd job" [ "$(grep -c . "$T/launchctl-asked")" = 1 ]
+
+echo "6i. --data: the other settings domains Anode's app and tool run under, the crash records, and what the tests made"
+NEW_DOMAINS="AnodeApp anode BetterStatsApp betterstats"
+domain_files() {  # domain_files HOME: the settings files of the four domains
+  mkdir -p "$1/Library/Preferences"
+  local d; for d in $NEW_DOMAINS; do : > "$1/Library/Preferences/$d.plist"; done
+}
+crash_home() {  # crash_home HOME: crash records of every name, in the folders macOS keeps them, and look-alikes
+  local c="$1/Library/Application Support/CrashReporter" d="$1/Library/Logs/DiagnosticReports"
+  mkdir -p "$c" "$d/Retired"
+  local n
+  for n in AnodeApp AnodeHelper anode BetterStatsApp betterstats; do
+    : > "$c/${n}_0A1B2C3D.plist"; : > "$d/${n}-2026-11-12-101010.ips"; : > "$d/Retired/${n}-2026-11-11-090909.ips"
+  done
+  : > "$c/anode-busy_9F8E.plist"; : > "$c/anode-decoy_7D6C.plist"
+  # (not Anode's: a name that only ends or contains one of the names, one with no _ or - after it, another case, another program)
+  : > "$c/Canode_x.plist"; : > "$c/AnodeAppX_1.plist"; : > "$c/anodeapp_1.plist"; : > "$c/Safari_1.plist"
+  : > "$d/MyAnodeApp-1.ips"; : > "$d/AnodeApp.ips"; : > "$d/Safari-2026-11-12-101010.ips"; : > "$d/Retired/Canode-1.ips"
+}
+crash_gone() {  # crash_gone HOME: every record of Anode's names is gone
+  local c="$1/Library/Application Support/CrashReporter" d="$1/Library/Logs/DiagnosticReports" n
+  for n in AnodeApp AnodeHelper anode BetterStatsApp betterstats; do
+    [ ! -e "$c/${n}_0A1B2C3D.plist" ] && [ ! -e "$d/${n}-2026-11-12-101010.ips" ] && [ ! -e "$d/Retired/${n}-2026-11-11-090909.ips" ] || return 1
+  done
+  [ ! -e "$c/anode-busy_9F8E.plist" ] && [ ! -e "$c/anode-decoy_7D6C.plist" ]
+}
+crash_look_alikes_kept() {  # crash_look_alikes_kept HOME
+  local c="$1/Library/Application Support/CrashReporter" d="$1/Library/Logs/DiagnosticReports" f
+  for f in "$c/Canode_x.plist" "$c/AnodeAppX_1.plist" "$c/anodeapp_1.plist" "$c/Safari_1.plist" \
+           "$d/MyAnodeApp-1.ips" "$d/AnodeApp.ips" "$d/Safari-2026-11-12-101010.ips" "$d/Retired/Canode-1.ips"; do
+    [ -e "$f" ] || return 1
+  done
+}
+crash_all_there() { crash_look_alikes_kept "$1" && [ -e "$1/Library/Application Support/CrashReporter/AnodeApp_0A1B2C3D.plist" ] && [ -e "$1/Library/Logs/DiagnosticReports/Retired/betterstats-2026-11-11-090909.ips" ]; }
+tests_made() {  # tests_made HOME: settings files the test suite leaves in Preferences, and look-alikes
+  mkdir -p "$1/Library/Preferences"
+  : > "$1/Library/Preferences/com.anode.tests.one.plist"; : > "$1/Library/Preferences/com.anode.tests.adhoc.two.1A2B.plist"
+  : > "$1/Library/Preferences/com.anode.testsX.plist"; : > "$1/Library/Preferences/com.example.anode.tests.plist"
+  : > "$1/Library/Preferences/com.apple.finder.plist"
+}
+deleted_domain() { grep -qxF -- "delete $1" "$T/defaults-asked"; }
+all_new_domains_cleared() { local d; for d in $NEW_DOMAINS; do deleted_domain "$d" || return 1; done; }
+all_new_domain_files_gone() { local d; for d in $NEW_DOMAINS; do [ ! -e "$1/Library/Preferences/$d.plist" ] || return 1; done; }
+all_new_domain_files_there() { local d; for d in $NEW_DOMAINS; do [ -e "$1/Library/Preferences/$d.plist" ] || return 1; done; }
+
+H="$(new_home i-data)"; stub_app "$H" 0; data_home "$H"; domain_files "$H"; crash_home "$H"; tests_made "$H"
+fresh_run "$H" --data
+check "AnodeApp, anode, BetterStatsApp and betterstats are cleared"  all_new_domains_cleared
+check "and their files are removed"                           all_new_domain_files_gone "$H"
+check_all "each is said"                                          has "removed  settings: AnodeApp" -- has "removed  settings: betterstats"
+check "the crash records of Anode's names are removed (the folders macOS keeps, and Retired)" crash_gone "$H"
+check "records that only look like them are NOT removed"      crash_look_alikes_kept "$H"
+check_all "the settings files the tests made are removed"         [ ! -e "$H/Library/Preferences/com.anode.tests.one.plist" ] -- [ ! -e "$H/Library/Preferences/com.anode.tests.adhoc.two.1A2B.plist" ]
+check_all "and no other settings file is"                         present "$H/Library/Preferences/com.anode.testsX.plist" -- present "$H/Library/Preferences/com.example.anode.tests.plist" -- present "$H/Library/Preferences/com.apple.finder.plist"
+check "the test leftovers are said as a count"                has "settings files made by Anode's tests"
+check "the exit status is 0"                                  [ "$ROOT_STATUS" = 0 ]
+check_all "the list before the question names the crash records and says how many test files" in_listing "$H/Library/Logs/DiagnosticReports/AnodeApp-2026-11-12-101010.ips" -- in_listing "settings files made by Anode's tests"
+
+H="$(new_home i-kept)"; stub_app "$H" 0; data_home "$H"; domain_files "$H"; crash_home "$H"; tests_made "$H"
+fresh_run "$H"
+check "without --data the four domains are not cleared"       absent "$T/defaults-asked"
+check "and their files are kept"                              all_new_domain_files_there "$H"
+check "the crash records are kept"                            crash_all_there "$H"
+check "the settings files the tests made are kept"            present "$H/Library/Preferences/com.anode.tests.one.plist"
+
+H="$(new_home i-restore-failed)"; stub_app "$H" 1; data_home "$H"; domain_files "$H"; crash_home "$H"; tests_made "$H"
+fresh_run "$H" --data
+check "a restore that failed keeps the four domains too: not cleared" absent "$T/defaults-asked"
+check "and their files"                                       all_new_domain_files_there "$H"
+check "the message names them among the domains to clear later" has "AnodeApp anode BetterStatsApp betterstats"
+check_all "the crash records and the test leftovers go all the same" crash_gone "$H" -- [ ! -e "$H/Library/Preferences/com.anode.tests.one.plist" ]
+
+H="$(new_home i-clean)"
+fresh_run "$H" --data
+check_all "a Mac with none of it says nothing about crash records or test settings" hasnt "crash reports" -- hasnt "made by Anode's tests"
+check "and the exit status is 0"                              [ "$ROOT_STATUS" = 0 ]
+
 # ═══ 7. optional: the real thing ════════════════════════════════════════════
 if [ "$FULL" = 1 ]; then
   echo "7. A REAL install (compiles the app) and uninstall"
@@ -1429,15 +1578,15 @@ check "…which the identity lookup sees"                       placeholder_has_
 check "…and delete-keychain takes away"                       absent "$T/placeholder.keychain-db"
 check "no keychain verb named a path outside the test's folder" absent "$T/security-refused"
 # What the scenarios above made sudo, pmset and tccutil do, looked at before this section calls them on purpose.
-only_anode_identifiers() {  # every tccutil call so far was `reset All <one of Anode's own identifiers>`
-  [ -e "$T/tccutil-asked" ] || return 0
-  ! grep -vxE 'reset All (dev\.anode\.app|dev\.noah\.anode|dev\.noah\.betterstats)' "$T/tccutil-asked" | grep -q .
+only_anode_identifiers() {  # every tccutil call in every scenario was `reset All <one of Anode's own identifiers>`, and there were some
+  [ -s "$T/tccutil-asked-all" ] || return 1
+  ! grep -vxE 'reset All (dev\.anode\.app|dev\.noah\.anode|dev\.noah\.betterstats)' "$T/tccutil-asked-all" | grep -q .
 }
 check "no scenario made sudo touch a path outside the test's folder or run a command it does not know" absent "$T/sudo-refused"
-check "no scenario changed a power setting except through sudo"   absent "$T/pmset-asked"
+check "no scenario changed a power setting except through sudo"   absent "$T/pmset-asked-all"
 check "tccutil was only ever asked to reset Anode's own identifiers" only_anode_identifiers
 # sudo, pmset and tccutil: what each is asked is written down, and nothing is done outside this test's folder.
-rm -f "$T/sudo-asked" "$T/sudo-fails" "$T/sudo-refused" "$T/pmset-asked" "$T/pmset-sleepdisabled" "$T/tccutil-asked" "$T/tccutil-fails"
+rm -f "$T/sudo-asked" "$T/sudo-fails" "$T/sudo-refused" "$T/pmset-asked" "$T/pmset-asked-all" "$T/pmset-sleepdisabled" "$T/tccutil-asked" "$T/tccutil-asked-all" "$T/tccutil-fails"
 refused_by_sudo() {  # refused_by_sudo ARGS…: sudo fails on them and writes them down in sudo-refused
   "$T/shim/sudo" "$@" >/dev/null 2>&1 && return 1
   grep -qxF -- "$*" "$T/sudo-refused"

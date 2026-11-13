@@ -61,6 +61,47 @@ final class UninstallDataTests: XCTestCase {
         XCTAssertEqual(Uninstall.keepAwakeRuleLocation, KeepAwakeAuthorisation.path)
     }
 
+    /// The text of an array the script declares on one line: `NAME=(a b c)`.
+    private func scriptArray(_ name: String) throws -> [String] {
+        let text = try scriptText()
+        let line = try XCTUnwrap(text.split(separator: "\n").first { $0.hasPrefix("\(name)=(") },
+                                 "uninstall.sh has no \(name)=(…) line")
+        let inside = try XCTUnwrap(line.split(separator: "(").last?.split(separator: ")").first)
+        return inside.split(separator: " ").map(String.init)
+    }
+
+    /// The identifiers the script resets privacy approvals for and clears caches of, and the names and extensions it
+    /// finds crash records by, are the app's plan's: one list in two places, kept in step by hand.
+    func testTheScriptNamesTheSameIdentifiersAndCrashRecords() throws {
+        XCTAssertEqual(try scriptArray("IDENTIFIERS"), Uninstall.bundleIdentifiers)
+        XCTAssertEqual(try scriptArray("CRASH_NAMES"), Uninstall.crashReportNames)
+        XCTAssertEqual(try scriptArray("CRASH_EXTENSIONS"), Uninstall.crashReportExtensions)
+    }
+
+    /// Anode's WebKit folders: `com.apple.WebKit.<process>+<identifier>` for each, which the script builds from
+    /// the identifier and the plan builds the same way.
+    func testTheScriptRemovesTheSameWebKitFolders() throws {
+        let text = try scriptText()
+        for process in Uninstall.webKitProcessNames {
+            XCTAssertTrue(text.contains("\"${USER_CACHE_DIR}com.apple.WebKit.\(process)+${id}\""),
+                          "uninstall.sh does not remove the WebKit \(process) folder")
+        }
+        let folders = Uninstall.userCacheFolders(cacheDirectory: "/C/")
+        XCTAssertEqual(folders.count, Uninstall.bundleIdentifiers.count * (1 + Uninstall.webKitProcessNames.count))
+        XCTAssertTrue(folders.contains("/C/com.apple.WebKit.GPU+dev.anode.app"))
+        XCTAssertTrue(folders.contains("/C/com.apple.WebKit.Networking+dev.noah.anode"))
+        XCTAssertTrue(folders.contains("/C/com.apple.WebKit.WebContent+dev.noah.betterstats"))
+    }
+
+    /// The script says once, after it has reset them, what resetting the approvals means; the dialog says it first.
+    func testTheScriptAndTheDialogSayWhatResettingTheApprovalsMeans() throws {
+        let text = try scriptText()
+        XCTAssertTrue(text.contains("Accessibility, Screen Recording and the other approvals were reset: "
+                                    + "a reinstalled Anode will ask for them again."))
+        XCTAssertTrue(text.contains("tccutil reset All \"$id\""))
+        XCTAssertTrue(Uninstall.approvalsSentence.hasSuffix("a reinstalled Anode will ask for them again."))
+    }
+
     func testTheScriptRemovesTheSameFiles() throws {
         let script = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()

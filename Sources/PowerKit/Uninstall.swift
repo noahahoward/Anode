@@ -6,9 +6,9 @@ import Foundation
 /// reasons. It can be shown to the user before anything happens, which an
 /// irreversible operation deserves. It can be tested without a machine to
 /// destroy. And it forces the awkward cases to be decided in one place instead
-/// of being discovered halfway through a shell script — the root daemon that
-/// cannot be removed without a password, and the source checkout that must not
-/// be removed at all.
+/// of being discovered halfway through a shell script — the root-owned helper and
+/// permission that are removed with a password the Terminal asks for once, and the
+/// source checkout that must not be removed at all.
 public enum Uninstall {
 
     /// What will be removed, in the order it will happen.
@@ -28,6 +28,11 @@ public enum Uninstall {
         /// that lost a month of measurements would be its own bug report.
         public var data: [String] = []
         public var defaultsDomains: [String] = []
+        /// The crash records macOS keeps for Anode's programs (the plist in Application Support/CrashReporter, the
+        /// reports in Logs/DiagnosticReports and its Retired folder), found by name. Only with `removingData`.
+        public var crashRecords: [String] = []
+        /// Settings files the test suite makes in Preferences (`com.anode.tests.*.plist`). Only with `removingData`.
+        public var testSettings: [String] = []
         /// The clone `install.sh` made. Only that one: a checkout anywhere else
         /// is somebody's working copy and is never listed. Even this one is
         /// removed by the script only if it has no uncommitted or unpushed work,
@@ -44,7 +49,7 @@ public enum Uninstall {
         public var isEmpty: Bool {
             appBundle == nil && loginAgents.isEmpty && scripts.isEmpty && systemFiles.isEmpty
                 && data.isEmpty && defaultsDomains.isEmpty && installedCheckout == nil
-                && helperFiles.isEmpty && keepAwakeRule == nil
+                && helperFiles.isEmpty && keepAwakeRule == nil && crashRecords.isEmpty && testSettings.isEmpty
         }
     }
 
@@ -80,10 +85,51 @@ public enum Uninstall {
                 "Library/Logs/Anode-install.log"].map { "\(home)/\($0)" }
     }
 
-    /// macOS's per-user cache folder for the app, which it keeps under /var/folders and which
-    /// the Library folder never shows. `cacheDirectory` ends in a slash, as `getconf` gives it.
+    /// The bundle identifiers the app has had, newest first. macOS keeps a cache folder, three WebKit folders and the
+    /// privacy approvals under each; `uninstall.sh` names the same ones (IDENTIFIERS) and a test keeps them in step.
+    public static let bundleIdentifiers = ["dev.anode.app", "dev.noah.anode", "dev.noah.betterstats"]
+
+    /// The processes WebKit keeps a cache folder for, per app: `com.apple.WebKit.<process>+<bundle identifier>`.
+    public static let webKitProcessNames = ["GPU", "Networking", "WebContent"]
+
+    /// macOS's per-user cache folders for the app, which it keeps under /var/folders and which
+    /// the Library folder never shows: one for each bundle identifier, and WebKit's three for it.
+    /// `cacheDirectory` ends in a slash, as `getconf` gives it.
     public static func userCacheFolders(cacheDirectory: String) -> [String] {
-        ["dev.anode.app", "dev.noah.anode", "dev.noah.betterstats"].map { cacheDirectory + $0 }
+        bundleIdentifiers.flatMap { id in
+            [cacheDirectory + id] + webKitProcessNames.map { cacheDirectory + "com.apple.WebKit.\($0)+\(id)" }
+        }
+    }
+
+    /// The names crash records are kept under: exact and case-sensitive, followed by `_` or `-`. Never a bare
+    /// `*anode*`: a program that only contains one of these is not Anode's. `uninstall.sh` names the same
+    /// (CRASH_NAMES, CRASH_EXTENSIONS).
+    public static let crashReportNames = ["AnodeApp", "AnodeHelper", "anode", "BetterStatsApp", "betterstats"]
+    public static let crashReportExtensions = ["ips", "crash", "diag", "spin", "hang"]
+
+    /// Is this file in a crash-record folder one of Anode's: `<name>_*.<ext>` or `<name>-*.<ext>`, for a name above?
+    public static func isCrashRecord(_ fileName: String, extensions: [String]) -> Bool {
+        for name in crashReportNames {
+            for separator in ["_", "-"] where fileName.hasPrefix(name + separator) {
+                if extensions.contains(where: { fileName.hasSuffix("." + $0) }) { return true }
+            }
+        }
+        return false
+    }
+
+    /// Where macOS keeps them, with the extensions each folder holds: the plist the crash reporter writes, and the
+    /// reports, which move to `Retired` once they have aged.
+    public static func crashRecordFolders(home: String) -> [(folder: String, extensions: [String])] {
+        [("\(home)/Library/Application Support/CrashReporter", ["plist"]),
+         ("\(home)/Library/Logs/DiagnosticReports", crashReportExtensions),
+         ("\(home)/Library/Logs/DiagnosticReports/Retired", crashReportExtensions)]
+    }
+
+    /// The settings suites the test suite makes leave `com.anode.tests.<…>.plist` in Preferences.
+    public static let testSettingsPrefix = "com.anode.tests."
+
+    public static func directoryContents(_ path: String) -> [String] {
+        (try? FileManager.default.contentsOfDirectory(atPath: path)) ?? []
     }
 
     /// The lock files `swift build` leaves in the per-user temp folder for the clone `install.sh`
@@ -113,9 +159,11 @@ public enum Uninstall {
     /// which is where the app's own `UserDefaults.standard` lands (the window
     /// frame, the menu bar widgets, the charge limit). The other two are the
     /// named suite and the one before the rename; `dev.noah.anode` is the
-    /// bundle identifier from before that.
+    /// bundle identifier from before that. The last four are the domains the app and the `anode` tool write
+    /// under when they run outside the bundle (`AnodeApp`, `anode`) and what they were called before the rename.
     public static let defaultsDomainNames = [Settings.suiteName, Settings.previousSuiteName,
-                                              "dev.anode.app", "dev.noah.anode"]
+                                              "dev.anode.app", "dev.noah.anode",
+                                              "AnodeApp", "anode", "BetterStatsApp", "betterstats"]
 
     /// Build the plan. `exists` is injected so this can be tested against a
     /// machine that does not have any of it — which is every machine running
@@ -124,7 +172,8 @@ public enum Uninstall {
                             home: String = NSHomeDirectory(),
                             cacheDirectory: String = userDirectory(_CS_DARWIN_USER_CACHE_DIR),
                             tempDirectory: String = userDirectory(_CS_DARWIN_USER_TEMP_DIR),
-                            exists: (String) -> Bool = { FileManager.default.fileExists(atPath: $0) })
+                            exists: (String) -> Bool = { FileManager.default.fileExists(atPath: $0) },
+                            listDirectory: (String) -> [String] = Uninstall.directoryContents)
     -> Plan {
         var plan = Plan()
         plan.appBundle = bundleLocations(home: home).first(where: exists)
@@ -167,6 +216,15 @@ public enum Uninstall {
             // uninstaller must not give.
             plan.defaultsDomains = defaultsDomainNames
                 .filter { exists("\(home)/Library/Preferences/\($0).plist") }
+            // Found by name in the folders macOS keeps them in: a glob cannot be asked of `exists`.
+            plan.crashRecords = crashRecordFolders(home: home).flatMap { entry in
+                listDirectory(entry.folder).filter { isCrashRecord($0, extensions: entry.extensions) }
+                    .sorted().map { "\(entry.folder)/\($0)" }
+            }
+            let preferences = "\(home)/Library/Preferences"
+            plan.testSettings = listDirectory(preferences)
+                .filter { $0.hasPrefix(testSettingsPrefix) && $0.hasSuffix(".plist") }
+                .sorted().map { "\(preferences)/\($0)" }
         }
 
         if let checkout = installedCheckoutDirectories(home: home).first(where: { exists("\($0)/.git") }) {
@@ -181,6 +239,12 @@ public enum Uninstall {
         if exists(keepAwakeRuleLocation) { plan.keepAwakeRule = keepAwakeRuleLocation }
         return plan
     }
+
+    /// Said whatever else is found: the script resets the privacy approvals macOS holds for the app, because they stay
+    /// in macOS's list after the app is gone and the signing keychain goes with it, so a reinstalled Anode would show
+    /// the old approval as on while it does not work. The script says the same, after it has done it.
+    public static let approvalsSentence = "Accessibility, Screen Recording and the other approvals are reset: "
+        + "a reinstalled Anode will ask for them again."
 
     /// What is said about the root-owned parts, naming only the ones that are there, or nil when none is. The
     /// Terminal the script runs in asks for the password once; it is not asked for here.
@@ -207,6 +271,17 @@ public enum Uninstall {
         for f in plan.systemFiles { lines.append("• \(f)") }
         for d in plan.data { lines.append("• \(d)") }
         for d in plan.defaultsDomains { lines.append("• settings: \(d)") }
+        // A Mac that has crashed a few times has dozens of these: past a few, a count and where they are.
+        if plan.crashRecords.count <= 4 {
+            for r in plan.crashRecords { lines.append("• \(r)") }
+        } else {
+            lines.append("• \(plan.crashRecords.count) crash records macOS kept for Anode's programs "
+                       + "(in Application Support/CrashReporter and Logs/DiagnosticReports)")
+        }
+        if let first = plan.testSettings.first {
+            lines.append("• \(plan.testSettings.count) settings files made by Anode's tests "
+                       + "(\((first as NSString).deletingLastPathComponent)/\(testSettingsPrefix)*.plist)")
+        }
         if !removingData && plan.data.isEmpty {
             lines.append("\nYour measurement history and settings are KEPT. "
                        + "Tick the box to remove those too.")
@@ -218,6 +293,7 @@ public enum Uninstall {
             lines.append("• \(checkout)  (the copy the installer cloned — only if it has "
                        + "no uncommitted or unpushed changes)")
         }
+        lines.append("\n" + approvalsSentence)
         lines.append("\nA source checkout anywhere else is never touched — delete it "
                    + "yourself if you want it gone.")
         return lines.joined(separator: "\n")

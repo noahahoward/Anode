@@ -484,6 +484,106 @@ final class UninstallPlanTests: XCTestCase {
                        "a password was announced for nothing")
     }
 
+    /// The three WebKit folders of every identifier go with the app whatever is decided about data, and the dialog
+    /// says that the privacy approvals are reset.
+    func testTheWebKitCachesGoAndTheApprovalsResetIsSaid() {
+        let plan = Uninstall.plan(removingData: false, home: home, cacheDirectory: "/var/C/", exists: allExist)
+        for id in ["dev.anode.app", "dev.noah.anode", "dev.noah.betterstats"] {
+            for process in ["GPU", "Networking", "WebContent"] {
+                XCTAssertTrue(plan.systemFiles.contains("/var/C/com.apple.WebKit.\(process)+\(id)"),
+                              "\(process) for \(id) would be left behind")
+            }
+            XCTAssertTrue(plan.systemFiles.contains("/var/C/\(id)"))
+        }
+        XCTAssertTrue(Uninstall.summary(plan, removingData: false).contains(Uninstall.approvalsSentence))
+        let noCache = Uninstall.plan(removingData: false, home: home, cacheDirectory: "", exists: allExist)
+        XCTAssertFalse(noCache.systemFiles.contains { $0.contains("com.apple.WebKit") },
+                       "with no cache folder known, a path was made from nothing")
+    }
+
+    /// The four domains the app and the `anode` tool write under outside the bundle go with the other settings:
+    /// only with data, and only when they are there.
+    func testTheAppAndToolSettingsDomainsGoWithData() {
+        let wiped = Uninstall.plan(removingData: true, home: home, exists: allExist)
+        for d in ["AnodeApp", "anode", "BetterStatsApp", "betterstats"] {
+            XCTAssertTrue(wiped.defaultsDomains.contains(d), "\(d) would be left behind")
+            XCTAssertTrue(Uninstall.defaultsDomainNames.contains(d))
+        }
+        let kept = Uninstall.plan(removingData: false, home: home, exists: allExist)
+        XCTAssertTrue(kept.defaultsDomains.isEmpty)
+        let onlyOne = Uninstall.plan(removingData: true, home: home) { $0 == "\(self.home)/Library/Preferences/AnodeApp.plist" }
+        XCTAssertEqual(onlyOne.defaultsDomains, ["AnodeApp"])
+        XCTAssertTrue(Uninstall.summary(wiped, removingData: true).contains("• settings: AnodeApp"))
+    }
+
+    /// Crash records are found by exact name, then `_` or `-`: a program that only contains one of the names is not
+    /// Anode's, and a record is looked for only in the folder and with the extension macOS keeps it under.
+    func testCrashRecordsAreFoundByExactName() {
+        let support = "\(home)/Library/Application Support/CrashReporter"
+        let reports = "\(home)/Library/Logs/DiagnosticReports"
+        let folders: [String: [String]] = [
+            support: ["AnodeApp_0A1B.plist", "AnodeHelper_1.plist", "anode-busy_2.plist", "betterstats_3.plist",
+                      "BetterStatsApp_4.plist", "Canode_x.plist", "AnodeAppX_1.plist", "anodeapp_1.plist",
+                      "Safari_1.plist", "AnodeApp-5.ips"],
+            reports: ["AnodeApp-2026-11-12-101010.ips", "MyAnodeApp-1.ips", "AnodeApp.ips", "anode-1.ips",
+                      "Safari-1.ips", "AnodeApp_9.plist", "AnodeApp-3.txt"],
+            reports + "/Retired": ["AnodeApp-2026-11-01-000000.ips", "Canode-1.ips"],
+        ]
+        let plan = Uninstall.plan(removingData: true, home: home, exists: noneExist, listDirectory: { folders[$0] ?? [] })
+        XCTAssertEqual(Set(plan.crashRecords), Set([
+            "\(support)/AnodeApp_0A1B.plist", "\(support)/AnodeHelper_1.plist", "\(support)/anode-busy_2.plist",
+            "\(support)/betterstats_3.plist", "\(support)/BetterStatsApp_4.plist",
+            "\(reports)/AnodeApp-2026-11-12-101010.ips", "\(reports)/anode-1.ips",
+            "\(reports)/Retired/AnodeApp-2026-11-01-000000.ips",
+        ]))
+        let kept = Uninstall.plan(removingData: false, home: home, exists: noneExist, listDirectory: { folders[$0] ?? [] })
+        XCTAssertTrue(kept.crashRecords.isEmpty, "crash records went without the data box ticked")
+    }
+
+    func testWhichFileNamesAreCrashRecords() {
+        let reports = Uninstall.crashReportExtensions
+        for name in ["AnodeApp_1.ips", "AnodeApp-1.ips", "AnodeHelper-2026.crash", "anode_x.diag", "betterstats-1.spin",
+                     "BetterStatsApp_x.hang"] {
+            XCTAssertTrue(Uninstall.isCrashRecord(name, extensions: reports), name)
+        }
+        for name in ["Canode_x.ips", "MyAnodeApp-1.ips", "AnodeAppX_1.ips", "anodeapp_1.ips", "AnodeApp.ips",
+                     "AnodeApp_1.txt", "Anode_1.ips", "ANODE_1.ips", "_AnodeApp_1.ips", "mynode-1.ips"] {
+            XCTAssertFalse(Uninstall.isCrashRecord(name, extensions: reports), name)
+        }
+        XCTAssertTrue(Uninstall.isCrashRecord("AnodeApp_1.plist", extensions: ["plist"]))
+        XCTAssertFalse(Uninstall.isCrashRecord("AnodeApp_1.ips", extensions: ["plist"]))
+    }
+
+    /// The settings files the test suite makes are listed with data only, and as a count: there can be hundreds.
+    func testTestSettingsFilesAreListedWithDataOnlyAndAsACount() {
+        let prefs = "\(home)/Library/Preferences"
+        let names = (1...300).map { "com.anode.tests.suite\($0).plist" }
+            + ["com.anode.testsX.plist", "com.example.anode.tests.plist", "com.anode.tests.nothing.txt", "com.apple.finder.plist"]
+        let list: (String) -> [String] = { $0 == prefs ? names : [] }
+        let wiped = Uninstall.plan(removingData: true, home: home, exists: noneExist, listDirectory: list)
+        XCTAssertEqual(wiped.testSettings.count, 300)
+        XCTAssertTrue(wiped.testSettings.allSatisfy { $0.hasPrefix("\(prefs)/com.anode.tests.") && $0.hasSuffix(".plist") })
+        let text = Uninstall.summary(wiped, removingData: true)
+        XCTAssertTrue(text.contains("300 settings files made by Anode's tests (\(prefs)/com.anode.tests.*.plist)"), text)
+        XCTAssertLessThan(text.split(separator: "\n").count, 12, "every test settings file was spelled out")
+        XCTAssertTrue(Uninstall.plan(removingData: false, home: home, exists: noneExist, listDirectory: list).testSettings.isEmpty)
+        XCTAssertFalse(wiped.isEmpty)
+    }
+
+    /// Many crash records are a count, a few are spelled out.
+    func testManyCrashRecordsAreACount() {
+        let reports = "\(home)/Library/Logs/DiagnosticReports"
+        let many = (1...30).map { "AnodeApp-2026-11-\($0)-101010.ips" }
+        let plan = Uninstall.plan(removingData: true, home: home, exists: noneExist,
+                                  listDirectory: { $0 == reports ? many : [] })
+        let text = Uninstall.summary(plan, removingData: true)
+        XCTAssertTrue(text.contains("30 crash records"), text)
+        XCTAssertFalse(text.contains("AnodeApp-2026-11-1-101010.ips"))
+        let few = Uninstall.plan(removingData: true, home: home, exists: noneExist,
+                                 listDirectory: { $0 == reports ? Array(many.prefix(2)) : [] })
+        XCTAssertTrue(Uninstall.summary(few, removingData: true).contains("\(reports)/AnodeApp-2026-11-1-101010.ips"))
+    }
+
     /// Nothing found says so, rather than claiming to have removed things.
     func testACleanMachineSaysNothingWasFound() {
         let plan = Uninstall.plan(removingData: true, home: home, exists: noneExist)

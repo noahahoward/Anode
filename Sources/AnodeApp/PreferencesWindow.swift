@@ -429,6 +429,10 @@ private final class GeneralPane: Pane {
         ChargeController.current?.restoreForUninstall()
         switch UpdateLauncher.launchUninstall(removingData: wipe.state == .on) {
         case .openedTerminal:
+            // The login item macOS keeps for the app (the system's own service, not the launch agent the script
+            // removes) can only be taken back by the running app: once the app is deleted, a greyed "Anode" stays in
+            // System Settings → Login Items. Done here, at once, before the script quits and deletes this app.
+            settings.launchAtLogin = false
             updateNote.stringValue = "Uninstalling in Terminal…"
         case .failed(let why):
             updateNote.stringValue = why

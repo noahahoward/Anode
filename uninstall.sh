@@ -89,7 +89,17 @@ fi
 # slash. Empty if getconf cannot say, which turns the entries below into nothing.
 USER_CACHE_DIR="$(getconf DARWIN_USER_CACHE_DIR 2>/dev/null || true)"
 USER_TEMP_DIR="$(getconf DARWIN_USER_TEMP_DIR 2>/dev/null || true)"
-DOMAINS=(com.anode.settings com.betterstats.settings dev.anode.app dev.noah.anode)
+# The last four are the domains the app and the `anode` tool write under when they run outside the bundle (AnodeApp, anode),
+# and what they were called before the rename (BetterStatsApp, betterstats); each has a file in ~/Library/Preferences.
+DOMAINS=(com.anode.settings com.betterstats.settings dev.anode.app dev.noah.anode AnodeApp anode BetterStatsApp betterstats)
+# The bundle identifiers Anode has had, newest first. macOS keeps a cache folder, three WebKit folders and the privacy
+# approvals (Accessibility and the rest) under each. Kept in step with Uninstall.bundleIdentifiers.
+IDENTIFIERS=(dev.anode.app dev.noah.anode dev.noah.betterstats)
+# What macOS and its crash reporter keep when Anode crashed or hung: files named for the program, then _ or -, then
+# anything, then the extension. The names are exact and case-sensitive, never a bare *anode*: a program whose name only
+# contains one of them is not Anode's. Kept in step with Uninstall.crashReportNames and crashReportExtensions.
+CRASH_NAMES=(AnodeApp AnodeHelper anode BetterStatsApp betterstats)
+CRASH_EXTENSIONS=(ips crash diag spin hang)
 
 # Candidates, existence-checked below. Quoted throughout: every one of these
 # contains a space on a normal Mac.
@@ -116,11 +126,15 @@ CANDIDATES=(
   # The install log, which is the diagnosis of a failed install and is not worth keeping after a good one.
   "$HOME/Library/Logs/Anode-install.log"
 )
-# The cache folder macOS keeps for the app, under its old identifiers too.
+# The cache folder macOS keeps for the app, under its old identifiers too, and the three folders WebKit keeps for the
+# processes its web views run in (GPU, Networking and WebContent), named from the identifier after a +.
 # Kept in step with Uninstall.userCacheFolders.
 if [ -n "$USER_CACHE_DIR" ]; then
-  for id in dev.anode.app dev.noah.anode dev.noah.betterstats; do
-    CANDIDATES+=("${USER_CACHE_DIR}${id}")
+  for id in "${IDENTIFIERS[@]}"; do
+    CANDIDATES+=("${USER_CACHE_DIR}${id}"
+                 "${USER_CACHE_DIR}com.apple.WebKit.GPU+${id}"
+                 "${USER_CACHE_DIR}com.apple.WebKit.Networking+${id}"
+                 "${USER_CACHE_DIR}com.apple.WebKit.WebContent+${id}")
   done
 fi
 if [ "$REMOVE_DATA" = "1" ]; then
@@ -143,6 +157,33 @@ FOUND=()
 for path in "${CANDIDATES[@]}"; do
   [ -e "$path" ] && FOUND+=("$path")
 done
+
+# Crash records of Anode's names (see CRASH_NAMES), with --data. macOS keeps a plist for each in Application Support, and
+# a report for each in DiagnosticReports and, once it has aged, DiagnosticReports/Retired.
+add_crash_records() {  # add_crash_records DIR EXTENSION…: the records in DIR named for Anode's programs
+  local dir="$1" name sep ext f; shift
+  [ -d "$dir" ] || return 0
+  for name in "${CRASH_NAMES[@]}"; do
+    for sep in _ -; do
+      for ext in "$@"; do
+        for f in "$dir/$name$sep"*".$ext"; do
+          [ -e "$f" ] && FOUND+=("$f")
+        done
+      done
+    done
+  done
+  return 0
+}
+# The settings files the test suite makes (a suite for each test) and never always removes. Many; said as a count.
+TEST_SETTINGS=()
+if [ "$REMOVE_DATA" = "1" ]; then
+  add_crash_records "$HOME/Library/Application Support/CrashReporter" plist
+  add_crash_records "$HOME/Library/Logs/DiagnosticReports" "${CRASH_EXTENSIONS[@]}"
+  add_crash_records "$HOME/Library/Logs/DiagnosticReports/Retired" "${CRASH_EXTENSIONS[@]}"
+  for f in "$HOME/Library/Preferences/com.anode.tests."*.plist; do
+    [ -e "$f" ] && TEST_SETTINGS+=("$f")
+  done
+fi
 
 # The clone install.sh made, if it is safe to lose. "Safe" is git's answer, not
 # ours: nothing uncommitted or untracked, nothing stashed, nothing ahead of the
@@ -211,8 +252,12 @@ elif [ ${#FOUND[@]} -gt 0 ]; then
   printf '   %s\n' "${FOUND[@]}"
 fi
 if [ "$ROOT_NEEDED" = "1" ]; then
-  echo
-  echo " …and these, which are root's, so removing them needs the Mac's password (the Terminal asks once):"
+  if [ ${#FOUND[@]} -gt 0 ]; then
+    echo
+    echo " …and these, which are root's, so removing them needs the Mac's password (the Terminal asks once):"
+  else
+    echo " This will remove these, which are root's, so it needs the Mac's password (the Terminal asks once):"
+  fi
   if [ ${#ROOT_LISTED[@]} -gt 0 ]; then printf '   %s\n' "${ROOT_LISTED[@]}"; fi
   if [ "$SLEEP_DISABLED" = "1" ]; then
     echo "   macOS's setting that keeps the Mac from sleeping (SleepDisabled), which Anode may have left on"
@@ -222,6 +267,10 @@ if [ "$REMOVE_DATA" = "1" ]; then
   echo
   echo " …and these preference domains:"
   printf '   %s\n' "${DOMAINS[@]}"
+  if [ ${#TEST_SETTINGS[@]} -gt 0 ]; then
+    echo
+    echo " …and ${#TEST_SETTINGS[@]} settings files made by Anode's tests ($HOME/Library/Preferences/com.anode.tests.*.plist)."
+  fi
   echo
   echo " …and the record of macOS's own charge settings that every account's Anode shares, $SHARED_RECORD,"
   echo " but only if it holds no record: while an Anode holds a charge limit it is what puts macOS back."
@@ -230,6 +279,8 @@ else
   echo " Your measurement history and settings are KEPT."
   echo " Re-run with --data to remove those too."
 fi
+echo
+echo " The privacy approvals macOS holds for Anode (Accessibility, Screen Recording and the rest) are reset too."
 echo
 if [ -n "$KEPT_CHECKOUT" ]; then
   echo " $INSTALLED_SRC is KEPT: it $KEPT_CHECKOUT."
@@ -427,12 +478,32 @@ if [ "$REMOVE_DATA" = "1" ] && [ -e "$SHARED_RECORD" ]; then
   fi
 fi
 
+# Anode's privacy approvals (Accessibility and the rest) under each bundle identifier it has had. They stay in macOS's list
+# after the app is gone, and the signing keychain is deleted below, so an Anode installed again is signed differently: the
+# old approval would show as on and not work. Before the app is deleted, after the checks above that can stop the uninstall.
+# A reset that fails says nothing.
+reset_privacy_approvals() {
+  local id reset=0
+  for id in "${IDENTIFIERS[@]}"; do
+    if tccutil reset All "$id" >/dev/null 2>&1; then
+      echo "reset    privacy approvals: $id"
+      reset=1
+    fi
+  done
+  if [ "$reset" = "1" ]; then
+    echo "Accessibility, Screen Recording and the other approvals were reset: a reinstalled Anode will ask for them again."
+  fi
+  return 0
+}
+reset_privacy_approvals
+
 for path in "${FOUND[@]:-}"; do
   [ -z "$path" ] && continue
   case "$path" in
-    *.plist)
+    "$HOME/Library/LaunchAgents/"*.plist)
       # Boot the agent out before deleting its plist, or launchd keeps a job
-      # describing a file that no longer exists.
+      # describing a file that no longer exists. Only a login agent's: a .plist
+      # is also what macOS keeps for a crash, and that names no job.
       label="$(basename "$path" .plist)"
       launchctl bootout "gui/$(id -u)/$label" >/dev/null 2>&1 || true
       ;;
@@ -440,6 +511,11 @@ for path in "${FOUND[@]:-}"; do
   rm -rf "$path"
   echo "removed  $path"
 done
+if [ ${#TEST_SETTINGS[@]} -gt 0 ]; then
+  # Many (a suite for each test the test suite ran): one rm for all of them would not fit on a command line.
+  printf '%s\0' "${TEST_SETTINGS[@]}" | xargs -0 rm -f
+  echo "removed  ${#TEST_SETTINGS[@]} settings files made by Anode's tests ($HOME/Library/Preferences/com.anode.tests.*.plist)"
+fi
 # The hidden folder install.sh made to hold the clone, once it is empty. rmdir refuses otherwise.
 rmdir "$HOME/.anode" 2>/dev/null && echo "removed  $HOME/.anode" || true
 
@@ -486,7 +562,7 @@ say_removed_or_left() {  # say_removed_or_left PATH…: each was there before; s
 # Whatever is still there at the end is printed as commands for you to run. Nothing here changes the exit status.
 remove_root_items() {
   root_things_left || return 0
-  local reason had_rule=0 had_sleep=0 p
+  local reason had_rule=0 had_sleep=0 explained=0 p
   local -a had_helper=()
   if [ -e "$HELPER_PLIST" ] || [ -e "$HELPER_BIN" ]; then
     for p in "$HELPER_PLIST" "$HELPER_BIN" "$FAN_SOCKET"; do
@@ -510,6 +586,7 @@ remove_root_items() {
       # and the helper reconnects it before it removes itself (deleting it would leave the charger cut for good).
       echo " The helper's uninstall reconnects the charger if Anode had switched it off, then removes itself."
       echo
+      explained=1
     fi
     trap ':' INT   # a ^C at the password prompt ends sudo, not this script: what is left is printed below
     if sudo -v; then
@@ -547,7 +624,7 @@ remove_root_items() {
     echo " Run these yourself, in a Terminal:"
     echo
     print_root_commands
-    if [ -e "$HELPER_BIN" ]; then
+    if [ -e "$HELPER_BIN" ] && [ "$explained" = "0" ]; then
       echo
       echo " The helper's uninstall reconnects the charger if Anode had switched it off, then removes itself."
     fi
