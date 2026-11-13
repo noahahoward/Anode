@@ -34,8 +34,12 @@ final class UltraScreenTests: XCTestCase {
         XCTAssertEqual(BrightnessCeiling.restore(before: 0.8, now: 0.245), 0.8)
     }
 
-    func testBrightnessIsNotRaisedBackWhenTheOwnerWentDimmer() {
-        XCTAssertNil(BrightnessCeiling.restore(before: 0.8, now: 0.15))
+    /// The screen is dimmer than the ceiling at the end: macOS dimmed it further when Low Power Mode came on (measured, 0.25 to
+    /// 0.2184), or the owner did. Either way it is put back to what it was before the mode.
+    func testBrightnessComesBackWhenTheScreenIsDimmerThanTheCeiling() {
+        XCTAssertEqual(BrightnessCeiling.restore(before: 0.8, now: 0.15), 0.8)
+        XCTAssertEqual(BrightnessCeiling.restore(before: 0.4375, now: 0.2184), 0.4375, "what macOS did to a quarter, measured")
+        XCTAssertEqual(BrightnessCeiling.restore(before: 0.8, now: 0), 0.8)
     }
 
     func testNothingToRestoreWhenTheModeDidNotLowerIt() {
@@ -43,9 +47,30 @@ final class UltraScreenTests: XCTestCase {
         XCTAssertNil(BrightnessCeiling.restore(before: nil, now: nil))
     }
 
-    func testBrightnessIsNotRestoredWhenItIsUnreadableOrWasMovedPastTheCeiling() {
-        XCTAssertNil(BrightnessCeiling.restore(before: 0.8, now: nil), "no way to tell the owner did not go dimmer")
+    func testBrightnessIsNotChangedWhenSomebodyRaisedItAboveTheCeiling() {
         XCTAssertNil(BrightnessCeiling.restore(before: 0.9, now: 0.7), "someone chose that, it is not the mode's doing")
+        XCTAssertNil(BrightnessCeiling.restore(before: 0.9, now: 0.27), "past what the display's rounding can explain")
+        XCTAssertEqual(BrightnessCeiling.restore(before: 0.9, now: 0.255), 0.9, "within the display's rounding: still the ceiling")
+    }
+
+    func testBrightnessIsNeverLoweredAtTheEnd() {
+        XCTAssertNil(BrightnessCeiling.restore(before: 0.2, now: 0.25), "it was under the ceiling before, and is not now")
+        XCTAssertNil(BrightnessCeiling.restore(before: 0.25, now: 0.25), "already where it was")
+        XCTAssertNil(BrightnessCeiling.restore(before: 0.25, now: 0.255))
+        XCTAssertNil(BrightnessCeiling.restore(before: 0.2, now: 0.2))
+    }
+
+    func testBrightnessIsNotRestoredWhenItIsUnreadable() {
+        XCTAssertNil(BrightnessCeiling.restore(before: 0.8, now: nil), "no way to tell where it is")
+    }
+
+    func testWhyTheScreenWasOrWasNotPutBackIsNamed() {
+        XCTAssertEqual(BrightnessCeiling.decide(before: 0.8, now: 0.2184), .putBack(0.8))
+        XCTAssertEqual(BrightnessCeiling.decide(before: nil, now: 0.25), .nothingWasLowered)
+        XCTAssertEqual(BrightnessCeiling.decide(before: 0.8, now: nil), .couldNotBeRead)
+        XCTAssertEqual(BrightnessCeiling.decide(before: 0.8, now: 0.6), .aboveTheCeiling)
+        XCTAssertEqual(BrightnessCeiling.decide(before: 0.2, now: 0.25), .alreadyAtTheEarlierLevel)
+        XCTAssertEqual(BrightnessCeiling.decide(before: 0.25, now: 0.25), .alreadyAtTheEarlierLevel)
     }
 
     // ── Refresh rate ────────────────────────────────────────────────────────

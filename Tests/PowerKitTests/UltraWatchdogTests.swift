@@ -66,6 +66,30 @@ final class UltraWatchdogTests: XCTestCase {
         func setBrightness(_ v: Float) -> Bool { sets.append(v); log?.entries.append("setBrightness(\(v))"); value = v; return true }
     }
 
+    /// Low Power Mode as the watchdog reads it, and the sleeper it waits with: both are written on the shared log, and no test sleeps.
+    private final class FakeWait {
+        /// What the next reads answer, in order; `fallback` after that.
+        var readings: [Bool]
+        var fallback: Bool
+        private(set) var reads = 0
+        private(set) var sleeps: [TimeInterval] = []
+        private let log: CallLog?
+        init(_ readings: [Bool] = [], then fallback: Bool = false, log: CallLog? = nil) {
+            self.readings = readings
+            self.fallback = fallback
+            self.log = log
+        }
+        func lowPowerOn() -> Bool {
+            reads += 1
+            log?.entries.append("lowPowerOn()")
+            return readings.isEmpty ? fallback : readings.removeFirst()
+        }
+        func sleep(_ seconds: TimeInterval) {
+            sleeps.append(seconds)
+            log?.entries.append("sleep(\(seconds))")
+        }
+    }
+
     /// A watchdog process that is a few values and nothing else: no process is started or ended.
     private final class FakeWatchdogProcess: WatchdogProcess {
         let pid: pid_t
@@ -104,6 +128,19 @@ final class UltraWatchdogTests: XCTestCase {
         record.powerModeBefore = 0
         record.throttled = [.init(pid: 70, startTime: 7_000), .init(pid: 71, startTime: 7_010), .init(pid: 600, startTime: 6_000)]
         return record
+    }
+
+    /// The undo with Low Power Mode off already and a sleeper that does nothing: for the tests of what is undone, not of the wait.
+    private func undoWithNoWait(record: UltraRecord, freezer: ProcessFreezing, throttler: ProcessThrottling,
+                                processTable: () -> [UltraProcess]?, backlight: @autoclosure () -> BacklightControl) {
+        UltraWatchdog.undo(record: record, freezer: freezer, throttler: throttler, processTable: processTable, lowPowerOn: { false },
+                           sleep: { _ in }, backlight: backlight())
+    }
+
+    private func undoWithNoWait(from store: UltraRecordStoring, freezer: ProcessFreezing, throttler: ProcessThrottling,
+                                processTable: () -> [UltraProcess]?, backlight: @autoclosure () -> BacklightControl) {
+        UltraWatchdog.undo(from: store, freezer: freezer, throttler: throttler, processTable: processTable, lowPowerOn: { false },
+                           sleep: { _ in }, backlight: backlight())
     }
 
     /// One row of the process table as the walk down the children reads it: pid, parent and start time.
@@ -173,7 +210,7 @@ final class UltraWatchdogTests: XCTestCase {
         let freezer = FakeFreezer()
         let throttler = FakeThrottler()
         let panel = FakeBacklight(BrightnessCeiling.ceiling)   // still where the mode left it
-        UltraWatchdog.undo(record: sessionRecord(), freezer: freezer, throttler: throttler, processTable: { nil }, backlight: panel)
+        undoWithNoWait(record: sessionRecord(), freezer: freezer, throttler: throttler, processTable: { nil }, backlight: panel)
 
         // Every member of the groups still frozen, by pid AND start time; a released group is not continued again.
         XCTAssertEqual(freezer.resumed, [.init(pid: 400, startTime: 4_000), .init(pid: 401, startTime: 4_010),
@@ -186,7 +223,7 @@ final class UltraWatchdogTests: XCTestCase {
     /// released; nothing is ever put under it by the watchdog.
     func testUndoLiftsThePolicyFromEveryProcessTheRecordNames() {
         let throttler = FakeThrottler()
-        UltraWatchdog.undo(record: sessionRecord(), freezer: FakeFreezer(), throttler: throttler, processTable: { nil }, backlight: FakeBacklight(BrightnessCeiling.ceiling))
+        undoWithNoWait(record: sessionRecord(), freezer: FakeFreezer(), throttler: throttler, processTable: { nil }, backlight: FakeBacklight(BrightnessCeiling.ceiling))
         XCTAssertEqual(throttler.lifted, [.init(pid: 70, startTime: 7_000), .init(pid: 71, startTime: 7_010),
                                           .init(pid: 600, startTime: 6_000)])
         XCTAssertTrue(throttler.throttled.isEmpty)
@@ -196,17 +233,17 @@ final class UltraWatchdogTests: XCTestCase {
         let throttler = FakeThrottler()
         var record = sessionRecord()
         record.throttled = nil
-        UltraWatchdog.undo(record: record, freezer: FakeFreezer(), throttler: throttler, processTable: { nil }, backlight: FakeBacklight(BrightnessCeiling.ceiling))
+        undoWithNoWait(record: record, freezer: FakeFreezer(), throttler: throttler, processTable: { nil }, backlight: FakeBacklight(BrightnessCeiling.ceiling))
         record.throttled = []
-        UltraWatchdog.undo(record: record, freezer: FakeFreezer(), throttler: throttler, processTable: { nil }, backlight: FakeBacklight(BrightnessCeiling.ceiling))
-        UltraWatchdog.undo(record: UltraRecord(), freezer: FakeFreezer(), throttler: throttler, processTable: { nil }, backlight: FakeBacklight(BrightnessCeiling.ceiling))
+        undoWithNoWait(record: record, freezer: FakeFreezer(), throttler: throttler, processTable: { nil }, backlight: FakeBacklight(BrightnessCeiling.ceiling))
+        undoWithNoWait(record: UltraRecord(), freezer: FakeFreezer(), throttler: throttler, processTable: { nil }, backlight: FakeBacklight(BrightnessCeiling.ceiling))
         XCTAssertTrue(throttler.lifted.isEmpty)
     }
 
     /// The policy comes off even when there is no brightness to put back: the backlight is not what decides it.
     func testThePolicyIsLiftedWhenThereIsNoBrightnessToPutBack() {
         let throttler = FakeThrottler()
-        UltraWatchdog.undo(record: sessionRecord(brightnessBefore: nil), freezer: FakeFreezer(), throttler: throttler, processTable: { nil },
+        undoWithNoWait(record: sessionRecord(brightnessBefore: nil), freezer: FakeFreezer(), throttler: throttler, processTable: { nil },
                            backlight: FakeBacklight(BrightnessCeiling.ceiling))
         XCTAssertEqual(throttler.lifted.count, 3)
     }
@@ -215,7 +252,7 @@ final class UltraWatchdogTests: XCTestCase {
     /// itself, when it undoes, and lifts the policy from it too. A stranger is not touched.
     func testAChildBornAfterTheLastSweepIsLiftedByTheWatchdogToo() {
         let throttler = FakeThrottler()
-        UltraWatchdog.undo(record: sessionRecord(), freezer: FakeFreezer(), throttler: throttler,
+        undoWithNoWait(record: sessionRecord(), freezer: FakeFreezer(), throttler: throttler,
                            processTable: { self.tableWithChildren }, backlight: FakeBacklight(BrightnessCeiling.ceiling))
         XCTAssertEqual(throttler.lifted, [.init(pid: 70, startTime: 7_000), .init(pid: 71, startTime: 7_010),
                                           .init(pid: 600, startTime: 6_000), .init(pid: 72, startTime: 7_200),
@@ -227,7 +264,7 @@ final class UltraWatchdogTests: XCTestCase {
     func testTheChildrenOfARecycledPidAreNotWalked() {
         let throttler = FakeThrottler()
         let table = [row(70, parent: 1, startTime: 9_999), row(72, parent: 70), row(71, parent: 1, startTime: 7_010), row(74, parent: 71)]
-        UltraWatchdog.undo(record: sessionRecord(), freezer: FakeFreezer(), throttler: throttler, processTable: { table },
+        undoWithNoWait(record: sessionRecord(), freezer: FakeFreezer(), throttler: throttler, processTable: { table },
                            backlight: FakeBacklight(BrightnessCeiling.ceiling))
         XCTAssertFalse(throttler.lifted.contains { $0.pid == 72 }, "the child of a process that is not the recorded one")
         XCTAssertTrue(throttler.lifted.contains(.init(pid: 74, startTime: 7_400)), "the child of the one that is")
@@ -236,7 +273,7 @@ final class UltraWatchdogTests: XCTestCase {
     func testAParentCycleInTheTableEndsTheWalk() {
         let throttler = FakeThrottler()
         let table = [row(70, parent: 72, startTime: 7_000), row(72, parent: 70), row(71, parent: 71, startTime: 7_010)]
-        UltraWatchdog.undo(record: sessionRecord(), freezer: FakeFreezer(), throttler: throttler, processTable: { table },
+        undoWithNoWait(record: sessionRecord(), freezer: FakeFreezer(), throttler: throttler, processTable: { table },
                            backlight: FakeBacklight(BrightnessCeiling.ceiling))
         XCTAssertEqual(throttler.lifted.filter { $0.pid == 72 }.count, 1)
     }
@@ -244,7 +281,7 @@ final class UltraWatchdogTests: XCTestCase {
     /// A table that cannot be read leaves the recorded processes lifted all the same.
     func testATableThatCannotBeReadStillLiftsWhatTheRecordNames() {
         let throttler = FakeThrottler()
-        UltraWatchdog.undo(record: sessionRecord(), freezer: FakeFreezer(), throttler: throttler, processTable: { nil },
+        undoWithNoWait(record: sessionRecord(), freezer: FakeFreezer(), throttler: throttler, processTable: { nil },
                            backlight: FakeBacklight(BrightnessCeiling.ceiling))
         XCTAssertEqual(throttler.lifted.count, 3)
     }
@@ -254,23 +291,29 @@ final class UltraWatchdogTests: XCTestCase {
         var reads = 0
         var record = sessionRecord()
         record.throttled = nil
-        UltraWatchdog.undo(record: record, freezer: FakeFreezer(), throttler: FakeThrottler(),
+        undoWithNoWait(record: record, freezer: FakeFreezer(), throttler: FakeThrottler(),
                            processTable: { reads += 1; return nil }, backlight: FakeBacklight(BrightnessCeiling.ceiling))
-        UltraWatchdog.undo(record: UltraRecord(), freezer: FakeFreezer(), throttler: FakeThrottler(),
+        undoWithNoWait(record: UltraRecord(), freezer: FakeFreezer(), throttler: FakeThrottler(),
                            processTable: { reads += 1; return nil }, backlight: FakeBacklight(BrightnessCeiling.ceiling))
         XCTAssertEqual(reads, 0)
     }
 
-    func testUndoLeavesTheBrightnessAloneWhenTheOwnerMovedIt() {
+    /// Dimmer than the ceiling at the end (macOS lowered it further when Low Power Mode came on, or the owner did) is put back to what
+    /// it was before the mode; above the ceiling is somebody else's, and unreadable leaves no way to tell.
+    func testUndoPutsBackADimmerScreenAndLeavesAnotherOnesAlone() {
         let freezer = FakeFreezer()
-        let dimmer = FakeBacklight(0.15)
-        UltraWatchdog.undo(record: sessionRecord(), freezer: freezer, throttler: FakeThrottler(), processTable: { nil }, backlight: dimmer)
-        XCTAssertTrue(dimmer.sets.isEmpty, "the owner went dimmer: not the mode's to change")
-        XCTAssertEqual(freezer.resumed.count, 3, "the processes are continued all the same")
+        let dimmer = FakeBacklight(0.2184)
+        undoWithNoWait(record: sessionRecord(), freezer: freezer, throttler: FakeThrottler(), processTable: { nil }, backlight: dimmer)
+        XCTAssertEqual(dimmer.sets, [0.8], "macOS dimmed it a little more than the ceiling: the owner's level comes back")
+        XCTAssertEqual(freezer.resumed.count, 3)
+
+        let raised = FakeBacklight(0.6)
+        undoWithNoWait(record: sessionRecord(), freezer: FakeFreezer(), throttler: FakeThrottler(), processTable: { nil }, backlight: raised)
+        XCTAssertTrue(raised.sets.isEmpty, "above the ceiling: somebody else raised it, not the mode's to change")
 
         let unreadable = FakeBacklight(nil)
-        UltraWatchdog.undo(record: sessionRecord(), freezer: FakeFreezer(), throttler: FakeThrottler(), processTable: { nil }, backlight: unreadable)
-        XCTAssertTrue(unreadable.sets.isEmpty, "no way to tell the owner did not go dimmer")
+        undoWithNoWait(record: sessionRecord(), freezer: FakeFreezer(), throttler: FakeThrottler(), processTable: { nil }, backlight: unreadable)
+        XCTAssertTrue(unreadable.sets.isEmpty, "no way to tell where it is")
     }
 
     func testUndoWithNoRecordDoesNothing() {
@@ -279,7 +322,7 @@ final class UltraWatchdogTests: XCTestCase {
         let freezer = FakeFreezer()
         let panel = FakeBacklight(BrightnessCeiling.ceiling)
         let throttler = FakeThrottler()
-        UltraWatchdog.undo(from: missing, freezer: freezer, throttler: throttler, processTable: { nil }, backlight: panel)
+        undoWithNoWait(from: missing, freezer: freezer, throttler: throttler, processTable: { nil }, backlight: panel)
         XCTAssertEqual(missing.loads, 1)
         XCTAssertTrue(freezer.resumed.isEmpty)
         XCTAssertTrue(throttler.lifted.isEmpty)
@@ -288,7 +331,7 @@ final class UltraWatchdogTests: XCTestCase {
         XCTAssertEqual(missing.clears, 0)
 
         // A record of a session that changed nothing.
-        UltraWatchdog.undo(record: UltraRecord(), freezer: freezer, throttler: throttler, processTable: { nil }, backlight: panel)
+        undoWithNoWait(record: UltraRecord(), freezer: freezer, throttler: throttler, processTable: { nil }, backlight: panel)
         XCTAssertTrue(freezer.resumed.isEmpty)
         XCTAssertTrue(throttler.lifted.isEmpty)
         XCTAssertTrue(panel.sets.isEmpty)
@@ -297,7 +340,7 @@ final class UltraWatchdogTests: XCTestCase {
     func testUndoReadsTheRecordFromTheStoreAndLeavesItForTheNextLaunch() {
         let store = FakeStore(sessionRecord())
         let freezer = FakeFreezer()
-        UltraWatchdog.undo(from: store, freezer: freezer, throttler: FakeThrottler(), processTable: { nil }, backlight: FakeBacklight(BrightnessCeiling.ceiling))
+        undoWithNoWait(from: store, freezer: freezer, throttler: FakeThrottler(), processTable: { nil }, backlight: FakeBacklight(BrightnessCeiling.ceiling))
         XCTAssertEqual(freezer.resumed.count, 3)
         // The next launch reads the record to finish what the watchdog does not do (unhide, rate, keyboard, power mode).
         XCTAssertEqual(store.clears, 0)
@@ -313,7 +356,7 @@ final class UltraWatchdogTests: XCTestCase {
         let throttler = FakeThrottler(log: log)
         let panel = FakeBacklight(BrightnessCeiling.ceiling, log: log)
         func makePanel() -> BacklightControl { log.entries.append("backlight built"); return panel }
-        UltraWatchdog.undo(from: FakeStore(sessionRecord()), freezer: freezer, throttler: throttler,
+        undoWithNoWait(from: FakeStore(sessionRecord()), freezer: freezer, throttler: throttler,
                            processTable: { log.entries.append("table read"); return self.tableWithChildren }, backlight: makePanel())
         XCTAssertEqual(log.entries, ["resume 400@4000", "resume 401@4010", "resume 500@5000",
                                      "unthrottle 70@7000", "unthrottle 71@7010", "unthrottle 600@6000",
@@ -325,11 +368,103 @@ final class UltraWatchdogTests: XCTestCase {
         var built = 0
         func makePanel() -> BacklightControl { built += 1; return FakeBacklight(BrightnessCeiling.ceiling) }
         let freezer = FakeFreezer()
-        UltraWatchdog.undo(from: FakeStore(sessionRecord(brightnessBefore: nil)), freezer: freezer, throttler: FakeThrottler(), processTable: { nil },
+        undoWithNoWait(from: FakeStore(sessionRecord(brightnessBefore: nil)), freezer: freezer, throttler: FakeThrottler(), processTable: { nil },
                            backlight: makePanel())
         XCTAssertEqual(freezer.resumed.count, 3)
-        UltraWatchdog.undo(from: FakeStore(nil), freezer: freezer, throttler: FakeThrottler(), processTable: { nil }, backlight: makePanel())
+        undoWithNoWait(from: FakeStore(nil), freezer: freezer, throttler: FakeThrottler(), processTable: { nil }, backlight: makePanel())
         XCTAssertEqual(built, 0)
+    }
+
+    // ── Waiting for Low Power Mode to be off ────────────────────────────────
+
+    /// A record whose session switched Low Power Mode on (the helper answered, and it was not the owner's own).
+    private func recordThatSwitchedLowPowerOn() -> UltraRecord {
+        var record = sessionRecord()
+        record.powerModeBefore = 0
+        record.lowPowerBefore = false
+        return record
+    }
+
+    func testTheWatchdogsWaitsAreAsLongAsTheyWereMeasuredToNeedToBe() {
+        XCTAssertEqual(UltraWatchdog.lowPowerPollSeconds, 0.25)
+        XCTAssertEqual(UltraWatchdog.lowPowerWaitSeconds, 8)
+        XCTAssertEqual(UltraWatchdog.brightnessSettleSeconds, 1)
+    }
+
+    /// macOS raises the screen when Low Power Mode ends, so what the watchdog sets before that is lost: after every continue and
+    /// every lift, it looks every quarter second until Low Power Mode is off, gives macOS a second to finish, then reads and sets.
+    func testTheScreenIsPutBackOnlyAfterLowPowerModeIsOffAndSettledAndAfterTheContinuesAndLifts() {
+        let log = CallLog()
+        let wait = FakeWait([true, true, false], log: log)
+        let panel = FakeBacklight(0.2184, log: log)
+        func makePanel() -> BacklightControl { log.entries.append("backlight built"); return panel }
+        UltraWatchdog.undo(record: recordThatSwitchedLowPowerOn(), freezer: FakeFreezer(log: log), throttler: FakeThrottler(log: log),
+                           processTable: { log.entries.append("table read"); return self.tableWithChildren },
+                           lowPowerOn: wait.lowPowerOn, sleep: wait.sleep, backlight: makePanel())
+        XCTAssertEqual(log.entries, ["resume 400@4000", "resume 401@4010", "resume 500@5000",
+                                     "unthrottle 70@7000", "unthrottle 71@7010", "unthrottle 600@6000",
+                                     "table read", "unthrottle 72@7200", "unthrottle 73@7300",
+                                     "lowPowerOn()", "sleep(0.25)", "lowPowerOn()", "sleep(0.25)", "lowPowerOn()",
+                                     "sleep(1.0)",
+                                     "backlight built", "brightness()", "setBrightness(0.8)"])
+        XCTAssertEqual(panel.sets, [0.8])
+    }
+
+    func testLowPowerModeThatIsOffAlreadyIsStillGivenTheSettle() {
+        let wait = FakeWait([false])
+        let panel = FakeBacklight(0.2184)
+        UltraWatchdog.undo(record: recordThatSwitchedLowPowerOn(), freezer: FakeFreezer(), throttler: FakeThrottler(), processTable: { nil },
+                           lowPowerOn: wait.lowPowerOn, sleep: wait.sleep, backlight: panel)
+        XCTAssertEqual(wait.reads, 1)
+        XCTAssertEqual(wait.sleeps, [1])
+        XCTAssertEqual(panel.sets, [0.8])
+    }
+
+    func testALowPowerModeThatNeverGoesOffIsWaitedForEightSecondsAndThenTheScreenIsPutBack() {
+        let wait = FakeWait(then: true)
+        let panel = FakeBacklight(0.2184)
+        UltraWatchdog.undo(record: recordThatSwitchedLowPowerOn(), freezer: FakeFreezer(), throttler: FakeThrottler(), processTable: { nil },
+                           lowPowerOn: wait.lowPowerOn, sleep: wait.sleep, backlight: panel)
+        XCTAssertEqual(wait.sleeps, Array(repeating: 0.25, count: 32) + [1], "eight seconds of looks, then the settle")
+        XCTAssertEqual(wait.sleeps.dropLast().reduce(0, +), UltraWatchdog.lowPowerWaitSeconds)
+        XCTAssertEqual(panel.sets, [0.8], "put back all the same, once")
+    }
+
+    /// Nothing to wait for: it was the owner's own Low Power Mode, or no helper switched it on, or there is no screen to put back.
+    func testNothingIsWaitedForWhenLowPowerModeWasNotTheModesToEnd() {
+        var ownLowPower = sessionRecord()
+        ownLowPower.powerModeBefore = 0
+        ownLowPower.lowPowerBefore = true
+        var noHelper = sessionRecord()
+        noHelper.powerModeBefore = nil
+        noHelper.lowPowerBefore = false
+        for (name, record) in [("the owner's own", ownLowPower), ("no helper", noHelper)] {
+            let wait = FakeWait(then: true)
+            let panel = FakeBacklight(0.2184)
+            UltraWatchdog.undo(record: record, freezer: FakeFreezer(), throttler: FakeThrottler(), processTable: { nil },
+                               lowPowerOn: wait.lowPowerOn, sleep: wait.sleep, backlight: panel)
+            XCTAssertEqual(wait.reads, 0, name)
+            XCTAssertTrue(wait.sleeps.isEmpty, "\(name): no sleep at all")
+            XCTAssertEqual(panel.sets, [0.8], name)
+        }
+        let wait = FakeWait(then: true)
+        var built = 0
+        func makePanel() -> BacklightControl { built += 1; return FakeBacklight(0.2184) }
+        UltraWatchdog.undo(record: recordThatSwitchedLowPowerOn().withNoScreen(), freezer: FakeFreezer(), throttler: FakeThrottler(),
+                           processTable: { nil }, lowPowerOn: wait.lowPowerOn, sleep: wait.sleep, backlight: makePanel())
+        XCTAssertEqual(wait.reads, 0, "no screen to put back")
+        XCTAssertTrue(wait.sleeps.isEmpty)
+        XCTAssertEqual(built, 0)
+    }
+
+    func testARecordFromBeforeLowPowerWasNamedIsWaitedFor() {
+        let wait = FakeWait([false])
+        var old = sessionRecord()
+        old.lowPowerBefore = nil               // powerModeBefore is set: the mode did switch it on, and may have been the owner's own
+        UltraWatchdog.undo(record: old, freezer: FakeFreezer(), throttler: FakeThrottler(), processTable: { nil },
+                           lowPowerOn: wait.lowPowerOn, sleep: wait.sleep, backlight: FakeBacklight(0.2184))
+        XCTAssertEqual(wait.reads, 1)
+        XCTAssertEqual(wait.sleeps, [1])
     }
 
     // ── Waiting for Anode to end ────────────────────────────────────────────
@@ -449,5 +584,14 @@ final class UltraWatchdogTests: XCTestCase {
         watchdog.stop()
         XCTAssertEqual(process.terminated, 0, "ended already: no signal to a pid that may mean something else now")
         XCTAssertNil(watchdog.pid)
+    }
+}
+
+private extension UltraRecord {
+    /// The same session with no screen lowered.
+    func withNoScreen() -> UltraRecord {
+        var copy = self
+        copy.brightnessBefore = nil
+        return copy
     }
 }

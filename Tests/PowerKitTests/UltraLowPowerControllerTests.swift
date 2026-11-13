@@ -151,6 +151,9 @@ final class UltraLowPowerControllerTests: XCTestCase {
         /// What `availability` reads from the moment an enter has been answered: a helper whose answer taught what it is
         /// (an installed helper that had not been heard from, and says it speaks 3).
         var availabilityAfterEnter: PowerModeAvailability?
+        /// Called as the helper is asked, before the answer: lets a test look at the record at that moment, and do what macOS does
+        /// when Low Power Mode comes on.
+        var onEnter: (() -> Void)?
         /// Keep the completion: a helper that takes its time to answer.
         var hold = false
         private(set) var held: [(Int?) -> Void] = []
@@ -158,7 +161,7 @@ final class UltraLowPowerControllerTests: XCTestCase {
         private(set) var restored: [Int] = []
         init(_ calls: Calls) { self.calls = calls }
         func enterLowPower(_ done: @escaping (Int?) -> Void) {
-            calls.add("power enter"); entered += 1
+            calls.add("power enter"); entered += 1; onEnter?()
             let answer: (Int?) -> Void = { [unowned self] mode in
                 if let learned = availabilityAfterEnter { availability = learned }
                 done(mode)
@@ -166,6 +169,31 @@ final class UltraLowPowerControllerTests: XCTestCase {
             if hold { held.append(answer) } else { answer(modeBefore) }
         }
         func restore(_ mode: Int, _ done: @escaping (Bool) -> Void) { calls.add("power restore \(mode)"); restored.append(mode); done(true) }
+    }
+
+    /// What macOS says about Low Power Mode, as the controller reads it. It reads ON unless a test says otherwise: as when the owner
+    /// had it on already, so nothing waits for it and the tests of other things stay about those. A test of the wait turns it off
+    /// before the start, and on again the way macOS does once the helper has been asked (`FakePower.onEnter`).
+    final class FakeLowPower {
+        let calls: Calls
+        var on = true
+        /// What the next reads answer, in order, before `on`: Low Power Mode taking its time to go off.
+        var readings: [Bool] = []
+        /// What macOS does by itself when Low Power Mode goes off (it raises the screen): run by `goOff`.
+        var whenItGoesOff: (() -> Void)?
+        private(set) var reads = 0
+        init(_ calls: Calls) { self.calls = calls }
+        func read() -> Bool {
+            calls.add("low power read"); reads += 1
+            return readings.isEmpty ? on : readings.removeFirst()
+        }
+        /// macOS switches it off, and does what it does then.
+        func goOff() {
+            guard on else { return }
+            on = false
+            calls.add("low power off")
+            whenItGoesOff?()
+        }
     }
 
     final class FakeWatchdog: UltraWatchdogging {
@@ -280,6 +308,7 @@ final class UltraLowPowerControllerTests: XCTestCase {
     private var rate: FakeRate!
     private var keyboard: FakeKeyboard!
     private var power: FakePower!
+    private var lowPower: FakeLowPower!
     private var watchdog: FakeWatchdog!
     private var store: FakeStore!
     private var confirm: FakeConfirm!
@@ -322,7 +351,7 @@ final class UltraLowPowerControllerTests: XCTestCase {
         processes = FakeProcesses(world)
         freezer = FakeFreezer(calls); throttler = FakeThrottler(calls); hider = FakeHider(calls)
         backlight = FakeBacklight(calls); own = OwnBrightness()
-        rate = FakeRate(calls); keyboard = FakeKeyboard(calls); power = FakePower(calls); watchdog = FakeWatchdog(calls)
+        rate = FakeRate(calls); keyboard = FakeKeyboard(calls); power = FakePower(calls); lowPower = FakeLowPower(calls); watchdog = FakeWatchdog(calls)
         store = FakeStore(calls); confirm = FakeConfirm(); backdrop = FakeBackdrop(calls); load = FakeLoad(calls)
         controller = makeController()
     }
@@ -339,8 +368,8 @@ final class UltraLowPowerControllerTests: XCTestCase {
             },
             startTime: { [unowned self] pid in self.gone.contains(pid) ? nil : (self.recycled[pid] ?? UInt64(pid) * 10) },
             hasEfficiencyCores: hasEfficiencyCores, hider: hider, backlight: backlight,
-            ownBrightness: own, rate: rate, keyboard: keyboard, power: power, watchdog: watchdog, store: store,
-            confirm: confirm, backdrop: backdrop, load: load,
+            ownBrightness: own, rate: rate, keyboard: keyboard, power: power, lowPowerOn: { [unowned self] in self.lowPower.read() },
+            watchdog: watchdog, store: store, confirm: confirm, backdrop: backdrop, load: load,
             lastOtherFrontApp: { [unowned self] in self.front }, ownPIDs: { [unowned self] in self.ownPIDs }, user: 501,
             work: { [unowned self] job in
                 if self.holdWork || self.workLimit.map({ self.workRuns >= $0 }) == true {
@@ -995,12 +1024,37 @@ final class UltraLowPowerControllerTests: XCTestCase {
         XCTAssertEqual(logged.filter { $0.contains("brightness") }.count, 0, "\(logged)")
     }
 
-    func testTurnOffLeavesAScreenTheOwnerChangedAlone() {
+    /// Dimmer than the ceiling at the end (the owner, or macOS when Low Power Mode came on) is put back to what it was before the mode.
+    func testTurnOffPutsBackAScreenThatWasDimmedFurtherDuringTheMode() {
         start()
-        backlight.value = 0.15   // the owner went dimmer
+        backlight.value = 0.15
         controller.turnOff()
-        XCTAssertEqual(backlight.sets, [0.25], "only the ceiling; 0.15 is the owner's")
-        XCTAssertEqual(backlight.value, 0.15)
+        XCTAssertEqual(backlight.sets, [0.25, 0.8])
+        XCTAssertEqual(backlight.value, 0.8)
+    }
+
+    func testTurnOffLeavesAScreenSomebodyRaisedAboveTheCeilingAlone() {
+        start()
+        backlight.value = 0.6
+        logged = []
+        controller.turnOff()
+        XCTAssertEqual(backlight.sets, [0.25], "only the ceiling: 0.6 is somebody else's doing")
+        XCTAssertEqual(backlight.value, 0.6)
+        XCTAssertEqual(logged.filter { $0.contains("screen was left at 0.60") && $0.contains("above the ceiling") }.count, 1, "\(logged)")
+    }
+
+    /// A start never records a level at or under the ceiling, so only a record from elsewhere can name one: the end still never
+    /// lowers the screen, and says why it left it.
+    func testARecordThatNamesALevelNotAboveWhereTheScreenIsLeavesItAndSaysWhy() {
+        var record = UltraRecord()
+        record.brightnessBefore = 0.2
+        store.record = record
+        backlight.value = 0.25
+        controller.recoverAtLaunch()
+        XCTAssertEqual(backlight.sets, [])
+        XCTAssertEqual(logged.filter { $0.contains("screen was left at 0.25") && $0.contains("not dimmer") && $0.contains("0.20") }.count, 1,
+                       "\(logged)")
+        XCTAssertNil(store.record)
     }
 
     func testAnotherFeatureHoldingTheScreenDownKeepsItDown() {
@@ -1148,6 +1202,396 @@ final class UltraLowPowerControllerTests: XCTestCase {
         backlight.value = 0.9
         controller.brightnessMayHaveChanged()
         XCTAssertEqual(backlight.sets, [0.25, 0.25, 0.25])
+    }
+
+    // ── The screen is put back after Low Power Mode is off ──────────────────
+
+    private var poll: TimeInterval { UltraLowPowerController.lowPowerPollSeconds }
+    private var settle: TimeInterval { UltraLowPowerController.brightnessSettleSeconds }
+
+    /// The next look at Low Power Mode, a quarter of a second on from the last.
+    private func firePoll(file: StaticString = #filePath, line: UInt = #line) { fire(poll, file: file, line: line) }
+
+    /// The Mac as it was measured: the owner's screen at 0.4375 and Low Power Mode off; once the helper is asked macOS switches it on
+    /// and lowers the screen a little more (0.25 to 0.2184); when it goes off macOS raises whatever level is there, by about a seventh
+    /// (0.80 became 0.9225), so a level set before that is not the level that stays.
+    private func theMacAsMeasured() {
+        lowPower.on = false
+        backlight.value = 0.4375
+        power.onEnter = { [unowned self] in
+            self.lowPower.on = true
+            self.backlight.value = 0.2184
+        }
+        lowPower.whenItGoesOff = { [unowned self] in
+            self.backlight.value = min(1, (self.backlight.value ?? 0) * 1.145)
+        }
+    }
+
+    /// The record a quit leaves for the watchdog when the screen has to wait for Low Power Mode: what remains, and nothing else.
+    private var whatRemainsAfterAQuit: UltraRecord {
+        var record = UltraRecord()
+        record.brightnessBefore = 0.4375
+        record.powerModeBefore = 0
+        record.lowPowerBefore = false
+        return record
+    }
+
+    func testTheWaitsAreAsLongAsTheyWereMeasuredToNeedToBe() {
+        XCTAssertEqual(UltraLowPowerController.lowPowerPollSeconds, 0.25)
+        XCTAssertEqual(UltraLowPowerController.lowPowerWaitSeconds, 6)
+        XCTAssertEqual(UltraLowPowerController.brightnessSettleSeconds, 1, "macOS's own ramp took 0.3 to 0.5 s")
+    }
+
+    func testWhetherLowPowerWasOnIsNamedOnTheRecordBeforeTheHelperIsAsked() {
+        lowPower.on = false
+        var onDiskAtTheAsk: Bool?
+        power.onEnter = { [unowned self] in onDiskAtTheAsk = self.store.record?.lowPowerBefore }
+        start()
+        XCTAssertEqual(onDiskAtTheAsk, false, "named before the helper switches anything")
+        XCTAssertEqual(store.record?.lowPowerBefore, false)
+    }
+
+    func testALowPowerStateTheRecordCannotNameMeansTheHelperIsNotAsked() {
+        store.refuseSave = { $0.lowPowerBefore != nil }
+        start()
+        XCTAssertEqual(power.entered, 0, "what cannot be named is not done")
+        XCTAssertTrue(controller.skipped.contains(.lowPowerRefused), "\(controller.skipped)")
+        XCTAssertEqual(controller.state, .on, "the rest of the mode goes on")
+        XCTAssertNil(store.record?.powerModeBefore)
+    }
+
+    func testNoHelperMeansLowPowerIsNeverAskedAbout() {
+        power.availability = .noHelper
+        start()
+        XCTAssertEqual(lowPower.reads, 0)
+        XCTAssertNil(store.record?.lowPowerBefore)
+    }
+
+    // The wait, turning off.
+
+    func testTheScreenIsPutBackOnlyAfterLowPowerModeIsOffAndHasSettled() throws {
+        theMacAsMeasured()
+        start()
+        XCTAssertEqual(store.record?.lowPowerBefore, false)
+        XCTAssertEqual(try XCTUnwrap(backlight.value), 0.2184, accuracy: 0.0001, "macOS lowered it a little more")
+        calls.list.removeAll()
+
+        controller.turnOff()
+
+        XCTAssertEqual(power.restored, [0])
+        XCTAssertEqual(controller.state, .on, "not finished until the screen is back")
+        XCTAssertEqual(backlight.sets, [0.25], "the start's own set, and nothing at the end yet")
+        for _ in 0..<5 { firePoll() }
+        XCTAssertEqual(backlight.sets, [0.25], "not set while Low Power Mode is on")
+        XCTAssertNotNil(store.record)
+        XCTAssertEqual(watchdog.stopped, 0, "the safety net stays until the screen is back")
+        XCTAssertEqual(rate.restored, 1, "the rate and the keyboard light do not wait")
+        XCTAssertEqual(keyboard.sets, [0, 0.6])
+
+        lowPower.goOff()                      // macOS raises the screen to a quarter, over about half a second
+        XCTAssertEqual(try XCTUnwrap(backlight.value), 0.25, accuracy: 0.001)
+        firePoll()                            // it sees Low Power Mode is off, and gives macOS its time to finish
+        XCTAssertEqual(backlight.sets, [0.25], "settling")
+        XCTAssertEqual(controller.state, .on)
+        fire(settle)
+
+        XCTAssertEqual(backlight.sets, [0.25, 0.4375], "the owner's level, once")
+        XCTAssertEqual(backlight.value, 0.4375)
+        XCTAssertEqual(controller.state, .off)
+        XCTAssertNil(store.record)
+        XCTAssertEqual(watchdog.stopped, 1)
+        assertAllBefore("power restore", "low power read")
+        assertAllBefore("low power off", "brightness set")
+        assertAllBefore("brightness set", "watchdog stop")
+        assertAllBefore("watchdog stop", "store clear")
+    }
+
+    func testALowPowerModeThatIsAlreadyOffIsGivenTheSettleAndNoLooks() {
+        theMacAsMeasured()
+        start()
+        lowPower.goOff()
+        let reads = lowPower.reads
+        controller.turnOff()
+        XCTAssertEqual(lowPower.reads, reads + 1, "one look, and it is off")
+        XCTAssertTrue(scheduled.allSatisfy { $0.delay != poll }, "nothing to wait for")
+        XCTAssertEqual(backlight.sets, [0.25], "macOS is still finishing its ramp")
+        fire(settle)
+        XCTAssertEqual(backlight.sets, [0.25, 0.4375])
+        XCTAssertEqual(controller.state, .off)
+    }
+
+    func testTheScreenIsReadAndSetOnTheWorkQueueAfterTheSettle() {
+        theMacAsMeasured()
+        start()
+        lowPower.goOff()
+        controller.turnOff()
+        holdWork = true
+        fire(settle)
+        XCTAssertEqual(backlight.sets, [0.25], "handed to the queue, not done on the main thread")
+        XCTAssertEqual(heldWork.count, 1)
+        XCTAssertEqual(controller.state, .on)
+        runHeldWork()
+        XCTAssertEqual(backlight.sets, [0.25, 0.4375])
+        XCTAssertEqual(controller.state, .off)
+    }
+
+    func testLowPowerModeThatNeverGoesOffGetsTheScreenPutBackAtTheLimitAndOnce() {
+        theMacAsMeasured()
+        start()
+        let before = lowPower.reads
+        controller.turnOff()
+        let looks = Int(UltraLowPowerController.lowPowerWaitSeconds / poll)
+        XCTAssertEqual(looks, 24)
+        for _ in 0..<(looks - 1) { firePoll() }
+        XCTAssertTrue(scheduled.allSatisfy { $0.delay != settle }, "not before the limit")
+        XCTAssertEqual(backlight.sets, [0.25])
+        firePoll()                            // the look at the limit: still on, so it stops looking
+        XCTAssertTrue(scheduled.allSatisfy { $0.delay != poll }, "no more looks")
+        XCTAssertEqual(lowPower.reads, before + 1 + looks)
+        XCTAssertEqual(backlight.sets, [0.25], "the settle first")
+        fire(settle)
+        XCTAssertEqual(backlight.sets, [0.25, 0.4375], "put back all the same, once")
+        XCTAssertEqual(controller.state, .off)
+        XCTAssertNil(store.record)
+        XCTAssertEqual(logged.filter { $0.contains("Low Power Mode was still on after 6 s") }.count, 1, "\(logged)")
+    }
+
+    func testWhenLowPowerModeWasTheOwnersOwnNothingWaitsForIt() {
+        backlight.value = 0.4375
+        start()                               // it reads on, and stays on
+        XCTAssertEqual(store.record?.lowPowerBefore, true)
+        let reads = lowPower.reads
+        controller.turnOff()
+        XCTAssertEqual(lowPower.reads, reads, "not even looked at")
+        XCTAssertTrue(scheduled.allSatisfy { $0.delay != poll && $0.delay != settle }, "\(scheduled.map(\.delay))")
+        XCTAssertEqual(backlight.sets, [0.25, 0.4375], "put back with the rest, at once")
+        XCTAssertEqual(controller.state, .off)
+        XCTAssertNil(store.record)
+    }
+
+    func testWithNoHelperNothingWaitsAndTheScreenIsPutBackWithTheRest() {
+        power.availability = .noHelper
+        lowPower.on = false
+        start()
+        controller.turnOff()
+        XCTAssertEqual(lowPower.reads, 0)
+        XCTAssertTrue(scheduled.allSatisfy { $0.delay != poll && $0.delay != settle })
+        XCTAssertEqual(backlight.sets, [0.25, 0.8])
+        XCTAssertEqual(controller.state, .off)
+    }
+
+    func testWithNoScreenToPutBackNothingWaitsForLowPower() {
+        theMacAsMeasured()
+        backlight.value = 0.2                 // under the ceiling: the mode lowers nothing
+        start()
+        XCTAssertNil(store.record?.brightnessBefore)
+        controller.turnOff()
+        XCTAssertTrue(scheduled.allSatisfy { $0.delay != poll && $0.delay != settle })
+        XCTAssertEqual(power.restored, [0])
+        XCTAssertEqual(controller.state, .off)
+    }
+
+    func testAQuitDuringTheWaitLeavesTheScreenToTheWatchdogAndWhatWasWaitingDoesNothing() {
+        theMacAsMeasured()
+        start()
+        controller.turnOff()
+        firePoll()
+        XCTAssertEqual(controller.state, .on, "waiting for Low Power Mode")
+
+        controller.shutdown()
+
+        // The quit cannot wait for it: the power mode is asked for again, the record is cut down to what remains, and neither the
+        // record nor the watchdog is taken away, so the watchdog finishes it when it sees Anode go.
+        XCTAssertEqual(power.restored, [0, 0])
+        XCTAssertEqual(store.record, whatRemainsAfterAQuit)
+        XCTAssertEqual(store.cleared, 0)
+        XCTAssertEqual(watchdog.stopped, 0)
+        XCTAssertEqual(backlight.sets, [0.25], "not set by the app: macOS would raise it again")
+
+        // The app is still here (a logout that was cancelled): the quit finishes the end itself, once, a few seconds later. What the
+        // turn-off had waiting is over and does nothing, so the screen is set once, by the quit's own wait, and the record goes then.
+        lowPower.goOff()
+        fireEverythingPending()               // both waiting looks: the turn-off's does nothing, the quit's sees it is off
+        XCTAssertEqual(backlight.sets, [0.25], "settling")
+        XCTAssertEqual(store.record, whatRemainsAfterAQuit)
+        fireEverythingPending()               // the settle
+        XCTAssertEqual(backlight.sets, [0.25, 0.4375], "once")
+        XCTAssertNil(store.record)
+        XCTAssertEqual(watchdog.stopped, 1)
+        XCTAssertEqual(controller.state, .off)
+        fireEverythingPending()
+        XCTAssertEqual(backlight.sets, [0.25, 0.4375])
+    }
+
+    func testAQuitDuringTheWaitAfterLowPowerWentOffPutsTheScreenBackOnceAndFinishes() {
+        theMacAsMeasured()
+        start()
+        controller.turnOff()
+        lowPower.goOff()                      // off, and the turn-off has not looked yet
+        controller.shutdown()
+        XCTAssertEqual(backlight.sets, [0.25, 0.4375], "the quit's own job put it back")
+        XCTAssertEqual(controller.state, .off)
+        XCTAssertNil(store.record)
+        XCTAssertEqual(watchdog.stopped, 1)
+        firePoll(); fireEverythingPending(); fireEverythingPending()
+        XCTAssertEqual(backlight.sets, [0.25, 0.4375], "what the turn-off had waiting does not set it a second time")
+        XCTAssertEqual(watchdog.stopped, 1)
+    }
+
+    // The wait, quitting.
+
+    func testAQuitWhileLowPowerModeIsOnLeavesTheScreenAndTheRecordForTheWatchdog() {
+        theMacAsMeasured()
+        start()
+        controller.shutdown()
+        XCTAssertEqual(freezer.resumes, [20, 21, 30], "everything is continued here, first")
+        XCTAssertEqual(hider.unhidden, [20])
+        XCTAssertEqual(rate.restored, 1)
+        XCTAssertEqual(keyboard.sets, [0, 0.6])
+        XCTAssertEqual(power.restored, [0], "still asked for: the helper does it too when the connection closes")
+        XCTAssertEqual(backlight.sets, [0.25])
+        XCTAssertEqual(store.record, whatRemainsAfterAQuit, "no groups, no throttled list, and the rate and the keyboard light are done")
+        XCTAssertEqual(store.cleared, 0)
+        XCTAssertEqual(watchdog.stopped, 0)
+        XCTAssertEqual(controller.state, .on, "left as the quit found it: the watchdog finishes it")
+        XCTAssertEqual(logged.filter { $0.contains("watchdog") && $0.contains("screen") }.count, 1, "\(logged)")
+    }
+
+    /// A logout can be cancelled after the notice, so the app may be here after the quit: a controller left ending would refuse the
+    /// mode for good and show it on with everything already off. It finishes the end the way a turning off does.
+    func testAQuitThatLeavesTheScreenToTheWatchdogFinishesItselfIfTheAppIsStillHere() {
+        theMacAsMeasured()
+        start()
+        controller.shutdown()
+        XCTAssertEqual(controller.state, .on)
+        let asks = confirm.keptNames.count
+        controller.request()
+        XCTAssertEqual(confirm.keptNames.count, asks, "refused while it is ending")
+        firePoll()                            // nothing yet: Low Power Mode is still on
+        XCTAssertEqual(backlight.sets, [0.25])
+        lowPower.goOff()
+        firePoll()
+        fire(settle)
+        XCTAssertEqual(backlight.sets, [0.25, 0.4375], "once")
+        XCTAssertEqual(backlight.value, 0.4375)
+        XCTAssertNil(store.record)
+        XCTAssertEqual(watchdog.stopped, 1)
+        XCTAssertEqual(controller.state, .off)
+        controller.request()
+        XCTAssertEqual(controller.state, .confirming, "free again")
+    }
+
+    func testAQuitWhoseRecordCannotBeCutDownPutsTheScreenBackItselfAndSaysSo() {
+        theMacAsMeasured()
+        start()
+        store.refuseSave = { $0.groups.isEmpty }
+        controller.shutdown()
+        XCTAssertEqual(backlight.sets, [0.25, 0.4375], "the app puts it back itself")
+        XCTAssertEqual(logged.filter { $0.contains("could not be rewritten") }.count, 1, "\(logged)")
+        XCTAssertEqual(controller.state, .off)
+        XCTAssertNil(store.record)
+        XCTAssertEqual(watchdog.stopped, 1)
+    }
+
+    func testAQuitWhileLowPowerModeIsAlreadyOffPutsTheScreenBackWithTheRest() {
+        theMacAsMeasured()
+        start()
+        lowPower.goOff()
+        let saves = store.saves.count
+        controller.shutdown()
+        XCTAssertEqual(backlight.sets, [0.25, 0.4375])
+        XCTAssertEqual(store.saves.count, saves, "nothing to cut down")
+        XCTAssertEqual(controller.state, .off)
+        XCTAssertNil(store.record)
+        XCTAssertEqual(watchdog.stopped, 1)
+    }
+
+    func testAQuitWhenLowPowerModeWasTheOwnersOwnIsAsItWas() {
+        start()                               // on before, and on now
+        let saves = store.saves.count
+        let workBefore = workRuns
+        controller.shutdown()
+        XCTAssertEqual(backlight.sets, [0.25, 0.8])
+        XCTAssertEqual(store.saves.count, saves)
+        XCTAssertEqual(workRuns, workBefore + 1, "one job for the settings, the screen among them")
+        XCTAssertNil(store.record)
+        XCTAssertEqual(controller.state, .off)
+    }
+
+    func testAQuitWithNoHelperIsAsItWas() {
+        power.availability = .noHelper
+        lowPower.on = false
+        start()
+        controller.shutdown()
+        XCTAssertEqual(backlight.sets, [0.25, 0.8])
+        XCTAssertNil(store.record)
+        XCTAssertEqual(watchdog.stopped, 1)
+    }
+
+    // The wait, recovering.
+
+    func testRecoveryAtLaunchPutsThePowerBackThenWaitsThenSetsTheScreen() throws {
+        var record = UltraRecord()
+        record.brightnessBefore = 0.4375
+        record.powerModeBefore = 0
+        record.lowPowerBefore = false
+        record.rateLowered = true
+        store.record = record
+        lowPower.on = true
+        backlight.value = 0.2184
+        calls.list.removeAll()
+
+        controller.recoverAtLaunch()
+
+        XCTAssertEqual(power.restored, [0])
+        XCTAssertEqual(rate.restored, 1)
+        XCTAssertEqual(backlight.sets, [])
+        XCTAssertNotNil(store.record, "the record stays until the screen is back")
+        controller.request()
+        XCTAssertEqual(confirm.keptNames.count, 0, "nothing starts while it is being undone")
+        firePoll()
+        XCTAssertEqual(backlight.sets, [])
+        lowPower.goOff()
+        firePoll()
+        XCTAssertEqual(backlight.sets, [], "settling")
+        fire(settle)
+        XCTAssertEqual(backlight.sets, [0.4375])
+        XCTAssertNil(store.record)
+        XCTAssertEqual(controller.state, .off)
+        assertAllBefore("power restore", "low power read")
+        assertAllBefore("low power read", "brightness set")
+        controller.request()
+        XCTAssertEqual(controller.state, .confirming, "free again")
+    }
+
+    // Saying what happened.
+
+    func testANormalSessionWritesWhatHappenedToTheLog() {
+        theMacAsMeasured()
+        start()
+        func said(_ words: String...) -> Int { logged.filter { line in words.allSatisfy { line.contains($0) } }.count }
+        XCTAssertEqual(said("mode is on", "1 kept", "2 frozen", "0 left running"), 1, "\(logged)")
+        XCTAssertEqual(said("screen was lowered from 0.44 to 0.25"), 1, "\(logged)")
+        XCTAssertEqual(said("turned off"), 0)
+
+        controller.turnOff()
+        XCTAssertEqual(said("mode was turned off"), 1, "\(logged)")
+        firePoll(); firePoll()
+        lowPower.goOff()
+        firePoll()
+        fire(settle)
+        XCTAssertEqual(said("Low Power Mode went off after 0.75 s"), 1, "\(logged)")
+        XCTAssertEqual(said("screen was put back to 0.44"), 1, "\(logged)")
+        XCTAssertEqual(logged.filter { $0.hasPrefix("ultra: ") }.count, logged.count, "every line is the feature's: \(logged)")
+    }
+
+    func testAScreenAnotherFeatureHoldsDownIsLeftAndSaid() {
+        own.remember(0.9, for: "lid")
+        start()
+        logged = []
+        controller.turnOff()
+        XCTAssertEqual(logged.filter { $0.contains("screen was left") && $0.contains("another feature") }.count, 1, "\(logged)")
+        XCTAssertEqual(own.forget("lid"), 0.9)
     }
 
     // ── Hide that takes its time; power that takes its time ─────────────────
@@ -1694,8 +2138,11 @@ final class UltraLowPowerControllerTests: XCTestCase {
         record.powerModeBefore = 1
         store.record = record
         backlight.value = 0.25
+        lowPower.on = false   // the helper put the power mode back when Anode's connection closed
 
         controller.recoverAtLaunch()
+        // A record that does not say whether Low Power Mode was the owner's own is waited for; it is off already, so only the settle.
+        fire(UltraLowPowerController.brightnessSettleSeconds)
 
         XCTAssertEqual(freezer.resumes, [20, 21], "only what the record names, and not what was released already")
         XCTAssertEqual(hider.unhidden, [20])

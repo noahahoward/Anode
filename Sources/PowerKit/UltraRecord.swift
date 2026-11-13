@@ -46,6 +46,10 @@ public struct UltraRecord: Codable, Equatable {
     public var keyboardBefore: Float?
     /// macOS's power mode before the mode changed it; nil when this feature did not change it.
     public var powerModeBefore: Int?
+    /// Whether Low Power Mode was already on, as macOS reports it, when the session asked the helper to switch it on. True means it
+    /// was the owner's own and stays on, so ending the session has no Low Power Mode to wait for. Optional so that a record written by
+    /// a build that did not name it still loads (as nil, which is not known to be the owner's own).
+    public var lowPowerBefore: Bool?
     /// Every process the mode put under the background policy, named before the policy was applied. Optional so that a record
     /// written by a build that had no such part still loads (as nil, which lifts nothing).
     public var throttled: [Member]?
@@ -57,7 +61,16 @@ public struct UltraRecord: Codable, Equatable {
         rateLowered = false
         keyboardBefore = nil
         powerModeBefore = nil
+        lowPowerBefore = nil
         throttled = nil
+    }
+
+    /// Whether putting the screen back has to wait for Low Power Mode to be off. macOS raises the screen when Low Power Mode ends,
+    /// by an amount that depends on the level (measured: 0.12 became 0.1516, 0.80 became 0.9225), so a level set before that is
+    /// lost and the screen has to be put back after it. That is so when the mode switched Low Power Mode on (it was not the
+    /// owner's own, which stays on) and there is a screen to put back.
+    public var waitsForLowPowerToEnd: Bool {
+        brightnessBefore != nil && powerModeBefore != nil && lowPowerBefore != true
     }
 }
 
@@ -128,7 +141,11 @@ public enum UltraRecovery {
     /// before the background policy is lifted from every process the record names (released groups included: a group that
     /// came back is the one that was put under it), and both before any app is asked to unhide (a stopped app cannot answer,
     /// and a call into another app can stall), and all of that before any setting. `brightnessNow` is the screen's
-    /// brightness as read now, nil when it cannot be read.
+    /// brightness as read now, nil when it cannot be read; the brightness is named by `BrightnessCeiling.restore`.
+    ///
+    /// The list is the order of the undo, with one exception the callers apply: the brightness step is done by them LAST, after
+    /// the power mode and after Low Power Mode is off (`UltraRecord.waitsForLowPowerToEnd`), and not where it stands in the list,
+    /// because macOS raises the screen when Low Power Mode ends.
     public static func actions(for record: UltraRecord, brightnessNow: Float?) -> [Action] {
         let open = record.groups.filter { !$0.released }
         var actions: [Action] = open.flatMap { group in

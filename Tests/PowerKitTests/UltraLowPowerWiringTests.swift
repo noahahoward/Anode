@@ -166,7 +166,7 @@ final class UltraLowPowerWiringTests: XCTestCase {
             settings: settings, processes: processes, freezer: freezer, throttler: Fakes.FakeThrottler(calls),
             processTable: { Self.world }, startTime: { UInt64($0) * 10 }, hasEfficiencyCores: true, hider: Fakes.FakeHider(calls), backlight: backlight,
             ownBrightness: OwnBrightness(), rate: Fakes.FakeRate(calls), keyboard: Fakes.FakeKeyboard(calls),
-            power: Fakes.FakePower(calls), watchdog: watchdog, store: store, confirm: confirm,
+            power: Fakes.FakePower(calls), lowPowerOn: { true }, watchdog: watchdog, store: store, confirm: confirm,
             backdrop: Fakes.FakeBackdrop(calls), load: Fakes.FakeLoad(calls), widgets: widgets, icon: icon,
             presentMenu: { menu, button in env.menus.append((menu, button)) },
             openBetaFeatures: { env.betaOpened += 1 },
@@ -1067,7 +1067,9 @@ final class UltraLowPowerWiringTests: XCTestCase {
                        "startTime: { LiveProcessList.startTime($0) }",        // the app to hide is checked to be the one planned
                        "appBundleID: liveAppBundleID",                        // a reopened app is known by its bundle, not its old pid
                        "alert: { NSSound.beep() }",                           // a start that could not read the apps says so
-                       "windows: liveWindows"] {
+                       "windows: liveWindows",
+                       // Low Power Mode as macOS reports it, read each time: the end of a session waits for it to go off.
+                       "lowPowerOn: { ProcessInfo.processInfo.isLowPowerModeEnabled }"] {
             XCTAssertTrue(body.contains(needed), "live() no longer has: \(needed)")
         }
         // The controller and the confirm box are each told whether this Mac has efficiency cores: the box must not say the cores
@@ -1113,6 +1115,9 @@ final class UltraLowPowerWiringTests: XCTestCase {
         XCTAssertTrue(text.contains("freezer: LiveProcessFreezer()"), "\(text)")
         XCTAssertTrue(text.contains("throttler: LiveProcessThrottler()"), "\(text)")
         XCTAssertTrue(text.contains("processTable: LiveProcessList.processTable"), "its own read of the process table: \(text)")
+        // The wait for Low Power Mode before the screen is put back reads the real one and really sleeps; neither is made in a test.
+        XCTAssertTrue(text.contains("lowPowerOn: { ProcessInfo.processInfo.isLowPowerModeEnabled }"), "the real Low Power Mode: \(text)")
+        XCTAssertTrue(text.contains("sleep: { Thread.sleep(forTimeInterval: $0) }"), "a real sleep between the looks: \(text)")
     }
 
     func testMainWiresTheRuntimeAndShutsItDown() throws {

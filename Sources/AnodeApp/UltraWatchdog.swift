@@ -118,6 +118,14 @@ enum UltraWatchdog {
 
     static let argument = "--ultra-watchdog"
 
+    /// How often the undo looks at whether macOS's Low Power Mode is off yet, before it puts the screen back.
+    static let lowPowerPollSeconds: TimeInterval = 0.25
+    /// The most it waits for Low Power Mode to go off: longer than a turning off waits, since Anode's connection to the helper has to
+    /// close first. Past it the screen is put back all the same.
+    static let lowPowerWaitSeconds: TimeInterval = 8
+    /// After Low Power Mode is off, how long macOS is given to finish raising the screen by itself (measured, 0.3 to 0.5 s).
+    static let brightnessSettleSeconds: TimeInterval = 1
+
     struct Request: Equatable {
         var parent: pid_t
         var recordPath: String
@@ -158,7 +166,8 @@ enum UltraWatchdog {
             // can stall on a Mac that is asleep, and nothing may hold up a continue.
             undo(from: UltraRecordFile(url: URL(fileURLWithPath: request.recordPath)),
                  freezer: LiveProcessFreezer(), throttler: LiveProcessThrottler(),
-                 processTable: LiveProcessList.processTable, backlight: DisplayServicesBacklight())
+                 processTable: LiveProcessList.processTable, lowPowerOn: { ProcessInfo.processInfo.isLowPowerModeEnabled },
+                 sleep: { Thread.sleep(forTimeInterval: $0) }, backlight: DisplayServicesBacklight())
             exit(0)
         case .timedOut, .failed:
             // The kernel would not say when Anode ends. Undoing now, with Anode very likely alive, would continue
@@ -189,11 +198,14 @@ enum UltraWatchdog {
     /// Nothing here clears the record: the next launch reads it to finish the undo (lifting the policy again from a process
     /// that is free of it already changes nothing).
     ///
-    /// Every continue comes first, then the policy, which a kept app would otherwise carry for as long as it runs. The
-    /// backlight is a parameter that is not evaluated until the brightness step, and the step is left out when the record
-    /// has no brightness to put back.
+    /// Every continue comes first, then the policy, which a kept app would otherwise carry for as long as it runs. The brightness
+    /// comes last: when the mode switched Low Power Mode on, it is looked at every `lowPowerPollSeconds` until it is off (or
+    /// `lowPowerWaitSeconds` have passed) and macOS is given `brightnessSettleSeconds` to finish its own ramp first. `lowPowerOn`
+    /// and `sleep` are given, so that a test reads a made-up Low Power Mode and never sleeps. The backlight is a parameter that is
+    /// not evaluated until the brightness step, and the step is left out when the record has no brightness to put back.
     static func undo(record: UltraRecord, freezer: ProcessFreezing, throttler: ProcessThrottling,
-                     processTable: () -> [UltraProcess]?, backlight: @autoclosure () -> BacklightControl) {
+                     processTable: () -> [UltraProcess]?, lowPowerOn: () -> Bool, sleep: (TimeInterval) -> Void,
+                     backlight: @autoclosure () -> BacklightControl) {
         let actions = UltraRecovery.actions(for: record, brightnessNow: nil)
         for case .resume(let pid, let startTime) in actions {
             _ = freezer.resume(pid: pid, startTime: startTime)
@@ -211,6 +223,16 @@ enum UltraWatchdog {
             }
         }
         guard record.brightnessBefore != nil else { return }
+        // The screen is last, after Low Power Mode is off: macOS raises it when Low Power Mode ends, so a level set before that is
+        // lost. Nothing is waited for when Low Power Mode was the owner's own, or no helper switched it on.
+        if record.waitsForLowPowerToEnd {
+            var waited: TimeInterval = 0
+            while lowPowerOn(), waited < lowPowerWaitSeconds {
+                sleep(lowPowerPollSeconds)
+                waited += lowPowerPollSeconds
+            }
+            sleep(brightnessSettleSeconds)
+        }
         let panel = backlight()
         for case .brightness(let value) in UltraRecovery.actions(for: record, brightnessNow: panel.brightness()) {
             _ = panel.setBrightness(value)
@@ -219,9 +241,11 @@ enum UltraWatchdog {
 
     /// The same, from where the record is kept. No record, or one that cannot be read, is nothing to undo.
     static func undo(from store: UltraRecordStoring, freezer: ProcessFreezing, throttler: ProcessThrottling,
-                     processTable: () -> [UltraProcess]?, backlight: @autoclosure () -> BacklightControl) {
+                     processTable: () -> [UltraProcess]?, lowPowerOn: () -> Bool, sleep: (TimeInterval) -> Void,
+                     backlight: @autoclosure () -> BacklightControl) {
         guard let record = store.load() else { return }
-        undo(record: record, freezer: freezer, throttler: throttler, processTable: processTable, backlight: backlight())
+        undo(record: record, freezer: freezer, throttler: throttler, processTable: processTable, lowPowerOn: lowPowerOn, sleep: sleep,
+             backlight: backlight())
     }
 
     /// Blocks until `pid` ends, with a kernel event (`kqueue`, `NOTE_EXIT`): the process sleeps until the kernel says so

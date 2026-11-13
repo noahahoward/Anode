@@ -18,12 +18,39 @@ public enum BrightnessCeiling {
         current > ceiling + slack ? ceiling : nil
     }
 
-    /// The brightness to put back at the end: `before` (what the mode lowered it from; nil when it did not) only when
-    /// the screen is still where the mode left it. Dimmer is the owner's choice, brighter is somebody else's, and
-    /// unreadable leaves no way to tell: none of them is the mode's to change.
+    /// What the end of a session does about the screen, and why: the decision and the reason for the log in one value.
+    public enum Restoration: Equatable {
+        /// Set the screen to this.
+        case putBack(Float)
+        /// The mode did not lower it, so it has nothing to put back.
+        case nothingWasLowered
+        case couldNotBeRead
+        /// Somebody else raised it past the ceiling since: not the mode's to change.
+        case aboveTheCeiling
+        /// It is at or above the earlier level already: the end never lowers the screen.
+        case alreadyAtTheEarlierLevel
+    }
+
+    /// What the end of a session does about the screen, from the level before the mode (`before`; nil when the mode did not
+    /// lower it) and the level now. The ceiling is what the mode left it at, so:
+    ///
+    ///  · at or under the ceiling, and under `before`: put back to `before`. A screen dimmer than the ceiling was dimmed further
+    ///    during the mode, by the owner or by macOS (it lowers the screen a little more when Low Power Mode comes on: 0.25 became
+    ///    0.2184, measured), and the owner's own level is what they get back;
+    ///  · above the ceiling: somebody else raised it since, and it is not the mode's to change;
+    ///  · at or above `before` already: the end never lowers the screen;
+    ///  · unreadable: no way to tell where it is.
+    public static func decide(before: Float?, now: Float?) -> Restoration {
+        guard let before else { return .nothingWasLowered }
+        guard let now else { return .couldNotBeRead }
+        guard now <= ceiling + slack else { return .aboveTheCeiling }
+        return before > now ? .putBack(before) : .alreadyAtTheEarlierLevel
+    }
+
+    /// The brightness to put back at the end, or nil when the screen is to be left as it is (see `decide`).
     public static func restore(before: Float?, now: Float?) -> Float? {
-        guard let before, let now, abs(now - ceiling) <= slack else { return nil }
-        return before
+        if case .putBack(let level) = decide(before: before, now: now) { return level }
+        return nil
     }
 }
 

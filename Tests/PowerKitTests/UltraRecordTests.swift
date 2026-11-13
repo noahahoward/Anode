@@ -51,6 +51,7 @@ final class UltraRecordTests: XCTestCase {
         record.rateLowered = true
         record.keyboardBefore = 0.35
         record.powerModeBefore = 1
+        record.lowPowerBefore = false
         record.throttled = [member(10), member(30)]
 
         // A folder that does not exist yet: the record must still be written.
@@ -131,6 +132,47 @@ final class UltraRecordTests: XCTestCase {
         XCTAssertEqual(record.groups.map(\.id), ["com.example.notes"])
         XCTAssertEqual(UltraRecovery.actions(for: record, brightnessNow: 0.25),
                        [.resume(pid: 20, startTime: 200), .brightness(0.8), .restoreRate])
+    }
+
+    /// A record written by a build that did not name whether Low Power Mode was on before the session has no such key. It must
+    /// still load, as "not known", or a session that build left behind could not be undone by this one.
+    func testARecordWrittenBeforeLowPowerWasNamedStillLoadsWithoutIt() throws {
+        let old = #"{"groups":[],"brightnessBefore":0.8,"rateLowered":false,"powerModeBefore":0}"#
+        let url = directory.appendingPathComponent("old.json")
+        try Data(old.utf8).write(to: url)
+        let record = try XCTUnwrap(UltraRecordFile(url: url).load(), "an old record is still a record")
+        XCTAssertNil(record.lowPowerBefore)
+        XCTAssertEqual(record.powerModeBefore, 0)
+        XCTAssertNil(UltraRecord().lowPowerBefore, "nothing is named until the mode names it")
+    }
+
+    func testWhetherLowPowerWasOnBeforeRoundTripsThroughAFile() {
+        let store = UltraRecordFile(url: directory.appendingPathComponent("record.json"))
+        for value: Bool? in [true, false, nil] {
+            var record = UltraRecord()
+            record.lowPowerBefore = value
+            XCTAssertTrue(store.save(record))
+            XCTAssertEqual(store.load()?.lowPowerBefore, value)
+        }
+    }
+
+    /// Putting the screen back has to wait for Low Power Mode to be off when the mode is what switched it on (it was not the
+    /// owner's own) and there is a screen to put back: macOS raises the screen when Low Power Mode ends, by an amount that
+    /// depends on the level, so a level set before that is lost.
+    func testTheScreenWaitsForLowPowerOnlyWhenTheModeSwitchedItOnAndThereIsAScreenToPutBack() {
+        var record = UltraRecord()
+        XCTAssertFalse(record.waitsForLowPowerToEnd, "nothing was done")
+        record.brightnessBefore = 0.8
+        XCTAssertFalse(record.waitsForLowPowerToEnd, "no helper: Low Power Mode was never switched on by the mode")
+        record.powerModeBefore = 0
+        XCTAssertTrue(record.waitsForLowPowerToEnd, "a record from before it was named: not known to be the owner's own")
+        record.lowPowerBefore = false
+        XCTAssertTrue(record.waitsForLowPowerToEnd)
+        record.lowPowerBefore = true
+        XCTAssertFalse(record.waitsForLowPowerToEnd, "it was the owner's own, and stays on")
+        record.lowPowerBefore = false
+        record.brightnessBefore = nil
+        XCTAssertFalse(record.waitsForLowPowerToEnd, "nothing to put back, so nothing to wait for")
     }
 
     func testTheProcessesPutUnderThePolicyRoundTripThroughAFile() {
@@ -228,9 +270,13 @@ final class UltraRecordTests: XCTestCase {
 
         XCTAssertEqual(UltraRecovery.actions(for: record, brightnessNow: 0.25), [.brightness(0.8)],
                        "still at the ceiling: the mode's doing, so it is put back")
-        XCTAssertEqual(UltraRecovery.actions(for: record, brightnessNow: 0.15), [],
-                       "the owner went dimmer since: left alone")
+        XCTAssertEqual(UltraRecovery.actions(for: record, brightnessNow: 0.2184), [.brightness(0.8)],
+                       "dimmer than the ceiling, as macOS leaves it with Low Power Mode on: put back to what it was before the mode")
+        XCTAssertEqual(UltraRecovery.actions(for: record, brightnessNow: 0.9), [],
+                       "above the ceiling: somebody else raised it, so it is not the mode's to change")
+        XCTAssertEqual(UltraRecovery.actions(for: record, brightnessNow: 0.8), [],
+                       "already at the earlier level: never lowered at the end")
         XCTAssertEqual(UltraRecovery.actions(for: record, brightnessNow: nil), [],
-                       "unreadable: no way to tell the owner did not go dimmer")
+                       "unreadable: no way to tell where it is")
     }
 }

@@ -11,14 +11,18 @@ import PowerKit
 //
 //   · the record names everything BEFORE it is done: every process before it is stopped, each setting before it is
 //     changed. A crash in between finds an entry for something that was not done yet, which is harmless (a continue of a
-//     running process, a brightness put back only when the screen is still where the mode held it); it never finds the
-//     reverse. When a record cannot be written, what it would have named is not done;
+//     running process, a brightness put back only when the screen is not above the ceiling and is below the earlier level);
+//     it never finds the reverse. When a record cannot be written, what it would have named is not done;
 //   · every piece of work that waits (a hidden app, the load, a call that can block, a helper) is tagged with the session
 //     it belongs to and does nothing if that session is over. Ending bumps the number;
 //   · ending takes the backdrop away and continues every process first, then lifts the background policy from every process the
 //     record names, every living descendant of one (a child inherits the policy and is on no record) and every current member of
 //     the kept, left-running and brought-back groups, then puts the settings back, and only then takes the watchdog and the record
-//     away.
+//     away;
+//   · the screen is put back LAST, after macOS's Low Power Mode is off: macOS lowers the screen a little more when the mode switches
+//     it on and raises whatever level is there when it ends (measured), so a level set while it is still on is not the level that
+//     stays. A turning off waits for it to go off (and for macOS to finish its own ramp) before it sets the screen; a quit cannot,
+//     so it leaves the screen, in a record cut down to that, for the watchdog (and finishes it itself if the app is still here).
 
 enum PowerModeAvailability: Equatable { case ready, noHelper, oldHelper }
 
@@ -68,6 +72,13 @@ final class UltraLowPowerController {
     static let displayStepSeconds: TimeInterval = 3
     /// How long the helper is given to switch Low Power Mode on: its own worst case is a little under five seconds.
     static let helperStepSeconds: TimeInterval = 5
+    /// How often a turning off looks at whether macOS's Low Power Mode is off yet, before it puts the screen back.
+    static let lowPowerPollSeconds: TimeInterval = 0.25
+    /// The most a turning off waits for Low Power Mode to go off. Past it the screen is put back all the same.
+    static let lowPowerWaitSeconds: TimeInterval = 6
+    /// After Low Power Mode is off, how long macOS is given to finish raising the screen by itself (measured, 0.3 to 0.5 s)
+    /// before the owner's level is set over it.
+    static let brightnessSettleSeconds: TimeInterval = 1
     /// What the section says when the list of running apps could not be read.
     static let couldNotReadApps = "Anode could not read the running apps. Try again."
     /// Posted (main thread) whenever what the menu and the section show changes.
@@ -90,6 +101,7 @@ final class UltraLowPowerController {
     private let rate: DisplayRateControlling
     private let keyboard: KeyboardBacklightControlling
     private let power: PowerModeControlling
+    private let lowPowerOn: () -> Bool
     private let watchdog: UltraWatchdogging
     private let store: UltraRecordStoring
     private let confirm: UltraConfirming
@@ -163,6 +175,8 @@ final class UltraLowPowerController {
     private var ending = false
     private var sweeping = false
     private var adjustingBrightness = false
+    /// How many groups the plan kept, for the line the log says when the mode comes on.
+    private var keptCount = 0
     private var brightnessTaken = false
     private var brightnessToPutBack: Float?
 
@@ -170,7 +184,8 @@ final class UltraLowPowerController {
          processTable: @escaping () -> [UltraProcess]?, startTime: @escaping (pid_t) -> UInt64?, hasEfficiencyCores: Bool,
          hider: AppHiding, backlight: BacklightControl,
          ownBrightness: OwnBrightness, rate: DisplayRateControlling, keyboard: KeyboardBacklightControlling,
-         power: PowerModeControlling, watchdog: UltraWatchdogging, store: UltraRecordStoring, confirm: UltraConfirming,
+         power: PowerModeControlling, lowPowerOn: @escaping () -> Bool, watchdog: UltraWatchdogging, store: UltraRecordStoring,
+         confirm: UltraConfirming,
          backdrop: BackdropPresenting, load: LoadReading, lastOtherFrontApp: @escaping () -> pid_t?, ownPIDs: @escaping () -> Set<pid_t>, user: uid_t,
          work: @escaping (@escaping () -> Void) -> Void, waitForWork: @escaping (TimeInterval) -> Bool,
          schedule: @escaping (TimeInterval, @escaping () -> Void) -> Void, alert: @escaping () -> Void,
@@ -188,6 +203,7 @@ final class UltraLowPowerController {
         self.rate = rate
         self.keyboard = keyboard
         self.power = power
+        self.lowPowerOn = lowPowerOn
         self.watchdog = watchdog
         self.store = store
         self.confirm = confirm
@@ -255,6 +271,7 @@ final class UltraLowPowerController {
     /// light, Low Power Mode, then `.on`.
     private func begin(_ plan: FreezePlan, _ list: [UltraProcess], token: Int) {
         leftRunning = plan.leftRunning
+        keptCount = plan.kept.count
         known = list
         load.read { [weak self] before in
             guard let self, self.session == token else { return }
@@ -285,6 +302,7 @@ final class UltraLowPowerController {
         guard session == token else { return }
         state = .on
         isStarting = false
+        log("ultra: the mode is on; groups: \(keptCount) kept running, \(frozen.count) frozen, \(leftRunning.count) left running")
         // Only now, with the mode on: a start that did not finish never darkens the desktop. Nothing is recorded, as the window
         // is Anode's own and goes with it; `reset` takes it away on every path that ends the session.
         if settings.ultraLowPowerBlackBackdrop { backdrop.show() }
@@ -598,7 +616,9 @@ final class UltraLowPowerController {
             }
             self.background(token, gate, { [backlight = self.backlight] in backlight.setBrightness(target) }) { [weak self] accepted in
                 guard let self else { return }
-                if !accepted {
+                if accepted {
+                    self.log("ultra: the screen was lowered from \(Self.level(current)) to \(Self.level(target))")
+                } else {
                     self.log("ultra: the screen did not take the lower brightness")
                     _ = self.ownBrightness.forget(Self.ownerName)
                     self.skipped.append(.ceilingRefused)
@@ -670,6 +690,14 @@ final class UltraLowPowerController {
             skipped.append(.lowPowerOldHelper)
             next()
         case .ready:
+            // Named before the helper is asked, with the rest of what the record holds: whether Low Power Mode was the owner's own
+            // decides, at the end, whether there is anything to wait for. A record that cannot take it means the helper is not asked.
+            let wasOn = lowPowerOn()
+            guard record(mustSave: true, { $0.lowPowerBefore = wasOn }) else {
+                log("ultra: the record could not take whether Low Power Mode was on, so it was left as it is")
+                skipped.append(.lowPowerRefused)
+                return next()
+            }
             power.enterLowPower { [weak self] modeBefore in
                 self?.onMain { [weak self] in
                     guard let self else { return }
@@ -708,17 +736,22 @@ final class UltraLowPowerController {
     // ── Turning off ─────────────────────────────────────────────────────────
 
     /// Ends the mode, or the start of it, or the question: whatever there is. Every process is continued at once; the
-    /// screen and the rest are put back on the work queue, and the state stays as it is until that is done.
+    /// screen and the rest are put back on the work queue, and the state stays as it is until that is done. When the mode switched
+    /// Low Power Mode on, the screen is put back after it is off, which can take up to about seven seconds: the state stays `.on`,
+    /// and a new ask is refused, until then.
     func turnOff() {
         guard state != .off, !ending else { return }
         end(inline: false)
     }
 
-    /// Quit and logout cannot wait for ever: the continues, the lifts and the unhide are done here, first; the screen, the
-    /// refresh rate, the keyboard light and the power mode are put back on the work queue (this thread never calls the display or
-    /// the keyboard) and waited for for `shutdownWaitSeconds`. When they are done the record and the watchdog go too, before this
-    /// returns; when the wait runs out they stay, for the watchdog and the next launch. Call it on the main thread, like
-    /// everything that changes the state.
+    /// Quit and logout cannot wait for ever: the continues, the lifts and the unhide are done here, first; the refresh rate, the
+    /// keyboard light and the power mode are put back on the work queue (this thread never calls the display or the keyboard) and
+    /// waited for for `shutdownWaitSeconds`, and so is the screen, unless the mode switched Low Power Mode on and it is still on:
+    /// macOS raises the screen when it ends, so the screen waits for it. When everything is done the record and the watchdog go too,
+    /// before this returns. When the wait runs out, or the screen is left for Low Power Mode, they stay, cut down to what remains in
+    /// the second case, for the watchdog and the next launch; the screen is then put back by the watchdog, or here a few seconds
+    /// later if the app is still running (a logout that was cancelled). Call it on the main thread, like everything that changes
+    /// the state.
     func shutdown() {
         guard state != .off else { return }
         end(inline: true)
@@ -746,6 +779,7 @@ final class UltraLowPowerController {
         // No record yet: nothing was done, so there is nothing to undo, only the question or the start to drop.
         guard let record = live else { reset(); return }
         ending = true
+        log(inline ? "ultra: the mode was turned off as the app quit" : "ultra: the mode was turned off")
         frozen = []
         // Cancelled, or quit: nothing is left to cancel, and the button and the menus stop offering it.
         if isStarting {
@@ -795,13 +829,23 @@ final class UltraLowPowerController {
         }
     }
 
-    /// Continues everything the record names, then unhides, and only then touches the settings (the screen, the
-    /// refresh rate, the keyboard light, the power mode), which can block and must not hold up a continue.
-    /// The settings run on `work`. `inline` is a quit: it waits for them here, for at most `shutdownWaitSeconds`, and
-    /// `finished` is called here if they are done; otherwise `finished` comes on the main thread if the session still stands.
+    /// Continues everything the record names, then unhides, and only then touches the settings (the refresh rate, the keyboard
+    /// light, the power mode, and last the screen), which can block and must not hold up a continue.
+    ///
+    /// The screen comes last, after Low Power Mode is off, when the mode is what switched it on (`waitsForLowPowerToEnd`): macOS
+    /// raises the screen when Low Power Mode ends, so a level set before that is lost. Otherwise there is nothing to wait for and the
+    /// screen is put back in the settings job, as it always was.
+    ///
+    /// The settings run on `work`. `inline` is a quit: it waits for them here, for at most `shutdownWaitSeconds`, and `finished` is
+    /// called here if they are done; otherwise `finished` comes on the main thread if the session still stands. A quit that finds Low
+    /// Power Mode still on cannot wait for it, and leaves the screen to the watchdog (see `leaveTheScreenToTheWatchdog`). Anything
+    /// else is a turning off, or the undoing of a leftover record: it waits (`putTheScreenBackAfterLowPower`) and then finishes.
     private func putBack(_ record: UltraRecord, brightnessBefore: Float?, inline: Bool, token: Int,
                          finished: @escaping () -> Void) {
         var record = record
+        if record.brightnessBefore != nil, brightnessBefore == nil {
+            log("ultra: the screen was left as it is: another feature holds it down")
+        }
         record.brightnessBefore = brightnessBefore
         let actions = UltraRecovery.actions(for: record, brightnessNow: nil)
         let groupOf = Dictionary(record.groups.flatMap { group in group.members.map { ($0.pid, group.name) } },
@@ -816,58 +860,43 @@ final class UltraLowPowerController {
         liftTheLimit(actions, names: groupOf)
         for case .unhide(let pid) in actions { hider.unhide(pid: pid) }
 
-        // What each step could not do, to be logged where the log is safe to write.
-        let settings = { [backlight = self.backlight, rate = self.rate, keyboard = self.keyboard] () -> [String] in
-            var failed: [String] = []
-            // The screen is put back only where the mode left it: that is decided against what it reads now.
-            if record.brightnessBefore != nil {
-                if let now = backlight.brightness() {
-                    for case .brightness(let value) in UltraRecovery.actions(for: record, brightnessNow: now)
-                    where !backlight.setBrightness(value) {
-                        failed.append("ultra: the brightness could not be put back")
-                    }
-                } else {
-                    failed.append("ultra: the brightness could not be read, so it was not put back")
-                }
-            }
+        let waits = record.waitsForLowPowerToEnd
+        let screenLevel = record.brightnessBefore
+        // What each step could not do (and what it did to the screen), to be logged where the log is safe to write. The screen is put
+        // back only as far as `BrightnessCeiling` says, against what it reads now; it is in this job only when nothing waits.
+        let settings = { [backlight = self.backlight, rate = self.rate, keyboard = self.keyboard] (withScreen: Bool) -> [String] in
+            var lines: [String] = []
+            if withScreen { lines += Self.putTheScreenBack(to: screenLevel, on: backlight) }
             for action in actions {
                 switch action {
                 case .restoreRate:
                     rate.restore()
                 case .keyboard(let level):
-                    if !keyboard.set(level) { failed.append("ultra: the keyboard light could not be put back") }
+                    if !keyboard.set(level) { lines.append("ultra: the keyboard light could not be put back") }
                 case .resume, .unthrottle, .unhide, .brightness, .powerMode:
                     break
                 }
             }
-            return failed
+            return lines
         }
-        let afterSettings = { [weak self] in
+        let restoreThePowerMode = { [weak self] in
             for case .powerMode(let mode) in actions { self?.restorePower(mode) }
-            finished()
         }
         if inline {
-            // A quit puts the screen, the refresh rate and the keyboard light back on the work queue, like everything that can
-            // block, and waits for it here, for at most `shutdownWaitSeconds`: those calls go to other processes, and a main
-            // thread that is stuck in one cannot be told to quit. What the job found goes through a box, and the rest is done
-            // here on this thread (a hop back to the main queue would not run until this returns, which is after the app is gone).
-            let handoff = SettingsHandoff()
-            work { [weak self] in
-                let failed = settings()
-                guard handoff.complete(failed) else { return }
-                // The quit had given up and the app is still here (a logout that was cancelled): the job finishes the put-back the
-                // way the queue's own path does.
-                self?.onMain { [weak self] in
-                    guard let self, self.session == token else { return }
-                    failed.forEach(self.log)
-                    afterSettings()
-                }
+            // A quit puts the refresh rate and the keyboard light back on the work queue, like everything that can block, and waits
+            // for it here, for at most `shutdownWaitSeconds`: those calls go to other processes, and a main thread that is stuck in
+            // one cannot be told to quit. What the job found goes through a box, and the rest is done here on this thread (a hop back
+            // to the main queue would not run until this returns, which is after the app is gone).
+            //
+            // The screen is in that job when nothing waits, or when Low Power Mode is off already. When it is still on the app cannot
+            // wait for it to go off: it is going away, and the helper puts the power mode back when the connection closes.
+            let screenInJob = !waits || !lowPowerOn()
+            let inTime = runWhileQuitting(token: token, { settings(screenInJob) }) { [weak self] in
+                restoreThePowerMode()
+                if screenInJob { return finished() }
+                self?.leaveTheScreenToTheWatchdog(screenLevel, of: record, token: token, finished: finished)
             }
-            _ = waitForWork(Self.shutdownWaitSeconds)
-            if let failed = handoff.take() {
-                failed.forEach(log)
-                afterSettings()
-            } else {
+            if !inTime {
                 // Neither the record nor the watchdog is taken away: the watchdog sees Anode go and the next launch looks for the
                 // record, and either puts back what is still named.
                 log("ultra: the screen and the rest were not put back in time, so the record and the watchdog were left to finish it")
@@ -876,16 +905,133 @@ final class UltraLowPowerController {
             work { [weak self] in
                 // Overtaken by a quit that has put everything back already: it does not do it a second time.
                 guard let self, self.session == token else { return }
-                let failed = settings()
+                let lines = settings(!waits)
                 self.onMain { [weak self] in
                     guard let self else { return }
-                    failed.forEach(self.log)
+                    lines.forEach(self.log)
                     guard self.session == token else { return }
-                    afterSettings()
+                    restoreThePowerMode()
+                    guard waits else { return finished() }
+                    self.putTheScreenBackAfterLowPower(to: screenLevel, token: token, finished: finished)
                 }
             }
         }
     }
+
+    /// Runs `job` on the work queue and waits for it here for at most `shutdownWaitSeconds`. When it is done in time its lines are
+    /// logged and `afterwards` runs, here. When not, the job finishes the put-back itself if the app is still here (a logout that was
+    /// cancelled): its lines are logged and `afterwards` runs on the main thread, if the session still stands. Says which happened.
+    @discardableResult
+    private func runWhileQuitting(token: Int, _ job: @escaping () -> [String], then afterwards: @escaping () -> Void) -> Bool {
+        let handoff = SettingsHandoff()
+        work { [weak self] in
+            let lines = job()
+            guard handoff.complete(lines) else { return }
+            // The quit had given up and the app is still here: the job finishes the put-back the way the queue's own path does.
+            self?.onMain { [weak self] in
+                guard let self, self.session == token else { return }
+                lines.forEach(self.log)
+                afterwards()
+            }
+        }
+        _ = waitForWork(Self.shutdownWaitSeconds)
+        guard let lines = handoff.take() else { return false }
+        lines.forEach(log)
+        afterwards()
+        return true
+    }
+
+    /// A quit that finds Low Power Mode still on: the power mode has been asked for, but the screen is not set, because macOS raises
+    /// it again when Low Power Mode ends. The record is cut down to what remains (the screen, and what says whether to wait for Low
+    /// Power Mode), and neither it nor the watchdog is taken away, so the watchdog puts the screen back once it sees Anode go (and
+    /// the next launch does, if it did not). If Anode does not go after all (a logout that was cancelled) it waits and puts the
+    /// screen back itself, and then takes the record and the watchdog away. The processes, the lifts, the rate and the keyboard light are done, so none of them is
+    /// named any more. A record that cannot be rewritten leaves the screen to this quit: it is put back now, which is better than not.
+    private func leaveTheScreenToTheWatchdog(_ level: Float?, of held: UltraRecord, token: Int, finished: @escaping () -> Void) {
+        var rest = UltraRecord()
+        rest.brightnessBefore = level
+        rest.powerModeBefore = held.powerModeBefore
+        rest.lowPowerBefore = held.lowPowerBefore
+        if record(mustSave: true, { $0 = rest }) {
+            log("ultra: Low Power Mode is still on, so the screen is left for the watchdog to put back once it is off")
+            // The app may stay: a logout can be cancelled after the notice, and a controller left ending would refuse the mode for good.
+            // Then the end is finished the way a turning off finishes it, a little later (the record and the watchdog go then). On a
+            // quit this never runs, because the app is gone, and the watchdog does it.
+            schedule(Self.lowPowerPollSeconds) { [weak self] in
+                self?.putTheScreenBackAfterLowPower(to: level, token: token, finished: finished)
+            }
+            return
+        }
+        log("ultra: the record could not be rewritten for the watchdog, so the screen was put back now")
+        let inTime = runWhileQuitting(token: token, { [backlight = self.backlight] in Self.putTheScreenBack(to: level, on: backlight) },
+                                      then: finished)
+        if !inTime {
+            log("ultra: the screen was not put back in time, so the record and the watchdog were left to finish it")
+        }
+    }
+
+    /// For a turning off, or the undoing of a leftover record, after the power mode has been asked for: looks every
+    /// `lowPowerPollSeconds` until Low Power Mode is off or `lowPowerWaitSeconds` have passed, gives macOS `brightnessSettleSeconds`
+    /// to finish raising the screen by itself, puts the screen back on the work queue, and calls `finished`. Every hop is this
+    /// session's only: a quit that overtakes any of them has taken the end over, and this does nothing more.
+    private func putTheScreenBackAfterLowPower(to level: Float?, token: Int, finished: @escaping () -> Void) {
+        waitForLowPowerToEnd(token: token) { [weak self] in
+            self?.schedule(Self.brightnessSettleSeconds) { [weak self] in
+                guard let self, self.session == token else { return }
+                self.work { [weak self] in
+                    guard let self, self.session == token else { return }
+                    let lines = Self.putTheScreenBack(to: level, on: self.backlight)
+                    self.onMain { [weak self] in
+                        guard let self else { return }
+                        lines.forEach(self.log)
+                        guard self.session == token else { return }
+                        finished()
+                    }
+                }
+            }
+        }
+    }
+
+    /// Looks at Low Power Mode now and, while it is on, every `lowPowerPollSeconds` (through `schedule`) up to `lowPowerWaitSeconds`.
+    /// `done` runs when it reads off, or at the limit. Counts the looks rather than the clock, so a test never waits.
+    private func waitForLowPowerToEnd(token: Int, waited: TimeInterval = 0, then done: @escaping () -> Void) {
+        guard session == token else { return }
+        guard lowPowerOn() else {
+            log(waited == 0 ? "ultra: Low Power Mode was off already"
+                            : "ultra: Low Power Mode went off after \(String(format: "%.2f", waited)) s")
+            return done()
+        }
+        guard waited < Self.lowPowerWaitSeconds else {
+            log("ultra: Low Power Mode was still on after \(Int(Self.lowPowerWaitSeconds)) s, so the screen was set all the same")
+            return done()
+        }
+        schedule(Self.lowPowerPollSeconds) { [weak self] in
+            self?.waitForLowPowerToEnd(token: token, waited: waited + Self.lowPowerPollSeconds, then: done)
+        }
+    }
+
+    /// Reads the screen and sets it to `before` where `BrightnessCeiling` says it is the mode's to: runs on the work queue and may
+    /// block. Returns what to log, which is said on the main thread. Nothing is read when the mode lowered nothing.
+    private static func putTheScreenBack(to before: Float?, on backlight: BacklightControl) -> [String] {
+        guard let before else { return [] }
+        let now = backlight.brightness()
+        switch BrightnessCeiling.decide(before: before, now: now) {
+        case .putBack(let level):
+            return [backlight.setBrightness(level) ? "ultra: the screen was put back to \(Self.level(level))"
+                                                   : "ultra: the brightness could not be put back"]
+        case .couldNotBeRead:
+            return ["ultra: the brightness could not be read, so it was not put back"]
+        case .aboveTheCeiling:
+            return ["ultra: the screen was left at \(Self.level(now ?? 0)): it is above the ceiling, so something else raised it"]
+        case .alreadyAtTheEarlierLevel:
+            return ["ultra: the screen was left at \(Self.level(now ?? 0)): it is not dimmer than it was before the mode (\(Self.level(before)))"]
+        case .nothingWasLowered:
+            return []
+        }
+    }
+
+    /// A brightness for the log, with two decimals.
+    private static func level(_ value: Float) -> String { String(format: "%.2f", value) }
 
     /// Lifts the background policy from every process the record names, from every living descendant of one of them, and, in a
     /// session, from every current member of the groups the session kept on the efficiency cores. The last two come from one
@@ -1094,7 +1240,8 @@ final class UltraLowPowerController {
                     self.adjustingBrightness = false
                     return
                 }
-                if self.live?.brightnessBefore == nil {
+                let firstPullBack = self.live?.brightnessBefore == nil
+                if firstPullBack {
                     self.ownBrightness.remember(now, for: Self.ownerName)
                     guard self.record(mustSave: true, { $0.brightnessBefore = now }) else {
                         self.log("ultra: the record could not take the brightness, so the screen was not pulled back")
@@ -1107,7 +1254,12 @@ final class UltraLowPowerController {
                     let refused = self?.session == token ? !backlight.setBrightness(ceiling) : false
                     self?.onMain { [weak self] in
                         guard let self, self.session == token else { return }
-                        if refused { self.log("ultra: the screen did not take the lower brightness") }
+                        if refused {
+                            self.log("ultra: the screen did not take the lower brightness")
+                        } else if firstPullBack {
+                            // The start did not lower it, so this is the one time the log hears of the screen being lowered.
+                            self.log("ultra: the screen was lowered from \(Self.level(now)) to \(Self.level(ceiling))")
+                        }
                         self.adjustingBrightness = false
                     }
                 }
@@ -1261,6 +1413,7 @@ final class UltraLowPowerController {
         appOfGroup = [:]
         sweeping = false
         adjustingBrightness = false
+        keptCount = 0
         brightnessTaken = false
         brightnessToPutBack = nil
         changed()

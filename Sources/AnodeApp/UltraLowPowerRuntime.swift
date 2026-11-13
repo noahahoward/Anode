@@ -119,7 +119,8 @@ final class UltraLowPowerRuntime {
          processTable: @escaping () -> [UltraProcess]?, startTime: @escaping (pid_t) -> UInt64?, hasEfficiencyCores: Bool,
          hider: AppHiding, backlight: BacklightControl,
          ownBrightness: OwnBrightness, rate: DisplayRateControlling, keyboard: KeyboardBacklightControlling,
-         power: PowerModeControlling, watchdog: UltraWatchdogging, store: UltraRecordStoring, confirm: UltraConfirming,
+         power: PowerModeControlling, lowPowerOn: @escaping () -> Bool, watchdog: UltraWatchdogging, store: UltraRecordStoring,
+         confirm: UltraConfirming,
          backdrop: BackdropPresenting, load: LoadReading, widgets: UltraReadingHosting, icon: UltraIconPresenting,
          presentMenu: @escaping (NSMenu, NSStatusBarButton) -> Void, openBetaFeatures: @escaping () -> Void,
          registerShortcut: @escaping (@escaping () -> Void) -> Void, unregisterShortcut: @escaping () -> Void,
@@ -161,8 +162,8 @@ final class UltraLowPowerRuntime {
         controller = UltraLowPowerController(
             settings: settings, processes: processes, freezer: freezer, throttler: throttler,
             processTable: processTable, startTime: startTime, hasEfficiencyCores: hasEfficiencyCores, hider: hider, backlight: backlight,
-            ownBrightness: ownBrightness, rate: rate, keyboard: keyboard, power: power, watchdog: watchdog, store: store,
-            confirm: confirm, backdrop: backdrop, load: load, lastOtherFrontApp: lastOtherFront, ownPIDs: ownPIDs, user: user,
+            ownBrightness: ownBrightness, rate: rate, keyboard: keyboard, power: power, lowPowerOn: lowPowerOn,
+            watchdog: watchdog, store: store, confirm: confirm, backdrop: backdrop, load: load, lastOtherFrontApp: lastOtherFront, ownPIDs: ownPIDs, user: user,
             work: { work.run($0) }, waitForWork: { work.waitUntilIdle(limit: $0) }, schedule: schedule, alert: alert, log: log)
         controller.onChange = { [weak self] in self?.controllerChanged() }
 
@@ -185,7 +186,10 @@ final class UltraLowPowerRuntime {
             startTime: { LiveProcessList.startTime($0) },
             hasEfficiencyCores: LiveProcessThrottler.hasEfficiencyCores,
             hider: LiveAppHider(), backlight: DisplayServicesBacklight(), ownBrightness: OwnBrightness.shared, rate: LiveDisplayRate(),
-            keyboard: LiveKeyboardBacklight(), power: HelperPowerMode(), watchdog: LiveUltraWatchdog(recordURL: url, log: log),
+            keyboard: LiveKeyboardBacklight(), power: HelperPowerMode(),
+            // Read each time it is asked: it follows the switch live in a running process, with no notification to wait for.
+            lowPowerOn: { ProcessInfo.processInfo.isLowPowerModeEnabled },
+            watchdog: LiveUltraWatchdog(recordURL: url, log: log),
             store: UltraRecordFile(url: url),
             // What the box says is what will happen: the owner's choices, and whether this Mac has the cores to keep work on.
             confirm: UltraConfirmPanel(screenText: {

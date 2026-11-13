@@ -693,7 +693,7 @@ final class UltraLowPowerFeatureTests: XCTestCase {
                 throttler: Fakes.FakeThrottler(calls), processTable: { Self.world }, startTime: { UInt64($0) * 10 },
                 hasEfficiencyCores: hasEfficiencyCores,
                 hider: Fakes.FakeHider(calls), backlight: Fakes.FakeBacklight(calls), ownBrightness: OwnBrightness(),
-                rate: Fakes.FakeRate(calls), keyboard: Fakes.FakeKeyboard(calls), power: power,
+                rate: Fakes.FakeRate(calls), keyboard: Fakes.FakeKeyboard(calls), power: power, lowPowerOn: { true },
                 watchdog: Fakes.FakeWatchdog(calls), store: Fakes.FakeStore(calls), confirm: confirm,
                 backdrop: Fakes.FakeBackdrop(calls), load: Fakes.FakeLoad(calls),
                 lastOtherFrontApp: { 10 }, ownPIDs: { [1000] }, user: 501, work: { $0() }, waitForWork: { _ in true }, schedule: { _, _ in },
