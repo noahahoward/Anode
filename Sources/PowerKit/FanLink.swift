@@ -172,16 +172,21 @@ public struct FanReply: Codable, Equatable {
     /// nil is an older helper, which by definition speaks version 1.
     public let version: Int?
     /// The power mode the Mac was in before `enterLowPowerMode` switched Low Power Mode on, as `battery + 10 * charger`.
-    /// Set only on a yes to that command; nil elsewhere, and left out of the line when nil, so every other reply is
-    /// written as it always was.
+    /// Set only on the "done" answer to `powerModeResult` for an enter; nil elsewhere, and left out of the line when nil,
+    /// so every other reply is written as it always was.
     public let powerModeBefore: Int?
+    /// True on the answer to `powerModeResult` while the job it asks about has not finished (a yes, so that nothing mistakes
+    /// it for a failure); left out of the line when nil, so every other reply is written as it always was.
+    public let pending: Bool?
 
-    public init(ok: Bool, message: String, fanCount: Int? = nil, version: Int? = nil, powerModeBefore: Int? = nil) {
+    public init(ok: Bool, message: String, fanCount: Int? = nil, version: Int? = nil, powerModeBefore: Int? = nil,
+                pending: Bool? = nil) {
         self.ok = ok
         self.message = message
         self.fanCount = fanCount
         self.version = version
         self.powerModeBefore = powerModeBefore
+        self.pending = pending
     }
 }
 

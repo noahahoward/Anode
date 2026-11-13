@@ -66,14 +66,21 @@ public enum FanCommand: Codable, Equatable {
     case scheduleChargeLimit(limit: Int, at: Date)
     /// Protocol 3. Drop the plan, and the wake it scheduled, writing nothing. Nothing planned is not a failure.
     case cancelScheduledChargeLimit
-    /// Protocol 4. Switch macOS's Low Power Mode on, for the battery and for the charger, remembering what each was; the
-    /// reply carries those as one number (`FanReply.powerModeBefore`). A source already in low power is left as it is.
-    /// Kept only while the client that sent it stays connected: put back, wherever it still reads low power, when that
-    /// client goes or the helper stops.
+    /// Protocol 4. Switch macOS's Low Power Mode on, for the battery and for the charger, remembering what each was. A
+    /// source already in low power is left as it is. Answered at once, with "started" or a refusal (a power mode job is
+    /// already running): the tool runs off the helper's loop, and how it ended is `powerModeResult`'s answer, which
+    /// carries the mode before as one number (`FanReply.powerModeBefore`). Kept only while the client that sent it stays
+    /// connected: put back, wherever it still reads low power, when that client goes or the helper stops.
     case enterLowPowerMode
     /// Protocol 4. Put the power mode back to `before` (`battery + 10 * charger`, each digit 0…2), wherever a source still
     /// reads low power and was not in it before. Checked before anything runs; a value that is not a power mode is refused.
+    /// Answered at once like `enterLowPowerMode`, and its end is `powerModeResult`'s too.
     case restorePowerMode(before: Int)
+    /// Protocol 4. How the last `enterLowPowerMode` or `restorePowerMode` of this connection ended: pending
+    /// (`FanReply.pending`), done (a yes, with `powerModeBefore` for an enter), or failed (a no, with the reason). Asked
+    /// again it says the same until the next one starts. Writes nothing and runs nothing; a connection that has started
+    /// none is refused.
+    case powerModeResult
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -425,7 +432,7 @@ public struct FanSession: Equatable {
         case .releaseAll:
             if ok { held.removeAll() }
         case .setChargeLimit, .discharge, .stopDischarge, .scheduleChargeLimit, .cancelScheduledChargeLimit,
-             .enterLowPowerMode, .restorePowerMode:
+             .enterLowPowerMode, .restorePowerMode, .powerModeResult:
             // Not a fan command; nothing a fan session tracks.
             break
         }

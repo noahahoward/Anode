@@ -2,11 +2,18 @@ import Foundation
 
 // ── macOS's Low Power Mode, as the root helper changes it ───────────────────
 //
-// Two commands (`FanCommand.enterLowPowerMode`, `.restorePowerMode`) and one tool: `/usr/bin/pmset`.
+// Three commands (`FanCommand.enterLowPowerMode`, `.restorePowerMode`, `.powerModeResult`) and one tool: `/usr/bin/pmset`.
+//
+// THE TOOL RUNS OFF THE LOOP. `pmset` can take seconds when it hangs, and the helper's loop answers the app within its link's
+// two seconds, keeps the charger's floor and serves the plan: it never waits for the tool. Every job (the read, the writes, a
+// roll-back, a put-back) runs on one serial queue of the helper's own (`PowerModeWorker`), through the one runner below.
+// The loop hands it values and reads the finished outcome from a notice, the way it reads the plan's timer; what the helper
+// remembers, what is owed and what the client was last told are the loop's alone (`FanHelperServer`). `enterLowPowerMode` and
+// `restorePowerMode` answer at once ("started"), and the client asks `powerModeResult` for how it ended.
 //
 // WHAT RUNS. Exactly one program, at an absolute path, never through a shell, with a bounded wait and its output captured,
 // through one runner the server is handed (`PowerModeRunner`). Only the helper's own `main` hands it the real one
-// (`SystemPowerModeRunner`); a server built anywhere else, a test least of all, has no runner and refuses both commands.
+// (`SystemPowerModeRunner`); a server built anywhere else, a test least of all, has no runner and refuses the commands.
 // The arguments are built here and nowhere else, from closed sets: `-g custom` to read; to write, `-b` or `-c`, one of two
 // key names, and one digit that has been checked against that key. Nothing in a command line comes from what the tool
 // printed, and nothing from the client but a number that is validated before anything runs.
@@ -133,6 +140,11 @@ enum PowerModeRefusal: Error, Equatable {
     case notTaken
     /// A value to put back that is not a power mode (checked before the tool is run), or that this Mac's key does not take.
     case badValue
+    /// A job is already running: one at a time. A put-back that is owed is one (it is on the worker, or it is the switch-on
+    /// that says what there is to put back).
+    case busy
+    /// `powerModeResult` from a client that has not started anything.
+    case nothingAsked
 
     var message: String {
         switch self {
@@ -142,6 +154,8 @@ enum PowerModeRefusal: Error, Equatable {
         case .notUnderstood:  return "the Mac's power mode is not one this helper knows"
         case .notTaken:       return "macOS did not take the power mode"
         case .badValue:       return "refused: that is not a power mode to put back"
+        case .busy:           return "a power mode change is already running"
+        case .nothingAsked:   return "no power mode change has been asked for"
         }
     }
 }
@@ -154,12 +168,9 @@ struct PowerModeSwitch {
     /// asked to end and given `SystemPowerModeRunner.endGrace`, then killed and given `SystemPowerModeRunner.killWait` to be
     /// gone. So the longest a call can take is `slowestCall`, 0.6 + 0.2 + 0.2 = 1.0 s, not 0.6 s.
     ///
-    /// The app's link gives the helper two seconds to answer a request and closes the socket after that, which hands
-    /// everything back. An enter that goes through, a restore that works, and the put-back that works make three calls
-    /// that each finish in the time they are given: 1.8 s at most, inside the two seconds. A call that has to be ended can
-    /// run a command past them: `slowestCommand` and `slowestRolledBackEnter` are the worst that can happen. When the link
-    /// has given up it has closed the socket and the answer is late; the helper's own put-back on close then runs, because
-    /// what it holds is kept until a put-back has been taken, so nothing is left on.
+    /// This is the WORKER's time, not the loop's: the loop never waits for a call (see the header). What it bounds is how
+    /// long a job holds the one worker, and so how long the helper stays up for it (`slowestCommand`,
+    /// `slowestRolledBackEnter`), and what the helper's stop waits for.
     static let callLimit: TimeInterval = 0.6
 
     /// The longest one call to the real runner can take: what the tool is given, what it is given to end when asked, and
@@ -169,15 +180,22 @@ struct PowerModeSwitch {
     /// The slowest a restore, or the put-back when a client goes, can be: a read and the two writes it makes (each source
     /// is tried). A read that has to be ended is no answer and ends the command, so in a command that goes on the read
     /// finished in the time it was given, `callLimit`; each write can have had to be ended, `slowestCall`. 0.6 + 1.0 + 1.0
-    /// = 2.6 s, past the link's two seconds.
+    /// = 2.6 s. It is how long the helper's stop waits for the worker (`FanHelperServer.powerModeStopWait`): the mode is
+    /// put back before the process ends if the worker can do it in that time, and the stop goes on without it otherwise.
     static let slowestCommand: TimeInterval = callLimit + 2 * slowestCall
 
     /// The slowest switch-on that fails and is rolled back, as the code can really go. The read finishes (0.6 s); the first
     /// write goes (0.6 s, it had to finish for the second to be tried); the second is cut off (1.0 s) and may have landed;
     /// the roll-back's read finishes (0.6 s); and both put-back writes are cut off (1.0 s each). Six calls:
     /// 0.6 + 0.6 + 1.0 + 0.6 + 1.0 + 1.0 = 4.8 s. A read that has to be ended, or a first write that is, ends the command
-    /// sooner.
+    /// sooner. The most the worker is held by one job; the app watches for its answer for longer than this.
     static let slowestRolledBackEnter: TimeInterval = callLimit + callLimit + slowestCall + callLimit + 2 * slowestCall
+
+    /// How many times a put-back that fails is tried before the helper stops owing it, counting the first. Each try is a
+    /// job of its own on the worker, started from the result of the one before (never on a timer), so a put-back that
+    /// keeps failing keeps the helper up for at most this many `slowestCommand`s; after that it is idle again. What the
+    /// helper remembers is kept, and the helper's stop tries once more.
+    static let putBackTries = 2
 
     static let readArguments = ["-g", "custom"]
 
@@ -231,6 +249,101 @@ struct PowerModeSwitch {
             if wanted != PowerModeKey.low, !write(wanted, of: reading.key, for: source) { clean = false }
         }
         return clean ? .success(()) : .failure(.notTaken)
+    }
+
+    /// One whole job, as the worker runs it: values in (what the loop remembers), values out (what happened, and what the
+    /// loop is to remember). Nothing here touches the loop's books or says anything: the loop does both from the outcome.
+    func perform(_ job: PowerModeJob) -> PowerModeOutcome {
+        switch job {
+        case .enter(let held): return enter(held: held)
+        case .putBack(let modes):
+            switch putBack(modes) {
+            case .success: return .putBack
+            case .failure(let why): return .refused(why, memory: .unchanged)
+            }
+        }
+    }
+
+    /// What was read is the "before", unless the client already holds a mode: what the Mac reads then is its own work. Any
+    /// write that is not taken is put back; what is remembered is forgotten only when that has worked.
+    private func enter(held: PowerModes?) -> PowerModeOutcome {
+        let reading: PowerModeReading
+        switch read() {
+        case .failure(let why): return .refused(why, memory: .unchanged)
+        case .success(let seen): reading = seen
+        }
+        let before: PowerModes
+        if let held {
+            before = held
+        } else if let seen = reading.modes {
+            before = seen
+        } else {
+            return .refused(.notUnderstood, memory: .unchanged)
+        }
+        guard lower(reading) else {
+            if case .success = putBack(before) { return .refused(.notTaken, memory: .forget) }
+            return .refused(.notTaken, memory: .remember(before))
+        }
+        return .on(before: before)
+    }
+}
+
+/// What the loop hands the worker, as values.
+enum PowerModeJob: Equatable {
+    /// Read the Mac, switch Low Power Mode on for every source that is not in it, and say what it was. `held` is what the
+    /// loop already remembers for the client (nil: nothing).
+    case enter(held: PowerModes?)
+    /// Put these modes back, wherever a source still reads low power and was not in it before. A client's restore, and the
+    /// put-back owed when a client goes or the helper stops, are the same work.
+    case putBack(PowerModes)
+}
+
+/// What the worker hands back, as values.
+enum PowerModeOutcome: Equatable {
+    /// What the loop is to remember after the job.
+    enum Memory: Equatable {
+        case unchanged
+        case remember(PowerModes)
+        case forget
+    }
+
+    /// Switched on; the Mac was `before`. Remembered until it is put back.
+    case on(before: PowerModes)
+    /// Put back. Nothing is remembered any more.
+    case putBack
+    case refused(PowerModeRefusal, memory: Memory)
+
+    var memory: Memory {
+        switch self {
+        case .on(let before): return .remember(before)
+        case .putBack: return .forget
+        case .refused(_, let memory): return memory
+        }
+    }
+}
+
+/// The one serial queue every power-mode job runs on, so that the helper's loop never waits for the tool. Owned by the
+/// server, which gives it a job at a time (it refuses a second while one runs) and reads each outcome from a notice.
+final class PowerModeWorker {
+    private let queue = DispatchQueue(label: "dev.anode.helper.power-mode")
+    private let machine: PowerModeSwitch
+    private let outstanding = DispatchGroup()
+
+    init(_ machine: PowerModeSwitch) { self.machine = machine }
+
+    /// Run `job` after the ones already given. `done` gets the outcome on the worker's queue, and must only hand it to the
+    /// loop: it posts a notice and writes the wake pipe, as the plan's timer does.
+    func submit(_ job: PowerModeJob, done: @escaping (PowerModeOutcome) -> Void) {
+        outstanding.enter()
+        queue.async { [machine, outstanding] in
+            done(machine.perform(job))
+            outstanding.leave()
+        }
+    }
+
+    /// True when every job given has run and been handed on, false when `timeout` ran out first.
+    func idle(within timeout: TimeInterval) -> Bool {
+        outstanding.wait(timeout: .now() + timeout) == .success
     }
 }
 

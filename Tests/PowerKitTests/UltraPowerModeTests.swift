@@ -332,30 +332,33 @@ final class UltraPowerModePureTests: XCTestCase {
         XCTAssertEqual(PowerModeSwitch.slowestRolledBackEnter, 4.8, accuracy: 1e-9)
     }
 
-    /// The deadline the sleep watch gives the loop belongs to the charge feature and is not changed here; what is pinned is
-    /// that the worst rolled-back switch-on leaves it a second to spare, so a change to either number that eats that fails.
+    /// The deadline the sleep watch gives the loop belongs to the charge feature and is not changed here. It no longer bears
+    /// on the sleep answer: with the tool run on the worker, no pass of the loop takes the worst rolled-back switch-on's
+    /// time, so nothing the loop does for Low Power Mode can outlast it. What is kept is that it still covers that time with
+    /// a second to spare, so that the figure the worker's bound and the stop's wait are made of is never one the deadline
+    /// would not have survived, and a change to either number that eats the margin is noticed.
     func testTheSleepAnswerDeadlineKeepsAMarginOverTheWorstRolledBackSwitchOn() {
         XCTAssertGreaterThanOrEqual(FanHelperServer.sleepAnswerDeadline, PowerModeSwitch.slowestRolledBackEnter + 1)
     }
 
-    /// The comments that state the bound state the figures these constants make, and none that cannot happen.
-    func testTheCommentsThatStateTheBoundStateTheReachableFigures() throws {
+    /// The comments that state the worker's bound state the figures these constants make, where the worker's time is
+    /// described; and the loop's own docs, with the work off the loop, state none of them: the tool's time is no loop time.
+    func testTheCommentsThatStateTheWorkersBoundStateTheReachableFiguresAndTheLoopsDocsStateNone() throws {
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
         func source(_ path: String) throws -> String {
             try String(contentsOf: root.appendingPathComponent(path), encoding: .utf8)
         }
         func s(_ seconds: Double) -> String { String(format: "%.1f s", seconds) }
-        let call = PowerModeSwitch.callLimit, slowest = PowerModeSwitch.slowestCall
+        let slowest = PowerModeSwitch.slowestCall
         let switchFile = try source("Sources/PowerKit/PowerModeSwitch.swift")
         let serverFile = try source("Sources/PowerKit/FanHelperService.swift")
-        // The doc of `callLimit` and of the two worst cases.
-        for figure in [s(3 * call), s(slowest), s(PowerModeSwitch.slowestCommand), s(PowerModeSwitch.slowestRolledBackEnter)] {
-            XCTAssertTrue(switchFile.contains(figure), "PowerModeSwitch.swift does not say \(figure)")
-        }
-        // The loop's own docs: what a pass can take, and the sleep notice's deadline.
+        // The docs of `callLimit` and of the two worst cases, the worker's time.
         for figure in [s(slowest), s(PowerModeSwitch.slowestCommand), s(PowerModeSwitch.slowestRolledBackEnter)] {
-            XCTAssertTrue(serverFile.contains(figure), "FanHelperService.swift does not say \(figure)")
+            XCTAssertTrue(switchFile.contains(figure), "PowerModeSwitch.swift does not say \(figure)")
+            XCTAssertFalse(serverFile.contains(figure), "FanHelperService.swift says \(figure), as if the loop waited for it")
         }
+        // The loop's doc says what it always said.
+        XCTAssertTrue(serverFile.contains("NOTHING A CLIENT DOES CAN HOLD THIS THREAD"))
         // Figures that were true of an earlier version, or cannot happen.
         for old in ["3.6 s", "3.0 s", "6.0 s", "up to 0.6 s a call"] {
             XCTAssertFalse(switchFile.contains(old), "PowerModeSwitch.swift still says \(old)")
@@ -379,14 +382,51 @@ final class UltraPowerModePureTests: XCTestCase {
 
 // ── The app's side: HelperPowerMode over the shared connection ──────────────
 
-/// A wire whose answer to `enterLowPowerMode` is held until the test lets it go, to show what happens to an answer that
-/// comes after the app has stopped waiting.
+/// The helper as the app sees it over the wire. `enterLowPowerMode` and `restorePowerMode` are answered "started" at once;
+/// `powerModeResult` is answered pending for the first `pendingAsks` times it is asked, and then with how the job that was
+/// started ended: done (with the mode before, for an enter), or failed with a reason.
+private final class ScriptedHelper {
+    var before = 21
+    var pendingAsks = 0
+    /// The job ends in this refusal, instead of in done.
+    var failsWith: String?
+    /// The command itself is refused, at once.
+    var refusesStart: String?
+    private var last: FanCommand?
+    private var asked = 0
+
+    func answer(_ command: FanCommand) -> FanReply {
+        switch command {
+        case .enterLowPowerMode, .restorePowerMode:
+            if let why = refusesStart { return FanReply(ok: false, message: why) }
+            last = command
+            asked = 0
+            return FanReply(ok: true, message: "started")
+        case .powerModeResult:
+            if asked < pendingAsks {
+                asked += 1
+                return FanReply(ok: true, message: "pending", pending: true)
+            }
+            if let why = failsWith { return FanReply(ok: false, message: why) }
+            switch last {
+            case .enterLowPowerMode?: return FanReply(ok: true, message: "Low Power Mode is on", powerModeBefore: before)
+            case .restorePowerMode?: return FanReply(ok: true, message: "power mode put back")
+            default: return FanReply(ok: false, message: PowerModeRefusal.nothingAsked.message)
+            }
+        default:
+            return FanReply(ok: true, message: "ok")
+        }
+    }
+}
+
+/// A wire whose answer to `powerModeResult` is whatever the test sets, to show what happens to an answer that comes after
+/// the app has stopped waiting.
 private final class DeferredWire: HelperWire {
     var onPeerClosed: (() -> Void)?
     var version: Int? = 4
+    var result = FanReply(ok: true, message: "pending", pending: true)
     private(set) var sent: [FanCommand] = []
     private(set) var disconnects = 0
-    private(set) var held: [(FanReply) -> Void] = []
 
     func ensureConnected(_ done: @escaping (FanControlLink.Status, Bool) -> Void) {
         done(.connected(fanCount: 1, version: version), true)
@@ -394,7 +434,11 @@ private final class DeferredWire: HelperWire {
     func ping(_ done: @escaping (FanControlLink.Status) -> Void) { done(.connected(fanCount: 1, version: version)) }
     func send(_ command: FanCommand, _ done: @escaping (FanReply) -> Void) {
         sent.append(command)
-        if command == .enterLowPowerMode { held.append(done) } else { done(FanReply(ok: true, message: "ok")) }
+        switch command {
+        case .powerModeResult: done(result)
+        case .enterLowPowerMode, .restorePowerMode: done(FanReply(ok: true, message: "started"))
+        default: done(FanReply(ok: true, message: "ok"))
+        }
     }
     func sendWaiting(_ command: FanCommand, timeout: TimeInterval) -> FanReply? { nil }
     func drain(timeout: TimeInterval) -> Bool { true }
@@ -409,13 +453,17 @@ final class UltraPowerModeTests: XCTestCase {
     private var installed = true
     private var scheduled: [(after: TimeInterval, work: () -> Void)] = []
     private var mode: HelperPowerMode!
+    private var helper = ScriptedHelper()
 
     override func setUp() {
         super.setUp()
         installed = true
         scheduled = []
+        helper = ScriptedHelper()
         wire = ScriptedWire()
         wire.answerAtOnce = .connected(fanCount: 1, version: 4)
+        wire.pingStatus = .connected(fanCount: 1, version: 4)
+        wire.reply = { [unowned self] command in helper.answer(command) }
         connection = HelperConnection(wire: wire)
         mode = makeMode(over: connection)
     }
@@ -425,19 +473,23 @@ final class UltraPowerModeTests: XCTestCase {
                         schedule: { [unowned self] after, work in scheduled.append((after, work)) })
     }
 
-    /// What the helper answers an enter with: it took it, and the mode before was `before`.
+    /// What the helper answers an enter with, in the end: it took it, and the mode before was `before`.
     private func helperTakesIt(before: Int = 21) {
-        wire.reply = { command in
-            command == .enterLowPowerMode
-                ? FanReply(ok: true, message: "Low Power Mode is on", powerModeBefore: before)
-                : FanReply(ok: true, message: "ok")
-        }
+        helper.before = before
     }
 
     private func enter() -> [Int?] {
         var answers: [Int?] = []
         mode.enterLowPower { answers.append($0) }
         return answers
+    }
+
+    /// Time passes: whatever was scheduled for `after` seconds from its start runs, once, and is no longer waiting.
+    private func fire(_ after: TimeInterval, file: StaticString = #filePath, line: UInt = #line) {
+        guard let i = scheduled.firstIndex(where: { $0.after == after }) else {
+            return XCTFail("nothing was scheduled for \(after) s: \(scheduled.map(\.after))", file: file, line: line)
+        }
+        scheduled.remove(at: i).work()
     }
 
     // ── What the helper speaks ──────────────────────────────────────────────
@@ -541,10 +593,42 @@ final class UltraPowerModeTests: XCTestCase {
 
     // ── Entering ────────────────────────────────────────────────────────────
 
-    func testEnterSendsTheCommandAndAnswersTheModeBefore() {
+    /// The helper runs `pmset` off its loop, so the enter is answered "started" and its end is asked for.
+    func testEnterSendsTheCommandThenAsksForTheResultAndAnswersTheModeBefore() {
         helperTakesIt(before: 21)
         XCTAssertEqual(enter(), [21])
-        XCTAssertEqual(wire.sent, [.enterLowPowerMode])
+        XCTAssertEqual(wire.sent, [.enterLowPowerMode, .powerModeResult])
+    }
+
+    /// Asked every 0.2 s while the helper says pending, and answered when it says done.
+    func testEnterAsksEveryTwoTenthsOfASecondUntilTheHelperSaysDone() {
+        XCTAssertEqual(HelperPowerMode.pollEvery, 0.2)
+        helper.pendingAsks = 2
+        var answers: [Int?] = []
+        mode.enterLowPower { answers.append($0) }
+        XCTAssertEqual(answers, [])
+        XCTAssertEqual(wire.sent, [.enterLowPowerMode, .powerModeResult], "the first ask is at once")
+        fire(HelperPowerMode.pollEvery)
+        XCTAssertEqual(answers, [], "still pending")
+        XCTAssertEqual(wire.sent.count, 3)
+        fire(HelperPowerMode.pollEvery)
+        XCTAssertEqual(answers, [21])
+        XCTAssertEqual(wire.sent, [.enterLowPowerMode, .powerModeResult, .powerModeResult, .powerModeResult])
+        XCTAssertFalse(scheduled.contains { $0.after == HelperPowerMode.pollEvery }, "went on asking after the answer")
+        XCTAssertEqual(connection.holders, [.powerMode], "held from the enter until the restore")
+    }
+
+    func testEnterAsksUntilTheHelperSaysFailedAndThenAnswersNilAndLetsGo() {
+        helper.pendingAsks = 1
+        helper.failsWith = PowerModeRefusal.notTaken.message
+        var answers: [Int?] = []
+        mode.enterLowPower { answers.append($0) }
+        XCTAssertEqual(answers, [])
+        fire(HelperPowerMode.pollEvery)
+        XCTAssertEqual(answers, [nil])
+        XCTAssertTrue(connection.holders.isEmpty)
+        XCTAssertEqual(wire.disconnects, 1, "nobody else was holding it")
+        XCTAssertFalse(scheduled.contains { $0.after == HelperPowerMode.pollEvery }, "went on asking after the answer")
     }
 
     /// Held from a successful enter until the restore: that is what the helper's rule on a closed connection rests on.
@@ -557,7 +641,7 @@ final class UltraPowerModeTests: XCTestCase {
         var restored: [Bool] = []
         mode.restore(21) { restored.append($0) }
         XCTAssertEqual(restored, [true])
-        XCTAssertEqual(wire.sent, [.enterLowPowerMode, .restorePowerMode(before: 21)])
+        XCTAssertEqual(wire.sent, [.enterLowPowerMode, .powerModeResult, .restorePowerMode(before: 21), .powerModeResult])
         XCTAssertTrue(connection.holders.isEmpty)
         XCTAssertEqual(wire.disconnects, 1, "nobody else was holding it")
     }
@@ -572,8 +656,17 @@ final class UltraPowerModeTests: XCTestCase {
         XCTAssertEqual(wire.disconnects, 0)
     }
 
-    func testARefusalAnswersNilAndLetsGoOfTheSocket() {
-        wire.reply = { _ in FanReply(ok: false, message: PowerModeRefusal.noLowPowerMode.message) }
+    /// A refusal at once (a job is already running, a Mac with no Low Power Mode is a failed result and not this).
+    func testAnEnterTheHelperRefusesAnswersNilAndLetsGoOfTheSocket() {
+        helper.refusesStart = PowerModeRefusal.busy.message
+        XCTAssertEqual(enter(), [nil])
+        XCTAssertEqual(wire.sent, [.enterLowPowerMode], "asked for the result of a job that was never started")
+        XCTAssertTrue(connection.holders.isEmpty)
+        XCTAssertEqual(wire.disconnects, 1)
+    }
+
+    func testAnEnterThatFailsInTheHelperAnswersNilAndLetsGoOfTheSocket() {
+        helper.failsWith = PowerModeRefusal.noLowPowerMode.message
         XCTAssertEqual(enter(), [nil])
         XCTAssertTrue(connection.holders.isEmpty)
         XCTAssertEqual(wire.disconnects, 1)
@@ -583,7 +676,7 @@ final class UltraPowerModeTests: XCTestCase {
     func testAYesWithNoUsablePowerModeIsNotTakenForOne() {
         for reply in [FanReply(ok: true, message: "on"), FanReply(ok: true, message: "on", powerModeBefore: 77),
                       FanReply(ok: true, message: "on", powerModeBefore: -1)] {
-            wire.reply = { _ in reply }
+            wire.reply = { command in command == .powerModeResult ? reply : FanReply(ok: true, message: "started") }
             XCTAssertEqual(enter(), [nil], "\(reply)")
             XCTAssertTrue(connection.holders.isEmpty)
         }
@@ -647,16 +740,18 @@ final class UltraPowerModeTests: XCTestCase {
         var answers: [Int?] = []
         mode.enterLowPower { answers.append($0) }
         XCTAssertEqual(answers, [])
-        XCTAssertEqual(scheduled.count, 1)
-        XCTAssertEqual(scheduled.first?.after, HelperPowerMode.answerWithin)
+        XCTAssertEqual(HelperPowerMode.answerWithin, 3)
+        XCTAssertEqual(scheduled.map(\.after).sorted(), [HelperPowerMode.answerWithin, HelperPowerMode.watchWithin])
         XCTAssertLessThanOrEqual(HelperPowerMode.answerWithin, 10, "the session waits on this")
-        scheduled.first?.work()
+        fire(HelperPowerMode.answerWithin)
         XCTAssertEqual(answers, [nil])
         XCTAssertTrue(connection.holders.isEmpty, "the socket was kept for an answer nobody is waiting for")
         // The hello is answered after all: nothing is sent, and nothing is answered twice.
         wire.answerConnects(.connected(fanCount: 1, version: 4), reopened: true)
         XCTAssertEqual(answers, [nil])
         XCTAssertTrue(wire.sent.isEmpty)
+        fire(HelperPowerMode.watchWithin)
+        XCTAssertEqual(answers, [nil])
     }
 
     func testTheTimeIsNotWaitedOutWhenTheAnswerComes() {
@@ -669,22 +764,65 @@ final class UltraPowerModeTests: XCTestCase {
         XCTAssertEqual(connection.holders, [.powerMode], "the mode is on and the socket was let go")
     }
 
-    /// The helper took the command and answered after the app stopped waiting: nobody recorded the mode, so it is put
-    /// back at once rather than left on until the connection closes.
+    /// Three seconds without an end: the answer is nil. The helper was started, though, and may well take it: the enter is
+    /// still watched, and a "before" that comes after is put back at once, because nobody recorded the mode.
     func testAnAnswerThatComesAfterTheTimeIsPutBack() {
         let late = DeferredWire()
         let connection = HelperConnection(wire: late)
         let mode = makeMode(over: connection)
         var answers: [Int?] = []
         mode.enterLowPower { answers.append($0) }
-        XCTAssertEqual(late.sent, [.enterLowPowerMode])
-        XCTAssertEqual(scheduled.count, 1)
-        scheduled.first?.work()
+        XCTAssertEqual(late.sent, [.enterLowPowerMode, .powerModeResult])
+        fire(HelperPowerMode.answerWithin)
         XCTAssertEqual(answers, [nil])
-        late.held.first?(FanReply(ok: true, message: "Low Power Mode is on", powerModeBefore: 12))
+        XCTAssertEqual(connection.holders, [.powerMode], "let go while the helper may still be switching the mode on")
+        fire(HelperPowerMode.pollEvery)
+        XCTAssertEqual(late.sent.last, .powerModeResult, "stopped asking when the time was up")
+
+        late.result = FanReply(ok: true, message: "Low Power Mode is on", powerModeBefore: 12)
+        fire(HelperPowerMode.pollEvery)
         XCTAssertEqual(answers, [nil], "answered twice")
-        XCTAssertEqual(late.sent, [.enterLowPowerMode, .restorePowerMode(before: 12)])
+        XCTAssertEqual(late.sent.suffix(2), [.powerModeResult, .restorePowerMode(before: 12)])
+        XCTAssertTrue(connection.holders.isEmpty, "the claim was kept after the mode was put back")
+        XCTAssertFalse(scheduled.contains { $0.after == HelperPowerMode.pollEvery }, "went on asking")
     }
+
+    /// A late answer that is a failure puts nothing back, and lets go.
+    func testALateFailureIsNotPutBackAndTheSocketIsLetGo() {
+        let late = DeferredWire()
+        let connection = HelperConnection(wire: late)
+        let mode = makeMode(over: connection)
+        mode.enterLowPower { _ in }
+        fire(HelperPowerMode.answerWithin)
+        late.result = FanReply(ok: false, message: PowerModeRefusal.notTaken.message)
+        fire(HelperPowerMode.pollEvery)
+        XCTAssertFalse(late.sent.contains { if case .restorePowerMode = $0 { return true } else { return false } })
+        XCTAssertTrue(connection.holders.isEmpty)
+    }
+
+    /// The watch ends: nothing more is asked, and the claim is let go (which closes the socket if nobody else holds it, so
+    /// that the helper puts back whatever it holds).
+    func testTheWatchForALateAnswerEndsAndLetsGo() {
+        let late = DeferredWire()
+        let connection = HelperConnection(wire: late)
+        let mode = makeMode(over: connection)
+        mode.enterLowPower { _ in }
+        fire(HelperPowerMode.answerWithin)
+        fire(HelperPowerMode.watchWithin)
+        XCTAssertTrue(connection.holders.isEmpty)
+        XCTAssertEqual(late.disconnects, 1)
+        let asked = late.sent.count
+        fire(HelperPowerMode.pollEvery)
+        XCTAssertEqual(late.sent.count, asked, "went on asking after the watch ended")
+    }
+
+    /// The watch is longer than the helper's worst case, which is what makes it a watch for the answer and not for nothing.
+    func testTheWatchOutlastsTheHelpersSlowestSwitchOn() {
+        XCTAssertGreaterThan(HelperPowerMode.watchWithin, PowerModeSwitch.slowestRolledBackEnter + 2)
+        XCTAssertGreaterThan(HelperPowerMode.watchWithin, HelperPowerMode.answerWithin)
+    }
+
+    // ── A restore: started, then asked for ──────────────────────────────────
 
     /// `restore` can be asked from the work queue (recovery at launch): the connection is the main thread's.
     func testARestoreAskedOffTheMainThreadIsAnsweredOnIt() {
@@ -699,27 +837,108 @@ final class UltraPowerModeTests: XCTestCase {
         }
         wait(for: [answered], timeout: 3)
         XCTAssertEqual(onMain, true)
-        XCTAssertEqual(wire.sent, [.restorePowerMode(before: 21)])
+        XCTAssertEqual(wire.sent, [.restorePowerMode(before: 21), .powerModeResult])
     }
 
     /// After a crash nothing is held and the helper remembers nothing: the restore connects, sends the packed value from
-    /// the record, and lets go.
-    func testARestoreWithNothingHeldConnectsSendsAndLetsGo() {
-        helperTakesIt()
+    /// the record, asks how it ended, and lets go.
+    func testARestoreWithNothingHeldConnectsSendsAsksAndLetsGo() {
         var restored: [Bool] = []
         mode.restore(20) { restored.append($0) }
         XCTAssertEqual(restored, [true])
-        XCTAssertEqual(wire.sent, [.restorePowerMode(before: 20)])
+        XCTAssertEqual(wire.sent, [.restorePowerMode(before: 20), .powerModeResult])
         XCTAssertTrue(connection.holders.isEmpty)
     }
 
-    func testARestoreTheHelperRefusesAnswersFalseAndStillLetsGo() {
-        wire.reply = { _ in FanReply(ok: false, message: PowerModeRefusal.notTaken.message) }
+    func testARestoreAsksEveryTwoTenthsOfASecondUntilTheHelperSaysDone() {
+        helper.pendingAsks = 2
         var restored: [Bool] = []
         mode.restore(20) { restored.append($0) }
+        XCTAssertEqual(restored, [])
+        XCTAssertEqual(connection.holders, [.powerMode], "let go before the put-back was done")
+        fire(HelperPowerMode.pollEvery)
+        XCTAssertEqual(restored, [])
+        fire(HelperPowerMode.pollEvery)
+        XCTAssertEqual(restored, [true])
+        XCTAssertEqual(wire.sent, [.restorePowerMode(before: 20), .powerModeResult, .powerModeResult, .powerModeResult])
+        XCTAssertTrue(connection.holders.isEmpty)
+    }
+
+    func testARestoreTheHelperRefusesOrFailsAnswersFalseAndStillLetsGo() {
+        for refuse in [true, false] {
+            helper = ScriptedHelper()
+            if refuse { helper.refusesStart = PowerModeRefusal.busy.message } else { helper.failsWith = PowerModeRefusal.notTaken.message }
+            wire.reply = { [unowned self] command in helper.answer(command) }
+            var restored: [Bool] = []
+            mode.restore(20) { restored.append($0) }
+            XCTAssertEqual(restored, [false], "refused: \(refuse)")
+            XCTAssertTrue(connection.holders.isEmpty, "letting go is the helper's own second try")
+        }
+    }
+
+    /// Three seconds without an end: false, and let go, so that a put-back the helper has not finished is its own, when the
+    /// socket closes.
+    func testARestoreThatIsNotAnsweredInThreeSecondsAnswersFalseOnceAndLetsGo() {
+        helper.pendingAsks = Int.max
+        var restored: [Bool] = []
+        mode.restore(20) { restored.append($0) }
+        XCTAssertEqual(restored, [])
+        fire(HelperPowerMode.answerWithin)
         XCTAssertEqual(restored, [false])
-        XCTAssertTrue(connection.holders.isEmpty, "letting go is the helper's own second try")
-        XCTAssertEqual(wire.disconnects, 1)
+        XCTAssertTrue(connection.holders.isEmpty)
+        fire(HelperPowerMode.pollEvery)
+        XCTAssertEqual(restored, [false], "answered twice")
+    }
+
+    // ── The shared connection ───────────────────────────────────────────────
+
+    /// The charge feature holds its own claim and relies on the socket not being closed or reset while it does. An enter, a
+    /// poll that times out, a late watch that ends, and a restore leave it alone: no reset recorded, no close, no new socket.
+    func testAnotherHoldersConnectionIsLeftUntouchedByAnEnterATimedOutPollAndARestore() {
+        connection.connect(for: .charge) { _ in }
+        let resets = connection.resets
+        let connects = wire.connectsAsked
+        let status = connection.status
+
+        helper.pendingAsks = Int.max
+        var answers: [Int?] = []
+        mode.enterLowPower { answers.append($0) }
+        fire(HelperPowerMode.answerWithin)
+        XCTAssertEqual(answers, [nil], "the poll timed out")
+        fire(HelperPowerMode.pollEvery)
+        fire(HelperPowerMode.watchWithin)
+        helper = ScriptedHelper()
+        helper.before = 21
+        wire.reply = { [unowned self] command in helper.answer(command) }
+        var entered: [Int?] = []
+        mode.enterLowPower { entered.append($0) }
+        XCTAssertEqual(entered, [21])
+        var restored: [Bool] = []
+        mode.restore(21) { restored.append($0) }
+        XCTAssertEqual(restored, [true])
+
+        XCTAssertEqual(connection.holders, [.charge], "the other holder's claim was let go, or this one was kept")
+        XCTAssertEqual(connection.resets, resets, "a reset was recorded: the socket the other holder relies on went")
+        XCTAssertEqual(wire.disconnects, 0, "the socket was closed under the other holder")
+        XCTAssertEqual(connection.status, status)
+        XCTAssertEqual(wire.connectsAsked, connects + 3, "a hello each (an enter, an enter, a restore), never a new socket")
+        XCTAssertTrue(wire.open)
+    }
+
+    /// A helper that goes while an enter is being asked for: nothing is sent to a socket that is not there, and no socket
+    /// is opened to send it on.
+    func testAHelperThatGoesWhileAnEnterIsPolledIsNotSentToAndNoSocketIsOpened() {
+        helper.pendingAsks = Int.max
+        var answers: [Int?] = []
+        mode.enterLowPower { answers.append($0) }
+        XCTAssertEqual(wire.sent, [.enterLowPowerMode, .powerModeResult])
+        let connects = wire.connectsAsked
+        wire.peerCloses()                    // the helper closed the socket between exchanges
+        fire(HelperPowerMode.pollEvery)
+        XCTAssertEqual(answers, [nil])
+        XCTAssertEqual(wire.sent.count, 2, "a command was sent with no connection")
+        XCTAssertEqual(wire.connectsAsked, connects, "a socket was opened to send it on")
+        XCTAssertTrue(connection.holders.isEmpty)
     }
 
     // ── The wire form ───────────────────────────────────────────────────────
@@ -838,11 +1057,9 @@ final class UltraPowerModeSessionTests: XCTestCase {
     func testASessionAgainstAHelperThatSpeaksFourRecordsTheModeAndPutsItBack() {
         let wire = ScriptedWire()
         wire.answerAtOnce = .connected(fanCount: 1, version: 4)
-        wire.reply = { command in
-            command == .enterLowPowerMode
-                ? FanReply(ok: true, message: "Low Power Mode is on", powerModeBefore: 21)
-                : FanReply(ok: true, message: "ok")
-        }
+        let helper = ScriptedHelper()
+        helper.before = 21
+        wire.reply = { helper.answer($0) }
         let connection = HelperConnection(wire: wire)
         let power = HelperPowerMode(connection: connection, isInstalled: { true }, schedule: { _, _ in })
         let s = session(over: power)
@@ -853,7 +1070,7 @@ final class UltraPowerModeSessionTests: XCTestCase {
         XCTAssertEqual(s.store.record?.powerModeBefore, 21)
         XCTAssertEqual(connection.holders, [.powerMode], "held while the mode is on")
         s.controller.turnOff()
-        XCTAssertEqual(wire.sent, [.enterLowPowerMode, .restorePowerMode(before: 21)])
+        XCTAssertEqual(wire.sent, [.enterLowPowerMode, .powerModeResult, .restorePowerMode(before: 21), .powerModeResult])
         XCTAssertTrue(connection.holders.isEmpty)
     }
 }

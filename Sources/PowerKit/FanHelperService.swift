@@ -475,6 +475,9 @@ public final class FanHelperServer {
         /// arming it belongs to, so one that was already on its way when the
         /// plan was replaced or cancelled is ignored.
         case planDue(generation: Int)
+        /// The worker finished a power-mode job. Carries the job it belongs to, so an outcome the loop is not waiting for
+        /// is ignored, and the outcome itself: values, handed over and acted on here.
+        case powerModeDone(job: Int, outcome: PowerModeOutcome)
     }
 
     /// Notices posted from the sleep watch's queue, in the order they came,
@@ -498,13 +501,6 @@ public final class FanHelperServer {
     /// charger still cut. So it is at least the reply deadline plus a 3 s
     /// margin, which a test pins. A longer bound costs nothing: a healthy loop
     /// answers in milliseconds, and macOS waits about 30 s for the answer.
-    ///
-    /// A pass that runs a Low Power Mode command can take 2.6 s of its own, and 4.8 s for a switch-on that failed and is
-    /// rolled back (`PowerModeSwitch.slowestCommand`, `slowestRolledBackEnter`), which the margin above does not count.
-    /// The deadline leaves 1.2 s over the worse of them, and a test pins that it leaves a second at least. A pass that
-    /// has a reply to write as well, to a client that stopped reading (up to 2 s), can still outlast it: the sleep watch
-    /// then reconnects the charger itself, without the loop, and logs a WARNING that the loop did not answer in time
-    /// (`reconnectWithoutTheLoop`); the loop writes the reconnect again on its next pass.
     public static let sleepAnswerDeadline: TimeInterval = 6
 
     /// Between a will-sleep and the next wake. A discharge is refused for the
@@ -547,14 +543,48 @@ public final class FanHelperServer {
     private let powerEvents: PowerEventScheduler?
     private let wakeTimer: WallClockTimer
 
-    /// The tool that changes macOS's power mode. nil refuses both commands for this helper's whole life.
-    private let powerMode: PowerModeSwitch?
+    /// The worker that runs the tool that changes macOS's power mode, off the loop. nil refuses the commands for this
+    /// helper's whole life.
+    private let powerWorker: PowerModeWorker?
 
     /// The power mode of the battery and of the charger as they were when this client switched Low Power Mode on, kept
-    /// until they are put back. Remembered before the first write, so a write that half worked is still owed its undo;
-    /// cleared only by a put-back that was taken. Loop thread only. (Not a term of `isIdle`: it lives with its client,
-    /// whose connection keeps the helper up, and a put-back that failed is tried again when the helper stops.)
+    /// until they are put back. Set from the outcome of the job that switched it on (which read it before the first write,
+    /// so a write that half worked is still owed its undo); cleared only by an outcome that says it was put back. Loop
+    /// thread only. A put-back that failed its tries leaves it, and the helper's stop tries once more.
     private(set) var heldPowerModes: PowerModes?
+
+    /// A power-mode job on the worker, as the loop knows it. Loop thread only.
+    private struct PowerModeJobRecord {
+        enum Kind { case enter, restore, putBack }
+        /// The generation the worker's notice carries back.
+        let id: Int
+        let kind: Kind
+        /// The client that asked is still connected, so its outcome is its answer. False once it is gone: the outcome then
+        /// only settles what the helper remembers and owes.
+        var forClient: Bool
+    }
+    private var powerModeJob: PowerModeJobRecord?
+    /// Generation counter for jobs given to the worker.
+    private var powerModeJobs = 0
+
+    /// What this connection was last told about its own job. nil: it has started none, which is what a new connection is.
+    private enum PowerModeAsked {
+        case pending(job: Int)
+        case answered(FanReply)
+    }
+    private var powerModeAsked: PowerModeAsked?
+
+    /// A put-back is wanted: the client that switched Low Power Mode on is gone, or the helper is stopping. Held until a
+    /// put-back has been taken or has failed its tries (`PowerModeSwitch.putBackTries`), so it always ends and nothing here
+    /// keeps a helper up for ever. While it is held the worker has the put-back, or the switch-on that says what there is to
+    /// put back, which is what keeps a helper started by launchd from exiting under it (`isIdle`). Loop thread only.
+    private(set) var powerModePutBackOwed = false
+    private var powerModePutBackTries = 0
+    private var powerModePutBackWhy = ""
+
+    /// How long the helper's stop waits for the worker so that the mode is put back before the process ends. A var only so
+    /// a test can shorten it.
+    var powerModeStopWait: TimeInterval = PowerModeSwitch.slowestCommand
 
     /// The plan this helper holds: a limit to write at a moment, with a wake scheduled for it. One at a time. Only
     /// the loop thread touches it.
@@ -630,8 +660,9 @@ public final class FanHelperServer {
     /// so nothing that builds a server, a test least of all, can schedule a wake by accident. `wakeTimer` is its own
     /// wall-clock timer for the same moment.
     ///
-    /// `powerMode` is how this helper runs `pmset` (`PowerModeSwitch`). nil, which is what every server gets that is not
-    /// told otherwise, refuses the Low Power Mode commands: only the helper's own `main` hands over the real runner.
+    /// `powerMode` is how this helper runs `pmset`, on a worker of its own (`PowerModeSwitch`, `PowerModeWorker`). nil,
+    /// which is what every server gets that is not told otherwise, refuses the Low Power Mode commands: only the helper's
+    /// own `main` hands over the real runner.
     public init(hardware: FanHardware,
                 configuration: Configuration,
                 log: @escaping (String) -> Void = { _ in },
@@ -647,7 +678,7 @@ public final class FanHelperServer {
         self.chargeWithoutTheLoop = charge == nil ? nil : (sleepCharge ?? charge)
         self.powerEvents = powerEvents
         self.wakeTimer = wakeTimer
-        self.powerMode = powerMode.map { PowerModeSwitch(runner: $0) }
+        self.powerWorker = powerMode.map { PowerModeWorker(PowerModeSwitch(runner: $0)) }
     }
 
     /// Nothing connected, no fan held, the charger not cut, and no reconnect
@@ -659,8 +690,14 @@ public final class FanHelperServer {
     /// promise without a word. (A plan only lives while its client is
     /// connected, which already keeps the helper up; this says it in its own
     /// right.)
+    ///
+    /// Nor while a power-mode job is on the worker: a helper that exited under one would leave the Mac in Low Power Mode.
+    /// A put-back that is owed is always such a job (it is given to the worker the moment there is something to put
+    /// back, `startOwedPutBack`), and it ends by itself, taken or out of tries (`powerModeFinished`), so nothing here keeps
+    /// the helper up for ever.
     var isIdle: Bool {
         clientFD < 0 && holdings.isEmpty && dischargeTarget == nil && !reconnectOwed && chargePlan == nil
+            && powerModeJob == nil
     }
 
     /// Reconnect a charger cut that no live helper owns.
@@ -875,18 +912,10 @@ public final class FanHelperServer {
     /// non-blocking: a readable client gets one `read`, whole lines are served
     /// one per pass, a half-sent line waits in `lines` (and is dropped after
     /// `requestLineDeadline`), and a reply gets `replyWriteDeadline` in total.
-    /// What the helper itself does in a pass is another matter, and takes a few
-    /// seconds at most, not nothing: a charger write is read back for about
-    /// 0.65 s, and a Low Power Mode command, or the put-back when a client goes,
-    /// runs `pmset`, which is given 0.6 s a call and, when it has to be ended,
-    /// takes up to 1.0 s (`PowerModeSwitch.slowestCall`: 0.6 s given, 0.2 s asked
-    /// to end, 0.2 s killed). A read that has to be ended ends the command, so
-    /// the slowest command that goes on is 2.6 s (a read that finished and two
-    /// writes that did not: `PowerModeSwitch.slowestCommand`), and the slowest
-    /// switch-on that failed and is rolled back is 4.8 s (six calls:
-    /// `PowerModeSwitch.slowestRolledBackEnter`).
     /// So every pass reaches the floor check and the stop check whatever the
-    /// client is doing — slow, half-sent, or silent.
+    /// client is doing — slow, half-sent, or silent. (`pmset` is no part of a pass:
+    /// the Low Power Mode jobs run on a worker of their own, and the loop reads
+    /// what they finish from a notice, `PowerNotice.powerModeDone`.)
     public func run() {
         var idleSince: Date? = Date()
         while !stopping {
@@ -1098,6 +1127,8 @@ public final class FanHelperServer {
                 owesTheSleepWatchsReconnect()
             case .planDue(let generation):
                 if generation == planGeneration { planTimerFired() }
+            case .powerModeDone(let job, let outcome):
+                powerModeFinished(job, outcome)
             }
         }
     }
@@ -1124,7 +1155,9 @@ public final class FanHelperServer {
     private func answerPowerNoticesOnTheWayOut() {
         stateLock.lock()
         let notices = powerNotices
-        powerNotices.removeAll()
+        // A finished power-mode job is not answered, it is read: the stop is still waiting for the worker, and the outcome
+        // says whether the mode was put back (`settlePowerModeWork`).
+        powerNotices = notices.filter { if case .powerModeDone = $0 { return true } else { return false } }
         loopEnded = true
         stateLock.unlock()
         for case .willSleep(let answered) in notices { answered.signal() }
@@ -1271,8 +1304,11 @@ public final class FanHelperServer {
         // The plan lives on the connection, like a discharge: whoever asked for it is gone, so nothing is written for
         // it and the Mac is not woken for it.
         dropPlan(because: "the client went away")
-        // And the power mode it switched on: put back last of the three, because it runs a tool that can take a moment.
-        dropPowerMode(because: "the client went away")
+        // And the power mode it switched on: put back last of the three. The loop only marks it owed and gives it to the
+        // worker; it does not wait for the tool.
+        powerModeAsked = nil
+        powerModeJob?.forClient = false
+        owePowerModePutBack(because: "the client went away")
         log("client gone (\(reason))")
         log(reply.message)
     }
@@ -1285,9 +1321,12 @@ public final class FanHelperServer {
         // Whatever stopped the helper (a signal, an uninstall, its own exit), no wake is left behind and nothing is
         // written afterwards.
         dropPlan(because: "the helper is stopping")
-        // A put-back that was refused when the client went gets one more try here.
-        dropPowerMode(because: "the helper is stopping")
+        // A put-back that failed its tries when the client went gets another go here.
+        owePowerModePutBack(because: "the helper is stopping")
         answerPowerNoticesOnTheWayOut()
+        // Last of all, after the charger is reconnected, the plan is dropped and every sleep notice is answered: wait for
+        // the worker so that the mode is put back before the process ends. Bounded, and it changes nothing before it.
+        settlePowerModeWork(within: powerModeStopWait)
         if listenFD >= 0 { close(listenFD); listenFD = -1 }
         // Only if we made it. launchd's socket outlives this process on purpose:
         // it is what the next connection arrives on, and removing it would make
@@ -1326,6 +1365,8 @@ public final class FanHelperServer {
             return enterLowPowerMode()
         case .command(.restorePowerMode(let before)):
             return restorePowerMode(before: before)
+        case .command(.powerModeResult):
+            return powerModeResult()
         }
     }
 
@@ -1709,66 +1750,167 @@ public final class FanHelperServer {
     }
 
     // ── Low Power Mode ──────────────────────────────────────────────────────
+    //
+    // The tool runs on the worker, never here. The loop gives it a job and, later, reads the outcome from a notice
+    // (`powerModeFinished`); in between it answers everything else. Strictly one request, one reply, in order: the commands
+    // below answer at once, whatever the tool is doing.
 
-    /// Switch Low Power Mode on for the battery and the charger, and reply with what each was. See `FanCommand` and
-    /// `PowerModeSwitch`. What was read is remembered BEFORE the first write; any write that is not taken is put back, and
-    /// what is not forgotten until that has worked. Asked again by the client that already holds it, the first "before"
-    /// stays: what the Mac reads now is this client's own work.
+    /// Give the worker `job`, and remember here that it has one. LOOP THREAD ONLY.
+    @discardableResult
+    private func startPowerModeJob(_ job: PowerModeJob, kind: PowerModeJobRecord.Kind, forClient: Bool) -> Int {
+        powerModeJobs += 1
+        let id = powerModeJobs
+        powerModeJob = PowerModeJobRecord(id: id, kind: kind, forClient: forClient)
+        powerWorker?.submit(job) { [weak self] outcome in self?.postPowerModeDone(id, outcome) }
+        return id
+    }
+
+    /// From the worker's queue: hand the outcome to the loop, the way the plan's timer does (`postPlanDue`), and do nothing
+    /// else here.
+    private func postPowerModeDone(_ job: Int, _ outcome: PowerModeOutcome) {
+        stateLock.lock()
+        powerNotices.append(.powerModeDone(job: job, outcome: outcome))
+        stateLock.unlock()
+        wakeLoop()
+    }
+
+    /// Switch Low Power Mode on for the battery and the charger. See `FanCommand` and `PowerModeSwitch`. Answers "started",
+    /// or a refusal; how it ended is `powerModeResult`.
     private func enterLowPowerMode() -> FanReply {
-        guard let powerMode else { return FanReply(ok: false, message: PowerModeRefusal.cannotChange.message) }
-        let reading: PowerModeReading
-        switch powerMode.read() {
-        case .failure(let why): return FanReply(ok: false, message: why.message)
-        case .success(let seen): reading = seen
-        }
-        let before: PowerModes
-        if let held = heldPowerModes {
-            before = held
-        } else if let seen = reading.modes {
-            before = seen
-            heldPowerModes = seen
-        } else {
-            return FanReply(ok: false, message: PowerModeRefusal.notUnderstood.message)
-        }
-        guard powerMode.lower(reading) else {
-            if case .success = powerMode.putBack(before) { heldPowerModes = nil }
-            log("could not switch macOS's Low Power Mode on")
-            return FanReply(ok: false, message: PowerModeRefusal.notTaken.message)
-        }
-        log("switched macOS's Low Power Mode on (before: battery \(before.battery), charger \(before.charger))")
-        return FanReply(ok: true, message: "Low Power Mode is on", powerModeBefore: before.packed)
+        guard powerWorker != nil else { return FanReply(ok: false, message: PowerModeRefusal.cannotChange.message) }
+        guard powerModeJob == nil else { return FanReply(ok: false, message: PowerModeRefusal.busy.message) }
+        powerModeAsked = .pending(job: startPowerModeJob(.enter(held: heldPowerModes), kind: .enter, forClient: true))
+        return FanReply(ok: true, message: "started")
     }
 
     /// Put the power mode back to what the app says it was. Checked before anything runs. A source that no longer reads
-    /// low power is the owner's, and is left as it is.
+    /// low power is the owner's, and is left as it is. Answers "started", or a refusal.
     private func restorePowerMode(before packed: Int) -> FanReply {
-        guard let powerMode else { return FanReply(ok: false, message: PowerModeRefusal.cannotChange.message) }
+        guard powerWorker != nil else { return FanReply(ok: false, message: PowerModeRefusal.cannotChange.message) }
         guard let modes = PowerModes(packed: packed) else {
             return FanReply(ok: false, message: PowerModeRefusal.badValue.message)
         }
-        switch powerMode.putBack(modes) {
-        case .failure(let why):
-            log("could not put the macOS power mode back: \(why.message)")
-            return FanReply(ok: false, message: why.message)
-        case .success:
-            heldPowerModes = nil
-            log("put the macOS power mode back")
-            return FanReply(ok: true, message: "power mode put back")
+        guard powerModeJob == nil else { return FanReply(ok: false, message: PowerModeRefusal.busy.message) }
+        powerModeAsked = .pending(job: startPowerModeJob(.putBack(modes), kind: .restore, forClient: true))
+        return FanReply(ok: true, message: "started")
+    }
+
+    /// How this connection's last job ended. The same answer every time it is asked, until the next job starts.
+    private func powerModeResult() -> FanReply {
+        guard powerWorker != nil else { return FanReply(ok: false, message: PowerModeRefusal.cannotChange.message) }
+        switch powerModeAsked {
+        case nil:
+            return FanReply(ok: false, message: PowerModeRefusal.nothingAsked.message)
+        case .pending?:
+            return FanReply(ok: true, message: "pending", pending: true)
+        case .answered(let reply)?:
+            return reply
         }
     }
 
-    /// The client that switched Low Power Mode on is gone, or the helper is stopping: put it back, writing nothing to a
-    /// source the owner has changed since. Does nothing, and says nothing, when this client switched nothing on. A
-    /// put-back that is refused leaves the memory, so the next close or the helper stopping tries again. LOOP THREAD ONLY.
-    private func dropPowerMode(because why: String) {
-        guard let powerMode, let held = heldPowerModes else { return }
-        switch powerMode.putBack(held) {
-        case .success:
-            heldPowerModes = nil
-            log("put the macOS power mode back (\(why))")
-        case .failure(let refusal):
-            log("WARNING: could not put the macOS power mode back (\(why)): \(refusal.message); "
-              + "it is tried again when the helper stops")
+    /// The loop reads what the worker finished. LOOP THREAD ONLY, from `actOnPowerNotices`. Every outcome settles what the
+    /// helper remembers and owes, whichever client asked; only an outcome for a client that is still connected becomes its
+    /// answer. An outcome for a job the loop is not waiting for is ignored.
+    private func powerModeFinished(_ id: Int, _ outcome: PowerModeOutcome) {
+        guard let job = powerModeJob, job.id == id else { return }
+        powerModeJob = nil
+        switch outcome.memory {
+        case .unchanged: break
+        case .remember(let modes): heldPowerModes = modes
+        case .forget: heldPowerModes = nil
+        }
+        switch (job.kind, outcome) {
+        case (_, .on(let before)):
+            log("switched macOS's Low Power Mode on (before: battery \(before.battery), charger \(before.charger))")
+        case (.enter, .refused(.notTaken, _)):
+            log("could not switch macOS's Low Power Mode on")
+        case (.restore, .putBack):
+            log("put the macOS power mode back")
+        case (.restore, .refused(let why, _)):
+            log("could not put the macOS power mode back: \(why.message)")
+        case (.putBack, .putBack):
+            log("put the macOS power mode back (\(powerModePutBackWhy))")
+        default:
+            break
+        }
+        if job.forClient {
+            switch outcome {
+            case .on(let before):
+                powerModeAsked = .answered(FanReply(ok: true, message: "Low Power Mode is on",
+                                                    powerModeBefore: before.packed))
+            case .putBack:
+                powerModeAsked = .answered(FanReply(ok: true, message: "power mode put back"))
+            case .refused(let why, _):
+                powerModeAsked = .answered(FanReply(ok: false, message: why.message))
+            }
+        }
+        // What is owed: nothing once nothing is remembered; otherwise another put-back, from this result, until the tries
+        // are used.
+        if heldPowerModes == nil {
+            powerModePutBackOwed = false
+        } else if powerModePutBackOwed {
+            if job.kind == .putBack, case .refused(let why, _) = outcome {
+                guard powerModePutBackTries < PowerModeSwitch.putBackTries else {
+                    powerModePutBackOwed = false
+                    log("WARNING: could not put the macOS power mode back (\(powerModePutBackWhy)): \(why.message); "
+                      + "it is tried again when the helper stops")
+                    return
+                }
+                log("could not put the macOS power mode back (\(powerModePutBackWhy)): \(why.message); trying again")
+            }
+            startOwedPutBack()
+        }
+    }
+
+    /// The client that switched Low Power Mode on is gone, or the helper is stopping: the mode is to be put back, writing
+    /// nothing to a source the owner has changed since. Marks it owed and gives it to the worker, behind whatever job is
+    /// running (when that is a switch-on, its outcome says what there is to put back, and `powerModeFinished` does the
+    /// rest). Does nothing, and says nothing, when this client switched nothing on. Never waits for the tool.
+    /// LOOP THREAD ONLY.
+    func owePowerModePutBack(because why: String) {
+        guard powerWorker != nil else { return }
+        guard powerModeJob != nil || heldPowerModes != nil else { return }
+        if !powerModePutBackOwed {
+            powerModePutBackOwed = true
+            powerModePutBackTries = 0
+        }
+        powerModePutBackWhy = why
+        startOwedPutBack()
+    }
+
+    /// Give the worker the put-back that is owed, if the worker is free, there is something to put back, and the tries are
+    /// not used. LOOP THREAD ONLY.
+    private func startOwedPutBack() {
+        guard powerModePutBackOwed, powerModeJob == nil, let held = heldPowerModes,
+              powerModePutBackTries < PowerModeSwitch.putBackTries else { return }
+        powerModePutBackTries += 1
+        startPowerModeJob(.putBack(held), kind: .putBack, forClient: false)
+    }
+
+    /// Wait for the worker, for at most `budget`, reading what it finishes and giving it the put-back that is owed. For the
+    /// helper's stop (after everything else is done), and for a test that stands in for the loop. Ends when nothing is
+    /// running and nothing is owed that can be started, or when the budget is spent: it says so once and goes on without
+    /// the worker. LOOP THREAD ONLY.
+    func settlePowerModeWork(within budget: TimeInterval) {
+        guard let powerWorker else { return }
+        let deadline = Date().addingTimeInterval(budget)
+        while true {
+            actOnPowerNotices()
+            startOwedPutBack()
+            guard let running = powerModeJob?.id else { return }
+            let left = deadline.timeIntervalSinceNow
+            guard left > 0, powerWorker.idle(within: left) else {
+                log("WARNING: a power mode change had not finished \(String(format: "%g", budget)) s after the helper "
+                  + "was told to stop; the helper stops without it")
+                return
+            }
+            // The worker is idle, so what it finished is posted. A job still not settled by it is one whose outcome went
+            // missing: there is nothing to wait for, and spinning here would hold a root process for the whole budget.
+            actOnPowerNotices()
+            if powerModeJob?.id == running {
+                log("WARNING: the power mode worker finished and its outcome was not found; the helper stops without it")
+                return
+            }
         }
     }
 
