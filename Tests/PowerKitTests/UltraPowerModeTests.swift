@@ -1222,7 +1222,7 @@ final class UltraPowerModeSessionTests: XCTestCase {
         let lines = UltraLowPowerFeature.describe(s.controller.skipped)
         XCTAssertEqual(lines.count, 1)
         XCTAssertTrue(lines[0].contains("an older one"), lines[0])
-        XCTAssertTrue(lines[0].contains("Install Helper\u{2026}"), lines[0])
+        XCTAssertTrue(lines[0].contains("Install Anode Helper\u{2026}"), lines[0])
         s.controller.turnOff()
     }
 

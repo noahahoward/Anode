@@ -254,7 +254,7 @@ final class UltraLowPowerFeature: BetaFeature {
     let failureLabel = BetaFeaturesWindowController.wrapping("", color: .secondaryLabelColor)
     let skippedLabel = BetaFeaturesWindowController.wrapping("", color: .secondaryLabelColor)
     let leftRunningLabel = BetaFeaturesWindowController.wrapping("", color: .secondaryLabelColor)
-    let installButton = NSButton(title: "Install Helper\u{2026}", target: nil, action: nil)
+    let installButton = NSButton(title: "Install Anode Helper\u{2026}", target: nil, action: nil)
     let installNoteLabel = BetaFeaturesWindowController.wrapping("", color: .secondaryLabelColor)
     let noteLabel = BetaFeaturesWindowController.wrapping(UltraLowPowerFeature.note, color: .secondaryLabelColor)
     private let emptyKeepLabel = NSTextField(labelWithString: "No apps added yet.")
@@ -314,10 +314,10 @@ final class UltraLowPowerFeature: BetaFeature {
             switch part {
             case .lowPowerNoHelper:
                 return "Low Power Mode was not switched on: it needs the Anode helper, which is not installed. Press Install "
-                    + "Helper\u{2026} below to add it, and it will be used the next time you start."
+                    + "Anode Helper\u{2026} below to add it, and it will be used the next time you start."
             case .lowPowerOldHelper:
                 return "Low Power Mode was not switched on: the Anode helper installed here is an older one. Press Install "
-                    + "Helper\u{2026} below to update it, and it will be used the next time you start."
+                    + "Anode Helper\u{2026} below to update it, and it will be used the next time you start."
             case .lowPowerRefused:
                 return "The Anode helper could not switch Low Power Mode on, so it was left as it was."
             case .oneRefreshRate:

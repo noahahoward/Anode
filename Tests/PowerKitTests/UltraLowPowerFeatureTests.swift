@@ -151,10 +151,10 @@ final class UltraLowPowerFeatureTests: XCTestCase {
         // A missing helper names the helper and says what to do about it, by the route Charge Control already offers.
         let noHelper = UltraLowPowerFeature.describe([.lowPowerNoHelper])[0]
         XCTAssertTrue(noHelper.contains("Anode helper"), noHelper)
-        XCTAssertTrue(noHelper.contains("Install Helper…"), noHelper)
+        XCTAssertTrue(noHelper.contains("Install Anode Helper…"), noHelper)
         let oldHelper = UltraLowPowerFeature.describe([.lowPowerOldHelper])[0]
         XCTAssertTrue(oldHelper.contains("older"), oldHelper)
-        XCTAssertTrue(oldHelper.contains("Install Helper…"), oldHelper)
+        XCTAssertTrue(oldHelper.contains("Install Anode Helper…"), oldHelper)
         // Lines a Mac without the hardware gets every session say so, and do not blame the Mac or the screen.
         XCTAssertEqual(UltraLowPowerFeature.describe([.oneRefreshRate]),
                        ["The screen's refresh rate was left as it was: it offers only one, or this Mac has no built-in screen."])
