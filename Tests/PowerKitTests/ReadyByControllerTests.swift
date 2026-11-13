@@ -378,21 +378,120 @@ final class ReadyByControllerTests: XCTestCase {
         XCTAssertTrue(helper.waitedTimeouts.allSatisfy { $0 <= ChargeController.stopTimeout })
     }
 
-    /// If that send cannot be confirmed either, the log says so plainly.
-    func testALimitThatCannotBeConfirmedWhenThePlanIsRefusedIsSaidPlainly() {
+    /// The helper takes the hold (54), then refuses the plan and the person's limit (87, which only the helper can set)
+    /// as the Mac goes to sleep. Nothing the helper does can lift the hold, so the nearest limit macOS takes itself at or
+    /// above 87 goes in, and the log says what is in force: 90, not "the battery may charge past it", and not the hold
+    /// that would keep the battery at 54 all night.
+    private func holdThenRefuseAtSleep(_ refuse: @escaping (FanCommand) -> Bool = { _ in true }) -> (ChargeController, () -> Void) {
         settings.chargeLimit = 87
+        var refusing = false
         helper.answer = { cmd in
-            switch cmd {
-            case .scheduleChargeLimit: return FanReply(ok: false, message: ChargeRefusal.wakeNotScheduled)
-            case .setChargeLimit: return FanReply(ok: false, message: "refused: not now")
-            default: return FanReply(ok: true, message: "ok")
+            if refusing, refuse(cmd) {
+                switch cmd {
+                case .scheduleChargeLimit, .setChargeLimit: return FanReply(ok: false, message: "refused: not now")
+                default: break
+                }
             }
+            return FanReply(ok: true, message: "ok")
+        }
+        let c = holding()
+        XCTAssertEqual(client.state?.mclLimit, 54, "the helper took the hold")
+        return (c, { refusing = true })
+    }
+
+    func testALimitThatCannotBeConfirmedWhenThePlanIsRefusedIsSaidPlainly() {
+        let (c, startRefusing) = holdThenRefuseAtSleep()
+        startRefusing()
+        c.willSleep()
+        XCTAssertNil(c.wakePlan)
+        XCTAssertEqual(client.state?.mclLimit, 90,
+                       "the Ready By hold was left in force all night: the nearest limit macOS takes at or above 87 is 90")
+        XCTAssertTrue(lines.contains {
+            $0.contains("87%") && $0.contains("could not be confirmed") && $0.contains("sleep") && $0.contains("90%")
+        }, lines.joined(separator: "\n"))
+        XCTAssertFalse(lines.contains { $0.contains("may charge past it") }, lines.joined(separator: "\n"))
+    }
+
+    /// The same when the helper does not answer in time (slow, not gone).
+    func testALimitTheHelperDoesNotAnswerInTimeAtSleepIsStoodInForToo() {
+        let (c, startRefusing) = holdThenRefuseAtSleep { _ in false }
+        _ = startRefusing
+        helper.silentFor = { cmd in
+            switch cmd {
+            case .scheduleChargeLimit, .setChargeLimit: return true
+            default: return false
+            }
+        }
+        c.willSleep()
+        XCTAssertEqual(client.state?.mclLimit, 90, "the hold was left in force while the helper was silent")
+        XCTAssertTrue(helper.available, "the fixture: the helper is slow, not gone")
+        XCTAssertTrue(lines.contains { $0.contains("87%") && $0.contains("could not be confirmed") && $0.contains("90%") },
+                      lines.joined(separator: "\n"))
+    }
+
+    /// The stand-in is for the sleep: on a wake before the start moment Ready By is back and holds at 54.
+    func testTheStandInIsGoneAtTheWakeAndReadyByHoldsAgain() {
+        let (c, startRefusing) = holdThenRefuseAtSleep()
+        startRefusing()
+        c.willSleep()
+        XCTAssertEqual(client.state?.mclLimit, 90)
+        helper.answer = { _ in FanReply(ok: true, message: "ok") }
+        c.didWake(now: clockNow.addingTimeInterval(3600))
+        XCTAssertEqual(c.lastDecision?.reason, .readyBy)
+        XCTAssertEqual(client.state?.mclLimit, 54, "the stand-in outlived the sleep")
+    }
+
+    /// And on a wake after the start moment the person's own limit goes back in.
+    func testThePersonsOwnLimitIsBackAtTheWakeAfterTheStartMoment() {
+        let (c, startRefusing) = holdThenRefuseAtSleep()
+        startRefusing()
+        c.willSleep()
+        XCTAssertEqual(client.state?.mclLimit, 90)
+        helper.answer = { _ in FanReply(ok: true, message: "ok") }
+        c.didWake(now: raiseAt.addingTimeInterval(60))
+        XCTAssertEqual(client.state?.mclLimit, 87, "the person's own limit was not put back")
+    }
+
+    /// The helper refuses and macOS refuses the stand-in too: the hold is what is in force, and the log says that and
+    /// nothing about the battery charging.
+    func testWhenNothingCanBeSetTheLogSaysTheHoldIsStillInForce() {
+        let (c, startRefusing) = holdThenRefuseAtSleep()
+        startRefusing()
+        client.succeeds = false
+        c.willSleep()
+        XCTAssertEqual(client.state?.mclLimit, 54)
+        XCTAssertTrue(lines.contains { $0.contains("still in force") && $0.contains("54%") }, lines.joined(separator: "\n"))
+        XCTAssertFalse(lines.contains { $0.contains("may charge") }, lines.joined(separator: "\n"))
+    }
+
+    /// With Hold Level During Sleep on, setting Ready By aside for the sleep means the sleep hold applies: the battery is
+    /// held where it is, which is what that person asked for, and the log says that and not "charging as usual".
+    func testWithHoldLevelDuringSleepOnTheLogSaysTheBatteryIsHeld() {
+        settings.chargeHoldDuringSleep = true
+        helper.answer = { cmd in
+            if case .scheduleChargeLimit = cmd { return FanReply(ok: false, message: ChargeRefusal.wakeNotScheduled) }
+            return FanReply(ok: true, message: "ok")
         }
         let c = holding()
         c.willSleep()
-        XCTAssertTrue(lines.contains { $0.contains("could not be confirmed") && $0.contains("sleep") },
+        XCTAssertEqual(c.lastDecision?.reason, .sleeping)
+        XCTAssertEqual(client.state?.mclLimit, 54, "the battery is held where it is")
+        XCTAssertTrue(lines.contains { $0.contains("held at 54%") && $0.contains("Hold Level During Sleep") },
                       lines.joined(separator: "\n"))
-        XCTAssertNil(c.wakePlan)
+        XCTAssertFalse(lines.contains { $0.contains("charging as usual") }, lines.joined(separator: "\n"))
+    }
+
+    /// And without it the battery charges as usual, to the person's limit.
+    func testWithHoldLevelDuringSleepOffTheLogSaysTheBatteryChargesAsUsual() {
+        helper.answer = { cmd in
+            if case .scheduleChargeLimit = cmd { return FanReply(ok: false, message: ChargeRefusal.wakeNotScheduled) }
+            return FanReply(ok: true, message: "ok")
+        }
+        let c = holding()
+        c.willSleep()
+        XCTAssertEqual(client.state?.mclLimit, 80)
+        XCTAssertTrue(lines.contains { $0.contains("charging as usual, to 80%") }, lines.joined(separator: "\n"))
+        XCTAssertFalse(lines.contains { $0.contains("Hold Level During Sleep") }, lines.joined(separator: "\n"))
     }
 
     /// Ready By is set aside for that sleep only: on the wake it holds again, and the plan is tried again at the next

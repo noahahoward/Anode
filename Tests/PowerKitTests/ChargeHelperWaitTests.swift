@@ -128,8 +128,8 @@ final class ChargeHelperWaitTests: XCTestCase {
     }
 
     /// Going to sleep with a Ready By hold, against a helper that answered the hold and then stops: the plan's send waits
-    /// out the sleep's own budget, and the fall back to charging as usual (the person's limit, waited for) runs inside the
-    /// same budget; the whole of it holds the main thread no longer than any other sleep.
+    /// out the sleep's own budget, and the fall back to the person's limit (waited for, then the nearest value macOS takes itself
+    /// if the helper cannot confirm it) runs inside the same budget; the whole of it holds the main thread no longer than any other sleep.
     func testGoingToSleepWithAReadyByHoldAgainstAStalledHelperStaysInTheBudget() {
         stalling.helloVersion = 3
         settings.chargeLimit = 87   // a limit only the helper sets: it is waited for too
@@ -148,7 +148,11 @@ final class ChargeHelperWaitTests: XCTestCase {
         XCTAssertLessThan(took, Self.bound, "going to sleep with a Ready By hold held the main thread \(took) s")
         XCTAssertNil(c.wakePlan, "a plan nobody answered was booked")
         XCTAssertTrue(lines.contains { $0.contains("no answer in time") }, lines.joined(separator: "\n"))
-        XCTAssertTrue(lines.contains { $0.contains("charging as usual") }, lines.joined(separator: "\n"))
+        // 87 is a limit only the helper sets, and the helper is not answering: the nearest value macOS takes itself at or
+        // above it is in force for the sleep, and the log says so instead of "charging as usual".
+        XCTAssertEqual(client.state?.mclLimit, 90, "the Ready By hold was left in force through the sleep")
+        XCTAssertTrue(lines.contains { $0.contains("87%") && $0.contains("could not be confirmed") && $0.contains("90%") },
+                      lines.joined(separator: "\n"))
     }
 
     func testAnAccountSwitchDoesNotHoldTheMainThread() {

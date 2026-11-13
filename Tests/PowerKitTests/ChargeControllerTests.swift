@@ -4438,6 +4438,8 @@ final class FakeHelperLink: ChargeHelperLink {
     /// Hold back only the commands this says yes to, until `flushReplies`: one command still on its way while the others
     /// are answered at once.
     var defersOnly: ((FanCommand) -> Bool)?
+    /// A waited command this says yes to gets no answer in time (the helper is slow, not gone): it stays available.
+    var silentFor: ((FanCommand) -> Bool)?
     /// Where a `.setChargeLimit` the helper accepts lands: the same macOS limit the client reads.
     var landsOn: FakeChargeLimitClient?
     /// `drain` gives up, as the real one does after its timeout.
@@ -4532,6 +4534,7 @@ final class FakeHelperLink: ChargeHelperLink {
             available = false
             return nil
         }
+        if silentFor?(c) == true { return nil }
         queue.forEach { run($0) }
         let reply = answer(c)
         land(c, reply)

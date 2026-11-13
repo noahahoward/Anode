@@ -1906,14 +1906,49 @@ final class ChargeController {
         waitUntil = deadline
         tick(now: now)
         waitUntil = nil
-        let limit = lastDecision?.osLimit
-        log("the Mac sleeps with the battery charging as usual, to \(limit.map { "\($0)%" } ?? "its limit"), because no "
-            + "wake could be arranged for Ready By; it is back when the Mac wakes")
-        if let limit, appliedLimit != limit {
-            log("the charge limit of \(limit)% could not be confirmed in force before the Mac sleeps; the battery may "
-                + "charge past it, and the limit is asserted again on the wake")
-        }
+        standInForTheLimitThatCouldNotBeConfirmed()
+        log(Self.sleepWithoutAPlanText(wanted: lastDecision, inForce: limitInForceNow()))
         settle()
+    }
+
+    /// The limit macOS holds as far as can be known now: read back when it can be, otherwise what was booked.
+    private func limitInForceNow() -> Int? { client?.read()?.mclLimit ?? appliedLimit }
+
+    /// Going to sleep with no plan, the decision's limit has been asked of the helper (waited for), and the helper may
+    /// have refused or not answered. Whatever the Ready By hold left in force would then stay all night, so the nearest
+    /// value macOS takes itself at or above the limit goes in, as `restoreLimit` does: never lower than asked. The wake
+    /// asserts everything again (`didWake`), so it is for this sleep only.
+    private func standInForTheLimitThatCouldNotBeConfirmed() {
+        guard let d = lastDecision, let c = client, appliedLimit != d.osLimit,
+              !NativeChargeLimit.isClientSettable(d.osLimit) else { return }
+        let nearest = Self.nearestClientValue(atOrAbove: d.osLimit)
+        guard appliedLimit != nearest else { return }
+        setClientLimit(nearest, client: c, reason: d.reason, wanted: d.osLimit)
+    }
+
+    /// What the log says about the sleep that has no plan, from what is in force when the Mac goes to sleep.
+    static func sleepWithoutAPlanText(wanted d: ChargeDecision?, inForce: Int?) -> String {
+        let why = "because no wake could be arranged for Ready By"
+        guard let d else { return "the Mac sleeps \(why); Ready By is back when the Mac wakes" }
+        let want = d.osLimit
+        let back = "the limit is asserted again when the Mac wakes"
+        switch inForce {
+        case want?:
+            if d.reason == .sleeping {
+                return "the Mac sleeps with the battery held at \(want)% by Hold Level During Sleep, \(why); Ready By is "
+                    + "back when the Mac wakes"
+            }
+            return "the Mac sleeps with the battery charging as usual, to \(want)%, \(why); it is back when the Mac wakes"
+        case let held? where held < want:
+            return "the Mac sleeps with \(held)% still in force, not \(want)%: neither the helper nor macOS set \(want)% "
+                + "before the Mac sleeps, so the battery will not charge past \(held)% until it wakes; \(back)"
+        case let above?:
+            return "the charge limit of \(want)% could not be confirmed in force before the Mac sleeps; \(above)% is in "
+                + "force instead, the nearest limit macOS takes itself at or above it, so the battery may charge up to "
+                + "\(above)% meanwhile; \(back)"
+        case nil:
+            return "the charge limit of \(want)% could not be confirmed in force before the Mac sleeps; \(back)"
+        }
     }
 
     /// How long a pack paused for heat is given, asleep, to cool before the limit is raised for Ready By.
