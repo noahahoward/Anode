@@ -499,9 +499,10 @@ public final class FanHelperServer {
     /// margin, which a test pins. A longer bound costs nothing: a healthy loop
     /// answers in milliseconds, and macOS waits about 30 s for the answer.
     ///
-    /// A pass that runs a Low Power Mode command can take up to 3.6 s of its own (`PowerModeSwitch.callLimit`), which the
-    /// margin above does not count. A notice that waits past this is answered by the sleep watch itself, which
-    /// reconnects the charger without the loop.
+    /// A pass that runs a Low Power Mode command can take 3.0 s of its own when its three calls each have to be ended, and
+    /// 6.0 s for a switch-on that failed and is rolled back (six calls of up to 1.0 s: `PowerModeSwitch.slowestCall`),
+    /// which the margin above does not count and which is as long as this deadline. A notice that waits past this is
+    /// answered by the sleep watch itself, which reconnects the charger without the loop.
     public static let sleepAnswerDeadline: TimeInterval = 6
 
     /// Between a will-sleep and the next wake. A discharge is refused for the
@@ -875,8 +876,11 @@ public final class FanHelperServer {
     /// What the helper itself does in a pass is another matter, and takes a few
     /// seconds at most, not nothing: a charger write is read back for about
     /// 0.65 s, and a Low Power Mode command, or the put-back when a client goes,
-    /// runs `pmset` for up to 0.6 s a call, three calls (1.8 s), or six (3.6 s)
-    /// for a switch-on that failed and is rolled back (`PowerModeSwitch.callLimit`).
+    /// runs `pmset`, which is given 0.6 s a call and, when it has to be ended,
+    /// takes up to 1.0 s (`PowerModeSwitch.slowestCall`: 0.6 s given, 0.2 s asked
+    /// to end, 0.2 s killed). That is 1.8 s for three calls that finish in time,
+    /// 3.0 s for three that each have to be ended, and 6.0 s for six, the most a
+    /// switch-on that failed and is rolled back can make.
     /// So every pass reaches the floor check and the stop check whatever the
     /// client is doing — slow, half-sent, or silent.
     public func run() {

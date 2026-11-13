@@ -406,8 +406,9 @@ final class PowerModeHelperTests: XCTestCase {
     }
 
     /// The link answers within 2 s of a request or closes the socket, which hands everything back. An enter that goes
-    /// through, and a restore, make three calls each (a read and two writes), so on the bound alone they fit inside it.
-    func testASuccessfulEnterAndARestoreMakeThreeCallsEachAndSoFitInsideTheLinksTwoSeconds() {
+    /// through, and a restore that works, make three calls each (a read and two writes); when every call finishes in the
+    /// time it is given, they fit inside it.
+    func testAnEnterAndARestoreInWhichEveryCallFinishesMakeThreeCallsAndSoFitInsideTheLinksTwoSeconds() {
         let server = makeServer()
         _ = enter(server)
         let enterCalls = pmset.calls.count
@@ -418,11 +419,39 @@ final class PowerModeHelperTests: XCTestCase {
         XCTAssertLessThan(Double(max(enterCalls, restoreCalls)) * PowerModeSwitch.callLimit, 2.0)
     }
 
-    /// A switch-on that fails and is rolled back is more: a read and two writes, then a read and two writes, when a write
-    /// that was reported failed had in fact landed. Six calls is 3.6 s on the bound, past the link's two seconds, so the
-    /// link may have closed the socket by then: the helper puts the mode back itself when it drops the client, because it
-    /// remembered before the first write. The answer is late; nothing is left on.
-    func testAFailedEnterThatIsRolledBackMakesAtMostSixCallsAndLeavesNothingOn() {
+    /// A restore whose writes hang is three calls too (a read and two writes, each source tried), but two of them can each
+    /// take `slowestCall`: 0.6 + 1.0 + 1.0 = 2.6 s, past the link's two seconds. The link closes the socket then, and what
+    /// the helper holds is still held: the put-back on close is what finishes the job.
+    func testARestoreWithHungWritesCanRunPastTheLinksTwoSecondsAndWhatIsHeldIsKeptForTheClose() {
+        let server = makeServer()
+        _ = enter(server)
+        let before = pmset.calls.count
+        pmset.refuseWrites(to: "-b")
+        pmset.refuseWrites(to: "-c")
+        XCTAssertFalse(restore(server, 2).ok)
+        let calls = pmset.calls.count - before
+        XCTAssertEqual(calls, 3, "a read, and each source tried once")
+        XCTAssertGreaterThan(PowerModeSwitch.callLimit + Double(calls - 1) * PowerModeSwitch.slowestCall, 2.0)
+        XCTAssertNotNil(server.heldPowerModes, "forgotten while both sources were still low")
+    }
+
+    /// A switch-on that fails and is rolled back is more: a read and a write that goes, a write that is refused, then the
+    /// read and the put-back of what went. Five calls when the refused write did not land.
+    func testAFailedEnterWhoseFailedWriteDidNotLandMakesFiveCallsAndLeavesNothingOn() {
+        pmset.refuseWrites(to: "-c")
+        let server = makeServer()
+        XCTAssertFalse(enter(server).ok)
+        XCTAssertEqual(pmset.calls.count, 5, "\(pmset.calls.map(\.arguments))")
+        XCTAssertEqual(pmset.battery, 2)
+        XCTAssertEqual(pmset.charger, 0)
+        XCTAssertNil(server.heldPowerModes)
+    }
+
+    /// Six when it did: a write the tool was cut off after it had done the work is reported failed and is on, so the
+    /// put-back writes both sources. Six is the most a command makes (two writes before the failure, two after, and a read
+    /// each side). Each call can take `PowerModeSwitch.slowestCall`, so this is the command the link may not wait for; the
+    /// link closes the socket and the helper's own put-back on close runs, and nothing is left on.
+    func testAFailedEnterWhoseFailedWriteHadLandedMakesSixCallsAndLeavesNothingOn() {
         pmset.writesLandButFail(for: "-c")
         let server = makeServer()
         XCTAssertFalse(enter(server).ok)

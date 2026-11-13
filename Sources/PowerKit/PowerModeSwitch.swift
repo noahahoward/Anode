@@ -33,8 +33,10 @@ public struct PowerModeRun: Equatable {
 /// How the helper runs `pmset`. The real one is `SystemPowerModeRunner`; a server is given none unless told, and the tests
 /// give it a table in memory.
 public protocol PowerModeRunner: AnyObject {
-    /// Run the tool with exactly `arguments` and wait at most `limit` seconds. nil when it could not be started or did not
-    /// finish in time.
+    /// Run the tool with exactly `arguments`, giving it `limit` seconds to finish. nil when it could not be started or did
+    /// not finish in time. A tool that has not finished is ended, and ending it takes longer still: the real runner is
+    /// back within `limit` plus `SystemPowerModeRunner.endGrace` plus `SystemPowerModeRunner.killWait`
+    /// (`PowerModeSwitch.slowestCall` for the limit the helper uses), not within `limit`.
     func run(_ arguments: [String], within limit: TimeInterval) -> PowerModeRun?
 }
 
@@ -148,15 +150,23 @@ enum PowerModeRefusal: Error, Equatable {
 struct PowerModeSwitch {
     let runner: PowerModeRunner
 
-    /// How long each call to the tool may take. The app's link gives the helper two seconds to answer a request and
-    /// closes the socket after that, which hands everything back (the helper then puts the mode back itself, having
-    /// remembered it before its first write).
+    /// How long the tool is given to finish each call. A call that has not finished is ended, and that takes more: it is
+    /// asked to end and given `SystemPowerModeRunner.endGrace`, then killed and given `SystemPowerModeRunner.killWait` to be
+    /// gone. So the longest a call can take is `slowestCall`, 0.6 + 0.2 + 0.2 = 1.0 s, not 0.6 s.
     ///
-    /// An enter that goes through, a restore, and the put-back when a client goes make three calls each (a read and two
-    /// writes): 1.8 s on this bound, inside the link's two seconds. A switch-on that fails and is rolled back can make six
-    /// (a read and two writes, then a read and two writes, when a write that was reported failed had in fact landed): 3.6 s,
-    /// past it. The answer to that one may find the socket closed; nothing is left on.
+    /// The app's link gives the helper two seconds to answer a request and closes the socket after that, which hands
+    /// everything back. An enter that goes through, a restore that works, and the put-back that works make three calls
+    /// that each finish in the time they are given: 1.8 s at most, inside the two seconds. Anything with a call that has to
+    /// be ended can run past them. A restore, or the put-back when a client goes, with a slow read and two hung writes is
+    /// 0.6 + 1.0 + 1.0 = 2.6 s. A switch-on that fails and is rolled back makes up to six calls (a read and two writes,
+    /// then a read and two writes, when a write that was reported failed had in fact landed): up to 6.0 s. When the link
+    /// has given up it has closed the socket and the answer is late; the helper's own put-back on close then runs, because
+    /// what it holds is kept until a put-back has been taken, so nothing is left on.
     static let callLimit: TimeInterval = 0.6
+
+    /// The longest one call to the real runner can take: what the tool is given, what it is given to end when asked, and
+    /// what it is given to be gone once killed.
+    static let slowestCall: TimeInterval = callLimit + SystemPowerModeRunner.endGrace + SystemPowerModeRunner.killWait
 
     static let readArguments = ["-g", "custom"]
 
@@ -216,6 +226,7 @@ struct PowerModeSwitch {
 /// A child process, as far as ending one goes. What is done with a child that has not ended is decided in
 /// `SystemPowerModeRunner.end`, on this, so that a test can drive it with a fake and no process.
 protocol PowerModeChild: AnyObject {
+    var processIdentifier: Int32 { get }
     var isRunning: Bool { get }
     /// Ask it to end (SIGTERM).
     func terminate()
@@ -238,6 +249,14 @@ public final class SystemPowerModeRunner: PowerModeRunner {
     /// How long a child that was asked to end has before it is made to.
     static let endGrace: TimeInterval = 0.2
 
+    /// How long a child that was killed is waited for. The kill is not waited out for ever: a child that is still there
+    /// then is said, and the call goes on.
+    static let killWait: TimeInterval = 0.2
+
+    /// A pid that may be sent a signal. `kill(-1, SIGKILL)` as root ends every process the user can see, `kill(0, ...)` the
+    /// whole process group, and pid 1 is launchd: none of them is ever a child of this.
+    static func mayBeSignalled(_ pid: Int32) -> Bool { pid > 1 }
+
     private let path: String
 
     public init() { path = Self.tool }
@@ -246,14 +265,22 @@ public final class SystemPowerModeRunner: PowerModeRunner {
     init(path: String) { self.path = path }
 
     /// Ask `child` to end; if it is still running when the grace is up (`exitedWithin` waits for it to end for that
-    /// long, and says whether it did), kill it. A child that ended while the grace ran out is not signalled: its pid
-    /// may already be someone else's.
-    static func end(_ child: PowerModeChild, grace: TimeInterval, exitedWithin: (TimeInterval) -> Bool) {
-        guard child.isRunning else { return }
+    /// long, and says whether it did), kill it, and wait for it to be gone for `killWait`: if it is still there then, say
+    /// so once through `log` and go on. A child that ended while a wait ran out is not signalled again: its pid may
+    /// already be someone else's. A pid that may not be signalled (`mayBeSignalled`) is not signalled at all. Takes
+    /// `grace` plus `killWait` at most.
+    static func end(_ child: PowerModeChild, grace: TimeInterval = endGrace,
+                    killWait: TimeInterval = SystemPowerModeRunner.killWait,
+                    exitedWithin: (TimeInterval) -> Bool, log: (String) -> Void) {
+        guard mayBeSignalled(child.processIdentifier), child.isRunning else { return }
         child.terminate()
         if exitedWithin(grace) { return }
         guard child.isRunning else { return }
         child.kill()
+        if exitedWithin(killWait) { return }
+        guard child.isRunning else { return }
+        log("WARNING: pmset (pid \(child.processIdentifier)) was still running \(String(format: "%.1f", killWait)) s after "
+          + "SIGKILL; going on without it")
     }
 
     public func run(_ arguments: [String], within limit: TimeInterval) -> PowerModeRun? {
@@ -287,7 +314,9 @@ public final class SystemPowerModeRunner: PowerModeRunner {
 
         let deadline = DispatchTime.now() + limit
         guard atEnd.wait(timeout: deadline) == .success, exited.wait(timeout: deadline) == .success else {
-            Self.end(RunningProcess(process), grace: Self.endGrace) { exited.wait(timeout: .now() + $0) == .success }
+            Self.end(RunningProcess(process),
+                     exitedWithin: { exited.wait(timeout: .now() + $0) == .success },
+                     log: { line in fanLog.error("helper: \(line, privacy: .public)") })
             return nil
         }
         guard !output.failed else { return nil }
@@ -297,9 +326,14 @@ public final class SystemPowerModeRunner: PowerModeRunner {
     private final class RunningProcess: PowerModeChild {
         private let process: Process
         init(_ process: Process) { self.process = process }
+        var processIdentifier: Int32 { process.processIdentifier }
         var isRunning: Bool { process.isRunning }
         func terminate() { process.terminate() }
-        func kill() { _ = Darwin.kill(process.processIdentifier, SIGKILL) }
+        func kill() {
+            let pid = process.processIdentifier
+            guard SystemPowerModeRunner.mayBeSignalled(pid) else { return }
+            _ = Darwin.kill(pid, SIGKILL)
+        }
     }
 
     private final class Output {

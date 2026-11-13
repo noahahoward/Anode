@@ -213,56 +213,136 @@ final class UltraPowerModePureTests: XCTestCase {
     /// runs: it ignores SIGTERM for its own sake (the signal is routed to `stop()`), so a hung `pmset` may ignore it too.
     private final class FakeChild: PowerModeChild {
         private(set) var running = true
+        let processIdentifier: Int32
         let endsWhenAsked: Bool
+        let endsWhenKilled: Bool
         private(set) var asked = 0
         private(set) var killed = 0
-        init(endsWhenAsked: Bool) { self.endsWhenAsked = endsWhenAsked }
+        init(pid: Int32 = 4242, endsWhenAsked: Bool, endsWhenKilled: Bool = true) {
+            processIdentifier = pid
+            self.endsWhenAsked = endsWhenAsked
+            self.endsWhenKilled = endsWhenKilled
+        }
         var isRunning: Bool { running }
         func terminate() { asked += 1; if endsWhenAsked { running = false } }
-        func kill() { killed += 1; running = false }
+        func kill() { killed += 1; if endsWhenKilled { running = false } }
         func endBehindTheirBack() { running = false }
+    }
+
+    /// `end` with every wait it makes written down, and every line it says.
+    private func end(_ child: FakeChild, exits: (TimeInterval) -> Bool = { _ in false }) -> (waited: [TimeInterval], said: [String]) {
+        var waited: [TimeInterval] = []
+        var said: [String] = []
+        SystemPowerModeRunner.end(child, exitedWithin: { waited.append($0); return exits($0) }, log: { said.append($0) })
+        return (waited, said)
     }
 
     func testAChildThatEndsWhenAskedIsNotKilled() {
         let child = FakeChild(endsWhenAsked: true)
-        var waited: [TimeInterval] = []
-        SystemPowerModeRunner.end(child, grace: 0.2) { waited.append($0); return !child.isRunning }
+        let r = end(child) { _ in !child.isRunning }
         XCTAssertEqual(child.asked, 1)
         XCTAssertEqual(child.killed, 0)
-        XCTAssertEqual(waited, [0.2], "the child was given the grace to end")
+        XCTAssertEqual(r.waited, [SystemPowerModeRunner.endGrace], "the child was given the grace to end")
+        XCTAssertEqual(r.said, [])
     }
 
     /// A child that ignores the request is not left running: after the grace it is killed, its own pid and no other.
-    func testAChildThatIgnoresTheRequestIsKilledAfterTheGrace() {
+    func testAChildThatIgnoresTheRequestIsKilledAfterTheGraceAndWaitedFor() {
         let child = FakeChild(endsWhenAsked: false)
-        var waited: [TimeInterval] = []
-        SystemPowerModeRunner.end(child, grace: 0.2) { waited.append($0); return false }
+        let r = end(child) { _ in !child.isRunning }
         XCTAssertEqual(child.asked, 1)
         XCTAssertEqual(child.killed, 1)
-        XCTAssertEqual(waited, [0.2])
+        XCTAssertEqual(r.waited.first, SystemPowerModeRunner.endGrace)
+        XCTAssertEqual(r.waited, [SystemPowerModeRunner.endGrace, SystemPowerModeRunner.killWait],
+                       "after the kill the child is waited for, for a short bounded time, and not for ever")
         XCTAssertFalse(child.isRunning)
+        XCTAssertEqual(r.said, [], "it ended: nothing to say")
+    }
+
+    /// Nothing the daemon does depends on an object going out of scope to reap a child: one that has not ended by the end
+    /// of the wait after the kill is said once, with its pid, and the call goes on.
+    func testAChildThatSurvivesTheKillIsSaidOnceAndTheCallGoesOn() {
+        let child = FakeChild(endsWhenAsked: false, endsWhenKilled: false)
+        let r = end(child)
+        XCTAssertEqual(child.killed, 1, "killed once, not again and again")
+        XCTAssertEqual(r.waited, [SystemPowerModeRunner.endGrace, SystemPowerModeRunner.killWait])
+        XCTAssertEqual(r.said.count, 1, "\(r.said)")
+        guard let line = r.said.first else { return }
+        XCTAssertTrue(line.contains("4242"), line)
+        XCTAssertTrue(line.contains("WARNING"), line)
     }
 
     func testAChildThatHasAlreadyEndedIsLeftAlone() {
         let child = FakeChild(endsWhenAsked: false)
         child.endBehindTheirBack()
-        var waited = 0
-        SystemPowerModeRunner.end(child, grace: 0.2) { _ in waited += 1; return true }
+        let r = end(child) { _ in true }
         XCTAssertEqual(child.asked, 0)
         XCTAssertEqual(child.killed, 0)
-        XCTAssertEqual(waited, 0)
+        XCTAssertEqual(r.waited, [])
+        XCTAssertEqual(r.said, [])
     }
 
-    /// It ended while the grace ran out: its pid may be free for something else, so nothing is sent to it.
+    /// It ended while the grace ran out: its pid may already be someone else's, so nothing is sent to it.
     func testAChildThatEndedDuringTheGraceIsNotKilled() {
         let child = FakeChild(endsWhenAsked: false)
-        SystemPowerModeRunner.end(child, grace: 0.2) { _ in child.endBehindTheirBack(); return false }
+        let r = end(child) { _ in child.endBehindTheirBack(); return false }
         XCTAssertEqual(child.asked, 1)
         XCTAssertEqual(child.killed, 0, "a signal to a pid that is no longer this child's")
+        XCTAssertEqual(r.waited, [SystemPowerModeRunner.endGrace])
     }
 
-    func testTheGraceIsShorterThanOneCall() {
-        XCTAssertLessThan(SystemPowerModeRunner.endGrace, PowerModeSwitch.callLimit)
+    /// `kill(-1, SIGKILL)` as root ends every process the user can see, and `kill(0, ...)` the process group: a pid of 1 or
+    /// less is never signalled, by either signal, whatever the child says about itself.
+    func testAPidOfOneOrLessIsNeverSignalled() {
+        for pid in [Int32.min, -1000, -1, 0, 1] {
+            let child = FakeChild(pid: pid, endsWhenAsked: false)
+            let r = end(child)
+            XCTAssertEqual(child.asked, 0, "pid \(pid) was asked to end")
+            XCTAssertEqual(child.killed, 0, "pid \(pid) was killed")
+            XCTAssertEqual(r.waited, [], "pid \(pid)")
+        }
+        let first = FakeChild(pid: 2, endsWhenAsked: false)
+        _ = end(first)
+        XCTAssertEqual(first.killed, 1, "an ordinary pid is still ended")
+    }
+
+    // ── The time a call can take ────────────────────────────────────────────
+
+    /// A call is given `callLimit`; one that has not finished is asked to end, given `endGrace`, killed, and given
+    /// `killWait` to be gone. The most a call can take is the sum, and `end` waits exactly the last two.
+    func testTheMostACallCanTakeIsWhatItIsGivenPlusWhatEndingItTakes() {
+        XCTAssertEqual(PowerModeSwitch.slowestCall,
+                       PowerModeSwitch.callLimit + SystemPowerModeRunner.endGrace + SystemPowerModeRunner.killWait,
+                       accuracy: 1e-9)
+        XCTAssertEqual(PowerModeSwitch.slowestCall, 1.0, accuracy: 1e-9)
+        let child = FakeChild(endsWhenAsked: false, endsWhenKilled: false)
+        let r = end(child)
+        XCTAssertEqual(PowerModeSwitch.callLimit + r.waited.reduce(0, +), PowerModeSwitch.slowestCall, accuracy: 1e-9,
+                       "`end` waits something other than the two constants the bound is made of")
+    }
+
+    /// The comments that state the bound state the figures these constants make, and none of the earlier ones.
+    func testTheCommentsThatStateTheBoundStateTheRealOne() throws {
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        func source(_ path: String) throws -> String {
+            try String(contentsOf: root.appendingPathComponent(path), encoding: .utf8)
+        }
+        func s(_ seconds: Double) -> String { String(format: "%.1f s", seconds) }
+        let call = PowerModeSwitch.callLimit, slowest = PowerModeSwitch.slowestCall
+        let switchFile = try source("Sources/PowerKit/PowerModeSwitch.swift")
+        let serverFile = try source("Sources/PowerKit/FanHelperService.swift")
+        // The doc of `callLimit`: what a call that finishes, a call that has to be ended, and each kind of command take.
+        for figure in [s(3 * call), s(slowest), s(call + 2 * slowest), s(6 * slowest)] {
+            XCTAssertTrue(switchFile.contains(figure), "PowerModeSwitch.swift does not say \(figure)")
+        }
+        // The loop's own docs: what a pass can take, and the sleep notice's deadline.
+        for figure in [s(slowest), s(3 * slowest), s(6 * slowest)] {
+            XCTAssertTrue(serverFile.contains(figure), "FanHelperService.swift does not say \(figure)")
+        }
+        // The figures that were true before the grace and the wait for the kill were counted.
+        XCTAssertFalse(switchFile.contains("3.6 s"))
+        XCTAssertFalse(serverFile.contains("3.6 s"))
+        XCTAssertFalse(serverFile.contains("up to 0.6 s a call"))
     }
 
     // ── The real runner, on a program that is harmless ──────────────────────
