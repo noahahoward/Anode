@@ -78,3 +78,34 @@ A stopped throwaway app, the Mac put to sleep and woken 327 s later: the process
 ## State left behind
 
 Power mode 2 (as before), brightness 0.5 (the owner's own level at the last run), 120 Hz, no process stopped, the throwaway app quit.
+
+## Trial on the owner's Mac (2026-11-13, try build 07f18db, the owner present; the controller drove the Mac for most runs)
+
+Whole-Mac power (median over about a minute unless noted), brightness slider 0.375 throughout, High Power when the mode is off.
+
+**The mode as built**
+- First real session: 40 processes stopped in 10 groups, 47.95 Hz, keyboard light off, low power mode entered through the helper (22 → low) and restored, watchdog running; turning off put everything back. Driven from a script too: the shortcut by a synthetic key event, Confirm by an accessibility press.
+- At rest, hands off: on 2.73 W, off 2.88 W. No saving that can be told from noise.
+- A video playing in a browser (off: 7.6 W and 7.5 W either side):
+  - the browser frozen by the mode: **3.2 W**;
+  - lowest refresh rate alone: **5.6 W** (about 2 W less; at rest it had measured nothing);
+  - the mode on with the browser kept and playing: 6.7 W in this run, 4.3 W (mean 4.2, against 5.8 / 9.2 off) in an earlier run with another video. Not settled.
+
+**Further levers, measured on top of the mode at rest (base about 3.2 W; 36 s each, rough)**
+- Brightness 0.25: 2.8 W. 0.125: 2.65 W. 0.0625: no further gain.
+- Screen fully black at the same brightness: 2.7 W; fully white: 3.0 W. Net of the processor rail, black is about 0.7 W under the base: the panel's backlight zones go dark behind black.
+- Wi-Fi off: 2.9 W (about 0.3 W less). Bluetooth off: no change. Two of the system's contacts services stopped: no change (idle at that moment).
+
+**Heavy work (four busy threads)**
+| | Whole Mac |
+|---|---|
+| At rest, mode off | 3.5 W |
+| Load, High Power | 27.4 W |
+| Load on the efficiency cores only (background policy) | 5.0 W |
+| At rest, mode on | 3.1 W |
+| Load, mode on (low power mode) | 12.8 W |
+| Load, mode on, efficiency cores only | 4.7 W |
+
+Low power mode halves what heavy work costs; keeping the work on the efficiency cores cuts it by four fifths. The first attempt at this run is discarded (the load never started and a video had resumed in the background).
+
+**What this corrects:** the refresh rate and low power mode are not "little or nothing": they do nothing at rest and a great deal when something is running. The section's note must say that.
