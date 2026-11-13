@@ -65,13 +65,14 @@ import PowerKit
 // While the setting is off nothing exists: no client, no timer, no observer but the one on the switch itself, no
 // helper connection and no helper command. The exceptions are what an earlier run left unfinished: a restore record
 // is put back once at launch (and before an uninstall), with a client made for that alone; and that debt, which is
-// paid at launch through an installed helper, and asked again every 30 s until a running helper answers. While it is
-// owed, the section says so (`offWarning`), from the flag alone. The delay after an unclean exit is the same kind of
+// paid at launch through an installed helper, and asked again every 30 s until a running helper answers or the charger
+// switch reads connected (read before each ask). While it is owed, the section says so (`offWarning`), from the flag
+// alone. The delay after an unclean exit is the same kind of
 // thing: Charge Control is on in the setting but holds nothing, so nothing of it exists but one timer and the two
 // session observers (so that it does not start into another account's limit), and the debt is paid in the same way
 // meanwhile. With no helper installed to ask, the one thing done for the debt is a single read of the charger switch
 // whenever the section is shown (`settleOwedCutByReadingTheSwitch`): a helper started by hand and stopped has
-// reconnected the charger itself, and nothing else would say so.
+// reconnected the charger itself, and nothing else would say so. The same read is made whichever helper is installed.
 //
 // Ready By (a hold until the battery has to charge to be at the limit by a time of day) is one more rule in the policy,
 // fed two things here: the next moment the person's time of day names (`nextReadyBy`, worked out with the calendar on
@@ -177,6 +178,15 @@ final class ChargeController {
 
     /// A discharge's end has not been confirmed by a running helper, and Charge Control is still asking.
     static let cutWarningText = "The charger may still be switched off. Reconnecting\u{2026}"
+    /// A running helper said the charger is connected, and Anode's own reading of the charger switch still says it is
+    /// cut, past the time a discharge's end takes. Asked again, at longer and longer intervals.
+    static let cutWarningDisputedText = "The charger may still be switched off. The Anode helper says it is connected, "
+        + "but Anode's own reading of the charger says it is not; Anode asks the helper again from time to time."
+    /// The same once an installed helper has been asked and did not say yes (it refuses this build, cannot start, is too
+    /// old): "Reconnecting\u{2026}" would no longer be true. It goes when the charger reads connected.
+    static let cutWarningStillAskingText = "The charger may still be switched off. The Anode helper has not switched it "
+        + "back on; Anode asks it again every \(Int(tickInterval)) seconds, and this line goes when the charger "
+        + "reads connected."
     /// The same with no helper installed as a daemon: nothing will start a fresh one, and an unplug does not undo
     /// the cut. The way out is the section's own Install Helper\u{2026} button, shown with this line
     /// (`cutWarningsThatOfferInstall`): the installed helper starts on the first connection, and its startup switches
@@ -495,6 +505,10 @@ final class ChargeController {
     /// `ChargeRecords`); see `sessionResigned`. Seeded from the session at launch (`onConsole`): an Anode started while
     /// another account is on screen holds nothing until its own account is back.
     private var sessionActive = true
+    /// The session's own answer, asked again by the periodic tick while this controller believes another account is on
+    /// screen: a seed that was wrong at launch, or a notice that never came, would otherwise leave it passive for good
+    /// while the section says the limit is held.
+    private let sessionOnConsole: () -> Bool?
     /// macOS's settings have been asserted by this controller (the switch-on turned Optimized Battery Charging off and
     /// the limit's switch on). Not while another account was on screen at launch: then the first time this account is
     /// on screen it does that, and is not taken to have found someone else's change.
@@ -609,8 +623,20 @@ final class ChargeController {
     /// their own, and the tests move this one by hand).
     private var lastTickNow = Date()
     /// Once a running helper has said the charger is connected, the switch still reading cut is asked about again, but
-    /// not sooner than this after that answer, so a helper that keeps saying so is not woken every tick.
+    /// not sooner than this after that answer, so a helper that keeps saying so is not woken every tick. Each further
+    /// ask waits twice as long (`cutReaskInterval`), up to `cutReaskCap`.
     static let cutReaskAfter: TimeInterval = 300
+    static let cutReaskCap: TimeInterval = 3600
+    /// How long to wait after the answer before asking again, when the helper has already been asked `reasks` times
+    /// again in this stretch: 5, 10, 20, 40 minutes, then an hour.
+    static func cutReaskInterval(afterReasks reasks: Int) -> TimeInterval {
+        min(cutReaskAfter * pow(2, Double(min(max(reasks, 0), 12))), cutReaskCap)
+    }
+    /// How many times, in this stretch of the look, the helper has been asked again after saying the charger is
+    /// connected; and the wait that was last put in the log, so that a line is written when the wait changes and not
+    /// at each ask.
+    private var cutReasks = 0
+    private var cutReaskLogged: TimeInterval?
     /// Since when the charger has shown as connected, with something to settle and no discharge in force; nil
     /// otherwise. See `noteConnected`.
     private var connectedSince: Date?
@@ -723,7 +749,7 @@ final class ChargeController {
     /// (measured on Mac17,9, macOS 27.0: an unprivileged process reads it). The helper's own reader and key name
     /// (`SystemChargeHardware.adapterCutValue`), so there is one of each; nothing here can write. The connection to
     /// the SMC is opened at the first read, which is never while Charge Control is off, except for the one read the
-    /// section asks for when a debt is owed and no helper is installed to ask (`settleOwedCutByReadingTheSwitch`).
+    /// section asks for when a debt is owed (`settleOwedCutByReadingTheSwitch`).
     ///
     /// A read that fails is followed, at the next read, by a new connection. `SystemChargeHardware()` cannot fail: an
     /// SMC that would not open is kept inside it as "no connection" for good (`SMC.init?` is nil then), and a
@@ -791,6 +817,7 @@ final class ChargeController {
         self.limitInForce = limitInForce
         self.startAfter = startDelay
         self.liftedAtLaunch = liftedAtLaunch
+        self.sessionOnConsole = onConsole
         cutOwed = settings.chargeCutUnconfirmed
         guard observing else { return }
         // Only a controller that will run asks: the headless restores never act on it.
@@ -1093,7 +1120,7 @@ final class ChargeController {
         cutLost = false
         cutSeen = false
         cutLookSince = nil
-        cutLookAnsweredAt = nil
+        forgetTheAnswer()
         connectedSince = nil
         switchRead = nil
         lookDueAt = nil
@@ -1323,6 +1350,10 @@ final class ChargeController {
     /// Internal so the tests can be the timer.
     func retryOwedStopWhileOff() {
         guard !running, cutOwed, helper.installed else { return endOffRetry() }
+        // The charger switch first, whatever the helper is (see `settleOwedCutByReadingTheSwitch`): a helper that
+        // refuses this build, cannot start or is too old would be asked every 30 s for ever, each ask starting the
+        // root helper, while the switch reads connected. A read that says so ends it, and nothing is asked.
+        if settleOwedCutByReadingTheSwitch() { return }
         if offRetryTimer == nil {
             let t = Timer(timeInterval: Self.tickInterval, repeats: true) { [weak self] _ in
                 self?.retryOwedStopWhileOff()
@@ -1349,22 +1380,31 @@ final class ChargeController {
                 self.lastOffFailure = r.message
                 self.log("a drain's end is still not confirmed: \(r.message); asking again every "
                          + "\(Int(Self.tickInterval)) s")
+                // The line while off stops saying "Reconnecting…", which is no longer what is happening
+                // (`offWarning`).
+                self.changed()
             }
         }
     }
 
-    /// While not running, with a debt and no installed helper to ask: the charger switch, read once. A hand-started
-    /// helper that was stopped has reconnected the charger as it went, and nothing else would ever say so: no helper
-    /// is there to answer a stop, and while not running nothing reads the switch, so the warning (`offWarning`) would
-    /// stay for good, across launches. Not running means nothing of this Anode's can be cutting the charger, so one
-    /// read that says connected is enough: the net's 90 s of agreement guards against a discharge ending, and there is
-    /// none. A switch that reads cut, a value Anode never writes, or cannot be read settles nothing. Asked when the
-    /// section is shown or the app comes forward; there is no timer for it.
-    private func settleOwedCutByReadingTheSwitch() {
-        guard !running, cutOwed, !helper.installed, chargerSwitch() == AdapterCutKey.connected else { return }
+    /// While not running, with a debt: the charger switch, read once, whatever helper is installed. A hand-started
+    /// helper that was stopped has reconnected the charger as it went, and an installed one may never say yes (it
+    /// refuses this build, cannot start, is too old): nothing else would ever say that the charger is connected, so
+    /// the warning (`offWarning`) would stay for good, across launches, and an installed helper would be asked every
+    /// 30 s for ever. Not running means nothing of this Anode's can be cutting the charger, so one read that says
+    /// connected is enough: the net's 90 s of agreement guards against a discharge ending, and there is none. A switch
+    /// that reads cut, a value Anode never writes, or cannot be read settles nothing. Read when the section is shown or
+    /// the app comes forward, with no helper to ask, and before each ask of an installed one. True when it settled.
+    @discardableResult
+    private func settleOwedCutByReadingTheSwitch() -> Bool {
+        guard !running, cutOwed, chargerSwitch() == AdapterCutKey.connected else { return false }
         settleWithoutTheHelper("the charger switch reads connected, and nothing of Charge Control's is running to cut "
                                + "it again")
+        return true
     }
+
+    /// Whether the debt is being asked about on the timer, for the tests.
+    var isAskingAboutTheDebtWhileOff: Bool { offRetryTimer != nil }
 
     private func endOffRetry() {
         let ended = offRetryTimer != nil
@@ -1433,7 +1473,7 @@ final class ChargeController {
         cutLost = false
         cutSeen = false
         cutLookSince = nil
-        cutLookAnsweredAt = nil
+        forgetTheAnswer()
         if cutOwed || settings.chargeCutUnconfirmed {
             cutOwed = false
             settings.chargeCutUnconfirmed = false
@@ -1450,7 +1490,8 @@ final class ChargeController {
     /// timer or helper traffic is added for it.
     var offWarning: String? {
         guard !running, cutOwed else { return nil }
-        if offRetryTimer != nil { return Self.cutWarningText }
+        // Asked and not answered yes: "Reconnecting…" is not what is happening, and the line says what is.
+        if offRetryTimer != nil { return lastOffFailure == nil ? Self.cutWarningText : Self.cutWarningStillAskingText }
         // Nothing is asking: either no helper is installed, or one was installed since and has not been asked yet.
         return helper.installed ? Self.cutWarningInstalledText : Self.cutWarningOffText
     }
@@ -1545,6 +1586,12 @@ final class ChargeController {
     func periodicTick(now given: Date? = nil) {
         guard running else { return }
         let now = given ?? clock()
+        // Believed off screen: ask the session again. Only a plain yes counts (a session that says nothing is not
+        // proof, and the account that is on screen holds the limit), and then it is what the notice would have done.
+        if !sessionActive, sessionOnConsole() == true {
+            log("the session says this account is on screen, though no notice of it came")
+            sessionBecameActive()
+        }
         if appliedDischarge != nil { helper.refresh() }
         // Another account on screen holds the limit: its changes are not drift.
         if sessionActive { checkDrift() }
@@ -1655,8 +1702,9 @@ final class ChargeController {
     /// nothing more while the retry is already asking.
     func recheckHelper() {
         guard running else {
-            if offRetryTimer == nil { retryOwedStopWhileOff() }
-            settleOwedCutByReadingTheSwitch()
+            // An installed helper's ask reads the switch first; with the ask already on its timer, or no helper to ask,
+            // the section being shown is one more look.
+            if helper.installed, offRetryTimer == nil { retryOwedStopWhileOff() } else { settleOwedCutByReadingTheSwitch() }
             return
         }
         refusedLimit = nil
@@ -1875,7 +1923,7 @@ final class ChargeController {
         stopAndWait(for: "another account", deadline: deadline)
         cutSeen = false
         cutLookSince = nil
-        cutLookAnsweredAt = nil
+        forgetTheAnswer()
         // Every lost cut is owed: a discharge is owed before it is asked for, and the net owes what it finds, so a
         // debt this Anode has written down is still asked about while away (that is putting right, not holding),
         // warning and all. This holds only a lost cut with no debt behind it, which nothing makes now; it is kept so
@@ -2026,6 +2074,22 @@ final class ChargeController {
         return value
     }
 
+    /// The helper's yes for this stretch of the look is forgotten, and with it how often it was asked again.
+    private func forgetTheAnswer() {
+        cutLookAnsweredAt = nil
+        cutReasks = 0
+        cutReaskLogged = nil
+    }
+
+    /// A helper said the charger is connected, and Anode's own read of the switch still says cut after the time the
+    /// net waits: the warning stays while the asking backs off (`cutReaskInterval`).
+    private var cutDisputed: Bool {
+        guard cutLookAnsweredAt != nil, switchRead?.value == AdapterCutKey.cut, let since = cutLookSince else {
+            return false
+        }
+        return lastTickNow.timeIntervalSince(since) > Self.chargerReconnectTime
+    }
+
     /// Something only "the charger is connected" can settle: the debt, a lost cut, the net, or a stop that is due.
     private var somethingToSettle: Bool {
         cutOwed || cutLost || cutSeen || stopDue || settings.chargeCutUnconfirmed
@@ -2060,7 +2124,7 @@ final class ChargeController {
         let looksCut = switchCut || (macOSLook && read == nil)
         guard looksCut, appliedDischarge == nil else {
             cutLookSince = nil
-            cutLookAnsweredAt = nil
+            forgetTheAnswer()
             cutSeen = false
             return
         }
@@ -2068,8 +2132,10 @@ final class ChargeController {
         cutLookSince = since
         // A yes to the stop settles the stretch for macOS's word, which is no proof. The switch itself still reading
         // cut is: asked again, no sooner than `cutReaskAfter` after the answer.
-        if let answered = cutLookAnsweredAt, switchCut, now.timeIntervalSince(answered) >= Self.cutReaskAfter {
+        if let answered = cutLookAnsweredAt, switchCut,
+           now.timeIntervalSince(answered) >= Self.cutReaskInterval(afterReasks: cutReasks) {
             cutLookAnsweredAt = nil
+            cutReasks += 1
         }
         guard !dischargeInFlight, !cutLookAnswered, !cutSeen,
               now.timeIntervalSince(since) > Self.chargerReconnectTime else { return }
@@ -2078,6 +2144,17 @@ final class ChargeController {
         // later in this tick), so a switch-off or a quit while it is unsettled still asks the helper, and the line
         // while off still says so. The look itself is only in memory, and ends with the look.
         oweCut()
+        if cutReasks > 0 {
+            // A helper that said the charger is connected, and a switch that still reads cut: each ask waits twice as
+            // long as the one before, and the line is written when the wait changes, not at each ask.
+            let wait = Self.cutReaskInterval(afterReasks: cutReasks)
+            if wait != cutReaskLogged {
+                cutReaskLogged = wait
+                log("the helper said the charger is connected, but the charger switch still reads cut; asked it "
+                    + "again, and will ask again in \(Int(wait / 60)) minutes if it still does")
+            }
+            return
+        }
         let what = switchCut ? "the charger switch has read cut" : "macOS has said the Mac is off the adapter"
         log("\(what), with the adapter there and no drain running, for over \(Int(Self.chargerReconnectTime)) s: "
             + "the charger may have been left cut; asking the helper to reconnect it")
@@ -2371,6 +2448,7 @@ final class ChargeController {
         if cutLost || cutSeen {
             return setStatus(.warning(helper.installed ? Self.cutWarningText : Self.cutWarningNoHelperText))
         }
+        if cutDisputed { return setStatus(.warning(Self.cutWarningDisputedText)) }
         // The value macOS would have to take for this decision, when it is macOS and not the helper that holds it:
         // not in force because macOS refused it. (A refusal of an earlier value, or of one the helper has since set,
         // is not this.)

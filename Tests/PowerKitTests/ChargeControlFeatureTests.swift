@@ -364,7 +364,8 @@ final class ChargeControlFeatureTests: XCTestCase {
         helper.gone = true
         let f = make(enabled: true)
         XCTAssertEqual(controller?.isWaitingToStart, true)
-        XCTAssertEqual(f.statusLabel.stringValue, ChargeController.cutWarningText)
+        // Asked, and not answered (a helper that is gone): "Reconnecting…" would no longer be true.
+        XCTAssertEqual(f.statusLabel.stringValue, ChargeController.cutWarningStillAskingText)
         XCTAssertEqual(f.statusLabel.textColor, .systemOrange)
     }
 

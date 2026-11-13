@@ -1907,11 +1907,14 @@ final class ChargeControllerTests: XCTestCase {
         }
         c.tick(now: t0.addingTimeInterval(95 + 301))
         XCTAssertEqual(helper.stops(), 2, "the switch reads cut still, and the helper was never asked again")
-        // And not again for another five minutes.
+        // And not again for ten minutes: each ask waits twice as long as the one before (see
+        // `testTheReaskBacksOffAndTheLogSpeaksOnlyWhenTheWaitChanges`).
         c.tick(now: t0.addingTimeInterval(95 + 301 + 120))
         c.periodicTick(now: t0.addingTimeInterval(95 + 301 + 299))
-        XCTAssertEqual(helper.stops(), 2)
         c.tick(now: t0.addingTimeInterval(95 + 301 + 302))
+        c.tick(now: t0.addingTimeInterval(95 + 301 + 599))
+        XCTAssertEqual(helper.stops(), 2)
+        c.tick(now: t0.addingTimeInterval(95 + 301 + 601))
         XCTAssertEqual(helper.stops(), 3)
         // Reading connected ends the look: a new stretch is the ordinary 90 s again.
         chargerSwitch = AdapterCutKey.connected
@@ -1922,6 +1925,51 @@ final class ChargeControllerTests: XCTestCase {
         XCTAssertEqual(helper.stops(), 3)
         c.tick(now: t0.addingTimeInterval(1_105))
         XCTAssertEqual(helper.stops(), 4)
+    }
+
+    /// The ask that a helper's yes does not end (the switch still reads cut) waits twice as long each time, 5, 10, 20,
+    /// 40 minutes, then an hour at most, and the log says so when the wait changes and not at each ask. The warning
+    /// stays all the while: Anode's own reading says the charger is cut.
+    func testTheReaskBacksOffAndTheLogSpeaksOnlyWhenTheWaitChanges() {
+        XCTAssertEqual((0...6).map { ChargeController.cutReaskInterval(afterReasks: $0) },
+                       [300, 600, 1_200, 2_400, 3_600, 3_600, 3_600])
+        XCTAssertEqual(ChargeController.cutReaskInterval(afterReasks: 10_000), 3_600)
+        let t0 = Date()
+        chargerSwitch = AdapterCutKey.cut
+        battery = Self.state(70, ac: true)
+        let c = make()
+        func said() -> [String] { lines.filter { $0.contains("will ask again in") } }
+        c.tick(now: t0.addingTimeInterval(95))
+        XCTAssertEqual(helper.stops(), 1)
+        XCTAssertTrue(said().isEmpty)
+        // (the time of the tick that asks, then how many times the helper has been asked, then the lines about it)
+        let steps: [(at: Double, stops: Int, lines: Int)] = [
+            (396, 2, 1), (997, 3, 2), (2_198, 4, 3), (4_599, 5, 4), (8_200, 6, 4), (11_801, 7, 4), (15_402, 8, 4),
+        ]
+        var last = 95.0
+        for step in steps {
+            // Inside the wait: nothing is asked, whatever the ticks.
+            c.tick(now: t0.addingTimeInterval(last + 100))
+            c.periodicTick(now: t0.addingTimeInterval(step.at - 2))
+            XCTAssertEqual(helper.stops(), step.stops - 1, "asked before the wait was over at \(step.at - 2)")
+            XCTAssertEqual(c.status, .warning(ChargeController.cutWarningDisputedText),
+                           "the warning went while the asking waited")
+            c.tick(now: t0.addingTimeInterval(step.at))
+            XCTAssertEqual(helper.stops(), step.stops, "not asked again at \(step.at)")
+            XCTAssertEqual(said().count, step.lines, said().joined(separator: "\n"))
+            last = step.at
+        }
+        XCTAssertTrue(said()[0].contains("in 10 minutes") && said()[3].contains("in 60 minutes"), said().joined(separator: "\n"))
+        // The switch reading connected ends the stretch: the next one starts from five minutes again.
+        chargerSwitch = AdapterCutKey.connected
+        c.tick(now: t0.addingTimeInterval(16_000))
+        XCTAssertNotEqual(c.status, .warning(ChargeController.cutWarningDisputedText))
+        chargerSwitch = AdapterCutKey.cut
+        c.tick(now: t0.addingTimeInterval(16_010))
+        c.tick(now: t0.addingTimeInterval(16_105))
+        XCTAssertEqual(helper.stops(), 9, "a new stretch is asked after its own 90 s")
+        c.tick(now: t0.addingTimeInterval(16_105 + 301))
+        XCTAssertEqual(helper.stops(), 10, "a new stretch did not start its wait from five minutes again")
     }
 
     /// macOS saying the Mac is off the adapter, with a switch that reads a value Anode never writes: not a cut of
@@ -2384,20 +2432,37 @@ final class ChargeControllerTests: XCTestCase {
         helper.beforeSend = nil
 
         center.post(name: NSWorkspace.sessionDidResignActiveNotification, object: nil)
+        onConsole = false   // and the session says so too: the periodic tick asks it
         let reads = switchReads
         c.tick()
         c.periodicTick()
         XCTAssertEqual(switchReads, reads, "the switch was read for an account not on screen, with nothing owed")
     }
 
-    /// While off nothing reads it, a debt or not.
-    func testTheSwitchIsNotReadWhileOff() {
-        settings.chargeCutUnconfirmed = true
+    /// While off the switch is read only for a debt, and only when the debt is asked about: before each ask of an
+    /// installed helper (at launch and every 30 s), and when the section is shown. A tick reads nothing.
+    func testTheSwitchIsReadWhileOffOnlyForADebtAndOnlyWhenAsked() {
         chargerSwitch = AdapterCutKey.cut
+        let clean = make(enabled: false)
+        clean.retryOwedStopWhileOff()
+        clean.recheckHelper()
+        clean.tick()
+        clean.periodicTick()
+        XCTAssertEqual(switchReads, 0, "the switch was read with nothing owed")
+
+        settings.chargeCutUnconfirmed = true
+        helper.gone = true   // nobody says yes, so the debt stays
         let c = make(enabled: false)
+        let atLaunch = switchReads
+        XCTAssertEqual(atLaunch, 1, "one read before the ask at launch")
+        c.tick()
+        c.periodicTick()
+        XCTAssertEqual(switchReads, atLaunch, "a tick read the switch while off")
         c.retryOwedStopWhileOff()
+        XCTAssertEqual(switchReads, atLaunch + 1, "one read for each ask")
         c.recheckHelper()
-        XCTAssertEqual(switchReads, 0)
+        XCTAssertEqual(switchReads, atLaunch + 2, "one read for each look")
+        withExtendedLifetime(clean) {}
     }
 
     // ── A switch that has been read and then cannot be ──────────────────────
@@ -2888,7 +2953,8 @@ final class ChargeControllerTests: XCTestCase {
         helper.gone = true
         let asking = make(enabled: false)
         XCTAssertEqual(helper.stops(), 1)
-        XCTAssertEqual(asking.offWarning, ChargeController.cutWarningText)
+        XCTAssertEqual(asking.offWarning, ChargeController.cutWarningStillAskingText,
+                       "the helper did not answer, and the line still said it was reconnecting")
         withExtendedLifetime(c) {}
         // Nothing owed, nothing said.
         settings.chargeCutUnconfirmed = false
@@ -2909,10 +2975,10 @@ final class ChargeControllerTests: XCTestCase {
 
         var heard = 0
         let token = c.observeChanges { heard += 1 }
-        helper.gone = true   // its first answer is slow to come
+        helper.gone = true   // it does not answer
         c.recheckHelper()    // the section was shown
         XCTAssertEqual(helper.stops(), 1)
-        XCTAssertEqual(c.offWarning, ChargeController.cutWarningText)
+        XCTAssertEqual(c.offWarning, ChargeController.cutWarningStillAskingText)
         XCTAssertGreaterThan(heard, 0, "the section was not told the line changed")
         c.recheckHelper()
         XCTAssertEqual(helper.stops(), 1, "asked on every look as well as every 30 s")
@@ -2941,7 +3007,7 @@ final class ChargeControllerTests: XCTestCase {
         helper.gone = true
         settings.chargeControlEnabled = false
         XCTAssertTrue(settings.chargeCutUnconfirmed)
-        XCTAssertEqual(c.offWarning, ChargeController.cutWarningText)
+        XCTAssertEqual(c.offWarning, ChargeController.cutWarningStillAskingText)
         var heard = 0
         let token = c.observeChanges { heard += 1 }
         helper.gone = false
@@ -3284,6 +3350,7 @@ final class ChargeControllerTests: XCTestCase {
         c.pressDrain()
         XCTAssertEqual(c.dischargeInForce, 80)
         center.post(name: NSWorkspace.sessionDidResignActiveNotification, object: nil)
+        onConsole = false   // and the session says so too: the periodic tick asks it
         XCTAssertEqual(helper.waited, [.stopDischarge], "a discharge was left running for an account not on screen")
         XCTAssertNil(c.dischargeInForce)
         XCTAssertFalse(c.isDrainRequested)
@@ -3815,22 +3882,95 @@ final class ChargeControllerTests: XCTestCase {
         }
     }
 
-    /// Nothing to read for: an installed helper is asked instead (which a yes settles), and with no debt nothing is
-    /// read at all.
-    func testTheSwitchIsReadOnlyForADebtWithNoInstalledHelper() {
+    /// With no debt nothing is read at all. With one, the switch is read whatever helper is installed: an installed one
+    /// that is gone was once asked instead, and the switch, which read connected, was never looked at.
+    func testTheSwitchIsReadForADebtWhateverHelperIsInstalledAndForNoDebtNever() {
         chargerSwitch = AdapterCutKey.connected
         helper.installed = false
         let clean = make(enabled: false)
         clean.recheckHelper()
         XCTAssertEqual(switchReads, 0, "read with nothing owed")
+        helper.installed = true
+        clean.recheckHelper()
+        XCTAssertEqual(switchReads, 0, "read with nothing owed, and a helper installed")
 
         settings.chargeCutUnconfirmed = true
         helper.installed = true
         helper.gone = true
         let asked = make(enabled: false)
-        asked.recheckHelper()
-        XCTAssertEqual(switchReads, 0, "read when an installed helper is there to ask")
+        XCTAssertGreaterThan(switchReads, 0, "an installed helper was asked without the switch being read")
+        XCTAssertNil(asked.offWarning, "the switch reads connected and the line stayed")
+        XCTAssertFalse(settings.chargeCutUnconfirmed)
+        XCTAssertTrue(helper.commands.isEmpty, "a helper was started to say what the switch already said")
         withExtendedLifetime(clean) {}
+    }
+
+    /// An installed helper that never says yes (it refuses this build, cannot start, is too old) was asked every 30 s
+    /// for ever while the switch read connected, and the line stayed. Each ask starts the root helper through launchd.
+    func testAnInstalledHelperThatNeverSaysYesIsNotAskedOnceTheSwitchReadsConnected() {
+        settings.chargeCutUnconfirmed = true
+        helper.installed = true
+        helper.answer = { _ in FanReply(ok: false, message: "refused: this build is not the one it was installed for") }
+        chargerSwitch = AdapterCutKey.cut
+        let c = make(enabled: false)
+        XCTAssertEqual(helper.stops(), 1)
+        XCTAssertTrue(c.isAskingAboutTheDebtWhileOff)
+        let reads = switchReads
+        c.retryOwedStopWhileOff()
+        XCTAssertEqual(helper.stops(), 2, "a cut switch is no reason not to ask")
+        XCTAssertGreaterThan(switchReads, reads, "the switch was not read before the ask")
+        XCTAssertNotNil(c.offWarning)
+
+        chargerSwitch = AdapterCutKey.connected
+        c.retryOwedStopWhileOff()
+        XCTAssertEqual(helper.stops(), 2, "asked again with the charger reading connected")
+        XCTAssertNil(c.offWarning)
+        XCTAssertFalse(c.isAskingAboutTheDebtWhileOff, "the 30 s ask went on")
+        XCTAssertFalse(settings.chargeCutUnconfirmed)
+        XCTAssertTrue(lines.contains { $0.contains("the charger switch reads connected") }, lines.joined(separator: "\n"))
+        c.retryOwedStopWhileOff()
+        c.recheckHelper()
+        XCTAssertEqual(helper.stops(), 2)
+    }
+
+    /// The same when the section is shown while the ask is already on its timer: one more look at the switch.
+    func testShowingTheSectionLooksAtTheSwitchWhileAnInstalledHelperIsBeingAsked() {
+        settings.chargeCutUnconfirmed = true
+        helper.installed = true
+        helper.answer = { _ in FanReply(ok: false, message: "refused") }
+        chargerSwitch = AdapterCutKey.cut
+        let c = make(enabled: false)
+        XCTAssertTrue(c.isAskingAboutTheDebtWhileOff)
+        chargerSwitch = AdapterCutKey.connected
+        c.recheckHelper()
+        XCTAssertNil(c.offWarning)
+        XCTAssertFalse(c.isAskingAboutTheDebtWhileOff)
+        XCTAssertEqual(helper.stops(), 1)
+    }
+
+    /// "Reconnecting\u{2026}" is true while the first ask is on its way, and not after the helper has refused it: then the
+    /// line says that the helper has not switched the charger back on, and that Anode keeps asking.
+    func testTheLineWhileOffStopsSayingReconnectingOnceTheHelperHasRefused() {
+        settings.chargeCutUnconfirmed = true
+        helper.installed = true
+        helper.deferReplies = true
+        helper.answer = { _ in FanReply(ok: false, message: "refused") }
+        let c = make(enabled: false)
+        XCTAssertEqual(c.offWarning, ChargeController.cutWarningText)
+        var changes = 0
+        let token = c.observeChanges { changes += 1 }
+        helper.flushReplies()
+        XCTAssertEqual(c.offWarning, ChargeController.cutWarningStillAskingText)
+        XCTAssertGreaterThan(changes, 0, "the section was not told")
+        XCTAssertFalse(ChargeController.cutWarningStillAskingText.contains("Reconnecting"))
+        XCTAssertTrue(ChargeController.cutWarningStillAskingText.contains("every 30 seconds"),
+                      ChargeController.cutWarningStillAskingText)
+        XCTAssertFalse(ChargeController.cutWarningsThatOfferInstall.contains(ChargeController.cutWarningStillAskingText))
+        // A yes ends it.
+        helper.answer = { _ in FanReply(ok: true, message: "ok") }
+        c.retryOwedStopWhileOff()
+        XCTAssertNil(c.offWarning)
+        withExtendedLifetime(token) {}
     }
 
     /// While waiting out the delay after an unclean exit nothing is running either, and the line is the same.
@@ -4048,6 +4188,50 @@ final class ChargeControllerTests: XCTestCase {
             _ = make()
             XCTAssertEqual(client.state?.mclLimit, 80, "not held for \(String(describing: answer))")
         }
+    }
+
+    /// A seed that said "not on screen" wrongly at launch (or a notice that never came) left the controller passive for
+    /// good, with the section saying the limit is held. The periodic tick asks the session again while it believes
+    /// it is off screen, and acts as on becoming active when the session says yes.
+    func testAWrongNotOnScreenAtLaunchHealsOnThePeriodicTick() {
+        onConsole = false
+        client.state = found
+        let c = make()
+        c.periodicTick()
+        c.periodicTick()
+        XCTAssertEqual(client.limitCalls, [], "asserted while the session still says another account is on screen")
+        XCTAssertFalse(lines.contains { $0.contains("on screen") && !$0.contains("another account") },
+                       lines.joined(separator: "\n"))
+        // Nothing to go on: a session that says nothing is not proof.
+        onConsole = nil
+        c.periodicTick()
+        XCTAssertEqual(client.limitCalls, [])
+
+        onConsole = true
+        c.periodicTick()
+        XCTAssertEqual(client.state?.mclLimit, 80, "this account's limit was not asserted once the session said so")
+        XCTAssertEqual(client.state?.mclEnabled, true)
+        XCTAssertEqual(client.state?.optimizedChargingEnabled, false)
+        XCTAssertFalse(lines.contains { $0.contains("changed outside") }, lines.joined(separator: "\n"))
+        XCTAssertTrue(lines.contains { $0.contains("this account is on screen again") }, lines.joined(separator: "\n"))
+        // And it asks no more: the limit is not asserted again, nor the session read, on the ticks that follow.
+        let calls = client.limitCalls.count
+        onConsole = false
+        c.periodicTick()
+        XCTAssertEqual(client.limitCalls.count, calls)
+        XCTAssertEqual(lines.filter { $0.contains("this account is on screen again") }.count, 1)
+    }
+
+    /// An account that resigned and whose notice of coming back was missed is healed the same way.
+    func testAMissedBecomeActiveNoticeIsHealedOnThePeriodicTick() {
+        let c = make()
+        center.post(name: NSWorkspace.sessionDidResignActiveNotification, object: nil)
+        onConsole = false
+        c.periodicTick()
+        client.state?.mclLimit = 95   // the other account's Anode set its own
+        onConsole = true
+        c.periodicTick()
+        XCTAssertEqual(client.state?.mclLimit, 80, "this account is on screen and did not take the limit back")
     }
 
     /// The session's dictionary says whether this account is on the console; anything else is no answer.
