@@ -291,14 +291,15 @@ final class UltraProcessesTests: XCTestCase {
     /// A hider whose app, clock and hiding are all made up. `schedule` runs the next check at once and adds the wait to
     /// a clock that is only a number, so these tests never sleep.
     private final class FakeHiding {
-        var hidden: (Int) -> Bool = { _ in false }   // is it hidden at this check (1-based)?
+        var hidden: (Int) -> Bool = { _ in false }   // is it hidden at this check (1-based)? Check 1 is the one before hiding.
         var found = true
         var checks = 0
         var clock: TimeInterval = 0
         var hides: [pid_t] = []
         var unhides: [pid_t] = []
-        var completions = 0
+        var results: [Bool] = []
         var clockAtCompletion: TimeInterval?
+        var completions: Int { results.count }
 
         func make() -> LiveAppHider {
             LiveAppHider(
@@ -308,33 +309,36 @@ final class UltraProcessesTests: XCTestCase {
                 schedule: { delay, work in self.clock += delay; work() })
         }
         func hide(_ hider: LiveAppHider, pid: pid_t = 4242) {
-            hider.hide(pid: pid) { self.completions += 1; self.clockAtCompletion = self.clock }
+            hider.hide(pid: pid) { hidByUs in self.results.append(hidByUs); self.clockAtCompletion = self.clock }
         }
     }
 
-    func testHideCallsBackAsSoonAsTheAppIsHidden() {
+    func testHideCallsBackAsSoonAsTheAppIsHiddenAndSaysItDidIt() {
         let fake = FakeHiding()
-        fake.hidden = { $0 >= 3 }
+        fake.hidden = { $0 >= 3 }   // not hidden before; not at the first look after; hidden at the second
         fake.hide(fake.make())
         XCTAssertEqual(fake.hides, [4242])
-        XCTAssertEqual(fake.checks, 3, "checked until it was hidden, not for the whole wait")
-        XCTAssertEqual(fake.completions, 1)
-        XCTAssertEqual(fake.clockAtCompletion ?? -1, 2 * LiveAppHider.pollInterval, accuracy: 1e-9)
-
-        let already = FakeHiding()
-        already.hidden = { _ in true }
-        already.hide(already.make())
-        XCTAssertEqual(already.checks, 1)
-        XCTAssertEqual(already.clock, 0, "an app that is hidden already is not waited for")
-        XCTAssertEqual(already.completions, 1)
+        XCTAssertEqual(fake.checks, 3, "one before, then until it was hidden, not for the whole wait")
+        XCTAssertEqual(fake.results, [true], "it was not hidden before and is now: Anode hid it")
+        XCTAssertEqual(fake.clockAtCompletion ?? -1, LiveAppHider.pollInterval, accuracy: 1e-9)
     }
 
-    func testHideGivesUpAfterTheWait() {
+    func testAnAppThatWasHiddenAlreadyIsNotHiddenAgainAndIsNotOurs() {
+        let fake = FakeHiding()
+        fake.hidden = { _ in true }
+        fake.hide(fake.make())
+        XCTAssertEqual(fake.hides, [], "nothing to do to it")
+        XCTAssertEqual(fake.checks, 1)
+        XCTAssertEqual(fake.clock, 0, "an app that is hidden already is not waited for")
+        XCTAssertEqual(fake.results, [false], "the owner hid it, so it is not Anode's to unhide at the end")
+    }
+
+    func testHideGivesUpAfterTheWaitAndDoesNotClaimIt() {
         let fake = FakeHiding()
         fake.hide(fake.make())
-        XCTAssertEqual(fake.completions, 1)
+        XCTAssertEqual(fake.results, [false], "not hidden after the call: not Anode's")
         XCTAssertEqual(fake.clockAtCompletion ?? -1, LiveAppHider.hideWait, accuracy: 1e-9)
-        XCTAssertEqual(fake.checks, 21, "one check at once, then one every 50 ms for a second")
+        XCTAssertEqual(fake.checks, 22, "one before, one at once after, then one every 50 ms for a second")
         XCTAssertEqual(LiveAppHider.hideWait, 1.0)
         XCTAssertEqual(LiveAppHider.pollInterval, 0.05)
     }
@@ -344,8 +348,8 @@ final class UltraProcessesTests: XCTestCase {
         fake.found = false
         let hider = fake.make()
         fake.hide(hider)
-        XCTAssertEqual(fake.completions, 1)
-        XCTAssertEqual(fake.checks, 0)
+        XCTAssertEqual(fake.results, [false])
+        XCTAssertEqual(fake.checks, 1, "only the look before")
         XCTAssertEqual(fake.clock, 0)
         hider.unhide(pid: 4242)
         XCTAssertEqual(fake.unhides, [4242])

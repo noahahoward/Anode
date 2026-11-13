@@ -15,13 +15,27 @@ final class UltraLowPowerControllerTests: XCTestCase {
     final class FakeProcesses: ProcessListing {
         var list: [UltraProcess]?
         var snapshots = 0
+        /// Keep the completions instead of calling them: a list that takes its time to be read.
+        var hold = false
+        private(set) var held: [([UltraProcess]?) -> Void] = []
         init(_ list: [UltraProcess]?) { self.list = list }
-        func snapshot(completion: @escaping ([UltraProcess]?) -> Void) { snapshots += 1; completion(list) }
+        func snapshot(completion: @escaping ([UltraProcess]?) -> Void) {
+            snapshots += 1
+            if hold { held.append(completion) } else { completion(list) }
+        }
+        /// The read finally returns, with the list as it is now.
+        func answerHeld() {
+            hold = false
+            let waiting = held
+            held = []
+            for completion in waiting { completion(list) }
+        }
     }
 
     final class FakeFreezer: ProcessFreezing {
         let calls: Calls
         var refuse: Set<pid_t> = []
+        var refuseResume: Set<pid_t> = []
         /// Called as a process is stopped, before the answer: lets a test look at the record at that moment.
         var onStop: ((pid_t) -> Void)?
         private(set) var stops: [pid_t] = []
@@ -31,20 +45,28 @@ final class UltraLowPowerControllerTests: XCTestCase {
             calls.add("stop \(pid)"); stops.append(pid); onStop?(pid)
             return !refuse.contains(pid)
         }
-        func resume(pid: pid_t, startTime: UInt64) -> Bool { calls.add("resume \(pid)"); resumes.append(pid); return true }
+        func resume(pid: pid_t, startTime: UInt64) -> Bool {
+            calls.add("resume \(pid)"); resumes.append(pid)
+            return !refuseResume.contains(pid)
+        }
     }
 
     final class FakeHider: AppHiding {
         let calls: Calls
         /// Keep the completions instead of calling them: an app that takes its time to hide.
         var hold = false
+        /// Apps the owner had hidden before the mode: Anode does not hide those, and says so.
+        var alreadyHidden: Set<pid_t> = []
+        /// Called as an app is asked to hide, before anything is answered: lets a test look at the record at that moment.
+        var onHide: ((pid_t) -> Void)?
         private(set) var held: [() -> Void] = []
         private(set) var hidden: [pid_t] = []
         private(set) var unhidden: [pid_t] = []
         init(_ calls: Calls) { self.calls = calls }
-        func hide(pid: pid_t, completion: @escaping () -> Void) {
-            calls.add("hide \(pid)"); hidden.append(pid)
-            if hold { held.append(completion) } else { completion() }
+        func hide(pid: pid_t, completion: @escaping (Bool) -> Void) {
+            calls.add("hide \(pid)"); hidden.append(pid); onHide?(pid)
+            let hidByUs = !alreadyHidden.contains(pid)
+            if hold { held.append { completion(hidByUs) } } else { completion(hidByUs) }
         }
         func unhide(pid: pid_t) { calls.add("unhide \(pid)"); unhidden.append(pid) }
     }
@@ -154,11 +176,21 @@ final class UltraLowPowerControllerTests: XCTestCase {
         /// What the next reads answer, in order; `fallback` after that.
         var queue: [LoadSample?] = []
         var fallback: LoadSample? = LoadSample(busyCores: 1.0, byProcess: [10: 0.2])
+        /// Keep the completions of this many of the next reads instead of calling them: a reading that takes its time.
+        var holdNext = 0
+        private(set) var held: [(LoadSample?) -> Void] = []
         private(set) var reads = 0
         init(_ calls: Calls) { self.calls = calls }
+        private func next() -> LoadSample? { queue.isEmpty ? fallback : queue.removeFirst() }
         func read(completion: @escaping (LoadSample?) -> Void) {
             calls.add("load read"); reads += 1
-            completion(queue.isEmpty ? fallback : queue.removeFirst())
+            if holdNext > 0 { holdNext -= 1; held.append(completion) } else { completion(next()) }
+        }
+        /// The held readings finally return.
+        func answerHeld() {
+            let waiting = held
+            held = []
+            for completion in waiting { completion(next()) }
         }
     }
 
@@ -384,10 +416,10 @@ final class UltraLowPowerControllerTests: XCTestCase {
         XCTAssertLessThan(try XCTUnwrap(firstIndex("save")), try XCTUnwrap(firstIndex("watchdog start")))
         XCTAssertLessThan(try XCTUnwrap(firstIndex("watchdog start")), try XCTUnwrap(firstIndex("hide")))
         XCTAssertLessThan(try XCTUnwrap(firstIndex("watchdog start")), try XCTUnwrap(firstIndex("stop")))
-        // The first record names every group that is about to be stopped, and the app that is about to be hidden.
+        // The first record names every group that is about to be stopped.
         let first = store.saves.first
         XCTAssertEqual(first?.groups.map(\.id), ["com.example.browser", "com.example.sync"])
-        XCTAssertEqual(first?.groups.map(\.appPID), [20, nil])
+        XCTAssertEqual(first?.groups.map(\.appPID), [nil, nil], "an app is named just before its own hide, not before")
         XCTAssertEqual(first?.groups.first?.members, [.init(pid: 20, startTime: 200), .init(pid: 21, startTime: 210)])
         XCTAssertEqual(first?.groups.map(\.released), [false, false])
     }
@@ -449,6 +481,84 @@ final class UltraLowPowerControllerTests: XCTestCase {
         XCTAssertEqual(controller.state, .on)
     }
 
+    // ── Hiding: what Anode hid, and only that, is unhidden ──────────────────
+
+    func testTheAppIsOnTheRecordBeforeItIsHidden() {
+        var named: [Int32?] = []
+        hider.onHide = { [unowned self] _ in named.append(self.store.record?.groups.first { $0.id == "com.example.browser" }?.appPID) }
+        start()
+        XCTAssertEqual(named, [20], "a crash while the app is being hidden still finds it on the record")
+        XCTAssertEqual(store.record?.groups.first?.appPID, 20, "and it stays there: Anode hid it")
+    }
+
+    func testAnAppWhoseMembersAllRefusedToStopIsUnhiddenAtOnce() {
+        freezer.refuse = [20, 21]
+        start()
+        XCTAssertEqual(hider.unhidden, [20], "nothing was stopped behind that hide, so nothing else will ever unhide it")
+        XCTAssertEqual(groupIDs(controller.frozen), ["com.example.sync"])
+        XCTAssertEqual(store.record?.groups.map(\.id), ["com.example.sync"])
+        controller.turnOff()
+        XCTAssertEqual(hider.unhidden, [20], "once")
+        XCTAssertEqual(freezer.resumes, [30])
+    }
+
+    func testAnAppTheOwnerHadHiddenIsNotNamedAsHiddenByUs() {
+        hider.alreadyHidden = [20]
+        start()
+        XCTAssertNil(store.record?.groups.first?.appPID, "it was named for the hide, and taken off when Anode did not hide it")
+        let named = store.saves.firstIndex { $0.groups.first?.appPID == 20 }
+        let cleared = store.saves.lastIndex { $0.groups.first?.appPID == nil }
+        XCTAssertNotNil(named)
+        XCTAssertLessThan(named ?? 99, cleared ?? -1, "written ahead, then taken back")
+        XCTAssertEqual(freezer.stops, [20, 21, 30], "it is stopped all the same")
+    }
+
+    func testAFailedWriteWhenTakingAnAppOffTheRecordDoesNotStopTheStep() {
+        hider.alreadyHidden = [20]
+        hider.onHide = { [unowned self] _ in self.store.refuseSave = { $0.groups.first?.appPID == nil } }
+        start()
+        XCTAssertEqual(freezer.stops, [20, 21, 30])
+        XCTAssertTrue(logged.contains { $0.contains("record") }, "\(logged)")
+        controller.turnOff()
+        XCTAssertEqual(hider.unhidden, [], "the in-memory record no longer names it, whatever the disk says")
+    }
+
+    func testAnAppTheOwnerHadHiddenIsStillHiddenAfterTurningOff() {
+        hider.alreadyHidden = [20]
+        start()
+        controller.turnOff()
+        XCTAssertEqual(freezer.resumes, [20, 21, 30])
+        XCTAssertEqual(hider.unhidden, [])
+    }
+
+    func testAnAppTheOwnerHadHiddenIsStillHiddenAfterAReleaseAndAnActivation() {
+        hider.alreadyHidden = [20]
+        start()
+        controller.release(groupID: "com.example.browser")
+        XCTAssertEqual(freezer.resumes, [20, 21])
+        XCTAssertEqual(hider.unhidden, [])
+        controller.appActivated(pid: 30)   // the sync agent: no app of its own to unhide either
+        XCTAssertEqual(hider.unhidden, [])
+    }
+
+    func testAnAppTheOwnerHadHiddenIsStillHiddenAfterQuitting() {
+        hider.alreadyHidden = [20]
+        start()
+        controller.shutdown()
+        XCTAssertEqual(freezer.resumes, [20, 21, 30])
+        XCTAssertEqual(hider.unhidden, [])
+    }
+
+    func testRecoveryUnhidesOnlyWhatTheRecordNames() {
+        var record = UltraRecord()
+        record.groups = [UltraRecord.Group(id: "com.example.browser", name: "Browser", members: [.init(pid: 20, startTime: 200)]),
+                         UltraRecord.Group(id: "com.example.other", name: "Other", members: [.init(pid: 60, startTime: 600)], appPID: 60)]
+        store.record = record
+        controller.recoverAtLaunch()
+        XCTAssertEqual(freezer.resumes, [20, 60])
+        XCTAssertEqual(hider.unhidden, [60], "the browser was hidden by the owner, so the record never named it")
+    }
+
     // ── Confirm: the screen, the keyboard light, the power mode ─────────────
 
     func testConfirmAppliesCeilingRateKeyboardAndLowPower() {
@@ -493,6 +603,7 @@ final class UltraLowPowerControllerTests: XCTestCase {
         start()
         XCTAssertEqual(backlight.sets, [])
         XCTAssertEqual(controller.state, .on)
+        XCTAssertEqual(controller.skipped, [.ceilingRefused], "the owner is told the limit is not held")
         XCTAssertTrue(logged.contains { $0.contains("brightness") }, "\(logged)")
         controller.turnOff()
 
@@ -503,6 +614,7 @@ final class UltraLowPowerControllerTests: XCTestCase {
         own.remember(0.9, for: "lid")
         start()
         XCTAssertEqual(controller.state, .on)
+        XCTAssertEqual(controller.skipped, [.ceilingRefused])
         XCTAssertNil(store.record?.brightnessBefore)
         XCTAssertTrue(logged.contains { $0.contains("brightness") }, "\(logged)")
         XCTAssertEqual(own.forget("lid"), 0.9, "this feature lowered nothing, so it does not hold the screen: the lid is the last one out")
@@ -570,6 +682,7 @@ final class UltraLowPowerControllerTests: XCTestCase {
     func testARefreshRateTheDisplayRefusedIsSaidInTheLogAndNotRecorded() {
         rate.lowerResult = false
         start()
+        XCTAssertEqual(controller.skipped, [.rateRefused])
         XCTAssertEqual(store.record?.rateLowered, false)
         XCTAssertTrue(logged.contains { $0.contains("refresh") }, "\(logged)")
     }
@@ -578,10 +691,19 @@ final class UltraLowPowerControllerTests: XCTestCase {
         power.modeBefore = nil
         start()
         XCTAssertEqual(controller.state, .on)
+        XCTAssertEqual(controller.skipped, [.lowPowerRefused])
         XCTAssertNil(store.record?.powerModeBefore)
         XCTAssertTrue(logged.contains { $0.contains("power") }, "\(logged)")
         controller.turnOff()
         XCTAssertEqual(power.restored, [])
+    }
+
+    func testARefreshRateTheRecordCannotNameIsNotLowered() {
+        store.refuseSave = { $0.rateLowered }
+        start()
+        XCTAssertEqual(rate.lowered, 0)
+        XCTAssertEqual(controller.skipped, [.rateRefused])
+        XCTAssertEqual(controller.state, .on)
     }
 
     func testASettingTheRecordCannotNameIsNotChanged() {
@@ -592,6 +714,7 @@ final class UltraLowPowerControllerTests: XCTestCase {
         XCTAssertEqual(backlight.sets, [])
         XCTAssertEqual(keyboard.sets, [])
         XCTAssertEqual(freezer.stops, [20, 21, 30], "the groups were on the record, so they were stopped")
+        XCTAssertEqual(controller.skipped, [.ceilingRefused, .keyboardLight], "and the owner is told what was not done")
         XCTAssertTrue(logged.contains { $0.contains("record") }, "\(logged)")
         XCTAssertNil(own.forget("ultra"), "what was noted is taken back too")
     }
@@ -627,6 +750,45 @@ final class UltraLowPowerControllerTests: XCTestCase {
         assertAllBefore("keyboard set", "power restore")
         assertAllBefore("power restore", "watchdog stop")
         assertAllBefore("watchdog stop", "store clear")
+    }
+
+    func testAContinueThatFailedIsLoggedWithTheGroupAndThePid() {
+        start()
+        freezer.refuseResume = [21]
+        controller.turnOff()
+        XCTAssertEqual(freezer.resumes, [20, 21, 30], "the others are continued all the same")
+        XCTAssertEqual(logged.filter { $0.contains("Browser") && $0.contains("21") }.count, 1, "\(logged)")
+        XCTAssertEqual(controller.state, .off)
+    }
+
+    func testAContinueThatFailedWhileQuittingOrRecoveringIsLoggedToo() {
+        start()
+        freezer.refuseResume = [30]
+        controller.shutdown()
+        XCTAssertEqual(logged.filter { $0.contains("Sync") && $0.contains("30") }.count, 1, "\(logged)")
+
+        logged = []
+        var record = UltraRecord()
+        record.groups = [UltraRecord.Group(id: "com.example.browser", name: "Browser", members: [.init(pid: 20, startTime: 200)])]
+        store.record = record
+        controller.recoverAtLaunch()
+        XCTAssertEqual(logged.filter { $0.contains("Browser") && $0.contains("20") }.count, 0, "it answered: nothing failed")
+        freezer.refuseResume = [20]
+        store.record = record
+        controller.recoverAtLaunch()
+        XCTAssertEqual(logged.filter { $0.contains("Browser") && $0.contains("20") }.count, 1, "\(logged)")
+    }
+
+    func testARestoreThatFailedIsLoggedOnce() {
+        start()
+        backlight.refuseSet = true
+        keyboard.refuseSet = true
+        logged = []
+        controller.turnOff()
+        XCTAssertEqual(logged.filter { $0.contains("brightness") }.count, 1, "\(logged)")
+        XCTAssertEqual(logged.filter { $0.contains("keyboard") }.count, 1, "\(logged)")
+        XCTAssertEqual(controller.state, .off, "and the rest is done all the same")
+        XCTAssertEqual(power.restored, [0])
     }
 
     func testTurnOffLeavesAScreenTheOwnerChangedAlone() {
@@ -692,12 +854,57 @@ final class UltraLowPowerControllerTests: XCTestCase {
         XCTAssertEqual(power.restored, [0])
         XCTAssertEqual(watchdog.stopped, 1)
         XCTAssertNil(store.record)
-        // The queue gets round to the earlier job after all: it ends nothing a second time.
+        // The queue gets round to the earlier job after all: it was put back already, and does not do it twice.
+        let sets = backlight.sets, light = keyboard.sets
         runHeldWork()
         XCTAssertEqual(controller.state, .off)
         XCTAssertEqual(watchdog.stopped, 1)
         XCTAssertEqual(power.restored, [0])
         XCTAssertEqual(backlight.value, 0.8)
+        XCTAssertEqual(backlight.sets, sets)
+        XCTAssertEqual(keyboard.sets, light, "the keyboard light is not written twice")
+        XCTAssertEqual(rate.restored, 1, "nor the refresh rate")
+    }
+
+    /// Quit while a job that LOWERS something is on the queue, not started: when the queue gets round to it, it does
+    /// nothing, because the session it belongs to is over. (A job already inside a system call when the quit comes is
+    /// not stopped by this; the restore behind it on the queue and Task 11's ordering are what cover that.)
+    private func quitWhileTheNthCallIsOnTheQueue(_ n: Int, file: StaticString = #filePath, line: UInt = #line) {
+        workLimit = n - 1
+        start()
+        XCTAssertEqual(heldWork.count, 1, file: file, line: line)
+        controller.shutdown()
+        XCTAssertEqual(controller.state, .off, file: file, line: line)
+        runHeldWork()
+        XCTAssertEqual(controller.state, .off, file: file, line: line)
+    }
+
+    func testAHeldBrightnessCheckThatComesAfterQuittingLowersNothing() {
+        start()
+        backlight.value = 0.9
+        holdWork = true
+        controller.brightnessMayHaveChanged()
+        XCTAssertEqual(heldWork.count, 1)
+        controller.shutdown()
+        runHeldWork()
+        XCTAssertEqual(backlight.sets, [0.5], "the check was for a mode that is over: the screen is not held down after the quit")
+        XCTAssertEqual(backlight.value, 0.9)
+    }
+
+    func testQuittingWhileTheScreenIsBeingLoweredLowersNothingLater() {
+        quitWhileTheNthCallIsOnTheQueue(2)
+        XCTAssertEqual(backlight.sets, [])
+        XCTAssertEqual(backlight.value, 0.8)
+    }
+
+    func testQuittingWhileTheRefreshRateIsBeingLoweredLowersNothingLater() {
+        quitWhileTheNthCallIsOnTheQueue(3)
+        XCTAssertEqual(rate.lowered, 0)
+    }
+
+    func testQuittingWhileTheKeyboardLightIsBeingSwitchedOffSwitchesNothingLater() {
+        quitWhileTheNthCallIsOnTheQueue(5)
+        XCTAssertEqual(keyboard.sets, [0.6], "the earlier level, once, by the quit; the held 0 never happens")
     }
 
     func testNothingStartsWhileALeftoverRecordIsBeingUndone() {
@@ -780,21 +987,21 @@ final class UltraLowPowerControllerTests: XCTestCase {
         XCTAssertEqual(watchdog.stopped, 1, file: file, line: line)
     }
 
-    func testTurnOffWhileTheScreenIsBeingLoweredPutsItBack() {
+    func testTurnOffWhileTheScreenIsBeingLoweredLeavesItWhereItWas() {
         turnOffWhileTheNthCallIsOnTheQueue(2)
-        XCTAssertEqual(backlight.sets, [0.5, 0.8])
+        XCTAssertEqual(backlight.sets, [], "the job had not started when the mode ended, so it lowered nothing")
         XCTAssertEqual(backlight.value, 0.8)
     }
 
-    func testTurnOffWhileTheRefreshRateIsBeingLoweredPutsItBack() {
+    func testTurnOffWhileTheRefreshRateIsBeingLoweredLeavesItWhereItWas() {
         turnOffWhileTheNthCallIsOnTheQueue(3)
-        XCTAssertEqual(rate.lowered, 1)
-        XCTAssertEqual(rate.restored, 1)
+        XCTAssertEqual(rate.lowered, 0)
+        XCTAssertEqual(rate.restored, 1, "put back all the same: the record named it, and a restore of nothing is nothing")
     }
 
-    func testTurnOffWhileTheKeyboardLightIsBeingSwitchedOffPutsItBack() {
+    func testTurnOffWhileTheKeyboardLightIsBeingSwitchedOffLeavesItWhereItWas() {
         turnOffWhileTheNthCallIsOnTheQueue(5)
-        XCTAssertEqual(keyboard.sets, [0, 0.6])
+        XCTAssertEqual(keyboard.sets, [0.6], "never switched off; the earlier level is written back, which changes nothing")
     }
 
     func testTurnOffBeforeAnythingWasHandedToTheQueueChangesNoSetting() {
@@ -802,6 +1009,134 @@ final class UltraLowPowerControllerTests: XCTestCase {
         XCTAssertEqual(backlight.sets, [])
         XCTAssertEqual(rate.lowered, 0)
         XCTAssertEqual(keyboard.sets, [])
+    }
+
+    // ── Answers that come late ──────────────────────────────────────────────
+
+    func testConfirmThenTurnOffBeforeTheLoadReturnsStartsNothing() {
+        controller.request()
+        load.holdNext = 1
+        confirm.press(true)
+        XCTAssertEqual(load.held.count, 1, "waiting for the reading")
+        controller.turnOff()
+        load.answerHeld()
+        XCTAssertEqual(store.saves.count, 0)
+        XCTAssertEqual(watchdog.started, 0)
+        XCTAssertEqual(hider.hidden, [])
+        XCTAssertEqual(freezer.stops, [])
+        XCTAssertEqual(controller.state, .off)
+    }
+
+    func testConfirmThenQuitBeforeTheLoadReturnsStartsNothing() {
+        controller.request()
+        load.holdNext = 1
+        confirm.press(true)
+        controller.shutdown()
+        load.answerHeld()
+        XCTAssertEqual(store.saves.count, 0)
+        XCTAssertEqual(watchdog.started, 0)
+        XCTAssertEqual(hider.hidden, [])
+        XCTAssertEqual(controller.state, .off)
+    }
+
+    func testTurnOffBeforeTheProcessListReturnsAsksNothing() {
+        processes.hold = true
+        controller.request()
+        controller.turnOff()
+        processes.answerHeld()
+        XCTAssertEqual(confirm.keptNames.count, 0)
+        XCTAssertEqual(controller.state, .off)
+    }
+
+    func testASweepPendingAcrossTurnOffAndANewStartStopsNothing() {
+        start()
+        processes.list = world + [helper(22, of: 20, in: "Browser")]
+        processes.hold = true
+        fire(30)
+        XCTAssertEqual(processes.held.count, 1, "waiting for the list")
+        controller.turnOff()
+        processes.hold = false
+        processes.list = world
+        start()   // the new session has frozen groups the old sweep could stop things in; its own sweep has not run
+        let stops = freezer.stops, reads = load.reads
+        processes.list = world + [helper(22, of: 20, in: "Browser")]
+        processes.answerHeld()
+        XCTAssertEqual(freezer.stops, stops, "the old sweep stops nothing")
+        XCTAssertEqual(load.reads, reads, "and does not go on to read the load")
+        XCTAssertFalse(controller.isFrozen(pid: 22))
+    }
+
+    func testASweepWhoseReadingIsPendingAcrossTurnOffAndANewStartStopsNothing() {
+        start()
+        processes.list = world + [helper(22, of: 20, in: "Browser")]
+        load.holdNext = 1
+        fire(30)
+        XCTAssertEqual(load.held.count, 1, "waiting for the reading, with 22 as the new part")
+        controller.turnOff()
+        processes.list = world
+        start()
+        let stops = freezer.stops
+        load.answerHeld()
+        XCTAssertEqual(freezer.stops, stops, "the old sweep stops nothing in the new session")
+        XCTAssertFalse(controller.isFrozen(pid: 22))
+        XCTAssertEqual(controller.state, .on)
+    }
+
+    func testASweepPendingAcrossTurnOffAloneStopsNothing() {
+        start()
+        processes.list = world + [helper(22, of: 20, in: "Browser")]
+        processes.hold = true
+        fire(30)
+        controller.turnOff()
+        processes.answerHeld()
+        XCTAssertFalse(freezer.stops.contains(22))
+        XCTAssertEqual(controller.state, .off)
+    }
+
+    func testAGroupReleasedBetweenASweepsListAndItsReadingIsNotStopped() {
+        start()
+        processes.list = world + [helper(22, of: 20, in: "Browser")]
+        load.holdNext = 1
+        fire(30)
+        controller.release(groupID: "com.example.browser")   // the owner took it back while the load was being read
+        load.answerHeld()
+        XCTAssertFalse(freezer.stops.contains(22), "a released group is never stopped again")
+        XCTAssertFalse(controller.isFrozen(pid: 22))
+        XCTAssertEqual(store.record?.groups.first?.members.map(\.pid), [20, 21], "nor named")
+    }
+
+    func testAGuardReadingPendingAcrossTurnOffAndANewStartLeavesTheNewSessionAlone() {
+        start()
+        load.holdNext = 1
+        fire(5)
+        XCTAssertEqual(load.held.count, 1, "the first session's check is waiting for its reading")
+        controller.turnOff()
+        start()
+        let resumes = freezer.resumes
+        // The old check's reading comes in: a core and a half on the sync agent's extension, which would release it.
+        load.queue = [sample(2.6, [10: 0.2, 31: 1.4])]
+        let snapshots = processes.snapshots
+        load.answerHeld()
+        XCTAssertEqual(processes.snapshots, snapshots, "the old check does not go on to ask for the list")
+        XCTAssertEqual(controller.releasedForLoad, [])
+        XCTAssertEqual(freezer.resumes, resumes, "the new session's groups are untouched")
+        XCTAssertEqual(controller.frozen.count, 2)
+    }
+
+    func testAGuardListPendingAcrossTurnOffAndANewStartLeavesTheNewSessionAlone() {
+        load.queue = [nil, sample(1.0), sample(2.6, [10: 0.2, 31: 1.4])]
+        start()
+        processes.hold = true
+        fire(5)
+        XCTAssertEqual(processes.held.count, 1, "the first session's check has its reading and waits for the list")
+        controller.turnOff()
+        processes.hold = false
+        start()
+        let resumes = freezer.resumes
+        processes.answerHeld()
+        XCTAssertEqual(controller.releasedForLoad, [])
+        XCTAssertEqual(freezer.resumes, resumes, "the new session's groups are untouched")
+        XCTAssertEqual(controller.frozen.count, 2)
     }
 
     func testALowPowerModeEnteredAfterTheModeEndedIsPutBack() {
@@ -830,6 +1165,17 @@ final class UltraLowPowerControllerTests: XCTestCase {
         // At the end only what is still frozen is continued: the released group was continued already.
         controller.turnOff()
         XCTAssertEqual(freezer.resumes, [20, 21, 30])
+        XCTAssertEqual(hider.unhidden, [20])
+    }
+
+    func testAReleaseWhoseContinueFailedStillMarksTheGroupReleasedAndSaysSo() {
+        start()
+        freezer.refuseResume = [21]
+        controller.release(groupID: "com.example.browser")
+        XCTAssertEqual(freezer.resumes, [20, 21])
+        XCTAssertEqual(groupIDs(controller.frozen), ["com.example.sync"], "gone, or not that process any more: nothing to keep stopped")
+        XCTAssertEqual(store.record?.groups.map(\.released), [true, false])
+        XCTAssertEqual(logged.filter { $0.contains("Browser") && $0.contains("21") && $0.contains("released") }.count, 1, "\(logged)")
         XCTAssertEqual(hider.unhidden, [20])
     }
 

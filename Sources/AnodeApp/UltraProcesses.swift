@@ -27,8 +27,11 @@ protocol ProcessFreezing: AnyObject {
 }
 
 protocol AppHiding: AnyObject {
-    /// Hides the app and calls back on the main queue when it is hidden or `hideWait` has passed, whichever is first.
-    func hide(pid: pid_t, completion: @escaping () -> Void)
+    /// Hides the app and calls back on the main queue, once, when it is hidden or `hideWait` has passed, whichever is
+    /// first. `hidByUs` is true only when the app was not hidden before the call and is hidden after it: an app that was
+    /// hidden already (the owner's doing), that is gone, that refused, or that was not hidden in time is not Anode's to
+    /// unhide later.
+    func hide(pid: pid_t, completion: @escaping (_ hidByUs: Bool) -> Void)
     func unhide(pid: pid_t)
 }
 
@@ -522,10 +525,12 @@ final class LiveAppHider: AppHiding {
         self.schedule = schedule
     }
 
-    func hide(pid: pid_t, completion: @escaping () -> Void) {
+    func hide(pid: pid_t, completion: @escaping (Bool) -> Void) {
         onMain { [self] in
-            // No such app: nothing to wait for.
-            guard hideApp(pid) else { completion(); return }
+            // Hidden already (or no such app, which reads as hidden): the owner's doing, or nothing to do.
+            if isHidden(pid) { completion(false); return }
+            // Refused, or the app ended between the look and the call: nothing to wait for.
+            guard hideApp(pid) else { completion(false); return }
             check(pid, left: Int((Self.hideWait / Self.pollInterval).rounded()), completion: completion)
         }
     }
@@ -533,9 +538,10 @@ final class LiveAppHider: AppHiding {
     func unhide(pid: pid_t) { onMain { [self] in unhideApp(pid) } }
 
     /// One check now, then one every `pollInterval` until it is hidden or `left` waits are used up. `completion` is
-    /// called exactly once, whichever way it ends.
-    private func check(_ pid: pid_t, left: Int, completion: @escaping () -> Void) {
-        if isHidden(pid) || left == 0 { completion(); return }
+    /// called exactly once, whichever way it ends: true when it is hidden by then.
+    private func check(_ pid: pid_t, left: Int, completion: @escaping (Bool) -> Void) {
+        if isHidden(pid) { completion(true); return }
+        if left == 0 { completion(false); return }
         schedule(Self.pollInterval) { [self] in check(pid, left: left - 1, completion: completion) }
     }
 

@@ -34,8 +34,17 @@ protocol UltraConfirming: AnyObject {
     func ask(kept: [String], frozen: [String], answer: @escaping (Bool) -> Void)
 }
 
-/// A part of the mode that this Mac cannot do, for the section and the menu to say so.
-enum UltraSkipped: Equatable { case lowPowerNoHelper, lowPowerOldHelper, oneRefreshRate, keyboardLight }
+/// A part of the mode that was not done, for the section and the menu to say so: because this Mac cannot (no helper, an
+/// old one, one refresh rate, no keyboard light), or because the system or the record refused it.
+enum UltraSkipped: Equatable {
+    case lowPowerNoHelper, lowPowerOldHelper, oneRefreshRate, keyboardLight
+    /// The helper answered that it could not switch Low Power Mode on.
+    case lowPowerRefused
+    /// The display would not take the lower refresh rate.
+    case rateRefused
+    /// The brightness could not be read or set, so the ceiling is not held.
+    case ceilingRefused
+}
 
 final class UltraLowPowerController {
 
@@ -83,8 +92,21 @@ final class UltraLowPowerController {
     /// Told (main thread) when any of the above changes.
     var onChange: (() -> Void)?
 
-    /// Counts asks and sessions. Everything that waits captures it and does nothing when it has moved on.
-    private var session = 0
+    /// Counts asks and sessions. Everything that waits captures it and does nothing when it has moved on. A job on the
+    /// work queue reads it too (one that has not started when its session ends must not run), so it is behind a lock.
+    private final class SessionCounter {
+        private let lock = NSLock()
+        private var number = 0
+        var value: Int {
+            get { lock.lock(); defer { lock.unlock() }; return number }
+            set { lock.lock(); number = newValue; lock.unlock() }
+        }
+    }
+    private let counter = SessionCounter()
+    private var session: Int {
+        get { counter.value }
+        set { counter.value = newValue }
+    }
     /// What the owner is being asked about: the plan, and the list it was made from.
     private var asked: (plan: FreezePlan, processes: [UltraProcess])?
     /// This session's record as it is now; nil until the first save and after the end.
@@ -172,7 +194,7 @@ final class UltraLowPowerController {
         load.read { [weak self] before in
             guard let self, self.session == token else { return }
             var record = UltraRecord()
-            record.groups = plan.frozen.map { Self.recordGroup($0, in: list) }
+            record.groups = plan.frozen.map(Self.recordGroup)
             guard self.store.save(record) else {
                 self.log("ultra: the record could not be saved, so nothing was started")
                 self.reset()
@@ -202,28 +224,44 @@ final class UltraLowPowerController {
 
     /// One group after another: the app is hidden first when it has windows, and stopped once it says it is hidden (or has
     /// had its time). The completion may come at once or a second later, and does nothing when the mode has ended by then.
+    ///
+    /// The app is put on the record just before it is hidden, and taken off again if Anode did not hide it (the owner had
+    /// hidden it already, or it would not hide): only what Anode hid is ever unhidden.
     private func freeze(_ groups: ArraySlice<FreezeGroup>, in list: [UltraProcess], token: Int, then done: @escaping () -> Void) {
         guard let group = groups.first else { return done() }
         let rest = groups.dropFirst()
         var proceeded = false
-        let stopThenGoOn = { [weak self] in
+        let proceed = { [weak self] (hidByUs: Bool?) in
             guard let self, !proceeded, self.session == token else { return }
             proceeded = true
-            self.stopMembers(of: group)
+            if hidByUs == false { self.nameHiddenApp(nil, of: group.id) }
+            let stopped = self.stop(group.members, of: group)
+            if !stopped.isEmpty { self.frozen.append(FreezeGroup(id: group.id, name: group.name, members: stopped)) }
             self.freeze(rest, in: list, token: token, then: done)
         }
-        if let app = Self.appToHide(in: group, among: list) {
-            hider.hide(pid: app, completion: stopThenGoOn)
-        } else {
-            stopThenGoOn()
+        guard let app = Self.appToHide(in: group, among: list) else { return proceed(nil) }
+        guard nameHiddenApp(app, of: group.id, mustSave: true) else {
+            log("ultra: the record could not take the hidden app, so it was not hidden")
+            return proceed(nil)
+        }
+        hider.hide(pid: app) { hidByUs in proceed(hidByUs) }
+    }
+
+    @discardableResult
+    private func nameHiddenApp(_ app: pid_t?, of groupID: String, mustSave: Bool = false) -> Bool {
+        record(mustSave: mustSave) { record in
+            guard let i = record.groups.firstIndex(where: { $0.id == groupID }) else { return }
+            record.groups[i].appPID = app
         }
     }
 
-    /// Stops every member of a group the record already names. A member that would not stop is taken off the record
-    /// and is not listed as frozen; a group none of whose members stopped is not listed at all.
-    private func stopMembers(of group: FreezeGroup) {
+    /// The one place a process is stopped, for the start and for the sweep: members of a group the record already names.
+    /// It notes that each was tried, says which refused, takes a refused member off the record, and drops a group left
+    /// with nothing stopped, unhiding its app (nothing stopped behind that hide, so nothing else would ever unhide it).
+    /// Returns the members that stopped.
+    private func stop(_ members: [FreezeGroup.Member], of group: FreezeGroup) -> [FreezeGroup.Member] {
         var stopped: [FreezeGroup.Member] = []
-        for member in group.members {
+        for member in members {
             attempted[member.pid] = member.startTime
             if freezer.stop(pid: member.pid, startTime: member.startTime) {
                 stopped.append(member)
@@ -231,17 +269,19 @@ final class UltraLowPowerController {
                 log("ultra: could not stop \(group.name) (\(member.pid))")
             }
         }
-        guard !stopped.isEmpty else {
-            record { $0.groups.removeAll { $0.id == group.id } }
-            return
-        }
-        if stopped.count < group.members.count {
-            record { record in
-                guard let i = record.groups.firstIndex(where: { $0.id == group.id }) else { return }
-                record.groups[i].members = stopped.map(Self.recordMember)
+        let refused = Set(members.map(\.pid)).subtracting(stopped.map(\.pid))
+        guard !refused.isEmpty else { return stopped }
+        var appLeftBehind: pid_t?
+        record { record in
+            guard let i = record.groups.firstIndex(where: { $0.id == group.id }) else { return }
+            record.groups[i].members.removeAll { refused.contains($0.pid) }
+            if record.groups[i].members.isEmpty {
+                appLeftBehind = record.groups[i].appPID
+                record.groups.remove(at: i)
             }
         }
-        frozen.append(FreezeGroup(id: group.id, name: group.name, members: stopped))
+        if let appLeftBehind { hider.unhide(pid: appLeftBehind) }
+        return stopped
     }
 
     // ── The screen, the keyboard light, the power mode ──────────────────────
@@ -265,11 +305,14 @@ final class UltraLowPowerController {
     }
 
     /// `job` runs on the work queue and may block; `done` runs on the main thread, and only when the session is still
-    /// the one that asked.
+    /// the one that asked. A job that has not started when its session ends does not run at all: it would lower
+    /// something after the mode was put back. (One already inside a system call cannot be stopped; what it did was
+    /// named on the record first, and the restore queued behind it puts that back.)
     private func background<T>(_ token: Int, _ job: @escaping () -> T, then done: @escaping (T) -> Void) {
         work { [weak self] in
+            guard let self, self.session == token else { return }
             let result = job()
-            self?.onMain { [weak self] in
+            self.onMain { [weak self] in
                 guard let self, self.session == token else { return }
                 done(result)
             }
@@ -281,6 +324,7 @@ final class UltraLowPowerController {
             guard let self else { return }
             guard let current else {
                 self.log("ultra: the brightness could not be read, so it was left as it is")
+                self.skipped.append(.ceilingRefused)
                 return next()
             }
             // At or below half already: nothing to lower, nothing to put back.
@@ -290,6 +334,7 @@ final class UltraLowPowerController {
             guard self.record(mustSave: true, { $0.brightnessBefore = current }) else {
                 self.log("ultra: the record could not take the brightness, so it was left as it is")
                 _ = self.ownBrightness.forget(Self.ownerName)
+                self.skipped.append(.ceilingRefused)
                 return next()
             }
             self.background(token, { [backlight = self.backlight] in backlight.setBrightness(target) }) { [weak self] accepted in
@@ -297,6 +342,7 @@ final class UltraLowPowerController {
                 if !accepted {
                     self.log("ultra: the screen did not take the lower brightness")
                     _ = self.ownBrightness.forget(Self.ownerName)
+                    self.skipped.append(.ceilingRefused)
                     self.record { $0.brightnessBefore = nil }
                 }
                 next()
@@ -310,6 +356,7 @@ final class UltraLowPowerController {
         // Named before it is asked for, like the rest: a turning off that overtakes the call on the queue still puts it back.
         guard record(mustSave: true, { $0.rateLowered = true }) else {
             log("ultra: the record could not take the refresh rate, so it was left as it is")
+            skipped.append(.rateRefused)
             return next()
         }
         background(token, { [rate = self.rate] () -> RateOutcome in
@@ -326,6 +373,7 @@ final class UltraLowPowerController {
             // Asked for and refused: the system puts the rate back by itself, and nothing was changed.
             case .refused:
                 self.log("ultra: the display did not take the lower refresh rate")
+                self.skipped.append(.rateRefused)
                 self.record { $0.rateLowered = false }
             }
             next()
@@ -340,6 +388,7 @@ final class UltraLowPowerController {
             guard level > 0 else { return next() }
             guard self.record(mustSave: true, { $0.keyboardBefore = level }) else {
                 self.log("ultra: the record could not take the keyboard light, so it was left as it is")
+                self.skipped.append(.keyboardLight)
                 return next()
             }
             self.background(token, { [keyboard = self.keyboard] in keyboard.set(0) }) { [weak self] accepted in
@@ -375,6 +424,7 @@ final class UltraLowPowerController {
                         self.record { $0.powerModeBefore = modeBefore }
                     } else {
                         self.log("ultra: the helper could not switch the power mode")
+                        self.skipped.append(.lowPowerRefused)
                     }
                     next()
                 }
@@ -452,36 +502,51 @@ final class UltraLowPowerController {
         var record = record
         record.brightnessBefore = brightnessBefore
         let actions = UltraRecovery.actions(for: record, brightnessNow: nil)
-        for case .resume(let pid, let startTime) in actions { _ = freezer.resume(pid: pid, startTime: startTime) }
+        let groupOf = Dictionary(record.groups.flatMap { group in group.members.map { ($0.pid, group.name) } },
+                                 uniquingKeysWith: { first, _ in first })
+        for case .resume(let pid, let startTime) in actions where !freezer.resume(pid: pid, startTime: startTime) {
+            log("ultra: could not continue \(groupOf[pid] ?? "a process") (\(pid)): it has ended, or is not that process any more")
+        }
         for case .unhide(let pid) in actions { hider.unhide(pid: pid) }
 
-        let settings = { [backlight = self.backlight, rate = self.rate, keyboard = self.keyboard] in
+        // What each step could not do, to be logged where the log is safe to write.
+        let settings = { [backlight = self.backlight, rate = self.rate, keyboard = self.keyboard] () -> [String] in
+            var failed: [String] = []
             // The screen is put back only where the mode left it: that is decided against what it reads now.
             if record.brightnessBefore != nil, let now = backlight.brightness() {
-                for case .brightness(let value) in UltraRecovery.actions(for: record, brightnessNow: now) {
-                    _ = backlight.setBrightness(value)
+                for case .brightness(let value) in UltraRecovery.actions(for: record, brightnessNow: now)
+                where !backlight.setBrightness(value) {
+                    failed.append("ultra: the brightness could not be put back")
                 }
             }
             for action in actions {
                 switch action {
-                case .restoreRate: rate.restore()
-                case .keyboard(let level): _ = keyboard.set(level)
-                case .resume, .unhide, .brightness, .powerMode: break
+                case .restoreRate:
+                    rate.restore()
+                case .keyboard(let level):
+                    if !keyboard.set(level) { failed.append("ultra: the keyboard light could not be put back") }
+                case .resume, .unhide, .brightness, .powerMode:
+                    break
                 }
             }
+            return failed
         }
         let afterSettings = { [weak self] in
             for case .powerMode(let mode) in actions { self?.restorePower(mode) }
             finished()
         }
         if inline {
-            settings()
+            settings().forEach(log)
             afterSettings()
         } else {
             work { [weak self] in
-                settings()
-                self?.onMain { [weak self] in
-                    guard let self, self.session == token else { return }
+                // Overtaken by a quit that has put everything back already: it does not do it a second time.
+                guard let self, self.session == token else { return }
+                let failed = settings()
+                self.onMain { [weak self] in
+                    guard let self else { return }
+                    failed.forEach(self.log)
+                    guard self.session == token else { return }
                     afterSettings()
                 }
             }
@@ -507,7 +572,14 @@ final class UltraLowPowerController {
     private func releaseGroup(_ id: String, forLoad: Bool) {
         guard state == .on, !ending, let index = frozen.firstIndex(where: { $0.id == id }) else { return }
         let group = frozen.remove(at: index)
-        for member in group.members { _ = freezer.resume(pid: member.pid, startTime: member.startTime) }
+        var notContinued: [pid_t] = []
+        for member in group.members where !freezer.resume(pid: member.pid, startTime: member.startTime) {
+            notContinued.append(member.pid)
+        }
+        // They are gone, or no longer that process: nothing is left to keep stopped, so the group is released all the same.
+        if !notContinued.isEmpty {
+            log("ultra: \(group.name) is released, but \(notContinued.map(String.init).joined(separator: ", ")) could not be continued (ended, or not that process any more)")
+        }
         if let app = live?.groups.first(where: { $0.id == id })?.appPID { hider.unhide(pid: app) }
         record { record in
             guard let i = record.groups.firstIndex(where: { $0.id == id }) else { return }
@@ -575,23 +647,7 @@ final class UltraLowPowerController {
         }
         var froze: Set<String> = []
         for add in groups {
-            var stopped: [FreezeGroup.Member] = []
-            for member in add.members {
-                attempted[member.pid] = member.startTime
-                if freezer.stop(pid: member.pid, startTime: member.startTime) {
-                    stopped.append(member)
-                } else {
-                    log("ultra: could not stop \(add.name) (\(member.pid))")
-                }
-            }
-            if stopped.count < add.members.count {
-                let kept = Set(stopped.map(\.pid))
-                let refused = Set(add.members.map(\.pid)).subtracting(kept)
-                record { record in
-                    guard let i = record.groups.firstIndex(where: { $0.id == add.id }) else { return }
-                    record.groups[i].members.removeAll { refused.contains($0.pid) }
-                }
-            }
+            let stopped = stop(add.members, of: add)
             if !stopped.isEmpty, let i = frozen.firstIndex(where: { $0.id == add.id }) {
                 frozen[i].members += stopped
                 froze.insert(add.id)
@@ -609,11 +665,17 @@ final class UltraLowPowerController {
     func brightnessMayHaveChanged() {
         guard state == .on, !ending, !adjustingBrightness else { return }
         adjustingBrightness = true
+        let token = session
         work { [backlight = self.backlight, weak self] in
-            if let now = backlight.brightness(), let ceiling = BrightnessCeiling.clamp(now), !backlight.setBrightness(ceiling) {
-                self?.onMain { self?.log("ultra: the screen did not take the lower brightness") }
+            var refused = false
+            // Not run at all when the mode has ended while this waited its turn.
+            if self?.session == token, let now = backlight.brightness(), let ceiling = BrightnessCeiling.clamp(now) {
+                refused = !backlight.setBrightness(ceiling)
             }
-            self?.onMain { self?.adjustingBrightness = false }
+            self?.onMain {
+                if refused { self?.log("ultra: the screen did not take the lower brightness") }
+                self?.adjustingBrightness = false
+            }
         }
     }
 
@@ -722,9 +784,8 @@ final class UltraLowPowerController {
         UltraRecord.Member(pid: member.pid, startTime: member.startTime)
     }
 
-    private static func recordGroup(_ group: FreezeGroup, in list: [UltraProcess]) -> UltraRecord.Group {
-        UltraRecord.Group(id: group.id, name: group.name, members: group.members.map(recordMember),
-                          appPID: appToHide(in: group, among: list))
+    private static func recordGroup(_ group: FreezeGroup) -> UltraRecord.Group {
+        UltraRecord.Group(id: group.id, name: group.name, members: group.members.map(recordMember))
     }
 
     /// The app with windows to hide before its group is stopped: the group's own regular app, by its bundle id.
