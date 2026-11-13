@@ -98,21 +98,29 @@ final class UltraLowPowerController {
         private let lock = NSLock()
         private var number = 0
         var value: Int {
-            get { lock.lock(); defer { lock.unlock() }; return number }
-            set { lock.lock(); number = newValue; lock.unlock() }
+            lock.lock(); defer { lock.unlock() }
+            return number
+        }
+        /// The next session, in one step: a get and then a set could be interleaved with another change.
+        @discardableResult
+        func increment() -> Int {
+            lock.lock(); defer { lock.unlock() }
+            number += 1
+            return number
         }
     }
     private let counter = SessionCounter()
-    private var session: Int {
-        get { counter.value }
-        set { counter.value = newValue }
-    }
+    private var session: Int { counter.value }
     /// What the owner is being asked about: the plan, and the list it was made from.
     private var asked: (plan: FreezePlan, processes: [UltraProcess])?
     /// This session's record as it is now; nil until the first save and after the end.
     private var live: UltraRecord?
     /// Every process this session tried to stop, with its start time: the sweep must not try the same one again.
     private var attempted: [pid_t: UInt64] = [:]
+    /// The app with windows of each group that was asked to hide, by group id, so that bringing it forward finds its
+    /// group whether or not Anode hid it and whether or not its own stop worked. Not what is unhidden at the end: that
+    /// is `appPID` on the record, set only for an app Anode hid.
+    private var appOfGroup: [String: pid_t] = [:]
     /// The mode is being put back; the state stays `.on` until it is done.
     private var ending = false
     private var sweeping = false
@@ -153,8 +161,7 @@ final class UltraLowPowerController {
 
     func request() {
         guard state == .off, !ending else { return }
-        session += 1
-        let token = session
+        let token = counter.increment()
         state = .confirming
         // The app in front is the one in front NOW: asking may bring Anode forward, and the box names what was picked.
         let front = lastOtherFrontApp()
@@ -240,6 +247,7 @@ final class UltraLowPowerController {
             self.freeze(rest, in: list, token: token, then: done)
         }
         guard let app = Self.appToHide(in: group, among: list) else { return proceed(nil) }
+        appOfGroup[group.id] = app
         guard nameHiddenApp(app, of: group.id, mustSave: true) else {
             log("ultra: the record could not take the hidden app, so it was not hidden")
             return proceed(nil)
@@ -448,7 +456,9 @@ final class UltraLowPowerController {
         end(inline: false)
     }
 
-    /// Quit and logout cannot wait for a queue: the same, on this thread, and done when it returns.
+    /// Quit and logout cannot wait for a queue: the same, on this thread, and done when it returns. Call it on the main
+    /// thread, like everything that changes the state: it does not go through `work`, but it does change what the main
+    /// thread owns.
     func shutdown() {
         guard state != .off else { return }
         end(inline: true)
@@ -461,21 +471,20 @@ final class UltraLowPowerController {
         guard state == .off, !ending, let record = store.load() else { return }
         log("ultra: undoing a session that was not ended")
         ending = true
-        session += 1
-        putBack(record, brightnessBefore: record.brightnessBefore, inline: false, token: session) { [weak self] in
+        putBack(record, brightnessBefore: record.brightnessBefore, inline: false, token: counter.increment()) { [weak self] in
             self?.store.clear()
             self?.ending = false
         }
     }
 
     private func end(inline: Bool) {
-        session += 1
+        let token = counter.increment()
         asked = nil
         // No record yet: nothing was done, so there is nothing to undo, only the question or the start to drop.
         guard let record = live else { reset(); return }
         ending = true
         frozen = []
-        putBack(record, brightnessBefore: brightnessToRestore(), inline: inline, token: session) { [weak self] in
+        putBack(record, brightnessBefore: brightnessToRestore(), inline: inline, token: token) { [weak self] in
             self?.watchdog.stop()
             self?.store.clear()
             self?.ending = false
@@ -513,10 +522,14 @@ final class UltraLowPowerController {
         let settings = { [backlight = self.backlight, rate = self.rate, keyboard = self.keyboard] () -> [String] in
             var failed: [String] = []
             // The screen is put back only where the mode left it: that is decided against what it reads now.
-            if record.brightnessBefore != nil, let now = backlight.brightness() {
-                for case .brightness(let value) in UltraRecovery.actions(for: record, brightnessNow: now)
-                where !backlight.setBrightness(value) {
-                    failed.append("ultra: the brightness could not be put back")
+            if record.brightnessBefore != nil {
+                if let now = backlight.brightness() {
+                    for case .brightness(let value) in UltraRecovery.actions(for: record, brightnessNow: now)
+                    where !backlight.setBrightness(value) {
+                        failed.append("ultra: the brightness could not be put back")
+                    }
+                } else {
+                    failed.append("ultra: the brightness could not be read, so it was not put back")
                 }
             }
             for action in actions {
@@ -562,7 +575,7 @@ final class UltraLowPowerController {
     func appActivated(pid: pid_t) {
         guard state == .on, !ending else { return }
         let group = frozen.first { group in
-            group.members.contains { $0.pid == pid } || live?.groups.first { $0.id == group.id }?.appPID == pid
+            group.members.contains { $0.pid == pid } || appOfGroup[group.id] == pid
         }
         if let group { releaseGroup(group.id, forLoad: false) }
     }
@@ -805,7 +818,7 @@ final class UltraLowPowerController {
 
     /// The end of a session that came to nothing, or was ended: everything this controller holds is dropped.
     private func reset() {
-        session += 1
+        counter.increment()
         state = .off
         frozen = []
         skipped = []
@@ -814,6 +827,7 @@ final class UltraLowPowerController {
         asked = nil
         live = nil
         attempted = [:]
+        appOfGroup = [:]
         sweeping = false
         adjustingBrightness = false
         brightnessTaken = false

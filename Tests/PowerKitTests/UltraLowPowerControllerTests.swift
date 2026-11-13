@@ -541,6 +541,38 @@ final class UltraLowPowerControllerTests: XCTestCase {
         XCTAssertEqual(hider.unhidden, [])
     }
 
+    func testActivatingAnAppTheOwnerHadHiddenReleasesItsGroupAndUnhidesNothing() {
+        hider.alreadyHidden = [20]
+        start()
+        controller.appActivated(pid: 20)
+        XCTAssertEqual(freezer.resumes, [20, 21], "the group is released")
+        XCTAssertEqual(groupIDs(controller.frozen), ["com.example.sync"])
+        XCTAssertEqual(hider.unhidden, [], "it was the owner's hiding, and the owner just showed it")
+    }
+
+    func testActivatingAnAppTheOwnerHadHiddenAndWhoseOwnStopFailedStillReleasesItsHelpers() {
+        // Neither a member (its stop failed) nor named as hidden by Anode (it was not): the app's pid still has to find
+        // its group, or its stopped helpers would stay stopped behind a window the owner has just opened.
+        hider.alreadyHidden = [20]
+        freezer.refuse = [20]
+        start()
+        XCTAssertEqual(controller.frozen.first?.members.map(\.pid), [21])
+        XCTAssertNil(store.record?.groups.first?.appPID)
+        controller.appActivated(pid: 20)
+        XCTAssertEqual(freezer.resumes, [21])
+        XCTAssertEqual(groupIDs(controller.frozen), ["com.example.sync"])
+        XCTAssertEqual(hider.unhidden, [])
+    }
+
+    func testAnAppThatWasSlowToHideIsStillUnhiddenAtTheEnd() {
+        hider.hold = true
+        start()
+        hider.held.forEach { $0() }   // the hide was taken and reported after the wait: Anode did it
+        XCTAssertEqual(controller.state, .on)
+        controller.turnOff()
+        XCTAssertEqual(hider.unhidden, [20])
+    }
+
     func testAnAppTheOwnerHadHiddenIsStillHiddenAfterQuitting() {
         hider.alreadyHidden = [20]
         start()
@@ -789,6 +821,24 @@ final class UltraLowPowerControllerTests: XCTestCase {
         XCTAssertEqual(logged.filter { $0.contains("keyboard") }.count, 1, "\(logged)")
         XCTAssertEqual(controller.state, .off, "and the rest is done all the same")
         XCTAssertEqual(power.restored, [0])
+    }
+
+    func testAScreenThatCannotBeReadAtTheEndIsLoggedOnce() {
+        start()
+        backlight.value = nil
+        logged = []
+        controller.turnOff()
+        XCTAssertEqual(logged.filter { $0.contains("brightness") }.count, 1, "\(logged)")
+        XCTAssertEqual(backlight.sets, [0.5], "nothing was set at the end")
+        XCTAssertEqual(controller.state, .off, "and the rest is done all the same")
+
+        // Nothing lowered, so nothing to put back and nothing to say.
+        backlight.value = 0.4
+        start()
+        backlight.value = nil
+        logged = []
+        controller.turnOff()
+        XCTAssertEqual(logged.filter { $0.contains("brightness") }.count, 0, "\(logged)")
     }
 
     func testTurnOffLeavesAScreenTheOwnerChangedAlone() {

@@ -28,9 +28,10 @@ protocol ProcessFreezing: AnyObject {
 
 protocol AppHiding: AnyObject {
     /// Hides the app and calls back on the main queue, once, when it is hidden or `hideWait` has passed, whichever is
-    /// first. `hidByUs` is true only when the app was not hidden before the call and is hidden after it: an app that was
-    /// hidden already (the owner's doing), that is gone, that refused, or that was not hidden in time is not Anode's to
-    /// unhide later.
+    /// first. `hidByUs` is true when the app was not hidden before the call and the request was taken, even if the app
+    /// had not finished hiding when the wait ran out: unhiding an app that is not hidden does no harm, and leaving one
+    /// Anode hid hidden does. False for an app that was hidden already (the owner's doing), that is gone, or that
+    /// refused: those are not Anode's to unhide later.
     func hide(pid: pid_t, completion: @escaping (_ hidByUs: Bool) -> Void)
     func unhide(pid: pid_t)
 }
@@ -538,10 +539,10 @@ final class LiveAppHider: AppHiding {
     func unhide(pid: pid_t) { onMain { [self] in unhideApp(pid) } }
 
     /// One check now, then one every `pollInterval` until it is hidden or `left` waits are used up. `completion` is
-    /// called exactly once, whichever way it ends: true when it is hidden by then.
+    /// called exactly once, whichever way it ends. True either way: the request was taken, so whatever the app does
+    /// next is Anode's doing.
     private func check(_ pid: pid_t, left: Int, completion: @escaping (Bool) -> Void) {
-        if isHidden(pid) { completion(true); return }
-        if left == 0 { completion(false); return }
+        if isHidden(pid) || left == 0 { completion(true); return }
         schedule(Self.pollInterval) { [self] in check(pid, left: left - 1, completion: completion) }
     }
 

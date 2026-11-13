@@ -333,10 +333,13 @@ final class UltraProcessesTests: XCTestCase {
         XCTAssertEqual(fake.results, [false], "the owner hid it, so it is not Anode's to unhide at the end")
     }
 
-    func testHideGivesUpAfterTheWaitAndDoesNotClaimIt() {
+    func testHideGivesUpAfterTheWaitAndStillClaimsIt() {
         let fake = FakeHiding()
         fake.hide(fake.make())
-        XCTAssertEqual(fake.results, [false], "not hidden after the call: not Anode's")
+        // Anode asked, the app was not hidden before, and the request was taken: if the app hides a moment after the
+        // wait it was Anode that hid it. Unhiding an app that is not hidden is harmless; leaving one that Anode hid
+        // hidden is not.
+        XCTAssertEqual(fake.results, [true])
         XCTAssertEqual(fake.clockAtCompletion ?? -1, LiveAppHider.hideWait, accuracy: 1e-9)
         XCTAssertEqual(fake.checks, 22, "one before, one at once after, then one every 50 ms for a second")
         XCTAssertEqual(LiveAppHider.hideWait, 1.0)
