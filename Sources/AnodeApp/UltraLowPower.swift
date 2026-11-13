@@ -432,7 +432,14 @@ final class UltraLowPowerController {
                         self.record { $0.powerModeBefore = modeBefore }
                     } else {
                         self.log("ultra: the helper could not switch the power mode")
-                        self.skipped.append(.lowPowerRefused)
+                        // A helper that had not been heard from reads ready until it is asked, and the answer to the ask
+                        // is what shows it is an older one (or not there): so what it is now is read again, and a no from
+                        // one that is still ready is a refusal.
+                        switch self.power.availability {
+                        case .oldHelper: self.skipped.append(.lowPowerOldHelper)
+                        case .noHelper:  self.skipped.append(.lowPowerNoHelper)
+                        case .ready:     self.skipped.append(.lowPowerRefused)
+                        }
                     }
                     next()
                 }

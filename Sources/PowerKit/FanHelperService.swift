@@ -498,6 +498,10 @@ public final class FanHelperServer {
     /// charger still cut. So it is at least the reply deadline plus a 3 s
     /// margin, which a test pins. A longer bound costs nothing: a healthy loop
     /// answers in milliseconds, and macOS waits about 30 s for the answer.
+    ///
+    /// A pass that runs a Low Power Mode command can take up to 3.6 s of its own (`PowerModeSwitch.callLimit`), which the
+    /// margin above does not count. A notice that waits past this is answered by the sleep watch itself, which
+    /// reconnects the charger without the loop.
     public static let sleepAnswerDeadline: TimeInterval = 6
 
     /// Between a will-sleep and the next wake. A discharge is refused for the
@@ -868,6 +872,11 @@ public final class FanHelperServer {
     /// non-blocking: a readable client gets one `read`, whole lines are served
     /// one per pass, a half-sent line waits in `lines` (and is dropped after
     /// `requestLineDeadline`), and a reply gets `replyWriteDeadline` in total.
+    /// What the helper itself does in a pass is another matter, and takes a few
+    /// seconds at most, not nothing: a charger write is read back for about
+    /// 0.65 s, and a Low Power Mode command, or the put-back when a client goes,
+    /// runs `pmset` for up to 0.6 s a call, three calls (1.8 s), or six (3.6 s)
+    /// for a switch-on that failed and is rolled back (`PowerModeSwitch.callLimit`).
     /// So every pass reaches the floor check and the stop check whatever the
     /// client is doing — slow, half-sent, or silent.
     public func run() {

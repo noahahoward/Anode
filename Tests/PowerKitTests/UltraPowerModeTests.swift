@@ -96,6 +96,45 @@ final class UltraPowerModePureTests: XCTestCase {
                        PowerModeReading(key: .powermode, battery: 0, charger: 2))
     }
 
+    /// What `pmset -g custom` printed on the owner's Mac, as it was captured: no `lowpowermode` at all, and a line whose
+    /// first word is not a key. The fixtures above are made up; this one is not.
+    func testTheRealCaptureFromTheOwnersMacIsReadAsPowermodeTwoOnBoth() {
+        let capture = """
+        Battery Power:
+         Sleep On Power Button 1
+         powermode            2
+         standby              1
+         ttyskeepawake        1
+         hibernatemode        3
+         powernap             1
+         hibernatefile        /var/vm/sleepimage
+         displaysleep         0
+         womp                 0
+         networkoversleep     0
+         sleep                1
+         lessbright           1
+         tcpkeepalive         1
+         disksleep            10
+        AC Power:
+         Sleep On Power Button 1
+         powermode            2
+         standby              1
+         ttyskeepawake        1
+         hibernatemode        3
+         powernap             1
+         hibernatefile        /var/vm/sleepimage
+         displaysleep         0
+         womp                 1
+         networkoversleep     0
+         sleep                0
+         tcpkeepalive         1
+         disksleep            10
+
+        """
+        XCTAssertEqual(PowerModeReading.parse(capture), PowerModeReading(key: .powermode, battery: 2, charger: 2))
+        XCTAssertEqual(PowerModeReading.parse(capture)?.modes, PowerModes(battery: 2, charger: 2))
+    }
+
     func testBothSourcesWithLowpowermodeAreReadByIt() {
         XCTAssertEqual(PowerModeReading.parse(bothWithLowpowermode),
                        PowerModeReading(key: .lowpowermode, battery: 1, charger: 0))
@@ -166,7 +205,64 @@ final class UltraPowerModePureTests: XCTestCase {
     func testTheRunnerIsAskedForOneProgramAtOneAbsolutePath() {
         XCTAssertEqual(SystemPowerModeRunner.tool, "/usr/bin/pmset")
         XCTAssertTrue(SystemPowerModeRunner.tool.hasPrefix("/"), "a path that is looked up is a path that can be planted")
-        XCTAssertLessThan(3 * PowerModeSwitch.callLimit, 2.0, "a read and two writes fit inside the link's two seconds")
+    }
+
+    // ── A child that has not ended ──────────────────────────────────────────
+
+    /// A child as far as ending it goes, with no process behind it. The helper's own dispositions are inherited by what it
+    /// runs: it ignores SIGTERM for its own sake (the signal is routed to `stop()`), so a hung `pmset` may ignore it too.
+    private final class FakeChild: PowerModeChild {
+        private(set) var running = true
+        let endsWhenAsked: Bool
+        private(set) var asked = 0
+        private(set) var killed = 0
+        init(endsWhenAsked: Bool) { self.endsWhenAsked = endsWhenAsked }
+        var isRunning: Bool { running }
+        func terminate() { asked += 1; if endsWhenAsked { running = false } }
+        func kill() { killed += 1; running = false }
+        func endBehindTheirBack() { running = false }
+    }
+
+    func testAChildThatEndsWhenAskedIsNotKilled() {
+        let child = FakeChild(endsWhenAsked: true)
+        var waited: [TimeInterval] = []
+        SystemPowerModeRunner.end(child, grace: 0.2) { waited.append($0); return !child.isRunning }
+        XCTAssertEqual(child.asked, 1)
+        XCTAssertEqual(child.killed, 0)
+        XCTAssertEqual(waited, [0.2], "the child was given the grace to end")
+    }
+
+    /// A child that ignores the request is not left running: after the grace it is killed, its own pid and no other.
+    func testAChildThatIgnoresTheRequestIsKilledAfterTheGrace() {
+        let child = FakeChild(endsWhenAsked: false)
+        var waited: [TimeInterval] = []
+        SystemPowerModeRunner.end(child, grace: 0.2) { waited.append($0); return false }
+        XCTAssertEqual(child.asked, 1)
+        XCTAssertEqual(child.killed, 1)
+        XCTAssertEqual(waited, [0.2])
+        XCTAssertFalse(child.isRunning)
+    }
+
+    func testAChildThatHasAlreadyEndedIsLeftAlone() {
+        let child = FakeChild(endsWhenAsked: false)
+        child.endBehindTheirBack()
+        var waited = 0
+        SystemPowerModeRunner.end(child, grace: 0.2) { _ in waited += 1; return true }
+        XCTAssertEqual(child.asked, 0)
+        XCTAssertEqual(child.killed, 0)
+        XCTAssertEqual(waited, 0)
+    }
+
+    /// It ended while the grace ran out: its pid may be free for something else, so nothing is sent to it.
+    func testAChildThatEndedDuringTheGraceIsNotKilled() {
+        let child = FakeChild(endsWhenAsked: false)
+        SystemPowerModeRunner.end(child, grace: 0.2) { _ in child.endBehindTheirBack(); return false }
+        XCTAssertEqual(child.asked, 1)
+        XCTAssertEqual(child.killed, 0, "a signal to a pid that is no longer this child's")
+    }
+
+    func testTheGraceIsShorterThanOneCall() {
+        XCTAssertLessThan(SystemPowerModeRunner.endGrace, PowerModeSwitch.callLimit)
     }
 
     // ── The real runner, on a program that is harmless ──────────────────────
@@ -568,5 +664,98 @@ final class UltraPowerModeTests: XCTestCase {
             XCTAssertEqual(written, wanted, "\(command)")
             XCTAssertEqual(try JSONDecoder().decode(FanCommand.self, from: Data(json.utf8)), command)
         }
+    }
+}
+
+// ── A session, end to end ───────────────────────────────────────────────────
+
+/// The real controller with the real `HelperPowerMode`, over a scripted wire, and made-up parts for everything else: what
+/// the owner sees after one session against a helper of each kind. Nothing reaches the Mac.
+final class UltraPowerModeSessionTests: XCTestCase {
+
+    private typealias Rig = UltraLowPowerControllerTests
+
+    private var defaults: UserDefaults!
+    private var suiteName: String!
+
+    override func setUpWithError() throws {
+        (defaults, suiteName) = try TestDefaults.make(owner: "UltraPowerModeSession", test: name)
+    }
+
+    override func tearDownWithError() throws {
+        TestDefaults.destroy(defaults, suiteName)
+    }
+
+    private struct Session {
+        let controller: UltraLowPowerController
+        let confirm: Rig.FakeConfirm
+        let store: Rig.FakeStore
+    }
+
+    private func session(over power: PowerModeControlling) -> Session {
+        let calls = Rig.Calls()
+        let store = Rig.FakeStore(calls)
+        let confirm = Rig.FakeConfirm()
+        func proc(_ pid: pid_t, _ path: String, _ bundle: String, _ name: String) -> UltraProcess {
+            UltraProcess(pid: pid, parent: 1, uid: 501, startTime: UInt64(pid) * 10, path: path, app: .regular,
+                         bundleID: bundle, name: name)
+        }
+        let world = [proc(1000, "/Applications/Anode.app/Contents/MacOS/Anode", "dev.example.self", "Anode"),
+                     proc(10, "/Applications/Editor.app/Contents/MacOS/Editor", "com.example.editor", "Editor"),
+                     proc(20, "/Applications/Browser.app/Contents/MacOS/Browser", "com.example.browser", "Browser")]
+        let controller = UltraLowPowerController(
+            settings: Settings(defaults: defaults), processes: Rig.FakeProcesses(world), freezer: Rig.FakeFreezer(calls),
+            hider: Rig.FakeHider(calls), backlight: Rig.FakeBacklight(calls), ownBrightness: OwnBrightness(),
+            rate: Rig.FakeRate(calls), keyboard: Rig.FakeKeyboard(calls), power: power, watchdog: Rig.FakeWatchdog(calls),
+            store: store, confirm: confirm, load: Rig.FakeLoad(calls), lastOtherFrontApp: { 10 }, ownPIDs: { [1000] },
+            user: 501, work: { $0() }, schedule: { _, _ in }, log: { _ in })
+        return Session(controller: controller, confirm: confirm, store: store)
+    }
+
+    /// Every owner has the helper installed before this release, which speaks 3, and nothing has greeted it yet this
+    /// run. The one session they start must say the helper is an older one and offer the install, not say it refused.
+    func testTheFirstSessionAgainstAHelperThatSpeaksThreeSaysItIsOldAndOffersTheInstall() {
+        let wire = ScriptedWire()
+        wire.answerAtOnce = .connected(fanCount: 1, version: 3)
+        let connection = HelperConnection(wire: wire)
+        let power = HelperPowerMode(connection: connection, isInstalled: { true }, schedule: { _, _ in })
+        XCTAssertEqual(power.availability, .ready, "installed, and not heard from yet")
+        let s = session(over: power)
+        s.controller.request()
+        s.confirm.press(true)
+        XCTAssertEqual(s.controller.state, .on)
+        XCTAssertEqual(s.controller.skipped, [.lowPowerOldHelper])
+        XCTAssertTrue(wire.sent.isEmpty, "a command was put on the socket of a helper that cannot read it")
+        XCTAssertTrue(connection.holders.isEmpty)
+        XCTAssertNil(s.store.record?.powerModeBefore)
+        let lines = UltraLowPowerFeature.describe(s.controller.skipped)
+        XCTAssertEqual(lines.count, 1)
+        XCTAssertTrue(lines[0].contains("an older one"), lines[0])
+        XCTAssertTrue(lines[0].contains("Install Helper\u{2026}"), lines[0])
+        s.controller.turnOff()
+    }
+
+    /// A helper that speaks 4 is asked, the mode before is on the record, the socket is held, and turning the mode off
+    /// puts it back and lets the socket go.
+    func testASessionAgainstAHelperThatSpeaksFourRecordsTheModeAndPutsItBack() {
+        let wire = ScriptedWire()
+        wire.answerAtOnce = .connected(fanCount: 1, version: 4)
+        wire.reply = { command in
+            command == .enterLowPowerMode
+                ? FanReply(ok: true, message: "Low Power Mode is on", powerModeBefore: 21)
+                : FanReply(ok: true, message: "ok")
+        }
+        let connection = HelperConnection(wire: wire)
+        let power = HelperPowerMode(connection: connection, isInstalled: { true }, schedule: { _, _ in })
+        let s = session(over: power)
+        s.controller.request()
+        s.confirm.press(true)
+        XCTAssertEqual(s.controller.state, .on)
+        XCTAssertEqual(s.controller.skipped, [])
+        XCTAssertEqual(s.store.record?.powerModeBefore, 21)
+        XCTAssertEqual(connection.holders, [.powerMode], "held while the mode is on")
+        s.controller.turnOff()
+        XCTAssertEqual(wire.sent, [.enterLowPowerMode, .restorePowerMode(before: 21)])
+        XCTAssertTrue(connection.holders.isEmpty)
     }
 }

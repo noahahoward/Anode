@@ -118,6 +118,9 @@ final class UltraLowPowerControllerTests: XCTestCase {
         let calls: Calls
         var availability: PowerModeAvailability = .ready
         var modeBefore: Int? = 0
+        /// What `availability` reads from the moment an enter has been answered: a helper whose answer taught what it is
+        /// (an installed helper that had not been heard from, and says it speaks 3).
+        var availabilityAfterEnter: PowerModeAvailability?
         /// Keep the completion: a helper that takes its time to answer.
         var hold = false
         private(set) var held: [(Int?) -> Void] = []
@@ -126,7 +129,11 @@ final class UltraLowPowerControllerTests: XCTestCase {
         init(_ calls: Calls) { self.calls = calls }
         func enterLowPower(_ done: @escaping (Int?) -> Void) {
             calls.add("power enter"); entered += 1
-            if hold { held.append(done) } else { done(modeBefore) }
+            let answer: (Int?) -> Void = { [unowned self] mode in
+                if let learned = availabilityAfterEnter { availability = learned }
+                done(mode)
+            }
+            if hold { held.append(answer) } else { answer(modeBefore) }
         }
         func restore(_ mode: Int, _ done: @escaping (Bool) -> Void) { calls.add("power restore \(mode)"); restored.append(mode); done(true) }
     }
@@ -711,6 +718,34 @@ final class UltraLowPowerControllerTests: XCTestCase {
         XCTAssertNil(store.record?.keyboardBefore, "what was written ahead is taken back")
     }
 
+    /// An installed helper that had not been heard from reads ready, and the answer to the enter is what teaches that it is
+    /// an older one: the nil is then said as that, with the way to install the newer, and not as a refusal.
+    func testAnEnterThatTaughtTheHelperIsOldIsSaidAsOldAndNotAsRefused() {
+        power.modeBefore = nil
+        power.availabilityAfterEnter = .oldHelper
+        start()
+        XCTAssertEqual(controller.state, .on)
+        XCTAssertEqual(controller.skipped, [.lowPowerOldHelper])
+        XCTAssertNil(store.record?.powerModeBefore)
+        XCTAssertEqual(power.entered, 1)
+    }
+
+    func testAnEnterThatTaughtThereIsNoHelperIsSaidAsNoHelper() {
+        power.modeBefore = nil
+        power.availabilityAfterEnter = .noHelper
+        start()
+        XCTAssertEqual(controller.skipped, [.lowPowerNoHelper])
+    }
+
+    /// Only a no is read again: a yes records the mode and says nothing, whatever the helper is said to be afterwards.
+    func testAnEnterThatWasTakenSaysNothingEvenIfTheHelperReadsOldAfterwards() {
+        power.modeBefore = 2
+        power.availabilityAfterEnter = .oldHelper
+        start()
+        XCTAssertEqual(controller.skipped, [])
+        XCTAssertEqual(store.record?.powerModeBefore, 2)
+    }
+
     func testARefreshRateTheDisplayRefusedIsSaidInTheLogAndNotRecorded() {
         rate.lowerResult = false
         start()
@@ -719,6 +754,7 @@ final class UltraLowPowerControllerTests: XCTestCase {
         XCTAssertTrue(logged.contains { $0.contains("refresh") }, "\(logged)")
     }
 
+    /// The helper is still there and still ready after it said no: it refused, and that is what the section says.
     func testALowPowerModeThatCouldNotBeEnteredIsSaidInTheLogAndNotRecorded() {
         power.modeBefore = nil
         start()

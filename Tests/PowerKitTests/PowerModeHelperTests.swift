@@ -27,6 +27,7 @@ final class FakePmset: PowerModeRunner {
     private var _writes: [[String]] = []
     private var _unexpected: [[String]] = []
     private var _refusedFlags: Set<String> = []
+    private var _landsButFails: [String: Int] = [:]
     private var _writesAllowed: Int?
     private var _readFails = false
     private var _readStatus: Int32 = 0
@@ -55,7 +56,10 @@ final class FakePmset: PowerModeRunner {
     func ownerSets(_ flag: String, _ value: Int) { lock.lock(); _values[flag] = value; lock.unlock() }
     /// A write to this source is refused.
     func refuseWrites(to flag: String) { lock.lock(); _refusedFlags.insert(flag); lock.unlock() }
-    func acceptWritesAgain() { lock.lock(); _refusedFlags = []; _writesAllowed = nil; lock.unlock() }
+    func acceptWritesAgain() { lock.lock(); _refusedFlags = []; _landsButFails = [:]; _writesAllowed = nil; lock.unlock() }
+    /// The next `times` writes to this source take effect and are reported as failed: a tool that was cut off after it had
+    /// done the work.
+    func writesLandButFail(for flag: String, times: Int = 1) { lock.lock(); _landsButFails[flag] = times; lock.unlock() }
     /// This many more writes are taken, and every one after them is refused.
     func allowWrites(_ n: Int) { lock.lock(); _writesAllowed = n; lock.unlock() }
     /// The tool does not finish in time (the runner's answer for it).
@@ -95,7 +99,9 @@ final class FakePmset: PowerModeRunner {
         if let n = _writesAllowed { _writesAllowed = n - 1 }
         _values[arguments[0]] = digit
         _writes.append(arguments)
-        return PowerModeRun(status: 0, output: "")
+        let lands = (_landsButFails[arguments[0]] ?? 0) > 0
+        if lands { _landsButFails[arguments[0]] = (_landsButFails[arguments[0]] ?? 1) - 1 }
+        return PowerModeRun(status: lands ? 1 : 0, output: "")
     }
 }
 
@@ -276,6 +282,35 @@ final class PowerModeHelperTests: XCTestCase {
         XCTAssertEqual(pmset.writes, [["-b", "powermode", "0"], ["-c", "powermode", "2"]])
     }
 
+    /// What the client's digits say is only ever acted on where a source reads low power now. A source that reads anything
+    /// else is left alone whatever the digits ask, when the helper remembers nothing as when it does: the root ability is
+    /// "put it back", never "set it".
+    func testDigitsAskingForTwoWriteNothingToASourceThatDoesNotReadLowPower() {
+        for (battery, charger) in [(0, 0), (2, 2), (0, 2), (2, 0)] {
+            pmset = FakePmset(battery: battery, charger: charger)
+            let server = makeServer()
+            XCTAssertNil(server.heldPowerModes, "the helper remembers nothing")
+            for digits in [22, 20, 2, 12, 21, 0] {
+                XCTAssertTrue(restore(server, digits).ok, "\(digits) on \(battery), \(charger)")
+            }
+            XCTAssertTrue(pmset.writes.isEmpty, "wrote to a source that was not in low power: \(pmset.writes)")
+            XCTAssertEqual(pmset.battery, battery)
+            XCTAssertEqual(pmset.charger, charger)
+        }
+    }
+
+    func testDigitsAskingForTwoWriteTwoToASourceThatReadsLowPowerAndNoOtherSource() {
+        pmset = FakePmset(battery: 0, charger: 1)
+        XCTAssertTrue(restore(makeServer(), 22).ok)
+        XCTAssertEqual(pmset.writes, [["-c", "powermode", "2"]], "only the charger read low power")
+        XCTAssertEqual(pmset.battery, 0)
+        XCTAssertEqual(pmset.charger, 2)
+        pmset = FakePmset(battery: 1, charger: 2)
+        XCTAssertTrue(restore(makeServer(), 22).ok)
+        XCTAssertEqual(pmset.writes, [["-b", "powermode", "2"]])
+        XCTAssertEqual(pmset.charger, 2)
+    }
+
     /// A source that no longer reads low power is the owner's own choice since: it is not this feature's to put back.
     func testRestoreLeavesASourceTheOwnerChangedSinceAlone() {
         let server = makeServer()
@@ -361,15 +396,41 @@ final class PowerModeHelperTests: XCTestCase {
         }
     }
 
-    /// The link answers within 2 s of a request or closes the socket, which hands everything back; so a command's calls
-    /// (a read and two writes) are each bounded, and together stay under that.
-    func testEveryCallIsBoundedAndAllThreeFitInsideTheLinksTwoSeconds() {
+    /// Every call to the tool is handed the same bound, which is the one thing the runner enforces.
+    func testEveryCallToTheToolIsHandedTheSameBound() {
         let server = makeServer()
         _ = enter(server)
         _ = restore(server, 2)
         XCTAssertFalse(pmset.calls.isEmpty)
         for call in pmset.calls { XCTAssertEqual(call.limit, PowerModeSwitch.callLimit) }
-        XCTAssertLessThan(3 * PowerModeSwitch.callLimit, 2.0)
+    }
+
+    /// The link answers within 2 s of a request or closes the socket, which hands everything back. An enter that goes
+    /// through, and a restore, make three calls each (a read and two writes), so on the bound alone they fit inside it.
+    func testASuccessfulEnterAndARestoreMakeThreeCallsEachAndSoFitInsideTheLinksTwoSeconds() {
+        let server = makeServer()
+        _ = enter(server)
+        let enterCalls = pmset.calls.count
+        _ = restore(server, 2)
+        let restoreCalls = pmset.calls.count - enterCalls
+        XCTAssertEqual(enterCalls, 3)
+        XCTAssertEqual(restoreCalls, 3)
+        XCTAssertLessThan(Double(max(enterCalls, restoreCalls)) * PowerModeSwitch.callLimit, 2.0)
+    }
+
+    /// A switch-on that fails and is rolled back is more: a read and two writes, then a read and two writes, when a write
+    /// that was reported failed had in fact landed. Six calls is 3.6 s on the bound, past the link's two seconds, so the
+    /// link may have closed the socket by then: the helper puts the mode back itself when it drops the client, because it
+    /// remembered before the first write. The answer is late; nothing is left on.
+    func testAFailedEnterThatIsRolledBackMakesAtMostSixCallsAndLeavesNothingOn() {
+        pmset.writesLandButFail(for: "-c")
+        let server = makeServer()
+        XCTAssertFalse(enter(server).ok)
+        XCTAssertEqual(pmset.calls.count, 6, "\(pmset.calls.map(\.arguments))")
+        XCTAssertGreaterThan(Double(pmset.calls.count) * PowerModeSwitch.callLimit, 2.0, "this is the case the link may not wait for")
+        XCTAssertEqual(pmset.battery, 2)
+        XCTAssertEqual(pmset.charger, 0)
+        XCTAssertNil(server.heldPowerModes)
     }
 
     // ── What it does not touch ──────────────────────────────────────────────
