@@ -694,6 +694,137 @@ final class PowerModeHelperTests: XCTestCase {
         XCTAssertNil(server.heldPowerModes)
     }
 
+    // ── What the stop's wait reads ──────────────────────────────────────────
+    //
+    // The stop waits for the worker after everything else is done, and reads the power mode's outcomes only. A charge or
+    // sleep notice is the loop's to act on, and the loop has gone: the plan is dropped, the sleep notices are answered, and
+    // nothing posted after that is acted on while the wait runs.
+
+    /// A full server on a socket of its own: the charger, the plan's wake and timer as fakes, and the tool behind a gate.
+    private struct Rig {
+        let server: FanHelperServer
+        let hw: FakeChargeHardware
+        let events: FakePowerEvents
+        let timer: FakeWallTimer
+        let gate: GatedPmset
+    }
+
+    private func makeRig() throws -> Rig {
+        let hw = FakeChargeHardware(percent: 54, onAC: true)
+        let events = FakePowerEvents()
+        let timer = FakeWallTimer()
+        let gate = GatedPmset(pmset)
+        let server = FanHelperServer(
+            hardware: FakeFans([:]),
+            configuration: .init(socketPath: NSTemporaryDirectory() + "bs-pwr-\(UUID().uuidString.prefix(8)).sock",
+                                 ownerUID: getuid(), pin: .signingIdentifier(FanDaemon.clientSigningIdentifier)),
+            log: { [weak self] in self?.lines.append($0) },
+            charge: hw, powerEvents: events, wakeTimer: timer, powerMode: gate)
+        server.chargeTiming = .immediate
+        try server.start()
+        return Rig(server: server, hw: hw, events: events, timer: timer, gate: gate)
+    }
+
+    /// `stop()` and then `run()` on a thread of its own, which leaves the loop at once and goes to the stop's wait. The
+    /// semaphore is signalled when the helper has gone.
+    private func stopOnAThread(_ server: FanHelperServer) -> DispatchSemaphore {
+        let gone = DispatchSemaphore(value: 0)
+        Thread { server.stop(); server.run(); gone.signal() }.start()
+        return gone
+    }
+
+    /// A wake notice that arrives while the stop waits for the worker is not acted on: the loop has gone, and acting on it
+    /// would be the loop doing its work after it has handed everything back.
+    func testAWakeNoticePostedWhileTheStopWaitsIsNotActedOn() throws {
+        let rig = try makeRig()
+        rig.server.systemWillSleep()
+        XCTAssertTrue(rig.server.systemAsleep)
+        rig.gate.hold()
+        XCTAssertEqual(rig.server.handle(.command(.enterLowPowerMode)), started)
+        rig.server.powerModeStopWait = 3
+        let gone = stopOnAThread(rig.server)
+        Thread.sleep(forTimeInterval: 0.2)               // in the wait, with the tool held
+        rig.server.noteSystemDidWake()
+        Thread.sleep(forTimeInterval: 0.1)
+        rig.gate.release()                               // the worker finishes, and the wait reads what is posted
+        XCTAssertEqual(gone.wait(timeout: .now() + 3), .success)
+        XCTAssertTrue(rig.server.systemAsleep, "a wake notice was acted on by the loop after it had left")
+        // What the wait is for is still done: the held switch-on's outcome was read, and the mode put back.
+        XCTAssertEqual(pmset.battery, 2)
+        XCTAssertEqual(pmset.charger, 0)
+        XCTAssertNil(rig.server.heldPowerModes)
+    }
+
+    /// THE ORDER THE STOP KEEPS, pinned with the worker held for the whole of the wait: the plan is dropped and its wake
+    /// cancelled, a sleep notice waiting is answered, and neither waits for the tool; a plan that is due writes nothing.
+    func testAStopWithTheWorkerHeldAPlanDueAndASleepNoticeWaitingDropsThePlanAndAnswersSleepAtOnce() throws {
+        let rig = try makeRig()
+        let at = Date().addingTimeInterval(1)             // within the plan's slack: due now
+        XCTAssertTrue(rig.server.handle(.command(.scheduleChargeLimit(limit: 80, at: at))).ok)
+        let wake = try XCTUnwrap(rig.server.chargePlan?.wakeAt)
+        rig.timer.fireNow()                               // the plan's due notice is waiting for the loop
+        rig.gate.hold()
+        XCTAssertEqual(rig.server.handle(.command(.enterLowPowerMode)), started)
+        spinUntil { rig.gate.waiting == 1 }
+        rig.server.powerModeStopWait = 2
+
+        let answered = DispatchSemaphore(value: 0)
+        let sleepAnsweredAfter = Locked<TimeInterval?>(nil)
+        let began = Date()
+        DispatchQueue.global().async {
+            if rig.server.noteSystemWillSleep(timeout: 5) { sleepAnsweredAfter.set(Date().timeIntervalSince(began)) }
+            answered.signal()
+        }
+        Thread.sleep(forTimeInterval: 0.1)                // posted, waiting for a loop that is not running
+        let gone = stopOnAThread(rig.server)
+        XCTAssertEqual(answered.wait(timeout: .now() + 1), .success, "macOS was not answered while the stop waited for the tool")
+        XCTAssertLessThan(sleepAnsweredAfter.get() ?? .infinity, 1.0, "the sleep answer waited for the tool")
+        XCTAssertTrue(rig.events.cancelled.contains(wake), "the plan's wake was still there while the stop waited for the tool")
+        XCTAssertNil(rig.events.pending.first)
+        XCTAssertEqual(gone.wait(timeout: .now() + 0.2), .timedOut, "the wait is over, so it was not waiting for the tool")
+        XCTAssertTrue(rig.hw.limitWrites.isEmpty, "the plan's limit was written during the stop")
+
+        rig.gate.release()
+        XCTAssertEqual(gone.wait(timeout: .now() + 3), .success)
+        XCTAssertTrue(rig.hw.limitWrites.isEmpty)
+    }
+
+    /// A reconnect owed by the sleep watch, a plan's due notice and a wake that are waiting when the stop begins are dropped,
+    /// not acted on: no charger write, no limit write, and the Mac is still the way the loop left it.
+    func testAReconnectOwedAPlanDueAndAWakeNoticeWaitingAtTheStopAreDroppedAndNotActedOn() throws {
+        let rig = try makeRig()
+        rig.server.systemWillSleep()
+        XCTAssertTrue(rig.server.systemAsleep)
+        // The loop is not running, so the sleep notice goes unanswered: the sleep watch reconnects the charger itself (one
+        // write) and hands the loop a reconnect that it owes.
+        XCTAssertFalse(rig.server.noteSystemWillSleep(timeout: 0.05))
+        let writes = rig.hw.cutWrites.count
+        XCTAssertGreaterThan(writes, 0)
+        XCTAssertTrue(rig.server.handle(.command(.scheduleChargeLimit(limit: 80, at: Date().addingTimeInterval(1)))).ok)
+        rig.timer.fireNow()
+        rig.server.noteSystemDidWake()
+
+        rig.server.stop()
+        rig.server.run()
+        XCTAssertEqual(rig.hw.cutWrites.count, writes, "the reconnect the sleep watch handed over was acted on at the stop")
+        XCTAssertTrue(rig.hw.limitWrites.isEmpty, "the plan's limit was written at the stop")
+        XCTAssertTrue(rig.server.systemAsleep, "the wake notice was acted on at the stop")
+        XCTAssertFalse(rig.server.reconnectOwed)
+    }
+
+    private func spinUntil(timeout: TimeInterval = 3, _ done: () -> Bool) {
+        let end = Date().addingTimeInterval(timeout)
+        while !done(), Date() < end { Thread.sleep(forTimeInterval: 0.005) }
+    }
+
+    private final class Locked<T> {
+        private let lock = NSLock()
+        private var value: T
+        init(_ value: T) { self.value = value }
+        func set(_ v: T) { lock.lock(); value = v; lock.unlock() }
+        func get() -> T { lock.lock(); defer { lock.unlock() }; return value }
+    }
+
     /// The stop answers every sleep notice still waiting, as it always did, and keeps a finished power-mode outcome for
     /// itself: the filter that keeps the one must not drop the other.
     func testASleepNoticeStillWaitingWhenTheHelperStopsIsAnsweredAndTheModeIsStillPutBack() throws {

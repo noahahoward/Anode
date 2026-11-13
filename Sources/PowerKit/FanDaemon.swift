@@ -319,9 +319,9 @@ public enum FanDaemon {
     /// 3: adds `scheduleChargeLimit` and `cancelScheduledChargeLimit`, for Ready By. A helper that speaks 2 closes the
     /// connection on a command it does not know, which ends a discharge and hands the fans back, so the app sends
     /// them only to a helper that has said 3.
-    /// 4: adds `enterLowPowerMode` and `restorePowerMode`, for Ultra Low Power Mode. A helper that speaks 3 closes the
-    /// connection on a command it does not know, with the same consequences, so the app sends these only to a helper
-    /// that has said 4. Nothing a helper at 2 or 3 serves is changed: the version is a plain increasing number, and the
+    /// 4: adds `enterLowPowerMode`, `restorePowerMode` and `powerModeResult` (which says how the last of the two ended and
+    /// writes nothing), for Ultra Low Power Mode. A helper that speaks 3 closes the connection on a command it does not
+    /// know, with the same consequences, so the app sends these only to a helper that has said 4. Nothing a helper at 2 or 3 serves is changed: the version is a plain increasing number, and the
     /// app asks "does it speak at least N" of each feature.
     public static let protocolVersion = 4
 

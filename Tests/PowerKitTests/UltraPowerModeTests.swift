@@ -969,10 +969,12 @@ final class UltraPowerModeTests: XCTestCase {
             helper = ScriptedHelper()
             if refuse { helper.refusesStart = PowerModeRefusal.busy.message } else { helper.failsWith = PowerModeRefusal.notTaken.message }
             wire.reply = { [unowned self] command in helper.answer(command) }
+            let closed = wire.disconnects
             var restored: [Bool] = []
             mode.restore(20) { restored.append($0) }
             XCTAssertEqual(restored, [false], "refused: \(refuse)")
             XCTAssertTrue(connection.holders.isEmpty, "letting go is the helper's own second try")
+            XCTAssertEqual(wire.disconnects - closed, 1, "refused: \(refuse): the socket is closed once, by letting go, and not again")
         }
     }
 

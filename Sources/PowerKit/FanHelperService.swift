@@ -478,6 +478,11 @@ public final class FanHelperServer {
         /// The worker finished a power-mode job. Carries the job it belongs to, so an outcome the loop is not waiting for
         /// is ignored, and the outcome itself: values, handed over and acted on here.
         case powerModeDone(job: Int, outcome: PowerModeOutcome)
+
+        /// The one kind the helper's stop reads and keeps (`answerPowerNoticesOnTheWayOut`, `actOnPowerModeNotices`).
+        var isPowerModeDone: Bool {
+            if case .powerModeDone = self { return true } else { return false }
+        }
     }
 
     /// Notices posted from the sleep watch's queue, in the order they came,
@@ -582,8 +587,12 @@ public final class FanHelperServer {
     private var powerModePutBackTries = 0
     private var powerModePutBackWhy = ""
 
-    /// How long the helper's stop waits for the worker so that the mode is put back before the process ends. A var only so
-    /// a test can shorten it.
+    /// How long the helper's stop waits for the worker so that the mode can be put back before the process ends: the
+    /// slowest single command (`PowerModeSwitch.slowestCommand`). A stop that arrives while a switch-on is hung can need
+    /// longer: that switch-on's own worst case (`slowestRolledBackEnter`) and then the put-back it chains (up to
+    /// `putBackTries` of `slowestCommand`). The wait is not extended for it. When the budget is spent the helper says so
+    /// once and exits, and the mode may be left on; the `pmset` child the worker abandoned may even land a write after the
+    /// helper has gone, which nothing here can undo. A var only so a test can shorten it.
     var powerModeStopWait: TimeInterval = PowerModeSwitch.slowestCommand
 
     /// The plan this helper holds: a limit to write at a moment, with a wake scheduled for it. One at a time. Only
@@ -1133,6 +1142,18 @@ public final class FanHelperServer {
         }
     }
 
+    /// The stop's reader: ONLY the worker's finished jobs, so the stop's wait can never act on a notice that is the loop's
+    /// (a plan's timer, a wake, a reconnect the sleep watch owes). The loop has handed everything back by then, and acting
+    /// on one now would be the loop doing its work after it has gone, a due plan writing the limit during the stop. Anything
+    /// else posted meanwhile is left unread. LOOP THREAD ONLY.
+    private func actOnPowerModeNotices() {
+        stateLock.lock()
+        let notices = powerNotices
+        powerNotices = notices.filter { !$0.isPowerModeDone }
+        stateLock.unlock()
+        for case .powerModeDone(let job, let outcome) in notices { powerModeFinished(job, outcome) }
+    }
+
     /// The sleep watch reconnected the charger without the loop. LOOP THREAD
     /// ONLY. Its write is not this thread's read-back, so the reconnect is owed
     /// — and made at once, before this pass serves anything: a read-back that
@@ -1155,9 +1176,11 @@ public final class FanHelperServer {
     private func answerPowerNoticesOnTheWayOut() {
         stateLock.lock()
         let notices = powerNotices
-        // A finished power-mode job is not answered, it is read: the stop is still waiting for the worker, and the outcome
-        // says whether the mode was put back (`settlePowerModeWork`).
-        powerNotices = notices.filter { if case .powerModeDone = $0 { return true } else { return false } }
+        // Only a finished power-mode job is kept: it is not answered, it is read, by the stop's wait for the worker, and says
+        // whether the mode was put back (`actOnPowerModeNotices`). Keeping it is a filter over a list in memory and waits for
+        // nothing; every sleep notice that was waiting is signalled below whatever else is in the list, before the stop's
+        // wait begins (`shutdownSocket` calls this first), and the rest are dropped.
+        powerNotices = notices.filter(\.isPowerModeDone)
         loopEnded = true
         stateLock.unlock()
         for case .willSleep(let answered) in notices { answered.signal() }
@@ -1325,7 +1348,8 @@ public final class FanHelperServer {
         owePowerModePutBack(because: "the helper is stopping")
         answerPowerNoticesOnTheWayOut()
         // Last of all, after the charger is reconnected, the plan is dropped and every sleep notice is answered: wait for
-        // the worker so that the mode is put back before the process ends. Bounded, and it changes nothing before it.
+        // the worker so that the mode can be put back before the process ends, and read only its outcomes. Bounded, and it
+        // changes nothing before it. The put-back is not promised: see `powerModeStopWait`.
         settlePowerModeWork(within: powerModeStopWait)
         if listenFD >= 0 { close(listenFD); listenFD = -1 }
         // Only if we made it. launchd's socket outlives this process on purpose:
@@ -1887,26 +1911,26 @@ public final class FanHelperServer {
         startPowerModeJob(.putBack(held), kind: .putBack, forClient: false)
     }
 
-    /// Wait for the worker, for at most `budget`, reading what it finishes and giving it the put-back that is owed. For the
-    /// helper's stop (after everything else is done), and for a test that stands in for the loop. Ends when nothing is
-    /// running and nothing is owed that can be started, or when the budget is spent: it says so once and goes on without
-    /// the worker. LOOP THREAD ONLY.
+    /// Wait for the worker, for at most `budget`, reading what it finishes (and nothing else: `actOnPowerModeNotices`) and
+    /// giving it the put-back that is owed. For the helper's stop (after everything else is done), and for a test that
+    /// stands in for the loop. Ends when nothing is running and nothing is owed that can be started, or when the budget is
+    /// spent: it says so once and goes on without the worker. LOOP THREAD ONLY.
     func settlePowerModeWork(within budget: TimeInterval) {
         guard let powerWorker else { return }
         let deadline = Date().addingTimeInterval(budget)
         while true {
-            actOnPowerNotices()
+            actOnPowerModeNotices()
             startOwedPutBack()
             guard let running = powerModeJob?.id else { return }
             let left = deadline.timeIntervalSinceNow
             guard left > 0, powerWorker.idle(within: left) else {
                 log("WARNING: a power mode change had not finished \(String(format: "%g", budget)) s after the helper "
-                  + "was told to stop; the helper stops without it")
+                  + "was told to stop; the helper stops without it, and the mode may be left on")
                 return
             }
             // The worker is idle, so what it finished is posted. A job still not settled by it is one whose outcome went
             // missing: there is nothing to wait for, and spinning here would hold a root process for the whole budget.
-            actOnPowerNotices()
+            actOnPowerModeNotices()
             if powerModeJob?.id == running {
                 log("WARNING: the power mode worker finished and its outcome was not found; the helper stops without it")
                 return
