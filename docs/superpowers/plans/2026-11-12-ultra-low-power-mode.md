@@ -601,7 +601,7 @@ Only after the charge feature's helper files are final.
 
 **Interfaces:**
 - Consumes: `PowerModeControlling` (Task 8); the helper's command pattern as the charge feature left it.
-- Produces: `FanCommand.setPowerMode(lowPower: Bool)` (the helper reads the battery power mode, remembers it for this connection, sets low power or puts the remembered mode back, and replies with the mode before); `protocolVersion` one higher; the mode put back by the helper itself when the app's connection closes without a restore; one sentence in the disclosure text naming this.
+- Produces: `FanCommand.setPowerMode(lowPower: Bool)` (the helper reads the battery power mode, remembers it for this connection, sets low power or puts the remembered mode back, and replies with the mode before); `protocolVersion` one higher (4, if the charge feature lands at 3); the mode put back by the helper itself when the app's connection closes without a restore (the helper's link already watches its socket, and every close goes through one place); the new ability added to `HelperVocabulary` and to the disclosure texts that tests pin; and the "disclosure seen" settings key renamed, as it is whenever an ability is added, so the owner is shown the sheet again.
 
 - [ ] **Step 1: Write the failing tests**
 
