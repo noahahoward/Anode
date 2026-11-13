@@ -354,7 +354,7 @@ protocol DisplayRateControlling: AnyObject {
     func restore()
 }
 protocol KeyboardBacklightControlling: AnyObject { func level() -> Float?; func set(_ level: Float) -> Bool }
-protocol UltraWatchdogging: AnyObject { func start(); func stop() }
+protocol UltraWatchdogging: AnyObject { @discardableResult func start() -> Bool; func stop(); var pid: pid_t? { get } }   // start: false when no watchdog is running after the call
 final class LiveDisplayRate: DisplayRateControlling
 final class LiveKeyboardBacklight: KeyboardBacklightControlling      // `level()` nil when Task 1 found no clean way
 final class LiveUltraWatchdog: UltraWatchdogging { init(recordURL: URL) }   // starts this same executable with `--ultra-watchdog <pid> <record path>`
@@ -443,6 +443,8 @@ func testCancelChangesNothing()                           // no stop, no record,
 func testAFailedSnapshotStartsNothing()                   // snapshot nil → state .off, confirm never asked, logged
 func testConfirmWritesTheRecordBeforeAnythingIsStopped()  // order of calls recorded across the fakes
 func testARecordThatCannotBeSavedStartsNothing()          // store.save returns false → nothing stopped, nothing changed, state .off, logged
+func testAWatchdogThatDidNotStartStartsNothing()          // watchdog.start() returns false → nothing stopped, record cleared, state .off, logged
+func testTheWatchdogIsNeverFrozenOrBlamed()               // its pid is in ownPIDs for the planner and in `kept` for the spin guard
 func testConfirmHidesThenStopsEachGroup()
 func testConfirmAppliesCeilingRateKeyboardAndLowPower()   // brightness 0.8 → 0.5; rate.lowered; keyboard 0; power entered
 func testBrightnessBelowHalfIsNotTouchedOrRemembered()
