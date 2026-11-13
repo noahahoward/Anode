@@ -4138,6 +4138,9 @@ final class ChargeControllerTests: XCTestCase {
 /// real link it never answers "nothing": a helper that is gone answers ok:false, "the fan helper stopped answering".
 final class FakeHelperLink: ChargeHelperLink {
     var available = true
+    /// The helper has said protocol 3, which knows the plan commands (`FanCommand.scheduleChargeLimit`). A test of a
+    /// protocol 2 helper sets this false.
+    var speaksReadyBy = true
     var outdated = false
     /// Installed as a daemon, so a connection starts it.
     var installed = true

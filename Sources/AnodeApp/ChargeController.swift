@@ -73,6 +73,20 @@ import PowerKit
 // whenever the section is shown (`settleOwedCutByReadingTheSwitch`): a helper started by hand and stopped has
 // reconnected the charger itself, and nothing else would say so.
 //
+// Ready By (a hold until the battery has to charge to be at the limit by a time of day) is one more rule in the policy,
+// fed two things here: the next moment the person's time of day names (`nextReadyBy`, worked out with the calendar on
+// every look at the battery, so a change of time zone is acted on at once) and how fast this charger charges (learned
+// from the battery, `ChargeRateMeter`, kept through `ChargeRateStore`). It needs a helper that speaks protocol 3; with
+// none, or an older one, the policy is told there is no moment and the battery charges to the limit as usual.
+//
+// While the Mac is awake the hold is the same kind of hold as any other, and a one-shot timer raises the limit at the
+// start moment. A Mac that sleeps in the middle of a hold cannot raise it: before it sleeps the helper is told the
+// moment and the limit (`sendThePlan`, waited for) and wakes the Mac to write it. The plan lives on the helper
+// connection, which is held open while it is pending (`linkNeeded`). A wake that is not the moment changes nothing; the
+// plan is cancelled (`cancelPlan`) only when the hold it was made for ends: unplugged, Ready By or Charge Control off,
+// the time or the limit changed, Charge to Full, another account on screen, the moment come, or quitting. After an
+// unclean exit the new run knows nothing of the old plan, and the helper dropped it when the old connection closed.
+//
 // Main thread throughout.
 
 /// The root helper as Charge Control sees it. A protocol so the tests can script it; the real one is
@@ -81,6 +95,10 @@ protocol ChargeHelperLink: AnyObject {
     /// The helper last answered speaking protocol 2 or later, and has not stopped answering since. Learned from its
     /// hello and from its replies; the connection need not be open now.
     var available: Bool { get }
+    /// The helper last answered speaking protocol 3 or later, which knows the commands that plan a wake for Ready By
+    /// (`FanCommand.scheduleChargeLimit`). A helper that speaks 2 closes the connection on a command it does not know,
+    /// which ends a discharge and hands the fans back, so those are sent to nothing else.
+    var speaksReadyBy: Bool { get }
     /// A helper answered, but one too old to know the charge commands.
     var outdated: Bool { get }
     /// Installed as a daemon: a connection starts it, so it can be greeted even when it has not answered.
@@ -438,6 +456,33 @@ final class ChargeController {
     /// While going to sleep, a limit only the helper can set is waited for, until this, rather than sent and left.
     private var waitUntil: Date?
 
+    /// The time, and the calendar: parameters so the tests can be both. The calendar is asked every time a moment is
+    /// worked out, so a change of time zone is acted on with no more than the next look at the battery.
+    private let clock: () -> Date
+    private let calendar: () -> Calendar
+    /// How fast chargers charge this Mac, as learned so far (`ChargeRate`), and where it is kept. Built from the
+    /// settings this controller was given, and never from the shared ones.
+    private let rateStore: ChargeRateStore
+    private var rates: ChargeRate?
+    private var meter = ChargeRateMeter()
+
+    /// What the helper has been told to do while the Mac sleeps, as far as it has said yes.
+    struct WakePlan: Equatable {
+        /// The moment the battery is to be ready by.
+        var by: Date
+        /// The limit to raise to.
+        var limit: Int
+        /// When to raise it, and so when to wake the Mac.
+        var raiseAt: Date
+    }
+    /// The plan the helper holds for this controller, if it has said yes to one and nothing has cancelled it since.
+    private(set) var wakePlan: WakePlan?
+    /// A plan is on its way to the helper, waited for.
+    private var planSending = false
+    /// When the one-shot timer for the start moment fires, while awake; nil when none is set.
+    private(set) var readyByTimerAt: Date?
+    private var readyByTimer: Timer?
+
     private var client: ChargeLimitClient?
     private var memory = ChargeMemory()
     private var sleeping = false
@@ -590,6 +635,8 @@ final class ChargeController {
     private var keyTokens: [AnyObject] = []
     private var timer: Timer?
     private var workspaceObservers: [NSObjectProtocol] = []
+    /// The system's own word that the time zone or the clock changed, on the default centre.
+    private var timeClockObservers: [NSObjectProtocol] = []
     private var powerSource: CFRunLoopSource?
 
     private var running: Bool { client != nil }
@@ -615,11 +662,15 @@ final class ChargeController {
                      limitInForce: ChargeLimitInForce = ChargeLimitInForce(),
                      startDelay: TimeInterval = ChargeController.startDelay, liftedAtLaunch: Bool = false,
                      noClientBecause: @escaping () -> NoClientReason = ChargeController.systemNoClientReason,
-                     onConsole: @escaping () -> Bool? = ChargeController.systemOnConsole) {
+                     onConsole: @escaping () -> Bool? = ChargeController.systemOnConsole,
+                     rateStore: ChargeRateStore? = nil,
+                     now: @escaping () -> Date = Date.init,
+                     calendar: @escaping () -> Calendar = { Calendar.autoupdatingCurrent }) {
         self.init(settings: settings, records: records ?? ChargeRecords(settings: settings), makeClient: makeClient,
                   helper: helper, battery: battery, chargerSwitch: chargerSwitch, log: log, workspace: workspace,
                   limitInForce: limitInForce, startDelay: startDelay, liftedAtLaunch: liftedAtLaunch, observing: true,
-                  noClientBecause: noClientBecause, onConsole: onConsole)
+                  noClientBecause: noClientBecause, onConsole: onConsole,
+                  rateStore: rateStore ?? SettingsChargeRateStore(settings: settings), now: now, calendar: calendar)
     }
 
     /// The Mac's own charger switch, read as the person and not through the helper: only writing it needs root
@@ -675,8 +726,14 @@ final class ChargeController {
                  log: @escaping (String) -> Void, workspace: NotificationCenter, limitInForce: ChargeLimitInForce,
                  startDelay: TimeInterval, liftedAtLaunch: Bool, observing: Bool,
                  noClientBecause: @escaping () -> NoClientReason = ChargeController.systemNoClientReason,
-                 onConsole: @escaping () -> Bool? = { nil }) {
+                 onConsole: @escaping () -> Bool? = { nil },
+                 rateStore: ChargeRateStore? = nil,
+                 now: @escaping () -> Date = Date.init,
+                 calendar: @escaping () -> Calendar = { Calendar.autoupdatingCurrent }) {
         self.settings = settings
+        self.rateStore = rateStore ?? SettingsChargeRateStore(settings: settings)
+        self.clock = now
+        self.calendar = calendar
         self.records = records
         self.makeClient = makeClient
         self.noClientBecause = noClientBecause
@@ -715,6 +772,7 @@ final class ChargeController {
         removeTriggers()
         offRetryTimer?.invalidate()
         startTimer?.invalidate()
+        readyByTimer?.invalidate()
         for o in startObservers { workspace.removeObserver(o) }
         // The connection is shared: a claim left behind would keep it open for good.
         if running { helper.letGo() }
@@ -847,8 +905,11 @@ final class ChargeController {
     ///
     /// Used for switching off, quitting and uninstalling, and at a launch that finds the last run did not quit
     /// (`liftAfterUncleanExit`); `why` names which, in the line about a discharge stopped on the way.
-    private func restore(client c: ChargeLimitClient, leaving why: String = "switching off") {
-        let deadline = Date().addingTimeInterval(Self.stopTimeout)
+    private func restore(client c: ChargeLimitClient, leaving why: String = "switching off", deadline given: Date? = nil) {
+        let deadline = given ?? Date().addingTimeInterval(Self.stopTimeout)
+        // A plan the helper holds goes first: nothing may raise the limit after this, and the helper's connection may
+        // be one the Fans tab is also holding, which would keep the plan alive.
+        cancelPlan(because: why, waitingUntil: deadline)
         // A stop goes behind everything already sent on the same link, so its answer also says those have landed.
         let settled: Bool
         if appliedDischarge != nil || dischargeInFlight || cutOwed {
@@ -974,6 +1035,13 @@ final class ChargeController {
         dischargeEndedAt = nil
         lastRefusal = nil
         lastDrift = nil
+        // A plan the helper holds is cancelled before this (`cancelPlan`); what is forgotten here is this side's book.
+        wakePlan = nil
+        planSending = false
+        readyByTimer?.invalidate()
+        readyByTimer = nil
+        readyByTimerAt = nil
+        meter = ChargeRateMeter()
         // The debt itself (`cutOwed`) is on disk and outlives this; what was being done about it does not.
         stopDue = false
         cutLost = false
@@ -1013,16 +1081,19 @@ final class ChargeController {
         guard running, let c = client else { return }
         switchingOff = true
         defer { switchingOff = false }
+        // All the waiting of a quit is one budget: the plan's cancel, a discharge's stop, the limit going back.
+        let deadline = Date().addingTimeInterval(Self.stopTimeout)
+        cancelPlan(because: "quitting", waitingUntil: deadline)
         // Who holds the limit is known when the record is shared (`restore` puts nothing back while another account's
         // Anode is running and holds it); with a per-account record it is not, and nothing is put back while another
         // account is on screen: the limit in force is probably its Anode's.
         if records.hasRecord, sessionActive || records.isShared {
-            restore(client: c, leaving: "quitting")
+            restore(client: c, leaving: "quitting", deadline: deadline)
         } else if appliedDischarge != nil || dischargeInFlight || cutOwed {
-            let r = waitedStop(timeout: Self.stopTimeout)
+            let r = waitedStop(timeout: Self.timeLeft(deadline))
             log("drain stopped (quitting): \(r?.message ?? "no answer in time")")
         } else if limitInFlight {
-            _ = helper.drain(timeout: Self.stopTimeout)
+            _ = helper.drain(timeout: Self.timeLeft(deadline))
         }
         stop()
     }
@@ -1386,6 +1457,14 @@ final class ChargeController {
             },
         ]
 
+        // The time of day Ready By names is a moment on the calendar: a change of time zone, or of the clock, moves it.
+        timeClockObservers = [NSNotification.Name.NSSystemTimeZoneDidChange, NSNotification.Name.NSSystemClockDidChange]
+            .map { name in
+                NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                    self?.tick()
+                }
+            }
+
         // Plugging in or unplugging. The context is unretained, so the source is always removed before this
         // object goes (`removeTriggers`, also from deinit).
         let context = Unmanaged.passUnretained(self).toOpaque()
@@ -1404,6 +1483,8 @@ final class ChargeController {
         timer = nil
         for o in workspaceObservers { workspace.removeObserver(o) }
         workspaceObservers = []
+        for o in timeClockObservers { NotificationCenter.default.removeObserver(o) }
+        timeClockObservers = []
         if let source = powerSource {
             CFRunLoopRemoveSource(CFRunLoopGetMain(), source, .commonModes)
             powerSource = nil
@@ -1415,8 +1496,9 @@ final class ChargeController {
     /// It talks to the helper only while a discharge lives on the connection, to notice a helper that went away
     /// under it, or while something needs a helper that has not answered (see `lookAgainIfDue`). Otherwise the
     /// daemon is left asleep: a limit it set stays set without it.
-    func periodicTick(now: Date = Date()) {
+    func periodicTick(now given: Date? = nil) {
         guard running else { return }
+        let now = given ?? clock()
         if appliedDischarge != nil { helper.refresh() }
         // Another account on screen holds the limit: its changes are not drift.
         if sessionActive { checkDrift() }
@@ -1501,6 +1583,13 @@ final class ChargeController {
         guard running, !switchingOff else { return }
         if helper.resets != seenResets {
             seenResets = helper.resets
+            // A plan lives on the connection. A socket that closed or was replaced took it with it; a reset that left
+            // the connection open (the Fans tab released everything) did not, and a plan the helper still holds is
+            // one that must still be cancelled when the hold ends.
+            if wakePlan != nil, !helper.isOpen {
+                log("the helper's connection was reset; the plan it held went with it")
+                wakePlan = nil
+            }
             if appliedDischarge != nil || cutOwed {
                 if appliedDischarge != nil {
                     log("the helper's connection was reset under the drain; stopping it before anything else")
@@ -1555,12 +1644,36 @@ final class ChargeController {
 
     // ── Sleep ───────────────────────────────────────────────────────────────
 
+    /// The next moment the time of day `minutes` (after local midnight) names, strictly after `now`, on `calendar`.
+    ///
+    /// Worked out with the calendar each time and never added up in seconds, so that it is right across a change of
+    /// time zone and both daylight-saving changes: 7:00 is 7:00 on the wall that morning, whether the night was seven
+    /// hours or nine. A time that does not exist that day (2:30 in the hour that was skipped) is the next one that
+    /// does; one that happens twice (1:30 in the hour that was repeated) is the first.
+    static func nextReadyBy(after now: Date, minutes: Int, calendar: Calendar) -> Date? {
+        var time = DateComponents()
+        time.hour = minutes / 60
+        time.minute = minutes % 60
+        time.second = 0
+        return calendar.nextDate(after: now, matching: time, matchingPolicy: .nextTime,
+                                 repeatedTimePolicy: .first, direction: .forward)
+    }
+
+    /// The one-shot timer for the start moment: look again now. Internal so the tests can be the timer.
+    func readyByDue(now: Date? = nil) {
+        readyByTimer?.invalidate()
+        readyByTimer = nil
+        readyByTimerAt = nil
+        guard running else { return }
+        tick(now: now)
+    }
+
     /// The Mac is going to sleep. A running discharge is stopped, and the helper's answer awaited, before this
     /// returns, whatever Hold Level During Sleep says: nothing watches the floor while the Mac sleeps. A manual
     /// drain ends here and does not come back; an automatic one comes back by itself after the wake, through the
     /// policy. Then the sleeping decision is applied, a limit only the helper can set waited for too: it must be in
     /// force before the Mac sleeps, not on its way. All of it within `stopTimeout`.
-    func willSleep() {
+    func willSleep(now: Date? = nil) {
         guard running else { return }
         let deadline = Date().addingTimeInterval(Self.stopTimeout)
         sleeping = true
@@ -1571,19 +1684,116 @@ final class ChargeController {
             changed()
         }
         waitUntil = deadline
-        tick()
+        tick(now: now)
         waitUntil = nil
+        sendThePlan(deadline: deadline)
     }
 
-    func didWake() {
+    /// While a hold is in force and the Mac is about to sleep, the helper is told when to wake it and what to raise the
+    /// limit to, and the answer is waited for within the sleep's own budget: a plan not in place before the Mac sleeps
+    /// is no plan. The connection is asked to stay open first, because the helper keeps a plan only as long as the
+    /// connection it came on, and the link lets go after a waited command unless it has been asked not to.
+    ///
+    /// Sent again before every sleep, whatever was sent before: the helper replaces a plan with the same plan, and one
+    /// it has lost (a restart, a reconnect) is then back. Only to a helper that speaks protocol 3: an older one closes
+    /// the connection on a command it does not know.
+    private func sendThePlan(deadline: Date) {
+        guard sessionActive, helper.speaksReadyBy, lastDecision?.reason == .readyBy,
+              let hold = lastDecision?.readyBy, let raiseAt = hold.raiseAt else { return }
+        planSending = true
+        helper.keepOpen(true)
+        let r = helper.sendWaiting(.scheduleChargeLimit(limit: hold.raiseTo, at: raiseAt),
+                                   timeout: Self.timeLeft(deadline))
+        planSending = false
+        if r?.ok == true {
+            wakePlan = WakePlan(by: hold.by, limit: hold.raiseTo, raiseAt: raiseAt)
+            log("the helper will wake the Mac and raise the limit to \(hold.raiseTo)% at \(Self.logTime(raiseAt))")
+        } else {
+            wakePlan = nil
+            log("the helper did not take the plan to raise the limit to \(hold.raiseTo)% at "
+                + "\(Self.logTime(raiseAt)): \(r?.message ?? "no answer in time")")
+        }
+        settle()
+    }
+
+    /// The helper was told to forget the plan to raise the limit: a hold that has ended for a reason of its own (the
+    /// charger unplugged, Ready By switched off, the time or the limit changed, Charge to Full pressed, the moment come),
+    /// or Charge Control going away. `deadline` when it must be answered before this returns (switching off, quitting,
+    /// another account coming on screen); otherwise it goes on its way. Nothing is sent when nothing was planned, and
+    /// nothing to a helper that does not know the command.
+    private func cancelPlan(because why: String, waitingUntil deadline: Date? = nil) {
+        guard wakePlan != nil else { return }
+        wakePlan = nil
+        guard helper.speaksReadyBy else { return }
+        if let deadline {
+            let r = helper.sendWaiting(.cancelScheduledChargeLimit, timeout: Self.timeLeft(deadline))
+            log("the plan to raise the limit was cancelled (\(why)): \(r?.message ?? "no answer in time")")
+        } else {
+            log("the plan to raise the limit was cancelled (\(why))")
+            helper.send(.cancelScheduledChargeLimit) { [weak self] r in
+                if !r.ok { self?.log("the helper did not cancel the plan to raise the limit: \(r.message)") }
+            }
+        }
+    }
+
+    /// The plan the helper holds stays only while the hold it was made for does: this same moment and this same limit.
+    /// A wake that is not the moment changes nothing about that, so it leaves the plan where it is.
+    private func reconcilePlan() {
+        guard let plan = wakePlan, !planSending else { return }
+        if sessionActive, helper.speaksReadyBy, lastDecision?.reason == .readyBy, let hold = lastDecision?.readyBy,
+           hold.isHolding, hold.by == plan.by, hold.raiseTo == plan.limit { return }
+        let why: String
+        if lastDecision?.reason != .readyBy {
+            why = isCablePresent ? "Ready By is no longer holding the charge" : "the charger is unplugged"
+        } else if lastDecision?.readyBy?.isHolding != true {
+            why = "the time to charge has come"
+        } else {
+            why = "the time or the limit changed"
+        }
+        // Going to sleep, a cancel is waited for like the plan itself: a Mac asleep cannot send one.
+        cancelPlan(because: why, waitingUntil: waitUntil)
+    }
+
+    /// One timer for the start moment while awake, so that the limit is raised when the moment comes and not up to a
+    /// tick later. Only for precision: the 30 s tick and the tick after a wake find the moment on their own.
+    private func syncReadyByTimer() {
+        var want: Date?
+        if running, !sleeping, lastDecision?.reason == .readyBy, let at = lastDecision?.readyBy?.raiseAt,
+           at > lastTickNow {
+            want = at
+        }
+        guard want != readyByTimerAt else { return }
+        readyByTimer?.invalidate()
+        readyByTimer = nil
+        readyByTimerAt = want
+        guard let at = want else { return }
+        let t = Timer(fire: at, interval: 0, repeats: false) { [weak self] _ in self?.readyByDue() }
+        t.tolerance = 1
+        RunLoop.main.add(t, forMode: .common)
+        readyByTimer = t
+    }
+
+    /// A moment for the charge log: the time on the person's own clock, with the zone.
+    private static func logTime(_ d: Date) -> String {
+        let f = DateFormatter()
+        f.dateFormat = "yyyy-MM-dd HH:mm:ss ZZZZZ"
+        return f.string(from: d)
+    }
+
+    func didWake(now: Date? = nil) {
         guard running else { return }
+        let t = now ?? clock()
         sleeping = false
+        // The helper may have raised the limit by itself while the Mac slept, at the plan's moment: that is its plan
+        // working, not a change someone else made. The decision below raises it too, and cancels the plan.
+        if let p = wakePlan, t.addingTimeInterval(FanHelperServer.chargePlanSlack) >= p.raiseAt { appliedLimit = nil }
         // The person may have changed macOS's settings while the Mac slept.
         if sessionActive { checkDrift() }
-        // Asserted again after every sleep, whatever the books say.
+        // Asserted again after every sleep, whatever the books say. The plan is not touched: a Mac wakes by itself many
+        // times a night, and only the decision (this moment, this limit, still holding) says whether it stands.
         appliedLimit = nil
         refusedLimit = nil
-        tick()
+        tick(now: t)
     }
 
     /// A discharge this controller holds (or may hold) is stopped and the answer waited for: what comes next has
@@ -1613,7 +1823,10 @@ final class ChargeController {
         guard running, sessionActive else { return }
         sessionActive = false
         log("another account is on screen; the charger is left to it until this one is back")
-        stopAndWait(for: "another account", deadline: Date().addingTimeInterval(Self.stopTimeout))
+        let deadline = Date().addingTimeInterval(Self.stopTimeout)
+        // Its Anode holds the limit now: a wake of ours must not raise it under that.
+        cancelPlan(because: "another account is on screen", waitingUntil: deadline)
+        stopAndWait(for: "another account", deadline: deadline)
         cutSeen = false
         cutLookSince = nil
         cutLookAnsweredAt = nil
@@ -1650,8 +1863,9 @@ final class ChargeController {
     // ── Deciding ────────────────────────────────────────────────────────────
 
     /// Ask the policy, and apply what changed.
-    func tick(now: Date = Date()) {
+    func tick(now given: Date? = nil) {
         guard running, !switchingOff else { return }
+        let now = given ?? clock()
         // The helper link may answer synchronously inside a tick (opening the connection, letting it go); that
         // news is acted on by one more pass afterwards, never by a tick inside this one.
         if ticking {
@@ -1687,11 +1901,19 @@ final class ChargeController {
             if b.isCharging { dischargeEndedAt = nil }
             announce = true
         }
+        learnChargeRate(from: b, at: now)
+        let snapshot = settings.chargeSettingsSnapshot()
+        // Ready By needs a helper that can wake the Mac: without one (or with one too old to know how) it is not in
+        // force and the battery charges to the limit as usual. Holding without it would only stop at the nearest limit
+        // macOS takes, which may be below the person's own.
+        let readyBy = snapshot.readyByEnabled && helper.speaksReadyBy
+            ? Self.nextReadyBy(after: now, minutes: snapshot.readyByMinutes, calendar: calendar()) : nil
         let inputs = ChargeInputs(percent: b.percent, onAC: onAC,
                                   temperatureC: b.temperature_C.flatMap { $0.isFinite ? $0 : nil },
                                   sleeping: sleeping, fullCharge: isFullChargeRequested,
-                                  manualDrain: isDrainRequested, now: now)
-        let decision = ChargePolicy.decide(settings.chargeSettingsSnapshot(), inputs, &memory)
+                                  manualDrain: isDrainRequested, now: now,
+                                  readyBy: readyBy, chargeRate: loadedRates().rate(forAdapterWatts: b.adapterWatts))
+        let decision = ChargePolicy.decide(snapshot, inputs, &memory)
         if decision.endFullCharge && isFullChargeRequested { isFullChargeRequested = false; announce = true }
         if decision.endManualDrain && isDrainRequested {
             isDrainRequested = false
@@ -1713,6 +1935,23 @@ final class ChargeController {
         settle()
         noteHelperNeed(now: now)
         if announce { changed() }
+    }
+
+    private func loadedRates() -> ChargeRate {
+        if let r = rates { return r }
+        let r = rateStore.load()
+        rates = r
+        return r
+    }
+
+    /// What the battery is doing teaches how fast this charger charges (`ChargeRateMeter`); what is learned is kept.
+    private func learnChargeRate(from b: Battery.State, at now: Date) {
+        guard let m = meter.observe(percent: b.percent, charging: b.isCharging, onAC: b.onAC,
+                                    adapterWatts: b.adapterWatts, at: now) else { return }
+        var r = loadedRates()
+        guard r.record(m.rate, for: m.band) else { return }
+        rates = r
+        rateStore.save(r)
     }
 
     /// The charger switch, read at most once a tick: by the net and by the debt, whichever asks first, and by neither
@@ -1858,6 +2097,8 @@ final class ChargeController {
     private func settle() {
         guard running else { return }
         updateStatus()
+        reconcilePlan()
+        syncReadyByTimer()
         helper.keepOpen(linkNeeded)
     }
 
@@ -1865,6 +2106,8 @@ final class ChargeController {
     /// stopped; and while a stop is owed, it is held for the stop. Nothing else keeps it open.
     private var linkNeeded: Bool {
         if appliedDischarge != nil || dischargeInFlight || stopDue || cutLost || cutSeen { return true }
+        // The helper keeps a plan only as long as the connection it came on.
+        if wakePlan != nil || planSending { return true }
         guard let target = lastDecision?.dischargeTo, !sleeping, sessionActive, helper.available else { return false }
         return blockedDischarge?.target != target
     }
@@ -2104,6 +2347,12 @@ final class ChargeController {
         } else if d.dischargeTo != nil, !helper.available {
             guard helper.known else { return }
             setStatus(.needsHelper(missing ?? Self.drainNeedsHelperText))
+        } else if settings.chargeReadyByEnabled, !helper.speaksReadyBy {
+            // Switched on and not in force: it needs a helper that knows how to wake the Mac, and the battery charges to
+            // the limit as usual meanwhile. Nothing is said about the helper until it has answered.
+            guard helper.known else { return }
+            setStatus(.needsHelper(helper.available || helper.outdated ? Self.helperOutdatedText
+                                                                         : Self.readyByNeedsHelperText))
         } else {
             setStatus(.active(d))
         }
@@ -2169,6 +2418,7 @@ final class ChargeHelperAdapter: ChargeHelperLink {
     }
 
     var available: Bool { (version ?? 0) >= 2 }
+    var speaksReadyBy: Bool { (version ?? 0) >= 3 }
     var installed: Bool { isInstalled() }
     var outdated: Bool { version.map { $0 < 2 } ?? false }
     var isOpen: Bool { claimed && connection.isConnected }

@@ -1,0 +1,701 @@
+import XCTest
+@testable import AnodeApp
+@testable import PowerKit
+
+/// The next moment a time of day names, on a calendar: today if it is still ahead, otherwise tomorrow, and right across
+/// a change of time zone and both daylight-saving changes. Pure: the calendar is a parameter.
+final class ReadyByMomentTests: XCTestCase {
+
+    private func calendar(_ zone: String) -> Calendar {
+        var c = Calendar(identifier: .gregorian)
+        c.timeZone = TimeZone(identifier: zone)!
+        return c
+    }
+
+    private func utc(_ text: String) -> Date { ISO8601DateFormatter().date(from: text)! }
+
+    private func next(after now: Date, _ minutes: Int, _ zone: String = "UTC") -> Date? {
+        ChargeController.nextReadyBy(after: now, minutes: minutes, calendar: calendar(zone))
+    }
+
+    func testTodayWhileItIsStillAhead() {
+        XCTAssertEqual(next(after: utc("2026-11-12T05:00:00Z"), 420), utc("2026-11-12T07:00:00Z"))
+        XCTAssertEqual(next(after: utc("2026-11-12T06:59:59Z"), 420), utc("2026-11-12T07:00:00Z"))
+    }
+
+    func testTomorrowOnceItHasPassed() {
+        XCTAssertEqual(next(after: utc("2026-11-12T07:00:01Z"), 420), utc("2026-11-13T07:00:00Z"))
+        XCTAssertEqual(next(after: utc("2026-11-12T23:00:00Z"), 420), utc("2026-11-13T07:00:00Z"))
+    }
+
+    /// At the moment itself it is the moment that has passed, and the next one is a day on.
+    func testAtTheMomentItselfTheNextOneIsTomorrows() {
+        XCTAssertEqual(next(after: utc("2026-11-12T07:00:00Z"), 420), utc("2026-11-13T07:00:00Z"))
+    }
+
+    func testTheEdgesOfTheDay() {
+        XCTAssertEqual(next(after: utc("2026-11-12T23:59:59Z"), 0), utc("2026-11-13T00:00:00Z"), "midnight")
+        XCTAssertEqual(next(after: utc("2026-11-12T12:00:00Z"), 1439), utc("2026-11-12T23:59:00Z"), "23:59")
+        XCTAssertEqual(next(after: utc("2026-11-12T23:59:30Z"), 1439), utc("2026-11-13T23:59:00Z"))
+        XCTAssertEqual(next(after: utc("2026-11-12T00:00:00Z"), 0), utc("2026-11-13T00:00:00Z"))
+    }
+
+    func testAlwaysAfterNowAndNeverMoreThanADayAndAnHourOff() {
+        var now = utc("2026-03-07T00:00:00Z")
+        for step in 0..<(24 * 60 * 3) {
+            now = now.addingTimeInterval(20 * 60)
+            _ = step
+            for minutes in [0, 90, 150, 420, 1439] {
+                guard let n = next(after: now, minutes, "America/New_York") else { return XCTFail("no moment") }
+                XCTAssertGreaterThan(n, now)
+                XCTAssertLessThanOrEqual(n.timeIntervalSince(now), 25 * 3600, "\(now) \(minutes)")
+            }
+        }
+    }
+
+    /// Clocks go forward at 2:00 on 2026-03-08 in New York: the night before is an hour shorter, and 7:00 is still 7:00
+    /// on the wall.
+    func testSpringForwardKeepsTheWallClockTime() throws {
+        let now = utc("2026-03-08T04:00:00Z")       // 23:00 on the 7th, EST
+        let n = try XCTUnwrap(next(after: now, 420, "America/New_York"))
+        XCTAssertEqual(n, utc("2026-03-08T11:00:00Z"), "7:00 EDT")
+        XCTAssertEqual(n.timeIntervalSince(now), 7 * 3600, "seven hours of clock time, because an hour was skipped")
+    }
+
+    /// A time that does not exist that day (2:30 in the hour that was skipped) is the next time that does.
+    func testATimeInTheSkippedHourIsTheNextThatExists() throws {
+        let now = utc("2026-03-08T04:00:00Z")
+        let n = try XCTUnwrap(next(after: now, 150, "America/New_York"))
+        let wall = calendar("America/New_York").dateComponents([.day, .hour], from: n)
+        XCTAssertEqual(wall.day, 8)
+        XCTAssertEqual(wall.hour, 3, "2:30 does not exist on the 8th; 3:xx is what the clock shows next")
+        XCTAssertGreaterThanOrEqual(n, utc("2026-03-08T07:00:00Z"))
+        XCTAssertLessThanOrEqual(n, utc("2026-03-08T07:30:00Z"))
+    }
+
+    /// Clocks go back at 2:00 on 2026-11-01: the night is an hour longer.
+    func testFallBackKeepsTheWallClockTime() throws {
+        let now = utc("2026-11-01T03:00:00Z")       // 23:00 on the 31st, EDT
+        let n = try XCTUnwrap(next(after: now, 420, "America/New_York"))
+        XCTAssertEqual(n, utc("2026-11-01T12:00:00Z"), "7:00 EST")
+        XCTAssertEqual(n.timeIntervalSince(now), 9 * 3600, "nine hours of clock time, because an hour was repeated")
+    }
+
+    /// 1:30 happens twice that night; the first is the one to be ready by.
+    func testATimeInTheRepeatedHourIsTheFirstOne() throws {
+        let now = utc("2026-11-01T03:00:00Z")
+        let n = try XCTUnwrap(next(after: now, 90, "America/New_York"))
+        XCTAssertEqual(n, utc("2026-11-01T05:30:00Z"), "1:30 EDT, not 1:30 EST")
+    }
+
+    func testTheDayAfterAChangeIsBackToTwentyFourHours() throws {
+        let n = try XCTUnwrap(next(after: utc("2026-03-08T12:00:00Z"), 420, "America/New_York"))
+        XCTAssertEqual(n, utc("2026-03-09T11:00:00Z"))
+    }
+
+    /// The same time of day is a different moment in another time zone, and a calendar that has changed zone is the
+    /// one asked each time.
+    func testATimeZoneChangeMovesTheMoment() throws {
+        let now = utc("2026-11-12T12:00:00Z")
+        let newYork = try XCTUnwrap(next(after: now, 420, "America/New_York"))
+        let tokyo = try XCTUnwrap(next(after: now, 420, "Asia/Tokyo"))
+        let london = try XCTUnwrap(next(after: now, 420, "Europe/London"))
+        XCTAssertEqual(newYork, utc("2026-11-13T12:00:00Z"), "7:00 EST")
+        XCTAssertEqual(tokyo, utc("2026-11-12T22:00:00Z"), "7:00 JST is 22:00 the day before, in UTC")
+        XCTAssertEqual(london, utc("2026-11-13T07:00:00Z"))
+    }
+}
+
+/// A rate store held in memory.
+final class MemoryRateStore: ChargeRateStore {
+    var rates = ChargeRate()
+    private(set) var saves = 0
+    func load() -> ChargeRate { rates }
+    func save(_ r: ChargeRate) { rates = r; saves += 1 }
+}
+
+/// Ready By in the controller: it feeds the policy the next moment and the learned rate, holds through the helper as
+/// any hold does, raises the limit itself when the moment comes while awake, hands the helper the plan before the Mac
+/// sleeps, and takes it back when the hold ends for a real reason. Nothing here touches the Mac: the client, the helper,
+/// the battery, the clock and the calendar are all the test's.
+final class ReadyByControllerTests: XCTestCase {
+
+    private var defaults: UserDefaults!
+    private var suiteName: String!
+    private var settings: Settings!
+    private var client: FakeChargeLimitClient!
+    private var helper: FakeHelperLink!
+    private var battery: Battery.State?
+    private var lines: [String] = []
+    private var center: NotificationCenter!
+    private var limitInForce: ChargeLimitInForce!
+    private var controller: ChargeController?
+    private var rateStore: MemoryRateStore!
+    private var calendar = ReadyByControllerTests.utcCalendar
+    private var clockNow = ReadyByControllerTests.utc("2026-11-12T23:00:00Z")
+
+    private static var utcCalendar: Calendar {
+        var c = Calendar(identifier: .gregorian)
+        c.timeZone = TimeZone(identifier: "UTC")!
+        return c
+    }
+    private static func utc(_ text: String) -> Date { ISO8601DateFormatter().date(from: text)! }
+
+    /// 07:00 the next morning, which is what the settings say unless a test changes it.
+    private let by = ReadyByControllerTests.utc("2026-11-13T07:00:00Z")
+    /// 54 to 80 on a 100 W charger at the guess for it (1.0 a minute) is 26 minutes, and the margin is 15 more.
+    private var raiseAt: Date { by.addingTimeInterval(-(26 * 60 + 15 * 60)) }
+
+    /// What macOS says before Charge Control has ever touched it.
+    private let found = NativeChargeState(mclEnabled: true, mclLimit: 90, optimizedChargingEnabled: true)
+
+    override func setUpWithError() throws {
+        (defaults, suiteName) = try TestDefaults.make(owner: "ReadyByController", test: name)
+        settings = Settings(defaults: defaults)
+        client = FakeChargeLimitClient(state: found)
+        helper = FakeHelperLink()
+        helper.landsOn = client
+        battery = Self.plugged(54)
+        lines = []
+        center = NotificationCenter()
+        limitInForce = ChargeLimitInForce()
+        rateStore = MemoryRateStore()
+        calendar = Self.utcCalendar
+        clockNow = Self.utc("2026-11-12T23:00:00Z")
+        settings.chargeReadyByEnabled = true
+    }
+
+    override func tearDownWithError() throws {
+        controller?.shutdown()
+        controller = nil
+        settings = nil
+        TestDefaults.destroy(defaults, suiteName)
+    }
+
+    /// On the charger that comes with the Mac: 100 W, so the over-65 class.
+    static func plugged(_ percent: Int, ac: Bool = true, charging: Bool = false, watts: Double? = 100) -> Battery.State {
+        var s = ChargeControllerTests.state(percent, ac: ac, charging: charging)
+        s.adapterWatts = ac ? watts : nil
+        return s
+    }
+
+    @discardableResult
+    private func make(enabled: Bool = true, startDelay: TimeInterval = ChargeController.startDelay) -> ChargeController {
+        settings.chargeControlEnabled = enabled
+        let c = ChargeController(settings: settings,
+                                 makeClient: { [weak self] in self?.client },
+                                 helper: helper,
+                                 battery: { [weak self] in self?.battery },
+                                 chargerSwitch: { nil },
+                                 log: { [weak self] in self?.lines.append($0) },
+                                 workspace: center, limitInForce: limitInForce, startDelay: startDelay,
+                                 noClientBecause: { ChargeController.NoClientReason(unsupportedMac: true, step: nil) },
+                                 onConsole: { true },
+                                 rateStore: rateStore,
+                                 now: { [weak self] in self?.clockNow ?? Date() },
+                                 calendar: { [weak self] in self?.calendar ?? .current })
+        controller = c
+        return c
+    }
+
+    private func count(_ command: FanCommand) -> Int { helper.commands.filter { $0 == command }.count }
+    private var schedules: [FanCommand] {
+        helper.commands.filter { if case .scheduleChargeLimit = $0 { return true } else { return false } }
+    }
+    private let cancel = FanCommand.cancelScheduledChargeLimit
+
+    /// Holding at 54, Mac awake, nothing sent to the helper about a plan yet.
+    private func holding() -> ChargeController {
+        let c = make()
+        XCTAssertEqual(c.lastDecision?.reason, .readyBy, "the fixture is not holding: \(String(describing: c.lastDecision))")
+        return c
+    }
+
+    /// Holding, the Mac has gone to sleep (the plan was sent) and woken again before the moment: awake, a plan pending.
+    private func awakeWithAPlan() -> ChargeController {
+        let c = holding()
+        c.willSleep()
+        c.didWake(now: clockNow.addingTimeInterval(3600))
+        XCTAssertNotNil(c.wakePlan, "the fixture has no plan pending")
+        return c
+    }
+
+    // ── The hold ────────────────────────────────────────────────────────────
+
+    func testItHoldsWhereTheBatteryIsThroughTheHelper() throws {
+        let c = holding()
+        XCTAssertEqual(c.lastDecision?.osLimit, 54)
+        XCTAssertEqual(c.lastDecision?.readyBy, ReadyByState(by: by, raiseAt: raiseAt, raiseTo: 80))
+        XCTAssertEqual(helper.commands, [.setChargeLimit(54)], "54 is not a limit macOS takes by itself")
+        XCTAssertEqual(client.state?.mclLimit, 54)
+        XCTAssertEqual(c.status, .active(try XCTUnwrap(c.lastDecision)))
+    }
+
+    /// The card's "held at" follows the hold as it follows every other hold.
+    func testTheBatteryCardFollowsTheHold() {
+        let c = holding()
+        XCTAssertEqual(limitInForce.value, 54)
+        XCTAssertEqual(ChargeController.limitForMonitor(settings: settings, inForce: limitInForce), 54)
+        c.tick(now: raiseAt)
+        XCTAssertEqual(limitInForce.value, 80)
+        XCTAssertEqual(ChargeController.limitForMonitor(settings: settings, inForce: limitInForce), 80)
+    }
+
+    func testTheMomentComesFromTheCalendarEachTick() throws {
+        let c = holding()
+        XCTAssertEqual(c.lastDecision?.readyBy?.by, by)
+        // The Mac is carried to India: it is 4:30 there, and the next 7:00 is at 01:30 UTC, two and a half hours off.
+        calendar.timeZone = TimeZone(identifier: "Asia/Kolkata")!
+        c.tick()
+        XCTAssertEqual(c.lastDecision?.readyBy?.by, Self.utc("2026-11-13T01:30:00Z"))
+        calendar = Self.utcCalendar
+        settings.chargeReadyByMinutes = 480
+        XCTAssertEqual(c.lastDecision?.readyBy?.by, Self.utc("2026-11-13T08:00:00Z"), "a changed time is acted on at once")
+    }
+
+    func testAnUnplugEndsTheHold() {
+        let c = holding()
+        battery = Self.plugged(54, ac: false)
+        c.tick()
+        XCTAssertEqual(c.lastDecision?.reason, .limit)
+        XCTAssertEqual(c.lastDecision?.osLimit, 80)
+        XCTAssertNil(c.lastDecision?.readyBy)
+    }
+
+    func testWithTimeToSpareNothingIsHeldBackBeyondTheWindow() {
+        // 20:00 is 11 hours from 7:00, 8:00 the next morning is 23 hours: outside the window.
+        clockNow = Self.utc("2026-11-12T07:30:00Z")   // the next 7:00 is 23.5 hours away
+        let c = make()
+        XCTAssertEqual(c.lastDecision?.reason, .limit, "a Mac plugged in at 7:30 must not sit at 54% all day")
+        XCTAssertEqual(c.lastDecision?.osLimit, 80)
+        XCTAssertTrue(helper.commands.isEmpty)
+    }
+
+    // ── The start moment, awake ─────────────────────────────────────────────
+
+    func testItRaisesTheLimitItselfWhenTheMomentComesWhileAwake() {
+        let c = holding()
+        XCTAssertEqual(c.readyByTimerAt, raiseAt, "its own wake-up is set for the start moment")
+        c.readyByDue(now: raiseAt)
+        XCTAssertEqual(c.lastDecision?.osLimit, 80)
+        XCTAssertEqual(c.lastDecision?.readyBy, ReadyByState(by: by, raiseAt: nil, raiseTo: 80), "charging for Ready By")
+        XCTAssertEqual(client.state?.mclLimit, 80, "80 is one macOS takes by itself")
+        XCTAssertNil(c.readyByTimerAt, "and nothing is left waiting")
+    }
+
+    func testTheStartMomentIsNotEarlyAndNotLate() {
+        let c = holding()
+        c.tick(now: raiseAt.addingTimeInterval(-1))
+        XCTAssertEqual(c.lastDecision?.osLimit, 54)
+        c.tick(now: raiseAt)
+        XCTAssertEqual(c.lastDecision?.osLimit, 80)
+        // And it stays started: a later tick with the charge a little up does not hold it again.
+        battery = Self.plugged(60, charging: true)
+        c.tick(now: raiseAt.addingTimeInterval(60))
+        XCTAssertEqual(c.lastDecision?.osLimit, 80)
+    }
+
+    func testNoTimeToSpareChargesAtOnceAndSetsNoWakeUp() {
+        clockNow = Self.utc("2026-11-13T06:30:00Z")
+        let c = make()
+        XCTAssertEqual(c.lastDecision?.osLimit, 80)
+        XCTAssertNil(c.lastDecision?.readyBy?.raiseAt)
+        XCTAssertNil(c.readyByTimerAt)
+    }
+
+    func testTheWakeUpGoesWhenTheHoldEnds() {
+        let c = holding()
+        XCTAssertNotNil(c.readyByTimerAt)
+        settings.chargeReadyByEnabled = false
+        XCTAssertNil(c.readyByTimerAt)
+        settings.chargeReadyByEnabled = true
+        XCTAssertEqual(c.readyByTimerAt, raiseAt)
+        settings.chargeControlEnabled = false
+        XCTAssertNil(c.readyByTimerAt)
+    }
+
+    // ── Before the Mac sleeps ───────────────────────────────────────────────
+
+    func testThePlanIsSentBeforeSleepAndWaitedFor() {
+        let c = holding()
+        var linkOpenWhenSent: Bool?
+        helper.beforeSend = { [unowned self] cmd in
+            if case .scheduleChargeLimit = cmd { linkOpenWhenSent = self.helper.isOpen }
+        }
+        c.willSleep()
+        XCTAssertEqual(helper.waited, [.scheduleChargeLimit(limit: 80, at: raiseAt)],
+                       "the plan was not waited for, or was not the plan")
+        // Closing the connection is what makes the helper drop a plan, and the link lets go once a command is answered
+        // unless it was asked to stay: so it was asked first.
+        XCTAssertEqual(linkOpenWhenSent, true, "the connection was not held open when the plan went out")
+        XCTAssertEqual(helper.openRequests.last, true, "and it is held open while the plan is pending")
+        XCTAssertEqual(c.wakePlan, ChargeController.WakePlan(by: by, limit: 80, raiseAt: raiseAt))
+        XCTAssertEqual(count(cancel), 0)
+    }
+
+    func testThePlanIsSentOnlyWhenTheHoldHasATimeToRaiseAt() {
+        battery = Self.plugged(80)          // at the limit: nothing to hold below
+        let c = make()
+        c.willSleep()
+        XCTAssertTrue(schedules.isEmpty)
+        XCTAssertNil(c.wakePlan)
+    }
+
+    func testAPlanTheHelperCouldNotTakeIsNotBookedAndTheLinkIsLetGo() {
+        helper.answer = { cmd in
+            if case .scheduleChargeLimit = cmd { return FanReply(ok: false, message: ChargeRefusal.wakeNotScheduled) }
+            return FanReply(ok: true, message: "ok")
+        }
+        let c = holding()
+        c.willSleep()
+        XCTAssertNil(c.wakePlan)
+        XCTAssertEqual(helper.openRequests.last, false, "nothing is pending, so the connection is not held")
+        XCTAssertTrue(lines.contains { $0.contains(ChargeRefusal.wakeNotScheduled) }, lines.joined(separator: "\n"))
+    }
+
+    /// The helper not answering within the sleep budget does not hold the Mac up, and books nothing.
+    func testAHelperThatDoesNotAnswerTheSleepPlanBooksNothing() {
+        let c = holding()
+        helper.gone = true
+        c.willSleep()
+        XCTAssertNil(c.wakePlan)
+        XCTAssertTrue(lines.contains { $0.contains("plan") && $0.contains("no answer") }, lines.joined(separator: "\n"))
+    }
+
+    func testTheSameHoldIsPlannedAgainBeforeEverySleep() {
+        let c = holding()
+        c.willSleep()
+        c.didWake(now: clockNow.addingTimeInterval(3600))
+        c.willSleep()
+        XCTAssertEqual(helper.waited.filter { if case .scheduleChargeLimit = $0 { return true } else { return false } }.count, 2,
+                       "a replaced plan is harmless; one the helper has lost would be missing")
+        XCTAssertEqual(count(cancel), 0)
+    }
+
+    // ── On a wake ───────────────────────────────────────────────────────────
+
+    /// The Mac wakes by itself many times a night. A wake before the moment leaves the plan, and the hold.
+    func testAWakeBeforeTheMomentLeavesThePlanAndTheHold() {
+        let c = holding()
+        c.willSleep()
+        let plan = c.wakePlan
+        for hours in [1.0, 3, 5] {
+            c.didWake(now: clockNow.addingTimeInterval(hours * 3600))
+            XCTAssertEqual(c.wakePlan, plan, "a wake cancelled the plan")
+            XCTAssertEqual(c.lastDecision?.osLimit, 54)
+            c.willSleep()
+        }
+        XCTAssertEqual(count(cancel), 0, "the plan was cancelled by a wake that was not its moment")
+        XCTAssertEqual(helper.openRequests.last, true)
+    }
+
+    func testAWakeAfterTheMomentRaisesTheLimitAndCancelsThePlan() {
+        let c = holding()
+        c.willSleep()
+        // While the Mac slept the helper raised the limit.
+        client.state?.mclLimit = 80
+        c.didWake(now: raiseAt.addingTimeInterval(2))
+        XCTAssertEqual(c.lastDecision?.osLimit, 80)
+        XCTAssertEqual(client.state?.mclLimit, 80)
+        XCTAssertEqual(limitInForce.value, 80)
+        XCTAssertEqual(count(cancel), 1, "the plan the helper may still hold is cancelled")
+        XCTAssertNil(c.wakePlan)
+        XCTAssertEqual(helper.openRequests.last, false, "the connection is let go with nothing left pending")
+        XCTAssertFalse(lines.contains { $0.contains("changed outside Charge Control") },
+                       "the helper's own raise was taken for someone else's change: \(lines.joined(separator: "\n"))")
+    }
+
+    /// It raises the limit itself even when the helper did nothing (a Mac that woke late, a charger back in).
+    func testAWakeAfterTheMomentRaisesTheLimitEvenIfTheHelperDidNot() {
+        let c = holding()
+        c.willSleep()
+        c.didWake(now: raiseAt.addingTimeInterval(600))
+        XCTAssertEqual(client.state?.mclLimit, 80)
+        XCTAssertEqual(count(cancel), 1)
+    }
+
+    // ── Each real reason to end the plan ────────────────────────────────────
+
+    /// A hold that ends just as the Mac goes to sleep has its plan cancelled before the Mac sleeps, waited for: a Mac
+    /// that has gone to sleep sends nothing.
+    func testAPlanCancelledAsTheMacGoesToSleepIsWaitedFor() {
+        let c = awakeWithAPlan()
+        battery = Self.plugged(54, ac: false)   // unplugged, and the tick for it has not run yet
+        c.willSleep(now: clockNow.addingTimeInterval(3700))
+        XCTAssertEqual(helper.waited.filter { $0 == .cancelScheduledChargeLimit }.count, 1)
+        XCTAssertNil(c.wakePlan)
+    }
+
+    /// A plan lives on the connection. A reset that closed it took the plan with it; one that left it open (the Fans tab
+    /// released everything) did not, so the plan is still there to be cancelled when the hold ends.
+    func testAResetThatClosedTheConnectionTakesThePlanWithIt() {
+        let c = awakeWithAPlan()
+        helper.keepOpen(false)      // the socket is gone
+        helper.reset()
+        XCTAssertNil(c.wakePlan)
+        XCTAssertTrue(lines.contains { $0.contains("reset") && $0.contains("plan") }, lines.joined(separator: "\n"))
+    }
+
+    func testAResetThatLeftTheConnectionOpenKeepsThePlanToCancelLater() {
+        let c = awakeWithAPlan()
+        XCTAssertTrue(helper.isOpen)
+        helper.reset()
+        XCTAssertNotNil(c.wakePlan)
+        settings.chargeReadyByEnabled = false
+        XCTAssertEqual(count(cancel), 1, "the plan the helper still held was not cancelled")
+    }
+
+    func testAPendingPlanIsLeftAloneWhileNothingChanges() {
+        let c = awakeWithAPlan()
+        c.tick(now: clockNow.addingTimeInterval(3700))
+        c.periodicTick(now: clockNow.addingTimeInterval(3730))
+        XCTAssertEqual(count(cancel), 0)
+        XCTAssertNotNil(c.wakePlan)
+    }
+
+    func testUnpluggingCancelsThePlan() {
+        let c = awakeWithAPlan()
+        battery = Self.plugged(54, ac: false)
+        c.tick(now: clockNow.addingTimeInterval(3700))
+        XCTAssertEqual(count(cancel), 1)
+        XCTAssertNil(c.wakePlan)
+    }
+
+    func testSwitchingReadyByOffCancelsThePlan() {
+        let c = awakeWithAPlan()
+        settings.chargeReadyByEnabled = false
+        XCTAssertEqual(count(cancel), 1)
+        XCTAssertNil(c.wakePlan)
+        XCTAssertEqual(helper.openRequests.last, false)
+    }
+
+    func testChangingTheTimeCancelsThePlan() {
+        let c = awakeWithAPlan()
+        settings.chargeReadyByMinutes = 480
+        XCTAssertEqual(count(cancel), 1, "a wake at the old time would raise the limit an hour early")
+        XCTAssertNil(c.wakePlan)
+    }
+
+    func testChangingTheLimitCancelsThePlan() {
+        let c = awakeWithAPlan()
+        settings.chargeLimit = 90
+        XCTAssertEqual(count(cancel), 1, "a plan for 80 would write the wrong limit")
+        XCTAssertNil(c.wakePlan)
+    }
+
+    func testChargeToFullCancelsThePlan() {
+        let c = awakeWithAPlan()
+        c.pressFullCharge()
+        XCTAssertEqual(c.lastDecision?.reason, .fullCharge)
+        XCTAssertEqual(count(cancel), 1)
+        XCTAssertNil(c.wakePlan)
+    }
+
+    /// Switching Charge Control off takes the plan back first, waited for, and before macOS is put back: the helper
+    /// writes nothing after that.
+    func testSwitchingChargeControlOffCancelsThePlanBeforePuttingMacOSBack() {
+        let c = awakeWithAPlan()
+        var heldWhenCancelled: NativeChargeState?
+        helper.beforeSend = { [unowned self] cmd in
+            if cmd == .cancelScheduledChargeLimit { heldWhenCancelled = self.client.state }
+        }
+        settings.chargeControlEnabled = false
+        XCTAssertEqual(helper.waited.filter { $0 == .cancelScheduledChargeLimit }.count, 1, "the cancel was not waited for")
+        XCTAssertEqual(heldWhenCancelled?.mclLimit, 54, "macOS was put back before the plan was cancelled")
+        XCTAssertEqual(client.state, found)
+        XCTAssertNil(c.wakePlan)
+    }
+
+    /// A quit in the middle of a hold: the plan is cancelled (the Fans tab may be holding the connection, which would
+    /// keep the plan alive), and macOS's own settings are put back.
+    func testQuittingDuringAHoldCancelsThePlanAndPutsMacOSsOwnSettingsBack() {
+        let c = awakeWithAPlan()
+        XCTAssertEqual(client.state?.mclLimit, 54)
+        c.shutdown()
+        XCTAssertEqual(helper.waited.filter { $0 == .cancelScheduledChargeLimit }.count, 1)
+        XCTAssertEqual(client.state, found, "macOS was left holding the limit after the quit")
+        XCTAssertNil(settings.chargeRestoreRecord)
+        XCTAssertNil(c.wakePlan)
+    }
+
+    /// With no record of macOS's own settings there is nothing to put back, and the plan still goes: the wake must not
+    /// outlive the app whatever else the quit does or does not do.
+    func testQuittingWithNoRecordStillCancelsThePlan() {
+        let c = awakeWithAPlan()
+        settings.chargeRestoreRecord = nil
+        c.shutdown()
+        XCTAssertEqual(helper.waited.filter { $0 == .cancelScheduledChargeLimit }.count, 1)
+        XCTAssertNil(c.wakePlan)
+    }
+
+    func testQuittingDuringAHoldWithNoPlanSendsNoCancel() {
+        let c = holding()
+        c.shutdown()
+        XCTAssertEqual(count(cancel), 0, "nothing was planned, so nothing is cancelled")
+        XCTAssertEqual(client.state, found)
+    }
+
+    func testAnotherAccountComingOnScreenCancelsThePlan() {
+        let c = awakeWithAPlan()
+        c.sessionResigned()
+        XCTAssertEqual(helper.waited.filter { $0 == .cancelScheduledChargeLimit }.count, 1)
+        XCTAssertNil(c.wakePlan)
+    }
+
+    // ── A helper that cannot do it ──────────────────────────────────────────
+
+    /// A helper that speaks protocol 2 closes the connection on a command it does not know, which ends a drain and hands
+    /// the fans back. It is never sent one, the battery charges to the limit as usual, and the section says why.
+    func testAProtocolTwoHelperIsNeverSentAPlanAndTheBatteryChargesToTheLimit() {
+        helper.speaksReadyBy = false
+        let c = make()
+        XCTAssertEqual(c.lastDecision?.reason, .limit)
+        XCTAssertEqual(c.lastDecision?.osLimit, 80)
+        XCTAssertEqual(client.state?.mclLimit, 80)
+        c.willSleep()
+        c.didWake(now: clockNow.addingTimeInterval(60))
+        settings.chargeReadyByEnabled = false
+        settings.chargeReadyByEnabled = true
+        c.shutdown()
+        XCTAssertTrue(schedules.isEmpty, "a plan was sent to a helper that does not know it")
+        XCTAssertEqual(count(cancel), 0, "a cancel was sent to a helper that does not know it")
+    }
+
+    func testAProtocolTwoHelperSaysItNeedsUpdating() {
+        helper.speaksReadyBy = false
+        let c = make()
+        XCTAssertEqual(c.status, .needsHelper(ChargeController.helperOutdatedText))
+    }
+
+    /// The features that need only protocol 2 keep working with a protocol 2 helper, Ready By on or off.
+    func testAProtocolTwoHelperStillServesTheOtherFeatures() {
+        helper.speaksReadyBy = false
+        settings.chargeLimit = 63
+        let c = make()
+        XCTAssertEqual(helper.commands, [.setChargeLimit(63)], "a limit only the helper can set still goes to it")
+        XCTAssertEqual(client.state?.mclLimit, 63)
+        battery = Self.plugged(90)
+        settings.chargeLimit = 80
+        c.pressDrain()
+        XCTAssertTrue(helper.commands.contains(.discharge(toPercent: 80)), "a drain no longer works: \(helper.commands)")
+    }
+
+    func testWithNoHelperTheSectionSaysSoAndTheBatteryChargesToTheLimit() {
+        helper.available = false
+        helper.installed = false
+        helper.speaksReadyBy = false
+        let c = make()
+        XCTAssertEqual(c.status, .needsHelper(ChargeController.readyByNeedsHelperText))
+        XCTAssertEqual(c.lastDecision?.osLimit, 80)
+        XCTAssertEqual(client.state?.mclLimit, 80)
+        XCTAssertTrue(helper.commands.isEmpty)
+    }
+
+    /// Ready By off asks nothing of the helper and says nothing about it.
+    func testWithReadyByOffNothingIsSaidAboutTheHelper() throws {
+        settings.chargeReadyByEnabled = false
+        helper.speaksReadyBy = false
+        let c = make()
+        XCTAssertEqual(c.status, .active(try XCTUnwrap(c.lastDecision)))
+    }
+
+    /// A helper that learns protocol 3 later (installed, or updated, while Anode runs) takes over from the next tick.
+    func testAHelperThatTurnsUpHoldsFromThen() {
+        helper.speaksReadyBy = false
+        let c = make()
+        XCTAssertEqual(c.lastDecision?.reason, .limit)
+        helper.speaksReadyBy = true
+        helper.becomeAvailable()
+        XCTAssertEqual(c.lastDecision?.reason, .readyBy)
+        XCTAssertEqual(client.state?.mclLimit, 54)
+    }
+
+    // ── After an unclean exit ───────────────────────────────────────────────
+
+    /// The last run died in the middle of a hold with a plan pending. Its connection closing is what ended the plan at
+    /// the helper. This run lifts macOS's limit at once and holds nothing for the delay, plan or no plan, and asks the
+    /// helper nothing at all.
+    func testTheDelayAfterAnUncleanExitHoldsNothingEarly() {
+        let first = make()
+        first.willSleep()
+        XCTAssertEqual(client.state?.mclLimit, 54)
+        XCTAssertNotNil(first.wakePlan)
+        controller = nil   // a crash: no quit, the record stays
+        let before = helper.commands.count
+        let c = make()
+        XCTAssertEqual(client.state, found, "the limit the dead run held was not lifted at launch")
+        XCTAssertTrue(c.isWaitingToStart)
+        c.tick()
+        c.willSleep()
+        c.didWake(now: clockNow.addingTimeInterval(120))
+        c.periodicTick(now: clockNow.addingTimeInterval(150))
+        c.resumeIfDue(now: Date().addingTimeInterval(ChargeController.startDelay - 10))
+        XCTAssertEqual(client.state, found, "something was held during the delay")
+        XCTAssertTrue(Array(helper.commands.dropFirst(before)).isEmpty,
+                      "the helper was asked something during the delay: \(helper.commands.dropFirst(before))")
+        XCTAssertNil(c.wakePlan)
+        // After it, the policy holds again as from a cold start.
+        c.resumeIfDue(now: Date().addingTimeInterval(ChargeController.startDelay + 1))
+        XCTAssertEqual(c.lastDecision?.reason, .readyBy)
+        XCTAssertEqual(client.state?.mclLimit, 54)
+    }
+
+    // ── The charge rate ─────────────────────────────────────────────────────
+
+    /// The controller feeds the learner what the battery does, and what it learns changes the start moment.
+    func testItLearnsTheChargeRateAndUsesIt() throws {
+        settings.chargeReadyByEnabled = false
+        battery = Self.plugged(40, charging: true, watts: 20)
+        let c = make()
+        // One percent a minute for six minutes on a 20 W charger, whose guess is 0.3.
+        var t = clockNow
+        for s in stride(from: 30.0, through: 360, by: 30) {
+            t = clockNow.addingTimeInterval(s)
+            battery = Self.plugged(40 + Int((s / 60).rounded(.down)), charging: true, watts: 20)
+            c.tick(now: t)
+        }
+        XCTAssertTrue(rateStore.rates.hasLearned(.under30), "nothing was learned")
+        XCTAssertEqual(rateStore.rates.rate(for: .under30), 1.0, accuracy: 0.25)
+        XCTAssertGreaterThanOrEqual(rateStore.saves, 1, "what was learned was not stored")
+        XCTAssertFalse(rateStore.rates.hasLearned(.over65), "another class learned it too")
+
+        // Held on the same charger, the start moment is from 1.0 and not from the guess of 0.3.
+        battery = Self.plugged(54, watts: 20)
+        settings.chargeReadyByEnabled = true
+        let lead = by.timeIntervalSince(try XCTUnwrap(c.lastDecision?.readyBy?.raiseAt))
+        let learned = rateStore.rates.rate(for: .under30)
+        XCTAssertEqual(lead, 26 / learned * 60 + 15 * 60, accuracy: 1, "the learned rate was not the one used")
+        XCTAssertLessThan(lead, 26 / 0.3 * 60 + 15 * 60 - 600, "it is still going by the guess")
+    }
+
+    func testTheGuessIsUsedForAChargerNothingHasBeenLearnedFor() throws {
+        battery = Self.plugged(54, watts: 20)    // 0.3 a minute: 26 points is 86.7 minutes
+        let c = make()
+        let lead = by.timeIntervalSince(try XCTUnwrap(c.lastDecision?.readyBy?.raiseAt))
+        XCTAssertEqual(lead, 26 / 0.3 * 60 + 15 * 60, accuracy: 1)
+        battery = Self.plugged(54, watts: 45)    // the middle class, 0.8
+        settings.chargeLimit = 81
+        settings.chargeLimit = 80
+        let lead2 = by.timeIntervalSince(try XCTUnwrap(c.lastDecision?.readyBy?.raiseAt))
+        XCTAssertEqual(lead2, 26 / 0.8 * 60 + 15 * 60, accuracy: 1)
+    }
+
+    func testWhatWasLearnedIsKeptForTheNextRun() throws {
+        let store = SettingsChargeRateStore(settings: settings)
+        var r = ChargeRate()
+        r.record(1.2, for: .over65)
+        store.save(r)
+        // A controller made without a store of its own reads the settings it was given, and no others.
+        let c = ChargeController(settings: settings, makeClient: { [weak self] in self?.client }, helper: helper,
+                                 battery: { [weak self] in self?.battery }, chargerSwitch: { nil }, log: { _ in },
+                                 workspace: center, limitInForce: limitInForce,
+                                 noClientBecause: { ChargeController.NoClientReason(unsupportedMac: true, step: nil) },
+                                 onConsole: { true },
+                                 now: { [weak self] in self?.clockNow ?? Date() },
+                                 calendar: { [weak self] in self?.calendar ?? .current })
+        controller = c
+        settings.chargeControlEnabled = true
+        let lead = by.timeIntervalSince(try XCTUnwrap(c.lastDecision?.readyBy?.raiseAt))
+        XCTAssertEqual(lead, 26 / 1.2 * 60 + 15 * 60, accuracy: 1)
+    }
+}

@@ -1373,7 +1373,7 @@ public final class FanHelperServer {
     /// How close to the moment a wake notice or a timer counts as the moment. The system's wake lands within a second
     /// of what it was asked for, either side; a limit raised a few seconds early costs nothing, and one missed because
     /// the notice came a second before the moment would cost the whole night.
-    static let chargePlanSlack: TimeInterval = 5
+    public static let chargePlanSlack: TimeInterval = 5
 
     /// Arm counter for the plan's own timer. Loop thread only.
     private var planGeneration = 0
