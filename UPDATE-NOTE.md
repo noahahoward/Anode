@@ -1,3 +1,3 @@
 <!-- Two plain sentences saying what THIS update is. The update screen shows them; update.sh prints them.
      Rewrite them on every push. Say what changed for the person using the app, not how it was done. -->
-Anode can now hold your battery at a charge limit you choose, have it at that limit by a time you set, drain down to it while plugged in, and charge to full when asked. It is a beta feature called Charge Control, off by default, and turning it off or quitting Anode puts macOS's own charging settings back.
+Two new beta features, both off by default: Charge Control holds your battery at a limit you choose and can have it ready by a set time, and Ultra Low Power Mode freezes everything but the app you are using so a low battery lasts. Install the Anode helper again once after updating so both can do everything.
