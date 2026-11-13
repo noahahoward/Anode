@@ -215,7 +215,10 @@ final class ChargeControlFeature: BetaFeature {
         p.datePickerMode = .single
         p.calendar = utcCalendar
         p.timeZone = utcCalendar.timeZone
-        p.locale = .current
+        // The person's own way of writing a time: 19:30 with 24-hour time switched on in System Settings, 7:30 PM with
+        // it off (both rendered on a Mac17,9, macOS 27.0). Auto-updating, so a change of that setting while Anode runs
+        // is followed.
+        p.locale = .autoupdatingCurrent
         p.dateValue = pickerDate(minutes: ChargePolicy.defaultReadyByMinutes)
         return p
     }
