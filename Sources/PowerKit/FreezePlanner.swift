@@ -67,6 +67,17 @@ public enum FreezePlanner {
         return ordered(result)
     }
 
+    /// The group id of every process that is in a group, with the same owner rules as the plan: so a caller never has to
+    /// work out who belongs to whom itself. Extensions are in it (they are in their app's group, though the plan never
+    /// stops them); the system's processes, another user's and Anode's own are not, because they are in no group.
+    public static func groupIDs(processes: [UltraProcess], user: uid_t, ownPIDs: Set<pid_t>) -> [pid_t: String] {
+        var ids: [pid_t: String] = [:]
+        for draft in groups(processes, index: ProcessIndex(processes), user: user, ownPIDs: ownPIDs) {
+            for process in draft.processes { ids[process.pid] = draft.id }
+        }
+        return ids
+    }
+
     /// What macOS itself is, as against an app the owner opened: system files that are not an app, the system's agents
     /// that are apps without a Dock icon, and the three that hold the screen together (Finder, the Dock, the login window).
     /// A regular app of Apple's (the mail app, the browser) is not system: the owner opened it.

@@ -499,6 +499,40 @@ final class FreezePlannerTests: XCTestCase {
         XCTAssertEqual(a, plan(Array(list.reversed()), front: 10))
     }
 
+    // ── Which group a process is in ─────────────────────────────────────────
+
+    func testGroupIDsNameTheGroupOfEveryProcessThatHasOne() {
+        let list = [editor(),
+                    proc(11, parent: 10, path: "/bin/zsh"),
+                    browser(),
+                    proc(21, parent: 20, path: "/Applications/Browser.app/Contents/Frameworks/Browser Helper.app/Contents/MacOS/Browser Helper"),
+                    // An extension is no member of the plan's group, but it is in that group: the spin guard blames it there.
+                    proc(22, parent: 20, path: "/Applications/Browser.app/Contents/PlugIns/Some.appex/Contents/MacOS/Some")]
+        XCTAssertEqual(FreezePlanner.groupIDs(processes: list, user: user, ownPIDs: []),
+                       [10: "com.example.editor", 11: "com.example.editor",
+                        20: "com.example.browser", 21: "com.example.browser", 22: "com.example.browser"])
+    }
+
+    func testGroupIDsLeaveOutTheSystemOtherUsersAndAnodesOwn() {
+        let list = [editor(),
+                    proc(30, path: "/usr/libexec/syslogd"),                       // the system's
+                    proc(31, uid: 0, path: "/opt/vendor/daemon"),                 // another user's
+                    proc(32, path: "/opt/tools/anode-helper"),                    // Anode's own, by pid
+                    proc(33, parent: 32, path: "/bin/zsh")]                       // what Anode's own process started
+        XCTAssertEqual(FreezePlanner.groupIDs(processes: list, user: user, ownPIDs: [32]), [10: "com.example.editor"])
+    }
+
+    func testGroupIDsAgreeWithThePlan() {
+        let list = [editor(), proc(11, parent: 10, path: "/bin/zsh"), browser(),
+                    proc(21, parent: 20, path: "/Applications/Browser.app/Contents/XPCServices/Net.xpc/Contents/MacOS/Net"),
+                    proc(40, path: "/opt/tools/bin/server", label: "com.example.server")]
+        let p = plan(list, front: 10)
+        let map = FreezePlanner.groupIDs(processes: list, user: user, ownPIDs: [])
+        for group in p.kept + p.frozen {
+            for member in group.members { XCTAssertEqual(map[member.pid], group.id, "pid \(member.pid)") }
+        }
+    }
+
     // ── What starts later ───────────────────────────────────────────────────
 
     func testANewProcessOfAFrozenGroupIsAnAddition() {
