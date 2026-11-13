@@ -28,7 +28,7 @@ final class ChargeSettingsTests: XCTestCase {
     /// Put a value on disk the way `defaults write` or another build would: with no validation at all.
     private func store(_ value: Any, as name: String) { defaults.set(value, forKey: "anode." + name) }
 
-    /// One observer per charge key on `s`, eight in all; each reports its short name when it fires. Retain the
+    /// One observer per charge key on `s`, ten in all; each reports its short name when it fires. Retain the
     /// tokens: a released token unobserves.
     private func observeEveryChargeKey(of s: Settings, _ report: @escaping (String) -> Void) -> [AnyObject] {
         [(Settings.Key.chargeControlEnabled, "enabled"),
@@ -38,7 +38,9 @@ final class ChargeSettingsTests: XCTestCase {
          (Settings.Key.chargePauseWhenHotEnabled, "heat"),
          (Settings.Key.chargeMaxTemperatureC, "temperature"),
          (Settings.Key.chargeHoldDuringSleep, "sleeping"),
-         (Settings.Key.chargeDrainAutomatically, "automatic")]
+         (Settings.Key.chargeDrainAutomatically, "automatic"),
+         (Settings.Key.chargeReadyByEnabled, "readyBy"),
+         (Settings.Key.chargeReadyByMinutes, "readyByTime")]
             .map { key, name in s.observe(key) { report(name) } }
     }
 
@@ -52,6 +54,8 @@ final class ChargeSettingsTests: XCTestCase {
         s.chargeMaxTemperatureC = 41.5
         s.chargeHoldDuringSleep = true
         s.chargeDrainAutomatically = true
+        s.chargeReadyByEnabled = true
+        s.chargeReadyByMinutes = 390
     }
 
     // ── Defaults ────────────────────────────────────────────────────────────
@@ -68,6 +72,8 @@ final class ChargeSettingsTests: XCTestCase {
         XCTAssertEqual(s.chargeMaxTemperatureC, 35)
         XCTAssertFalse(s.chargeHoldDuringSleep)
         XCTAssertFalse(s.chargeDrainAutomatically)
+        XCTAssertFalse(s.chargeReadyByEnabled, "Ready By holds the battery back, so it is asked for")
+        XCTAssertEqual(s.chargeReadyByMinutes, 420, "7:00, in minutes after midnight")
         XCTAssertNil(s.chargeRestoreRecord)
     }
 
@@ -201,7 +207,7 @@ final class ChargeSettingsTests: XCTestCase {
         XCTAssertTrue(Settings(defaults: defaults).chargeControlEnabled)
     }
 
-    /// Five switches, five keys. Each is turned on alone and must be the only one that reads on: two of them pasted
+    /// Six switches, six keys. Each is turned on alone and must be the only one that reads on: two of them pasted
     /// onto one key would pass every test that only reads back the value it just wrote.
     func testEachSwitchIsStoredOnItsOwn() {
         let switches: [(name: String, path: ReferenceWritableKeyPath<Settings, Bool>)] = [
@@ -210,6 +216,7 @@ final class ChargeSettingsTests: XCTestCase {
             ("chargePauseWhenHotEnabled", \.chargePauseWhenHotEnabled),
             ("chargeHoldDuringSleep", \.chargeHoldDuringSleep),
             ("chargeDrainAutomatically", \.chargeDrainAutomatically),
+            ("chargeReadyByEnabled", \.chargeReadyByEnabled),
         ]
         let s = Settings(defaults: defaults)
         for (name, path) in switches {
@@ -226,13 +233,64 @@ final class ChargeSettingsTests: XCTestCase {
         s.chargeLimit = 63
         s.chargeDriftGap = 9
         s.chargeMaxTemperatureC = 41.5
+        s.chargeReadyByMinutes = 395
         let again = Settings(defaults: defaults)
         XCTAssertEqual(again.chargeLimit, 63)
         XCTAssertEqual(again.chargeDriftGap, 9)
         XCTAssertEqual(again.chargeMaxTemperatureC, 41.5)
+        XCTAssertEqual(again.chargeReadyByMinutes, 395)
         XCTAssertEqual(stored("chargeLimit") as? Int, 63)
         XCTAssertEqual(stored("chargeDriftGap") as? Int, 9)
         XCTAssertEqual(stored("chargeMaxTemperatureC") as? Double, 41.5)
+        XCTAssertEqual(stored("chargeReadyByMinutes") as? Int, 395)
+    }
+
+    // ── Ready By ────────────────────────────────────────────────────────────
+
+    /// The time of day is minutes after local midnight, 0 to 1439: 1440 would be the next midnight and a negative
+    /// number no time at all. A person cannot reach either, and a plist some other build wrote can.
+    func testReadyByMinutesClampToTheDay() {
+        let s = Settings(defaults: defaults)
+        s.chargeReadyByMinutes = -5
+        XCTAssertEqual(s.chargeReadyByMinutes, 0)
+        XCTAssertEqual(stored("chargeReadyByMinutes") as? Int, 0, "stored clamped, not as given")
+        s.chargeReadyByMinutes = 1440
+        XCTAssertEqual(s.chargeReadyByMinutes, 1439)
+        XCTAssertEqual(stored("chargeReadyByMinutes") as? Int, 1439)
+        s.chargeReadyByMinutes = 0
+        XCTAssertEqual(s.chargeReadyByMinutes, 0, "midnight is a time")
+        s.chargeReadyByMinutes = 1439
+        XCTAssertEqual(s.chargeReadyByMinutes, 1439, "23:59 is a time")
+        XCTAssertEqual(Settings.chargeReadyByMinutesRange, 0...1439)
+    }
+
+    func testCorruptStoredReadyByMinutesReadAsTheDefaultOrClamped() {
+        let times: [(stored: Any, want: Int)] = [
+            (-1, 0), (0, 0), (1439, 1439), (1440, 1439), (Int.max, 1439), (Int.min, 0), (419.6, 420),
+            ("390", 420), ("", 420), (Data([3, 9]), 420), ([390], 420), (Date(timeIntervalSince1970: 390), 420),
+            (true, 420), (false, 420), (Double.nan, 420), (Double.infinity, 420), (-Double.infinity, 420),
+        ]
+        for (raw, want) in times {
+            store(500, as: "chargeReadyByMinutes")
+            store(raw, as: "chargeReadyByMinutes")
+            XCTAssertEqual(Settings(defaults: defaults).chargeReadyByMinutes, want, "stored as \(raw)")
+        }
+        // The switch: only a Boolean is one (a stored 1 or 0 reads as one, as for every switch here).
+        for raw in ["true", "yes", 2.5, Data([1])] as [Any] {
+            store(raw, as: "chargeReadyByEnabled")
+            XCTAssertFalse(Settings(defaults: defaults).chargeReadyByEnabled, "stored as \(raw)")
+        }
+    }
+
+    /// The switch and the time are written under their own names, and neither is read from the other.
+    func testReadyByIsStoredUnderItsOwnKeys() {
+        let s = Settings(defaults: defaults)
+        s.chargeReadyByEnabled = true
+        XCTAssertEqual(stored("chargeReadyByEnabled") as? Bool, true)
+        XCTAssertEqual(s.chargeReadyByMinutes, 420, "switching it on did not touch the time")
+        s.chargeReadyByMinutes = 60
+        XCTAssertTrue(Settings(defaults: defaults).chargeReadyByEnabled)
+        XCTAssertEqual(Settings(defaults: defaults).chargeReadyByMinutes, 60)
     }
 
     // ── Observation ─────────────────────────────────────────────────────────
@@ -245,7 +303,8 @@ final class ChargeSettingsTests: XCTestCase {
         let tokens = observeEveryChargeKey(of: s) { fired.append($0) }
 
         changeEverything(through: s)
-        XCTAssertEqual(fired, ["enabled", "limit", "drift", "gap", "heat", "temperature", "sleeping", "automatic"])
+        XCTAssertEqual(fired, ["enabled", "limit", "drift", "gap", "heat", "temperature", "sleeping", "automatic",
+                               "readyBy", "readyByTime"])
 
         // The same values again tell nobody anything.
         fired = []
@@ -256,7 +315,7 @@ final class ChargeSettingsTests: XCTestCase {
         s.chargeLimit = 100
         s.chargeLimit = 150
         XCTAssertEqual(fired, ["limit"])
-        XCTAssertEqual(tokens.count, 8)
+        XCTAssertEqual(tokens.count, 10)
     }
 
     /// The controller watches these on its own `Settings`; the Beta Features window writes them through whichever
@@ -269,8 +328,9 @@ final class ChargeSettingsTests: XCTestCase {
 
         changeEverything(through: Settings(defaults: defaults))
 
-        XCTAssertEqual(fired, ["enabled", "limit", "drift", "gap", "heat", "temperature", "sleeping", "automatic"])
-        XCTAssertEqual(tokens.count, 8)
+        XCTAssertEqual(fired, ["enabled", "limit", "drift", "gap", "heat", "temperature", "sleeping", "automatic",
+                               "readyBy", "readyByTime"])
+        XCTAssertEqual(tokens.count, 10)
     }
 
     // ── The restore record ──────────────────────────────────────────────────
@@ -367,6 +427,23 @@ final class ChargeSettingsTests: XCTestCase {
                        ChargeSettingsSnapshot(limit: 63, driftEnabled: false, driftGap: 9,
                                               pauseWhenHotEnabled: true, maxTemperatureC: 41.5,
                                               holdDuringSleep: false, drainAutomatically: true))
+        s.chargeReadyByEnabled = true
+        s.chargeReadyByMinutes = 1000
+        XCTAssertEqual(s.chargeSettingsSnapshot(),
+                       ChargeSettingsSnapshot(limit: 63, driftEnabled: false, driftGap: 9,
+                                              pauseWhenHotEnabled: true, maxTemperatureC: 41.5,
+                                              holdDuringSleep: false, drainAutomatically: true,
+                                              readyByEnabled: true, readyByMinutes: 1000))
+    }
+
+    func testSnapshotCarriesClampedReadyByMinutes() {
+        store(true, as: "chargeReadyByEnabled")
+        store(5000, as: "chargeReadyByMinutes")
+        let a = Settings(defaults: defaults).chargeSettingsSnapshot()
+        XCTAssertTrue(a.readyByEnabled)
+        XCTAssertEqual(a.readyByMinutes, 1439)
+        store("seven", as: "chargeReadyByMinutes")
+        XCTAssertEqual(Settings(defaults: defaults).chargeSettingsSnapshot().readyByMinutes, 420)
     }
 
     /// The snapshot is what `ChargePolicy` decides from, and the policy trusts the limit and the maximum temperature

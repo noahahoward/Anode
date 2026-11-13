@@ -88,6 +88,9 @@ public final class Settings {
         public static let chargeMaxTemperatureC = "chargeMaxTemperatureC"
         public static let chargeHoldDuringSleep = "chargeHoldDuringSleep"
         public static let chargeDrainAutomatically = "chargeDrainAutomatically"
+        /// Ready By: the switch, and the time of day, in minutes after local midnight.
+        public static let chargeReadyByEnabled = "chargeReadyByEnabled"
+        public static let chargeReadyByMinutes = "chargeReadyByMinutes"
         /// Wildcard — an observer registered on this key fires for every change.
         public static let any = "*"
     }
@@ -107,6 +110,8 @@ public final class Settings {
     public static let chargeLimitRange: ClosedRange<Int> = ChargePolicy.osLimitRange
     public static let chargeDriftGapRange: ClosedRange<Int> = ChargePolicy.driftGapRange
     public static let chargeMaxTemperatureRange: ClosedRange<Double> = 25...50
+    /// Ready By's time of day: minutes after local midnight, so 0 is midnight and 1439 is 23:59.
+    public static let chargeReadyByMinutesRange: ClosedRange<Int> = 0...1439
 
     /// What the ledger graph drew before it was customizable: the drain line, its
     /// mean since the lid opened, and the battery level. The strings are the
@@ -218,6 +223,9 @@ public final class Settings {
         /// The policy's own defaults (5 percent, 35 °C), so they are written down in one place.
         static let chargeDriftGap = ChargePolicy.defaultDriftGap
         static let chargeMaxTemperatureC = ChargePolicy.defaultMaxTemperatureC
+        /// OFF: holding the battery back until it has to charge is something the person asks for. 7:00 once it is on.
+        static let chargeReadyByEnabled = false
+        static let chargeReadyByMinutes = ChargePolicy.defaultReadyByMinutes
         /// Matches what the status item shows today: smoothed drain + runtime.
         // Must be real, currently-registered metric IDs. Stale ones are invisible
         // in the picker and get preserved forever as "unknown" bindings.
@@ -289,6 +297,8 @@ public final class Settings {
             chargeHoldDuringSleep, chargeDrainAutomatically: Bool
         var chargeLimit, chargeDriftGap: Int
         var chargeMaxTemperatureC: Double
+        var chargeReadyByEnabled: Bool
+        var chargeReadyByMinutes: Int
     }
     private var snapshot: Values
     private var defaultsObserver: NSObjectProtocol?
@@ -843,6 +853,26 @@ public final class Settings {
                         Default.chargeDrainAutomatically) }
     }
 
+    /// Whether Ready By is on: while the Mac is on the charger and below the limit, the battery is held where it is
+    /// until it has to charge to be at the limit by `chargeReadyByMinutes`. Needs the Anode helper.
+    public var chargeReadyByEnabled: Bool {
+        get { Settings.readBool(defaults, Key.chargeReadyByEnabled, Default.chargeReadyByEnabled) }
+        set { writeBool(Key.chargeReadyByEnabled, \.chargeReadyByEnabled, newValue, Default.chargeReadyByEnabled) }
+    }
+
+    /// The time of day the battery is to be at the limit by, in minutes after local midnight, 0 to 1439. Every day.
+    ///
+    /// Minutes and not a date, because it is a time on the clock and not a moment: the next moment it names is worked
+    /// out each time with the calendar, so it is right across a change of time zone and of daylight saving. Clamped
+    /// on the read as well as the write, like the other numbers: the plist is also written by `defaults write` and by
+    /// builds other than this one.
+    public var chargeReadyByMinutes: Int {
+        get { Settings.readInt(defaults, Key.chargeReadyByMinutes, Default.chargeReadyByMinutes,
+                               Settings.chargeReadyByMinutesRange) }
+        set { writeInt(Key.chargeReadyByMinutes, \.chargeReadyByMinutes, newValue, Default.chargeReadyByMinutes,
+                       Settings.chargeReadyByMinutesRange) }
+    }
+
     /// How macOS's own charge limit and Optimized Battery Charging were set before Charge Control first changed
     /// them, as the JSON of a `NativeChargeState`, in THIS account's preferences. nil when there is nothing to put
     /// back.
@@ -941,7 +971,8 @@ public final class Settings {
                                pauseWhenHotEnabled: chargePauseWhenHotEnabled,
                                maxTemperatureC: chargeMaxTemperatureC,
                                holdDuringSleep: chargeHoldDuringSleep,
-                               drainAutomatically: chargeDrainAutomatically)
+                               drainAutomatically: chargeDrainAutomatically,
+                               readyByEnabled: chargeReadyByEnabled, readyByMinutes: chargeReadyByMinutes)
     }
 
     // ── Launch at login (SMAppService, macOS 13+) ───────────────────────────
@@ -1190,6 +1221,8 @@ public final class Settings {
         if old.chargeMaxTemperatureC != now.chargeMaxTemperatureC { notify(Key.chargeMaxTemperatureC) }
         if old.chargeHoldDuringSleep != now.chargeHoldDuringSleep { notify(Key.chargeHoldDuringSleep) }
         if old.chargeDrainAutomatically != now.chargeDrainAutomatically { notify(Key.chargeDrainAutomatically) }
+        if old.chargeReadyByEnabled != now.chargeReadyByEnabled { notify(Key.chargeReadyByEnabled) }
+        if old.chargeReadyByMinutes != now.chargeReadyByMinutes { notify(Key.chargeReadyByMinutes) }
     }
 
     // ── Plumbing ────────────────────────────────────────────────────────────
@@ -1387,7 +1420,10 @@ public final class Settings {
                chargeLimit: readInt(d, Key.chargeLimit, Default.chargeLimit, chargeLimitRange),
                chargeDriftGap: readInt(d, Key.chargeDriftGap, Default.chargeDriftGap, chargeDriftGapRange),
                chargeMaxTemperatureC: readDouble(d, Key.chargeMaxTemperatureC, Default.chargeMaxTemperatureC,
-                                                 chargeMaxTemperatureRange))
+                                                 chargeMaxTemperatureRange),
+               chargeReadyByEnabled: readBool(d, Key.chargeReadyByEnabled, Default.chargeReadyByEnabled),
+               chargeReadyByMinutes: readInt(d, Key.chargeReadyByMinutes, Default.chargeReadyByMinutes,
+                                             chargeReadyByMinutesRange))
     }
 }
 

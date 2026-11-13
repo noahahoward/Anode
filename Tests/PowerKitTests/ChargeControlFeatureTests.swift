@@ -813,7 +813,7 @@ final class ChargeControlFeatureTests: XCTestCase {
         battery = ChargeControllerTests.state(30, ac: false)   // both buttons say why they wait
         controller?.tick()
         collect(root)
-        let reasons: [ChargeReason] = [.limit, .fullCharge, .heat, .sleeping, .drift, .draining, .drained]
+        let reasons: [ChargeReason] = [.limit, .fullCharge, .heat, .sleeping, .drift, .draining, .drained, .readyBy]
         typealias Facts = ChargeControlFeature.Facts
         let facts = [Facts(), Facts(percent: 60), Facts(percent: 70), Facts(percent: 80), Facts(percent: 60, cablePresent: false),
                      Facts(percent: 60, reconnecting: true), Facts(percent: 80, dischargeInForce: 70)]

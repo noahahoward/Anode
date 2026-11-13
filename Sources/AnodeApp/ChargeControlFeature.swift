@@ -128,6 +128,7 @@ final class ChargeControlFeature: BetaFeature {
         case .drift: return "drifting"
         case .draining: return "draining"
         case .drained: return "drained"
+        case .readyBy: return "Ready By"
         }
     }
 

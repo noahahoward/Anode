@@ -151,6 +151,7 @@ final class ChargeController {
     static let limitNeedsHelperText = "Limits other than 80, 85, 90, 95 or 100% need the Anode helper"
     static let drainNeedsHelperText = "Draining to the limit needs the Anode helper"
     static let helperOutdatedText = "The Anode helper needs updating to control charging"
+    static let readyByNeedsHelperText = "Ready By needs the Anode helper"
     /// The record of macOS's own settings is another Anode's to finish at the moment (its lock is held), so switching
     /// on changed nothing.
     static let recordUnreachableText = "Charge Control could not reach the record of macOS's own charge settings, so "
@@ -191,6 +192,7 @@ final class ChargeController {
         case .heat: return "Pausing for heat at \(p)% needs the Anode helper; it charges on to \(on)%"
         case .sleeping: return "Holding \(p)% while the Mac sleeps needs the Anode helper; it charges on to \(on)%"
         case .drift: return "Drifting below the limit at \(p)% needs the Anode helper; it charges on to \(on)%"
+        case .readyBy: return readyByNeedsHelperText
         case .limit, .fullCharge, .draining, .drained: return limitNeedsHelperText
         }
     }
@@ -1355,7 +1357,8 @@ final class ChargeController {
     private func installTriggers() {
         let keys = [Settings.Key.chargeLimit, Settings.Key.chargeDriftEnabled, Settings.Key.chargeDriftGap,
                     Settings.Key.chargePauseWhenHotEnabled, Settings.Key.chargeMaxTemperatureC,
-                    Settings.Key.chargeHoldDuringSleep, Settings.Key.chargeDrainAutomatically]
+                    Settings.Key.chargeHoldDuringSleep, Settings.Key.chargeDrainAutomatically,
+                    Settings.Key.chargeReadyByEnabled, Settings.Key.chargeReadyByMinutes]
         keyTokens = keys.map { settings.observe($0) { [weak self] in self?.tick() } }
 
         let t = Timer(timeInterval: Self.tickInterval, repeats: true) { [weak self] _ in
