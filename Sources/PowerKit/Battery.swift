@@ -388,6 +388,13 @@ public enum Battery {
         ///
         /// Defaulted for the fixtures, like `temperature_C`.
         public var adapterPresent: Bool = false
+
+        /// The charger's rated power, `AdapterDetails.Watts`, when a charger is on the cable and says. Used only to
+        /// tell chargers apart by their class for the charge rate Ready By learns (`ChargeRate`); never shown.
+        /// nil with the cable out (`{"FamilyCode"=0}` carries no `Watts`) and for a charger that publishes none.
+        ///
+        /// Defaulted for the fixtures, like `adapterPresent`.
+        public var adapterWatts: Double? = nil
     }
 
     public static func state() -> State? {
@@ -434,6 +441,7 @@ public enum Battery {
         state.temperature_C = Self.temperature(battery: props, pack: Self.packProperties)
         // From the dictionary already in hand: no second registry read.
         state.adapterPresent = Self.adapterPresent(fromProperties: props)
+        state.adapterWatts = Self.adapterWatts(fromProperties: props)
         return state
     }
 
@@ -499,6 +507,16 @@ public enum Battery {
         if let watts = number("Watts"), watts.doubleValue > 0 { return true }
         if let family = number("FamilyCode"), family.uint64Value != 0 { return true }
         return false
+    }
+
+    /// The charger's rated power in watts, from `AdapterDetails.Watts` (MEASURED on `Mac17,9`, macOS 27.0: 100 on the
+    /// charger that comes with it). nil when there is no dictionary, no `Watts`, or one that is not a positive finite
+    /// number: a registry boolean bridges to `NSNumber` and `true` would read 1 W, as for `adapterPresent`.
+    static func adapterWatts(fromProperties props: [String: Any]) -> Double? {
+        guard let details = props["AdapterDetails"] as? [String: Any],
+              let n = details["Watts"] as? NSNumber, CFGetTypeID(n) != CFBooleanGetTypeID() else { return nil }
+        let w = n.doubleValue
+        return w.isFinite && w > 0 ? w : nil
     }
 
     // ── Pack temperature ────────────────────────────────────────────────────

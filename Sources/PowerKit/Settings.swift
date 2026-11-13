@@ -951,6 +951,22 @@ public final class Settings {
     }
     private static let chargeStartPendingKey = storageKey("chargeStartPending")
 
+    /// What Ready By has learned about how fast each class of charger charges this Mac, as the JSON of a `ChargeRate`.
+    /// nil until something has been learned. Bookkeeping, not a preference: nothing observes it and a write notifies
+    /// nobody, like `chargeRestoreRecord`. Written by the controller, a few times in a charge at most, and never shown.
+    /// Anything stored that is not a string reads as nil.
+    public var chargeRateRecord: String? {
+        get { defaults.object(forKey: Settings.chargeRateRecordKey) as? String }
+        set {
+            if let newValue {
+                defaults.set(newValue, forKey: Settings.chargeRateRecordKey)
+            } else {
+                defaults.removeObject(forKey: Settings.chargeRateRecordKey)
+            }
+        }
+    }
+    private static let chargeRateRecordKey = storageKey("chargeRateRecord")
+
     /// Write what this handle holds to disk now rather than when `cfprefsd` gets to it.
     ///
     /// For Charge Control's bookkeeping: it stores `chargeRestoreRecord` (or `chargeCutUnconfirmed`, or
