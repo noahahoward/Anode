@@ -76,6 +76,9 @@ overall() {
   local me child
   me="$(sh -c 'echo $PPID')"   # this watcher's own pid ($BASHPID needs bash 4; macOS ships 3.2)
   sleep "$TOTAL_LIMIT"
+  # Only if PARENT is still this run. A watcher that outlived its run must do nothing: by now the pid may belong to
+  # some other program, and its children are not this run's to kill.
+  ps -o command= -p "$1" 2>/dev/null | grep -q "test\.sh" || return 0
   printf '%s' "$TOTAL_LIMIT" > "$TIMED_OUT"
   for child in $(pgrep -P "$1" 2>/dev/null || true); do [ "$child" = "$me" ] || kill_tree "$child"; done
 }
@@ -101,6 +104,9 @@ await() {
 ended_by_a_watchdog() {
   if [ -s "$STALLED" ]; then
     wait "$WATCH_PID" 2>/dev/null || true
+    # The whole-run watcher is still asleep, and nothing else would stop it: left behind, it would wake after the
+    # run's limit and look for this run's children under a pid that is no longer this run's.
+    { kill_tree "$OVERALL_PID"; wait "$OVERALL_PID"; } 2>/dev/null || true
     echo "✗ $(cat "$STALLED") was still running after ${LIMIT} s, so the run was stopped. A test that waits for a socket," \
       "a timer or a run loop that never comes hangs the whole suite; this is the one." >&2
   else
