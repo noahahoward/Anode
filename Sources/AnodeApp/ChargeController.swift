@@ -2282,6 +2282,15 @@ final class ChargeController {
         return lastTickNow.timeIntervalSince(since) > Self.chargerReconnectTime
     }
 
+    /// The helper said the charger is connected earlier in this stretch, the switch still reads cut, and it is being
+    /// asked again (`cutReasks`) without its answer back yet. The sentence about the switch stays up through the ask:
+    /// "Reconnecting…" for the few seconds between the ask and the yes made the line flap every time. A helper that
+    /// does not say yes sets `cutLost`, which is another sentence.
+    private var cutReasking: Bool {
+        cutReasks > 0 && cutLookAnsweredAt == nil && !cutLost && cutLookSince != nil
+            && switchRead?.value == AdapterCutKey.cut
+    }
+
     /// Something only "the charger is connected" can settle: the debt, a lost cut, the net, or a stop that is due.
     private var somethingToSettle: Bool {
         cutOwed || cutLost || cutSeen || stopDue || settings.chargeCutUnconfirmed
@@ -2642,6 +2651,7 @@ final class ChargeController {
     private func updateStatus() {
         guard running, let d = lastDecision else { return }
         // First: the charger may be cut with nobody watching it.
+        if cutReasking { return setStatus(.warning(Self.cutWarningDisputedText)) }
         if cutLost || cutSeen {
             return setStatus(.warning(helper.installed ? Self.cutWarningText : Self.cutWarningNoHelperText))
         }

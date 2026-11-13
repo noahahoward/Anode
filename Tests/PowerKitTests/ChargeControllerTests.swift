@@ -1928,6 +1928,34 @@ final class ChargeControllerTests: XCTestCase {
         XCTAssertEqual(helper.stops(), 4)
     }
 
+    /// While the helper is asked again the line does not flap: the sentence about the switch still reading cut stays up
+    /// through the ask, instead of going to "Reconnecting…" until the helper's yes comes back a few seconds later.
+    func testTheDisputedSentenceStaysUpWhileTheHelperIsAskedAgain() {
+        let t0 = Date()
+        chargerSwitch = AdapterCutKey.cut
+        battery = Self.state(70, ac: true)
+        let c = make()
+        c.tick(now: t0.addingTimeInterval(95))
+        XCTAssertEqual(helper.stops(), 1)
+        c.tick(now: t0.addingTimeInterval(200))
+        XCTAssertEqual(c.status, .warning(ChargeController.cutWarningDisputedText), "the fixture is not disputed")
+        // The re-ask goes out, and its answer has not come back yet.
+        helper.deferReplies = true
+        c.tick(now: t0.addingTimeInterval(95 + 301))
+        XCTAssertEqual(helper.stops(), 2, "the helper was not asked again")
+        XCTAssertEqual(c.status, .warning(ChargeController.cutWarningDisputedText),
+                       "the line changed while the helper was being asked again: \(c.status)")
+        // Its answer arrives (a yes), and the line is the same.
+        helper.flushReplies()
+        c.tick(now: t0.addingTimeInterval(95 + 301 + 4))
+        XCTAssertEqual(c.status, .warning(ChargeController.cutWarningDisputedText))
+        // A helper that does not say yes is another matter: that is not disputed, it is not switching it back on.
+        helper.answer = { _ in FanReply(ok: false, message: "refused") }
+        c.tick(now: t0.addingTimeInterval(95 + 301 + 4 + 601))
+        XCTAssertNotEqual(c.status, .warning(ChargeController.cutWarningDisputedText),
+                          "a helper that refused the ask was still reported as saying the charger is connected")
+    }
+
     /// The ask that a helper's yes does not end (the switch still reads cut) waits twice as long each time, 5, 10, 20,
     /// 40 minutes, then an hour at most, and the log says so when the wait changes and not at each ask. The warning
     /// stays all the while: Anode's own reading says the charger is cut.
