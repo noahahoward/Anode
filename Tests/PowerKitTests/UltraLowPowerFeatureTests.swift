@@ -43,12 +43,13 @@ final class UltraLowPowerFeatureTests: XCTestCase {
 
     // ── The menu ────────────────────────────────────────────────────────────
 
-    private func menu(_ state: UltraLowPowerController.State, frozen: [FreezeGroup] = [], leftRunning: [FreezeGroup] = [],
+    private func menu(_ state: UltraLowPowerController.State, starting: Bool = false, frozen: [FreezeGroup] = [],
+                      leftRunning: [FreezeGroup] = [],
                       released: [String] = [], names: [String: String] = [:], start: @escaping () -> Void = {},
                       off: @escaping () -> Void = {}, release: @escaping (String) -> Void = { _ in },
                       beta: @escaping () -> Void = {}) -> NSMenu {
-        UltraMenu.build(state: state, frozen: frozen, leftRunning: leftRunning, releasedForLoad: released, names: names,
-                        onStart: start, onTurnOff: off, onRelease: release, onOpenBeta: beta)
+        UltraMenu.build(state: state, starting: starting, frozen: frozen, leftRunning: leftRunning, releasedForLoad: released,
+                        names: names, onStart: start, onTurnOff: off, onRelease: release, onOpenBeta: beta)
     }
 
     private func titles(_ menu: NSMenu) -> [String] { menu.items.map { $0.isSeparatorItem ? "-" : $0.title } }
@@ -74,6 +75,16 @@ final class UltraLowPowerFeatureTests: XCTestCase {
         XCTAssertEqual(titles(m), ["Ultra Low Power Mode…"])
         XCTAssertFalse(m.items[0].isEnabled)
         XCTAssertFalse(m.autoenablesItems, "the menu must not switch the item back on")
+    }
+
+    /// Once the owner has confirmed and until the mode is on, the one item is Cancel, and it turns the mode off.
+    func testMenuWhileTheStartIsRunningOffersCancelAndItTurnsOff() {
+        var off = 0, started = 0
+        let m = menu(.confirming, starting: true, start: { started += 1 }, off: { off += 1 })
+        XCTAssertEqual(titles(m), ["Cancel"])
+        XCTAssertTrue(m.items[0].isEnabled)
+        fire(m, at: 0)
+        XCTAssertEqual([off, started], [1, 0])
     }
 
     func testMenuWhenOnListsTurnOffAndEveryFrozenGroup() {
@@ -282,7 +293,31 @@ final class UltraLowPowerFeatureTests: XCTestCase {
         XCTAssertEqual(UltraLowPowerFeature.buttonLook(ticked: false, state: .on), Look(title: "Turn Off", isEnabled: true))
     }
 
+    func testTheButtonIsCancelWhileTheStartIsRunning() {
+        typealias Look = UltraLowPowerFeature.ButtonLook
+        XCTAssertEqual(UltraLowPowerFeature.buttonLook(ticked: true, state: .confirming, starting: true),
+                       Look(title: "Cancel", isEnabled: true))
+        XCTAssertEqual(UltraLowPowerFeature.buttonLook(ticked: false, state: .confirming, starting: true),
+                       Look(title: "Cancel", isEnabled: true), "unticking ends the start, and until it has the way out stays")
+        XCTAssertEqual(UltraLowPowerFeature.buttonLook(ticked: true, state: .confirming, starting: false),
+                       Look(title: "Start…", isEnabled: false), "the box is up: as before")
+        XCTAssertEqual(UltraLowPowerFeature.buttonLook(ticked: true, state: .on, starting: false),
+                       Look(title: "Turn Off", isEnabled: true))
+    }
+
     // ── What a press does, and the app menu's entry ─────────────────────────
+
+    func testPressCancelsWhileTheStartIsRunning() {
+        XCTAssertEqual(UltraMenu.press(for: .confirming, starting: true), .turnOff)
+        XCTAssertNil(UltraMenu.press(for: .confirming, starting: false), "the box is up: a second press must not ask again")
+    }
+
+    func testTheAppMenuEntryReadsCancelWhileTheStartIsRunning() {
+        XCTAssertEqual(UltraMenu.appEntry(ticked: true, state: .confirming, starting: true),
+                       UltraMenu.AppEntry(title: "Cancel", isHidden: false, isEnabled: true))
+        XCTAssertEqual(UltraMenu.appEntry(ticked: true, state: .confirming, starting: false),
+                       UltraMenu.AppEntry(title: "Ultra Low Power Mode…", isHidden: false, isEnabled: false))
+    }
 
     func testPressStartsWhenOffTurnsOffWhenOnAndDoesNothingWhileTheBoxIsUp() {
         XCTAssertEqual(UltraMenu.press(for: .off), .start)
@@ -407,7 +442,7 @@ final class UltraLowPowerFeatureTests: XCTestCase {
             box = UltraConfirmPanel(screenText: { words.text })
             _ = NSApplication.shared
             box.present = { [unowned self] _ in events.append("present") }
-            box.dismiss = { [unowned self] _ in events.append("dismiss") }
+            box.putAway = { [unowned self] _ in events.append("dismiss") }
         }
         func ask(kept: [String] = ["Editor"], frozen: [String] = ["Browser", "Sync"]) {
             box.ask(kept: kept, frozen: frozen) { [unowned self] yes in answers.append(yes) }
@@ -438,6 +473,30 @@ final class UltraLowPowerFeatureTests: XCTestCase {
         r.box.cancelButton.performClick(nil)
         r.box.confirmButton.performClick(nil)
         XCTAssertEqual(r.answers, [true, false])
+    }
+
+    /// The session ended while the box was up (unticked, a quit): the box goes away and its question is answered No, once.
+    func testPuttingTheBoxAwayAnswersNoOnceAndPutsThePanelAway() {
+        let r = BoxRig()
+        r.ask()
+        r.box.dismiss()
+        XCTAssertEqual(r.answers, [false])
+        XCTAssertEqual(r.events, ["present", "dismiss"])
+        r.box.dismiss()
+        XCTAssertEqual(r.answers, [false], "answered once")
+        XCTAssertEqual(r.events, ["present", "dismiss"], "nothing was up the second time")
+    }
+
+    func testPuttingTheBoxAwayWhenNoneIsUpDoesNothing() {
+        let r = BoxRig()
+        r.box.dismiss()
+        XCTAssertEqual(r.events, [])
+        r.ask()
+        r.box.confirmButton.performClick(nil)
+        XCTAssertEqual(r.events, ["present", "dismiss"])
+        r.box.dismiss()
+        XCTAssertEqual(r.events, ["present", "dismiss"], "it was answered already: it is not put away again")
+        XCTAssertEqual(r.answers, [true])
     }
 
     func testCancelIsEscapeAndReturnDoesNotConfirm() {
@@ -610,6 +669,7 @@ final class UltraLowPowerFeatureTests: XCTestCase {
     private final class ControllerRig {
         let calls = Fakes.Calls()
         let confirm = Fakes.FakeConfirm()
+        let processes = Fakes.FakeProcesses(ControllerRig.world)
         let power: Fakes.FakePower
         let controller: UltraLowPowerController
 
@@ -629,13 +689,14 @@ final class UltraLowPowerFeatureTests: XCTestCase {
         init(settings: Settings, hasEfficiencyCores: Bool = true) {
             power = Fakes.FakePower(calls)
             controller = UltraLowPowerController(
-                settings: settings, processes: Fakes.FakeProcesses(Self.world), freezer: Fakes.FakeFreezer(calls),
+                settings: settings, processes: processes, freezer: Fakes.FakeFreezer(calls),
                 throttler: Fakes.FakeThrottler(calls), processTable: { Self.world }, hasEfficiencyCores: hasEfficiencyCores,
                 hider: Fakes.FakeHider(calls), backlight: Fakes.FakeBacklight(calls), ownBrightness: OwnBrightness(),
                 rate: Fakes.FakeRate(calls), keyboard: Fakes.FakeKeyboard(calls), power: power,
                 watchdog: Fakes.FakeWatchdog(calls), store: Fakes.FakeStore(calls), confirm: confirm,
                 backdrop: Fakes.FakeBackdrop(calls), load: Fakes.FakeLoad(calls),
-                lastOtherFrontApp: { 10 }, ownPIDs: { [1000] }, user: 501, work: { $0() }, schedule: { _, _ in }, log: { _ in })
+                lastOtherFrontApp: { 10 }, ownPIDs: { [1000] }, user: 501, work: { $0() }, waitForWork: { _ in true }, schedule: { _, _ in },
+                alert: {}, log: { _ in })
         }
     }
 
@@ -694,6 +755,66 @@ final class UltraLowPowerFeatureTests: XCTestCase {
         rig.confirm.press(false)
         XCTAssertEqual(rig.controller.state, .off)
         XCTAssertTrue(f.startButton.isEnabled)
+    }
+
+    /// Confirmed, and the mode is not on yet (the helper has not answered): the button is the way out of the start.
+    func testTheButtonIsCancelWhileTheStartIsRunningAndPressingItTurnsTheModeOff() throws {
+        let probe = Probe()
+        let (f, settings) = try section(probe)
+        let rig = ControllerRig(settings: settings)
+        probe.controller = rig.controller
+        press(f.enableCheckbox)
+        rig.power.hold = true
+        press(f.startButton)
+        XCTAssertEqual(f.startButton.title, "Start…", "the box is up")
+        XCTAssertFalse(f.startButton.isEnabled)
+        rig.confirm.press(true)
+        XCTAssertEqual(rig.controller.state, .confirming)
+        XCTAssertEqual(f.startButton.title, "Cancel")
+        XCTAssertTrue(f.startButton.isEnabled)
+        press(f.startButton)
+        XCTAssertEqual(rig.controller.state, .off)
+        XCTAssertFalse(rig.controller.isStarting)
+        XCTAssertEqual(f.startButton.title, "Start…")
+        XCTAssertTrue(f.startButton.isEnabled)
+    }
+
+    func testTheShortcutCancelsAStartThatIsRunning() throws {
+        let probe = Probe()
+        let (_, settings) = try section(probe)
+        let rig = ControllerRig(settings: settings)
+        rig.power.hold = true
+        rig.controller.request()
+        UltraMenu.toggle(rig.controller)
+        XCTAssertEqual(rig.controller.state, .confirming, "the box is up: the key does not ask again")
+        XCTAssertEqual(rig.confirm.keptNames.count, 1)
+        rig.confirm.press(true)
+        XCTAssertTrue(rig.controller.isStarting)
+        UltraMenu.toggle(rig.controller)
+        XCTAssertEqual(rig.controller.state, .off)
+    }
+
+    /// The list of running apps could not be read: one line under the button, until the next ask.
+    func testTheSectionSaysWhenTheAppsCouldNotBeReadUnderTheButtonUntilTheNextAsk() throws {
+        let probe = Probe()
+        let (f, settings) = try section(probe)
+        let rig = ControllerRig(settings: settings)
+        probe.controller = rig.controller
+        press(f.enableCheckbox)
+        XCTAssertTrue(f.failureLabel.isHidden)
+        rig.processes.list = nil
+        press(f.startButton)
+        XCTAssertEqual(rig.controller.state, .off)
+        XCTAssertFalse(f.failureLabel.isHidden)
+        XCTAssertEqual(f.failureLabel.stringValue, "Anode could not read the running apps. Try again.")
+        let column = try XCTUnwrap(f.failureLabel.superview as? NSStackView)
+        let order = column.arrangedSubviews
+        XCTAssertEqual(order.firstIndex(of: f.failureLabel), order.firstIndex(of: f.startButton).map { $0 + 1 },
+                       "one line, right under the button")
+        rig.processes.list = ControllerRig.world
+        press(f.startButton)
+        XCTAssertTrue(f.failureLabel.isHidden)
+        XCTAssertEqual(f.failureLabel.stringValue, "")
     }
 
     func testTheButtonTurnsTheModeOff() throws {

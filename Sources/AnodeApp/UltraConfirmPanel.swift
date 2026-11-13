@@ -50,7 +50,7 @@ final class UltraConfirmPanel: NSObject, UltraConfirming, NSWindowDelegate {
 
     /// Put the panel on screen, and take it off. The tests replace them: a panel built and never shown is not on screen.
     var present: (NSPanel) -> Void = { $0.orderFrontRegardless(); $0.makeKey() }
-    var dismiss: (NSPanel) -> Void = { $0.orderOut(nil) }
+    var putAway: (NSPanel) -> Void = { $0.orderOut(nil) }
     static let width: CGFloat = 420
     private static let inset: CGFloat = 20
 
@@ -119,8 +119,15 @@ final class UltraConfirmPanel: NSObject, UltraConfirming, NSWindowDelegate {
     /// shows it): if the box were put away after the answer, it would hide that new question, and nothing would be left on
     /// screen to answer it. (`orderOut` does not post `windowWillClose`, so putting it away first cannot answer anything.)
     private func finish(_ yes: Bool) {
-        if let panel { dismiss(panel) }
+        if let panel { putAway(panel) }
         pending.give(yes)
+    }
+
+    /// The session ended while the box was up (the box unticked, a quit): it goes away, and its question is answered No, once.
+    /// Nothing happens when no box is up, which is every end of a session that was answered through the box.
+    func dismiss() {
+        guard pending.isPending else { return }
+        finish(false)
     }
 
     /// The names the box lists as to be frozen.

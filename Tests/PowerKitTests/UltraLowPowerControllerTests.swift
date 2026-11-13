@@ -15,12 +15,15 @@ final class UltraLowPowerControllerTests: XCTestCase {
     final class FakeProcesses: ProcessListing {
         var list: [UltraProcess]?
         var snapshots = 0
+        /// Whether each read was asked for at the owner's priority (`urgent`), in order.
+        private(set) var urgentFlags: [Bool] = []
         /// Keep the completions instead of calling them: a list that takes its time to be read.
         var hold = false
         private(set) var held: [([UltraProcess]?) -> Void] = []
         init(_ list: [UltraProcess]?) { self.list = list }
-        func snapshot(completion: @escaping ([UltraProcess]?) -> Void) {
+        func snapshot(urgent: Bool, completion: @escaping ([UltraProcess]?) -> Void) {
             snapshots += 1
+            urgentFlags.append(urgent)
             if hold { held.append(completion) } else { completion(list) }
         }
         /// The read finally returns, with the list as it is now.
@@ -196,11 +199,26 @@ final class UltraLowPowerControllerTests: XCTestCase {
         private(set) var keptNames: [[String]] = []
         private(set) var frozenNames: [[String]] = []
         private var answer: ((Bool) -> Void)?
+        /// How many times the box was put away while a question was up (as the real box: a no-op with none up).
+        private(set) var dismissals = 0
+        /// A question is up: nothing has answered it yet.
+        var isUp: Bool { answer != nil }
         func ask(kept: [String], frozen: [String], answer: @escaping (Bool) -> Void) {
             keptNames.append(kept); frozenNames.append(frozen); self.answer = answer
         }
-        /// The owner's press on Confirm (true) or Cancel (false).
-        func press(_ yes: Bool) { answer?(yes) }
+        /// The owner's press on Confirm (true) or Cancel (false). One answer to each question, as the real box gives.
+        func press(_ yes: Bool) {
+            guard let current = answer else { return }
+            answer = nil
+            current(yes)
+        }
+        /// The box goes away with its question answered No, once.
+        func dismiss() {
+            guard let current = answer else { return }
+            answer = nil
+            dismissals += 1
+            current(false)
+        }
     }
 
     final class FakeBackdrop: BackdropPresenting {
@@ -272,7 +290,14 @@ final class UltraLowPowerControllerTests: XCTestCase {
     private var front: pid_t? = 10
     private var ownPIDs: Set<pid_t> = [1000]
     private var scheduled: [(delay: TimeInterval, work: () -> Void)] = []
+    /// What the controller scheduled while the start was running (the deadline of each step that had not finished), kept apart
+    /// so that the sweep's and the guard's timers are found by their own delays.
+    private var startDeadlines: [(delay: TimeInterval, work: () -> Void)] = []
     private var logged: [String] = []
+    /// What the controller says out loud (the beep), and what its wait for the work queue is told and answers.
+    private var alerts = 0
+    private var waitedFor: [TimeInterval] = []
+    private var waitAnswers: Bool?
     private var workRuns = 0
     /// Keep what is handed to `work` instead of running it: a display or a keyboard light that is slow to answer.
     private var holdWork = false
@@ -312,7 +337,20 @@ final class UltraLowPowerControllerTests: XCTestCase {
                     self.workRuns += 1; job()
                 }
             },
-            schedule: { [unowned self] delay, job in self.scheduled.append((delay, job)) },
+            // The queue as a quit finds it: idle when nothing is being held, unless a test says what it answers.
+            waitForWork: { [unowned self] limit in
+                self.waitedFor.append(limit)
+                self.calls.add("wait for work \(limit)")
+                return self.waitAnswers ?? self.heldWork.isEmpty
+            },
+            schedule: { [unowned self] delay, job in
+                if self.controller?.state == .confirming {
+                    self.startDeadlines.append((delay, job))
+                } else {
+                    self.scheduled.append((delay, job))
+                }
+            },
+            alert: { [unowned self] in self.alerts += 1 },
             log: { [unowned self] in self.logged.append($0) })
     }
 
@@ -366,6 +404,14 @@ final class UltraLowPowerControllerTests: XCTestCase {
             return XCTFail("nothing is scheduled \(delay) s ahead; pending: \(scheduled.map(\.delay))", file: file, line: line)
         }
         scheduled.remove(at: i).work()
+    }
+
+    /// Runs the deadline of the step of the start that is waiting now (the first such item scheduled for `delay` seconds).
+    private func fireStartDeadline(_ delay: TimeInterval, file: StaticString = #filePath, line: UInt = #line) {
+        guard let i = startDeadlines.firstIndex(where: { $0.delay == delay }) else {
+            return XCTFail("no step of the start waits \(delay) s; pending: \(startDeadlines.map(\.delay))", file: file, line: line)
+        }
+        startDeadlines.remove(at: i).work()
     }
 
     /// One pass over what is pending now (a sweep schedules the next one, so this does not loop until nothing is left).
@@ -989,26 +1035,29 @@ final class UltraLowPowerControllerTests: XCTestCase {
         XCTAssertNil(store.record)
     }
 
-    func testQuittingWhileTheModeIsBeingTurnedOffPutsTheScreenBackItself() {
+    func testQuittingWhileTheModeIsBeingTurnedOffPutsTheScreenBackWhenTheQueueGetsRoundToIt() {
         start()
         holdWork = true
         controller.turnOff()
         XCTAssertEqual(backlight.value, 0.25, "queued, not done")
         controller.shutdown()
+        // The quit's own settings are queued behind the turn-off's, so its wait runs out: every process runs again, and the record
+        // and the watchdog are left for what finishes the job.
+        XCTAssertEqual(freezer.resumes, [20, 21, 30, 20, 21, 30], "continued again by the quit: a continue of a running process is harmless")
+        XCTAssertEqual(backlight.value, 0.25)
+        XCTAssertNotNil(store.record)
+        XCTAssertEqual(watchdog.stopped, 0)
+        XCTAssertFalse(backdrop.shown)
+        // The queue gets round to the turn-off's job first: its session was ended by the quit, so it does nothing. The quit's own
+        // job puts everything back, once, and finishes the end.
+        runHeldWork()
         XCTAssertEqual(controller.state, .off)
-        XCTAssertEqual(backlight.value, 0.8, "quit cannot wait for the queue, and the owner's brightness was taken only once")
+        XCTAssertEqual(backlight.value, 0.8, "the owner's brightness was taken only once")
+        XCTAssertEqual(backlight.sets, [0.25, 0.8])
         XCTAssertEqual(power.restored, [0])
         XCTAssertEqual(watchdog.stopped, 1)
         XCTAssertNil(store.record)
-        // The queue gets round to the earlier job after all: it was put back already, and does not do it twice.
-        let sets = backlight.sets, light = keyboard.sets
-        runHeldWork()
-        XCTAssertEqual(controller.state, .off)
-        XCTAssertEqual(watchdog.stopped, 1)
-        XCTAssertEqual(power.restored, [0])
-        XCTAssertEqual(backlight.value, 0.8)
-        XCTAssertEqual(backlight.sets, sets)
-        XCTAssertEqual(keyboard.sets, light, "the keyboard light is not written twice")
+        XCTAssertEqual(keyboard.sets, [0, 0.6], "the keyboard light is not written twice")
         XCTAssertEqual(rate.restored, 1, "nor the refresh rate")
     }
 
@@ -1020,9 +1069,12 @@ final class UltraLowPowerControllerTests: XCTestCase {
         start()
         XCTAssertEqual(heldWork.count, 1, file: file, line: line)
         controller.shutdown()
-        XCTAssertEqual(controller.state, .off, file: file, line: line)
+        // The quit's settings are behind the jammed job on the queue, so its wait runs out and the record is left for the watchdog.
+        XCTAssertEqual(heldWork.count, 2, file: file, line: line)
+        XCTAssertNotNil(store.record, file: file, line: line)
         runHeldWork()
         XCTAssertEqual(controller.state, .off, file: file, line: line)
+        XCTAssertNil(store.record, file: file, line: line)
     }
 
     func testAHeldBrightnessCheckThatComesAfterQuittingLowersNothing() {
@@ -1522,7 +1574,7 @@ final class UltraLowPowerControllerTests: XCTestCase {
         XCTAssertNil(store.record)
         XCTAssertEqual(watchdog.stopped, 1)
         XCTAssertEqual(controller.state, .off)
-        XCTAssertEqual(workRuns, workBefore, "quit cannot wait for a queue: it all happens on the calling thread")
+        XCTAssertEqual(workRuns, workBefore + 1, "the quit gives the queue one job, the settings: the continues and the lifts are here")
         assertAllBefore("resume", "unhide")
         assertAllBefore("unhide", "brightness")
         assertAllBefore("brightness", "power restore")
@@ -2021,7 +2073,7 @@ final class UltraLowPowerControllerTests: XCTestCase {
         calls.list.removeAll()
         controller.shutdown()
         XCTAssertEqual(throttler.lifted, [10, 11])
-        XCTAssertEqual(workRuns, workBefore, "quit cannot wait for a queue")
+        XCTAssertEqual(workRuns, workBefore + 1, "the lifts are on this thread; the one job the queue gets is the settings")
         assertAllBefore("resume", "unthrottle")
         assertAllBefore("unthrottle", "unhide")
     }
@@ -2284,7 +2336,7 @@ final class UltraLowPowerControllerTests: XCTestCase {
         calls.list.removeAll()
         controller.shutdown()
         XCTAssertEqual(throttler.lifted, [10, 11, 12, 13])
-        XCTAssertEqual(workRuns, workBefore, "quit cannot wait for a queue")
+        XCTAssertEqual(workRuns, workBefore + 1, "the lifts are on this thread; the one job the queue gets is the settings")
         assertAllBefore("resume", "unthrottle")
         assertAllBefore("unthrottle", "unhide")
     }
@@ -2406,7 +2458,7 @@ final class UltraLowPowerControllerTests: XCTestCase {
         let workBefore = workRuns
         controller.shutdown()
         XCTAssertEqual(throttler.lifted, [10, 11, 15])
-        XCTAssertEqual(workRuns, workBefore, "quit cannot wait for a queue")
+        XCTAssertEqual(workRuns, workBefore + 1, "the lifts are on this thread; the one job the queue gets is the settings")
     }
 
     /// The groups are placed with what the last snapshot knew of the apps (a bundle id is not in a light read of the table).
@@ -2629,5 +2681,398 @@ final class UltraLowPowerControllerTests: XCTestCase {
         XCTAssertEqual(freezer.resumes, [])
         XCTAssertEqual(load.reads, reads)
         XCTAssertTrue(logged.contains { $0.contains("before") }, "\(logged)")
+    }
+
+    // ── Nothing in the start waits for ever ─────────────────────────────────
+
+    /// The start with the work queue jammed after `jobs` jobs have gone through: the call that is waiting never answers. The
+    /// brightness takes two jobs (a read, a set), the refresh rate one, the keyboard light two.
+    private func startWithTheQueueJammedAfter(_ jobs: Int) {
+        workLimit = jobs
+        start()
+    }
+
+    func testABrightnessReadThatNeverAnswersIsSkippedAtItsDeadlineAndTheModeComesOn() {
+        startWithTheQueueJammedAfter(0)
+        XCTAssertEqual(controller.state, .confirming, "waiting for the display")
+        XCTAssertEqual(startDeadlines.map(\.delay), [UltraLowPowerController.displayStepSeconds])
+        fireStartDeadline(3)
+        XCTAssertEqual(controller.skipped, [.ceilingRefused])
+        XCTAssertEqual(logged.filter { $0.contains("brightness") && $0.contains("answer") }.count, 1, "\(logged)")
+        // The queue is still jammed, so the refresh rate and the keyboard light go the same way, each at its own deadline.
+        fireStartDeadline(3)
+        fireStartDeadline(3)
+        XCTAssertEqual(controller.state, .on, "the helper's step is not on the queue")
+        XCTAssertEqual(controller.skipped, [.ceilingRefused, .rateRefused, .keyboardLight])
+        XCTAssertEqual(power.entered, 1)
+        XCTAssertNil(store.record?.brightnessBefore, "nothing was lowered, so nothing is owed")
+        // The queue gets round to what was given it: none of it was started in time, so none of it changes anything now.
+        runHeldWork()
+        XCTAssertEqual(backlight.sets, [])
+        XCTAssertEqual(rate.lowered, 0)
+        XCTAssertEqual(keyboard.sets, [])
+        XCTAssertEqual(controller.skipped, [.ceilingRefused, .rateRefused, .keyboardLight])
+        XCTAssertEqual(controller.state, .on)
+    }
+
+    func testABrightnessSetThatNeverAnswersIsSkippedAndWhatIsNamedStaysNamed() {
+        startWithTheQueueJammedAfter(1)         // the read went through, the set is on the queue
+        XCTAssertEqual(controller.state, .confirming)
+        XCTAssertEqual(store.record?.brightnessBefore, 0.8, "named before it is asked for")
+        fireStartDeadline(3)
+        XCTAssertEqual(controller.skipped, [.ceilingRefused])
+        XCTAssertEqual(store.record?.brightnessBefore, 0.8, "the call may still land: the record keeps naming it")
+        fireStartDeadline(3)
+        fireStartDeadline(3)
+        runHeldWork()
+        XCTAssertEqual(backlight.sets, [], "a set that had not started when its time was up does not start now")
+        XCTAssertEqual(controller.skipped, [.ceilingRefused, .rateRefused, .keyboardLight])
+    }
+
+    func testARefreshRateThatNeverAnswersIsSkippedAtItsDeadlineAndTheModeComesOn() {
+        startWithTheQueueJammedAfter(2)         // the brightness is done
+        XCTAssertEqual(controller.state, .confirming)
+        XCTAssertEqual(backlight.value, 0.25)
+        XCTAssertEqual(store.record?.rateLowered, true, "named before it is asked for")
+        fireStartDeadline(3)
+        XCTAssertEqual(controller.skipped, [.rateRefused])
+        XCTAssertEqual(store.record?.rateLowered, true, "the call may still land")
+        fireStartDeadline(3)                    // the keyboard light is behind it on the same queue
+        XCTAssertEqual(controller.state, .on)
+        XCTAssertEqual(controller.skipped, [.rateRefused, .keyboardLight])
+        runHeldWork()
+        XCTAssertEqual(rate.lowered, 0, "its job had not started when its time was up")
+        XCTAssertEqual(controller.skipped, [.rateRefused, .keyboardLight])
+        controller.turnOff()
+        XCTAssertEqual(rate.restored, 1, "what the record named is put back whether or not the call landed")
+    }
+
+    func testAKeyboardLightThatNeverAnswersIsSkippedAtItsDeadlineAndTheModeComesOn() {
+        startWithTheQueueJammedAfter(3)         // the brightness and the rate are done; the light's read is jammed
+        XCTAssertEqual(controller.state, .confirming)
+        fireStartDeadline(3)
+        XCTAssertEqual(controller.skipped, [.keyboardLight])
+        XCTAssertEqual(controller.state, .on)
+        XCTAssertEqual(power.entered, 1, "and the helper is still asked")
+        runHeldWork()
+        XCTAssertEqual(keyboard.sets, [])
+        XCTAssertEqual(controller.skipped, [.keyboardLight])
+    }
+
+    func testEachDeadlineGoesOnToTheNextStepExactlyOnce() throws {
+        startWithTheQueueJammedAfter(0)
+        let brightnessDeadline = try XCTUnwrap(startDeadlines.first).work
+        brightnessDeadline()
+        XCTAssertEqual(startDeadlines.count, 2, "the refresh rate's step began, and waits")
+        // The same deadline again (a timer that ran twice): it does not skip the part twice or begin the next step twice.
+        brightnessDeadline()
+        XCTAssertEqual(controller.skipped, [.ceilingRefused])
+        XCTAssertEqual(startDeadlines.count, 2)
+    }
+
+    func testAStepThatAnswersInTimeLeavesNoDeadlineBehindThatDoesAnything() {
+        start()
+        XCTAssertEqual(controller.state, .on)
+        XCTAssertEqual(startDeadlines.count, 0, "every step finished before it was waited for")
+        XCTAssertEqual(controller.skipped, [])
+    }
+
+    func testAHelperThatDoesNotAnswerIsSkippedAtItsDeadlineAndTheModeComesOn() {
+        power.hold = true
+        start()
+        XCTAssertEqual(controller.state, .confirming, "waiting for the helper")
+        XCTAssertEqual(startDeadlines.map(\.delay), [UltraLowPowerController.helperStepSeconds])
+        fireStartDeadline(5)
+        XCTAssertEqual(controller.state, .on)
+        XCTAssertEqual(controller.skipped, [.lowPowerRefused])
+        XCTAssertTrue(logged.contains { $0.contains("helper") && $0.contains("answer") }, "\(logged)")
+        XCTAssertNil(store.record?.powerModeBefore)
+        // The answer comes after all: Low Power Mode is on and nothing recorded it, so it is put back, as when the session has
+        // ended. Nothing else changes.
+        power.held.forEach { $0(0) }
+        XCTAssertEqual(power.restored, [0])
+        XCTAssertEqual(controller.skipped, [.lowPowerRefused])
+        XCTAssertEqual(controller.state, .on)
+        XCTAssertNil(store.record?.powerModeBefore)
+        controller.turnOff()
+        XCTAssertEqual(power.restored, [0], "and not put back a second time at the end")
+    }
+
+    func testAHelperThatAnswersNoAfterItsDeadlineChangesNothing() {
+        power.hold = true
+        start()
+        fireStartDeadline(5)
+        power.held.forEach { $0(nil) }
+        XCTAssertEqual(power.restored, [])
+        XCTAssertEqual(controller.skipped, [.lowPowerRefused], "named once")
+    }
+
+    func testTheDeadlinesOfAnEndedStartDoNothing() {
+        startWithTheQueueJammedAfter(0)
+        controller.turnOff()
+        startDeadlines.forEach { $0.work() }
+        runHeldWork()
+        XCTAssertEqual(controller.state, .off)
+        XCTAssertEqual(controller.skipped, [])
+        XCTAssertEqual(power.entered, 0, "a start that was cancelled does not go on to the helper")
+    }
+
+    // ── A start can be cancelled ────────────────────────────────────────────
+
+    func testIsStartingIsTrueOnlyBetweenConfirmAndOnOrOff() {
+        XCTAssertFalse(controller.isStarting)
+        controller.request()
+        XCTAssertEqual(controller.state, .confirming)
+        XCTAssertFalse(controller.isStarting, "the box is up: nothing has started")
+        power.hold = true
+        confirm.press(true)
+        XCTAssertEqual(controller.state, .confirming)
+        XCTAssertTrue(controller.isStarting)
+        fireStartDeadline(5)
+        XCTAssertEqual(controller.state, .on)
+        XCTAssertFalse(controller.isStarting)
+        controller.turnOff()
+        XCTAssertFalse(controller.isStarting)
+    }
+
+    func testIsStartingEndsWithACancelAndWithAStartThatCameToNothing() {
+        power.hold = true
+        start()
+        XCTAssertTrue(controller.isStarting)
+        controller.turnOff()
+        XCTAssertFalse(controller.isStarting, "once the cancel is being done there is nothing left to cancel")
+        XCTAssertEqual(controller.state, .off)
+
+        power.hold = false
+        store.refuseSave = { _ in true }
+        start()
+        XCTAssertFalse(controller.isStarting, "the record could not be written: nothing started")
+        store.refuseSave = { _ in false }
+
+        controller.request()
+        confirm.press(false)
+        XCTAssertFalse(controller.isStarting)
+    }
+
+    func testTellsTheMenusWhenTheStartBeginsAndWhenItEnds() {
+        var seen: [Bool] = []
+        controller.onChange = { [unowned self] in seen.append(self.controller.isStarting) }
+        power.hold = true
+        start()
+        XCTAssertTrue(seen.contains(true), "the button must be redrawn as Cancel: \(seen)")
+        fireStartDeadline(5)
+        XCTAssertEqual(seen.last, false)
+    }
+
+    func testCancellingAStartThatIsWaitingForTheHelperPutsEverythingBack() {
+        power.hold = true
+        start()
+        XCTAssertTrue(controller.isStarting)
+        XCTAssertEqual(backlight.value, 0.25)
+        controller.turnOff()
+        XCTAssertEqual(controller.state, .off)
+        XCTAssertEqual(freezer.resumes, [20, 21, 30])
+        XCTAssertEqual(backlight.value, 0.8)
+        XCTAssertEqual(rate.restored, 1)
+        XCTAssertEqual(keyboard.sets.last, 0.6)
+        XCTAssertEqual(watchdog.stopped, 1)
+        XCTAssertNil(store.record)
+    }
+
+    func testCancellingAStartThatIsWaitingForTheDisplayPutsEverythingBack() {
+        startWithTheQueueJammedAfter(1)         // the brightness read went through; the set is jammed
+        XCTAssertTrue(controller.isStarting)
+        controller.turnOff()
+        XCTAssertEqual(freezer.resumes, [20, 21, 30], "every process runs again at once")
+        runHeldWork()
+        XCTAssertEqual(controller.state, .off)
+        XCTAssertNil(store.record)
+        XCTAssertEqual(watchdog.stopped, 1)
+        XCTAssertEqual(backlight.value, 0.8)
+    }
+
+    func testCancellingWhileTheBoxIsUpStartsNothingAndAConfirmAfterwardsDoesNothing() {
+        controller.request()
+        XCTAssertFalse(controller.isStarting)
+        controller.turnOff()
+        XCTAssertEqual(controller.state, .off)
+        confirm.press(true)
+        XCTAssertEqual(controller.state, .off)
+        XCTAssertEqual(freezer.stops, [])
+    }
+
+    // ── The box goes away with the session ──────────────────────────────────
+
+    func testTurningOffWhileTheBoxIsUpPutsTheBoxAway() {
+        controller.request()
+        XCTAssertTrue(confirm.isUp)
+        controller.turnOff()
+        XCTAssertEqual(confirm.dismissals, 1)
+        XCTAssertFalse(confirm.isUp)
+        XCTAssertEqual(controller.state, .off)
+    }
+
+    func testAShutdownWhileTheBoxIsUpPutsTheBoxAway() {
+        controller.request()
+        controller.shutdown()
+        XCTAssertEqual(confirm.dismissals, 1)
+        XCTAssertEqual(controller.state, .off)
+    }
+
+    func testTheBoxIsNotPutAwayTwiceWhenTheOwnerAnsweredIt() {
+        controller.request()
+        confirm.press(false)
+        XCTAssertEqual(controller.state, .off)
+        XCTAssertEqual(confirm.dismissals, 0, "it was answered; nothing was left up")
+        start()
+        controller.turnOff()
+        XCTAssertEqual(confirm.dismissals, 0)
+    }
+
+    func testTheBoxThatWasPutAwayAnsweringNoLaterDoesNotUndoANewSession() {
+        controller.request()
+        controller.turnOff()
+        controller.request()                // a new session, a new question
+        XCTAssertEqual(controller.state, .confirming)
+        XCTAssertEqual(confirm.keptNames.count, 2)
+        confirm.press(true)
+        XCTAssertEqual(controller.state, .on)
+    }
+
+    // ── The owner's ask, when the apps cannot be listed ─────────────────────
+
+    func testAnAskIsReadAtTheOwnersPriorityAndTheSweepAtTheBackgroundOne() {
+        start()
+        XCTAssertEqual(processes.urgentFlags, [true])
+        fire(30)
+        XCTAssertEqual(processes.urgentFlags, [true, false])
+    }
+
+    func testAListThatCannotBeReadSaysSoOnceAndStartsNothing() {
+        processes.list = nil
+        var changes = 0
+        controller.onChange = { changes += 1 }
+        let center = NotificationCenter.default
+        var posted = 0
+        let token = center.addObserver(forName: UltraLowPowerController.didChange, object: nil, queue: nil) { _ in posted += 1 }
+        defer { center.removeObserver(token) }
+        controller.request()
+        XCTAssertEqual(controller.state, .off)
+        XCTAssertEqual(controller.lastFailure, "Anode could not read the running apps. Try again.")
+        XCTAssertEqual(alerts, 1)
+        XCTAssertGreaterThan(changes, 0)
+        XCTAssertGreaterThan(posted, 0)
+        XCTAssertEqual(confirm.keptNames.count, 0)
+        XCTAssertEqual(freezer.stops, [])
+        XCTAssertNil(store.record)
+        XCTAssertEqual(watchdog.started, 0)
+        XCTAssertFalse(controller.isStarting)
+    }
+
+    func testTheFailureStaysUntilTheNextAskAndTheNextAskClearsIt() {
+        processes.list = nil
+        controller.request()
+        XCTAssertNotNil(controller.lastFailure)
+        // It is still said after the state came back to off and the section was redrawn.
+        XCTAssertEqual(controller.state, .off)
+        XCTAssertNotNil(controller.lastFailure)
+        processes.list = world
+        controller.request()
+        XCTAssertNil(controller.lastFailure)
+        XCTAssertEqual(alerts, 1, "a good ask makes no sound")
+        XCTAssertEqual(controller.state, .confirming)
+        controller.turnOff()
+        XCTAssertNil(controller.lastFailure, "and a session that came to an end does not bring it back")
+    }
+
+    func testAFailedAskIsSaidAgainWhenItFailsAgain() {
+        processes.list = nil
+        controller.request()
+        controller.request()
+        XCTAssertEqual(alerts, 2)
+        XCTAssertNotNil(controller.lastFailure)
+    }
+
+    func testAnAskThatFailsAfterTheOwnerWentAwayMakesNoSound() {
+        processes.list = world
+        processes.hold = true
+        controller.request()
+        controller.turnOff()
+        processes.list = nil
+        processes.answerHeld()
+        XCTAssertEqual(alerts, 0, "the owner had cancelled; a late answer is for nobody")
+        XCTAssertNil(controller.lastFailure)
+    }
+
+    // ── A quit does not wait for ever, and does not call the display itself ─
+
+    func testAQuitPutsTheScreenBackOnTheQueueAndWaitsForItWithinTwoSeconds() {
+        start()
+        controller.shutdown()
+        XCTAssertEqual(waitedFor, [2])
+        XCTAssertEqual(controller.state, .off)
+        XCTAssertEqual(watchdog.stopped, 1)
+        XCTAssertNil(store.record)
+        XCTAssertEqual(backlight.value, 0.8)
+        XCTAssertEqual(rate.restored, 1)
+        XCTAssertEqual(keyboard.sets.last, 0.6)
+        XCTAssertEqual(power.restored, [0])
+    }
+
+    func testAQuitDoesTheContinuesAndTheLiftsBeforeItWaitsAndTheSettingsAfterwards() {
+        start()
+        calls.list = []
+        controller.shutdown()
+        // (The fake queue runs a job as it is given, so the settings come before the wait in this log; what must come after the wait
+        // is the end of the record and of the watchdog.)
+        assertAllBefore("resume", "brightness set")
+        assertAllBefore("unthrottle", "brightness set")
+        assertAllBefore("unhide", "brightness set")
+        assertAllBefore("wait for work", "store clear")
+        assertAllBefore("wait for work", "watchdog stop")
+    }
+
+    func testAQuitWhoseWaitRunsOutKeepsTheRecordAndTheWatchdogAndHasContinuedEverything() {
+        start()
+        holdWork = true
+        calls.list = []
+        controller.shutdown()
+        XCTAssertEqual(waitedFor, [2])
+        assertAllBefore("resume", "wait for work")
+        XCTAssertEqual(freezer.resumes, [20, 21, 30])
+        XCTAssertEqual(hider.unhidden, [20])
+        XCTAssertNotNil(store.record, "the record stays: the watchdog and the next launch finish what was not put back")
+        XCTAssertEqual(store.cleared, 0)
+        XCTAssertEqual(watchdog.stopped, 0)
+        XCTAssertEqual(backlight.value, 0.25, "the display was not called from here")
+        XCTAssertEqual(rate.restored, 0)
+        XCTAssertEqual(logged.filter { $0.contains("put back in time") }.count, 1, "\(logged)")
+        XCTAssertEqual(backdrop.shown, false)
+    }
+
+    func testASettingsJobThatFinishesAfterTheQuitGaveUpFinishesTheJob() {
+        // The logout was cancelled after the notice, so the app is still here when the queue gets round to it.
+        start()
+        holdWork = true
+        controller.shutdown()
+        XCTAssertNotNil(store.record)
+        runHeldWork()
+        XCTAssertEqual(backlight.value, 0.8)
+        XCTAssertEqual(rate.restored, 1)
+        XCTAssertNil(store.record)
+        XCTAssertEqual(watchdog.stopped, 1)
+        XCTAssertEqual(controller.state, .off)
+        XCTAssertEqual(power.restored, [0])
+        XCTAssertEqual(freezer.resumes, [20, 21, 30], "and nothing is continued a second time")
+    }
+
+    func testAQuitWhenTheQueueIsBusyWithAJobInsideACallStillContinuesFirst() {
+        startWithTheQueueJammedAfter(1)
+        calls.list = []
+        controller.shutdown()
+        assertAllBefore("resume", "wait for work")
+        XCTAssertEqual(controller.state, .confirming)
+        XCTAssertNotNil(store.record)
+        XCTAssertEqual(watchdog.stopped, 0)
     }
 }

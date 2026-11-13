@@ -16,8 +16,15 @@ import Security
 // ── The protocols the controller is written against ─────────────────────────
 
 protocol ProcessListing: AnyObject {
-    /// Calls back on the main queue, once. nil when the list could not be read in full within the budget.
-    func snapshot(completion: @escaping ([UltraProcess]?) -> Void)
+    /// Calls back on the main queue, once. nil when the list could not be read in full within the budget. `urgent` is for a
+    /// read the owner is waiting on (asking for the mode): it runs at the priority of something the owner asked for, not of
+    /// background work.
+    func snapshot(urgent: Bool, completion: @escaping ([UltraProcess]?) -> Void)
+}
+
+extension ProcessListing {
+    /// The sweep's and the guard's reading: background work.
+    func snapshot(completion: @escaping ([UltraProcess]?) -> Void) { snapshot(urgent: false, completion: completion) }
 }
 
 protocol ProcessFreezing: AnyObject {
@@ -118,12 +125,15 @@ final class LiveProcessList: ProcessListing {
         self.injectedRead = read
     }
 
-    func snapshot(completion: @escaping ([UltraProcess]?) -> Void) {
+    func snapshot(urgent: Bool, completion: @escaping ([UltraProcess]?) -> Void) {
         let answer = OneAnswer(completion)
         let deadline = DispatchTime.now() + budget
         // The read is a serial queue's work, so a read that hangs delays the next one. Each snapshot still answers at its
         // own deadline, and a read that starts after its answer has gone does nothing.
-        queue.async { [self] in
+        // One queue, because the team cache is only ever touched on it; what the owner is waiting on is given a higher priority for
+        // its own run (`enforceQoS`), and the queue is not changed for the sweep's.
+        let qos: DispatchQoS = urgent ? .userInitiated : .utility
+        queue.async(qos: qos, flags: urgent ? .enforceQoS : []) { [self] in
             guard !answer.isDone else { return }
             let read = ReadBudget(deadline: deadline, abandoned: { answer.isDone })
             if let injectedRead {
@@ -132,7 +142,7 @@ final class LiveProcessList: ProcessListing {
                 answer.deliver(readLive(read))
             }
         }
-        DispatchQueue.global(qos: .utility).asyncAfter(deadline: deadline) { answer.deliver(nil) }
+        DispatchQueue.global(qos: qos.qosClass).asyncAfter(deadline: deadline) { answer.deliver(nil) }
     }
 
     // ── Reading the system ──────────────────────────────────────────────────

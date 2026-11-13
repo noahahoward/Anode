@@ -33,6 +33,9 @@ protocol PowerModeControlling: AnyObject {
 protocol UltraConfirming: AnyObject {
     /// Shows what is kept and what is frozen, by name, and calls back once on the main thread: true for Confirm.
     func ask(kept: [String], frozen: [String], answer: @escaping (Bool) -> Void)
+    /// The session ended while the box was up (the box unticked, a quit): the box goes away, and its question is answered No,
+    /// once. Nothing happens when no box is up.
+    func dismiss()
 }
 
 /// A part of the mode that was not done, for the section and the menu to say so: because this Mac cannot (no helper, an
@@ -57,6 +60,15 @@ final class UltraLowPowerController {
     static let sweepSeconds: TimeInterval = 30
     /// After each freeze step, the load is read again this long after it.
     static let guardDelays: [TimeInterval] = [5, 15]
+    /// How long a quit waits for the screen, the refresh rate, the keyboard light and the power mode to be put back on the work
+    /// queue. Past it the quit goes on without them: the watchdog and the next launch finish the job.
+    static let shutdownWaitSeconds: TimeInterval = 2
+    /// How long each part of the start that can block (the brightness, the refresh rate, the keyboard light) is given.
+    static let displayStepSeconds: TimeInterval = 3
+    /// How long the helper is given to switch Low Power Mode on: its own worst case is a little under five seconds.
+    static let helperStepSeconds: TimeInterval = 5
+    /// What the section says when the list of running apps could not be read.
+    static let couldNotReadApps = "Anode could not read the running apps. Try again."
     /// Posted (main thread) whenever what the menu and the section show changes.
     static let didChange = Notification.Name("AnodeUltraLowPowerDidChange")
     /// Set by the app so Beta Features and the menus can reach the live controller.
@@ -85,7 +97,9 @@ final class UltraLowPowerController {
     private let ownPIDs: () -> Set<pid_t>
     private let user: uid_t
     private let work: (@escaping () -> Void) -> Void
+    private let waitForWork: (TimeInterval) -> Bool
     private let schedule: (TimeInterval, @escaping () -> Void) -> Void
+    private let alert: () -> Void
     private let log: (String) -> Void
 
     private(set) var state: State = .off
@@ -96,6 +110,10 @@ final class UltraLowPowerController {
     private(set) var leftRunning: [FreezeGroup] = []
     /// Group ids the spin guard continued this session; they are never frozen again in it.
     private(set) var releasedForLoad: [String] = []
+    /// The owner has pressed Confirm and the mode is not on yet: the start is running, and can be cancelled.
+    private(set) var isStarting = false
+    /// Why the last ask came to nothing, for the section to say under the button; nil from the next ask.
+    private(set) var lastFailure: String?
     /// Told (main thread) when any of the above changes.
     var onChange: (() -> Void)?
 
@@ -151,8 +169,9 @@ final class UltraLowPowerController {
          ownBrightness: OwnBrightness, rate: DisplayRateControlling, keyboard: KeyboardBacklightControlling,
          power: PowerModeControlling, watchdog: UltraWatchdogging, store: UltraRecordStoring, confirm: UltraConfirming,
          backdrop: BackdropPresenting, load: LoadReading, lastOtherFrontApp: @escaping () -> pid_t?, ownPIDs: @escaping () -> Set<pid_t>, user: uid_t,
-         work: @escaping (@escaping () -> Void) -> Void,
-         schedule: @escaping (TimeInterval, @escaping () -> Void) -> Void, log: @escaping (String) -> Void) {
+         work: @escaping (@escaping () -> Void) -> Void, waitForWork: @escaping (TimeInterval) -> Bool,
+         schedule: @escaping (TimeInterval, @escaping () -> Void) -> Void, alert: @escaping () -> Void,
+         log: @escaping (String) -> Void) {
         self.settings = settings
         self.processes = processes
         self.freezer = freezer
@@ -174,7 +193,9 @@ final class UltraLowPowerController {
         self.ownPIDs = ownPIDs
         self.user = user
         self.work = work
+        self.waitForWork = waitForWork
         self.schedule = schedule
+        self.alert = alert
         self.log = log
     }
 
@@ -184,6 +205,7 @@ final class UltraLowPowerController {
 
     func request() {
         guard state == .off, !ending else { return }
+        lastFailure = nil
         let token = counter.increment()
         state = .confirming
         // The app in front is the one in front NOW: asking may bring Anode forward, and the box names what was picked.
@@ -192,11 +214,15 @@ final class UltraLowPowerController {
         // The reader compares with its last reading and has none the first time, so it answers nil. This read is only here
         // so that the one at Confirm has something to compare with.
         load.read { _ in }
-        processes.snapshot { [weak self] list in
+        // The owner is waiting on this one: it is read at the priority of what they asked for.
+        processes.snapshot(urgent: true) { [weak self] list in
             guard let self, self.session == token else { return }
             guard let list else {
                 self.log("ultra: the process list could not be read, so nothing was started")
+                // Said under the button until the next ask, and out loud once: the shortcut has no button to look at.
+                self.lastFailure = Self.couldNotReadApps
                 self.reset()
+                self.alert()
                 return
             }
             let plan = FreezePlanner.plan(processes: list, user: self.user, front: front,
@@ -212,6 +238,9 @@ final class UltraLowPowerController {
         guard session == token, state == .confirming, let asked else { return }
         self.asked = nil
         guard yes else { reset(); return }
+        // From now until the mode is on or off the start can be cancelled: the menus and the button say so.
+        isStarting = true
+        changed()
         begin(asked.plan, asked.processes, token: token)
     }
 
@@ -251,6 +280,7 @@ final class UltraLowPowerController {
     private func becomeOn(before: LoadSample?, token: Int) {
         guard session == token else { return }
         state = .on
+        isStarting = false
         // Only now, with the mode on: a start that did not finish never darkens the desktop. Nothing is recorded, as the window
         // is Anode's own and goes with it; `reset` takes it away on every path that ends the session.
         if settings.ultraLowPowerBlackBackdrop { backdrop.show() }
@@ -421,40 +451,95 @@ final class UltraLowPowerController {
     // ── The screen, the keyboard light, the power mode ──────────────────────
 
     /// Each part is tried in turn and each can be skipped: a part this Mac cannot do goes in `skipped`, and the rest goes
-    /// on. What can block (the display, the keyboard light, the backlight) runs on `work`.
+    /// on. What can block (the display, the keyboard light, the backlight) runs on `work`. Each part also has a deadline, so
+    /// that a display or a helper that never answers cannot hold the start for ever.
     private func lowerScreenAndPower(token: Int, then done: @escaping () -> Void) {
-        run([{ [unowned self] next in lowerBrightness(token, next) },
-             { [unowned self] next in lowerRate(token, next) },
-             { [unowned self] next in switchKeyboardOff(token, next) },
-             { [unowned self] next in enterLowPower(token, next) }], then: done)
+        run([Step(name: "the brightness", seconds: Self.displayStepSeconds, part: .ceilingRefused) { [unowned self] gate, next in
+                lowerBrightness(token, gate, next) },
+             Step(name: "the refresh rate", seconds: Self.displayStepSeconds, part: .rateRefused) { [unowned self] gate, next in
+                lowerRate(token, gate, next) },
+             Step(name: "the keyboard light", seconds: Self.displayStepSeconds, part: .keyboardLight) { [unowned self] gate, next in
+                switchKeyboardOff(token, gate, next) },
+             Step(name: "the helper", seconds: Self.helperStepSeconds, part: .lowPowerRefused) { [unowned self] gate, next in
+                enterLowPower(token, gate, next) }], token: token, then: done)
     }
 
-    private func run(_ steps: ArraySlice<(@escaping () -> Void) -> Void>, then done: @escaping () -> Void) {
+    /// One part of the start. It calls `next` when it is done; if `seconds` pass first, `part` goes in `skipped` and the start goes
+    /// on without it.
+    private struct Step {
+        let name: String
+        let seconds: TimeInterval
+        let part: UltraSkipped
+        let run: (_ gate: StepGate, _ next: @escaping () -> Void) -> Void
+    }
+
+    /// Who got to a step's end first, its answer or its deadline. Whichever it is, the other does nothing: the start goes on
+    /// from a step exactly once, and an answer that comes after the deadline changes nothing (it is read on the work queue as
+    /// well, so a job that has not started when its time is up does not start). What the record named before the call was made
+    /// is still put back at the end, whether or not a late call landed.
+    private final class StepGate {
+        private let lock = NSLock()
+        private var done = false
+        private var late = false
+        /// The step's deadline came first.
+        var passed: Bool { lock.lock(); defer { lock.unlock() }; return late }
+        var isFinished: Bool { lock.lock(); defer { lock.unlock() }; return done || late }
+        /// The step answered: true when this is the one that goes on.
+        func finish() -> Bool {
+            lock.lock(); defer { lock.unlock() }
+            guard !done, !late else { return false }
+            done = true
+            return true
+        }
+        /// The deadline came: true when this is the one that goes on.
+        func pass() -> Bool {
+            lock.lock(); defer { lock.unlock() }
+            guard !done, !late else { return false }
+            late = true
+            return true
+        }
+    }
+
+    private func run(_ steps: ArraySlice<Step>, token: Int, then done: @escaping () -> Void) {
         guard let step = steps.first else { return done() }
-        step { [weak self] in self?.run(steps.dropFirst(), then: done) }
+        let rest = steps.dropFirst()
+        let gate = StepGate()
+        step.run(gate) { [weak self] in
+            guard let self, self.session == token, gate.finish() else { return }
+            self.run(rest, token: token, then: done)
+        }
+        // A step that finished while it was started has no deadline to wait for.
+        guard !gate.isFinished else { return }
+        schedule(step.seconds) { [weak self] in
+            guard let self, self.session == token, gate.pass() else { return }
+            self.log("ultra: \(step.name) did not answer in \(Int(step.seconds)) s, so it was skipped")
+            self.skipped.append(step.part)
+            self.run(rest, token: token, then: done)
+        }
     }
 
-    private func run(_ steps: [(@escaping () -> Void) -> Void], then done: @escaping () -> Void) {
-        run(steps[...], then: done)
+    private func run(_ steps: [Step], token: Int, then done: @escaping () -> Void) {
+        run(steps[...], token: token, then: done)
     }
 
     /// `job` runs on the work queue and may block; `done` runs on the main thread, and only when the session is still
-    /// the one that asked. A job that has not started when its session ends does not run at all: it would lower
-    /// something after the mode was put back. (One already inside a system call cannot be stopped; what it did was
-    /// named on the record first, and the restore queued behind it puts that back.)
-    private func background<T>(_ token: Int, _ job: @escaping () -> T, then done: @escaping (T) -> Void) {
+    /// the one that asked and the step's time (`gate`) has not run out. A job that has not started when its session ends, or
+    /// its step's time does, does not run at all: it would lower something after the mode was put back or given up on. (One
+    /// already inside a system call cannot be stopped; what it did was named on the record first, and the restore queued
+    /// behind it puts that back.)
+    private func background<T>(_ token: Int, _ gate: StepGate, _ job: @escaping () -> T, then done: @escaping (T) -> Void) {
         work { [weak self] in
-            guard let self, self.session == token else { return }
+            guard let self, self.session == token, !gate.passed else { return }
             let result = job()
             self.onMain { [weak self] in
-                guard let self, self.session == token else { return }
+                guard let self, self.session == token, !gate.passed else { return }
                 done(result)
             }
         }
     }
 
-    private func lowerBrightness(_ token: Int, _ next: @escaping () -> Void) {
-        background(token, { [backlight = self.backlight] in backlight.brightness() }) { [weak self] current in
+    private func lowerBrightness(_ token: Int, _ gate: StepGate, _ next: @escaping () -> Void) {
+        background(token, gate, { [backlight = self.backlight] in backlight.brightness() }) { [weak self] current in
             guard let self else { return }
             guard let current else {
                 self.log("ultra: the brightness could not be read, so it was left as it is")
@@ -471,7 +556,7 @@ final class UltraLowPowerController {
                 self.skipped.append(.ceilingRefused)
                 return next()
             }
-            self.background(token, { [backlight = self.backlight] in backlight.setBrightness(target) }) { [weak self] accepted in
+            self.background(token, gate, { [backlight = self.backlight] in backlight.setBrightness(target) }) { [weak self] accepted in
                 guard let self else { return }
                 if !accepted {
                     self.log("ultra: the screen did not take the lower brightness")
@@ -486,14 +571,14 @@ final class UltraLowPowerController {
 
     private enum RateOutcome { case notOffered, lowered, refused }
 
-    private func lowerRate(_ token: Int, _ next: @escaping () -> Void) {
+    private func lowerRate(_ token: Int, _ gate: StepGate, _ next: @escaping () -> Void) {
         // Named before it is asked for, like the rest: a turning off that overtakes the call on the queue still puts it back.
         guard record(mustSave: true, { $0.rateLowered = true }) else {
             log("ultra: the record could not take the refresh rate, so it was left as it is")
             skipped.append(.rateRefused)
             return next()
         }
-        background(token, { [rate = self.rate] () -> RateOutcome in
+        background(token, gate, { [rate = self.rate] () -> RateOutcome in
             guard rate.canLower else { return .notOffered }
             return rate.lower() ? .lowered : .refused
         }) { [weak self] outcome in
@@ -514,8 +599,8 @@ final class UltraLowPowerController {
         }
     }
 
-    private func switchKeyboardOff(_ token: Int, _ next: @escaping () -> Void) {
-        background(token, { [keyboard = self.keyboard] in keyboard.level() }) { [weak self] level in
+    private func switchKeyboardOff(_ token: Int, _ gate: StepGate, _ next: @escaping () -> Void) {
+        background(token, gate, { [keyboard = self.keyboard] in keyboard.level() }) { [weak self] level in
             guard let self else { return }
             guard let level else { self.skipped.append(.keyboardLight); return next() }
             // Off already: nothing to switch off, and a 0 put back at the end could undo a light the owner switched on since.
@@ -525,7 +610,7 @@ final class UltraLowPowerController {
                 self.skipped.append(.keyboardLight)
                 return next()
             }
-            self.background(token, { [keyboard = self.keyboard] in keyboard.set(0) }) { [weak self] accepted in
+            self.background(token, gate, { [keyboard = self.keyboard] in keyboard.set(0) }) { [weak self] accepted in
                 guard let self else { return }
                 if !accepted {
                     self.skipped.append(.keyboardLight)
@@ -536,7 +621,7 @@ final class UltraLowPowerController {
         }
     }
 
-    private func enterLowPower(_ token: Int, _ next: @escaping () -> Void) {
+    private func enterLowPower(_ token: Int, _ gate: StepGate, _ next: @escaping () -> Void) {
         switch power.availability {
         case .noHelper:
             skipped.append(.lowPowerNoHelper)
@@ -548,9 +633,9 @@ final class UltraLowPowerController {
             power.enterLowPower { [weak self] modeBefore in
                 self?.onMain { [weak self] in
                     guard let self else { return }
-                    guard self.session == token else {
-                        // The mode ended while the helper was answering. It did switch Low Power Mode on, and nothing
-                        // else knows to switch it off.
+                    guard self.session == token, !gate.passed else {
+                        // The mode ended while the helper was answering, or the helper was given up on (and the section says
+                        // so). It did switch Low Power Mode on, and nothing else knows to switch it off.
                         if let modeBefore { self.restorePower(modeBefore) }
                         return
                     }
@@ -589,9 +674,11 @@ final class UltraLowPowerController {
         end(inline: false)
     }
 
-    /// Quit and logout cannot wait for a queue: the same, on this thread, and done when it returns. Call it on the main
-    /// thread, like everything that changes the state: it does not go through `work`, but it does change what the main
-    /// thread owns.
+    /// Quit and logout cannot wait for ever: the continues, the lifts and the unhide are done here, first; the screen, the
+    /// refresh rate, the keyboard light and the power mode are put back on the work queue (this thread never calls the display or
+    /// the keyboard) and waited for for `shutdownWaitSeconds`. When they are done the record and the watchdog go too, before this
+    /// returns; when the wait runs out they stay, for the watchdog and the next launch. Call it on the main thread, like
+    /// everything that changes the state.
     func shutdown() {
         guard state != .off else { return }
         // The window is Anode's own and goes first: whatever the put-back does, a quit leaves nothing of the mode on screen.
@@ -619,6 +706,11 @@ final class UltraLowPowerController {
         guard let record = live else { reset(); return }
         ending = true
         frozen = []
+        // Cancelled, or quit: nothing is left to cancel, and the button and the menus stop offering it.
+        if isStarting {
+            isStarting = false
+            changed()
+        }
         putBack(record, brightnessBefore: brightnessToRestore(), inline: inline, token: token) { [weak self] in
             self?.watchdog.stop()
             self?.store.clear()
@@ -638,9 +730,34 @@ final class UltraLowPowerController {
         return brightnessToPutBack
     }
 
+    /// What the settings job hands to a quit that waits for it, behind a lock (the job is on the work queue): what it could not
+    /// put back, once it is done, or that nobody waits for it any more.
+    private final class SettingsHandoff {
+        private let lock = NSLock()
+        private var failed: [String]?
+        private var abandoned = false
+
+        /// The job is done. True when the quit has given up on it, so the job finishes the put-back itself.
+        func complete(_ lines: [String]) -> Bool {
+            lock.lock(); defer { lock.unlock() }
+            if abandoned { return true }
+            failed = lines
+            return false
+        }
+
+        /// The quit's look after its wait: what the job handed back, or nil, and then the quit does not look again.
+        func take() -> [String]? {
+            lock.lock(); defer { lock.unlock() }
+            if let failed { return failed }
+            abandoned = true
+            return nil
+        }
+    }
+
     /// Continues everything the record names, then unhides, and only then touches the settings (the screen, the
     /// refresh rate, the keyboard light, the power mode), which can block and must not hold up a continue.
-    /// `inline` runs them here; otherwise on `work`, and `finished` comes on the main thread if the session still stands.
+    /// The settings run on `work`. `inline` is a quit: it waits for them here, for at most `shutdownWaitSeconds`, and
+    /// `finished` is called here if they are done; otherwise `finished` comes on the main thread if the session still stands.
     private func putBack(_ record: UltraRecord, brightnessBefore: Float?, inline: Bool, token: Int,
                          finished: @escaping () -> Void) {
         var record = record
@@ -688,8 +805,31 @@ final class UltraLowPowerController {
             finished()
         }
         if inline {
-            settings().forEach(log)
-            afterSettings()
+            // A quit puts the screen, the refresh rate and the keyboard light back on the work queue, like everything that can
+            // block, and waits for it here, for at most `shutdownWaitSeconds`: those calls go to other processes, and a main
+            // thread that is stuck in one cannot be told to quit. What the job found goes through a box, and the rest is done
+            // here on this thread (a hop back to the main queue would not run until this returns, which is after the app is gone).
+            let handoff = SettingsHandoff()
+            work { [weak self] in
+                let failed = settings()
+                guard handoff.complete(failed) else { return }
+                // The quit had given up and the app is still here (a logout that was cancelled): the job finishes the put-back the
+                // way the queue's own path does.
+                self?.onMain { [weak self] in
+                    guard let self, self.session == token else { return }
+                    failed.forEach(self.log)
+                    afterSettings()
+                }
+            }
+            _ = waitForWork(Self.shutdownWaitSeconds)
+            if let failed = handoff.take() {
+                failed.forEach(log)
+                afterSettings()
+            } else {
+                // Neither the record nor the watchdog is taken away: the watchdog sees Anode go and the next launch looks for the
+                // record, and either puts back what is still named.
+                log("ultra: the screen and the rest were not put back in time, so the record and the watchdog were left to finish it")
+            }
         } else {
             work { [weak self] in
                 // Overtaken by a quit that has put everything back already: it does not do it a second time.
@@ -1012,6 +1152,9 @@ final class UltraLowPowerController {
     private func reset() {
         counter.increment()
         state = .off
+        isStarting = false
+        // A box still up is for a session that is over: it goes, and its No finds the session moved on.
+        confirm.dismiss()
         backdrop.hide()
         frozen = []
         skipped = []

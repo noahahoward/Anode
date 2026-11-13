@@ -213,6 +213,24 @@ final class UltraProcessesTests: XCTestCase {
         wait(for: [done], timeout: 3)
     }
 
+    /// The one the owner waits on (asking for the mode) is read at the priority of something they asked for; the sweep's and the
+    /// guard's stay background work, on the same queue.
+    func testASnapshotTheOwnerAsksForIsReadAtTheirPriorityAndTheSweepsStaysInTheBackground() {
+        final class Seen { let lock = NSLock(); var classes: [qos_class_t] = [] }
+        let seen = Seen()
+        let list = LiveProcessList(budget: 5, read: { _ in
+            seen.lock.lock(); seen.classes.append(qos_class_self()); seen.lock.unlock()
+            return []
+        })
+        let first = expectation(description: "urgent"), second = expectation(description: "background")
+        list.snapshot(urgent: true) { _ in first.fulfill() }
+        wait(for: [first], timeout: 3)
+        list.snapshot { _ in second.fulfill() }
+        wait(for: [second], timeout: 3)
+        seen.lock.lock(); defer { seen.lock.unlock() }
+        XCTAssertEqual(seen.classes, [QOS_CLASS_USER_INITIATED, QOS_CLASS_UTILITY])
+    }
+
     func testASnapshotThatTakesTooLongCallsBackNilOnceAndTheLateListIsDropped() {
         let release = DispatchSemaphore(value: 0)
         let one = UltraProcess(pid: 9, parent: 1, uid: 501, startTime: 1, path: "/x", name: "x")

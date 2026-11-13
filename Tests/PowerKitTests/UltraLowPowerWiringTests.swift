@@ -98,6 +98,7 @@ final class UltraLowPowerWiringTests: XCTestCase {
         var logged: [String] = []
         var menus: [(menu: NSMenu, button: NSStatusBarButton)] = []
         var betaOpened = 0
+        var alerts = 0
     }
 
     private struct Rig {
@@ -174,7 +175,8 @@ final class UltraLowPowerWiringTests: XCTestCase {
             workspace: workspace, center: center, appPID: { $0.userInfo?["pid"] as? pid_t },
             frontmostPID: { env.frontmost }, windows: { env.readWindows() }, ownPID: 1000, user: 501,
             log: { env.logged.append($0) },
-            schedule: { delay, job in env.scheduled.append((delay, job)) })
+            schedule: { delay, job in env.scheduled.append((delay, job)) },
+            alert: { env.alerts += 1 })
         return Rig(runtime: runtime, settings: settings, defaults: defaults, suite: suite, calls: calls, processes: processes,
                    freezer: freezer, backlight: backlight, watchdog: watchdog, store: store, confirm: confirm, widgets: widgets,
                    icon: icon, work: work, ticker: ticker, shortcut: shortcut, workspace: workspace, center: center, env: env)
@@ -454,20 +456,24 @@ final class UltraLowPowerWiringTests: XCTestCase {
     }
 
     /// The put-back of the screen is on the queue when the box is unticked: the session is still on until it has run, and the
-    /// power-off notice is still heard for as long as that is so.
+    /// power-off notice is still heard for as long as that is so. The quit's own settings queue up behind it: the processes
+    /// are continued at once, and the end is finished when the queue gets round to them.
     func testAPowerOffStillEndsASessionThatWasUntickedWhileItsPutBackWasQueued() throws {
         let r = try rig(ticked: true); defer { done(r) }
         start(r)
         r.work.hold = true
+        r.work.idle = false
         r.settings.ultraLowPowerEnabled = false
         XCTAssertEqual(r.controller.state, .on, "the state stays until the settings are back")
         XCTAssertFalse(r.shortcut.registered)
         XCTAssertEqual(r.freezer.resumes.sorted(), [20, 21, 30])
         powerOff(r)
-        XCTAssertEqual(r.controller.state, .off)
-        XCTAssertEqual(r.store.cleared, 1)
+        XCTAssertEqual(r.controller.state, .on, "the quit's settings are behind the turn-off's, and the wait ran out")
+        XCTAssertEqual(r.store.cleared, 0, "so the record is left for the watchdog")
+        XCTAssertEqual(r.workspace.observers, 1, "and the notice is still heard")
         r.work.runHeld()
-        XCTAssertEqual(r.store.cleared, 1, "the queued put-back finds the session over and does nothing")
+        XCTAssertEqual(r.controller.state, .off)
+        XCTAssertEqual(r.store.cleared, 1, "the turn-off's put-back finds the session over and does nothing; the quit's finishes it")
         XCTAssertEqual(r.workspace.observers, 0)
     }
 
@@ -503,34 +509,41 @@ final class UltraLowPowerWiringTests: XCTestCase {
         XCTAssertFalse(r.runtime.isWatchingBrightness)
     }
 
-    /// A job already inside a display or keyboard call must not lower something after the put-back: so what is queued is
-    /// waited for (at most a second) before the controller puts everything back on this thread.
-    func testPowerOffWaitsForTheQueueBeforeThePutBack() throws {
+    /// A quit does the continues first, then gives the screen and the rest to the queue and waits for it once, for two seconds. A
+    /// job already inside a display or keyboard call is not lowering something after the put-back: the queue is serial, so the
+    /// put-back comes after it.
+    func testPowerOffContinuesFirstThenWaitsForTheSettingsOnTheQueue() throws {
         let r = try rig(ticked: true); defer { done(r) }
         start(r)
         r.calls.list.removeAll()
         powerOff(r)
-        XCTAssertEqual(r.calls.list.first, "wait for work 1.0", "asked first, for at most a second: \(r.calls.list)")
-        assertBefore("wait for work", "resume", in: r)
+        XCTAssertEqual(r.calls.list.filter { $0.hasPrefix("wait for work") }, ["wait for work 2.0"], "\(r.calls.list)")
+        assertBefore("resume", "wait for work", in: r)
+        assertBefore("wait for work", "watchdog stop", in: r)
     }
 
-    func testQuitWaitsForTheQueueBeforeThePutBack() throws {
+    func testQuitContinuesFirstThenWaitsForTheSettingsOnTheQueue() throws {
         let r = try rig(ticked: true); defer { done(r) }
         start(r)
         r.calls.list.removeAll()
         r.runtime.shutdown()
-        XCTAssertEqual(r.calls.list.first, "wait for work 1.0", "\(r.calls.list)")
-        assertBefore("wait for work", "resume", in: r)
+        XCTAssertEqual(r.calls.list.filter { $0.hasPrefix("wait for work") }, ["wait for work 2.0"], "\(r.calls.list)")
+        XCTAssertEqual(r.calls.list.first, "resume 20", "nothing waits before the processes are running again: \(r.calls.list)")
+        assertBefore("resume", "wait for work", in: r)
+        XCTAssertEqual(r.controller.state, .off)
     }
 
-    func testAQueueThatDoesNotFinishInTimeIsSaidInTheLogAndTheSessionIsStillEnded() throws {
+    func testAQueueThatDoesNotFinishInTimeIsSaidInTheLogAndTheRecordIsLeftForTheWatchdog() throws {
         let r = try rig(ticked: true); defer { done(r) }
         start(r)
+        r.work.hold = true
         r.work.idle = false
         r.runtime.shutdown()
-        XCTAssertEqual(r.controller.state, .off, "the wait is a courtesy; the put-back is not made to depend on it")
-        XCTAssertEqual(r.freezer.resumes.sorted(), [20, 21, 30])
-        XCTAssertTrue(r.env.logged.contains { $0.contains("still") }, "\(r.env.logged)")
+        XCTAssertEqual(r.freezer.resumes.sorted(), [20, 21, 30], "the processes were continued before the wait")
+        XCTAssertNotEqual(r.controller.state, .off)
+        XCTAssertEqual(r.store.cleared, 0)
+        XCTAssertEqual(r.watchdog.stopped, 0)
+        XCTAssertEqual(r.env.logged.filter { $0.contains("not put back in time") }.count, 1, "\(r.env.logged)")
     }
 
     /// A logout can be cancelled after the notice has been posted: the app goes on, and the owner can use the mode again.
@@ -559,14 +572,16 @@ final class UltraLowPowerWiringTests: XCTestCase {
         XCTAssertEqual(r.controller.state, .confirming, "not on yet")
         XCTAssertFalse(r.freezer.stops.isEmpty, "but the apps are stopped")
         XCTAssertFalse(r.runtime.isWatchingBrightness, "the timer and the icon wait for the mode to be on")
+        r.work.idle = false
         powerOff(r)
         XCTAssertFalse(r.freezer.resumes.isEmpty, "everything that was stopped is continued")
+        XCTAssertEqual(r.controller.state, .confirming, "the screen is behind the queued call: the wait ran out")
+        XCTAssertEqual(r.store.cleared, 0, "the record stays for the watchdog")
+        r.work.runHeld()   // the queued call finds the session over; the quit's own settings finish the end
         XCTAssertEqual(r.controller.state, .off)
         XCTAssertEqual(r.store.cleared, 1)
         XCTAssertEqual(r.watchdog.stopped, 1)
         XCTAssertEqual(r.workspace.observers, 1, "only the front app is still tracked: the box is ticked")
-        r.work.runHeld()   // the queued call finds the session over
-        XCTAssertEqual(r.controller.state, .off)
     }
 
     func testThePowerOffNoticeIsHeardFromTheQuestionUntilTheModeIsOffAndNotBefore() throws {
@@ -593,6 +608,49 @@ final class UltraLowPowerWiringTests: XCTestCase {
         r.settings.ultraLowPowerEnabled = true
         XCTAssertFalse(r.shortcut.registered)
         XCTAssertEqual(r.workspace.observers, 0)
+    }
+
+    // ── Starting, cancelling and quitting ───────────────────────────────────
+
+    func testUntickingTheBoxWhileTheBoxIsUpPutsTheBoxAway() throws {
+        let r = try rig(ticked: true); defer { done(r) }
+        r.controller.request()
+        XCTAssertTrue(r.confirm.isUp)
+        r.settings.ultraLowPowerEnabled = false
+        XCTAssertFalse(r.confirm.isUp)
+        XCTAssertEqual(r.confirm.dismissals, 1)
+        XCTAssertEqual(r.controller.state, .off)
+    }
+
+    /// The readings' menu and the icon's menu carry Cancel while the start is running.
+    func testTheMenuOffersCancelWhileTheStartIsRunning() throws {
+        let r = try rig(ticked: true); defer { done(r) }
+        r.work.hold = true
+        start(r)
+        XCTAssertTrue(r.controller.isStarting)
+        let menu = r.runtime.menu()
+        XCTAssertEqual(menu.items.map(\.title), ["Cancel"])
+        XCTAssertTrue(menu.items[0].isEnabled)
+        _ = (menu.items[0].target as? NSObject)?.perform(menu.items[0].action!)
+        XCTAssertFalse(r.controller.isStarting)
+        r.work.runHeld()
+        XCTAssertEqual(r.controller.state, .off)
+    }
+
+    func testTheStartedMenuStillOffersTurnOff() throws {
+        let r = try rig(ticked: true); defer { done(r) }
+        start(r)
+        XCTAssertEqual(r.controller.state, .on)
+        XCTAssertEqual(r.runtime.menu().items.first?.title, "Turn off")
+    }
+
+    func testAListOfAppsThatCannotBeReadMakesTheOneSoundAndStartsNothing() throws {
+        let r = try rig(ticked: true); defer { done(r) }
+        r.processes.list = nil
+        r.controller.request()
+        XCTAssertEqual(r.env.alerts, 1)
+        XCTAssertEqual(r.controller.lastFailure, "Anode could not read the running apps. Try again.")
+        XCTAssertEqual(r.controller.state, .off)
     }
 
     // ── While on ────────────────────────────────────────────────────────────

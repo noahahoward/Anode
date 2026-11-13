@@ -65,8 +65,6 @@ final class UltraLowPowerRuntime {
     /// How often the brightness is looked at while the mode is on. A pull-back is not visible as flicker even much faster
     /// (measured at 50 ms), so this is the cheap end.
     static let brightnessWatchSeconds: TimeInterval = 2
-    /// The longest a quit or a power-off waits for what is on the work queue before putting everything back.
-    static let quitWaitSeconds: TimeInterval = 1
     static let shortcutOwner = "ultraLowPower"
     /// The section in Beta Features asks this runtime for the groups it may add to its list.
     static var current: UltraLowPowerRuntime?
@@ -123,7 +121,8 @@ final class UltraLowPowerRuntime {
          registerShortcut: @escaping (@escaping () -> Void) -> Void, unregisterShortcut: @escaping () -> Void,
          work: UltraWorkRunning, startTicker: @escaping UltraTicker, workspace: NotificationCenter, center: NotificationCenter,
          appPID: @escaping (Notification) -> pid_t?, frontmostPID: @escaping () -> pid_t?, windows: @escaping () -> [UltraWindow], ownPID: pid_t, user: uid_t,
-         log: @escaping (String) -> Void, schedule: @escaping (TimeInterval, @escaping () -> Void) -> Void) {
+         log: @escaping (String) -> Void, schedule: @escaping (TimeInterval, @escaping () -> Void) -> Void,
+         alert: @escaping () -> Void) {
         self.settings = settings
         self.processes = processes
         self.watchdog = watchdog
@@ -159,7 +158,7 @@ final class UltraLowPowerRuntime {
             processTable: processTable, hasEfficiencyCores: hasEfficiencyCores, hider: hider, backlight: backlight,
             ownBrightness: ownBrightness, rate: rate, keyboard: keyboard, power: power, watchdog: watchdog, store: store,
             confirm: confirm, backdrop: backdrop, load: load, lastOtherFrontApp: lastOtherFront, ownPIDs: ownPIDs, user: user,
-            work: { work.run($0) }, schedule: schedule, log: log)
+            work: { work.run($0) }, waitForWork: { work.waitUntilIdle(limit: $0) }, schedule: schedule, alert: alert, log: log)
         controller.onChange = { [weak self] in self?.controllerChanged() }
 
         // Before anything else of the feature, and whether or not the box is ticked: a record left by a crash is undone even
@@ -201,7 +200,8 @@ final class UltraLowPowerRuntime {
             work: UltraWorkQueue(), startTicker: liveTicker,
             workspace: NSWorkspace.shared.notificationCenter, center: .default, appPID: liveAppPID,
             frontmostPID: { NSWorkspace.shared.frontmostApplication?.processIdentifier }, windows: liveWindows, ownPID: getpid(), user: getuid(),
-            log: log, schedule: { delay, work in DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work) })
+            log: log, schedule: { delay, work in DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work) },
+            alert: { NSSound.beep() })
         icon.onClick = { [weak runtime] button in runtime?.showMenu(under: button) }
         UltraLowPowerController.current = runtime.controller
         UltraLowPowerRuntime.current = runtime
@@ -313,19 +313,15 @@ final class UltraLowPowerRuntime {
         if !ownPIDs().contains(pid) { front.pid = pid }
     }
 
-    /// The Mac is being powered off or logged out: the session is ended, here, and the work queue is waited for first. A
-    /// logout can still be cancelled after this notice, so the runtime stays as it is: the box and the shortcut keep working.
+    /// The Mac is being powered off or logged out: the session is ended, here. A logout can still be cancelled after this
+    /// notice, so the runtime stays as it is: the box and the shortcut keep working.
     private func powerOffNotice() { endSession() }
 
-    /// What a quit or a power-off cannot leave to a queue. A job already inside a display or keyboard call must not lower
-    /// something after the put-back, so what is queued is waited for (briefly) first; then the controller puts everything
-    /// back on this thread. A session that has ended already is not ended again.
-    private func endSession() {
-        if !work.waitUntilIdle(limit: Self.quitWaitSeconds) {
-            log("ultra: the work queue was still busy at the end, so the put-back did not wait for it")
-        }
-        controller.shutdown()
-    }
+    /// What a quit or a power-off cannot leave to a queue: the controller continues everything here, first, and puts the
+    /// screen and the rest back on the work queue, which it waits for (`UltraLowPowerController.shutdownWaitSeconds`). That queue
+    /// is serial, so what is put back comes after any job already inside a display or keyboard call, and no job that has not
+    /// started runs once the session has ended. A session that has ended already is not ended again.
+    private func endSession() { controller.shutdown() }
 
     /// The controller says something changed (the state, the groups): what the mode needs while on is there exactly then.
     private func controllerChanged() {
@@ -380,7 +376,7 @@ final class UltraLowPowerRuntime {
 
     /// What a click on a paused reading, or on the icon, opens: the menu for the mode as it is now.
     func menu() -> NSMenu {
-        UltraMenu.build(state: controller.state, frozen: controller.frozen, leftRunning: controller.leftRunning,
+        UltraMenu.build(state: controller.state, starting: controller.isStarting, frozen: controller.frozen, leftRunning: controller.leftRunning,
                         releasedForLoad: controller.releasedForLoad, names: groupNames,
                         onStart: { [weak self] in self?.controller.request() },
                         onTurnOff: { [weak self] in self?.controller.turnOff() },

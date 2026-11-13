@@ -17,6 +17,8 @@ enum UltraMenu {
 
     static let startTitle = "Ultra Low Power Mode…"
     static let turnOffTitle = "Turn off"
+    /// While the start is running (the owner has confirmed and the mode is not on yet): the way out of it.
+    static let cancelTitle = "Cancel"
     static let frozenHeader = "Frozen (click to bring back):"
     static let nothingFrozenTitle = "Nothing is frozen now."
     static let openBetaTitle = "Open Beta Features…"
@@ -32,12 +34,13 @@ enum UltraMenu {
         @objc func fire() { run() }
     }
 
-    /// Off: the one way in. Waiting for a Confirm: the same item, switched off. On: turn it off, then every group still
-    /// frozen (choosing one brings it back), then the apps that are running whole, then the way to the settings.
+    /// Off: the one way in. Waiting for a Confirm: the same item, switched off. Starting (confirmed, not on yet): Cancel, which
+    /// turns it off. On: turn it off, then every group still frozen (choosing one brings it back), then the apps that are running
+    /// whole, then the way to the settings.
     ///
     /// `leftRunning`, `releasedForLoad` and `names` say which apps were never frozen or were let go, and why (see
     /// `UltraLowPowerFeature.leftRunningLines`); they only show while the mode is on.
-    static func build(state: UltraLowPowerController.State, frozen: [FreezeGroup], leftRunning: [FreezeGroup] = [],
+    static func build(state: UltraLowPowerController.State, starting: Bool = false, frozen: [FreezeGroup], leftRunning: [FreezeGroup] = [],
                       releasedForLoad: [String] = [], names: [String: String] = [:], onStart: @escaping () -> Void,
                       onTurnOff: @escaping () -> Void, onRelease: @escaping (String) -> Void,
                       onOpenBeta: @escaping () -> Void) -> NSMenu {
@@ -64,6 +67,8 @@ enum UltraMenu {
         switch state {
         case .off:
             add(startTitle, onStart)
+        case .confirming where starting:
+            add(cancelTitle, onTurnOff)
         case .confirming:
             add(startTitle, onStart).isEnabled = false
         case .on:
@@ -106,18 +111,18 @@ enum UltraMenu {
 
     enum Press: Equatable { case start, turnOff }
 
-    /// The section's button, the app menu's entry and the shortcut all mean the same: start when off, turn off when on, and
-    /// nothing while the box is up (a second press must not ask again).
-    static func press(for state: UltraLowPowerController.State) -> Press? {
+    /// The section's button, the app menu's entry and the shortcut all mean the same: start when off, turn off when on, cancel (the
+    /// same as turning off) while the start is running, and nothing while the box is up (a second press must not ask again).
+    static func press(for state: UltraLowPowerController.State, starting: Bool = false) -> Press? {
         switch state {
         case .off: return .start
         case .on: return .turnOff
-        case .confirming: return nil
+        case .confirming: return starting ? .turnOff : nil
         }
     }
 
     static func toggle(_ controller: UltraLowPowerController) {
-        switch press(for: controller.state) {
+        switch press(for: controller.state, starting: controller.isStarting) {
         case .start?: controller.request()
         case .turnOff?: controller.turnOff()
         case nil: break
@@ -135,10 +140,11 @@ enum UltraMenu {
     /// How the entry in the app menu looks. It is there only while the box in Beta Features is ticked, and a mode that is
     /// running keeps its entry even if the box is unticked since: the way out is never taken away. With no controller (the
     /// app has not made one) or while the box is up there is nothing to press.
-    static func appEntry(ticked: Bool, state: UltraLowPowerController.State?) -> AppEntry {
-        AppEntry(title: state == .on ? appTurnOffTitle : startTitle,
-                 isHidden: !ticked && state != .on,
-                 isEnabled: state == .off || state == .on)
+    static func appEntry(ticked: Bool, state: UltraLowPowerController.State?, starting: Bool = false) -> AppEntry {
+        let cancelling = state == .confirming && starting
+        return AppEntry(title: state == .on ? appTurnOffTitle : cancelling ? cancelTitle : startTitle,
+                        isHidden: !ticked && state != .on,
+                        isEnabled: state == .off || state == .on || cancelling)
     }
 }
 
@@ -217,6 +223,7 @@ final class UltraLowPowerFeature: BetaFeature {
 
     static let startTitle = "Start…"
     static let turnOffTitle = "Turn Off"
+    static let cancelTitle = "Cancel"
     static let addTitle = "Add…"
     static let nothingToAddTitle = "Nothing else is running"
 
@@ -243,6 +250,7 @@ final class UltraLowPowerFeature: BetaFeature {
     let startButton = NSButton(title: UltraLowPowerFeature.startTitle, target: nil, action: nil)
     let keepList = NSStackView()
     let addPopup = NSPopUpButton(frame: .zero, pullsDown: true)
+    let failureLabel = BetaFeaturesWindowController.wrapping("", color: .secondaryLabelColor)
     let skippedLabel = BetaFeaturesWindowController.wrapping("", color: .secondaryLabelColor)
     let leftRunningLabel = BetaFeaturesWindowController.wrapping("", color: .secondaryLabelColor)
     let installButton = NSButton(title: "Install Helper\u{2026}", target: nil, action: nil)
@@ -368,11 +376,12 @@ final class UltraLowPowerFeature: BetaFeature {
     }
 
     /// The Start / Turn Off button. Start waits for the box to be ticked, a controller to exist and no box to be up. Turn Off is
-    /// always there while the mode runs, ticked or not.
-    static func buttonLook(ticked: Bool, state: UltraLowPowerController.State?) -> ButtonLook {
+    /// always there while the mode runs, ticked or not. While the start is running (confirmed, not on yet) it is Cancel.
+    static func buttonLook(ticked: Bool, state: UltraLowPowerController.State?, starting: Bool = false) -> ButtonLook {
         switch state {
         case .on?: return ButtonLook(title: turnOffTitle, isEnabled: true)
         case .off?: return ButtonLook(title: startTitle, isEnabled: ticked)
+        case .confirming? where starting: return ButtonLook(title: cancelTitle, isEnabled: true)
         case .confirming?, nil: return ButtonLook(title: startTitle, isEnabled: false)
         }
     }
@@ -410,7 +419,7 @@ final class UltraLowPowerFeature: BetaFeature {
 
         let keepCaption = NSTextField(labelWithString: "Always keep running")
         keepCaption.font = .boldSystemFont(ofSize: NSFont.smallSystemFontSize)
-        let column = NSStackView(views: [enableCheckbox, efficiencyCheckbox, backdropCheckbox, startButton, keepCaption, keepList, addPopup, skippedLabel,
+        let column = NSStackView(views: [enableCheckbox, efficiencyCheckbox, backdropCheckbox, startButton, failureLabel, keepCaption, keepList, addPopup, skippedLabel,
                                          leftRunningLabel, installButton, installNoteLabel, noteLabel])
         column.orientation = .vertical
         column.alignment = .leading
@@ -520,9 +529,12 @@ final class UltraLowPowerFeature: BetaFeature {
         efficiencyCheckbox.state = settings.ultraLowPowerEfficiencyCores ? .on : .off
         backdropCheckbox.state = settings.ultraLowPowerBlackBackdrop ? .on : .off
         for choice in [efficiencyCheckbox, backdropCheckbox] { choice.isEnabled = Self.optionsEnabled(state: c?.state) }
-        let look = Self.buttonLook(ticked: ticked, state: c?.state)
+        let look = Self.buttonLook(ticked: ticked, state: c?.state, starting: c?.isStarting ?? false)
         startButton.title = look.title
         startButton.isEnabled = look.isEnabled
+        // Why the last ask came to nothing, until the next one.
+        failureLabel.stringValue = c?.lastFailure ?? ""
+        failureLabel.isHidden = c?.lastFailure == nil
 
         redrawKeepList()
         redrawAddPopup()

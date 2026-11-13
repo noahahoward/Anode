@@ -102,7 +102,8 @@ extension AppDelegate {
     }
 
     private func ultraEntry() -> UltraMenu.AppEntry {
-        UltraMenu.appEntry(ticked: Settings.shared.ultraLowPowerEnabled, state: UltraLowPowerController.current?.state)
+        UltraMenu.appEntry(ticked: Settings.shared.ultraLowPowerEnabled, state: UltraLowPowerController.current?.state,
+                           starting: UltraLowPowerController.current?.isStarting ?? false)
     }
 
     // ── Settings ────────────────────────────────────────────────────────────
