@@ -171,3 +171,27 @@ Each gets a measured step with the owner at a quiet Mac, as the plan's first tas
 5. **Logout, restart and sleep with stopped apps.** These must work. If continuing everything at the announcement is too late, stop and go back to the owner.
 6. **Holding the brightness ceiling against auto-brightness without flicker.** If it flickers, set the ceiling once at start and after each key press, do not hold it, and say so.
 7. **Processes that belong to two apps at once, and system helpers of frozen apps.** If "responsible for" proves unreliable for a class, that class is left running.
+
+## Additions after the trial (2026-11-13; the owner: "efficiency cores only would be AWESOME… 1 2 3 is great, 4 let's keep wifi on… Build it")
+
+Measured on the owner's Mac in the trial (`docs/superpowers/plans/2026-11-12-ultra-low-power-mode-results.md`): at rest the mode as first built saves nothing that can be told from noise; with something running it saves a great deal (a busy browser frozen: 7.5 W to 3.2 W; the lowest refresh rate alone: about 2 W while a video plays; Low Power Mode: a heavy job from 27 W to 13 W). Three levers the first design did not have were measured and the owner chose them. Wi-Fi off (0.3 W) was measured too and the owner said to keep Wi-Fi on. Bluetooth off and pausing the system's own services measured nothing and are left out.
+
+### 1. Everything that still runs is kept on the efficiency cores
+- **What:** every process of the kept apps, of the apps left running because they cannot be frozen whole, and of any app the owner brings back during the session, is given the system's background policy, which on Apple silicon confines all of its threads to the efficiency cores. Measured: four busy threads cost 27.4 W normally and 5.0 W this way; applied to work already running it took 32 W to 10.5 W and back when undone; processes started afterwards by one already under the policy follow it.
+- **Not touched:** the system's own processes (the same "never touched" rule as for freezing), Anode, and an app that is using the microphone or camera *(author's call: a call's audio and video must not stutter)*.
+- **Undone:** an app stays under the policy for as long as the mode is on. It is lifted from every process when the mode ends, when Anode quits, by the watchdog at once if Anode dies (after it has continued the frozen processes, before anything else), and at the next launch from the record. The record names each process before the policy is applied, like everything else.
+- **New processes:** the sweep that already looks for new members of frozen groups also puts new members of these groups under the policy.
+- **Cost the section states plainly:** work is slower, and disk and network use by those apps is slowed too.
+- **A checkbox** in the section, on by default *(author's call)*: "Keep everything on the efficiency cores (slower)". Unticked, this part is not applied.
+- **Macs without efficiency cores** (Intel): the part is skipped and the section says so. Detected from the processor's performance levels, not from a model list.
+
+### 2. A black backdrop
+- **What:** while the mode is on, a plain black surface covers the desktop picture and desktop icons on every display, underneath every app window. With the other apps frozen and hidden, what is lit is then the kept app's windows, the menu bar and the Dock. Measured: a fully black screen read about 0.5 to 0.7 W under the same screen showing ordinary content at the same brightness (the panel's backlight zones go dark behind black), about a quarter of the resting draw. What it saves in practice depends on how much of the screen the kept app covers; a window that fills the screen leaves nothing to black out, and the section says so.
+- **Click-through**, on every Space, rebuilt when displays change, gone the moment the mode ends or Anode goes away (it is Anode's own window, so nothing needs recording or undoing after a crash).
+- **A checkbox** in the section, on by default *(author's call)*: "Black out the desktop behind your windows".
+
+### 3. The brightness ceiling is a quarter, not half
+The owner's first figure was "1/2 of max as the new max"; after the measurements (0.375 of the slider: about 3.2 W; 0.25: 2.8 W; 0.125: 2.65 W; no gain below that) the owner chose a quarter. Everything said about "half" above now reads "a quarter".
+
+### The section's note, corrected
+The first note said the refresh rate and Low Power Mode save "little or nothing". That was true only at rest. The note now says: at rest only a darker screen lowers the draw; when something is running, freezing it, the refresh rate, Low Power Mode and the efficiency cores each save a great deal, with the measured figures; work is slower in this mode; no running time is promised.
