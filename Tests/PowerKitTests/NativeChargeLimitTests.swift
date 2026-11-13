@@ -55,6 +55,28 @@ final class NativeChargeLimitTests: XCTestCase {
                        "a reason without a failure, or a failure without one")
     }
 
+    /// The fake is what the controller's tests stand on, so it is pinned to what was measured (see its comment).
+    func testFakeBehavesAsMeasured() {
+        let client = FakeChargeLimitClient(state: NativeChargeState(mclEnabled: false, mclLimit: 100,
+                                                                    optimizedChargingEnabled: true))
+        XCTAssertTrue(client.setLimit(90))
+        XCTAssertEqual(client.state, NativeChargeState(mclEnabled: true, mclLimit: 90, optimizedChargingEnabled: true),
+                       "a limit below 100 did not turn the switch on")
+        XCTAssertTrue(client.setLimit(100))
+        XCTAssertEqual(client.state, NativeChargeState(mclEnabled: false, mclLimit: 100, optimizedChargingEnabled: true),
+                       "a limit of 100 did not turn the switch off")
+        XCTAssertTrue(client.setLimit(85))
+        XCTAssertTrue(client.turnLimitOff())
+        XCTAssertEqual(client.state, NativeChargeState(mclEnabled: false, mclLimit: 100, optimizedChargingEnabled: true),
+                       "turning off did not give off, 100")
+        XCTAssertEqual(client.history.count, 4)
+        client.succeeds = false
+        let before = client.state
+        XCTAssertFalse(client.setLimit(90))
+        XCTAssertFalse(client.turnLimitOff())
+        XCTAssertEqual(client.state, before, "a refusal changed something")
+    }
+
     /// Later tests rely on the fake having the real client's gate, so a controller that asks for 63 sees
     /// a refusal and no recorded call, as it would from macOS.
     func testFakeRefusesValuesTheRealClientRefuses() {
@@ -68,15 +90,27 @@ final class NativeChargeLimitTests: XCTestCase {
 }
 
 /// A scripted stand-in for the PowerUI client, so the controller's tests never touch the real
-/// charge limit. It refuses what the real client refuses, without recording the call.
+/// charge limit. It refuses what the real client refuses, without recording the call, and it behaves as the real one
+/// was measured on Mac17,9, macOS 27.0, 2026-11-13 (unprivileged calls, each read back from the client and from
+/// `pmset -g battlimit`):
+///   * enabling the limit does not leave the limit alone: it sets it to 80 every time (95 then enable gave 80, and so
+///     did 90 then enable), which is why the client has no way to enable it, and this fake none either;
+///   * `setLimit(n)` with n below 100 turns the switch on by itself (off, 100 then set 90 gave on, 90), and
+///     `setLimit(100)` turns it off;
+///   * disabling gives off, 100.
+/// Whatever Charge Control wants of the switch, it gets by setting the limit.
 public final class FakeChargeLimitClient: ChargeLimitClient {
     public var state: NativeChargeState?
-    /// What every setter returns while true; flip it to make the OS "refuse".
+    /// What every setter returns while true; flip it to make the OS "refuse". A refusal changes nothing.
     public var succeeds = true
 
     public private(set) var limitCalls: [Int] = []
-    public private(set) var limitEnabledCalls: [Bool] = []
+    /// How many times the switch was asked to turn off. (The client has no way to turn it on: that is `enableMCL`,
+    /// which sets the limit to 80; the limit goes in by being set.)
+    public private(set) var turnOffCalls = 0
     public private(set) var optimizedChargingCalls: [Bool] = []
+    /// The state after every setter that changed it, in order: what macOS held on the way, not only where it ended.
+    public private(set) var history: [NativeChargeState] = []
 
     public init(state: NativeChargeState? = NativeChargeState(mclEnabled: false, mclLimit: 100, optimizedChargingEnabled: true)) {
         self.state = state
@@ -89,13 +123,17 @@ public final class FakeChargeLimitClient: ChargeLimitClient {
         limitCalls.append(percent)
         guard succeeds else { return false }
         state?.mclLimit = percent
+        state?.mclEnabled = percent < NativeChargeLimit.clientValues.last!
+        remember()
         return true
     }
 
-    public func setLimitEnabled(_ on: Bool) -> Bool {
-        limitEnabledCalls.append(on)
+    public func turnLimitOff() -> Bool {
+        turnOffCalls += 1
         guard succeeds else { return false }
-        state?.mclEnabled = on
+        state?.mclEnabled = false
+        state?.mclLimit = 100
+        remember()
         return true
     }
 
@@ -104,6 +142,10 @@ public final class FakeChargeLimitClient: ChargeLimitClient {
         guard succeeds else { return false }
         state?.optimizedChargingEnabled = on
         return true
+    }
+
+    private func remember() {
+        if let state { history.append(state) }
     }
 }
 

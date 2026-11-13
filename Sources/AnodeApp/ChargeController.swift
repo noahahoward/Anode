@@ -11,7 +11,10 @@ import PowerKit
 // Where an answer goes:
 //   * a limit of 80, 85, 90, 95 or 100 → macOS's own client API (`ChargeLimitClient`), no helper needed;
 //   * any other limit → the helper's `setChargeLimit`; with no helper, the nearest client value ABOVE it, so the
-//     battery is never held lower than asked, and the status says the helper is needed;
+//     battery is never held lower than asked, and the status says the helper is needed. The helper only writes the
+//     value, and macOS's limit switch is turned on by setting a limit, never by enabling it (enabling sets the limit to
+//     80: see `ChargeLimitClient`), so when the switch reads off, or nothing is known to be in force, the nearest
+//     client value at or above the limit is set first and the helper's value follows (`standInForTheHelper`);
 //   * a discharge → the helper's `discharge` / `stopDischarge`, over the connection the Fans tab shares
 //     (`HelperConnection`).
 //
@@ -545,9 +548,10 @@ final class ChargeController {
     /// screen: a seed that was wrong at launch, or a notice that never came, would otherwise leave it passive for good
     /// while the section says the limit is held.
     private let sessionOnConsole: () -> Bool?
-    /// macOS's settings have been asserted by this controller (the switch-on turned Optimized Battery Charging off and
-    /// the limit's switch on). Not while another account was on screen at launch: then the first time this account is
-    /// on screen it does that, and is not taken to have found someone else's change.
+    /// macOS's settings have been asserted by this controller (the switch-on turned Optimized Battery Charging off; the
+    /// limit goes in by setting it, which is what turns the limit's switch on). Not while another account was on screen
+    /// at launch: then the first time this account is on screen it does that, and is not taken to have found someone
+    /// else's change.
     private var asserted = false
     /// While going to sleep, a limit only the helper can set is waited for, until this, rather than sent and left.
     private var waitUntil: Date?
@@ -990,7 +994,6 @@ final class ChargeController {
     private func assertMacOSSettings(_ c: ChargeLimitClient) {
         asserted = true
         if !c.setOptimizedCharging(false) { log("macOS would not turn Optimized Battery Charging off") }
-        if !c.setLimitEnabled(true) { log("macOS would not turn its charge limit on") }
     }
 
     private func disable() {
@@ -1062,9 +1065,8 @@ final class ChargeController {
                     + "Optimized Battery Charging on")
                 record = Self.defaultRecord
             }
-            let limit = restoreLimit(record.mclLimit, client: c, deadline: deadline)
+            let limit = restoreLimit(record, client: c, deadline: deadline)
             var ok = limit != .kept && settled
-            ok = c.setLimitEnabled(record.mclEnabled) && ok
             ok = c.setOptimizedCharging(record.optimizedChargingEnabled) && ok
             let switchText = "\(record.mclEnabled ? "on" : "off")"
             let obcText = "Optimized Battery Charging \(record.optimizedChargingEnabled ? "on" : "off")"
@@ -1106,7 +1108,10 @@ final class ChargeController {
         case kept
     }
 
-    /// The recorded limit itself, or the best this Mac can do. Only the helper can put back one macOS does not take by
+    /// The recorded limit with the recorded switch, or the best this Mac can do. A record with the switch off is put
+    /// back by turning it off (which gives "off, 100"); one with the switch on and limit v ends at "on, v" by setting v,
+    /// which turns the switch on by itself, and never by enabling it, which would end at 80. Only the helper can put
+    /// back one macOS does not take by
     /// itself; an installed one is greeted for it even when nothing has talked to it this run (Charge Control off, or
     /// this is the uninstall): the waited command opens the connection first. When the value cannot land, the nearest
     /// one macOS takes at or above it is set, so the Mac can still charge at least that far. With no helper
@@ -1119,10 +1124,14 @@ final class ChargeController {
     /// record would be cleared with a stand-in left in force and the person's original lost. So its socket is tried
     /// once, as the stop for a cut debt is: the same waited command, bounded to `helperProbeTimeout`. Only when nothing
     /// answers is there no helper; an answer, even a refusal, is one.
-    private func restoreLimit(_ limit: Int, client c: ChargeLimitClient, deadline: Date) -> LimitRestore {
+    private func restoreLimit(_ record: NativeChargeState, client c: ChargeLimitClient, deadline: Date) -> LimitRestore {
+        guard record.mclEnabled else { return c.turnLimitOff() ? .restored : .kept }
+        let limit = record.mclLimit
         if NativeChargeLimit.isClientSettable(limit) { return c.setLimit(limit) ? .restored : .kept }
         let nearest = Self.nearestClientValue(atOrAbove: limit)
         var noHelper = !(helper.available || helper.installed)
+        // With the switch off the helper's value alone would land with it off: the nearest value above goes first.
+        standInForTheHelper(limit, client: c)
         let r = helper.sendWaiting(.setChargeLimit(limit),
                                    timeout: noHelper ? min(Self.timeLeft(deadline), Self.helperProbeTimeout)
                                                      : Self.timeLeft(deadline))
@@ -1691,7 +1700,8 @@ final class ChargeController {
 
     /// Read macOS back. If the limit's switch, the limit or Optimized Battery Charging is not what this controller
     /// put in force (the person changed it in System Settings, or something else did), say so once, forget what
-    /// was believed, and put all three back; the tick that follows sets the limit. Once per call, on the timer and
+    /// was believed, and put it back: Optimized Battery Charging here, and the limit (with its switch) by the tick
+    /// that follows, which sets it. The switch is never enabled on its own: that would set the limit to 80. Once per call, on the timer and
     /// after a wake, so a Mac that keeps refusing is asked again 30 s later, never in a loop.
     ///
     /// The switch reading off is not a change when 100 is what this controller put in force and 100 is what macOS
@@ -1717,10 +1727,14 @@ final class ChargeController {
         var changed: [String] = []
         let offByItself = appliedLimit == Self.noLimit && found.mclLimit == Self.noLimit
         // A limit only the helper can set, on its way from nothing in force or from 100 (where macOS keeps the switch
-        // off): the switch is being turned on around it (`switchOnForTheHelper`), and macOS may show it off, or the
-        // value already landed, for a moment before the helper's yes. That is the transition, not someone's change.
+        // off): macOS may show the value already landed, and the switch off if the stand-in ahead of it
+        // (`standInForTheHelper`) was refused, for a moment before the helper's yes. That is the transition, not
+        // someone's change. And with nothing in force (nothing applied yet, or the books cleared by this very pass) a
+        // switch that is off is not a change either: nothing was holding it on.
         let helperLimitOnItsWay = limitInFlight && (appliedLimit == nil || appliedLimit == Self.noLimit)
-        if !found.mclEnabled, !offByItself, !helperLimitOnItsWay { changed.append("the limit was turned off") }
+        if appliedLimit != nil, !found.mclEnabled, !offByItself, !helperLimitOnItsWay {
+            changed.append("the limit was turned off")
+        }
         if found.optimizedChargingEnabled { changed.append("Optimized Battery Charging was turned on") }
         if let mine = appliedLimit, !limitInFlight, found.mclLimit != mine {
             changed.append("the limit is \(found.mclLimit), not \(mine)")
@@ -1737,8 +1751,8 @@ final class ChargeController {
         lastDrift = line
         appliedLimit = nil
         refusedLimit = nil
+        // The limit itself is put back by the tick that follows, which sets it (that turns the switch on).
         if !c.setOptimizedCharging(false), news { log("macOS would not turn Optimized Battery Charging off") }
-        if !c.setLimitEnabled(true), news { log("macOS would not turn its charge limit on") }
     }
 
     /// The helper link came, went, answered, or was reset under a discharge.
@@ -2491,7 +2505,7 @@ final class ChargeController {
             setClientLimit(want, client: c, reason: d.reason)
         } else if helper.available, refusedLimit == nil {
             let from = appliedLimit
-            switchOnForTheHelper(from: from, client: c)
+            standInForTheHelper(want, client: c)
             if let deadline = waitUntil {
                 // Going to sleep: in force before sleep is allowed. Queued behind anything still on its way, whose
                 // late answer then books nothing.
@@ -2531,23 +2545,29 @@ final class ChargeController {
             appliedLimit = want
             macOSRefusedLimit = nil
             log("\(Self.limitChange(from, want)) (\(Self.logWords(reason)))")
-            // Once more now that the value has landed: what macOS does to a switch turned on while it still held 100
-            // was not measured, and the cost of asking again is one call that changes nothing if it is on.
-            if let c = client { switchOnForTheHelper(from: from, client: c, afterTheYes: true) }
         } else {
             log("the helper did not set the limit to \(want): \(r.message)")
             if r.message != HelperConnection.stoppedAnswering { refusedLimit = (want, r.message) }
         }
     }
 
-    /// macOS turns its limit switch off by itself at a limit of 100, and the helper only writes the value and says so:
-    /// nothing turns the switch on. So a value only the helper can set is not in force until the switch is on, which
-    /// the next drift pass would see and fix up to 35 s later (and a Mac asleep runs none). Whenever the switch may be
-    /// off (nothing of Charge Control's in force, or 100) it is turned on first, as the drift pass does, and asked
-    /// again after the helper's yes. `from` is what was in force before this limit.
-    private func switchOnForTheHelper(from: Int?, client c: ChargeLimitClient, afterTheYes: Bool = false) {
-        guard from == nil || from == Self.noLimit else { return }
-        if !c.setLimitEnabled(true), !afterTheYes { log("macOS would not turn its charge limit on") }
+    /// The one place the limit's switch is turned on for a value only the helper can set, and it is turned on by setting
+    /// a limit, never by enabling it.
+    ///
+    /// Measured on Mac17,9, macOS 27.0, 2026-11-13 (unprivileged calls on `PowerUISmartChargeClient`, each read back
+    /// from the client and from `pmset -g battlimit`): enabling the limit sets it to 80 every time (set 95, enable: 80;
+    /// set 90, enable: 80), so enabling after the helper's yes put an 87 back to 80; setting a limit below 100 turns
+    /// the switch on by itself (off, 100 then set 90 gave on, 90), and setting 100 turns it off; a limit the helper's
+    /// preference write stores is read back by the client at once. Nothing was measured of what the helper's write does
+    /// to the switch.
+    ///
+    /// So when the switch reads off, cannot be read, or nothing is booked as in force, the nearest value macOS takes at
+    /// or above `want` is set first (never lower than asked, on the way too) and the helper's value follows. With the
+    /// switch on and a limit booked, the helper alone is asked.
+    private func standInForTheHelper(_ want: Int, client c: ChargeLimitClient) {
+        if appliedLimit != nil, c.read()?.mclEnabled == true { return }
+        let nearest = Self.nearestClientValue(atOrAbove: want)
+        if !c.setLimit(nearest) { log("macOS would not take \(nearest)% ahead of the helper's \(want)%") }
     }
 
     private func setClientLimit(_ value: Int, client c: ChargeLimitClient, reason: ChargeReason, wanted: Int? = nil) {

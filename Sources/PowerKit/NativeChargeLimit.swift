@@ -23,12 +23,28 @@ public struct NativeChargeState: Equatable, Codable {
 
 /// The app-side half of Charge Control's route to the OS limit. A protocol so the controller's
 /// tests can script it: the real client changes the real Mac's charge limit.
+///
+/// What macOS does with these calls, measured on Mac17,9, macOS 27.0, on 2026-11-13 with unprivileged calls on
+/// `PowerUISmartChargeClient`, each read back from the client and from `pmset -g battlimit`:
+///   (a) `enableMCL` does not merely turn the limit switch on: it sets the limit to 80 every time (set 95, enable: 80;
+///       set 90, enable: 80);
+///   (b) `setMCLLimit(n)` with n below 100 turns the switch on by itself (from "off, 100" a set of 90 gave "on, 90"),
+///       and `setMCLLimit(100)` turns it off;
+///   (c) `disableMCL` gives "off, 100";
+///   (d) a limit written through the root helper's preference write is stored by macOS at once (the client reads it
+///       back) but, while the battery is charging, is enforced only when the battery level next changes (31 s in one
+///       run); when the battery is not charging it is enforced within a second; when the charger is cut it is enforced
+///       on reconnect.
+/// So the switch is turned on by setting a limit, and this protocol has no way to enable it: enabling would set 80.
+/// It can be turned off, which gives "off, 100".
 public protocol ChargeLimitClient: AnyObject {
     /// nil when the OS refuses a read; callers treat that as "charge control unavailable".
     func read() -> NativeChargeState?
-    /// Only for `NativeChargeLimit.clientValues`. Any other value returns false without asking the OS.
+    /// Only for `NativeChargeLimit.clientValues`. Any other value returns false without asking the OS. A value below
+    /// 100 turns the limit's switch on, and 100 turns it off (b).
     func setLimit(_ percent: Int) -> Bool
-    func setLimitEnabled(_ on: Bool) -> Bool
+    /// Turns the limit's switch off, which gives "off, 100" (c).
+    func turnLimitOff() -> Bool
     func setOptimizedCharging(_ on: Bool) -> Bool
 }
 
@@ -45,7 +61,8 @@ public enum NativeChargeLimit {
 /// Apple's `PowerUISmartChargeClient`: the unprivileged route to the OS charge limit.
 ///
 /// This is a PRIVATE API, found and measured on a Mac17,9 with macOS 27.0 (probes in docs/superpowers/spikes/
-/// 2026-11-11-charge-control/). An unprivileged, ad-hoc signed probe read the limit and set 85
+/// 2026-11-11-charge-control/; what the calls do to the limit and its switch is in `ChargeLimitClient`). `enableMCL`
+/// is not bound at all: it sets the limit to 80, and nothing here needs it. An unprivileged, ad-hoc signed probe read the limit and set 85
 /// through it, and the limit stayed in force after the probe exited: macOS keeps it in its own
 /// preferences, so it outlives the process that set it. That is why Charge Control puts macOS's own settings back
 /// when Anode quits, and why the launch after a crash lifts the limit before anything else.
@@ -83,7 +100,6 @@ public final class PowerUIChargeClient: ChargeLimitClient {
     private let getLimit: Call<GetUInt8>
     private let isLimitEnabled: Call<GetUInt64>
     private let setLimitValue: Call<SetUInt8>
-    private let enableLimit: Call<Action>
     private let disableLimit: Call<Action>
     private let isOptimizedEnabled: Call<GetUInt64>
     private let enableOptimized: Call<Action>
@@ -157,7 +173,6 @@ public final class PowerUIChargeClient: ChargeLimitClient {
               let getLimit = get(bind("getMCLLimitWithError:", "C24@0:8^@16", GetUInt8.self)),
               let isLimitEnabled = get(bind("isMCLCurrentlyEnabled:", "Q24@0:8^@16", GetUInt64.self)),
               let setLimitValue = get(bind("setMCLLimit:error:", "B28@0:8C16^@20", SetUInt8.self)),
-              let enableLimit = get(bind("enableMCL:", "B24@0:8^@16", Action.self)),
               let disableLimit = get(bind("disableMCL:", "B24@0:8^@16", Action.self)),
               let isOptimizedEnabled = get(bind("isSmartChargingCurrentlyEnabled:", "Q24@0:8^@16", GetUInt64.self)),
               let enableOptimized = get(bind("enableSmartCharging:", "B24@0:8^@16", Action.self)),
@@ -170,19 +185,17 @@ public final class PowerUIChargeClient: ChargeLimitClient {
                   .takeRetainedValue()
         else { return fail("the class \(className) could not make a client") }
         return .success(PowerUIChargeClient(object: made, getLimit: getLimit, isLimitEnabled: isLimitEnabled,
-                                            setLimitValue: setLimitValue, enableLimit: enableLimit,
-                                            disableLimit: disableLimit, isOptimizedEnabled: isOptimizedEnabled,
+                                            setLimitValue: setLimitValue, disableLimit: disableLimit, isOptimizedEnabled: isOptimizedEnabled,
                                             enableOptimized: enableOptimized, disableOptimized: disableOptimized))
     }
 
     private init(object: AnyObject, getLimit: Call<GetUInt8>, isLimitEnabled: Call<GetUInt64>,
-                 setLimitValue: Call<SetUInt8>, enableLimit: Call<Action>, disableLimit: Call<Action>,
+                 setLimitValue: Call<SetUInt8>, disableLimit: Call<Action>,
                  isOptimizedEnabled: Call<GetUInt64>, enableOptimized: Call<Action>, disableOptimized: Call<Action>) {
         self.object = object
         self.getLimit = getLimit
         self.isLimitEnabled = isLimitEnabled
         self.setLimitValue = setLimitValue
-        self.enableLimit = enableLimit
         self.disableLimit = disableLimit
         self.isOptimizedEnabled = isOptimizedEnabled
         self.enableOptimized = enableOptimized
@@ -207,7 +220,7 @@ public final class PowerUIChargeClient: ChargeLimitClient {
         return setLimitValue.function(object, setLimitValue.selector, UInt8(percent), &error)
     }
 
-    public func setLimitEnabled(_ on: Bool) -> Bool { run(on ? enableLimit : disableLimit) }
+    public func turnLimitOff() -> Bool { run(disableLimit) }
 
     public func setOptimizedCharging(_ on: Bool) -> Bool { run(on ? enableOptimized : disableOptimized) }
 

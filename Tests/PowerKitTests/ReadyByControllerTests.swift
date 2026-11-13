@@ -231,6 +231,19 @@ final class ReadyByControllerTests: XCTestCase {
         XCTAssertEqual(c.status, .active(try XCTUnwrap(c.lastDecision)))
     }
 
+    /// A hold that begins while 100 is in force (the switch off): the nearest value macOS takes at or above the hold is
+    /// set first, which turns the switch on (enabling would set 80, measured), and the helper's hold follows, so that
+    /// macOS never holds the battery below the hold on the way, and ends at the hold with the switch on.
+    func testTheHoldAfter100NeverHoldsBelowIt() {
+        client.state = NativeChargeState(mclEnabled: false, mclLimit: 100, optimizedChargingEnabled: true)
+        settings.chargeLimit = 100
+        battery = Self.plugged(63)
+        let c = holding()
+        XCTAssertEqual(c.lastDecision?.osLimit, 63)
+        XCTAssertEqual(client.state, NativeChargeState(mclEnabled: true, mclLimit: 63, optimizedChargingEnabled: false))
+        XCTAssertTrue(client.history.allSatisfy { $0.mclLimit >= 63 }, "\(client.history)")
+    }
+
     /// The card's "held at" follows the hold as it follows every other hold.
     func testTheBatteryCardFollowsTheHold() {
         let c = holding()

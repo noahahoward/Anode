@@ -226,7 +226,7 @@ final class ChargeControllerTests: XCTestCase {
         make()
         XCTAssertEqual(record, NativeChargeState(mclEnabled: false, mclLimit: 100, optimizedChargingEnabled: true))
         XCTAssertEqual(client.optimizedChargingCalls, [false])
-        XCTAssertEqual(client.limitEnabledCalls, [true])
+        XCTAssertEqual(client.turnOffCalls, 0)
         XCTAssertEqual(client.state?.optimizedChargingEnabled, false)
         XCTAssertEqual(client.state?.mclEnabled, true)
         XCTAssertEqual(client.limitCalls, [80], "turning on did not apply the default limit")
@@ -311,7 +311,7 @@ final class ChargeControllerTests: XCTestCase {
         let c = make()
         guard case .unavailable = c.status else { return XCTFail("status \(c.status)") }
         XCTAssertTrue(client.limitCalls.isEmpty)
-        XCTAssertTrue(client.limitEnabledCalls.isEmpty)
+        XCTAssertEqual(client.turnOffCalls, 0)
         XCTAssertTrue(client.optimizedChargingCalls.isEmpty)
         XCTAssertNil(settings.chargeRestoreRecord)
     }
@@ -626,10 +626,10 @@ final class ChargeControllerTests: XCTestCase {
         let c = make()
         settings.chargeRestoreRecord = nil
         client.state = NativeChargeState(mclEnabled: true, mclLimit: 95, optimizedChargingEnabled: true)
-        let calls = (client.limitCalls, client.limitEnabledCalls, client.optimizedChargingCalls)
+        let calls = (client.limitCalls, client.turnOffCalls, client.optimizedChargingCalls)
         c.shutdown()
         XCTAssertEqual(client.limitCalls, calls.0)
-        XCTAssertEqual(client.limitEnabledCalls, calls.1)
+        XCTAssertEqual(client.turnOffCalls, calls.1)
         XCTAssertEqual(client.optimizedChargingCalls, calls.2)
         XCTAssertEqual(client.state, NativeChargeState(mclEnabled: true, mclLimit: 95, optimizedChargingEnabled: true))
     }
@@ -660,7 +660,7 @@ final class ChargeControllerTests: XCTestCase {
 
     /// What was asked of macOS so far: the limits, the limit's switch and Optimized Battery Charging.
     private var writesToMacOS: [Int] {
-        [client.limitCalls.count, client.limitEnabledCalls.count, client.optimizedChargingCalls.count]
+        [client.limitCalls.count, client.turnOffCalls, client.optimizedChargingCalls.count]
     }
 
     /// A quit puts macOS back and clears the record, so a record still there at launch with Charge Control on means
@@ -1529,7 +1529,7 @@ final class ChargeControllerTests: XCTestCase {
         settings.chargeLimit = 63
         let c = make()
         XCTAssertEqual(helper.commands, [.setChargeLimit(63)])
-        XCTAssertTrue(client.limitCalls.isEmpty)
+        XCTAssertEqual(client.limitCalls, [80], "the nearest value above did not go in ahead of the helper's")
         XCTAssertEqual(c.status, .active(ChargeDecision(osLimit: 63, dischargeTo: nil, reason: .limit)))
     }
 
@@ -1636,7 +1636,9 @@ final class ChargeControllerTests: XCTestCase {
         }
         let c = make()
         XCTAssertEqual(helper.commands, [.setChargeLimit(63)])
-        XCTAssertEqual(client.limitCalls, [80], "the nearest value above did not hold meanwhile")
+        // 80 went in ahead of the helper's 63 (the switch was off), and again, as the booked stand-in, once it refused.
+        XCTAssertEqual(client.limitCalls, [80, 80], "the nearest value above did not hold meanwhile")
+        XCTAssertEqual(client.state, NativeChargeState(mclEnabled: true, mclLimit: 80, optimizedChargingEnabled: false))
         XCTAssertEqual(c.status, .refused(ChargeController.limitRefusedText(63, "macOS did not take the charge limit")))
         for _ in 0..<3 { c.periodicTick() }
         XCTAssertEqual(helper.commands, [.setChargeLimit(63)], "a refused limit was asked for again on the timer")
@@ -3386,14 +3388,14 @@ final class ChargeControllerTests: XCTestCase {
 
         // The other account's Anode sets its own limit (and its own Optimized Battery Charging); this one leaves
         // them alone, whatever changes here.
-        let calls = (client.limitCalls, client.limitEnabledCalls, client.optimizedChargingCalls)
+        let calls = (client.limitCalls, client.turnOffCalls, client.optimizedChargingCalls)
         client.state?.mclLimit = 95
         client.state?.optimizedChargingEnabled = true
         settings.chargeLimit = 85
         c.periodicTick()
         c.tick()
         XCTAssertEqual(client.limitCalls, calls.0, "an account not on screen changed the limit")
-        XCTAssertEqual(client.limitEnabledCalls, calls.1, "an account not on screen put the limit's switch back")
+        XCTAssertEqual(client.turnOffCalls, calls.1, "an account not on screen put the limit's switch back")
         XCTAssertEqual(client.optimizedChargingCalls, calls.2,
                        "an account not on screen put Optimized Battery Charging back")
         XCTAssertEqual(client.state?.mclLimit, 95)
@@ -3463,7 +3465,7 @@ final class ChargeControllerTests: XCTestCase {
         let said = lines
         for _ in 0..<3 { c.periodicTick() }
         XCTAssertEqual(client.limitCalls, [100], "100 was set again over macOS's own off-at-100")
-        XCTAssertEqual(client.limitEnabledCalls, [true], "the switch macOS turns off at 100 was turned on again")
+        XCTAssertEqual(client.turnOffCalls, 0)
         XCTAssertEqual(client.optimizedChargingCalls, [false])
         XCTAssertEqual(lines, said, "agreement was logged")
         XCTAssertEqual(c.status, .active(ChargeDecision(osLimit: 100, dischargeTo: nil, reason: .limit)))
@@ -3479,7 +3481,6 @@ final class ChargeControllerTests: XCTestCase {
         let said = lines
         for _ in 0..<3 { c.periodicTick() }
         XCTAssertEqual(client.limitCalls, [80, 100])
-        XCTAssertEqual(client.limitEnabledCalls, [true])
         XCTAssertEqual(lines, said, "agreement was logged")
     }
 
@@ -3491,7 +3492,6 @@ final class ChargeControllerTests: XCTestCase {
         c.periodicTick()
         XCTAssertEqual(client.state, NativeChargeState(mclEnabled: true, mclLimit: 80, optimizedChargingEnabled: false))
         XCTAssertEqual(client.limitCalls, [80, 80])
-        XCTAssertEqual(client.limitEnabledCalls, [true, true])
         XCTAssertEqual(lines.filter { $0.contains("changed outside Charge Control") }.count, 1,
                        lines.joined(separator: "\n"))
     }
@@ -3504,7 +3504,6 @@ final class ChargeControllerTests: XCTestCase {
         client.state = NativeChargeState(mclEnabled: false, mclLimit: 80, optimizedChargingEnabled: false)
         c.periodicTick()
         XCTAssertEqual(client.limitCalls, [100, 100], "a limit changed elsewhere was left, because the switch is off")
-        XCTAssertEqual(client.limitEnabledCalls, [true, true])
 
         client.state = NativeChargeState(mclEnabled: false, mclLimit: 100, optimizedChargingEnabled: true)
         c.periodicTick()
@@ -3727,10 +3726,11 @@ final class ChargeControllerTests: XCTestCase {
     // ── A helper-set limit after 100 ────────────────────────────────────────
 
     /// macOS turns its limit switch off by itself at a limit of 100, and the helper only writes the value, so a value
-    /// only the helper can set is not in force until the switch is turned on. It is turned on before the helper is
-    /// asked, not 35 s later by a drift pass. The fake client does not turn the switch off at 100 as macOS does, so
-    /// the tests do it, and look at the switch at the moment each command goes out.
-    func testALimitOnlyTheHelperCanSetFollowing100TurnsTheSwitchOnFirst() {
+    /// only the helper can set is not in force until the switch is on. Enabling is not the way (it sets the limit to
+    /// 80, measured), so the nearest value macOS takes at or above the limit is set first, which turns the switch on,
+    /// before the helper is asked and not 35 s later by a drift pass. The tests look at the switch at the moment each
+    /// command goes out.
+    func testALimitOnlyTheHelperCanSetFollowing100HasTheSwitchOnFirst() {
         settings.chargeLimit = 100
         helper.landsOn = client
         let c = make()
@@ -3751,7 +3751,7 @@ final class ChargeControllerTests: XCTestCase {
 
     /// Charge to Full ends (the person cancels it) into a limit only the helper can set: 100 was in force, and the
     /// switch with it off.
-    func testFullChargeEndingIntoAHelperOnlyLimitTurnsTheSwitchOnFirst() {
+    func testFullChargeEndingIntoAHelperOnlyLimitHasTheSwitchOnFirst() {
         settings.chargeLimit = 63
         helper.landsOn = client
         battery = Self.state(50)
@@ -3770,7 +3770,7 @@ final class ChargeControllerTests: XCTestCase {
 
     /// Going to sleep at a limit of 100 with a hold at the current charge: the waited send must find the switch on, or
     /// the Mac sleeps with nothing held (no tick runs asleep to put it right).
-    func testTheSleepHoldAfter100TurnsTheSwitchOnBeforeTheWaitedSend() {
+    func testTheSleepHoldAfter100HasTheSwitchOnBeforeTheWaitedSend() {
         settings.chargeLimit = 100
         settings.chargeHoldDuringSleep = true
         battery = Self.state(63)
@@ -3785,22 +3785,6 @@ final class ChargeControllerTests: XCTestCase {
         XCTAssertEqual(helper.waited, [.setChargeLimit(63)])
         XCTAssertEqual(switchAtSend, [true], "the Mac was let go to sleep with the limit's switch off")
         XCTAssertEqual(client.state, NativeChargeState(mclEnabled: true, mclLimit: 63, optimizedChargingEnabled: false))
-    }
-
-    /// If macOS turns the switch off again as the limit lands (it does at 100, and what it does when the switch is
-    /// turned on at 100 is not measured), the helper's yes is followed by turning it on once more.
-    func testTheSwitchIsTurnedOnAgainAfterTheHelpersYesWhenItMayHaveBeenOff() {
-        settings.chargeLimit = 100
-        let c = make()
-        client.state?.mclEnabled = false
-        helper.answer = { [client] in
-            // The helper writes the value; macOS, meanwhile, leaves the switch off.
-            if case .setChargeLimit(let p) = $0 { client?.state?.mclLimit = p; client?.state?.mclEnabled = false }
-            return FanReply(ok: true, message: "ok")
-        }
-        settings.chargeLimit = 63
-        XCTAssertEqual(client.state?.mclEnabled, true, "not in force: the switch is still off after the yes")
-        _ = c
     }
 
     /// While a helper limit is on its way, a switch reading off (and a limit that has landed before its yes) is not
@@ -4241,7 +4225,7 @@ final class ChargeControllerTests: XCTestCase {
         client.state = found
         let c = make()
         XCTAssertEqual(client.limitCalls, [], "the limit was asserted over the account on screen")
-        XCTAssertEqual(client.limitEnabledCalls, [], "the limit's switch was turned on over the account on screen")
+        XCTAssertEqual(client.turnOffCalls, 0, "the limit's switch was touched over the account on screen")
         XCTAssertEqual(client.optimizedChargingCalls, [], "Optimized Battery Charging was turned off over it")
         XCTAssertEqual(client.state, found, "macOS's settings were touched")
         XCTAssertTrue(helper.commands.isEmpty)
@@ -4422,6 +4406,184 @@ final class ChargeControllerTests: XCTestCase {
         XCTAssertEqual(helper.stops(), 0, "macOS's word was taken after a switch that had been read could not be")
         XCTAssertFalse(settings.chargeCutUnconfirmed)
         XCTAssertNotEqual(c.status, .warning(ChargeController.cutWarningText))
+    }
+
+    // ── The switch is turned on by setting the limit, never by itself ───────
+
+    private func on(_ limit: Int, optimized: Bool = false) -> NativeChargeState {
+        NativeChargeState(mclEnabled: true, mclLimit: limit, optimizedChargingEnabled: optimized)
+    }
+
+    /// Measured on Mac17,9, macOS 27.0, 2026-11-13: enabling the limit sets it to 80, so a limit of 87 (which only the
+    /// helper can set) was put back to 80 by the call that "turned the switch on" after the helper's yes, every 30 s.
+    /// With the fake as macOS behaves, the limit read back is 87 after the change from outside and stays 87, and the
+    /// drift pass says the change once and then nothing.
+    func testAHelperLimitComesBackAfterAChangeFromOutsideAndStaysThere() {
+        settings.chargeLimit = 87
+        helper.landsOn = client
+        let c = make()
+        XCTAssertEqual(client.state, on(87), "the limit was not 87 after switching on")
+        XCTAssertEqual(limitInForce.value, 87)
+        XCTAssertTrue(client.setLimit(80), "the change from outside")
+        c.periodicTick()
+        XCTAssertEqual(client.state, on(87), "the limit was not put back to 87")
+        for pass in 0..<5 {
+            c.periodicTick()
+            XCTAssertEqual(client.state, on(87), "pass \(pass): the limit moved off 87 again")
+        }
+        XCTAssertEqual(lines.filter { $0.contains("changed outside") }.count, 1, lines.joined(separator: "\n"))
+        XCTAssertEqual(lines.filter { $0.contains("the limit is 80, not 87") }.count, 1)
+        XCTAssertEqual(limitInForce.value, 87)
+    }
+
+    /// Switching on, and launching, with a limit only the helper can set ends at that limit, from whatever macOS held,
+    /// and the limit macOS holds on the way is never below it.
+    func testSwitchingOnWithAHelperOnlyLimitEndsAtThatLimit() {
+        for start in [NativeChargeState(mclEnabled: false, mclLimit: 100, optimizedChargingEnabled: true),
+                      NativeChargeState(mclEnabled: true, mclLimit: 90, optimizedChargingEnabled: true),
+                      NativeChargeState(mclEnabled: true, mclLimit: 63, optimizedChargingEnabled: false)] {
+            client = FakeChargeLimitClient(state: start)
+            clientToMake = client
+            helper = FakeHelperLink()
+            helper.landsOn = client
+            settings.chargeLimit = 87
+            make(enabled: false)
+            settings.chargeControlEnabled = true
+            XCTAssertEqual(client.state, on(87), "switching on from \(start)")
+            XCTAssertTrue(client.history.allSatisfy { $0.mclLimit >= 87 }, "below 87 on the way: \(client.history)")
+            controller?.shutdown()
+            controller = nil
+            settings.chargeControlEnabled = false
+
+            client = FakeChargeLimitClient(state: start)
+            clientToMake = client
+            helper = FakeHelperLink()
+            helper.landsOn = client
+            make()
+            XCTAssertEqual(client.state, on(87), "launching over \(start)")
+            XCTAssertTrue(client.history.allSatisfy { $0.mclLimit >= 87 }, "below 87 on the way: \(client.history)")
+            controller?.shutdown()
+            controller = nil
+            settings.chargeControlEnabled = false
+        }
+    }
+
+    /// A launch while another account is on screen asserts nothing; the first time this account is back is the
+    /// switch-on, and it goes through the same route: no switch turned on by itself.
+    func testAnAccountBackOnScreenSetsItsLimitWithoutEnabling() {
+        settings.chargeLimit = 87
+        helper.landsOn = client
+        onConsole = false
+        make()
+        XCTAssertEqual(client.state?.mclLimit, 100, "an account not on screen set a limit")
+        center.post(name: NSWorkspace.sessionDidBecomeActiveNotification, object: nil)
+        XCTAssertEqual(client.state, on(87))
+        XCTAssertTrue(client.history.allSatisfy { $0.mclLimit >= 87 }, "\(client.history)")
+    }
+
+    /// Charge to Full ends into a hold only the helper can set (87): 100 was in force, with the switch off. macOS holds
+    /// nothing below 87 on the way: the nearest value it takes at or above comes first.
+    func testFullChargeEndingIntoAHelperOnlyLimitNeverHoldsBelowIt() {
+        settings.chargeLimit = 87
+        helper.landsOn = client
+        battery = Self.state(50)
+        let c = make()
+        c.pressFullCharge()
+        XCTAssertEqual(client.state?.mclLimit, 100)
+        XCTAssertEqual(client.state?.mclEnabled, false)
+        let mark = client.history.count
+        c.pressFullCharge()
+        XCTAssertEqual(client.state, on(87))
+        XCTAssertTrue(client.history[mark...].allSatisfy { $0.mclLimit >= 87 }, "\(client.history[mark...])")
+    }
+
+    /// The same for a hold of Pause When Hot taken while 100 is in force.
+    func testPauseWhenHotAfter100NeverHoldsBelowTheHold() {
+        settings.chargeLimit = 100
+        settings.chargePauseWhenHotEnabled = true
+        helper.landsOn = client
+        battery = Self.state(87, temperature: 20)
+        let c = make()
+        XCTAssertEqual(client.state?.mclEnabled, false)
+        let mark = client.history.count
+        battery = Self.state(87, temperature: 45)
+        c.tick()
+        XCTAssertEqual(c.lastDecision?.osLimit, 87)
+        XCTAssertEqual(client.state, on(87))
+        XCTAssertTrue(client.history[mark...].allSatisfy { $0.mclLimit >= 87 }, "\(client.history[mark...])")
+    }
+
+    /// And Hold Level During Sleep at a limit of 100: the waited send finds the limit already at or above the hold.
+    func testHoldLevelDuringSleepAfter100NeverHoldsBelowTheHold() {
+        settings.chargeLimit = 100
+        settings.chargeHoldDuringSleep = true
+        helper.landsOn = client
+        battery = Self.state(93)
+        let c = make()
+        XCTAssertEqual(client.state?.mclEnabled, false)
+        let mark = client.history.count
+        c.willSleep()
+        XCTAssertEqual(helper.waited, [.setChargeLimit(93)])
+        XCTAssertEqual(client.state, on(93))
+        XCTAssertTrue(client.history[mark...].allSatisfy { $0.mclLimit >= 93 }, "\(client.history[mark...])")
+    }
+
+    /// Putting macOS back: a record with the switch on and limit v ends at exactly "on, v", whichever route sets v,
+    /// and with the switch off ends off. Enabling is never the way: it would end at 80.
+    func testSwitchingOffEndsAtTheRecordedOnLimit() {
+        let original = NativeChargeState(mclEnabled: true, mclLimit: 90, optimizedChargingEnabled: true)
+        client.state = original
+        make()
+        settings.chargeControlEnabled = false
+        XCTAssertEqual(client.state, original, "an own limit of 90, on, was not put back")
+    }
+
+    func testSwitchingOffEndsAtARecordedLimitOnlyTheHelperSets() {
+        let original = NativeChargeState(mclEnabled: true, mclLimit: 63, optimizedChargingEnabled: true)
+        client.state = original
+        helper.landsOn = client
+        make()
+        XCTAssertEqual(client.state?.mclLimit, 80)
+        settings.chargeControlEnabled = false
+        XCTAssertEqual(client.state, original, "an own limit of 63, on, was not put back")
+    }
+
+    /// With 100 in force (switch off), putting back "on, 63" needs the nearest value first, or the helper's write
+    /// would land with the switch off.
+    func testSwitchingOffFrom100EndsAtARecordedHelperLimitWithTheSwitchOn() {
+        let original = NativeChargeState(mclEnabled: true, mclLimit: 63, optimizedChargingEnabled: true)
+        client.state = original
+        settings.chargeLimit = 100
+        helper.landsOn = client
+        make()
+        XCTAssertEqual(client.state?.mclEnabled, false)
+        let mark = client.history.count
+        settings.chargeControlEnabled = false
+        XCTAssertEqual(client.state, original)
+        XCTAssertTrue(client.history[mark...].allSatisfy { $0.mclLimit >= 63 }, "\(client.history[mark...])")
+    }
+
+    func testSwitchingOffEndsOffWhenItWasOff() {
+        client.state = NativeChargeState(mclEnabled: false, mclLimit: 100, optimizedChargingEnabled: false)
+        make()
+        XCTAssertEqual(client.state?.mclEnabled, true)
+        settings.chargeControlEnabled = false
+        XCTAssertEqual(client.state, NativeChargeState(mclEnabled: false, mclLimit: 100, optimizedChargingEnabled: false))
+    }
+
+    /// The same by the other two ways back: the launch after a run that did not quit, and the uninstall.
+    func testTheLaunchAfterACrashAndTheUninstallPutBackAnOnLimitExactly() {
+        helper.landsOn = client
+        crashedWhileHolding(limit: 87)
+        XCTAssertEqual(client.state?.mclLimit, 87)
+        make()
+        XCTAssertEqual(client.state, found, "the launch after a crash left \(String(describing: client.state))")
+        controller?.shutdown()
+        controller = nil
+        client.state = found
+        settings.chargeControlEnabled = true
+        make().restoreForUninstall()
+        XCTAssertEqual(client.state, found)
     }
 }
 
@@ -4613,14 +4775,17 @@ final class RecordingChargeClient: ChargeLimitClient {
         recordAtEachCall.append(settings?.chargeRestoreRecord)
         pendingAtEachCall.append(settings?.chargeStartPending ?? false)
         guard NativeChargeLimit.isClientSettable(percent) else { return false }
+        // As the real client behaves (see `FakeChargeLimitClient`).
         state?.mclLimit = percent
+        state?.mclEnabled = percent < 100
         return true
     }
 
-    func setLimitEnabled(_ on: Bool) -> Bool {
+    func turnLimitOff() -> Bool {
         recordAtEachCall.append(settings?.chargeRestoreRecord)
         pendingAtEachCall.append(settings?.chargeStartPending ?? false)
-        state?.mclEnabled = on
+        state?.mclEnabled = false
+        state?.mclLimit = 100
         return true
     }
 
