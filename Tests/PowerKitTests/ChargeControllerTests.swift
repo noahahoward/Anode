@@ -4435,6 +4435,9 @@ final class FakeHelperLink: ChargeHelperLink {
     var answer: (FanCommand) -> FanReply = { _ in FanReply(ok: true, message: "ok") }
     /// Hold every exchange back until `flushReplies` (or a drain): a command still on its way.
     var deferReplies = false
+    /// Hold back only the commands this says yes to, until `flushReplies`: one command still on its way while the others
+    /// are answered at once.
+    var defersOnly: ((FanCommand) -> Bool)?
     /// Where a `.setChargeLimit` the helper accepts lands: the same macOS limit the client reads.
     var landsOn: FakeChargeLimitClient?
     /// `drain` gives up, as the real one does after its timeout.
@@ -4512,7 +4515,7 @@ final class FakeHelperLink: ChargeHelperLink {
             return done(FanReply(ok: false, message: HelperConnection.stoppedAnswering))
         }
         let e = Exchange(c, done)
-        if deferReplies {
+        if deferReplies || defersOnly?(c) == true {
             queue.append(e)
         } else {
             done(run(e))
@@ -4549,6 +4552,7 @@ final class FakeHelperLink: ChargeHelperLink {
         let pending = queue
         queue = []
         deferReplies = false
+        defersOnly = nil
         for e in pending { e.done(run(e)) }
     }
 

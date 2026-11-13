@@ -459,11 +459,13 @@ final class ReadyByControllerTests: XCTestCase {
         XCTAssertEqual(plannedAt(), raiseAt)
         XCTAssertEqual(helper.waited.last, .scheduleChargeLimit(limit: 80, at: raiseAt))
         XCTAssertEqual(ChargeController.heatCoolingTime, 30 * 60)
-        // Awake behaviour is unchanged: heat still outranks Ready By, and the plan stays while the pack is still hot.
+        // A plan made for a hot pack is for sleep only: awake with the pack still hot it is cancelled (the next sleep
+        // sends it again), because the helper's own timer would raise the limit onto the hot pack with the Mac awake.
         c.didWake(now: clockNow.addingTimeInterval(3600))
         XCTAssertEqual(c.lastDecision?.reason, .heat)
-        XCTAssertNotNil(c.wakePlan, "the plan was cancelled by a wake with the pack still hot")
-        XCTAssertEqual(count(cancel), 0)
+        XCTAssertNil(c.wakePlan, "the plan outlived a wake with the pack still hot")
+        XCTAssertEqual(count(cancel), 1)
+        XCTAssertEqual(client.state?.mclLimit, 54)
     }
 
     /// Ready By had started charging and heat paused it: the start moment has passed, so the plan is for half an hour
@@ -521,21 +523,149 @@ final class ReadyByControllerTests: XCTestCase {
         XCTAssertTrue(schedules.isEmpty)
     }
 
-    /// The pack cools while the Mac is awake before the moment: Ready By decides again, and the plan, made for the same
-    /// moment and limit, stands.
-    func testThePlanStandsWhenThePackCoolsAndReadyByHoldsAgain() {
+    /// The pack cools while the Mac is awake before the moment: the plan was cancelled at the wake (it was made for sleep
+    /// only), Ready By decides again with nothing planned, and the next sleep sends the plan again.
+    func testAPlanForAHotPackIsSentAgainAtTheNextSleepWhenItIsStillWanted() throws {
         hotAtNight()
         let c = make()
         c.willSleep()
-        let plan = c.wakePlan
+        XCTAssertEqual(schedules.count, 1)
         battery?.temperature_C = 25
         c.didWake(now: clockNow.addingTimeInterval(3600))
         XCTAssertEqual(c.lastDecision?.reason, .heat, "heat resumes only after the pack has been cool for a while")
-        XCTAssertEqual(c.wakePlan, plan)
-        c.tick(now: clockNow.addingTimeInterval(3600 + ChargePolicy.heatResumeAfter + 1))
+        XCTAssertNil(c.wakePlan, "a plan made for a hot pack outlived the wake")
+        XCTAssertEqual(count(cancel), 1)
+        let later = clockNow.addingTimeInterval(3600 + ChargePolicy.heatResumeAfter + 1)
+        c.tick(now: later)
         XCTAssertEqual(c.lastDecision?.reason, .readyBy)
-        XCTAssertEqual(c.wakePlan, plan, "the plan was dropped for a hold that is the same one")
-        XCTAssertEqual(count(cancel), 0)
+        XCTAssertNil(c.wakePlan)
+        XCTAssertEqual(count(cancel), 1, "nothing more to cancel")
+        c.willSleep(now: later)
+        XCTAssertEqual(schedules.count, 2, "the plan was not sent again before the next sleep")
+        XCTAssertEqual(c.wakePlan?.by, by)
+        XCTAssertEqual(c.wakePlan?.limit, 80)
+        XCTAssertEqual(client.state?.mclLimit, 54)
+    }
+
+    // ── A plan for a hot pack is for sleep only ─────────────────────────────
+
+    /// What the real helper does with a plan, as far as these tests need: the last plan sent stands until a cancel is sent
+    /// after it, and at its moment the helper writes the plan's limit, whether the Mac is awake or asleep.
+    private func helperWritesItsPlan() {
+        guard let i = helper.commands.lastIndex(where: { if case .scheduleChargeLimit = $0 { return true } else { return false } }),
+              case .scheduleChargeLimit(let limit, _) = helper.commands[i],
+              !helper.commands[(i + 1)...].contains(cancel) else { return }
+        client.state?.mclLimit = limit
+    }
+
+    /// The start moment is sooner than the cooling time, so the plan for a hot pack is for half an hour on.
+    private func hotAndAboutToSleep() -> ChargeController {
+        clockNow = raiseAt.addingTimeInterval(-5 * 60)
+        hotAtNight()
+        let c = make()
+        XCTAssertEqual(c.lastDecision?.reason, .heat, "the fixture is not paused for heat")
+        return c
+    }
+
+    /// A reviewer's probe: pack hot, Ready By on, the plan for 30 minutes on, the Mac wakes after 10 with the pack still
+    /// hot, and at the plan's moment the helper's own timer wrote the person's limit onto it while the app said nothing
+    /// and never put its hold back. The limit in force is asserted at each step.
+    func testAPlanForAHotPackNeverRaisesTheLimitWhileTheMacIsAwake() throws {
+        let c = hotAndAboutToSleep()
+        XCTAssertEqual(client.state?.mclLimit, 54, "hot, before sleep")
+        c.willSleep()
+        let plan = try XCTUnwrap(c.wakePlan)
+        XCTAssertEqual(plan.raiseAt, clockNow.addingTimeInterval(30 * 60))
+        XCTAssertEqual(client.state?.mclLimit, 54, "asleep, the hold stays until the plan's moment")
+        c.didWake(now: clockNow.addingTimeInterval(10 * 60))
+        XCTAssertEqual(c.lastDecision?.reason, .heat, "still hot after ten minutes")
+        XCTAssertNil(c.wakePlan, "the plan is for sleep only; the Mac is awake")
+        XCTAssertEqual(count(cancel), 1)
+        XCTAssertEqual(client.state?.mclLimit, 54, "awake and hot")
+        lines = []
+        helperWritesItsPlan()       // the plan's moment: the cancel has gone, so there is nothing for the helper to write
+        c.periodicTick(now: plan.raiseAt.addingTimeInterval(1))
+        XCTAssertEqual(client.state?.mclLimit, 54, "the limit was raised onto a pack that is still hot")
+        XCTAssertFalse(lines.contains { $0.contains("changed outside") }, lines.joined(separator: "\n"))
+        // Still wanted, so it is sent again before the next sleep.
+        let again = plan.raiseAt.addingTimeInterval(2)
+        c.willSleep(now: again)
+        XCTAssertEqual(schedules.count, 2)
+        XCTAssertEqual(c.wakePlan?.raiseAt, again.addingTimeInterval(ChargeController.heatCoolingTime))
+        XCTAssertEqual(client.state?.mclLimit, 54)
+    }
+
+    /// The Mac slept through the plan's moment, the helper wrote the limit, and it woke with the pack still hot: the hold
+    /// goes back at once, and the log says what happened: the helper's write was its plan working, not an outside change.
+    func testAHelperWriteAsleepOntoAPackStillHotIsPutBackAndSaidPlainly() throws {
+        let c = hotAndAboutToSleep()
+        c.willSleep()
+        let plan = try XCTUnwrap(c.wakePlan)
+        helperWritesItsPlan()
+        XCTAssertEqual(client.state?.mclLimit, 80, "the fixture: the helper raised the limit asleep")
+        lines = []
+        c.didWake(now: plan.raiseAt.addingTimeInterval(60))
+        XCTAssertEqual(client.state?.mclLimit, 54, "the limit was left raised on a hot pack")
+        XCTAssertTrue(lines.contains {
+            $0.contains("the helper raised the limit to 80% as planned, but the battery is still paused for heat; holding again")
+        }, lines.joined(separator: "\n"))
+        XCTAssertFalse(lines.contains { $0.contains("changed outside") }, lines.joined(separator: "\n"))
+        XCTAssertNil(c.wakePlan)
+        XCTAssertEqual(count(cancel), 1)
+    }
+
+    /// A Ready By plan, the Mac awake, and the pack heats up between two looks: at the plan's moment the helper writes
+    /// the limit. The pass that finds it is not an outside change, and the decision is the heat pause, so the hold goes
+    /// straight back.
+    func testAPlannedWriteOntoAPackThatHeatedUpSinceTheLastLookIsPutBack() {
+        settings.chargePauseWhenHotEnabled = true
+        settings.chargeMaxTemperatureC = 35
+        battery?.temperature_C = 25
+        let c = awakeWithAPlan()
+        battery?.temperature_C = 40
+        helperWritesItsPlan()
+        lines = []
+        c.periodicTick(now: raiseAt.addingTimeInterval(1))
+        XCTAssertEqual(c.lastDecision?.reason, .heat)
+        XCTAssertEqual(client.state?.mclLimit, 54, "the limit was left raised on a hot pack")
+        XCTAssertTrue(lines.contains { $0.contains("as planned, but the battery is still paused for heat; holding again") },
+                      lines.joined(separator: "\n"))
+        XCTAssertFalse(lines.contains { $0.contains("changed outside") }, lines.joined(separator: "\n"))
+        XCTAssertNil(c.wakePlan, "awake and hot: the plan is cancelled")
+        XCTAssertEqual(count(cancel), 1)
+    }
+
+    /// The helper's timer can fire before it has processed the cancel. The write that lands then is still its own plan
+    /// working, and the app has not been told yet that the plan is gone.
+    func testAWriteThatLandsBeforeTheHelperAnswersTheCancelIsNotAnOutsideChange() throws {
+        let c = hotAndAboutToSleep()
+        c.willSleep()
+        let plan = try XCTUnwrap(c.wakePlan)
+        helper.defersOnly = { $0 == FanCommand.cancelScheduledChargeLimit }
+        c.didWake(now: clockNow.addingTimeInterval(10 * 60))
+        XCTAssertEqual(count(cancel), 1)
+        XCTAssertNil(c.wakePlan)
+        client.state?.mclLimit = 80         // the helper's timer fired just before the cancel was processed
+        lines = []
+        c.periodicTick(now: plan.raiseAt.addingTimeInterval(1))
+        XCTAssertFalse(lines.contains { $0.contains("changed outside") }, lines.joined(separator: "\n"))
+        helper.flushReplies()
+        XCTAssertEqual(client.state?.mclLimit, 54, "put back at once")
+        XCTAssertTrue(lines.contains { $0.contains("as planned, but the battery is still paused for heat; holding again") },
+                      lines.joined(separator: "\n"))
+    }
+
+    /// The ordinary Ready By plan is still the app's own at its moment, and nothing is said against it.
+    func testTheOrdinaryReadyByPlanIsStillExpectedAtItsMoment() {
+        let c = awakeWithAPlan()
+        lines = []
+        helperWritesItsPlan()
+        c.periodicTick(now: raiseAt.addingTimeInterval(1))
+        XCTAssertEqual(client.state?.mclLimit, 80)
+        XCTAssertFalse(lines.contains { $0.contains("changed outside") || $0.contains("as planned, but") },
+                       lines.joined(separator: "\n"))
+        XCTAssertEqual(c.lastDecision?.reason, .readyBy)
+        XCTAssertNil(c.lastDecision?.readyBy?.raiseAt, "Ready By is charging now")
     }
 
     // ── The helper's write at the moment, with the Mac awake ────────────────

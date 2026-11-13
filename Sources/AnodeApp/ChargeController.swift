@@ -424,6 +424,18 @@ final class ChargeController {
         }
     }
 
+    /// The helper raised the limit at its plan's moment and Charge Control does not want that limit now: the pack is
+    /// paused for heat again, or something else outranks the plan. Not a change from outside, and said so.
+    static func plannedWriteNotWanted(_ planned: Int, _ d: ChargeDecision) -> String {
+        let head = "the helper raised the limit to \(planned)% as planned, but "
+        switch d.reason {
+        case .heat: return head + "the battery is still paused for heat; holding again"
+        case .readyBy where d.readyBy?.isHolding == true:
+            return head + "Ready By is still holding the battery at \(d.osLimit)%; holding again"
+        default: return head + "Charge Control wants \(d.osLimit)% now (\(logWords(d.reason))); setting that"
+        }
+    }
+
     static func drainRefusedText(_ why: String) -> String {
         "The Anode helper would not start the drain: \(plainWords(why))"
     }
@@ -561,6 +573,13 @@ final class ChargeController {
     }
     /// The plan the helper holds for this controller, if it has said yes to one and nothing has cancelled it since.
     private(set) var wakePlan: WakePlan?
+    /// A plan this controller has asked the helper to forget, and the helper has not said yes to yet. The helper's own
+    /// timer can fire before it has processed the cancel, and a write that lands then is that plan working, not
+    /// someone else's change (`checkDrift`). Ends with the helper's yes, a new plan, or the connection closing.
+    private var cancelledPlan: WakePlan?
+    /// The helper's planned write, found in macOS by the drift pass and not yet compared with what the decision wants
+    /// (`tickOnce` does that, with the decision made for this moment, and says so when it does not want it).
+    private var plannedWriteSeen: WakePlan?
     /// For the sleep that is starting: the helper did not take the plan, so Ready By is not holding (`sendThePlan`). Ends
     /// with the wake, or when Charge Control stops.
     private var readyBySetAside = false
@@ -1147,6 +1166,8 @@ final class ChargeController {
         lastDrift = nil
         // A plan the helper holds is cancelled before this (`cancelPlan`); what is forgotten here is this side's book.
         wakePlan = nil
+        cancelledPlan = nil
+        plannedWriteSeen = nil
         readyBySetAside = false
         planSending = false
         readyByTimer?.invalidate()
@@ -1679,16 +1700,20 @@ final class ChargeController {
     /// the limit, or Charge to Full, was 100). Off with anything below 100 in force is still a change, as is any
     /// other limit.
     ///
-    /// With a plan pending (the helper holds one for this controller) and its moment come, the planned limit is the
-    /// app's own: the helper's timer writes it when the Mac is awake as much as when it slept, and the pass must not
-    /// call that a change and put things back. The app then raises the limit itself and cancels the plan, as it does
-    /// when it gets there first.
+    /// With a plan pending (the helper holds one for this controller, or was asked to forget it and has not said yes) and
+    /// its moment come, the planned limit is the helper's doing, not a change: its timer writes it when the Mac is awake
+    /// as much as when it slept, and the pass must not call that outside. What the app does about it is the decision's:
+    /// the limit macOS holds is taken as the planned one, and the tick that follows (`tickOnce`) leaves it when the
+    /// decision wants it (Ready By charging), and sets the decision's own limit, with a line that says what happened,
+    /// when it does not (a pack that is hot again, a hold that is not yet over).
     private func checkDrift(now: Date? = nil) {
         guard let c = client, let found = c.read() else { return }
-        let planned = wakePlan.map {
-            $0.limit == found.mclLimit
-                && (now ?? clock()).addingTimeInterval(FanHelperServer.chargePlanSlack) >= $0.raiseAt
-        } ?? false
+        let at = now ?? clock()
+        if let plan = wakePlan ?? cancelledPlan, let mine = appliedLimit, !limitInFlight, found.mclLimit != mine,
+           found.mclLimit == plan.limit, at.addingTimeInterval(FanHelperServer.chargePlanSlack) >= plan.raiseAt {
+            plannedWriteSeen = plan
+            appliedLimit = plan.limit
+        }
         var changed: [String] = []
         let offByItself = appliedLimit == Self.noLimit && found.mclLimit == Self.noLimit
         // A limit only the helper can set, on its way from nothing in force or from 100 (where macOS keeps the switch
@@ -1697,7 +1722,7 @@ final class ChargeController {
         let helperLimitOnItsWay = limitInFlight && (appliedLimit == nil || appliedLimit == Self.noLimit)
         if !found.mclEnabled, !offByItself, !helperLimitOnItsWay { changed.append("the limit was turned off") }
         if found.optimizedChargingEnabled { changed.append("Optimized Battery Charging was turned on") }
-        if let mine = appliedLimit, !limitInFlight, found.mclLimit != mine, !planned {
+        if let mine = appliedLimit, !limitInFlight, found.mclLimit != mine {
             changed.append("the limit is \(found.mclLimit), not \(mine)")
         }
         guard !changed.isEmpty else {
@@ -1732,6 +1757,8 @@ final class ChargeController {
                 log("the helper's connection was reset; the plan it held went with it")
                 wakePlan = nil
             }
+            // And a cancel that was never answered no longer matters: the connection it was for is gone.
+            if !helper.isOpen { cancelledPlan = nil }
             if appliedDischarge != nil || cutOwed {
                 if appliedDischarge != nil {
                     log("the helper's connection was reset under the drain; stopping it before anything else")
@@ -1865,6 +1892,7 @@ final class ChargeController {
         planSending = false
         if r?.ok == true {
             wakePlan = WakePlan(by: target.by, limit: target.limit, raiseAt: target.raiseAt)
+            cancelledPlan = nil
             log("the helper will wake the Mac and raise the limit to \(target.limit)% at \(Self.logTime(target.raiseAt))")
             settle()
             return
@@ -1919,16 +1947,22 @@ final class ChargeController {
     /// another account coming on screen); otherwise it goes on its way. Nothing is sent when nothing was planned, and
     /// nothing to a helper that does not know the command.
     private func cancelPlan(because why: String, waitingUntil deadline: Date? = nil) {
-        guard wakePlan != nil else { return }
+        guard let plan = wakePlan else { return }
         wakePlan = nil
         guard helper.speaksReadyBy else { return }
+        // Until the helper says yes it may still write the plan's limit (`checkDrift`).
+        cancelledPlan = plan
         if let deadline {
             let r = helper.sendWaiting(.cancelScheduledChargeLimit, timeout: Self.timeLeft(deadline))
+            if r?.ok == true, cancelledPlan == plan { cancelledPlan = nil }
             log("the plan to raise the limit was cancelled (\(why)): \(r?.message ?? "no answer in time")")
         } else {
             log("the plan to raise the limit was cancelled (\(why))")
+            let mine = session
             helper.send(.cancelScheduledChargeLimit) { [weak self] r in
-                if !r.ok { self?.log("the helper did not cancel the plan to raise the limit: \(r.message)") }
+                guard let self, self.session == mine else { return }
+                if r.ok { if self.cancelledPlan == plan { self.cancelledPlan = nil } }
+                else { self.log("the helper did not cancel the plan to raise the limit: \(r.message)") }
             }
         }
     }
@@ -1939,6 +1973,13 @@ final class ChargeController {
         guard let plan = wakePlan, !planSending else { return }
         if sessionActive, helper.speaksReadyBy, lastDecision?.reason == .readyBy, let hold = lastDecision?.readyBy,
            hold.isHolding, hold.by == plan.by, hold.raiseTo == plan.limit { return }
+        // A plan is for sleep only while the pack is paused for heat: awake, heat outranks Ready By, and the helper's own
+        // timer would raise the limit onto the hot pack at the plan's moment. It is sent again before the next sleep if
+        // it is still wanted (`sendThePlan`).
+        if lastDecision?.reason == .heat, !sleeping {
+            cancelPlan(because: "the Mac is awake and the battery is paused for heat", waitingUntil: waitUntil)
+            return
+        }
         // A plan made for a pack paused for heat (`heatPausePlan`) stands while the pack is, for the same moment and limit.
         if sessionActive, helper.speaksReadyBy, lastDecision?.reason == .heat, settings.chargeReadyByEnabled,
            plan.limit == settings.chargeLimit, (batteryPercent ?? 100) < plan.limit,
@@ -1988,11 +2029,10 @@ final class ChargeController {
         let t = now ?? clock()
         sleeping = false
         readyBySetAside = false
-        // The helper may have raised the limit by itself while the Mac slept, at the plan's moment: that is its plan
-        // working, not a change someone else made. The decision below raises it too, and cancels the plan.
-        if let p = wakePlan, t.addingTimeInterval(FanHelperServer.chargePlanSlack) >= p.raiseAt { appliedLimit = nil }
-        // The person may have changed macOS's settings while the Mac slept.
-        if sessionActive { checkDrift() }
+        // The person may have changed macOS's settings while the Mac slept. The helper may have raised the limit by itself
+        // at the plan's moment: that is its plan working, not a change someone else made, and the decision below says
+        // whether it is wanted (`checkDrift`, `tickOnce`).
+        if sessionActive { checkDrift(now: t) }
         // Asserted again after every sleep, whatever the books say. The plan is not touched: a Mac wakes by itself many
         // times a night, and only the decision (this moment, this limit, still holding) says whether it stands.
         appliedLimit = nil
@@ -2125,6 +2165,13 @@ final class ChargeController {
             log(onAC ? "manual drain finished" : "manual drain ended: unplugged")
         }
         lastDecision = decision
+        // The helper's planned write, found by the drift pass just before this: the limit macOS holds is the plan's, and
+        // the decision made now says whether that is what is wanted. Said plainly when it is not (`apply` puts the
+        // decision's own limit in force just below).
+        if let wrote = plannedWriteSeen {
+            plannedWriteSeen = nil
+            if decision.osLimit != wrote.limit { log(Self.plannedWriteNotWanted(wrote.limit, decision)) }
+        }
         // The net is this account's alone: while another is on screen, its Anode may be discharging through a
         // helper this one cannot even reach. It looks only with a charger on the cable: with the cable out nothing
         // is cut off from anything, and the Mac is on its battery, where every read costs.
