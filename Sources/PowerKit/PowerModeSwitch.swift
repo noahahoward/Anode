@@ -156,10 +156,8 @@ struct PowerModeSwitch {
     ///
     /// The app's link gives the helper two seconds to answer a request and closes the socket after that, which hands
     /// everything back. An enter that goes through, a restore that works, and the put-back that works make three calls
-    /// that each finish in the time they are given: 1.8 s at most, inside the two seconds. Anything with a call that has to
-    /// be ended can run past them. A restore, or the put-back when a client goes, with a slow read and two hung writes is
-    /// 0.6 + 1.0 + 1.0 = 2.6 s. A switch-on that fails and is rolled back makes up to six calls (a read and two writes,
-    /// then a read and two writes, when a write that was reported failed had in fact landed): up to 6.0 s. When the link
+    /// that each finish in the time they are given: 1.8 s at most, inside the two seconds. A call that has to be ended can
+    /// run a command past them: `slowestCommand` and `slowestRolledBackEnter` are the worst that can happen. When the link
     /// has given up it has closed the socket and the answer is late; the helper's own put-back on close then runs, because
     /// what it holds is kept until a put-back has been taken, so nothing is left on.
     static let callLimit: TimeInterval = 0.6
@@ -167,6 +165,19 @@ struct PowerModeSwitch {
     /// The longest one call to the real runner can take: what the tool is given, what it is given to end when asked, and
     /// what it is given to be gone once killed.
     static let slowestCall: TimeInterval = callLimit + SystemPowerModeRunner.endGrace + SystemPowerModeRunner.killWait
+
+    /// The slowest a restore, or the put-back when a client goes, can be: a read and the two writes it makes (each source
+    /// is tried). A read that has to be ended is no answer and ends the command, so in a command that goes on the read
+    /// finished in the time it was given, `callLimit`; each write can have had to be ended, `slowestCall`. 0.6 + 1.0 + 1.0
+    /// = 2.6 s, past the link's two seconds.
+    static let slowestCommand: TimeInterval = callLimit + 2 * slowestCall
+
+    /// The slowest switch-on that fails and is rolled back, as the code can really go. The read finishes (0.6 s); the first
+    /// write goes (0.6 s, it had to finish for the second to be tried); the second is cut off (1.0 s) and may have landed;
+    /// the roll-back's read finishes (0.6 s); and both put-back writes are cut off (1.0 s each). Six calls:
+    /// 0.6 + 0.6 + 1.0 + 0.6 + 1.0 + 1.0 = 4.8 s. A read that has to be ended, or a first write that is, ends the command
+    /// sooner.
+    static let slowestRolledBackEnter: TimeInterval = callLimit + callLimit + slowestCall + callLimit + 2 * slowestCall
 
     static let readArguments = ["-g", "custom"]
 

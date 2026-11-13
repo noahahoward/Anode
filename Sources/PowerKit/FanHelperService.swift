@@ -499,10 +499,12 @@ public final class FanHelperServer {
     /// margin, which a test pins. A longer bound costs nothing: a healthy loop
     /// answers in milliseconds, and macOS waits about 30 s for the answer.
     ///
-    /// A pass that runs a Low Power Mode command can take 3.0 s of its own when its three calls each have to be ended, and
-    /// 6.0 s for a switch-on that failed and is rolled back (six calls of up to 1.0 s: `PowerModeSwitch.slowestCall`),
-    /// which the margin above does not count and which is as long as this deadline. A notice that waits past this is
-    /// answered by the sleep watch itself, which reconnects the charger without the loop.
+    /// A pass that runs a Low Power Mode command can take 2.6 s of its own, and 4.8 s for a switch-on that failed and is
+    /// rolled back (`PowerModeSwitch.slowestCommand`, `slowestRolledBackEnter`), which the margin above does not count.
+    /// The deadline leaves 1.2 s over the worse of them, and a test pins that it leaves a second at least. A pass that
+    /// has a reply to write as well, to a client that stopped reading (up to 2 s), can still outlast it: the sleep watch
+    /// then reconnects the charger itself, without the loop, and logs a WARNING that the loop did not answer in time
+    /// (`reconnectWithoutTheLoop`); the loop writes the reconnect again on its next pass.
     public static let sleepAnswerDeadline: TimeInterval = 6
 
     /// Between a will-sleep and the next wake. A discharge is refused for the
@@ -878,9 +880,11 @@ public final class FanHelperServer {
     /// 0.65 s, and a Low Power Mode command, or the put-back when a client goes,
     /// runs `pmset`, which is given 0.6 s a call and, when it has to be ended,
     /// takes up to 1.0 s (`PowerModeSwitch.slowestCall`: 0.6 s given, 0.2 s asked
-    /// to end, 0.2 s killed). That is 1.8 s for three calls that finish in time,
-    /// 3.0 s for three that each have to be ended, and 6.0 s for six, the most a
-    /// switch-on that failed and is rolled back can make.
+    /// to end, 0.2 s killed). A read that has to be ended ends the command, so
+    /// the slowest command that goes on is 2.6 s (a read that finished and two
+    /// writes that did not: `PowerModeSwitch.slowestCommand`), and the slowest
+    /// switch-on that failed and is rolled back is 4.8 s (six calls:
+    /// `PowerModeSwitch.slowestRolledBackEnter`).
     /// So every pass reaches the floor check and the stop check whatever the
     /// client is doing — slow, half-sent, or silent.
     public func run() {

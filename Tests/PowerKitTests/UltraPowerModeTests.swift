@@ -321,8 +321,25 @@ final class UltraPowerModePureTests: XCTestCase {
                        "`end` waits something other than the two constants the bound is made of")
     }
 
-    /// The comments that state the bound state the figures these constants make, and none of the earlier ones.
-    func testTheCommentsThatStateTheBoundStateTheRealOne() throws {
+    /// The two worst cases that can really happen, as sums: the read and the writes that can hang.
+    func testTheWorstCasesAreTheReachableSums() {
+        let call = PowerModeSwitch.callLimit, slowest = PowerModeSwitch.slowestCall
+        // A read that has to be ended ends the command, so a read counts `callLimit`; a write that goes counts `callLimit`;
+        // a write that hangs, `slowestCall`.
+        XCTAssertEqual(PowerModeSwitch.slowestCommand, call + 2 * slowest, accuracy: 1e-9)
+        XCTAssertEqual(PowerModeSwitch.slowestRolledBackEnter, call + call + slowest + call + 2 * slowest, accuracy: 1e-9)
+        XCTAssertEqual(PowerModeSwitch.slowestCommand, 2.6, accuracy: 1e-9)
+        XCTAssertEqual(PowerModeSwitch.slowestRolledBackEnter, 4.8, accuracy: 1e-9)
+    }
+
+    /// The deadline the sleep watch gives the loop belongs to the charge feature and is not changed here; what is pinned is
+    /// that the worst rolled-back switch-on leaves it a second to spare, so a change to either number that eats that fails.
+    func testTheSleepAnswerDeadlineKeepsAMarginOverTheWorstRolledBackSwitchOn() {
+        XCTAssertGreaterThanOrEqual(FanHelperServer.sleepAnswerDeadline, PowerModeSwitch.slowestRolledBackEnter + 1)
+    }
+
+    /// The comments that state the bound state the figures these constants make, and none that cannot happen.
+    func testTheCommentsThatStateTheBoundStateTheReachableFigures() throws {
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
         func source(_ path: String) throws -> String {
             try String(contentsOf: root.appendingPathComponent(path), encoding: .utf8)
@@ -331,18 +348,19 @@ final class UltraPowerModePureTests: XCTestCase {
         let call = PowerModeSwitch.callLimit, slowest = PowerModeSwitch.slowestCall
         let switchFile = try source("Sources/PowerKit/PowerModeSwitch.swift")
         let serverFile = try source("Sources/PowerKit/FanHelperService.swift")
-        // The doc of `callLimit`: what a call that finishes, a call that has to be ended, and each kind of command take.
-        for figure in [s(3 * call), s(slowest), s(call + 2 * slowest), s(6 * slowest)] {
+        // The doc of `callLimit` and of the two worst cases.
+        for figure in [s(3 * call), s(slowest), s(PowerModeSwitch.slowestCommand), s(PowerModeSwitch.slowestRolledBackEnter)] {
             XCTAssertTrue(switchFile.contains(figure), "PowerModeSwitch.swift does not say \(figure)")
         }
         // The loop's own docs: what a pass can take, and the sleep notice's deadline.
-        for figure in [s(slowest), s(3 * slowest), s(6 * slowest)] {
+        for figure in [s(slowest), s(PowerModeSwitch.slowestCommand), s(PowerModeSwitch.slowestRolledBackEnter)] {
             XCTAssertTrue(serverFile.contains(figure), "FanHelperService.swift does not say \(figure)")
         }
-        // The figures that were true before the grace and the wait for the kill were counted.
-        XCTAssertFalse(switchFile.contains("3.6 s"))
-        XCTAssertFalse(serverFile.contains("3.6 s"))
-        XCTAssertFalse(serverFile.contains("up to 0.6 s a call"))
+        // Figures that were true of an earlier version, or cannot happen.
+        for old in ["3.6 s", "3.0 s", "6.0 s", "up to 0.6 s a call"] {
+            XCTAssertFalse(switchFile.contains(old), "PowerModeSwitch.swift still says \(old)")
+            XCTAssertFalse(serverFile.contains(old), "FanHelperService.swift still says \(old)")
+        }
     }
 
     // ── The real runner, on a program that is harmless ──────────────────────

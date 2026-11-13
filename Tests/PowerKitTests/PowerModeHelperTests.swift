@@ -17,6 +17,8 @@ final class FakePmset: PowerModeRunner {
     struct Call: Equatable {
         let arguments: [String]
         let limit: TimeInterval
+        /// How it ended: nil is a call that was never answered (the runner would have had to end the tool).
+        let status: Int32?
     }
 
     private let lock = NSLock()
@@ -28,6 +30,8 @@ final class FakePmset: PowerModeRunner {
     private var _unexpected: [[String]] = []
     private var _refusedFlags: Set<String> = []
     private var _landsButFails: [String: Int] = [:]
+    private var _writeAttempts = 0
+    private var _failingAttempts: Set<Int> = []
     private var _writesAllowed: Int?
     private var _readFails = false
     private var _readStatus: Int32 = 0
@@ -60,6 +64,9 @@ final class FakePmset: PowerModeRunner {
     /// The next `times` writes to this source take effect and are reported as failed: a tool that was cut off after it had
     /// done the work.
     func writesLandButFail(for flag: String, times: Int = 1) { lock.lock(); _landsButFails[flag] = times; lock.unlock() }
+    /// The writes numbered like this (1 is the first the tool is asked for) take effect and are reported as failed: a tool
+    /// that was cut off after it had done the work, at the moments a test chooses.
+    func writesNumberedLandButFail(_ numbers: Set<Int>) { lock.lock(); _failingAttempts = numbers; lock.unlock() }
     /// This many more writes are taken, and every one after them is refused.
     func allowWrites(_ n: Int) { lock.lock(); _writesAllowed = n; lock.unlock() }
     /// The tool does not finish in time (the runner's answer for it).
@@ -81,7 +88,12 @@ final class FakePmset: PowerModeRunner {
 
     func run(_ arguments: [String], within limit: TimeInterval) -> PowerModeRun? {
         lock.lock(); defer { lock.unlock() }
-        _calls.append(Call(arguments: arguments, limit: limit))
+        let result = answer(arguments)
+        _calls.append(Call(arguments: arguments, limit: limit, status: result?.status))
+        return result
+    }
+
+    private func answer(_ arguments: [String]) -> PowerModeRun? {
         if _silent { return nil }
         if arguments == ["-g", "custom"] {
             if _readFails { return PowerModeRun(status: _readStatus, output: "") }
@@ -91,6 +103,12 @@ final class FakePmset: PowerModeRunner {
               let digit = Int(arguments[2]), arguments[2] == String(digit),
               (0...(key == "powermode" ? 2 : 1)).contains(digit), _values[arguments[0]] != nil else {
             _unexpected.append(arguments)
+            return PowerModeRun(status: 1, output: "")
+        }
+        _writeAttempts += 1
+        if _failingAttempts.contains(_writeAttempts) {
+            _values[arguments[0]] = digit
+            _writes.append(arguments)
             return PowerModeRun(status: 1, output: "")
         }
         if _refusedFlags.contains(arguments[0]) || _writesAllowed == 0 {
@@ -431,7 +449,7 @@ final class PowerModeHelperTests: XCTestCase {
         XCTAssertFalse(restore(server, 2).ok)
         let calls = pmset.calls.count - before
         XCTAssertEqual(calls, 3, "a read, and each source tried once")
-        XCTAssertGreaterThan(PowerModeSwitch.callLimit + Double(calls - 1) * PowerModeSwitch.slowestCall, 2.0)
+        XCTAssertGreaterThan(PowerModeSwitch.slowestCommand, 2.0)
         XCTAssertNotNil(server.heldPowerModes, "forgotten while both sources were still low")
     }
 
@@ -456,10 +474,56 @@ final class PowerModeHelperTests: XCTestCase {
         let server = makeServer()
         XCTAssertFalse(enter(server).ok)
         XCTAssertEqual(pmset.calls.count, 6, "\(pmset.calls.map(\.arguments))")
-        XCTAssertGreaterThan(Double(pmset.calls.count) * PowerModeSwitch.callLimit, 2.0, "this is the case the link may not wait for")
+        XCTAssertGreaterThan(PowerModeSwitch.slowestRolledBackEnter, 2.0, "this is the case the link may not wait for")
         XCTAssertEqual(pmset.battery, 2)
         XCTAssertEqual(pmset.charger, 0)
         XCTAssertNil(server.heldPowerModes)
+    }
+
+    /// What `slowestCommand` and `slowestRolledBackEnter` add up, by the calls a command really makes. A call that was
+    /// answered in time took at most `callLimit`; one that failed, or was never answered, can have been ended, and took at
+    /// most `slowestCall`.
+    private func slowest(_ calls: [FakePmset.Call]) -> TimeInterval {
+        calls.map { $0.status == 0 ? PowerModeSwitch.callLimit : PowerModeSwitch.slowestCall }.reduce(0, +)
+    }
+
+    /// A read that has to be ended is no answer, and ends the command: so in a command that goes on, every read finished in
+    /// the time it was given.
+    func testAReadThatHasToBeEndedStopsTheCommand() {
+        pmset.neverAnswers = true
+        let server = makeServer()
+        XCTAssertFalse(enter(server).ok)
+        XCTAssertEqual(pmset.calls.count, 1, "\(pmset.calls.map(\.arguments))")
+        XCTAssertFalse(restore(server, 2).ok)
+        XCTAssertEqual(pmset.calls.count, 2, "a restore makes one call too, the read")
+        XCTAssertEqual(slowest(pmset.calls), 2 * PowerModeSwitch.slowestCall)
+    }
+
+    /// The slowest command that is not a rolled-back switch-on: a read that finished, and two writes that each had to be
+    /// ended (each source is tried).
+    func testTheSlowestRestoreIsOneReadAndTwoWritesThatHadToBeEnded() {
+        let server = makeServer()
+        _ = enter(server)
+        let before = pmset.calls.count
+        pmset.refuseWrites(to: "-b")
+        pmset.refuseWrites(to: "-c")
+        XCTAssertFalse(restore(server, 2).ok)
+        let calls = Array(pmset.calls.dropFirst(before))
+        XCTAssertEqual(calls.map { $0.arguments.first }, ["-g", "-b", "-c"])
+        XCTAssertEqual(slowest(calls), PowerModeSwitch.slowestCommand, accuracy: 1e-9)
+    }
+
+    /// The slowest switch-on that fails and is rolled back, as the code can really go: the read finishes; the first write
+    /// goes; the second is cut off (it lands, and is reported failed); the read of the roll-back finishes; and both
+    /// put-back writes are cut off. Six calls, three of them as slow as a call can be.
+    func testTheSlowestRolledBackSwitchOnIsSixCallsOfWhichThreeHadToBeEnded() {
+        pmset.writesNumberedLandButFail([2, 3, 4])
+        let server = makeServer()
+        XCTAssertFalse(enter(server).ok)
+        XCTAssertEqual(pmset.calls.map { $0.arguments.first }, ["-g", "-b", "-c", "-g", "-b", "-c"])
+        XCTAssertEqual(pmset.calls.map(\.status), [0, 0, 1, 0, 1, 1])
+        XCTAssertEqual(slowest(pmset.calls), PowerModeSwitch.slowestRolledBackEnter, accuracy: 1e-9)
+        XCTAssertGreaterThan(PowerModeSwitch.slowestRolledBackEnter, PowerModeSwitch.slowestCommand)
     }
 
     // ── What it does not touch ──────────────────────────────────────────────
