@@ -1064,6 +1064,9 @@ final class UltraLowPowerWiringTests: XCTestCase {
                        "throttler: LiveProcessThrottler()",                   // what still runs is kept on the efficiency cores
                        "processTable: LiveProcessList.processTable",          // and its children are found when it is lifted
                        "hasEfficiencyCores: LiveProcessThrottler.hasEfficiencyCores",
+                       "startTime: { LiveProcessList.startTime($0) }",        // the app to hide is checked to be the one planned
+                       "appBundleID: liveAppBundleID",                        // a reopened app is known by its bundle, not its old pid
+                       "alert: { NSSound.beep() }",                           // a start that could not read the apps says so
                        "windows: liveWindows"] {
             XCTAssertTrue(body.contains(needed), "live() no longer has: \(needed)")
         }
@@ -1074,6 +1077,25 @@ final class UltraLowPowerWiringTests: XCTestCase {
         XCTAssertEqual(body.components(separatedBy: "let url = recordURL").count - 1, 1)
         XCTAssertTrue(body.contains("UltraRecordFile(url: url)"), "the store is on the record's url")
         XCTAssertTrue(body.contains("LiveUltraWatchdog(recordURL: url"), "the watchdog is given the same url")
+    }
+
+    /// Three connections outside `live()` that no test makes for real: each is read from its text, because without it every
+    /// other test still passes while the app menu never offers Cancel, Lid Glass never rests and the bar keeps its fast pace.
+    func testTheAppMenuLidGlassAndTheBarAskTheRealMode() throws {
+        let sources = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent().appendingPathComponent("Sources/AnodeApp")
+        func code(_ file: String) throws -> String {
+            try String(contentsOf: sources.appendingPathComponent(file), encoding: .utf8)
+                .split(separator: "\n", omittingEmptySubsequences: false)
+                .filter { !$0.trimmingCharacters(in: .whitespaces).hasPrefix("//") }.joined(separator: " ")
+                .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+        }
+        XCTAssertTrue(try code("AppMenu.swift").contains("starting: UltraLowPowerController.current?.isStarting ?? false"),
+                      "the app menu no longer asks whether a start is running")
+        XCTAssertTrue(try code("LidGlass.swift").contains("ultraOn: @escaping () -> Bool = { UltraQuiet.isOn }"),
+                      "Lid Glass no longer asks the real mode by default")
+        XCTAssertEqual(try code("MenuBarBackdrop.swift").components(separatedBy: "MenuBarBackdropPolling.interval(ultraOn: UltraQuiet.isOn)").count - 1, 2,
+                       "the bar's poll and its observer both take their pace from the real mode")
     }
 
     /// The watchdog is the one that lifts the policy when Anode dies, and it is never run in a test, so its call is read from its
