@@ -20,7 +20,7 @@ The hard part, in the owner's words: "What to kill, and what not to kill. If the
 - **Anode while it is on:** "anode should pause all measurements, just show paused for drain, left, swap, ram, cpu, everything in menu bar, all background measurements, only measure if main window open."
 - Approved as proposed ("all looks good to me"): what is kept; apps opened afterwards are left alone; one app can be un-frozen from Anode's menu; frozen apps' windows are hidden; macOS Low Power Mode on through the helper and put back afterwards; the switch lives in Beta Features, Anode's menu and a shortcut; quitting Anode ends the mode; a crash is cleaned up.
 
-Decisions beyond these are marked *(author's call)*.
+Decisions beyond these are marked *(author's call)*. On 2026-11-12 the owner was shown every one of them as a numbered list and said yes to each, so they stand as the owner's. Two answers settled open points: background tools with no app **are frozen by default**, and the measured test at a quiet Mac is **the first step of the build**.
 
 ## States
 
@@ -56,7 +56,7 @@ Every process is in exactly one of three piles.
 - Other vendors' background agents (sync clients, updaters, launchers).
 - With each of these, everything that belongs to it, by the same rule as for kept apps. An app is frozen whole or not at all.
 - **"Belongs to" wins over where the file lives.** A helper in a system location that macOS holds a frozen app responsible for (a browser's page and network processes) is frozen with that app; otherwise the biggest burners would keep running. A system service that serves several apps is never frozen.
-- **Background tools with no app** (a local database, a container engine, a development server started outside the editor) are grouped by their launchd job, or else by executable name, and frozen like the rest *(author's call, question open with the owner)*. Each group has a name the owner can read, appears in the confirm box and the menu, and can be put on the "always keep" list.
+- **Background tools with no app** (a local database, a container engine, a development server started outside the editor) are grouped by their launchd job, or else by executable name, and frozen like the rest (the owner's answer). Each group has a name the owner can read, appears in the confirm box and the menu, and can be put on the "always keep" list.
 - **What starts later.** A new process that belongs to an already-frozen group (a frozen sync client's respawned updater) is frozen when Anode next looks. Anything else new is left alone. How often Anode looks is the builder's choice; what the looking costs is measured. "No timers" is a rule for the Off state.
 
 Before an app with windows is frozen, Anode hides it, so the owner is not left clicking a dead window. The windows come back when the app does.
