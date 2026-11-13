@@ -137,9 +137,10 @@ enum UltraMenu {
         var isEnabled: Bool
     }
 
-    /// How the entry in the app menu looks. It is there only while the box in Beta Features is ticked, and a mode that is
-    /// running keeps its entry even if the box is unticked since: the way out is never taken away. With no controller (the
-    /// app has not made one) or while the box is up there is nothing to press.
+    /// How the entry in the app menu looks. It is there only while the box in Beta Features is ticked. Unticking the box ends the
+    /// mode, and until the end has put the screen and the rest back (the state stays on until then) the entry stays, so the way
+    /// out is never taken away. With no controller (the app has not made one) or while the box is up there is nothing to press;
+    /// while the start is running it is Cancel.
     static func appEntry(ticked: Bool, state: UltraLowPowerController.State?, starting: Bool = false) -> AppEntry {
         let cancelling = state == .confirming && starting
         return AppEntry(title: state == .on ? appTurnOffTitle : cancelling ? cancelTitle : startTitle,
@@ -376,7 +377,8 @@ final class UltraLowPowerFeature: BetaFeature {
     }
 
     /// The Start / Turn Off button. Start waits for the box to be ticked, a controller to exist and no box to be up. Turn Off is
-    /// always there while the mode runs, ticked or not. While the start is running (confirmed, not on yet) it is Cancel.
+    /// there for as long as the mode runs (unticking the box ends it, and the button stays until the end is done). While the start
+    /// is running (confirmed, not on yet) it is Cancel.
     static func buttonLook(ticked: Bool, state: UltraLowPowerController.State?, starting: Bool = false) -> ButtonLook {
         switch state {
         case .on?: return ButtonLook(title: turnOffTitle, isEnabled: true)

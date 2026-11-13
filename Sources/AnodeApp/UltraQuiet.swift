@@ -6,8 +6,8 @@ import Foundation
 // into a stopped process (an accessibility question, a window raise) waits until it times out. Every file that needs to know
 // asks here, so "the mode is on" and "this process is stopped" are each decided in one place and a call site is one line.
 //
-// With no controller (nothing creates one until the mode is wired in) or with the mode off, every answer is the one the app
-// gave before the mode existed. Main thread only, like the controller.
+// With no controller (the app makes one when it starts, and drops it when it quits) or with the mode off, every answer is the
+// one the app gave before the mode existed. Main thread only, like the controller.
 
 enum UltraQuiet {
 

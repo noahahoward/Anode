@@ -41,6 +41,8 @@ final class UltraLowPowerControllerTests: XCTestCase {
         var refuseResume: Set<pid_t> = []
         /// Called as a process is stopped, before the answer: lets a test look at the record at that moment.
         var onStop: ((pid_t) -> Void)?
+        /// Called as a process is continued, before the answer: lets a test look at what else has been done by then.
+        var onResume: ((pid_t) -> Void)?
         private(set) var stops: [pid_t] = []
         private(set) var resumes: [pid_t] = []
         init(_ calls: Calls) { self.calls = calls }
@@ -49,7 +51,7 @@ final class UltraLowPowerControllerTests: XCTestCase {
             return !refuse.contains(pid)
         }
         func resume(pid: pid_t, startTime: UInt64) -> Bool {
-            calls.add("resume \(pid)"); resumes.append(pid)
+            calls.add("resume \(pid)"); resumes.append(pid); onResume?(pid)
             return !refuseResume.contains(pid)
         }
     }
@@ -2100,8 +2102,8 @@ final class UltraLowPowerControllerTests: XCTestCase {
         other[editor] = UltraProcess(pid: 11, parent: 1, uid: 501, startTime: 99_999, path: "/bin/zsh", name: "zsh")
         processes.list = other
         fire(30)
-        XCTAssertEqual(throttler.lifted, [10], "11 is another process now: not lifted, and still on the record as it was")
-        XCTAssertEqual(namedThrottled, [11])
+        XCTAssertEqual(throttler.lifted, [10], "11 is another process now: not lifted")
+        XCTAssertEqual(namedThrottled, [], "and no longer named: the record is of the recorded process, dropped in the sweep's one write")
     }
 
     func testARefusedThrottleIsNotRetriedByEverySweep() {
@@ -2202,7 +2204,7 @@ final class UltraLowPowerControllerTests: XCTestCase {
         XCTAssertEqual(logged.filter { $0.contains("10") || $0.contains("12") }.count, 0, "they answered: nothing failed")
     }
 
-    func testAProcessThatEndedDuringTheSessionIsLoggedOnTurnOffAndTheModeStillEnds() {
+    func testALiftTheSystemRefusedForAProcessThatIsStillThereIsLoggedOnTurnOffAndTheModeStillEnds() {
         start()
         throttler.refuseLift = [11]
         controller.turnOff()
@@ -2210,6 +2212,100 @@ final class UltraLowPowerControllerTests: XCTestCase {
         XCTAssertEqual(logged.filter { $0.contains("11") }.count, 1, "\(logged)")
         XCTAssertEqual(controller.state, .off)
         XCTAssertNil(store.record)
+    }
+
+    /// A process that has ended is not a failure: there is nothing left to lift it from.
+    func testAProcessThatEndedDuringTheSessionIsNotLoggedAsAFailureAtTheEnd() {
+        start()
+        throttler.refuseLift = [11]
+        gone = [11]
+        processes.list = world.filter { $0.pid != 11 }
+        controller.turnOff()
+        XCTAssertEqual(throttler.lifted, [10, 11], "it is still asked: the record names it")
+        XCTAssertEqual(logged.filter { $0.contains("lift") }.count, 0, "\(logged)")
+        XCTAssertEqual(controller.state, .off)
+        XCTAssertNil(store.record)
+    }
+
+    /// And a pid that is another process now is the same: it is not the one the record names.
+    func testAPidThatIsAnotherProcessNowIsNotLoggedAsAFailureAtTheEnd() {
+        start()
+        throttler.refuseLift = [11]
+        recycled[11] = 999_999
+        controller.turnOff()
+        XCTAssertEqual(logged.filter { $0.contains("lift") }.count, 0, "\(logged)")
+    }
+
+    func testALiftRefusedForAProcessOfARecordLeftBehindIsStillLoggedWhileItIsThere() {
+        var record = UltraRecord()
+        record.throttled = [.init(pid: 10, startTime: 100), .init(pid: 11, startTime: 110)]
+        store.record = record
+        throttler.refuseLift = [10, 11]
+        gone = [11]
+        controller.recoverAtLaunch()
+        XCTAssertEqual(logged.filter { $0.contains("lift") }.count, 1, "10 is there and refused; 11 has ended: \(logged)")
+        XCTAssertTrue(logged.contains { $0.contains("(10)") }, "\(logged)")
+    }
+
+    // ── The record does not grow ────────────────────────────────────────────
+
+    func testTheSweepDropsWhatIsNoLongerThereFromTheThrottledListInTheOneWriteItMakes() {
+        start()
+        XCTAssertEqual(namedThrottled, [10, 11])
+        let writes = store.saves.count
+        // The shell (11) has ended, and a new part of the editor (12) has started: one write, with both changes.
+        processes.list = world.filter { $0.pid != 11 } + [proc(12, parent: 10, path: "/bin/zsh")]
+        fire(30)
+        XCTAssertEqual(namedThrottled, [10, 12])
+        XCTAssertEqual(store.saves.count, writes + 1)
+    }
+
+    func testTheSweepDropsAProcessWhosePidIsAnotherProcessNow() {
+        start()
+        var list = world
+        let shell = list.firstIndex { $0.pid == 11 }!
+        list[shell] = UltraProcess(pid: 11, parent: 10, uid: 501, startTime: 99_999, path: "/bin/zsh", name: "zsh")
+        processes.list = list
+        fire(30)
+        XCTAssertEqual(store.record?.throttled?.contains(.init(pid: 11, startTime: 110)), false, "the old process is dropped")
+        XCTAssertEqual(store.record?.throttled?.contains(.init(pid: 11, startTime: 99_999)), true, "the new one is named")
+    }
+
+    func testTheSweepMakesAWriteOfItsOwnWhenThereIsOnlyWhatToDrop() {
+        start()
+        let writes = store.saves.count
+        processes.list = world.filter { $0.pid != 11 }
+        fire(30)
+        XCTAssertEqual(namedThrottled, [10])
+        XCTAssertEqual(store.saves.count, writes + 1)
+    }
+
+    func testTheSweepMakesNoWriteWhenNothingChanged() {
+        start()
+        let writes = store.saves.count
+        fire(30)
+        fire(30)
+        XCTAssertEqual(store.saves.count, writes, "nothing to name and nothing to drop")
+    }
+
+    func testWhatTheSweepDroppedIsNotAskedForAtTheEnd() {
+        start()
+        processes.list = world.filter { $0.pid != 11 }
+        fire(30)
+        controller.turnOff()
+        XCTAssertFalse(throttler.lifted.contains(11), "the shell had ended: the record no longer names it")
+        XCTAssertTrue(throttler.lifted.contains(10))
+    }
+
+    func testAThrottledListThatCannotBeWrittenIsNotLostFromWhatTheEndLifts() {
+        start()
+        store.refuseSave = { $0.throttled?.contains(where: { $0.pid == 11 }) != true }
+        processes.list = world.filter { $0.pid != 11 }
+        fire(30)
+        XCTAssertTrue(logged.contains { $0.contains("record") }, "\(logged)")
+        store.refuseSave = { _ in false }
+        controller.turnOff()
+        XCTAssertTrue(throttler.lifted.contains(10))
     }
 
     // A start that does not finish
@@ -2301,13 +2397,17 @@ final class UltraLowPowerControllerTests: XCTestCase {
         XCTAssertGreaterThan(backdrop.hides, 0)
     }
 
-    /// A turn-off whose settings are still being put back leaves the state on, and the backdrop with it: it goes when the
-    /// state does, and a quit that overtakes it takes it away at once.
-    func testAQuitThatOvertakesATurnOffStillTakesItAway() {
+    /// The backdrop is the first thing the end takes away, before a process is continued or anything is put back: a turn-off whose
+    /// settings are still being put back leaves the state on, but not the black desktop. A quit that overtakes it leaves it gone.
+    func testTurnOffTakesTheBackdropAwayFirstAndAQuitThatOvertakesItLeavesItGone() {
         start()
+        var shownAtTheFirstContinue: Bool?
+        freezer.onResume = { [unowned self] _ in if shownAtTheFirstContinue == nil { shownAtTheFirstContinue = self.backdrop.shown } }
         holdWork = true
         controller.turnOff()
         XCTAssertEqual(controller.state, .on, "still being put back")
+        XCTAssertEqual(shownAtTheFirstContinue, false, "gone before the first process was continued")
+        XCTAssertFalse(backdrop.shown, "and not waiting for the screen to be put back")
         controller.shutdown()
         XCTAssertFalse(backdrop.shown)
         runHeldWork()

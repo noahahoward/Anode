@@ -15,9 +15,10 @@ import PowerKit
 //     reverse. When a record cannot be written, what it would have named is not done;
 //   · every piece of work that waits (a hidden app, the load, a call that can block, a helper) is tagged with the session
 //     it belongs to and does nothing if that session is over. Ending bumps the number;
-//   · ending continues every process first, then lifts the background policy from every process the record names and every
-//     living child of one (a child inherits the policy and is on no record), then puts the settings back, and only then takes
-//     the watchdog and the record away.
+//   · ending takes the backdrop away and continues every process first, then lifts the background policy from every process the
+//     record names, every living descendant of one (a child inherits the policy and is on no record) and every current member of
+//     the kept, left-running and brought-back groups, then puts the settings back, and only then takes the watchdog and the record
+//     away.
 
 enum PowerModeAvailability: Equatable { case ready, noHelper, oldHelper }
 
@@ -383,12 +384,22 @@ final class UltraLowPowerController {
     /// processes first, and when it cannot be written none of them is touched: a process slowed with no record is slowed for
     /// good if Anode dies. One the system refuses is taken off the record again, so that only what was done is lifted.
     private func throttle(_ members: [FreezeGroup.Member]) {
+        var none: [UltraRecord.Member] = []
+        throttle(members, dropping: &none)
+    }
+
+    /// `stale` is what the record names that is gone: it goes in this same write, when the write is made, and is then no longer owed.
+    private func throttle(_ members: [FreezeGroup.Member], dropping stale: inout [UltraRecord.Member]) {
         guard !members.isEmpty else { return }
-        let named = record(mustSave: true) { $0.throttled = ($0.throttled ?? []) + members.map(Self.recordMember) }
+        let gone = stale
+        let named = record(mustSave: true) {
+            $0.throttled = (($0.throttled ?? []).filter { !gone.contains($0) }) + members.map(Self.recordMember)
+        }
         guard named else {
             log("ultra: the record could not take the processes to keep on the efficiency cores, so they were left as they are")
             return
         }
+        stale = []
         var refused: [UltraRecord.Member] = []
         for member in members where !throttler.throttle(pid: member.pid, startTime: member.startTime) {
             log("ultra: could not keep \(member.pid) on the efficiency cores")
@@ -403,16 +414,19 @@ final class UltraLowPowerController {
     /// brought back, read from the fresh list. The groups are whole, so that the rule about a call is read over every part of one.
     ///
     ///  · A group that is not on a call: each part of it that is not under the policy yet (a new helper, a tool the editor ran, what
-    ///    a call left behind) is put under it. A part the system refused, or that was in the background before, is not asked again.
+    ///    a call left behind) is put under it. A part the system refused is not asked again.
     ///  · A group that has started using the microphone or camera: the policy is lifted from its parts that are on the record, and
     ///    from what they started since the last sweep (which inherited it and is on no record, and may be the very part on the
     ///    call), and only then are the parts taken off the record. It is not put back under it while it is in use; a later sweep
     ///    does that when it stops.
     private func keepRunningOnEfficiencyCores(in list: [UltraProcess]) {
         guard throttling else { return }
+        // What the record names that is gone now goes off it in the one write this makes (naming a new part, or lifting from a group
+        // that is on a call), or in one of its own when it makes none.
+        var stale = throttledNoLongerThere(in: list)
         var wanted = keptIDs.union(leftRunning.map(\.id))
         wanted.formUnion(live?.groups.filter(\.released).map(\.id) ?? [])
-        guard !wanted.isEmpty else { return }
+        guard !wanted.isEmpty else { return dropFromRecord(stale) }
         let own = anodes()
         let groupOf = FreezePlanner.groupIDs(processes: list, user: user, ownPIDs: own)
         var held: [String: [FreezeGroup.Member]] = [:]
@@ -427,12 +441,28 @@ final class UltraLowPowerController {
 
         let underPolicy = live?.throttled ?? []
         let isUnderPolicy: (FreezeGroup.Member) -> Bool = { member in underPolicy.contains(Self.recordMember(member)) }
-        liftFromGroupsOnACall(onACall, underPolicy: isUnderPolicy, in: list, groupOf: groupOf, own: own)
-        throttle(notOnACall.filter { !isUnderPolicy($0) && throttleSkipped[$0.pid] != $0.startTime })
+        liftFromGroupsOnACall(onACall, underPolicy: isUnderPolicy, in: list, groupOf: groupOf, own: own, stale: &stale)
+        throttle(notOnACall.filter { !isUnderPolicy($0) && throttleSkipped[$0.pid] != $0.startTime }, dropping: &stale)
+        dropFromRecord(stale)
+    }
+
+    /// The processes the record names under the policy that are no longer in the list: the pid is gone, or is another process now
+    /// (its start time differs). A session of days would otherwise carry every process that ever ran under it to the end, where each
+    /// is asked to be lifted and none can be.
+    private func throttledNoLongerThere(in list: [UltraProcess]) -> [UltraRecord.Member] {
+        let startTimes = Dictionary(list.map { ($0.pid, $0.startTime) }, uniquingKeysWith: { first, _ in first })
+        return (live?.throttled ?? []).filter { startTimes[$0.pid] != $0.startTime }
+    }
+
+    /// What no longer exists, off the record, in a write of its own: only when no other write of the sweep took it, and none when
+    /// there is nothing to drop.
+    private func dropFromRecord(_ stale: [UltraRecord.Member]) {
+        guard !stale.isEmpty else { return }
+        record { $0.throttled?.removeAll { stale.contains($0) } }
     }
 
     private func liftFromGroupsOnACall(_ groups: [FreezeGroup], underPolicy: (FreezeGroup.Member) -> Bool, in list: [UltraProcess],
-                                       groupOf: [pid_t: String], own: Set<pid_t>) {
+                                       groupOf: [pid_t: String], own: Set<pid_t>, stale: inout [UltraRecord.Member]) {
         let roots = groups.flatMap(\.members).filter(underPolicy)
         guard !roots.isEmpty else { return }
         let onACall = Set(groups.map(\.id))
@@ -442,13 +472,15 @@ final class UltraLowPowerController {
             !own.contains(child.pid) && (groupOf[child.pid].map { onACall.contains($0) || !wantedGroup($0) } ?? true)
         }
         var lifted: [UltraRecord.Member] = []
-        for member in roots + children where throttler.unthrottle(pid: member.pid, startTime: member.startTime) {
-            lifted.append(Self.recordMember(member))
+        for member in roots + children {
+            if throttler.unthrottle(pid: member.pid, startTime: member.startTime) { lifted.append(Self.recordMember(member)) }
         }
         // After the lift: a crash in between finds them named, which only lifts again. A lift the system refused leaves the process
-        // named, so that the end lifts it again and the next sweep tries.
+        // named, so that the end lifts it again and the next sweep tries. What is no longer there goes in the same write.
         guard !lifted.isEmpty else { return }
-        record { $0.throttled?.removeAll { lifted.contains($0) } }
+        let gone = stale
+        stale = []
+        record { $0.throttled?.removeAll { lifted.contains($0) || gone.contains($0) } }
     }
 
     /// Whether a group id is one of those the sweep keeps on the efficiency cores.
@@ -689,8 +721,6 @@ final class UltraLowPowerController {
     /// everything that changes the state.
     func shutdown() {
         guard state != .off else { return }
-        // The window is Anode's own and goes first: whatever the put-back does, a quit leaves nothing of the mode on screen.
-        backdrop.hide()
         end(inline: true)
     }
 
@@ -708,6 +738,9 @@ final class UltraLowPowerController {
     }
 
     private func end(inline: Bool) {
+        // The black desktop is the first thing to go, before a process is continued or a setting put back: whatever the rest takes,
+        // the owner sees their screen again at once.
+        backdrop.hide()
         let token = counter.increment()
         asked = nil
         // No record yet: nothing was done, so there is nothing to undo, only the question or the start to drop.
@@ -777,8 +810,9 @@ final class UltraLowPowerController {
             log("ultra: could not continue \(groupOf[pid] ?? "a process") (\(pid)): it has ended, or is not that process any more")
         }
         // Right after the continues, before anything that asks another app for something: what was slowed is lifted from
-        // every process the record names, and from what those processes started (see `liftTheLimit`). Not tied to the setting or to
-        // this Mac's cores: a record is undone whatever the owner has changed since.
+        // every process the record names, from every living descendant of one, and from every current member of the kept,
+        // left-running and brought-back groups (see `liftTheLimit`). Not tied to the setting or to this Mac's cores: a record
+        // is undone whatever the owner has changed since.
         liftTheLimit(actions, names: groupOf)
         for case .unhide(let pid) in actions { hider.unhide(pid: pid) }
 
@@ -875,7 +909,9 @@ final class UltraLowPowerController {
         func lift(_ pid: pid_t, _ startTime: UInt64) {
             guard lifted[pid, default: []].insert(startTime).inserted else { return }
             guard !throttler.unthrottle(pid: pid, startTime: startTime), notLifted.insert(pid).inserted else { return }
-            log("ultra: could not lift the efficiency-core limit from \(names[pid] ?? "a process") (\(pid)): it has ended, or is not that process any more")
+            // One that has ended (or whose pid is another process now) has nothing left to lift: not a failure, and not said.
+            guard self.startTime(pid) == startTime else { return }
+            log("ultra: could not lift the efficiency-core limit from \(names[pid] ?? "a process") (\(pid)): the system refused")
         }
         var roots: [FreezeGroup.Member] = []
         for case .unthrottle(let pid, let startTime) in actions {
@@ -972,9 +1008,9 @@ final class UltraLowPowerController {
             self.known = list
             // A pid is known only while it is still the process that was tried: a pid that was reused is a new process.
             let startTimes = Dictionary(list.map { ($0.pid, $0.startTime) }, uniquingKeysWith: { first, _ in first })
-            let known = Set(self.attempted.filter { startTimes[$0.key] == $0.value }.keys)
+            let tried = Set(self.attempted.filter { startTimes[$0.key] == $0.value }.keys)
             var additions = FreezePlanner.additions(processes: list, user: self.user, frozenGroups: Set(self.frozen.map(\.id)),
-                                                    known: known, ownPIDs: self.anodes())
+                                                    known: tried, ownPIDs: self.anodes())
             // A frozen app that was quit and opened again has a new app process, which the mode did not stop: the owner is using
             // it. The group is released as the owner's own bringing it back would, and none of its new parts are stopped.
             let regular = Set(list.filter { $0.app == .regular }.map(\.pid))
