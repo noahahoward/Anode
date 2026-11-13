@@ -33,15 +33,26 @@ public enum Uninstall {
         /// removed by the script only if it has no uncommitted or unpushed work,
         /// which a plan built from file existence cannot know.
         public var installedCheckout: String?
-        /// SHOWN, never run. Removing it needs root, and this project's rule is
-        /// that anything needing root is a command the user reads and types.
-        public var rootDaemonCommand: String?
+        /// The Anode helper's launchd job and binary, root-owned, whichever are there. NOT in `systemFiles` or `data`:
+        /// the app cannot delete them. The script removes them with `sudo`, running the helper's own `--uninstall`
+        /// (which reconnects the charger first), and the Terminal it runs in asks for the password once.
+        public var helperFiles: [String] = []
+        /// The sudoers rule Always Stay Awake installs, when it is there. Root-owned too; the script removes it with
+        /// `sudo rm -f`, under the same single password prompt.
+        public var keepAwakeRule: String?
 
         public var isEmpty: Bool {
             appBundle == nil && loginAgents.isEmpty && scripts.isEmpty && systemFiles.isEmpty
                 && data.isEmpty && defaultsDomains.isEmpty && installedCheckout == nil
+                && helperFiles.isEmpty && keepAwakeRule == nil
         }
     }
+
+    /// Where the helper's launchd job and binary, and the Always Stay Awake rule, are. `uninstall.sh` names the same
+    /// four places (its defaults for ANODE_LAUNCH_DAEMONS_DIR and the other variables the tests use); a test keeps
+    /// the two in step.
+    public static let helperFileLocations = [FanDaemon.plistPath, FanDaemon.helperPath]
+    public static let keepAwakeRuleLocation = KeepAwakeAuthorisation.path
 
     /// Where an installed bundle can be. `~/Applications` is where
     /// `build-app.sh` puts it; `/Applications` is where someone may have
@@ -166,16 +177,27 @@ public enum Uninstall {
             }
         }
 
-        if exists("/Library/LaunchDaemons/\(FanDaemon.label).plist") {
-            plan.rootDaemonCommand = FanDaemon.uninstallCommand(for: [FanDaemon.label])
-        }
+        plan.helperFiles = helperFileLocations.filter(exists)
+        if exists(keepAwakeRuleLocation) { plan.keepAwakeRule = keepAwakeRuleLocation }
         return plan
+    }
+
+    /// What is said about the root-owned parts, naming only the ones that are there, or nil when none is. The
+    /// Terminal the script runs in asks for the password once; it is not asked for here.
+    public static func passwordSentence(_ plan: Plan) -> String? {
+        let parts = (plan.helperFiles.isEmpty ? [] : ["The Anode helper"])
+            + (plan.keepAwakeRule == nil ? [] : ["the Always Stay Awake permission"])
+        guard !parts.isEmpty else { return nil }
+        let subject = parts.count == 2 ? "\(parts[0]) and \(parts[1])" : parts[0]
+        let sentence = "\(subject) \(parts.count == 2 ? "are" : "is") removed too; "
+            + "the Terminal window will ask for your password once."
+        return sentence.prefix(1).uppercased() + sentence.dropFirst()
     }
 
     /// What the user is asked to agree to. Every path spelled out: an uninstall
     /// that says "and associated files" is asking for trust it has not earned.
     public static func summary(_ plan: Plan, removingData: Bool) -> String {
-        guard !plan.isEmpty || plan.rootDaemonCommand != nil else {
+        guard !plan.isEmpty else {
             return "Nothing of Anode was found on this machine."
         }
         var lines: [String] = []
@@ -189,10 +211,9 @@ public enum Uninstall {
             lines.append("\nYour measurement history and settings are KEPT. "
                        + "Tick the box to remove those too.")
         }
-        if plan.rootDaemonCommand != nil {
-            lines.append("\nThe Anode helper runs as root and cannot be removed from here. "
-                       + "The command to remove it is printed at the end.")
-        }
+        for f in plan.helperFiles { lines.append("• \(f)") }
+        if let rule = plan.keepAwakeRule { lines.append("• \(rule)") }
+        if let sentence = passwordSentence(plan) { lines.append("\n" + sentence) }
         if let checkout = plan.installedCheckout {
             lines.append("• \(checkout)  (the copy the installer cloned — only if it has "
                        + "no uncommitted or unpushed changes)")

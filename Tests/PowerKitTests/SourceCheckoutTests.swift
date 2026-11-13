@@ -441,17 +441,47 @@ final class UninstallPlanTests: XCTestCase {
         }
     }
 
-    /// The root daemon is REPORTED, never removed: it needs a password, and this
-    /// project's rule is that anything needing root is a command you read.
-    func testTheRootDaemonIsReportedAndNotRemoved() {
+    /// The helper and the Always Stay Awake rule are root-owned: they are listed apart from what the app can delete,
+    /// never on a plain delete list, and the summary says the Terminal asks for the password once. The script removes
+    /// them with sudo (Tests/installer-tests.sh runs that, against a stand-in sudo).
+    func testTheRootOwnedPartsAreListedApartAndTheirPasswordSaid() {
         let plan = Uninstall.plan(removingData: true, home: home) {
-            $0.hasPrefix("/Library/LaunchDaemons/")
+            $0.hasPrefix("/Library/") || $0.hasPrefix("/etc/")
         }
-        let command = try? XCTUnwrap(plan.rootDaemonCommand)
-        XCTAssertTrue(command?.contains("sudo") ?? false,
-                      "the root daemon command does not tell the user to use sudo")
-        XCTAssertFalse(plan.data.contains { $0.hasPrefix("/Library") },
-                       "a root-owned path ended up on the delete list")
+        XCTAssertEqual(plan.helperFiles, ["/Library/LaunchDaemons/dev.anode.app.fanhelper.plist",
+                                          "/Library/PrivilegedHelperTools/dev.anode.app.fanhelper"])
+        XCTAssertEqual(plan.keepAwakeRule, "/etc/sudoers.d/anode-keep-awake")
+        XCTAssertFalse((plan.data + plan.systemFiles + plan.scripts).contains { $0.hasPrefix("/Library") || $0.hasPrefix("/etc") },
+                       "a root-owned path ended up on a list the app deletes from")
+        let text = Uninstall.summary(plan, removingData: true)
+        XCTAssertTrue(text.contains("• /Library/PrivilegedHelperTools/dev.anode.app.fanhelper"))
+        XCTAssertTrue(text.contains("• /etc/sudoers.d/anode-keep-awake"))
+        XCTAssertTrue(text.contains("The Anode helper and the Always Stay Awake permission are removed too; "
+                                    + "the Terminal window will ask for your password once."), text)
+        XCTAssertFalse(text.contains("cannot be removed from here"), "the old sentence, which said it was left to the user")
+    }
+
+    /// Only the parts that are there are named.
+    func testOnlyThePartsThatAreThereAreNamed() {
+        let helperOnly = Uninstall.plan(removingData: false, home: home) { $0.hasPrefix("/Library/") }
+        XCTAssertTrue(Uninstall.summary(helperOnly, removingData: false).contains(
+            "The Anode helper is removed too; the Terminal window will ask for your password once."))
+        XCTAssertFalse(Uninstall.summary(helperOnly, removingData: false).contains("Always Stay Awake"))
+
+        let ruleOnly = Uninstall.plan(removingData: false, home: home) { $0.hasPrefix("/etc/") }
+        XCTAssertNil(ruleOnly.helperFiles.first)
+        let text = Uninstall.summary(ruleOnly, removingData: false)
+        XCTAssertTrue(text.contains("The Always Stay Awake permission is removed too; "
+                                    + "the Terminal window will ask for your password once."), text)
+        XCTAssertFalse(text.contains("Anode helper"))
+        XCTAssertFalse(text.contains("Nothing of Anode was found"),
+                       "a Mac with only the permission left said there was nothing to remove")
+        XCTAssertFalse(ruleOnly.isEmpty)
+
+        let neither = Uninstall.plan(removingData: false, home: home, exists: { $0.hasPrefix(home) })
+        XCTAssertNil(Uninstall.passwordSentence(neither))
+        XCTAssertFalse(Uninstall.summary(neither, removingData: false).contains("password"),
+                       "a password was announced for nothing")
     }
 
     /// Nothing found says so, rather than claiming to have removed things.

@@ -15,11 +15,28 @@
 #     for years. The ONE exception is the clone install.sh makes (~/.anode/source, or
 #     ~/Developer/Anode where an earlier version put it) — and even that only when git says it has no uncommitted, stashed or
 #     unpushed work. Otherwise it is left and the reason is printed.
-#   * It never runs sudo. The Anode helper is a root daemon and removing it needs a
-#     password; this project's rule is that anything needing root is a command
-#     you read and type yourself, so it prints that command at the end.
 #   * It keeps your history and settings unless you ask for --data. A reinstall
 #     that silently lost a month of measurements would be its own bug report.
+#
+# ── WHAT IT RUNS WITH sudo, AND WHY ─────────────────────────────────────────
+#
+#   It used to print the commands for what needs the password and leave them to you, and every uninstall then left a
+#   root daemon, a sudoers rule and sometimes a Mac that could not sleep behind. The owner decided that an uninstall
+#   removes everything, so it now runs sudo, for exactly this and nothing else, at the very end, after everything the
+#   account owns is gone:
+#
+#     sudo <the helper> --uninstall           the helper reconnects the charger if Anode switched it off, then removes
+#                                             its launchd job, its binary and its socket (when only the job is left and
+#                                             the binary is gone: sudo launchctl bootout, then sudo rm -f of the job
+#                                             and the socket)
+#     sudo rm -f <the Always Stay Awake rule> the one sudoers rule Always Stay Awake installs
+#     sudo pmset -a disablesleep 0            only when macOS reports SleepDisabled 1 (a crashed Anode can leave the
+#                                             Mac unable to sleep)
+#
+#   They are printed first, with a sentence saying the Terminal asks for the Mac's password once. The password is typed
+#   at the Terminal, to sudo: no `sudo -S`, nothing here reads it. Where sudo cannot be used (nothing on stdin to type
+#   at, ANODE_NO_SUDO=1, a password that was refused or cancelled) the same commands are printed for you to run, and
+#   the rest of the uninstall stands, with the exit status it always had.
 set -euo pipefail
 
 REMOVE_DATA=0
@@ -47,6 +64,15 @@ SYSTEM_APPS_DIR="${ANODE_SYSTEM_APPLICATIONS_DIR:-/Applications}"
 APP_COPIES=("$HOME/Applications/Anode.app" "$SYSTEM_APPS_DIR/Anode.app")
 # Where the helper's launchd job lives. ANODE_LAUNCH_DAEMONS_DIR is for the tests, which must not read the real one.
 LAUNCH_DAEMONS_DIR="${ANODE_LAUNCH_DAEMONS_DIR:-/Library/LaunchDaemons}"
+# The rest of what is root's, each with a variable for the tests, which must not read or write the real /Library, /etc
+# or /var: the folder the helper's binary is installed in, the folder of the sudoers rule Always Stay Awake installs,
+# and the helper's socket. Kept in step with FanDaemon.helperPath, KeepAwakeAuthorisation.path and FanSocket.path.
+HELPER_TOOLS_DIR="${ANODE_PRIVILEGED_HELPER_TOOLS_DIR:-/Library/PrivilegedHelperTools}"
+SUDOERS_DIR="${ANODE_SUDOERS_DIR:-/etc/sudoers.d}"
+FAN_SOCKET="${ANODE_FAN_SOCKET:-/var/run/anode-fan.sock}"
+HELPER_PLIST="$LAUNCH_DAEMONS_DIR/$DAEMON_LABEL.plist"
+HELPER_BIN="$HELPER_TOOLS_DIR/$DAEMON_LABEL"
+KEEP_AWAKE_RULE="$SUDOERS_DIR/anode-keep-awake"
 # The first version of the app that takes --restore-charge-settings. An older app would start its whole interface
 # instead and this script would wait on it.
 RESTORE_ARGUMENT_SINCE="1.17.0"
@@ -142,14 +168,55 @@ if [ -d "$INSTALLED_SRC/.git" ]; then
   fi
 fi
 
+# ── What only root can remove ───────────────────────────────────────────────
+# macOS says the Mac cannot sleep. A crashed Anode (Always Stay Awake sets it) can leave it so, and only root can say
+# otherwise. Empty or absent reads as not disabled.
+sleep_is_disabled() {
+  [ "$(pmset -g 2>/dev/null | awk '$1 == "SleepDisabled" { v = $2 } END { print v }')" = "1" ]
+}
+# Something root owns is still there, or macOS is still told not to sleep.
+root_things_left() {
+  [ -e "$HELPER_PLIST" ] || [ -e "$HELPER_BIN" ] || [ -e "$KEEP_AWAKE_RULE" ] || sleep_is_disabled
+}
+# The commands for what is there now, as they are run (and as they are printed for you to run). The helper's own
+# uninstall when its binary is there. When only its launchd job is left, that job is booted out and its files removed.
+# %q leaves a path alone unless it holds something a shell would read.
+print_root_commands() {
+  if [ -e "$HELPER_BIN" ]; then
+    printf '  sudo %q --uninstall\n' "$HELPER_BIN"
+  elif [ -e "$HELPER_PLIST" ]; then
+    printf '  sudo launchctl bootout system/%s\n' "$DAEMON_LABEL"
+    printf '  sudo rm -f %q %q\n' "$HELPER_PLIST" "$FAN_SOCKET"
+  fi
+  if [ -e "$KEEP_AWAKE_RULE" ]; then printf '  sudo rm -f %q\n' "$KEEP_AWAKE_RULE"; fi
+  if sleep_is_disabled; then printf '  sudo pmset -a disablesleep 0\n'; fi
+}
+ROOT_LISTED=()
+for path in "$HELPER_PLIST" "$HELPER_BIN" "$KEEP_AWAKE_RULE"; do
+  [ -e "$path" ] && ROOT_LISTED+=("$path")
+done
+if { [ -e "$HELPER_PLIST" ] || [ -e "$HELPER_BIN" ]; } && [ -e "$FAN_SOCKET" ]; then ROOT_LISTED+=("$FAN_SOCKET"); fi
+SLEEP_DISABLED=0
+if sleep_is_disabled; then SLEEP_DISABLED=1; fi
+ROOT_NEEDED=0
+if [ ${#ROOT_LISTED[@]} -gt 0 ] || [ "$SLEEP_DISABLED" = "1" ]; then ROOT_NEEDED=1; fi
+
 echo "────────────────────────────────────────────────────────────────────────"
 echo " Uninstalling Anode"
 echo "────────────────────────────────────────────────────────────────────────"
-if [ ${#FOUND[@]} -eq 0 ]; then
+if [ ${#FOUND[@]} -eq 0 ] && [ "$ROOT_NEEDED" != "1" ]; then
   echo " Nothing found to remove."
-else
+elif [ ${#FOUND[@]} -gt 0 ]; then
   echo " This will delete:"
   printf '   %s\n' "${FOUND[@]}"
+fi
+if [ "$ROOT_NEEDED" = "1" ]; then
+  echo
+  echo " …and these, which are root's, so removing them needs the Mac's password (the Terminal asks once):"
+  if [ ${#ROOT_LISTED[@]} -gt 0 ]; then printf '   %s\n' "${ROOT_LISTED[@]}"; fi
+  if [ "$SLEEP_DISABLED" = "1" ]; then
+    echo "   macOS's setting that keeps the Mac from sleeping (SleepDisabled), which Anode may have left on"
+  fi
 fi
 if [ "$REMOVE_DATA" = "1" ]; then
   echo
@@ -171,7 +238,7 @@ else
 fi
 echo "────────────────────────────────────────────────────────────────────────"
 
-if [ "$ASSUME_YES" != "1" ] && [ ${#FOUND[@]} -gt 0 ]; then
+if [ "$ASSUME_YES" != "1" ] && { [ ${#FOUND[@]} -gt 0 ] || [ "$ROOT_NEEDED" = "1" ]; }; then
   printf '\nRemove these? [y/N] '
   read -r reply
   case "$reply" in
@@ -394,20 +461,102 @@ elif [ "$REMOVE_DATA" = "1" ]; then
   done
 fi
 
+why_no_sudo() {  # prints why sudo is not tried, and nothing when it can be
+  if [ "${ANODE_NO_SUDO:-0}" = "1" ]; then
+    echo "ANODE_NO_SUDO is set"
+  elif ! command -v sudo >/dev/null 2>&1; then
+    echo "this Mac has no sudo"
+  elif [ ! -t 0 ] && [ "${ANODE_SUDO_WITHOUT_TERMINAL:-0}" != "1" ]; then
+    # (ANODE_SUDO_WITHOUT_TERMINAL=1 is for the tests, which have no terminal and whose sudo is a stand-in.)
+    echo "this window cannot ask for a password"
+  fi
+  return 0
+}
+say_removed_or_left() {  # say_removed_or_left PATH…: each was there before; says which of them still is
+  local p
+  for p in "$@"; do
+    if [ -e "$p" ]; then echo "left     $p: still there"; else echo "removed  $p"; fi
+  done
+}
+# The helper, the Always Stay Awake rule and a Mac told not to sleep: root's, so removed with sudo, which asks for the Mac's
+# password at the Terminal once (`sudo -v`; the commands that follow ride on what it was given). The helper's own
+# uninstall is the one command for the helper, because it reconnects the charger before it removes anything. Each command
+# is judged by whether its thing is gone, not by its exit status: the helper's ends with 1 when it could not confirm the
+# charger is connected, after removing everything else. A refused or cancelled password stops it, with nothing run.
+# Whatever is still there at the end is printed as commands for you to run. Nothing here changes the exit status.
+remove_root_items() {
+  root_things_left || return 0
+  local reason had_rule=0 had_sleep=0 p
+  local -a had_helper=()
+  if [ -e "$HELPER_PLIST" ] || [ -e "$HELPER_BIN" ]; then
+    for p in "$HELPER_PLIST" "$HELPER_BIN" "$FAN_SOCKET"; do
+      if [ -e "$p" ]; then had_helper+=("$p"); fi
+    done
+  fi
+  if [ -e "$KEEP_AWAKE_RULE" ]; then had_rule=1; fi
+  if sleep_is_disabled; then had_sleep=1; fi
+
+  echo "────────────────────────────────────────────────────────────────────────"
+  echo " Removing what only root can remove"
+  echo "────────────────────────────────────────────────────────────────────────"
+  reason="$(why_no_sudo)"
+  if [ -z "$reason" ]; then
+    echo " The Terminal will ask for the Mac's password once. These are the commands, and nothing else is run as root:"
+    echo
+    print_root_commands
+    echo
+    if [ -e "$HELPER_BIN" ]; then
+      # The helper's own uninstall, not its files deleted by hand: a drain may have left the charger switched off,
+      # and the helper reconnects it before it removes itself (deleting it would leave the charger cut for good).
+      echo " The helper's uninstall reconnects the charger if Anode had switched it off, then removes itself."
+      echo
+    fi
+    trap ':' INT   # a ^C at the password prompt ends sudo, not this script: what is left is printed below
+    if sudo -v; then
+      if [ -e "$HELPER_BIN" ]; then
+        sudo "$HELPER_BIN" --uninstall || true
+      elif [ -e "$HELPER_PLIST" ]; then
+        sudo launchctl bootout "system/$DAEMON_LABEL" >/dev/null 2>&1 || true
+        sudo rm -f "$HELPER_PLIST" "$FAN_SOCKET" || true
+      fi
+      if [ ${#had_helper[@]} -gt 0 ]; then say_removed_or_left "${had_helper[@]}"; fi
+      if [ "$had_rule" = "1" ]; then
+        sudo rm -f "$KEEP_AWAKE_RULE" || true
+        say_removed_or_left "$KEEP_AWAKE_RULE"
+      fi
+      if [ "$had_sleep" = "1" ] && sleep_is_disabled; then
+        sudo pmset -a disablesleep 0 || true
+        if sleep_is_disabled; then
+          echo "left     SleepDisabled: macOS still says this Mac cannot sleep"
+        else
+          echo "reset    SleepDisabled: macOS can put this Mac to sleep again"
+        fi
+      fi
+    else
+      reason="the password was not given"
+    fi
+    trap - INT
+  fi
+  if root_things_left; then
+    echo
+    if [ -n "$reason" ]; then
+      echo " Removing them needs the Mac's password, and $reason, so none of it was run."
+    else
+      echo " Some of it is still there."
+    fi
+    echo " Run these yourself, in a Terminal:"
+    echo
+    print_root_commands
+    if [ -e "$HELPER_BIN" ]; then
+      echo
+      echo " The helper's uninstall reconnects the charger if Anode had switched it off, then removes itself."
+    fi
+  fi
+  echo
+  return 0
+}
 echo
-if [ -e "$LAUNCH_DAEMONS_DIR/$DAEMON_LABEL.plist" ]; then
-  # The helper's own uninstall, not its files deleted by hand: a drain may have left the charger switched off,
-  # and the helper reconnects it before it removes itself (deleting it would leave the charger cut for good).
-  cat <<EOF
-The Anode helper is still installed and runs as ROOT. It cannot be removed from
-here without a password. To remove it, run:
-
-  sudo /Library/PrivilegedHelperTools/$DAEMON_LABEL --uninstall
-
-It reconnects the charger if Anode had switched it off, then removes itself.
-
-EOF
-fi
+remove_root_items
 echo "✓ Anode has been removed."
 echo
 if [ -n "$KEPT_CHECKOUT" ]; then

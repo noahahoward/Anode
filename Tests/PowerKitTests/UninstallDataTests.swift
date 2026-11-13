@@ -38,6 +38,29 @@ final class UninstallDataTests: XCTestCase {
                        "uninstall.sh clears a different list of settings domains than the app's uninstall plan")
     }
 
+    private func scriptText() throws -> String {
+        let script = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("uninstall.sh")
+        return try String(contentsOf: script, encoding: .utf8)
+    }
+
+    /// The root-owned places the app installs into, and the script removes with sudo, are the same ones: the helper's
+    /// launchd job and binary, its socket, the Always Stay Awake rule. A path changed in one and not the other is a
+    /// helper that an uninstall leaves running as root.
+    func testTheScriptNamesTheRootOwnedPlacesTheAppInstalls() throws {
+        let text = try scriptText()
+        func folder(_ path: String) -> String { (path as NSString).deletingLastPathComponent }
+        XCTAssertTrue(text.contains("DAEMON_LABEL=\"\(FanDaemon.label)\""))
+        XCTAssertTrue(text.contains("ANODE_LAUNCH_DAEMONS_DIR:-\(folder(FanDaemon.plistPath))}"))
+        XCTAssertTrue(text.contains("ANODE_PRIVILEGED_HELPER_TOOLS_DIR:-\(folder(FanDaemon.helperPath))}"))
+        XCTAssertTrue(text.contains("ANODE_SUDOERS_DIR:-\(folder(KeepAwakeAuthorisation.path))}"))
+        XCTAssertTrue(text.contains("KEEP_AWAKE_RULE=\"$SUDOERS_DIR/\((KeepAwakeAuthorisation.path as NSString).lastPathComponent)\""))
+        XCTAssertTrue(text.contains("ANODE_FAN_SOCKET:-\(FanSocket.path)}"))
+        XCTAssertEqual(Uninstall.helperFileLocations, [FanDaemon.plistPath, FanDaemon.helperPath])
+        XCTAssertEqual(Uninstall.keepAwakeRuleLocation, KeepAwakeAuthorisation.path)
+    }
+
     func testTheScriptRemovesTheSameFiles() throws {
         let script = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()

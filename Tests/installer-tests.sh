@@ -15,7 +15,10 @@
 # pmset and sudo first on PATH, checks with `command -v` that the script will find them, and sets
 # ANODE_NO_LAUNCH=1 unless a stub app stands in. The stubs go by VERB: `defaults` and `security` pass only reads
 # to the real tool and write down every change they were asked for, naming any domain or keychain. The login
-# keychain list is compared before and after.
+# keychain list is compared before and after. `sudo` becomes nobody: it writes down what it was asked and, for a
+# path inside this test's folder only, does what was asked as the user the test runs as (a stand-in helper it is told
+# to run, `rm -f`); `pmset` answers `pmset -g` from a file of the test's own and writes down anything else; `tccutil`
+# writes down what it was asked. The terminal is not the test's either: the scripts are run with nothing on stdin.
 #
 # The uninstaller also names /Applications/Anode.app, an absolute path no HOME can stand in for; it takes the folder
 # from ANODE_SYSTEM_APPLICATIONS_DIR, which run_anode checks is this test's own, so the real one is never looked at.
@@ -42,6 +45,19 @@ PASS=0; FAIL=0
 ok()    { PASS=$((PASS + 1)); printf '    ok    %s\n' "$1"; }
 bad()   { FAIL=$((FAIL + 1)); printf '    FAIL  %s\n' "$1"; [ -n "${2:-}" ] && printf '%s\n' "$2" | sed 's/^/          | /'; }
 check() { local what="$1"; shift; if "$@"; then ok "$what"; else bad "$what"; fi; }
+check_all() {  # check_all WHAT CMD… [-- CMD…]…: it is ok when every command (a function or a test, each with its arguments, set apart by --) succeeds
+  local what="$1" a failed=0; shift
+  local -a cmd=()
+  for a in "$@" "--"; do
+    if [ "$a" = "--" ]; then
+      if [ ${#cmd[@]} -gt 0 ]; then "${cmd[@]}" || failed=1; fi
+      cmd=()
+    else
+      cmd+=("$a")
+    fi
+  done
+  if [ "$failed" = 0 ]; then ok "$what"; else bad "$what"; fi
+}
 present() { [ -e "$1" ]; }
 absent()  { [ ! -e "$1" ]; }
 has()     { printf '%s' "$OUT" | grep -qF -- "$1"; }
@@ -56,6 +72,12 @@ export ANODE_SHARED_CHARGE_DIR="$T/shared-charge"
 export ANODE_LAUNCH_DAEMONS_DIR="$T/no-launch-daemons"
 # And /Applications, the second place an Anode can be installed.
 export ANODE_SYSTEM_APPLICATIONS_DIR="$T/system-applications"
+# And the other root-owned places the uninstaller names by an absolute path: the helper's binary, the sudoers rule Always
+# Stay Awake installs, and the helper's socket. Places of the test's own that are not there (a scenario that needs them
+# points the variables at ones it made), so where an Anode helper is installed on this Mac changes nothing.
+export ANODE_PRIVILEGED_HELPER_TOOLS_DIR="$T/no-helper-tools"
+export ANODE_SUDOERS_DIR="$T/no-sudoers.d"
+export ANODE_FAN_SOCKET="$T/no-fan-socket/anode-fan.sock"
 # And the settings the uninstaller reads to see whether Charge Control may have left something: a settings file of the
 # test's own that is not there, so no scenario reads the real account's. A scenario that needs settings points it at a
 # file it wrote (SCENARIO_ENV=(ANODE_SETTINGS_DOMAIN=…)).
@@ -147,9 +169,67 @@ pids=\$(tr '\\n' ',' < "$T/test-pids" 2>/dev/null)
 [ -n "\$pids" ] || exit 0
 exec /bin/ps -p "\${pids%,}" -o pid=,comm=
 EOF
-for tool in open pkill killall tccutil pmset sudo; do
+for tool in open pkill killall; do
   printf '#!/bin/sh\necho "%s $*" >> "%s"\nexit 0\n' "$tool" "$T/other-asked" > "$T/shim/$tool"
 done
+# pmset: only the read `pmset -g` is answered, and from a file of the test's own ($T/pmset-sleepdisabled; 0 when it is not
+# there), never from this Mac. Anything else is written down in pmset-asked and not run. The uninstaller changes power
+# settings only through sudo (whose stub sets the same file), so a line in pmset-asked is a call it must not make.
+cat > "$T/shim/pmset" <<EOF
+#!/bin/sh
+if [ "\$#" = 1 ] && [ "\$1" = "-g" ]; then
+  echo "System-wide power settings:"
+  echo "Currently in use:"
+  echo " standby              1"
+  printf ' SleepDisabled\t\t%s\n' "\$(cat "$T/pmset-sleepdisabled" 2>/dev/null || echo 0)"
+  exit 0
+fi
+echo "\$*" >> "$T/pmset-asked"
+exit 0
+EOF
+# tccutil: writes down what it was asked (tccutil-asked) and changes nothing. It fails, as the real one does for an
+# identifier it cannot reset, for each identifier named (one a line) in $T/tccutil-fails.
+cat > "$T/shim/tccutil" <<EOF
+#!/bin/sh
+echo "\$*" >> "$T/tccutil-asked"
+if [ -f "$T/tccutil-fails" ] && grep -qxF -- "\$3" "$T/tccutil-fails"; then
+  echo "tccutil: Failed to reset \$2 approval status for \$3" >&2
+  exit 70
+fi
+exit 0
+EOF
+# sudo: becomes nobody. It writes down what it was asked (sudo-asked, a line a call: the arguments) and, while
+# $T/sudo-fails exists (a password that was refused or cancelled), fails on every call and runs nothing. Otherwise it does
+# what it was asked only for paths inside this test's folder, as the user the test runs as: `rm -f` of them, a program
+# there (the stand-in helper a scenario made), `-v`, a launchctl bootout (written down, not run) and
+# `pmset -a disablesleep 0|1` (which sets the file the pmset stub answers from). Anything else, and any path outside this
+# folder, is refused, written to sudo-refused, and fails the run (the end of this file looks for that file).
+cat > "$T/shim/sudo" <<EOF
+#!/bin/sh
+under_t() { case "\$1" in "$T"/*) return 0 ;; esac; return 1; }
+refuse() { echo "\$*" >> "$T/sudo-refused"; exit 1; }
+echo "\$*" >> "$T/sudo-asked"
+if [ -e "$T/sudo-fails" ]; then echo "sudo: Sorry, try again." >&2; exit 1; fi
+case "\$1" in
+  -v) exit 0 ;;
+  rm)
+    shift
+    for a in "\$@"; do
+      case "\$a" in -f) ;; *) under_t "\$a" || refuse "rm \$*" ;; esac
+    done
+    exec /bin/rm "\$@" ;;
+  launchctl)
+    [ "\$2" = bootout ] || refuse "\$*"
+    exit 0 ;;
+  pmset)
+    [ "\$2 \$3 \$4" = "-a disablesleep 0" ] || [ "\$2 \$3 \$4" = "-a disablesleep 1" ] || refuse "\$*"
+    echo "\$4" > "$T/pmset-sleepdisabled"
+    exit 0 ;;
+  *)
+    if under_t "\$1" && [ -x "\$1" ]; then exec "\$@"; fi
+    refuse "\$*" ;;
+esac
+EOF
 chmod +x "$T"/shim/*
 # END STUBS
 
@@ -161,7 +241,7 @@ chmod +x "$T"/shim/*
 # cannot send a script somewhere real. The working directory is the test's folder.
 export PATH="$T/shim:$PATH"
 mkdir -p "$T/home-file"; export HOME="$T/home-file"
-unset ANODE_SRC ANODE_REPO ANODE_ADHOC ANODE_KEEP_TERMINAL ANODE_NO_ACTOOL ANODE_SLOW_BUILD ANODE_NO_LAUNCH
+unset ANODE_SRC ANODE_REPO ANODE_ADHOC ANODE_KEEP_TERMINAL ANODE_NO_ACTOOL ANODE_SLOW_BUILD ANODE_NO_LAUNCH ANODE_NO_SUDO ANODE_SUDO_WITHOUT_TERMINAL
 cd "$T" || exit 1
 
 # ── The one door ────────────────────────────────────────────────────────────
@@ -179,8 +259,9 @@ cd "$T" || exit 1
 # BEGIN GUARD
 exec 3>&2   # the real stderr: a scenario captures the script's own with 2>&1, and the reason for stopping must not go there
 GUARDED_TOOLS="osascript getconf defaults launchctl security open pkill killall tccutil pmset sudo"
-# (ANODE_SETTINGS_DOMAIN is a settings file rather than a folder, and has to be inside the test's own all the same.)
+# (ANODE_SETTINGS_DOMAIN is a settings file and ANODE_FAN_SOCKET a socket, rather than folders, and have to be inside the test's own all the same.)
 GUARDED_FOLDERS="HOME ANODE_SHARED_CHARGE_DIR ANODE_LAUNCH_DAEMONS_DIR ANODE_SYSTEM_APPLICATIONS_DIR ANODE_SETTINGS_DOMAIN"
+GUARDED_FOLDERS="$GUARDED_FOLDERS ANODE_PRIVILEGED_HELPER_TOOLS_DIR ANODE_SUDOERS_DIR ANODE_FAN_SOCKET"
 # Folders that may be empty (the script then uses its own default, which is inside HOME) but are the test's when set.
 OPTIONAL_FOLDERS="ANODE_SRC ANODE_REPO"
 T_PHYSICAL="$(cd "$T" && pwd -P)"
@@ -221,10 +302,11 @@ run_anode() {   # run_anode HOME SCRIPT [ARGS…]: prints the script's output; r
       got="$(env -u BASH_ENV -u ENV "${e[@]}" bash -c 'printf %s "${ANODE_REPO:-}"' _ 2>/dev/null)"
       inside_t "$got" || { guard_fail "ANODE_REPO is '$got': install.sh would clone from somewhere real"; return 1; } ;;
   esac
+  # Nothing on stdin: whether the person running the tests has a terminal must not change which way a script goes.
   if [ -f "$app" ] && grep -qx '# anode-test-stub' "$app" 2>/dev/null; then
-    env -u BASH_ENV -u ENV -u ANODE_NO_LAUNCH "${e[@]}" bash "$script" "$@"
+    env -u BASH_ENV -u ENV -u ANODE_NO_LAUNCH "${e[@]}" bash "$script" "$@" < /dev/null
   else
-    env -u BASH_ENV -u ENV "${e[@]}" ANODE_NO_LAUNCH=1 bash "$script" "$@"
+    env -u BASH_ENV -u ENV "${e[@]}" ANODE_NO_LAUNCH=1 bash "$script" "$@" < /dev/null
   fi
 }
 # The same, read from the text of the file it is given (this one), so a scenario added later cannot forget. It fails
@@ -410,6 +492,10 @@ printf '#!/bin/sh\n: > "%s"\n' "$T/probe-ran" > "$OUTSIDE/update.sh"
 printf '#!/bin/sh\n: > "%s"\n' "$T/probe-ran" > "$T/probe-dir/update.sh"
 printf '#!/bin/sh\n: > "%s"\n' "$T/probe-ran" > "$T/probe-dir/install.sh"
 mkdir -p "$T/decoy"; printf '#!/bin/sh\nexit 0\n' > "$T/decoy/defaults"; chmod +x "$T/decoy/defaults"
+# A decoy for each of the tools that reach the person's account or become root: a folder with only that tool in it.
+for tool in sudo tccutil pmset; do
+  mkdir -p "$T/decoy-$tool"; printf '#!/bin/sh\nexit 0\n' > "$T/decoy-$tool/$tool"; chmod +x "$T/decoy-$tool/$tool"
+done
 must_stop() {  # must_stop WHAT TRY…: the guard has to stop the run, and the script must not have run
   local what="$1" victim alive=0 i; shift
   rm -f "$T/probe-ran"
@@ -437,6 +523,15 @@ try_system_apps_outside() { export ANODE_SYSTEM_APPLICATIONS_DIR="$OUTSIDE"; run
 try_settings_outside()  { export ANODE_SETTINGS_DOMAIN="$OUTSIDE/com.anode.settings"; run_anode "$T/home-selftest" "$T/probe-script"; }
 try_settings_real()     { export ANODE_SETTINGS_DOMAIN="com.anode.settings"; run_anode "$T/home-selftest" "$T/probe-script"; }
 try_settings_unset()    { unset ANODE_SETTINGS_DOMAIN; run_anode "$T/home-selftest" "$T/probe-script"; }
+try_helper_tools_outside() { export ANODE_PRIVILEGED_HELPER_TOOLS_DIR="$OUTSIDE"; run_anode "$T/home-selftest" "$T/probe-script"; }
+try_helper_tools_unset()   { unset ANODE_PRIVILEGED_HELPER_TOOLS_DIR; run_anode "$T/home-selftest" "$T/probe-script"; }
+try_sudoers_outside()   { export ANODE_SUDOERS_DIR="$OUTSIDE"; run_anode "$T/home-selftest" "$T/probe-script"; }
+try_sudoers_unset()     { unset ANODE_SUDOERS_DIR; run_anode "$T/home-selftest" "$T/probe-script"; }
+try_socket_outside()    { export ANODE_FAN_SOCKET="$OUTSIDE/anode-fan.sock"; run_anode "$T/home-selftest" "$T/probe-script"; }
+try_socket_unset()      { unset ANODE_FAN_SOCKET; run_anode "$T/home-selftest" "$T/probe-script"; }
+try_no_sudo_stub()      { SCENARIO_PATH="$T/decoy-sudo"; run_anode "$T/home-selftest" "$T/probe-script"; }
+try_no_tccutil_stub()   { SCENARIO_PATH="$T/decoy-tccutil"; run_anode "$T/home-selftest" "$T/probe-script"; }
+try_no_pmset_stub()     { SCENARIO_PATH="$T/decoy-pmset"; run_anode "$T/home-selftest" "$T/probe-script"; }
 try_src_outside()       { export ANODE_SRC="$OUTSIDE/src"; run_anode "$T/home-selftest" "$T/probe-script"; }
 try_repo_outside()      { SCENARIO_ENV=(ANODE_REPO="$OUTSIDE"); run_anode "$T/home-selftest" "$T/probe-script"; }
 try_install_no_repo()   { run_anode "$T/home-selftest" "$T/probe-dir/install.sh"; }
@@ -454,6 +549,15 @@ must_stop "a system Applications folder outside the test's folder"   try_system_
 must_stop "a settings file outside the test's folder"                try_settings_outside
 must_stop "the real settings domain by name"                         try_settings_real
 must_stop "no settings file named at all (the script's default is the real domain)" try_settings_unset
+must_stop "a helper tools folder outside the test's folder"           try_helper_tools_outside
+must_stop "no helper tools folder named at all (the script's default is the real one)" try_helper_tools_unset
+must_stop "a sudoers folder outside the test's folder"                try_sudoers_outside
+must_stop "no sudoers folder named at all (the script's default is the real one)" try_sudoers_unset
+must_stop "a socket path outside the test's folder"                   try_socket_outside
+must_stop "no socket path named at all (the script's default is the real one)" try_socket_unset
+must_stop "a PATH where the sudo stub is not first"                   try_no_sudo_stub
+must_stop "a PATH where the tccutil stub is not first"                try_no_tccutil_stub
+must_stop "a PATH where the pmset stub is not first"                  try_no_pmset_stub
 must_stop "ANODE_SRC outside the test's folder"                      try_src_outside
 must_stop "ANODE_REPO outside the test's folder"                     try_repo_outside
 must_stop "install.sh with no clone source of the test's own"        try_install_no_repo
@@ -846,15 +950,58 @@ check "and says so"                                         has "Could not tell 
 check "the app is still removed"                            absent "$H/Applications/Anode.app"
 
 echo "6b3. The helper that is still installed is removed by its own uninstall, which reconnects the charger"
-mkdir -p "$T/launch-daemons"; : > "$T/launch-daemons/dev.anode.app.fanhelper.plist"
+# The places root owns, as folders of the test's own (the uninstaller takes each from an ANODE_… variable, which run_anode
+# holds inside this test's folder), so no scenario reads or writes the real /Library, /etc or /var.
+ROOT_DIR="$T/root"
+ROOT_PATHS=(ANODE_LAUNCH_DAEMONS_DIR="$ROOT_DIR/LaunchDaemons" ANODE_PRIVILEGED_HELPER_TOOLS_DIR="$ROOT_DIR/PrivilegedHelperTools"
+            ANODE_SUDOERS_DIR="$ROOT_DIR/sudoers.d" ANODE_FAN_SOCKET="$ROOT_DIR/anode-fan.sock")
+HELPER_PLIST="$ROOT_DIR/LaunchDaemons/dev.anode.app.fanhelper.plist"
+HELPER_BIN="$ROOT_DIR/PrivilegedHelperTools/dev.anode.app.fanhelper"
+HELPER_SOCKET="$ROOT_DIR/anode-fan.sock"
+KEEP_RULE="$ROOT_DIR/sudoers.d/anode-keep-awake"
+UNINSTALL_ARGS=()
+root_reset() {  # root_reset: nothing root-owned is installed, sudo works, SleepDisabled is 0, nothing has been asked of any tool
+  rm -rf "$ROOT_DIR"; mkdir -p "$ROOT_DIR/LaunchDaemons" "$ROOT_DIR/PrivilegedHelperTools" "$ROOT_DIR/sudoers.d"
+  rm -f "$T/sudo-asked" "$T/sudo-fails" "$T/pmset-sleepdisabled" "$T/pmset-asked" "$T/helper-ran" "$T/tccutil-asked" "$T/tccutil-fails"
+  UNINSTALL_ARGS=()
+}
+root_helper() {  # root_helper [removes|leaves] [EXIT-STATUS]: the helper's launchd job, its socket and its binary. The binary
+  # stands in for AnodeHelper: it writes down how it was run (helper-ran) and takes away what the real one takes away (its
+  # job, its socket and itself), or, with "leaves", nothing, and ends with the status given.
+  : > "$HELPER_PLIST"; : > "$HELPER_SOCKET"
+  if [ "${1:-removes}" = removes ]; then
+    printf '#!/bin/sh\necho "$*" >> "%s"\nrm -f "%s" "%s" "$0"\nexit %s\n' "$T/helper-ran" "$HELPER_PLIST" "$HELPER_SOCKET" "${2:-0}" > "$HELPER_BIN"
+  else
+    printf '#!/bin/sh\necho "$*" >> "%s"\nexit %s\n' "$T/helper-ran" "${2:-0}" > "$HELPER_BIN"
+  fi
+  chmod +x "$HELPER_BIN"
+}
+root_helper_plist_only() { : > "$HELPER_PLIST"; : > "$HELPER_SOCKET"; }   # a job and a socket, and no binary to run
+root_rule() { printf 'someone ALL=(root) NOPASSWD: pmset\n' > "$KEEP_RULE"; }
+sleep_disabled() { printf '%s\n' "$1" > "$T/pmset-sleepdisabled"; }
+# The uninstaller with those places, and the terminal standing in (there is nothing on stdin: see run_anode); extra
+# NAME=value pairs follow (ANODE_SUDO_WITHOUT_TERMINAL=0 takes the stand-in away). Sets OUT and ROOT_STATUS.
+root_run() {  # root_run HOME [NAME=value…]
+  local h="$1"; shift
+  SCENARIO_ENV=("${ROOT_PATHS[@]}" ANODE_SUDO_WITHOUT_TERMINAL=1 "$@")
+  OUT="$(run_anode "$h" "$ROOT/uninstall.sh" --yes ${UNINSTALL_ARGS[@]+"${UNINSTALL_ARGS[@]}"} 2>&1)"; ROOT_STATUS=$?
+  SCENARIO_ENV=()
+}
+yourself_part() { printf '%s\n' "$OUT" | sed -n '/Run these yourself/,$p'; }   # what is printed for the person to run, and after it
+says_to_run() { yourself_part | grep -qF -- "$1"; }
+says_not_to_run() { ! says_to_run "$1"; }
+sudo_calls() { cat "$T/sudo-asked" 2>/dev/null; }
+sudo_called_exactly() { [ "$(sudo_calls)" = "$(printf '%s\n' "$@")" ]; }   # sudo_called_exactly CALL…: these calls, in this order, and no others
+sudo_never_called() { [ ! -e "$T/sudo-asked" ]; }
+sudo_call_line() { grep -nxF -- "$1" "$T/sudo-asked" 2>/dev/null | head -1 | cut -d: -f1; }
+root_reset; root_helper
 H="$(new_home 17)"; mkdir -p "$H/Applications/Anode.app"
-SCENARIO_ENV=(ANODE_LAUNCH_DAEMONS_DIR="$T/launch-daemons")
-OUT="$(run_anode "$H" "$ROOT/uninstall.sh" --yes 2>&1 || true)"
-SCENARIO_ENV=()
-check "tells the helper's own uninstall"                    has "sudo /Library/PrivilegedHelperTools/dev.anode.app.fanhelper --uninstall"
+root_run "$H" ANODE_SUDO_WITHOUT_TERMINAL=0
+check "tells the helper's own uninstall"                    has "sudo $HELPER_BIN --uninstall"
 check "and that it reconnects the charger first"            has "reconnects the charger if Anode had switched it off, then removes itself"
-check "and no longer tells to delete the helper by hand"    hasnt "sudo rm -f"
+check "and does not tell to delete the helper by hand"      hasnt "sudo rm -f $HELPER_PLIST"
 check "nor to boot it out first"                            hasnt "launchctl bootout system"
+check "and, with no password to be had, runs nothing as root" sudo_never_called
 H="$(new_home 18)"; mkdir -p "$H/Applications/Anode.app"
 OUT="$(run_anode "$H" "$ROOT/uninstall.sh" --yes 2>&1 || true)"
 check "with no helper installed it says nothing about one"  hasnt "Anode helper is still installed"
@@ -1090,6 +1237,144 @@ check "a copy that can be run is asked"                          grep -qx -- "--
 check "and nothing is said about nobody being asked"             hasnt "No installed Anode"
 shared_record_empty
 
+echo "6g. What only root can remove (the helper, Always Stay Awake's permission, a Mac told not to sleep) goes through sudo, asked for once"
+# sudo here is the stub: it writes down each call and does it only inside this test's folder (see the stubs). The stand-in
+# helper takes away what the real one does, so "removed" can be told from "still there".
+ASKS="The Terminal will ask for the Mac's password once."
+YOURSELF="Run these yourself"
+root_reset; root_helper; root_rule; sleep_disabled 0
+H="$(new_home g-all)"; mkdir -p "$H/Applications/Anode.app"
+root_run "$H"
+check "the helper's own uninstall is the one command for the helper, and the rule goes after it" \
+                                                            sudo_called_exactly -v "$HELPER_BIN --uninstall" "rm -f $KEEP_RULE"
+check "the helper was run with --uninstall and nothing else" [ "$(cat "$T/helper-ran")" = "--uninstall" ]
+check "it says plainly that the Terminal asks for the password once" has "$ASKS"
+check_all "and lists the exact commands first"                  has "sudo $HELPER_BIN --uninstall" -- has "sudo rm -f $KEEP_RULE"
+check_all "the helper's job, socket and binary are gone, and said" [ ! -e "$HELPER_PLIST" ] -- [ ! -e "$HELPER_SOCKET" ] -- [ ! -e "$HELPER_BIN" ] \
+                                                            -- has "removed  $HELPER_PLIST" -- has "removed  $HELPER_SOCKET" -- has "removed  $HELPER_BIN"
+check_all "the rule is gone, and said"                          absent "$KEEP_RULE" -- has "removed  $KEEP_RULE"
+check "nothing is left to run by hand"                      hasnt "$YOURSELF"
+check "the rest was removed as well"                        absent "$H/Applications/Anode.app"
+check "and the exit status is 0"                            [ "$ROOT_STATUS" = 0 ]
+check "the script itself removed nothing of the helper's (no rm of it, no bootout)" sudo_called_exactly -v "$HELPER_BIN --uninstall" "rm -f $KEEP_RULE"
+check_all "the list before the question names what needs the password" has "$HELPER_BIN" -- has "$KEEP_RULE"
+
+root_reset; root_helper
+H="$(new_home g-helper-only)"
+root_run "$H"
+check "a helper and no rule: sudo is asked once, for the helper only" sudo_called_exactly -v "$HELPER_BIN --uninstall"
+check "the rule is not mentioned"                           hasnt "anode-keep-awake"
+
+root_reset; root_helper leaves; root_rule
+H="$(new_home g-leaves)"
+root_run "$H"
+check_all "a helper uninstall that leaves its files: the script removes none of them itself" present "$HELPER_PLIST" -- present "$HELPER_BIN" -- present "$HELPER_SOCKET"
+check "…it only asked for the helper's own uninstall, then for the rule" sudo_called_exactly -v "$HELPER_BIN --uninstall" "rm -f $KEEP_RULE"
+check_all "what is still there is said, by path"                has "left     $HELPER_BIN" -- has "left     $HELPER_PLIST"
+check_all "and the command for it is printed for the person to run" has "$YOURSELF" -- says_to_run "sudo $HELPER_BIN --uninstall"
+check_all "the rule that went is not printed again"             absent "$KEEP_RULE" -- says_not_to_run "sudo rm -f $KEEP_RULE"
+check "the exit status is still 0"                          [ "$ROOT_STATUS" = 0 ]
+
+# AnodeHelper --uninstall exits 1 when it could not confirm the charger is connected, after removing everything.
+root_reset; root_helper removes 1; root_rule
+H="$(new_home g-helper-exit-1)"
+root_run "$H"
+check "a helper that ends with status 1 but removed everything is not taken for a failure" sudo_called_exactly -v "$HELPER_BIN --uninstall" "rm -f $KEEP_RULE"
+check "the rule is still removed"                           absent "$KEEP_RULE"
+check "and nothing is printed for the person to run"        hasnt "$YOURSELF"
+
+# A job and a socket with no binary to run: the job is booted out and the two files removed, all through sudo.
+root_reset; root_helper_plist_only
+H="$(new_home g-plist-only)"
+root_run "$H"
+check "a job and no binary: bootout, then the removal of the job and the socket" \
+                                                            sudo_called_exactly -v "launchctl bootout system/dev.anode.app.fanhelper" "rm -f $HELPER_PLIST $HELPER_SOCKET"
+check_all "they are gone, and said"                             [ ! -e "$HELPER_PLIST" ] -- [ ! -e "$HELPER_SOCKET" ] -- has "removed  $HELPER_PLIST" -- has "removed  $HELPER_SOCKET"
+check "the helper's own uninstall is not asked for (there is nothing to run)" hasnt "--uninstall"
+
+root_reset; root_rule
+H="$(new_home g-rule-only)"
+root_run "$H"
+check "the rule alone: removed through sudo"                sudo_called_exactly -v "rm -f $KEEP_RULE"
+check_all "…and said, with nothing about the helper"            has "removed  $KEEP_RULE" -- hasnt "--uninstall"
+
+# Nothing root-owned, nothing to say about it, and no password asked for.
+root_reset
+H="$(new_home g-nothing)"; mkdir -p "$H/Applications/Anode.app"
+root_run "$H"
+check "nothing root-owned and SleepDisabled 0: sudo is never called" sudo_never_called
+check_all "and nothing about a password is printed"             hasnt "password" -- hasnt "sudo"
+check "the rest is removed all the same"                    absent "$H/Applications/Anode.app"
+check "and the exit status is 0"                            [ "$ROOT_STATUS" = 0 ]
+
+# A Mac that macOS says cannot sleep (a crashed Anode can leave it so).
+root_reset; sleep_disabled 1
+H="$(new_home g-sleep)"
+root_run "$H"
+check "SleepDisabled 1: pmset is run through sudo and nothing else" sudo_called_exactly -v "pmset -a disablesleep 0"
+check_all "macOS reads 0 afterwards, and it is said"            [ "$("$T/shim/pmset" -g | awk '$1 == "SleepDisabled" { print $2 }')" = 0 ] -- has "reset    SleepDisabled"
+check "it says plainly that the password is asked once"     has "$ASKS"
+root_reset; root_helper; root_rule; sleep_disabled 1
+H="$(new_home g-all-three)"
+root_run "$H"
+check "everything at once, in the order: the helper, the rule, the sleep setting" \
+                                                            sudo_called_exactly -v "$HELPER_BIN --uninstall" "rm -f $KEEP_RULE" "pmset -a disablesleep 0"
+root_reset; sleep_disabled 1
+H="$(new_home g-sleep-0)"
+root_run "$H" ANODE_NO_SUDO=1
+check_all "SleepDisabled 1 with sudo off: the pmset command is printed" says_to_run "sudo pmset -a disablesleep 0"
+
+# sudo that fails: a password that is refused or cancelled.
+root_reset; root_helper; root_rule; sleep_disabled 1; : > "$T/sudo-fails"
+H="$(new_home g-fails)"; mkdir -p "$H/Applications/Anode.app" "$H/Library/Preferences"
+root_run "$H"
+check "sudo that fails is asked once, and no more is tried"  sudo_called_exactly -v
+check_all "nothing root-owned was removed"                      present "$HELPER_BIN" -- present "$HELPER_PLIST" -- present "$KEEP_RULE"
+check_all "the commands are printed for the person to run, the rule's too" has "$YOURSELF" -- says_to_run "sudo $HELPER_BIN --uninstall" -- says_to_run "sudo rm -f $KEEP_RULE" -- says_to_run "sudo pmset -a disablesleep 0"
+check "it says why they were not run"                       has "password"
+check "the rest was still removed"                          absent "$H/Applications/Anode.app"
+check "and the exit status is the same as without sudo"     [ "$ROOT_STATUS" = 0 ]
+root_reset; root_helper_plist_only; : > "$T/sudo-fails"
+H="$(new_home g-fails-plist)"
+root_run "$H"
+check_all "a failed sudo with a job and no binary: bootout and the removal are printed" \
+                                                            says_to_run "sudo launchctl bootout system/dev.anode.app.fanhelper" -- says_to_run "sudo rm -f $HELPER_PLIST $HELPER_SOCKET"
+check_all "and the files are still there"                       present "$HELPER_PLIST" -- present "$HELPER_SOCKET"
+
+# sudo switched off, and a window with no keyboard for the password: never called, the commands printed.
+root_reset; root_helper; root_rule
+H="$(new_home g-no-sudo)"; mkdir -p "$H/Applications/Anode.app"
+root_run "$H" ANODE_NO_SUDO=1
+check "ANODE_NO_SUDO=1: sudo is never called"               sudo_never_called
+check_all "the commands are printed, the rule's too"            has "$YOURSELF" -- says_to_run "sudo $HELPER_BIN --uninstall" -- says_to_run "sudo rm -f $KEEP_RULE"
+check "and nothing is said to be asked for"                 hasnt "$ASKS"
+check_all "nothing root-owned was touched, the rest was removed" present "$HELPER_BIN" -- present "$KEEP_RULE" -- absent "$H/Applications/Anode.app"
+check "the exit status is 0"                                [ "$ROOT_STATUS" = 0 ]
+root_reset; root_helper; root_rule
+H="$(new_home g-no-terminal)"
+root_run "$H" ANODE_SUDO_WITHOUT_TERMINAL=0
+check "no terminal on stdin: sudo is never called"          sudo_never_called
+check_all "and the commands are printed, the rule's too"        has "$YOURSELF" -- says_to_run "sudo $HELPER_BIN --uninstall" -- says_to_run "sudo rm -f $KEEP_RULE"
+
+# The helper reconnects the charger, so a restore that failed is the very case it must still be run for; --data does not change it.
+root_reset; root_helper; root_rule
+H="$(new_home g-restore-failed)"; stub_app "$H" 1; data_home "$H"
+UNINSTALL_ARGS=(--data)
+root_run "$H"
+check "after a restore that failed the helper's uninstall is still run" sudo_called_exactly -v "$HELPER_BIN --uninstall" "rm -f $KEEP_RULE"
+check "and Anode's settings are kept, as before"            present "$H/Library/Preferences/com.anode.settings.plist"
+
+# An Anode that is still running stops the uninstall with nothing removed, and nothing is asked of sudo.
+root_reset; root_helper; root_rule
+H="$(new_home g-running)"; stub_app "$H" 0
+ps_reset; printf '%s\n' "$H/Applications/Anode.app/Contents/MacOS/AnodeApp" > "$T/running-bins"
+SCENARIO_PATH="$T/shim-running"
+root_run "$H"
+SCENARIO_PATH=""; ps_reset
+check_all "a running Anode: the uninstall stops, and sudo is never called" [ "$ROOT_STATUS" != 0 ] -- sudo_never_called
+check_all "and the helper and the rule are still there"         present "$HELPER_BIN" -- present "$KEEP_RULE"
+root_reset
+
 # ═══ 7. optional: the real thing ════════════════════════════════════════════
 if [ "$FULL" = 1 ]; then
   echo "7. A REAL install (compiles the app) and uninstall"
@@ -1143,7 +1428,48 @@ check "…which the identity lookup sees"                       placeholder_has_
 "$T/shim/security" delete-keychain "$T/placeholder.keychain-db" >/dev/null 2>&1
 check "…and delete-keychain takes away"                       absent "$T/placeholder.keychain-db"
 check "no keychain verb named a path outside the test's folder" absent "$T/security-refused"
-check "and nothing opened an app, signalled a process, or changed privacy or power settings" absent "$T/other-asked"
+# What the scenarios above made sudo, pmset and tccutil do, looked at before this section calls them on purpose.
+only_anode_identifiers() {  # every tccutil call so far was `reset All <one of Anode's own identifiers>`
+  [ -e "$T/tccutil-asked" ] || return 0
+  ! grep -vxE 'reset All (dev\.anode\.app|dev\.noah\.anode|dev\.noah\.betterstats)' "$T/tccutil-asked" | grep -q .
+}
+check "no scenario made sudo touch a path outside the test's folder or run a command it does not know" absent "$T/sudo-refused"
+check "no scenario changed a power setting except through sudo"   absent "$T/pmset-asked"
+check "tccutil was only ever asked to reset Anode's own identifiers" only_anode_identifiers
+# sudo, pmset and tccutil: what each is asked is written down, and nothing is done outside this test's folder.
+rm -f "$T/sudo-asked" "$T/sudo-fails" "$T/sudo-refused" "$T/pmset-asked" "$T/pmset-sleepdisabled" "$T/tccutil-asked" "$T/tccutil-fails"
+refused_by_sudo() {  # refused_by_sudo ARGS…: sudo fails on them and writes them down in sudo-refused
+  "$T/shim/sudo" "$@" >/dev/null 2>&1 && return 1
+  grep -qxF -- "$*" "$T/sudo-refused"
+}
+for verb_args in "-S" "rm -f /nonexistent-installer-tests/never" "launchctl bootstrap system /nonexistent-installer-tests/never.plist" \
+                 "-S rm -f /nonexistent-installer-tests/never" "pmset -a sleep 0" "pmset -a disablesleep 2" "/nonexistent-installer-tests/never --uninstall"; do
+  # shellcheck disable=SC2086
+  check "sudo $verb_args is refused and written down"          refused_by_sudo $verb_args
+done
+rm -f "$T/sudo-refused"   # the refusals just made on purpose
+"$T/shim/sudo" pmset -a disablesleep 1 >/dev/null 2>&1
+sleep_reads() { "$T/shim/pmset" -g | awk '$1 == "SleepDisabled" { print $2 }'; }
+check "sudo pmset -a disablesleep 1 sets what the pmset stub answers" [ "$(sleep_reads)" = 1 ]
+"$T/shim/sudo" pmset -a disablesleep 0 >/dev/null 2>&1
+check "…and 0 sets it back"                                   [ "$(sleep_reads)" = 0 ]
+touch "$T/sudo-fails"
+sudo_ok() { "$T/shim/sudo" -v >/dev/null 2>&1; }
+sudo_fails() { ! sudo_ok; }
+check "a sudo whose password is refused fails, even for -v"   sudo_fails
+rm -f "$T/sudo-fails"
+check "…and without that file it does not"                    sudo_ok
+check "sudo never touched a path outside the test's folder"   absent "$T/sudo-refused"
+"$T/shim/pmset" -a disablesleep 1 >/dev/null 2>&1
+check "pmset with a verb that changes something is written down, not run" grep -qxF -- "-a disablesleep 1" "$T/pmset-asked"
+rm -f "$T/pmset-asked"
+printf '%s\n' dev.anode.app > "$T/tccutil-fails"
+tcc_resets() { "$T/shim/tccutil" reset All "$1" >/dev/null 2>&1; }
+tcc_fails() { ! tcc_resets "$1"; }
+check "tccutil fails for an identifier named in its failure file"  tcc_fails dev.anode.app
+check "…and only for it"                                      tcc_resets dev.noah.anode
+rm -f "$T/tccutil-asked" "$T/tccutil-fails"
+check "and nothing opened an app or signalled a process"      absent "$T/other-asked"
 
 echo
 check "the real login keychain list was not changed by any of this" [ "$("$T/shim/security" list-keychains 2>/dev/null)" = "$KEYCHAINS_BEFORE" ]
