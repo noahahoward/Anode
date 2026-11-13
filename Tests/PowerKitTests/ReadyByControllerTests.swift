@@ -357,9 +357,20 @@ final class ReadyByControllerTests: XCTestCase {
         XCTAssertEqual(client.state?.mclLimit, 80, "the Mac sleeps with the hold level still in force")
         XCTAssertNotEqual(c.lastDecision?.reason, .readyBy)
         XCTAssertTrue(lines.contains { $0.contains(ChargeRefusal.wakeNotScheduled) }, lines.joined(separator: "\n"))
-        XCTAssertTrue(lines.contains { $0.contains("charging as usual") && $0.contains("80%") }, lines.joined(separator: "\n"))
+        XCTAssertTrue(lines.contains(Self.limitSentence), lines.joined(separator: "\n"))
         XCTAssertEqual(count(cancel), 0)
     }
+
+    // The sentences the log carries when the Mac sleeps with no plan, one for each decision that can be in force then,
+    // written out whole. The person's own limit is the only one that charges as usual.
+    private static let noPlan = "because no wake could be arranged for Ready By"
+    private static let limitSentence = "the Mac sleeps with the battery charging as usual, to 80%, \(noPlan); it is back when the Mac wakes"
+    private static let sleepingSentence = "the Mac sleeps with the battery held at 54% by Hold Level During Sleep, \(noPlan); "
+        + "Ready By is back when the Mac wakes"
+    private static let heatSentence = "the Mac sleeps with the battery paused for heat at 54% by Pause When Hot, \(noPlan); "
+        + "it stays paused until the Mac wakes"
+    private static let driftSentence = "the Mac sleeps with the battery drifting below the limit, held at 78% by Drift Below "
+        + "the Limit, \(noPlan); Ready By is back when the Mac wakes"
 
     /// A limit only the helper can set goes in too, waited for within the same budget, after the plan's own try.
     func testAHelperOnlyLimitIsWaitedForWhenThePlanIsRefused() {
@@ -476,8 +487,7 @@ final class ReadyByControllerTests: XCTestCase {
         c.willSleep()
         XCTAssertEqual(c.lastDecision?.reason, .sleeping)
         XCTAssertEqual(client.state?.mclLimit, 54, "the battery is held where it is")
-        XCTAssertTrue(lines.contains { $0.contains("held at 54%") && $0.contains("Hold Level During Sleep") },
-                      lines.joined(separator: "\n"))
+        XCTAssertTrue(lines.contains(Self.sleepingSentence), lines.joined(separator: "\n"))
         XCTAssertFalse(lines.contains { $0.contains("charging as usual") }, lines.joined(separator: "\n"))
     }
 
@@ -490,7 +500,7 @@ final class ReadyByControllerTests: XCTestCase {
         let c = holding()
         c.willSleep()
         XCTAssertEqual(client.state?.mclLimit, 80)
-        XCTAssertTrue(lines.contains { $0.contains("charging as usual, to 80%") }, lines.joined(separator: "\n"))
+        XCTAssertTrue(lines.contains(Self.limitSentence), lines.joined(separator: "\n"))
         XCTAssertFalse(lines.contains { $0.contains("Hold Level During Sleep") }, lines.joined(separator: "\n"))
     }
 
@@ -565,6 +575,60 @@ final class ReadyByControllerTests: XCTestCase {
         XCTAssertNil(c.wakePlan, "the plan outlived a wake with the pack still hot")
         XCTAssertEqual(count(cancel), 1)
         XCTAssertEqual(client.state?.mclLimit, 54)
+    }
+
+    /// A plan was made for a hot pack at one sleep, cancelled when the Mac woke with the pack still hot, and at the next
+    /// sleep the helper refuses the plan. Pause When Hot outranks Ready By, so the decision made again without Ready By
+    /// is still the heat pause: the battery is paused for heat at 54% and stays so until the Mac wakes. The log used to
+    /// say it was "charging as usual, to 54%".
+    func testARefusedPlanForAHotPackSaysTheBatteryIsPausedForHeat() throws {
+        hotAtNight()
+        let c = make()
+        XCTAssertEqual(c.lastDecision?.reason, .heat, "the fixture is not paused for heat")
+        c.willSleep()
+        XCTAssertNotNil(c.wakePlan, "the fixture: a plan was made for the hot pack")
+        c.didWake(now: clockNow.addingTimeInterval(3600))
+        XCTAssertNil(c.wakePlan, "the fixture: the plan was cancelled awake")
+        XCTAssertEqual(count(cancel), 1)
+        let plansBefore = helper.waited.filter { if case .scheduleChargeLimit = $0 { return true } else { return false } }.count
+        helper.answer = { cmd in
+            if case .scheduleChargeLimit = cmd { return FanReply(ok: false, message: ChargeRefusal.wakeNotScheduled) }
+            return FanReply(ok: true, message: "ok")
+        }
+        c.willSleep()
+        let plansAfter = helper.waited.filter { if case .scheduleChargeLimit = $0 { return true } else { return false } }.count
+        XCTAssertEqual(plansAfter, plansBefore + 1, "the plan was not asked for again at the second sleep")
+        XCTAssertNil(c.wakePlan)
+        XCTAssertEqual(c.lastDecision?.reason, .heat, "heat outranks Ready By, set aside or not")
+        XCTAssertEqual(client.state?.mclLimit, 54, "the pause is what is in force as the Mac sleeps")
+        XCTAssertTrue(lines.contains { $0.contains(ChargeRefusal.wakeNotScheduled) }, lines.joined(separator: "\n"))
+        XCTAssertTrue(lines.contains(Self.heatSentence), lines.joined(separator: "\n"))
+        XCTAssertFalse(lines.contains { $0.contains("charging as usual") }, lines.joined(separator: "\n"))
+    }
+
+    // ── Going to sleep drifting below the limit ─────────────────────────────
+
+    /// Drift Below the Limit is below Ready By: the battery rests inside the band, Ready By holds it there for the
+    /// night, and when its plan is refused the decision made again is the drift rest at the level the battery is at. It
+    /// is not charging as usual.
+    func testARefusedPlanWhileDriftingSaysTheBatteryIsDriftingBelowTheLimit() throws {
+        settings.chargeDriftEnabled = true
+        battery = Self.plugged(80)
+        let c = make()
+        XCTAssertEqual(c.lastDecision?.reason, .drift, "the fixture is not resting at the limit")
+        battery = Self.plugged(78)
+        c.tick()
+        XCTAssertEqual(c.lastDecision?.reason, .readyBy, "the fixture: Ready By holds the battery inside the band")
+        helper.answer = { cmd in
+            if case .scheduleChargeLimit = cmd { return FanReply(ok: false, message: ChargeRefusal.wakeNotScheduled) }
+            return FanReply(ok: true, message: "ok")
+        }
+        c.willSleep()
+        XCTAssertNil(c.wakePlan)
+        XCTAssertEqual(c.lastDecision?.reason, .drift)
+        XCTAssertEqual(client.state?.mclLimit, 78)
+        XCTAssertTrue(lines.contains(Self.driftSentence), lines.joined(separator: "\n"))
+        XCTAssertFalse(lines.contains { $0.contains("charging as usual") }, lines.joined(separator: "\n"))
     }
 
     /// Ready By had started charging and heat paused it: the start moment has passed, so the plan is for half an hour
@@ -1251,5 +1315,102 @@ final class ReadyByControllerTests: XCTestCase {
         settings.chargeControlEnabled = true
         let lead = by.timeIntervalSince(try XCTUnwrap(c.lastDecision?.readyBy?.raiseAt))
         XCTAssertEqual(lead, 26 / 1.2 * 60 + 15 * 60, accuracy: 1)
+    }
+}
+
+
+/// The sentence the log carries when the Mac sleeps with no plan for Ready By, from the decision that is in force and
+/// the limit read back. A decision that cannot be the one made again at a sleep (a drain needs the battery above the
+/// limit, which no plan is made for; Charge to Full is above Ready By) is tried here directly with a decision of its own,
+/// and the sentences are written out whole: a test that built them with the function would pass whatever it said.
+final class SleepWithoutAPlanTextTests: XCTestCase {
+
+    private let no = "because no wake could be arranged for Ready By"
+
+    private func text(_ reason: ChargeReason, limit: Int, inForce: Int?) -> String {
+        ChargeController.sleepWithoutAPlanText(wanted: ChargeDecision(osLimit: limit, dischargeTo: nil, reason: reason),
+                                               inForce: inForce)
+    }
+
+    /// What each decision is, in force, in the words of the control behind it. Exhaustive, so a new reason is not
+    /// left to the sentence that was written for another.
+    private func expected(_ reason: ChargeReason, _ n: Int) -> String {
+        switch reason {
+        case .limit:
+            return "the Mac sleeps with the battery charging as usual, to \(n)%, \(no); it is back when the Mac wakes"
+        case .heat:
+            return "the Mac sleeps with the battery paused for heat at \(n)% by Pause When Hot, \(no); it stays paused until "
+                + "the Mac wakes"
+        case .sleeping:
+            return "the Mac sleeps with the battery held at \(n)% by Hold Level During Sleep, \(no); Ready By is back when "
+                + "the Mac wakes"
+        case .drift:
+            return "the Mac sleeps with the battery drifting below the limit, held at \(n)% by Drift Below the Limit, \(no); "
+                + "Ready By is back when the Mac wakes"
+        case .draining:
+            return "the Mac sleeps with the limit of \(n)% in force and the drain stopped for the sleep, \(no); Drain "
+                + "Automatically Above the Limit starts it again when the Mac wakes, if the battery is still above the limit"
+        case .drained:
+            return "the Mac sleeps with the drain down to the limit finished and the limit of \(n)% in force, \(no); Ready By "
+                + "is back when the Mac wakes"
+        case .fullCharge:
+            return "the Mac sleeps with the battery charging to \(n)% for Charge to Full, \(no); Ready By is back when the "
+                + "Mac wakes"
+        case .readyBy:
+            return "the Mac sleeps with the battery still held at \(n)% by Ready By, although no wake could be arranged for "
+                + "it; the limit is asserted again when the Mac wakes"
+        }
+    }
+
+    func testEachReasonSaysWhatIsInForceInItsOwnWords() {
+        let cases: [(ChargeReason, Int)] = [(.limit, 80), (.heat, 54), (.sleeping, 54), (.drift, 78), (.draining, 80),
+                                            (.drained, 80), (.fullCharge, 100), (.readyBy, 54)]
+        for (reason, n) in cases {
+            XCTAssertEqual(text(reason, limit: n, inForce: n), expected(reason, n), "\(reason)")
+        }
+    }
+
+    /// Only the person's own limit charges as usual; nothing else may say so.
+    func testOnlyTheLimitIsSaidToChargeAsUsual() {
+        for reason: ChargeReason in [.heat, .sleeping, .drift, .draining, .drained, .fullCharge, .readyBy] {
+            let said = text(reason, limit: 54, inForce: 54)
+            XCTAssertFalse(said.contains("as usual"), "\(reason): \(said)")
+        }
+        XCTAssertTrue(text(.limit, limit: 54, inForce: 54).contains("charging as usual, to 54%"))
+    }
+
+    func testTheHeatPauseSaysItStaysPausedUntilTheWake() {
+        let said = text(.heat, limit: 61, inForce: 61)
+        XCTAssertTrue(said.contains("paused for heat at 61%"), said)
+        XCTAssertTrue(said.contains("stays paused until the Mac wakes"), said)
+    }
+
+    /// No decision at all: unchanged.
+    func testNoDecisionIsSaidAsBefore() {
+        XCTAssertEqual(ChargeController.sleepWithoutAPlanText(wanted: nil, inForce: 80),
+                       "the Mac sleeps \(no); Ready By is back when the Mac wakes")
+    }
+
+    /// When the limit cannot be confirmed in force the sentence says what was asked for, in the decision's words, and
+    /// what is in force instead, and claims no charging as usual.
+    func testALimitThatCannotBeConfirmedNamesWhatWasAskedFor() {
+        XCTAssertEqual(text(.limit, limit: 87, inForce: 90),
+                       "the charge limit of 87% could not be confirmed in force before the Mac sleeps; 90% is in force "
+                       + "instead, the nearest limit macOS takes itself at or above it, so the battery may charge up to 90% "
+                       + "meanwhile; the limit is asserted again when the Mac wakes")
+        XCTAssertEqual(text(.heat, limit: 54, inForce: 55),
+                       "the pause for heat at 54% could not be confirmed in force before the Mac sleeps; 55% is in force "
+                       + "instead, the nearest limit macOS takes itself at or above it, so the battery may charge up to 55% "
+                       + "meanwhile; the limit is asserted again when the Mac wakes")
+        XCTAssertEqual(text(.drift, limit: 78, inForce: nil),
+                       "the rest below the limit at 78% could not be confirmed in force before the Mac sleeps; the limit "
+                       + "is asserted again when the Mac wakes")
+        XCTAssertEqual(text(.sleeping, limit: 54, inForce: nil),
+                       "the hold of 54% for the sleep could not be confirmed in force before the Mac sleeps; the limit is "
+                       + "asserted again when the Mac wakes")
+        XCTAssertEqual(text(.heat, limit: 54, inForce: 40),
+                       "the Mac sleeps with 40% still in force, not 54%: neither the helper nor macOS set 54% before the "
+                       + "Mac sleeps, so the battery will not charge past 40% until it wakes; the limit is asserted again "
+                       + "when the Mac wakes")
     }
 }

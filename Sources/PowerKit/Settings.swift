@@ -254,10 +254,13 @@ public final class Settings {
 
     // ── Which settings a process that names none uses ───────────────────────
 
-    /// Whether this process is a test run: XCTest is loaded into it. XCTest is linked by nothing that ships (the app,
-    /// the helper and the command-line tool do not import it, so its classes are not in their processes), and the
-    /// class is looked up by name in the Objective-C runtime, so no environment variable of a person's shell can make
-    /// it true. A test pins both (`ProcessSettingsTests`). Decided once.
+    /// Whether this process is a test run: XCTest is loaded into it. The shipped products (the app, the helper and the
+    /// command-line tool) do not link XCTest, so the class is absent in their processes, and it is looked up by name in
+    /// the Objective-C runtime. Someone who deliberately injects the XCTest library into the process would make it
+    /// true, and would then get a throwaway settings suite for that run in place of the person's `com.anode.settings`:
+    /// the person's suite is neither changed nor lost. (What the app keeps in the standard defaults, such as window
+    /// layouts and shortcuts, does not go through this class and is outside that.) A test pins both
+    /// (`ProcessSettingsTests`). Decided once.
     public static let isTestRun: Bool = isTestRun(classNamed: { NSClassFromString($0) })
 
     /// The detection, with the lookup a parameter so a test can show that a process without XCTest is not a test run.

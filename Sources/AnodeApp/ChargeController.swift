@@ -1870,9 +1870,11 @@ final class ChargeController {
     ///
     /// A plan that is not in place when the Mac is about to sleep is not left as the hold: nothing would raise the limit
     /// until someone woke the Mac after the time, and the battery would sit at the hold level all night. Ready By is set
-    /// aside for this sleep (`readyBySetAside`), the decision is made again without it, and the person's own limit is put
+    /// aside for this sleep (`readyBySetAside`), the decision is made again without it, and what that decides is put
     /// in force before the Mac sleeps, inside the same budget (a limit only the helper can set is waited for, as for
-    /// any sleep). On the wake Ready By is back. A plan send that timed out can still land at the helper: that is
+    /// any sleep): the person's own limit, unless another rule decides otherwise (Pause When Hot keeps a hot pack
+    /// paused, Hold Level During Sleep holds the level, Drift Below the Limit rests the battery), and the log says
+    /// which (`sleepWithoutAPlanText`). On the wake Ready By is back. A plan send that timed out can still land at the helper: that is
     /// harmless, since it only raises to the person's own limit at its moment, and it dies with the connection, which is
     /// let go.
     func sendThePlan(deadline: Date, now: Date?) {
@@ -1927,27 +1929,63 @@ final class ChargeController {
     }
 
     /// What the log says about the sleep that has no plan, from what is in force when the Mac goes to sleep.
+    ///
+    /// The decision made again without Ready By is not always the person's own limit, so "charging as usual" is said
+    /// only for the decision that is the person's own limit (`.limit`). Pause When Hot outranks Ready By: a pack that
+    /// was paused for heat stays paused and held at its level until the Mac wakes. Drift Below the Limit, a drain that
+    /// is finished or stopped, Charge to Full and Hold Level During Sleep each hold or ask for something else, and each
+    /// is said in its own words, built from the decision's reason and the limit read back as in force.
     static func sleepWithoutAPlanText(wanted d: ChargeDecision?, inForce: Int?) -> String {
         let why = "because no wake could be arranged for Ready By"
         guard let d else { return "the Mac sleeps \(why); Ready By is back when the Mac wakes" }
         let want = d.osLimit
         let back = "the limit is asserted again when the Mac wakes"
+        // What was asked for, in the words of the decision that asked for it, where it could not be confirmed.
+        let asked: String
+        switch d.reason {
+        case .heat: asked = "the pause for heat at \(want)%"
+        case .sleeping: asked = "the hold of \(want)% for the sleep"
+        case .drift: asked = "the rest below the limit at \(want)%"
+        case .readyBy: asked = "the hold of \(want)% for Ready By"
+        case .limit, .fullCharge, .draining, .drained: asked = "the charge limit of \(want)%"
+        }
         switch inForce {
         case want?:
-            if d.reason == .sleeping {
+            switch d.reason {
+            case .limit:
+                return "the Mac sleeps with the battery charging as usual, to \(want)%, \(why); it is back when the Mac wakes"
+            case .heat:
+                return "the Mac sleeps with the battery paused for heat at \(want)% by Pause When Hot, \(why); it stays "
+                    + "paused until the Mac wakes"
+            case .sleeping:
                 return "the Mac sleeps with the battery held at \(want)% by Hold Level During Sleep, \(why); Ready By is "
                     + "back when the Mac wakes"
+            case .drift:
+                return "the Mac sleeps with the battery drifting below the limit, held at \(want)% by Drift Below the "
+                    + "Limit, \(why); Ready By is back when the Mac wakes"
+            case .draining:
+                return "the Mac sleeps with the limit of \(want)% in force and the drain stopped for the sleep, \(why); "
+                    + "Drain Automatically Above the Limit starts it again when the Mac wakes, if the battery is still "
+                    + "above the limit"
+            case .drained:
+                return "the Mac sleeps with the drain down to the limit finished and the limit of \(want)% in force, "
+                    + "\(why); Ready By is back when the Mac wakes"
+            case .fullCharge:
+                return "the Mac sleeps with the battery charging to \(want)% for Charge to Full, \(why); Ready By is "
+                    + "back when the Mac wakes"
+            case .readyBy:
+                return "the Mac sleeps with the battery still held at \(want)% by Ready By, although no wake could be "
+                    + "arranged for it; \(back)"
             }
-            return "the Mac sleeps with the battery charging as usual, to \(want)%, \(why); it is back when the Mac wakes"
         case let held? where held < want:
             return "the Mac sleeps with \(held)% still in force, not \(want)%: neither the helper nor macOS set \(want)% "
                 + "before the Mac sleeps, so the battery will not charge past \(held)% until it wakes; \(back)"
         case let above?:
-            return "the charge limit of \(want)% could not be confirmed in force before the Mac sleeps; \(above)% is in "
+            return "\(asked) could not be confirmed in force before the Mac sleeps; \(above)% is in "
                 + "force instead, the nearest limit macOS takes itself at or above it, so the battery may charge up to "
                 + "\(above)% meanwhile; \(back)"
         case nil:
-            return "the charge limit of \(want)% could not be confirmed in force before the Mac sleeps; \(back)"
+            return "\(asked) could not be confirmed in force before the Mac sleeps; \(back)"
         }
     }
 
