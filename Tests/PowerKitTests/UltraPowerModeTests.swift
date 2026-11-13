@@ -425,6 +425,12 @@ private final class DeferredWire: HelperWire {
     var onPeerClosed: (() -> Void)?
     var version: Int? = 4
     var result = FanReply(ok: true, message: "pending", pending: true)
+    /// An enter is refused at once (a job is already running).
+    var refusesEnter = false
+    /// The answer to a restore is held until `deliverRestoreReply()`: a command that is still on its way.
+    var holdsRestoreReply = false
+    private var heldRestoreReply: ((FanReply) -> Void)?
+    func deliverRestoreReply() { heldRestoreReply?(FanReply(ok: true, message: "started")); heldRestoreReply = nil }
     private(set) var sent: [FanCommand] = []
     private(set) var disconnects = 0
 
@@ -436,6 +442,8 @@ private final class DeferredWire: HelperWire {
         sent.append(command)
         switch command {
         case .powerModeResult: done(result)
+        case .enterLowPowerMode where refusesEnter: done(FanReply(ok: false, message: PowerModeRefusal.busy.message))
+        case .restorePowerMode where holdsRestoreReply: heldRestoreReply = done
         case .enterLowPowerMode, .restorePowerMode: done(FanReply(ok: true, message: "started"))
         default: done(FanReply(ok: true, message: "ok"))
         }
@@ -798,6 +806,98 @@ final class UltraPowerModeTests: XCTestCase {
         fire(HelperPowerMode.pollEvery)
         XCTAssertFalse(late.sent.contains { if case .restorePowerMode = $0 { return true } else { return false } })
         XCTAssertTrue(connection.holders.isEmpty)
+    }
+
+    // The helper keeps one answer per connection and the app one claim on it: an enter that is still being watched is
+    // overlapped by the next session's call, and none of the two may read the other's answer or let go of its claim.
+
+    /// The helper took a second enter while the first was still being watched, and says done for it: the second records the
+    /// mode and keeps the claim. The first must not read that answer as its own and put back what the second just recorded
+    /// as on, nor let go of the claim the second depends on.
+    func testASecondEnterTheHelperTakesWhileTheFirstIsStillWatchedOwnsTheAnswerAndTheClaim() {
+        let late = DeferredWire()
+        let connection = HelperConnection(wire: late)
+        let mode = makeMode(over: connection)
+        var first: [Int?] = [], second: [Int?] = []
+        mode.enterLowPower { first.append($0) }
+        fire(HelperPowerMode.answerWithin)
+        XCTAssertEqual(first, [nil])
+
+        late.result = FanReply(ok: true, message: "Low Power Mode is on", powerModeBefore: 21)
+        mode.enterLowPower { second.append($0) }
+        XCTAssertEqual(second, [21])
+        fire(HelperPowerMode.pollEvery)                  // the first attempt's next ask
+        XCTAssertFalse(late.sent.contains { if case .restorePowerMode = $0 { return true } else { return false } },
+                       "the second session's mode was put back by the first: \(late.sent)")
+        XCTAssertEqual(connection.holders, [.powerMode])
+        fire(HelperPowerMode.watchWithin)
+        fire(HelperPowerMode.watchWithin)                // both watches end
+        XCTAssertEqual(connection.holders, [.powerMode], "the claim the second session depends on was let go")
+        XCTAssertEqual(late.disconnects, 0)
+        XCTAssertEqual(first, [nil])
+        XCTAssertEqual(second, [21])
+    }
+
+    /// A second enter the helper refuses (the first job is still running) leaves the first watch as it was: it goes on, and
+    /// puts back what the helper then says it took.
+    func testARefusedSecondEnterLeavesTheFirstWatchAndItsClaimAlone() {
+        let late = DeferredWire()
+        let connection = HelperConnection(wire: late)
+        let mode = makeMode(over: connection)
+        mode.enterLowPower { _ in }
+        fire(HelperPowerMode.answerWithin)
+
+        late.refusesEnter = true
+        var second: [Int?] = []
+        mode.enterLowPower { second.append($0) }
+        XCTAssertEqual(second, [nil])
+        XCTAssertEqual(connection.holders, [.powerMode], "the first watch's claim was let go by the refused call")
+
+        late.refusesEnter = false
+        late.result = FanReply(ok: true, message: "Low Power Mode is on", powerModeBefore: 12)
+        fire(HelperPowerMode.pollEvery)
+        XCTAssertEqual(late.sent.last, .restorePowerMode(before: 12), "the late mode was not put back")
+        XCTAssertTrue(connection.holders.isEmpty)
+    }
+
+    /// The late put-back is still on its way when the next session's enter is taken and says done: the claim is the second
+    /// session's now, and the first one's reply to its put-back does not let go of it.
+    func testALatePutBacksReplyDoesNotLetGoOfAClaimASecondEnterHasTaken() {
+        let late = DeferredWire()
+        let connection = HelperConnection(wire: late)
+        let mode = makeMode(over: connection)
+        mode.enterLowPower { _ in }
+        fire(HelperPowerMode.answerWithin)
+        late.holdsRestoreReply = true
+        late.result = FanReply(ok: true, message: "Low Power Mode is on", powerModeBefore: 12)
+        fire(HelperPowerMode.pollEvery)                  // the first attempt's ask: done, so the put-back is sent
+        XCTAssertEqual(late.sent.last, .restorePowerMode(before: 12))
+
+        var second: [Int?] = []
+        mode.enterLowPower { second.append($0) }
+        XCTAssertEqual(second, [12])
+        late.deliverRestoreReply()
+        XCTAssertEqual(connection.holders, [.powerMode], "the claim the second session depends on was let go")
+        XCTAssertEqual(late.disconnects, 0)
+    }
+
+    /// A restore the helper takes while an enter is being watched is the connection's answer and claim from then on: the
+    /// enter's next ask is not made, so it cannot read the restore's answer as its own.
+    func testARestoreTheHelperTakesWhileAnEnterIsWatchedOwnsTheAnswerAndTheClaim() {
+        let late = DeferredWire()
+        let connection = HelperConnection(wire: late)
+        let mode = makeMode(over: connection)
+        mode.enterLowPower { _ in }
+        fire(HelperPowerMode.answerWithin)
+
+        late.result = FanReply(ok: true, message: "power mode put back")
+        var restored: [Bool] = []
+        mode.restore(12) { restored.append($0) }
+        XCTAssertEqual(restored, [true])
+        fire(HelperPowerMode.pollEvery)                  // the enter's next ask
+        fire(HelperPowerMode.watchWithin)
+        XCTAssertEqual(late.sent, [.enterLowPowerMode, .powerModeResult, .restorePowerMode(before: 12), .powerModeResult])
+        XCTAssertTrue(connection.holders.isEmpty, "the restore lets go once it is answered")
     }
 
     /// The watch ends: nothing more is asked, and the claim is let go (which closes the socket if nobody else holds it, so

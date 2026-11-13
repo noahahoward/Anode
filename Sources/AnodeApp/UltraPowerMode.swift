@@ -19,6 +19,13 @@ import PowerKit
 // for that long, so the socket stays open to poll on, and let go when the watch ends (which, if nobody else holds it, closes
 // the socket and so makes the helper put back whatever it holds).
 //
+// ONE ATTEMPT AT A TIME OWNS THE HELPER'S ANSWER. The helper keeps one answer per connection, and the claim on the connection
+// is one claim, whoever holds it for how long: an enter that was answered "could not" and is still being watched can be
+// overlapped by the next session's enter or restore. The helper accepting a new command hands the answer and the claim to
+// it (`accepted`); the old attempt stops asking and sends nothing more, so it can neither read the new one's answer as its
+// own nor let go of what the new one is holding (`end`, and the reply to a late put-back). A new command the helper refuses
+// leaves the old attempt as it was: the refused call does not let go of a claim an attempt that is still going needs.
+//
 // THE SOCKET IS SHARED, and Charge Control relies on it not being closed or reset while it holds its own claim. So this
 // uses the claim and release of `HelperConnection` only: it connects through `connect(for:)`, never closes the link, and
 // sends nothing once the connection is down (a send that finds no socket never opens one, and is not made).
@@ -50,6 +57,8 @@ final class HelperPowerMode: PowerModeControlling {
     private var token: AnyObject?
     /// What the helper last said it speaks; nil before it has said anything, and while it is being replaced.
     private var version: Int?
+    /// The attempt whose command the helper last accepted. It owns the helper's one answer and, until it is over, the claim.
+    private var active: Attempt?
 
     init(connection: HelperConnection = .shared, isInstalled: @escaping () -> Bool = { FanDaemon.isInstalled() },
          schedule: @escaping (TimeInterval, @escaping () -> Void) -> Void = { after, work in
@@ -110,6 +119,7 @@ final class HelperPowerMode: PowerModeControlling {
                         answer.finish(nil)
                         return
                     }
+                    self.accepted(attempt)
                     self.pollEnter(attempt, answer)
                 }
             }
@@ -141,7 +151,9 @@ final class HelperPowerMode: PowerModeControlling {
             // back here, at once, and the claim is let go once the helper has the command.
             if !answer.finish(before) {
                 self.connection.send(.restorePowerMode(before: before)) { [weak self] _ in
-                    self?.connection.release(.powerMode)
+                    // Unless a later attempt took the claim while this was on its way.
+                    guard let self, self.active === attempt else { return }
+                    self.connection.release(.powerMode)
                 }
             }
         }
@@ -170,6 +182,7 @@ final class HelperPowerMode: PowerModeControlling {
                         answer.finish(false)
                         return
                     }
+                    self.accepted(attempt)
                     self.pollRestore(attempt, answer)
                 }
             }
@@ -195,11 +208,19 @@ final class HelperPowerMode: PowerModeControlling {
         }
     }
 
+    /// The helper took this attempt's command, so the helper's answer and the claim are this attempt's now: an earlier
+    /// attempt that is still being watched stops, and sends nothing more.
+    private func accepted(_ attempt: Attempt) {
+        if let earlier = active, earlier !== attempt { earlier.over = true }
+        active = attempt
+    }
+
     /// This attempt is done with the connection: nothing more is polled or sent for it, and its claim is let go (the socket
-    /// closes only if nobody else holds it). Once.
+    /// closes only if nobody else holds it), unless another attempt that is still going needs the socket. Once.
     private func end(_ attempt: Attempt) {
         guard !attempt.over else { return }
         attempt.over = true
+        if let other = active, other !== attempt, !other.over { return }
         connection.release(.powerMode)
     }
 
