@@ -90,6 +90,10 @@ final class UltraLowPowerWiringTests: XCTestCase {
     /// What the fake system says and what the runtime asked of it.
     final class Env {
         var frontmost: pid_t? = 10
+        /// The windows on screen, front to back, and how many times they were read.
+        var windows: [UltraWindow] = []
+        private(set) var windowReads = 0
+        func readWindows() -> [UltraWindow] { windowReads += 1; return windows }
         var scheduled: [(delay: TimeInterval, work: () -> Void)] = []
         var logged: [String] = []
         var menus: [(menu: NSMenu, button: NSStatusBarButton)] = []
@@ -167,7 +171,7 @@ final class UltraLowPowerWiringTests: XCTestCase {
             unregisterShortcut: { calls.add("shortcut unregister"); shortcut.unregister() },
             work: work, startTicker: ticker.start,
             workspace: workspace, center: center, appPID: { $0.userInfo?["pid"] as? pid_t },
-            frontmostPID: { env.frontmost }, ownPID: 1000, user: 501,
+            frontmostPID: { env.frontmost }, windows: { env.readWindows() }, ownPID: 1000, user: 501,
             log: { env.logged.append($0) },
             schedule: { delay, job in env.scheduled.append((delay, job)) })
         return Rig(runtime: runtime, settings: settings, defaults: defaults, suite: suite, calls: calls, processes: processes,
@@ -335,6 +339,83 @@ final class UltraLowPowerWiringTests: XCTestCase {
         XCTAssertEqual(r.confirm.keptNames, [["Editor"]], "the earlier front app stays")
     }
 
+    // ── The first Start, with Anode in front ────────────────────────────────
+
+    private func window(_ pid: pid_t, layer: Int = 0, onScreen: Bool = true) -> UltraWindow {
+        UltraWindow(ownerPID: pid, layer: layer, onScreen: onScreen)
+    }
+
+    func testTheAppBehindAnodesWindowIsTheOneToKeep() {
+        let own: Set<pid_t> = [1000, 1001]
+        XCTAssertEqual(UltraLowPowerRuntime.frontOtherApp(in: [window(1000), window(10)], excluding: own), 10,
+                       "Anode's window in front and the editor's behind")
+        XCTAssertEqual(UltraLowPowerRuntime.frontOtherApp(in: [window(10), window(1000), window(20)], excluding: own), 10,
+                       "the frontmost of the others")
+    }
+
+    func testOnlyAnodesWindowsKeepNothing() {
+        let own: Set<pid_t> = [1000, 1001]
+        XCTAssertNil(UltraLowPowerRuntime.frontOtherApp(in: [window(1000), window(1000), window(1001)], excluding: own))
+        XCTAssertNil(UltraLowPowerRuntime.frontOtherApp(in: [], excluding: own))
+    }
+
+    func testAPanelAboveTheOrdinaryWindowsIsSkipped() {
+        let own: Set<pid_t> = [1000]
+        // A menu, the Dock, a floating panel: not the layer of an app's window.
+        XCTAssertEqual(UltraLowPowerRuntime.frontOtherApp(in: [window(30, layer: 25), window(20, layer: 3), window(1000),
+                                                              window(10)], excluding: own), 10)
+        XCTAssertNil(UltraLowPowerRuntime.frontOtherApp(in: [window(30, layer: 25), window(1000)], excluding: own))
+        XCTAssertNil(UltraLowPowerRuntime.frontOtherApp(in: [window(20, layer: -1)], excluding: own),
+                     "nor one below: the desktop")
+    }
+
+    func testAWindowThatIsNotOnScreenIsSkippedAndTheWatchdogIsAnodes() {
+        let own: Set<pid_t> = [1000, 1001]
+        XCTAssertEqual(UltraLowPowerRuntime.frontOtherApp(in: [window(20, onScreen: false), window(1001), window(10)],
+                                                          excluding: own), 10)
+    }
+
+    func testTheFirstStartFromAnodesOwnWindowKeepsTheAppBehindIt() throws {
+        let r = try rig(ticked: false); defer { done(r) }
+        r.env.frontmost = 1000   // the box is ticked in Anode's own window
+        r.env.windows = [window(1000), window(10), window(20)]
+        r.settings.ultraLowPowerEnabled = true
+        XCTAssertEqual(r.env.windowReads, 0, "not read at tick time")
+        r.shortcut.fire?()
+        XCTAssertEqual(r.confirm.keptNames, [["Editor"]], "the editor was behind Anode's window")
+        XCTAssertEqual(r.env.windowReads, 1, "read once, when asked")
+    }
+
+    func testAnAppThatCameForwardIsKeptWhateverTheWindowsSay() throws {
+        let r = try rig(ticked: false); defer { done(r) }
+        r.env.frontmost = 1000
+        r.env.windows = [window(1000), window(20)]   // the browser's window is the next one behind
+        r.settings.ultraLowPowerEnabled = true
+        activate(10, in: r)   // but the editor really came forward
+        r.shortcut.fire?()
+        XCTAssertEqual(r.confirm.keptNames, [["Editor"]])
+        XCTAssertEqual(r.env.windowReads, 0, "the windows are not read when an activation is remembered")
+    }
+
+    func testWithNoWindowBehindAnodeNothingIsKept() throws {
+        let r = try rig(ticked: false); defer { done(r) }
+        r.env.frontmost = 1000
+        r.env.windows = [window(1000)]
+        r.settings.ultraLowPowerEnabled = true
+        r.shortcut.fire?()
+        XCTAssertEqual(r.confirm.keptNames, [[]])
+    }
+
+    func testThePickerKeepsTheSameAppTheFirstStartWould() throws {
+        let r = try rig(ticked: false); defer { done(r) }
+        r.env.frontmost = 1000
+        r.env.windows = [window(1000), window(10)]
+        r.settings.ultraLowPowerEnabled = true
+        var answer: [String]?
+        r.runtime.candidates { answer = $0.map(\.name) }
+        XCTAssertEqual(answer, ["Editor", "Browser", "Sync", "Cloud"], "the editor is first: it is the one that is kept")
+    }
+
     func testTheLiveReaderTakesThePidFromTheNotification() {
         let note = Notification(name: NSWorkspace.didActivateApplicationNotification, object: nil,
                                 userInfo: [NSWorkspace.applicationUserInfoKey: NSRunningApplication.current])
@@ -465,6 +546,40 @@ final class UltraLowPowerWiringTests: XCTestCase {
         XCTAssertTrue(r.runtime.isWatchingBrightness)
         r.settings.ultraLowPowerEnabled = false
         XCTAssertEqual(r.controller.state, .off, "and so does the box")
+    }
+
+    /// From Confirm until the mode is on the apps are already stopped (the record is saved and the watchdog started first), and
+    /// turning Low Power Mode on may wait on the helper for seconds: a logout in that window is heard all the same.
+    func testALogoutBetweenConfirmAndOnIsHeard() throws {
+        let r = try rig(ticked: true); defer { done(r) }
+        r.work.hold = true   // the screen's first call is on the queue and does not come back
+        r.controller.request()
+        r.confirm.press(true)
+        XCTAssertEqual(r.controller.state, .confirming, "not on yet")
+        XCTAssertFalse(r.freezer.stops.isEmpty, "but the apps are stopped")
+        XCTAssertFalse(r.runtime.isWatchingBrightness, "the timer and the icon wait for the mode to be on")
+        powerOff(r)
+        XCTAssertFalse(r.freezer.resumes.isEmpty, "everything that was stopped is continued")
+        XCTAssertEqual(r.controller.state, .off)
+        XCTAssertEqual(r.store.cleared, 1)
+        XCTAssertEqual(r.watchdog.stopped, 1)
+        XCTAssertEqual(r.workspace.observers, 1, "only the front app is still tracked: the box is ticked")
+        r.work.runHeld()   // the queued call finds the session over
+        XCTAssertEqual(r.controller.state, .off)
+    }
+
+    func testThePowerOffNoticeIsHeardFromTheQuestionUntilTheModeIsOffAndNotBefore() throws {
+        let r = try rig(ticked: true); defer { done(r) }
+        XCTAssertEqual(r.workspace.observers, 1, "off: the front app only")
+        r.controller.request()
+        XCTAssertEqual(r.workspace.observers, 2, "asked: the notice too")
+        r.confirm.press(false)
+        XCTAssertEqual(r.workspace.observers, 1, "answered no: gone again")
+        start(r)
+        XCTAssertEqual(r.workspace.observers, 2)
+        XCTAssertTrue(r.runtime.isWatchingBrightness)
+        r.controller.turnOff()
+        XCTAssertEqual(r.workspace.observers, 1)
     }
 
     func testShutdownRemovesEverythingAndStopsListening() throws {
@@ -775,6 +890,35 @@ final class UltraLowPowerWiringTests: XCTestCase {
         XCTAssertEqual(url.lastPathComponent, "ultra-session.json")
         XCTAssertEqual(url.deletingLastPathComponent().lastPathComponent, "Anode")
         XCTAssertTrue(url.path.contains("Application Support"), url.path)
+    }
+
+    /// `live()` is not made in a test, so what it connects is read from its text: a connection dropped or swapped there
+    /// would leave every other test passing and the feature dead in the app.
+    func testLiveHandsTheControllerTheRealPartsAndOneRecordFile() throws {
+        let source = try String(contentsOf: URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent().appendingPathComponent("Sources/AnodeApp/UltraLowPowerRuntime.swift"), encoding: .utf8)
+        let start = try XCTUnwrap(source.range(of: "static func live("))
+        let end = try XCTUnwrap(source.range(of: "static var recordURL"))
+        // The code of the function: comments taken out, white space made one space.
+        let body = source[start.lowerBound..<end.lowerBound].split(separator: "\n", omittingEmptySubsequences: false)
+            .filter { !$0.trimmingCharacters(in: .whitespaces).hasPrefix("//") }.joined(separator: " ")
+            .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+        for needed in ["workspace: NSWorkspace.shared.notificationCenter",   // the front app and the power-off notice
+                       "center: .default",                                    // the bar's rebuilds
+                       "ownBrightness: OwnBrightness.shared",                 // shared with Keep Awake, which holds the screen too
+                       "UltraLowPowerController.current = runtime.controller",
+                       "UltraLowPowerRuntime.current = runtime",
+                       "icon.onClick =",
+                       "KeybindCenter.shared.register(owner: shortcutOwner, commands: ShortcutCommands.ultra)",
+                       "KeybindCenter.shared.unregister(owner: shortcutOwner)",
+                       "widgets: widgets, icon: icon",
+                       "windows: liveWindows"] {
+            XCTAssertTrue(body.contains(needed), "live() no longer has: \(needed)")
+        }
+        // One file for the record: the store reads and writes it, and the watchdog is told where it is.
+        XCTAssertEqual(body.components(separatedBy: "let url = recordURL").count - 1, 1)
+        XCTAssertTrue(body.contains("UltraRecordFile(url: url)"), "the store is on the record's url")
+        XCTAssertTrue(body.contains("LiveUltraWatchdog(recordURL: url"), "the watchdog is given the same url")
     }
 
     func testMainWiresTheRuntimeAndShutsItDown() throws {

@@ -8,11 +8,12 @@ import PowerKit
 // the Mac being powered off, the menu bar's readings, the icon, a timer for the screen. It decides nothing about the mode
 // itself.
 //
-// Three layers, each there only while it is wanted:
+// Layers, each there only while it is wanted:
 //   · always: the controller (an object that does nothing until asked), the observer of the setting, and the undoing of a
 //     record a session left behind;
 //   · the box ticked: the shortcut, the tracking of the front app, the readings' hooks;
-//   · the mode on: the watch on the brightness, the notice of a power-off, the watch on the bar for the icon, the icon.
+//   · the mode on: the watch on the brightness, the watch on the bar for the icon, the icon;
+//   · from the question until the mode is off again: the notice of a power-off (apps are stopped before the mode is on).
 
 /// The menu bar's readings, as far as the mode needs them. `MenuBarWidgetController` is one; a test has a fake.
 protocol UltraReadingHosting: AnyObject {
@@ -49,6 +50,13 @@ final class UltraWorkQueue: UltraWorkRunning {
     }
 }
 
+/// One window of the screen as the choice of an app to keep needs it, in a list ordered front to back.
+struct UltraWindow: Equatable {
+    var ownerPID: pid_t
+    var layer: Int
+    var onScreen: Bool
+}
+
 /// Starts something that fires every `every` seconds, and returns what stops it.
 typealias UltraTicker = (_ every: TimeInterval, _ fire: @escaping () -> Void) -> () -> Void
 
@@ -80,10 +88,12 @@ final class UltraLowPowerRuntime {
     private let appPID: (Notification) -> pid_t?
     private let frontmostPID: () -> pid_t?
     private let ownPIDs: () -> Set<pid_t>
+    private let lastOtherFront: () -> pid_t?
     private let user: uid_t
     private let log: (String) -> Void
 
-    /// The last app that came forward and is not Anode: what the plan keeps when the owner asks.
+    /// The last app that came forward and is not Anode, as far as the box has been ticked: what the plan keeps when the owner
+    /// asks. A remembered one wins; with none, the app behind Anode's windows is read at the moment it is asked.
     private final class Front { var pid: pid_t? }
     private let front: Front
 
@@ -111,7 +121,7 @@ final class UltraLowPowerRuntime {
          presentMenu: @escaping (NSMenu, NSStatusBarButton) -> Void, openBetaFeatures: @escaping () -> Void,
          registerShortcut: @escaping (@escaping () -> Void) -> Void, unregisterShortcut: @escaping () -> Void,
          work: UltraWorkRunning, startTicker: @escaping UltraTicker, workspace: NotificationCenter, center: NotificationCenter,
-         appPID: @escaping (Notification) -> pid_t?, frontmostPID: @escaping () -> pid_t?, ownPID: pid_t, user: uid_t,
+         appPID: @escaping (Notification) -> pid_t?, frontmostPID: @escaping () -> pid_t?, windows: @escaping () -> [UltraWindow], ownPID: pid_t, user: uid_t,
          log: @escaping (String) -> Void, schedule: @escaping (TimeInterval, @escaping () -> Void) -> Void) {
         self.settings = settings
         self.processes = processes
@@ -139,10 +149,14 @@ final class UltraLowPowerRuntime {
         self.ownPIDs = ownPIDs
         let front = Front()
         self.front = front
+        let lastOtherFront: () -> pid_t? = {
+            front.pid ?? UltraLowPowerRuntime.frontOtherApp(in: windows(), excluding: ownPIDs())
+        }
+        self.lastOtherFront = lastOtherFront
         controller = UltraLowPowerController(
             settings: settings, processes: processes, freezer: freezer, hider: hider, backlight: backlight,
             ownBrightness: ownBrightness, rate: rate, keyboard: keyboard, power: power, watchdog: watchdog, store: store,
-            confirm: confirm, load: load, lastOtherFrontApp: { front.pid }, ownPIDs: ownPIDs, user: user,
+            confirm: confirm, load: load, lastOtherFrontApp: lastOtherFront, ownPIDs: ownPIDs, user: user,
             work: { work.run($0) }, schedule: schedule, log: log)
         controller.onChange = { [weak self] in self?.controllerChanged() }
 
@@ -161,7 +175,7 @@ final class UltraLowPowerRuntime {
         let icon = UltraIcon()
         let runtime = UltraLowPowerRuntime(
             settings: .shared, processes: LiveProcessList(), freezer: LiveProcessFreezer(), hider: LiveAppHider(),
-            backlight: DisplayServicesBacklight(), ownBrightness: .shared, rate: LiveDisplayRate(),
+            backlight: DisplayServicesBacklight(), ownBrightness: OwnBrightness.shared, rate: LiveDisplayRate(),
             keyboard: LiveKeyboardBacklight(), power: HelperPowerMode(), watchdog: LiveUltraWatchdog(recordURL: url, log: log),
             store: UltraRecordFile(url: url), confirm: UltraConfirmPanel(), load: LiveLoadReader(), widgets: widgets, icon: icon,
             presentMenu: { menu, button in
@@ -175,7 +189,7 @@ final class UltraLowPowerRuntime {
             unregisterShortcut: { KeybindCenter.shared.unregister(owner: shortcutOwner) },
             work: UltraWorkQueue(), startTicker: liveTicker,
             workspace: NSWorkspace.shared.notificationCenter, center: .default, appPID: liveAppPID,
-            frontmostPID: { NSWorkspace.shared.frontmostApplication?.processIdentifier }, ownPID: getpid(), user: getuid(),
+            frontmostPID: { NSWorkspace.shared.frontmostApplication?.processIdentifier }, windows: liveWindows, ownPID: getpid(), user: getuid(),
             log: log, schedule: { delay, work in DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work) })
         icon.onClick = { [weak runtime] button in runtime?.showMenu(under: button) }
         UltraLowPowerController.current = runtime.controller
@@ -199,6 +213,25 @@ final class UltraLowPowerRuntime {
 
     static func liveAppPID(_ note: Notification) -> pid_t? {
         (note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication)?.processIdentifier
+    }
+
+    /// The app to keep when no other app has come forward since the box was ticked (Anode's own window was in front when it was
+    /// ticked and Start was pressed there): the owner of the frontmost ordinary window that is not Anode's. `windows` is front to
+    /// back; ordinary is layer 0, which leaves out the menu bar, the Dock, floating panels and the desktop. nil when only
+    /// Anode's windows are on screen.
+    static func frontOtherApp(in windows: [UltraWindow], excluding own: Set<pid_t>) -> pid_t? {
+        windows.first { $0.layer == 0 && $0.onScreen && !own.contains($0.ownerPID) }?.ownerPID
+    }
+
+    /// The windows on screen, front to back. One query to the window server, made only when the mode is asked for (or the
+    /// picker is filled) with no remembered app to go by.
+    static func liveWindows() -> [UltraWindow] {
+        let info = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []
+        return info.compactMap { entry in
+            guard let pid = entry[kCGWindowOwnerPID as String] as? Int32, let layer = entry[kCGWindowLayer as String] as? Int else { return nil }
+            // Only windows on screen were asked for, so one that does not say otherwise is on screen.
+            return UltraWindow(ownerPID: pid, layer: layer, onScreen: (entry[kCGWindowIsOnscreen as String] as? Bool) ?? true)
+        }
     }
 
     /// For the section in Beta Features, which is built before the runtime may exist and asks again each time it is shown:
@@ -285,6 +318,17 @@ final class UltraLowPowerRuntime {
 
     /// The controller says something changed (the state, the groups): what the mode needs while on is there exactly then.
     private func controllerChanged() {
+        // The apps are stopped from Confirm on, and the mode is not on until the screen and Low Power Mode have been dealt with,
+        // which can wait on the helper: a logout in between must be heard, so the notice is listened for from the question
+        // until the mode is off.
+        let asked = !finished && controller.state != .off
+        if asked != (powerOffToken != nil) {
+            if asked {
+                powerOffToken = observe(workspace, NSWorkspace.willPowerOffNotification) { [weak self] _ in self?.powerOffNotice() }
+            } else {
+                forget(&powerOffToken, in: workspace)
+            }
+        }
         let on = !finished && controller.state == .on
         if on != running {
             running = on
@@ -302,7 +346,6 @@ final class UltraLowPowerRuntime {
         stopBrightnessWatch = startTicker(Self.brightnessWatchSeconds) { [weak controller] in
             controller?.brightnessMayHaveChanged()
         }
-        powerOffToken = observe(workspace, NSWorkspace.willPowerOffNotification) { [weak self] _ in self?.powerOffNotice() }
         // Only this bar: another widget controller's rebuild says nothing about it.
         barToken = observe(center, MenuBarWidgetController.itemsDidRebuild, object: widgets) { [weak self] _ in self?.updateIcon() }
     }
@@ -310,7 +353,6 @@ final class UltraLowPowerRuntime {
     private func stopRunning() {
         stopBrightnessWatch?()
         stopBrightnessWatch = nil
-        forget(&powerOffToken, in: workspace)
         forget(&barToken, in: center)
     }
 
@@ -344,7 +386,7 @@ final class UltraLowPowerRuntime {
     func candidates(_ done: @escaping ([FreezeGroup]) -> Void) {
         processes.snapshot { [weak self] list in
             guard let self, let list else { return done([]) }
-            let plan = FreezePlanner.plan(processes: list, user: self.user, front: self.front.pid,
+            let plan = FreezePlanner.plan(processes: list, user: self.user, front: self.lastOtherFront(),
                                           alwaysKeep: Set(self.settings.ultraLowPowerAlwaysKeep), ownPIDs: self.ownPIDs())
             done(plan.kept + plan.frozen + plan.leftRunning)
         }
