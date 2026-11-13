@@ -233,6 +233,9 @@ else
   check "a failure says where to change the limit"            has "System Settings → Battery"
   check "a failure says what reconnects a charger left off"   has "sudo /Library/PrivilegedHelperTools/dev.anode.app.fanhelper --uninstall"
   check "and does not promise that a restart reconnects it"   hasnt "restarting the Mac"
+  check "and says the other way: install again, then Install Helper… in Charge Control" \
+                                                              has "install Anode again and press Install Helper… in Charge Control"
+  check "and does not send a Charge Control user to the Fans tab" hasnt "start its helper from the Fans tab"
   check "a restore that ran says nothing about Anode running" hasnt "still running"
   check "the app is still removed"                            absent "$H/Applications/Anode.app"
   # Anode does not finish quitting: a pgrep that always finds it (and writes down how it was asked), and a sleep

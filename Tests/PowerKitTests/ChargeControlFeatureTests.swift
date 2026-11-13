@@ -19,6 +19,8 @@ final class ChargeControlFeatureTests: XCTestCase {
     private var battery: Battery.State?
     private var controller: ChargeController?
     private var installs = 0
+    /// What the controller wrote to its log.
+    private var logLines: [String] = []
     /// What the last "Install Helper…" press was handed to say how the install is going.
     private var installReport: ((String) -> Void)?
     /// What `makeView` returned for the last section made.
@@ -32,6 +34,7 @@ final class ChargeControlFeatureTests: XCTestCase {
         clientToMake = FakeChargeLimitClient()
         battery = ChargeControllerTests.state(70)
         installs = 0
+        logLines = []
         installReport = nil
     }
 
@@ -51,7 +54,7 @@ final class ChargeControlFeatureTests: XCTestCase {
                                           helper: helper,
                                           battery: { [weak self] in self?.battery },
                                           chargerSwitch: { nil },
-                                          log: { _ in },
+                                          log: { [weak self] in self?.logLines.append($0) },
                                           noClientBecause: { ChargeController.NoClientReason(unsupportedMac: true,
                                                                                             step: nil) },
                                           onConsole: { true })
@@ -787,22 +790,26 @@ final class ChargeControlFeatureTests: XCTestCase {
         }
     }
 
-    /// Ruling 1: no jargon and no watts in anything the section can show, the controller's sentences included.
-    func testEveryWordShownIsPlain() throws {
+    /// Everything the section can say, in every state a person can put it in: each control's title, tooltip and
+    /// accessibility label (a button both as pressed and as not), the status line for every reason, the controller's
+    /// own sentences, and what an install started here says under its button.
+    private func everythingTheSectionSays() throws -> [String] {
         settings.chargeLimit = 40
         let f = make(enabled: true)
         var shown = [f.title, f.summary]
         func collect(_ v: NSView) {
-            if let b = v as? NSButton { shown.append(b.title); shown.append(b.toolTip ?? "") }
+            if let b = v as? NSButton { shown.append(b.title) }
             else if let t = v as? NSTextField { shown.append(t.stringValue) }
+            shown.append(v.toolTip ?? "")
             shown.append(v.accessibilityLabel() ?? "")
             v.subviews.forEach(collect)
         }
         let root = try XCTUnwrap(view)
         collect(root)
         f.drainButton.performClick(nil)
-        f.fullChargeButton.performClick(nil)
-        collect(root)
+        collect(root)                                  // Stop Draining
+        f.fullChargeButton.performClick(nil)           // cancels the drain, which it outranks
+        collect(root)                                  // Cancel Charge to Full
         battery = ChargeControllerTests.state(30, ac: false)   // both buttons say why they wait
         controller?.tick()
         collect(root)
@@ -836,6 +843,12 @@ final class ChargeControlFeatureTests: XCTestCase {
         shown += [FanControlPanel.waitingText, FanControlPanel.authorisationOnScreenText,
                   FanControlPanel.notBundledInstallText, FanControlPanel.cancelledText,
                   FanControlPanel.installedForChargeControlText, FanControlPanel.notInstalledText("the disk is locked")]
+        return shown
+    }
+
+    /// Ruling 1: no jargon and no watts in anything the section can show, the controller's sentences included.
+    func testEveryWordShownIsPlain() throws {
+        let shown = try everythingTheSectionSays()
         // The other charge app's name, built from pieces so this file does not carry it either.
         let otherApp = ["Al", "Den", "te"].joined()
         let banned = ["MCL", "SMC", "PowerUI", "fullCharge", "watt", "CHIE", "OBC", otherApp]
@@ -843,5 +856,123 @@ final class ChargeControlFeatureTests: XCTestCase {
             for word in banned { XCTAssertFalse(text.localizedCaseInsensitiveContains(word), "“\(word)” in: \(text)") }
             XCTAssertNil(text.range(of: #"\d\s?W\b"#, options: .regularExpression), "watts in: \(text)")
         }
+    }
+
+    // ── Names ───────────────────────────────────────────────────────────────
+
+    private var repo: URL {
+        URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+    }
+
+    /// What the helper's sheets and refusals say; the section shows some of it and points at the rest.
+    private func theHelperSays() -> [String] {
+        [FanElevation.sessionDisclosure, FanElevation.installDisclosure, FanElevation.chargeLimitOutlivesTheHelper,
+         FanElevation.uninstallPrompt, FanElevation.uninstallDone, HelperVocabulary.sentence,
+         ChargeRefusal.noChargeControl, ChargeRefusal.noSleepNotices, ChargeRefusal.goingToSleep,
+         ChargeRefusal.reconnectOwed, ChargeRefusal.targetOutOfRange, ChargeRefusal.batteryUnreadable,
+         ChargeRefusal.noCharger, ChargeRefusal.atOrBelow(40), ChargeRefusal.switchedRecently,
+         ChargeRefusal.cutRefused, ChargeRefusal.cutNotKept]
+    }
+
+    /// Every string literal in a Swift source file, comments left out: what the file can say or log. An
+    /// interpolation is cut out of its string, and a string inside one is a literal of its own.
+    private func literals(inSource path: String) throws -> [String] {
+        let c = Array(try String(contentsOf: repo.appendingPathComponent(path), encoding: .utf8))
+        var i = 0
+        var found: [String] = []
+        func at(_ s: String) -> Bool {
+            let a = Array(s)
+            return i + a.count <= c.count && Array(c[i..<i + a.count]) == a
+        }
+        func code(untilClose: Bool) {
+            var depth = 0
+            while i < c.count {
+                if at("//") { while i < c.count, c[i] != "\n" { i += 1 }; continue }
+                if at("/*") { while i < c.count, !at("*/") { i += 1 }; i += 2; continue }
+                if c[i] == "\"" { string(); continue }
+                if c[i] == "(" { depth += 1 }
+                if c[i] == ")" {
+                    if untilClose && depth == 0 { i += 1; return }
+                    depth -= 1
+                }
+                i += 1
+            }
+        }
+        func string() {
+            let multiline = at("\"\"\"")
+            i += multiline ? 3 : 1
+            var text = ""
+            while i < c.count {
+                if multiline ? at("\"\"\"") : c[i] == "\"" { i += multiline ? 3 : 1; break }
+                if c[i] == "\\", i + 1 < c.count {
+                    if c[i + 1] == "(" { i += 2; code(untilClose: true); text += " " } else { text.append(c[i + 1]); i += 2 }
+                    continue
+                }
+                text.append(c[i])
+                i += 1
+            }
+            found.append(text)
+        }
+        code(untilClose: false)
+        return found
+    }
+
+    /// The names the section's controls were first given, which another app uses for the same features, put together
+    /// from pieces so that this file does not carry them either. Each is a pattern for finding it in a sentence.
+    /// Discharge is matched with its capital, as the name of a control starts a label or a sentence: the plain word,
+    /// for what the battery does and what the helper is asked to do, is lower case and stays.
+    private static let oldNames: [(name: String, pattern: String, options: String.CompareOptions)] = {
+        let dis = ["Dis", "charg"].joined()
+        return [
+            (dis + "e", #"\b"# + dis, [.regularExpression]),
+            ("Stop " + dis + "e", "stop " + dis.lowercased(), [.regularExpression, .caseInsensitive]),
+            ("Top " + "Up", #"\btop[ -]?up\b"#, [.regularExpression, .caseInsensitive]),
+            (["Sail", "ing Mode"].joined(), #"\bsail"#, [.regularExpression, .caseInsensitive]),
+            (["Heat ", "Protection"].joined(), #"\bheat[ -]?protection"#, [.regularExpression, .caseInsensitive]),
+            (["Stop charging", " when sleeping"].joined(), ["stop charging", " when sleeping"].joined(),
+             [.regularExpression, .caseInsensitive]),
+            (dis + "e automatically to the limit", dis.lowercased() + #"\w* automatically"#,
+             [.regularExpression, .caseInsensitive]),
+        ]
+    }()
+
+    /// The owner's ruling: none of Charge Control's controls carries a name another app uses for the same feature.
+    /// Not in the section (every state of every control, its tooltips and accessibility labels), not in the
+    /// controller's status and warning texts, not in anything it logs, not in the helper's disclosures, and not in
+    /// `uninstall.sh`, which says what to do when Charge Control could not be put away.
+    func testNoControlKeepsAnOldName() throws {
+        let section = try everythingTheSectionSays()
+        // The controller's own words, as it can say them in a run of this test and as its source can say any of them.
+        var sources: [String] = []
+        for file in ["Sources/AnodeApp/ChargeControlFeature.swift", "Sources/AnodeApp/ChargeController.swift",
+                     "Sources/AnodeApp/ChargeRecords.swift", "Sources/PowerKit/ChargeRefusal.swift"] {
+            sources += try literals(inSource: file)
+        }
+        XCTAssertGreaterThan(sources.count, 100, "the scan of the sources found next to no strings")
+        let uninstall = try String(contentsOf: repo.appendingPathComponent("uninstall.sh"), encoding: .utf8)
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .filter { !$0.trimmingCharacters(in: .whitespaces).hasPrefix("#") }.map(String.init)
+        let surfaces: [(String, [String])] = [
+            ("the section", section), ("charge.log", logLines), ("the sources' strings", sources),
+            ("the helper's disclosures", theHelperSays()), ("uninstall.sh", uninstall),
+        ]
+        for (surface, texts) in surfaces {
+            for text in texts {
+                for old in Self.oldNames {
+                    XCTAssertNil(text.range(of: old.pattern, options: old.options),
+                                 "\(old.name) still on \(surface): \(text)")
+                }
+            }
+        }
+        // And what they are called now is there, so a gap in what was collected cannot pass for a clean section.
+        for name in ["Drain to Limit", "Stop Draining", "Draining to", "Charge to Full", "Cancel Charge to Full",
+                     "Drift Below the Limit", "Pause When Hot", "Hold Level During Sleep",
+                     "Drain Automatically Above the Limit"] {
+            XCTAssertTrue(section.contains { $0.contains(name) }, "\(name) is not shown by the section")
+        }
+        for line in ["Drain to Limit pressed", "Charge to Full pressed"] {
+            XCTAssertTrue(logLines.contains(line), "\(line) is not what the log says: \(logLines)")
+        }
+        XCTAssertTrue(uninstall.contains { $0.contains("press Install Helper\u{2026} in Charge Control") })
     }
 }

@@ -244,7 +244,7 @@ for app in "$HOME/Applications/Anode.app" "/Applications/Anode.app"; do
       echo "Anode could not put back macOS's own charge settings, so macOS may still hold a charge limit: change it" \
         "in System Settings → Battery. If the battery is not charging on the charger, Anode's helper reconnects it: run" \
         "'sudo /Library/PrivilegedHelperTools/$DAEMON_LABEL --uninstall' if that helper is installed (it reconnects" \
-        "the charger, then removes itself), or install Anode again and start its helper from the Fans tab."
+        "the charger, then removes itself), or install Anode again and press Install Helper… in Charge Control."
       ;;
   esac
   break
@@ -292,7 +292,7 @@ fi
 
 echo
 if [ -e "$LAUNCH_DAEMONS_DIR/$DAEMON_LABEL.plist" ]; then
-  # The helper's own uninstall, not its files deleted by hand: a discharge may have left the charger switched off,
+  # The helper's own uninstall, not its files deleted by hand: a drain may have left the charger switched off,
   # and the helper reconnects it before it removes itself (deleting it would leave the charger cut for good).
   cat <<EOF
 The fan helper is still installed and runs as ROOT. It cannot be removed from
