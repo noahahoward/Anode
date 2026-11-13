@@ -409,7 +409,8 @@ final class UltraLowPowerFeatureTests: XCTestCase {
         r.ask(kept: ["Editor", "Meetings"], frozen: ["Browser", "Sync", "Database"])
         XCTAssertEqual(r.box.headline.stringValue,
                        "Keeps Editor and Meetings. Freezes 3 apps and tools until you turn this off.")
-        XCTAssertEqual(UltraConfirmPanel.screenLine, "The screen is held at half brightness or lower, and Low Power Mode is switched on.")
+        XCTAssertEqual(UltraConfirmPanel.screenLine, "The screen is held at half brightness or lower, and Low Power Mode is switched on "
+                       + "if Anode's helper is installed.")
         let stack = try XCTUnwrap(r.box.panel?.contentView as? NSStackView)
         XCTAssertTrue(stack.arrangedSubviews[0] === r.box.headline)
         XCTAssertTrue(stack.arrangedSubviews[1] === r.box.screenLabel, "under the headline")

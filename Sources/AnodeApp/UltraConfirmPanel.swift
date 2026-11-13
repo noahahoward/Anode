@@ -39,7 +39,8 @@ final class UltraConfirmPanel: NSObject, UltraConfirming, NSWindowDelegate {
 
     static let title = "Ultra Low Power Mode"
     /// What the box says about the screen and Low Power Mode, under the headline.
-    static let screenLine = "The screen is held at half brightness or lower, and Low Power Mode is switched on."
+    static let screenLine = "The screen is held at half brightness or lower, and Low Power Mode is switched on if Anode's helper "
+        + "is installed."
 
     /// Put the panel on screen, and take it off. The tests replace them: a panel built and never shown is not on screen.
     var present: (NSPanel) -> Void = { $0.orderFrontRegardless(); $0.makeKey() }
