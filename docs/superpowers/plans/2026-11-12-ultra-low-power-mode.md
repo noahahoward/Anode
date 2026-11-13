@@ -187,7 +187,7 @@ public struct UltraRecord: Codable, Equatable {
     public var powerModeBefore: Int?               // nil = not changed by this feature
     public init()
 }
-public protocol UltraRecordStoring: AnyObject { func load() -> UltraRecord?; func save(_ record: UltraRecord); func clear() }
+public protocol UltraRecordStoring: AnyObject { func load() -> UltraRecord?; @discardableResult func save(_ record: UltraRecord) -> Bool; func clear() }   // save: false when the record did not reach the disk
 public final class UltraRecordFile: UltraRecordStoring { public init(url: URL) }   // atomic write; unreadable or garbage → nil
 public enum UltraRecovery {
     public enum Action: Equatable { case resume(pid: Int32, startTime: UInt64), unhide(pid: Int32),
@@ -442,6 +442,7 @@ func testRequestShowsWhatWillBeKeptAndFrozenByName()      // confirm.asked == (k
 func testCancelChangesNothing()                           // no stop, no record, state .off
 func testAFailedSnapshotStartsNothing()                   // snapshot nil → state .off, confirm never asked, logged
 func testConfirmWritesTheRecordBeforeAnythingIsStopped()  // order of calls recorded across the fakes
+func testARecordThatCannotBeSavedStartsNothing()          // store.save returns false → nothing stopped, nothing changed, state .off, logged
 func testConfirmHidesThenStopsEachGroup()
 func testConfirmAppliesCeilingRateKeyboardAndLowPower()   // brightness 0.8 → 0.5; rate.lowered; keyboard 0; power entered
 func testBrightnessBelowHalfIsNotTouchedOrRemembered()
