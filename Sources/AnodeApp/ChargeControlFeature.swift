@@ -3,13 +3,13 @@ import PowerKit
 
 // ── Charge Control (Beta Features) ──────────────────────────────────────────
 
-/// The Charge Control section: the switch, the limit, Discharge and Top Up, the four modes, and a line saying what
-/// is happening now (see `ChargeController`).
+/// The Charge Control section: the switch, the limit, Drain to Limit and Charge to Full, the four modes, and a line
+/// saying what is happening now (see `ChargeController`).
 ///
 /// Every control writes straight to `Settings`, which the controller observes; the two buttons press the controller
 /// itself. What the section shows is read back from `Settings` and the controller in `redraw`, which runs when any
 /// charge setting changes and whenever the controller says something it shows changed (its status, a button's
-/// state, the discharge in force, the charge or the cable), so "Discharging to 40%" appears when the helper starts
+/// state, the discharge in force, the charge or the cable), so "Draining to 40%" appears when the helper starts
 /// it rather than at the next 30 s tick.
 final class ChargeControlFeature: BetaFeature {
 
@@ -17,9 +17,9 @@ final class ChargeControlFeature: BetaFeature {
     let summary = "Holds the battery at a charge limit you choose, and can drain it down to the limit while the Mac stays "
                 + "plugged in. The limit applies while Anode is running, and is lifted when Anode quits, unless "
                 + "another account's Anode is holding one. While Charge Control is on, Anode turns off Optimized "
-                + "Battery Charging, and puts it back as it was when you turn Charge Control off or quit. Discharging "
+                + "Battery Charging, and puts it back as it was when you turn Charge Control off or quit. Draining "
                 + "needs the Anode helper, and so does holding the charge anywhere but 80, 85, 90, 95 or 100%, whether "
-                + "for your limit, Heat Protection, Sailing Mode or Stop charging when sleeping. Quit Anode before "
+                + "for your limit, Pause When Hot, Drift Below the Limit or Hold Level During Sleep. Quit Anode before "
                 + "removing it by hand (if it ever stopped without quitting, open it and quit it once more first): "
                 + "dragging it to the Trash puts nothing back."
     var layoutChanged: (() -> Void)?
@@ -44,18 +44,18 @@ final class ChargeControlFeature: BetaFeature {
     let limitLabel = NSTextField(labelWithString: "Limit")
     let limitSlider = ChargeControlFeature.makeLimitSlider()
     let limitValueLabel = NSTextField(labelWithString: "")
-    let drainButton = NSButton(title: "Discharge", target: nil, action: nil)
-    let fullChargeButton = NSButton(title: "Top Up", target: nil, action: nil)
-    let driftCheckbox = NSButton(checkboxWithTitle: "Sailing Mode", target: nil, action: nil)
+    let drainButton = NSButton(title: "Drain to Limit", target: nil, action: nil)
+    let fullChargeButton = NSButton(title: "Charge to Full", target: nil, action: nil)
+    let driftCheckbox = NSButton(checkboxWithTitle: "Drift Below the Limit", target: nil, action: nil)
     let driftLabel = NSTextField(labelWithString: "")
     let driftStepper = ChargeControlFeature.makeStepper(Double(Settings.chargeDriftGapRange.lowerBound),
                                                           Double(Settings.chargeDriftGapRange.upperBound))
-    let heatCheckbox = NSButton(checkboxWithTitle: "Heat Protection", target: nil, action: nil)
+    let heatCheckbox = NSButton(checkboxWithTitle: "Pause When Hot", target: nil, action: nil)
     let heatLabel = NSTextField(labelWithString: "")
     let heatStepper = ChargeControlFeature.makeStepper(Settings.chargeMaxTemperatureRange.lowerBound,
                                                        Settings.chargeMaxTemperatureRange.upperBound)
-    let sleepCheckbox = NSButton(checkboxWithTitle: "Stop charging when sleeping", target: nil, action: nil)
-    let drainAutomaticallyCheckbox = NSButton(checkboxWithTitle: "Discharge automatically to the limit", target: nil, action: nil)
+    let sleepCheckbox = NSButton(checkboxWithTitle: "Hold Level During Sleep", target: nil, action: nil)
+    let drainAutomaticallyCheckbox = NSButton(checkboxWithTitle: "Drain Automatically Above the Limit", target: nil, action: nil)
     let statusLabel = BetaFeaturesWindowController.wrapping("")
     let installButton = NSButton(title: "Install Helper\u{2026}", target: nil, action: nil)
     /// What the install started here last said: it runs in the Fans tab's flow, whose own strip is not on screen.
@@ -74,27 +74,27 @@ final class ChargeControlFeature: BetaFeature {
     // ── Words ───────────────────────────────────────────────────────────────
 
     static let fullChargeTip = "Charge to 100% this once. It ends when you unplug."
-    static let fullChargeBlockedTip = "Top Up needs the charger."
+    static let fullChargeBlockedTip = "Charge to Full needs the charger."
     static let drainTip = "Run the Mac from the battery while it stays plugged in, until the charge is down to the "
         + "limit. Needs the Anode helper."
-    static let drainBlockedTip = "Discharge needs the charger and a battery above the limit."
+    static let drainBlockedTip = "Drain to Limit needs the charger and a battery above the limit."
     /// The three holds pause where the charge is, which macOS can do by itself only at its own steps.
     static let holdNeedsHelperTip = "Without the Anode helper it can pause only at 80, 85, 90, 95 or 100%, and the "
         + "Mac charges on to the next of those."
 
-    /// What the status line needs besides the status: the battery and the discharge as the controller last saw them.
+    /// What the status line needs besides the status: the battery and the drain as the controller last saw them.
     struct Facts: Equatable {
         /// The charge; nil when not known.
         var percent: Int?
         var cablePresent = true
-        /// The discharge the helper is running, if any (not the one asked for).
+        /// The drain the helper is running, if any (not the one asked for).
         var dischargeInForce: Int?
-        /// A discharge ended moments ago with the cable in, and macOS may still show "not charging".
+        /// A drain ended moments ago with the cable in, and macOS may still show "not charging".
         var reconnecting = false
     }
 
     /// The status line. macOS's limit is a ceiling, so the words say where the charge is against it: "charging to"
-    /// below it, "holding" only at it. A discharge is described by what the helper runs, not what was asked for.
+    /// below it, "holding" only at it. A drain is described by what the helper runs, not what was asked for.
     static func statusText(_ s: ChargeStatus, _ facts: Facts = Facts()) -> String {
         switch s {
         case .off:
@@ -104,13 +104,13 @@ final class ChargeControlFeature: BetaFeature {
         case .active(let d):
             let limit = d.osLimit, why = reasonText(d.reason)
             if let running = facts.dischargeInForce {
-                return d.dischargeTo != nil ? "Discharging to \(running)% on the adapter" : "Stopping the discharge\u{2026}"
+                return d.dischargeTo != nil ? "Draining to \(running)% on the adapter" : "Stopping the drain\u{2026}"
             }
-            if d.dischargeTo != nil { return "Starting to discharge\u{2026}" }
+            if d.dischargeTo != nil { return "Starting to drain\u{2026}" }
             if !facts.cablePresent { return "On battery; charging stops at \(limit)%" }
             guard let p = facts.percent else { return "Charging stops at \(limit)% (\(why))" }
             if p < limit {
-                // Measured: after a discharge macOS shows "not charging" for about a minute. Nothing is wrong.
+                // Measured: after a drain macOS shows "not charging" for about a minute. Nothing is wrong.
                 return facts.reconnecting ? "Reconnecting the charger\u{2026}" : "Charging to \(limit)% (\(why))"
             }
             if p == limit { return "Holding \(limit)% (\(why))" }
@@ -122,12 +122,12 @@ final class ChargeControlFeature: BetaFeature {
     static func reasonText(_ r: ChargeReason) -> String {
         switch r {
         case .limit: return "your limit"
-        case .fullCharge: return "Top Up"
-        case .heat: return "Heat Protection"
+        case .fullCharge: return "Charge to Full"
+        case .heat: return "Pause When Hot"
         case .sleeping: return "sleeping"
-        case .drift: return "sailing"
-        case .discharging: return "discharging"
-        case .discharged: return "discharged"
+        case .drift: return "drifting"
+        case .draining: return "draining"
+        case .drained: return "drained"
         }
     }
 
@@ -181,8 +181,8 @@ final class ChargeControlFeature: BetaFeature {
         limitValueLabel.widthAnchor.constraint(equalToConstant: 44).isActive = true
         // The slider and the steppers have no title of their own for VoiceOver to read.
         limitSlider.setAccessibilityLabel("Charge limit")
-        driftStepper.setAccessibilityLabel("Sailing Mode: how far below the limit to recharge")
-        heatStepper.setAccessibilityLabel("Heat Protection: temperature to pause at")
+        driftStepper.setAccessibilityLabel("Drift Below the Limit: how far below the limit to recharge")
+        heatStepper.setAccessibilityLabel("Pause When Hot: temperature to pause at")
 
         drainButton.target = self
         drainButton.action = #selector(drainPressed)
@@ -337,8 +337,8 @@ final class ChargeControlFeature: BetaFeature {
             label.textColor = usable ? .labelColor : .disabledControlTextColor
         }
 
-        // A button that would undo itself at once waits, and says why: Top Up and a discharge both end when the
-        // cable is out, and a discharge ends at the limit. One already pressed can always be pressed again to stop.
+        // A button that would undo itself at once waits, and says why: Charge to Full and a drain both end when the
+        // cable is out, and a drain ends at the limit. One already pressed can always be pressed again to stop.
         let cable = c?.isCablePresent ?? false
         let percent = c?.batteryPercent
         let fullChargeRequested = c?.isFullChargeRequested == true, drainRequested = c?.isDrainRequested == true
@@ -348,8 +348,8 @@ final class ChargeControlFeature: BetaFeature {
         // Not while it waits out the delay after an unclean exit: it holds nothing yet, and a press would do nothing.
         let waiting = c?.isWaitingToStart == true
         let pressable = usable && c != nil && !waiting
-        drainButton.title = drainRequested ? "Stop Discharge" : "Discharge"
-        fullChargeButton.title = fullChargeRequested ? "Cancel Top Up" : "Top Up"
+        drainButton.title = drainRequested ? "Stop Draining" : "Drain to Limit"
+        fullChargeButton.title = fullChargeRequested ? "Cancel Charge to Full" : "Charge to Full"
         drainButton.isEnabled = pressable && drainCan
         fullChargeButton.isEnabled = pressable && fullChargeCan
         drainButton.toolTip = pressable && !drainCan ? Self.drainBlockedTip : Self.drainTip
@@ -382,7 +382,7 @@ final class ChargeControlFeature: BetaFeature {
             redraw(after: left)
         }
         // Not running (off, or waiting out the delay after an unclean exit), the one line that can show besides the
-        // delay's own: a discharge's end never confirmed, so the charger may still be cut. It is shown first.
+        // delay's own: a drain's end never confirmed, so the charger may still be cut. It is shown first.
         let offWarning = !on || waiting ? c?.offWarning : nil
         statusLabel.stringValue = offWarning ?? Self.statusText(status, facts)
         statusLabel.textColor = unavailable || needsHelper || refused || offWarning != nil

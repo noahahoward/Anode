@@ -1464,7 +1464,7 @@ final class ChargeHelperTests: XCTestCase {
         XCTAssertEqual(ChargeRefusal.noSleepNotices, "this Mac cannot warn the helper before it sleeps")
         XCTAssertEqual(ChargeRefusal.goingToSleep, "the Mac is going to sleep")
         XCTAssertEqual(ChargeRefusal.reconnectOwed, "the charger may still be cut off from an earlier failure")
-        XCTAssertEqual(ChargeRefusal.targetOutOfRange, "refused: a discharge target must be 10–100%")
+        XCTAssertEqual(ChargeRefusal.targetOutOfRange, "refused: the level to drain to must be 10–100%")
         XCTAssertEqual(ChargeRefusal.batteryUnreadable, "refused: the battery level cannot be read")
         XCTAssertEqual(ChargeRefusal.noCharger, "refused: no charger is connected")
         XCTAssertEqual(ChargeRefusal.atOrBelow(40), "refused: the battery is already at or below 40%")

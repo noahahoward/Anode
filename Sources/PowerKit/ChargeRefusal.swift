@@ -27,8 +27,9 @@ public enum ChargeRefusal {
     /// charger connected.
     public static let reconnectOwed = "the charger may still be cut off from an earlier failure"
 
-    /// The target is outside what root accepts.
-    public static let targetOutOfRange = "refused: a discharge target must be "
+    /// The target is outside what root accepts. Said in the app's own words for the control (a drain), because the
+    /// section shows it.
+    public static let targetOutOfRange = "refused: the level to drain to must be "
         + "\(FanHelperServer.dischargeTargetRange.lowerBound)–"
         + "\(FanHelperServer.dischargeTargetRange.upperBound)%"
 

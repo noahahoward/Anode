@@ -783,22 +783,23 @@ public final class Settings {
     ///
     /// This number does not stay in the app. `ChargePolicy` hands it to macOS as the charge limit and drains to it
     /// as given: the policy clamps the limit it sets but not the level a discharge stops at, so a stored 5 with
-    /// Automatic Discharge on would run the pack down to 10% on the adapter. That is why it is clamped on the read
-    /// as well as the write. The plist is also written by `defaults write` and by builds other than this one.
+    /// Drain Automatically Above the Limit on would run the pack down to 10% on the adapter. That is why it is
+    /// clamped on the read as well as the write. The plist is also written by `defaults write` and by builds other
+    /// than this one.
     public var chargeLimit: Int {
         get { Settings.readInt(defaults, Key.chargeLimit, Default.chargeLimit, Settings.chargeLimitRange) }
         set { writeInt(Key.chargeLimit, \.chargeLimit, newValue, Default.chargeLimit, Settings.chargeLimitRange) }
     }
 
-    /// Whether Sailing Mode is on: once the limit is reached the battery rests in a band below it, and is not
+    /// Whether Drift Below the Limit is on: once the limit is reached the battery rests in a band below it, and is not
     /// charged again until it has fallen through the band.
     public var chargeDriftEnabled: Bool {
         get { Settings.readBool(defaults, Key.chargeDriftEnabled, Default.chargeDriftEnabled) }
         set { writeBool(Key.chargeDriftEnabled, \.chargeDriftEnabled, newValue, Default.chargeDriftEnabled) }
     }
 
-    /// How deep that band is: how far below the limit the battery may fall before Sailing Mode charges it again,
-    /// 1 to 30 percent.
+    /// How deep that band is: how far below the limit the battery may fall before Drift Below the Limit charges it
+    /// again, 1 to 30 percent.
     public var chargeDriftGap: Int {
         get { Settings.readInt(defaults, Key.chargeDriftGap, Default.chargeDriftGap,
                                Settings.chargeDriftGapRange) }
@@ -806,7 +807,7 @@ public final class Settings {
                        Settings.chargeDriftGapRange) }
     }
 
-    /// Whether Heat Protection is on: charging is held while the pack is at or above `chargeMaxTemperatureC`, and
+    /// Whether Pause When Hot is on: charging is held while the pack is at or above `chargeMaxTemperatureC`, and
     /// for five minutes after it has cooled.
     public var chargePauseWhenHotEnabled: Bool {
         get { Settings.readBool(defaults, Key.chargePauseWhenHotEnabled, Default.chargePauseWhenHotEnabled) }
@@ -814,7 +815,7 @@ public final class Settings {
                         Default.chargePauseWhenHotEnabled) }
     }
 
-    /// The pack temperature, in °C, at or above which Heat Protection holds the charge. 25 to 50.
+    /// The pack temperature, in °C, at or above which Pause When Hot holds the charge. 25 to 50.
     ///
     /// The range matters more here than for any other number in this file. The policy compares the pack against
     /// this as given, so a stored 0 would call every pack hot and hold charging for as long as the feature was on,
@@ -1274,7 +1275,7 @@ public final class Settings {
 
     /// Whether the app's Charge Control is on, and the limit it holds, as a process that is not the app (the
     /// command-line tool) can read them: `defaults` is the app's settings domain (`suiteName`). The limit is the
-    /// person's own, which is what Charge Control holds except while a hold (heat, sailing, sleep) or Top Up is in
+    /// person's own, which is what Charge Control holds except while a hold (heat, drift, sleep) or Charge to Full is in
     /// force, which only the app knows. nil while it is off (and nothing is stored: off is the default). Read on each
     /// call, with the same clamping as the app's own read.
     public static func chargeControlLimit(in d: UserDefaults) -> Int? {

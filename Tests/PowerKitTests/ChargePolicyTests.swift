@@ -54,7 +54,7 @@ final class ChargePolicyTests: XCTestCase {
         XCTAssertEqual(ChargePolicy.decide(s, i, &m).osLimit, 20)
     }
 
-    // ── Unplug and Top Up ───────────────────────────────────────────────────
+    // ── Unplug and Charge to Full ───────────────────────────────────────────────────
 
     func testFullChargeWinsUntilUnplug() {
         let (s, start) = base()
@@ -102,7 +102,7 @@ final class ChargePolicyTests: XCTestCase {
         XCTAssertNil(d.dischargeTo)
     }
 
-    // ── Heat Protection ─────────────────────────────────────────────────────
+    // ── Pause When Hot ─────────────────────────────────────────────────────
 
     func testHeatPausesAtCurrentAndHasFiveMinuteHysteresis() {
         var (s, i) = base()
@@ -141,7 +141,7 @@ final class ChargePolicyTests: XCTestCase {
         i.temperatureC = 40
         let d = ChargePolicy.decide(s, i, &m)
         XCTAssertEqual(d.reason, .heat)
-        XCTAssertEqual(d.osLimit, 80, "Heat Protection raised the limit above the person's own")
+        XCTAssertEqual(d.osLimit, 80, "Pause When Hot raised the limit above the person's own")
         XCTAssertNil(d.dischargeTo)
     }
 
@@ -266,7 +266,7 @@ final class ChargePolicyTests: XCTestCase {
         XCTAssertNotNil(m.heatPausedSince, "the pause began while asleep")
     }
 
-    // ── Stop Charging when Sleeping ─────────────────────────────────────────
+    // ── Hold Level During Sleep ─────────────────────────────────────────
 
     func testSleepingHoldsAtCurrent() {
         var (s, i) = base()
@@ -332,7 +332,7 @@ final class ChargePolicyTests: XCTestCase {
         XCTAssertNil(d.dischargeTo)
     }
 
-    /// Sleeping outranks sailing: asleep, the charge is held where it is, and sailing's own phase is not consulted, so
+    /// Sleeping outranks drift: asleep, the charge is held where it is, and drift's own phase is not consulted, so
     /// it does not rest or resume on a charge nobody is watching.
     func testSleepingBeatsDrift() {
         var (s, i) = base()
@@ -340,18 +340,18 @@ final class ChargePolicyTests: XCTestCase {
         s.driftEnabled = true
         s.holdDuringSleep = true
         i.sleeping = true
-        i.percent = 80          // at the limit: awake, sailing would rest here
+        i.percent = 80          // at the limit: awake, drift would rest here
         let d = ChargePolicy.decide(s, i, &m)
         XCTAssertEqual(d.reason, .sleeping)
         XCTAssertEqual(d.osLimit, 80)
-        XCTAssertFalse(m.driftPhase, "sailing was consulted while asleep")
+        XCTAssertFalse(m.driftPhase, "drift was consulted while asleep")
         i.percent = 78
         let lower = ChargePolicy.decide(s, i, &m)
         XCTAssertEqual(lower.reason, .sleeping)
         XCTAssertEqual(lower.osLimit, 78)
     }
 
-    // ── Discharge ───────────────────────────────────────────────────────────
+    // ── Drain to Limit ───────────────────────────────────────────────────────────
 
     func testManualDrainToLimit() {
         var (s, i) = base()
@@ -362,7 +362,7 @@ final class ChargePolicyTests: XCTestCase {
         let d = ChargePolicy.decide(s, i, &m)
         XCTAssertEqual(d.dischargeTo, 40)
         XCTAssertEqual(d.osLimit, 40)
-        XCTAssertEqual(d.reason, .discharging)
+        XCTAssertEqual(d.reason, .draining)
         XCTAssertFalse(d.endManualDrain)
     }
 
@@ -376,7 +376,7 @@ final class ChargePolicyTests: XCTestCase {
         let atTarget = ChargePolicy.decide(s, i, &m)
         XCTAssertNil(atTarget.dischargeTo)
         XCTAssertTrue(atTarget.endManualDrain)
-        XCTAssertEqual(atTarget.reason, .discharged)
+        XCTAssertEqual(atTarget.reason, .drained)
         XCTAssertEqual(atTarget.osLimit, 40)
 
         i.percent = 33
@@ -410,13 +410,13 @@ final class ChargePolicyTests: XCTestCase {
         i.percent = 85
         let above = ChargePolicy.decide(s, i, &m)
         XCTAssertEqual(above.dischargeTo, 80)
-        XCTAssertEqual(above.reason, .discharging)
+        XCTAssertEqual(above.reason, .draining)
 
         i.percent = 80
         let at = ChargePolicy.decide(s, i, &m)
         XCTAssertNil(at.dischargeTo)
         XCTAssertEqual(at.reason, .limit)
-        XCTAssertFalse(at.endManualDrain, "automatic discharge has no pending request to end")
+        XCTAssertFalse(at.endManualDrain, "an automatic drain has no pending request to end")
     }
 
     func testAutomaticDrainOffNeverDrains() {
@@ -429,7 +429,7 @@ final class ChargePolicyTests: XCTestCase {
         XCTAssertEqual(d.osLimit, 80)
     }
 
-    // ── Sailing ─────────────────────────────────────────────────────────────
+    // ── Drift ─────────────────────────────────────────────────────────────
 
     func testDriftBand() {
         var (s, i) = base()
@@ -481,7 +481,7 @@ final class ChargePolicyTests: XCTestCase {
         XCTAssertEqual(d.reason, .limit)
     }
 
-    /// A discharge outranks sailing: above the limit with a discharge wanted, the discharge runs, and sailing does not
+    /// A discharge outranks drift: above the limit with a discharge wanted, the discharge runs, and drift does not
     /// begin its rest at the limit it passes on the way down.
     func testDrainBeatsDrift() {
         var (s, i) = base()
@@ -490,10 +490,10 @@ final class ChargePolicyTests: XCTestCase {
         i.manualDrain = true
         i.percent = 90
         let d = ChargePolicy.decide(s, i, &m)
-        XCTAssertEqual(d.reason, .discharging)
+        XCTAssertEqual(d.reason, .draining)
         XCTAssertEqual(d.dischargeTo, ChargePolicy.dischargeTarget(limit: 80))
         XCTAssertEqual(d.osLimit, 80)
-        XCTAssertFalse(m.driftPhase, "sailing was consulted while a discharge ran")
+        XCTAssertFalse(m.driftPhase, "drift was consulted while a discharge ran")
     }
 
     /// A gap of 0 (a bad setting) is clamped to 1, so the band is not empty: the charge rests at the limit and

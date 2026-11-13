@@ -364,7 +364,7 @@ public enum Battery {
         /// publishes none, and where the figure it publishes is not a
         /// temperature: see `Battery.temperatureC(fromRaw:)`.
         ///
-        /// Charge Control's Heat Protection holds and resumes charging on it,
+        /// Charge Control's Pause When Hot holds and resumes charging on it,
         /// and reads nil as neither hot nor cool.
         ///
         /// It can be over a minute old. Watched for four minutes while the pack
@@ -505,7 +505,7 @@ public enum Battery {
 
     /// The range a pack temperature is believed in, °C. Far wider than a pack
     /// in a running Mac gets (this Mac's pack records a lifetime minimum of 15
-    /// and maximum of 40, and Heat Protection's setting stops at 50), so all it
+    /// and maximum of 40, and Pause When Hot's setting stops at 50), so all it
     /// ever rejects is a figure that is not a temperature.
     static let plausibleTemperature_C: ClosedRange<Double> = -20...100
 
@@ -516,7 +516,7 @@ public enum Battery {
     /// figure reading 2709 while the SMC's battery thermistors read 27.10 °C.
     /// The Smart Battery unit, 0.1 K, would have made that -2.25 °C.
     ///
-    /// Anything else is nil (and so is a raw 0 or below: see the guard), because Charge Control's Heat Protection
+    /// Anything else is nil (and so is a raw 0 or below: see the guard), because Charge Control's Pause When Hot
     /// holds and resumes charging on this number. 65535, the "unknown" that `state()`
     /// already keeps out of `TimeRemaining`, is 655.35 °C and would hold the
     /// charge on a cool pack; a fault that came out below -20 °C would resume
@@ -525,7 +525,7 @@ public enum Battery {
         // A registry boolean bridges to NSNumber, and `true` would read 0.01 °C.
         guard let n = raw as? NSNumber, CFGetTypeID(n) != CFBooleanGetTypeID() else { return nil }
         // A raw 0 or below is a gauge that has nothing to say (0, -1), not a pack at freezing: read as a real 0 °C it
-        // would let a Heat Protection pause resume on a hot pack. Charge Control has no use for a pack below zero.
+        // would let a pause for heat resume on a hot pack. Charge Control has no use for a pack below zero.
         guard n.doubleValue > 0 else { return nil }
         let c = n.doubleValue / 100
         guard c.isFinite, plausibleTemperature_C.contains(c) else { return nil }

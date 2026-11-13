@@ -149,7 +149,7 @@ final class ChargeController {
     static let unreadableText = "macOS did not report its charge settings, so Charge Control changed nothing"
     static let noBatteryText = "Anode could not read the battery"
     static let limitNeedsHelperText = "Limits other than 80, 85, 90, 95 or 100% need the Anode helper"
-    static let drainNeedsHelperText = "Discharge needs the Anode helper"
+    static let drainNeedsHelperText = "Draining to the limit needs the Anode helper"
     static let helperOutdatedText = "The Anode helper needs updating to control charging"
     /// The record of macOS's own settings is another Anode's to finish at the moment (its lock is held), so switching
     /// on changed nothing.
@@ -190,14 +190,14 @@ final class ChargeController {
         switch d.reason {
         case .heat: return "Pausing for heat at \(p)% needs the Anode helper; it charges on to \(on)%"
         case .sleeping: return "Holding \(p)% while the Mac sleeps needs the Anode helper; it charges on to \(on)%"
-        case .drift: return "Sailing at \(p)% needs the Anode helper; it charges on to \(on)%"
-        case .limit, .fullCharge, .discharging, .discharged: return limitNeedsHelperText
+        case .drift: return "Drifting below the limit at \(p)% needs the Anode helper; it charges on to \(on)%"
+        case .limit, .fullCharge, .draining, .drained: return limitNeedsHelperText
         }
     }
 
     /// What the battery card is told Charge Control holds: the limit in force when the controller knows it (a hold
-    /// or Top Up included), else the person's own; nil while off, and while the delay after an unclean exit holds
-    /// nothing. Safe from any thread.
+    /// or Charge to Full included), else the person's own; nil while off, and while the delay after an unclean exit
+    /// holds nothing. Safe from any thread.
     static func limitForMonitor(settings: Settings, inForce: ChargeLimitInForce) -> Int? {
         guard settings.chargeControlEnabled, !inForce.lifted else { return nil }
         return inForce.value ?? settings.chargeLimit
@@ -338,7 +338,7 @@ final class ChargeController {
     }
 
     static func drainRefusedText(_ why: String) -> String {
-        "The Anode helper would not discharge: \(plainWords(why))"
+        "The Anode helper would not start the drain: \(plainWords(why))"
     }
     /// A limit macOS takes by itself and refused: not in force, so the status says so instead of "Charging stops at".
     static func macOSRefusedLimitText(_ limit: Int) -> String {
@@ -390,9 +390,9 @@ final class ChargeController {
     /// The policy's last answer.
     private(set) var lastDecision: ChargeDecision?
     private(set) var status: ChargeStatus = .off
-    /// The person pressed Discharge and it has not finished, been cancelled, or been ended by an unplug or a sleep.
+    /// The person pressed Drain to Limit and it has not finished, been cancelled, or been ended by an unplug or a sleep.
     private(set) var isDrainRequested = false
-    /// The person pressed Top Up and has not unplugged or cancelled it.
+    /// The person pressed Charge to Full and has not unplugged or cancelled it.
     private(set) var isFullChargeRequested = false
     /// The charge the last tick saw; nil while off.
     private(set) var batteryPercent: Int?
@@ -794,7 +794,7 @@ final class ChargeController {
         // A debt left from before (a quit, a crash, a switch-off the helper did not answer) is paid first.
         cutOwed = settings.chargeCutUnconfirmed
         stopDue = cutOwed
-        if cutOwed { log("a discharge's end was never confirmed; asking the helper to reconnect the charger") }
+        if cutOwed { log("a drain's end was never confirmed; asking the helper to reconnect the charger") }
         // Two controllers on one charger would fight; Optimized Battery Charging comes back on when this goes off.
         // Not while another account is on screen: that Anode's limit is in force, and this is not the account that
         // holds it (`assertMacOSSettings` is what the account does once it is back).
@@ -851,7 +851,7 @@ final class ChargeController {
         let settled: Bool
         if appliedDischarge != nil || dischargeInFlight || cutOwed {
             let r = waitedStop(timeout: Self.timeLeft(deadline))
-            log("discharge stopped (\(why)): \(r?.message ?? "no answer within \(Int(Self.stopTimeout)) s")")
+            log("drain stopped (\(why)): \(r?.message ?? "no answer within \(Int(Self.stopTimeout)) s")")
             settled = r != nil
         } else {
             settled = helper.drain(timeout: Self.timeLeft(deadline))
@@ -1018,7 +1018,7 @@ final class ChargeController {
             restore(client: c, leaving: "quitting")
         } else if appliedDischarge != nil || dischargeInFlight || cutOwed {
             let r = waitedStop(timeout: Self.stopTimeout)
-            log("discharge stopped (quitting): \(r?.message ?? "no answer in time")")
+            log("drain stopped (quitting): \(r?.message ?? "no answer in time")")
         } else if limitInFlight {
             _ = helper.drain(timeout: Self.stopTimeout)
         }
@@ -1048,7 +1048,7 @@ final class ChargeController {
             // Once Anode is gone nothing would ever pay the debt, so it is asked about now, and waited for. (A
             // restore asks about it itself.)
             let r = waitedStop(timeout: Self.stopTimeout)
-            log("discharge stopped (before uninstalling): "
+            log("drain stopped (before uninstalling): "
                 + "\(r?.message ?? "no answer within \(Int(Self.stopTimeout)) s")")
         }
         endOffRetry()
@@ -1228,7 +1228,7 @@ final class ChargeController {
                 self.endOffRetry()
             } else if r.message != self.lastOffFailure {
                 self.lastOffFailure = r.message
-                self.log("a discharge's end is still not confirmed: \(r.message); asking again every "
+                self.log("a drain's end is still not confirmed: \(r.message); asking again every "
                          + "\(Int(Self.tickInterval)) s")
             }
         }
@@ -1458,7 +1458,8 @@ final class ChargeController {
     /// The switch reading off is not a change when 100 is what this controller put in force and 100 is what macOS
     /// reads: macOS turns the switch off by itself once the limit is set to 100 (measured on Mac17,9, macOS 27.0:
     /// "off, 100" read back seconds after 100 was set; taken for drift, 100 was set again every 30 s for as long as
-    /// the limit, or Top Up, was 100). Off with anything below 100 in force is still a change, as is any other limit.
+    /// the limit, or Charge to Full, was 100). Off with anything below 100 in force is still a change, as is any
+    /// other limit.
     private func checkDrift() {
         guard let c = client, let found = c.read() else { return }
         var changed: [String] = []
@@ -1499,7 +1500,7 @@ final class ChargeController {
             seenResets = helper.resets
             if appliedDischarge != nil || cutOwed {
                 if appliedDischarge != nil {
-                    log("the helper's connection was reset under the discharge; stopping it before anything else")
+                    log("the helper's connection was reset under the drain; stopping it before anything else")
                 }
                 appliedDischarge = nil
                 stopDue = true
@@ -1526,24 +1527,25 @@ final class ChargeController {
 
     // ── The person ──────────────────────────────────────────────────────────
 
-    /// Discharge to the limit on the adapter; pressed again, cancel. Cancels Top Up, which would otherwise outrank it.
+    /// Drain to the limit on the adapter; pressed again, cancel. Cancels Charge to Full, which would otherwise outrank
+    /// it.
     func pressDrain() {
         guard running else { return }
         isDrainRequested.toggle()
         if isDrainRequested { isFullChargeRequested = false }
         // Pressing again is asking again, whatever the helper said last time.
         blockedDischarge = nil
-        log(isDrainRequested ? "Discharge pressed" : "Discharge cancelled")
+        log(isDrainRequested ? "Drain to Limit pressed" : "Drain to Limit cancelled")
         tick()
         changed()
     }
 
-    /// Charge to 100% until unplugged; pressed again, cancel. Cancels a manual discharge.
+    /// Charge to 100% until unplugged; pressed again, cancel. Cancels a manual drain.
     func pressFullCharge() {
         guard running else { return }
         isFullChargeRequested.toggle()
         if isFullChargeRequested { isDrainRequested = false }
-        log(isFullChargeRequested ? "Top Up pressed" : "Top Up cancelled")
+        log(isFullChargeRequested ? "Charge to Full pressed" : "Charge to Full cancelled")
         tick()
         changed()
     }
@@ -1551,8 +1553,8 @@ final class ChargeController {
     // ── Sleep ───────────────────────────────────────────────────────────────
 
     /// The Mac is going to sleep. A running discharge is stopped, and the helper's answer awaited, before this
-    /// returns, whatever Stop Charging when Sleeping says: nothing watches the floor while the Mac sleeps. A manual
-    /// discharge ends here and does not come back; an automatic one comes back by itself after the wake, through the
+    /// returns, whatever Hold Level During Sleep says: nothing watches the floor while the Mac sleeps. A manual
+    /// drain ends here and does not come back; an automatic one comes back by itself after the wake, through the
     /// policy. Then the sleeping decision is applied, a limit only the helper can set waited for too: it must be in
     /// force before the Mac sleeps, not on its way. All of it within `stopTimeout`.
     func willSleep() {
@@ -1562,7 +1564,7 @@ final class ChargeController {
         stopAndWait(for: "sleep", deadline: deadline)
         if isDrainRequested {
             isDrainRequested = false
-            log("manual discharge ended by sleep")
+            log("manual drain ended by sleep")
             changed()
         }
         waitUntil = deadline
@@ -1586,7 +1588,7 @@ final class ChargeController {
     private func stopAndWait(for why: String, deadline: Date) {
         guard appliedDischarge != nil || dischargeInFlight || cutOwed else { return }
         let r = waitedStop(timeout: Self.timeLeft(deadline))
-        log("discharge stopped for \(why): \(r?.message ?? "no answer in time")")
+        log("drain stopped for \(why): \(r?.message ?? "no answer in time")")
         dischargeEpoch += 1
         dischargeInFlight = false
         appliedDischarge = nil
@@ -1622,7 +1624,7 @@ final class ChargeController {
         }
         if isDrainRequested {
             isDrainRequested = false
-            log("manual discharge ended: another account is on screen")
+            log("manual drain ended: another account is on screen")
             changed()
         }
         tick()
@@ -1691,7 +1693,7 @@ final class ChargeController {
         if decision.endManualDrain && isDrainRequested {
             isDrainRequested = false
             announce = true
-            log(onAC ? "manual discharge finished" : "manual discharge ended: unplugged")
+            log(onAC ? "manual drain finished" : "manual drain ended: unplugged")
         }
         lastDecision = decision
         // The net is this account's alone: while another is on screen, its Anode may be discharging through a
@@ -1703,7 +1705,7 @@ final class ChargeController {
         // macOS's own flag, not `onAC` above: the adapter's details say yes all through a cut.
         noteConnected(externalConnected: b.onAC, now: now)
         apply(decision)
-        // Sailing and heat memory belong to one connection to the adapter.
+        // Drift and heat memory belong to one connection to the adapter.
         if !onAC { memory = ChargeMemory() }
         settle()
         noteHelperNeed(now: now)
@@ -1789,7 +1791,7 @@ final class ChargeController {
         // while off still says so. The look itself is only in memory, and ends with the look.
         oweCut()
         let what = switchCut ? "the charger switch has read cut" : "macOS has said the Mac is off the adapter"
-        log("\(what), with the adapter there and no discharge running, for over \(Int(Self.chargerReconnectTime)) s: "
+        log("\(what), with the adapter there and no drain running, for over \(Int(Self.chargerReconnectTime)) s: "
             + "the charger may have been left cut; asking the helper to reconnect it")
     }
 
@@ -1832,7 +1834,7 @@ final class ChargeController {
         connectedSince = since
         guard now.timeIntervalSince(since) > Self.chargerReconnectTime, !dischargeInFlight else { return }
         let what = read != nil ? "the charger switch has read connected" : "macOS has said the Mac is on the adapter"
-        settleWithoutTheHelper("\(what) for over \(Int(Self.chargerReconnectTime)) s with no discharge running: the "
+        settleWithoutTheHelper("\(what) for over \(Int(Self.chargerReconnectTime)) s with no drain running: the "
                                + "charger is connected")
     }
 
@@ -1953,7 +1955,7 @@ final class ChargeController {
         from.map { "limit \($0) -> \(to)" } ?? "limit set to \(to)"
     }
 
-    // ── Discharge ───────────────────────────────────────────────────────────
+    // ── Draining (the helper's discharge) ───────────────────────────────
 
     private func applyDischarge(_ d: ChargeDecision) {
         guard !dischargeInFlight else { return }
@@ -1999,7 +2001,7 @@ final class ChargeController {
         let mine = session, epoch = dischargeEpoch, resetsAtSend = helper.resets
         if stopFirst {
             helper.send(.stopDischarge) { [log] r in
-                if !r.ok { log("stopping the old discharge first: \(r.message)") }
+                if !r.ok { log("stopping the old drain first: \(r.message)") }
             }
         }
         helper.send(.discharge(toPercent: target)) { [weak self] r in
@@ -2010,7 +2012,7 @@ final class ChargeController {
                 self.lastRefusal = nil
                 if self.helper.resets == resetsAtSend {
                     self.appliedDischarge = target
-                    self.log(from.map { "discharge \($0) -> \(target)" } ?? "discharge to \(target) started")
+                    self.log(from.map { "drain \($0) -> \(target)" } ?? "drain to \(target) started")
                 } else {
                     // The connection was reset after this went out: the helper that cut may be gone, or may have
                     // reconnected the charger. Neither running nor ended as far as anyone knows, so a stop goes
@@ -2018,13 +2020,13 @@ final class ChargeController {
                     self.appliedDischarge = nil
                     self.seenResets = self.helper.resets
                     self.stopDue = true
-                    self.log("the helper's connection was reset as the discharge to \(target) started; stopping it "
+                    self.log("the helper's connection was reset as the drain to \(target) started; stopping it "
                              + "before anything else")
                 }
                 self.reapply()
             } else if r.message == HelperConnection.stoppedAnswering {
                 // Not a refusal: the helper went away with this on its way, and may have cut the charger first.
-                self.stopNotConfirmed("the helper stopped answering as the discharge to \(target) went out")
+                self.stopNotConfirmed("the helper stopped answering as the drain to \(target) went out")
             } else {
                 // A refusal starts nothing, and a stop sent first ended whatever ran.
                 self.appliedDischarge = nil
@@ -2035,7 +2037,7 @@ final class ChargeController {
                 }
                 if why != self.lastRefusal {
                     self.lastRefusal = why
-                    if why != ChargeRefusal.goingToSleep { self.log("discharge to \(target) refused: \(why)") }
+                    if why != ChargeRefusal.goingToSleep { self.log("drain to \(target) refused: \(why)") }
                 }
                 self.settle()
             }
@@ -2058,7 +2060,7 @@ final class ChargeController {
                 self.appliedDischarge = nil
                 self.chargerConfirmed(stopSentAt: seq, message: r.message)
                 if let from {
-                    self.log("discharge to \(from) stopped (\(why))")
+                    self.log("drain to \(from) stopped (\(why))")
                 } else if !lost, !Self.isNotAnodesValue(r.message) {
                     self.log("the charger is connected (\(why)): \(r.message)")
                 }

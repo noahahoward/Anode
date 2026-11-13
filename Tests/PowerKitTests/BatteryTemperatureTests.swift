@@ -2,7 +2,7 @@ import XCTest
 import IOKit
 @testable import PowerKit
 
-/// The pack temperature Charge Control's Heat Protection holds and resumes
+/// The pack temperature Charge Control's Pause When Hot holds and resumes
 /// charging on.
 ///
 /// Two things can go wrong with it and both are silent. WHERE the gauge
@@ -48,7 +48,7 @@ final class BatteryTemperatureTests: XCTestCase {
         XCTAssertNil(Battery.temperatureC(fromProperties: ["Temperature": "3012"]))
     }
 
-    /// A glitched register must neither trip Heat Protection nor defeat it.
+    /// A glitched register must neither trip Pause When Hot nor defeat it.
     /// 65535 is the SBS "unknown" that `Battery.state()` already filters out of
     /// `TimeRemaining`; as centi-°C it is 655.35 °C.
     func testImplausibleTemperatureIsNil() {
@@ -63,7 +63,7 @@ final class BatteryTemperatureTests: XCTestCase {
         XCTAssertEqual(Battery.temperatureC(fromRaw: 10000), 100)
     }
 
-    /// A gauge that glitches to 0 (or -1) is not at 0 °C: read as a real 0 °C it would let a Heat Protection pause
+    /// A gauge that glitches to 0 (or -1) is not at 0 °C: read as a real 0 °C it would let a pause for heat
     /// resume on a hot pack. A raw value of 0 or below is no reading. The smallest positive one is.
     func testZeroOrNegativeRawIsNoReading() throws {
         for raw in [0, -1, -2, -100, -2000] as [Any] {

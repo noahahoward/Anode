@@ -56,7 +56,7 @@ final class ChargeSettingsTests: XCTestCase {
 
     // ── Defaults ────────────────────────────────────────────────────────────
 
-    /// On a machine that has never seen Charge Control every switch is off, the numbers are charge to 80, sail 5
+    /// On a machine that has never seen Charge Control every switch is off, the numbers are charge to 80, drift 5
     /// below and pause at 35 °C, and nothing is recorded to put back because nothing has been changed.
     func testDefaults() {
         let s = Settings(defaults: defaults)
@@ -95,7 +95,7 @@ final class ChargeSettingsTests: XCTestCase {
     func testGapAndTemperatureClamp() {
         let s = Settings(defaults: defaults)
         s.chargeDriftGap = 0
-        XCTAssertEqual(s.chargeDriftGap, 1, "a gap of 0 leaves Sailing Mode no band to rest in")
+        XCTAssertEqual(s.chargeDriftGap, 1, "a gap of 0 leaves Drift Below the Limit no band to rest in")
         XCTAssertEqual(stored("chargeDriftGap") as? Int, 1)
         s.chargeDriftGap = 99
         XCTAssertEqual(s.chargeDriftGap, 30)
@@ -343,7 +343,7 @@ final class ChargeSettingsTests: XCTestCase {
     // ── What the policy is handed ───────────────────────────────────────────
 
     /// Each field of the snapshot comes from its own setting. Two arrangements, so that no two switches agree in
-    /// both: a snapshot that took `holdDuringSleep` from the automatic-discharge switch would pass either alone.
+    /// both: a snapshot that took `holdDuringSleep` from the automatic-drain switch would pass either alone.
     func testSnapshotReadsEachFieldFromItsOwnSetting() {
         let s = Settings(defaults: defaults)
         XCTAssertEqual(s.chargeSettingsSnapshot(),
@@ -392,8 +392,8 @@ final class ChargeSettingsTests: XCTestCase {
     }
 
     /// Why the limit is clamped here and not left to the policy. The policy clamps the limit it gives macOS, but a
-    /// discharge drains to the limit as stored, down to a floor of 10. So a stored 5 with Automatic Discharge on
-    /// would run a battery at 60% down to 10% on the adapter; read as 20, the drain stops at 20.
+    /// discharge drains to the limit as stored, down to a floor of 10. So a stored 5 with Drain Automatically Above the
+    /// Limit on would run a battery at 60% down to 10% on the adapter; read as 20, the drain stops at 20.
     func testAStoredLimitBelowTheRangeCannotDrainThePackBelowIt() {
         store(5, as: "chargeLimit")
         store(true, as: "chargeDrainAutomatically")
@@ -403,11 +403,11 @@ final class ChargeSettingsTests: XCTestCase {
                                                         sleeping: false, fullCharge: false, manualDrain: false,
                                                         now: Date(timeIntervalSince1970: 0)),
                                            &memory)
-        XCTAssertEqual(decision, ChargeDecision(osLimit: 20, dischargeTo: 20, reason: .discharging))
+        XCTAssertEqual(decision, ChargeDecision(osLimit: 20, dischargeTo: 20, reason: .draining))
     }
 
     /// The same for the temperature, run through the real policy. A stored maximum of 0 is below any temperature a
-    /// pack in use can have, so unclamped it would read every pack as hot and Heat Protection would hold the charge
+    /// pack in use can have, so unclamped it would read every pack as hot and Pause When Hot would hold the charge
     /// for as long as it was switched on. Read as 25, the lowest a person can choose, a pack at 24 °C is cool and
     /// charges to the limit.
     func testAStoredMaximumOfZeroDoesNotCallEveryPackHot() {
@@ -423,7 +423,7 @@ final class ChargeSettingsTests: XCTestCase {
     }
 
     /// The opposite failure. No temperature is "at or above" NaN, so a stored NaN that reached the policy would
-    /// switch Heat Protection off without saying so. It reads as 35, and a pack at 40 °C is held where it is.
+    /// switch Pause When Hot off without saying so. It reads as 35, and a pack at 40 °C is held where it is.
     func testAStoredMaximumThatIsNotANumberStillProtects() {
         store(Double.nan, as: "chargeMaxTemperatureC")
         store(true, as: "chargePauseWhenHotEnabled")

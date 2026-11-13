@@ -284,7 +284,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         AXUIElementSetMessagingTimeout(AXUIElementCreateSystemWide(), 0.5)
         // Charge Control's own hold is not a limit the Mac enforces: tell the monitor the limit it holds (nil
         // while it is off), so the charge-limit learner does not learn it and the card names it as the target.
-        // The limit actually in force (a hold or Top Up included) once the controller knows it: read through a
+        // The limit actually in force (a hold or Charge to Full included) once the controller knows it: read through a
         // locked box, because this closure runs on the monitor's sampling queue and the controller is main-only.
         let chargeLimitInForce = ChargeLimitInForce()
         monitor = PowerMonitor(chargeControlLimit: {

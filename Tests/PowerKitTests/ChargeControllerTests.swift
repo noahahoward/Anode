@@ -483,7 +483,7 @@ final class ChargeControllerTests: XCTestCase {
         XCTAssertTrue(lines.contains { $0.hasPrefix("put back macOS's own settings") }, lines.joined(separator: "\n"))
     }
 
-    /// A hold is a limit too (Heat Protection at 24%): it is not put back to the person's own, it is lifted with
+    /// A hold is a limit too (Pause When Hot at 24%): it is not put back to the person's own, it is lifted with
     /// the rest.
     func testQuittingLiftsAHoldToo() {
         settings.chargePauseWhenHotEnabled = true
@@ -499,7 +499,7 @@ final class ChargeControllerTests: XCTestCase {
         XCTAssertFalse(helper.following)
     }
 
-    /// Top Up's 100 is a hold too.
+    /// Charge to Full's 100 is a hold too.
     func testQuittingEndsFullCharge() {
         battery = Self.state(85)
         let c = make()
@@ -1571,8 +1571,8 @@ final class ChargeControllerTests: XCTestCase {
         c.tick()
         battery = Self.state(77)
         c.tick()
-        let sailing = ChargeControlFeature.statusText(c.status)
-        XCTAssertTrue(sailing.contains("Sailing") && sailing.contains("77%"), sailing)
+        let drifting = ChargeControlFeature.statusText(c.status)
+        XCTAssertTrue(drifting.contains("Drifting below the limit") && drifting.contains("77%"), drifting)
 
         settings.chargeDriftEnabled = false
         settings.chargeLimit = 63
@@ -1672,7 +1672,7 @@ final class ChargeControllerTests: XCTestCase {
         battery = Self.state(90)
         let c = make()
         c.pressDrain()
-        XCTAssertEqual(c.status, .needsHelper("Discharge needs the Anode helper"))
+        XCTAssertEqual(c.status, .needsHelper("Draining to the limit needs the Anode helper"))
         XCTAssertTrue(helper.commands.isEmpty)
     }
 
@@ -1706,20 +1706,20 @@ final class ChargeControllerTests: XCTestCase {
         XCTAssertEqual(discharges(helper.commands), [80])
     }
 
-    // ── Discharge ───────────────────────────────────────────────────────────
+    // ── Drain to Limit ───────────────────────────────────────────────────────────
 
     func testDischargeSendsHelperCommandAndStopsOnUnplug() {
         battery = Self.state(90)
         let c = make()
         c.pressDrain()
         XCTAssertEqual(helper.commands, [.discharge(toPercent: 80)])
-        XCTAssertEqual(c.status, .active(ChargeDecision(osLimit: 80, dischargeTo: 80, reason: .discharging)))
+        XCTAssertEqual(c.status, .active(ChargeDecision(osLimit: 80, dischargeTo: 80, reason: .draining)))
         XCTAssertTrue(c.isDrainRequested)
 
         battery = Self.state(89, ac: false, adapter: false)
         c.tick()
         XCTAssertEqual(helper.commands, [.discharge(toPercent: 80), .stopDischarge])
-        XCTAssertFalse(c.isDrainRequested, "unplugging did not end the manual discharge")
+        XCTAssertFalse(c.isDrainRequested, "unplugging did not end the manual drain")
     }
 
     /// While Anode's own cut is on, macOS can say the Mac is off the adapter (measured with no macOS limit holding the
@@ -1733,7 +1733,7 @@ final class ChargeControllerTests: XCTestCase {
         c.tick()
         XCTAssertEqual(helper.commands, [.discharge(toPercent: 80)])
         XCTAssertTrue(c.isDrainRequested)
-        XCTAssertEqual(c.lastDecision?.reason, .discharging)
+        XCTAssertEqual(c.lastDecision?.reason, .draining)
     }
 
     /// A new target is a stop and then a start: the charger is reconnected, and that confirmed, before it is cut
@@ -1757,7 +1757,7 @@ final class ChargeControllerTests: XCTestCase {
         let c = make()
         c.pressDrain()
         XCTAssertEqual(discharges(helper.commands), [80])
-        XCTAssertEqual(c.status, .active(ChargeDecision(osLimit: 80, dischargeTo: 80, reason: .discharging)),
+        XCTAssertEqual(c.status, .active(ChargeDecision(osLimit: 80, dischargeTo: 80, reason: .draining)),
                        "a refusal because the Mac is going to sleep is not an error")
 
         helper.answer = { _ in FanReply(ok: true, message: "ok") }
@@ -2120,7 +2120,7 @@ final class ChargeControllerTests: XCTestCase {
         XCTAssertTrue(settings.chargeCutUnconfirmed)
         XCTAssertEqual(c.dischargeInForce, 80)
         XCTAssertEqual(helper.commands, sent, "a discharge in force was settled by macOS's word, and sent again")
-        XCTAssertFalse(lines.contains { $0.contains("with no discharge running") }, lines.joined(separator: "\n"))
+        XCTAssertFalse(lines.contains { $0.contains("with no drain running") }, lines.joined(separator: "\n"))
     }
 
     /// One on its way is not evidence either. The request is cancelled while it is on its way, so that nothing asks
@@ -2137,7 +2137,7 @@ final class ChargeControllerTests: XCTestCase {
         c.tick(now: t0.addingTimeInterval(300))
         c.tick(now: t0.addingTimeInterval(500))
         XCTAssertTrue(settings.chargeCutUnconfirmed, "a discharge on its way was settled by macOS's word")
-        XCTAssertFalse(lines.contains { $0.contains("with no discharge running") }, lines.joined(separator: "\n"))
+        XCTAssertFalse(lines.contains { $0.contains("with no drain running") }, lines.joined(separator: "\n"))
     }
 
     // ── The charger switch itself ───────────────────────────────────────────
@@ -2218,7 +2218,7 @@ final class ChargeControllerTests: XCTestCase {
         c.tick(now: t0.addingTimeInterval(100))
         c.tick(now: t0.addingTimeInterval(300))
         XCTAssertTrue(settings.chargeCutUnconfirmed, "a discharge on its way was settled by the switch")
-        XCTAssertFalse(lines.contains { $0.contains("with no discharge running") }, lines.joined(separator: "\n"))
+        XCTAssertFalse(lines.contains { $0.contains("with no drain running") }, lines.joined(separator: "\n"))
     }
 
     /// Nor is one in force: the switch is not even read under it, and nothing is settled.
@@ -2235,7 +2235,7 @@ final class ChargeControllerTests: XCTestCase {
         XCTAssertTrue(settings.chargeCutUnconfirmed)
         XCTAssertEqual(c.dischargeInForce, 80)
         XCTAssertEqual(helper.commands, sent, "a discharge in force was settled by the switch, and sent again")
-        XCTAssertFalse(lines.contains { $0.contains("with no discharge running") }, lines.joined(separator: "\n"))
+        XCTAssertFalse(lines.contains { $0.contains("with no drain running") }, lines.joined(separator: "\n"))
     }
 
     /// A discharge sent starts the count of evidence again: whatever was read before it says nothing about what it
@@ -2265,7 +2265,7 @@ final class ChargeControllerTests: XCTestCase {
         XCTAssertFalse(settings.chargeCutUnconfirmed)
     }
 
-    /// The net, by the switch. Cut, with no discharge running or on its way, for more than 90 s is a cut left behind
+    /// The net, by the switch. Cut, with no drain running or on its way, for more than 90 s is a cut left behind
     /// whatever macOS says (here it says "on the adapter" throughout, as measured under a limit below the battery
     /// level): the helper is asked to reconnect it and the warning shows, and macOS's word does not clear it. Once
     /// a running helper has reconnected it, nothing more is asked.
@@ -2314,7 +2314,7 @@ final class ChargeControllerTests: XCTestCase {
         c.periodicTick(now: t0.addingTimeInterval(430))
         XCTAssertEqual(helper.commands, [.discharge(toPercent: 80)])
         XCTAssertEqual(c.dischargeInForce, 80)
-        XCTAssertEqual(c.status, .active(ChargeDecision(osLimit: 80, dischargeTo: 80, reason: .discharging)))
+        XCTAssertEqual(c.status, .active(ChargeDecision(osLimit: 80, dischargeTo: 80, reason: .draining)))
         XCTAssertEqual(switchReads, reads, "the switch was read under a discharge, where nothing asks about it")
     }
 
@@ -2692,7 +2692,7 @@ final class ChargeControllerTests: XCTestCase {
 
     // ── A cut the net found is owed ─────────────────────────────────────────
     //
-    // The net finds a cut nobody holds (the switch read cut for more than 90 s with no discharge running). That cut
+    // The net finds a cut nobody holds (the switch read cut for more than 90 s with no drain running). That cut
     // is as much a debt as one a discharge left: written down before the helper is asked, asked about by a switch-off
     // and by a quit, shown while off, and settled the same ways (a running helper's yes, or the switch reading
     // connected for long enough). Held only in memory, a person who saw "may still be switched off" and switched
@@ -2780,7 +2780,7 @@ final class ChargeControllerTests: XCTestCase {
                        "going to sleep did not wait for the helper about a cut the net found")
         XCTAssertFalse(settings.chargeCutUnconfirmed, "the helper's yes was not heard")
         XCTAssertNotEqual(c.status, .warning(ChargeController.cutWarningText))
-        XCTAssertTrue(lines.contains { $0.contains("discharge stopped for sleep") }, lines.joined(separator: "\n"))
+        XCTAssertTrue(lines.contains { $0.contains("drain stopped for sleep") }, lines.joined(separator: "\n"))
     }
 
     /// With nobody answering, going to sleep leaves the debt, and the stop is asked again at once after the wake.
@@ -3022,7 +3022,7 @@ final class ChargeControllerTests: XCTestCase {
         }
         let c = make()
         c.pressDrain()
-        XCTAssertEqual(c.status, .active(ChargeDecision(osLimit: 80, dischargeTo: 80, reason: .discharging)))
+        XCTAssertEqual(c.status, .active(ChargeDecision(osLimit: 80, dischargeTo: 80, reason: .draining)))
         helper.answer = { _ in FanReply(ok: true, message: "ok") }
         c.tick()
         XCTAssertEqual(discharges(helper.commands), [80, 80])
@@ -3132,7 +3132,7 @@ final class ChargeControllerTests: XCTestCase {
         XCTAssertEqual(discharges(helper.commands), [80, 80], "pressing again did not ask again")
     }
 
-    /// An automatic discharge refused that way is asked again when the decision changes, not before.
+    /// An automatic drain refused that way is asked again when the decision changes, not before.
     func testAnAutomaticDrainRefusedThatWayWaitsForTheDecisionToChange() {
         let why = "this Mac cannot warn the helper before it sleeps"
         settings.chargeDrainAutomatically = true
@@ -3168,11 +3168,11 @@ final class ChargeControllerTests: XCTestCase {
         XCTAssertTrue(c.isDrainRequested)
         c.pressFullCharge()
         XCTAssertTrue(c.isFullChargeRequested)
-        XCTAssertFalse(c.isDrainRequested, "Top Up did not cancel the discharge")
+        XCTAssertFalse(c.isDrainRequested, "Charge to Full did not cancel the discharge")
         XCTAssertEqual(c.lastDecision?.reason, .fullCharge)
         XCTAssertEqual(helper.commands.last, .stopDischarge)
         c.pressFullCharge()
-        XCTAssertFalse(c.isFullChargeRequested, "a second press did not cancel Top Up")
+        XCTAssertFalse(c.isFullChargeRequested, "a second press did not cancel Charge to Full")
         XCTAssertEqual(c.lastDecision?.reason, .limit)
         c.pressDrain()
         c.pressDrain()
@@ -3181,7 +3181,7 @@ final class ChargeControllerTests: XCTestCase {
 
     // ── Policy inputs ───────────────────────────────────────────────────────
 
-    /// The policy keeps its sailing and heat memory between calls; an unplug starts it again.
+    /// The policy keeps its drift and heat memory between calls; an unplug starts it again.
     func testMemoryResetsOnUnplug() {
         settings.chargeDriftEnabled = true
         battery = Self.state(80)
@@ -3195,7 +3195,7 @@ final class ChargeControllerTests: XCTestCase {
         c.tick()
         battery = Self.state(78)
         c.tick()
-        XCTAssertEqual(c.lastDecision?.reason, .limit, "sailing memory survived an unplug")
+        XCTAssertEqual(c.lastDecision?.reason, .limit, "drift memory survived an unplug")
     }
 
     /// A temperature that is not a number is no reading at all: it neither starts a pause nor counts as cool.
@@ -3230,8 +3230,8 @@ final class ChargeControllerTests: XCTestCase {
         XCTAssertEqual(client.limitCalls, [80, 80])
     }
 
-    /// Whatever Stop Charging when Sleeping says, a running discharge is stopped and the answer awaited before
-    /// `willSleep` returns: nothing watches the floor while the Mac sleeps. A manual discharge does not come back.
+    /// Whatever Hold Level During Sleep says, a running discharge is stopped and the answer awaited before
+    /// `willSleep` returns: nothing watches the floor while the Mac sleeps. A manual drain does not come back.
     func testSleepStopsADischargeBeforeReturning() {
         battery = Self.state(90)
         let c = make()
@@ -3240,7 +3240,7 @@ final class ChargeControllerTests: XCTestCase {
         XCTAssertEqual(helper.waited, [.stopDischarge])
         XCTAssertFalse(c.isDrainRequested)
         c.didWake()
-        XCTAssertEqual(discharges(helper.commands), [80], "a manual discharge came back after the wake")
+        XCTAssertEqual(discharges(helper.commands), [80], "a manual drain came back after the wake")
     }
 
     /// The sleep hold is in force before sleep is allowed: a limit only the helper can set is waited for (within
@@ -3374,7 +3374,7 @@ final class ChargeControllerTests: XCTestCase {
         XCTAssertEqual(limitInForce.value, 100)
     }
 
-    /// The same while Top Up holds 100 over the person's own limit.
+    /// The same while Charge to Full holds 100 over the person's own limit.
     func testFullChargesHundredReadBackAsOffIsAgreement() {
         let c = make()
         c.pressFullCharge()
@@ -3455,7 +3455,7 @@ final class ChargeControllerTests: XCTestCase {
         battery = Self.state(90)
         let c = make()
         for _ in 0..<3 { c.periodicTick() }
-        XCTAssertEqual(helper.refreshes, 0, "the timer talked to the helper with no discharge running")
+        XCTAssertEqual(helper.refreshes, 0, "the timer talked to the helper with no drain running")
         c.pressDrain()
         c.periodicTick()
         XCTAssertEqual(helper.refreshes, 1)
@@ -3509,11 +3509,11 @@ final class ChargeControllerTests: XCTestCase {
         battery = Self.state(90)
         let c = make()
         c.pressDrain()
-        XCTAssertTrue(lines.contains("discharge to 80 started"), lines.joined(separator: "\n"))
+        XCTAssertTrue(lines.contains("drain to 80 started"), lines.joined(separator: "\n"))
         settings.chargeLimit = 85
-        XCTAssertTrue(lines.contains("limit 80 -> 85 (discharging)"), lines.joined(separator: "\n"))
+        XCTAssertTrue(lines.contains("limit 80 -> 85 (draining)"), lines.joined(separator: "\n"))
         settings.chargeLimit = 63
-        XCTAssertTrue(lines.contains("limit 85 -> 63 (discharging)"), lines.joined(separator: "\n"))
+        XCTAssertTrue(lines.contains("limit 85 -> 63 (draining)"), lines.joined(separator: "\n"))
     }
 
     // ── What the section reads ──────────────────────────────────────────────
@@ -3653,8 +3653,8 @@ final class ChargeControllerTests: XCTestCase {
         XCTAssertFalse(lines.contains { $0.contains("changed outside") }, lines.joined(separator: "\n"))
     }
 
-    /// Top Up ends (the person cancels it) into a limit only the helper can set: 100 was in force, and the switch with
-    /// it off.
+    /// Charge to Full ends (the person cancels it) into a limit only the helper can set: 100 was in force, and the
+    /// switch with it off.
     func testFullChargeEndingIntoAHelperOnlyLimitTurnsTheSwitchOnFirst() {
         settings.chargeLimit = 63
         helper.landsOn = client
@@ -3668,7 +3668,7 @@ final class ChargeControllerTests: XCTestCase {
             if case .setChargeLimit = $0 { switchAtSend.append(client?.state?.mclEnabled) }
         }
         c.pressFullCharge()
-        XCTAssertEqual(switchAtSend, [true], "Top Up ended into a limit the helper set while the switch was off")
+        XCTAssertEqual(switchAtSend, [true], "Charge to Full ended into a limit the helper set while the switch was off")
         XCTAssertEqual(client.state, NativeChargeState(mclEnabled: true, mclLimit: 63, optimizedChargingEnabled: false))
     }
 
@@ -3748,7 +3748,7 @@ final class ChargeControllerTests: XCTestCase {
     // ── A helper that dies between ticks ────────────────────────────────────
 
     /// The helper dies under a discharge, with nothing being exchanged (measured: Charge Control noticed 28 s later,
-    /// at its next tick, and the section said "Discharging" meanwhile). The link now reports the closed socket, the
+    /// at its next tick, and the section said "Draining" meanwhile). The link now reports the closed socket, the
     /// connection records it, and the controller sends its stop at once, on a fresh socket (for an installed helper
     /// that starts a new one, whose startup reconnects the charger), before the discharge it still wants.
     func testAHelperThatDiesUnderADischargeIsStoppedAtOnceWithNoTick() {
@@ -3769,7 +3769,7 @@ final class ChargeControllerTests: XCTestCase {
         XCTAssertEqual(Array(wire.sent.prefix(2)), [.discharge(toPercent: 80), .stopDischarge],
                        "the stop did not go out at once: " + lines.joined(separator: "\n"))
         XCTAssertEqual(wire.reachedAHelper.prefix(2).last, true, "the stop went to a socket nobody had opened")
-        XCTAssertTrue(lines.contains { $0.contains("reset under the discharge") }, lines.joined(separator: "\n"))
+        XCTAssertTrue(lines.contains { $0.contains("reset under the drain") }, lines.joined(separator: "\n"))
     }
 
     // ── A warning that never clears while off ───────────────────────────────
