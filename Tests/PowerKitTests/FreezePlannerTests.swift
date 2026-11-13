@@ -293,10 +293,10 @@ final class FreezePlannerTests: XCTestCase {
     func testAlwaysKeepTakesAppsAndBackgroundTools() {
         let list = [editor(),
                     app(110, "com.example.vpn", "VPN"),
-                    proc(111, path: "/opt/tools/dbserver/bin/dbserver", name: "dbserver", label: "homebrew.db"),
+                    proc(111, path: "/opt/tools/dbserver/bin/dbserver", name: "dbserver", label: "com.example.database"),
                     browser()]
-        let p = plan(list, front: 10, alwaysKeep: ["com.example.vpn", "job:homebrew.db"])
-        XCTAssertEqual(ids(p.kept), ["com.example.editor", "com.example.vpn", "job:homebrew.db"])
+        let p = plan(list, front: 10, alwaysKeep: ["com.example.vpn", "job:com.example.database"])
+        XCTAssertEqual(ids(p.kept), ["com.example.editor", "com.example.vpn", "job:com.example.database"])
         XCTAssertEqual(ids(p.frozen), ["com.example.browser"])
     }
 
@@ -333,12 +333,12 @@ final class FreezePlannerTests: XCTestCase {
 
     func testABackgroundToolWithNoAppIsFrozenUnderItsJobName() {
         let list = [editor(),
-                    proc(120, parent: 1, path: "/opt/tools/dbserver/bin/dbserver", name: "dbserver", label: "homebrew.db"),
+                    proc(120, parent: 1, path: "/opt/tools/dbserver/bin/dbserver", name: "dbserver", label: "com.example.database"),
                     proc(121, parent: 120, path: "/opt/tools/dbserver/bin/dbserver-writer", name: "dbserver-writer")]
         let p = plan(list, front: 10)
-        XCTAssertEqual(ids(p.frozen), ["job:homebrew.db"])
+        XCTAssertEqual(ids(p.frozen), ["job:com.example.database"])
         XCTAssertEqual(p.frozen.first?.name, "dbserver")
-        XCTAssertEqual(pids(p.frozen, "job:homebrew.db"), [120, 121])
+        XCTAssertEqual(pids(p.frozen, "job:com.example.database"), [120, 121])
     }
 
     func testAToolWithNoLabelIsGroupedByExecutableName() {

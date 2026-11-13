@@ -23,7 +23,7 @@ final class UltraLowPowerSettingsTests: XCTestCase {
     }
 
     func testAlwaysKeepRoundTrips() {
-        let keep = ["com.example.vpn", "job:homebrew.db"]
+        let keep = ["com.example.vpn", "job:com.example.database"]
         Settings(defaults: defaults).ultraLowPowerAlwaysKeep = keep
         XCTAssertEqual(Settings(defaults: defaults).ultraLowPowerAlwaysKeep, keep, "a new handle on the same suite")
 
@@ -77,7 +77,7 @@ final class UltraLowPowerSettingsTests: XCTestCase {
         // watches its own: `reconcile()` carries it across, and a key left out of it fails without a sound.
         let other = Settings(defaults: defaults)
         other.ultraLowPowerEnabled = false
-        other.ultraLowPowerAlwaysKeep = ["com.example.vpn", "job:homebrew.db"]
+        other.ultraLowPowerAlwaysKeep = ["com.example.vpn", "job:com.example.database"]
         XCTAssertEqual([enabled, keep], [2, 2])
         _ = (t1, t2)
     }
