@@ -37,7 +37,8 @@ There is no other way in or out. Sleep, wake, the charger, a full battery and a 
 Every process is in exactly one of three piles.
 
 **Kept** (never touched):
-- The app in front when Confirm is pressed.
+- **The app the owner was using:** the frontmost app other than Anode at the moment the mode was asked for (captured then, because the request itself may bring Anode forward). The confirm box names it, so a wrong pick is seen before anything happens.
+- An app that is using the microphone or camera at that moment *(author's call: a call in progress must not be dropped by an empty keep list; if this cannot be detected cleanly, the app is at least named in the confirm box)*.
 - The apps on the "always keep" list, which the owner edits in the Beta Features section (empty to begin with; meant for things like a VPN client or a meeting app).
 - **Everything that belongs to a kept app:** the processes inside its bundle, every descendant of those, and every process macOS holds that app responsible for. Measured on the owner's Mac: the tools run from an editor's terminal (shells, interpreters, language servers, command-line assistants) are all descendants of the editor. Freezing them would break the very work the mode exists to protect.
 - Any app the owner opens or brings forward after the mode started (see "Getting an app back").
@@ -46,6 +47,7 @@ Every process is in exactly one of three piles.
 - Processes not owned by the logged-in user (Anode could not signal them anyway).
 - macOS itself: every process that is not an app the owner opened. In practice, processes whose executable lives under the system's own locations, and the system's interface agents (the Dock, the menu bar, Control Center, Finder, the window manager, input methods and the like). Measured: 546 of these on the owner's Mac, about 0.5 W together; they are not safe to stop.
 - Anode, its helper, and the watchdog described under "Safety".
+- Any process that owns an active keyboard or pointer event tap (key remappers, window managers, text expanders) *(author's call)*: a stopped tap owner can stall input for the whole Mac until the tap times out.
 - App extensions that macOS hosts on behalf of an app (Finder sync extensions, widgets) *(author's call for v1: left alone; whether freezing them is safe is unmeasured)*.
 
 **Frozen:** everything else of the user's.
@@ -53,6 +55,9 @@ Every process is in exactly one of three piles.
 - Menu bar apps and other windowless apps of other vendors.
 - Other vendors' background agents (sync clients, updaters, launchers).
 - With each of these, everything that belongs to it, by the same rule as for kept apps. An app is frozen whole or not at all.
+- **"Belongs to" wins over where the file lives.** A helper in a system location that macOS holds a frozen app responsible for (a browser's page and network processes) is frozen with that app; otherwise the biggest burners would keep running. A system service that serves several apps is never frozen.
+- **Background tools with no app** (a local database, a container engine, a development server started outside the editor) are grouped by their launchd job, or else by executable name, and frozen like the rest *(author's call, question open with the owner)*. Each group has a name the owner can read, appears in the confirm box and the menu, and can be put on the "always keep" list.
+- **What starts later.** A new process that belongs to an already-frozen group (a frozen sync client's respawned updater) is frozen when Anode next looks. Anything else new is left alone. How often Anode looks is the builder's choice; what the looking costs is measured. "No timers" is a rule for the Off state.
 
 Before an app with windows is frozen, Anode hides it, so the owner is not left clicking a dead window. The windows come back when the app does.
 
@@ -79,13 +84,18 @@ Through Anode's existing root helper, as one new command; the earlier power mode
 - While Anode's main window is open, measuring runs as it normally does; closing the window pauses it again.
 - Consequence the owner accepted: the history has a gap for the time the mode was on, except while the window was open.
 - Other Beta features that draw or poll on their own (live wallpaper, the game strip) are paused for the session *(author's call)*; features that only react to events keep working.
+- **Never paused:** anything that holds hardware state or watches for safety (charge control and its floor watcher, fan control, Keep Awake) *(author's call)*.
+- **Brightness has one owner.** Keep Awake's lid dimmer and this ceiling both save and restore brightness; they share one record of the owner's own brightness, and the lower limit applies.
+- **Anode's features that call into other apps** (the window switcher, Dock previews, window groups, the menu bar hider) must never call into a stopped process: frozen apps are skipped, and choosing one in a switcher un-freezes it first.
 
 ## The switch
 
 - **Beta Features section "Ultra Low Power Mode":** the button that starts and ends the mode; the "always keep" list (add and remove apps); a line for each part that cannot work on this Mac (no helper, one refresh rate only); and the honest note below.
-- **Anode's menu:** "Ultra Low Power Mode…" when off; when on, "Turn off" and the list of frozen apps.
+- **Anode's menus:** "Ultra Low Power Mode…" in the app menu and the readings' menu when off; when on, "Turn off" and the list of frozen apps (see below).
 - **A shortcut**, changeable in the Shortcuts window like the others *(author's call: propose ⌃⌥⌘U if it is free)*.
-- **The confirm box:** one or two lines, for example "Keeps: the app in front and 2 always-kept apps. Freezes 9 apps until you turn this off." Confirm and Cancel. No list to tick.
+- **The confirm box** names what is kept and lists, read-only, the names of what will be frozen. Confirm and Cancel; nothing to tick *(author's call: names in place of a bare count, so the owner can catch a wrong pick; still one button)*. It must not take the front app's place (see "Kept").
+- **Enable checkbox** in the section, like the other Beta features *(author's call)*: only while it is ticked is the shortcut listened for and the menu entry shown. Unticked, nothing exists. Ticking it never starts the mode.
+- **While the mode is on, every "Paused" reading in the menu bar opens the mode's menu** (Turn off, the frozen apps) when clicked. If no reading is on the bar, one small icon is added for that menu and removed at the end *(author's call: Anode has no menu that is always present, and the owner's bar has no room to spare)*.
 - **The honest note** in the section: what was measured (below), in plain words. Dimming further is what saves the most; the refresh rate saves little or nothing; frozen apps lose their network connections; no running time is promised.
 
 ## Safety
@@ -133,7 +143,7 @@ Probes are throwaway and live in the session scratchpad; the numbers that matter
 
 - macOS 13 deployment target; no new dependencies; a Beta Features section, off until the owner starts it.
 - No other product's name, and no feature name coined by another product, in code, interface text, tests, commit messages or documents.
-- One root helper, one pattern: the power-mode command is added to the existing helper (a new command, a protocol version step, and the disclosure text that tests pin), not to a second one. Those files are changing in the charge feature that is landing as 1.17.0, so this feature is built on top of that once it is stable.
+- One root helper, one pattern: the power-mode command is added to the existing helper (a new command, a protocol version step, and the disclosure text that tests pin), not to a second one. Those files are changing in the charge feature that is landing as 1.17.0, so this feature is built on top of that, and only once the session building it says it is stable. App-side parts first, the helper command last. It ships as the next minor version after 1.17.0.
 - Tests never send a real signal to another process, change the real brightness, refresh rate or power mode, or read or write the real settings store. Every one of those sits behind a protocol with a fake; the real thing runs only in hardware steps with the owner at the Mac.
 - Every call into another app or the system that can block runs off the main thread with a timeout; Anode has frozen on such calls before.
 - Subagents used for the build run on the smaller model, one implementer and one reviewer per task (the owner's standing instruction).
@@ -142,11 +152,14 @@ Probes are throwaway and live in the session scratchpad; the numbers that matter
 
 How "belongs to" is computed and how fast; how the frozen set is kept current when a kept app starts new helpers; the watchdog mechanism; how brightness changes are noticed; where the record lives and its format; the shortcut; the exact words in the confirm box and the section; which of Anode's own timers count as measuring.
 
-## Open risks (each gets a measured step in the plan before anything depends on it; all need a quiet Mac)
+## Open risks
 
-1. Freezing may make a kept process, or macOS's own hang reporting, burn power. Measure whole-Mac and per-process power with the set frozen for several minutes.
-2. Low Power Mode's saving on top of the rest is unknown, and so is whether the target is reached with all parts on.
-3. macOS may not report that a stopped app was brought forward.
-4. Hiding an app is asynchronous: it must have hidden before it is stopped, or its windows stay as dead pictures.
-5. Logout, restart and sleep with stopped apps.
-6. Brightness: whether the ceiling can be held against auto-brightness without flicker.
+Each gets a measured step with the owner at a quiet Mac, as the plan's first task; later tasks start only after it. What happens when a step comes back bad:
+
+1. **Freezing makes a kept process, or macOS's hang reporting, burn power or hang** (also: a paste from a frozen app's clipboard promise). Measure whole-Mac and per-process power with the set frozen for several minutes, and use the kept app meanwhile. If one class of process causes it, that class moves to "never touched". If freezing cannot be made safe in general, stop and go back to the owner: it is the core of the feature.
+2. **Low Power Mode's saving, and whether the target is reached with all parts on.** Whatever the number is, it goes in the section's note; no number stops the build.
+3. **macOS may not report that a stopped app was brought forward.** Then the menu is the only route, and the section says so.
+4. **Hiding is asynchronous.** Wait briefly for the app to hide; if it has not, freeze it anyway and leave its windows.
+5. **Logout, restart and sleep with stopped apps.** These must work. If continuing everything at the announcement is too late, stop and go back to the owner.
+6. **Holding the brightness ceiling against auto-brightness without flicker.** If it flickers, set the ceiling once at start and after each key press, do not hold it, and say so.
+7. **Processes that belong to two apps at once, and system helpers of frozen apps.** If "responsible for" proves unreliable for a class, that class is left running.
