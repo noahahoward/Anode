@@ -49,8 +49,9 @@ extension CGDisplayMode: DisplayModeValues {}
 /// system takes it back when the process ends, so a crash or a kill of Anode needs no undoing of the rate by anyone.
 final class LiveDisplayRate: DisplayRateControlling {
 
-    /// What `lower()` changed, kept to put back: the display and the mode it had.
-    private var lowered: (display: CGDirectDisplayID, original: CGDisplayMode)?
+    /// What `lower()` changed, kept to put back: the display, the mode it had, and the mode this asked for (to tell
+    /// later whether the display is still on it).
+    private var lowered: (display: CGDirectDisplayID, original: CGDisplayMode, set: CGDisplayMode)?
 
     var canLower: Bool { plan() != nil }
 
@@ -59,14 +60,43 @@ final class LiveDisplayRate: DisplayRateControlling {
         if lowered != nil { return true }
         guard let plan = plan() else { return false }
         guard Self.apply(plan.target, to: plan.display) else { return false }
-        lowered = (plan.display, plan.current)
+        lowered = (plan.display, plan.current, plan.target)
         return true
     }
 
     func restore() {
         guard let held = lowered else { return }
-        // On a refusal the state stays, so a later restore tries again; the system puts it back when Anode ends anyway.
-        if Self.apply(held.original, to: held.display) { lowered = nil }
+        switch Self.restoreStep(now: CGDisplayCopyDisplayMode(held.display), set: held.set) {
+        case .reapply:
+            // On a refusal the state stays, so a later restore tries again; the system puts it back when Anode ends anyway.
+            if Self.apply(held.original, to: held.display) { lowered = nil }
+        case .drop:
+            lowered = nil
+        case .keep:
+            break
+        }
+    }
+
+    /// What `restore()` does about the display's mode as it is now, against the mode `lower()` asked for.
+    enum RestoreStep: Equatable {
+        /// Still on the mode this set: put the earlier one back.
+        case reapply
+        /// On another mode: the owner (or the system) changed it since, and putting the earlier one back would undo
+        /// their change. Nothing is applied and nothing is held any more.
+        case drop
+        /// The mode cannot be read (the display is gone or asleep): no way to tell, so nothing is applied and the
+        /// state stays for a later try.
+        case keep
+    }
+
+    /// Same picture and same rate: width, height and pixels of both, and the rate within what the display's own rounding
+    /// can add.
+    static func restoreStep(now: DisplayModeValues?, set: DisplayModeValues) -> RestoreStep {
+        guard let now else { return .keep }
+        let same = now.width == set.width && now.height == set.height
+            && now.pixelWidth == set.pixelWidth && now.pixelHeight == set.pixelHeight
+            && abs(now.refreshRate - set.refreshRate) < 0.01
+        return same ? .reapply : .drop
     }
 
     // Plain values for the rule

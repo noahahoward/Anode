@@ -64,6 +64,23 @@ final class UltraDisplayTests: XCTestCase {
         XCTAssertNil(LiveDisplayRate.lowerIndex(in: modes, current: current))
     }
 
+    func testRestoreIsSkippedWhenTheDisplayIsNoLongerOnTheModeWeSet() {
+        let set = mode(1512, 982, 3024, 1964, 48)
+        XCTAssertEqual(LiveDisplayRate.restoreStep(now: set, set: set), .reapply, "still where this put it")
+        XCTAssertEqual(LiveDisplayRate.restoreStep(now: mode(1512, 982, 3024, 1964, 48.004), set: set), .reapply,
+                       "the same rate, as the display reads it back")
+
+        // The owner changed the resolution: the size in points, then only the pixels.
+        XCTAssertEqual(LiveDisplayRate.restoreStep(now: mode(1728, 1117, 3456, 2234, 48), set: set), .drop)
+        XCTAssertEqual(LiveDisplayRate.restoreStep(now: mode(1512, 982, 1512, 982, 48), set: set), .drop)
+        // The rate was changed by someone else.
+        XCTAssertEqual(LiveDisplayRate.restoreStep(now: mode(1512, 982, 3024, 1964, 60), set: set), .drop)
+        XCTAssertEqual(LiveDisplayRate.restoreStep(now: mode(1512, 982, 3024, 1964, 120), set: set), .drop)
+
+        // Unreadable: no way to tell, so nothing is applied and nothing is given up.
+        XCTAssertEqual(LiveDisplayRate.restoreStep(now: nil, set: set), .keep)
+    }
+
     // ── The real Mac, read only ─────────────────────────────────────────────
 
     /// Asks the built-in display whether it has a lower rate and the keyboard for its level. It sets nothing: the two

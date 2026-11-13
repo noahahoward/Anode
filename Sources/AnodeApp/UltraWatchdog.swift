@@ -14,22 +14,43 @@ import PowerKit
 /// A normal end is Anode's job, not the watchdog's: `stop()` ends it with SIGTERM and it exits without undoing.
 
 protocol UltraWatchdogging: AnyObject {
-    func start()
+    /// True only when a watchdog process is running after the call (one running already counts). False means nothing
+    /// will continue the frozen apps if Anode dies, and the caller must not freeze anything on it.
+    @discardableResult func start() -> Bool
+    /// Ends it without undoing. Does nothing when none runs.
     func stop()
+    /// The running watchdog's pid; nil when none runs, or after `stop()`. The controller keeps it out of the spin guard.
+    var pid: pid_t? { get }
 }
 
 // ── Anode's side ────────────────────────────────────────────────────────────
+
+/// The process a watchdog runs in, as far as Anode needs to know it. `Process` is one; a test has a stub.
+protocol WatchdogProcess: AnyObject {
+    var pid: pid_t { get }
+    var isRunning: Bool { get }
+    func terminate()
+}
+
+extension Process: WatchdogProcess {
+    var pid: pid_t { processIdentifier }
+}
 
 /// Starts and stops the watchdog from Anode. Called from the main thread, by the controller.
 final class LiveUltraWatchdog: UltraWatchdogging {
 
     private let recordURL: URL
     private let log: (String) -> Void
-    private var process: Process?
+    private let launch: (_ arguments: [String]) throws -> WatchdogProcess
+    private var process: WatchdogProcess?
 
-    init(recordURL: URL, log: @escaping (String) -> Void = { _ in }) {
+    /// `launch` starts this program again with the arguments it is given and throws when it cannot. Tests replace it so
+    /// no process is started.
+    init(recordURL: URL, log: @escaping (String) -> Void = { _ in },
+         launch: @escaping (_ arguments: [String]) throws -> WatchdogProcess = LiveUltraWatchdog.launchThisProgram) {
         self.recordURL = recordURL
         self.log = log
+        self.launch = launch
     }
 
     /// What the program is started with, after its own path. `UltraWatchdog.parse` reads it back.
@@ -37,36 +58,55 @@ final class LiveUltraWatchdog: UltraWatchdogging {
         [UltraWatchdog.argument, String(parent), recordURL.path]
     }
 
-    /// Does nothing while one is running already.
-    func start() {
-        if process?.isRunning == true { return }
-        guard let executable = Bundle.main.executableURL else {
-            log("ultra watchdog: this program has no executable to start again")
-            return
-        }
-        let child = Process()
-        child.executableURL = executable
-        child.arguments = Self.arguments(parent: getpid(), recordURL: recordURL)
-        // Nothing of Anode's to hold on to: a pipe it shares with Anode would outlive Anode's end and keep the other
-        // side of it open.
-        child.standardInput = FileHandle.nullDevice
-        child.standardOutput = FileHandle.nullDevice
-        child.standardError = FileHandle.nullDevice
+    var pid: pid_t? {
+        guard let process, process.isRunning else { return nil }
+        return process.pid
+    }
+
+    @discardableResult
+    func start() -> Bool {
+        if pid != nil { return true }
+        process = nil
         do {
-            try child.run()
+            let child = try launch(Self.arguments(parent: getpid(), recordURL: recordURL))
+            // Launched is not the same as running: one that has ended already is not a watchdog.
+            guard child.isRunning else {
+                log("ultra watchdog: it ended as soon as it was started")
+                return false
+            }
             process = child
+            return true
         } catch {
-            // The record is on disk all the same, so the next launch can still finish the undo.
+            // The record is on disk all the same, so the next launch can still finish the undo; but until then nothing
+            // continues the apps if Anode dies, so the caller is told.
             log("ultra watchdog: could not start (\(error.localizedDescription))")
+            return false
         }
     }
 
-    /// Ends it without undoing. Does nothing when none runs.
     func stop() {
         guard let child = process else { return }
         process = nil
         // `terminate()` on a process that has ended is for the system to refuse, not for this to find out.
         if child.isRunning { child.terminate() }
+    }
+
+    private struct NoExecutable: LocalizedError {
+        var errorDescription: String? { "this program has no executable to start again" }
+    }
+
+    static func launchThisProgram(arguments: [String]) throws -> WatchdogProcess {
+        guard let executable = Bundle.main.executableURL else { throw NoExecutable() }
+        let child = Process()
+        child.executableURL = executable
+        child.arguments = arguments
+        // Nothing of Anode's to hold on to: a pipe it shares with Anode would outlive Anode's end and keep the other
+        // side of it open.
+        child.standardInput = FileHandle.nullDevice
+        child.standardOutput = FileHandle.nullDevice
+        child.standardError = FileHandle.nullDevice
+        try child.run()
+        return child
     }
 }
 
@@ -109,8 +149,11 @@ enum UltraWatchdog {
         sigaddset(&unblock, SIGTERM)
         sigprocmask(SIG_UNBLOCK, &unblock, nil)
 
-        switch waitForExit(of: request.parent, timeout: nil) {
+        switch waitForExit(of: request.parent, timeout: nil,
+                           confirm: { !parentHasEnded(given: request.parent, current: getppid()) }) {
         case .exited:
+            // The backlight is built only when its turn comes, after every continue: its start-up and its first read
+            // can stall on a Mac that is asleep, and nothing may hold up a continue.
             undo(from: UltraRecordFile(url: URL(fileURLWithPath: request.recordPath)),
                  freezer: LiveProcessFreezer(), backlight: DisplayServicesBacklight())
             exit(0)
@@ -131,37 +174,57 @@ enum UltraWatchdog {
         return Request(parent: parent, recordPath: arguments[3])
     }
 
+    /// Whether the process that started this one is gone: its parent is no longer the pid it was given. A process whose
+    /// parent ends is re-parented (to launchd), which is how a watchdog started after Anode died sees it, and how it
+    /// sees a pid that was reused since.
+    static func parentHasEnded(given: pid_t, current: pid_t) -> Bool {
+        current != given
+    }
+
     /// Continues what the record names and puts the brightness back; the rest of the record is for the next launch.
     /// Nothing here clears the record: the next launch reads it to finish the undo.
-    static func undo(record: UltraRecord, freezer: ProcessFreezing, backlight: BacklightControl) {
-        let brightnessNow = record.brightnessBefore == nil ? nil : backlight.brightness()
-        for action in UltraRecovery.actions(for: record, brightnessNow: brightnessNow) {
-            switch action {
-            case .resume(let pid, let startTime):
-                _ = freezer.resume(pid: pid, startTime: startTime)
-            case .brightness(let value):
-                _ = backlight.setBrightness(value)
-            case .unhide, .restoreRate, .keyboard, .powerMode:
-                break
-            }
+    ///
+    /// Every continue comes first. The backlight is a parameter that is not evaluated until the brightness step, and the
+    /// step is left out when the record has no brightness to put back.
+    static func undo(record: UltraRecord, freezer: ProcessFreezing, backlight: @autoclosure () -> BacklightControl) {
+        for case .resume(let pid, let startTime) in UltraRecovery.actions(for: record, brightnessNow: nil) {
+            _ = freezer.resume(pid: pid, startTime: startTime)
+        }
+        guard record.brightnessBefore != nil else { return }
+        let panel = backlight()
+        for case .brightness(let value) in UltraRecovery.actions(for: record, brightnessNow: panel.brightness()) {
+            _ = panel.setBrightness(value)
         }
     }
 
     /// The same, from where the record is kept. No record, or one that cannot be read, is nothing to undo.
-    static func undo(from store: UltraRecordStoring, freezer: ProcessFreezing, backlight: BacklightControl) {
+    static func undo(from store: UltraRecordStoring, freezer: ProcessFreezing,
+                     backlight: @autoclosure () -> BacklightControl) {
         guard let record = store.load() else { return }
-        undo(record: record, freezer: freezer, backlight: backlight)
+        undo(record: record, freezer: freezer, backlight: backlight())
     }
 
     /// Blocks until `pid` ends, with a kernel event (`kqueue`, `NOTE_EXIT`): the process sleeps until the kernel says so
     /// and uses no time of its own. A `pid` that is already gone counts as ended. `timeout` nil waits forever.
-    static func waitForExit(of pid: pid_t, timeout: TimeInterval?) -> Wait {
+    ///
+    /// `confirm` is asked once, after the event is registered, whether `pid` is still the process that was meant; false
+    /// counts as ended. Asking after registering leaves no gap: from then on an end of that process is an event, and
+    /// before it a pid that was reused is the one thing a registration could have caught.
+    static func waitForExit(of pid: pid_t, timeout: TimeInterval?, confirm: () -> Bool = { true }) -> Wait {
         let queue = kqueue()
         guard queue >= 0 else { return .failed }
         defer { close(queue) }
 
+        // Registering and waiting are two calls, so that the check sits between them. With no room for an event, a pid
+        // that is gone comes back as a failed call with `errno` `ESRCH`; both forms below mean it is not there.
         var change = kevent(ident: UInt(pid), filter: Int16(EVFILT_PROC), flags: UInt16(EV_ADD | EV_ONESHOT),
                             fflags: UInt32(NOTE_EXIT), data: 0, udata: nil)
+        while kevent(queue, &change, 1, nil, 0, nil) < 0 {
+            if errno == EINTR { continue }
+            return errno == ESRCH ? .exited : .failed
+        }
+        if !confirm() { return .exited }
+
         let deadline = timeout.map { DispatchTime.now().uptimeNanoseconds + UInt64(max(0, $0) * 1_000_000_000) }
         while true {
             var event = kevent()
@@ -171,10 +234,8 @@ enum UltraWatchdog {
                 let left = deadline > now ? deadline - now : 0
                 remaining = timespec(tv_sec: Int(left / 1_000_000_000), tv_nsec: Int(left % 1_000_000_000))
             }
-            // The request and the wait are one call. A pid that is gone is reported as an event with `EV_ERROR` and
-            // `ESRCH` in `data`, or as a failed call with `errno` `ESRCH`: both mean the process is not there.
-            let count = deadline == nil ? kevent(queue, &change, 1, &event, 1, nil)
-                                        : kevent(queue, &change, 1, &event, 1, &remaining)
+            let count = deadline == nil ? kevent(queue, nil, 0, &event, 1, nil)
+                                        : kevent(queue, nil, 0, &event, 1, &remaining)
             if count < 0 {
                 if errno == EINTR { continue }
                 return errno == ESRCH ? .exited : .failed

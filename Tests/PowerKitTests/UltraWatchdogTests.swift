@@ -9,6 +9,11 @@ final class UltraWatchdogTests: XCTestCase {
 
     // ── Fakes ───────────────────────────────────────────────────────────────
 
+    /// One list of calls shared by several fakes, so a test can say which came first.
+    private final class CallLog {
+        var entries: [String] = []
+    }
+
     private final class FakeFreezer: ProcessFreezing {
         struct Call: Equatable {
             var pid: pid_t
@@ -16,18 +21,40 @@ final class UltraWatchdogTests: XCTestCase {
         }
         var stopped: [Call] = []
         var resumed: [Call] = []
-        func stop(pid: pid_t, startTime: UInt64) -> Bool { stopped.append(Call(pid: pid, startTime: startTime)); return true }
-        func resume(pid: pid_t, startTime: UInt64) -> Bool { resumed.append(Call(pid: pid, startTime: startTime)); return true }
+        private let log: CallLog?
+        init(log: CallLog? = nil) { self.log = log }
+        func stop(pid: pid_t, startTime: UInt64) -> Bool {
+            stopped.append(Call(pid: pid, startTime: startTime))
+            log?.entries.append("stop \(pid)")
+            return true
+        }
+        func resume(pid: pid_t, startTime: UInt64) -> Bool {
+            resumed.append(Call(pid: pid, startTime: startTime))
+            log?.entries.append("resume \(pid)@\(startTime)")
+            return true
+        }
     }
 
     private final class FakeBacklight: BacklightControl {
         var value: Float?
         var reads = 0
         var sets: [Float] = []
-        init(_ value: Float?) { self.value = value }
-        func brightness() -> Float? { reads += 1; return value }
-        func setBrightness(_ v: Float) -> Bool { sets.append(v); value = v; return true }
+        private let log: CallLog?
+        init(_ value: Float?, log: CallLog? = nil) { self.value = value; self.log = log }
+        func brightness() -> Float? { reads += 1; log?.entries.append("brightness()"); return value }
+        func setBrightness(_ v: Float) -> Bool { sets.append(v); log?.entries.append("setBrightness(\(v))"); value = v; return true }
     }
+
+    /// A watchdog process that is a few values and nothing else: no process is started or ended.
+    private final class FakeWatchdogProcess: WatchdogProcess {
+        let pid: pid_t
+        var isRunning: Bool
+        var terminated = 0
+        init(pid: pid_t, isRunning: Bool = true) { self.pid = pid; self.isRunning = isRunning }
+        func terminate() { terminated += 1; isRunning = false }
+    }
+
+    private struct LaunchRefused: Error {}
 
     private final class FakeStore: UltraRecordStoring {
         var record: UltraRecord?
@@ -160,6 +187,28 @@ final class UltraWatchdogTests: XCTestCase {
         XCTAssertEqual(store.record, sessionRecord())
     }
 
+    func testUndoResumesEveryProcessBeforeTouchingTheBacklight() {
+        // The Mac is least responsive when Anode died with the lid shut or the display asleep; the backlight's start-up
+        // and its first read must not hold up a single continue.
+        let log = CallLog()
+        let freezer = FakeFreezer(log: log)
+        let panel = FakeBacklight(BrightnessCeiling.ceiling, log: log)
+        func makePanel() -> BacklightControl { log.entries.append("backlight built"); return panel }
+        UltraWatchdog.undo(from: FakeStore(sessionRecord()), freezer: freezer, backlight: makePanel())
+        XCTAssertEqual(log.entries, ["resume 400@4000", "resume 401@4010", "resume 500@5000",
+                                     "backlight built", "brightness()", "setBrightness(0.8)"])
+    }
+
+    func testTheBacklightIsNeverBuiltWhenThereIsNoBrightnessToPutBack() {
+        var built = 0
+        func makePanel() -> BacklightControl { built += 1; return FakeBacklight(0.5) }
+        let freezer = FakeFreezer()
+        UltraWatchdog.undo(from: FakeStore(sessionRecord(brightnessBefore: nil)), freezer: freezer, backlight: makePanel())
+        XCTAssertEqual(freezer.resumed.count, 3)
+        UltraWatchdog.undo(from: FakeStore(nil), freezer: freezer, backlight: makePanel())
+        XCTAssertEqual(built, 0)
+    }
+
     // ── Waiting for Anode to end ────────────────────────────────────────────
 
     func testTheWaitEndsWhenTheProcessEnds() throws {
@@ -181,5 +230,101 @@ final class UltraWatchdogTests: XCTestCase {
     func testTheWaitDoesNotEndWhileTheProcessLives() {
         // This test process lives for as long as the wait does.
         XCTAssertEqual(UltraWatchdog.waitForExit(of: getpid(), timeout: 0.2), .timedOut)
+    }
+
+    func testAParentThatIsNoLongerTheOneGivenCountsAsGone() {
+        XCTAssertFalse(UltraWatchdog.parentHasEnded(given: 123, current: 123))
+        // An orphan is re-parented: to launchd when its parent ended, and a pid reused since is not the parent either.
+        XCTAssertTrue(UltraWatchdog.parentHasEnded(given: 123, current: 1))
+        XCTAssertTrue(UltraWatchdog.parentHasEnded(given: 123, current: 456))
+    }
+
+    func testTheWaitAsksOnceTheEventIsRegisteredWhetherItIsStillTheParent() {
+        // Not the parent any more: gone, though the process watched lives (this test process).
+        XCTAssertEqual(UltraWatchdog.waitForExit(of: getpid(), timeout: 5, confirm: { false }), .exited)
+        // Still the parent: the wait goes on.
+        XCTAssertEqual(UltraWatchdog.waitForExit(of: getpid(), timeout: 0.1, confirm: { true }), .timedOut)
+    }
+
+    // ── Starting and stopping it from Anode ─────────────────────────────────
+
+    private let recordURL = URL(fileURLWithPath: "/x/y.json")
+
+    func testAWatchdogThatFailsToLaunchIsReportedAsNotStarted() {
+        var attempts = 0
+        var logged: [String] = []
+        let watchdog = LiveUltraWatchdog(recordURL: recordURL, log: { logged.append($0) },
+                                         launch: { _ in attempts += 1; throw LaunchRefused() })
+        XCTAssertFalse(watchdog.start())
+        XCTAssertNil(watchdog.pid)
+        XCTAssertEqual(attempts, 1)
+        XCTAssertEqual(logged.count, 1, "said, not silent")
+    }
+
+    func testAWatchdogThatLaunchesIsReportedWithItsPid() throws {
+        var given: [String] = []
+        let watchdog = LiveUltraWatchdog(recordURL: recordURL, launch: { arguments in
+            given = arguments
+            return FakeWatchdogProcess(pid: 4321)
+        })
+        XCTAssertTrue(watchdog.start())
+        XCTAssertEqual(watchdog.pid, 4321)
+        // Started for this process and this record.
+        let request = try XCTUnwrap(UltraWatchdog.parse(["Anode"] + given))
+        XCTAssertEqual(request.parent, getpid())
+        XCTAssertEqual(request.recordPath, "/x/y.json")
+    }
+
+    func testAProcessThatIsNotRunningRightAfterTheLaunchIsNotAStartedWatchdog() {
+        let watchdog = LiveUltraWatchdog(recordURL: recordURL, launch: { _ in FakeWatchdogProcess(pid: 4321, isRunning: false) })
+        XCTAssertFalse(watchdog.start())
+        XCTAssertNil(watchdog.pid)
+    }
+
+    func testStartingTwiceLaunchesOnce() {
+        var launched = 0
+        let watchdog = LiveUltraWatchdog(recordURL: recordURL, launch: { _ in launched += 1; return FakeWatchdogProcess(pid: 4321) })
+        XCTAssertTrue(watchdog.start())
+        XCTAssertTrue(watchdog.start(), "one is running: that counts")
+        XCTAssertEqual(launched, 1)
+        XCTAssertEqual(watchdog.pid, 4321)
+    }
+
+    func testAWatchdogThatEndedByItselfIsStartedAgain() {
+        var launched: [FakeWatchdogProcess] = []
+        let watchdog = LiveUltraWatchdog(recordURL: recordURL, launch: { _ in
+            let process = FakeWatchdogProcess(pid: pid_t(4000 + launched.count))
+            launched.append(process)
+            return process
+        })
+        XCTAssertTrue(watchdog.start())
+        launched[0].isRunning = false
+        XCTAssertNil(watchdog.pid, "none runs now")
+        XCTAssertTrue(watchdog.start())
+        XCTAssertEqual(launched.count, 2)
+        XCTAssertEqual(watchdog.pid, 4001)
+    }
+
+    func testStopEndsItAndForgetsItsPid() {
+        let process = FakeWatchdogProcess(pid: 4321)
+        let watchdog = LiveUltraWatchdog(recordURL: recordURL, launch: { _ in process })
+        watchdog.stop()                      // none runs yet: nothing to do
+        XCTAssertEqual(process.terminated, 0)
+        XCTAssertTrue(watchdog.start())
+        watchdog.stop()
+        XCTAssertEqual(process.terminated, 1)
+        XCTAssertNil(watchdog.pid)
+        watchdog.stop()
+        XCTAssertEqual(process.terminated, 1, "not twice")
+    }
+
+    func testStopLeavesAProcessThatEndedAloneAndStillForgetsIt() {
+        let process = FakeWatchdogProcess(pid: 4321)
+        let watchdog = LiveUltraWatchdog(recordURL: recordURL, launch: { _ in process })
+        XCTAssertTrue(watchdog.start())
+        process.isRunning = false
+        watchdog.stop()
+        XCTAssertEqual(process.terminated, 0, "ended already: no signal to a pid that may mean something else now")
+        XCTAssertNil(watchdog.pid)
     }
 }
