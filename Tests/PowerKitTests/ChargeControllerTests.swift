@@ -4444,16 +4444,92 @@ final class ChargeControllerTests: XCTestCase {
         let c = make()
         for _ in 0..<6 { c.periodicTick() }
         XCTAssertEqual(c.status, .refused(ChargeController.notHoldingText(wanted: 87, inForce: 90)))
-        XCTAssertEqual(lines.filter { $0.contains("not setting it again") }.count, 1, lines.joined(separator: "\n"))
+        XCTAssertEqual(lines.filter { $0.contains("is not set again") }.count, 1, lines.joined(separator: "\n"))
         let sent = helper.commands.count
         for _ in 0..<4 { c.periodicTick() }
         XCTAssertEqual(helper.commands.count, sent, "the limit was sent again after Charge Control said it would stop")
-        XCTAssertEqual(lines.filter { $0.contains("not setting it again") }.count, 1)
+        XCTAssertEqual(lines.filter { $0.contains("is not set again") }.count, 1)
         // A limit macOS takes itself: set, read back, and the sentence goes.
         settings.chargeLimit = 85
         c.periodicTick()
         XCTAssertEqual(client.state, on(85))
         XCTAssertNotEqual(c.status, .refused(ChargeController.notHoldingText(wanted: 87, inForce: 90)))
+    }
+
+    /// The value set ahead of a helper's 97 is 95, and when the helper's value never shows, macOS keeps 95: below what
+    /// was asked. Giving up must not leave it there: the nearest value at or above 97 goes in (100, no limit), the
+    /// section says so, nothing is sent again, and Optimized Battery Charging is still kept off meanwhile.
+    func testALimitJustBelowFullThatNeverLandsIsNotLeftBelowIt() {
+        settings.chargeLimit = 97
+        // The helper says yes and its value never shows (`landsOn` is not set).
+        let c = make()
+        XCTAssertEqual(client.state?.mclLimit, 95, "the value ahead of the helper's")
+        for _ in 0..<6 { c.periodicTick() }
+        XCTAssertEqual(client.state?.mclEnabled, false, "left on, below the 97 that was asked for: \(String(describing: client.state))")
+        XCTAssertEqual(client.state?.mclLimit, 100)
+        XCTAssertEqual(c.status, .refused(ChargeController.notHoldingText(wanted: 97, inForce: 100)))
+        XCTAssertTrue(ChargeController.notHoldingText(wanted: 97, inForce: 100).contains("no limit is in force"))
+        let sent = helper.commands.count, sets = client.limitCalls.count
+        for _ in 0..<4 { c.periodicTick() }
+        XCTAssertEqual(helper.commands.count, sent, "sent again after Charge Control said it would stop")
+        XCTAssertEqual(client.limitCalls.count, sets, "set again after Charge Control said it would stop")
+        XCTAssertEqual(lines.filter { $0.contains("is not set again") }.count, 1, lines.joined(separator: "\n"))
+        // Optimized Battery Charging turned on from outside while Charge Control has stopped sending the limit.
+        client.state?.optimizedChargingEnabled = true
+        c.periodicTick()
+        XCTAssertEqual(client.state?.optimizedChargingEnabled, false)
+        XCTAssertEqual(c.status, .refused(ChargeController.notHoldingText(wanted: 97, inForce: 100)))
+    }
+
+    /// A wake clears what is booked, and the helper's value is asked for again. With macOS's limit already on, nothing
+    /// is set ahead of it: a 95 before a 97 would hold the battery lower than asked for a moment on every wake.
+    func testAWakeDoesNotPutALowerValueInAheadOfTheHelpers() {
+        settings.chargeLimit = 97
+        helper.landsOn = client
+        let c = make()
+        XCTAssertEqual(client.state, on(97))
+        let before = client.limitCalls
+        c.willSleep()
+        c.didWake()
+        XCTAssertEqual(client.state, on(97))
+        XCTAssertEqual(client.limitCalls, before, "a value was set through macOS on the wake: \(client.limitCalls)")
+        XCTAssertTrue(client.history.allSatisfy { $0.mclLimit >= 95 })
+    }
+
+    /// Not seen on macOS 27.0, where a set turns the switch on: an OS where setting a limit leaves the switch off.
+    /// The limit still ends on and at the wanted value, by both routes, and is not sent again every pass.
+    func testWhereSettingALimitDoesNotTurnTheSwitchOnItIsTurnedOnAndSetAgain() {
+        client.setTurnsTheSwitchOn = false
+        settings.chargeLimit = 85
+        let c = make()
+        XCTAssertEqual(client.state, on(85))
+        XCTAssertEqual(client.turnOnCalls, 1)
+        let sets = client.limitCalls.count
+        for _ in 0..<4 { c.periodicTick() }
+        XCTAssertEqual(client.limitCalls.count, sets, "the limit was set again although macOS holds it")
+        XCTAssertFalse(lines.contains { $0.contains("changed outside") }, lines.joined(separator: "\n"))
+        // And a value only the helper can set.
+        helper.landsOn = client
+        settings.chargeLimit = 100
+        c.periodicTick()
+        XCTAssertEqual(client.state?.mclEnabled, false)
+        settings.chargeLimit = 87
+        c.periodicTick()
+        XCTAssertEqual(client.state, on(87))
+    }
+
+    func testOnTheMeasuredOSTheSwitchIsNeverTurnedOnByItself() {
+        settings.chargeLimit = 85
+        helper.landsOn = client
+        let c = make()
+        settings.chargeLimit = 63
+        c.periodicTick()
+        settings.chargeLimit = 100
+        c.periodicTick()
+        settings.chargeLimit = 97
+        c.periodicTick()
+        XCTAssertEqual(client.state, on(97))
+        XCTAssertEqual(client.turnOnCalls, 0, "enabling sets the limit to 80; nothing may call it where a set is enough")
     }
 
     /// And when macOS comes to show the wanted limit after all, the sentence goes by itself.
@@ -4823,6 +4899,12 @@ final class RecordingChargeClient: ChargeLimitClient {
         // As the real client behaves (see `FakeChargeLimitClient`).
         state?.mclLimit = percent
         state?.mclEnabled = percent < 100
+        return true
+    }
+
+    func turnLimitOn() -> Bool {
+        state?.mclEnabled = true
+        state?.mclLimit = 80
         return true
     }
 

@@ -94,7 +94,7 @@ final class NativeChargeLimitTests: XCTestCase {
 /// was measured on Mac17,9, macOS 27.0, 2026-11-13 (unprivileged calls, each read back from the client and from
 /// `pmset -g battlimit`):
 ///   * enabling the limit does not leave the limit alone: it sets it to 80 every time (95 then enable gave 80, and so
-///     did 90 then enable), which is why the client has no way to enable it, and this fake none either;
+///     did 90 then enable), which is why nothing enables it except `setLimitInForce`, on an OS where a set leaves the switch off;
 ///   * `setLimit(n)` with n below 100 turns the switch on by itself (off, 100 then set 90 gave on, 90), and
 ///     `setLimit(100)` turns it off;
 ///   * disabling gives off, 100.
@@ -108,6 +108,12 @@ public final class FakeChargeLimitClient: ChargeLimitClient {
     /// How many times the switch was asked to turn off. (The client has no way to turn it on: that is `enableMCL`,
     /// which sets the limit to 80; the limit goes in by being set.)
     public private(set) var turnOffCalls = 0
+    /// How many times the switch was turned on by itself (`turnLimitOn`, which sets the limit to 80). Zero on the OS
+    /// that was measured, where a set turns it on; only `setLimitInForce` calls it, and only when it does not.
+    public private(set) var turnOnCalls = 0
+    /// False models an OS where setting a limit below 100 leaves the switch as it was (not seen; macOS 27.0 turns it
+    /// on). Charge Control has to end "on, n" there too.
+    public var setTurnsTheSwitchOn = true
     public private(set) var optimizedChargingCalls: [Bool] = []
     /// The state after every setter that changed it, in order: what macOS held on the way, not only where it ended.
     public private(set) var history: [NativeChargeState] = []
@@ -123,7 +129,20 @@ public final class FakeChargeLimitClient: ChargeLimitClient {
         limitCalls.append(percent)
         guard succeeds else { return false }
         state?.mclLimit = percent
-        state?.mclEnabled = percent < NativeChargeLimit.clientValues.last!
+        if percent >= NativeChargeLimit.clientValues.last! {
+            state?.mclEnabled = false
+        } else if setTurnsTheSwitchOn {
+            state?.mclEnabled = true
+        }
+        remember()
+        return true
+    }
+
+    public func turnLimitOn() -> Bool {
+        turnOnCalls += 1
+        guard succeeds else { return false }
+        state?.mclEnabled = true
+        state?.mclLimit = 80
         remember()
         return true
     }

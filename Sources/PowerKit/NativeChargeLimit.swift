@@ -45,7 +45,26 @@ public protocol ChargeLimitClient: AnyObject {
     func setLimit(_ percent: Int) -> Bool
     /// Turns the limit's switch off, which gives "off, 100" (c).
     func turnLimitOff() -> Bool
+    /// Turns the limit's switch on, WHICH SETS THE LIMIT TO 80 (a). Never called on its own: only by
+    /// `setLimitInForce`, which sets the wanted limit again straight after. False where the OS has no such call.
+    func turnLimitOn() -> Bool
     func setOptimizedCharging(_ on: Bool) -> Bool
+}
+
+public extension ChargeLimitClient {
+    /// Set `percent` and leave it in force: the one way a limit is set.
+    ///
+    /// On the Mac this was measured on (Mac17,9, macOS 27.0) setting a limit below 100 turns the switch on by itself
+    /// (b), and nothing more happens here. Charge Control also runs on macOS 26.4 and later, where that was not
+    /// measured: if the switch reads off after the set, it is turned on (which makes the limit 80) and the limit is set
+    /// again, so the limit ends on and at `percent` either way. Without this a limit could be stored and not in force
+    /// while Charge Control says it is held.
+    func setLimitInForce(_ percent: Int) -> Bool {
+        guard setLimit(percent) else { return false }
+        guard percent < 100, let after = read(), !after.mclEnabled else { return true }
+        guard turnLimitOn(), setLimit(percent) else { return false }
+        return read()?.mclEnabled ?? true
+    }
 }
 
 public enum NativeChargeLimit {
@@ -101,6 +120,7 @@ public final class PowerUIChargeClient: ChargeLimitClient {
     private let isLimitEnabled: Call<GetUInt64>
     private let setLimitValue: Call<SetUInt8>
     private let disableLimit: Call<Action>
+    private let enableLimit: Call<Action>?
     private let isOptimizedEnabled: Call<GetUInt64>
     private let enableOptimized: Call<Action>
     private let disableOptimized: Call<Action>
@@ -185,18 +205,23 @@ public final class PowerUIChargeClient: ChargeLimitClient {
                   .takeRetainedValue()
         else { return fail("the class \(className) could not make a client") }
         return .success(PowerUIChargeClient(object: made, getLimit: getLimit, isLimitEnabled: isLimitEnabled,
-                                            setLimitValue: setLimitValue, disableLimit: disableLimit, isOptimizedEnabled: isOptimizedEnabled,
+                                            setLimitValue: setLimitValue, disableLimit: disableLimit,
+                                            // Optional: only `setLimitInForce` uses it, on an OS where setting a limit
+                                            // leaves the switch off. A client without it still opens.
+                                            enableLimit: get(bind("enableMCL:", "B24@0:8^@16", Action.self)),
+                                            isOptimizedEnabled: isOptimizedEnabled,
                                             enableOptimized: enableOptimized, disableOptimized: disableOptimized))
     }
 
     private init(object: AnyObject, getLimit: Call<GetUInt8>, isLimitEnabled: Call<GetUInt64>,
-                 setLimitValue: Call<SetUInt8>, disableLimit: Call<Action>,
+                 setLimitValue: Call<SetUInt8>, disableLimit: Call<Action>, enableLimit: Call<Action>?,
                  isOptimizedEnabled: Call<GetUInt64>, enableOptimized: Call<Action>, disableOptimized: Call<Action>) {
         self.object = object
         self.getLimit = getLimit
         self.isLimitEnabled = isLimitEnabled
         self.setLimitValue = setLimitValue
         self.disableLimit = disableLimit
+        self.enableLimit = enableLimit
         self.isOptimizedEnabled = isOptimizedEnabled
         self.enableOptimized = enableOptimized
         self.disableOptimized = disableOptimized
@@ -221,6 +246,8 @@ public final class PowerUIChargeClient: ChargeLimitClient {
     }
 
     public func turnLimitOff() -> Bool { run(disableLimit) }
+
+    public func turnLimitOn() -> Bool { enableLimit.map(run) ?? false }
 
     public func setOptimizedCharging(_ on: Bool) -> Bool { run(on ? enableOptimized : disableOptimized) }
 

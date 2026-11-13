@@ -458,7 +458,11 @@ final class ChargeController {
     }
     /// macOS shows another limit than the one that was set, three passes running.
     static func notHoldingText(wanted: Int, inForce: Int) -> String {
-        "macOS is not holding the charge limit of \(wanted)%: \(inForce)% is in force. Change the limit to try again."
+inForce >= noLimit
+            ? "macOS is not holding the charge limit of \(wanted)%, so no limit is in force. Anode tries again when the "
+              + "limit is changed."
+            : "macOS is not holding the charge limit of \(wanted)%: \(inForce)% is in force. Anode tries again when the "
+              + "limit is changed."
     }
     static func limitRefusedText(_ limit: Int, _ why: String) -> String {
         "The Anode helper did not set the limit to \(limit)%: \(plainWords(why))"
@@ -1138,7 +1142,7 @@ final class ChargeController {
     private func restoreLimit(_ record: NativeChargeState, client c: ChargeLimitClient, deadline: Date) -> LimitRestore {
         guard record.mclEnabled else { return c.turnLimitOff() ? .restored : .kept }
         let limit = record.mclLimit
-        if NativeChargeLimit.isClientSettable(limit) { return c.setLimit(limit) ? .restored : .kept }
+        if NativeChargeLimit.isClientSettable(limit) { return c.setLimitInForce(limit) ? .restored : .kept }
         let nearest = Self.nearestClientValue(atOrAbove: limit)
         var noHelper = !(helper.available || helper.installed)
         // With the switch off the helper's value alone would land with it off: the nearest value above goes first.
@@ -1154,7 +1158,7 @@ final class ChargeController {
             noHelper = false
             why = "the helper did not put the limit back to \(limit): " + (r?.message ?? "no answer in time")
         }
-        let landed = c.setLimit(nearest)
+        let landed = c.setLimitInForce(nearest)
         if noHelper, landed { return .bestThisMacCanDo(nearest) }
         log("\(why); set \(nearest) for now, and the record is kept to try again at the next launch")
         return .kept
@@ -1737,6 +1741,14 @@ final class ChargeController {
             plannedWriteSeen = plan
             appliedLimit = plan.limit
         }
+        // Already said that macOS will not hold this limit, and macOS still shows what was put in its place: nothing is
+        // sent again (see `notHolding`). Optimized Battery Charging is still Charge Control's to keep off.
+        if let n = notHolding, appliedLimit == n.wanted, found.mclLimit == n.inForce {
+            if found.optimizedChargingEnabled, c.setOptimizedCharging(false) {
+                log("Optimized Battery Charging was turned on outside Charge Control; turned off again")
+            }
+            return
+        }
         var changed: [String] = []
         let offByItself = appliedLimit == Self.noLimit && found.mclLimit == Self.noLimit
         // A limit only the helper can set, on its way from nothing in force or from 100 (where macOS keeps the switch
@@ -1772,11 +1784,19 @@ final class ChargeController {
         } else if let mine = appliedLimit, !limitInFlight, found.mclLimit != mine {
             driftRepeats += 1
             if driftRepeats >= Self.driftTries {
-                if notHolding == nil {
-                    log("macOS still shows a limit of \(found.mclLimit)%, not \(mine)%, after it was put back "
-                        + "\(Self.driftTries) times; not setting it again until the limit changes")
+                // Never left lower than asked: if what macOS shows is below the wanted limit (the 95 set ahead of a
+                // helper's 97 that never landed, say), the nearest value macOS takes at or above it goes in, which
+                // for 96 to 99 is 100, no limit.
+                var inForce = found.mclLimit
+                if inForce < mine {
+                    let above = Self.nearestClientValue(atOrAbove: mine)
+                    if c.setLimitInForce(above) { inForce = above }
                 }
-                notHolding = (mine, found.mclLimit)
+                log("macOS still shows a limit of \(found.mclLimit)%, not \(mine)%, after it was put back "
+                    + "\(Self.driftTries) times; \(inForce == Self.noLimit ? "no limit" : "\(inForce)%") is in force, and "
+                    + "it is not set again until the limit changes")
+                notHolding = (mine, inForce)
+                if !c.setOptimizedCharging(false) { log("macOS would not turn Optimized Battery Charging off") }
                 updateStatus()
                 return
             }
@@ -2597,13 +2617,14 @@ final class ChargeController {
     /// preference write stores is read back by the client at once. Nothing was measured of what the helper's write does
     /// to the switch.
     ///
-    /// So when the switch reads off, cannot be read, or nothing is booked as in force, the nearest value macOS takes at
-    /// or above `want` is set first (never lower than asked, on the way too) and the helper's value follows. With the
-    /// switch on and a limit booked, the helper alone is asked.
+    /// So when the switch does not read on (it is off, or cannot be read), a value macOS takes itself is set first
+    /// (`standInValue`) and the helper's value follows. With the switch on the helper alone is asked, whatever is
+    /// booked: after a wake nothing is booked, and a 95 set ahead of a 97 then would hold the battery lower than asked
+    /// for a moment on every wake.
     private func standInForTheHelper(_ want: Int, client c: ChargeLimitClient) {
-        if appliedLimit != nil, c.read()?.mclEnabled == true { return }
+        if c.read()?.mclEnabled == true { return }
         let standIn = Self.standInValue(for: want)
-        if !c.setLimit(standIn) { log("macOS would not take \(standIn)% ahead of the helper's \(want)%") }
+        if !c.setLimitInForce(standIn) { log("macOS would not take \(standIn)% ahead of the helper's \(want)%") }
     }
 
     /// The value set through macOS itself to turn the switch on ahead of a helper's `want`: the nearest it takes at or
@@ -2618,7 +2639,7 @@ final class ChargeController {
     private func setClientLimit(_ value: Int, client c: ChargeLimitClient, reason: ChargeReason, wanted: Int? = nil) {
         guard NativeChargeLimit.isClientSettable(value) else { return }
         let from = appliedLimit
-        if c.setLimit(value) {
+        if c.setLimitInForce(value) {
             appliedLimit = value
             macOSRefusedLimit = nil
             let note = wanted.map { "; \($0) needs the helper" } ?? ""
@@ -2878,6 +2899,7 @@ final class ChargeHelperAdapter: ChargeHelperLink {
 
     func letGo() {
         token = nil
+        resumes += 1    // looks still waiting after an install belong to the follow that has just ended
         changed = nil
         wantOpen = false
         version = nil
