@@ -1,5 +1,6 @@
 import XCTest
 import AppKit
+import Carbon.HIToolbox
 @testable import AnodeApp
 @testable import PowerKit
 
@@ -486,7 +487,7 @@ final class UltraLowPowerFeatureTests: XCTestCase {
         var installAsks = 0
         var installReport: ((String) -> Void)?
         var appNames: [String: String] = [:]
-        var shortcutLabel = "⌃⌥⌘U"
+        var shortcutLabel: String? = "⌃⌥⌘U"
     }
 
     private func section(_ probe: Probe = Probe(), ticked: Bool = false, buildView: Bool = true) throws
@@ -706,7 +707,30 @@ final class UltraLowPowerFeatureTests: XCTestCase {
                                           + "brightness or lower, until you turn it off."), f.summary)
         XCTAssertFalse(f.summary.contains("every app"), f.summary)
         XCTAssertFalse(f.summary.contains("dim"), f.summary)
-        XCTAssertTrue(f.summary.contains("⌃⌥⌘J"), "the key the owner has chosen: \(f.summary)")
+        XCTAssertTrue(f.summary.contains("(or choose it from a menu, or press ⌃⌥⌘J)"), "the key the owner has chosen: \(f.summary)")
+    }
+
+    /// A key the owner has cleared does nothing, so the summary does not send them to it.
+    func testTheSummaryDropsThePressClauseWhenThereIsNoKey() throws {
+        let probe = Probe()
+        probe.shortcutLabel = nil
+        let (f, _) = try section(probe)
+        XCTAssertTrue(f.summary.hasPrefix("Freezes the apps and tools you are not using, and holds the screen at half "
+                                          + "brightness or lower, until you turn it off."), f.summary)
+        XCTAssertTrue(f.summary.contains("press Start (or choose it from a menu) and confirm"), f.summary)
+        XCTAssertFalse(f.summary.contains("⌃"), f.summary)
+        XCTAssertFalse(f.summary.contains("or press"), f.summary)
+    }
+
+    /// The key the summary names is the one the store holds: a cleared key is nil, not the default again.
+    func testTheKeyIsReadFromTheStoreAndAClearedKeyIsNone() {
+        let store = ShortcutStore(defaults: TestDefaults.throwaway("ultra-summary"))
+        XCTAssertEqual(UltraLowPowerFeature.keyLabel(in: store), "⌃⌥⌘U")
+        store.assign(Shortcut(key: kVK_ANSI_J, modifiers: Shortcut.control | Shortcut.command), to: ShortcutCommands.ultraToggle,
+                     among: ShortcutCommands.all)
+        XCTAssertEqual(UltraLowPowerFeature.keyLabel(in: store), "⌃⌘J")
+        store.assign(nil, to: ShortcutCommands.ultraToggle, among: ShortcutCommands.all)
+        XCTAssertNil(UltraLowPowerFeature.keyLabel(in: store), "cleared: the default must not come back")
     }
 
     // ── The always-keep list ────────────────────────────────────────────────

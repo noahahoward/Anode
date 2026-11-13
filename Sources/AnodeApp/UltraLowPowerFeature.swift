@@ -205,11 +205,13 @@ final class UltraIcon: NSObject, UltraIconPresenting {
 final class UltraLowPowerFeature: BetaFeature {
 
     let title = "Ultra Low Power Mode"
-    /// Read once, when the window is built, so it names the key the owner has chosen at that time.
+    /// Read once, when the window is built, so it names the key the owner has chosen at that time, and no key at all when
+    /// they have cleared it.
     var summary: String {
-        "Freezes the apps and tools you are not using, and holds the screen at half brightness or lower, until you turn it "
-            + "off. Ticking the box only makes it available: it starts when you press Start (or choose it from a menu, or "
-            + "press \(shortcutLabel())) and confirm the list of what is kept and what is frozen."
+        let key = shortcutLabel().map { ", or press \($0)" } ?? ""
+        return "Freezes the apps and tools you are not using, and holds the screen at half brightness or lower, until you turn "
+            + "it off. Ticking the box only makes it available: it starts when you press Start (or choose it from a menu\(key)) "
+            + "and confirm the list of what is kept and what is frozen."
     }
     var layoutChanged: (() -> Void)?
 
@@ -222,7 +224,8 @@ final class UltraLowPowerFeature: BetaFeature {
     private let controller: () -> UltraLowPowerController?
     private let candidates: (@escaping ([FreezeGroup]) -> Void) -> Void
     private let appName: (String) -> String?
-    private let shortcutLabel: () -> String
+    /// The key that asks for the mode; nil when the owner has cleared it.
+    private let shortcutLabel: () -> String?
     private let installHelper: (@escaping (String) -> Void) -> Void
     private var tokens: [AnyObject] = []
     private var changeObserver: NSObjectProtocol?
@@ -249,7 +252,7 @@ final class UltraLowPowerFeature: BetaFeature {
          controller: @escaping () -> UltraLowPowerController? = { UltraLowPowerController.current },
          candidates: @escaping (@escaping ([FreezeGroup]) -> Void) -> Void = { $0([]) },
          appName: @escaping (String) -> String? = { UltraLowPowerFeature.runningAppName(bundleID: $0) },
-         shortcutLabel: @escaping () -> String = { UltraLowPowerFeature.liveShortcutLabel() },
+         shortcutLabel: @escaping () -> String? = { UltraLowPowerFeature.keyLabel(in: .shared) },
          installHelper: @escaping (@escaping (String) -> Void) -> Void = { report in
              (NSApplication.shared.delegate as? AppDelegate)?.fansPane.control.installHelper(report: report)
          }) {
@@ -267,8 +270,10 @@ final class UltraLowPowerFeature: BetaFeature {
 
     // ── Words ───────────────────────────────────────────────────────────────
 
-    static func liveShortcutLabel() -> String {
-        (ShortcutStore.shared.shortcut(for: ShortcutCommands.ultraToggle) ?? ShortcutCommands.ultraToggle.defaultShortcut).label
+    /// The key the store holds for the mode: the default until the owner changes it, nil once they have cleared it (a
+    /// cleared key does nothing, so the default must not be put back in its place).
+    static func keyLabel(in store: ShortcutStore) -> String? {
+        store.shortcut(for: ShortcutCommands.ultraToggle)?.label
     }
 
     /// What was measured, on the owner's 14-inch MacBook Pro (10.4, 4.3 and 2.8 W, rounded), and what was not. The mode
