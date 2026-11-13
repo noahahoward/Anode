@@ -92,6 +92,9 @@ public final class Settings {
         /// Ready By: the switch, and the time of day, in minutes after local midnight.
         public static let chargeReadyByEnabled = "chargeReadyByEnabled"
         public static let chargeReadyByMinutes = "chargeReadyByMinutes"
+        /// Ultra Low Power Mode: the switch, and the group ids the owner always wants kept running.
+        public static let ultraLowPowerEnabled = "ultraLowPowerEnabled"
+        public static let ultraLowPowerAlwaysKeep = "ultraLowPowerAlwaysKeep"
         /// Wildcard — an observer registered on this key fires for every change.
         public static let any = "*"
     }
@@ -227,6 +230,8 @@ public final class Settings {
         /// OFF: holding the battery back until it has to charge is something the person asks for. 7:00 once it is on.
         static let chargeReadyByEnabled = false
         static let chargeReadyByMinutes = ChargePolicy.defaultReadyByMinutes
+        /// OFF: it freezes background apps and dims the screen, so the owner turns it on.
+        static let ultraLowPowerEnabled = false
         /// Matches what the status item shows today: smoothed drain + runtime.
         // Must be real, currently-registered metric IDs. Stale ones are invisible
         // in the picker and get preserved forever as "unknown" bindings.
@@ -395,6 +400,8 @@ public final class Settings {
         var chargeMaxTemperatureC: Double
         var chargeReadyByEnabled: Bool
         var chargeReadyByMinutes: Int
+        var ultraLowPowerEnabled: Bool
+        var ultraLowPowerAlwaysKeep: [String]
     }
     private var snapshot: Values
     private var defaultsObserver: NSObjectProtocol?
@@ -1088,6 +1095,41 @@ public final class Settings {
                                readyByEnabled: chargeReadyByEnabled, readyByMinutes: chargeReadyByMinutes)
     }
 
+    // ── Ultra Low Power Mode (Beta Features) ────────────────────────────────
+
+    /// Whether Ultra Low Power Mode is on (Beta Features). Off until asked for: it freezes background apps and dims the
+    /// screen while it runs.
+    public var ultraLowPowerEnabled: Bool {
+        get { Settings.readBool(defaults, Key.ultraLowPowerEnabled, Default.ultraLowPowerEnabled) }
+        set { writeBool(Key.ultraLowPowerEnabled, \.ultraLowPowerEnabled, newValue, Default.ultraLowPowerEnabled) }
+    }
+
+    /// Ids of the groups the owner always wants kept running, whatever the mode would otherwise freeze. Opaque to this
+    /// file, like the other id lists: a blank or repeated id is dropped, the order is the owner's, and an id for a
+    /// group that is not on this Mac right now is kept for when it is.
+    ///
+    /// Stored as JSON text, like the menu bar hider's arrangement, so one value on disk is one list and a half-written
+    /// or hand-edited value cannot read as part of one: anything that is not a JSON list of strings reads as empty.
+    public var ultraLowPowerAlwaysKeep: [String] {
+        get { Settings.readAlwaysKeep(defaults) }
+        set {
+            let clean = Settings.sanitizeIDs(newValue)
+            guard clean != ultraLowPowerAlwaysKeep,
+                  let data = try? JSONEncoder().encode(clean),
+                  let text = String(data: data, encoding: .utf8) else { return }
+            lock.lock(); snapshot.ultraLowPowerAlwaysKeep = clean; lock.unlock()
+            defaults.set(text, forKey: Settings.storageKey(Key.ultraLowPowerAlwaysKeep))
+            notify(Key.ultraLowPowerAlwaysKeep)
+        }
+    }
+
+    private static func readAlwaysKeep(_ d: UserDefaults) -> [String] {
+        guard let text = d.string(forKey: storageKey(Key.ultraLowPowerAlwaysKeep)),
+              let data = text.data(using: .utf8),
+              let ids = try? JSONDecoder().decode([String].self, from: data) else { return [] }
+        return sanitizeIDs(ids)
+    }
+
     // ── Launch at login (SMAppService, macOS 13+) ───────────────────────────
 
     /// OS-truth status, mapped so callers don't need ServiceManagement.
@@ -1336,6 +1378,8 @@ public final class Settings {
         if old.chargeDrainAutomatically != now.chargeDrainAutomatically { notify(Key.chargeDrainAutomatically) }
         if old.chargeReadyByEnabled != now.chargeReadyByEnabled { notify(Key.chargeReadyByEnabled) }
         if old.chargeReadyByMinutes != now.chargeReadyByMinutes { notify(Key.chargeReadyByMinutes) }
+        if old.ultraLowPowerEnabled != now.ultraLowPowerEnabled { notify(Key.ultraLowPowerEnabled) }
+        if old.ultraLowPowerAlwaysKeep != now.ultraLowPowerAlwaysKeep { notify(Key.ultraLowPowerAlwaysKeep) }
     }
 
     // ── Plumbing ────────────────────────────────────────────────────────────
@@ -1536,7 +1580,9 @@ public final class Settings {
                                                  chargeMaxTemperatureRange),
                chargeReadyByEnabled: readBool(d, Key.chargeReadyByEnabled, Default.chargeReadyByEnabled),
                chargeReadyByMinutes: readInt(d, Key.chargeReadyByMinutes, Default.chargeReadyByMinutes,
-                                             chargeReadyByMinutesRange))
+                                             chargeReadyByMinutesRange),
+               ultraLowPowerEnabled: readBool(d, Key.ultraLowPowerEnabled, Default.ultraLowPowerEnabled),
+               ultraLowPowerAlwaysKeep: readAlwaysKeep(d))
     }
 }
 
