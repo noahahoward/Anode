@@ -1040,19 +1040,41 @@ final class UltraLowPowerController {
     /// Something may have raised the brightness (the keys, auto-brightness, another feature putting its own back): if it
     /// is above the ceiling it is pulled back. One check at a time, so a display that is slow to answer is not asked again
     /// and again.
+    ///
+    /// When the start did not lower the screen (the lid was closed, or it was at or under the ceiling already) nothing names a
+    /// level to put back. The first pull-back of such a session names the level it pulls back from, as the start does for
+    /// the one it lowers: remembered for the other features that dim the screen, and written on the record before the screen
+    /// is touched. A record that cannot take it means the screen is left as it is.
     func brightnessMayHaveChanged() {
         guard state == .on, !ending, !adjustingBrightness else { return }
         adjustingBrightness = true
         let token = session
         work { [backlight = self.backlight, weak self] in
-            var refused = false
-            // Not run at all when the mode has ended while this waited its turn.
-            if self?.session == token, let now = backlight.brightness(), let ceiling = BrightnessCeiling.clamp(now) {
-                refused = !backlight.setBrightness(ceiling)
-            }
-            self?.onMain {
-                if refused { self?.log("ultra: the screen did not take the lower brightness") }
-                self?.adjustingBrightness = false
+            // Not read at all when the mode has ended while this waited its turn.
+            let now = self?.session == token ? backlight.brightness() : nil
+            self?.onMain { [weak self] in
+                guard let self, self.session == token else { return }
+                guard let now, let ceiling = BrightnessCeiling.clamp(now) else {
+                    self.adjustingBrightness = false
+                    return
+                }
+                if self.live?.brightnessBefore == nil {
+                    self.ownBrightness.remember(now, for: Self.ownerName)
+                    guard self.record(mustSave: true, { $0.brightnessBefore = now }) else {
+                        self.log("ultra: the record could not take the brightness, so the screen was not pulled back")
+                        _ = self.ownBrightness.forget(Self.ownerName)
+                        self.adjustingBrightness = false
+                        return
+                    }
+                }
+                self.work { [weak self] in
+                    let refused = self?.session == token ? !backlight.setBrightness(ceiling) : false
+                    self?.onMain { [weak self] in
+                        guard let self, self.session == token else { return }
+                        if refused { self.log("ultra: the screen did not take the lower brightness") }
+                        self.adjustingBrightness = false
+                    }
+                }
             }
         }
     }

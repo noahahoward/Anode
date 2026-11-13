@@ -30,6 +30,7 @@ final class UltraLowPowerWiringTests: XCTestCase {
     final class FakeWidgets: UltraReadingHosting {
         var isPaused: () -> Bool = { false } { didSet { pausedSets += 1 } }
         var onPausedClick: ((NSStatusBarButton) -> Void)?
+        var ultraMenuEntry: (() -> UltraReadingMenuEntry?)?
         var hasReadingsOnBar = true
         private(set) var pausedSets = 0
     }
@@ -956,6 +957,77 @@ final class UltraLowPowerWiringTests: XCTestCase {
         XCTAssertFalse(controller.isPaused())
         host.isPaused = { true }
         XCTAssertTrue(controller.isPaused(), "what the runtime sets is what the readings ask")
+    }
+
+    // ── The readings' right-click menu ──────────────────────────────────────
+
+    /// A real widget controller whose right-click menu is fed the way the runtime feeds it: what the runtime installed on the
+    /// readings is what the menu asks.
+    private func readingsMenu(of r: Rig) throws -> NSMenu {
+        let (defaults, suite) = try TestDefaults.make(owner: "UltraLowPowerWiringReadingsMenu", test: name)
+        addTeardownBlock { TestDefaults.destroy(defaults, suite) }
+        let widgets = MenuBarWidgetController(onClick: { _ in }, defaults: defaults, enabled: false)
+        widgets.ultraMenuEntry = r.widgets.ultraMenuEntry
+        return widgets.rightClickMenu(metric: nil)
+    }
+
+    func testTheReadingsRightClickMenuIsOpenAndQuitAloneWhileTheBoxIsNotTicked() throws {
+        let r = try rig(ticked: false); defer { done(r) }
+        XCTAssertNil(r.widgets.ultraMenuEntry)
+        XCTAssertEqual(titles(try readingsMenu(of: r)), ["Open Anode", "-", "Quit Anode"])
+        // And after it was ticked and unticked again.
+        r.settings.ultraLowPowerEnabled = true
+        XCTAssertNotNil(r.widgets.ultraMenuEntry)
+        r.settings.ultraLowPowerEnabled = false
+        XCTAssertNil(r.widgets.ultraMenuEntry)
+        XCTAssertEqual(titles(try readingsMenu(of: r)), ["Open Anode", "-", "Quit Anode"])
+    }
+
+    func testTheReadingsRightClickMenuOffersTheModeWhileTheBoxIsTickedAndItIsOff() throws {
+        let r = try rig(ticked: true); defer { done(r) }
+        let menu = try readingsMenu(of: r)
+        XCTAssertEqual(titles(menu), ["Open Anode", "Ultra Low Power Mode…", "-", "Quit Anode"])
+        let item = try XCTUnwrap(menu.items.first { $0.title == "Ultra Low Power Mode…" })
+        XCTAssertTrue(item.isEnabled)
+        fire(menu, titled: "Ultra Low Power Mode…")
+        XCTAssertEqual(r.controller.state, .confirming)
+        XCTAssertEqual(r.confirm.keptNames.count, 1, "it asked, as the shortcut does")
+    }
+
+    func testTheReadingsRightClickMenuEntryIsSwitchedOffWhileTheBoxIsUp() throws {
+        let r = try rig(ticked: true); defer { done(r) }
+        r.controller.request()
+        let menu = try readingsMenu(of: r)
+        let item = try XCTUnwrap(menu.items.first { $0.title == "Ultra Low Power Mode…" })
+        XCTAssertFalse(item.isEnabled, "a second press must not ask again")
+        XCTAssertFalse(menu.autoenablesItems, "the menu must not switch it back on")
+        XCTAssertTrue(menu.items.first { $0.title == "Open Anode" }?.isEnabled ?? false)
+        XCTAssertTrue(menu.items.first { $0.title == "Quit Anode" }?.isEnabled ?? false)
+        fire(menu, titled: "Ultra Low Power Mode…")
+        XCTAssertEqual(r.confirm.keptNames.count, 1)
+    }
+
+    func testTheReadingsRightClickMenuSaysCancelWhileTheStartIsRunningAndCancelsIt() throws {
+        let r = try rig(ticked: true); defer { done(r) }
+        r.work.hold = true
+        start(r)
+        XCTAssertTrue(r.controller.isStarting)
+        let menu = try readingsMenu(of: r)
+        XCTAssertEqual(titles(menu), ["Open Anode", "Cancel", "-", "Quit Anode"])
+        XCTAssertTrue(try XCTUnwrap(menu.items.first { $0.title == "Cancel" }).isEnabled)
+        fire(menu, titled: "Cancel")
+        XCTAssertFalse(r.controller.isStarting)
+        r.work.runHeld()
+        XCTAssertEqual(r.controller.state, .off)
+    }
+
+    func testTheReadingsRightClickMenuTurnsTheModeOffWhileItIsOn() throws {
+        let r = try rig(ticked: true); defer { done(r) }
+        start(r)
+        let menu = try readingsMenu(of: r)
+        XCTAssertEqual(titles(menu), ["Open Anode", "Turn Off Ultra Low Power Mode", "-", "Quit Anode"])
+        fire(menu, titled: "Turn Off Ultra Low Power Mode")
+        XCTAssertEqual(r.controller.state, .off)
     }
 
     func testTheRecordIsAFileInAnodesSupportFolder() {

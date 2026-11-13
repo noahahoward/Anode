@@ -51,6 +51,8 @@ final class LidGlassTests: XCTestCase {
     private var pendingCapture: CheckedContinuation<CGImage?, Never>?
     private var holdCaptures = false
     private var external = false
+    /// Is Ultra Low Power Mode on, as the glass is told.
+    private var ultra = false
     private var finishClearsAtOnce = true
 
     private static let onePixel: CGImage = CGContext(
@@ -79,6 +81,7 @@ final class LidGlassTests: XCTestCase {
                 return picture
             },
             externalDisplayPresent: { [unowned self] in external },
+            ultraOn: { [unowned self] in ultra },
             log: { _ in })
     }
 
@@ -106,6 +109,86 @@ final class LidGlassTests: XCTestCase {
         XCTAssertEqual(sensor.startedHz, [8])
         settings.lidGlassEnabled = false
         XCTAssertEqual(g.status, .off)
+        XCTAssertEqual(sensor.stops, 1)
+    }
+
+    // ── While Ultra Low Power Mode is on ──
+
+    /// The mode ends or begins: the controller says so, and the glass reads again.
+    private func ultraChanged(to on: Bool) {
+        ultra = on
+        NotificationCenter.default.post(name: UltraLowPowerController.didChange, object: nil)
+    }
+
+    func testTheSensorIsStoppedWhileTheModeIsOnAndStartedAgainWhenItEnds() {
+        let g = makeGlass()
+        XCTAssertEqual(g.status, .idle)
+        XCTAssertEqual(sensor.startedHz, [8])
+        ultraChanged(to: true)
+        XCTAssertEqual(g.status, .pausedForUltra)
+        XCTAssertEqual(sensor.stops, 1, "the lid-angle sensor is stopped: it is not read for as long as the mode lasts")
+        ultraChanged(to: true)
+        XCTAssertEqual(sensor.stops, 1, "and not stopped again by every change the controller announces")
+        ultraChanged(to: false)
+        XCTAssertEqual(g.status, .idle)
+        XCTAssertEqual(sensor.startedHz, [8, 8], "started again, at the rate the setting says")
+    }
+
+    func testAnEffectUnderWayWhenTheModeBeginsIsTakenAway() {
+        let g = makeGlass()
+        closeFast(g)
+        waitUntil(g.status == .active && overlays.first?.calls.isEmpty == false)
+        ultraChanged(to: true)
+        XCTAssertEqual(g.status, .pausedForUltra)
+        XCTAssertEqual(overlays.first?.calls.last, "hide")
+    }
+
+    func testTheGlassTurnedOffDuringTheModeStaysOffAtTheEnd() {
+        let g = makeGlass()
+        ultraChanged(to: true)
+        settings.lidGlassEnabled = false
+        XCTAssertEqual(g.status, .off)
+        XCTAssertEqual(sensor.stops, 1, "already stopped: not stopped a second time")
+        ultraChanged(to: false)
+        XCTAssertEqual(g.status, .off)
+        XCTAssertEqual(sensor.startedHz, [8])
+    }
+
+    func testTheGlassTurnedOnDuringTheModeStartsAtTheEndAndNotBefore() {
+        let g = makeGlass(enabled: false)
+        ultraChanged(to: true)
+        settings.lidGlassEnabled = true
+        XCTAssertEqual(g.status, .pausedForUltra)
+        XCTAssertTrue(sensor.startedHz.isEmpty, "nothing is read while the mode lasts")
+        ultraChanged(to: false)
+        XCTAssertEqual(g.status, .idle)
+        XCTAssertEqual(sensor.startedHz, [8])
+    }
+
+    func testAnUntickedGlassIsNotStartedWhenTheModeEnds() {
+        let g = makeGlass(enabled: false)
+        ultraChanged(to: true)
+        ultraChanged(to: false)
+        XCTAssertEqual(g.status, .off)
+        XCTAssertTrue(sensor.startedHz.isEmpty)
+    }
+
+    func testAGlassMadeWhileTheModeIsOnStartsNothing() {
+        ultra = true
+        let g = makeGlass()
+        XCTAssertEqual(g.status, .pausedForUltra)
+        XCTAssertTrue(sensor.startedHz.isEmpty)
+        ultraChanged(to: false)
+        XCTAssertEqual(g.status, .idle)
+    }
+
+    func testASettingChangedDuringTheModeStartsNothing() {
+        let g = makeGlass()
+        ultraChanged(to: true)
+        settings.lidGlassIdleHz = 20
+        settings.lidGlassTriggerAngle = 100
+        XCTAssertEqual(g.status, .pausedForUltra)
+        XCTAssertEqual(sensor.startedHz, [8])
         XCTAssertEqual(sensor.stops, 1)
     }
 

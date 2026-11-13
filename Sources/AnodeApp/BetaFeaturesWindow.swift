@@ -1101,6 +1101,9 @@ final class LidGlassFeature: BetaFeature {
         } else if state == .sensorLost {
             accessStatus.stringValue = "The lid sensor stopped responding, so Lid Glass is paused. Turn it off and on to try again."
             accessStatus.textColor = .systemOrange
+        } else if state == .pausedForUltra {
+            accessStatus.stringValue = "Paused while Ultra Low Power Mode is on. It starts again when that is turned off."
+            accessStatus.textColor = .secondaryLabelColor
         } else if !granted {
             accessStatus.stringValue = "Screen Recording: not allowed yet, so there is no picture to frost and nothing happens. "
                 + "Allow Anode under Privacy & Security → Screen Recording, then reopen Anode."

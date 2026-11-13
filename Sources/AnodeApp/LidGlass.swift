@@ -23,6 +23,8 @@ enum LidGlassStatus: Equatable {
     case unsupported
     /// The sensor stopped answering mid-session; polling has stopped.
     case sensorLost
+    /// Ultra Low Power Mode is on: the sensor is stopped for as long as it lasts.
+    case pausedForUltra
 }
 
 final class LidGlass {
@@ -77,6 +79,7 @@ final class LidGlass {
     private let makeOverlay: () -> LidGlassOverlaying?
     private let capture: () async -> CGImage?
     private let externalDisplayPresent: () -> Bool
+    private let ultraOn: () -> Bool
     private let log: (String) -> Void
 
     private var detector: LidCloseDetector
@@ -102,12 +105,14 @@ final class LidGlass {
          makeOverlay: @escaping () -> LidGlassOverlaying? = LidGlass.realOverlay,
          capture: @escaping () async -> CGImage? = LidGlass.realCapture,
          externalDisplayPresent: @escaping () -> Bool = { LidGlassCapture.hasExternalDisplay() },
+         ultraOn: @escaping () -> Bool = { UltraQuiet.isOn },
          log: @escaping (String) -> Void = { FeatureLog.append("lidglass.log", $0) }) {
         self.settings = settings
         self.sensor = sensor
         self.makeOverlay = makeOverlay
         self.capture = capture
         self.externalDisplayPresent = externalDisplayPresent
+        self.ultraOn = ultraOn
         self.log = log
         self.detector = LidCloseDetector(trigger: settings.lidGlassTriggerAngle)
 
@@ -116,6 +121,8 @@ final class LidGlass {
         }
         observe(NSWorkspace.shared.notificationCenter, NSWorkspace.willSleepNotification) { $0.systemWillSleep() }
         observe(NotificationCenter.default, NSApplication.didChangeScreenParametersNotification) { $0.displayConfigurationChanged() }
+        // Ultra Low Power Mode starting or ending: the controller posts for every change it makes, so this is only a re-read.
+        observe(NotificationCenter.default, UltraLowPowerController.didChange) { $0.ultraChanged() }
         settingsChanged()
     }
 
@@ -139,15 +146,34 @@ final class LidGlass {
 
     private func settingsChanged() {
         detector.trigger = settings.lidGlassTriggerAngle
-        if settings.lidGlassEnabled {
-            switch status {
-            case .off: start()
-            case .idle: setRestingRate()
-            case .active, .unsupported, .sensorLost: break
-            }
-        } else if status != .off {
-            stopAll()
+        guard settings.lidGlassEnabled else {
+            // Switched off during the mode, the sensor is stopped already: it only has to say so, and stays off at the end.
+            if status == .pausedForUltra { status = .off; log("off") } else if status != .off { stopAll() }
+            return
         }
+        // While the mode is on the app measures nothing, and a lid sensor read ten times a second is a reason to wake: it rests,
+        // and the status says why. A sensor that is not there, or that stopped answering, keeps saying that.
+        if ultraOn() {
+            switch status {
+            case .off: status = .pausedForUltra
+            case .idle, .active: stopAll(becoming: .pausedForUltra)
+            case .unsupported, .sensorLost, .pausedForUltra: break
+            }
+            return
+        }
+        switch status {
+        case .off, .pausedForUltra: start()
+        case .idle: setRestingRate()
+        case .active, .unsupported, .sensorLost: break
+        }
+    }
+
+    /// The mode began or ended, or the controller changed something else (it posts for every change): only a change that moves the
+    /// glass between watching and resting is acted on, so the sensor's rate is not set again for nothing.
+    private func ultraChanged() {
+        let on = ultraOn()
+        if on, status == .idle || status == .active { settingsChanged() }
+        if !on, status == .pausedForUltra { settingsChanged() }
     }
 
     private var idleHz: Double { LidPollPolicy.idleHz(settings.lidGlassIdleHz) }
@@ -188,11 +214,11 @@ final class LidGlass {
         log("on, idle \(idleHz) Hz")
     }
 
-    private func stopAll() {
+    private func stopAll(becoming final: LidGlassStatus = .off) {
         teardown()
         sensor.stop()
-        status = .off
-        log("off")
+        status = final
+        log(final == .off ? "off" : "paused while Ultra Low Power Mode is on")
     }
 
     private func sensorLost() {

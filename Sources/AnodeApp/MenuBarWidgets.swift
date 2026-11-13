@@ -60,9 +60,27 @@ public struct WidgetConfig: Codable, Equatable {
     }
 }
 
+/// One line the readings' right-click menu carries for Ultra Low Power Mode.
+struct UltraReadingMenuEntry {
+    var title: String
+    var isEnabled: Bool
+    var run: () -> Void
+}
+
+/// What a menu item's click calls, kept alive by the item.
+private final class UltraEntryAction: NSObject {
+    let run: () -> Void
+    init(_ run: @escaping () -> Void) { self.run = run }
+    @objc func fire() { run() }
+}
+
 public final class MenuBarWidgetController: NSObject, NSMenuDelegate {
 
     public static let defaultsKey = "com.anode.menubar.widgets.v1"
+
+    /// What the readings' right-click menu adds for Ultra Low Power Mode, asked each time the menu is built; nil, or nothing
+    /// installed, when the box in Beta Features is not ticked. The app sets it, as it sets `isPaused`.
+    var ultraMenuEntry: (() -> UltraReadingMenuEntry?)?
 
     /// Is the group panel on screen right now?
     ///
@@ -976,16 +994,7 @@ public final class MenuBarWidgetController: NSObject, NSMenuDelegate {
     @objc private func widgetClicked(_ sender: NSStatusBarButton) {
         let metric = metricID(of: sender)
         if NSApp.currentEvent?.type == .rightMouseUp {
-            let menu = NSMenu()
-            let open = menu.addItem(withTitle: "Open Anode",
-                                    action: #selector(openFromMenu), keyEquivalent: "")
-            open.target = self
-            // The menu outlives this call, so the identity of the widget it was
-            // raised from has to travel with the item — by then `sender` is gone.
-            open.representedObject = metric
-            menu.addItem(.separator())
-            menu.addItem(withTitle: "Quit Anode",
-                         action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+            let menu = rightClickMenu(metric: metric)
             // popUp(positioning:at:in:) — NOT assigning item.menu and calling
             // performClick. That re-enters this very action handler from inside
             // itself, which is a recursion waiting to happen and is the likely
@@ -997,6 +1006,33 @@ public final class MenuBarWidgetController: NSObject, NSMenuDelegate {
         }
         Self.routeLeftClick(on: sender, metric: metric, paused: isPaused(),
                             onClick: onClick, onPausedClick: onPausedClick)
+    }
+
+    /// The menu a right-click on a reading opens.
+    func rightClickMenu(metric: MetricID?) -> NSMenu {
+        let menu = NSMenu()
+        // The entry for Ultra Low Power Mode can be switched off (the confirm box is up), and the menu must not switch it back on.
+        menu.autoenablesItems = false
+        let open = menu.addItem(withTitle: "Open Anode",
+                                action: #selector(openFromMenu), keyEquivalent: "")
+        open.target = self
+        // The menu outlives this call, so the identity of the widget it was
+        // raised from has to travel with the item — by then `sender` is gone.
+        open.representedObject = metric
+        // While the box in Beta Features is ticked (the app installs the entry then, and takes it away when it is unticked).
+        if let entry = ultraMenuEntry?() {
+            let action = UltraEntryAction(entry.run)
+            let item = NSMenuItem(title: entry.title, action: #selector(UltraEntryAction.fire), keyEquivalent: "")
+            item.target = action
+            // A menu item does not retain its target: the item holds the action for as long as the menu lives.
+            item.representedObject = action
+            item.isEnabled = entry.isEnabled
+            menu.addItem(item)
+        }
+        menu.addItem(.separator())
+        menu.addItem(withTitle: "Quit Anode",
+                     action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        return menu
     }
 
     /// A left click on a reading. While paused it goes to `onPausedClick` and the usual action is not taken; with nobody

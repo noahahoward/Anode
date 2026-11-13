@@ -268,6 +268,12 @@ final class LidGlassFeatureTests: XCTestCase {
         XCTAssertTrue(b.accessStatus.stringValue.contains("stopped responding"))
     }
 
+    func testThePauseForUltraLowPowerModeIsSaid() throws {
+        let (f, _) = try feature(status: .pausedForUltra, enabled: true)
+        XCTAssertTrue(f.accessStatus.stringValue.contains("Paused while Ultra Low Power Mode is on"), f.accessStatus.stringValue)
+        XCTAssertFalse(f.accessStatus.isHidden)
+    }
+
     func testTheDetailRowsAreHiddenWhileOff() throws {
         let (f, _) = try feature(enabled: false)
         XCTAssertTrue(f.idleRateSlider.isHidden)

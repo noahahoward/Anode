@@ -21,6 +21,8 @@ protocol UltraReadingHosting: AnyObject {
     var isPaused: () -> Bool { get set }
     /// A click on a reading while paused, with the reading that was clicked.
     var onPausedClick: ((NSStatusBarButton) -> Void)? { get set }
+    /// What the readings' right-click menu adds for the mode, while the box is ticked; nil otherwise.
+    var ultraMenuEntry: (() -> UltraReadingMenuEntry?)? { get set }
     /// Is at least one reading on the menu bar now: not switched off, not folded away, and made?
     var hasReadingsOnBar: Bool { get }
 }
@@ -301,6 +303,8 @@ final class UltraLowPowerRuntime {
         // Paused for as long as the mode is on, window open or not: the numbers would be hours old and look live.
         widgets.isPaused = { UltraQuiet.isOn }
         widgets.onPausedClick = { [weak self] button in self?.showMenu(under: button) }
+        // The readings' right-click menu carries the mode's entry for as long as the box is ticked.
+        widgets.ultraMenuEntry = { [weak self] in self?.readingsMenuEntry() }
     }
 
     private func withdraw() {
@@ -311,6 +315,7 @@ final class UltraLowPowerRuntime {
         front.pid = nil
         widgets.isPaused = { false }
         widgets.onPausedClick = nil
+        widgets.ultraMenuEntry = nil
     }
 
     // ── Reactions ───────────────────────────────────────────────────────────
@@ -394,6 +399,17 @@ final class UltraLowPowerRuntime {
     }
 
     func showMenu(under button: NSStatusBarButton) { presentMenu(menu(), button) }
+
+    /// The line the readings' right-click menu carries: the same words and the same press as the app menu's entry (start, cancel
+    /// while the start runs, turn off), switched off while the confirm box is up.
+    private func readingsMenuEntry() -> UltraReadingMenuEntry {
+        let entry = UltraMenu.appEntry(ticked: true, state: controller.state, starting: controller.isStarting)
+        return UltraReadingMenuEntry(title: entry.title, isEnabled: entry.isEnabled,
+                                     run: { [weak self] in
+                                         guard let self else { return }
+                                         UltraMenu.toggle(self.controller)
+                                     })
+    }
 
     // ── The section ─────────────────────────────────────────────────────────
 

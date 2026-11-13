@@ -16,6 +16,16 @@ import PowerKit
 // or the Space change. No timer, nothing on the tick.
 
 /// Where the strip goes. Pure so the arithmetic is testable without a display.
+/// How often the backdrop that follows the windows looks at them.
+enum MenuBarBackdropPolling {
+    /// Once a second normally. While Ultra Low Power Mode is on, every five: the mode is for a Mac that is mostly left alone, and
+    /// a wake-up each second for a strip that rarely changes is what it is there to stop. Slowed and not stopped, because the look
+    /// is what notices a window going under the bar, and a stale strip can make the menu bar unreadable.
+    static func interval(ultraOn: Bool) -> (seconds: TimeInterval, tolerance: TimeInterval) {
+        ultraOn ? (5, 2.5) : (1, 0.5)
+    }
+}
+
 enum MenuBarBackdropGeometry {
 
     /// The wedge radius, in points: a little ABOVE macOS 27's window corner radius.
@@ -478,6 +488,8 @@ final class MenuBarBackdrop {
     private var darkBar = true
     private var pendingRetint: DispatchWorkItem?
     private var poll: Timer?
+    /// How often `poll` fires, so a change of pace is told from a change of something else.
+    private var pollSeconds: TimeInterval?
     private var fullScreenWatch: Timer?
     private var watchInterval: TimeInterval?
     /// The window list for the tick in progress, so the several questions one tick asks of it
@@ -549,6 +561,14 @@ final class MenuBarBackdrop {
         settingsTokens.append(settings.observe(Settings.Key.menuBarBackdropBlur) { [weak self] in
             self?.applyBlurRadius()
         })
+        // Ultra Low Power Mode starting or ending changes how often the windows are looked at.
+        observers.append(center.addObserver(forName: UltraLowPowerController.didChange, object: nil, queue: .main) {
+            [weak self] _ in
+            // The controller posts for every change it makes: the timer is made again only when its pace is not the one wanted.
+            guard let self, self.follows,
+                  self.pollSeconds != MenuBarBackdropPolling.interval(ultraOn: UltraQuiet.isOn).seconds else { return }
+            self.syncPolling()
+        })
         syncPolling()
     }
 
@@ -604,14 +624,17 @@ final class MenuBarBackdrop {
     // ── Reading ─────────────────────────────────────────────────────────────
 
     /// Another app's window moving or changing its top edge is announced to
-    /// nobody, so while the setting is on the bar looks once a second. Cheap: the
+    /// nobody, so while the setting is on the bar looks once a second (every five
+    /// while Ultra Low Power Mode is on: `MenuBarBackdropPolling`). Cheap: the
     /// window list is a system call that returns bounds and owners, and nothing is
     /// captured unless another app's window is actually sitting under the bar.
     private func syncPolling() {
         poll?.invalidate()
         poll = nil
+        pollSeconds = nil
         guard follows else { return }
-        let t = Timer(timeInterval: 1, repeats: true) { [weak self] _ in
+        let interval = MenuBarBackdropPolling.interval(ultraOn: UltraQuiet.isOn)
+        let t = Timer(timeInterval: interval.seconds, repeats: true) { [weak self] _ in
             guard let self else { return }
             // One window query for the whole tick.
             self.tickWindows = self.windowList()
@@ -619,9 +642,10 @@ final class MenuBarBackdrop {
             self.refresh()
             self.retint(force: false)
         }
-        t.tolerance = 0.5
+        t.tolerance = interval.tolerance
         RunLoop.main.add(t, forMode: .common)
         poll = t
+        pollSeconds = interval.seconds
     }
 
     /// A drag posts a move per frame; one read after it settles is enough.

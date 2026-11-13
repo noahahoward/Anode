@@ -217,3 +217,24 @@ final class UltraBackdropTests: XCTestCase {
         XCTAssertTrue(r.backdrop.windows.isEmpty)
     }
 }
+
+/// How often the backdrop that follows the windows looks at them: once a second, and while Ultra Low Power Mode is on every five
+/// seconds. Slowed, not stopped: it is what notices a window going under the menu bar, and a stale strip can make it unreadable.
+final class MenuBarBackdropPollingTests: XCTestCase {
+
+    func testTheBackdropLooksOnceASecondNormally() {
+        let normal = MenuBarBackdropPolling.interval(ultraOn: false)
+        XCTAssertEqual(normal.seconds, 1)
+        XCTAssertEqual(normal.tolerance, 0.5)
+    }
+
+    func testWhileTheModeIsOnItLooksEveryFiveSecondsWithHalfThatToSpare() {
+        let slowed = MenuBarBackdropPolling.interval(ultraOn: true)
+        XCTAssertEqual(slowed.seconds, 5)
+        XCTAssertEqual(slowed.tolerance, 2.5)
+    }
+
+    func testItIsNeverStopped() {
+        for on in [false, true] { XCTAssertGreaterThan(MenuBarBackdropPolling.interval(ultraOn: on).seconds, 0) }
+    }
+}

@@ -1556,6 +1556,82 @@ final class UltraLowPowerControllerTests: XCTestCase {
         XCTAssertEqual(backlight.value, 0.8)
     }
 
+    /// The start did not lower the screen (it was under the ceiling already): when something raises it later and it is pulled back,
+    /// the level it was pulled back from is remembered first, and put back at the end.
+    func testAScreenUnderTheCeilingAtTheStartIsRememberedWhenItIsRaisedAndPutBackToThatLevelAtTheEnd() {
+        backlight.value = 0.2
+        start()
+        XCTAssertNil(store.record?.brightnessBefore)
+        backlight.value = 0.9
+        var recordedWhenSet: Float?
+        backlight.onSet = { [unowned self] _ in recordedWhenSet = self.store.record?.brightnessBefore }
+        controller.brightnessMayHaveChanged()
+        XCTAssertEqual(backlight.sets, [0.25])
+        XCTAssertEqual(recordedWhenSet, 0.9, "named on the record before the screen is pulled back")
+        XCTAssertEqual(store.record?.brightnessBefore, 0.9)
+        // Raised again: pulled back again, and what was remembered is the first level, not this one.
+        backlight.value = 0.7
+        controller.brightnessMayHaveChanged()
+        XCTAssertEqual(backlight.sets, [0.25, 0.25])
+        XCTAssertEqual(store.record?.brightnessBefore, 0.9)
+        controller.turnOff()
+        XCTAssertEqual(backlight.value, 0.9, "put back to the level it was raised to")
+        XCTAssertNil(store.record)
+    }
+
+    func testAScreenThatWasNotReadAtTheStartIsRememberedWhenItCanBeReadAndIsRaised() {
+        backlight.value = nil           // the lid was closed
+        start()
+        XCTAssertEqual(controller.skipped, [.ceilingRefused])
+        backlight.value = 0.8
+        controller.brightnessMayHaveChanged()
+        XCTAssertEqual(backlight.sets, [0.25])
+        XCTAssertEqual(store.record?.brightnessBefore, 0.8)
+        controller.turnOff()
+        XCTAssertEqual(backlight.value, 0.8)
+    }
+
+    func testAScreenTheStartLoweredIsNotRememberedAgainWhenItIsPulledBack() {
+        start()
+        XCTAssertEqual(store.record?.brightnessBefore, 0.8)
+        backlight.value = 0.9
+        controller.brightnessMayHaveChanged()
+        XCTAssertEqual(store.record?.brightnessBefore, 0.8, "the owner's own level stays the one that is put back")
+        controller.turnOff()
+        XCTAssertEqual(backlight.value, 0.8)
+    }
+
+    func testARecordThatCannotNameTheRaisedLevelMeansTheScreenIsNotPulledBack() {
+        backlight.value = 0.2
+        start()
+        store.refuseSave = { $0.brightnessBefore != nil }
+        backlight.value = 0.9
+        controller.brightnessMayHaveChanged()
+        XCTAssertEqual(backlight.sets, [], "what cannot be put back is not changed")
+        XCTAssertEqual(backlight.value, 0.9)
+        XCTAssertNil(store.record?.brightnessBefore)
+        XCTAssertTrue(logged.contains { $0.contains("record") }, "\(logged)")
+        // Nothing is remembered for the end either, and a later check, with the record working, goes through.
+        store.refuseSave = { _ in false }
+        controller.brightnessMayHaveChanged()
+        XCTAssertEqual(backlight.sets, [0.25])
+        XCTAssertEqual(store.record?.brightnessBefore, 0.9)
+        controller.turnOff()
+        XCTAssertEqual(backlight.value, 0.9)
+    }
+
+    func testARaiseThatComesAfterTheEndIsNeitherRememberedNorPulledBack() {
+        backlight.value = 0.2
+        start()
+        backlight.value = 0.9
+        holdWork = true
+        controller.brightnessMayHaveChanged()
+        controller.shutdown()
+        runHeldWork()
+        XCTAssertEqual(backlight.sets, [])
+        XCTAssertNil(own.forget("ultra"))
+    }
+
     func testTheCeilingIsNotHeldOutsideTheMode() {
         backlight.value = 0.9
         controller.brightnessMayHaveChanged()
