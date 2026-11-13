@@ -642,3 +642,15 @@ Tell the other session before starting. The helper must be reinstalled once (pas
 - [ ] **Step 7: Logout** with the mode on, at a moment the owner picks (it ends every open session on the Mac). Expected: the logout is not held up.
 - [ ] **Step 8: Power.** Ten minutes on battery at a quiet Mac with the mode on; record whole-Mac watts in the results file and correct the section's note if it differs.
 - [ ] **Step 9: Release files.** Next minor version in `build-app.sh`, the entry at the top of `CHANGELOG.md`, two plain sentences in `UPDATE-NOTE.md`; `./test.sh --quick` green; commit `git commit -m "Release <version>: ultra low power mode"`. Merge, tag and push only on the owner's word.
+
+---
+
+### Task 14: Three additions the owner chose after the trial
+
+Added 2026-11-13, after the trial on the owner's Mac. Runs before Task 13. Spec: the design's last section, "Additions after the trial".
+
+- **A. Everything that still runs is kept on the efficiency cores** (`Sources/PowerKit/UltraThrottle.swift`; `ProcessThrottling` in `Sources/AnodeApp/UltraProcesses.swift`; `UltraRecord.throttled`; `.unthrottle` in recovery, right after the continues; the watchdog lifts it too; setting `ultraLowPowerEfficiencyCores`, default on; skipped and said on a Mac with one performance level).
+- **B. A black backdrop** behind every app window while the mode is on (`Sources/AnodeApp/UltraBackdrop.swift`; setting `ultraLowPowerBlackBackdrop`, default on; nothing recorded).
+- **C. The brightness ceiling is `0.25`**, and the section's note states what the trial measured instead of "little or nothing".
+
+One commit per part, each test-first; the exact requirements are in the task's brief in the plan workspace. Task 13's hardware pass also checks: the kept app is usable on the efficiency cores; the policy is lifted after turn off, after quit and after `kill -9`; the backdrop sits under every window on every Space and display and is gone at the end.
