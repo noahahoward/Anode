@@ -44,8 +44,7 @@ public enum NativeChargeLimit {
 
 /// Apple's `PowerUISmartChargeClient`: the unprivileged route to the OS charge limit.
 ///
-/// This is a PRIVATE API, found and measured in plan 0 (docs/superpowers/plans/
-/// 2026-11-11-charge-control-plan-0-results.md; probes in docs/superpowers/spikes/
+/// This is a PRIVATE API, found and measured on a Mac17,9 with macOS 27.0 (probes in docs/superpowers/spikes/
 /// 2026-11-11-charge-control/). An unprivileged, ad-hoc signed probe read the limit and set 85
 /// through it, and the limit stayed in force after the probe exited: macOS keeps it in its own
 /// preferences, so it outlives the process that set it. That is why Charge Control puts macOS's own settings back
