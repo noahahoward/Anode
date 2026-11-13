@@ -216,7 +216,8 @@ for app in "$HOME/Applications/Anode.app" "/Applications/Anode.app"; do
   # checked first, and anything that is not a version number is no answer.
   version=""
   if [ -f "$app/Contents/Info.plist" ]; then
-    version="$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$app/Contents/Info.plist" 2>/dev/null || true)"
+    version="$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$app/Contents/Info.plist" \
+      2>/dev/null || true)"
   fi
   case "$version" in [0-9]*.[0-9]*) ;; *) version="" ;; esac
   if [ -z "$version" ]; then

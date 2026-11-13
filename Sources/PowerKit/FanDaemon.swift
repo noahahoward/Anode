@@ -901,7 +901,6 @@ public enum FanElevation {
         "Anode will hand the fans back to macOS, reconnect the charger, and remove "
         + "everything it has installed as root."
 
-    /// What the Fans tab says once the uninstall has run.
     /// How `AnodeHelper --uninstall` ends, by how its reconnect of the charger went: 0 when it is not Anode's cut
     /// any more (or never was); otherwise a failure, after every other step is done, and the line it prints on
     /// stderr, which is what the authorisation reports as the reason. The app takes a FINISHED uninstall to mean the
@@ -911,9 +910,36 @@ public enum FanElevation {
         charger.ok ? (0, nil) : (1, "The charger may still be switched off: \(charger.message).")
     }
 
+    /// What the Fans tab says once the uninstall has run, when the charger was reconnected. See
+    /// `uninstallDone(helperOutput:)`, which says what is true in each case.
     public static let uninstallDone =
         "Removed. The fans are back on automatic, the charger is reconnected, and "
         + "nothing of Anode runs as root."
+
+    /// What the Fans tab says once the uninstall has run, by what the helper said about the charger in its output (its
+    /// own line for each outcome, `ChargeRelease.Result.message`): "the charger is reconnected" only when it was. An
+    /// uninstall also ends well (status 0) when the charger was not cut, when this Mac has no charger switch, and when
+    /// the switch held a value Anode never writes and was left alone; each says so. Output that says nothing about the
+    /// charger (an older helper) claims nothing about it.
+    public static func uninstallDone(helperOutput output: String) -> String {
+        func said(_ outcome: ChargeRelease.Result.Outcome) -> Bool {
+            output.contains(ChargeRelease.Result(outcome, writes: 1).message)
+        }
+        let clause: String?
+        if output.contains(ChargeRelease.notAnodesValue) {
+            clause = "the charger switch holds a value Anode did not write, so Anode left it as it was"
+        } else if said(.notCut) {
+            clause = "the charger was not switched off"
+        } else if said(.noKey) {
+            clause = "this Mac has no charger switch to reconnect"
+        } else if said(.reconnected) {
+            return uninstallDone
+        } else {
+            clause = nil
+        }
+        return "Removed. The fans are back on automatic, " + (clause.map { $0 + ", and " } ?? "and ")
+            + "nothing of Anode runs as root."
+    }
 
     // ── What the person is told before authorising ──────────────────────────
     //

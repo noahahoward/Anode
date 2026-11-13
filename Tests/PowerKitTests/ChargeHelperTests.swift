@@ -883,6 +883,101 @@ final class ChargeHelperTests: XCTestCase {
         XCTAssertNil(server.dischargeTarget)
     }
 
+    /// A Mac with no adapter-cut key whose SMC answers the key-info call oddly (yes): the undo of a cut that cannot be
+    /// confirmed cannot be read back either, so the reconnect was owed for ever, the helper never idle, and the loop
+    /// woke root every 10 s until the helper died. With no cut ever held, and nothing ever read as cut, the debt is
+    /// given up after a bounded number of retries, and said once.
+    func testAReconnectOwedForACutNeverHeldIsGivenUpAfterABoundedNumberOfRetries() {
+        let hw = FakeChargeHardware(percent: 77, onAC: true)
+        hw.keyExists = false
+        hw.existsAnswersYes = true
+        var lines: [String] = []
+        let server = makeServer(hw, log: { lines.append($0) })
+        let clock = ChargeTestClock()
+        server.now = { clock.now }
+        XCTAssertFalse(server.handle(.command(.discharge(toPercent: 40))).ok, "a cut that cannot be read back")
+        XCTAssertTrue(server.reconnectOwed)
+        XCTAssertFalse(server.isIdle)
+        XCTAssertNil(server.dischargeTarget)
+        // The watch's own 10 s apart.
+        var retries = 0, elapsed: TimeInterval = 0
+        while server.reconnectOwed, retries < 100 {
+            server.watchDischarge()
+            retries += 1
+            if server.reconnectOwed { clock.advance(10); elapsed += 10 }
+        }
+        XCTAssertFalse(server.reconnectOwed, "still owed after \(retries) retries")
+        XCTAssertGreaterThanOrEqual(retries, FanHelperServer.unheldRetryLimit)
+        XCTAssertGreaterThanOrEqual(elapsed, FanHelperServer.unheldGiveUpAfter)
+        XCTAssertLessThan(retries, 20, "not bounded")
+        XCTAssertTrue(server.isIdle, "the helper is kept up for a reconnect that can never land")
+        XCTAssertEqual(lines.filter { $0.contains("gave up") }.count, 1, lines.joined(separator: "\n"))
+        // Said once, and nothing owed.
+        server.watchDischarge()
+        XCTAssertEqual(lines.filter { $0.contains("gave up") }.count, 1)
+        XCTAssertFalse(server.reconnectOwed)
+    }
+
+    /// Failures close together are not enough: only retries spread over time can say that the key is not coming back.
+    func testQuickFailuresAloneDoNotGiveUpAReconnectOwed() {
+        let hw = FakeChargeHardware(percent: 77, onAC: true)
+        hw.keyExists = false
+        hw.existsAnswersYes = true
+        let server = makeServer(hw)
+        let clock = ChargeTestClock()
+        server.now = { clock.now }
+        XCTAssertFalse(server.handle(.command(.discharge(toPercent: 40))).ok)
+        for _ in 0..<(FanHelperServer.unheldRetryLimit * 5) {
+            server.watchDischarge()
+            clock.advance(0.05)
+        }
+        XCTAssertTrue(server.reconnectOwed, "given up on failures a fraction of a second apart")
+    }
+
+    /// The key reads again just as the bound is reached, and says cut: from then on it is a cut that was seen, and
+    /// it is owed until it reads connected.
+    func testAChargerThatReadsCutWhenTheBoundIsReachedIsNeverGivenUp() {
+        let hw = FakeChargeHardware(percent: 77, onAC: true)
+        hw.cutUnreadable = true       // every read fails, so nothing is ever read as cut on the way
+        hw.ignoreRestore = true
+        let server = makeServer(hw)
+        let clock = ChargeTestClock()
+        server.now = { clock.now }
+        XCTAssertFalse(server.handle(.command(.discharge(toPercent: 40))).ok)
+        XCTAssertTrue(server.reconnectOwed)
+        for _ in 0..<(FanHelperServer.unheldRetryLimit - 1) { server.watchDischarge(); clock.advance(30) }
+        hw.cutUnreadable = false      // the key reads again at the bound, and says cut
+        server.watchDischarge()
+        XCTAssertTrue(hw.isCut)
+        XCTAssertTrue(server.reconnectOwed, "a charger that reads cut was given up on")
+    }
+
+    /// The bound is for a cut nobody ever held. A cut this helper made (or ever read as cut) is owed until it reads
+    /// connected, however long that takes: the charger really is cut, and giving up would leave it so.
+    func testAReconnectOwedForACutThatWasHeldIsNeverGivenUp() {
+        let hw = FakeChargeHardware(percent: 77, onAC: true)
+        let server = makeServer(hw)
+        XCTAssertTrue(server.handle(.command(.discharge(toPercent: 40))).ok)
+        hw.refuseRestore = true
+        XCTAssertFalse(server.handle(.command(.stopDischarge)).ok)
+        for _ in 0..<(FanHelperServer.unheldRetryLimit * 3) { server.watchDischarge() }
+        XCTAssertTrue(server.reconnectOwed, "a held cut was given up")
+        XCTAssertNotNil(server.dischargeTarget)
+        XCTAssertTrue(hw.isCut)
+    }
+
+    /// A charger found cut and then not reconnected (stuck at 0x08, with no cut of this helper's) is a real cut too.
+    func testAReconnectOwedForACutThatWasReadAsCutIsNeverGivenUp() {
+        let hw = FakeChargeHardware(percent: 77, onAC: true, cut: true)
+        hw.refuseRestore = true
+        let server = makeServer(hw)
+        XCTAssertFalse(server.handle(.command(.stopDischarge)).ok, "stuck: it reads cut after the writes")
+        XCTAssertTrue(server.reconnectOwed)
+        for _ in 0..<(FanHelperServer.unheldRetryLimit * 3) { server.watchDischarge() }
+        XCTAssertTrue(server.reconnectOwed, "a charger read as cut was given up on")
+        XCTAssertTrue(hw.isCut)
+    }
+
     func testTheWatchReconnectsAtTheTarget() {
         let hw = FakeChargeHardware(percent: 77, onAC: true)
         let server = makeServer(hw)
@@ -2061,16 +2156,13 @@ final class ChargeTestClock {
 ///
 /// It answers as the hardware does: `onAC()` is whether the cable is in, cut or
 /// not (`ChargeAC.presence` reads the charger's own details, which a cut leaves
-/// alone). A test pulls the cable by setting `cable`; `acWhileCut` overrides the
-/// answer for a cut alone.
+/// alone). A test pulls the cable by setting `cable`. That the real hardware
+/// answers through `ChargeAC.presence` is pinned in `ChargeAdapterPresenceTests`.
 final class FakeChargeHardware: ChargeHardware {
     private let lock = NSLock()
     private var _percent: Int?
     /// Whether the cable is in; nil when that cannot be read.
     private var _cable: Bool?
-    /// What `onAC()` answers while the charger is cut, when that is not the
-    /// cable's.
-    private var _acWhileCut: Bool?
     /// What the charger is actually doing.
     private var _cut: Bool
     private var _unreadable = false
@@ -2086,6 +2178,7 @@ final class FakeChargeHardware: ChargeHardware {
     private var _cutLandsButSaysNo = false
     private var _failNextReads = 0
     private var _existsAnswersNo = false
+    private var _existsAnswersYes = false
     private var _unknownValue: UInt8?
     private var _limitWriteGate: DispatchSemaphore?
     private var _limitWritesWaiting = 0
@@ -2103,10 +2196,6 @@ final class FakeChargeHardware: ChargeHardware {
     var cable: Bool? {
         get { locked { _cable } }
         set { locked { _cable = newValue } }
-    }
-    var acWhileCut: Bool? {
-        get { locked { _acWhileCut } }
-        set { locked { _acWhileCut = newValue } }
     }
     /// The charger's real state, whatever a read would say.
     var isCut: Bool { locked { _cut } }
@@ -2166,6 +2255,12 @@ final class FakeChargeHardware: ChargeHardware {
         get { locked { _existsAnswersNo } }
         set { locked { _existsAnswersNo = newValue } }
     }
+    /// `adapterCutKeyExists()` answers yes although the key is not there: a Mac with no such key whose SMC answers the
+    /// key-info call oddly. Reads of it fail and writes go nowhere, whatever it says.
+    var existsAnswersYes: Bool {
+        get { locked { _existsAnswersYes } }
+        set { locked { _existsAnswersYes = newValue } }
+    }
     /// The key holds a value Anode never writes — neither 0x00 nor 0x08 — and
     /// reads answer it until a write lands. Whatever put it there, it was not
     /// Anode.
@@ -2220,8 +2315,8 @@ final class FakeChargeHardware: ChargeHardware {
     var limitWritesWaiting: Int { locked { _limitWritesWaiting } }
 
     func batteryPercent() -> Int? { locked { _percent } }
-    func onAC() -> Bool? { locked { _cut ? (_acWhileCut ?? _cable) : _cable } }
-    func adapterCutKeyExists() -> Bool { locked { _keyExists && !_existsAnswersNo } }
+    func onAC() -> Bool? { locked { _cable } }
+    func adapterCutKeyExists() -> Bool { locked { _existsAnswersYes || (_keyExists && !_existsAnswersNo) } }
     func writeChargeLimit(_ percent: Int) -> Bool {
         if let gate = limitWriteGate {
             locked { _limitWritesWaiting += 1 }

@@ -1889,6 +1889,76 @@ final class ChargeControllerTests: XCTestCase {
         XCTAssertEqual(helper.stops(), asked + 1)
     }
 
+    /// A running helper's yes ends the question for a stretch of the look, so a charger macOS reports oddly does not
+    /// wake the helper every tick. But the switch itself still reading cut after a yes is a charger that is cut and a
+    /// helper that said otherwise: it is asked again, not sooner than every five minutes while the switch reads cut.
+    func testASwitchStillReadingCutAfterAYesIsAskedAgainNoSoonerThanEveryFiveMinutes() {
+        let t0 = Date()
+        chargerSwitch = AdapterCutKey.cut
+        battery = Self.state(70, ac: true)
+        let c = make()
+        c.tick(now: t0.addingTimeInterval(95))
+        XCTAssertEqual(helper.stops(), 1, "a cut nobody holds was left alone")
+        XCTAssertNotEqual(c.status, .warning(ChargeController.cutWarningText), "the yes settled it")
+        XCTAssertEqual(ChargeController.cutReaskAfter, 300)
+        for after in [150.0, 250.0, 95.0 + 299] {
+            c.tick(now: t0.addingTimeInterval(after))
+            XCTAssertEqual(helper.stops(), 1, "asked again after \(after - 95) s, inside the back-off")
+        }
+        c.tick(now: t0.addingTimeInterval(95 + 301))
+        XCTAssertEqual(helper.stops(), 2, "the switch reads cut still, and the helper was never asked again")
+        // And not again for another five minutes.
+        c.tick(now: t0.addingTimeInterval(95 + 301 + 120))
+        c.periodicTick(now: t0.addingTimeInterval(95 + 301 + 299))
+        XCTAssertEqual(helper.stops(), 2)
+        c.tick(now: t0.addingTimeInterval(95 + 301 + 302))
+        XCTAssertEqual(helper.stops(), 3)
+        // Reading connected ends the look: a new stretch is the ordinary 90 s again.
+        chargerSwitch = AdapterCutKey.connected
+        c.tick(now: t0.addingTimeInterval(1_000))
+        chargerSwitch = AdapterCutKey.cut
+        c.tick(now: t0.addingTimeInterval(1_010))
+        c.tick(now: t0.addingTimeInterval(1_090))
+        XCTAssertEqual(helper.stops(), 3)
+        c.tick(now: t0.addingTimeInterval(1_105))
+        XCTAssertEqual(helper.stops(), 4)
+    }
+
+    /// macOS saying the Mac is off the adapter, with a switch that reads a value Anode never writes: not a cut of
+    /// Anode's, and not Anode's to touch (as everywhere else a foreign value is left alone). Taken for one it wrote a
+    /// debt that only a helper could clear, with no helper there. macOS's word is for a switch that has never been
+    /// readable.
+    func testAForeignSwitchValueWithMacOSsLookOfACutOwesNothing() {
+        let t0 = Date()
+        chargerSwitch = 0x04
+        battery = Self.state(70, ac: false, adapter: true)
+        helper.installed = false
+        helper.gone = true
+        let c = make()
+        c.tick(now: t0.addingTimeInterval(95))
+        c.tick(now: t0.addingTimeInterval(200))
+        XCTAssertFalse(settings.chargeCutUnconfirmed, "a value that is not Anode's left a debt")
+        XCTAssertEqual(helper.stops(), 0)
+        XCTAssertNotEqual(c.status, .warning(ChargeController.cutWarningNoHelperText))
+        XCTAssertFalse(lines.contains { $0.contains("may have been left cut") }, lines.joined(separator: "\n"))
+        // (With a switch that cannot be read at all it is still macOS's word, as before:
+        // `testASwitchNeverReadStillGoesByMacOSsLookOfACut`.)
+    }
+
+    /// Only the switch re-arms it: macOS's word alone (a Mac whose switch cannot be read) is asked once per stretch, as
+    /// before, so an oddly reporting charger does not wake the helper again and again.
+    func testMacOSsWordAloneIsStillAskedOnlyOncePerStretch() {
+        let t0 = Date()
+        battery = Self.state(70, ac: false, adapter: true)
+        let c = make()
+        c.tick(now: t0.addingTimeInterval(95))
+        XCTAssertEqual(helper.stops(), 1)
+        for after in [400.0, 800.0, 1_600.0] {
+            c.tick(now: t0.addingTimeInterval(after))
+        }
+        XCTAssertEqual(helper.stops(), 1)
+    }
+
     /// A stop answered "the charger switch holds a value Anode did not write" settles the debt (it is not Anode's
     /// cut: Anode keeps a cut only when it reads back exactly 0x08), but it is not "the charger is connected". It is
     /// logged once, in its own words, however many stops hear it.
@@ -2279,10 +2349,13 @@ final class ChargeControllerTests: XCTestCase {
         XCTAssertEqual(helper.stops(), 0)
         XCTAssertNotEqual(c.status, .warning(ChargeController.cutWarningText))
 
+        // A value Anode never writes is not Anode's cut and not Anode's to touch either: macOS's look does not owe a
+        // stop for it (`testAForeignSwitchValueWithMacOSsLookOfACutOwesNothing`).
         chargerSwitch = 0x04
         c.tick(now: t0.addingTimeInterval(410))
         c.tick(now: t0.addingTimeInterval(505))
-        XCTAssertEqual(helper.stops(), 1)
+        XCTAssertEqual(helper.stops(), 0)
+        XCTAssertFalse(settings.chargeCutUnconfirmed)
     }
 
     /// The switch is read where something asks about it and nowhere else: never while off, with the cable out and
@@ -2379,19 +2452,22 @@ final class ChargeControllerTests: XCTestCase {
         XCTAssertGreaterThan(helper.stops(), 0, "the cut read before the failed reads was forgotten")
     }
 
-    /// The same for macOS's look of a cut, which is what counts where the switch reads a value Anode never writes:
-    /// a failed read does not let it run on.
-    func testAFailedReadDoesNotAdvanceMacOSsLookOfACut() {
+    /// macOS's look of a cut counts only for a switch that has never been readable. Once one value has been read (even
+    /// one Anode never writes), reads that fail afterwards are no information, and nothing owes a stop on macOS's word.
+    func testAFailedReadAfterAReadDoesNotLetMacOSsLookOweAStop() {
         let t0 = Date()
         battery = Self.state(70, ac: false, adapter: true)
         chargerSwitch = 0x04
         let c = make()
+        c.tick(now: t0.addingTimeInterval(30))
         chargerSwitch = nil
         c.tick(now: t0.addingTimeInterval(91))
+        c.tick(now: t0.addingTimeInterval(400))
         XCTAssertEqual(helper.stops(), 0, "macOS's look of a cut ran on over a switch that could not be read")
         chargerSwitch = 0x04
-        c.tick(now: t0.addingTimeInterval(121))
-        XCTAssertEqual(helper.stops(), 1)
+        c.tick(now: t0.addingTimeInterval(430))
+        XCTAssertEqual(helper.stops(), 0)
+        XCTAssertFalse(settings.chargeCutUnconfirmed)
     }
 
     /// A debt, the switch read as cut, then reads that fail while macOS says "on the adapter" for far longer than 90
@@ -2509,24 +2585,66 @@ final class ChargeControllerTests: XCTestCase {
         XCTAssertEqual(opened, 2, "a connection that works was opened again")
     }
 
-    /// A key that cannot be read at all is asked again with a new connection each read, and no more than one.
-    func testAnUnreadableSwitchIsOpenedOnceAReadAtMost() {
+    /// A key that cannot be read at all is asked again with a new connection each read (no more than one a read), a few
+    /// times; then no more than once every `reopenBackoff`. A Mac whose switch can never be read would otherwise open
+    /// the SMC afresh on every tick for as long as Charge Control is on.
+    func testAnUnreadableSwitchIsOpenedOnceAReadAtMostAndThenNotMoreThanEverySeveralMinutes() {
         let charger = FakeChargeHardware(cut: false)
         charger.cutUnreadable = true
         var opened = 0
+        var clock = Date()
         let read = ChargeController.systemChargerSwitch(open: {
             opened += 1
             return ChargeLine(charger)
-        })
-        for expected in 1...4 {
+        }, now: { clock })
+        let before = ChargeController.reopenFailuresBeforeBackoff
+        for expected in 1...before {
             XCTAssertNil(read())
             XCTAssertEqual(opened, expected, "more than one connection was opened for one read")
+            clock += 30
         }
+        // Then it backs off: ticks every 30 s open nothing, for the whole of the back-off.
+        var quietFor: TimeInterval = 0
+        while quietFor + 30 < ChargeController.reopenBackoff {
+            XCTAssertNil(read())
+            XCTAssertEqual(opened, before, "opened again after \(quietFor) s of back-off")
+            clock += 30
+            quietFor += 30
+        }
+        clock += 30
+        XCTAssertNil(read())
+        XCTAssertEqual(opened, before + 1, "never tried again")
+        // Each try that fails backs off again.
+        clock += 30
+        XCTAssertNil(read())
+        XCTAssertEqual(opened, before + 1)
+        // A switch that can be read again once the back-off is over is read, and the failures are forgotten.
         charger.cutUnreadable = false
+        clock += ChargeController.reopenBackoff
         XCTAssertEqual(read(), AdapterCutKey.connected)
-        XCTAssertEqual(opened, 5)
+        XCTAssertEqual(opened, before + 2)
         XCTAssertEqual(read(), AdapterCutKey.connected)
-        XCTAssertEqual(opened, 5)
+        XCTAssertEqual(opened, before + 2)
+    }
+
+    /// One read that fails among reads that work is the ordinary connection that died: a new one at the next read,
+    /// with no back-off.
+    func testAFailureAmongReadsThatWorkNeverBacksOff() {
+        let charger = FakeChargeHardware(cut: false)
+        var line = ChargeLine(charger)
+        var opened = 0
+        let clock = Date()
+        let read = ChargeController.systemChargerSwitch(open: {
+            opened += 1
+            line = ChargeLine(charger)
+            return line
+        }, now: { clock })
+        for round in 1...5 {
+            XCTAssertEqual(read(), AdapterCutKey.connected)
+            line.sever()
+            XCTAssertNil(read())
+            XCTAssertEqual(opened, round)
+        }
     }
 
     /// Another account on screen: its Anode may be discharging, and the helper's socket is its own, so this one could
@@ -2647,6 +2765,65 @@ final class ChargeControllerTests: XCTestCase {
                       "quitting did not ask the helper to reconnect a charger the net found cut: \(helper.waited)")
         XCTAssertTrue(settings.chargeCutUnconfirmed, "the debt was forgotten by the quit")
         XCTAssertNotNil(c.offWarning)
+    }
+
+    /// Going to sleep: nothing watches the charger while the Mac sleeps, so a debt the net found is asked about, and
+    /// the answer waited for, before `willSleep` returns, like a running discharge's stop.
+    func testGoingToSleepAfterTheNetFoundACutAsksAndWaitsForTheHelper() {
+        let c = netFoundACutNobodyAnswers()
+        XCTAssertTrue(settings.chargeCutUnconfirmed)
+        helper.gone = false
+        helper.available = true
+        let waited = helper.waited.count
+        c.willSleep()
+        XCTAssertEqual(Array(helper.waited.dropFirst(waited)), [.stopDischarge],
+                       "going to sleep did not wait for the helper about a cut the net found")
+        XCTAssertFalse(settings.chargeCutUnconfirmed, "the helper's yes was not heard")
+        XCTAssertNotEqual(c.status, .warning(ChargeController.cutWarningText))
+        XCTAssertTrue(lines.contains { $0.contains("discharge stopped for sleep") }, lines.joined(separator: "\n"))
+    }
+
+    /// With nobody answering, going to sleep leaves the debt, and the stop is asked again at once after the wake.
+    func testGoingToSleepAfterTheNetFoundACutKeepsTheDebtWhenNobodyAnswers() {
+        let c = netFoundACutNobodyAnswers()
+        c.willSleep()
+        XCTAssertTrue(settings.chargeCutUnconfirmed, "the debt was forgotten by the sleep")
+        helper.gone = false
+        helper.available = true
+        let asked = helper.stops()
+        c.didWake()
+        XCTAssertGreaterThan(helper.stops(), asked, "the stop was not asked again at the wake")
+        XCTAssertFalse(settings.chargeCutUnconfirmed)
+    }
+
+    /// The helper's connection reset (it died, or was replaced): the debt is asked about at once on a fresh
+    /// connection, not at the next tick.
+    func testAHelperResetAfterTheNetFoundACutAsksAtOnce() {
+        let c = netFoundACutNobodyAnswers()
+        helper.gone = false
+        helper.available = true
+        let asked = helper.stops()
+        helper.reset()
+        XCTAssertEqual(helper.stops(), asked + 1, "the reset did not ask about the cut")
+        XCTAssertFalse(settings.chargeCutUnconfirmed, "the helper's yes was not heard")
+        XCTAssertNotEqual(c.status, .warning(ChargeController.cutWarningText))
+    }
+
+    /// Relaunched after a crash with the debt on disk: the first thing, before the delay and before any limit, is the
+    /// stop, waited for; a yes settles it.
+    func testARelaunchAfterTheNetFoundACutAsksTheHelperFirst() {
+        let c = netFoundACutNobodyAnswers()
+        XCTAssertTrue(settings.chargeCutUnconfirmed)
+        withExtendedLifetime(c) {}
+        crash()
+        helper.gone = false
+        helper.available = true
+        let waited = helper.waited.count
+        let again = make()
+        XCTAssertEqual(helper.waited.dropFirst(waited).first, .stopDischarge,
+                       "the relaunch did not ask about the debt first: \(helper.waited)")
+        XCTAssertFalse(settings.chargeCutUnconfirmed, "the helper's yes was not heard")
+        XCTAssertNil(again.offWarning)
     }
 
     /// With no helper to answer, the switch reading connected for more than 90 s settles it, as it does any debt.
@@ -3464,7 +3641,9 @@ final class ChargeControllerTests: XCTestCase {
         XCTAssertEqual(client.state?.mclLimit, 100)
         client.state?.mclEnabled = false   // macOS, at 100
         var switchAtSend: [Bool?] = []
-        helper.beforeSend = { [client] in if case .setChargeLimit = $0 { switchAtSend.append(client?.state?.mclEnabled) } }
+        helper.beforeSend = { [client] in
+            if case .setChargeLimit = $0 { switchAtSend.append(client?.state?.mclEnabled) }
+        }
         settings.chargeLimit = 63
         XCTAssertEqual(helper.commands, [.setChargeLimit(63)])
         XCTAssertEqual(switchAtSend, [true], "the helper was asked while macOS's limit switch was still off")
@@ -3485,7 +3664,9 @@ final class ChargeControllerTests: XCTestCase {
         XCTAssertEqual(client.state?.mclLimit, 100)
         client.state?.mclEnabled = false   // macOS, at 100
         var switchAtSend: [Bool?] = []
-        helper.beforeSend = { [client] in if case .setChargeLimit = $0 { switchAtSend.append(client?.state?.mclEnabled) } }
+        helper.beforeSend = { [client] in
+            if case .setChargeLimit = $0 { switchAtSend.append(client?.state?.mclEnabled) }
+        }
         c.pressTopUp()
         XCTAssertEqual(switchAtSend, [true], "Top Up ended into a limit the helper set while the switch was off")
         XCTAssertEqual(client.state, NativeChargeState(mclEnabled: true, mclLimit: 63, optimizedChargingEnabled: false))
@@ -3501,7 +3682,9 @@ final class ChargeControllerTests: XCTestCase {
         let c = make()
         client.state?.mclEnabled = false   // macOS, at 100
         var switchAtSend: [Bool?] = []
-        helper.beforeSend = { [client] in if case .setChargeLimit = $0 { switchAtSend.append(client?.state?.mclEnabled) } }
+        helper.beforeSend = { [client] in
+            if case .setChargeLimit = $0 { switchAtSend.append(client?.state?.mclEnabled) }
+        }
         c.willSleep()
         XCTAssertEqual(helper.waited, [.setChargeLimit(63)])
         XCTAssertEqual(switchAtSend, [true], "the Mac was let go to sleep with the limit's switch off")
@@ -3520,7 +3703,7 @@ final class ChargeControllerTests: XCTestCase {
             return FanReply(ok: true, message: "ok")
         }
         settings.chargeLimit = 63
-        XCTAssertEqual(client.state?.mclEnabled, true, "the limit is not in force: the switch is still off after the yes")
+        XCTAssertEqual(client.state?.mclEnabled, true, "not in force: the switch is still off after the yes")
         _ = c
     }
 
@@ -3606,7 +3789,8 @@ final class ChargeControllerTests: XCTestCase {
         XCTAssertEqual(switchReads, 1)
         XCTAssertNil(c.offWarning, "the charger reads connected and the line stayed")
         XCTAssertFalse(settings.chargeCutUnconfirmed, "the debt was kept on disk, for the next launch to show again")
-        XCTAssertTrue(lines.contains { $0.contains("the charger switch reads connected") }, lines.joined(separator: "\n"))
+        XCTAssertTrue(lines.contains { $0.contains("the charger switch reads connected") },
+                      lines.joined(separator: "\n"))
         XCTAssertTrue(helper.commands.isEmpty, "a helper that is not installed was asked")
         // Nothing owed: nothing is read any more, and a later launch says nothing.
         c.recheckHelper()
@@ -3884,6 +4068,67 @@ final class ChargeControllerTests: XCTestCase {
         clientToMake = client
         settings.chargeRestoreRecord = nil
         lines = []
+    }
+
+    // ── macOS refuses a limit it takes ──────────────────────────────────────
+
+    /// A limit macOS takes by itself (80, 85, 90, 95, 100) that it refuses is not in force, and the status said
+    /// "Charging stops at 80%" all the same. It says so in plain words while the value is not in force, and goes
+    /// back to the ordinary line when macOS takes it.
+    func testAClientLimitMacOSRefusesIsShownAsRefusedWhileItIsNotInForce() {
+        client.succeeds = false
+        let c = make()
+        XCTAssertEqual(c.status, .refused(ChargeController.macOSRefusedLimitText(80)))
+        XCTAssertEqual(ChargeControlFeature.statusText(c.status),
+                       "macOS did not take the charge limit of 80%, so the battery is not held there")
+        client.succeeds = true
+        c.periodicTick()
+        XCTAssertEqual(client.state?.mclLimit, 80)
+        if case .active = c.status {} else { XCTFail("still \(c.status) once macOS took the limit") }
+    }
+
+    /// The same for a limit the helper cannot set for lack of a helper, where macOS's nearest value is what holds: if
+    /// macOS refuses that, "it charges on to 80%" is not true either.
+    func testTheNearestValueMacOSRefusesIsShownAsRefusedToo() {
+        settings.chargeLimit = 63
+        helper.available = false
+        helper.installed = false
+        client.succeeds = false
+        let c = make()
+        XCTAssertEqual(c.status, .refused(ChargeController.macOSRefusedLimitText(80)))
+    }
+
+    /// A refusal of an earlier value says nothing about the one that is wanted now, nor about one the helper took.
+    func testAnEarlierRefusalIsNotShownOnceTheLimitIsInForce() {
+        helper.landsOn = client
+        client.succeeds = false
+        let c = make()
+        XCTAssertEqual(c.status, .refused(ChargeController.macOSRefusedLimitText(80)))
+        // The person moves the limit to one the helper sets, and the helper takes it.
+        settings.chargeLimit = 63
+        XCTAssertEqual(c.lastDecision?.osLimit, 63)
+        if case .refused = c.status { XCTFail("still refused: \(c.status)") }
+        XCTAssertEqual(client.state?.mclLimit, 63)
+    }
+
+    /// The switch having been read once in this run is about the Mac and the run, not the switch-on: switching Charge
+    /// Control off and on again does not forget it. If it did, a failed read after the switch-on would be taken for a
+    /// Mac whose switch cannot be read, and macOS's word alone would owe a stop.
+    func testTheSwitchHavingBeenReadSurvivesSwitchingChargeControlOffAndOn() {
+        let t0 = Date()
+        battery = Self.state(70, ac: false, adapter: true)
+        chargerSwitch = AdapterCutKey.connected
+        let c = make()
+        XCTAssertGreaterThanOrEqual(switchReads, 1, "the switch was not read by the first tick")
+        settings.chargeControlEnabled = false
+        chargerSwitch = nil   // from the first tick of the new switch-on
+        settings.chargeControlEnabled = true
+        c.tick(now: t0.addingTimeInterval(30))
+        c.tick(now: t0.addingTimeInterval(130))
+        c.tick(now: t0.addingTimeInterval(400))
+        XCTAssertEqual(helper.stops(), 0, "macOS's word was taken after a switch that had been read could not be")
+        XCTAssertFalse(settings.chargeCutUnconfirmed)
+        XCTAssertNotEqual(c.status, .warning(ChargeController.cutWarningText))
     }
 }
 

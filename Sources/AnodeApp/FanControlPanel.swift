@@ -667,6 +667,7 @@ final class FanControlPanel: NSView {
                 prompt: FanElevation.uninstallPrompt,
                 waiting: Self.waitingText,
                 done: FanElevation.uninstallDone,
+                doneFrom: FanElevation.uninstallDone(helperOutput:),
                 finishedBeforeResume: helperUninstalled)
     }
 
@@ -684,6 +685,7 @@ final class FanControlPanel: NSView {
     /// if this strip has gone meanwhile. `finishedBeforeResume` runs when the command finished, before the shared
     /// connection is opened again, even if this strip has gone.
     private func elevate(command: String, prompt: String, waiting: String, done: String,
+                         doneFrom: ((String) -> String)? = nil,
                          report: ((String) -> Void)? = nil,
                          onSuccess: ((FanControlPanel) -> Void)? = nil,
                          finishedBeforeResume: (() -> Void)? = nil) {
@@ -707,15 +709,15 @@ final class FanControlPanel: NSView {
                 // Charge Control off the helper for good.
                 link.resume()
                 guard let self else {
-                    report?(Self.outcome(result, done: done, forReport: true))
+                    report?(Self.outcome(result, done: done, doneFrom: doneFrom, forReport: true))
                     return
                 }
                 self.elevating = false
                 self.installed = FanDaemon.isInstalled()
                 self.daemonVersion = nil
                 if case .done = result { onSuccess?(self) }
-                self.say(Self.outcome(result, done: done, forReport: false))
-                report?(Self.outcome(result, done: done, forReport: true))
+                self.say(Self.outcome(result, done: done, doneFrom: doneFrom, forReport: false))
+                report?(Self.outcome(result, done: done, doneFrom: doneFrom, forReport: true))
                 // The daemon launchd just started needs a moment to bind; the
                 // ordinary reconnect poll picks it up on the next tick.
                 self.lastConnectAttempt = .distantPast
@@ -725,10 +727,12 @@ final class FanControlPanel: NSView {
     }
 
     /// How an authorisation ended, in words: on this strip, or to the caller that started it elsewhere.
-    private static func outcome(_ result: FanElevation.Result, done: String, forReport: Bool) -> String {
+    private static func outcome(_ result: FanElevation.Result, done: String, doneFrom: ((String) -> String)?,
+                                forReport: Bool) -> String {
         switch result {
-        case .done:
-            return done
+        case .done(let output):
+            // What the command printed, when what the strip says depends on it (the uninstall and the charger).
+            return doneFrom?(output) ?? done
         case .cancelled:
             // A refused authorisation is an answer, not a failure. Nothing
             // was written and nothing needs undoing.

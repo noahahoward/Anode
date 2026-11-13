@@ -545,6 +545,22 @@ public final class FanHelperServer {
     /// not idle — and takes no new discharge — until a read shows it connected.
     private(set) var reconnectOwed = false
 
+    /// How long, and how many failed retries, it takes to stop owing a reconnect for a cut this helper never held and
+    /// never read as cut. On a Mac with no adapter-cut key whose SMC answers the key-info call oddly, the undo of a
+    /// cut that cannot be confirmed can never be read back either, and without a bound it would keep the helper up and
+    /// wake root every 10 s until it died. Both are needed: a few quick failures say nothing (the SMC is a
+    /// microcontroller, and the key may come back), and the longer the failures run the less likely there is a cut.
+    /// Two minutes and six retries at the watch's 10 s.
+    static let unheldRetryLimit = 6
+    static let unheldGiveUpAfter: TimeInterval = 120
+    /// Failed retries of the reconnect owed now, and when the first was, counted only while no cut was held or seen.
+    private var unheldRetries = 0
+    private var unheldSince: Date?
+    /// This helper has held a cut, or something it read said the charger was cut: a reconnect owed after that is
+    /// never given up, because the charger really may be cut.
+    private var everHeldOrSawACut = false
+    private var saidGaveUp = false
+
     /// Values the adapter-cut key has been found holding that Anode never
     /// writes, each already logged once. Loop thread only.
     private var unrecognisedCutValuesSaid: Set<UInt8> = []
@@ -871,6 +887,7 @@ public final class FanHelperServer {
             let result = reconnectCharger()
             log(result.ok ? "\(result.message) (on a retry)"
                           : "\(result.message) — retrying in \(Int(dischargeWatchInterval))s")
+            if !result.ok { countAFailedRetry() }
             return
         }
         guard let target = dischargeTarget else { return }
@@ -1012,6 +1029,7 @@ public final class FanHelperServer {
     /// shows connected clears the target and the debt, as every reconnect
     /// does; a failure stays owed and the watch retries it on every pass.
     private func owesTheSleepWatchsReconnect() {
+        if dischargeTarget != nil { everHeldOrSawACut = true }
         reconnectOwed = true
         let result = reconnectCharger()
         if result.ok {
@@ -1301,6 +1319,7 @@ public final class FanHelperServer {
         }
         dischargeTarget = target
         reconnectOwed = false
+        everHeldOrSawACut = true
         log("cut the charger: discharging to \(target)% from \(percent.map { "\($0)%" } ?? "?")")
         return FanReply(ok: true, message: "discharging to \(target)%")
     }
@@ -1345,13 +1364,46 @@ public final class FanHelperServer {
            unrecognisedCutValuesSaid.insert(value).inserted {
             log(result.message)
         }
+        if result.outcome == .stillCut { everHeldOrSawACut = true }
         if result.ok {
             dischargeTarget = nil
             reconnectOwed = false
+            unheldRetries = 0
+            unheldSince = nil
         } else if holding || alwaysWrite || result.outcome == .stillCut {
+            if !reconnectOwed {
+                unheldRetries = 0
+                unheldSince = nil
+            }
             reconnectOwed = true
         }
         return result
+    }
+
+    /// A retry of the owed reconnect failed. When no cut was ever held or read as cut, enough failures over enough time
+    /// stop the debt (`unheldRetryLimit`, `unheldGiveUpAfter`), and that is said once. Not without one last read of the
+    /// key: a charger that reads cut now is one, whatever came before. LOOP THREAD ONLY (the watch).
+    private func countAFailedRetry() {
+        guard reconnectOwed, dischargeTarget == nil, !everHeldOrSawACut else { return }
+        let at = now()
+        unheldRetries += 1
+        let since = unheldSince ?? at
+        unheldSince = since
+        guard unheldRetries >= Self.unheldRetryLimit, at.timeIntervalSince(since) >= Self.unheldGiveUpAfter else {
+            return
+        }
+        if charge?.adapterCutValue() == AdapterCutKey.cut {
+            everHeldOrSawACut = true
+            return
+        }
+        reconnectOwed = false
+        unheldRetries = 0
+        unheldSince = nil
+        guard !saidGaveUp else { return }
+        saidGaveUp = true
+        log("gave up reconnecting a charger this helper never saw cut: the adapter-cut key could not be read back "
+            + "after \(Self.unheldRetryLimit) retries over \(Int(Self.unheldGiveUpAfter)) s, so this Mac probably "
+            + "has no such key")
     }
 
     private func set(_ target: FanTarget) -> FanReply {

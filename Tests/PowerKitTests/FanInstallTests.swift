@@ -675,6 +675,42 @@ final class FanElevationTests: XCTestCase {
             XCTAssertEqual(FanElevation.classify(status: end.status, output: "", error: line), .failed(line))
         }
     }
+
+    /// The Fans tab said "the charger is reconnected" for every uninstall that finished, including one that found no
+    /// switch to reconnect on this Mac, one that found the charger not cut, and one that found a value Anode never
+    /// writes and left it. What it says follows what the helper reported (its own lines are the output).
+    func testTheUninstallSaysWhatHappenedToTheCharger() {
+        func output(_ outcome: ChargeRelease.Result.Outcome) -> String {
+            "Handing the fans back to macOS\u{2026}\n  fans: ok\nReconnecting the charger\u{2026}\n  "
+                + ChargeRelease.Result(outcome, writes: 1).message + "\n  unloaded x\nDone.\n"
+        }
+        let reconnected = FanElevation.uninstallDone(helperOutput: output(.reconnected))
+        XCTAssertTrue(reconnected.contains("the charger is reconnected"), reconnected)
+        XCTAssertEqual(reconnected, FanElevation.uninstallDone)
+
+        let notCut = FanElevation.uninstallDone(helperOutput: output(.notCut))
+        XCTAssertTrue(notCut.contains("the charger was not switched off"), notCut)
+        XCTAssertFalse(notCut.contains("is reconnected"), notCut)
+
+        let noKey = FanElevation.uninstallDone(helperOutput: output(.noKey))
+        XCTAssertTrue(noKey.contains("this Mac has no charger switch"), noKey)
+        XCTAssertFalse(noKey.contains("is reconnected"), noKey)
+
+        let foreign = FanElevation.uninstallDone(helperOutput: output(.unrecognised(0x04)))
+        XCTAssertTrue(foreign.contains("holds a value Anode did not write"), foreign)
+        XCTAssertTrue(foreign.contains("left it as it was"), foreign)
+        XCTAssertFalse(foreign.contains("is reconnected"), foreign)
+
+        // Output nobody recognises (an older helper, say): nothing is claimed about the charger.
+        let unknown = FanElevation.uninstallDone(helperOutput: "Done.\n")
+        XCTAssertFalse(unknown.contains("charger"), unknown)
+        XCTAssertTrue(unknown.hasPrefix("Removed."), unknown)
+        XCTAssertTrue(unknown.contains("nothing of Anode runs as root"), unknown)
+        for text in [reconnected, notCut, noKey, foreign, unknown] {
+            XCTAssertTrue(text.contains("The fans are back on automatic"), text)
+            XCTAssertFalse(text.contains("SMC") || text.contains("CHIE"), text)
+        }
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -136,7 +136,31 @@ final class BatteryAdapterPresenceTests: XCTestCase {
     func testStateCarriesTheAdapterThisMachineIsOn() throws {
         guard let state = Battery.state() else { throw XCTSkip("no battery on this machine") }
         try XCTSkipUnless(state.onAC, "on battery: nothing to read")
-        XCTAssertTrue(state.adapterPresent,
-                      "on the charger, but AdapterDetails read as no charger")
+        // Not every charger fills AdapterDetails: a Mac whose charger leaves it empty is still on that charger,
+        // which is what `ChargeAC.presence` says by the flag alone. So an empty reading is not a failure to read the
+        // registry, and proves nothing about it either way.
+        XCTAssertEqual(ChargeAC.presence(externalConnected: state.onAC, adapterPresent: state.adapterPresent), true)
+        try XCTSkipUnless(state.adapterPresent, "this charger's AdapterDetails are empty: nothing to check")
+        XCTAssertTrue(state.adapterPresent)
+    }
+}
+
+/// What the helper's own reader, on the real hardware, says about the cable: `SystemChargeHardware.onAC()` is
+/// `ChargeAC.presence` of one `Battery.state()`, not the flag alone (which reads No during Anode's own cut) and not
+/// the details alone. The fake in the helper's tests stands in for it, so this is the one place that says the
+/// two answer alike. Reads the registry only; no SMC is opened.
+final class ChargeAdapterPresenceTests: XCTestCase {
+
+    func testTheHelpersReaderAnswersThroughChargeACPresence() throws {
+        guard Battery.state() != nil else { throw XCTSkip("no battery on this machine") }
+        let hardware = SystemChargeHardware(smc: nil)
+        // The cable can move between two reads; a second look settles that rather than failing the test.
+        var agreed = false
+        for _ in 0..<3 where !agreed {
+            let state = Battery.state()
+            let expected = ChargeAC.presence(externalConnected: state?.onAC, adapterPresent: state?.adapterPresent)
+            agreed = hardware.onAC() == expected
+        }
+        XCTAssertTrue(agreed, "SystemChargeHardware.onAC() is not ChargeAC.presence of the battery's two answers")
     }
 }

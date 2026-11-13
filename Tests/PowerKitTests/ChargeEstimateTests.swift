@@ -488,6 +488,26 @@ final class ChargeEstimateTests: XCTestCase {
         XCTAssertEqual(scale.gaugeRatio(skewed(gauge: 0, mAhPercent: 50, charging: false, scale: scale)), 1)
     }
 
+    /// The two bases agree to a few percent on a healthy pack. A glitched reading (a gauge that says 10 while the
+    /// capacity says 100) must not turn Charge Control's limit into a tiny or an enormous target on the mAh basis, so
+    /// the ratio is held to a sane band.
+    func testTheGaugeRatioIsHeldToASaneBand() {
+        let scale = pack()
+        XCTAssertEqual(scale.gaugeRatio(skewed(gauge: 10, mAhPercent: 100, charging: false, scale: scale)), 0.8,
+                       accuracy: 1e-9, "a glitched low gauge made the target tiny")
+        XCTAssertEqual(scale.gaugeRatio(skewed(gauge: 100, mAhPercent: 20, charging: false, scale: scale)), 1.25,
+                       accuracy: 1e-9, "a glitched high gauge made the target enormous")
+        XCTAssertEqual(scale.gaugeRatio(skewed(gauge: 80, mAhPercent: 100, charging: false, scale: scale)), 0.8,
+                       accuracy: 1e-9)
+        XCTAssertEqual(scale.gaugeRatio(skewed(gauge: 100, mAhPercent: 80, charging: false, scale: scale)), 1.25,
+                       accuracy: 1e-9)
+        // Inside the band it is untouched.
+        XCTAssertEqual(scale.gaugeRatio(skewed(gauge: 90, mAhPercent: 85, charging: false, scale: scale)), 90.0 / 85.0,
+                       accuracy: 1e-9)
+        XCTAssertEqual(scale.gaugeRatio(skewed(gauge: 80, mAhPercent: 76, charging: false, scale: scale)), 80.0 / 76.0,
+                       accuracy: 1e-9)
+    }
+
     // ── The monitor hands Charge Control's limit to the target ──────────────
 
     /// The closure is read once per tick, so the learner and the target are told

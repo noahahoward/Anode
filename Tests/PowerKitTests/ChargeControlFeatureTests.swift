@@ -825,6 +825,7 @@ final class ChargeControlFeatureTests: XCTestCase {
                   ChargeController.dischargeRefusedText("the SMC would not cut the charger"),
                   ChargeController.dischargeRefusedText("the SMC took the cut and the charger does not read as cut"),
                   ChargeController.limitRefusedText(63, "macOS did not take the charge limit"),
+                  ChargeController.macOSRefusedLimitText(80),
                   ChargeController.cutWarningText, ChargeController.cutWarningNoHelperText,
                   ChargeController.cutWarningOffText, ChargeController.cutWarningInstalledText,
                   ChargeController.liftedText]

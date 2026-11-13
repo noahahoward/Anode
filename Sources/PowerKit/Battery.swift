@@ -148,11 +148,18 @@ public struct BatteryScale {
     /// mAh-basis target in the gauge's terms, and the monitor uses it the other
     /// way to bring Charge Control's limit (a gauge percent) onto the mAh basis,
     /// so the two are the same number at the same instant.
+    ///
+    /// Held to `gaugeRatioBand`: the two bases agree to a few percent on a healthy pack, and a glitched reading (a
+    /// gauge that says 10 while the capacity says 100) must not turn Charge Control's limit into a tiny or an enormous
+    /// target.
     public func gaugeRatio(_ s: Battery.State) -> Double {
         let mAh = chargePercent(s)
         guard mAh > 1, s.percent > 0 else { return 1 }
-        return Double(s.percent) / mAh
+        return min(max(Double(s.percent) / mAh, Self.gaugeRatioBand.lowerBound), Self.gaugeRatioBand.upperBound)
     }
+
+    /// What `gaugeRatio` can be.
+    public static let gaugeRatioBand: ClosedRange<Double> = 0.8...1.25
 }
 
 public enum Battery {
@@ -424,8 +431,7 @@ public enum Battery {
         state.adapterInput_mW = input
         // The battery entry, then its pack's, which is the only place this Mac
         // keeps it. See `packProperties()`.
-        state.temperature_C = Self.temperatureC(fromProperties: props)
-            ?? Self.packProperties().flatMap(Self.temperatureC(fromProperties:))
+        state.temperature_C = Self.temperature(battery: props, pack: Self.packProperties)
         // From the dictionary already in hand: no second registry read.
         state.adapterPresent = Self.adapterPresent(fromProperties: props)
         return state
@@ -477,8 +483,10 @@ public enum Battery {
     /// asked whether it is 0, so a reader that took the charger's own code as
     /// "no code" would find no charger on the Mac this was measured on.
     ///
-    /// Not measured: how soon `AdapterDetails` clears after a cable is pulled
-    /// during a cut. The helper's watch looks again every few seconds.
+    /// How soon `AdapterDetails` clears after a cable is pulled during a cut:
+    /// MEASURED on the same Mac and macOS, sampling every 2 s, it was gone
+    /// (`{"FamilyCode"=0}`) within one sample. The helper's watch looks again
+    /// every few seconds, so a pull is seen on its next look.
     static func adapterPresent(fromProperties props: [String: Any]) -> Bool {
         guard let details = props["AdapterDetails"] as? [String: Any] else { return false }
         // A registry boolean bridges to NSNumber, and `true` would read 1 W.
@@ -508,14 +516,17 @@ public enum Battery {
     /// figure reading 2709 while the SMC's battery thermistors read 27.10 °C.
     /// The Smart Battery unit, 0.1 K, would have made that -2.25 °C.
     ///
-    /// Anything else is nil, because Charge Control's Heat Protection holds and
-    /// resumes charging on this number. 65535, the "unknown" that `state()`
+    /// Anything else is nil (and so is a raw 0 or below: see the guard), because Charge Control's Heat Protection
+    /// holds and resumes charging on this number. 65535, the "unknown" that `state()`
     /// already keeps out of `TimeRemaining`, is 655.35 °C and would hold the
     /// charge on a cool pack; a fault that came out below -20 °C would resume
     /// it on a hot one. `ChargePolicy` reads nil as neither.
     static func temperatureC(fromRaw raw: Any?) -> Double? {
         // A registry boolean bridges to NSNumber, and `true` would read 0.01 °C.
         guard let n = raw as? NSNumber, CFGetTypeID(n) != CFBooleanGetTypeID() else { return nil }
+        // A raw 0 or below is a gauge that has nothing to say (0, -1), not a pack at freezing: read as a real 0 °C it
+        // would let a Heat Protection pause resume on a hot pack. Charge Control has no use for a pack below zero.
+        guard n.doubleValue > 0 else { return nil }
         let c = n.doubleValue / 100
         guard c.isFinite, plausibleTemperature_C.contains(c) else { return nil }
         return c
@@ -531,6 +542,13 @@ public enum Battery {
     static func temperatureC(fromProperties props: [String: Any]) -> Double? {
         temperatureC(fromRaw: props["Temperature"])
             ?? temperatureC(fromRaw: (props["BatteryData"] as? [String: Any])?["Temperature"])
+    }
+
+    /// The pack's temperature by the order it is looked for: the battery entry's own (`props`), and only when that has
+    /// none, the pack entry's, which `readPack` reads. A function of its two inputs so the order, and that the pack
+    /// is not read for nothing, can be tested without hardware (`readPack` is a closure that counts).
+    static func temperature(battery props: [String: Any], pack readPack: () -> [String: Any]?) -> Double? {
+        temperatureC(fromProperties: props) ?? readPack().flatMap(temperatureC(fromProperties:))
     }
 
     /// The properties of `AppleSmartBatteryPack`, the battery entry's child,

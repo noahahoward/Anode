@@ -35,7 +35,8 @@ final class NativeChargeLimitTests: XCTestCase {
             return nil
         }
         let loadable = "/usr/lib/libSystem.B.dylib"
-        XCTAssertTrue(why(PowerUIChargeClient.open(frameworkPath: "/nonexistent/PowerUI"))?.contains("did not load") == true)
+        XCTAssertTrue(why(PowerUIChargeClient.open(frameworkPath: "/nonexistent/PowerUI"))?
+            .contains("did not load") == true)
         XCTAssertTrue(why(PowerUIChargeClient.open(frameworkPath: loadable, className: "NoSuchPowerUIClass"))?
             .contains("class NoSuchPowerUIClass is not there") == true)
         // A class that is there and has none of the methods.

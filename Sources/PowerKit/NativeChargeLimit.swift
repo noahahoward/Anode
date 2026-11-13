@@ -141,7 +141,8 @@ public final class PowerUIChargeClient: ChargeLimitClient {
                 return fail("the method \(name) takes a different signature than the one measured (\(was), "
                             + "expected \(encoding))")
             }
-            return .success(Call(selector: selector, function: unsafeBitCast(method_getImplementation(method), to: type)))
+            let function = unsafeBitCast(method_getImplementation(method), to: type)
+            return .success(Call(selector: selector, function: function))
         }
         var failure: OpenFailure?
         func get<Fn>(_ result: Result<Call<Fn>, OpenFailure>) -> Call<Fn>? {

@@ -59,9 +59,62 @@ final class BatteryTemperatureTests: XCTestCase {
         }
         XCTAssertNil(Battery.temperatureC(fromProperties: ["Temperature": 65535]))
         XCTAssertNil(Battery.temperatureC(fromProperties: ["BatteryData": ["Temperature": 65535]]))
-        // The ends of the range are readings.
-        XCTAssertEqual(Battery.temperatureC(fromRaw: -2000), -20)
+        // The top of the range is a reading.
         XCTAssertEqual(Battery.temperatureC(fromRaw: 10000), 100)
+    }
+
+    /// A gauge that glitches to 0 (or -1) is not at 0 °C: read as a real 0 °C it would let a Heat Protection pause
+    /// resume on a hot pack. A raw value of 0 or below is no reading. The smallest positive one is.
+    func testZeroOrNegativeRawIsNoReading() throws {
+        for raw in [0, -1, -2, -100, -2000] as [Any] {
+            XCTAssertNil(Battery.temperatureC(fromRaw: raw), "\(raw)")
+            XCTAssertNil(Battery.temperatureC(fromRaw: NSNumber(value: 0)), "\(raw)")
+        }
+        XCTAssertNil(Battery.temperatureC(fromRaw: 0.0))
+        XCTAssertNil(Battery.temperatureC(fromRaw: -0.0))
+        XCTAssertNil(Battery.temperatureC(fromProperties: ["Temperature": 0]))
+        XCTAssertNil(Battery.temperatureC(fromProperties: ["BatteryData": ["Temperature": -1]]))
+        // A top-level figure that is not a reading does not hide the nested one that is.
+        XCTAssertEqual(Battery.temperatureC(fromProperties: ["Temperature": 0, "BatteryData": ["Temperature": 3012]]),
+                       30.12)
+        XCTAssertEqual(try XCTUnwrap(Battery.temperatureC(fromRaw: 1)), 0.01, accuracy: 1e-9)
+    }
+
+    // ── Which entry is asked ────────────────────────────────────────────────
+
+    /// The battery entry's own temperature wins, and the pack entry is not read at all then; only a battery entry with
+    /// none (this Mac's publishes none) sends the read to the pack. Counted, with no hardware.
+    func testThePackIsReadOnlyWhenTheBatteryEntryHasNoTemperature() throws {
+        var reads = 0
+        let pack: [String: Any] = ["BatteryData": ["Temperature": 3500]]
+        func read() -> [String: Any]? { reads += 1; return pack }
+
+        XCTAssertEqual(try XCTUnwrap(Battery.temperature(battery: ["Temperature": 2709], pack: read)), 27.09,
+                       accuracy: 1e-9)
+        XCTAssertEqual(reads, 0, "the pack was read though the battery entry had the temperature")
+        XCTAssertEqual(try XCTUnwrap(Battery.temperature(battery: ["BatteryData": ["Temperature": 3012]], pack: read)),
+                       30.12, accuracy: 1e-9)
+        XCTAssertEqual(reads, 0)
+
+        XCTAssertEqual(try XCTUnwrap(Battery.temperature(battery: ["BatteryData": ["DesignCapacity": 6249]],
+                                                          pack: read)), 35, accuracy: 1e-9)
+        XCTAssertEqual(reads, 1, "the pack is read once when the battery entry has none")
+        // Not a temperature (65535, a raw 0): the same as none.
+        XCTAssertEqual(try XCTUnwrap(Battery.temperature(battery: ["Temperature": 65535], pack: read)), 35,
+                       accuracy: 1e-9)
+        XCTAssertEqual(reads, 2)
+        XCTAssertEqual(try XCTUnwrap(Battery.temperature(battery: ["Temperature": 0], pack: read)), 35, accuracy: 1e-9)
+        XCTAssertEqual(reads, 3)
+    }
+
+    /// Neither has one: no reading, and the pack was asked once.
+    func testNeitherEntryHavingOneIsNoReading() {
+        var reads = 0
+        XCTAssertNil(Battery.temperature(battery: [:], pack: { reads += 1; return ["BatteryData": [:]] }))
+        XCTAssertEqual(reads, 1)
+        XCTAssertNil(Battery.temperature(battery: [:], pack: { reads += 1; return nil }))
+        XCTAssertEqual(reads, 2)
+        XCTAssertNil(Battery.temperature(battery: [:], pack: { reads += 1; return ["Temperature": 65535] }))
     }
 
     // ── Where an entry keeps it ─────────────────────────────────────────────

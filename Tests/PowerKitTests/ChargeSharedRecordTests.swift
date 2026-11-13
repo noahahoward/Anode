@@ -287,6 +287,27 @@ final class ChargeSharedRecordTests: XCTestCase {
         XCTAssertTrue(a.settings.chargeStartPending)
     }
 
+    /// A record an earlier build left in this account's preferences that cannot be read is still moved into the shared
+    /// one, as macOS's own defaults (no limit, Optimized Battery Charging on): the only thing it can stand for, and
+    /// better than leaving it where another account's Anode cannot see it.
+    func testAnUndecodablePerAccountRecordIsMovedIntoTheSharedRecordAsMacOSsDefaults() throws {
+        let a = try account("A", uid: 501, limit: 85)
+        a.settings.chargeRestoreRecord = "{ this is not a record"
+        XCTAssertNil(ChargeController.decodeRecord(a.settings.chargeRestoreRecord))
+        a.records = ChargeRecords(settings: a.settings, store: store(for: a), log: { [weak a] in a?.lines.append($0) })
+        XCTAssertTrue(a.records.hasRecord, "a record that cannot be read is still a record")
+        nextPid += 1
+        a.pid = nextPid
+        live.insert(a.pid)
+        a.records = ChargeRecords(settings: a.settings, store: store(for: a), log: { [weak a] in a?.lines.append($0) })
+        _ = a.records.acquire(read: { [macOS] in macOS?.state })
+        XCTAssertNil(a.settings.chargeRestoreRecord, "the per-account copy stayed")
+        guard case .record(let r)? = file() else { return XCTFail("no shared record: \(String(describing: file()))") }
+        XCTAssertEqual(r.original, ChargeController.defaultRecord)
+        XCTAssertEqual(r.original, macOSOwn)
+        XCTAssertTrue(a.lines.contains { $0.contains("moved this account's record") }, a.lines.joined(separator: "\n"))
+    }
+
     /// Off, a record left over is put back at the top of the program as well, by the same holder rule. A's setting was
     /// turned off while Anode was closed (it crashed holding the limit): nobody else holds it, so it goes back at
     /// once, with no wait and nothing pending.

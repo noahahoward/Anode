@@ -222,7 +222,8 @@ final class ChargeController {
         var arm64: Int32 = 0
         var size = MemoryLayout<Int32>.size
         let known = sysctlbyname("hw.optional.arm64", &arm64, &size, nil, 0) == 0
-        let fits = osFitsChargeControl(ProcessInfo.processInfo.operatingSystemVersion, appleSilicon: known && arm64 == 1)
+        let version = ProcessInfo.processInfo.operatingSystemVersion
+        let fits = osFitsChargeControl(version, appleSilicon: known && arm64 == 1)
         return NoClientReason(unsupportedMac: !fits, step: PowerUIChargeClient.lastFailure)
     }
 
@@ -270,7 +271,9 @@ final class ChargeController {
     }
 
     static func restoreForUninstallOutcome(settings: Settings, records: ChargeRecords? = nil,
-                                           makeClient: @escaping () -> ChargeLimitClient? = { PowerUIChargeClient.make() },
+                                           makeClient: @escaping () -> ChargeLimitClient? = {
+                                               PowerUIChargeClient.make()
+                                           },
                                            helper: ChargeHelperLink,
                                            log: @escaping (String) -> Void = { FeatureLog.append("charge.log", $0) })
         -> UninstallRestore {
@@ -324,9 +327,9 @@ final class ChargeController {
                              log: @escaping (String) -> Void = { FeatureLog.append("charge.log", $0) }) -> Bool {
         let records = records ?? ChargeRecords(settings: settings)
         let on = settings.chargeControlEnabled
-        guard on ? records.lastRunDidNotRelease() || settings.chargeStartPending : records.leftOverForThisAccount() else {
-            return false
-        }
+        let work = on ? records.lastRunDidNotRelease() || settings.chargeStartPending
+                      : records.leftOverForThisAccount()
+        guard work else { return false }
         let c = ChargeController(settings: settings, records: records, makeClient: makeClient, helper: helper(),
                                  battery: { nil }, chargerSwitch: { nil }, log: log, workspace: NotificationCenter(),
                                  limitInForce: ChargeLimitInForce(), startDelay: Self.startDelay,
@@ -336,6 +339,10 @@ final class ChargeController {
 
     static func dischargeRefusedText(_ why: String) -> String {
         "The Anode helper would not discharge: \(plainWords(why))"
+    }
+    /// A limit macOS takes by itself and refused: not in force, so the status says so instead of "Charging stops at".
+    static func macOSRefusedLimitText(_ limit: Int) -> String {
+        "macOS did not take the charge limit of \(limit)%, so the battery is not held there"
     }
     static func limitRefusedText(_ limit: Int, _ why: String) -> String {
         "The Anode helper did not set the limit to \(limit)%: \(plainWords(why))"
@@ -446,6 +453,9 @@ final class ChargeController {
     /// A limit the helper refused, and why. Not sent again until the decision's limit changes, the Mac wakes, macOS
     /// is found changed, or the section looks again; meanwhile the nearest value macOS takes above it holds.
     private var refusedLimit: (value: Int, why: String)?
+    /// The value macOS itself refused (a client value, or the nearest one standing in for a limit only the helper can
+    /// set), until a value is taken: the status says so while it is the one wanted and not in force.
+    private var macOSRefusedLimit: Int?
     private var appliedDischarge: Int? {
         didSet {
             guard appliedDischarge != oldValue else { return }
@@ -500,7 +510,14 @@ final class ChargeController {
     private var cutLookSince: Date?
     /// A running helper said the charger is connected during this stretch of that look: not asked again until it
     /// ends, or a charger macOS reports oddly would wake the helper every tick.
-    private var cutLookAnswered = false
+    private var cutLookAnsweredAt: Date?
+    private var cutLookAnswered: Bool { cutLookAnsweredAt != nil }
+    /// The time of the last tick, which is when a helper's answer is taken to have come (the callbacks have no clock of
+    /// their own, and the tests move this one by hand).
+    private var lastTickNow = Date()
+    /// Once a running helper has said the charger is connected, the switch still reading cut is asked about again, but
+    /// not sooner than this after that answer, so a helper that keeps saying so is not woken every tick.
+    static let cutReaskAfter: TimeInterval = 300
     /// Since when the charger has shown as connected, with something to settle and no discharge in force; nil
     /// otherwise. See `noteConnected`.
     private var connectedSince: Date?
@@ -612,19 +629,41 @@ final class ChargeController {
     /// A read that fails is followed, at the next read, by a new connection. `SystemChargeHardware()` cannot fail: an
     /// SMC that would not open is kept inside it as "no connection" for good (`SMC.init?` is nil then), and a
     /// connection that has died is never opened again by itself. So the one that failed is dropped, and the next read
-    /// opens one (one open at most per read, and the controller reads once a tick at most). `open` is a parameter for
-    /// the tests, which must not reach the real SMC.
-    static func systemChargerSwitch(open: @escaping () -> ChargeHardware = { SystemChargeHardware() })
+    /// opens one (one open at most per read, and the controller reads once a tick at most). On a Mac whose switch can
+    /// never be read that would be a new SMC connection every tick for as long as Charge Control is on, so after
+    /// `reopenFailuresBeforeBackoff` failures in a row nothing is opened or read for `reopenBackoff`; the next read
+    /// after that tries again, and each failure then backs off again. A read that works forgets the failures. `open`
+    /// and `now` are parameters for the tests, which must not reach the real SMC or wait.
+    static func systemChargerSwitch(open: @escaping () -> ChargeHardware = { SystemChargeHardware() },
+                                    now: @escaping () -> Date = Date.init)
         -> () -> UInt8? {
         var hardware: ChargeHardware?
         var lastReadFailed = false
+        var failuresInARow = 0
+        var tryAgainAt = Date.distantPast
         return {
-            if hardware == nil || lastReadFailed { hardware = open() }
+            if hardware == nil || lastReadFailed {
+                guard failuresInARow < reopenFailuresBeforeBackoff || now() >= tryAgainAt else { return nil }
+                hardware = open()
+            }
             let value = hardware?.adapterCutValue()
             lastReadFailed = value == nil
+            if value == nil {
+                failuresInARow += 1
+                if failuresInARow >= reopenFailuresBeforeBackoff {
+                    tryAgainAt = now().addingTimeInterval(reopenBackoff)
+                }
+            } else {
+                failuresInARow = 0
+            }
             return value
         }
     }
+
+    /// How many reads in a row may fail, each with a new connection, before `systemChargerSwitch` backs off.
+    static let reopenFailuresBeforeBackoff = 3
+    /// How long it then leaves the SMC alone.
+    static let reopenBackoff: TimeInterval = 300
 
     /// `observing` false: a controller that watches nothing and starts nothing, for the uninstall's restore with no
     /// window (`restoreForUninstall(settings:...)`), which must not switch Charge Control on to switch it off.
@@ -757,8 +796,8 @@ final class ChargeController {
         stopDue = cutOwed
         if cutOwed { log("a discharge's end was never confirmed; asking the helper to reconnect the charger") }
         // Two controllers on one charger would fight; Optimized Battery Charging comes back on when this goes off.
-        // Not while another account is on screen: that Anode's limit is in force, and this is not the account that holds
-        // it (`assertMacOSSettings` is what the account does once it is back).
+        // Not while another account is on screen: that Anode's limit is in force, and this is not the account that
+        // holds it (`assertMacOSSettings` is what the account does once it is back).
         if sessionActive { assertMacOSSettings(c) }
         log("on")
         installTriggers()
@@ -915,6 +954,7 @@ final class ChargeController {
         helper.letGo()
         client = nil
         asserted = false
+        macOSRefusedLimit = nil
         memory = ChargeMemory()
         sleeping = false
         lastDecision = nil
@@ -937,7 +977,7 @@ final class ChargeController {
         cutLost = false
         cutSeen = false
         cutLookSince = nil
-        cutLookAnswered = false
+        cutLookAnsweredAt = nil
         connectedSince = nil
         switchRead = nil
         lookDueAt = nil
@@ -1238,7 +1278,7 @@ final class ChargeController {
         let wasLost = (cutLost || cutSeen) && !foreign
         stopDue = false
         cutLost = false
-        if cutSeen || cutLookSince != nil { cutLookAnswered = true }
+        if cutSeen || cutLookSince != nil { cutLookAnsweredAt = lastTickNow }
         cutSeen = false
         if cutOwed || settings.chargeCutUnconfirmed {
             cutOwed = false
@@ -1274,7 +1314,7 @@ final class ChargeController {
         cutLost = false
         cutSeen = false
         cutLookSince = nil
-        cutLookAnswered = false
+        cutLookAnsweredAt = nil
         if cutOwed || settings.chargeCutUnconfirmed {
             cutOwed = false
             settings.chargeCutUnconfirmed = false
@@ -1571,7 +1611,7 @@ final class ChargeController {
         stopAndWait(for: "another account", deadline: Date().addingTimeInterval(Self.stopTimeout))
         cutSeen = false
         cutLookSince = nil
-        cutLookAnswered = false
+        cutLookAnsweredAt = nil
         // Every lost cut is owed: a discharge is owed before it is asked for, and the net owes what it finds, so a
         // debt this Anode has written down is still asked about while away (that is putting right, not holding),
         // warning and all. This holds only a lost cut with no debt behind it, which nothing makes now; it is kept so
@@ -1625,6 +1665,7 @@ final class ChargeController {
     }
 
     private func tickOnce(now: Date) {
+        lastTickNow = now
         guard let b = battery() else { return setStatus(.unavailable(Self.noBatteryText)) }
         // Anode's own charger cut can make macOS report the Mac off the adapter while the cable is in (measured with
         // no macOS limit holding the battery); the adapter's details still describe a charger then, and stop
@@ -1711,8 +1752,9 @@ final class ChargeController {
     ///     50 s and macOS said "on the adapter" throughout, so macOS's word alone would never see that cut;
     ///   * macOS reporting the Mac off the adapter while the adapter is there (`macOSLook`), which is what a cut
     ///     looks like with no limit holding the battery (measured: within 1 to 2 s of the cut). This is the route
-    ///     for a Mac whose switch has never been read in this run. It is not believed against a switch that reads
-    ///     connected: there is then nothing to reconnect, and the helper is not woken to say so.
+    ///     for a Mac whose switch has never been read in this run, and only for it. It is not believed against a
+    ///     switch that reads connected (there is then nothing to reconnect, and the helper is not woken to say so),
+    ///     nor against one that reads a value Anode never writes (not Anode's cut, and not Anode's to touch).
     ///
     /// `looked` is whether the switch was asked at all this tick (`read` is nil when it was not). A read that fails
     /// is no information once the switch has been read in this run: the look neither ends nor goes on, `cutLookSince`
@@ -1722,15 +1764,23 @@ final class ChargeController {
     private func noteCutLook(looked: Bool, switchReads read: UInt8?, macOSLook: Bool, now: Date) {
         if looked, read == nil, switchEverRead { return }
         let switchCut = read == AdapterCutKey.cut
-        let looksCut = switchCut || (macOSLook && read != AdapterCutKey.connected)
+        // macOS's word is for a switch that could not be read at all (above, a read that fails after one that worked
+        // returned). A switch that reads connected disproves it, and one that reads a value Anode never writes is not
+        // Anode's cut and not Anode's to touch: owing a stop for it would write a debt only a helper can clear.
+        let looksCut = switchCut || (macOSLook && read == nil)
         guard looksCut, appliedDischarge == nil else {
             cutLookSince = nil
-            cutLookAnswered = false
+            cutLookAnsweredAt = nil
             cutSeen = false
             return
         }
         let since = cutLookSince ?? now
         cutLookSince = since
+        // A yes to the stop settles the stretch for macOS's word, which is no proof. The switch itself still reading
+        // cut is: asked again, no sooner than `cutReaskAfter` after the answer.
+        if let answered = cutLookAnsweredAt, switchCut, now.timeIntervalSince(answered) >= Self.cutReaskAfter {
+            cutLookAnsweredAt = nil
+        }
         guard !dischargeInFlight, !cutLookAnswered, !cutSeen,
               now.timeIntervalSince(since) > Self.chargerReconnectTime else { return }
         cutSeen = true
@@ -1864,6 +1914,7 @@ final class ChargeController {
         guard let r else { return log("the helper did not answer the limit \(want) in time") }
         if r.ok {
             appliedLimit = want
+            macOSRefusedLimit = nil
             log("\(Self.limitChange(from, want)) (\(reason.rawValue))")
             // Once more now that the value has landed: what macOS does to a switch turned on while it still held 100
             // was not measured, and the cost of asking again is one call that changes nothing if it is on.
@@ -1889,9 +1940,11 @@ final class ChargeController {
         let from = appliedLimit
         if c.setLimit(value) {
             appliedLimit = value
+            macOSRefusedLimit = nil
             let note = wanted.map { "; \($0) needs the helper" } ?? ""
             log("\(Self.limitChange(from, value)) (\(reason.rawValue)\(note))")
         } else {
+            macOSRefusedLimit = value
             log("macOS refused the limit \(value)")
         }
     }
@@ -2023,6 +2076,15 @@ final class ChargeController {
         // First: the charger may be cut with nobody watching it.
         if cutLost || cutSeen {
             return setStatus(.warning(helper.installed ? Self.cutWarningText : Self.cutWarningNoHelperText))
+        }
+        // The value macOS would have to take for this decision, when it is macOS and not the helper that holds it:
+        // not in force because macOS refused it. (A refusal of an earlier value, or of one the helper has since set,
+        // is not this.)
+        let viaMacOS = NativeChargeLimit.isClientSettable(d.osLimit) || !(helper.available && refusedLimit == nil)
+        let viaMacOSValue = NativeChargeLimit.isClientSettable(d.osLimit) ? d.osLimit
+            : Self.nearestClientValue(atOrAbove: d.osLimit)
+        if viaMacOS, let refused = macOSRefusedLimit, refused == viaMacOSValue, appliedLimit != viaMacOSValue {
+            return setStatus(.refused(Self.macOSRefusedLimitText(refused)))
         }
         let missing = helper.outdated ? Self.helperOutdatedText : nil
         let limitNotInForce = !NativeChargeLimit.isClientSettable(d.osLimit) && appliedLimit != d.osLimit

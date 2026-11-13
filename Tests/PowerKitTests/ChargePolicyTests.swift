@@ -57,7 +57,8 @@ final class ChargePolicyTests: XCTestCase {
     // ── Unplug and Top Up ───────────────────────────────────────────────────
 
     func testTopUpWinsUntilUnplug() {
-        var (s, i) = base()
+        let (s, start) = base()
+        var i = start
         var m = ChargeMemory()
         i.topUp = true
         let on = ChargePolicy.decide(s, i, &m)
@@ -187,7 +188,8 @@ final class ChargePolicyTests: XCTestCase {
     }
 
     func testHotButHeatProtectionOffChargesNormally() {
-        var (s, i) = base()
+        let (s, start) = base()
+        var i = start
         var m = ChargeMemory()
         i.temperatureC = 45
         let d = ChargePolicy.decide(s, i, &m)
@@ -246,6 +248,22 @@ final class ChargePolicyTests: XCTestCase {
         XCTAssertNil(d.dischargeTo)
         XCTAssertEqual(d.osLimit, 77)
         XCTAssertFalse(d.endManualDischarge, "the discharge is waiting, not finished")
+    }
+
+    /// Heat outranks sleeping: both hold at the charge, so the limit is the same, but the reason is what the section
+    /// says, and heat is the one that must still be in force (and its clock still running) when the Mac wakes.
+    func testHeatBeatsSleeping() {
+        var (s, i) = base()
+        var m = ChargeMemory()
+        s.heatProtectionEnabled = true
+        s.stopWhenSleeping = true
+        i.temperatureC = 40
+        i.sleeping = true
+        i.percent = 77
+        let d = ChargePolicy.decide(s, i, &m)
+        XCTAssertEqual(d.reason, .heat)
+        XCTAssertEqual(d.osLimit, 77)
+        XCTAssertNotNil(m.heatPausedSince, "the pause began while asleep")
     }
 
     // ── Stop Charging when Sleeping ─────────────────────────────────────────
@@ -312,6 +330,25 @@ final class ChargePolicyTests: XCTestCase {
         let d = ChargePolicy.decide(s, i, &m)
         XCTAssertEqual(d.reason, .sleeping)
         XCTAssertNil(d.dischargeTo)
+    }
+
+    /// Sleeping outranks sailing: asleep, the charge is held where it is, and sailing's own phase is not consulted, so
+    /// it does not rest or resume on a charge nobody is watching.
+    func testSleepingBeatsSailing() {
+        var (s, i) = base()
+        var m = ChargeMemory()
+        s.sailingEnabled = true
+        s.stopWhenSleeping = true
+        i.sleeping = true
+        i.percent = 80          // at the limit: awake, sailing would rest here
+        let d = ChargePolicy.decide(s, i, &m)
+        XCTAssertEqual(d.reason, .sleeping)
+        XCTAssertEqual(d.osLimit, 80)
+        XCTAssertFalse(m.sailingPhase, "sailing was consulted while asleep")
+        i.percent = 78
+        let lower = ChargePolicy.decide(s, i, &m)
+        XCTAssertEqual(lower.reason, .sleeping)
+        XCTAssertEqual(lower.osLimit, 78)
     }
 
     // ── Discharge ───────────────────────────────────────────────────────────
@@ -442,6 +479,42 @@ final class ChargePolicyTests: XCTestCase {
         XCTAssertFalse(m.sailingPhase)
         XCTAssertEqual(d.osLimit, 80)
         XCTAssertEqual(d.reason, .limit)
+    }
+
+    /// A discharge outranks sailing: above the limit with a discharge wanted, the discharge runs, and sailing does not
+    /// begin its rest at the limit it passes on the way down.
+    func testDischargeBeatsSailing() {
+        var (s, i) = base()
+        var m = ChargeMemory()
+        s.sailingEnabled = true
+        i.manualDischarge = true
+        i.percent = 90
+        let d = ChargePolicy.decide(s, i, &m)
+        XCTAssertEqual(d.reason, .discharging)
+        XCTAssertEqual(d.dischargeTo, ChargePolicy.dischargeTarget(limit: 80))
+        XCTAssertEqual(d.osLimit, 80)
+        XCTAssertFalse(m.sailingPhase, "sailing was consulted while a discharge ran")
+    }
+
+    /// A gap of 0 (a bad setting) is clamped to 1, so the band is not empty: the charge rests at the limit and
+    /// recharges one below it. With whole-number charges the clamp cannot be told apart from no clamp at all (the
+    /// recharge test `percent <= limit - gap` and the rest test `percent >= limit` meet either way), so this pins the
+    /// band's behaviour at the bad values, and it is not a mutation check of the clamp.
+    func testSailingGapIsClampedToOneFromBelow() {
+        for bad in [0, -5] {
+            var (s, i) = base()
+            var m = ChargeMemory()
+            s.sailingEnabled = true
+            s.sailingGap = bad
+            i.percent = 80
+            XCTAssertEqual(ChargePolicy.decide(s, i, &m).reason, .sailing, "gap \(bad): not resting at the limit")
+            XCTAssertTrue(m.sailingPhase)
+            i.percent = 79
+            let d = ChargePolicy.decide(s, i, &m)
+            XCTAssertEqual(d.reason, .limit, "gap \(bad): not charging one below the limit")
+            XCTAssertFalse(m.sailingPhase)
+            XCTAssertEqual(d.osLimit, 80)
+        }
     }
 
     func testSailingGapIsClampedToThirty() {
