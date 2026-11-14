@@ -41,6 +41,38 @@ final class UltraLowPowerFeatureTests: XCTestCase {
                        "Keeps Editor. Nothing else is running that can be frozen.")
     }
 
+    /// An app with a part Anode cannot freeze is left running whole. It is neither kept by choice nor in the list of
+    /// what freezes, and the box said nothing of it: one sentence names them, after the other two.
+    func testConfirmTextNamesTheAppsThatWillBeLeftRunning() {
+        XCTAssertEqual(UltraMenu.confirmText(kept: ["Editor"], frozenCount: 9, leftRunning: ["Backup"]),
+                       "Keeps Editor. Freezes 9 apps and tools until you turn this off. Leaves Backup running: it has a "
+                       + "part Anode cannot freeze.")
+        XCTAssertEqual(UltraMenu.confirmText(kept: ["Editor"], frozenCount: 9, leftRunning: ["Backup", "VPN", "Sync"]),
+                       "Keeps Editor. Freezes 9 apps and tools until you turn this off. Leaves Backup, VPN and Sync "
+                       + "running: each has a part Anode cannot freeze.")
+        XCTAssertEqual(UltraMenu.confirmText(kept: ["Editor"], frozenCount: 0, leftRunning: ["Backup", "VPN"]),
+                       "Keeps Editor. Nothing else is running that can be frozen. Leaves Backup and VPN running: each "
+                       + "has a part Anode cannot freeze.")
+    }
+
+    /// More than three are counted, not named: the box stays one short paragraph however many there are.
+    func testConfirmTextCountsTheAppsLeftRunningPastTheThird() {
+        XCTAssertEqual(UltraMenu.confirmText(kept: ["Editor"], frozenCount: 9, leftRunning: ["A", "B", "C", "D"]),
+                       "Keeps Editor. Freezes 9 apps and tools until you turn this off. Leaves A, B, C and 1 more "
+                       + "running: each has a part Anode cannot freeze.")
+        XCTAssertEqual(UltraMenu.confirmText(kept: ["Editor"], frozenCount: 9,
+                                             leftRunning: ["A", "B", "C", "D", "E", "F", "G", "H"]),
+                       "Keeps Editor. Freezes 9 apps and tools until you turn this off. Leaves A, B, C and 5 more "
+                       + "running: each has a part Anode cannot freeze.")
+        XCTAssertEqual(UltraMenu.confirmNamesLeftRunning, 3)
+    }
+
+    /// With none, the box says what it always said.
+    func testConfirmTextWithNothingLeftRunningIsUnchanged() {
+        XCTAssertEqual(UltraMenu.confirmText(kept: ["Editor"], frozenCount: 9, leftRunning: []),
+                       UltraMenu.confirmText(kept: ["Editor"], frozenCount: 9))
+    }
+
     // ── The menu ────────────────────────────────────────────────────────────
 
     private func menu(_ state: UltraLowPowerController.State, starting: Bool = false, frozen: [FreezeGroup] = [],
@@ -523,6 +555,19 @@ final class UltraLowPowerFeatureTests: XCTestCase {
         r.ask(kept: ["Editor"], frozen: [])
         XCTAssertEqual(r.box.headline.stringValue, "Keeps Editor. Nothing else is running that can be frozen.")
         XCTAssertEqual(r.box.listedNames, [])
+    }
+
+    /// What will be left running is one more sentence of the headline, not a second list: the box stays small.
+    func testTheBoxSaysWhatWillBeLeftRunningInItsHeadline() {
+        let r = BoxRig()
+        r.box.ask(kept: ["Editor"], frozen: ["Browser", "Sync"], leftRunning: ["Backup", "VPN"]) { _ in }
+        XCTAssertEqual(r.box.headline.stringValue,
+                       "Keeps Editor. Freezes 2 apps and tools until you turn this off. Leaves Backup and VPN running: "
+                       + "each has a part Anode cannot freeze.")
+        XCTAssertEqual(r.box.listedNames, ["Browser", "Sync"], "the list is still only what freezes")
+        // The next question starts clean.
+        r.box.ask(kept: ["Editor"], frozen: ["Browser"]) { _ in }
+        XCTAssertEqual(r.box.headline.stringValue, "Keeps Editor. Freezes 1 app or tool until you turn this off.")
     }
 
     /// The line is asked for at each ask, not once when the box is made: the choices may change between two questions.

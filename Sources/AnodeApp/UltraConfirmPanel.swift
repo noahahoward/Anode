@@ -74,16 +74,16 @@ final class UltraConfirmPanel: NSObject, UltraConfirming, NSWindowDelegate {
 
     // ── Asking ──────────────────────────────────────────────────────────────
 
-    func ask(kept: [String], frozen: [String], answer: @escaping (Bool) -> Void) {
+    func ask(kept: [String], frozen: [String], leftRunning: [String], answer: @escaping (Bool) -> Void) {
         guard Thread.isMainThread else {
-            DispatchQueue.main.async { [self] in ask(kept: kept, frozen: frozen, answer: answer) }
+            DispatchQueue.main.async { [self] in ask(kept: kept, frozen: frozen, leftRunning: leftRunning, answer: answer) }
             return
         }
         // A box already up is answered No, and this question takes its place on the same panel.
         pending.replace(answer)
         let panel = self.panel ?? makePanel()
         self.panel = panel
-        fill(kept: kept, frozen: frozen)
+        fill(kept: kept, frozen: frozen, leftRunning: leftRunning)
         let size = content?.fittingSize ?? NSSize(width: Self.width, height: 200)
         panel.setContentSize(size)
         let area = NSScreen.screens.first?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
@@ -99,8 +99,8 @@ final class UltraConfirmPanel: NSObject, UltraConfirming, NSWindowDelegate {
         return NSRect(origin: NSPoint(x: x, y: y), size: size)
     }
 
-    private func fill(kept: [String], frozen: [String]) {
-        headline.stringValue = UltraMenu.confirmText(kept: kept, frozenCount: frozen.count)
+    private func fill(kept: [String], frozen: [String], leftRunning: [String]) {
+        headline.stringValue = UltraMenu.confirmText(kept: kept, frozenCount: frozen.count, leftRunning: leftRunning)
         screenLabel.stringValue = screenText()
         (list.documentView as? NSTextView)?.string = frozen.joined(separator: "\n")
         // The list is only shown when there is something in it, and no taller than a screenful of rows.

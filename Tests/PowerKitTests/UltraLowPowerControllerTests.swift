@@ -233,13 +233,14 @@ final class UltraLowPowerControllerTests: XCTestCase {
     final class FakeConfirm: UltraConfirming {
         private(set) var keptNames: [[String]] = []
         private(set) var frozenNames: [[String]] = []
+        private(set) var leftRunningNames: [[String]] = []
         private var answer: ((Bool) -> Void)?
         /// How many times the box was put away while a question was up (as the real box: a no-op with none up).
         private(set) var dismissals = 0
         /// A question is up: nothing has answered it yet.
         var isUp: Bool { answer != nil }
-        func ask(kept: [String], frozen: [String], answer: @escaping (Bool) -> Void) {
-            keptNames.append(kept); frozenNames.append(frozen); self.answer = answer
+        func ask(kept: [String], frozen: [String], leftRunning: [String], answer: @escaping (Bool) -> Void) {
+            keptNames.append(kept); frozenNames.append(frozen); leftRunningNames.append(leftRunning); self.answer = answer
         }
         /// The owner's press on Confirm (true) or Cancel (false). One answer to each question, as the real box gives.
         func press(_ yes: Bool) {
@@ -2283,6 +2284,25 @@ final class UltraLowPowerControllerTests: XCTestCase {
         XCTAssertEqual(confirm.frozenNames, [["Browser", "Sync"]])
         controller.turnOff()
         XCTAssertEqual(controller.leftRunning, [])
+    }
+
+    /// The box is told which apps will be left running whole, by name, so that it can say so before Confirm: an app
+    /// that kept running after it, with no word about it, looked like a mistake.
+    func testTheConfirmBoxIsToldWhatWillBeLeftRunning() {
+        processes.list = world + cloud
+        start()
+        XCTAssertEqual(confirm.leftRunningNames.count, 1)
+        XCTAssertEqual(confirm.leftRunningNames.first, controller.leftRunning.map(\.name))
+        XCTAssertEqual(confirm.leftRunningNames.first?.isEmpty, false)
+        XCTAssertFalse(confirm.frozenNames[0].contains(confirm.leftRunningNames[0][0]), "it is not in the list of what freezes")
+        XCTAssertFalse(confirm.keptNames[0].contains(confirm.leftRunningNames[0][0]), "nor among what is kept by choice")
+        controller.turnOff()
+    }
+
+    func testWithNothingLeftRunningTheBoxIsToldNone() {
+        start()
+        XCTAssertEqual(confirm.leftRunningNames, [[]])
+        controller.turnOff()
     }
 
     // ── The efficiency cores ────────────────────────────────────────────────

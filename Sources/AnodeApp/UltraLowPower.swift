@@ -36,11 +36,19 @@ protocol PowerModeControlling: AnyObject {
 }
 
 protocol UltraConfirming: AnyObject {
-    /// Shows what is kept and what is frozen, by name, and calls back once on the main thread: true for Confirm.
-    func ask(kept: [String], frozen: [String], answer: @escaping (Bool) -> Void)
+    /// Shows what is kept, what is frozen and what is left running whole (apps with a part Anode cannot freeze), by
+    /// name, and calls back once on the main thread: true for Confirm.
+    func ask(kept: [String], frozen: [String], leftRunning: [String], answer: @escaping (Bool) -> Void)
     /// The session ended while the box was up (the box unticked, a quit): the box goes away, and its question is answered No,
     /// once. Nothing happens when no box is up.
     func dismiss()
+}
+
+extension UltraConfirming {
+    /// With nothing left running.
+    func ask(kept: [String], frozen: [String], answer: @escaping (Bool) -> Void) {
+        ask(kept: kept, frozen: frozen, leftRunning: [], answer: answer)
+    }
 }
 
 /// A part of the mode that was not done, for the section and the menu to say so: because this Mac cannot (no helper, an
@@ -248,7 +256,8 @@ final class UltraLowPowerController {
             let plan = FreezePlanner.plan(processes: list, user: self.user, front: front,
                                           alwaysKeep: Set(self.settings.ultraLowPowerAlwaysKeep), ownPIDs: self.anodes())
             self.asked = (plan, list)
-            self.confirm.ask(kept: plan.kept.map(\.name), frozen: plan.frozen.map(\.name)) { [weak self] yes in
+            self.confirm.ask(kept: plan.kept.map(\.name), frozen: plan.frozen.map(\.name),
+                             leftRunning: plan.leftRunning.map(\.name)) { [weak self] yes in
                 self?.answered(yes, token: token)
             }
         }

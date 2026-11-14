@@ -89,8 +89,10 @@ enum UltraMenu {
     }
 
     /// The box's headline: what is kept, then what freezes. "Keeps Editor and Meetings. Freezes 9 apps and tools until you
-    /// turn this off."
-    static func confirmText(kept: [String], frozenCount: Int) -> String {
+    /// turn this off." Then, when there are any, one sentence for the apps that will be left running whole because a
+    /// part of each cannot be frozen: they are neither kept by choice nor in the list of what freezes, and the box
+    /// used to say nothing of them, so an app that kept running after Confirm looked like a mistake.
+    static func confirmText(kept: [String], frozenCount: Int, leftRunning: [String] = []) -> String {
         let keeps = kept.isEmpty ? "Keeps nothing in particular." : "Keeps \(plainList(kept))."
         let freezes: String
         switch frozenCount {
@@ -98,8 +100,19 @@ enum UltraMenu {
         case 1: freezes = "Freezes 1 app or tool until you turn this off."
         default: freezes = "Freezes \(frozenCount) apps and tools until you turn this off."
         }
-        return keeps + " " + freezes
+        guard !leftRunning.isEmpty else { return keeps + " " + freezes }
+        // The first few by name and the rest as a number: one vendor's root updater leaves every app of that vendor
+        // running, and the box is meant to stay small. The section and the menu list them all once the mode is on.
+        var named = Array(leftRunning.prefix(confirmNamesLeftRunning))
+        let more = leftRunning.count - named.count
+        if more > 0 { named.append("\(more) more") }
+        let leaves = "Leaves \(plainList(named)) running: \(leftRunning.count == 1 ? "it has" : "each has") "
+            + "a part Anode cannot freeze."
+        return keeps + " " + freezes + " " + leaves
     }
+
+    /// How many of the apps that will be left running the confirm box names before it counts the rest.
+    static let confirmNamesLeftRunning = 3
 
     /// "A", "A and B", "A, B and C".
     private static func plainList(_ names: [String]) -> String {
