@@ -7,6 +7,10 @@ feature or a visible change in how something works, the first only for a rewrite
 Nothing was bumped between 1.0.0 and 1.15.0. Those versions were assigned afterwards from the history and exist as
 git tags (`git show v1.7.0`); builds made before 1.15.0 still say 1.0.0 in their About box.
 
+## 1.18.1 — 2026-11-13
+- Charge Control: if Anode crashes or is force quit while it holds a limit, macOS's own charging settings are put back within a few seconds, by a small watcher that runs beside Anode while Charge Control is on. Before, the limit stayed in force until Anode was next opened, which could be never.
+- The next time Anode opens after that it still waits a minute before holding a limit again, as before.
+
 ## 1.18.0 — 2026-11-13
 - The Anode helper is offered as soon as Anode is installed or updated: the first time it opens, one notice says what the helper does (one helper for fans, Charge Control and Low Power Mode), then macOS asks for your password.
 - Nothing appears when the helper installed is already current, and "Not Now" is not asked again until the next update. The buttons in the Fans tab, Charge Control and Ultra Low Power Mode still install it later.

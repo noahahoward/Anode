@@ -412,6 +412,40 @@ final class ChargeController {
         return on ? c.liftNow() : c.putBackLeftoverRecord(when: "at the top of the program")
     }
 
+    /// What Charge Control's watchdog does once the Anode that started it (`pid`) has ended (`ChargeWatchdog`): if the
+    /// record still names that process as a holder, it ended without quitting, and macOS's own settings are put back
+    /// now, as the next launch would have done (`liftAtLaunch`), instead of whenever Anode is next opened, which may
+    /// be never. The pending start is written down as there, so the launch that follows still waits before it holds a
+    /// limit again. True when it did.
+    ///
+    /// Only that process's hold counts. A quit releases before the watchdog can see the end, so the record no longer
+    /// names it; and an Anode opened since, which holds the limit under its own pid, is not this one's to lift. A
+    /// record that cannot be read at the moment (another Anode is in the middle of its own restore) is looked at
+    /// again, `ChargeWatchdog.recordLooks` times in all.
+    @discardableResult
+    static func liftAfterAnodeEnded(pid: Int32, settings: Settings = .shared, records: ChargeRecords? = nil,
+                                    makeClient: @escaping () -> ChargeLimitClient? = { PowerUIChargeClient.make() },
+                                    helper: () -> ChargeHelperLink = { ChargeHelperAdapter() },
+                                    log: @escaping (String) -> Void = { FeatureLog.append("charge.log", $0) },
+                                    wait: (TimeInterval) -> Void = { Thread.sleep(forTimeInterval: $0) }) -> Bool {
+        let records = records ?? ChargeRecords(settings: settings)
+        var held = records.isHeld(byProcess: pid)
+        var looks = 1
+        while held == nil, looks < ChargeWatchdog.recordLooks {
+            wait(ChargeWatchdog.recordLookInterval)
+            held = records.isHeld(byProcess: pid)
+            looks += 1
+        }
+        guard held == true else { return false }
+        let c = ChargeController(settings: settings, records: records, makeClient: makeClient, helper: helper(),
+                                 battery: { nil }, chargerSwitch: { nil }, log: log, workspace: NotificationCenter(),
+                                 limitInForce: ChargeLimitInForce(), startDelay: Self.startDelay,
+                                 liftedAtLaunch: false, observing: false)
+        return settings.chargeControlEnabled
+            ? c.liftNow(afterAnodeEnded: true)
+            : c.putBackLeftoverRecord(when: "as Anode ended without quitting")
+    }
+
     /// A reason for a limit in the words the charge log uses, which a person reads. The enum's raw values are names in the
     /// code ("fullCharge") and are stored nowhere.
     static func logWords(_ reason: ChargeReason) -> String {
@@ -746,6 +780,9 @@ inForce >= noLimit
     /// `liftAtLaunch` already ran in this process: macOS's own settings were put back before the app was built, and
     /// the pending start written. The controller waits without lifting again.
     private let liftedAtLaunch: Bool
+    /// Puts macOS's own settings back if this Anode ends without quitting; started when the limit is taken, ended when
+    /// it is given back. nil in the tests that are not about it and in the headless restores, which hold nothing.
+    private let watchdog: ChargeWatchdogging?
     private var startsAt: Date? {
         didSet {
             guard (startsAt == nil) != (oldValue == nil) else { return }
@@ -804,12 +841,14 @@ inForce >= noLimit
                      onConsole: @escaping () -> Bool? = ChargeController.systemOnConsole,
                      rateStore: ChargeRateStore? = nil,
                      now: @escaping () -> Date = Date.init,
-                     calendar: @escaping () -> Calendar = { Calendar.autoupdatingCurrent }) {
+                     calendar: @escaping () -> Calendar = { Calendar.autoupdatingCurrent },
+                     watchdog: ChargeWatchdogging? = nil) {
         self.init(settings: settings, records: records ?? ChargeRecords(settings: settings), makeClient: makeClient,
                   helper: helper, battery: battery, chargerSwitch: chargerSwitch, log: log, workspace: workspace,
                   limitInForce: limitInForce, startDelay: startDelay, liftedAtLaunch: liftedAtLaunch, observing: true,
                   noClientBecause: noClientBecause, onConsole: onConsole,
-                  rateStore: rateStore ?? SettingsChargeRateStore(settings: settings), now: now, calendar: calendar)
+                  rateStore: rateStore ?? SettingsChargeRateStore(settings: settings), now: now, calendar: calendar,
+                  watchdog: watchdog)
     }
 
     /// The Mac's own charger switch, read as the person and not through the helper: only writing it needs root
@@ -868,7 +907,9 @@ inForce >= noLimit
                  onConsole: @escaping () -> Bool? = { nil },
                  rateStore: ChargeRateStore? = nil,
                  now: @escaping () -> Date = Date.init,
-                 calendar: @escaping () -> Calendar = { Calendar.autoupdatingCurrent }) {
+                 calendar: @escaping () -> Calendar = { Calendar.autoupdatingCurrent },
+                 watchdog: ChargeWatchdogging? = nil) {
+        self.watchdog = watchdog
         self.settings = settings
         self.rateStore = rateStore ?? SettingsChargeRateStore(settings: settings)
         self.clock = now
@@ -987,6 +1028,12 @@ inForce >= noLimit
             log("the shared record of macOS's own settings could not be reached (another Anode may be using it); "
                 + "nothing was changed")
             return setStatus(.unavailable(Self.recordUnreachableText))
+        }
+        // From here macOS holds what Charge Control sets, and keeps it if Anode dies: the watchdog is what puts it back
+        // then. Without one the limit is still lifted, but only when Anode is next opened, and the log says so.
+        if let watchdog, !watchdog.start() {
+            log("no watchdog is running: if Anode ends without quitting, macOS's own charge settings are put back "
+                + "when Anode is next opened, not before")
         }
         client = c
         session += 1
@@ -1166,6 +1213,9 @@ inForce >= noLimit
 
     /// Forget everything this switch-on built. Leaves macOS as it is.
     private func stop() {
+        // Every way here has put macOS back, or left the limit on purpose (it is another account's): either way
+        // there is nothing for the watchdog to lift.
+        watchdog?.stop()
         removeTriggers()
         helper.letGo()
         client = nil
@@ -1320,20 +1370,26 @@ inForce >= noLimit
     /// A discharge's end never confirmed is dealt with first: `restore` waits for a stop ahead of anything else (with
     /// no record there is no restore, and the off-retry asks at once; see `liftAfterUncleanExit`). A restore macOS
     /// refused keeps the record; the switch-on that follows leaves it as it is.
-    private func liftNow() -> Bool {
+    private func liftNow(afterAnodeEnded: Bool = false) -> Bool {
         let recorded = records.hasRecord
         guard records.lastRunDidNotRelease() || settings.chargeStartPending else { return false }
         // Something to put back needs a client; with nothing, the wait is all there is.
         let c = recorded ? makeClient() : nil
         if recorded, c == nil { return false }
         setStartPending(true)
-        if let c {
+        if let c, afterAnodeEnded {
+            // Said by the watchdog, in the moment Anode ended: nothing starts again until Anode is opened.
+            log("Anode ended without quitting (the record of macOS's own settings was still there); its watchdog is "
+                + "putting them back now, and Charge Control waits \(Int(startAfter)) s when Anode is next opened")
+            restore(client: c, leaving: "Anode ended without quitting")
+        } else if let c {
             log("Anode did not quit cleanly last time (the record of macOS's own settings was still there); putting "
                 + "them back now, and Charge Control starts again in \(Int(startAfter)) s")
             restore(client: c)
         } else {
-            log("a start was still pending from last time (Anode stopped before the delay ended); nothing to put "
-                + "back, and Charge Control starts again in \(Int(startAfter)) s")
+            log("a start was still pending from last time (Anode ended without quitting and its watchdog put macOS's "
+                + "own settings back, or it stopped before the delay ended); nothing to put back, and Charge Control "
+                + "starts again in \(Int(startAfter)) s")
         }
         return true
     }

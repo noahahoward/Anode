@@ -345,7 +345,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         keepAwake = KeepAwakeController()
         KeepAwakeController.current = keepAwake
         chargeControl = ChargeController(settings: .shared, records: chargeRecords, helper: ChargeHelperAdapter(),
-                                         limitInForce: chargeLimitInForce, liftedAtLaunch: chargeLiftedAtLaunch)
+                                         limitInForce: chargeLimitInForce, liftedAtLaunch: chargeLiftedAtLaunch,
+                                         watchdog: LiveChargeWatchdog())
         ChargeController.current = chargeControl
         keyboardCleaner = KeyboardCleaner(tap: CleanerInputTap(), windows: CleanerWindows())
         KeyboardCleaner.current = keyboardCleaner
@@ -3126,6 +3127,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
 // runs: with that flag the program waits for Anode to end, continues what Anode froze, and exits, and never gets to
 // anything below (no app, no window, no settings).
 UltraWatchdog.runIfRequested(CommandLine.arguments)
+
+// Charge Control's watchdog is this same program started with `--charge-watchdog`: it waits for Anode to end, puts
+// macOS's own charge settings back if Anode ended without quitting, and exits. Nothing below runs in it.
+ChargeWatchdog.runIfRequested(CommandLine.arguments)
 
 // `uninstall.sh` runs the app this way, with no window and before anything else starts, to put macOS's own charge
 // settings back before the app and its settings are deleted. A quit does that already, but an Anode that crashed or

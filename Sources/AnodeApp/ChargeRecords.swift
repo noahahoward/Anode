@@ -127,6 +127,22 @@ final class ChargeRecords {
         return store.looksUnclean(r)
     }
 
+    /// Whether the record names process `pid` of this account as a holder: that process took the limit and has not
+    /// given it back. nil when the shared record cannot be read at the moment (its lock is held). With this account's
+    /// own record there are no holders to read: a record that is there is taken for that process's.
+    func isHeld(byProcess pid: Int32) -> Bool? {
+        if perAccountText != nil { return true }
+        guard let store, mode != .perAccount else { return false }
+        switch store.peek() {
+        case .record(let r)?: return r.holders.contains(ChargeHolder(uid: store.me.uid, pid: pid))
+        case .unreadable(let why)?:
+            sayUnreadable(why)
+            return false
+        case .none?: return false
+        case nil: return nil
+        }
+    }
+
     /// While off: a record this account has to put back, because nobody else is holding it. (One another account's
     /// live Anode holds is that Anode's to put back.)
     func leftOverForThisAccount() -> Bool {
