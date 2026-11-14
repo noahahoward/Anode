@@ -841,7 +841,7 @@ public final class MenuBarWidgetController: NSObject, NSMenuDelegate {
     /// file (no control characters: a newline would forge a line; 64 at most). The file is append-only,
     /// created readable by this user alone, and refuses to follow a symlink planted at its path.
     static func logWidgetEvent(_ text: String) {
-        let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?
+        let dir = AnodeFiles.applicationSupport?
             .appendingPathComponent("Anode")
         guard let url = dir?.appendingPathComponent("widget-squeeze.log") else { return }
         let raw = NSWorkspace.shared.frontmostApplication?.localizedName ?? "?"

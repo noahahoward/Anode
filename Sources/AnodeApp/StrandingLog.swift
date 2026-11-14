@@ -1,4 +1,5 @@
 import AppKit
+import PowerKit
 
 /// Writes down WHEN the main window becomes stranded, so the next occurrence
 /// can be matched against what the machine was doing at that moment.
@@ -53,7 +54,7 @@ struct StrandingLog {
     /// Beside the history database, so it is found with everything else this app
     /// keeps and removed by the same uninstall.
     static var fileURL: URL? {
-        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?
+        AnodeFiles.applicationSupport?
             .appendingPathComponent("Anode/window-stranding.log")
     }
 

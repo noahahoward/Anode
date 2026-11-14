@@ -37,16 +37,14 @@ enum UpdateLauncher {
     }
 
     static var supportDirectory: URL {
-        let support = FileManager.default.urls(for: .applicationSupportDirectory,
-                                               in: .userDomainMask).first
+        let support = AnodeFiles.applicationSupport
             ?? URL(fileURLWithPath: NSHomeDirectory())
                 .appendingPathComponent("Library/Application Support")
         return support.appendingPathComponent("Anode")
     }
 
     static var wrapperURL: URL {
-        let support = FileManager.default.urls(for: .applicationSupportDirectory,
-                                               in: .userDomainMask).first
+        let support = AnodeFiles.applicationSupport
             ?? URL(fileURLWithPath: NSHomeDirectory())
                 .appendingPathComponent("Library/Application Support")
         return support.appendingPathComponent("Anode/update.command")

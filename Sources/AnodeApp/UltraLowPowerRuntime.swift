@@ -221,7 +221,7 @@ final class UltraLowPowerRuntime {
 
     /// Beside the history database and the logs, so an uninstall that removes the folder removes it too.
     static var recordURL: URL {
-        let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+        let support = AnodeFiles.applicationSupport
             ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support")
         return support.appendingPathComponent("Anode/ultra-session.json")
     }

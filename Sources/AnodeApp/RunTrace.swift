@@ -16,7 +16,7 @@ import PowerKit
 enum RunTrace {
 
     private static var markerURL: URL? {
-        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?
+        AnodeFiles.applicationSupport?
             .appendingPathComponent("Anode/running")
     }
 

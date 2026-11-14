@@ -286,21 +286,16 @@ public final class Settings {
         lookup("XCTestCase") != nil
     }
 
-    /// The suite a test run uses where the person's would be used (`Settings.shared`, `Settings(defaults: nil)`, the
-    /// command-line tool's reader): one throwaway suite, unique to this process, removed when the process exits. A test
-    /// that builds the app's own sections without giving them settings reads and writes this, never the person's.
+    /// What a test run uses where the person's suite would be used (`Settings.shared`, `Settings(defaults: nil)`, the
+    /// command-line tool's reader): one throwaway store, unique to this process and kept in memory only
+    /// (`VolatileDefaults`). A test that builds the app's own sections without giving them settings reads and writes
+    /// this, never the person's.
     static let throwawayProcessSuiteName = "com.anode.tests.process.\(getpid()).\(UUID().uuidString)"
 
     private static let throwawayProcessDefaults: UserDefaults? = {
         guard isTestRun else { return nil }
-        let name = throwawayProcessSuiteName
-        guard let d = UserDefaults(suiteName: name) else {
-            preconditionFailure("a throwaway settings suite could not be made, and the person's must not be used instead")
-        }
-        d.removePersistentDomain(forName: name)
-        exitSweep.holdProcessDefaults(d)
-        noteThrowawaySuiteForExit(name)
-        return d
+        // In memory: a suite would be a file in the person's preferences folder, left there when the run ends.
+        return VolatileDefaults.named(throwawayProcessSuiteName)
     }()
 
     /// The defaults of the settings domain the app and the command-line tool share: the person's suite, and in a test
@@ -309,61 +304,9 @@ public final class Settings {
         isTestRun ? throwawayProcessDefaults : UserDefaults(suiteName: suiteName)
     }
 
-    /// Whether a suite name is one of the tests' own throwaway ones (the only kind that is ever removed by name).
+    /// Whether a name is one of the tests' own throwaway ones. Nothing is kept on disk under such a name: in a test run
+    /// it names a store in memory (`VolatileDefaults`).
     static func isThrowawaySuiteName(_ name: String) -> Bool { name.hasPrefix("com.anode.tests.") }
-
-    private static let exitSweep = ThrowawayExitSweep()
-
-    /// A throwaway suite whose file is taken out of the preferences folder when the process exits (`ThrowawayExitSweep`).
-    /// Only a suite this process made: never one whose file was there already.
-    static func noteThrowawaySuiteForExit(_ name: String) { exitSweep.note(name) }
-
-    /// What happens at exit, now: the files of every suite noted are taken away until none comes back.
-    static func sweepThrowawaySuiteFilesNow() { exitSweep.run() }
-
-    /// The files of throwaway suites taken out of the preferences folder, again and again until nothing of theirs has
-    /// come back for `quiet` seconds (at most `limit`). Removing a domain, or flushing a write, makes the preferences
-    /// service write the file out about two seconds later (measured, and longer when it has many to write), and that
-    /// write lands after a one-time unlink: this is for the end of a process, where nothing will remove it again.
-    static func unlinkThrowawaySuiteFilesUntilQuiet(_ names: [String], quiet: TimeInterval = 5, limit: TimeInterval = 20) {
-        let files = Set(names.filter(isThrowawaySuiteName).map { "\($0).plist" })
-        guard !files.isEmpty,
-              let library = FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask).first else { return }
-        let folder = library.appendingPathComponent("Preferences")
-        let started = Date()
-        var lastRemoval = started
-        while Date().timeIntervalSince(lastRemoval) < quiet, Date().timeIntervalSince(started) < limit {
-            if let present = try? FileManager.default.contentsOfDirectory(atPath: folder.path) {
-                for file in present where files.contains(file) {
-                    if (try? FileManager.default.removeItem(at: folder.appendingPathComponent(file))) != nil {
-                        lastRemoval = Date()
-                    }
-                }
-            }
-            usleep(50_000)
-        }
-    }
-
-    /// A throwaway suite's values emptied and its file left alone (for a suite whose file was there before this process
-    /// began, which is not this process's to remove).
-    static func emptyThrowawaySuite(named name: String) {
-        guard isThrowawaySuiteName(name), let d = UserDefaults(suiteName: name) else { return }
-        d.removePersistentDomain(forName: name)
-        d.synchronize()
-    }
-
-    /// A throwaway suite's values and its file removed. Only ever a suite under the tests' own prefix: nothing else is
-    /// removed here whatever name is passed.
-    static func removeThrowawaySuite(named name: String) {
-        guard isThrowawaySuiteName(name) else { return }
-        if let d = UserDefaults(suiteName: name) {
-            d.removePersistentDomain(forName: name)
-            d.synchronize()
-        }
-        guard let library = FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask).first else { return }
-        try? FileManager.default.removeItem(
-            at: library.appendingPathComponent("Preferences").appendingPathComponent("\(name).plist"))
-    }
 
     private let defaults: UserDefaults
     private let lock = NSLock()
@@ -1646,7 +1589,16 @@ extension Settings {
     /// rather than in the discipline of whoever writes the next one.
     static func migrateFromPreviousName(into defaults: UserDefaults,
                                         from source: String = previousSuiteName) {
-        guard let old = UserDefaults(suiteName: source),
+        // In a test run nothing of the person's is read: a source under the tests' own prefix is a store in memory, and
+        // any other (the real previous domain, above all) is left alone, so no test starts from the settings of
+        // whoever runs it.
+        let old: UserDefaults?
+        if isTestRun {
+            old = isThrowawaySuiteName(source) ? VolatileDefaults.named(source) : nil
+        } else {
+            old = UserDefaults(suiteName: source)
+        }
+        guard let old,
               let values = old.persistentDomain(forName: source),
               !values.isEmpty
         else { return }
@@ -1711,40 +1663,5 @@ public enum MenuBarBackdropMode: String, CaseIterable {
         case .solid: return "Solid"
         case .solidFollow: return "Solid, following the window"
         }
-    }
-}
-
-
-/// The throwaway suites of a test run whose files are taken out of the preferences folder when the process exits. One
-/// pass for all of them, so the wait for the preferences service to finish writing is made once.
-private final class ThrowawayExitSweep: @unchecked Sendable {
-    private let lock = NSLock()
-    private var names: Set<String> = []
-    private var armed = false
-    private var processDefaults: UserDefaults?
-
-    func holdProcessDefaults(_ d: UserDefaults) {
-        lock.lock(); processDefaults = d; lock.unlock()
-    }
-
-    func note(_ name: String) {
-        guard Settings.isThrowawaySuiteName(name) else { return }
-        lock.lock()
-        names.insert(name)
-        let arm = !armed
-        armed = true
-        lock.unlock()
-        if arm { atexit { Settings.sweepThrowawaySuiteFilesNow() } }
-    }
-
-    func run() {
-        lock.lock()
-        let all = Array(names)
-        let held = processDefaults
-        lock.unlock()
-        // What is pending is handed to the preferences service first (not `removePersistentDomain`, which would make the
-        // process write the domain out once more on its way out, after this has looked).
-        held?.synchronize()
-        Settings.unlinkThrowawaySuiteFilesUntilQuiet(all)
     }
 }

@@ -1,4 +1,5 @@
 import AppKit
+import PowerKit
 
 /// A small append-only log for a feature that has to be diagnosed after the fact, because what goes
 /// wrong with it does not go wrong on demand. One file per feature in Anode's support folder,
@@ -10,7 +11,7 @@ enum FeatureLog {
     static let maxBytes = 64 * 1024
 
     static func append(_ name: String, _ text: String, now: Date = Date()) {
-        guard let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?
+        guard let dir = AnodeFiles.applicationSupport?
                 .appendingPathComponent("Anode") else { return }
         let url = dir.appendingPathComponent(name)
         let line = "\(ISO8601DateFormatter().string(from: now)) \(clean(text, limit: 240))\n"

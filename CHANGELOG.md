@@ -7,6 +7,11 @@ feature or a visible change in how something works, the first only for a rewrite
 Nothing was bumped between 1.0.0 and 1.15.0. Those versions were assigned afterwards from the history and exist as
 git tags (`git show v1.7.0`); builds made before 1.15.0 still say 1.0.0 in their About box.
 
+## 1.18.6 — 2026-11-13
+- Running Anode's tests (./test.sh) no longer leaves files behind: test settings are kept in memory, where each run used to leave hundreds of empty com.anode.tests files in ~/Library/Preferences.
+- A test run no longer writes into Anode's own folder in Application Support (a line had appeared in the real Keep Awake log, and the folder was made again on a Mac where Anode was uninstalled): in a test run Anode's files go to a temporary folder that is removed when the run ends.
+- Nothing changes in how the app itself works.
+
 ## 1.18.5 — 2026-11-13
 - Anode now quits when it is asked to while one of its own questions is on screen. Before, with the first-run question about automatic updates or the helper notice up, the updater and the uninstaller found Anode still running on a freshly installed Mac, and logging out was held up.
 - A question that was closed this way counts as not answered: the one about automatic updates is asked again the next time Anode opens.

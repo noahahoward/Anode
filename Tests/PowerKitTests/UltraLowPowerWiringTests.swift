@@ -1034,7 +1034,9 @@ final class UltraLowPowerWiringTests: XCTestCase {
         let url = UltraLowPowerRuntime.recordURL
         XCTAssertEqual(url.lastPathComponent, "ultra-session.json")
         XCTAssertEqual(url.deletingLastPathComponent().lastPathComponent, "Anode")
-        XCTAssertTrue(url.path.contains("Application Support"), url.path)
+        // In a test run Anode's support folder is the test process's own (`AnodeFiles`), never the person's.
+        XCTAssertTrue(url.path.hasPrefix(AnodeFiles.testSupport.path), url.path)
+        XCTAssertFalse(url.path.hasPrefix(NSHomeDirectory() + "/Library"), url.path)
     }
 
     /// `live()` is not made in a test, so what it connects is read from its text: a connection dropped or swapped there

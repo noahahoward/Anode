@@ -57,7 +57,7 @@ public final class WallpaperLibrary {
     public static let didChange = Notification.Name("AnodeWallpaperLibraryDidChange")
 
     public static var defaultDirectory: URL {
-        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+        let base = AnodeFiles.applicationSupport
             ?? URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library/Application Support")
         return base.appendingPathComponent("Anode/Wallpapers", isDirectory: true)
     }

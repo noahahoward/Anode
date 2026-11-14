@@ -278,8 +278,7 @@ public final class HistoryStore {
         if let p = path {
             url = p
         } else {
-            guard let base = FileManager.default.urls(for: .applicationSupportDirectory,
-                                                      in: .userDomainMask).first else { return nil }
+            guard let base = AnodeFiles.applicationSupport else { return nil }
             url = base.appendingPathComponent("Anode/history.sqlite")
             HistoryStore.adoptPreviousName(at: url, under: base)
         }

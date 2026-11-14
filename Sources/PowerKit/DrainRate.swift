@@ -867,8 +867,7 @@ extension BatteryDischargeTrend.Persisted {
     /// Beside the history database, because it is the same kind of thing: state
     /// about this machine's battery that outlives the process.
     public static func fileURL(fileManager fm: FileManager = .default) -> URL? {
-        guard let base = fm.urls(for: .applicationSupportDirectory,
-                                 in: .userDomainMask).first else { return nil }
+        guard let base = AnodeFiles.applicationSupport else { return nil }
         return base.appendingPathComponent("Anode/discharge-trend.json")
     }
 

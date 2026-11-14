@@ -71,15 +71,6 @@ final class ProcessSettingsTests: XCTestCase {
         }
         XCTAssertTrue(Settings.isThrowawaySuiteName(Settings.throwawayProcessSuiteName))
     }
-
-    func testRemovingAThrowawaySuiteTakesItsFileToo() throws {
-        let (defaults, name) = try TestDefaults.make(owner: "ProcessSettingsRemoval")
-        defaults.set(true, forKey: "written")
-        defaults.synchronize()
-        XCTAssertFalse(TestDefaults.plistURLs(named: name).isEmpty, "nothing was written, so this proves nothing")
-        Settings.removeThrowawaySuite(named: name)
-        XCTAssertTrue(TestDefaults.plistURLs(named: name).isEmpty)
-    }
 }
 
 /// A small test class whose tests make suites in each way a test can, and tidy none of them. It is run by hand by
@@ -97,29 +88,22 @@ final class SuiteMakingProbe: XCTestCase {
     }
 }
 
-/// Every suite a test makes is gone when its test ends, with no teardown of the test's own.
+/// Whatever a test makes for its settings, and however little it tidies, nothing of it reaches the preferences folder.
 final class TestSuitesAreRemovedTests: XCTestCase {
 
-    func testASmallTestClassLeavesNoSuiteBehind() throws {
-        let before = Set(TestSuiteRegistry.shared.allRegistered())
+    func testASmallTestClassLeavesNothingInThePreferencesFolder() throws {
+        let before = TestDefaults.strayDomainCount()
         let suite = XCTestSuite(name: "LeakProbe")
         suite.addTest(SuiteMakingProbe(selector: #selector(SuiteMakingProbe.makesSuitesAndTidiesNone)))
         suite.addTest(SuiteMakingProbe(selector: #selector(SuiteMakingProbe.makesSuitesAndTidiesNone)))
         suite.run()
         XCTAssertEqual(suite.testRun?.totalFailureCount, 0, "the probe itself failed")
         XCTAssertEqual(suite.testRun?.executionCount, 2, "the probe did not run")
-        let made = Set(TestSuiteRegistry.shared.allRegistered()).subtracting(before)
-        XCTAssertGreaterThanOrEqual(made.count, 6, "the probe's suites were not noted: \(made)")
-        // As soon as its test ends, a suite holds nothing...
-        for name in made {
-            let values = UserDefaults(suiteName: name)?.persistentDomain(forName: name) ?? [:]
-            XCTAssertTrue(values.isEmpty, "\(name) still held \(values.keys) when its test had ended")
+        for name in ["com.anode.tests.LeakProbe.makesSuitesAndTidiesNone",
+                     "com.anode.tests.LeakProbeSettings.makesSuitesAndTidiesNone"] {
+            XCTAssertTrue(TestDefaults.plistURLs(named: name).isEmpty, "\(name) has a file")
+            XCTAssertFalse(TestDefaults.preferencesServiceHolds(name), "\(name) reached the preferences service")
         }
-        // ...and once the preferences service has settled, as it does at the end of the process, its file is gone. (A file
-        // that was in the folder before this run, under the same fixed name, is not this run's to remove.)
-        Settings.sweepThrowawaySuiteFilesNow()
-        for name in made where !TestSuiteRegistry.shared.wasThereBeforeThisRun(name) {
-            XCTAssertTrue(TestDefaults.plistURLs(named: name).isEmpty, "\(name) left its file behind")
-        }
+        XCTAssertEqual(TestDefaults.strayDomainCount(), before, "the number of test files in the preferences folder moved")
     }
 }

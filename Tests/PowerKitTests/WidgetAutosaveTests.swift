@@ -20,6 +20,10 @@ final class WidgetAutosaveTests: XCTestCase {
     func testMacOSRemembersAHiddenStatusItemAcrossRecreation() throws {
         let name = "AnodeWidgetAutosaveTest.\(UUID().uuidString)"
         let bar = NSStatusBar.system
+        // AppKit keeps what it remembers in the standard defaults of the process, which for a test run is the test
+        // tool's own domain: one entry per run, under this run's name, 294 of them when someone went to look. What
+        // this run wrote is taken out again; nothing else in that domain is touched.
+        defer { TestDefaults.removeFromTheTestToolsDefaults(keysContaining: name) }
 
         let first = bar.statusItem(withLength: NSStatusItem.variableLength)
         first.autosaveName = name

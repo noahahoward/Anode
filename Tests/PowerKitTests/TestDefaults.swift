@@ -2,75 +2,43 @@ import Foundation
 @testable import PowerKit
 import XCTest
 
-/// A throwaway `UserDefaults` suite that actually goes away.
+/// Throwaway settings for a test: a store in memory (`VolatileDefaults`), never a `UserDefaults` suite.
 ///
-/// The obvious teardown — `removePersistentDomain(forName:)` — clears the values
-/// and routinely leaves the backing plist behind: `cfprefsd` has already written
-/// the file, and clearing a domain does not ask for it to be unlinked. Both suites
-/// that use throwaway defaults called it and both looked correct.
-///
-/// MEASURED: 2468 files named `com.anode.tests.<UUID>.plist` in the real
-/// `~/Library/Preferences`, one per test run per suite, accumulated over this
-/// project's life. Nothing broke, which is why it went unnoticed — a test suite
-/// quietly littering a developer's actual preferences is the kind of mess that is
-/// only ever found by going to look.
-///
-/// So the file is removed as well as the domain, and the removal is verified.
+/// A suite is a file in the preferences folder of whoever runs the tests, written by the preferences service some
+/// seconds after the test has moved on, and every way of removing it afterwards left some behind. MEASURED: 2468 files
+/// named `com.anode.tests.<UUID>.plist` in the real `~/Library/Preferences` when each test made a suite of its own
+/// name; then, with fixed names, a teardown that unlinked the file and a sweep at the end of the process, still 508 of
+/// them after an afternoon of runs. So nothing is written: the tests further down hold that to the file system.
 enum TestDefaults {
 
-    /// A clean suite, named for its OWNER rather than uniquely per test.
-    ///
-    /// The unique-per-test version is what produced thousands of files, and
-    /// deleting them in teardown does not fix it: `cfprefsd` writes the domain out
-    /// asynchronously, so the file can land AFTER the teardown has looked for it
-    /// and found nothing. Measured — a run that deleted every file it made still
-    /// left six behind, one per suite created.
-    ///
-    /// A stable name cannot accumulate, because the next run reuses the same file
-    /// instead of adding one. It is emptied on the way in as well as out, so a
-    /// leftover from a crashed run cannot seed the next one. Two classes must not
-    /// share an owner string; the tests each pass their own type name.
-    ///
-    /// Stable per TEST, not per class. `swift test --parallel` — what CI runs —
-    /// puts the tests of one class in separate processes at the same time, and a
-    /// per-class suite let one test's setup empty the domain under another's
-    /// writes: a stored `false` read back as the default `true`, and a retention
-    /// change was undone before the store saw it. `test` defaults to the caller's
-    /// function, which is the test itself when called from one; a `setUp` passes
-    /// the case's `name`.
+    /// A clean store, named for its owner and its test. The name is stable per TEST, not per class: `swift test
+    /// --parallel` puts the tests of one class in separate processes, and within one process an earlier test of the
+    /// same name must not seed this one, so it is emptied on the way in. `test` defaults to the caller's function,
+    /// which is the test itself when called from one; a `setUp` passes the case's `name`.
     static func make(owner: String, test: String = #function,
                      file: StaticString = #filePath, line: UInt = #line)
         throws -> (defaults: UserDefaults, name: String) {
         let name = "com.anode.tests.\(owner).\(suffix(test))"
-        // Registered before the suite is opened: whether its file was there already is decided by this.
-        TestSuiteRegistry.shared.register(name)
-        let defaults = try XCTUnwrap(UserDefaults(suiteName: name), file: file, line: line)
-        // A previous run may have died before its teardown.
-        defaults.removePersistentDomain(forName: name)
+        // In memory (`VolatileDefaults`): a suite is a file in the preferences folder of whoever runs the tests, and
+        // every way of removing it afterwards left some behind. Emptied on the way in, as the suite was: an earlier
+        // test of the same name in this process must not seed this one.
+        let defaults = VolatileDefaults.named(name)
+        defaults.removeAll()
         return (defaults, name)
     }
 
-    /// A suite of exactly this name (it has to be under `com.anode.tests.`), emptied, and removed when the test ends.
+    /// A store of exactly this name (it has to be under `com.anode.tests.`), emptied.
     static func named(_ name: String) -> UserDefaults {
-        precondition(name.hasPrefix("com.anode.tests."), "a throwaway suite is named under com.anode.tests.")
-        TestSuiteRegistry.shared.register(name)
-        guard let defaults = UserDefaults(suiteName: name) else {
-            preconditionFailure("a throwaway settings suite could not be made")
-        }
-        defaults.removePersistentDomain(forName: name)
+        precondition(name.hasPrefix("com.anode.tests."), "a throwaway store is named under com.anode.tests.")
+        let defaults = VolatileDefaults.named(name)
+        defaults.removeAll()
         return defaults
     }
 
-    /// A suite of its own for a test that needs one more than `make` gives, or a name per call (a `UUID` in it): removed
-    /// when the test ends like any other. `UserDefaults(suiteName: "x-\(UUID())")` left one file in the preferences
-    /// folder per call, thousands of them, because nothing ever removed it.
+    /// A store of its own for a test that needs one more than `make` gives, or a name per call (a `UUID` in it).
+    /// `UserDefaults(suiteName: "x-\(UUID())")` left one file in the preferences folder per call, thousands of them.
     static func throwaway(_ owner: String) -> UserDefaults {
-        let name = "com.anode.tests.adhoc.\(owner).\(UUID().uuidString)"
-        TestSuiteRegistry.shared.register(name)
-        guard let defaults = UserDefaults(suiteName: name) else {
-            preconditionFailure("a throwaway settings suite could not be made")
-        }
-        return defaults
+        VolatileDefaults(name: "com.anode.tests.adhoc.\(owner).\(UUID().uuidString)")
     }
 
     /// "-[PowerKitTests.StartupSettingsTests testX]" or "testX()" -> "testX".
@@ -79,8 +47,13 @@ enum TestDefaults {
         return String(method.unicodeScalars.filter(CharacterSet.alphanumerics.contains))
     }
 
-    /// Clear the domain AND unlink its file.
+    /// Empty it and forget it. (Nothing was ever written to disk for it. A real suite handed in by a test that makes
+    /// its own is cleared and its file unlinked, as before.)
     static func destroy(_ defaults: UserDefaults, _ name: String) {
+        if defaults is VolatileDefaults {
+            VolatileDefaults.forget(name)
+            return
+        }
         defaults.removePersistentDomain(forName: name)
         // Let cfprefsd act on the removal before the file is taken out from under
         // it, or it can write the domain back out afterwards.
@@ -108,121 +81,73 @@ enum TestDefaults {
 
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Every suite a test of this process made through `TestDefaults`, and the promise that each is gone: removed when its
-/// test ends (a test's own teardown is welcome to do it first and need not), and its file taken away again when the
-/// process exits (`Settings.noteThrowawaySuiteForExit`), after the preferences service has finished writing. A suite is a file in the test runner's preferences folder, and a test that forgot its teardown, or a name
-/// with a `UUID` in it, left one behind every run.
+/// A throwaway store writes nothing.
 ///
-/// Only files this process made are removed. A suite whose file was already in the folder when the process first
-/// named it (an earlier run's, with the same fixed name) is emptied and its file left where it is: what is in the
-/// owner's preferences folder from before is not for a test run to delete.
-final class TestSuiteRegistry: NSObject, XCTestObservation {
-    static let shared = TestSuiteRegistry()
-
-    private let lock = NSLock()
-    private var pending: [String] = []
-    private var seen: Set<String> = []
-    private var everRegistered: [String] = []
-    private var alreadyThere: Set<String> = []
-    private var installed = false
-
-    func register(_ name: String) {
-        lock.lock()
-        pending.append(name)
-        if seen.insert(name).inserted {
-            everRegistered.append(name)
-            if !TestDefaults.plistURLs(named: name).isEmpty {
-                alreadyThere.insert(name)
-            } else {
-                Settings.noteThrowawaySuiteForExit(name)
-            }
-        }
-        let install = !installed
-        installed = true
-        lock.unlock()
-        if install { XCTestObservationCenter.shared.addTestObserver(self) }
-    }
-
-    /// Whether the suite's file was in the preferences folder before this process first named it.
-    func wasThereBeforeThisRun(_ name: String) -> Bool {
-        lock.lock(); defer { lock.unlock() }
-        return alreadyThere.contains(name)
-    }
-
-    /// Everything registered and not yet removed is removed now (a suite that was there before this run is emptied).
-    func sweep() {
-        lock.lock()
-        let names = pending
-        pending = []
-        let kept = alreadyThere
-        lock.unlock()
-        for name in names {
-            if kept.contains(name) { Settings.emptyThrowawaySuite(named: name) } else { Settings.removeThrowawaySuite(named: name) }
-        }
-    }
-
-    /// Every name registered by this process so far, removed or not.
-    func allRegistered() -> [String] {
-        lock.lock(); defer { lock.unlock() }
-        return everRegistered
-    }
-
-    func testCaseDidFinish(_ testCase: XCTestCase) { sweep() }
-    func testBundleDidFinish(_ testBundle: Bundle) { sweep() }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-
-/// The cleanup cleans up.
-///
-/// Worth its own test because the previous teardown LOOKED correct — it called
-/// the method whose name says it removes the domain — and left 2468 files
-/// behind. Asserting on the filesystem is the only version of this claim that
-/// means anything.
+/// Worth its own test because every earlier version LOOKED correct (it called the method whose name says it removes
+/// the domain, then it unlinked the file, then it swept at exit) and each left files behind. Asserting on the
+/// filesystem is the only version of this claim that means anything.
 final class TestDefaultsTests: XCTestCase {
 
-    func testAThrowawaySuiteLeavesNoFileBehind() throws {
+    func testAThrowawayStoreWritesNoFile() throws {
+        let before = TestDefaults.strayDomainCount()
         let (defaults, name) = try TestDefaults.make(owner: "SelfCheck")
-        // Write and flush, so there is definitely a file to fail to delete.
         defaults.set(true, forKey: "somethingWasWritten")
         defaults.synchronize()
-        XCTAssertFalse(TestDefaults.plistURLs(named: name).isEmpty,
-                       "nothing was written, so this test cannot prove anything")
+        XCTAssertEqual(defaults.object(forKey: "somethingWasWritten") as? Bool, true, "the store does not hold what it is given")
+        XCTAssertTrue(defaults is VolatileDefaults, "a throwaway store is a UserDefaults suite again")
+        XCTAssertTrue(TestDefaults.plistURLs(named: name).isEmpty, "a file was written for a throwaway store")
+        // The preferences service knows nothing of it either: a suite of that name, opened for real, is empty. (Opening
+        // and reading a suite writes nothing.)
+        XCTAssertFalse(TestDefaults.preferencesServiceHolds(name), "the values reached the preferences service")
 
         TestDefaults.destroy(defaults, name)
-        XCTAssertTrue(TestDefaults.plistURLs(named: name).isEmpty,
-                      "the suite's plist survived its own teardown — this is the leak")
-        XCTAssertNil(UserDefaults(suiteName: name)?.object(forKey: "somethingWasWritten"),
-                     "the values survived too")
+        XCTAssertNil(defaults.object(forKey: "somethingWasWritten"), "the values survived the teardown")
+        XCTAssertTrue(TestDefaults.plistURLs(named: name).isEmpty)
+        XCTAssertEqual(TestDefaults.strayDomainCount(), before, "the number of test files in the preferences folder moved")
     }
 
-    /// Repeated runs do not ACCUMULATE, which is the property that failed.
-    ///
-    /// Counting every stray file is the wrong assertion here — other tests in the
-    /// process create and destroy their own, so the total moves for reasons that
-    /// have nothing to do with this. The claim worth making is about one owner:
-    /// five throwaway suites under the same name must leave at most the one file
-    /// that name can have, and none once the last is destroyed.
-    ///
-    /// This is what a unique name per test could never give. Deleting the file in
-    /// teardown does not help, because `cfprefsd` writes the domain out
-    /// asynchronously and can land it after the teardown has already looked.
-    func testRepeatedThrowawaySuitesDoNotAccumulate() throws {
-        for _ in 0..<5 {
-            let (d, n) = try TestDefaults.make(owner: "SelfCheckLoop")
-            d.set(1, forKey: "x")
+    /// One name is one store within a process, as two handles on one suite were, and it starts empty each time.
+    func testTheSameNameIsTheSameStoreAndStartsEmpty() throws {
+        let (first, name) = try TestDefaults.make(owner: "SelfCheckLoop")
+        first.set(1, forKey: "x")
+        XCTAssertEqual(VolatileDefaults.named(name).integer(forKey: "x"), 1)
+        let (second, again) = try TestDefaults.make(owner: "SelfCheckLoop")
+        XCTAssertEqual(again, name)
+        XCTAssertNil(second.object(forKey: "x"), "an earlier test of the same name seeded this one")
+        XCTAssertTrue(TestDefaults.plistURLs(named: name).isEmpty)
+    }
+
+    /// Each way a test can make one: none is a suite, and none writes.
+    func testEveryWayOfMakingOneIsInMemory() throws {
+        let made = [try TestDefaults.make(owner: "SelfCheckKinds").defaults,
+                    TestDefaults.named("com.anode.tests.SelfCheckKinds.named"),
+                    TestDefaults.throwaway("SelfCheckKinds")]
+        for d in made {
+            XCTAssertTrue(d is VolatileDefaults, "\(type(of: d))")
+            d.set("x", forKey: "k")
             d.synchronize()
-            XCTAssertLessThanOrEqual(TestDefaults.plistURLs(named: n).count, 1,
-                                     "one name produced more than one file")
-            TestDefaults.destroy(d, n)
         }
-        let last = try TestDefaults.make(owner: "SelfCheckLoop").name
-        XCTAssertTrue(TestDefaults.plistURLs(named: last).isEmpty,
-                      "the last teardown left its file behind")
+        XCTAssertTrue(TestDefaults.plistURLs(named: "com.anode.tests.SelfCheckKinds.named").isEmpty)
     }
 }
 
 extension TestDefaults {
+    /// Whether the preferences service holds anything under this name: a real suite of the name, opened and read
+    /// (which writes nothing), has a value in it. A file an earlier run left under the same name is an empty domain,
+    /// and counts as nothing. The one place outside `TestDefaults` a suite is opened by name, so it lives here.
+    static func preferencesServiceHolds(_ name: String) -> Bool {
+        !(UserDefaults(suiteName: name)?.persistentDomain(forName: name) ?? [:]).isEmpty
+    }
+
+    /// Takes out of the test tool's own defaults (the standard defaults of a test process) the entries whose key
+    /// contains `fragment`: what AppKit wrote there for a test that used a name of its own. Nothing else is touched.
+    static func removeFromTheTestToolsDefaults(keysContaining fragment: String) {
+        let standard = UserDefaults.standard
+        for key in standard.dictionaryRepresentation().keys where key.contains(fragment) {
+            standard.removeObject(forKey: key)
+        }
+    }
+
     /// How many of this project's throwaway suites are currently on disk.
     static func strayDomainCount() -> Int {
         let fm = FileManager.default

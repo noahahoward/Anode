@@ -1443,8 +1443,7 @@ enum FanHelperLaunch {
     /// runs `sudo` should not live anywhere another user on the machine could
     /// reach it.
     static var scriptURL: URL {
-        let support = FileManager.default.urls(for: .applicationSupportDirectory,
-                                               in: .userDomainMask).first
+        let support = AnodeFiles.applicationSupport
             ?? URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library/Application Support")
         return support.appendingPathComponent("Anode/start-fan-helper.command")
     }
