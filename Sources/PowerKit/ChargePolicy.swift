@@ -191,7 +191,29 @@ public enum ChargePolicy {
     public static let heatResumeAfter: TimeInterval = 300
     public static let defaultDriftGap = 5
     public static let driftGapRange = 1...30
-    public static let defaultMaxTemperatureC = 35.0
+    /// The battery temperature Pause When Hot pauses at until the person chooses one, and why it is this number.
+    ///
+    /// Lithium-ion cells are specified to charge up to 45 °C: the cell makers' datasheets and the JEITA charging
+    /// guideline both end normal charging there (above it the charge is reduced or refused, and many chargers stop
+    /// at 50 °C), and macOS has its own protection at that end. Charging is at its best between 10 and 30 °C, and
+    /// the warmer a cell is while it charges, and the fuller it is while warm, the faster it ages. Apple gives 35 °C
+    /// as the warmest surroundings a MacBook should be used in, but that is the air around the Mac: the pack runs
+    /// well above it (31.8 °C was read on a Mac17,9 at light load in an ordinary room, and 35 °C and more under
+    /// load).
+    ///
+    /// So 35 °C, which this was until 1.18.3, paused charging in everyday use on a pack that was only doing its job,
+    /// and 45 °C would do nothing macOS does not do already. 40 °C sits between them: 5 °C under the limit the cells
+    /// are specified to, and above what the pack reaches in ordinary use, so the pause is for real heat (a hot room,
+    /// the sun, heavy work while charging).
+    ///
+    /// Sources: Apple, "Maximizing Battery Life and Lifespan" (MacBook works best at 10 to 35 °C ambient; charging in
+    /// high ambient temperatures can damage the battery further); Battery University BU-410 (Li-ion charge 0 to 45 °C,
+    /// best results 10 to 30 °C, many chargers prohibit charging above 50 °C); Texas Instruments SLYT365 on the JEITA
+    /// guideline (charging prohibited or reduced above 45 °C cell temperature).
+    public static let defaultMaxTemperatureC = 40.0
+    /// Where the cells' own specification ends normal charging (see `defaultMaxTemperatureC`). The default has to
+    /// stay under it to be of any use.
+    public static let cellChargeLimitC = 45.0
     /// A discharge never drains below this, whatever the limit.
     public static let dischargeFloor = 10
 

@@ -17,7 +17,7 @@ ICON="Resources/AppIcon.icon"
 # report can quote what About says and the answer maps to an exact commit —
 # which matters more than usual here, because there is no update mechanism and
 # an installed build may be weeks old.
-VERSION="1.18.3"
+VERSION="1.18.4"
 BUILD="$(git rev-list --count HEAD 2>/dev/null || echo 1)"
 COMMIT="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
 # Absolute, and resolved through any symlink, because it is written into a

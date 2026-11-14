@@ -91,6 +91,11 @@ final class ChargeControlFeature: BetaFeature {
     static let installTip = "The Anode helper is needed for Drain to Limit, Ready By, and holding the charge anywhere but "
         + "80, 85, 90, 95 or 100%."
     static let fullChargeBlockedTip = "Charge to Full needs the charger."
+    /// Says where the number comes from: the default is not a guess (`ChargePolicy.defaultMaxTemperatureC`).
+    static let heatTip = "Pause charging while the battery is this warm, and for five minutes after it cools. Batteries "
+        + "are built to charge up to \(Int(ChargePolicy.cellChargeLimitC)) \u{00B0}C and age faster the warmer they "
+        + "charge; \(Int(ChargePolicy.defaultMaxTemperatureC)) \u{00B0}C pauses before that, and is above what the "
+        + "battery reaches in everyday use. "
     static let drainTip = "Run the Mac from the battery while it stays plugged in, until the charge is down to the "
         + "limit. Needs the Anode helper."
     static let drainBlockedTip = "Drain to Limit needs the charger and a battery above the limit."
@@ -288,8 +293,7 @@ final class ChargeControlFeature: BetaFeature {
         driftStepper.action = #selector(driftGapStepped)
         heatCheckbox.target = self
         heatCheckbox.action = #selector(heatToggled)
-        heatCheckbox.toolTip = "Pause charging while the battery is this warm, and for five minutes after it cools. "
-            + Self.holdNeedsHelperTip
+        heatCheckbox.toolTip = Self.heatTip + Self.holdNeedsHelperTip
         heatStepper.target = self
         heatStepper.action = #selector(heatStepped)
         sleepCheckbox.target = self

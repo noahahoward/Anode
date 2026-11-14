@@ -412,7 +412,7 @@ final class ChargeControlFeatureTests: XCTestCase {
     func testSettingsChangedElsewhereShowAtOnce() {
         let f = make(enabled: true)
         XCTAssertEqual(f.driftLabel.stringValue, "recharge at limit \u{2212} 5%")
-        XCTAssertEqual(f.heatLabel.stringValue, "pause at 35 \u{00B0}C")
+        XCTAssertEqual(f.heatLabel.stringValue, "pause at 40 \u{00B0}C")
         XCTAssertFalse(f.driftStepper.isEnabled, "a stepper for a switched-off mode")
         XCTAssertFalse(f.heatStepper.isEnabled, "a stepper for a switched-off mode")
 

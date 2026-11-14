@@ -7,6 +7,10 @@ feature or a visible change in how something works, the first only for a rewrite
 Nothing was bumped between 1.0.0 and 1.15.0. Those versions were assigned afterwards from the history and exist as
 git tags (`git show v1.7.0`); builds made before 1.15.0 still say 1.0.0 in their About box.
 
+## 1.18.4 — 2026-11-13
+- Pause When Hot: the temperature it starts at is now 40 °C, not 35 °C. Batteries are built to charge up to 45 °C and age faster the warmer they charge, but a MacBook's battery sits in the low 30s at light load and passes 35 °C under ordinary work, so 35 °C paused charging on a Mac that was only doing its job. 40 °C pauses for real heat and still well before the limit.
+- A temperature you set yourself is kept. The Pause When Hot tooltip says where the number comes from.
+
 ## 1.18.3 — 2026-11-13
 - Pause When Hot: closing the lid on a warm Mac used to leave charging paused until the Mac was next opened, because nothing reads the battery's temperature while it sleeps. With the Anode helper installed, the Mac is now woken half an hour later, and charging resumes to your limit if the battery has cooled; if it is still hot it is paused again and tried again half an hour after that.
 - Without the helper nothing can wake the Mac, so the pause is set aside while the Mac sleeps and the battery charges as usual; the pause is back as soon as the Mac wakes.

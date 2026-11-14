@@ -61,7 +61,7 @@ final class ChargeSettingsTests: XCTestCase {
     // ── Defaults ────────────────────────────────────────────────────────────
 
     /// On a machine that has never seen Charge Control every switch is off, the numbers are charge to 80, drift 5
-    /// below and pause at 35 °C, and nothing is recorded to put back because nothing has been changed.
+    /// below and pause at 40 °C, and nothing is recorded to put back because nothing has been changed.
     func testDefaults() {
         let s = Settings(defaults: defaults)
         XCTAssertFalse(s.chargeControlEnabled, "off until asked for: it changes macOS's own charge limit")
@@ -69,12 +69,23 @@ final class ChargeSettingsTests: XCTestCase {
         XCTAssertFalse(s.chargeDriftEnabled)
         XCTAssertEqual(s.chargeDriftGap, 5)
         XCTAssertFalse(s.chargePauseWhenHotEnabled)
-        XCTAssertEqual(s.chargeMaxTemperatureC, 35)
+        XCTAssertEqual(s.chargeMaxTemperatureC, 40)
         XCTAssertFalse(s.chargeHoldDuringSleep)
         XCTAssertFalse(s.chargeDrainAutomatically)
         XCTAssertFalse(s.chargeReadyByEnabled, "Ready By holds the battery back, so it is asked for")
         XCTAssertEqual(s.chargeReadyByMinutes, 420, "7:00, in minutes after midnight")
         XCTAssertNil(s.chargeRestoreRecord)
+    }
+
+    /// The default is a number with a reason (`ChargePolicy.defaultMaxTemperatureC`): under the 45 °C the cells are
+    /// specified to charge up to, or it would do nothing macOS does not do already, and above the 35 °C a pack
+    /// reaches in ordinary use, or it would pause charging on a Mac that is only working. Inside what can be chosen.
+    func testTheDefaultPauseTemperatureIsUnderTheCellsLimitAndAboveEverydayUse() {
+        XCTAssertEqual(ChargePolicy.cellChargeLimitC, 45)
+        XCTAssertEqual(ChargePolicy.defaultMaxTemperatureC, 40)
+        XCTAssertLessThan(ChargePolicy.defaultMaxTemperatureC, ChargePolicy.cellChargeLimitC)
+        XCTAssertGreaterThan(ChargePolicy.defaultMaxTemperatureC, 35)
+        XCTAssertTrue(Settings.chargeMaxTemperatureRange.contains(ChargePolicy.defaultMaxTemperatureC))
     }
 
     // ── Clamping on the way in ──────────────────────────────────────────────
@@ -188,9 +199,9 @@ final class ChargeSettingsTests: XCTestCase {
 
         let temperatures: [(stored: Any, want: Double)] = [
             (0, 25), (10.0, 25), (-5.5, 25), (80, 50), (500.5, 50), (25, 25), (50, 50), (41, 41), (41.5, 41.5),
-            ("41", 35), (Data([4, 1]), 35), ([41.0], 35),
-            (Date(timeIntervalSince1970: 41), 35), (true, 35), (false, 35),
-            (Double.nan, 35), (Double.infinity, 35), (-Double.infinity, 35),
+            ("41", 40), (Data([4, 1]), 40), ([41.0], 40),
+            (Date(timeIntervalSince1970: 41), 40), (true, 40), (false, 40),
+            (Double.nan, 40), (Double.infinity, 40), (-Double.infinity, 40),
         ]
         for (raw, want) in temperatures {
             store(30.5, as: "chargeMaxTemperatureC")
@@ -408,7 +419,7 @@ final class ChargeSettingsTests: XCTestCase {
         let s = Settings(defaults: defaults)
         XCTAssertEqual(s.chargeSettingsSnapshot(),
                        ChargeSettingsSnapshot(limit: 80, driftEnabled: false, driftGap: 5,
-                                              pauseWhenHotEnabled: false, maxTemperatureC: 35,
+                                              pauseWhenHotEnabled: false, maxTemperatureC: 40,
                                               holdDuringSleep: false, drainAutomatically: false))
         s.chargeLimit = 63
         s.chargeDriftEnabled = true
@@ -464,7 +475,7 @@ final class ChargeSettingsTests: XCTestCase {
         store("hot", as: "chargeMaxTemperatureC")
         XCTAssertEqual(Settings(defaults: defaults).chargeSettingsSnapshot(),
                        ChargeSettingsSnapshot(limit: 20, driftEnabled: true, driftGap: 30,
-                                              pauseWhenHotEnabled: true, maxTemperatureC: 35,
+                                              pauseWhenHotEnabled: true, maxTemperatureC: 40,
                                               holdDuringSleep: false, drainAutomatically: false))
     }
 
@@ -500,7 +511,7 @@ final class ChargeSettingsTests: XCTestCase {
     }
 
     /// The opposite failure. No temperature is "at or above" NaN, so a stored NaN that reached the policy would
-    /// switch Pause When Hot off without saying so. It reads as 35, and a pack at 40 °C is held where it is.
+    /// switch Pause When Hot off without saying so. It reads as 40, and a pack at 40 °C is held where it is.
     func testAStoredMaximumThatIsNotANumberStillProtects() {
         store(Double.nan, as: "chargeMaxTemperatureC")
         store(true, as: "chargePauseWhenHotEnabled")
