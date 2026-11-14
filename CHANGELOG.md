@@ -7,6 +7,10 @@ feature or a visible change in how something works, the first only for a rewrite
 Nothing was bumped between 1.0.0 and 1.15.0. Those versions were assigned afterwards from the history and exist as
 git tags (`git show v1.7.0`); builds made before 1.15.0 still say 1.0.0 in their About box.
 
+## 1.18.0 — 2026-11-13
+- The Anode helper is offered as soon as Anode is installed or updated: the first time it opens, one notice says what the helper does (one helper for fans, Charge Control and Low Power Mode), then macOS asks for your password.
+- Nothing appears when the helper installed is already current, and "Not Now" is not asked again until the next update. The buttons in the Fans tab, Charge Control and Ultra Low Power Mode still install it later.
+
 ## 1.17.0 — 2026-11-13
 - Charge Control (Beta Features, off by default): hold the battery at a charge limit you choose, from 20% to 100%. The limit applies while Anode is running: quitting Anode, or turning Charge Control off, puts macOS's own charging settings back as they were, and opening Anode again brings your limit back.
 - If Anode ever stops without quitting, the next time it opens it lifts the limit first and waits a minute before setting it again, so an Anode that is not working does not hold your battery.
