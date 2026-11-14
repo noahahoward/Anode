@@ -173,21 +173,28 @@ final class ChargeSharedRecordTests: XCTestCase {
         try twoAccountsQuit(first: 1)
     }
 
-    /// DOCUMENTS A LIMITATION, it does not bless it: with per-account records (the shared file cannot be had, which is
-    /// logged) the same two accounts cannot be told apart and the limit is left behind with no Anode running. This is
-    /// why the record is shared, and why the fallback says so in the log.
-    func testTheFallbackToPerAccountRecordsDocumentsThatTwoAccountsCannotBeToldApart() throws {
+    /// The old failure when the shared file cannot be had: each account kept a record of its own, the second wrote
+    /// the first's limit down as macOS's own and put it back on quitting, and the limit stayed with no Anode running.
+    /// Now neither holds anything: a record another account's Anode cannot read is not written at all.
+    func testTwoAccountsOnAMacWhoseSharedRecordCannotBeHadHoldNoLimit() throws {
+        let blocker = (directory as NSString).deletingLastPathComponent + "/blocker"
+        try "x".write(toFile: blocker, atomically: true, encoding: .utf8)
+        directory = blocker + "/Anode"
         let a = try account("A", uid: 501, limit: 85)
         let b = try account("B", uid: 502, limit: 90)
-        launch(a, shared: false)
+        let ca = launch(a)
         toBackground(a)
-        launch(b, shared: false)
-        XCTAssertEqual(b.settings.chargeRestoreRecord.flatMap { ChargeController.decodeRecord($0) },
-                       NativeChargeState(mclEnabled: true, mclLimit: 85, optimizedChargingEnabled: false),
-                       "B recorded A's limit as macOS's own")
+        let cb = launch(b)
+        XCTAssertEqual(macOS.state, macOSOwn, "a limit was set with no record every account can read")
+        XCTAssertEqual(ca.status, .unavailable(ChargeController.recordUnusableText))
+        XCTAssertEqual(cb.status, .unavailable(ChargeController.recordUnusableText))
+        XCTAssertNil(a.settings.chargeRestoreRecord, "a record was written in this account's preferences")
+        XCTAssertNil(b.settings.chargeRestoreRecord)
+        XCTAssertTrue(macOS.limitCalls.isEmpty)
         quit(b)
         quit(a)
-        XCTAssertNotEqual(macOS.state, macOSOwn, "per-account records are expected to leave A's limit behind")
+        XCTAssertEqual(macOS.state, macOSOwn)
+        XCTAssertTrue(a.settings.chargeControlEnabled, "the setting was changed")
     }
 
     // ── Switching off, quitting, crashing ───────────────────────────────────
@@ -499,50 +506,102 @@ final class ChargeSharedRecordTests: XCTestCase {
                       a.lines.joined(separator: "\n"))
     }
 
-    /// A folder that cannot be written: the account falls back to its own record, with today's rules, and says one
-    /// line that two accounts cannot be told apart on this Mac.
-    func testAFolderThatCannotBeWrittenFallsBackToThisAccountsOwnRecord() throws {
+    /// A folder that cannot be written: nothing is recorded and nothing is changed, the section says why, and the log
+    /// says it once however often it is looked at.
+    func testAFolderThatCannotBeWrittenHoldsNoLimitAndSaysSo() throws {
         let blocker = (directory as NSString).deletingLastPathComponent + "/blocker"
         try "x".write(toFile: blocker, atomically: true, encoding: .utf8)
+        directory = blocker + "/Anode"
         let a = try account("A", uid: 501, limit: 85)
-        nextPid += 1
-        a.pid = nextPid
-        live.insert(a.pid)
-        let unusable = ChargeRecordStore(directory: blocker + "/Anode", uid: a.uid, pid: a.pid, isLive: { _ in true })
-        a.records = ChargeRecords(settings: a.settings, store: unusable, log: { [weak a] in a?.lines.append($0) })
-        let c = ChargeController(settings: a.settings, records: a.records, makeClient: { [macOS] in macOS },
-                                 helper: a.helper, battery: { a.battery }, chargerSwitch: { nil },
-                                 log: { [weak a] in a?.lines.append($0) }, workspace: a.center,
-                                 limitInForce: ChargeLimitInForce(), onConsole: { true })
-        a.controller = c
-        XCTAssertEqual(macOS.state?.mclLimit, 85)
-        XCTAssertEqual(a.lines.filter { $0.contains("cannot be told apart") }.count, 1, a.lines.joined(separator: "\n"))
-        XCTAssertNotNil(a.settings.chargeRestoreRecord, "the record was not kept in this account's preferences")
+        let c = launch(a)
+        XCTAssertEqual(macOS.state, macOSOwn)
+        XCTAssertEqual(c.status, .unavailable(ChargeController.recordUnusableText))
+        XCTAssertNil(a.settings.chargeRestoreRecord, "a record was kept in this account's preferences")
+        XCTAssertFalse(a.helper.following, "the helper link was held with nothing to do")
+        a.settings.chargeControlEnabled = false
+        a.settings.chargeControlEnabled = true
+        XCTAssertEqual(macOS.state, macOSOwn)
+        XCTAssertEqual(a.lines.filter { $0.contains("cannot be recorded where every account") }.count, 1,
+                       a.lines.joined(separator: "\n"))
         quit(a)
         XCTAssertEqual(macOS.state, macOSOwn)
+        XCTAssertFalse(a.records.hasRecord, "a Mac that never held anything says something may be left")
+    }
+
+    /// The folder is put right while Anode runs: switching Charge Control off and on finds it, and holds the limit.
+    func testAFolderThatIsPutRightIsUsedTheNextTimeChargeControlIsSwitchedOn() throws {
+        let parent = (directory as NSString).deletingLastPathComponent
+        let blocker = parent + "/blocker"
+        try "x".write(toFile: blocker, atomically: true, encoding: .utf8)
+        directory = blocker + "/Anode"
+        let a = try account("A", uid: 501, limit: 85)
+        let c = launch(a)
+        XCTAssertEqual(c.status, .unavailable(ChargeController.recordUnusableText))
+        try FileManager.default.removeItem(atPath: blocker)
+        try FileManager.default.createDirectory(atPath: blocker, withIntermediateDirectories: true)
+        a.settings.chargeControlEnabled = false
+        a.settings.chargeControlEnabled = true
+        XCTAssertEqual(macOS.state?.mclLimit, 85)
+        XCTAssertTrue(a.records.isShared)
+        quit(a)
+        XCTAssertEqual(macOS.state, macOSOwn)
+    }
+
+    /// A record of this account's own, left by a build that kept one when the shared file could not be had, and by
+    /// a run that did not quit: the launch still puts it back from where it is, and then holds nothing.
+    func testARecordAnEarlierBuildKeptInThisAccountIsPutBackWhereTheSharedFileCannotBeHad() throws {
+        let blocker = (directory as NSString).deletingLastPathComponent + "/blocker"
+        try "x".write(toFile: blocker, atomically: true, encoding: .utf8)
+        directory = blocker + "/Anode"
+        let a = try account("A", uid: 501, limit: 85)
+        a.settings.chargeRestoreRecord = ChargeController.encodeRecord(macOSOwn)
+        macOS.state = NativeChargeState(mclEnabled: true, mclLimit: 85, optimizedChargingEnabled: false)
+        let c = launch(a, startDelay: 0.01)
+        XCTAssertEqual(macOS.state, macOSOwn, "the limit the dead run left was not lifted")
+        XCTAssertNil(a.settings.chargeRestoreRecord)
+        c.resumeIfDue(now: Date().addingTimeInterval(1))
+        XCTAssertEqual(macOS.state, macOSOwn, "a limit was set again with no record every account can read")
+        XCTAssertEqual(c.status, .unavailable(ChargeController.recordUnusableText))
         XCTAssertNil(a.settings.chargeRestoreRecord)
     }
 
     /// Another account made the shared file a hard link to one of this account's private files. It is refused, said in
-    /// one line, this account keeps its own record, and the private file is not made accessible or written.
-    func testAHardLinkAtTheSharedFileFallsBackAndLeavesThePrivateFileAlone() throws {
+    /// one line, nothing is held, and the private file is not made accessible or written.
+    func testAHardLinkAtTheSharedFileHoldsNoLimitAndLeavesThePrivateFileAlone() throws {
         let secret = (directory as NSString).deletingLastPathComponent + "/private.txt"
         try "do not touch".write(toFile: secret, atomically: true, encoding: .utf8)
         XCTAssertEqual(chmod(secret, 0o600), 0)
         try FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true)
         XCTAssertEqual(link(secret, directory + "/" + ChargeRecordStore.fileName), 0)
         let a = try account("A", uid: 501, limit: 85)
-        launch(a)
-        XCTAssertEqual(macOS.state?.mclLimit, 85)
-        XCTAssertEqual(a.lines.filter { $0.contains("cannot be told apart") }.count, 1, a.lines.joined(separator: "\n"))
+        let c = launch(a)
+        XCTAssertEqual(macOS.state, macOSOwn)
+        XCTAssertEqual(c.status, .unavailable(ChargeController.recordUnusableText))
         XCTAssertTrue(a.lines.contains { $0.contains("more than one link") }, a.lines.joined(separator: "\n"))
-        XCTAssertNotNil(a.settings.chargeRestoreRecord, "this account did not keep its own record")
+        XCTAssertNil(a.settings.chargeRestoreRecord, "this account kept a record of its own")
         var info = stat()
         XCTAssertEqual(stat(secret, &info), 0)
         XCTAssertEqual(info.st_mode & 0o7777, 0o600)
         XCTAssertEqual(try String(contentsOfFile: secret, encoding: .utf8), "do not touch")
         quit(a)
         XCTAssertEqual(macOS.state, macOSOwn)
+    }
+
+    /// The shared file is replaced, while the limit is held, by something the store refuses: the record is lost, as
+    /// when it is removed by hand, and a quit does not leave Charge Control's limit in force for that.
+    func testASharedFileThatIsLostWhileHoldingDoesNotLeaveTheLimitInForceAfterAQuit() throws {
+        let a = try account("A", uid: 501, limit: 85)
+        launch(a)
+        XCTAssertEqual(macOS.state?.mclLimit, 85)
+        let file = directory + "/" + ChargeRecordStore.fileName
+        let other = (directory as NSString).deletingLastPathComponent + "/elsewhere.txt"
+        try "x".write(toFile: other, atomically: true, encoding: .utf8)
+        try FileManager.default.removeItem(atPath: file)
+        XCTAssertEqual(link(other, file), 0)
+        quit(a)
+        XCTAssertEqual(macOS.state?.mclEnabled, false, "the limit stayed in force with no Anode running")
+        XCTAssertEqual(macOS.state?.mclLimit, 100)
+        XCTAssertEqual(try String(contentsOfFile: other, encoding: .utf8), "x", "the file it refuses was written")
     }
 
     /// A per-account record an earlier build left is moved into the shared file once, with this account as a holder

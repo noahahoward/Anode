@@ -182,6 +182,12 @@ final class ChargeController {
     static let recordUnreachableText = "Charge Control could not reach the record of macOS's own charge settings, so "
         + "it changed nothing"
 
+    /// The record of macOS's own settings cannot be kept where every account's Anode reads it, so nothing is held:
+    /// a record only this account could read would be taken for macOS's own by another account's Anode.
+    static let recordUnusableText = "Charge Control keeps macOS's own charge settings in the folder "
+        + "\(ChargeRecordStore.sharedDirectory), which every account on this Mac shares, and Anode cannot use that "
+        + "folder here. It holds no limit until it can; turn Charge Control off and on to try again."
+
     /// A discharge's end has not been confirmed by a running helper, and Charge Control is still asking.
     static let cutWarningText = "The charger may still be switched off. Reconnecting\u{2026}"
     /// A running helper said the charger is connected, and Anode's own reading of the charger switch still says it is
@@ -1028,6 +1034,9 @@ inForce >= noLimit
             log("the shared record of macOS's own settings could not be reached (another Anode may be using it); "
                 + "nothing was changed")
             return setStatus(.unavailable(Self.recordUnreachableText))
+        case .unusable:
+            // `ChargeRecords` has logged why.
+            return setStatus(.unavailable(Self.recordUnusableText))
         }
         // From here macOS holds what Charge Control sets, and keeps it if Anode dies: the watchdog is what puts it back
         // then. Without one the limit is still lifted, but only when Anode is next opened, and the log says so.

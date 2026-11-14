@@ -7,6 +7,10 @@ feature or a visible change in how something works, the first only for a rewrite
 Nothing was bumped between 1.0.0 and 1.15.0. Those versions were assigned afterwards from the history and exist as
 git tags (`git show v1.7.0`); builds made before 1.15.0 still say 1.0.0 in their About box.
 
+## 1.18.2 — 2026-11-13
+- Charge Control: on a Mac where Anode cannot use the folder every account shares (/Users/Shared/Anode), it used to keep a private record of macOS's charging settings instead. With two accounts using Charge Control that could leave one account's limit in force after both had quit Anode. It now holds no limit on such a Mac and says why in its section; turning Charge Control off and on tries the folder again.
+- A limit left by an earlier version on such a Mac is still put back the next time Anode opens, and a record that is lost while a limit is held no longer leaves the limit in force after a quit.
+
 ## 1.18.1 — 2026-11-13
 - Charge Control: if Anode crashes or is force quit while it holds a limit, macOS's own charging settings are put back within a few seconds, by a small watcher that runs beside Anode while Charge Control is on. Before, the limit stayed in force until Anode was next opened, which could be never.
 - The next time Anode opens after that it still waits a minute before holding a limit again, as before.

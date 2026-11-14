@@ -7,15 +7,22 @@ import PowerKit
 // cannot take each other's limit for macOS's own. This is the controller's one way to the record: it asks to
 // `acquire` it when switching on, to `release` it when putting back, and a few questions about what is there.
 //
-// If the shared file cannot be had (`/Users/Shared` missing or read-only, or a file another account made that this one
-// cannot write) it falls back to this account's own record in its preferences (`Settings.chargeRestoreRecord`), with
-// the rules that had before the record was shared, and logs one line saying two accounts cannot be told apart on
-// this Mac. The tests use that mode (no store) unless they are about two accounts.
+// If the shared file cannot be had (`/Users/Shared` missing or read-only, or something at the path that this account
+// cannot use) nothing is recorded, and so nothing is changed: Charge Control holds no limit on this Mac while that is
+// so, and says why (`RecordAcquired.unusable`). Up to 1.18.1 it kept this account's own record in its preferences
+// instead, and two accounts doing that could not be told apart: the second wrote the first's limit down as macOS's
+// own and put it back on quitting, and the limit stayed with no Anode running. A record of macOS's settings that is
+// not shared is one nobody can trust, so there is none. The folder is looked at again each time Charge Control is
+// switched on.
 //
-// A per-account record left by an earlier build is moved into the shared file, with this account as a holder whose
-// process is not known, so that the launch that finds it lifts the limit as for any run that did not quit. After that
-// nothing reads the per-account key. `chargeCutUnconfirmed` and `chargeStartPending` stay per account: they are about
-// this account's own discharge and start.
+// A per-account record left by an earlier build (`Settings.chargeRestoreRecord`) is moved into the shared file, with
+// this account as a holder whose process is not known, so that the launch that finds it lifts the limit as for any
+// run that did not quit; where the shared file cannot be had it is put back from where it is, and nothing new is
+// written there. `chargeCutUnconfirmed` and `chargeStartPending` stay per account: they are about this account's own
+// discharge and start.
+//
+// A `ChargeRecords` made with no store keeps this account's own record only, with the rules from before the record
+// was shared. The app never makes one; the tests do, unless they are about two accounts.
 
 /// What `acquire` found.
 enum RecordAcquired: Equatable {
@@ -29,6 +36,9 @@ enum RecordAcquired: Equatable {
     case adopted(readable: Bool)
     /// No record, and macOS would not say what its settings are.
     case macOSUnreadable
+    /// The shared record cannot be kept on this Mac (the sentence says why): nothing was written and nothing may be
+    /// changed, because a record no other account's Anode can read would be taken for macOS's own by theirs.
+    case unusable(String)
 }
 
 /// What there is to put back.
@@ -56,7 +66,13 @@ enum RecordReleased: Equatable {
 
 final class ChargeRecords {
 
-    private enum Mode { case shared, perAccount }
+    private enum Mode: Equatable {
+        case shared
+        /// No store was given: this account's own record (the tests).
+        case perAccount
+        /// A store was given and its file cannot be had; why.
+        case unusable(String)
+    }
 
     private let settings: Settings
     private let store: ChargeRecordStore?
@@ -64,6 +80,7 @@ final class ChargeRecords {
     /// Decided the first time something is written (or the file proves unusable), and kept.
     private var mode: Mode?
     private var saidUnreadable = false
+    private var saidUnusable: String?
 
     /// `store` nil: this account's own record only.
     init(settings: Settings, store: ChargeRecordStore? = nil, log: @escaping (String) -> Void = { _ in }) {
@@ -79,13 +96,22 @@ final class ChargeRecords {
 
     // ── Questions (nothing is created, nothing is written) ──────────────────
 
-    /// This account's own record: the fallback's, or one an earlier build left that is yet to be moved.
+    /// This account's own record: one an earlier build left that is yet to be moved or put back (or, with no store,
+    /// the only record there is).
     private var perAccountText: String? { settings.chargeRestoreRecord }
+
+    /// The store, unless it is known that there is none to use: none was given, or its file cannot be had.
+    private var storeInUse: ChargeRecordStore? {
+        switch mode {
+        case .perAccount?, .unusable?: return nil
+        case .shared?, nil: return store
+        }
+    }
 
     /// The shared record, as it stands. Not consulted when the shared file proved unusable. A file that is there and is
     /// not a record counts as no record, and is said once.
     private func sharedRecord() -> SharedChargeRecord? {
-        guard let store, mode != .perAccount else { return nil }
+        guard let store = storeInUse else { return nil }
         switch store.peek() {
         case .record(let r)?: return r
         case .unreadable(let why)?:
@@ -107,14 +133,17 @@ final class ChargeRecords {
     /// what happened.
     var hasRecord: Bool {
         if perAccountText != nil { return true }
-        guard let store, mode != .perAccount else { return false }
+        guard let store = storeInUse else { return false }
         switch store.peek() {
         case .record?: return true
         case .unreadable(let why)?:
             sayUnreadable(why)
             return false
         case .none?: return false
-        case nil: return true
+        // Busy is "may hold one", and so is a file this Anode has written to that has since become something the
+        // store refuses: the record in it is lost, and the release deals with that. A file that could never be had
+        // holds nothing of this Anode's.
+        case nil: return mode == .shared || store.isUsable()
         }
     }
 
@@ -132,7 +161,7 @@ final class ChargeRecords {
     /// own record there are no holders to read: a record that is there is taken for that process's.
     func isHeld(byProcess pid: Int32) -> Bool? {
         if perAccountText != nil { return true }
-        guard let store, mode != .perAccount else { return false }
+        guard let store = storeInUse else { return false }
         switch store.peek() {
         case .record(let r)?: return r.holders.contains(ChargeHolder(uid: store.me.uid, pid: pid))
         case .unreadable(let why)?:
@@ -166,21 +195,31 @@ final class ChargeRecords {
     // ── Which record ────────────────────────────────────────────────────────
 
     /// The record is the Mac's, shared by every account's Anode, so who holds the limit is known. False when it is this
-    /// account's own (no shared file here, or it could not be had): two accounts cannot be told apart then.
+    /// account's own (no store), or the shared file cannot be had.
     var isShared: Bool { resolved() != nil }
 
-    /// The store when records are shared on this Mac; nil when they are per account. The first time, the file is
-    /// made if need be and a record an earlier build left in this account's preferences is moved into it. Only a
-    /// folder or file that cannot be had at all makes the record per account, and for good: a file that is merely
-    /// busy at some moment does not (`acquire` and `release` say `unreachable`).
+    /// Why the shared record cannot be kept on this Mac, when that is so.
+    var unusableBecause: String? {
+        if case .unusable(let why)? = mode { return why }
+        return nil
+    }
+
+    /// The store when records are shared on this Mac; nil when there is no store, or its file cannot be had. The first
+    /// time, the file is made if need be and a record an earlier build left in this account's preferences is moved
+    /// into it. A folder or file that cannot be had is looked at again every time (it may have been put right since);
+    /// one that is merely busy at some moment is not "cannot be had" (`acquire` and `release` say `unreachable`).
     private func resolved() -> ChargeRecordStore? {
-        if let mode { return mode == .shared ? store : nil }
+        switch mode {
+        case .shared?: return store
+        case .perAccount?: return nil
+        case .unusable?, nil: break
+        }
         guard let store else {
             mode = .perAccount
             return nil
         }
         if let why = store.checkUsable() {
-            fallBack(why)
+            noteUnusable(why)
             return nil
         }
         mode = .shared
@@ -195,10 +234,12 @@ final class ChargeRecords {
         return store
     }
 
-    private func fallBack(_ why: String) {
-        mode = .perAccount
-        log("macOS's own charge settings are recorded in this account's preferences, not shared: \(why), so two "
-            + "accounts cannot be told apart on this Mac")
+    private func noteUnusable(_ why: String) {
+        mode = .unusable(why)
+        guard saidUnusable != why else { return }
+        saidUnusable = why
+        log("macOS's own charge settings cannot be recorded where every account's Anode reads them: \(why). Charge "
+            + "Control holds no limit on this Mac while that is so")
     }
 
     // ── Switching on and putting back ───────────────────────────────────────
@@ -219,6 +260,9 @@ final class ChargeRecords {
                 return .unreachable
             }
         }
+        // Nothing is written anywhere when the shared file cannot be had: this account's own preferences are not a
+        // place another account's Anode can read.
+        if let why = unusableBecause { return .unusable(why) }
         if let text = perAccountText { return .adopted(readable: ChargeController.decodeRecord(text) != nil) }
         guard let found = read(), let json = ChargeController.encodeRecord(found) else { return .macOSUnreadable }
         settings.chargeRestoreRecord = json
@@ -238,11 +282,20 @@ final class ChargeRecords {
                 sayUnreadable(why)
                 return .unreadable(why)
             case nil:
+                // Not busy but gone (the file was replaced by something this store refuses while the limit was held):
+                // the record is lost, as when it is removed by hand, and Charge Control's limit is not left in force
+                // for that. `restore` puts back macOS's defaults.
+                if let why = store.checkUsable() {
+                    noteUnusable(why)
+                    return .restored(restore(RecordOriginal.none))
+                }
                 // Busy: nothing is put back, and above all not macOS's defaults over a limit the record says is
                 // another account's.
                 return .unreachable
             }
         }
+        // The shared file cannot be had and this account left nothing of its own: nothing was ever recorded here.
+        if unusableBecause != nil, perAccountText == nil { return .restored(true) }
         let original: RecordOriginal
         if let text = perAccountText {
             original = ChargeController.decodeRecord(text).map { .state($0) } ?? .unreadableText
