@@ -432,6 +432,24 @@ final class UltraProcessesTests: XCTestCase {
         XCTAssertEqual(fake.clockAtCompletion ?? -1, LiveAppHider.pollInterval, accuracy: 1e-9)
     }
 
+    /// Measured on macOS 27.0, on Terminal, from Anode and from a small tool: `hide()` answers false and the app hides all
+    /// the same, and `unhide()` answers false and it comes back. Believing the answer made Anode think it had not hidden
+    /// the app: it stopped it before it had hidden (its windows stayed on screen, dead), took it off the record, and left
+    /// it hidden when the mode ended, because the hide went through as soon as the app was continued. So the real hide
+    /// asks, does not read the answer, and says only whether there was an app to ask.
+    func testTheRealHideDoesNotBelieveTheSystemsAnswer() throws {
+        XCTAssertFalse(LiveAppHider.askToHide(nil), "no such app: nothing was asked")
+        let source = try String(contentsOf: URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent().appendingPathComponent("Sources/AnodeApp/UltraProcesses.swift"), encoding: .utf8)
+        let code = source.split(separator: "\n", omittingEmptySubsequences: false)
+            .filter { !$0.trimmingCharacters(in: .whitespaces).hasPrefix("//") }.joined(separator: " ")
+            .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+        XCTAssertTrue(code.contains("hideApp: @escaping (pid_t) -> Bool = { LiveAppHider.askToHide(NSRunningApplication(processIdentifier: $0)) }"),
+                      "the real hide no longer goes through askToHide")
+        XCTAssertTrue(code.contains("static func askToHide(_ app: NSRunningApplication?) -> Bool { guard let app else { return false } _ = app.hide() return true }"),
+                      "askToHide reads the system's answer again")
+    }
+
     func testAnAppThatWasHiddenAlreadyIsNotHiddenAgainAndIsNotOurs() {
         let fake = FakeHiding()
         fake.hidden = { _ in true }

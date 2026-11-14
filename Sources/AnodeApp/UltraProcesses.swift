@@ -602,7 +602,7 @@ final class LiveAppHider: AppHiding {
 
     /// The closures are the system; tests replace all four so no app is ever hidden, and nothing waits for real.
     /// `hideApp` returns false when there is no such app (it has ended); the others are called on the main thread.
-    init(hideApp: @escaping (pid_t) -> Bool = { NSRunningApplication(processIdentifier: $0)?.hide() ?? false },
+    init(hideApp: @escaping (pid_t) -> Bool = { LiveAppHider.askToHide(NSRunningApplication(processIdentifier: $0)) },
          isHidden: @escaping (pid_t) -> Bool = { NSRunningApplication(processIdentifier: $0)?.isHidden ?? true },
          unhideApp: @escaping (pid_t) -> Void = { _ = NSRunningApplication(processIdentifier: $0)?.unhide() },
          schedule: @escaping (TimeInterval, @escaping () -> Void) -> Void = { delay, work in
@@ -614,11 +614,21 @@ final class LiveAppHider: AppHiding {
         self.schedule = schedule
     }
 
+    /// Asks `app` to hide, and says only whether there was an app to ask. The system's own answer is not read: measured on
+    /// macOS 27.0, `hide()` answers false for an app that then hides (and `unhide()` false for one that then comes back).
+    /// Taking that for a refusal stopped the app before it had hidden and took it off the record, so its windows stayed
+    /// on screen dead and it was left hidden when the mode ended. Whether it did hide is what `isHidden` is polled for.
+    static func askToHide(_ app: NSRunningApplication?) -> Bool {
+        guard let app else { return false }
+        _ = app.hide()
+        return true
+    }
+
     func hide(pid: pid_t, completion: @escaping (Bool) -> Void) {
         onMain { [self] in
             // Hidden already (or no such app, which reads as hidden): the owner's doing, or nothing to do.
             if isHidden(pid) { completion(false); return }
-            // Refused, or the app ended between the look and the call: nothing to wait for.
+            // The app ended between the look and the call: nothing to wait for.
             guard hideApp(pid) else { completion(false); return }
             check(pid, left: Int((Self.hideWait / Self.pollInterval).rounded()), completion: completion)
         }
