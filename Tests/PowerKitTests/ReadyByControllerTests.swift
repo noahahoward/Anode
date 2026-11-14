@@ -380,8 +380,6 @@ final class ReadyByControllerTests: XCTestCase {
     private static let limitSentence = "the Mac sleeps with the battery charging as usual, to 80%, \(noPlan); it is back when the Mac wakes"
     private static let sleepingSentence = "the Mac sleeps with the battery held at 54% by Hold Level During Sleep, \(noPlan); "
         + "Ready By is back when the Mac wakes"
-    private static let heatSentence = "the Mac sleeps with the battery paused for heat at 54% by Pause When Hot, \(noPlan); "
-        + "it stays paused until the Mac wakes"
     private static let driftSentence = "the Mac sleeps with the battery drifting below the limit, held at 78% by Drift Below "
         + "the Limit, \(noPlan); Ready By is back when the Mac wakes"
 
@@ -591,10 +589,10 @@ final class ReadyByControllerTests: XCTestCase {
     }
 
     /// A plan was made for a hot pack at one sleep, cancelled when the Mac woke with the pack still hot, and at the next
-    /// sleep the helper refuses the plan. Pause When Hot outranks Ready By, so the decision made again without Ready By
-    /// is still the heat pause: the battery is paused for heat at 54% and stays so until the Mac wakes. The log used to
-    /// say it was "charging as usual, to 54%".
-    func testARefusedPlanForAHotPackSaysTheBatteryIsPausedForHeat() throws {
+    /// sleep the helper refuses the plan. Nothing will wake the Mac, and asleep nothing reads the pack's temperature, so a
+    /// pause would hold the battery at 54% until the Mac is next opened, all night. Both Ready By and Pause When Hot are
+    /// set aside for this sleep: the battery charges as usual, and both are back at the wake.
+    func testARefusedPlanForAHotPackSetsThePauseAsideForTheSleep() throws {
         hotAtNight()
         let c = make()
         XCTAssertEqual(c.lastDecision?.reason, .heat, "the fixture is not paused for heat")
@@ -612,11 +610,16 @@ final class ReadyByControllerTests: XCTestCase {
         let plansAfter = helper.waited.filter { if case .scheduleChargeLimit = $0 { return true } else { return false } }.count
         XCTAssertEqual(plansAfter, plansBefore + 1, "the plan was not asked for again at the second sleep")
         XCTAssertNil(c.wakePlan)
-        XCTAssertEqual(c.lastDecision?.reason, .heat, "heat outranks Ready By, set aside or not")
-        XCTAssertEqual(client.state?.mclLimit, 54, "the pause is what is in force as the Mac sleeps")
+        XCTAssertEqual(c.lastDecision?.reason, .limit)
+        XCTAssertEqual(client.state?.mclLimit, 80, "the pause was left in force for a sleep nothing ends")
         XCTAssertTrue(lines.contains { $0.contains(ChargeRefusal.wakeNotScheduled) }, lines.joined(separator: "\n"))
-        XCTAssertTrue(lines.contains(Self.heatSentence), lines.joined(separator: "\n"))
-        XCTAssertFalse(lines.contains { $0.contains("charging as usual") }, lines.joined(separator: "\n"))
+        XCTAssertTrue(lines.contains("the Mac sleeps with the battery charging as usual, to 80%, because no wake could be "
+                                     + "arranged for Ready By and Pause When Hot; they are back when the Mac wakes"),
+                      lines.joined(separator: "\n"))
+        // Awake again with the pack still hot: the pause is back.
+        c.didWake(now: clockNow.addingTimeInterval(2 * 3600))
+        XCTAssertEqual(c.lastDecision?.reason, .heat)
+        XCTAssertEqual(client.state?.mclLimit, 54)
     }
 
     // ── Going to sleep drifting below the limit ─────────────────────────────
@@ -670,13 +673,146 @@ final class ReadyByControllerTests: XCTestCase {
         XCTAssertEqual(plan.raiseAt, clockNow.addingTimeInterval(ChargeController.heatCoolingTime))
     }
 
-    func testAHotPackWithReadyByOffGetsNoPlan() {
+    // ── Paused for heat with no Ready By moment to charge for ───────────────
+
+    /// The bug: a lid closed on a warm Mac with Ready By off. Asleep nothing reads the pack's temperature, so the pause
+    /// held the battery where it was until the Mac was next opened, all night. The helper is now asked to wake the Mac
+    /// half an hour on and raise the limit to the person's own.
+    func testAHotPackWithReadyByOffIsPlannedForHalfAnHourFromNow() throws {
+        hotAtNight()
+        settings.chargeReadyByEnabled = false
+        let c = make()
+        XCTAssertEqual(c.lastDecision?.reason, .heat)
+        XCTAssertEqual(client.state?.mclLimit, 54)
+        c.willSleep()
+        let cooled = clockNow.addingTimeInterval(ChargeController.heatCoolingTime)
+        let plan = try XCTUnwrap(c.wakePlan, "nothing will end the pause while the Mac sleeps")
+        XCTAssertEqual(plan, ChargeController.WakePlan(by: cooled, limit: 80, raiseAt: cooled, forHeatAlone: true))
+        XCTAssertEqual(helper.waited.last, .scheduleChargeLimit(limit: 80, at: cooled))
+        XCTAssertEqual(client.state?.mclLimit, 54, "asleep, the pause stays until the plan's moment")
+        XCTAssertEqual(count(cancel), 0, "the plan was cancelled as it was made")
+        XCTAssertTrue(lines.contains { $0.contains("when the battery has had time to cool") }, lines.joined(separator: "\n"))
+    }
+
+    /// The Mac slept through the plan's moment, the helper raised the limit, and the pack reads cool at the wake. The
+    /// sleep counts as the pause's own wait, so the hold does not go back over the limit the helper has just raised.
+    func testAfterTheHelpersWakeACooledPackChargesToTheLimit() throws {
         hotAtNight()
         settings.chargeReadyByEnabled = false
         let c = make()
         c.willSleep()
+        let plan = try XCTUnwrap(c.wakePlan)
+        helperWritesItsPlan()
+        XCTAssertEqual(client.state?.mclLimit, 80, "the fixture: the helper raised the limit asleep")
+        battery?.temperature_C = 27
+        lines = []
+        c.didWake(now: plan.raiseAt.addingTimeInterval(1))
+        XCTAssertEqual(c.lastDecision?.reason, .limit, "the pause went back on for five minutes after the wake")
+        XCTAssertEqual(client.state?.mclLimit, 80)
+        XCTAssertFalse(lines.contains { $0.contains("holding again") }, lines.joined(separator: "\n"))
+        XCTAssertFalse(lines.contains { $0.contains("changed outside") }, lines.joined(separator: "\n"))
+        XCTAssertNil(c.wakePlan)
+    }
+
+    /// Still hot at the plan's moment: the hold goes back, said plainly, and the next sleep plans again.
+    func testAfterTheHelpersWakeAPackStillHotIsPausedAgainAndPlannedAgain() throws {
+        hotAtNight()
+        settings.chargeReadyByEnabled = false
+        let c = make()
+        c.willSleep()
+        let plan = try XCTUnwrap(c.wakePlan)
+        helperWritesItsPlan()
+        lines = []
+        let woke = plan.raiseAt.addingTimeInterval(1)
+        c.didWake(now: woke)
+        XCTAssertEqual(c.lastDecision?.reason, .heat)
+        XCTAssertEqual(client.state?.mclLimit, 54, "the limit was left raised on a hot pack")
+        XCTAssertTrue(lines.contains { $0.contains("as planned, but the battery is still paused for heat; holding again") },
+                      lines.joined(separator: "\n"))
+        XCTAssertNil(c.wakePlan, "awake and hot: the plan is cancelled")
+        c.willSleep(now: woke.addingTimeInterval(60))
+        XCTAssertEqual(c.wakePlan?.raiseAt, woke.addingTimeInterval(60 + ChargeController.heatCoolingTime))
+        XCTAssertEqual(schedules.count, 2)
+    }
+
+    /// A sleep shorter than the pause's own wait is not that wait: the pack reads cool, and the pause still runs its
+    /// five minutes awake, as it always did.
+    func testAShortSleepDoesNotCountAsThePausesWait() {
+        hotAtNight()
+        settings.chargeReadyByEnabled = false
+        let c = make()
+        c.willSleep()
+        battery?.temperature_C = 27
+        let woke = clockNow.addingTimeInterval(ChargePolicy.heatResumeAfter - 60)
+        c.didWake(now: woke)
+        XCTAssertEqual(c.lastDecision?.reason, .heat)
+        XCTAssertEqual(client.state?.mclLimit, 54)
+        c.tick(now: woke.addingTimeInterval(ChargePolicy.heatResumeAfter + 1))
+        XCTAssertEqual(c.lastDecision?.reason, .limit)
+        XCTAssertEqual(client.state?.mclLimit, 80)
+    }
+
+    /// Hold Level During Sleep asks for the level to be held through the sleep anyway: the pause holds nothing back,
+    /// so there is nothing to plan, and nothing is set aside.
+    func testAHotPackWithHoldLevelDuringSleepGetsNoPlanAndKeepsItsHold() {
+        hotAtNight()
+        settings.chargeReadyByEnabled = false
+        settings.chargeHoldDuringSleep = true
+        let c = make()
+        c.willSleep()
         XCTAssertNil(c.wakePlan)
         XCTAssertTrue(schedules.isEmpty)
+        XCTAssertEqual(client.state?.mclLimit, 54)
+        XCTAssertFalse(lines.contains { $0.contains("no wake could be arranged") }, lines.joined(separator: "\n"))
+    }
+
+    /// No helper that can wake the Mac: a pause would last until the Mac is next opened, so Pause When Hot is set
+    /// aside for this sleep, the battery charges as usual, and the pause is back at the wake if the pack is still hot.
+    func testWithNoHelperToWakeTheMacThePauseIsSetAsideForTheSleep() {
+        hotAtNight()
+        settings.chargeReadyByEnabled = false
+        helper.speaksReadyBy = false
+        let c = make()
+        XCTAssertEqual(c.lastDecision?.reason, .heat)
+        c.willSleep()
+        XCTAssertTrue(schedules.isEmpty, "a plan was sent to a helper that does not know it")
+        XCTAssertEqual(c.lastDecision?.reason, .limit)
+        XCTAssertEqual(client.state?.mclLimit, 80, "the pause was left in force for a sleep nothing ends")
+        XCTAssertTrue(lines.contains("the Mac sleeps with the battery charging as usual, to 80%, because no wake could be "
+                                     + "arranged for Pause When Hot; it is back when the Mac wakes"),
+                      lines.joined(separator: "\n"))
+        c.didWake(now: clockNow.addingTimeInterval(3600))
+        XCTAssertEqual(c.lastDecision?.reason, .heat, "the pause did not come back with the wake")
+        XCTAssertEqual(client.state?.mclLimit, 54)
+    }
+
+    /// The helper refuses the wake: the same.
+    func testARefusedWakeForAHotPackSetsThePauseAsideForTheSleep() {
+        hotAtNight()
+        settings.chargeReadyByEnabled = false
+        let c = make()
+        helper.answer = { cmd in
+            if case .scheduleChargeLimit = cmd { return FanReply(ok: false, message: ChargeRefusal.wakeNotScheduled) }
+            return FanReply(ok: true, message: "ok")
+        }
+        c.willSleep()
+        XCTAssertNil(c.wakePlan)
+        XCTAssertEqual(client.state?.mclLimit, 80)
+        XCTAssertTrue(lines.contains { $0.contains("because no wake could be arranged for Pause When Hot") },
+                      lines.joined(separator: "\n"))
+    }
+
+    /// Unplugged while asleep, or the limit changed: the plan goes.
+    func testAHeatPlanIsCancelledWhenTheLimitItResumesToChanges() throws {
+        hotAtNight()
+        settings.chargeReadyByEnabled = false
+        let c = make()
+        c.willSleep()
+        XCTAssertNotNil(c.wakePlan)
+        settings.chargeLimit = 90
+        c.tick()
+        XCTAssertNil(c.wakePlan, "a plan to raise to 80 outlived a limit of 90")
+        XCTAssertEqual(count(cancel), 1)
     }
 
     /// At or above the limit there is nothing to charge: no plan.
@@ -689,33 +825,33 @@ final class ReadyByControllerTests: XCTestCase {
         XCTAssertTrue(schedules.isEmpty)
     }
 
-    /// A moment outside its window (more than 12 hours off) gets none either, as without heat.
-    func testAHotPackWithTheMomentBeyondTheWindowGetsNoPlan() {
+    /// A moment outside its window (more than 12 hours off) is no Ready By moment: the plan is the one for a pause
+    /// alone, half an hour on.
+    func testAHotPackWithTheMomentBeyondTheWindowIsPlannedForHalfAnHourFromNow() throws {
         clockNow = Self.utc("2026-11-12T15:00:00Z")   // 16 hours before 07:00
         hotAtNight()
         let c = make()
         c.willSleep()
-        XCTAssertNil(c.wakePlan)
-        XCTAssertTrue(schedules.isEmpty)
+        let cooled = clockNow.addingTimeInterval(ChargeController.heatCoolingTime)
+        XCTAssertEqual(try XCTUnwrap(c.wakePlan),
+                       ChargeController.WakePlan(by: cooled, limit: 80, raiseAt: cooled, forHeatAlone: true))
     }
 
-    /// The pack cools while the Mac is awake before the moment: the plan was cancelled at the wake (it was made for sleep
-    /// only), Ready By decides again with nothing planned, and the next sleep sends the plan again.
-    func testAPlanForAHotPackIsSentAgainAtTheNextSleepWhenItIsStillWanted() throws {
+    /// The Mac wakes before the moment, after an hour asleep, and the pack reads cool: the sleep was the pause's wait,
+    /// so Ready By holds again at once. The plan made for the hot pack is for the same moment and the same limit, so it
+    /// stands, and the next sleep sends it again.
+    func testAPlanForAHotPackStandsWhenTheMacWakesCooledAndIsSentAgainAtTheNextSleep() throws {
         hotAtNight()
         let c = make()
         c.willSleep()
         XCTAssertEqual(schedules.count, 1)
         battery?.temperature_C = 25
         c.didWake(now: clockNow.addingTimeInterval(3600))
-        XCTAssertEqual(c.lastDecision?.reason, .heat, "heat resumes only after the pack has been cool for a while")
-        XCTAssertNil(c.wakePlan, "a plan made for a hot pack outlived the wake")
-        XCTAssertEqual(count(cancel), 1)
-        let later = clockNow.addingTimeInterval(3600 + ChargePolicy.heatResumeAfter + 1)
-        c.tick(now: later)
-        XCTAssertEqual(c.lastDecision?.reason, .readyBy)
-        XCTAssertNil(c.wakePlan)
-        XCTAssertEqual(count(cancel), 1, "nothing more to cancel")
+        XCTAssertEqual(c.lastDecision?.reason, .readyBy, "an hour asleep and cool is the pause's wait")
+        XCTAssertEqual(c.wakePlan?.by, by)
+        XCTAssertEqual(count(cancel), 0, "the plan is the one Ready By wants")
+        XCTAssertEqual(client.state?.mclLimit, 54)
+        let later = clockNow.addingTimeInterval(3700)
         c.willSleep(now: later)
         XCTAssertEqual(schedules.count, 2, "the plan was not sent again before the next sleep")
         XCTAssertEqual(c.wakePlan?.by, by)
@@ -1396,6 +1532,27 @@ final class SleepWithoutAPlanTextTests: XCTestCase {
         let said = text(.heat, limit: 61, inForce: 61)
         XCTAssertTrue(said.contains("paused for heat at 61%"), said)
         XCTAssertTrue(said.contains("stays paused until the Mac wakes"), said)
+    }
+
+    /// What was set aside is named: Ready By, Pause When Hot, or both.
+    func testTheSentenceNamesWhatWasSetAside() {
+        func said(_ reason: ChargeReason, _ what: String) -> String {
+            ChargeController.sleepWithoutAPlanText(wanted: ChargeDecision(osLimit: 80, dischargeTo: nil, reason: reason),
+                                                   inForce: 80, for: what)
+        }
+        XCTAssertEqual(said(.limit, "Pause When Hot"),
+                       "the Mac sleeps with the battery charging as usual, to 80%, because no wake could be arranged for "
+                       + "Pause When Hot; it is back when the Mac wakes")
+        XCTAssertEqual(said(.limit, "Ready By and Pause When Hot"),
+                       "the Mac sleeps with the battery charging as usual, to 80%, because no wake could be arranged for "
+                       + "Ready By and Pause When Hot; they are back when the Mac wakes")
+        XCTAssertEqual(said(.drift, "Ready By and Pause When Hot"),
+                       "the Mac sleeps with the battery drifting below the limit, held at 80% by Drift Below the Limit, "
+                       + "because no wake could be arranged for Ready By and Pause When Hot; Ready By and Pause When Hot "
+                       + "are back when the Mac wakes")
+        XCTAssertEqual(said(.drift, "Pause When Hot"),
+                       "the Mac sleeps with the battery drifting below the limit, held at 80% by Drift Below the Limit, "
+                       + "because no wake could be arranged for Pause When Hot; Pause When Hot is back when the Mac wakes")
     }
 
     /// No decision at all: unchanged.

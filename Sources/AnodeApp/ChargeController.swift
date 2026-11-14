@@ -622,6 +622,9 @@ inForce >= noLimit
         var limit: Int
         /// When to raise it, and so when to wake the Mac.
         var raiseAt: Date
+        /// Made for a pack paused for heat with no Ready By moment behind it (`heatPausePlan`): `by` is then the same
+        /// moment as `raiseAt`, and the plan stands for as long as the pause and the limit it resumes to do.
+        var forHeatAlone = false
     }
     /// The plan the helper holds for this controller, if it has said yes to one and nothing has cancelled it since.
     private(set) var wakePlan: WakePlan?
@@ -635,6 +638,12 @@ inForce >= noLimit
     /// For the sleep that is starting: the helper did not take the plan, so Ready By is not holding (`sendThePlan`). Ends
     /// with the wake, or when Charge Control stops.
     private var readyBySetAside = false
+    /// For the sleep that is starting: the pack is paused for heat and nothing will wake the Mac to resume once it has
+    /// cooled (no helper that can, or it did not take the plan), so Pause When Hot is not pausing (`sendThePlan`): a
+    /// pause nobody ends would last until the Mac is next opened. Ends with the wake, or when Charge Control stops.
+    private var heatSetAside = false
+    /// When the Mac last went to sleep, for the cooling of a pack that was paused for heat then (`didWake`).
+    private var sleptAt: Date?
     /// A plan is on its way to the helper, waited for.
     private var planSending = false
     /// When the one-shot timer for the start moment fires, while awake; nil when none is set.
@@ -1254,6 +1263,8 @@ inForce >= noLimit
         cancelledPlan = nil
         plannedWriteSeen = nil
         readyBySetAside = false
+        heatSetAside = false
+        sleptAt = nil
         planSending = false
         readyByTimer?.invalidate()
         readyByTimer = nil
@@ -1978,6 +1989,7 @@ inForce >= noLimit
         guard running else { return }
         let deadline = Date().addingTimeInterval(Self.stopTimeout)
         sleeping = true
+        sleptAt = now ?? clock()
         stopAndWait(for: "sleep", deadline: deadline)
         if isDrainRequested {
             isDrainRequested = false
@@ -2009,13 +2021,19 @@ inForce >= noLimit
     /// harmless, since it only raises to the person's own limit at its moment, and it dies with the connection, which is
     /// let go.
     func sendThePlan(deadline: Date, now: Date?) {
-        guard sessionActive, helper.speaksReadyBy else { return }
-        let target: (by: Date, limit: Int, raiseAt: Date)
+        guard sessionActive else { return }
+        let target: (by: Date, limit: Int, raiseAt: Date, forHeatAlone: Bool)
         if lastDecision?.reason == .readyBy, let hold = lastDecision?.readyBy, let at = hold.raiseAt {
-            target = (hold.by, hold.raiseTo, at)
+            target = (hold.by, hold.raiseTo, at, false)
         } else if let paused = heatPausePlan(now: now ?? clock()) {
             target = paused
         } else {
+            return
+        }
+        // A pack paused for heat, and no helper that can wake the Mac (a Ready By hold is never decided without
+        // one): the pause is set aside for this sleep.
+        guard helper.speaksReadyBy else {
+            if lastDecision?.reason == .heat { sleepWithoutAWake(deadline: deadline, now: now) }
             return
         }
         planSending = true
@@ -2024,23 +2042,37 @@ inForce >= noLimit
                                    timeout: Self.timeLeft(deadline))
         planSending = false
         if r?.ok == true {
-            wakePlan = WakePlan(by: target.by, limit: target.limit, raiseAt: target.raiseAt)
+            wakePlan = WakePlan(by: target.by, limit: target.limit, raiseAt: target.raiseAt,
+                                forHeatAlone: target.forHeatAlone)
             cancelledPlan = nil
-            log("the helper will wake the Mac and raise the limit to \(target.limit)% at \(Self.logTime(target.raiseAt))")
+            log("the helper will wake the Mac and raise the limit to \(target.limit)% at \(Self.logTime(target.raiseAt))"
+                + (target.forHeatAlone ? ", when the battery has had time to cool" : ""))
             settle()
             return
         }
         wakePlan = nil
         log("the helper did not take the plan to raise the limit to \(target.limit)% at "
             + "\(Self.logTime(target.raiseAt)): \(r?.message ?? "no answer in time")")
-        // The link is let go first (nothing is pending), then the limit is decided again without Ready By.
+        sleepWithoutAWake(deadline: deadline, now: now)
+    }
+
+    /// The Mac is about to sleep and nothing will wake it for the hold that is in force. What cannot end without a
+    /// wake is set aside for this sleep: Ready By, and a pause for heat (asleep, nothing reads the pack's temperature,
+    /// so a pause would last until the Mac is next opened, however soon the pack cooled). The decision is made again
+    /// without them, put in force inside the sleep's own budget, and the log says what the Mac sleeps with.
+    private func sleepWithoutAWake(deadline: Date, now: Date?) {
+        let pausedForHeat = lastDecision?.reason == .heat
+        let hadReadyBy = settings.chargeReadyByEnabled && helper.speaksReadyBy && !readyBySetAside
+        // The link is let go first (nothing is pending), then the limit is decided again.
         readyBySetAside = true
+        if pausedForHeat { heatSetAside = true }
         settle()
         waitUntil = deadline
         tick(now: now)
         waitUntil = nil
         standInForTheLimitThatCouldNotBeConfirmed()
-        log(Self.sleepWithoutAPlanText(wanted: lastDecision, inForce: limitInForceNow()))
+        let what = pausedForHeat ? (hadReadyBy ? "Ready By and Pause When Hot" : "Pause When Hot") : "Ready By"
+        log(Self.sleepWithoutAPlanText(wanted: lastDecision, inForce: limitInForceNow(), for: what))
         settle()
     }
 
@@ -2066,9 +2098,12 @@ inForce >= noLimit
     /// was paused for heat stays paused and held at its level until the Mac wakes. Drift Below the Limit, a drain that
     /// is finished or stopped, Charge to Full and Hold Level During Sleep each hold or ask for something else, and each
     /// is said in its own words, built from the decision's reason and the limit read back as in force.
-    static func sleepWithoutAPlanText(wanted d: ChargeDecision?, inForce: Int?) -> String {
-        let why = "because no wake could be arranged for Ready By"
-        guard let d else { return "the Mac sleeps \(why); Ready By is back when the Mac wakes" }
+    ///
+    /// `what` names what was set aside for the sleep: Ready By, Pause When Hot, or both.
+    static func sleepWithoutAPlanText(wanted d: ChargeDecision?, inForce: Int?, for what: String = "Ready By") -> String {
+        let why = "because no wake could be arranged for \(what)"
+        let isBack = "\(what) \(what.contains(" and ") ? "are" : "is") back when the Mac wakes"
+        guard let d else { return "the Mac sleeps \(why); \(isBack)" }
         let want = d.osLimit
         let back = "the limit is asserted again when the Mac wakes"
         // What was asked for, in the words of the decision that asked for it, where it could not be confirmed.
@@ -2084,26 +2119,27 @@ inForce >= noLimit
         case want?:
             switch d.reason {
             case .limit:
-                return "the Mac sleeps with the battery charging as usual, to \(want)%, \(why); it is back when the Mac wakes"
+                return "the Mac sleeps with the battery charging as usual, to \(want)%, \(why); "
+                    + (what.contains(" and ") ? "they are" : "it is") + " back when the Mac wakes"
             case .heat:
                 return "the Mac sleeps with the battery paused for heat at \(want)% by Pause When Hot, \(why); it stays "
                     + "paused until the Mac wakes"
             case .sleeping:
-                return "the Mac sleeps with the battery held at \(want)% by Hold Level During Sleep, \(why); Ready By is "
-                    + "back when the Mac wakes"
+                return "the Mac sleeps with the battery held at \(want)% by Hold Level During Sleep, \(why); "
+                    + isBack
             case .drift:
                 return "the Mac sleeps with the battery drifting below the limit, held at \(want)% by Drift Below the "
-                    + "Limit, \(why); Ready By is back when the Mac wakes"
+                    + "Limit, \(why); " + isBack
             case .draining:
                 return "the Mac sleeps with the limit of \(want)% in force and the drain stopped for the sleep, \(why); "
                     + "Drain Automatically Above the Limit starts it again when the Mac wakes, if the battery is still "
                     + "above the limit"
             case .drained:
                 return "the Mac sleeps with the drain down to the limit finished and the limit of \(want)% in force, "
-                    + "\(why); Ready By is back when the Mac wakes"
+                    + "\(why); " + isBack
             case .fullCharge:
-                return "the Mac sleeps with the battery charging to \(want)% for Charge to Full, \(why); Ready By is "
-                    + "back when the Mac wakes"
+                return "the Mac sleeps with the battery charging to \(want)% for Charge to Full, \(why); "
+                    + isBack
             case .readyBy:
                 return "the Mac sleeps with the battery still held at \(want)% by Ready By, although no wake could be "
                     + "arranged for it; \(back)"
@@ -2129,20 +2165,30 @@ inForce >= noLimit
     /// inside its window, the plan is the person's limit at the later of the start moment and `heatCoolingTime` from now,
     /// so the pack has cooled asleep. If Ready By had already started charging (the start moment has passed) it is
     /// half an hour from now. Awake, heat still outranks Ready By, as it did.
-    private func heatPausePlan(now: Date) -> (by: Date, limit: Int, raiseAt: Date)? {
-        guard lastDecision?.reason == .heat, settings.chargeReadyByEnabled, let b = battery(),
+    ///
+    /// The same goes for a pause with no Ready By moment behind it: asleep nothing reads the pack's temperature, so the
+    /// pause would hold the battery where it is until the Mac is next opened, all night after a lid closed on a warm
+    /// Mac. The plan is then whatever would be decided for this sleep if the pack were cool (`decisionIfCool`), at
+    /// `heatCoolingTime` from now, when that is a limit above the pause's own: the person's limit, or the level Drift
+    /// Below the Limit rests at. With Hold Level During Sleep on, that decision is the same hold, and there is no plan.
+    private func heatPausePlan(now: Date) -> (by: Date, limit: Int, raiseAt: Date, forHeatAlone: Bool)? {
+        guard let paused = lastDecision, paused.reason == .heat, let b = battery(),
               b.onAC || b.adapterPresent else { return nil }
-        let limit = settings.chargeLimit
-        guard b.percent < limit,
-              let by = Self.nextReadyBy(after: now, minutes: settings.chargeReadyByMinutes, calendar: calendar()),
-              by.timeIntervalSince(now) <= ChargePolicy.readyByWindow else { return nil }
         let cooled = now.addingTimeInterval(Self.heatCoolingTime)
-        if memory.readyBy?.started == true { return (by, limit, cooled) }
-        let level = min(limit, max(b.percent, min(ChargePolicy.readyByFloor, limit)))
-        let lead = ChargePolicy.minutesToCharge(from: level, to: limit,
-                                                rate: loadedRates().rate(forAdapterWatts: b.adapterWatts)) * 60
-            + ChargePolicy.readyByMargin
-        return (by, limit, max(by.addingTimeInterval(-lead), cooled))
+        let limit = settings.chargeLimit
+        if settings.chargeReadyByEnabled, helper.speaksReadyBy, b.percent < limit,
+           let by = Self.nextReadyBy(after: now, minutes: settings.chargeReadyByMinutes, calendar: calendar()),
+           by.timeIntervalSince(now) <= ChargePolicy.readyByWindow {
+            if memory.readyBy?.started == true { return (by, limit, cooled, false) }
+            let level = min(limit, max(b.percent, min(ChargePolicy.readyByFloor, limit)))
+            let lead = ChargePolicy.minutesToCharge(from: level, to: limit,
+                                                    rate: loadedRates().rate(forAdapterWatts: b.adapterWatts)) * 60
+                + ChargePolicy.readyByMargin
+            return (by, limit, max(by.addingTimeInterval(-lead), cooled), false)
+        }
+        let cool = decisionIfCool(b, now: now)
+        guard cool.dischargeTo == nil, cool.osLimit > paused.osLimit else { return nil }
+        return (cooled, cool.osLimit, cooled, true)
     }
 
     /// The helper was told to forget the plan to raise the limit: a hold that has ended for a reason of its own (the
@@ -2182,6 +2228,19 @@ inForce >= noLimit
         // it is still wanted (`sendThePlan`).
         if lastDecision?.reason == .heat, !sleeping {
             cancelPlan(because: "the Mac is awake and the battery is paused for heat", waitingUntil: waitUntil)
+            return
+        }
+        // One made with no Ready By moment behind it stands while the pack is paused and the limit it resumes to is the
+        // same; its moment is not compared, because it is "half an hour after the sleep began", not a time of day.
+        if plan.forHeatAlone {
+            if sessionActive, helper.speaksReadyBy, let paused = lastDecision, paused.reason == .heat, let b = battery(),
+               b.onAC || b.adapterPresent {
+                let cool = decisionIfCool(b, now: lastTickNow)
+                if cool.dischargeTo == nil, cool.osLimit == plan.limit, cool.osLimit > paused.osLimit { return }
+            }
+            let why = lastDecision?.reason == .heat ? "the limit to resume to changed"
+                : (isCablePresent ? "the battery is no longer paused for heat" : "the charger is unplugged")
+            cancelPlan(because: why, waitingUntil: waitUntil)
             return
         }
         // A plan made for a pack paused for heat (`heatPausePlan`) stands while the pack is, for the same moment and limit.
@@ -2233,6 +2292,8 @@ inForce >= noLimit
         let t = now ?? clock()
         sleeping = false
         readyBySetAside = false
+        heatSetAside = false
+        countTheSleepAsCooling(wokeAt: t)
         // The person may have changed macOS's settings while the Mac slept. The helper may have raised the limit by itself
         // at the plan's moment: that is its plan working, not a change someone else made, and the decision below says
         // whether it is wanted (`checkDrift`, `tickOnce`).
@@ -2242,6 +2303,19 @@ inForce >= noLimit
         appliedLimit = nil
         refusedLimit = nil
         tick(now: t)
+    }
+
+    /// A pack that was paused for heat when the Mac went to sleep, and reads cool now, has been cooling for the whole
+    /// sleep: nothing charged it and the Mac was off. Awake, the pause ends only after the pack has read cool for
+    /// `ChargePolicy.heatResumeAfter`, and that wait would start at the wake, so the hold would go straight back over
+    /// a limit the helper has just raised (and the Mac, woken only for that, would sleep again still held). A sleep
+    /// at least that long counts as the wait. A pack still hot, or a reading that fails, changes nothing.
+    private func countTheSleepAsCooling(wokeAt t: Date) {
+        defer { sleptAt = nil }
+        guard let slept = sleptAt, memory.heatPausedSince != nil,
+              t.timeIntervalSince(slept) >= ChargePolicy.heatResumeAfter,
+              let c = battery()?.temperature_C, c.isFinite, c < settings.chargeMaxTemperatureC else { return }
+        if memory.coolSince.map({ $0 > slept }) ?? true { memory.coolSince = slept }
     }
 
     /// A discharge this controller holds (or may hold) is stopped and the answer waited for: what comes next has
@@ -2350,18 +2424,10 @@ inForce >= noLimit
             announce = true
         }
         learnChargeRate(from: b, at: now)
-        let snapshot = settings.chargeSettingsSnapshot()
-        // Ready By needs a helper that can wake the Mac: without one (or with one too old to know how) it is not in
-        // force and the battery charges to the limit as usual. Holding without it would only stop at the nearest limit
-        // macOS takes, which may be below the person's own.
-        let readyBy = snapshot.readyByEnabled && helper.speaksReadyBy && !readyBySetAside
-            ? Self.nextReadyBy(after: now, minutes: snapshot.readyByMinutes, calendar: calendar()) : nil
-        let inputs = ChargeInputs(percent: b.percent, onAC: onAC,
-                                  temperatureC: b.temperature_C.flatMap { $0.isFinite ? $0 : nil },
-                                  sleeping: sleeping, fullCharge: isFullChargeRequested,
-                                  manualDrain: isDrainRequested, now: now,
-                                  readyBy: readyBy, chargeRate: loadedRates().rate(forAdapterWatts: b.adapterWatts))
-        let decision = ChargePolicy.decide(snapshot, inputs, &memory)
+        var snapshot = settings.chargeSettingsSnapshot()
+        // Set aside for a sleep nothing will wake the Mac from (`sleepWithoutAWake`).
+        if heatSetAside { snapshot.pauseWhenHotEnabled = false }
+        let decision = ChargePolicy.decide(snapshot, policyInputs(b, snapshot, now: now), &memory)
         if decision.endFullCharge && isFullChargeRequested { isFullChargeRequested = false; announce = true }
         if decision.endManualDrain && isDrainRequested {
             isDrainRequested = false
@@ -2390,6 +2456,29 @@ inForce >= noLimit
         settle()
         noteHelperNeed(now: now)
         if announce { changed() }
+    }
+
+    /// What the policy is told about this moment, from one reading of the battery.
+    private func policyInputs(_ b: Battery.State, _ snapshot: ChargeSettingsSnapshot, now: Date) -> ChargeInputs {
+        // Ready By needs a helper that can wake the Mac: without one (or with one too old to know how) it is not in
+        // force and the battery charges to the limit as usual. Holding without it would only stop at the nearest limit
+        // macOS takes, which may be below the person's own.
+        let readyBy = snapshot.readyByEnabled && helper.speaksReadyBy && !readyBySetAside
+            ? Self.nextReadyBy(after: now, minutes: snapshot.readyByMinutes, calendar: calendar()) : nil
+        return ChargeInputs(percent: b.percent, onAC: b.onAC || b.adapterPresent,
+                            temperatureC: b.temperature_C.flatMap { $0.isFinite ? $0 : nil },
+                            sleeping: sleeping, fullCharge: isFullChargeRequested,
+                            manualDrain: isDrainRequested, now: now,
+                            readyBy: readyBy, chargeRate: loadedRates().rate(forAdapterWatts: b.adapterWatts))
+    }
+
+    /// What would be decided at this moment if Pause When Hot were not pausing: where the battery goes once the pack
+    /// has cooled. Nothing is remembered from it (the memory it works on is a copy).
+    private func decisionIfCool(_ b: Battery.State, now: Date) -> ChargeDecision {
+        var snapshot = settings.chargeSettingsSnapshot()
+        snapshot.pauseWhenHotEnabled = false
+        var copy = memory
+        return ChargePolicy.decide(snapshot, policyInputs(b, snapshot, now: now), &copy)
     }
 
     private func loadedRates() -> ChargeRate {

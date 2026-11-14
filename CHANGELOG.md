@@ -7,6 +7,11 @@ feature or a visible change in how something works, the first only for a rewrite
 Nothing was bumped between 1.0.0 and 1.15.0. Those versions were assigned afterwards from the history and exist as
 git tags (`git show v1.7.0`); builds made before 1.15.0 still say 1.0.0 in their About box.
 
+## 1.18.3 — 2026-11-13
+- Pause When Hot: closing the lid on a warm Mac used to leave charging paused until the Mac was next opened, because nothing reads the battery's temperature while it sleeps. With the Anode helper installed, the Mac is now woken half an hour later, and charging resumes to your limit if the battery has cooled; if it is still hot it is paused again and tried again half an hour after that.
+- Without the helper nothing can wake the Mac, so the pause is set aside while the Mac sleeps and the battery charges as usual; the pause is back as soon as the Mac wakes.
+- A battery that was hot when the Mac went to sleep and is cool when it wakes is no longer paused for another five minutes after the wake.
+
 ## 1.18.2 — 2026-11-13
 - Charge Control: on a Mac where Anode cannot use the folder every account shares (/Users/Shared/Anode), it used to keep a private record of macOS's charging settings instead. With two accounts using Charge Control that could leave one account's limit in force after both had quit Anode. It now holds no limit on such a Mac and says why in its section; turning Charge Control off and on tries the folder again.
 - A limit left by an earlier version on such a Mac is still put back the next time Anode opens, and a record that is lost while a limit is held no longer leaves the limit in force after a quit.
