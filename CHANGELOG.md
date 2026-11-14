@@ -7,6 +7,9 @@ feature or a visible change in how something works, the first only for a rewrite
 Nothing was bumped between 1.0.0 and 1.15.0. Those versions were assigned afterwards from the history and exist as
 git tags (`git show v1.7.0`); builds made before 1.15.0 still say 1.0.0 in their About box.
 
+## 1.18.7 — 2026-11-13
+- The closing lines of an install or update said "fan control" where they meant the Anode helper. They now name the helper, say what uses it (fans, Charge Control and Low Power Mode), and say that Anode offers to install it the first time it opens; the commands for running it by hand and for undoing it are still there.
+
 ## 1.18.6 — 2026-11-13
 - Running Anode's tests (./test.sh) no longer leaves files behind: test settings are kept in memory, where each run used to leave hundreds of empty com.anode.tests files in ~/Library/Preferences.
 - A test run no longer writes into Anode's own folder in Application Support (a line had appeared in the real Keep Awake log, and the folder was made again on a Mac where Anode was uninstalled): in a test run Anode's files go to a temporary folder that is removed when the run ends.

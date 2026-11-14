@@ -17,7 +17,7 @@ ICON="Resources/AppIcon.icon"
 # report can quote what About says and the answer maps to an exact commit —
 # which matters more than usual here, because there is no update mechanism and
 # an installed build may be weeks old.
-VERSION="1.18.6"
+VERSION="1.18.7"
 BUILD="$(git rev-list --count HEAD 2>/dev/null || echo 1)"
 COMMIT="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
 # Absolute, and resolved through any symlink, because it is written into a
@@ -28,7 +28,8 @@ if ! git diff --quiet HEAD 2>/dev/null; then DIRTY="+"; fi
 
 echo "› building ($CONFIG)…"
 # The Anode helper ships beside the app but is NEVER started by it: it runs as root
-# and the user starts it themselves with sudo when they want fan control. It is
+# and the user starts it themselves with sudo when they want what it does (the
+# fans, Charge Control, Low Power Mode), or lets the app install it. It is
 # in the bundle so there is one obvious path to type, and so it and the app it
 # will only ever talk to are rebuilt together — the helper pins the app's cdhash
 # at startup, and an app rebuilt without its helper would simply be refused.
@@ -297,7 +298,8 @@ echo "› installed: $INSTALL_DIR/Anode.app"
 # build will refuse the new one until it is restarted. Nothing is installed and
 # nothing runs as root unless the user runs this line themselves.
 echo "›"
-echo "› fan control (optional, nothing is installed):"
+echo "› the Anode helper (optional; fans, Charge Control and Low Power Mode use it):"
+echo "›   Anode offers to install it the first time it opens. To run it by hand instead, with nothing installed:"
 echo "›   sudo '$INSTALL_DIR/Anode.app/Contents/MacOS/AnodeHelper'"
 echo "› to undo everything this project has ever done as root:"
 echo "›   sudo '$INSTALL_DIR/Anode.app/Contents/MacOS/AnodeHelper' --uninstall"
