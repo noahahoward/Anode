@@ -47,6 +47,20 @@ public enum AutoUpdate {
         !ProtectedPath.isGated(path + "/") || path == confirmedPath
     }
 
+    /// Should the checkout be read once more, now that a window is up, so that the unasked check can run again?
+    ///
+    /// The setting is on and the checkout is behind a consent prompt, but the path git was last seen to read is not
+    /// this one: the checkout was moved or renamed, or the settings came over from an earlier name of the app. The
+    /// unasked check is then skipped at every launch, with the setting still saying on and nothing saying why:
+    /// automatic updates had stopped for good, and only pressing Check for Updates by hand, or switching the setting
+    /// off and on, brought them back. Reading the checkout with the window up is the same thing those do, at the
+    /// one moment a consent prompt has something to attach to; if it works the path is recorded and the next launch
+    /// checks by itself.
+    public static func shouldConfirmAgain(enabled: Bool, path: String?, confirmedPath: String?) -> Bool {
+        guard enabled, let path else { return false }
+        return !mayCheckUnasked(path: path, confirmedPath: confirmedPath)
+    }
+
     /// Did reading the checkout work? A denied consent prompt makes git fail,
     /// which `SourceCheckout` reports as not a repository.
     public static func confirmsAccess(_ state: SourceCheckout.State) -> Bool {

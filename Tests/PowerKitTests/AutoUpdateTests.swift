@@ -71,6 +71,47 @@ final class AutoUpdateTests: XCTestCase {
                                                   confirmedPath: nil))
     }
 
+    /// The bug: a checkout under Downloads was renamed. The path that had been confirmed was the old one, so the
+    /// unasked check was skipped at every launch, the setting still said on, and nothing said why: automatic
+    /// updates had stopped. With the window up the checkout is read once more, and the path it then records is the
+    /// new one.
+    func testACheckoutThatMovedIsConfirmedAgain() {
+        let now = NSHomeDirectory() + "/Downloads/Programs/Projects/Anode"
+        let before = NSHomeDirectory() + "/Downloads/Programs/Projects/the old name"
+        XCTAssertFalse(AutoUpdate.mayCheckUnasked(path: now, confirmedPath: before), "the fixture is not the bug")
+        XCTAssertTrue(AutoUpdate.shouldConfirmAgain(enabled: true, path: now, confirmedPath: before))
+        XCTAssertTrue(AutoUpdate.shouldConfirmAgain(enabled: true, path: now, confirmedPath: nil),
+                      "settings that never recorded a path at all are the same case")
+        // Once it has been read, it is not read again.
+        XCTAssertFalse(AutoUpdate.shouldConfirmAgain(enabled: true, path: now, confirmedPath: now))
+    }
+
+    /// Not with the setting off (nobody asked for the checkout to be read), not without a checkout, and not for one
+    /// that needs no consent (it was never skipped).
+    func testNothingIsConfirmedAgainThatDoesNotNeedIt() {
+        let gated = NSHomeDirectory() + "/Downloads/Anode"
+        XCTAssertFalse(AutoUpdate.shouldConfirmAgain(enabled: false, path: gated, confirmedPath: "/elsewhere"))
+        XCTAssertFalse(AutoUpdate.shouldConfirmAgain(enabled: true, path: nil, confirmedPath: "/elsewhere"))
+        XCTAssertFalse(AutoUpdate.shouldConfirmAgain(enabled: true, path: NSHomeDirectory() + "/.anode/source",
+                                                     confirmedPath: "/elsewhere"))
+    }
+
+    /// The app does it where the unasked check is skipped, once a launch, after the window has had a moment to come
+    /// up (a consent prompt needs it), and through the same read that switching the setting on makes.
+    func testTheAppConfirmsAgainWhenItSkipsTheCheck() throws {
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let text = try String(contentsOf: root.appendingPathComponent("Sources/AnodeApp/AutoUpdater.swift"), encoding: .utf8)
+        let skipped = try XCTUnwrap(text.range(of: "        else {\n            confirmAgainIfTheCheckoutMoved()\n            return open()\n        }"))
+        XCTAssertNotNil(skipped)
+        let body = try XCTUnwrap(text.range(of: "private func confirmAgainIfTheCheckoutMoved() {"))
+        let rest = String(text[body.upperBound...].prefix(600))
+        XCTAssertTrue(rest.contains("guard !confirmedAgain"), "it would read the checkout at every opening of the window")
+        XCTAssertTrue(rest.contains("AutoUpdate.shouldConfirmAgain(enabled: settings.autoUpdateEnabled, path: checkoutPath,"))
+        XCTAssertTrue(rest.contains("DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in self?.confirmAccess() }"),
+                      "the read must wait for the window: a consent prompt attaches to it")
+    }
+
     /// A denied prompt makes git fail, and that must not count as permission.
     func testOnlyAReadableCheckoutConfirmsAccess() {
         XCTAssertFalse(AutoUpdate.confirmsAccess(.missing))

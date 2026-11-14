@@ -7,6 +7,9 @@ feature or a visible change in how something works, the first only for a rewrite
 Nothing was bumped between 1.0.0 and 1.15.0. Those versions were assigned afterwards from the history and exist as
 git tags (`git show v1.7.0`); builds made before 1.15.0 still say 1.0.0 in their About box.
 
+## 1.18.10 — 2026-11-13
+- Automatic updates: if the folder Anode was built from sits in Downloads, Desktop or Documents and was moved or renamed, the check Anode makes when it opens was skipped from then on, with the setting still showing on and nothing saying why. Anode now reads the folder again the first time its window opens (macOS may ask for permission then), and from the next launch the check runs by itself again.
+
 ## 1.18.9 — 2026-11-13
 - Ultra Low Power Mode: the confirm box now says which apps will be left running because a part of them cannot be frozen ("Leaves Backup and VPN running: each has a part Anode cannot freeze."). Before, such an app was in neither the kept nor the frozen list, and its still running after Confirm looked like a mistake.
 

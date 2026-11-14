@@ -45,7 +45,10 @@ final class AutoUpdater {
         guard !checked, settings.autoUpdateEnabled, let path = checkoutPath,
               AutoUpdate.mayCheckUnasked(path: path,
                                          confirmedPath: settings.autoUpdateConfirmedPath)
-        else { return open() }
+        else {
+            confirmAgainIfTheCheckoutMoved()
+            return open()
+        }
         // A second click while the first is still waiting: that one will open.
         guard !checking else { return }
         checking = true
@@ -80,6 +83,19 @@ final class AutoUpdater {
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + AutoUpdate.checkTimeout) { settle(nil) }
     }
+
+    /// Once a launch, when the setting is on and the unasked check was skipped because the checkout is not the one
+    /// git was last seen to read (`AutoUpdate.shouldConfirmAgain`): read it now. The window is on its way up, and a
+    /// moment is left for it, so a consent prompt has it to attach to. A read that works records this path
+    /// (`noteAsked`), and the next launch checks by itself again.
+    private func confirmAgainIfTheCheckoutMoved() {
+        guard !confirmedAgain, panel == nil,
+              AutoUpdate.shouldConfirmAgain(enabled: settings.autoUpdateEnabled, path: checkoutPath,
+                                            confirmedPath: settings.autoUpdateConfirmedPath) else { return }
+        confirmedAgain = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in self?.confirmAccess() }
+    }
+    private var confirmedAgain = false
 
     /// Record that git could read the checkout while a window was up, so later
     /// checks may run with none. Called with the answer to any check the user
