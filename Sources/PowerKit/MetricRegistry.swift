@@ -240,6 +240,25 @@ public struct MetricValue {
         self.isEstimate = isEstimate
     }
 
+    /// The caption over the pair of watts a Mac on its charger shows ("12/0.5W"): which number is which. The pair had
+    /// the caption "Power", which named neither, and "12/0.5W" during a drain to the limit was read as the battery
+    /// being charged. The caption has the pair's own shape, so each word sits over its number.
+    public static let usedAndSuppliedLabel = "Used/Charger"
+    /// The caption over "AC", shown when the charger's power could not be read.
+    public static let onACLabel = "Power"
+
+    /// What a battery widget shows on the charger when it has no rate or time to show: the watts the Mac is using
+    /// and the watts the charger is supplying, captioned so, or "AC" when the charger's power was not read.
+    public static func onAC(_ state: Battery.State?, value: Double) -> MetricValue {
+        if let pair = state?.acPowerText {
+            return MetricValue(value: value, text: pair, isEstimate: false, label: usedAndSuppliedLabel)
+        }
+        return MetricValue(value: value, text: "AC", isEstimate: false, label: onACLabel)
+    }
+
+    /// Whether this is one of the two readings above: the Mac's own words for being on the charger, not a rate.
+    public var isOnACReading: Bool { label == Self.usedAndSuppliedLabel || label == Self.onACLabel }
+
     /// Convenience: format `text` from the unit so value and text cannot disagree.
     public init(_ value: Double, unit: MetricUnit, isEstimate: Bool, label: String? = nil) {
         self.init(value: value, text: unit.format(value), isEstimate: isEstimate, label: label)
@@ -609,8 +628,7 @@ public final class MetricRegistry {
                                    label: "Drain")
             }
             if s.direction == .acIdle {
-                return MetricValue(value: 0, text: s.state?.acPowerText ?? "AC",
-                                   isEstimate: false, label: "Power")
+                return .onAC(s.state, value: 0)
             }
             // The SHARED figure when one has been published — the same number the
             // window shows — falling back to instantaneous power only before the
@@ -669,8 +687,7 @@ public final class MetricRegistry {
             // would plot as "no time remaining" — alarming, and false. 0 %/hr on AC
             // is TRUE and belongs in a graph; 0 minutes left is not.
             if let st = s.state, st.onAC {
-                return MetricValue(value: .nan, text: st.acPowerText ?? "AC",
-                                   isEstimate: false, label: "Power")
+                return .onAC(st, value: .nan)
             }
             // Shared first, so the widget and the card cannot disagree about how
             // long the battery has left.

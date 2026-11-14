@@ -41,6 +41,13 @@ final class GameHUDTextTests: XCTestCase {
         XCTAssertTrue(text.hasSuffix("BAT 84% AC"), text)
     }
 
+    /// The used/supplied watts are the machine's own text too: no minus is put before them.
+    func testTheWattsOnTheChargerAreShownAsTheyAre() {
+        let text = line([.batteryPercent: value("84%"),
+                         .batteryDrain: value("12/0.5W", label: MetricValue.usedAndSuppliedLabel)])
+        XCTAssertTrue(text.hasSuffix("BAT 84% 12/0.5W"), text)
+    }
+
     func testDrainWithoutBatteryPercentStillShows() {
         let text = line([.batteryDrain: value("31 %/hr")])
         XCTAssertTrue(text.hasSuffix("BAT \u{2014} \u{2212}31 %/hr"), text)

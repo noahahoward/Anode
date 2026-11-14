@@ -7,6 +7,9 @@ feature or a visible change in how something works, the first only for a rewrite
 Nothing was bumped between 1.0.0 and 1.15.0. Those versions were assigned afterwards from the history and exist as
 git tags (`git show v1.7.0`); builds made before 1.15.0 still say 1.0.0 in their About box.
 
+## 1.18.8 — 2026-11-13
+- Menu bar: the pair of watts shown on the charger (for example 12/0.5W) is now captioned "Used/Charger": the first number is what the Mac is using and the second is what the charger is supplying. The caption used to be "Power", which named neither, and during a drain to the limit the pair was easy to read as the battery being charged.
+
 ## 1.18.7 — 2026-11-13
 - The closing lines of an install or update said "fan control" where they meant the Anode helper. They now name the helper, say what uses it (fans, Charge Control and Low Power Mode), and say that Anode offers to install it the first time it opens; the commands for running it by hand and for undoing it are still there.
 

@@ -57,10 +57,10 @@ public enum GameHUDText {
     }
 
     /// The registry's drain reading is the size of the rate. A discharge is shown with a minus; a charge already carries its
-    /// plus, and "AC" (label "Power") is the machine's own words for a Mac with nothing to report.
+    /// plus, and "AC" or the used/supplied watts are the machine's own words for a Mac on its charger (`isOnACReading`).
     private static func drain(_ v: MetricValue?) -> String {
         guard let v else { return dash }
-        if v.text.hasPrefix("+") || v.label == "Power" { return v.text }
+        if v.text.hasPrefix("+") || v.isOnACReading { return v.text }
         return minus + v.text
     }
 }

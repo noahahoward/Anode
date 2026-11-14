@@ -31,4 +31,35 @@ final class ACPowerTextTests: XCTestCase {
         XCTAssertNil(state(onAC: false, amps: 0, input: 5000).acPowerText)
         XCTAssertNil(state(amps: 0, input: nil).acPowerText)
     }
+
+    /// "12/0.5W" under the caption "Power" named neither number, and was read as the battery being charged while it
+    /// was being drained to its limit. The caption says which is which, in the order and shape of the pair.
+    func testThePairIsCaptionedWithWhichNumberIsWhich() {
+        // A drain to the limit: the Mac runs on the pack (8.4 W out of it) and the charger idles at half a watt.
+        let draining = MetricValue.onAC(state(amps: -764, input: 490), value: 0)
+        XCTAssertEqual(draining.text, "8.9/0.5W")
+        XCTAssertEqual(draining.label, "Used/Charger")
+        XCTAssertEqual(MetricValue.usedAndSuppliedLabel.split(separator: "/").count,
+                       draining.text.split(separator: "/").count, "one word over each number")
+        XCTAssertTrue(draining.isOnACReading)
+        XCTAssertFalse(draining.isEstimate)
+        XCTAssertEqual(draining.value, 0)
+    }
+
+    /// With the charger's power not read there is no pair to caption: "AC", under "Power", as before.
+    func testWithoutThePairItIsACUnderPower() {
+        for unread in [state(amps: 0, input: nil), nil] {
+            let v = MetricValue.onAC(unread, value: .nan)
+            XCTAssertEqual(v.text, "AC")
+            XCTAssertEqual(v.label, "Power")
+            XCTAssertTrue(v.isOnACReading)
+            XCTAssertTrue(v.value.isNaN)
+        }
+    }
+
+    /// A rate is not one of these, whatever its caption.
+    func testARateIsNotAnOnACReading() {
+        XCTAssertFalse(MetricValue(value: 12, text: "+12 %/hr", isEstimate: false, label: "Charge").isOnACReading)
+        XCTAssertFalse(MetricValue(value: 12, text: "12 %/hr", isEstimate: false).isOnACReading)
+    }
 }
