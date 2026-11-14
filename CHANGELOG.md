@@ -7,6 +7,11 @@ feature or a visible change in how something works, the first only for a rewrite
 Nothing was bumped between 1.0.0 and 1.15.0. Those versions were assigned afterwards from the history and exist as
 git tags (`git show v1.7.0`); builds made before 1.15.0 still say 1.0.0 in their About box.
 
+## 1.18.5 — 2026-11-13
+- Anode now quits when it is asked to while one of its own questions is on screen. Before, with the first-run question about automatic updates or the helper notice up, the updater and the uninstaller found Anode still running on a freshly installed Mac, and logging out was held up.
+- A question that was closed this way counts as not answered: the one about automatic updates is asked again the next time Anode opens.
+- The updater and the uninstaller ask Anode to quit by its identifier, so another copy of Anode.app on the Mac is never reached instead, and the updater waits for Anode to be gone before replacing it.
+
 ## 1.18.4 — 2026-11-13
 - Pause When Hot: the temperature it starts at is now 40 °C, not 35 °C. Batteries are built to charge up to 45 °C and age faster the warmer they charge, but a MacBook's battery sits in the low 30s at light load and passes 35 °C under ordinary work, so 35 °C paused charging on a Mac that was only doing its job. 40 °C pauses for real heat and still well before the limit.
 - A temperature you set yourself is kept. The Pause When Hot tooltip says where the number comes from.

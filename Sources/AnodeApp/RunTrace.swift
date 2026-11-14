@@ -47,10 +47,14 @@ enum RunTrace {
     /// "Quit & Reopen"), or this app's own code all arrive here the same way and the system log cannot tell them
     /// apart (measured on a MacBook Neo: `terminate:` and a clean exit, no crash report, no sender).
     static func cleanExit() {
-        FeatureLog.append("run.log", "quit normally, \(footprint()); asked by: \(quitCause())")
+        FeatureLog.append("run.log", "quit normally, \(footprint()); asked by: \(causeOfADeferredQuit ?? quitCause())")
         for line in callers() { FeatureLog.append("run.log", "  via: \(line)") }
         if let url = markerURL { try? FileManager.default.removeItem(at: url) }
     }
+
+    /// Who asked for a quit that could not happen inside its own event, because a dialog had to be dismissed first
+    /// (`QuitRequest`): by the time `terminate` runs, the Apple event is no longer the current one.
+    static var causeOfADeferredQuit: String?
 
     /// Four letters of an Apple event class or id, as they are written ('aevt', 'quit').
     static func fourCharacterCode(_ code: UInt32) -> String {

@@ -1,3 +1,3 @@
 <!-- Two plain sentences saying what THIS update is. The update screen shows them; update.sh prints them.
      Rewrite them on every push. Say what changed for the person using the app, not how it was done. -->
-Pause When Hot now starts at 40 °C instead of 35 °C, which a working MacBook's battery reaches in ordinary use. A temperature you chose yourself is kept.
+Updating or uninstalling Anode no longer fails when one of Anode's own questions is on screen, such as the first-run question about automatic updates. Anode now closes the question and quits when it is asked to.

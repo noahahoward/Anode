@@ -303,8 +303,9 @@ if [ "$ASSUME_YES" != "1" ] && { [ ${#FOUND[@]} -gt 0 ] || [ "$ROOT_NEEDED" = "1
   esac
 fi
 
-# Quit a running copy first, or the bundle is deleted out from under it.
-osascript -e 'tell application "Anode" to quit' >/dev/null 2>&1 || true
+# Quit a running copy first, or the bundle is deleted out from under it. By its identifier, not its name: on a Mac
+# with another copy of Anode.app registered (a build folder, a backup) the name can reach the wrong one, or start one.
+osascript -e 'if application id "dev.anode.app" is running then tell application id "dev.anode.app" to quit' >/dev/null 2>&1 || true
 sleep 1
 
 # Quitting Anode puts macOS's own charge settings back, but an Anode that crashed or was killed never got to, and

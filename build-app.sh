@@ -17,7 +17,7 @@ ICON="Resources/AppIcon.icon"
 # report can quote what About says and the answer maps to an exact commit —
 # which matters more than usual here, because there is no update mechanism and
 # an installed build may be weeks old.
-VERSION="1.18.4"
+VERSION="1.18.5"
 BUILD="$(git rev-list --count HEAD 2>/dev/null || echo 1)"
 COMMIT="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
 # Absolute, and resolved through any symlink, because it is written into a
@@ -267,9 +267,14 @@ touch "$APP"
 INSTALL_DIR="$HOME/Applications"
 mkdir -p "$INSTALL_DIR"
 if [ -d "$INSTALL_DIR/Anode.app" ]; then
-  # Quit a running copy first so the bundle is not swapped under it.
-  osascript -e 'tell application "Anode" to quit' >/dev/null 2>&1 || true
-  sleep 1
+  # Quit a running copy first so the bundle is not swapped under it. By its identifier, not its name: the name can
+  # reach another registered copy of Anode.app, or start one. Then it is given a few seconds to be gone: quitting puts
+  # macOS's own charge settings back and waits for the helper, and `rm` must not take the bundle from under that.
+  osascript -e 'if application id "dev.anode.app" is running then tell application id "dev.anode.app" to quit' >/dev/null 2>&1 || true
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
+    pgrep -f "$INSTALL_DIR/Anode.app/Contents/MacOS/AnodeApp" >/dev/null 2>&1 || break
+    sleep 0.5
+  done
   rm -rf "$INSTALL_DIR/Anode.app"
 fi
 cp -R "$APP" "$INSTALL_DIR/"

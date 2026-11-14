@@ -283,6 +283,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
 
     func applicationDidFinishLaunching(_ note: Notification) {
         RunTrace.launch()
+        // A quit asked for from outside gets through a dialog that is on screen (the first-run questions, above all).
+        QuitRequest.shared.install()
         // Every accessibility call into another app waits for its answer, six seconds by default if the app
         // is busy (FaceTime during a call, a hung app). Half a second is plenty for one that is well, and
         // keeps a stuck one from holding this app for long. Set on the system-wide element, it is the default
@@ -636,6 +638,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
             alert.addButton(withTitle: "Turn On")
             alert.addButton(withTitle: "Not Now")
             alert.beginSheetModal(for: self.main.window) { answer in
+                // Dismissed for a quit that was asked for from outside (`QuitRequest`), not answered: the question
+                // is still owed, and is asked at the next launch.
+                guard answer == .alertFirstButtonReturn || answer == .alertSecondButtonReturn else { return }
                 Settings.shared.autoUpdatePromptSeen = true
                 // The helper's offer waited for this answer: it follows now, not at the next launch.
                 self.helperOffer.runAfterLaunch(delay: 1)
