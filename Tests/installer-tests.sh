@@ -1313,11 +1313,18 @@ check_all "and nothing about a password is printed"             hasnt "password"
 check "the rest is removed all the same"                    absent "$H/Applications/Anode.app"
 check "and the exit status is 0"                            [ "$ROOT_STATUS" = 0 ]
 
-# A Mac that macOS says cannot sleep (a crashed Anode can leave it so).
+# A Mac that macOS says cannot sleep (a crashed Anode can leave it so). It is Anode's to put back only where Always Stay
+# Awake was ever set up, which is what its rule in the sudoers folder says: without the rule Anode could not have set it.
 root_reset; sleep_disabled 1
+H="$(new_home g-sleep-not-ours)"
+root_run "$H"
+check "SleepDisabled 1 with no Always Stay Awake rule: not Anode's, so sudo is never called" sudo_never_called
+check "and macOS still reads 1"                             [ "$("$T/shim/pmset" -g | awk '$1 == "SleepDisabled" { print $2 }')" = 1 ]
+root_reset; root_rule; sleep_disabled 1
 H="$(new_home g-sleep)"
 root_run "$H"
-check "SleepDisabled 1: pmset is run through sudo and nothing else" sudo_called_exactly -v "pmset -a disablesleep 0"
+check "SleepDisabled 1 with the rule: the rule goes, then the sleep setting, both through sudo" \
+                                                            sudo_called_exactly -v "rm -f $KEEP_RULE" "pmset -a disablesleep 0"
 check_all "macOS reads 0 afterwards, and it is said"            [ "$("$T/shim/pmset" -g | awk '$1 == "SleepDisabled" { print $2 }')" = 0 ] -- has "reset    SleepDisabled"
 check "it says plainly that the password is asked once"     has "$ASKS"
 root_reset; root_helper; root_rule; sleep_disabled 1
@@ -1325,7 +1332,7 @@ H="$(new_home g-all-three)"
 root_run "$H"
 check "everything at once, in the order: the helper, the rule, the sleep setting" \
                                                             sudo_called_exactly -v "$HELPER_BIN --uninstall" "rm -f $KEEP_RULE" "pmset -a disablesleep 0"
-root_reset; sleep_disabled 1
+root_reset; root_rule; sleep_disabled 1
 H="$(new_home g-sleep-0)"
 root_run "$H" ANODE_NO_SUDO=1
 check_all "SleepDisabled 1 with sudo off: the pmset command is printed" says_to_run "sudo pmset -a disablesleep 0"

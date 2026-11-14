@@ -212,7 +212,12 @@ fi
 # ── What only root can remove ───────────────────────────────────────────────
 # macOS says the Mac cannot sleep. A crashed Anode (Always Stay Awake sets it) can leave it so, and only root can say
 # otherwise. Empty or absent reads as not disabled.
+# It is Anode's to put back only where Always Stay Awake was ever set up: without its rule in the sudoers folder Anode
+# could not have set it, and a Mac told not to sleep by something else is left as it is. Read once, before the rule goes.
+KEEP_AWAKE_WAS_SET_UP=0
+if [ -e "$KEEP_AWAKE_RULE" ]; then KEEP_AWAKE_WAS_SET_UP=1; fi
 sleep_is_disabled() {
+  [ "$KEEP_AWAKE_WAS_SET_UP" = "1" ] || return 1
   [ "$(pmset -g 2>/dev/null | awk '$1 == "SleepDisabled" { v = $2 } END { print v }')" = "1" ]
 }
 # Something root owns is still there, or macOS is still told not to sleep.
