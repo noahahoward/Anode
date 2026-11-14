@@ -27,6 +27,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
     let networkPane = NetworkPane(frame: .zero)
     let sensorsPane = SensorsPane(frame: .zero)
     let fansPane = FansPane(frame: .zero)
+    private lazy var helperOffer = HelperOfferAtLaunch.live(panel: fansPane.control, autoUpdateQuestionDue: { [unowned self] in
+        // Due, and somewhere to put it: a launch with no window leaves that question unasked, and must not hold this one.
+        !Settings.shared.autoUpdatePromptSeen && AutoUpdater.shared.isAvailable && self.main.window.isVisible
+    })
     let resourcesPane = ResourcesPane(frame: .zero)
     /// Latest utilisation snapshot, so a pane can redraw without waiting for the
     /// next sample.
@@ -477,6 +481,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
             main.show()
             offerAutoUpdate()
         }
+        // The helper, offered at once by a newly installed or updated Anode (it asks nothing while the question above is
+        // still due, and once for each build).
+        helperOffer.runAfterLaunch()
 
         monitor?.tick()   // prime; the first tick has no interval to diff against
         restartTimer()
@@ -629,6 +636,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
             alert.addButton(withTitle: "Not Now")
             alert.beginSheetModal(for: self.main.window) { answer in
                 Settings.shared.autoUpdatePromptSeen = true
+                // The helper's offer waited for this answer: it follows now, not at the next launch.
+                self.helperOffer.runAfterLaunch(delay: 1)
                 guard answer == .alertFirstButtonReturn else { return }
                 Settings.shared.autoUpdateEnabled = true
                 AutoUpdater.shared.confirmAccess()

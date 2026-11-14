@@ -56,6 +56,8 @@ final class HelperConnection {
         /// Low Power Mode, from a successful switch-on until it is put back: the helper puts the mode back itself when
         /// the socket closes, so the socket is kept open for that long.
         case powerMode
+        /// The look a newly installed or updated Anode takes at what the installed helper speaks, let go at once.
+        case offer
     }
 
     private let wire: HelperWire

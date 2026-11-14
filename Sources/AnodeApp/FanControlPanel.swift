@@ -611,6 +611,40 @@ final class FanControlPanel: NSView {
         case chargeControl
         /// Ultra Low Power Mode's "Install Anode Helper…" in Beta Features.
         case ultraLowPower
+        /// Nobody pressed a button: the first launch of a newly installed Anode offers the helper (`HelperOfferAtLaunch`).
+        case afterInstall
+        /// The same after an update, when the helper installed speaks less than this build.
+        case afterUpdate
+
+        /// What is being offered when nobody asked, nil for the buttons.
+        var offer: HelperOffer? {
+            switch self {
+            case .afterInstall: return .install
+            case .afterUpdate: return .update
+            case .fansTab, .chargeControl, .ultraLowPower: return nil
+            }
+        }
+    }
+
+    /// Whether this build carries a helper it can install (a bare `swift build` binary does not).
+    static var helperIsBundled: Bool { bundledHelper() != nil }
+
+    /// What the strip, and whoever started it, is told when an install has finished.
+    static func installedText(from origin: InstallOrigin) -> String {
+        switch origin {
+        case .fansTab:
+            return "Fan control is installed and ON. Drag a slider or press ❄︎ to "
+                + "take a fan. It keeps working after you rebuild and after a "
+                + "reboot, with no more prompts."
+        case .chargeControl:
+            return installedForChargeControlText
+        case .ultraLowPower:
+            return installedForUltraLowPowerText
+        case .afterInstall:
+            return HelperOfferNotice.finished(.install)
+        case .afterUpdate:
+            return HelperOfferNotice.finished(.update)
+        }
     }
 
     /// The install flow for a caller outside the Fans tab: Charge Control's "Install Anode Helper…" in Beta Features, or
@@ -632,17 +666,7 @@ final class FanControlPanel: NSView {
         guard !elevating else { return tell(Self.authorisationOnScreenText) }
         guard let helper = installSteps.bundledHelper() else { return tell(Self.notBundledInstallText) }
         guard installSteps.confirm(helper, origin) else { return }
-        let done: String
-        switch origin {
-        case .fansTab:
-            done = "Fan control is installed and ON. Drag a slider or press ❄︎ to "
-                + "take a fan. It keeps working after you rebuild and after a "
-                + "reboot, with no more prompts."
-        case .chargeControl:
-            done = Self.installedForChargeControlText
-        case .ultraLowPower:
-            done = Self.installedForUltraLowPowerText
-        }
+        let done = Self.installedText(from: origin)
         elevate(command: FanElevation.installCommand(helper: helper, ownerUID: getuid()),
                 prompt: FanElevation.installPrompt,
                 waiting: Self.waitingText,
@@ -763,6 +787,14 @@ final class FanControlPanel: NSView {
     /// The confirmation, built and not shown. Internal for the tests.
     static func installAlert(helper: String, origin: InstallOrigin) -> NSAlert {
         let alert = NSAlert()
+        // Offered at launch, with nobody having pressed anything: the notice says why now, and "Not Now" is an answer.
+        if let offer = origin.offer {
+            alert.messageText = HelperOfferNotice.title(offer)
+            alert.informativeText = HelperOfferNotice.text(offer)
+            alert.addButton(withTitle: HelperOfferNotice.button(offer))
+            alert.addButton(withTitle: HelperOfferNotice.notNow)
+            return alert
+        }
         // From Charge Control it is the same helper, asked for something other than fans; the body below lists
         // everything it can do.
         alert.messageText = "Install the Anode helper?"
