@@ -1651,7 +1651,7 @@ final class SleepWithoutAPlanTextTests: XCTestCase {
             return "the Mac sleeps with the battery drifting below the limit, held at \(n)% by Drift Below the Limit, \(no); "
                 + "Ready By is back when the Mac wakes"
         case .draining:
-            return "the Mac sleeps with the limit of \(n)% in force and the drain stopped for the sleep, \(no); Drain "
+            return "the Mac sleeps with the limit of \(n)% in force and the drain stopped for the sleep, \(no); Soft Drain "
                 + "Automatically Above the Limit starts it again when the Mac wakes, if the battery is still above the limit"
         case .drained:
             return "the Mac sleeps with the drain down to the limit finished and the limit of \(n)% in force, \(no); Ready By "

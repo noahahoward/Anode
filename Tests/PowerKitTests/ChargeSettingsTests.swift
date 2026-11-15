@@ -512,7 +512,7 @@ final class ChargeSettingsTests: XCTestCase {
     }
 
     /// Why the limit is clamped here and not left to the policy. The policy clamps the limit it gives macOS, but a
-    /// discharge drains to the limit as stored, down to a floor of 10. So a stored 5 with Drain Automatically Above the
+    /// discharge drains to the limit as stored, down to a floor of 10. So a stored 5 with Soft Drain Automatically Above the
     /// Limit on would run a battery at 60% down to 10% on the adapter; read as 20, the drain stops at 20.
     func testAStoredLimitBelowTheRangeCannotDrainThePackBelowIt() {
         store(5, as: "chargeLimit")
