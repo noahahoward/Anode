@@ -7,6 +7,10 @@ feature or a visible change in how something works, the first only for a rewrite
 Nothing was bumped between 1.0.0 and 1.15.0. Those versions were assigned afterwards from the history and exist as
 git tags (`git show v1.7.0`); builds made before 1.15.0 still say 1.0.0 in their About box.
 
+## 1.18.13 — 2026-11-14
+- Ready By: it now waits whenever your time is within the next 16 hours, where it was 12. A Mac plugged in late in the evening for a time late the next morning (13:00, set at 23:49) was more than 12 hours from it, so nothing was held and it charged straight to the limit.
+- This needs a small update to the Anode helper, which until now would not plan a wake more than 13 hours ahead: Anode offers it the first time it opens after this update (one notice, then your password). Until the helper is updated Ready By keeps to 12 hours, so it never holds the battery without being able to wake the Mac for it.
+
 ## 1.18.12 — 2026-11-14
 - Ready By: charging to a limit above 80% now starts earlier. Anode assumed a battery charges at half speed above 80%; on a real overnight run to 100% it was slower than that (about two fifths of the usual speed, and slower again for the last few percent), and the battery was at 98% nine minutes before the time, with the whole safety margin used.
 - Anode now learns how fast your Mac and your charger really charge between 80% and 95%, the same way it learns the speed below 80%, and counts the last five percent slower still.

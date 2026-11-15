@@ -266,7 +266,7 @@ if arguments.contains(FanDaemon.installArgument) {
     While it is up it will, on request from uid \(installFor): set fan N to R rpm
     (within the range the fan itself reports), release the fans, set the macOS
     charge limit (20–100%), wake the Mac at a time Anode gives it to raise that
-    limit (never more than 13 hours ahead), switch macOS's Low Power Mode on and
+    limit (never more than 17 hours ahead), switch macOS's Low Power Mode on and
     put it back (by running /usr/bin/pmset), cut the charger to discharge down to
     a percentage (never below 10%), and reconnect it. Anything running as that
     user can ask —

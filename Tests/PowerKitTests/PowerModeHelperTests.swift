@@ -944,10 +944,10 @@ final class PowerModeHelperTests: XCTestCase {
         XCTAssertTrue(pmset.calls.isEmpty, "the tool was run for a command that has nothing to do with it")
     }
 
-    func testTheHelloSaysFourAndNothingElseAboutItChanged() {
+    func testTheHelloSaysFiveAndNothingElseAboutItChanged() {
         let reply = makeServer().handle(.hello)
-        XCTAssertEqual(FanDaemon.protocolVersion, 4)
-        XCTAssertEqual(reply, FanReply(ok: true, message: "fan helper ready", fanCount: 0, version: 4))
+        XCTAssertEqual(FanDaemon.protocolVersion, 5)
+        XCTAssertEqual(reply, FanReply(ok: true, message: "fan helper ready", fanCount: 0, version: 5))
         XCTAssertNil(reply.powerModeBefore)
     }
 

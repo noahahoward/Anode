@@ -113,15 +113,16 @@ final class ReadyBySectionTests: XCTestCase {
                                                       timeZone: Calendar.autoupdatingCurrent.timeZone))
     }
 
-    /// The tip says what a person needs to know: it waits only when the time is within the next 12 hours, and never below
-    /// 30% (it charges to 30% first).
+    /// The tip says what a person needs to know: it waits only when the time is within the next 16 hours (12 with a
+    /// helper that has not been updated), and never below 30% (it charges to 30% first).
     func testTheTipSaysTheWindowAndTheFloor() {
         let tip = ChargeControlFeature.readyByTip
-        XCTAssertTrue(tip.contains("12 hours"), tip)
+        XCTAssertTrue(tip.contains("within the next 16 hours (12 until the Anode helper has been updated)"), tip)
         XCTAssertTrue(tip.contains("30%"), tip)
         XCTAssertTrue(tip.contains("charges to 30% first"), tip)
         XCTAssertTrue(tip.contains("Anode helper"), tip)
-        XCTAssertEqual(ChargePolicy.readyByWindow, 12 * 3600)
+        XCTAssertEqual(ChargePolicy.readyByWindow, 16 * 3600)
+        XCTAssertEqual(ChargePolicy.readyByWindowWithAnOlderHelper, 12 * 3600)
         XCTAssertEqual(ChargePolicy.readyByFloor, 30)
         let f = make()
         XCTAssertEqual(f.readyByCheckbox.toolTip, tip)

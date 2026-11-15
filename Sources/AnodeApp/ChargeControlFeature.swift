@@ -105,7 +105,8 @@ final class ChargeControlFeature: BetaFeature {
 
     static let readyByTip = "While the Mac is on the charger and below the limit, hold the charge where it is until it "
         + "has to charge to be at the limit by this time every day. It only waits when that time is within the next "
-        + "12 hours, and never below 30%: it charges to 30% first. Needs the Anode helper."
+        + "16 hours (12 until the Anode helper has been updated), and never below 30%: it charges to 30% first. "
+        + "Needs the Anode helper."
 
     /// What the status line needs besides the status: the battery and the drain as the controller last saw them.
     struct Facts: Equatable {

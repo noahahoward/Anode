@@ -102,7 +102,7 @@ import Foundation
 //      Low Power Mode on and put it back, cut the charger to discharge down to
 //      a percentage, and reconnect it — whose fan values the firmware clamps
 //      and whose charge values the helper range-checks (never below 10%, a wake
-//      never more than 13 hours ahead, a power mode only a digit the helper has
+//      never more than 17 hours ahead, a power mode only a digit the helper has
 //      checked). It is not "only this app". Saying
 //      it were would be the overstatement this project keeps refusing to make.
 //
@@ -326,7 +326,10 @@ public enum FanDaemon {
     /// writes nothing), for Ultra Low Power Mode. A helper that speaks 3 closes the connection on a command it does not
     /// know, with the same consequences, so the app sends these only to a helper that has said 4. Nothing a helper at 2 or 3 serves is changed: the version is a plain increasing number, and the
     /// app asks "does it speak at least N" of each feature.
-    public static let protocolVersion = 4
+    /// 5: no new command. `scheduleChargeLimit` takes a moment up to 17 hours ahead where it took 13, for Ready By's
+    /// window of 16 hours. A helper that says less refuses a plan further off than 13 hours, so with one the app keeps
+    /// the window at 12 (`ChargePolicy.readyByWindowWithAnOlderHelper`).
+    public static let protocolVersion = 5
 
     /// The argument that tells the helper it is the installed daemon rather than
     /// a session helper. The difference is the pin, and where the socket comes

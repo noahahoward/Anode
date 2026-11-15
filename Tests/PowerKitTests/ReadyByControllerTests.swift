@@ -828,7 +828,7 @@ final class ReadyByControllerTests: XCTestCase {
     /// A moment outside its window (more than 12 hours off) is no Ready By moment: the plan is the one for a pause
     /// alone, half an hour on.
     func testAHotPackWithTheMomentBeyondTheWindowIsPlannedForHalfAnHourFromNow() throws {
-        clockNow = Self.utc("2026-11-12T15:00:00Z")   // 16 hours before 07:00
+        clockNow = Self.utc("2026-11-12T13:00:00Z")   // 18 hours before 07:00
         hotAtNight()
         let c = make()
         c.willSleep()
@@ -1404,6 +1404,35 @@ final class ReadyByControllerTests: XCTestCase {
         c.resumeIfDue(now: Date().addingTimeInterval(ChargeController.startDelay + 1))
         XCTAssertEqual(c.lastDecision?.reason, .readyBy)
         XCTAssertEqual(client.state?.mclLimit, 54)
+    }
+
+    // ── How far ahead it holds ──────────────────────────────────────────────
+
+    /// 23:00 with a time of 13:00 the next day is 14 hours off. With a helper that plans a wake that far ahead it is
+    /// held, and the plan goes to the helper at the sleep.
+    func testAnEveningPlugInForALateMorningTimeIsHeldAndPlanned() throws {
+        settings.chargeReadyByMinutes = 13 * 60
+        let c = make()
+        XCTAssertEqual(c.lastDecision?.reason, .readyBy, "14 hours ahead was not held")
+        XCTAssertEqual(client.state?.mclLimit, 54)
+        c.willSleep()
+        let plan = try XCTUnwrap(c.wakePlan, "the hold was not given its wake")
+        XCTAssertEqual(plan.by, Self.utc("2026-11-13T13:00:00Z"))
+        XCTAssertGreaterThan(plan.raiseAt.timeIntervalSince(clockNow), 13 * 3600, "the fixture is not further off than an older helper takes")
+    }
+
+    /// The same with a helper from before protocol 5, which refuses a plan more than 13 hours off: the window is 12
+    /// hours with it, so nothing is held that could not be given its wake, and the battery charges as usual.
+    func testWithAHelperThatCannotPlanThatFarAheadTheWindowIsTwelveHours() {
+        settings.chargeReadyByMinutes = 13 * 60
+        helper.plansFarAhead = false
+        let c = make()
+        XCTAssertEqual(c.lastDecision?.reason, .limit, "a hold was begun that this helper could not wake the Mac for")
+        XCTAssertEqual(client.state?.mclLimit, 80)
+        // Inside 12 hours it holds as it always did.
+        settings.chargeReadyByMinutes = 10 * 60 + 30
+        c.tick()
+        XCTAssertEqual(c.lastDecision?.reason, .readyBy)
     }
 
     // ── The charge rate ─────────────────────────────────────────────────────

@@ -57,11 +57,14 @@ public struct ChargeInputs: Equatable {
     /// How fast it charges above 80%, in percent per minute, when that has been learned for this charger; nil until
     /// then, and the policy counts a share of `chargeRate` (`ChargePolicy.chargeTaperFactor`).
     public var chargeRateAbove80: Double?
+    /// How far ahead the moment may be for Ready By to hold: `ChargePolicy.readyByWindow`, or less with a helper that
+    /// cannot plan a wake that far ahead.
+    public var readyByWindow: TimeInterval
 
     public init(percent: Int, onAC: Bool, temperatureC: Double?,
                 sleeping: Bool, fullCharge: Bool, manualDrain: Bool, now: Date,
                 readyBy: Date? = nil, chargeRate: Double = ChargePolicy.chargeRateRange.lowerBound,
-                chargeRateAbove80: Double? = nil) {
+                chargeRateAbove80: Double? = nil, readyByWindow: TimeInterval = ChargePolicy.readyByWindow) {
         self.percent = percent
         self.onAC = onAC
         self.temperatureC = temperatureC
@@ -72,6 +75,7 @@ public struct ChargeInputs: Equatable {
         self.readyBy = readyBy
         self.chargeRate = chargeRate
         self.chargeRateAbove80 = chargeRateAbove80
+        self.readyByWindow = readyByWindow
     }
 }
 
@@ -227,7 +231,16 @@ public enum ChargePolicy {
     /// Ready By holds only when the moment is no further off than this. Further off than that, it does nothing and
     /// the battery charges to the limit as usual: a Mac plugged in at 8:00 with a 7:00 moment must not sit at 30%
     /// all day.
-    public static let readyByWindow: TimeInterval = 12 * 3600
+    ///
+    /// It was 12 hours, which missed the ordinary case: a Mac plugged in in the evening for a time late the next
+    /// morning (13:00, set at 23:49) is more than 12 hours from it, so nothing was held and the battery charged
+    /// straight to the limit. 16 hours takes in an evening and the night after it, and still leaves a morning plug-in
+    /// for the next morning's time alone.
+    public static let readyByWindow: TimeInterval = 16 * 3600
+    /// The window with a helper that takes a plan no more than 13 hours ahead (one that speaks less than protocol 5,
+    /// `FanHelperServer.chargePlanReach`): a hold begun further off than this could not be given its wake if the Mac
+    /// went to sleep at once, and a hold with no wake lasts until somebody opens the Mac.
+    public static let readyByWindowWithAnOlderHelper: TimeInterval = 12 * 3600
     /// It never holds lower than this: below it the battery charges up to it first, and then holds. (The person's own
     /// limit, when that is lower still.)
     public static let readyByFloor = 30
@@ -378,7 +391,7 @@ public enum ChargePolicy {
     ///
     ///  * Charging that has started for this moment goes on until the moment has passed (`ReadyByMemory.started`),
     ///    whatever the estimate does and whether or not the moment is still inside the window.
-    ///  * More than `readyByWindow` before the moment, it does nothing.
+    ///  * More than the window before the moment (`ChargeInputs.readyByWindow`), it does nothing.
     ///  * Otherwise the battery is held at its level (`ReadyByMemory.level`: where it was when the hold began, and
     ///    never below `readyByFloor`, or above the limit when that is lower) until `raiseAt`, which is the moment less
     ///    the time the climb to the limit takes at `chargeRate` (`minutesToCharge`) and `readyByMargin`. From `raiseAt`
@@ -403,7 +416,7 @@ public enum ChargePolicy {
         if m.readyBy?.started == true {
             return decision(s.limit, charging)
         }
-        guard by.timeIntervalSince(i.now) <= readyByWindow else { return nil }
+        guard by.timeIntervalSince(i.now) <= i.readyByWindow else { return nil }
 
         let floor = min(readyByFloor, s.limit)
         // Never above the limit that is in force: a level remembered while the limit was higher is not held above one

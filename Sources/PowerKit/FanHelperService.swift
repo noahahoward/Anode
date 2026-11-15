@@ -1494,8 +1494,9 @@ public final class FanHelperServer {
         return FanReply(ok: true, message: "discharging to \(target)%")
     }
 
-    /// How far ahead a plan may be: the app's 12 hour window and an hour over for a clock that moved.
-    public static let chargePlanReach: TimeInterval = 13 * 3600
+    /// How far ahead a plan may be: the app's window (`ChargePolicy.readyByWindow`, 16 hours) and an hour over for a
+    /// clock that moved. It was 13 hours, for a window of 12, up to protocol 4.
+    public static let chargePlanReach: TimeInterval = 17 * 3600
 
     /// How close to the moment a wake notice or a timer counts as the moment. The system's wake lands within a second
     /// of what it was asked for, either side; a limit raised a few seconds early costs nothing, and one missed because

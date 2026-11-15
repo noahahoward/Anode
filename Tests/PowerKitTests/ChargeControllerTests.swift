@@ -4717,6 +4717,8 @@ final class FakeHelperLink: ChargeHelperLink {
     /// The helper has said protocol 3, which knows the plan commands (`FanCommand.scheduleChargeLimit`). A test of a
     /// protocol 2 helper sets this false.
     var speaksReadyBy = true
+    /// The helper has said protocol 5, which takes a plan up to 17 hours ahead. A test of an older one sets this false.
+    var plansFarAhead = true
     var outdated = false
     /// Installed as a daemon, so a connection starts it.
     var installed = true

@@ -139,7 +139,7 @@ final class HelperOfferTests: XCTestCase {
     func testAnUpdateWhoseHelperIsCurrentAsksNothingAndIsNotRemembered() {
         let rig = Rig()
         rig.installed = true
-        rig.helperVersion = 4
+        rig.helperVersion = FanDaemon.protocolVersion
         rig.step.run()
         XCTAssertEqual(rig.started, [])
         // Nothing was offered, so nothing is remembered: a helper removed later in this build is still offered once.

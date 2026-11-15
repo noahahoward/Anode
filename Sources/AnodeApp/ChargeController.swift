@@ -103,6 +103,9 @@ protocol ChargeHelperLink: AnyObject {
     /// (`FanCommand.scheduleChargeLimit`). A helper that speaks 2 closes the connection on a command it does not know,
     /// which ends a discharge and hands the fans back, so those are sent to nothing else.
     var speaksReadyBy: Bool { get }
+    /// The helper last answered speaking protocol 5 or later, which takes a plan up to 17 hours ahead. One that says
+    /// less refuses a plan more than 13 hours off, so Ready By's window is kept at 12 hours with it.
+    var plansFarAhead: Bool { get }
     /// A helper answered, but one too old to know the charge commands.
     var outdated: Bool { get }
     /// Installed as a daemon: a connection starts it, so it can be greeted even when it has not answered.
@@ -2178,7 +2181,7 @@ inForce >= noLimit
         let limit = settings.chargeLimit
         if settings.chargeReadyByEnabled, helper.speaksReadyBy, b.percent < limit,
            let by = Self.nextReadyBy(after: now, minutes: settings.chargeReadyByMinutes, calendar: calendar()),
-           by.timeIntervalSince(now) <= ChargePolicy.readyByWindow {
+           by.timeIntervalSince(now) <= readyByWindow {
             if memory.readyBy?.started == true { return (by, limit, cooled, false) }
             let level = min(limit, max(b.percent, min(ChargePolicy.readyByFloor, limit)))
             let rates = loadedRates()
@@ -2460,6 +2463,11 @@ inForce >= noLimit
         if announce { changed() }
     }
 
+    /// How far ahead Ready By's moment may be for it to hold: as far as the helper that answered can plan a wake.
+    private var readyByWindow: TimeInterval {
+        helper.plansFarAhead ? ChargePolicy.readyByWindow : ChargePolicy.readyByWindowWithAnOlderHelper
+    }
+
     /// What the policy is told about this moment, from one reading of the battery.
     private func policyInputs(_ b: Battery.State, _ snapshot: ChargeSettingsSnapshot, now: Date) -> ChargeInputs {
         // Ready By needs a helper that can wake the Mac: without one (or with one too old to know how) it is not in
@@ -2472,7 +2480,8 @@ inForce >= noLimit
                             sleeping: sleeping, fullCharge: isFullChargeRequested,
                             manualDrain: isDrainRequested, now: now,
                             readyBy: readyBy, chargeRate: loadedRates().rate(forAdapterWatts: b.adapterWatts),
-                            chargeRateAbove80: loadedRates().rateAbove80(forAdapterWatts: b.adapterWatts))
+                            chargeRateAbove80: loadedRates().rateAbove80(forAdapterWatts: b.adapterWatts),
+                            readyByWindow: readyByWindow)
     }
 
     /// What would be decided at this moment if Pause When Hot were not pausing: where the battery goes once the pack
@@ -3042,6 +3051,7 @@ final class ChargeHelperAdapter: ChargeHelperLink {
 
     var available: Bool { (version ?? 0) >= 2 }
     var speaksReadyBy: Bool { (version ?? 0) >= 3 }
+    var plansFarAhead: Bool { (version ?? 0) >= 5 }
     var installed: Bool { isInstalled() }
     var outdated: Bool { version.map { $0 < 2 } ?? false }
     var isOpen: Bool { claimed && connection.isConnected }

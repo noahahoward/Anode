@@ -197,13 +197,17 @@ final class ChargeHelperPlanTests: XCTestCase {
         XCTAssertTrue(events.scheduled.count == 1)
     }
 
-    func testAMomentMoreThanThirteenHoursAwayIsRefused() {
+    /// The reach is the app's window and an hour over, so that every hold the app begins can be given its wake.
+    func testAMomentMoreThanSeventeenHoursAwayIsRefused() {
         let server = makeServer()
-        XCTAssertEqual(FanHelperServer.chargePlanReach, 13 * 3600)
-        let far = plan(server, 80, in: 13 * hour + 1)
+        XCTAssertEqual(FanHelperServer.chargePlanReach, 17 * 3600)
+        XCTAssertEqual(FanHelperServer.chargePlanReach, ChargePolicy.readyByWindow + 3600)
+        let far = plan(server, 80, in: 17 * hour + 1)
         XCTAssertEqual(far, FanReply(ok: false, message: ChargeRefusal.planTooFarAway))
         XCTAssertTrue(events.scheduled.isEmpty)
-        XCTAssertTrue(plan(server, 80, in: 13 * hour).ok, "thirteen hours exactly is allowed")
+        XCTAssertTrue(plan(server, 80, in: 17 * hour).ok, "seventeen hours exactly is allowed")
+        // A helper from before protocol 5 took 13 hours, and the window the app keeps with one is inside that.
+        XCTAssertLessThanOrEqual(ChargePolicy.readyByWindowWithAnOlderHelper, 13 * 3600)
         let absurd = server.handle(.command(.scheduleChargeLimit(limit: 80, at: .distantFuture)))
         XCTAssertFalse(absurd.ok)
     }

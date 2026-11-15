@@ -33,7 +33,8 @@ final class ReadyByPolicyTests: XCTestCase {
     // ── The constants ───────────────────────────────────────────────────────
 
     func testTheNamedNumbers() {
-        XCTAssertEqual(ChargePolicy.readyByWindow, 12 * 3600)
+        XCTAssertEqual(ChargePolicy.readyByWindow, 16 * 3600)
+        XCTAssertEqual(ChargePolicy.readyByWindowWithAnOlderHelper, 12 * 3600)
         XCTAssertEqual(ChargePolicy.readyByFloor, 30)
         XCTAssertEqual(ChargePolicy.readyByMargin, 15 * 60)
         XCTAssertEqual(ChargePolicy.chargeTaperAbove, 80)
@@ -129,15 +130,15 @@ final class ReadyByPolicyTests: XCTestCase {
         XCTAssertEqual(m.readyBy, ReadyByMemory(moment: by, level: 54, started: false))
     }
 
-    func testTheWindowIsTwelveHoursAndIncludesItsEdge() {
+    func testTheWindowIsSixteenHoursAndIncludesItsEdge() {
         var m = ChargeMemory()
-        let inside = ChargePolicy.decide(settings(), inputs(by: t0.addingTimeInterval(12 * hour)), &m)
-        XCTAssertEqual(inside.reason, .readyBy, "exactly 12 hours away is inside the window")
+        let inside = ChargePolicy.decide(settings(), inputs(by: t0.addingTimeInterval(16 * hour)), &m)
+        XCTAssertEqual(inside.reason, .readyBy, "exactly 16 hours away is inside the window")
         m = ChargeMemory()
-        let justInside = ChargePolicy.decide(settings(), inputs(by: t0.addingTimeInterval(12 * hour - 1)), &m)
+        let justInside = ChargePolicy.decide(settings(), inputs(by: t0.addingTimeInterval(16 * hour - 1)), &m)
         XCTAssertEqual(justInside.reason, .readyBy)
         m = ChargeMemory()
-        let outside = ChargePolicy.decide(settings(), inputs(by: t0.addingTimeInterval(12 * hour + 1)), &m)
+        let outside = ChargePolicy.decide(settings(), inputs(by: t0.addingTimeInterval(16 * hour + 1)), &m)
         XCTAssertEqual(outside.reason, .limit, "a second further and the battery charges as usual")
         XCTAssertEqual(outside.osLimit, 80)
         XCTAssertNil(outside.readyBy)
@@ -189,6 +190,31 @@ final class ReadyByPolicyTests: XCTestCase {
         XCTAssertEqual(at.osLimit, 80, "at the start moment the limit is raised to the person's")
         XCTAssertEqual(at.readyBy, ReadyByState(by: by, raiseAt: nil, raiseTo: 80), "charging for Ready By")
         XCTAssertEqual(m.readyBy?.started, true)
+    }
+
+    /// The night the window was too short: 23:49, and a time of 13:00 the next day, 13 hours and 11 minutes off. With a
+    /// window of 12 hours nothing was held and the battery charged straight to the limit.
+    func testAnEveningPlugInForALateMorningTimeIsHeld() {
+        var m = ChargeMemory()
+        let by = t0.addingTimeInterval(13 * hour + 11 * minute)
+        let d = ChargePolicy.decide(settings(limit: 100), inputs(percent: 74, by: by), &m)
+        XCTAssertEqual(d.reason, .readyBy)
+        XCTAssertEqual(d.osLimit, 74, "it charged on instead of holding")
+    }
+
+    /// The window is what the policy is given: with a helper that cannot plan a wake further off than 13 hours it is
+    /// 12, and the same moment is then outside it.
+    func testTheWindowIsTheOneItIsGiven() {
+        var m = ChargeMemory()
+        var i = inputs(by: t0.addingTimeInterval(13 * hour))
+        XCTAssertEqual(i.readyByWindow, ChargePolicy.readyByWindow, "the default is the full window")
+        XCTAssertEqual(ChargePolicy.decide(settings(), i, &m).reason, .readyBy)
+        m = ChargeMemory()
+        i.readyByWindow = ChargePolicy.readyByWindowWithAnOlderHelper
+        XCTAssertEqual(ChargePolicy.decide(settings(), i, &m).reason, .limit)
+        m = ChargeMemory()
+        i.readyBy = t0.addingTimeInterval(12 * hour)
+        XCTAssertEqual(ChargePolicy.decide(settings(), i, &m).reason, .readyBy, "12 hours exactly is inside the shorter one")
     }
 
     func testTheStartMomentCountsTheTaperAboveEighty() throws {
@@ -422,7 +448,7 @@ final class ReadyByPolicyTests: XCTestCase {
         XCTAssertEqual(charge.osLimit, 80, "Hold Level During Sleep must not stop the charge Ready By started")
         // Outside the window it does nothing, and the sleep hold is the sleep hold.
         m = ChargeMemory()
-        let outside = ChargePolicy.decide(s, inputs(by: t0.addingTimeInterval(13 * hour), sleeping: true), &m)
+        let outside = ChargePolicy.decide(s, inputs(by: t0.addingTimeInterval(17 * hour), sleeping: true), &m)
         XCTAssertEqual(outside.reason, .sleeping)
         XCTAssertEqual(outside.osLimit, 54)
     }
