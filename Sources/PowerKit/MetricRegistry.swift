@@ -609,7 +609,7 @@ public final class MetricRegistry {
 
     public func registerBatteryMetrics() {
         register(MetricDescriptor(
-            id: .batteryDrain, title: "Battery rate", shortTitle: "Drain",
+            id: .batteryDrain, title: "Battery rate, half-hour average", shortTitle: "Drain",
             unit: .percentPerHour, category: "Battery", higherIsWorse: true
         )) { [weak self] in
             guard let s = self?.latestSnapshot() else { return nil }
@@ -652,7 +652,7 @@ public final class MetricRegistry {
         }
 
         register(MetricDescriptor(
-            id: .batteryDrainNow, title: "Battery rate, recent", shortTitle: "Now",
+            id: .batteryDrainNow, title: "Battery rate, last few minutes", shortTitle: "Now",
             unit: .percentPerHour, category: "Battery", higherIsWorse: true
         )) { [weak self] in
             // Only while draining: on AC there is no "recent drain" to speak of,

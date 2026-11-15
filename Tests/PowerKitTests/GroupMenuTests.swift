@@ -129,7 +129,7 @@ final class GroupMenuTests: XCTestCase {
         let titles = rows(MenuBarWidgetController.buildGroupMenu(settings: settings))
             .map { $0.title.components(separatedBy: "\t")[0] }
         XCTAssertEqual(titles.first, "CPU usage", "the saved order was ignored")
-        XCTAssertFalse(titles.contains("Battery rate"), "a hidden row was rendered")
+        XCTAssertFalse(titles.contains("Battery rate, half-hour average"), "a hidden row was rendered")
     }
 
     /// The default arrangement is the subject-grouped one: each temperature

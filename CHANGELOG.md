@@ -14,6 +14,7 @@ git tags (`git show v1.7.0`); builds made before 1.15.0 still say 1.0.0 in their
 - It stops by itself at the level, when the Mac goes to sleep, after three hours, and when you press Stop Hard Drain. It waits while the battery is at the Pause When Hot temperature (until it has cooled two degrees), while macOS says the Mac is hot, and while Low Power Mode or Ultra Low Power Mode is on; the section says which.
 - Drain to Limit is now called Soft Drain to Limit, and Drain Automatically Above the Limit is Soft Drain Automatically Above the Limit, so neither is taken for Hard Drain. They work as before: the battery comes down only as fast as the Mac uses power.
 - The battery chart's rate scale goes above 100 %/hr when the Mac does, instead of drawing the line flat along the top.
+- The two battery rate widgets now say which is which: Drain is the half-hour average that time left is worked out from, and Now is the last few minutes, which jumps as soon as the drain changes.
 
 ## 1.19.0 — 2026-11-14
 - Ready By: a new line, Hold No Higher Than (50% until you change it, on by default). While Ready By waits, a battery above that level is not charged: the charger supplies nothing and the Mac runs from the battery until it has come down to the level, where it is then held until it is time to charge. Before, a battery plugged in at 97% was held at 97% all night, which is the opposite of what Ready By is for.
