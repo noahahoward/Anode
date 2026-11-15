@@ -27,6 +27,9 @@ final class ReadyBySectionTests: XCTestCase {
         client = FakeChargeLimitClient()
         helper.landsOn = client
         battery = ReadyByControllerTests.plugged(54)
+        // The section's lines for a hold where the battery is (54% here); the line for coming down first has its own
+        // tests, which switch it back on.
+        settings.chargeReadyByLowerEnabled = false
     }
 
     override func tearDownWithError() throws {
@@ -365,6 +368,68 @@ final class ReadyBySectionTests: XCTestCase {
         XCTAssertFalse(f.statusLabel.isHiddenOrHasHiddenAncestor)
     }
 
+    // ── Coming down first ───────────────────────────────────────────────────
+
+    /// A battery above the level it is held at is coming down to it, with the charger supplying nothing: the line
+    /// says so, and says that the time the charge starts is an estimate. A point above is still a hold (a hold
+    /// overshoots by one).
+    func testTheLineSaysTheBatteryIsComingDown() {
+        XCTAssertEqual(readyBy(97, holdingAt: 50, limit: 100),
+                       "Running from the battery down to 50%, then charging from about 5:40 am to reach 100% by 7:00 am")
+        XCTAssertEqual(readyBy(52, holdingAt: 50), "Running from the battery down to 50%, then charging from about 5:40 am "
+                       + "to reach 80% by 7:00 am")
+        XCTAssertEqual(readyBy(51, holdingAt: 50), "Holding at 50% until 5:40 am, then charging to reach 80% by 7:00 am")
+        XCTAssertEqual(readyBy(50, holdingAt: 50), "Holding at 50% until 5:40 am, then charging to reach 80% by 7:00 am")
+    }
+
+    /// The second line of Ready By: a switch, the level, and a stepper for it, offered only while Ready By is on, and
+    /// each writing its own setting.
+    func testTheSecondLineHasASwitchALevelAndAStepper() throws {
+        settings.chargeReadyByLowerEnabled = true
+        let f = make()
+        XCTAssertEqual(f.readyByLowerCheckbox.title, "Hold No Higher Than")
+        XCTAssertEqual(f.readyByLowerLabel.stringValue, "50%")
+        XCTAssertEqual(f.readyByLowerStepper.integerValue, 50)
+        XCTAssertEqual(f.readyByLowerStepper.minValue, 30)
+        XCTAssertEqual(f.readyByLowerStepper.maxValue, 95)
+        XCTAssertTrue(f.readyByLowerCheckbox.isDescendant(of: try XCTUnwrap(view)))
+        XCTAssertEqual(f.readyByLowerCheckbox.toolTip, ChargeControlFeature.readyByLowerTip)
+        XCTAssertTrue(ChargeControlFeature.readyByLowerTip.contains("only as fast as the Mac uses power"))
+        XCTAssertEqual(f.readyByLowerStepper.accessibilityLabel(),
+                       "Ready By: the highest level the battery is held at while it waits")
+        // Ready By off: neither is offered.
+        settings.chargeReadyByEnabled = false
+        XCTAssertFalse(f.readyByLowerCheckbox.isEnabled)
+        XCTAssertFalse(f.readyByLowerStepper.isEnabled)
+        settings.chargeReadyByEnabled = true
+        XCTAssertTrue(f.readyByLowerCheckbox.isEnabled)
+        XCTAssertTrue(f.readyByLowerStepper.isEnabled)
+        // The stepper writes the level, the box the switch; with the switch off the level is not offered.
+        f.readyByLowerStepper.integerValue = 60
+        send(f.readyByLowerStepper)
+        XCTAssertEqual(settings.chargeReadyByHoldAtMost, 60)
+        XCTAssertEqual(f.readyByLowerLabel.stringValue, "60%")
+        f.readyByLowerCheckbox.state = .off
+        send(f.readyByLowerCheckbox)
+        XCTAssertFalse(settings.chargeReadyByLowerEnabled)
+        XCTAssertFalse(f.readyByLowerStepper.isEnabled)
+        XCTAssertTrue(f.readyByLowerCheckbox.isEnabled)
+    }
+
+    /// With the real controller: a battery plugged in at 97% for a limit of 100% is not held at 97%.
+    func testTheSectionShowsTheBatteryComingDown() {
+        settings.chargeReadyByLowerEnabled = true
+        settings.chargeReadyByEnabled = true
+        settings.chargeLimit = 100
+        battery = ReadyByControllerTests.plugged(97)
+        let f = make()
+        XCTAssertEqual(client.state?.mclLimit, 50, "the battery was held where it was")
+        XCTAssertTrue(f.statusLabel.stringValue.hasPrefix("Running from the battery down to 50%, then charging from about "),
+                      f.statusLabel.stringValue)
+        XCTAssertTrue(f.statusLabel.stringValue.hasSuffix("to reach 100% by 07:00") || f.statusLabel.stringValue.contains("to reach 100% by 7:00"),
+                      f.statusLabel.stringValue)
+    }
+
     func testNoWattsAndNoOtherWordsInTheLine() {
         for text in [readyBy(54), readyBy(60, until: nil), readyBy(22, holdingAt: 30)] {
             XCTAssertNil(text.range(of: #"\d\s?W\b"#, options: .regularExpression), text)
@@ -378,8 +443,8 @@ final class ReadyBySectionTests: XCTestCase {
 
     func testTheSummaryHasOneSentenceAboutReadyBy() {
         let s = ChargeControlFeature(settings: settings, controller: { nil }, installHelper: { _ in }).summary
-        let sentence = "Ready By holds the battery where it is and charges it to the limit by a time you choose, waking "
-            + "the Mac if it has to; it needs the Anode helper."
+        let sentence = "Ready By holds the battery, at a level it first lets it come down to, and charges it to the limit "
+            + "by a time you choose, waking the Mac if it has to; it needs the Anode helper."
         XCTAssertTrue(s.contains(sentence), s)
         XCTAssertEqual(s.components(separatedBy: "Ready By").count - 1, 1, "one sentence, not a paragraph")
         XCTAssertTrue(s.contains("Quit Anode before removing it by hand"), "the rest of the summary is still there")

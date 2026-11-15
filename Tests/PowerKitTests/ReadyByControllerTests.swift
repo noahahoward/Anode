@@ -163,6 +163,9 @@ final class ReadyByControllerTests: XCTestCase {
         calendar = Self.utcCalendar
         clockNow = Self.utc("2026-11-12T23:00:00Z")
         settings.chargeReadyByEnabled = true
+        // These tests are about the hold itself, at the level the battery is at (54% in the fixture). Coming down to
+        // a lower level first is on by default, and has its own tests further down, which switch it back on.
+        settings.chargeReadyByLowerEnabled = false
     }
 
     override func tearDownWithError() throws {
@@ -1404,6 +1407,99 @@ final class ReadyByControllerTests: XCTestCase {
         c.resumeIfDue(now: Date().addingTimeInterval(ChargeController.startDelay + 1))
         XCTAssertEqual(c.lastDecision?.reason, .readyBy)
         XCTAssertEqual(client.state?.mclLimit, 54)
+    }
+
+    // ── Coming down before it holds ─────────────────────────────────────────
+
+    /// Plugged in at 97% for a limit of 100%: the limit that goes to macOS is 50, through the helper (50 is not a limit
+    /// macOS takes by itself), nothing is asked of the charger switch, and the battery card says 50.
+    func testABatteryAboveTheLevelGetsTheLevelAsItsLimitAndNoCut() {
+        settings.chargeReadyByLowerEnabled = true
+        settings.chargeLimit = 100
+        battery = Self.plugged(97)
+        let c = make()
+        XCTAssertEqual(c.lastDecision?.reason, .readyBy)
+        XCTAssertEqual(client.state?.mclLimit, 50, "it was held where it was")
+        XCTAssertTrue(helper.commands.contains(.setChargeLimit(50)))
+        XCTAssertFalse(helper.commands.contains { if case .discharge = $0 { return true } else { return false } },
+                       "the charger was cut: macOS already runs the Mac from a battery above its limit")
+        XCTAssertEqual(limitInForce.value, 50)
+        // Switching it off puts the hold where the battery is.
+        settings.chargeReadyByLowerEnabled = false
+        XCTAssertEqual(client.state?.mclLimit, 97)
+        // And the level can be chosen.
+        settings.chargeReadyByLowerEnabled = true
+        settings.chargeReadyByHoldAtMost = 70
+        XCTAssertEqual(client.state?.mclLimit, 70)
+    }
+
+    /// Going to sleep while it is still coming down: the helper is given the wake for where the battery will have
+    /// come down to, and at that wake the limit is the person's own.
+    func testAsleepWhileComingDownTheHelperIsGivenTheWake() throws {
+        settings.chargeReadyByLowerEnabled = true
+        settings.chargeLimit = 100
+        battery = Self.plugged(97)
+        let c = make()
+        let raiseAt = try XCTUnwrap(c.lastDecision?.readyBy?.raiseAt)
+        c.willSleep()
+        let plan = try XCTUnwrap(c.wakePlan, "no wake was arranged")
+        XCTAssertEqual(plan.limit, 100)
+        XCTAssertEqual(plan.by, by)
+        XCTAssertEqual(plan.raiseAt, raiseAt)
+        XCTAssertEqual(client.state?.mclLimit, 50, "asleep, it goes on coming down")
+        // Eight hours at a point and a half an hour is twelve points: counted from 85, not from 97 and not from 50.
+        let lead: TimeInterval = ChargePolicy.minutesToCharge(from: 85, to: 100, rate: 1.0) * 60 + ChargePolicy.readyByMargin
+        XCTAssertEqual(by.timeIntervalSince(plan.raiseAt), lead, accuracy: 1)
+        // The helper raises the limit at its moment, and the Mac wakes with the battery at 88%: it charges.
+        client.state?.mclLimit = 100
+        battery = Self.plugged(88)
+        c.didWake(now: plan.raiseAt.addingTimeInterval(2))
+        XCTAssertEqual(c.lastDecision?.reason, .readyBy)
+        XCTAssertEqual(c.lastDecision?.osLimit, 100)
+        XCTAssertEqual(client.state?.mclLimit, 100)
+    }
+
+    /// The wake the helper was given is the start. Woken at it with the battery higher than was allowed for, an
+    /// estimate made afresh says there are minutes to spare; acted on, the hold would go back over the limit the
+    /// helper has just raised, and the Mac would sleep again with nothing left to wake it. Also for a hold where the
+    /// battery is, when the estimate has moved since the plan was made (a faster rate learned).
+    func testThePlannedWakeIsTheStartWhateverAFreshEstimateSays() throws {
+        let c = holding()
+        c.willSleep()
+        let plan = try XCTUnwrap(c.wakePlan)
+        // Since the plan was made, the charger has been learned as twice as fast: a fresh estimate would start later.
+        var faster = ChargeRate()
+        faster.record(1.5, for: .over65)
+        faster.record(1.5, for: .over65)
+        rateStore.rates = faster
+        client.state?.mclLimit = 80         // the helper raised the limit at its moment
+        c.didWake(now: plan.raiseAt.addingTimeInterval(2))
+        XCTAssertEqual(c.lastDecision?.osLimit, 80, "the hold went back over the limit the helper had raised")
+        XCTAssertEqual(client.state?.mclLimit, 80)
+        XCTAssertNil(c.lastDecision?.readyBy?.raiseAt, "it is charging for the moment, not holding")
+    }
+
+    /// Not before the moment: a wake that is not the planned one starts nothing.
+    func testAWakeBeforeThePlannedMomentStartsNothing() throws {
+        let c = holding()
+        c.willSleep()
+        let plan = try XCTUnwrap(c.wakePlan)
+        c.didWake(now: plan.raiseAt.addingTimeInterval(-600))
+        XCTAssertEqual(c.lastDecision?.osLimit, 54)
+        XCTAssertNotNil(c.lastDecision?.readyBy?.raiseAt, "it started charging ten minutes early")
+    }
+
+    /// Unplugged while it comes down, the hold is over, as any Ready By hold is: the limit is the person's own.
+    func testUnpluggedWhileComingDownTheHoldIsOver() {
+        settings.chargeReadyByLowerEnabled = true
+        settings.chargeLimit = 100
+        battery = Self.plugged(97)
+        let c = make()
+        XCTAssertEqual(client.state?.mclLimit, 50)
+        battery = Self.plugged(96, ac: false)
+        c.tick()
+        XCTAssertEqual(c.lastDecision?.reason, .limit)
+        XCTAssertEqual(client.state?.mclLimit, 100)
     }
 
     // ── How far ahead it holds ──────────────────────────────────────────────

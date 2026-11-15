@@ -112,9 +112,18 @@ final class ChargeLogWordsTests: XCTestCase {
 
     func testReadyByIsLoggedInWords() {
         settings.chargeReadyByEnabled = true
+        settings.chargeReadyByLowerEnabled = false      // held where it is
         battery = ReadyByControllerTests.plugged(54)
         make()
         XCTAssertTrue(lines.contains("limit set to 54 (ready by)"), lines.joined(separator: "\n"))
+    }
+
+    /// Coming down first is the same reason in the log: the limit that is set is the level it comes down to.
+    func testReadyByComingDownIsLoggedInWords() {
+        settings.chargeReadyByEnabled = true
+        battery = ReadyByControllerTests.plugged(54)
+        make()
+        XCTAssertTrue(lines.contains("limit set to 50 (ready by)"), lines.joined(separator: "\n"))
     }
 
     func testTheLimitAndAClientValueNeedingTheHelperAreLoggedInWords() {

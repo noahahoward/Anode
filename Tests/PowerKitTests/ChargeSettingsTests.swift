@@ -74,7 +74,33 @@ final class ChargeSettingsTests: XCTestCase {
         XCTAssertFalse(s.chargeDrainAutomatically)
         XCTAssertFalse(s.chargeReadyByEnabled, "Ready By holds the battery back, so it is asked for")
         XCTAssertEqual(s.chargeReadyByMinutes, 420, "7:00, in minutes after midnight")
+        XCTAssertTrue(s.chargeReadyByLowerEnabled, "Ready By lets the battery come down before it holds")
+        XCTAssertEqual(s.chargeReadyByHoldAtMost, 50)
         XCTAssertNil(s.chargeRestoreRecord)
+    }
+
+    /// The level Ready By comes down to is kept between 30 (its own floor) and 95, is 50 when what is stored is not a
+    /// number, and reaches the policy only while the switch is on.
+    func testTheLevelReadyByComesDownToIsClampedAndFollowsItsSwitch() {
+        let s = Settings(defaults: defaults)
+        XCTAssertEqual(Settings.chargeReadyByHoldAtMostRange, 30...95)
+        XCTAssertEqual(ChargePolicy.readyByHoldAtMostRange.lowerBound, ChargePolicy.readyByFloor)
+        s.chargeReadyByHoldAtMost = 10
+        XCTAssertEqual(s.chargeReadyByHoldAtMost, 30)
+        s.chargeReadyByHoldAtMost = 100
+        XCTAssertEqual(s.chargeReadyByHoldAtMost, 95)
+        s.chargeReadyByHoldAtMost = 60
+        XCTAssertEqual(s.chargeSettingsSnapshot().readyByHoldAtMost, 60)
+        store("sixty", as: "chargeReadyByHoldAtMost")
+        XCTAssertEqual(Settings(defaults: defaults).chargeReadyByHoldAtMost, 50)
+        s.chargeReadyByHoldAtMost = 60
+        s.chargeReadyByLowerEnabled = false
+        XCTAssertNil(s.chargeSettingsSnapshot().readyByHoldAtMost, "switched off, the battery is held where it is")
+        var heard = 0
+        let token = s.observe(Settings.Key.chargeReadyByLowerEnabled) { heard += 1 }
+        s.chargeReadyByLowerEnabled = true
+        XCTAssertEqual(heard, 1)
+        _ = token
     }
 
     /// The default is a number with a reason (`ChargePolicy.defaultMaxTemperatureC`): under the 45 °C the cells are
@@ -420,7 +446,8 @@ final class ChargeSettingsTests: XCTestCase {
         XCTAssertEqual(s.chargeSettingsSnapshot(),
                        ChargeSettingsSnapshot(limit: 80, driftEnabled: false, driftGap: 5,
                                               pauseWhenHotEnabled: false, maxTemperatureC: 40,
-                                              holdDuringSleep: false, drainAutomatically: false))
+                                              holdDuringSleep: false, drainAutomatically: false,
+                                              readyByHoldAtMost: 50))
         s.chargeLimit = 63
         s.chargeDriftEnabled = true
         s.chargeDriftGap = 9
@@ -429,7 +456,8 @@ final class ChargeSettingsTests: XCTestCase {
         XCTAssertEqual(s.chargeSettingsSnapshot(),
                        ChargeSettingsSnapshot(limit: 63, driftEnabled: true, driftGap: 9,
                                               pauseWhenHotEnabled: false, maxTemperatureC: 41.5,
-                                              holdDuringSleep: true, drainAutomatically: false))
+                                              holdDuringSleep: true, drainAutomatically: false,
+                                              readyByHoldAtMost: 50))
         s.chargeDriftEnabled = false
         s.chargePauseWhenHotEnabled = true
         s.chargeHoldDuringSleep = false
@@ -437,14 +465,16 @@ final class ChargeSettingsTests: XCTestCase {
         XCTAssertEqual(s.chargeSettingsSnapshot(),
                        ChargeSettingsSnapshot(limit: 63, driftEnabled: false, driftGap: 9,
                                               pauseWhenHotEnabled: true, maxTemperatureC: 41.5,
-                                              holdDuringSleep: false, drainAutomatically: true))
+                                              holdDuringSleep: false, drainAutomatically: true,
+                                              readyByHoldAtMost: 50))
         s.chargeReadyByEnabled = true
         s.chargeReadyByMinutes = 1000
         XCTAssertEqual(s.chargeSettingsSnapshot(),
                        ChargeSettingsSnapshot(limit: 63, driftEnabled: false, driftGap: 9,
                                               pauseWhenHotEnabled: true, maxTemperatureC: 41.5,
                                               holdDuringSleep: false, drainAutomatically: true,
-                                              readyByEnabled: true, readyByMinutes: 1000))
+                                              readyByEnabled: true, readyByMinutes: 1000,
+                                              readyByHoldAtMost: 50))
     }
 
     func testSnapshotCarriesClampedReadyByMinutes() {
@@ -468,7 +498,8 @@ final class ChargeSettingsTests: XCTestCase {
         XCTAssertEqual(Settings(defaults: defaults).chargeSettingsSnapshot(),
                        ChargeSettingsSnapshot(limit: 100, driftEnabled: true, driftGap: 1,
                                               pauseWhenHotEnabled: true, maxTemperatureC: 25,
-                                              holdDuringSleep: false, drainAutomatically: false))
+                                              holdDuringSleep: false, drainAutomatically: false,
+                                              readyByHoldAtMost: 50))
 
         store(5, as: "chargeLimit")
         store(99, as: "chargeDriftGap")
@@ -476,7 +507,8 @@ final class ChargeSettingsTests: XCTestCase {
         XCTAssertEqual(Settings(defaults: defaults).chargeSettingsSnapshot(),
                        ChargeSettingsSnapshot(limit: 20, driftEnabled: true, driftGap: 30,
                                               pauseWhenHotEnabled: true, maxTemperatureC: 40,
-                                              holdDuringSleep: false, drainAutomatically: false))
+                                              holdDuringSleep: false, drainAutomatically: false,
+                                              readyByHoldAtMost: 50))
     }
 
     /// Why the limit is clamped here and not left to the policy. The policy clamps the limit it gives macOS, but a

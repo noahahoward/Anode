@@ -94,6 +94,8 @@ public final class Settings {
         /// Ready By: the switch, and the time of day, in minutes after local midnight.
         public static let chargeReadyByEnabled = "chargeReadyByEnabled"
         public static let chargeReadyByMinutes = "chargeReadyByMinutes"
+        public static let chargeReadyByLowerEnabled = "chargeReadyByLowerEnabled"
+        public static let chargeReadyByHoldAtMost = "chargeReadyByHoldAtMost"
         /// Ultra Low Power Mode: the switch, and the group ids the owner always wants kept running.
         public static let ultraLowPowerEnabled = "ultraLowPowerEnabled"
         public static let ultraLowPowerAlwaysKeep = "ultraLowPowerAlwaysKeep"
@@ -122,6 +124,8 @@ public final class Settings {
     public static let chargeMaxTemperatureRange: ClosedRange<Double> = 25...50
     /// Ready By's time of day: minutes after local midnight, so 0 is midnight and 1439 is 23:59.
     public static let chargeReadyByMinutesRange: ClosedRange<Int> = 0...1439
+    /// The level Ready By lets the battery come down to before it holds: from its own floor up to 95%.
+    public static let chargeReadyByHoldAtMostRange: ClosedRange<Int> = ChargePolicy.readyByHoldAtMostRange
 
     /// What the ledger graph drew before it was customizable: the drain line, its
     /// mean since the lid opened, and the battery level. The strings are the
@@ -236,6 +240,8 @@ public final class Settings {
         /// OFF: holding the battery back until it has to charge is something the person asks for. 7:00 once it is on.
         static let chargeReadyByEnabled = false
         static let chargeReadyByMinutes = ChargePolicy.defaultReadyByMinutes
+        static let chargeReadyByLowerEnabled = true
+        static let chargeReadyByHoldAtMost = ChargePolicy.defaultReadyByHoldAtMost
         /// OFF: it freezes background apps and dims the screen, so the owner turns it on.
         static let ultraLowPowerEnabled = false
         /// ON: the mode is slower by design, and this is what keeps what still runs from burning power in bursts. The owner
@@ -356,6 +362,8 @@ public final class Settings {
         var chargeMaxTemperatureC: Double
         var chargeReadyByEnabled: Bool
         var chargeReadyByMinutes: Int
+        var chargeReadyByLowerEnabled: Bool
+        var chargeReadyByHoldAtMost: Int
         var ultraLowPowerEnabled: Bool
         var ultraLowPowerAlwaysKeep: [String]
         var ultraLowPowerEfficiencyCores: Bool
@@ -935,6 +943,24 @@ public final class Settings {
                        Settings.chargeReadyByMinutesRange) }
     }
 
+    /// Whether Ready By lets the battery come down before it holds: while it waits, a battery above
+    /// `chargeReadyByHoldAtMost` is not held where it is but at that level, and the Mac runs from the battery until
+    /// it gets there (macOS does that by itself whenever its limit is below the charge). Ready By is there so the
+    /// battery spends less time at a high charge, and a hold at 97% for a night was the opposite.
+    public var chargeReadyByLowerEnabled: Bool {
+        get { Settings.readBool(defaults, Key.chargeReadyByLowerEnabled, Default.chargeReadyByLowerEnabled) }
+        set { writeBool(Key.chargeReadyByLowerEnabled, \.chargeReadyByLowerEnabled, newValue,
+                        Default.chargeReadyByLowerEnabled) }
+    }
+
+    /// The highest level Ready By holds at while `chargeReadyByLowerEnabled` is on, in percent.
+    public var chargeReadyByHoldAtMost: Int {
+        get { Settings.readInt(defaults, Key.chargeReadyByHoldAtMost, Default.chargeReadyByHoldAtMost,
+                               Settings.chargeReadyByHoldAtMostRange) }
+        set { writeInt(Key.chargeReadyByHoldAtMost, \.chargeReadyByHoldAtMost, newValue,
+                       Default.chargeReadyByHoldAtMost, Settings.chargeReadyByHoldAtMostRange) }
+    }
+
     /// How macOS's own charge limit and Optimized Battery Charging were set before Charge Control first changed
     /// them, as the JSON of a `NativeChargeState`, in THIS account's preferences. nil when there is nothing to put
     /// back.
@@ -1050,7 +1076,8 @@ public final class Settings {
                                maxTemperatureC: chargeMaxTemperatureC,
                                holdDuringSleep: chargeHoldDuringSleep,
                                drainAutomatically: chargeDrainAutomatically,
-                               readyByEnabled: chargeReadyByEnabled, readyByMinutes: chargeReadyByMinutes)
+                               readyByEnabled: chargeReadyByEnabled, readyByMinutes: chargeReadyByMinutes,
+                               readyByHoldAtMost: chargeReadyByLowerEnabled ? chargeReadyByHoldAtMost : nil)
     }
 
     // ── Ultra Low Power Mode (Beta Features) ────────────────────────────────
@@ -1350,6 +1377,8 @@ public final class Settings {
         if old.chargeDrainAutomatically != now.chargeDrainAutomatically { notify(Key.chargeDrainAutomatically) }
         if old.chargeReadyByEnabled != now.chargeReadyByEnabled { notify(Key.chargeReadyByEnabled) }
         if old.chargeReadyByMinutes != now.chargeReadyByMinutes { notify(Key.chargeReadyByMinutes) }
+        if old.chargeReadyByLowerEnabled != now.chargeReadyByLowerEnabled { notify(Key.chargeReadyByLowerEnabled) }
+        if old.chargeReadyByHoldAtMost != now.chargeReadyByHoldAtMost { notify(Key.chargeReadyByHoldAtMost) }
         if old.ultraLowPowerEnabled != now.ultraLowPowerEnabled { notify(Key.ultraLowPowerEnabled) }
         if old.ultraLowPowerAlwaysKeep != now.ultraLowPowerAlwaysKeep { notify(Key.ultraLowPowerAlwaysKeep) }
         if old.ultraLowPowerEfficiencyCores != now.ultraLowPowerEfficiencyCores { notify(Key.ultraLowPowerEfficiencyCores) }
@@ -1555,6 +1584,9 @@ public final class Settings {
                chargeReadyByEnabled: readBool(d, Key.chargeReadyByEnabled, Default.chargeReadyByEnabled),
                chargeReadyByMinutes: readInt(d, Key.chargeReadyByMinutes, Default.chargeReadyByMinutes,
                                              chargeReadyByMinutesRange),
+               chargeReadyByLowerEnabled: readBool(d, Key.chargeReadyByLowerEnabled, Default.chargeReadyByLowerEnabled),
+               chargeReadyByHoldAtMost: readInt(d, Key.chargeReadyByHoldAtMost, Default.chargeReadyByHoldAtMost,
+                                                chargeReadyByHoldAtMostRange),
                ultraLowPowerEnabled: readBool(d, Key.ultraLowPowerEnabled, Default.ultraLowPowerEnabled),
                ultraLowPowerAlwaysKeep: readAlwaysKeep(d),
                ultraLowPowerEfficiencyCores: readBool(d, Key.ultraLowPowerEfficiencyCores, Default.ultraLowPowerEfficiencyCores),

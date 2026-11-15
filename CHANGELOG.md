@@ -7,6 +7,11 @@ feature or a visible change in how something works, the first only for a rewrite
 Nothing was bumped between 1.0.0 and 1.15.0. Those versions were assigned afterwards from the history and exist as
 git tags (`git show v1.7.0`); builds made before 1.15.0 still say 1.0.0 in their About box.
 
+## 1.19.0 — 2026-11-14
+- Ready By: a new line, Hold No Higher Than (50% until you change it, on by default). While Ready By waits, a battery above that level is not charged: the charger supplies nothing and the Mac runs from the battery until it has come down to the level, where it is then held until it is time to charge. Before, a battery plugged in at 97% was held at 97% all night, which is the opposite of what Ready By is for.
+- It comes down only as fast as the Mac uses power: quickly while you work, slowly while the Mac sleeps. Switch the line off to hold the battery wherever it is, as before.
+- The start of the charge allows for where the battery will have come down to by then, and the wake the Anode helper was given is always the start, so a battery that came down less than expected is not held again when the Mac wakes for it.
+
 ## 1.18.15 — 2026-11-14
 - The notice that offers to install or update the Anode helper has no app logo any more. The logo sat in a column of its own beside three paragraphs of text and squeezed them; the text now runs the whole width of the box.
 

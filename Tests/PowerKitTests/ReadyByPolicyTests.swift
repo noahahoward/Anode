@@ -217,6 +217,143 @@ final class ReadyByPolicyTests: XCTestCase {
         XCTAssertEqual(ChargePolicy.decide(settings(), i, &m).reason, .readyBy, "12 hours exactly is inside the shorter one")
     }
 
+    // ── Coming down before it holds ─────────────────────────────────────────
+
+    private func lowering(to cap: Int? = 50, limit: Int = 100) -> ChargeSettingsSnapshot {
+        var s = settings(limit: limit)
+        s.readyByHoldAtMost = cap
+        return s
+    }
+
+    /// The case it was built for: plugged in at 97% for a limit of 100%. It was held at 97% all night. The limit that
+    /// is set is now 50, which is below the battery, so nothing charges it and macOS runs the Mac from it.
+    func testABatteryAboveTheLevelIsHeldAtTheLevelAndNotWhereItIs() {
+        var m = ChargeMemory()
+        let by = t0.addingTimeInterval(14 * hour)
+        let d = ChargePolicy.decide(lowering(), inputs(percent: 97, by: by), &m)
+        XCTAssertEqual(d.reason, .readyBy)
+        XCTAssertEqual(d.osLimit, 50, "it was held where it was")
+        XCTAssertNil(d.dischargeTo, "the charger is not cut: macOS does not charge a battery above its limit")
+        XCTAssertEqual(d.readyBy?.raiseTo, 100)
+        XCTAssertEqual(m.readyBy?.level, 50)
+        // Switched off, it is held where it is, as before.
+        m = ChargeMemory()
+        XCTAssertEqual(ChargePolicy.decide(lowering(to: nil), inputs(percent: 97, by: by), &m).osLimit, 97)
+    }
+
+    /// At or below the level nothing changes: it holds where the battery is.
+    func testABatteryAtOrBelowTheLevelIsHeldWhereItIs() {
+        for percent in [50, 49, 42, 31] {
+            var m = ChargeMemory()
+            let d = ChargePolicy.decide(lowering(), inputs(percent: percent, by: t0.addingTimeInterval(8 * hour)), &m)
+            XCTAssertEqual(d.osLimit, percent, "\(percent)%")
+            var plain = ChargeMemory()
+            XCTAssertEqual(d, ChargePolicy.decide(lowering(to: nil), inputs(percent: percent, by: t0.addingTimeInterval(8 * hour)), &plain))
+        }
+    }
+
+    /// The level is never above the person's limit: with a limit of 40 and a level of 50 the battery is held where it
+    /// is, below the limit, and at or above the limit there is then nothing for Ready By to do.
+    func testTheLevelIsNeverAboveTheLimit() {
+        var m = ChargeMemory()
+        let by = t0.addingTimeInterval(8 * hour)
+        XCTAssertEqual(ChargePolicy.decide(lowering(to: 50, limit: 40), inputs(percent: 35, by: by), &m).osLimit, 35)
+        m = ChargeMemory()
+        XCTAssertEqual(ChargePolicy.decide(lowering(to: 50, limit: 40), inputs(percent: 60, by: by), &m).reason, .limit)
+        m = ChargeMemory()
+        XCTAssertEqual(ChargePolicy.decide(lowering(to: 95, limit: 80), inputs(percent: 90, by: by), &m).reason, .limit,
+                       "a level above the limit is no level to come down to")
+    }
+
+    /// Above the limit too: a limit of 80 with the battery at 97 comes down to 50 and is charged back to 80 by the time.
+    func testABatteryAboveTheLimitComesDownTooAndIsChargedBackToTheLimit() {
+        var m = ChargeMemory()
+        let by = t0.addingTimeInterval(10 * hour)
+        let d = ChargePolicy.decide(lowering(to: 50, limit: 80), inputs(percent: 97, by: by), &m)
+        XCTAssertEqual(d.reason, .readyBy)
+        XCTAssertEqual(d.osLimit, 50)
+        XCTAssertEqual(d.readyBy?.raiseTo, 80)
+        // Outside the window it is the limit's own business, as before.
+        m = ChargeMemory()
+        let far = ChargePolicy.decide(lowering(to: 50, limit: 80), inputs(percent: 97, by: t0.addingTimeInterval(20 * hour)), &m)
+        XCTAssertEqual(far.reason, .limit)
+    }
+
+    /// When the charge starts is counted from where the battery will be, not from the level it may never reach: a Mac
+    /// that sleeps comes down slowly (1.5 points an hour is allowed for). 97% with ten hours to go is taken to be at
+    /// 82% by then; from 50% the charge would start hours too early and the battery would sit full for them.
+    func testTheStartIsCountedFromWhereTheBatteryWillHaveComeDownTo() throws {
+        var m = ChargeMemory()
+        let by = t0.addingTimeInterval(10 * hour)
+        let d = ChargePolicy.decide(lowering(), inputs(percent: 97, by: by), &m)
+        let lead = by.timeIntervalSince(try XCTUnwrap(d.readyBy?.raiseAt))
+        let fromWhereItWillBe: TimeInterval = ChargePolicy.minutesToCharge(from: 82, to: 100, rate: 0.8) * 60 + 900
+        XCTAssertEqual(lead, fromWhereItWillBe, accuracy: 1e-6)
+        let fromTheLevel: TimeInterval = ChargePolicy.minutesToCharge(from: 50, to: 100, rate: 0.8) * 60 + 900
+        XCTAssertLessThan(lead, fromTheLevel)
+        XCTAssertEqual(ChargePolicy.readyByComingDownPerHour, 1.5)
+        // Never from below the level, however long there is.
+        m = ChargeMemory()
+        let long = ChargePolicy.decide(lowering(to: 90), inputs(percent: 97, by: t0.addingTimeInterval(15 * hour)), &m)
+        let longLead = t0.addingTimeInterval(15 * hour).timeIntervalSince(try XCTUnwrap(long.readyBy?.raiseAt))
+        let fromNinety: TimeInterval = ChargePolicy.minutesToCharge(from: 90, to: 100, rate: 0.8) * 60 + 900
+        XCTAssertEqual(longLead, fromNinety, accuracy: 1e-6)
+    }
+
+    /// As the battery really comes down (a Mac in use takes it down much faster than one asleep), each look counts
+    /// again from where it is, so the start moves earlier and is never late; once it is at the level, the hold and its
+    /// start are the ordinary ones.
+    func testAsItComesDownTheStartMovesEarlierAndThenItHoldsAtTheLevel() throws {
+        var m = ChargeMemory()
+        let by = t0.addingTimeInterval(8 * hour)
+        let first = ChargePolicy.decide(lowering(), inputs(percent: 97, by: by), &m)
+        let later = ChargePolicy.decide(lowering(), inputs(percent: 70, at: t0.addingTimeInterval(2 * hour), by: by), &m)
+        XCTAssertEqual(later.osLimit, 50)
+        XCTAssertLessThan(try XCTUnwrap(later.readyBy?.raiseAt), try XCTUnwrap(first.readyBy?.raiseAt))
+        let there = ChargePolicy.decide(lowering(), inputs(percent: 50, at: t0.addingTimeInterval(4 * hour), by: by), &m)
+        XCTAssertEqual(there.osLimit, 50)
+        let lead = by.timeIntervalSince(try XCTUnwrap(there.readyBy?.raiseAt))
+        let fromFifty: TimeInterval = ChargePolicy.minutesToCharge(from: 50, to: 100, rate: 0.8) * 60 + 900
+        XCTAssertEqual(lead, fromFifty, accuracy: 1e-6)
+    }
+
+    /// The level raised, or the option switched off, while the battery is still coming down: it is held at the new
+    /// level, or where it is, and not at the level it was coming down to before.
+    func testChangingTheLevelWhileItComesDownIsFollowed() {
+        var m = ChargeMemory()
+        let by = t0.addingTimeInterval(10 * hour)
+        XCTAssertEqual(ChargePolicy.decide(lowering(to: 50), inputs(percent: 97, by: by), &m).osLimit, 50)
+        XCTAssertEqual(ChargePolicy.decide(lowering(to: 70), inputs(percent: 96, by: by), &m).osLimit, 70)
+        XCTAssertEqual(ChargePolicy.decide(lowering(to: nil), inputs(percent: 96, by: by), &m).osLimit, 96,
+                       "switched off, it went on coming down")
+        // Raised above where the battery is: held where it is.
+        var n = ChargeMemory()
+        XCTAssertEqual(ChargePolicy.decide(lowering(to: 50), inputs(percent: 80, by: by), &n).osLimit, 50)
+        XCTAssertEqual(ChargePolicy.decide(lowering(to: 90), inputs(percent: 66, by: by), &n).osLimit, 66)
+        // A hold that overshoots by a point is still the hold it was.
+        var o = ChargeMemory()
+        XCTAssertEqual(ChargePolicy.decide(lowering(to: nil), inputs(percent: 54, by: by), &o).osLimit, 54)
+        XCTAssertEqual(ChargePolicy.decide(lowering(to: nil), inputs(percent: 55, by: by), &o).osLimit, 54)
+        XCTAssertEqual(ChargePolicy.decide(lowering(to: nil), inputs(percent: 53, by: by), &o).osLimit, 54)
+    }
+
+    /// When the time to charge comes while it is still above the level, it charges, as from any hold.
+    func testTheChargeStartsOnTimeAlthoughItNeverGotDownToTheLevel() {
+        var m = ChargeMemory()
+        let by = t0.addingTimeInterval(10 * hour)
+        _ = ChargePolicy.decide(lowering(), inputs(percent: 97, by: by), &m)
+        let d = ChargePolicy.decide(lowering(), inputs(percent: 90, at: by.addingTimeInterval(-20 * minute), by: by), &m)
+        XCTAssertEqual(d.reason, .readyBy)
+        XCTAssertEqual(d.osLimit, 100, "the time to charge had come")
+        XCTAssertEqual(m.readyBy?.started, true)
+    }
+
+    /// The numbers, named: the level is the middle, and it can be chosen between the floor and 95.
+    func testTheLevelItComesDownToIsTheMiddleUntilAnotherIsChosen() {
+        XCTAssertEqual(ChargePolicy.defaultReadyByHoldAtMost, 50)
+        XCTAssertEqual(ChargePolicy.readyByHoldAtMostRange, 30...95)
+    }
+
     func testTheStartMomentCountsTheTaperAboveEighty() throws {
         // Limit 100 from 54: 32.5 minutes to 80, then 15 points at 0.32 a minute and the last 5 at 0.16.
         let by = t0.addingTimeInterval(8 * hour)

@@ -20,8 +20,8 @@ final class ChargeControlFeature: BetaFeature {
                 + "Battery Charging, and puts it back as it was when you turn Charge Control off or quit. Draining "
                 + "needs the Anode helper, and so does holding the charge anywhere but 80, 85, 90, 95 or 100%, whether "
                 + "for your limit, Pause When Hot, Drift Below the Limit or Hold Level During Sleep. Ready By holds the "
-                + "battery where it is and charges it to the limit by a time you choose, waking the Mac if it has to; "
-                + "it needs the Anode helper. Quit Anode before "
+                + "battery, at a level it first lets it come down to, and charges it to the limit by a time you "
+                + "choose, waking the Mac if it has to; it needs the Anode helper. Quit Anode before "
                 + "removing it by hand (if it ever stopped without quitting, open it and quit it once more first): "
                 + "dragging it to the Trash puts nothing back."
     var layoutChanged: (() -> Void)?
@@ -61,6 +61,11 @@ final class ChargeControlFeature: BetaFeature {
     let readyByCheckbox = NSButton(checkboxWithTitle: "Ready By", target: nil, action: nil)
     /// The time of day, hours and minutes, in the person's own format (12 or 24 hour, as their Mac shows it).
     let readyByTimePicker = ChargeControlFeature.makeTimePicker()
+    /// Under Ready By: the level the battery is let come down to before it is held, and whether it is.
+    let readyByLowerCheckbox = NSButton(checkboxWithTitle: "Hold No Higher Than", target: nil, action: nil)
+    let readyByLowerLabel = NSTextField(labelWithString: "")
+    let readyByLowerStepper = ChargeControlFeature.makeStepper(Double(Settings.chargeReadyByHoldAtMostRange.lowerBound),
+                                                                Double(Settings.chargeReadyByHoldAtMostRange.upperBound))
     let statusLabel = BetaFeaturesWindowController.wrapping("")
     /// One more line under the Ready By row, for a helper that controls charging but is too old for Ready By: the status
     /// above stays what the features that work make it.
@@ -148,10 +153,15 @@ final class ChargeControlFeature: BetaFeature {
     static let holdNeedsHelperTip = "Without the Anode helper it can pause only at 80, 85, 90, 95 or 100%, and the "
         + "Mac charges on to the next of those."
 
-    static let readyByTip = "While the Mac is on the charger and below the limit, hold the charge where it is until it "
-        + "has to charge to be at the limit by this time every day. It only waits when that time is within the next "
-        + "16 hours (12 until the Anode helper has been updated), and never below 30%: it charges to 30% first. "
-        + "Needs the Anode helper."
+    static let readyByTip = "While the Mac is on the charger, hold the charge until it has to charge to be at the limit "
+        + "by this time every day. It only waits when that time is within the next 16 hours (12 until the Anode "
+        + "helper has been updated), and never below 30%: it charges to 30% first. Needs the Anode helper."
+    /// What the second line of Ready By does, and the one thing about it that is not obvious: how fast it goes.
+    static let readyByLowerTip = "While Ready By waits, a battery above this level is not charged: the charger supplies "
+        + "nothing and the Mac runs from the battery until it has come down to this level, where it is then held. "
+        + "The wait is spent at a lower charge, which a battery keeps better. It comes down only as fast as the Mac "
+        + "uses power, so slowly while the Mac sleeps. Switched off, the battery is held wherever it is."
+    static func readyByLowerText(level: Int) -> String { "\(level)%" }
 
     /// What the status line needs besides the status: the battery and the drain as the controller last saw them.
     struct Facts: Equatable {
@@ -200,6 +210,11 @@ final class ChargeControlFeature: BetaFeature {
         guard let raiseAt = r.raiseAt else { return "Charging to \(by)" }
         if let p = facts.percent, p + 1 < d.osLimit {
             return "Charging to \(d.osLimit)%, then holding until \(time(raiseAt)), then charging to \(by)"
+        }
+        // Above the level it is held at: the charger supplies nothing and the battery is coming down to it. When the
+        // charge starts depends on how far it has come down by then, so the time is an estimate and says so.
+        if let p = facts.percent, p > d.osLimit + 1 {
+            return "Running from the battery down to \(d.osLimit)%, then charging from about \(time(raiseAt)) to \(by)"
         }
         return "Holding at \(d.osLimit)% until \(time(raiseAt)), then charging to \(by)"
     }
@@ -352,6 +367,13 @@ final class ChargeControlFeature: BetaFeature {
         readyByTimePicker.target = self
         readyByTimePicker.action = #selector(readyByTimeChanged)
         readyByTimePicker.toolTip = Self.readyByTip
+        readyByLowerCheckbox.target = self
+        readyByLowerCheckbox.action = #selector(readyByLowerToggled)
+        readyByLowerCheckbox.toolTip = Self.readyByLowerTip
+        readyByLowerStepper.target = self
+        readyByLowerStepper.action = #selector(readyByLowerStepped)
+        readyByLowerStepper.toolTip = Self.readyByLowerTip
+        readyByLowerStepper.setAccessibilityLabel("Ready By: the highest level the battery is held at while it waits")
         drainAutomaticallyCheckbox.target = self
         drainAutomaticallyCheckbox.action = #selector(drainAutomaticallyToggled)
         drainAutomaticallyCheckbox.toolTip = "Whenever the battery is above the limit on the adapter, run from the battery "
@@ -368,8 +390,9 @@ final class ChargeControlFeature: BetaFeature {
         let driftRow = row([driftCheckbox, driftLabel, driftStepper])
         let heatRow = row([heatCheckbox, heatLabel, heatStepper])
         let readyByRow = row([readyByCheckbox, readyByTimePicker])
+        let readyByLowerRow = row([readyByLowerCheckbox, readyByLowerLabel, readyByLowerStepper])
         rows = [limitRow, buttonRow, driftRow, heatRow, sleepCheckbox, drainAutomaticallyCheckbox, readyByRow,
-                readyByNoteLabel]
+                readyByLowerRow, readyByNoteLabel]
 
         let column = NSStackView(views: [enableCheckbox] + rows + [statusLabel, installButton, installNoteLabel])
         column.orientation = .vertical
@@ -380,7 +403,8 @@ final class ChargeControlFeature: BetaFeature {
                     Settings.Key.chargeDriftGap, Settings.Key.chargePauseWhenHotEnabled,
                     Settings.Key.chargeMaxTemperatureC, Settings.Key.chargeHoldDuringSleep,
                     Settings.Key.chargeDrainAutomatically, Settings.Key.chargeReadyByEnabled,
-                    Settings.Key.chargeReadyByMinutes]
+                    Settings.Key.chargeReadyByMinutes, Settings.Key.chargeReadyByLowerEnabled,
+                    Settings.Key.chargeReadyByHoldAtMost]
         tokens = keys.map { settings.observe($0) { [weak self] in self?.redraw() } }
         redraw()
         return column
@@ -469,6 +493,8 @@ final class ChargeControlFeature: BetaFeature {
         commitReadyByTime()
         settings.chargeReadyByEnabled = on
     }
+    @objc private func readyByLowerToggled() { settings.chargeReadyByLowerEnabled = readyByLowerCheckbox.state == .on }
+    @objc private func readyByLowerStepped() { settings.chargeReadyByHoldAtMost = readyByLowerStepper.integerValue }
     @objc private func readyByTimeChanged() {
         pendingReadyByMinutes = Self.minutes(ofPickerDate: readyByTimePicker.dateValue)
         cancelPendingTime?()
@@ -562,6 +588,14 @@ final class ChargeControlFeature: BetaFeature {
             readyByTimePicker.dateValue = Self.pickerDate(minutes: settings.chargeReadyByMinutes)
         }
         readyByTimePicker.isEnabled = usable && settings.chargeReadyByEnabled
+        // The second line of Ready By is offered only while Ready By is on, as its time is.
+        let lower = settings.chargeReadyByLowerEnabled, readyBy = usable && settings.chargeReadyByEnabled
+        readyByLowerCheckbox.state = lower ? .on : .off
+        readyByLowerCheckbox.isEnabled = readyBy
+        readyByLowerStepper.integerValue = settings.chargeReadyByHoldAtMost
+        readyByLowerStepper.isEnabled = readyBy && lower
+        readyByLowerLabel.stringValue = Self.readyByLowerText(level: settings.chargeReadyByHoldAtMost)
+        readyByLowerLabel.textColor = readyBy && lower ? .labelColor : .disabledControlTextColor
 
         for r in rows { r.isHidden = !on }
         let readyByNote = usable && c?.readyByNeedsNewerHelper == true

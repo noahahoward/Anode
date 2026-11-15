@@ -1680,7 +1680,8 @@ inForce >= noLimit
         let keys = [Settings.Key.chargeLimit, Settings.Key.chargeDriftEnabled, Settings.Key.chargeDriftGap,
                     Settings.Key.chargePauseWhenHotEnabled, Settings.Key.chargeMaxTemperatureC,
                     Settings.Key.chargeHoldDuringSleep, Settings.Key.chargeDrainAutomatically,
-                    Settings.Key.chargeReadyByEnabled, Settings.Key.chargeReadyByMinutes]
+                    Settings.Key.chargeReadyByEnabled, Settings.Key.chargeReadyByMinutes,
+                    Settings.Key.chargeReadyByLowerEnabled, Settings.Key.chargeReadyByHoldAtMost]
         keyTokens = keys.map { settings.observe($0) { [weak self] in self?.tick() } }
 
         let t = Timer(timeInterval: Self.tickInterval, repeats: true) { [weak self] _ in
@@ -2432,6 +2433,7 @@ inForce >= noLimit
         var snapshot = settings.chargeSettingsSnapshot()
         // Set aside for a sleep nothing will wake the Mac from (`sleepWithoutAWake`).
         if heatSetAside { snapshot.pauseWhenHotEnabled = false }
+        startAtThePlannedMoment(now: now)
         let decision = ChargePolicy.decide(snapshot, policyInputs(b, snapshot, now: now), &memory)
         if decision.endFullCharge && isFullChargeRequested { isFullChargeRequested = false; announce = true }
         if decision.endManualDrain && isDrainRequested {
@@ -2461,6 +2463,18 @@ inForce >= noLimit
         settle()
         noteHelperNeed(now: now)
         if announce { changed() }
+    }
+
+    /// The moment the helper was given to wake the Mac for is the start of the charge, whatever an estimate made now
+    /// says. The plan's moment was counted from where the battery was expected to be; woken at it, a battery that
+    /// came down less than expected needs a little less time, and an estimate made afresh would say "not yet", put
+    /// the hold back over the limit the helper has just raised, and let the Mac go back to sleep with nothing left to
+    /// wake it. So once the plan's moment has come, the charge has started for that moment, as it has when the
+    /// policy's own estimate says so.
+    private func startAtThePlannedMoment(now: Date) {
+        guard let plan = wakePlan, !plan.forHeatAlone, now >= plan.raiseAt,
+              let remembered = memory.readyBy, remembered.moment == plan.by, !remembered.started else { return }
+        memory.readyBy?.started = true
     }
 
     /// How far ahead Ready By's moment may be for it to hold: as far as the helper that answered can plan a wake.

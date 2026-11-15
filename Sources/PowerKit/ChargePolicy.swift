@@ -17,12 +17,16 @@ public struct ChargeSettingsSnapshot: Equatable {
     /// The time of day, in minutes after local midnight, 0…1439. The policy never reads it: the controller turns it
     /// into the next moment (`ChargeInputs.readyBy`), with the calendar, and the policy only sees that moment.
     public var readyByMinutes: Int
+    /// The highest level Ready By holds at, when it lets the battery come down before it holds
+    /// (`Settings.chargeReadyByLowerEnabled`); nil when it holds the battery wherever it is.
+    public var readyByHoldAtMost: Int?
 
     public init(limit: Int,
                 driftEnabled: Bool, driftGap: Int,
                 pauseWhenHotEnabled: Bool, maxTemperatureC: Double,
                 holdDuringSleep: Bool, drainAutomatically: Bool,
-                readyByEnabled: Bool = false, readyByMinutes: Int = ChargePolicy.defaultReadyByMinutes) {
+                readyByEnabled: Bool = false, readyByMinutes: Int = ChargePolicy.defaultReadyByMinutes,
+                readyByHoldAtMost: Int? = nil) {
         self.limit = limit
         self.driftEnabled = driftEnabled
         self.driftGap = driftGap
@@ -32,6 +36,7 @@ public struct ChargeSettingsSnapshot: Equatable {
         self.drainAutomatically = drainAutomatically
         self.readyByEnabled = readyByEnabled
         self.readyByMinutes = readyByMinutes
+        self.readyByHoldAtMost = readyByHoldAtMost
     }
 }
 
@@ -244,6 +249,19 @@ public enum ChargePolicy {
     /// It never holds lower than this: below it the battery charges up to it first, and then holds. (The person's own
     /// limit, when that is lower still.)
     public static let readyByFloor = 30
+    /// The level Ready By lets the battery come down to before it holds, until the person chooses one: the middle,
+    /// where a lithium battery ages slowest. Ready By is there so the battery spends less time at a high charge, and
+    /// one plugged in at 97% was held at 97% for the night.
+    public static let defaultReadyByHoldAtMost = 50
+    /// What that level may be: not below the floor it never holds under, and not so high that it is no different
+    /// from holding where the battery is.
+    public static let readyByHoldAtMostRange = 30...95
+    /// How fast a battery that is above the hold is taken to come down while the Mac sleeps, in percent an hour: the
+    /// charger supplies nothing then (macOS runs the Mac from the battery whenever its limit is below the charge),
+    /// and a plan made as the Mac goes to sleep has to allow for where the battery will be when it is woken. A guess
+    /// on the fast side, so the charge starts early and not late; awake, the estimate is made again from where the
+    /// battery really is at every look.
+    public static let readyByComingDownPerHour = 1.5
     /// How much earlier than the estimate charging starts, to cover the estimate being wrong.
     public static let readyByMargin: TimeInterval = 15 * 60
     /// Above this charge a battery takes its charge slower.
@@ -409,8 +427,11 @@ public enum ChargePolicy {
         }
         // A different moment is a different plan: the one remembered has passed, or the time was changed.
         if let r = m.readyBy, r.moment != by { m.readyBy = nil }
-        // At or above the limit there is nothing to hold below and nothing to charge towards.
-        guard i.percent < s.limit else { return nil }
+        // The highest level it holds at: the person's limit, or lower when the battery is let come down first.
+        let cap = min(s.limit, s.readyByHoldAtMost ?? s.limit)
+        // At or above the limit there is nothing to charge towards, and nothing to hold below unless the battery is to
+        // come down first.
+        guard i.percent < s.limit || cap < s.limit else { return nil }
 
         let charging = ReadyByState(by: by, raiseAt: nil, raiseTo: s.limit)
         if m.readyBy?.started == true {
@@ -419,12 +440,28 @@ public enum ChargePolicy {
         guard by.timeIntervalSince(i.now) <= i.readyByWindow else { return nil }
 
         let floor = min(readyByFloor, s.limit)
-        // Never above the limit that is in force: a level remembered while the limit was higher is not held above one
-        // that was lowered since.
-        let level = min(s.limit, m.readyBy?.level ?? max(i.percent, floor))
-        // From the level it holds at, which is where the battery is heading: a battery below it (on its way up to the
-        // floor, or sagged a point under load) is charged back to it, and holds there.
-        let lead = minutesToCharge(from: level, to: s.limit, rate: i.chargeRate,
+        // Never above the limit that is in force (a level remembered while the limit was higher is not held above one
+        // that was lowered since), and never above the level the battery is to come down to. A battery above the level
+        // it is held at is not charged, and macOS runs the Mac from it until it is there: that is the coming down.
+        //
+        // The level it remembers is where the hold began, so that a battery that sags a point does not take the hold
+        // down with it. A battery well above it is another matter: nothing charges a battery to above its hold, so it
+        // is one that was coming down to a lower level which has since been raised or switched off, and the hold is
+        // then where the battery is now (or the level it comes down to, when that is lower).
+        var remembered = m.readyBy?.level ?? max(i.percent, floor)
+        if i.percent > remembered + 1 { remembered = i.percent }
+        let level = min(cap, remembered)
+        // The climb is counted from the level it holds at, which is where the battery is heading: a battery below it
+        // (on its way up to the floor, or sagged a point under load) is charged back to it, and holds there. One that is
+        // still above it is counted from where it will have come down to by the moment, which is never below the
+        // level, and never above the limit.
+        var from = level
+        if i.percent > level {
+            let hours = by.timeIntervalSince(i.now) / 3600
+            let fallen = i.percent - Int((readyByComingDownPerHour * hours).rounded(.up))
+            from = min(s.limit, max(level, fallen))
+        }
+        let lead = minutesToCharge(from: from, to: s.limit, rate: i.chargeRate,
                                    rateAbove80: i.chargeRateAbove80) * 60 + readyByMargin
         let raiseAt = by.addingTimeInterval(-lead)
         if i.now >= raiseAt {
