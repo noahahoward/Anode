@@ -1,4 +1,3 @@
-import CoreGraphics
 import Darwin
 import Foundation
 import IOKit.pwr_mgt
@@ -11,8 +10,8 @@ import PowerKit
 /// Each worker is this same program started with `--hard-drain-worker <Anode's pid> <cpu|gpu> <full|gentle>`. A
 /// processor worker is one loop of vector multiply-adds on one core; the GPU worker keeps the GPU busy with short
 /// command buffers. How many processor workers there are is decided every two seconds (`HardDrainRule.workers`) from
-/// how busy other programs are; how hard all of them work (`HardDrainRule.intensity`) from whether anybody is using
-/// the Mac and whether macOS says it is getting warm, and they are told with a signal. No work at all while the battery
+/// how busy other programs are; how hard all of them work (`HardDrainRule.intensity`) from whether macOS says the Mac
+/// is hot, and they are told with a signal. No work at all while the battery
 /// is too warm, while macOS says the Mac is hot, or in Low Power Mode or Ultra Low Power Mode. While it runs, the Mac
 /// is kept from going to sleep by itself (closing the lid still sleeps it, and that ends Hard Drain). A worker ends
 /// itself the moment Anode is no longer its parent, so none is left behind by an Anode that crashed.
@@ -51,8 +50,6 @@ final class LiveHardDrain: HardDraining {
         /// Calls `changed` whenever Ultra Low Power Mode starts or ends, until what it returns is called: the work has
         /// to stop when the mode begins, not at the next look.
         var followUltraLowPower: (_ changed: @escaping () -> Void) -> () -> Void
-        /// How long since anybody touched the keyboard, the pointer or the trackpad.
-        var secondsSinceInput: () -> TimeInterval
         var launch: (_ arguments: [String]) throws -> WatchdogProcess
         var signal: (_ pid: pid_t, _ signal: Int32) -> Void
         /// Keeps the Mac from going to sleep by itself until what it returns is called.
@@ -73,10 +70,6 @@ final class LiveHardDrain: HardDraining {
                 let token = NotificationCenter.default.addObserver(forName: UltraLowPowerController.didChange, object: nil,
                                                                    queue: .main) { _ in changed() }
                 return { NotificationCenter.default.removeObserver(token) }
-            },
-            secondsSinceInput: {
-                // Every kind of input event, from the session the person is in.
-                CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: CGEventType(rawValue: ~0)!)
             },
             launch: LiveUltraWatchdog.launchThisProgram,
             signal: { _ = kill($0, $1) },
@@ -102,7 +95,7 @@ final class LiveHardDrain: HardDraining {
     private let log: (String) -> Void
     private var processes: [WatchdogProcess] = []
     private var gpu: WatchdogProcess?
-    private var intensity: HardDrainRule.Intensity = .gentle
+    private var intensity: HardDrainRule.Intensity = .full
     private var cancelTimer: (() -> Void)?
     private var stopFollowing: (() -> Void)?
     private var releaseAwake: (() -> Void)?
@@ -210,8 +203,7 @@ final class LiveHardDrain: HardDraining {
             saidWhy = why
             log(why.map { "Hard Drain is waiting: \($0)" } ?? "Hard Drain is working again")
         }
-        let next = HardDrainRule.intensity(secondsSinceInput: system.secondsSinceInput(),
-                                           thermalSerious: system.thermalSerious())
+        let next = HardDrainRule.intensity(thermalSerious: system.thermalSerious())
         if next != intensity {
             intensity = next
             // Every worker that runs is told; one started from here on is started that way.

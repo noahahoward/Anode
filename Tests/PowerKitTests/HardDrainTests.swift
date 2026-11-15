@@ -76,14 +76,11 @@ final class HardDrainTests: XCTestCase {
 
     // ── How hard ────────────────────────────────────────────────────────────
 
-    /// All out only once nobody has touched the Mac for a minute and macOS does not say it is hot (serious). Fair is
-    /// not enough to back off: it came and went every minute of a real run with the battery under 37 °C.
-    func testItGoesAllOutOnlyWhenNobodyIsUsingTheMacAndItIsNotHot() {
-        XCTAssertEqual(HardDrainRule.awayAfter, 60)
-        XCTAssertEqual(HardDrainRule.intensity(secondsSinceInput: 59, thermalSerious: false), .gentle)
-        XCTAssertEqual(HardDrainRule.intensity(secondsSinceInput: 60, thermalSerious: false), .full)
-        XCTAssertEqual(HardDrainRule.intensity(secondsSinceInput: 3600, thermalSerious: true), .gentle)
-        XCTAssertEqual(HardDrainRule.intensity(secondsSinceInput: 0, thermalSerious: true), .gentle)
+    /// All out unless macOS says the Mac is hot (serious), whether or not somebody is using it: gently drew about half.
+    /// Fair is not enough to back off: it came and went every minute of a real run with the battery under 37 °C.
+    func testItGoesAllOutUnlessTheMacIsHot() {
+        XCTAssertEqual(HardDrainRule.intensity(thermalSerious: false), .full)
+        XCTAssertEqual(HardDrainRule.intensity(thermalSerious: true), .gentle)
     }
 
     /// The GPU's command buffers are sized to a few milliseconds whatever the GPU is doing, and never run away.
@@ -131,7 +128,6 @@ final class HardDrainTests: XCTestCase {
         var busy: UInt64 = 0, total: UInt64 = 0
         var workerSeconds: [pid_t: Double] = [:]
         var thermal = false, serious = false, lowPower = false, ultra = false
-        var idle: TimeInterval = 600
         var signals: [(pid_t, Int32)] = []
         var awake = 0
         var released = 0
@@ -161,7 +157,6 @@ final class HardDrainTests: XCTestCase {
                     ultraChanged = changed
                     return { [unowned self] in stoppedFollowing = true }
                 },
-                secondsSinceInput: { [unowned self] in idle },
                 launch: { [unowned self] arguments in
                     if launchFails { throw Refused() }
                     let p = FakeProcess(pid: pid_t(5000 + launched.count))
@@ -219,24 +214,25 @@ final class HardDrainTests: XCTestCase {
         }
     }
 
-    /// Nobody at the Mac: every worker starts all out. Someone at it: gently.
-    func testWorkersStartAllOutWhenNobodyIsAtTheMacAndGentlyWhenSomebodyIs() {
-        let away = Mac()
-        _ = engine(away)
-        XCTAssertTrue(away.launchedWith.allSatisfy { $0.last == "full" }, "\(away.launchedWith)")
-        let here = Mac()
-        here.idle = 5
-        _ = engine(here)
-        XCTAssertTrue(here.launchedWith.allSatisfy { $0.last == "gentle" }, "\(here.launchedWith)")
+    /// Every worker starts all out; on a Mac that macOS already says is hot, gently.
+    func testWorkersStartAllOutAndGentlyOnAHotMac() {
+        let cool = Mac()
+        let a = engine(cool)
+        XCTAssertTrue(cool.launchedWith.allSatisfy { $0.last == "full" }, "\(cool.launchedWith)")
+        let hot = Mac()
+        hot.serious = true
+        let b = engine(hot)
+        XCTAssertTrue(hot.launchedWith.allSatisfy { $0.last == "gentle" }, "\(hot.launchedWith)")
+        withExtendedLifetime((a, b)) {}
     }
 
-    /// The person comes back: every worker is told to be gentle at the next look, with a signal, not restarted; and all
-    /// out again once they have been away a minute.
-    func testWhenThePersonComesBackEveryWorkerIsToldToBeGentle() {
+    /// The Mac gets hot: every worker is told to be gentle at the next look, with a signal, not restarted; and all out
+    /// again once it has cooled.
+    func testWhenTheMacGetsHotEveryWorkerIsToldToBeGentle() {
         let mac = Mac()
         let e = engine(mac)
         let started = mac.launched.count
-        mac.idle = 1
+        mac.serious = true
         mac.pass(others: 0)
         XCTAssertEqual(e.currentIntensity, .gentle)
         XCTAssertEqual(Set(mac.signals.map(\.0)), Set(mac.running.map(\.pid)), "a worker was not told")
@@ -245,16 +241,11 @@ final class HardDrainTests: XCTestCase {
         mac.signals = []
         mac.pass(others: 0)
         XCTAssertTrue(mac.signals.isEmpty, "told again with nothing changed")
-        mac.idle = 61
+        mac.serious = false
         mac.pass(others: 0)
         XCTAssertEqual(e.currentIntensity, .full)
-        XCTAssertTrue(mac.signals.allSatisfy { $0.1 == HardDrainWorker.fullSignal })
-        // macOS saying the Mac is hot makes it gentle too, with nobody at it.
-        mac.signals = []
-        mac.serious = true
-        mac.pass(others: 0)
-        XCTAssertEqual(e.currentIntensity, .gentle)
         XCTAssertFalse(mac.signals.isEmpty)
+        XCTAssertTrue(mac.signals.allSatisfy { $0.1 == HardDrainWorker.fullSignal })
     }
 
     /// The Mac is kept from sleeping by itself while it runs, and let sleep again when it stops.
@@ -593,8 +584,8 @@ final class HardDrainControllerTests: XCTestCase {
     /// come first, the Mac gets warm, and what stops it. No watts.
     func testTheTipSaysWhatItDoesAndWhatStopsIt() {
         let tip = ChargeControlFeature.hardDrainTip
-        for part in ["processor and the GPU", "extra work", "on battery", "never below 30%", "all out when nobody",
-                     "gently while you are using it", "behind your apps", "gets warm", "fans", "stays awake",
+        for part in ["processor and the GPU", "extra work", "on battery", "never below 30%", "all out",
+                     "two processor cores free", "what your apps are using", "gets warm", "fans", "stays awake",
                      "stops by itself at the level", "sleeps", "three hours", "battery is warm"] {
             XCTAssertTrue(tip.contains(part), "\(part) is not in: \(tip)")
         }

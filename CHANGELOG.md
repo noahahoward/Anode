@@ -8,9 +8,9 @@ Nothing was bumped between 1.0.0 and 1.15.0. Those versions were assigned afterw
 git tags (`git show v1.7.0`); builds made before 1.15.0 still say 1.0.0 in their About box.
 
 ## 1.20.0 — 2026-11-15
-- Charge Control: a new button, Hard Drain, beside Drain to Limit. It brings the battery down fast to the level it is held at (your limit, or Ready By's Hold No Higher Than when that is lower) by giving the processor and the GPU extra work. Measured on a 14-inch MacBook Pro: about a battery an hour with nobody using the Mac, against about four percent an hour idle.
+- Charge Control: a new button, Hard Drain, beside Drain to Limit. It brings the battery down fast to the level it is held at (your limit, or Ready By's Hold No Higher Than when that is lower) by giving the processor and the GPU extra work. Measured on a 14-inch MacBook Pro: about a battery an hour, against about four percent an hour idle.
 - It works on the charger and on battery. On battery it drains to the level the battery would be held at on the charger, and never below 30%.
-- It goes all out once nobody has used the Mac for a minute, and gently while you are using it: its work then waits behind your apps, the GPU is worked a third of the time, and two processor cores are always left free. The Mac gets warm and its fans may be heard, and it stays awake while Hard Drain runs (closing the lid still sleeps it), but not while Low Power Mode or Ultra Low Power Mode is on.
+- It goes all out, whether or not you are using the Mac: two processor cores are always left free, and it makes room for whatever your apps are using. It eases off only when macOS says the Mac is hot. The Mac gets warm and its fans may be heard, and it stays awake while Hard Drain runs (closing the lid still sleeps it), but not while Low Power Mode or Ultra Low Power Mode is on.
 - It stops by itself at the level, when the Mac goes to sleep, after three hours, and when you press Stop Hard Drain. It waits while the battery is at the Pause When Hot temperature (until it has cooled two degrees), while macOS says the Mac is hot, and while Low Power Mode or Ultra Low Power Mode is on; the section says which.
 
 ## 1.19.0 — 2026-11-14

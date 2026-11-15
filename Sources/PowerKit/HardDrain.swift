@@ -21,9 +21,6 @@ public enum HardDrainRule {
     public static let coresLeftFree = 2
     /// How often the amount of work is decided again.
     public static let lookEvery: TimeInterval = 2
-    /// How long nobody has to have touched the keyboard or the pointer before the work goes all out: until then the
-    /// person is taken to be using the Mac, and the work is gentle.
-    public static let awayAfter: TimeInterval = 60
     /// The longest it runs before it ends by itself, whatever the battery says: nobody means to heat a Mac for longer.
     public static let longest: TimeInterval = 3 * 3600
     /// Once the battery has been too warm, how far below that it has to cool before the work starts again, so that a
@@ -45,23 +42,26 @@ public enum HardDrainRule {
 
     /// How hard the workers work. All out, the processor work runs at the default priority and the GPU without a gap,
     /// which is what draws the most (about 75 to 90 W here). Gently, the processor work runs at the utility priority,
-    /// which the scheduler puts behind anything the person is doing, and the GPU a third of the time, so that the
-    /// windows the person is looking at still get the GPU when they need it.
+    /// which the scheduler keeps off the fast cores, and the GPU a third of the time.
     public enum Intensity: String, Equatable {
         case full
         case gentle
     }
 
-    /// All out only while nobody is using the Mac and macOS does not say it is hot: someone at the keyboard, or a Mac
-    /// that macOS says is hot (serious), gets the gentle kind; a critical one gets none (`workers`).
+    /// All out unless macOS says the Mac is hot (serious), which gets the gentle kind; a critical one gets none
+    /// (`workers`). All out whether or not somebody is using the Mac: whoever pressed the button wants the battery
+    /// down, and the cores left free and the ones other programs are using are what keep the Mac usable.
+    ///
+    /// MEASURED: gently, with someone at the Mac, it drew 45 W (twelve processor workers on the slow cores, the GPU 17%
+    /// busy), about 58% of this battery an hour, against 80 to 86 W all out.
     ///
     /// Not at macOS's first step, fair. MEASURED in a 30-minute run from 85 to 40% with nobody at the Mac: the thermal
     /// state went to fair within a minute of going all out and back to nominal a minute after going gentle, again and
     /// again, so the Mac swung between 11 and 88 W and averaged about 90% of the battery an hour; the battery itself
     /// never passed 36.2 °C. Fair is the state any long render runs in, and the battery's own temperature
     /// (`isHot`) is what guards the battery.
-    public static func intensity(secondsSinceInput: TimeInterval, thermalSerious: Bool) -> Intensity {
-        secondsSinceInput >= awayAfter && !thermalSerious ? .full : .gentle
+    public static func intensity(thermalSerious: Bool) -> Intensity {
+        thermalSerious ? .gentle : .full
     }
 
     /// Whether the battery counts as too warm for the work, given whether it did at the last look: too warm at the
