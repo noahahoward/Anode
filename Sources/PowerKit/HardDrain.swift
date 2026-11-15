@@ -21,8 +21,6 @@ public enum HardDrainRule {
     public static let coresLeftFree = 2
     /// How often the amount of work is decided again.
     public static let lookEvery: TimeInterval = 2
-    /// The longest it runs before it ends by itself, whatever the battery says: nobody means to heat a Mac for longer.
-    public static let longest: TimeInterval = 3 * 3600
     /// Once the battery has been too warm, how far below that it has to cool before the work starts again, so that a
     /// battery at the threshold does not start and stop it at every look.
     public static let coolBy = 2.0

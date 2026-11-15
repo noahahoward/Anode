@@ -21,7 +21,7 @@ protocol HardDraining: AnyObject {
     func start(temperature: @escaping () -> Double?, hotAt: @escaping () -> Double)
     /// Ends every worker. Does nothing when none runs.
     func stop()
-    /// Started and not stopped, and not past its longest time. (There may be no worker at this moment: the battery is
+    /// Started and not stopped. (There may be no worker at this moment: the battery is
     /// warm, or other programs have the processor.)
     var isRunning: Bool { get }
     /// How many workers there are now, the GPU's among them.
@@ -158,12 +158,7 @@ final class LiveHardDrain: HardDraining {
 
     /// One look: how busy the Mac was with other programs since the last one, and how many workers that leaves.
     private func lookAgain() {
-        guard let started = startedAt else { return }
-        if system.now().timeIntervalSince(started) >= HardDrainRule.longest {
-            log("Hard Drain ended: it had run for \(Int(HardDrainRule.longest / 3600)) hours")
-            stop()
-            return
-        }
+        guard startedAt != nil else { return }
         // Workers that have ended by themselves are no longer counted.
         processes.removeAll { !$0.isRunning }
         if gpu?.isRunning == false { gpu = nil }

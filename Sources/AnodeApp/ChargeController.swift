@@ -572,33 +572,21 @@ inForce >= noLimit
     /// so that when Ready By's time to charge comes (the limit goes up) Hard Drain is over, and the two never pull the
     /// battery opposite ways.
     ///
-    /// On battery nothing holds the charge anywhere, so it is the level the battery would be held at once the charger is
-    /// back (`hardDrainTargetOnBattery`), until the battery is a point above it.
+    /// On battery nothing holds the charge anywhere, and it goes on until the person stops it or the battery is down to
+    /// `hardDrainLevelOnBattery`.
     var hardDrainLevel: Int? {
         guard running, !sleeping, let percent = batteryPercent else { return nil }
         if isCablePresent {
             guard let d = lastDecision, d.reason != .fullCharge, percent > d.osLimit else { return nil }
             return d.osLimit
         }
-        let target = Self.hardDrainTargetOnBattery(settings: settings)
-        return percent > target + Self.hardDrainStopsEarlyOnBattery ? target : nil
+        return percent > Self.hardDrainLevelOnBattery ? Self.hardDrainLevelOnBattery : nil
     }
 
-    /// Never below this on battery, whatever the limit: a Mac left draining with nobody near it must not go flat.
-    static let hardDrainFloorOnBattery = ChargePolicy.readyByFloor
-    /// On battery it ends a point above its level: the battery is looked at every 30 s, and all out it comes down about
-    /// a point a minute, so ending at the level itself could leave it a point or two under.
-    static let hardDrainStopsEarlyOnBattery = 1
+    /// On battery it goes this low and no lower, whatever the limit: the owner wants it to drain until they say stop,
+    /// and this is the one place it stops by itself, with enough left for the Mac to be plugged in before it shuts down.
+    static let hardDrainLevelOnBattery = 5
 
-    /// On battery: the person's limit, or Ready By's Hold No Higher Than when that is on and lower, and never below
-    /// `hardDrainFloorOnBattery`.
-    static func hardDrainTargetOnBattery(settings: Settings) -> Int {
-        var level = settings.chargeLimit
-        if settings.chargeReadyByEnabled, settings.chargeReadyByLowerEnabled {
-            level = min(level, settings.chargeReadyByHoldAtMost)
-        }
-        return max(level, hardDrainFloorOnBattery)
-    }
     /// The person pressed Charge to Full and has not unplugged or cancelled it.
     private(set) var isFullChargeRequested = false
     /// The charge the last tick saw; nil while off.
@@ -2014,14 +2002,14 @@ inForce >= noLimit
     private func endHardDrainIfItIsOver() {
         guard isHardDrainRequested else { return }
         if hardDrain?.isRunning != true {
-            // It ended itself (its longest time), and said so.
+            // It ended itself, and said so.
             isHardDrainRequested = false
             changed()
         } else if hardDrainLevel == nil {
             let at = batteryPercent.map { " (\($0)%)" } ?? ""
             endHardDrain(because: isCablePresent
                 ? "the battery is down to the level it is held at\(at), or is no longer coming down"
-                : "on battery, the battery is down to a point above the level it is held at\(at)")
+                : "on battery, the battery is down to \(Self.hardDrainLevelOnBattery)%\(at)")
         }
     }
 

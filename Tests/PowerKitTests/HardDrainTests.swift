@@ -431,15 +431,15 @@ final class HardDrainTests: XCTestCase {
         e.stop()
     }
 
-    func testItEndsByItselfAfterItsLongestTime() {
+    /// Time alone never ends it: the owner wants it to go on until they stop it (or the battery is at its level).
+    func testItDoesNotEndByItselfWithTime() {
         let mac = Mac()
         let e = engine(mac)
-        mac.now += HardDrainRule.longest
+        mac.now += 10 * 3600
         mac.pass(others: 0)
-        XCTAssertEqual(mac.released, 1, "the Mac was kept awake after it ended")
-        XCTAssertFalse(e.isRunning)
-        XCTAssertTrue(mac.running.isEmpty)
-        XCTAssertTrue(mac.lines.contains { $0.contains("Hard Drain ended: it had run for 3 hours") })
+        XCTAssertTrue(e.isRunning)
+        XCTAssertEqual(mac.released, 0)
+        XCTAssertFalse(mac.running.isEmpty)
     }
 
     func testAWorkerThatEndedByItselfIsReplaced() {
@@ -584,9 +584,9 @@ final class HardDrainControllerTests: XCTestCase {
     /// come first, the Mac gets warm, and what stops it. No watts.
     func testTheTipSaysWhatItDoesAndWhatStopsIt() {
         let tip = ChargeControlFeature.hardDrainTip
-        for part in ["processor and the GPU", "extra work", "on battery", "never below 30%", "all out",
-                     "two processor cores free", "what your apps are using", "gets warm", "fans", "stays awake",
-                     "stops by itself at the level", "sleeps", "three hours", "battery is warm"] {
+        for part in ["processor and the GPU", "extra work", "On battery", "until you press Stop Hard Drain",
+                     "down to 5%", "On the charger", "all out", "two processor cores free", "what your apps are using",
+                     "gets warm", "fans", "stays awake", "stops when the Mac sleeps", "battery is warm"] {
             XCTAssertTrue(tip.contains(part), "\(part) is not in: \(tip)")
         }
         XCTAssertNil(tip.range(of: #"\d\s?W\b"#, options: .regularExpression))
@@ -622,7 +622,7 @@ final class HardDrainControllerTests: XCTestCase {
         battery = ReadyByControllerTests.plugged(80)     // at the limit: held
         c.tick()
         XCTAssertNil(c.hardDrainLevel)
-        battery = ReadyByControllerTests.plugged(81, ac: false)     // on battery, a point above the limit: nothing
+        battery = ReadyByControllerTests.plugged(5, ac: false)     // on battery, at 5%: nothing
         c.tick()
         XCTAssertNil(c.hardDrainLevel)
     }
@@ -649,15 +649,14 @@ final class HardDrainControllerTests: XCTestCase {
         XCTAssertTrue(lines.contains { $0.hasPrefix("Hard Drain ended: the battery is down to the level") })
     }
 
-    /// Unplugging does not end it: on battery it goes on, to the level the battery is held at on the charger. Sleep
-    /// ends it.
+    /// Unplugging does not end it: on battery it goes on, down to 5%. Sleep ends it.
     func testUnpluggingDoesNotEndItAndSleepDoes() {
         let c = make()
         c.pressHardDrain()
         battery = ReadyByControllerTests.plugged(91, ac: false)
         c.tick()
         XCTAssertTrue(c.isHardDrainRequested, "unplugging ended it")
-        XCTAssertEqual(c.hardDrainLevel, 80)
+        XCTAssertEqual(c.hardDrainLevel, 5)
         XCTAssertEqual(engine.stops, 0)
         c.willSleep()
         XCTAssertFalse(c.isHardDrainRequested)
@@ -667,53 +666,40 @@ final class HardDrainControllerTests: XCTestCase {
 
     // ── On battery ──────────────────────────────────────────────────────────
 
-    /// The owner's case: Hold No Higher Than at 40 and a limit of 100, unplugged at 95%. On battery the level is 40,
-    /// the level it would be held at on the charger; it can be pressed, and it ends a point above it.
-    func testOnBatteryItDrainsToTheLevelItWouldBeHeldAt() {
+    /// On battery it goes on until it is stopped or the battery is down to 5%, whatever the limit or Ready By: the
+    /// owner's wish. It ends at 5, not a point above.
+    func testOnBatteryItDrainsDownToFivePercent() {
         settings.chargeLimit = 100
         settings.chargeReadyByEnabled = true
         settings.chargeReadyByHoldAtMost = 40
         battery = ReadyByControllerTests.plugged(95, ac: false)
         let c = make()
-        XCTAssertEqual(c.hardDrainLevel, 40)
+        XCTAssertEqual(c.hardDrainLevel, 5)
+        XCTAssertEqual(ChargeController.hardDrainLevelOnBattery, 5)
         c.pressHardDrain()
         XCTAssertTrue(c.isHardDrainRequested)
-        XCTAssertTrue(lines.contains("Hard Drain pressed: bringing the battery down to 40% faster"), lines.joined(separator: "\n"))
-        battery = ReadyByControllerTests.plugged(42, ac: false)
+        XCTAssertTrue(lines.contains("Hard Drain pressed: bringing the battery down to 5% faster"), lines.joined(separator: "\n"))
+        for p in [40, 30, 6] {
+            battery = ReadyByControllerTests.plugged(p, ac: false)
+            c.tick()
+            XCTAssertTrue(c.isHardDrainRequested, "it stopped by itself at \(p)%")
+        }
+        battery = ReadyByControllerTests.plugged(5, ac: false)
         c.tick()
-        XCTAssertTrue(c.isHardDrainRequested)
-        battery = ReadyByControllerTests.plugged(41, ac: false)
-        c.tick()
-        XCTAssertFalse(c.isHardDrainRequested, "it went on to the level itself, and could have gone under it")
-        XCTAssertTrue(lines.contains { $0.hasPrefix("Hard Drain ended: on battery, the battery is down to a point above") },
+        XCTAssertFalse(c.isHardDrainRequested, "it went on below 5%")
+        XCTAssertTrue(lines.contains { $0.hasPrefix("Hard Drain ended: on battery, the battery is down to 5%") },
                       lines.joined(separator: "\n"))
     }
 
-    /// Without Ready By coming down first, the level on battery is the person's limit.
-    func testOnBatteryWithoutReadyByTheLevelIsTheLimit() {
-        settings.chargeLimit = 70
-        battery = ReadyByControllerTests.plugged(90, ac: false)
-        let c = make()
-        XCTAssertEqual(c.hardDrainLevel, 70)
-        settings.chargeLimit = 100
-        c.tick()
-        XCTAssertNil(c.hardDrainLevel, "a limit of 100 leaves nothing to drain to on battery")
-    }
-
-    /// Never below 30% on battery, whatever the limit: a Mac draining with nobody near it must not go flat.
-    func testOnBatteryItNeverGoesBelowThirty() {
+    /// On the charger the level is still the one the battery is held at: below it the charger takes over.
+    func testOnTheChargerTheLevelIsStillTheLimit() {
         settings.chargeLimit = 20
-        battery = ReadyByControllerTests.plugged(60, ac: false)
-        let c = make()
-        XCTAssertEqual(c.hardDrainLevel, 30)
-        XCTAssertEqual(ChargeController.hardDrainFloorOnBattery, 30)
-        battery = ReadyByControllerTests.plugged(31, ac: false)
-        c.tick()
-        XCTAssertNil(c.hardDrainLevel)
-        // On the charger the limit is the limit: macOS holds it there.
         battery = ReadyByControllerTests.plugged(60)
-        c.tick()
+        let c = make()
         XCTAssertEqual(c.hardDrainLevel, 20)
+        battery = ReadyByControllerTests.plugged(60, ac: false)
+        c.tick()
+        XCTAssertEqual(c.hardDrainLevel, 5)
     }
 
     /// Plugged back in, it follows the charger's rule again: with nothing coming down (the limit is 100 and the time is
@@ -747,7 +733,7 @@ final class HardDrainControllerTests: XCTestCase {
     func testWhenTheEngineEndsItselfThePressIsOver() {
         let c = make()
         c.pressHardDrain()
-        engine.isRunning = false        // its longest time
+        engine.isRunning = false        // a worker launch failed for good, say
         c.tick()
         XCTAssertFalse(c.isHardDrainRequested)
     }

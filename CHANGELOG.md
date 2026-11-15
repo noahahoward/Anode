@@ -7,6 +7,11 @@ feature or a visible change in how something works, the first only for a rewrite
 Nothing was bumped between 1.0.0 and 1.15.0. Those versions were assigned afterwards from the history and exist as
 git tags (`git show v1.7.0`); builds made before 1.15.0 still say 1.0.0 in their About box.
 
+## 1.21.0 — 2026-11-15
+- Hard Drain on battery keeps going until you press Stop Hard Drain or the battery is down to 5%, whatever your limit or Ready By's Hold No Higher Than. Before, it stopped at the level the battery would be held at on the charger, and never went below 30%.
+- Hard Drain no longer stops by itself after three hours. It still stops when the Mac goes to sleep, and still waits while the battery is warm or a power-saving mode is on.
+- On the charger nothing changes: it brings the battery down to the level it is held at, where the charger takes over.
+
 ## 1.20.0 — 2026-11-15
 - Charge Control: a new button, Hard Drain, beside Soft Drain to Limit. It brings the battery down fast to the level it is held at (your limit, or Ready By's Hold No Higher Than when that is lower) by giving the processor and the GPU extra work. Measured on a 14-inch MacBook Pro: about a battery an hour, against about four percent an hour idle.
 - It works on the charger and on battery. On battery it drains to the level the battery would be held at on the charger, and never below 30%.
