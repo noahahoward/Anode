@@ -348,7 +348,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         KeepAwakeController.current = keepAwake
         chargeControl = ChargeController(settings: .shared, records: chargeRecords, helper: ChargeHelperAdapter(),
                                          limitInForce: chargeLimitInForce, liftedAtLaunch: chargeLiftedAtLaunch,
-                                         watchdog: LiveChargeWatchdog())
+                                         watchdog: LiveChargeWatchdog(), hardDrain: LiveHardDrain())
         ChargeController.current = chargeControl
         keyboardCleaner = KeyboardCleaner(tap: CleanerInputTap(), windows: CleanerWindows())
         KeyboardCleaner.current = keyboardCleaner
@@ -3136,6 +3136,10 @@ UltraWatchdog.runIfRequested(CommandLine.arguments)
 // Charge Control's watchdog is this same program started with `--charge-watchdog`: it waits for Anode to end, puts
 // macOS's own charge settings back if Anode ended without quitting, and exits. Nothing below runs in it.
 ChargeWatchdog.runIfRequested(CommandLine.arguments)
+
+// A worker of Hard Drain is this same program started with `--hard-drain-worker`: it keeps one core busy at the
+// lowest priority until Anode ends it. Nothing below runs in it.
+HardDrainWorker.runIfRequested(CommandLine.arguments)
 
 // `uninstall.sh` runs the app this way, with no window and before anything else starts, to put macOS's own charge
 // settings back before the app and its settings are deleted. A quit does that already, but an Anode that crashed or

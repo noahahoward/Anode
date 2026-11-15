@@ -558,6 +558,47 @@ inForce >= noLimit
     private(set) var status: ChargeStatus = .off
     /// The person pressed Drain to Limit and it has not finished, been cancelled, or been ended by an unplug or a sleep.
     private(set) var isDrainRequested = false
+    /// Hard Drain was pressed and has not ended: extra work is being run to bring the battery down faster.
+    private(set) var isHardDrainRequested = false
+    /// How many of Hard Drain's processes are working now.
+    var hardDrainWorkers: Int { hardDrain?.workers ?? 0 }
+    /// Why Hard Drain has no work at this moment, in a few words; nil while it is working, or not pressed.
+    var hardDrainWaitingBecause: String? { isHardDrainRequested ? hardDrain?.waitingBecause : nil }
+    /// The level Hard Drain brings the battery down to, when there is one to bring it down to; nil when there is
+    /// nothing for it to do.
+    ///
+    /// With the charger on the cable it is the limit in force, while the battery is above it: macOS charges nothing then
+    /// and runs the Mac from the battery, and the level is what macOS will hold. Taken from the decision of the moment,
+    /// so that when Ready By's time to charge comes (the limit goes up) Hard Drain is over, and the two never pull the
+    /// battery opposite ways.
+    ///
+    /// On battery nothing holds the charge anywhere, so it is the level the battery would be held at once the charger is
+    /// back (`hardDrainTargetOnBattery`), until the battery is a point above it.
+    var hardDrainLevel: Int? {
+        guard running, !sleeping, let percent = batteryPercent else { return nil }
+        if isCablePresent {
+            guard let d = lastDecision, d.reason != .fullCharge, percent > d.osLimit else { return nil }
+            return d.osLimit
+        }
+        let target = Self.hardDrainTargetOnBattery(settings: settings)
+        return percent > target + Self.hardDrainStopsEarlyOnBattery ? target : nil
+    }
+
+    /// Never below this on battery, whatever the limit: a Mac left draining with nobody near it must not go flat.
+    static let hardDrainFloorOnBattery = ChargePolicy.readyByFloor
+    /// On battery it ends a point above its level: the battery is looked at every 30 s, and all out it comes down about
+    /// a point a minute, so ending at the level itself could leave it a point or two under.
+    static let hardDrainStopsEarlyOnBattery = 1
+
+    /// On battery: the person's limit, or Ready By's Hold No Higher Than when that is on and lower, and never below
+    /// `hardDrainFloorOnBattery`.
+    static func hardDrainTargetOnBattery(settings: Settings) -> Int {
+        var level = settings.chargeLimit
+        if settings.chargeReadyByEnabled, settings.chargeReadyByLowerEnabled {
+            level = min(level, settings.chargeReadyByHoldAtMost)
+        }
+        return max(level, hardDrainFloorOnBattery)
+    }
     /// The person pressed Charge to Full and has not unplugged or cancelled it.
     private(set) var isFullChargeRequested = false
     /// The charge the last tick saw; nil while off.
@@ -801,6 +842,8 @@ inForce >= noLimit
     /// Puts macOS's own settings back if this Anode ends without quitting; started when the limit is taken, ended when
     /// it is given back. nil in the tests that are not about it and in the headless restores, which hold nothing.
     private let watchdog: ChargeWatchdogging?
+    /// Runs Hard Drain's work. nil in the tests that are not about it and in the headless restores.
+    private let hardDrain: HardDraining?
     private var startsAt: Date? {
         didSet {
             guard (startsAt == nil) != (oldValue == nil) else { return }
@@ -860,13 +903,13 @@ inForce >= noLimit
                      rateStore: ChargeRateStore? = nil,
                      now: @escaping () -> Date = Date.init,
                      calendar: @escaping () -> Calendar = { Calendar.autoupdatingCurrent },
-                     watchdog: ChargeWatchdogging? = nil) {
+                     watchdog: ChargeWatchdogging? = nil, hardDrain: HardDraining? = nil) {
         self.init(settings: settings, records: records ?? ChargeRecords(settings: settings), makeClient: makeClient,
                   helper: helper, battery: battery, chargerSwitch: chargerSwitch, log: log, workspace: workspace,
                   limitInForce: limitInForce, startDelay: startDelay, liftedAtLaunch: liftedAtLaunch, observing: true,
                   noClientBecause: noClientBecause, onConsole: onConsole,
                   rateStore: rateStore ?? SettingsChargeRateStore(settings: settings), now: now, calendar: calendar,
-                  watchdog: watchdog)
+                  watchdog: watchdog, hardDrain: hardDrain)
     }
 
     /// The Mac's own charger switch, read as the person and not through the helper: only writing it needs root
@@ -926,8 +969,9 @@ inForce >= noLimit
                  rateStore: ChargeRateStore? = nil,
                  now: @escaping () -> Date = Date.init,
                  calendar: @escaping () -> Calendar = { Calendar.autoupdatingCurrent },
-                 watchdog: ChargeWatchdogging? = nil) {
+                 watchdog: ChargeWatchdogging? = nil, hardDrain: HardDraining? = nil) {
         self.watchdog = watchdog
+        self.hardDrain = hardDrain
         self.settings = settings
         self.rateStore = rateStore ?? SettingsChargeRateStore(settings: settings)
         self.clock = now
@@ -1237,6 +1281,7 @@ inForce >= noLimit
         // Every way here has put macOS back, or left the limit on purpose (it is another account's): either way
         // there is nothing for the watchdog to lift.
         watchdog?.stop()
+        endHardDrain(because: nil)
         removeTriggers()
         helper.letGo()
         client = nil
@@ -1937,6 +1982,49 @@ inForce >= noLimit
 
     /// Drain to the limit on the adapter; pressed again, cancel. Cancels Charge to Full, which would otherwise outrank
     /// it.
+    /// Hard Drain: starts the extra work while the battery is above the level it is to come down to (`hardDrainLevel`),
+    /// on the charger or on battery, and ends it when pressed again. It changes nothing about what is held or when the
+    /// charger is cut: it only makes the Mac use more, so the battery gets to the level sooner. It ends by itself when
+    /// the battery is there, the Mac goes to sleep, Charge Control stops, or it has run its longest time
+    /// (`endHardDrainIfItIsOver`). Plugging in or unplugging does not end it: the level is then the other one.
+    func pressHardDrain() {
+        guard running, let engine = hardDrain else { return }
+        if isHardDrainRequested {
+            endHardDrain(because: "pressed again")
+        } else {
+            guard let level = hardDrainLevel else { return }
+            isHardDrainRequested = true
+            log("Hard Drain pressed: bringing the battery down to \(level)% faster")
+            engine.start(temperature: { [weak self] in self?.battery()?.temperature_C },
+                         hotAt: { [weak self] in self?.settings.chargeMaxTemperatureC ?? ChargePolicy.defaultMaxTemperatureC })
+        }
+        changed()
+    }
+
+    /// `why` nil ends it without a word (Charge Control itself is stopping).
+    private func endHardDrain(because why: String?) {
+        guard isHardDrainRequested else { return }
+        isHardDrainRequested = false
+        hardDrain?.stop()
+        if let why { log("Hard Drain ended: \(why)") }
+        changed()
+    }
+
+    /// After every look at the battery: the work goes on only while the battery is still coming down to a level.
+    private func endHardDrainIfItIsOver() {
+        guard isHardDrainRequested else { return }
+        if hardDrain?.isRunning != true {
+            // It ended itself (its longest time), and said so.
+            isHardDrainRequested = false
+            changed()
+        } else if hardDrainLevel == nil {
+            let at = batteryPercent.map { " (\($0)%)" } ?? ""
+            endHardDrain(because: isCablePresent
+                ? "the battery is down to the level it is held at\(at), or is no longer coming down"
+                : "on battery, the battery is down to a point above the level it is held at\(at)")
+        }
+    }
+
     func pressDrain() {
         guard running else { return }
         isDrainRequested.toggle()
@@ -1994,6 +2082,7 @@ inForce >= noLimit
         let deadline = Date().addingTimeInterval(Self.stopTimeout)
         sleeping = true
         sleptAt = now ?? clock()
+        endHardDrain(because: "the Mac is going to sleep")
         stopAndWait(for: "sleep", deadline: deadline)
         if isDrainRequested {
             isDrainRequested = false
@@ -2462,6 +2551,7 @@ inForce >= noLimit
         if !onAC { memory = ChargeMemory() }
         settle()
         noteHelperNeed(now: now)
+        endHardDrainIfItIsOver()
         if announce { changed() }
     }
 

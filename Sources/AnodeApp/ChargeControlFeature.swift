@@ -47,6 +47,7 @@ final class ChargeControlFeature: BetaFeature {
     let limitSlider = ChargeControlFeature.makeLimitSlider()
     let limitValueLabel = NSTextField(labelWithString: "")
     let drainButton = NSButton(title: "Drain to Limit", target: nil, action: nil)
+    let hardDrainButton = NSButton(title: "Hard Drain", target: nil, action: nil)
     let fullChargeButton = NSButton(title: "Charge to Full", target: nil, action: nil)
     let driftCheckbox = NSButton(checkboxWithTitle: "Drift Below the Limit", target: nil, action: nil)
     let driftLabel = NSTextField(labelWithString: "")
@@ -149,6 +150,19 @@ final class ChargeControlFeature: BetaFeature {
     static let drainTip = "Run the Mac from the battery while it stays plugged in, until the charge is down to the "
         + "limit. Needs the Anode helper."
     static let drainBlockedTip = "Drain to Limit needs the charger and a battery above the limit."
+    static let hardDrainTip = "Bring the battery down faster, to the level it is held at: your limit, or Ready By's "
+        + "Hold No Higher Than when that is lower. Anode gives the processor and the GPU extra work so the Mac uses "
+        + "much more, on the charger or on battery (on battery, never below 30%). It goes all out when nobody has "
+        + "used the Mac for a minute, and gently while you are using it, behind your apps. The Mac gets warm and its "
+        + "fans may be heard, and it stays awake while this runs. It stops by itself at the level, when the Mac "
+        + "sleeps, and after three hours, and waits while the battery is warm."
+    static let hardDrainBlockedTip = "Hard Drain needs a battery above the level it is held at: your limit, or Ready "
+        + "By's Hold No Higher Than when that is lower (on battery, never below 30%)."
+    /// Added to the status line while it runs.
+    static func hardDrainText(waitingBecause why: String?, level: Int?) -> String {
+        if let why { return " Hard Drain is waiting: \(why)." }
+        return level.map { " Hard Drain is running, down to \($0)%." } ?? " Hard Drain is running."
+    }
     /// The three holds pause where the charge is, which macOS can do by itself only at its own steps.
     static let holdNeedsHelperTip = "Without the Anode helper it can pause only at 80, 85, 90, 95 or 100%, and the "
         + "Mac charges on to the next of those."
@@ -337,10 +351,13 @@ final class ChargeControlFeature: BetaFeature {
         drainButton.target = self
         drainButton.action = #selector(drainPressed)
         drainButton.toolTip = Self.drainTip
+        hardDrainButton.target = self
+        hardDrainButton.action = #selector(hardDrainPressed)
+        hardDrainButton.toolTip = Self.hardDrainTip
         fullChargeButton.target = self
         fullChargeButton.action = #selector(fullChargePressed)
         fullChargeButton.toolTip = Self.fullChargeTip
-        for b in [drainButton, fullChargeButton, installButton] { b.bezelStyle = .rounded }
+        for b in [drainButton, hardDrainButton, fullChargeButton, installButton] { b.bezelStyle = .rounded }
         installButton.controlSize = .small
         installButton.target = self
         installButton.action = #selector(installPressed)
@@ -386,7 +403,7 @@ final class ChargeControlFeature: BetaFeature {
             return r
         }
         let limitRow = row([limitLabel, limitSlider, limitValueLabel])
-        let buttonRow = row([drainButton, fullChargeButton])
+        let buttonRow = row([drainButton, hardDrainButton, fullChargeButton])
         let driftRow = row([driftCheckbox, driftLabel, driftStepper])
         let heatRow = row([heatCheckbox, heatLabel, heatStepper])
         let readyByRow = row([readyByCheckbox, readyByTimePicker])
@@ -444,6 +461,7 @@ final class ChargeControlFeature: BetaFeature {
     }
 
     @objc private func drainPressed() { controller()?.pressDrain(); redraw() }
+    @objc private func hardDrainPressed() { controller()?.pressHardDrain(); redraw() }
     @objc private func fullChargePressed() { controller()?.pressFullCharge(); redraw() }
     /// The install says how it is going here, as it goes: waiting, a dialog already up, how it ended.
     @objc private func installPressed() {
@@ -557,6 +575,12 @@ final class ChargeControlFeature: BetaFeature {
         drainButton.isEnabled = pressable && drainCan
         fullChargeButton.isEnabled = pressable && fullChargeCan
         drainButton.toolTip = pressable && !drainCan ? Self.drainBlockedTip : Self.drainTip
+        // Hard Drain hurries a battery that is already coming down: offered only while it is, and always to stop.
+        let hardDrainRequested = c?.isHardDrainRequested == true
+        let hardDrainCan = hardDrainRequested || c?.hardDrainLevel != nil
+        hardDrainButton.title = hardDrainRequested ? "Stop Hard Drain" : "Hard Drain"
+        hardDrainButton.isEnabled = pressable && hardDrainCan
+        hardDrainButton.toolTip = pressable && !hardDrainCan ? Self.hardDrainBlockedTip : Self.hardDrainTip
         fullChargeButton.toolTip = pressable && !fullChargeCan ? Self.fullChargeBlockedTip : Self.fullChargeTip
 
         let drift = settings.chargeDriftEnabled, heat = settings.chargePauseWhenHotEnabled
@@ -611,7 +635,8 @@ final class ChargeControlFeature: BetaFeature {
         let offWarning = !on || waiting ? c?.offWarning : nil
         statusLabel.stringValue = offWarning ?? Self.statusText(status, facts, time: { [zone] in
             Self.shortTime($0, timeZone: zone())
-        })
+        }) + (c?.isHardDrainRequested == true
+            ? "." + Self.hardDrainText(waitingBecause: c?.hardDrainWaitingBecause, level: c?.hardDrainLevel) : "")
         statusLabel.textColor = unavailable || needsHelper || refused || offWarning != nil
             ? .systemOrange : .secondaryLabelColor
         // A switched-on section with nothing to report yet (the controller has not answered) shows no line.
