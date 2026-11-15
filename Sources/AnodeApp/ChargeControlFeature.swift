@@ -74,11 +74,56 @@ final class ChargeControlFeature: BetaFeature {
          installHelper: @escaping (@escaping (String) -> Void) -> Void = { report in
              (NSApplication.shared.delegate as? AppDelegate)?.fansPane.control.installHelper(report: report)
          },
-         timeZone: @escaping () -> TimeZone = { Calendar.autoupdatingCurrent.timeZone }) {
+         timeZone: @escaping () -> TimeZone = { Calendar.autoupdatingCurrent.timeZone },
+         after: @escaping (TimeInterval, @escaping () -> Void) -> () -> Void = ChargeControlFeature.afterOnTheMainRunLoop) {
         self.settings = settings
         self.controller = controller
         self.installHelper = installHelper
         self.zone = timeZone
+        self.after = after
+        // A quit inside the settle time must not lose a time the person has just chosen.
+        quitToken = NotificationCenter.default.addObserver(forName: NSApplication.willTerminateNotification, object: nil,
+                                                           queue: .main) { [weak self] _ in self?.commitReadyByTime() }
+    }
+
+    deinit {
+        if let quitToken { NotificationCenter.default.removeObserver(quitToken) }
+        commitReadyByTime()
+    }
+
+    // ── The time, once it has settled ───────────────────────────────────────
+
+    /// How long the time picker has to have been left alone before the time in it is written to the settings.
+    ///
+    /// A time is changed a field at a time: the hour, then the minutes, a step at a time with the arrows. Written at
+    /// every step, each value in between was a time of day in its own right and Charge Control acted on it at once:
+    /// changing 22:30 to 21:26 at 21:23 passed through 21:30, whose time to charge had already come, so the charger
+    /// was switched on, and two seconds later, with the minutes done, off again (seen twice in one evening's log).
+    /// The time is taken once the picker has been still for this long, and at once when Ready By is switched, the
+    /// section goes away or Anode quits.
+    static let timeSettle: TimeInterval = 1.5
+
+    /// Runs `work` after `delay` and returns what cancels it. The real one is a timer on the main run loop, in the
+    /// common modes so that it also fires while a control is being tracked; a test gives its own and is the clock.
+    static func afterOnTheMainRunLoop(_ delay: TimeInterval, _ work: @escaping () -> Void) -> () -> Void {
+        let timer = Timer(timeInterval: delay, repeats: false) { _ in work() }
+        RunLoop.main.add(timer, forMode: .common)
+        return { timer.invalidate() }
+    }
+
+    private let after: (TimeInterval, @escaping () -> Void) -> () -> Void
+    private var quitToken: NSObjectProtocol?
+    /// The time in the picker that has not been written yet, in minutes after midnight, and what cancels its wait.
+    private(set) var pendingReadyByMinutes: Int?
+    private var cancelPendingTime: (() -> Void)?
+
+    /// Write the time that is waiting, now. Nothing when none is.
+    func commitReadyByTime() {
+        cancelPendingTime?()
+        cancelPendingTime = nil
+        guard let minutes = pendingReadyByMinutes else { return }
+        pendingReadyByMinutes = nil
+        settings.chargeReadyByMinutes = minutes
     }
 
     /// The zone the times in the status line are written in: the one the controller's calendar follows
@@ -416,9 +461,18 @@ final class ChargeControlFeature: BetaFeature {
     @objc private func heatStepped() { settings.chargeMaxTemperatureC = heatStepper.doubleValue.rounded() }
     @objc private func sleepToggled() { settings.chargeHoldDuringSleep = sleepCheckbox.state == .on }
     @objc private func drainAutomaticallyToggled() { settings.chargeDrainAutomatically = drainAutomaticallyCheckbox.state == .on }
-    @objc private func readyByToggled() { settings.chargeReadyByEnabled = readyByCheckbox.state == .on }
+    @objc private func readyByToggled() {
+        // The time first, so that Ready By is never switched on for a time the picker no longer shows. The box is
+        // read before that: writing the time redraws the section from the settings, which still say what the box
+        // said before it was clicked.
+        let on = readyByCheckbox.state == .on
+        commitReadyByTime()
+        settings.chargeReadyByEnabled = on
+    }
     @objc private func readyByTimeChanged() {
-        settings.chargeReadyByMinutes = Self.minutes(ofPickerDate: readyByTimePicker.dateValue)
+        pendingReadyByMinutes = Self.minutes(ofPickerDate: readyByTimePicker.dateValue)
+        cancelPendingTime?()
+        cancelPendingTime = after(Self.timeSettle) { [weak self] in self?.commitReadyByTime() }
     }
 
     // ── Showing ─────────────────────────────────────────────────────────────
@@ -500,8 +554,11 @@ final class ChargeControlFeature: BetaFeature {
         drainAutomaticallyCheckbox.isEnabled = usable
         readyByCheckbox.state = settings.chargeReadyByEnabled ? .on : .off
         readyByCheckbox.isEnabled = usable
-        // Not while it is being edited with the keyboard to the value it already holds: only a time that differs.
-        if Self.minutes(ofPickerDate: readyByTimePicker.dateValue) != settings.chargeReadyByMinutes {
+        // Not while it is being edited with the keyboard to the value it already holds: only a time that differs. And
+        // not while a time chosen in it is waiting to settle: the settings still hold the time before, and putting
+        // that back would undo what the person is in the middle of choosing.
+        if pendingReadyByMinutes == nil,
+           Self.minutes(ofPickerDate: readyByTimePicker.dateValue) != settings.chargeReadyByMinutes {
             readyByTimePicker.dateValue = Self.pickerDate(minutes: settings.chargeReadyByMinutes)
         }
         readyByTimePicker.isEnabled = usable && settings.chargeReadyByEnabled

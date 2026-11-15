@@ -50,9 +50,25 @@ final class ReadyBySectionTests: XCTestCase {
                                  now: { [weak self] in self?.clockNow ?? Date() }, calendar: { utc })
         controller = c
         let f = ChargeControlFeature(settings: settings, controller: { c }, installHelper: { _ in },
-                                     timeZone: { [weak self] in self?.zone ?? .current })
+                                     timeZone: { [weak self] in self?.zone ?? .current },
+                                     after: { [weak self] delay, work in
+                                         self?.waits.append((delay, work))
+                                         let serial = (self?.waits.count ?? 1) - 1
+                                         return { [weak self] in self?.cancelled.insert(serial) }
+                                     })
         view = f.makeView()
         return f
+    }
+
+    /// The waits the section asked for, in order, and the ones it cancelled: the test is the clock.
+    private var waits: [(delay: TimeInterval, work: () -> Void)] = []
+    private var cancelled: Set<Int> = []
+
+    /// Time passes: every wait that was not cancelled fires.
+    private func settle() {
+        let due = waits.enumerated().filter { !cancelled.contains($0.offset) }.map(\.element.work)
+        cancelled.formUnion(waits.indices)
+        for work in due { work() }
     }
 
     private func send(_ control: NSControl) { _ = control.target?.perform(control.action, with: control) }
@@ -134,8 +150,107 @@ final class ReadyBySectionTests: XCTestCase {
         for (minutes, label) in [(390, "6:30"), (0, "midnight"), (1439, "23:59"), (735, "12:15"), (60, "1:00")] {
             f.readyByTimePicker.dateValue = ChargeControlFeature.pickerDate(minutes: minutes)
             send(f.readyByTimePicker)
+            settle()
             XCTAssertEqual(settings.chargeReadyByMinutes, minutes, label)
         }
+    }
+
+    // ── A time is taken once the picker is still ────────────────────────────
+
+    private func step(_ f: ChargeControlFeature, to minutes: Int) {
+        f.readyByTimePicker.dateValue = ChargeControlFeature.pickerDate(minutes: minutes)
+        send(f.readyByTimePicker)
+    }
+
+    /// The bug, as it happened at 21:23: the time was 22:30 and was being changed to 22:26. Changing the hour first
+    /// made it 21:30, seven minutes away, whose time to charge had come, and the charger was switched on; two
+    /// seconds later the minutes were done and it was switched off again. Nothing is written until the picker is
+    /// still, so the time in between never reaches Charge Control.
+    func testATimeInBetweenIsNeverActedOn() {
+        clockNow = ISO8601DateFormatter().date(from: "2026-11-13T21:23:00Z")!
+        settings.chargeReadyByEnabled = true
+        settings.chargeReadyByMinutes = 22 * 60 + 30
+        let f = make()
+        XCTAssertEqual(controller?.lastDecision?.reason, .readyBy)
+        XCTAssertEqual(client.state?.mclLimit, 54, "the fixture is not holding")
+        let before = client.limitCalls.count + helper.commands.count
+        step(f, to: 21 * 60 + 30)       // the hour, first
+        XCTAssertEqual(settings.chargeReadyByMinutes, 22 * 60 + 30, "a time in between was written")
+        XCTAssertEqual(client.state?.mclLimit, 54, "the charger was switched on for a time in between")
+        step(f, to: 21 * 60 + 26)       // then the minutes
+        step(f, to: 22 * 60 + 26)       // and the hour back
+        XCTAssertEqual(client.limitCalls.count + helper.commands.count, before, "something was sent while it was being chosen")
+        XCTAssertEqual(f.pendingReadyByMinutes, 22 * 60 + 26)
+        settle()
+        XCTAssertEqual(settings.chargeReadyByMinutes, 22 * 60 + 26)
+        XCTAssertNil(f.pendingReadyByMinutes)
+        XCTAssertEqual(client.state?.mclLimit, 54, "still holding, for the time that was chosen")
+    }
+
+    /// Each step starts the wait again and cancels the one before: one write, of the last value, and a wait of
+    /// `timeSettle`.
+    func testEachStepStartsTheWaitAgain() {
+        let f = make()
+        step(f, to: 500)
+        step(f, to: 501)
+        step(f, to: 502)
+        XCTAssertEqual(waits.map(\.delay), [1.5, 1.5, 1.5])
+        XCTAssertEqual(ChargeControlFeature.timeSettle, 1.5)
+        XCTAssertEqual(cancelled, [0, 1], "the earlier waits were left running")
+        settle()
+        XCTAssertEqual(settings.chargeReadyByMinutes, 502)
+    }
+
+    /// While a time is waiting, the picker keeps what the person chose: a redraw (the battery moved, another setting
+    /// changed) must not put the time before back into it.
+    func testARedrawDoesNotUndoATimeThatIsWaiting() {
+        settings.chargeReadyByEnabled = true
+        let f = make()
+        step(f, to: 615)
+        settings.chargeDriftGap = 7         // something else changes, and the section is redrawn
+        f.refresh()
+        XCTAssertEqual(ChargeControlFeature.minutes(ofPickerDate: f.readyByTimePicker.dateValue), 615)
+        settle()
+        XCTAssertEqual(settings.chargeReadyByMinutes, 615)
+    }
+
+    /// Switching Ready By takes the time at once, before the switch: Ready By is never switched on for a time the
+    /// picker no longer shows. And the box that was clicked is what is switched, although taking the time redraws the
+    /// section from settings that still say what the box said before.
+    func testTheTimeIsTakenAtOnceWhenReadyByIsSwitched() {
+        let f = make()
+        step(f, to: 615)
+        f.readyByCheckbox.state = .on
+        send(f.readyByCheckbox)
+        XCTAssertEqual(settings.chargeReadyByMinutes, 615)
+        XCTAssertTrue(settings.chargeReadyByEnabled, "the click on the box was lost")
+        XCTAssertNil(f.pendingReadyByMinutes)
+        XCTAssertEqual(cancelled, [0], "the wait was left running after the time was taken")
+        // Off again, with another time waiting.
+        step(f, to: 700)
+        f.readyByCheckbox.state = .off
+        send(f.readyByCheckbox)
+        XCTAssertEqual(settings.chargeReadyByMinutes, 700)
+        XCTAssertFalse(settings.chargeReadyByEnabled)
+    }
+
+    /// The section's view going away does not lose a time that is waiting: the wait still ends, and writes it.
+    func testATimeWaitingWhenTheViewGoesIsStillWritten() {
+        let f = make()
+        step(f, to: 700)
+        view = nil
+        settle()
+        XCTAssertEqual(settings.chargeReadyByMinutes, 700, "a time chosen just before the section went was lost")
+        _ = f
+    }
+
+    /// A quit inside the settle time takes it too.
+    func testAQuitTakesATimeThatIsWaiting() {
+        let f = make()
+        step(f, to: 733)
+        NotificationCenter.default.post(name: NSApplication.willTerminateNotification, object: nil)
+        XCTAssertEqual(settings.chargeReadyByMinutes, 733)
+        _ = f
     }
 
     /// A picker that has stepped past midnight is on another day and is still a time of day.
