@@ -351,7 +351,7 @@ final class ChargePolicyTests: XCTestCase {
         XCTAssertEqual(lower.osLimit, 78)
     }
 
-    // ── Drain to Limit ───────────────────────────────────────────────────────────
+    // ── Soft Drain to Limit ───────────────────────────────────────────────────────────
 
     func testManualDrainToLimit() {
         var (s, i) = base()

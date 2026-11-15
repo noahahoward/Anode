@@ -1163,6 +1163,18 @@ final class GraphAxisAndHoverTests: XCTestCase {
         }
     }
 
+    /// A rate above 100 %/hr raises the shared scale instead of running flat along the top: Hard Drain was seen at
+    /// 161 %/hr on a chart that stopped at 100.
+    func testTheSharedScaleRisesForARateAboveOneHundred() {
+        XCTAssertEqual(HistoryGraphView.sharedScale(dataMax: 40).top, 100)
+        XCTAssertEqual(HistoryGraphView.sharedScale(dataMax: 100).ticks, [0, 25, 50, 75, 100])
+        XCTAssertEqual(HistoryGraphView.sharedScale(dataMax: .nan).top, 100)
+        let raised = HistoryGraphView.sharedScale(dataMax: 161)
+        XCTAssertEqual(raised.top, 200)
+        XCTAssertEqual(raised.ticks, [0, 50, 100, 150, 200])
+        XCTAssertEqual(HistoryGraphView.sharedScale(dataMax: 100.5).top, 150)
+    }
+
     /// And the scale is not shared by default — the other charts still fit their
     /// own data, which is what makes a rate legible when it is small.
     func testTheSharedScaleIsOptIn() {

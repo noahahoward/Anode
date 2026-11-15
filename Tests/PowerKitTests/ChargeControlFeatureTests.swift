@@ -313,7 +313,7 @@ final class ChargeControlFeatureTests: XCTestCase {
     }
 
     /// After an unclean exit the section says plainly that the limit was lifted and when Charge Control starts again;
-    /// Drain to Limit and Charge to Full wait with it, and everything is back when it starts.
+    /// Soft Drain to Limit and Charge to Full wait with it, and everything is back when it starts.
     func testWhileWaitingOutTheDelayTheLineSaysSo() throws {
         settings.chargeRestoreRecord = ChargeController.encodeRecord(
             NativeChargeState(mclEnabled: false, mclLimit: 100, optimizedChargingEnabled: true))
@@ -400,7 +400,7 @@ final class ChargeControlFeatureTests: XCTestCase {
         f.sleepCheckbox.performClick(nil)
         XCTAssertTrue(settings.chargeHoldDuringSleep)
 
-        XCTAssertEqual(f.drainAutomaticallyCheckbox.title, "Drain Automatically Above the Limit")
+        XCTAssertEqual(f.drainAutomaticallyCheckbox.title, "Soft Drain Automatically Above the Limit")
         f.drainAutomaticallyCheckbox.performClick(nil)
         XCTAssertTrue(settings.chargeDrainAutomatically)
 
@@ -447,11 +447,11 @@ final class ChargeControlFeatureTests: XCTestCase {
         XCTAssertEqual(f.statusLabel.stringValue, "Not charging: 70% is above 40% (your limit)")
         c.pressDrain()   // as the menu would: the section is not told
         XCTAssertEqual(f.statusLabel.stringValue, "Draining to 40% on the adapter")
-        XCTAssertEqual(f.drainButton.title, "Stop Draining")
+        XCTAssertEqual(f.drainButton.title, "Stop Soft Drain")
         battery = ChargeControllerTests.state(40)
         c.tick()
         XCTAssertEqual(f.statusLabel.stringValue, "Holding 40% (drained)")
-        XCTAssertEqual(f.drainButton.title, "Drain to Limit", "a discharge that reached the limit ended itself")
+        XCTAssertEqual(f.drainButton.title, "Soft Drain to Limit", "a discharge that reached the limit ended itself")
     }
 
     /// Another part of the app listening to the controller neither silences the section nor is silenced by it.
@@ -525,10 +525,10 @@ final class ChargeControlFeatureTests: XCTestCase {
         XCTAssertEqual(f.fullChargeButton.toolTip, "Charge to 100% this once. It ends when you unplug.")
     }
 
-    /// Drain to Limit needs the charger and a battery above the limit; otherwise it would end the moment it began. A
+    /// Soft Drain to Limit needs the charger and a battery above the limit; otherwise it would end the moment it began. A
     /// discharge under way can always be stopped.
     func testDrainToLimitNeedsTheChargerAndABatteryAboveTheLimit() throws {
-        let blocked = "Drain to Limit needs the charger and a battery above the limit."
+        let blocked = "Soft Drain to Limit needs the charger and a battery above the limit."
         let f = make(enabled: true)   // 70%, limit 80
         let c = try XCTUnwrap(controller)
         XCTAssertFalse(f.drainButton.isEnabled, "nothing above the limit to discharge")
@@ -548,7 +548,7 @@ final class ChargeControlFeatureTests: XCTestCase {
         battery = ChargeControllerTests.state(90)
         c.tick()
         f.drainButton.performClick(nil)
-        XCTAssertEqual(f.drainButton.title, "Stop Draining")
+        XCTAssertEqual(f.drainButton.title, "Stop Soft Drain")
         XCTAssertTrue(f.drainButton.isEnabled, "a discharge under way cannot be stopped")
     }
 
@@ -556,18 +556,18 @@ final class ChargeControlFeatureTests: XCTestCase {
         settings.chargeLimit = 40
         let f = make(enabled: true)
         let c = try XCTUnwrap(controller)
-        XCTAssertEqual(f.drainButton.title, "Drain to Limit")
+        XCTAssertEqual(f.drainButton.title, "Soft Drain to Limit")
         XCTAssertEqual(f.fullChargeButton.title, "Charge to Full")
 
         f.drainButton.performClick(nil)
         XCTAssertTrue(c.isDrainRequested)
-        XCTAssertEqual(f.drainButton.title, "Stop Draining")
+        XCTAssertEqual(f.drainButton.title, "Stop Soft Drain")
         XCTAssertEqual(f.fullChargeButton.title, "Charge to Full")
 
         f.fullChargeButton.performClick(nil)
         XCTAssertTrue(c.isFullChargeRequested)
         XCTAssertFalse(c.isDrainRequested, "Charge to Full cancels a discharge")
-        XCTAssertEqual(f.drainButton.title, "Drain to Limit")
+        XCTAssertEqual(f.drainButton.title, "Soft Drain to Limit")
         XCTAssertEqual(f.fullChargeButton.title, "Cancel Charge to Full")
         // The discharge Charge to Full ended hands the battery back to the charger, which macOS takes a minute over.
         XCTAssertEqual(f.statusLabel.stringValue, "Reconnecting the charger\u{2026}")
@@ -749,7 +749,7 @@ final class ChargeControlFeatureTests: XCTestCase {
         XCTAssertFalse(f.statusLabel.isHiddenOrHasHiddenAncestor)
         XCTAssertTrue(f.installButton.isHiddenOrHasHiddenAncestor, "the helper is there; installing would not help")
         XCTAssertTrue(f.drainButton.isEnabled)
-        XCTAssertEqual(f.drainButton.title, "Stop Draining")
+        XCTAssertEqual(f.drainButton.title, "Stop Soft Drain")
     }
 
     /// The windows built from `defaultFeatures()` make this section with no controller (tests, or before launch
@@ -811,7 +811,7 @@ final class ChargeControlFeatureTests: XCTestCase {
         let root = try XCTUnwrap(view)
         collect(root)
         f.drainButton.performClick(nil)
-        collect(root)                                  // Stop Draining
+        collect(root)                                  // Stop Soft Drain
         f.fullChargeButton.performClick(nil)           // cancels the drain, which it outranks
         collect(root)                                  // Cancel Charge to Full
         battery = ChargeControllerTests.state(30, ac: false)   // both buttons say why they wait
@@ -984,12 +984,12 @@ final class ChargeControlFeatureTests: XCTestCase {
             }
         }
         // And what they are called now is there, so a gap in what was collected cannot pass for a clean section.
-        for name in ["Drain to Limit", "Stop Draining", "Draining to", "Charge to Full", "Cancel Charge to Full",
+        for name in ["Soft Drain to Limit", "Stop Soft Drain", "Draining to", "Charge to Full", "Cancel Charge to Full",
                      "Drift Below the Limit", "Pause When Hot", "Hold Level During Sleep",
-                     "Drain Automatically Above the Limit", "Ready By"] {
+                     "Soft Drain Automatically Above the Limit", "Ready By"] {
             XCTAssertTrue(section.contains { $0.contains(name) }, "\(name) is not shown by the section")
         }
-        for line in ["Drain to Limit pressed", "Charge to Full pressed"] {
+        for line in ["Soft Drain to Limit pressed", "Charge to Full pressed"] {
             XCTAssertTrue(logLines.contains(line), "\(line) is not what the log says: \(logLines)")
         }
         XCTAssertTrue(uninstall.contains { $0.contains("install Anode again, switch Charge Control on and press Install Anode Helper\u{2026}") },

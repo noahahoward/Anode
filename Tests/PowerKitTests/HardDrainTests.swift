@@ -545,7 +545,7 @@ final class HardDrainControllerTests: XCTestCase {
 
     // ── The button ──────────────────────────────────────────────────────────
 
-    /// Beside Drain to Limit. Offered while the battery is coming down, and it says so and stops when pressed again.
+    /// Beside Soft Drain to Limit. Offered while the battery is coming down, and it says so and stops when pressed again.
     func testTheButtonSitsBesideDrainToLimitAndStartsAndStopsIt() throws {
         let c = make()
         let f = section(c)
@@ -553,7 +553,7 @@ final class HardDrainControllerTests: XCTestCase {
         XCTAssertTrue(f.hardDrainButton.isEnabled)
         XCTAssertEqual(f.hardDrainButton.toolTip, ChargeControlFeature.hardDrainTip)
         let row = try XCTUnwrap(f.hardDrainButton.superview as? NSStackView)
-        XCTAssertTrue(row === f.drainButton.superview, "it is not in the row of Drain to Limit")
+        XCTAssertTrue(row === f.drainButton.superview, "it is not in the row of Soft Drain to Limit")
         let order = row.arrangedSubviews
         XCTAssertEqual(order.firstIndex(of: f.hardDrainButton), order.firstIndex(of: f.drainButton).map { $0 + 1 })
         press(f.hardDrainButton)

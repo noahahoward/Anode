@@ -49,7 +49,7 @@ public struct ChargeInputs: Equatable {
     public var sleeping: Bool
     /// The person pressed Charge to Full and has not unplugged since.
     public var fullCharge: Bool
-    /// The person pressed Drain to Limit and it has not finished.
+    /// The person pressed Soft Drain to Limit and it has not finished.
     public var manualDrain: Bool
     public var now: Date
     /// The next moment the person wants to be ready by, after `now`; nil when there is none to go by (Ready By is
@@ -171,7 +171,7 @@ public struct ChargeDecision: Equatable {
 /// What Charge Control wants from the charger right now, for every charge feature at once.
 ///
 /// ONE pure function decides this (the limit, Charge to Full, Pause When Hot, Hold Level During Sleep, Drain to
-/// Limit and Drain Automatically Above the Limit, Drift Below the Limit) so the features cannot disagree and the
+/// Limit and Soft Drain Automatically Above the Limit, Drift Below the Limit) so the features cannot disagree and the
 /// whole matrix of them is testable without a Mac. The controller that applies the answer to macOS's charge limit
 /// and the root helper never re-decides anything.
 ///

@@ -148,6 +148,16 @@ public class HistoryGraphView: NSView {
     /// rather than a coincidence maintained in two places.
     static let sharedAxisTicks: [Double] = [0, 25, 50, 75, 100]
 
+    /// The shared scale's top and gridlines for a rate that may pass 100 %/hr. Up to 100 it is 0-100 in quarters, as
+    /// always; above, the top grows to the next 50 and the gridlines go in fifties, so a Mac drawing 160 %/hr (seen
+    /// under Hard Drain) is drawn at 160 instead of flat along the top. Both axes keep the one scale: the charge line
+    /// simply never reaches the part above 100, and the right axis is labelled only up to 100 %.
+    static func sharedScale(dataMax: Double) -> (top: Double, ticks: [Double]) {
+        guard dataMax.isFinite, dataMax > 100 else { return (100, sharedAxisTicks) }
+        let top = (dataMax / 50).rounded(.up) * 50
+        return (top, stride(from: 0.0, through: top, by: 50).map { $0 })
+    }
+
     /// The spans this chart is ever actually asked to show — the range picker's
     /// four, the Resources panes' fifteen minutes, and the short ones the smaller
     /// graphs use. A live axis snaps to whichever of these it is within a few
@@ -574,9 +584,10 @@ public class HistoryGraphView: NSView {
         // Vertical scale. yMax pins; otherwise nice-round with hysteresis.
         var top: Double
         var bottom: Double
+        let shared = Self.sharedScale(dataMax: haveData ? dataMax : 0)
         if sharesRightAxisScale {
-            // The right axis is 0-100 and fixed; matching it is the whole point.
-            top = 100
+            // The right axis is 0-100, and matching it is the whole point; a rate above 100 raises both.
+            top = shared.top
             bottom = 0
         } else if let pinned = yMax, pinned.isFinite, pinned > 0 {
             top = pinned
@@ -630,7 +641,7 @@ public class HistoryGraphView: NSView {
             // The right axis's own steps, verbatim. Computing "quarters of 100"
             // separately here would be two places that have to agree about what
             // the gridlines are, and the entire feature is that they do.
-            yTicks = Self.sharedAxisTicks
+            yTicks = shared.ticks
         } else {
             let yTickStep = Self.niceCeil(
                 (top - bottom) / Double(Self.yTickTarget(forPlotHeight: plotHeight)))
@@ -721,9 +732,11 @@ public class HistoryGraphView: NSView {
         // Half-point snapping keeps 1 pt hairlines crisp at 1x and clean at 2x.
         func snap(_ v: CGFloat) -> CGFloat { floor(v) + 0.5 }
 
-        /// Right axis is always 0-100, never autoscaled — see `rightSeries`.
+        /// Right axis is always 0-100, never autoscaled — see `rightSeries`. On the shared scale it is drawn on the
+        /// same top as the rate, which is above 100 only while the rate is.
+        let rightTop = sharesRightAxisScale ? shared.top : 100
         func yForRight(_ v: Double) -> CGFloat {
-            plot.minY + CGFloat(min(max(v, 0), 100) / 100) * plot.height
+            plot.minY + CGFloat(min(max(v, 0), 100) / rightTop) * plot.height
         }
 
         // ── Grid, baseline, y labels ────────────────────────────────────────
@@ -1524,7 +1537,9 @@ public class HistoryGraphView: NSView {
         // one: the axis belongs to the line, not to what it was doing.
         var rightAttrs = tickAttrs
         rightAttrs[.foregroundColor] = r.color
-        for v in Self.sharedAxisTicks {
+        // On a scale raised above 100 the gridlines are in fifties, and the labels stay on them.
+        let raised = yForRight(100) < plot.maxY - 1
+        for v in Self.sharedAxisTicks where !raised || v.truncatingRemainder(dividingBy: 50) == 0 {
             let label = "\(Int(v))\(rightAxisUnit)" as NSString
             let sz = label.size(withAttributes: rightAttrs)
             label.draw(at: NSPoint(x: plot.maxX + 5,

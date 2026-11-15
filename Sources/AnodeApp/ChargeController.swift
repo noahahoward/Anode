@@ -556,7 +556,7 @@ inForce >= noLimit
     /// The policy's last answer.
     private(set) var lastDecision: ChargeDecision?
     private(set) var status: ChargeStatus = .off
-    /// The person pressed Drain to Limit and it has not finished, been cancelled, or been ended by an unplug or a sleep.
+    /// The person pressed Soft Drain to Limit and it has not finished, been cancelled, or been ended by an unplug or a sleep.
     private(set) var isDrainRequested = false
     /// Hard Drain was pressed and has not ended: extra work is being run to bring the battery down faster.
     private(set) var isHardDrainRequested = false
@@ -2031,7 +2031,7 @@ inForce >= noLimit
         if isDrainRequested { isFullChargeRequested = false }
         // Pressing again is asking again, whatever the helper said last time.
         blockedDischarge = nil
-        log(isDrainRequested ? "Drain to Limit pressed" : "Drain to Limit cancelled")
+        log(isDrainRequested ? "Soft Drain to Limit pressed" : "Soft Drain to Limit cancelled")
         tick()
         changed()
     }
@@ -2225,7 +2225,7 @@ inForce >= noLimit
                     + "Limit, \(why); " + isBack
             case .draining:
                 return "the Mac sleeps with the limit of \(want)% in force and the drain stopped for the sleep, \(why); "
-                    + "Drain Automatically Above the Limit starts it again when the Mac wakes, if the battery is still "
+                    + "Soft Drain Automatically Above the Limit starts it again when the Mac wakes, if the battery is still "
                     + "above the limit"
             case .drained:
                 return "the Mac sleeps with the drain down to the limit finished and the limit of \(want)% in force, "

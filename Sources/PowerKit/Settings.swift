@@ -863,7 +863,7 @@ public final class Settings {
     ///
     /// This number does not stay in the app. `ChargePolicy` hands it to macOS as the charge limit and drains to it
     /// as given: the policy clamps the limit it sets but not the level a discharge stops at, so a stored 5 with
-    /// Drain Automatically Above the Limit on would run the pack down to 10% on the adapter. That is why it is
+    /// Soft Drain Automatically Above the Limit on would run the pack down to 10% on the adapter. That is why it is
     /// clamped on the read as well as the write. The plist is also written by `defaults write` and by builds other
     /// than this one.
     public var chargeLimit: Int {

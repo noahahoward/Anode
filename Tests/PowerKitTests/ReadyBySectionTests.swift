@@ -514,7 +514,7 @@ final class ReadyBySectionTests: XCTestCase {
         for (name, flip) in [("Drift Below the Limit", { self.settings.chargeDriftEnabled = true }),
                              ("Pause When Hot", { self.settings.chargePauseWhenHotEnabled = true }),
                              ("Hold Level During Sleep", { self.settings.chargeHoldDuringSleep = true }),
-                             ("Drain Automatically Above the Limit", { self.settings.chargeDrainAutomatically = true })] {
+                             ("Soft Drain Automatically Above the Limit", { self.settings.chargeDrainAutomatically = true })] {
             flip()
             XCTAssertFalse(f.installButton.isHiddenOrHasHiddenAncestor, "\(name) needs a helper and none is installed")
         }

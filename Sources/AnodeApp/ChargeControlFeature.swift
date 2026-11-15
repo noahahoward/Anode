@@ -3,7 +3,7 @@ import PowerKit
 
 // ── Charge Control (Beta Features) ──────────────────────────────────────────
 
-/// The Charge Control section: the switch, the limit, Drain to Limit and Charge to Full, the four modes, Ready By with
+/// The Charge Control section: the switch, the limit, Soft Drain to Limit and Charge to Full, the four modes, Ready By with
 /// its time of day, and a line saying what is happening now (see `ChargeController`).
 ///
 /// Every control writes straight to `Settings`, which the controller observes; the two buttons press the controller
@@ -46,7 +46,7 @@ final class ChargeControlFeature: BetaFeature {
     let limitLabel = NSTextField(labelWithString: "Limit")
     let limitSlider = ChargeControlFeature.makeLimitSlider()
     let limitValueLabel = NSTextField(labelWithString: "")
-    let drainButton = NSButton(title: "Drain to Limit", target: nil, action: nil)
+    let drainButton = NSButton(title: "Soft Drain to Limit", target: nil, action: nil)
     let hardDrainButton = NSButton(title: "Hard Drain", target: nil, action: nil)
     let fullChargeButton = NSButton(title: "Charge to Full", target: nil, action: nil)
     let driftCheckbox = NSButton(checkboxWithTitle: "Drift Below the Limit", target: nil, action: nil)
@@ -58,7 +58,7 @@ final class ChargeControlFeature: BetaFeature {
     let heatStepper = ChargeControlFeature.makeStepper(Settings.chargeMaxTemperatureRange.lowerBound,
                                                        Settings.chargeMaxTemperatureRange.upperBound)
     let sleepCheckbox = NSButton(checkboxWithTitle: "Hold Level During Sleep", target: nil, action: nil)
-    let drainAutomaticallyCheckbox = NSButton(checkboxWithTitle: "Drain Automatically Above the Limit", target: nil, action: nil)
+    let drainAutomaticallyCheckbox = NSButton(checkboxWithTitle: "Soft Drain Automatically Above the Limit", target: nil, action: nil)
     let readyByCheckbox = NSButton(checkboxWithTitle: "Ready By", target: nil, action: nil)
     /// The time of day, hours and minutes, in the person's own format (12 or 24 hour, as their Mac shows it).
     let readyByTimePicker = ChargeControlFeature.makeTimePicker()
@@ -139,7 +139,7 @@ final class ChargeControlFeature: BetaFeature {
     // ── Words ───────────────────────────────────────────────────────────────
 
     static let fullChargeTip = "Charge to 100% this once. It ends when you unplug."
-    static let installTip = "The Anode helper is needed for Drain to Limit, Ready By, and holding the charge anywhere but "
+    static let installTip = "The Anode helper is needed for Soft Drain to Limit, Ready By, and holding the charge anywhere but "
         + "80, 85, 90, 95 or 100%."
     static let fullChargeBlockedTip = "Charge to Full needs the charger."
     /// Says where the number comes from: the default is not a guess (`ChargePolicy.defaultMaxTemperatureC`).
@@ -148,8 +148,9 @@ final class ChargeControlFeature: BetaFeature {
         + "charge; \(Int(ChargePolicy.defaultMaxTemperatureC)) \u{00B0}C pauses before that, and is above what the "
         + "battery reaches in everyday use. "
     static let drainTip = "Run the Mac from the battery while it stays plugged in, until the charge is down to the "
-        + "limit. Needs the Anode helper."
-    static let drainBlockedTip = "Drain to Limit needs the charger and a battery above the limit."
+        + "limit, as fast as the Mac uses power on its own. Needs the Anode helper. Hard Drain, beside it, adds work to "
+        + "bring the battery down faster."
+    static let drainBlockedTip = "Soft Drain to Limit needs the charger and a battery above the limit."
     static let hardDrainTip = "Bring the battery down faster, to the level it is held at: your limit, or Ready By's "
         + "Hold No Higher Than when that is lower. Anode gives the processor and the GPU extra work so the Mac uses "
         + "much more, on the charger or on battery (on battery, never below 30%). It goes all out, leaving two "
@@ -570,7 +571,7 @@ final class ChargeControlFeature: BetaFeature {
         // Not while it waits out the delay after an unclean exit: it holds nothing yet, and a press would do nothing.
         let waiting = c?.isWaitingToStart == true
         let pressable = usable && c != nil && !waiting
-        drainButton.title = drainRequested ? "Stop Draining" : "Drain to Limit"
+        drainButton.title = drainRequested ? "Stop Soft Drain" : "Soft Drain to Limit"
         fullChargeButton.title = fullChargeRequested ? "Cancel Charge to Full" : "Charge to Full"
         drainButton.isEnabled = pressable && drainCan
         fullChargeButton.isEnabled = pressable && fullChargeCan

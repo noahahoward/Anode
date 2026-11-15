@@ -1709,7 +1709,7 @@ final class ChargeControllerTests: XCTestCase {
         XCTAssertEqual(discharges(helper.commands), [80])
     }
 
-    // ── Drain to Limit ───────────────────────────────────────────────────────────
+    // ── Soft Drain to Limit ───────────────────────────────────────────────────────────
 
     func testDischargeSendsHelperCommandAndStopsOnUnplug() {
         battery = Self.state(90)
