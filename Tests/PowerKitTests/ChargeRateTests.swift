@@ -183,9 +183,9 @@ final class ChargeRateTests: XCTestCase {
         for x in out { XCTAssertEqual(x.rate, 1.2, accuracy: 0.25) }
     }
 
-    func testOnlyChargingBetweenTwentyAndEightyCounts() {
+    func testOnlyChargingInsideTheLearnedRangesCounts() {
         var m = ChargeRateMeter()
-        XCTAssertTrue(feed(&m, from: 81, perMinute: 0.5, minutes: 20).isEmpty, "above 80: tapering")
+        XCTAssertTrue(feed(&m, from: 96, perMinute: 0.1, minutes: 20).isEmpty, "above 95: the last points are not learned")
         m = ChargeRateMeter()
         XCTAssertTrue(feed(&m, from: 5, perMinute: 0.5, minutes: 20).isEmpty, "below 20")
         m = ChargeRateMeter()
@@ -211,8 +211,102 @@ final class ChargeRateTests: XCTestCase {
             }
         }
         XCTAssertEqual(out.count, 2, "five minutes, then five more up to 80, and the step to 81 is not one")
-        for x in out { XCTAssertEqual(x.rate, 1.0, accuracy: 0.05) }
-        XCTAssertFalse(m.isMeasuring)
+        for x in out {
+            XCTAssertEqual(x.rate, 1.0, accuracy: 0.05)
+            XCTAssertEqual(x.stretch, .steady)
+        }
+        // The observation at 81 ended the steady stretch, measured nothing, and is where the taper's begins.
+        XCTAssertTrue(m.isMeasuring, "the taper's stretch did not begin at 81")
+        XCTAssertNil(m.observe(percent: 81, charging: true, onAC: true, adapterWatts: 100, at: t0.addingTimeInterval(11 * 60 + 30)),
+                     "thirty seconds of taper is not a measurement")
+    }
+
+    // ── The taper, above 80% ────────────────────────────────────────────────
+
+    /// The night the taper was guessed too fast: 81 to 98% in 27 minutes. From 81 to 95 it is measured, as its own
+    /// stretch, every five minutes; above 95 nothing is.
+    func testTheTaperIsMeasuredAsItsOwnStretchUpToNinetyFive() {
+        var m = ChargeRateMeter()
+        let out = feed(&m, from: 81, perMinute: 0.625, minutes: 27)
+        XCTAssertEqual(out.count, 4, "81 to 95 at 0.625 a minute is 22 minutes: four stretches of five")
+        for x in out {
+            XCTAssertEqual(x.stretch, .taper)
+            XCTAssertEqual(x.band, .over65)
+            XCTAssertEqual(x.rate, 0.625, accuracy: 0.2)
+        }
+        XCTAssertFalse(m.isMeasuring, "above 95 nothing is being measured")
+    }
+
+    func testAChargeThroughEightyGivesBothRatesAndNeverOneAcrossIt() {
+        var m = ChargeRateMeter()
+        var out: [ChargeRateMeter.Measurement] = []
+        // 70 to 80 at 1.5 a minute, then on at 0.6: what a battery does.
+        var p = 70.0
+        for s in stride(from: 0.0, through: 30 * 60, by: 30) {
+            if let x = m.observe(percent: Int(p.rounded(.down)), charging: true, onAC: true, adapterWatts: 100,
+                                 at: t0.addingTimeInterval(s)) {
+                out.append(x)
+            }
+            p += (p < 80 ? 1.5 : 0.6) / 2
+        }
+        let steady = out.filter { $0.stretch == .steady }, taper = out.filter { $0.stretch == .taper }
+        XCTAssertFalse(steady.isEmpty)
+        XCTAssertFalse(taper.isEmpty)
+        for x in steady { XCTAssertEqual(x.rate, 1.5, accuracy: 0.3, "a steady measurement took in some of the taper") }
+        for x in taper { XCTAssertEqual(x.rate, 0.6, accuracy: 0.2, "a taper measurement took in some of the steady charge") }
+    }
+
+    func testTheStretchAChargeBeginsIn() {
+        XCTAssertNil(ChargeRate.stretch(startingAt: 19))
+        XCTAssertEqual(ChargeRate.stretch(startingAt: 20), .steady)
+        XCTAssertEqual(ChargeRate.stretch(startingAt: 79), .steady)
+        XCTAssertEqual(ChargeRate.stretch(startingAt: 80), .taper)
+        XCTAssertEqual(ChargeRate.stretch(startingAt: 95), .taper)
+        XCTAssertNil(ChargeRate.stretch(startingAt: 96))
+        XCTAssertEqual(ChargeRate.measured(.steady), 20...80)
+        XCTAssertEqual(ChargeRate.measured(.taper), 80...95)
+    }
+
+    /// The taper has an average of its own, apart from the steady rate, and nothing until it has been measured.
+    func testTheTaperIsLearnedApartFromTheSteadyRate() {
+        var r = ChargeRate()
+        XCTAssertNil(r.rateAbove80(for: .over65), "nothing learned: the policy counts a share of the steady rate")
+        XCTAssertTrue(r.record(1.5, for: .over65))
+        XCTAssertNil(r.rateAbove80(for: .over65), "a steady measurement taught the taper something")
+        XCTAssertTrue(r.record(0.6, for: .over65, stretch: .taper))
+        XCTAssertEqual(r.rateAbove80(for: .over65) ?? 0, 0.6, accuracy: 1e-9)
+        XCTAssertEqual(r.rate(for: .over65), 1.5, accuracy: 1e-9, "a taper measurement moved the steady rate")
+        XCTAssertNil(r.rateAbove80(for: .under30), "bands learn apart")
+        XCTAssertEqual(r.rateAbove80(forAdapterWatts: 100) ?? 0, 0.6, accuracy: 1e-9)
+        XCTAssertTrue(r.record(0.4, for: .over65, stretch: .taper))
+        XCTAssertEqual(r.rateAbove80(for: .over65) ?? 0, 0.5, accuracy: 1e-9, "averaged")
+    }
+
+    /// The first taper measurement is bounded around what the policy would otherwise count: 0.4 of the steady rate.
+    func testTheFirstTaperMeasurementIsBoundedAroundTheShareOfTheSteadyRate() {
+        var r = ChargeRate()
+        XCTAssertTrue(r.record(1.5, for: .over65))                      // steady 1.5, so the taper is taken for 0.6
+        XCTAssertTrue(r.record(2.0, for: .over65, stretch: .taper))     // far too fast for a taper
+        XCTAssertEqual(r.rateAbove80(for: .over65) ?? 0, 0.6 * ChargeRate.stepFactor, accuracy: 1e-9)
+        var slow = ChargeRate()
+        XCTAssertTrue(slow.record(0.0001, for: .under30, stretch: .taper))
+        XCTAssertEqual(slow.rateAbove80(for: .under30) ?? 0, 0.3 * 0.4 / ChargeRate.stepFactor, accuracy: 1e-9)
+        XCTAssertFalse(slow.record(-1, for: .under30, stretch: .taper))
+        XCTAssertFalse(slow.record(.nan, for: .under30, stretch: .taper))
+    }
+
+    /// What an earlier build stored has no taper in it: the steady rates are kept and nothing is learned for the taper.
+    func testARecordFromBeforeTheTaperWasLearnedIsStillRead() throws {
+        let old = #"{"learned":{"over65":{"samples":3,"rate":1.5798789509679847}}}"#
+        let r = try JSONDecoder().decode(ChargeRate.self, from: Data(old.utf8))
+        XCTAssertEqual(r.rate(for: .over65), 1.5798789509679847, accuracy: 1e-12)
+        XCTAssertNil(r.rateAbove80(for: .over65))
+        // And what is stored now comes back whole.
+        var now = r
+        XCTAssertTrue(now.record(0.63, for: .over65, stretch: .taper))
+        let back = try JSONDecoder().decode(ChargeRate.self, from: JSONEncoder().encode(now))
+        XCTAssertEqual(back, now)
+        XCTAssertEqual(back.sanitized().rateAbove80(for: .over65) ?? 0, 0.63, accuracy: 1e-9)
     }
 
     /// A sleep or a stopped app is not charging that was watched.

@@ -37,22 +37,70 @@ final class ReadyByPolicyTests: XCTestCase {
         XCTAssertEqual(ChargePolicy.readyByFloor, 30)
         XCTAssertEqual(ChargePolicy.readyByMargin, 15 * 60)
         XCTAssertEqual(ChargePolicy.chargeTaperAbove, 80)
-        XCTAssertEqual(ChargePolicy.chargeTaperFactor, 0.5)
+        XCTAssertEqual(ChargePolicy.chargeTaperFactor, 0.4)
+        XCTAssertEqual(ChargePolicy.chargeTopOffAbove, 95)
+        XCTAssertEqual(ChargePolicy.chargeTopOffFactor, 0.5)
         XCTAssertEqual(ChargePolicy.defaultReadyByMinutes, 420)
         XCTAssertEqual(ChargePolicy.chargeRateRange, 0.1...3.0)
     }
 
-    func testTimeToChargeCountsTheTaperAtHalfTheRate() {
+    func testTimeToChargeCountsTheTaperAndTheLastFivePointsSlower() {
         // Straight: 26 points at 0.8 a minute.
         XCTAssertEqual(ChargePolicy.minutesToCharge(from: 54, to: 80, rate: 0.8), 32.5, accuracy: 1e-9)
-        // Entirely above 80: 20 points at 0.4.
-        XCTAssertEqual(ChargePolicy.minutesToCharge(from: 80, to: 100, rate: 0.8), 50, accuracy: 1e-9)
-        XCTAssertEqual(ChargePolicy.minutesToCharge(from: 90, to: 100, rate: 0.8), 25, accuracy: 1e-9)
-        // Across 80: both parts.
-        XCTAssertEqual(ChargePolicy.minutesToCharge(from: 54, to: 100, rate: 0.8), 82.5, accuracy: 1e-9)
+        // Entirely above 80, nothing learned for it: 15 points at 0.4 of the rate (0.32), 5 at half of that (0.16).
+        XCTAssertEqual(ChargePolicy.minutesToCharge(from: 80, to: 100, rate: 0.8), 78.125, accuracy: 1e-9)
+        XCTAssertEqual(ChargePolicy.minutesToCharge(from: 90, to: 100, rate: 0.8), 46.875, accuracy: 1e-9)
+        XCTAssertEqual(ChargePolicy.minutesToCharge(from: 80, to: 90, rate: 0.8), 31.25, accuracy: 1e-9)
+        XCTAssertEqual(ChargePolicy.minutesToCharge(from: 96, to: 100, rate: 0.8), 25, accuracy: 1e-9)
+        // Across 80: all three parts.
+        XCTAssertEqual(ChargePolicy.minutesToCharge(from: 54, to: 100, rate: 0.8), 110.625, accuracy: 1e-9)
         // Nothing to charge.
         XCTAssertEqual(ChargePolicy.minutesToCharge(from: 80, to: 80, rate: 0.8), 0)
         XCTAssertEqual(ChargePolicy.minutesToCharge(from: 90, to: 60, rate: 0.8), 0)
+    }
+
+    /// The night this was written for: 75% to a limit of 100% on a charger learned at 1.58 a minute. Counting the taper
+    /// at half the rate gave 28.5 minutes; the battery took 34.5 to reach 98% and longer for the rest, so the 15-minute
+    /// margin was all that got it there. The estimate now is longer than what the climb to 98% took.
+    func testTheEstimateForTheNightItWasShortIsNowLongEnough() {
+        let now = ChargePolicy.minutesToCharge(from: 75, to: 100, rate: 1.58)
+        let steady: Double = 5 / 1.58, taper: Double = 15 / 0.632, last: Double = 5 / 0.316
+        XCTAssertEqual(now, steady + taper + last, accuracy: 1e-9)
+        XCTAssertGreaterThan(now, 39.5, "the climb to 98% alone took 34.5 minutes")
+        let before: Double = steady + 20 / 0.79
+        XCTAssertEqual(before, 28.5, accuracy: 0.05, "what it was that night")
+    }
+
+    /// Once the rate above 80% has been learned it is what is counted, in place of the share of the steady rate.
+    func testALearnedRateAboveEightyIsCounted() {
+        XCTAssertEqual(ChargePolicy.minutesToCharge(from: 80, to: 95, rate: 1.58, rateAbove80: 0.5), 30, accuracy: 1e-9)
+        XCTAssertEqual(ChargePolicy.minutesToCharge(from: 70, to: 100, rate: 1.0, rateAbove80: 0.5), 60, accuracy: 1e-9)
+        // Below 80 it changes nothing.
+        XCTAssertEqual(ChargePolicy.minutesToCharge(from: 54, to: 80, rate: 0.8, rateAbove80: 0.1), 32.5, accuracy: 1e-9)
+    }
+
+    /// A taper learned as faster than the charge below it is a misreading, and one that is not a rate is none: the
+    /// charge would start late, which is the direction that must not happen.
+    func testALearnedRateAboveEightyIsNeverBelievedFasterThanTheRateBelowIt() {
+        XCTAssertEqual(ChargePolicy.minutesToCharge(from: 80, to: 95, rate: 1.0, rateAbove80: 2.5), 15, accuracy: 1e-9)
+        let guessed = ChargePolicy.minutesToCharge(from: 80, to: 95, rate: 1.0)
+        for bad in [Double.nan, .infinity, 0, -1] {
+            XCTAssertEqual(ChargePolicy.minutesToCharge(from: 80, to: 95, rate: 1.0, rateAbove80: bad), guessed,
+                           accuracy: 1e-9, "rate above 80 of \(bad)")
+        }
+        // And never slower than the slowest charger's taper.
+        XCTAssertEqual(ChargePolicy.minutesToCharge(from: 80, to: 95, rate: 1.0, rateAbove80: 0.0001), 375, accuracy: 1e-9)
+    }
+
+    /// The policy passes what it is given: with a learned rate above 80 the start moment moves with it.
+    func testTheStartMomentUsesTheLearnedRateAboveEighty() throws {
+        let by = t0.addingTimeInterval(8 * hour)
+        var m = ChargeMemory()
+        var i = inputs(percent: 85, by: by)
+        i.chargeRateAbove80 = 0.2
+        let d = ChargePolicy.decide(settings(limit: 100), i, &m)
+        let lead: TimeInterval = (50.0 + 50.0) * 60 + 900   // 10 points at 0.2 a minute, 5 at 0.1, and the margin
+        XCTAssertEqual(by.timeIntervalSince(try XCTUnwrap(d.readyBy?.raiseAt)), lead, accuracy: 1e-6)
     }
 
     /// A rate that is not a charger's is the slowest one: it starts early, never late.
@@ -144,15 +192,15 @@ final class ReadyByPolicyTests: XCTestCase {
     }
 
     func testTheStartMomentCountsTheTaperAboveEighty() throws {
-        // Limit 100 from 54: 32.5 minutes to 80, then 20 points at half the rate, 50 minutes more.
+        // Limit 100 from 54: 32.5 minutes to 80, then 15 points at 0.32 a minute and the last 5 at 0.16.
         let by = t0.addingTimeInterval(8 * hour)
         var m = ChargeMemory()
         let d = ChargePolicy.decide(settings(limit: 100), inputs(by: by), &m)
         XCTAssertEqual(d.reason, .readyBy)
         XCTAssertEqual(d.osLimit, 54)
         XCTAssertEqual(d.readyBy?.raiseTo, 100)
-        XCTAssertEqual(by.timeIntervalSince(try XCTUnwrap(d.readyBy?.raiseAt)), (32.5 + 50) * 60 + 15 * 60,
-                       accuracy: 1e-6)
+        let lead: TimeInterval = (32.5 + 46.875 + 31.25) * 60 + 900
+        XCTAssertEqual(by.timeIntervalSince(try XCTUnwrap(d.readyBy?.raiseAt)), lead, accuracy: 1e-6)
         // Without the taper the same climb would start 25 minutes later.
         XCTAssertLessThan(try XCTUnwrap(d.readyBy?.raiseAt),
                           by.addingTimeInterval(-((46) / 0.8 * 60 + 15 * 60)))
@@ -163,8 +211,9 @@ final class ReadyByPolicyTests: XCTestCase {
         var m = ChargeMemory()
         let d = ChargePolicy.decide(settings(limit: 100), inputs(percent: 85, by: by), &m)
         XCTAssertEqual(d.osLimit, 85)
-        // 15 points entirely above 80 at 0.4 a minute: 37.5 minutes.
-        XCTAssertEqual(by.timeIntervalSince(try XCTUnwrap(d.readyBy?.raiseAt)), 37.5 * 60 + 15 * 60, accuracy: 1e-6)
+        // 15 points entirely above 80: 10 at 0.32 a minute and the last 5 at 0.16.
+        let lead: TimeInterval = (31.25 + 31.25) * 60 + 900
+        XCTAssertEqual(by.timeIntervalSince(try XCTUnwrap(d.readyBy?.raiseAt)), lead, accuracy: 1e-6)
     }
 
     func testNotEnoughTimeChargesAtOnce() {

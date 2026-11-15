@@ -54,10 +54,14 @@ public struct ChargeInputs: Equatable {
     /// How fast this charger charges this Mac, in percent per minute (`ChargeRate`), between 20 and 80%. Taken as
     /// given inside `ChargePolicy.chargeRateRange`; anything else counts as the slowest.
     public var chargeRate: Double
+    /// How fast it charges above 80%, in percent per minute, when that has been learned for this charger; nil until
+    /// then, and the policy counts a share of `chargeRate` (`ChargePolicy.chargeTaperFactor`).
+    public var chargeRateAbove80: Double?
 
     public init(percent: Int, onAC: Bool, temperatureC: Double?,
                 sleeping: Bool, fullCharge: Bool, manualDrain: Bool, now: Date,
-                readyBy: Date? = nil, chargeRate: Double = ChargePolicy.chargeRateRange.lowerBound) {
+                readyBy: Date? = nil, chargeRate: Double = ChargePolicy.chargeRateRange.lowerBound,
+                chargeRateAbove80: Double? = nil) {
         self.percent = percent
         self.onAC = onAC
         self.temperatureC = temperatureC
@@ -67,6 +71,7 @@ public struct ChargeInputs: Equatable {
         self.now = now
         self.readyBy = readyBy
         self.chargeRate = chargeRate
+        self.chargeRateAbove80 = chargeRateAbove80
     }
 }
 
@@ -230,23 +235,38 @@ public enum ChargePolicy {
     public static let readyByMargin: TimeInterval = 15 * 60
     /// Above this charge a battery takes its charge slower.
     public static let chargeTaperAbove = 80
-    /// How much of its usual rate it charges at above `chargeTaperAbove`.
-    public static let chargeTaperFactor = 0.5
+    /// How much of its usual rate it charges at above `chargeTaperAbove`, until that has been learned for the charger
+    /// (`ChargeRate`, `ChargeInputs.chargeRateAbove80`). Measured on a Mac17,9 with a charger of over 65 W: 81 to 98%
+    /// took 27 minutes where 62 to 75% had gone at 1.58 a minute, which is 0.40 of it. It was 0.5, a guess, and on
+    /// that night the climb to a limit of 100% was estimated at 29 minutes and took at least 35 to reach 98%: the whole
+    /// margin went, and the battery was at 98% nine minutes before the time.
+    public static let chargeTaperFactor = 0.4
+    /// The last few points go slower again: from here up, at `chargeTopOffFactor` of the rate above
+    /// `chargeTaperAbove`. Not measured as closely as the taper (the same night has no reading between 98 and 100%,
+    /// which took somewhere up to a quarter of an hour): a guess on the slow side, so the charge starts early.
+    public static let chargeTopOffAbove = 95
+    public static let chargeTopOffFactor = 0.5
     /// What the person's time is until they choose one: 7:00, in minutes after midnight.
     public static let defaultReadyByMinutes = 420
     /// The charge rates `ChargeRate` learns and the policy believes, in percent per minute. A rate outside it is a
     /// misreading, not a charger.
     public static let chargeRateRange: ClosedRange<Double> = 0.1...3.0
 
-    /// How long the battery takes to charge from `from` to `to` percent at `rate` percent per minute, the part above
-    /// `chargeTaperAbove` at half the rate. 0 when `to` is not above `from`.
-    public static func minutesToCharge(from: Int, to: Int, rate: Double) -> Double {
+    /// How long the battery takes to charge from `from` to `to` percent at `rate` percent per minute: the part above
+    /// `chargeTaperAbove` at `rateAbove80` when that has been learned and at `chargeTaperFactor` of `rate` when it has
+    /// not, and the part above `chargeTopOffAbove` at `chargeTopOffFactor` of that. A learned rate above 80 that says
+    /// the taper is faster than the charge below it is a misreading, and is taken for the rate below it. 0 when `to`
+    /// is not above `from`.
+    public static func minutesToCharge(from: Int, to: Int, rate: Double, rateAbove80: Double? = nil) -> Double {
         guard to > from else { return 0 }
         let r = rate.isFinite && rate > 0 ? min(max(rate, chargeRateRange.lowerBound), chargeRateRange.upperBound)
                                           : chargeRateRange.lowerBound
+        let learned = rateAbove80.flatMap { $0.isFinite && $0 > 0 ? $0 : nil }
+        let top = max(min(learned ?? r * chargeTaperFactor, r), chargeRateRange.lowerBound * chargeTaperFactor)
         let straight = max(0, min(to, chargeTaperAbove) - from)
-        let tapered = max(0, to - max(from, chargeTaperAbove))
-        return Double(straight) / r + Double(tapered) / (r * chargeTaperFactor)
+        let tapered = max(0, min(to, chargeTopOffAbove) - max(from, chargeTaperAbove))
+        let toppedOff = max(0, to - max(from, chargeTopOffAbove))
+        return Double(straight) / r + Double(tapered) / top + Double(toppedOff) / (top * chargeTopOffFactor)
     }
 
     /// Where a discharge stops. The floor only bites if the limit is ever allowed below 10; the
@@ -391,7 +411,8 @@ public enum ChargePolicy {
         let level = min(s.limit, m.readyBy?.level ?? max(i.percent, floor))
         // From the level it holds at, which is where the battery is heading: a battery below it (on its way up to the
         // floor, or sagged a point under load) is charged back to it, and holds there.
-        let lead = minutesToCharge(from: level, to: s.limit, rate: i.chargeRate) * 60 + readyByMargin
+        let lead = minutesToCharge(from: level, to: s.limit, rate: i.chargeRate,
+                                   rateAbove80: i.chargeRateAbove80) * 60 + readyByMargin
         let raiseAt = by.addingTimeInterval(-lead)
         if i.now >= raiseAt {
             m.readyBy = ReadyByMemory(moment: by, level: level, started: true)

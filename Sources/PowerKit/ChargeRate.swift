@@ -40,9 +40,33 @@ public struct ChargeRate: Equatable, Codable {
         }
     }
 
-    /// Learned only between these charges, where charging is steady: below it a battery may be trickling, and above
-    /// it the charge tapers (the policy counts that on its own).
+    /// The two stretches of a charge that are learned apart, because a battery charges at two speeds: steadily up to
+    /// 80%, and then slower and slower (`taper`). The policy counted the second as half the first, which on the one
+    /// night it mattered was too fast (see `ChargePolicy.chargeTaperFactor`); what this Mac and this charger really
+    /// do is measured instead.
+    public enum Stretch: String, Codable, CaseIterable {
+        case steady
+        case taper
+    }
+
+    /// The steady rate is learned only between these charges: below it a battery may be trickling, and above it the
+    /// charge tapers.
     public static let measuredPercent = 20...80
+    /// The taper's rate is learned between these. The last few points above it go slower again and take too long for
+    /// a measurement of whole percents to say much; the policy counts them at a share of this rate
+    /// (`ChargePolicy.chargeTopOffFactor`).
+    public static let measuredTaperPercent = 80...95
+
+    /// The charges a stretch is measured between.
+    public static func measured(_ stretch: Stretch) -> ClosedRange<Int> {
+        stretch == .steady ? measuredPercent : measuredTaperPercent
+    }
+
+    /// The stretch a measurement starting at this charge belongs to; nil where nothing is learned.
+    public static func stretch(startingAt percent: Int) -> Stretch? {
+        if percent < measuredPercent.lowerBound || percent > measuredTaperPercent.upperBound { return nil }
+        return percent < measuredPercent.upperBound ? .steady : .taper
+    }
     /// A measurement spans at least this long, so a handful of whole percents is enough to say a rate.
     public static let minimumSpan: TimeInterval = 5 * 60
     /// The average weighs the last this many measurements: a charger, a cable or a battery that changes is followed.
@@ -58,8 +82,30 @@ public struct ChargeRate: Equatable, Codable {
     /// By `Band.rawValue`: a dictionary keyed by an enum is stored as a flat array, and this is read by eye as often as
     /// by code.
     public private(set) var learned: [String: Learned] = [:]
+    /// The same for the taper, above 80%. Empty until a charge has gone through it with Anode looking.
+    public private(set) var learnedAbove80: [String: Learned] = [:]
 
     public init() {}
+
+    private enum CodingKeys: String, CodingKey { case learned, learnedAbove80 }
+
+    /// What an earlier build stored has no taper in it: that is nothing learned for it, not a record that cannot be read.
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        learned = try c.decodeIfPresent([String: Learned].self, forKey: .learned) ?? [:]
+        learnedAbove80 = try c.decodeIfPresent([String: Learned].self, forKey: .learnedAbove80) ?? [:]
+    }
+
+    /// The rate above 80% for a charger of this class, when it has been learned; nil until then, and the policy
+    /// counts a share of the steady rate.
+    public func rateAbove80(for band: Band) -> Double? { learnedAbove80[band.rawValue]?.rate }
+
+    public func rateAbove80(forAdapterWatts watts: Double?) -> Double? {
+        rateAbove80(for: Self.band(forAdapterWatts: watts))
+    }
+
+    /// The slowest a taper is believed to be: the slowest charger there is, at the share the policy guesses.
+    public static let slowestTaper = ChargePolicy.chargeRateRange.lowerBound * ChargePolicy.chargeTaperFactor
 
     /// The rate to count on for a charger of this class: what has been learned, or the guess.
     public func rate(for band: Band) -> Double {
@@ -84,20 +130,22 @@ public struct ChargeRate: Equatable, Codable {
     /// charger gives (`ChargePolicy.chargeRateRange`), which says nothing about the charger. One that is left is
     /// bounded to within `stepFactor` of the rate now counted on (the band's guess, before anything is learned) and kept
     /// inside the range. True when it was taken.
+    ///
+    /// A measurement of the taper is folded into the taper's own average by the same rules, bounded around what the
+    /// policy would otherwise count (`ChargePolicy.chargeTaperFactor` of the steady rate) until one has been taken.
     @discardableResult
-    public mutating func record(_ measured: Double, for band: Band) -> Bool {
+    public mutating func record(_ measured: Double, for band: Band, stretch: Stretch = .steady) -> Bool {
         guard measured.isFinite, measured > 0, measured <= ChargePolicy.chargeRateRange.upperBound else { return false }
-        let basis = rate(for: band)
+        let taper = stretch == .taper
+        let basis = taper ? rateAbove80(for: band) ?? rate(for: band) * ChargePolicy.chargeTaperFactor : rate(for: band)
         let bounded = min(max(measured, basis / Self.stepFactor), basis * Self.stepFactor)
-        let r = min(max(bounded, ChargePolicy.chargeRateRange.lowerBound), ChargePolicy.chargeRateRange.upperBound)
-        guard var l = learned[band.rawValue] else {
-            learned[band.rawValue] = Learned(rate: r, samples: 1)
-            return true
-        }
+        let slowest = taper ? Self.slowestTaper : ChargePolicy.chargeRateRange.lowerBound
+        let r = min(max(bounded, slowest), ChargePolicy.chargeRateRange.upperBound)
+        var l = (taper ? learnedAbove80 : learned)[band.rawValue] ?? Learned(rate: r, samples: 0)
         let n = min(l.samples + 1, Self.averagedOver)
         l.rate += (r - l.rate) / Double(n)
         l.samples = n
-        learned[band.rawValue] = l
+        if taper { learnedAbove80[band.rawValue] = l } else { learned[band.rawValue] = l }
         return true
     }
 
@@ -105,13 +153,18 @@ public struct ChargeRate: Equatable, Codable {
     /// brought inside 1 to `averagedOver`, and one that is not a number is dropped. The plist is also written by
     /// `defaults write` and by other builds.
     func sanitized() -> ChargeRate {
-        var out = ChargeRate()
-        for (key, l) in learned where Band(rawValue: key) != nil {
-            guard l.rate.isFinite, l.rate > 0 else { continue }
-            out.learned[key] = Learned(
-                rate: min(max(l.rate, ChargePolicy.chargeRateRange.lowerBound), ChargePolicy.chargeRateRange.upperBound),
-                samples: min(max(l.samples, 1), Self.averagedOver))
+        func safe(_ stored: [String: Learned], slowest: Double) -> [String: Learned] {
+            var out: [String: Learned] = [:]
+            for (key, l) in stored where Band(rawValue: key) != nil {
+                guard l.rate.isFinite, l.rate > 0 else { continue }
+                out[key] = Learned(rate: min(max(l.rate, slowest), ChargePolicy.chargeRateRange.upperBound),
+                                   samples: min(max(l.samples, 1), Self.averagedOver))
+            }
+            return out
         }
+        var out = ChargeRate()
+        out.learned = safe(learned, slowest: ChargePolicy.chargeRateRange.lowerBound)
+        out.learnedAbove80 = safe(learnedAbove80, slowest: Self.slowestTaper)
         return out
     }
 }
@@ -119,8 +172,10 @@ public struct ChargeRate: Equatable, Codable {
 /// Watches the battery as the controller sees it, tick by tick, and says how fast it charged over each stretch long
 /// enough to tell.
 ///
-/// A stretch is a run of observations with a charger on the cable, the battery charging, and the charge between 20 and
-/// 80%, of one class of charger, no further apart than `maxGap`. It is measured as soon as it is five minutes long,
+/// A stretch is a run of observations with a charger on the cable, the battery charging, and the charge inside one of
+/// the two ranges that are learned (20 to 80%, the steady charge, or 80 to 95%, the taper: `ChargeRate.Stretch`), of
+/// one class of charger, no further apart than `maxGap`. A charge that crosses 80% ends the steady stretch there, and
+/// the taper's begins with the next observation. It is measured as soon as it is five minutes long,
 /// and a new one begins where it ended, so a long charge gives a measurement every five minutes or so. One that ends
 /// before it is five minutes long is nothing. A gap longer than `maxGap` (a sleep, a stopped app) ends a stretch
 /// without being part of it: what the battery did while nobody looked is not what it did when somebody did.
@@ -131,6 +186,8 @@ public struct ChargeRateMeter {
     public struct Measurement: Equatable {
         public var band: ChargeRate.Band
         public var rate: Double
+        /// Which of the two rates this is a measurement of.
+        public var stretch: ChargeRate.Stretch = .steady
     }
 
     /// The longest between two observations for them to be one stretch. The controller looks every 30 s.
@@ -143,6 +200,7 @@ public struct ChargeRateMeter {
     private var start: Point?
     private var last: Point?
     private var band: ChargeRate.Band = .under30
+    private var stretch: ChargeRate.Stretch = .steady
 
     public init() {}
 
@@ -153,10 +211,11 @@ public struct ChargeRateMeter {
     public mutating func observe(percent: Int, charging: Bool, onAC: Bool, adapterWatts: Double?, at now: Date)
         -> Measurement? {
         let thisBand = ChargeRate.band(forAdapterWatts: adapterWatts)
-        let counts = onAC && charging && ChargeRate.measuredPercent.contains(percent)
+        let live = onAC && charging
 
         if let s = start, let l = last {
-            let continues = counts && thisBand == band && now >= l.at && now.timeIntervalSince(l.at) <= Self.maxGap
+            let continues = live && ChargeRate.measured(stretch).contains(percent) && thisBand == band
+                && now >= l.at && now.timeIntervalSince(l.at) <= Self.maxGap
             if continues {
                 last = Point(percent: percent, at: now)
                 guard now.timeIntervalSince(s.at) >= ChargeRate.minimumSpan else { return nil }
@@ -167,10 +226,11 @@ public struct ChargeRateMeter {
             start = nil
             last = nil
         }
-        if counts {
+        if live, let begins = ChargeRate.stretch(startingAt: percent) {
             start = Point(percent: percent, at: now)
             last = start
             band = thisBand
+            stretch = begins
         }
         return nil
     }
@@ -178,7 +238,7 @@ public struct ChargeRateMeter {
     private func measure(from a: Point, to b: Point) -> Measurement? {
         let minutes = b.at.timeIntervalSince(a.at) / 60
         guard minutes > 0 else { return nil }
-        return Measurement(band: band, rate: Double(b.percent - a.percent) / minutes)
+        return Measurement(band: band, rate: Double(b.percent - a.percent) / minutes, stretch: stretch)
     }
 }
 

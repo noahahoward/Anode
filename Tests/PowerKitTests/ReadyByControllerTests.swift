@@ -1408,6 +1408,35 @@ final class ReadyByControllerTests: XCTestCase {
 
     // ── The charge rate ─────────────────────────────────────────────────────
 
+    /// A charge that goes through the taper with the controller looking is learned as the taper's own rate, stored, and
+    /// then counted for a limit above 80%: the start moment moves from the guess (0.4 of the steady rate) to what this
+    /// charger really does there.
+    func testItLearnsTheRateAboveEightyAndUsesIt() throws {
+        settings.chargeReadyByEnabled = false
+        settings.chargeLimit = 100
+        battery = Self.plugged(82, charging: true)
+        let c = make()
+        // Half a percent a minute for eleven minutes above 80 on a 100 W charger: two measurements of the taper.
+        for s in stride(from: 30.0, through: 660, by: 30) {
+            battery = Self.plugged(82 + Int((s / 120).rounded(.down)), charging: true)
+            c.tick(now: clockNow.addingTimeInterval(s))
+        }
+        let learned = try XCTUnwrap(rateStore.rates.rateAbove80(for: .over65), "the taper was not learned")
+        XCTAssertEqual(learned, 0.5, accuracy: 0.11)
+        XCTAssertFalse(rateStore.rates.hasLearned(.over65), "a taper measurement was taken for the steady rate")
+        XCTAssertGreaterThanOrEqual(rateStore.saves, 1, "what was learned was not stored")
+
+        // Held at 85 for a limit of 100 on the same charger: the lead is from the learned taper, not from 0.4 of the
+        // steady guess (1.0 a minute), which would be 10 / 0.4 + 5 / 0.2 = 50 minutes.
+        battery = Self.plugged(85)
+        settings.chargeReadyByEnabled = true
+        let lead = by.timeIntervalSince(try XCTUnwrap(c.lastDecision?.readyBy?.raiseAt))
+        let counted: TimeInterval = (10 / learned + 5 / (learned * 0.5)) * 60 + ChargePolicy.readyByMargin
+        XCTAssertEqual(lead, counted, accuracy: 1)
+        let guessed: TimeInterval = 50 * 60 + ChargePolicy.readyByMargin
+        XCTAssertNotEqual(lead, guessed, accuracy: 60, "the guess was used although the taper has been learned")
+    }
+
     /// The controller feeds the learner what the battery does, and what it learns changes the start moment.
     func testItLearnsTheChargeRateAndUsesIt() throws {
         settings.chargeReadyByEnabled = false

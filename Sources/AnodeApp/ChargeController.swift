@@ -2181,8 +2181,10 @@ inForce >= noLimit
            by.timeIntervalSince(now) <= ChargePolicy.readyByWindow {
             if memory.readyBy?.started == true { return (by, limit, cooled, false) }
             let level = min(limit, max(b.percent, min(ChargePolicy.readyByFloor, limit)))
+            let rates = loadedRates()
             let lead = ChargePolicy.minutesToCharge(from: level, to: limit,
-                                                    rate: loadedRates().rate(forAdapterWatts: b.adapterWatts)) * 60
+                                                    rate: rates.rate(forAdapterWatts: b.adapterWatts),
+                                                    rateAbove80: rates.rateAbove80(forAdapterWatts: b.adapterWatts)) * 60
                 + ChargePolicy.readyByMargin
             return (by, limit, max(by.addingTimeInterval(-lead), cooled), false)
         }
@@ -2469,7 +2471,8 @@ inForce >= noLimit
                             temperatureC: b.temperature_C.flatMap { $0.isFinite ? $0 : nil },
                             sleeping: sleeping, fullCharge: isFullChargeRequested,
                             manualDrain: isDrainRequested, now: now,
-                            readyBy: readyBy, chargeRate: loadedRates().rate(forAdapterWatts: b.adapterWatts))
+                            readyBy: readyBy, chargeRate: loadedRates().rate(forAdapterWatts: b.adapterWatts),
+                            chargeRateAbove80: loadedRates().rateAbove80(forAdapterWatts: b.adapterWatts))
     }
 
     /// What would be decided at this moment if Pause When Hot were not pausing: where the battery goes once the pack
@@ -2493,7 +2496,7 @@ inForce >= noLimit
         guard let m = meter.observe(percent: b.percent, charging: b.isCharging, onAC: b.onAC,
                                     adapterWatts: b.adapterWatts, at: now) else { return }
         var r = loadedRates()
-        guard r.record(m.rate, for: m.band) else { return }
+        guard r.record(m.rate, for: m.band, stretch: m.stretch) else { return }
         rates = r
         rateStore.save(r)
     }

@@ -7,6 +7,10 @@ feature or a visible change in how something works, the first only for a rewrite
 Nothing was bumped between 1.0.0 and 1.15.0. Those versions were assigned afterwards from the history and exist as
 git tags (`git show v1.7.0`); builds made before 1.15.0 still say 1.0.0 in their About box.
 
+## 1.18.12 — 2026-11-14
+- Ready By: charging to a limit above 80% now starts earlier. Anode assumed a battery charges at half speed above 80%; on a real overnight run to 100% it was slower than that (about two fifths of the usual speed, and slower again for the last few percent), and the battery was at 98% nine minutes before the time, with the whole safety margin used.
+- Anode now learns how fast your Mac and your charger really charge between 80% and 95%, the same way it learns the speed below 80%, and counts the last five percent slower still.
+
 ## 1.18.11 — 2026-11-13
 - Ultra Low Power Mode: an app that is frozen is hidden first again, and comes back into view when the mode is turned off (on macOS 27 it stayed on screen during the mode and was left hidden afterwards).
 
