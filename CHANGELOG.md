@@ -7,6 +7,9 @@ feature or a visible change in how something works, the first only for a rewrite
 Nothing was bumped between 1.0.0 and 1.15.0. Those versions were assigned afterwards from the history and exist as
 git tags (`git show v1.7.0`); builds made before 1.15.0 still say 1.0.0 in their About box.
 
+## 1.18.15 — 2026-11-14
+- The notice that offers to install or update the Anode helper has no app logo any more. The logo sat in a column of its own beside three paragraphs of text and squeezed them; the text now runs the whole width of the box.
+
 ## 1.18.14 — 2026-11-14
 - Ready By: the time is now taken once you have stopped changing it (a second and a half after the last change, or at once when you switch Ready By or quit Anode). Before, every step of the time picker was acted on immediately, so changing the hour and then the minutes could pass through a time that was only minutes away, and the charger was switched on and then off again two seconds later.
 

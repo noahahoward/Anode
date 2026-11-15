@@ -793,6 +793,8 @@ final class FanControlPanel: NSView {
             alert.informativeText = HelperOfferNotice.text(offer)
             alert.addButton(withTitle: HelperOfferNotice.button(offer))
             alert.addButton(withTitle: HelperOfferNotice.notNow)
+            // No logo beside three paragraphs: the text takes the whole width (`AlertWithoutIcon`).
+            AlertWithoutIcon.apply(to: alert)
             return alert
         }
         // From Charge Control it is the same helper, asked for something other than fans; the body below lists
@@ -810,6 +812,7 @@ final class FanControlPanel: NSView {
         alert.accessoryView = command
         alert.addButton(withTitle: "Install")
         alert.addButton(withTitle: "Cancel")
+        AlertWithoutIcon.apply(to: alert)
         return alert
     }
 

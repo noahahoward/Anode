@@ -220,4 +220,57 @@ final class HelperOfferTests: XCTestCase {
         XCTAssertTrue(main.contains("self.helperOffer.runAfterLaunch(delay: 1)"),
                       "the offer no longer follows the answer to the automatic-updates question")
     }
+
+    // ── The notice has no logo ──────────────────────────────────────────────
+
+    /// The notice had the app's logo in a column of its own beside three paragraphs of text. It has none now, and the
+    /// text begins where the logo did and is as wide as the column the logo took. Read from the alert as it is laid
+    /// out, for every way the helper is offered; nothing is shown.
+    func testTheHelperNoticesHaveNoLogoAndTheirTextTakesTheWholeWidth() throws {
+        for origin in [FanControlPanel.InstallOrigin.afterInstall, .afterUpdate, .fansTab, .chargeControl, .ultraLowPower] {
+            // The same alert as `NSAlert` lays it out by itself, to compare with.
+            let plain = NSAlert()
+            let made = FanControlPanel.installAlert(helper: "/Applications/Anode.app/Contents/MacOS/AnodeHelper", origin: origin)
+            plain.messageText = made.messageText
+            plain.informativeText = made.informativeText
+            for b in made.buttons { plain.addButton(withTitle: b.title) }
+            plain.layout()
+            let plainContent = try XCTUnwrap(plain.window.contentView)
+            let plainIcon = try XCTUnwrap(plainContent.subviews.first { $0 is NSImageView }, "an alert has no icon view on this macOS")
+            let plainText = try XCTUnwrap(plainContent.subviews.compactMap { $0 as? NSTextField }.first { $0.stringValue == made.informativeText })
+
+            let content = try XCTUnwrap(made.window.contentView)
+            let icon = try XCTUnwrap(content.subviews.first { $0 is NSImageView })
+            XCTAssertTrue(icon.isHidden, "\(origin): the logo is still shown")
+            let texts = content.subviews.compactMap { $0 as? NSTextField }
+            let title = try XCTUnwrap(texts.first { $0.stringValue == made.messageText })
+            let body = try XCTUnwrap(texts.first { $0.stringValue == made.informativeText })
+            XCTAssertEqual(title.frame.minX, plainIcon.frame.minX, accuracy: 0.5, "\(origin): the title does not begin where the logo did")
+            XCTAssertEqual(body.frame.minX, plainIcon.frame.minX, accuracy: 0.5, "\(origin)")
+            XCTAssertEqual(body.frame.width, plainText.frame.width + (plainText.frame.minX - plainIcon.frame.minX), accuracy: 0.5,
+                           "\(origin): the text did not take the logo's column")
+            XCTAssertLessThanOrEqual(made.window.frame.height, plain.window.frame.height + 0.5, "\(origin): it grew")
+            XCTAssertLessThanOrEqual(body.frame.maxX, content.bounds.maxX, "\(origin): the text runs off the dialog")
+            // Nothing that was in the alert went missing, and the buttons are where they were.
+            XCTAssertEqual(made.buttons.map(\.title), plain.buttons.map(\.title))
+            if let accessory = made.accessoryView {
+                XCTAssertGreaterThanOrEqual(accessory.frame.minX, 0, "\(origin)")
+                XCTAssertLessThanOrEqual(accessory.frame.maxX, content.bounds.maxX + 0.5, "\(origin): the command runs off the dialog")
+            }
+        }
+    }
+
+    /// An alert that is not built as expected (no icon view to be found) is left as it is, and says so.
+    func testAnAlertItDoesNotKnowIsLeftAlone() {
+        let strange = NSAlertWithNothing()
+        XCTAssertFalse(AlertWithoutIcon.apply(to: strange))
+        XCTAssertEqual(strange.window.contentView?.subviews.count, 0)
+    }
+}
+
+/// An alert whose window has nothing in it, to stand for a macOS that builds alerts another way.
+private final class NSAlertWithNothing: NSAlert {
+    private let empty = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 100, height: 100), styleMask: [], backing: .buffered, defer: true)
+    override var window: NSWindow { empty }
+    override func layout() {}
 }
