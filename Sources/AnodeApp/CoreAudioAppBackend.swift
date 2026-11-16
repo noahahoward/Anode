@@ -13,6 +13,13 @@ import PowerKit
 //
 // NOT VERIFIED ON HARDWARE for the bundle-id tap (`bundleTapsVerified`). Until it is, `canTapAppsNotYetRunning` is false and the
 // feature is not offered, because a muted app would not be silent from its first sound, and a known bug does not ship.
+//
+// Measured 2026-11-16 (Chrome, a tone started after the tap was armed): a tap named `com.google.Chrome` never heard it, and one named
+// `com.google.Chrome.helper` heard it 0.03 s after start. The tap matches a process's OWN bundle id, and a browser's sound comes from
+// a helper with a different id, so naming the app misses Chrome, Brave and every Electron app. A tap built from the process list
+// (what is used while this is false) did hear a tone started afterwards, and muted it: through the menu, Chrome showed Muted, Anode
+// began outputting, and unmuting removed that output again. What a process-list tap cannot do is hold a helper process that did not
+// exist when the tap was made.
 
 final class CoreAudioAppBackend: AppAudioBackend {
 
