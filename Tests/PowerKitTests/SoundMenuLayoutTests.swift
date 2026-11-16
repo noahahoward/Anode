@@ -93,6 +93,16 @@ final class SoundMenuLayoutTests: XCTestCase {
         XCTAssertEqual(r.height, 537.5, accuracy: 0.01)
     }
 
+    func testANoticeAddsOneLineAboveTheFooterAndNothingElseMoves() {
+        let plain = SoundMenuLayout.frames(for: model(apple: apple))
+        var m = model(apple: apple); m.notice = "Put both AirPods in to use Adaptive."
+        let r = SoundMenuLayout.frames(for: m)
+        XCTAssertEqual(y(r, .device(3)), y(plain, .device(3)))
+        XCTAssertEqual(y(r, .notice), 478 + SoundMenuMetrics.noticeGap)
+        XCTAssertEqual(y(r, .footer(0)), 490 + SoundMenuMetrics.noticeGap + SoundMenuMetrics.noticeHeight)
+        XCTAssertEqual(r.height, plain.height + SoundMenuMetrics.noticeGap + SoundMenuMetrics.noticeHeight, accuracy: 0.01)
+    }
+
     func testCollapsedAirPodsHasNoListeningRows() {
         var a = apple; a.expandedDevice = nil
         let m = model(apple: a)

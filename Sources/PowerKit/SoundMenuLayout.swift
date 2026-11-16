@@ -13,6 +13,8 @@ public enum SoundMenuLayout {
         /// The lighter block under an opened device.
         case block
         case footer(Int)
+        /// A line of Anode's own, only when there is something to say.
+        case notice
     }
 
     public struct LaidOutRow: Equatable {
@@ -70,7 +72,11 @@ public enum SoundMenuLayout {
             y = blockBottom + M.afterBlockGap
         }
 
-        let dividerY = y + M.footerDividerGap - (model.expandedDevice == nil ? 0 : M.afterBlockGap) * 0
+        if model.notice != nil {
+            add(.notice, x: M.sideInset, y: y + M.noticeGap, w: M.width - 2 * M.sideInset, h: M.noticeHeight)
+            y += M.noticeGap + M.noticeHeight
+        }
+        let dividerY = y + M.footerDividerGap
         add(.divider, x: M.sideInset, y: dividerY, w: M.width - 2 * M.sideInset, h: 1)
         var fy = dividerY + M.footerFirstRowGap
         for i in model.footerTitles.indices {

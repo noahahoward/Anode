@@ -35,4 +35,7 @@ public enum SoundMenuMetrics {
     public static let footerRowHeight: CGFloat = 20
     public static let footerRowPitch: CGFloat = 22
     public static let bottomPadding: CGFloat = 5.5
+    /// The one line Anode adds under the rows when something needs saying (not part of macOS's menu).
+    public static let noticeGap: CGFloat = 4
+    public static let noticeHeight: CGFloat = 30
 }
