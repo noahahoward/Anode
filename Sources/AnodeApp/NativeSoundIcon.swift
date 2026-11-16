@@ -13,6 +13,18 @@ import PowerKit
 // is under the pointer (measured under a millisecond, 25 ms the first time; anything that fails is passed on untouched).
 // Anode's own use of macOS's panel presses its items with Accessibility, not with mouse events, so the tap never sees it.
 
+/// What the tap's callback is handed. It lives for the whole process and only holds the icon weakly, so a callback that is still
+/// running when the icon goes away finds nothing instead of a freed object.
+private final class NativeIconTapBox {
+    static let shared = NativeIconTapBox()
+    private let lock = NSLock()
+    private weak var _icon: NativeSoundIcon?
+    var icon: NativeSoundIcon? {
+        get { lock.lock(); defer { lock.unlock() }; return _icon }
+        set { lock.lock(); _icon = newValue; lock.unlock() }
+    }
+}
+
 final class NativeSoundIcon: NativeIconHosting {
 
     static let identifier = "com.apple.menuextra.sound"
@@ -24,38 +36,41 @@ final class NativeSoundIcon: NativeIconHosting {
     private let tapPort = TapPortBox()
     private let lock = NSLock()
     private var cachedFrame: CGRect?
+    /// The process that owns macOS's menu bar items: only an element of this one counts as the icon.
+    private var trustedPid: pid_t = 0
     private var gate = NativeIconClickGate()   // touched only on the tap thread
     private let systemWide: AXUIElement = {
         let e = AXUIElementCreateSystemWide()
-        AXUIElementSetMessagingTimeout(e, 0.1)
+        // The tap waits for this answer, so it is short: a click that cannot be confirmed in time is passed on to macOS.
+        AXUIElementSetMessagingTimeout(e, 0.05)
         return e
     }()
 
     deinit { stop() }
+
+    private func remember(_ frame: CGRect?, pid: pid_t) -> CGRect? {
+        lock.lock(); cachedFrame = frame; trustedPid = pid; lock.unlock()
+        return frame
+    }
 
     // ── The icon ────────────────────────────────────────────────────────────
 
     func currentFrame() -> CGRect? {
         guard AXIsProcessTrusted(),
               let pid = NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.MenuBarAgent").first?.processIdentifier
-        else { return remember(nil) }
+        else { return remember(nil, pid: 0) }
         let agent = AXUIElementCreateApplication(pid)
         AXUIElementSetMessagingTimeout(agent, 0.3)
-        guard let bar = Self.attribute(agent, "AXExtrasMenuBar"), CFGetTypeID(bar) == AXUIElementGetTypeID() else { return remember(nil) }
+        guard let bar = Self.attribute(agent, "AXExtrasMenuBar"), CFGetTypeID(bar) == AXUIElementGetTypeID() else { return remember(nil, pid: 0) }
         let groups = (Self.attribute(bar as! AXUIElement, kAXChildrenAttribute) as? [AXUIElement]) ?? []   // type checked above
         for group in groups {
             for item in (Self.attribute(group, kAXChildrenAttribute) as? [AXUIElement]) ?? [] where Self.identifier(of: item) == Self.identifier {
                 var r = CGRect.zero
                 if let v = Self.attribute(item, "AXFrame"), CFGetTypeID(v) == AXValueGetTypeID() { AXValueGetValue(v as! AXValue, .cgRect, &r) }   // type checked
-                return remember(r.isEmpty ? nil : r)
+                return remember(r.isEmpty ? nil : r, pid: pid)
             }
         }
-        return remember(nil)
-    }
-
-    private func remember(_ frame: CGRect?) -> CGRect? {
-        lock.lock(); cachedFrame = frame; lock.unlock()
-        return frame
+        return remember(nil, pid: 0)
     }
 
     private static func attribute(_ e: AXUIElement, _ name: String) -> CFTypeRef? {
@@ -69,11 +84,13 @@ final class NativeSoundIcon: NativeIconHosting {
 
     func start() {
         guard tap == nil, AXIsProcessTrusted() else { return }
+        if let frame = currentFrame() { _ = underPointerIsTheIcon(CGPoint(x: frame.midX, y: frame.midY)) }
         let mask = (1 << CGEventType.leftMouseDown.rawValue) | (1 << CGEventType.leftMouseUp.rawValue)
         // The session tap, an active one: only Accessibility is needed, which Anode already asks for.
         guard let t = CGEvent.tapCreate(tap: .cgSessionEventTap, place: .headInsertEventTap, options: .defaultTap,
                                         eventsOfInterest: CGEventMask(mask), callback: nativeIconTapCallback,
-                                        userInfo: Unmanaged.passUnretained(self).toOpaque()) else { return }
+                                        userInfo: Unmanaged.passUnretained(NativeIconTapBox.shared).toOpaque()) else { return }
+        NativeIconTapBox.shared.icon = self
         guard let source = CFMachPortCreateRunLoopSource(nil, t, 0) else { return }
         EventTapThread.shared.add(source)
         CGEvent.tapEnable(tap: t, enable: true)
@@ -83,6 +100,7 @@ final class NativeSoundIcon: NativeIconHosting {
     }
 
     func stop() {
+        if NativeIconTapBox.shared.icon === self { NativeIconTapBox.shared.icon = nil }
         if let tap {
             CGEvent.tapEnable(tap: tap, enable: false)
             CFMachPortInvalidate(tap)
@@ -121,13 +139,18 @@ final class NativeSoundIcon: NativeIconHosting {
     private func underPointerIsTheIcon(_ point: CGPoint) -> Bool {
         var hit: AXUIElement?
         guard AXUIElementCopyElementAtPosition(systemWide, Float(point.x), Float(point.y), &hit) == .success, let hit else { return false }
+        // The right id is not enough: any app can name an element anything. It must also belong to the process that draws macOS's bar.
+        lock.lock(); let expected = trustedPid; lock.unlock()
+        var owner: pid_t = 0
+        guard expected != 0, AXUIElementGetPid(hit, &owner) == .success, owner == expected else { return false }
         return Self.identifier(of: hit) == Self.identifier
     }
 }
 
 private func nativeIconTapCallback(proxy: CGEventTapProxy, type: CGEventType, event: CGEvent,
                                    refcon: UnsafeMutableRawPointer?) -> Unmanaged<CGEvent>? {
-    guard let refcon else { return Unmanaged.passUnretained(event) }
-    let icon = Unmanaged<NativeSoundIcon>.fromOpaque(refcon).takeUnretainedValue()
+    guard let refcon, let icon = Unmanaged<NativeIconTapBox>.fromOpaque(refcon).takeUnretainedValue().icon else {
+        return Unmanaged.passUnretained(event)
+    }
     return icon.tapped(type: type, event: event) ? Unmanaged.passUnretained(event) : nil
 }
