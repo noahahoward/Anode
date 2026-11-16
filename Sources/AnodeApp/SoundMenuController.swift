@@ -235,7 +235,8 @@ final class SoundMenuController {
         // Sound Settings opens the pane; the AirPods' own settings are macOS's panel's to open.
         if index == titles.count - 1 {
             if let url = URL(string: "x-apple.systempreferences:com.apple.Sound-Settings.extension") { NSWorkspace.shared.open(url) }
-        } else {
+        } else if apple?.settingsButtons.contains(titles[index]) == true {
+            // Only a button macOS's panel itself listed is pressed (these have no id to match on, only their label).
             press(SystemPanelRow(identifier: "", description: titles[index]), optimistic: nil)
         }
         closeMenu()

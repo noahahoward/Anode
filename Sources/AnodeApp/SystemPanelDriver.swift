@@ -226,7 +226,10 @@ final class SystemPanelDriver: SystemPanelDriving {
     private func pressRow(_ row: SystemPanelRow) {
         guard let window = panelWindow(),
               let element = find(in: window, where: {
-                  Self.string($0, "AXIdentifier") == row.identifier && Self.string($0, kAXDescriptionAttribute) == row.description
+                  // Only a row that can be pressed: a button, or a toggle row (macOS's own Settings buttons have no id).
+                  let role = Self.string($0, kAXRoleAttribute)
+                  guard role == "AXCheckBox" || role == "AXButton" else { return false }
+                  return Self.string($0, "AXIdentifier") == row.identifier && Self.string($0, kAXDescriptionAttribute) == row.description
               }) else { feed(.rowMissing); return }
         AXUIElementPerformAction(element, kAXPressAction as CFString)
         feed(.rowPressed)

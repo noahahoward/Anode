@@ -74,7 +74,7 @@ final class SoundMenuControllerTests: XCTestCase {
             ["Type": "Accessory Source", "Part Identifier": "Right", "Group Identifier": "G", "Current Capacity": 66]])
     }
 
-    private func tree(listening: String = "Transparency") -> AXNode {
+    private func tree(listening: String = "Transparency", buttons: Bool = false) -> AXNode {
         func box(_ id: String, _ desc: String, _ on: Bool) -> AXNode {
             AXNode(role: "AXCheckBox", subrole: "AXToggle", identifier: id, description: desc, value: on ? "1" : "0")
         }
@@ -92,7 +92,8 @@ final class SoundMenuControllerTests: XCTestCase {
                 AXNode(role: "AXHeading", identifier: pods, description: "Conversation Awareness"),
                 box(pods, "Off", true), box(pods, "On", false),
                 box("sound-device-Living Room Speaker", "Living Room Speaker", false),
-            ])])])
+            ])] + (buttons ? [AXNode(role: "AXButton", description: "Test AirPods Pro Settings…"),
+                              AXNode(role: "AXButton", description: "Sound Settings…")] : []))])
     }
 
     private func rig(enabled: Bool = true, trusted: Bool = true, batteries: [AccessoryBattery]? = nil) throws -> Rig {
@@ -221,6 +222,19 @@ final class SoundMenuControllerTests: XCTestCase {
         XCTAssertTrue(r.model.notice?.contains("Accessibility") == true)
         r.controller.setVolume(0.3)
         XCTAssertEqual(r.outputs.setVolumes, [0.3])
+    }
+
+    func testAirPodsSettingsPressedOnlyWhenApplesPanelListsIt() throws {
+        let listed = try rig(); defer { listed.cleanup() }
+        listed.controller.openMenu()
+        listed.driver.complete(0, .tree(tree(buttons: true)))
+        listed.controller.pressSettings(0)
+        XCTAssertEqual(listed.driver.jobs.last?.1, .press(SystemPanelRow(identifier: "", description: "Test AirPods Pro Settings…")))
+
+        let unlisted = try rig(); defer { unlisted.cleanup() }
+        openAndRead(unlisted)
+        unlisted.controller.pressSettings(0)
+        XCTAssertEqual(unlisted.driver.jobs.count, 1, "no button named in the panel, nothing to press")
     }
 
     func testVolumeAndMuteGoToTheOutput() throws {
