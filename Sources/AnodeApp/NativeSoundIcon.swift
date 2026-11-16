@@ -83,13 +83,18 @@ final class NativeSoundIcon: NativeIconHosting {
     // ── The tap ─────────────────────────────────────────────────────────────
 
     func start() {
-        guard tap == nil, AXIsProcessTrusted() else { return }
+        guard tap == nil else { return }
+        guard AXIsProcessTrusted() else { FeatureLog.append("sound-menu.log", "macOS icon: no Accessibility, the tap cannot start"); return }
         if let frame = currentFrame() { _ = underPointerIsTheIcon(CGPoint(x: frame.midX, y: frame.midY)) }
         let mask = (1 << CGEventType.leftMouseDown.rawValue) | (1 << CGEventType.leftMouseUp.rawValue)
         // The session tap, an active one: only Accessibility is needed, which Anode already asks for.
         guard let t = CGEvent.tapCreate(tap: .cgSessionEventTap, place: .headInsertEventTap, options: .defaultTap,
                                         eventsOfInterest: CGEventMask(mask), callback: nativeIconTapCallback,
-                                        userInfo: Unmanaged.passUnretained(NativeIconTapBox.shared).toOpaque()) else { return }
+                                        userInfo: Unmanaged.passUnretained(NativeIconTapBox.shared).toOpaque()) else {
+            FeatureLog.append("sound-menu.log", "macOS icon: the event tap could not be made")
+            return
+        }
+        FeatureLog.append("sound-menu.log", "macOS icon: tap started, icon frame \(String(describing: cachedFrame))")
         NativeIconTapBox.shared.icon = self
         guard let source = CFMachPortCreateRunLoopSource(nil, t, 0) else { return }
         EventTapThread.shared.add(source)
@@ -124,6 +129,7 @@ final class NativeSoundIcon: NativeIconHosting {
             let verdict = gate.decide(type == .leftMouseDown ? .down : .up, at: point, modifiers: !held.isEmpty, icon: icon) {
                 underPointerIsTheIcon(point)
             }
+            if let icon, icon.contains(point) { FeatureLog.append("sound-menu.log", "macOS icon: press inside the icon: \(verdict), modifiers held: \(!held.isEmpty), flags \(String(event.flags.rawValue, radix: 16))") }
             switch verdict {
             case .pass: return true
             case .swallow: return false
