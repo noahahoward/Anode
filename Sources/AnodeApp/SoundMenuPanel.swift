@@ -227,7 +227,7 @@ final class SoundMenuContentView: NSView {
             slider.value = model.muted ? 0 : model.volume
             slider.onChange = { [weak self] v in self?.controller?.setVolume(v) }
             addSubview(slider)
-            let down = IconButton(symbol: "speaker.fill", size: 14, frame: NSRect(x: 12, y: f.minY - 1, width: 18, height: 18)) { [weak self] in
+            let down = IconButton(symbol: "speaker.fill", size: 14.5, tint: 0.9, frame: NSRect(x: 12, y: f.minY - 1, width: 18, height: 18)) { [weak self] in
                 guard let self, let m = self.model else { return }
                 self.controller?.setVolume(max(0, m.volume - 1 / 16))
             }
@@ -389,8 +389,9 @@ final class ChoiceRow: HoverRow {
             addSubview(check)
         }
         let glyph = NSImageView(frame: NSRect(x: 42, y: 4, width: 20, height: 20))
-        glyph.image = symbol(SoundGlyphs.choice(choice.title), size: 14)
-        glyph.contentTintColor = choice.enabled ? NSColor.white.withAlphaComponent(0.6) : NSColor.white.withAlphaComponent(0.25)
+        glyph.image = ListeningGlyphs.image(for: choice.title) ?? symbol(SoundGlyphs.choice(choice.title), size: 14)
+        glyph.imageScaling = .scaleNone
+        glyph.contentTintColor = choice.enabled ? NSColor.white.withAlphaComponent(0.85) : NSColor.white.withAlphaComponent(0.25)
         addSubview(glyph)
         let l = NSTextField(labelWithString: choice.title)
         l.font = .systemFont(ofSize: 13)
