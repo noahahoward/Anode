@@ -346,22 +346,27 @@ final class DeviceRow: HoverRow {
         addSubview(name)
         if let b = device.battery {
             var x: CGFloat = 41
-            let pair = b.left != nil && b.left == b.right
-            let readings: [(String, Int?)] = pair ? [("airpodspro", b.left), ("airpodspro.chargingcase.wireless.fill", b.case_)]
-                : [("airpodpro.left", b.left), ("airpodpro.right", b.right), ("airpodspro.chargingcase.wireless.fill", b.case_)]
-            for (glyph, level) in readings {
+            // One reading for both buds when they agree, or when macOS lists them as one: the pair of buds drawn together.
+            let pair = b.left != nil && (b.right == nil || b.left == b.right)
+            // (symbol, point size, drawn width, where the percentage starts): macOS's glyphs are larger than a text-sized one.
+            let readings: [(String, CGFloat, CGFloat, CGFloat, CGFloat, Int?)] = pair
+                ? [("airpods.pro", 12, 17, 2.85, 20.9, b.left), ("airpods.pro.gen3.chargingcase.wireless.fill", 11.5, 14, 0.4, 16.4, b.case_)]
+                : [("airpods.pro.left", 11, 8, 2, 12, b.left), ("airpods.pro.right", 11, 8, 2, 12, b.right),
+                   ("airpods.pro.gen3.chargingcase.wireless.fill", 11.5, 14, 0.4, 16.4, b.case_)]
+            for (glyph, size, width, dx, textAt, level) in readings {
                 guard let level else { continue }
-                let icon = NSImageView(frame: NSRect(x: x, y: 18, width: 12, height: 12))
-                icon.image = symbol(glyph, size: 9)
+                let icon = NSImageView(frame: NSRect(x: x + dx, y: 18.5, width: width, height: 14))
+                icon.image = symbol(glyph, size: size)
+                icon.imageScaling = .scaleNone
                 icon.contentTintColor = NSColor.white.withAlphaComponent(0.5)
                 addSubview(icon)
                 let l = NSTextField(labelWithString: "\(level)%")
                 l.font = .systemFont(ofSize: 11)
                 l.textColor = .secondaryLabelColor
                 l.sizeToFit()
-                l.frame.origin = NSPoint(x: x + 14, y: 17)
+                l.frame.origin = NSPoint(x: x + textAt, y: 17)
                 addSubview(l)
-                x += 14 + l.frame.width + 8
+                x += textAt + l.frame.width + 6
             }
         }
         if expandable {
