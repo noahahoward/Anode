@@ -20,6 +20,7 @@ final class AppAudioRouter: AppVolumeControlling {
     private let name: (String) -> String
     private let isListable: (String) -> Bool
     private let displayName: (String) -> String?
+    private let openApps: () -> [(bundleID: String, name: String)]
     private var sessions: [String: Session] = [:]
     private var failedSignatures: [String: String] = [:]
     private var stopped = false
@@ -33,9 +34,11 @@ final class AppAudioRouter: AppVolumeControlling {
 
     init(settings: Settings, store: AppAudioStore, backend: AppAudioBackend, bundleID: @escaping (String) -> String?,
          name: @escaping (String) -> String, isListable: @escaping (String) -> Bool = { _ in true },
-         displayName: @escaping (String) -> String? = { _ in nil }) {
+         displayName: @escaping (String) -> String? = { _ in nil },
+         openApps: @escaping () -> [(bundleID: String, name: String)] = { [] }) {
         self.settings = settings; self.store = store; self.backend = backend
         self.bundleID = bundleID; self.name = name; self.isListable = isListable; self.displayName = displayName
+        self.openApps = openApps
         backend.onProcessesChanged = { [weak self] in self?.reconcile() }
         backend.onOutputChanged = { [weak self] in self?.reconcile() }
         observer = NotificationCenter.default.addObserver(forName: AppAudioStore.didChange, object: store, queue: .main) { [weak self] _ in
@@ -50,7 +53,7 @@ final class AppAudioRouter: AppVolumeControlling {
 
     // ── What the menu shows ─────────────────────────────────────────────────
 
-    /// Every open app that makes use of the sound system, at its own volume (100 % unless the person changed it), whether or not it
+    /// Every open app that can make sound, at its own volume (100 % unless the person changed it), whether or not it
     /// is playing: silent is not muted. Empty while the feature is off. In a steady order: rows that move as apps start and stop
     /// would be hard to aim at.
     var apps: [AppVolumeRow] {
@@ -58,6 +61,7 @@ final class AppAudioRouter: AppVolumeControlling {
         // Apps connected to the sound system now, and every app ever seen so that is still open: a browser is an audio client only
         // while a tab uses sound, and it does not leave the list when the tab stops.
         var names: [String: String] = [:]
+        let isListable: (String) -> Bool = { [isListable] in isListable($0) && !NeverSoundApps.contains($0) }
         for app in AudioAppGrouping.group(backend.processes(), bundleID: bundleID, name: name) where isListable(app.bundleID) {
             names[app.bundleID] = app.name
             store.remember(bundleID: app.bundleID, name: app.name)
@@ -67,6 +71,8 @@ final class AppAudioRouter: AppVolumeControlling {
         for id in store.customised.keys where names[id] == nil && isListable(id) {
             if let n = displayName(id) { names[id] = n; store.remember(bundleID: id, name: n) }
         }
+        // Every other open app: it is not connected to the sound system until it plays, and it can still be set before that.
+        for app in openApps() where names[app.bundleID] == nil && isListable(app.bundleID) { names[app.bundleID] = app.name }
         return names.map { id, name in (id, name) }
             .sorted { $0.1.localizedCaseInsensitiveCompare($1.1) == .orderedAscending }
             .map { id, name in

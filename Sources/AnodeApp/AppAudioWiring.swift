@@ -67,7 +67,11 @@ final class AppAudioCoordinator {
                                   },
                                   // Anode itself is not an app whose volume the person sets here.
                                   isListable: { $0 != Bundle.main.bundleIdentifier && running().contains($0) },
-                                  displayName: { id in NSWorkspace.shared.runningApplications.first { $0.bundleIdentifier == id }?.localizedName })
+                                  displayName: { id in NSWorkspace.shared.runningApplications.first { $0.bundleIdentifier == id }?.localizedName },
+                                  openApps: {
+                                      NSWorkspace.shared.runningApplications.filter { $0.activationPolicy == .regular }
+                                          .compactMap { app in app.bundleIdentifier.flatMap { id in app.localizedName.map { (id, $0) } } }
+                                  })
         }, attach: attach)
     }
 }

@@ -81,11 +81,38 @@ final class AppAudioRouterTests: XCTestCase {
         router.shutdown()
     }
 
-    func testAnAppThatWasNeverSeenUsingSoundIsNotListed() throws {
-        let (router, backend, _, _, done) = try rig(running: []); defer { done() }
-        XCTAssertTrue(router.apps.isEmpty)
-        backend.list = []
-        XCTAssertTrue(router.apps.isEmpty)
+    func testAnOpenAppIsListedBeforeItHasEverUsedSound() throws {
+        let (defaults, suite) = try TestDefaults.make(owner: "AppAudioRouterOpen", test: name)
+        defer { TestDefaults.destroy(defaults, suite) }
+        let settings = Settings(defaults: defaults); settings.appAudioEnabled = true
+        let router = AppAudioRouter(settings: settings, store: AppAudioStore(defaults: defaults), backend: FakeBackend(),
+                                    bundleID: { _ in nil }, name: { $0 },
+                                    openApps: { [("com.example.game", "Game"), ("com.example.editor", "Editor")] })
+        XCTAssertEqual(router.apps.map(\.name), ["Editor", "Game"])
+        XCTAssertTrue(router.apps.allSatisfy { $0.volume == 1 && !$0.muted })
+        router.shutdown()
+    }
+
+    func testAppsThatCannotMakeSoundAreNotListedEvenWhenOpen() throws {
+        let (defaults, suite) = try TestDefaults.make(owner: "AppAudioRouterNever", test: name)
+        defer { TestDefaults.destroy(defaults, suite) }
+        let settings = Settings(defaults: defaults); settings.appAudioEnabled = true
+        let router = AppAudioRouter(settings: settings, store: AppAudioStore(defaults: defaults), backend: FakeBackend(),
+                                    bundleID: { _ in nil }, name: { $0 },
+                                    openApps: { [("com.apple.finder", "Finder"), ("com.apple.Terminal", "Terminal"), ("com.example.game", "Game")] })
+        XCTAssertEqual(router.apps.map(\.name), ["Game"])
+        router.shutdown()
+    }
+
+    func testAnOpenAppThatIsNotListableIsNotShown() throws {
+        let (defaults, suite) = try TestDefaults.make(owner: "AppAudioRouterSelf", test: name)
+        defer { TestDefaults.destroy(defaults, suite) }
+        let settings = Settings(defaults: defaults); settings.appAudioEnabled = true
+        let router = AppAudioRouter(settings: settings, store: AppAudioStore(defaults: defaults), backend: FakeBackend(),
+                                    bundleID: { _ in nil }, name: { $0 }, isListable: { $0 != "dev.anode.app" },
+                                    openApps: { [("dev.anode.app", "Anode"), ("com.example.game", "Game")] })
+        XCTAssertEqual(router.apps.map(\.name), ["Game"])
+        router.shutdown()
     }
 
     func testAnAppThatHasBeenClosedIsNotListedAnyMore() throws {
