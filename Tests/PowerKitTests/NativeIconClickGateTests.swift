@@ -42,6 +42,32 @@ final class NativeIconClickGateTests: XCTestCase {
                        "the bar moved since the frame was read: the click belongs to whatever is there now")
     }
 
+    func testAClickJustBesideTheLastKnownFrameIsStillTakenWhenTheLiveCheckSaysItIsTheIcon() {
+        var g = NativeIconClickGate()
+        // The bar's other items changed width a moment ago, so the icon has moved a few points since its frame was read.
+        let moved = CGPoint(x: icon.minX - 14, y: 19)
+        XCTAssertEqual(g.decide(.down, at: moved, modifiers: false, icon: icon, isTheIcon: { true }), .swallowAndOpen)
+    }
+
+    func testABesideClickThatIsNotTheIconIsPassed() {
+        var g = NativeIconClickGate()
+        XCTAssertEqual(g.decide(.down, at: CGPoint(x: icon.minX - 14, y: 19), modifiers: false, icon: icon, isTheIcon: { false }), .pass)
+    }
+
+    func testFarFromTheIconNothingIsEvenAsked() {
+        var g = NativeIconClickGate()
+        var asked = 0
+        _ = g.decide(.down, at: CGPoint(x: icon.minX - 400, y: 19), modifiers: false, icon: icon, isTheIcon: { asked += 1; return true })
+        XCTAssertEqual(asked, 0)
+    }
+
+    func testBelowTheMenuBarNothingIsAsked() {
+        var g = NativeIconClickGate()
+        var asked = 0
+        _ = g.decide(.down, at: CGPoint(x: icon.midX, y: 300), modifiers: false, icon: icon, isTheIcon: { asked += 1; return true })
+        XCTAssertEqual(asked, 0)
+    }
+
     func testNoKnownIconPassesEverything() {
         var g = NativeIconClickGate()
         XCTAssertEqual(g.decide(.down, at: inside, modifiers: false, icon: nil, isTheIcon: { true }), .pass)

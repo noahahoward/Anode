@@ -126,20 +126,27 @@ final class NativeSoundIcon: NativeIconHosting {
             lock.lock(); let icon = cachedFrame; lock.unlock()
             let held = event.flags.intersection([.maskCommand, .maskAlternate, .maskControl])
             let point = event.location
+            var liveFrame: CGRect?
             let verdict = gate.decide(type == .leftMouseDown ? .down : .up, at: point, modifiers: !held.isEmpty, icon: icon) {
-                underPointerIsTheIcon(point)
+                liveFrame = iconUnderPointer(point)
+                return liveFrame != nil
             }
-            // A line for a click Anode took or declined on purpose (never an ordinary pass), written off the tap thread:
-            // the tap must not wait for a disk.
-            if let icon, icon.contains(point), verdict != .pass || !held.isEmpty {
-                let line = "macOS icon: press inside the icon: \(verdict), modifiers held: \(!held.isEmpty)"
+            // A line for a click near the icon that Anode took, or declined: a press that was passed on is the one worth knowing
+            // about (macOS's own panel opens instead). Written off the tap thread: the tap must not wait for a disk.
+            if let icon, NativeIconClickGate.isNear(point, icon), verdict != .pass || !held.isEmpty || type == .leftMouseDown {
+                let line = "macOS icon: press near the icon: \(verdict), live look: \(liveFrame.map { "icon at x \(Int($0.minX))" } ?? "not the icon"), "
+                    + "last known icon x \(Int(icon.minX)), modifiers held: \(!held.isEmpty)"
                 DispatchQueue.global(qos: .utility).async { FeatureLog.append("sound-menu.log", line) }
             }
             switch verdict {
             case .pass: return true
             case .swallow: return false
             case .swallowAndOpen:
-                if let icon { DispatchQueue.main.async { [weak self] in self?.onClick?(icon) } }
+                // Where the icon really is now, from the look just taken, not where it was a few seconds ago.
+                if let shown = liveFrame ?? icon {
+                    lock.lock(); cachedFrame = shown; lock.unlock()
+                    DispatchQueue.main.async { [weak self] in self?.onClick?(shown) }
+                }
                 return false
             }
         default:
@@ -147,15 +154,20 @@ final class NativeSoundIcon: NativeIconHosting {
         }
     }
 
-    private func underPointerIsTheIcon(_ point: CGPoint) -> Bool {
+    /// The icon's frame when what is under the pointer is macOS's Sound icon, else nil.
+    private func iconUnderPointer(_ point: CGPoint) -> CGRect? {
         var hit: AXUIElement?
-        guard AXUIElementCopyElementAtPosition(systemWide, Float(point.x), Float(point.y), &hit) == .success, let hit else { return false }
+        guard AXUIElementCopyElementAtPosition(systemWide, Float(point.x), Float(point.y), &hit) == .success, let hit else { return nil }
         // The right id is not enough: any app can name an element anything. It must also belong to the process that draws macOS's bar.
         lock.lock(); let expected = trustedPid; lock.unlock()
         var owner: pid_t = 0
-        guard expected != 0, AXUIElementGetPid(hit, &owner) == .success, owner == expected else { return false }
-        return Self.identifier(of: hit) == Self.identifier
+        guard expected != 0, AXUIElementGetPid(hit, &owner) == .success, owner == expected, Self.identifier(of: hit) == Self.identifier else { return nil }
+        var r = CGRect.zero
+        if let v = Self.attribute(hit, "AXFrame"), CFGetTypeID(v) == AXValueGetTypeID() { AXValueGetValue(v as! AXValue, .cgRect, &r) }   // type checked
+        return r.isEmpty ? nil : r
     }
+
+    private func underPointerIsTheIcon(_ point: CGPoint) -> Bool { iconUnderPointer(point) != nil }
 }
 
 private func nativeIconTapCallback(proxy: CGEventTapProxy, type: CGEventType, event: CGEvent,
