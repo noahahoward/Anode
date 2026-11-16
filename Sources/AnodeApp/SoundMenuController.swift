@@ -308,6 +308,12 @@ final class SoundMenuController {
         redraw()
     }
 
+    /// A volume key pressed while the menu is open: the level moves a sixteenth, as macOS's own keys would move it, or the mute switches.
+    func volumeKey(_ key: MediaKeyEvent.Key) {
+        guard presenter.isOpen else { return }
+        if let level = VolumeKeys.next(volume: outputs.muted ? 0 : outputs.volume, key: key) { setVolume(level) } else { toggleMute() }
+    }
+
     func toggleMute() {
         outputs.setMuted(!outputs.muted)
         redraw()

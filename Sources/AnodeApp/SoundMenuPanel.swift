@@ -104,6 +104,7 @@ final class SoundMenuPanel: NSPanel, SoundMenuPresenting {
 
     private let content = SoundMenuContentView()
     private var monitors: [Any] = []
+    private let volumeKeys = MediaKeyTap()
     private var anchor = CGRect.zero
 
     var isOpen: Bool { isVisible }
@@ -137,6 +138,8 @@ final class SoundMenuPanel: NSPanel, SoundMenuPresenting {
         content.apply(model)
         place()
         orderFrontRegardless()
+        // The volume keys go to the menu while it is open, so macOS does not draw its own bubble beside it.
+        volumeKeys.start { [weak self] key in self?.controller?.volumeKey(key.key) }
         // A click anywhere else closes the menu.
         if let click = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown], handler: { [weak self] _ in
             self?.closeUnlessOnItem()
@@ -190,6 +193,7 @@ final class SoundMenuPanel: NSPanel, SoundMenuPresenting {
     override func close() {
         for m in monitors { NSEvent.removeMonitor(m) }
         monitors.removeAll()
+        volumeKeys.stop()
         stopGlide()
         orderOut(nil)
     }
