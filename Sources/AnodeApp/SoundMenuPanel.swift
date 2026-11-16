@@ -138,7 +138,7 @@ final class SoundMenuPanel: NSPanel, SoundMenuPresenting {
     private func place() {
         guard let screen = NSScreen.screens.first else { return }
         let size = content.fittingSize
-        let bar = NSStatusBar.system.thickness
+        let bar = max(NSStatusBar.system.thickness, screen.frame.height - screen.visibleFrame.maxY)
         var x = anchor.maxX + 10.5 - size.width
         x = min(max(8, x), screen.frame.width - size.width - 8)
         setFrame(NSRect(x: x, y: screen.frame.height - bar - 2 - size.height, width: size.width, height: size.height), display: true)
@@ -186,7 +186,7 @@ final class SoundMenuContentView: NSView {
         let f = row.frame
         switch row.kind {
         case .title:
-            addSubview(label("Sound", f, size: 14, weight: .bold, color: .labelColor))
+            addSubview(label("Sound", f, size: 13, weight: .bold, color: .labelColor))
         case .volumeSlider:
             let slider = MenuSlider(frame: f)
             slider.value = model.muted ? 0 : model.volume
@@ -207,7 +207,7 @@ final class SoundMenuContentView: NSView {
             d.layer?.backgroundColor = NSColor.white.withAlphaComponent(0.12).cgColor
             addSubview(d)
         case .heading(let title):
-            addSubview(label(title, f, size: 13, weight: .semibold, color: .secondaryLabelColor))
+            addSubview(label(title, f, size: 12, weight: .semibold, color: .secondaryLabelColor))
         case .block:
             let b = NSView(frame: f)
             b.wantsLayer = true
@@ -301,22 +301,31 @@ final class DeviceRow: HoverRow {
         addSubview(circle)
 
         let name = NSTextField(labelWithString: device.name)
-        name.font = .systemFont(ofSize: 15)
+        name.font = .systemFont(ofSize: 13)
         name.textColor = .labelColor
         name.lineBreakMode = .byTruncatingTail
         let hasBattery = device.battery != nil
         name.frame = NSRect(x: 43, y: hasBattery ? 1 : 6, width: 220, height: 18)
         addSubview(name)
         if let b = device.battery {
-            let text = [b.left.map { "\($0)%" }, b.right.map { "\($0)%" }, b.case_.map { "\($0)%" }].compactMap { $0 }.joined(separator: "   ")
-            let l = NSTextField(labelWithString: text)
-            l.font = .systemFont(ofSize: 12)
-            l.textColor = .secondaryLabelColor
-            l.frame = NSRect(x: 43, y: 17, width: 220, height: 14)
-            addSubview(l)
+            var x: CGFloat = 43
+            for (glyph, level) in [("airpodpro.left", b.left), ("airpodpro.right", b.right), ("airpodspro.chargingcase.wireless.fill", b.case_)] {
+                guard let level else { continue }
+                let icon = NSImageView(frame: NSRect(x: x, y: 18, width: 12, height: 12))
+                icon.image = symbol(glyph, size: 9)
+                icon.contentTintColor = NSColor.white.withAlphaComponent(0.5)
+                addSubview(icon)
+                let l = NSTextField(labelWithString: "\(level)%")
+                l.font = .systemFont(ofSize: 11)
+                l.textColor = .secondaryLabelColor
+                l.sizeToFit()
+                l.frame.origin = NSPoint(x: x + 14, y: 17)
+                addSubview(l)
+                x += 14 + l.frame.width + 8
+            }
         }
         if expandable {
-            let chev = IconButton(symbol: expanded ? "chevron.up" : "chevron.down", frame: NSRect(x: 268, y: 3, width: 26, height: 26)) { [weak self] in self?.onToggle?() }
+            let chev = IconButton(symbol: "chevron.down", frame: NSRect(x: 268, y: 3, width: 26, height: 26)) { [weak self] in self?.onToggle?() }
             addSubview(chev)
         }
     }
@@ -329,19 +338,19 @@ final class ChoiceRow: HoverRow {
         super.init(frame: frame)
         highlightable = choice.enabled
         if choice.isOn {
-            let check = NSImageView(frame: NSRect(x: 9, y: 4, width: 18, height: 18))
+            let check = NSImageView(frame: NSRect(x: 13, y: 4, width: 18, height: 18))
             check.image = symbol("checkmark", size: 13, weight: .semibold)
             check.contentTintColor = .labelColor
             addSubview(check)
         }
-        let glyph = NSImageView(frame: NSRect(x: 36, y: 3, width: 20, height: 20))
+        let glyph = NSImageView(frame: NSRect(x: 42, y: 3, width: 20, height: 20))
         glyph.image = symbol(SoundGlyphs.choice(choice.title), size: 14)
         glyph.contentTintColor = choice.enabled ? NSColor.white.withAlphaComponent(0.6) : NSColor.white.withAlphaComponent(0.25)
         addSubview(glyph)
         let l = NSTextField(labelWithString: choice.title)
-        l.font = .systemFont(ofSize: 15)
+        l.font = .systemFont(ofSize: 13)
         l.textColor = choice.enabled ? .labelColor : NSColor.white.withAlphaComponent(0.3)
-        l.frame = NSRect(x: 63, y: 4, width: 220, height: 18)
+        l.frame = NSRect(x: 69, y: 4, width: 220, height: 18)
         addSubview(l)
     }
 
@@ -353,7 +362,7 @@ final class TextButton: HoverRow {
         super.init(frame: frame)
         onPick = action
         let l = NSTextField(labelWithString: title)
-        l.font = .systemFont(ofSize: 15)
+        l.font = .systemFont(ofSize: 13)
         l.textColor = .labelColor
         l.frame = NSRect(x: 0, y: 1, width: frame.width, height: 18)
         addSubview(l)
