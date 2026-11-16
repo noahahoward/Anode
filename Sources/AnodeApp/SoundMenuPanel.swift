@@ -59,10 +59,11 @@ enum SoundGlyphs {
 
     static func choice(_ title: String) -> String {
         switch title {
-        case "Transparency": return "person.wave.2.fill"
+        case "Transparency": return "person.and.background.dotted"
         case "Adaptive": return "person.fill.badge.plus"
         case "Noise Cancellation": return "person.crop.circle.fill"
-        case "Not Available", "On", "Off": return "person.line.dotted.person.fill"
+        case "Not Available": return "person.spatialaudio.fill"
+        case "On", "Off": return "person.wave.2.fill"
         default: return "circle"
         }
     }
@@ -170,6 +171,7 @@ final class SoundMenuContentView: NSView {
         return v
     }()
     private let tint = NSView()
+    private let edge = EdgeView()
 
     override var isFlipped: Bool { true }
     override var fittingSize: NSSize { size }
@@ -181,19 +183,26 @@ final class SoundMenuContentView: NSView {
         tint.wantsLayer = true
         tint.layer?.backgroundColor = NSColor.white.withAlphaComponent(0).cgColor
         addSubview(tint)
+        edge.wantsLayer = true
+        edge.layer?.cornerRadius = 17
+        edge.layer?.cornerCurve = .continuous
+        edge.layer?.borderWidth = 0.5
+        edge.layer?.borderColor = NSColor.white.withAlphaComponent(0.16).cgColor
     }
 
     required init?(coder: NSCoder) { fatalError("not used") }
 
     func apply(_ model: SoundMenuModel) {
         self.model = model
-        for v in subviews where v !== material && v !== tint { v.removeFromSuperview() }
+        for v in subviews where v !== material && v !== tint { v.removeFromSuperview() }   // the edge is added again at the end
         let layout = SoundMenuLayout.frames(for: model)
         size = NSSize(width: SoundMenuMetrics.width, height: layout.height)
         frame.size = size
         material.frame = bounds
         tint.frame = bounds
+        edge.frame = bounds
         for row in layout.rows { add(row, model) }
+        addSubview(edge)   // last, so it is drawn over everything
         invalidateIntrinsicContentSize()
     }
 
@@ -207,11 +216,11 @@ final class SoundMenuContentView: NSView {
             slider.value = model.muted ? 0 : model.volume
             slider.onChange = { [weak self] v in self?.controller?.setVolume(v) }
             addSubview(slider)
-            let down = IconButton(symbol: "speaker.fill", frame: NSRect(x: 12, y: f.minY - 1, width: 18, height: 18)) { [weak self] in
+            let down = IconButton(symbol: "speaker.fill", size: 14, frame: NSRect(x: 12, y: f.minY - 1, width: 18, height: 18)) { [weak self] in
                 guard let self, let m = self.model else { return }
                 self.controller?.setVolume(max(0, m.volume - 1 / 16))
             }
-            let up = IconButton(symbol: "speaker.wave.3.fill", frame: NSRect(x: f.maxX + 6, y: f.minY - 1, width: 26, height: 18)) { [weak self] in
+            let up = IconButton(symbol: "speaker.wave.3.fill", size: 14, frame: NSRect(x: f.maxX + 4, y: f.minY - 1, width: 28, height: 18)) { [weak self] in
                 guard let self, let m = self.model else { return }
                 self.controller?.setVolume(min(1, m.volume + 1 / 16))
             }
@@ -326,7 +335,10 @@ final class DeviceRow: HoverRow {
         addSubview(name)
         if let b = device.battery {
             var x: CGFloat = 41
-            for (glyph, level) in [("airpodpro.left", b.left), ("airpodpro.right", b.right), ("airpodspro.chargingcase.wireless.fill", b.case_)] {
+            let pair = b.left != nil && b.left == b.right
+            let readings: [(String, Int?)] = pair ? [("airpodspro", b.left), ("airpodspro.chargingcase.wireless.fill", b.case_)]
+                : [("airpodpro.left", b.left), ("airpodpro.right", b.right), ("airpodspro.chargingcase.wireless.fill", b.case_)]
+            for (glyph, level) in readings {
                 guard let level else { continue }
                 let icon = NSImageView(frame: NSRect(x: x, y: 18, width: 12, height: 12))
                 icon.image = symbol(glyph, size: 9)
@@ -342,7 +354,7 @@ final class DeviceRow: HoverRow {
             }
         }
         if expandable {
-            let chev = IconButton(symbol: "chevron.down", frame: NSRect(x: 268, y: 3, width: 26, height: 26)) { [weak self] in self?.onToggle?() }
+            let chev = IconButton(symbol: "chevron.down", size: 11, weight: .regular, tint: 0.4, frame: NSRect(x: 268, y: 3, width: 26, height: 26)) { [weak self] in self?.onToggle?() }
             addSubview(chev)
         }
     }
@@ -355,19 +367,19 @@ final class ChoiceRow: HoverRow {
         super.init(frame: frame)
         highlightable = choice.enabled
         if choice.isOn {
-            let check = NSImageView(frame: NSRect(x: 13, y: 4, width: 18, height: 18))
+            let check = NSImageView(frame: NSRect(x: 12, y: 5, width: 18, height: 18))
             check.image = symbol("checkmark", size: 13, weight: .semibold)
             check.contentTintColor = .labelColor
             addSubview(check)
         }
-        let glyph = NSImageView(frame: NSRect(x: 42, y: 3, width: 20, height: 20))
+        let glyph = NSImageView(frame: NSRect(x: 42, y: 4, width: 20, height: 20))
         glyph.image = symbol(SoundGlyphs.choice(choice.title), size: 14)
         glyph.contentTintColor = choice.enabled ? NSColor.white.withAlphaComponent(0.6) : NSColor.white.withAlphaComponent(0.25)
         addSubview(glyph)
         let l = NSTextField(labelWithString: choice.title)
         l.font = .systemFont(ofSize: 13)
         l.textColor = choice.enabled ? .labelColor : NSColor.white.withAlphaComponent(0.3)
-        l.frame = NSRect(x: 67, y: 4, width: 220, height: 18)
+        l.frame = NSRect(x: 67, y: 5, width: 220, height: 18)
         addSubview(l)
     }
 
@@ -391,12 +403,13 @@ final class TextButton: HoverRow {
 final class IconButton: NSView {
     private let action: () -> Void
 
-    init(symbol name: String, frame: NSRect, action: @escaping () -> Void) {
+    init(symbol name: String, size: CGFloat = 12, weight: NSFont.Weight = .semibold, tint: CGFloat = 0.6, frame: NSRect,
+         action: @escaping () -> Void) {
         self.action = action
         super.init(frame: frame)
         let v = NSImageView(frame: bounds)
-        v.image = symbol(name, size: 12, weight: .semibold)
-        v.contentTintColor = NSColor.white.withAlphaComponent(0.6)
+        v.image = symbol(name, size: size, weight: weight)
+        v.contentTintColor = NSColor.white.withAlphaComponent(tint)
         v.imageScaling = .scaleProportionallyDown
         addSubview(v)
     }
@@ -455,4 +468,9 @@ enum SoundMenuRuntime {
         controller.start()
         return controller
     }
+}
+
+/// The hairline around the panel. It draws and answers no clicks.
+final class EdgeView: NSView {
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
 }
