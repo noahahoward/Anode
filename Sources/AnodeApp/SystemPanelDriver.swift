@@ -101,6 +101,9 @@ final class SystemPanelDriver: SystemPanelDriving {
     private var route = SystemPanelRoute.menuExtra
     private var observer: AXObserver?
     private var ccElement: AXUIElement?
+    /// Alert windows already answered in this job, by identity: the OK press is not instant, and the same window must not be
+    /// reported (or answered) twice.
+    private var answeredAlerts = Set<CFHashCode>()
 
     init(log: @escaping (String) -> Void = { _ in }) { self.log = log }
 
@@ -121,6 +124,7 @@ final class SystemPanelDriver: SystemPanelDriving {
 
     private func finishJob(_ outcome: SystemPanelOutcome) {
         removeObserver()
+        answeredAlerts.removeAll()
         let done = current?.done
         current = nil; machine = nil; busy = false
         done?(outcome)
@@ -164,11 +168,11 @@ final class SystemPanelDriver: SystemPanelDriving {
             case .movePanelOffScreen: movePanel()
             case .readTree: readTree()
             case .pressRow(let row): pressRow(row)
-            case .dismissAlert: dismissAlerts()
+            case .dismissAlert: pressAlertButtons()
             case .closePanel: closePanel()
             case .waitForAlert(let seconds):
                 DispatchQueue.main.asyncAfter(deadline: .now() + seconds) { [weak self] in
-                    self?.dismissAlerts(reporting: true)
+                    self?.answerAlerts()
                     self?.feed(.alertWindowElapsed)
                 }
             case .uncoverIcon(let delay):
@@ -231,15 +235,31 @@ final class SystemPanelDriver: SystemPanelDriving {
 
     // ── Alerts ──────────────────────────────────────────────────────────────
 
-    /// macOS's refusal is its own window ("Failed to set listening mode"). Pressing OK ends it; its words are reported once.
-    private func dismissAlerts(reporting: Bool = false) {
-        guard let cc = ccElement else { return }
+    /// macOS's refusal is its own window ("Failed to set listening mode"). It is answered only when it has exactly one button
+    /// (an acknowledgement: there is no choice to make for the person) and only while a job of Anode's is running; any other
+    /// dialog of Control Center is left alone, where the person can see it. Each window is answered and reported once.
+    private func answerAlerts() {
+        guard machine != nil, let cc = ccElement else { return }
         for window in windows(of: cc) where Self.string(window, kAXSubroleAttribute) == "AXDialog" {
-            let texts = children(of: window).filter { Self.string($0, kAXRoleAttribute) == "AXStaticText" }.map { Self.string($0, kAXValueAttribute) }
-            if let ok = children(of: window).first(where: { Self.string($0, kAXRoleAttribute) == "AXButton" }) {
-                AXUIElementPerformAction(ok, kAXPressAction as CFString)
-            }
+            let key = CFHash(window)
+            guard !answeredAlerts.contains(key) else { continue }
+            let kids = children(of: window)
+            let buttons = kids.filter { Self.string($0, kAXRoleAttribute) == "AXButton" }
+            guard buttons.count == 1 else { continue }
+            answeredAlerts.insert(key)
+            let texts = kids.filter { Self.string($0, kAXRoleAttribute) == "AXStaticText" }.map { Self.string($0, kAXValueAttribute) }
+            AXUIElementPerformAction(buttons[0], kAXPressAction as CFString)
             if !texts.isEmpty { feed(.alert(texts.joined(separator: " / "))) }
+        }
+    }
+
+    /// The step the state machine asks for after an alert: the OK was already pressed by `answerAlerts`; press any single
+    /// button of an alert still showing, without reporting again.
+    private func pressAlertButtons() {
+        guard machine != nil, let cc = ccElement else { return }
+        for window in windows(of: cc) where Self.string(window, kAXSubroleAttribute) == "AXDialog" {
+            let buttons = children(of: window).filter { Self.string($0, kAXRoleAttribute) == "AXButton" }
+            if buttons.count == 1 { AXUIElementPerformAction(buttons[0], kAXPressAction as CFString) }
         }
     }
 
@@ -248,11 +268,16 @@ final class SystemPanelDriver: SystemPanelDriving {
         guard let cc = ccElement, let pid = Self.pid(of: Self.controlCenter) else { return }
         var created: AXObserver?
         let callback: AXObserverCallback = { _, element, _, refcon in
-            // Every new window of Control Center is moved off the screen the moment it exists; an alert is also answered.
-            SystemPanelDriver.moveOffScreen(element)
+            // The panel is moved off the screen the moment it exists; an alert is answered. Nothing else is touched, and
+            // nothing at all outside a job.
             guard let refcon else { return }
             let driver = Unmanaged<SystemPanelDriver>.fromOpaque(refcon).takeUnretainedValue()
-            if SystemPanelDriver.string(element, kAXSubroleAttribute) == "AXDialog" { driver.dismissAlerts() }
+            guard driver.machine != nil else { return }
+            switch SystemPanelDriver.string(element, kAXSubroleAttribute) {
+            case "AXSystemDialog": SystemPanelDriver.moveOffScreen(element)
+            case "AXDialog": driver.answerAlerts()
+            default: break
+            }
         }
         guard AXObserverCreate(pid, callback, &created) == .success, let obs = created else { return }
         AXObserverAddNotification(obs, cc, kAXWindowCreatedNotification as CFString, Unmanaged.passUnretained(self).toOpaque())
@@ -261,15 +286,21 @@ final class SystemPanelDriver: SystemPanelDriving {
     }
 
     private func removeObserver() {
-        if let obs = observer { CFRunLoopRemoveSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(obs), .defaultMode) }
+        if let obs = observer {
+            if let cc = ccElement { AXObserverRemoveNotification(obs, cc, kAXWindowCreatedNotification as CFString) }
+            CFRunLoopRemoveSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(obs), .defaultMode)
+        }
         observer = nil
     }
+
+    deinit { removeObserver() }
 
     // ── Finding things ──────────────────────────────────────────────────────
 
     private func locate(_ kind: SystemPanelKind) -> (item: AXUIElement, frame: CGRect, route: SystemPanelRoute)? {
-        guard let agent = Self.application(Self.menuBarAgent), let bar = Self.attribute(agent, "AXExtrasMenuBar") else { return nil }
-        let items = children(of: bar as! AXUIElement).flatMap { children(of: $0) }
+        guard let agent = Self.application(Self.menuBarAgent),
+              let bar = Self.element(Self.attribute(agent, "AXExtrasMenuBar")) else { return nil }
+        let items = children(of: bar).flatMap { children(of: $0) }
         func item(_ id: String) -> (AXUIElement, CGRect)? {
             items.first { Self.string($0, "AXIdentifier") == id }.map { ($0, Self.frame(of: $0)) }
         }
@@ -287,12 +318,13 @@ final class SystemPanelDriver: SystemPanelDriving {
     }
 
     /// True when a panel of Control Center is on the screen at its own place: the person opened it.
+    /// Fails closed: when the window list cannot be read, the person is assumed to have it open and nothing is touched.
     private func panelOnScreen() -> Bool {
-        guard let pid = Self.pid(of: Self.controlCenter) else { return false }
-        let list = (CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [[String: Any]]) ?? []
+        guard let pid = Self.pid(of: Self.controlCenter) else { return false }   // no Control Center: nothing to be open
+        guard let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [[String: Any]] else { return true }
         return list.contains { w in
-            guard (w[kCGWindowOwnerPID as String] as? Int32) == pid, (w[kCGWindowLayer as String] as? Int) == 101,
-                  let b = w[kCGWindowBounds as String] as? [String: Any], let x = b["X"] as? Double else { return false }
+            guard (w[kCGWindowOwnerPID as String] as? Int32) == pid, (w[kCGWindowLayer as String] as? Int) == 101 else { return false }
+            guard let b = w[kCGWindowBounds as String] as? [String: Any], let x = b["X"] as? Double else { return true }
             return x > -1000
         }
     }
@@ -338,8 +370,17 @@ final class SystemPanelDriver: SystemPanelDriving {
 
     private static func frame(of e: AXUIElement) -> CGRect {
         var r = CGRect.zero
-        if let v = attribute(e, "AXFrame") { AXValueGetValue(v as! AXValue, .cgRect, &r) }
+        if let ref = attribute(e, "AXFrame"), CFGetTypeID(ref) == AXValueGetTypeID() {
+            let v = ref as! AXValue   // checked by type id just above
+            if AXValueGetType(v) == .cgRect { AXValueGetValue(v, .cgRect, &r) }
+        }
         return r
+    }
+
+    /// An `AXUIElement` out of an attribute, or nil when the value is anything else.
+    private static func element(_ ref: CFTypeRef?) -> AXUIElement? {
+        guard let ref, CFGetTypeID(ref) == AXUIElementGetTypeID() else { return nil }
+        return (ref as! AXUIElement)   // checked by type id just above
     }
 
     private static func moveOffScreen(_ window: AXUIElement) {
