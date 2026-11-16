@@ -180,7 +180,11 @@ final class CoreAudioOutputs: AudioOutputs {
             var streams = Self.address(kAudioDevicePropertyStreams, scope: kAudioObjectPropertyScopeOutput)
             var n: UInt32 = 0
             guard AudioObjectGetPropertyDataSize(id, &streams, 0, nil, &n) == noErr, n > 0 else { return false }
-            return (value(id, kAudioDevicePropertyIsHidden) ?? 0) == 0
+            guard (value(id, kAudioDevicePropertyIsHidden) ?? 0) == 0 else { return false }
+            // Anode's own plumbing for per-app volume is not an output.
+            if let uid = string(id, kAudioDevicePropertyDeviceUID), OwnAudioDevices.contains(uid: uid) { return false }
+            if let name = string(id, kAudioObjectPropertyName), OwnAudioDevices.isOwnName(name) { return false }
+            return true
         }
     }
 

@@ -198,3 +198,20 @@ final class AppAudioRouterTests: XCTestCase {
         XCTAssertEqual(backend.started.count, 1)
     }
 }
+
+/// The device a tap plays back through is Anode's own plumbing: it must never be listed as somewhere to send the sound.
+final class OwnAudioDevicesTests: XCTestCase {
+    func testADeviceAnodeMadeIsRecognisedUntilItIsGone() {
+        XCTAssertFalse(OwnAudioDevices.contains(uid: "x-1"))
+        OwnAudioDevices.add(uid: "x-1")
+        XCTAssertTrue(OwnAudioDevices.contains(uid: "x-1"))
+        XCTAssertFalse(OwnAudioDevices.contains(uid: "x-2"))
+        OwnAudioDevices.remove(uid: "x-1")
+        XCTAssertFalse(OwnAudioDevices.contains(uid: "x-1"))
+    }
+
+    func testTheNameAnodeGivesItsPlumbingIsNotAnOutputEither() {
+        XCTAssertTrue(OwnAudioDevices.isOwnName("Anode app volume"))
+        XCTAssertFalse(OwnAudioDevices.isOwnName("MacBook Pro Speakers"))
+    }
+}

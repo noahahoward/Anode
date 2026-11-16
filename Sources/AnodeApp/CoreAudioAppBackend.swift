@@ -160,9 +160,14 @@ final class CoreAudioSession: AppAudioSessionHandle {
 
     deinit { scratch.deallocate() }
 
+    private var ownUID: String?
+
     func build(tapUUID: String, outputUID: String) throws {
+        let uid = UUID().uuidString
+        ownUID = uid
+        OwnAudioDevices.add(uid: uid)   // before it exists, so it is never listed as an output even for a moment
         let dictionary: [String: Any] = [
-            kAudioAggregateDeviceNameKey: "Anode app volume", kAudioAggregateDeviceUIDKey: UUID().uuidString,
+            kAudioAggregateDeviceNameKey: OwnAudioDevices.name, kAudioAggregateDeviceUIDKey: uid,
             kAudioAggregateDeviceMainSubDeviceKey: outputUID, kAudioAggregateDeviceIsPrivateKey: true,
             kAudioAggregateDeviceIsStackedKey: false, kAudioAggregateDeviceTapAutoStartKey: true,
             kAudioAggregateDeviceSubDeviceListKey: [[kAudioSubDeviceUIDKey: outputUID]],
@@ -210,6 +215,7 @@ final class CoreAudioSession: AppAudioSessionHandle {
     func stop() {
         guard !stopped else { return }
         stopped = true
+        defer { if let ownUID { OwnAudioDevices.remove(uid: ownUID) } }
         if aggregate != kAudioObjectUnknown {
             if let block = aliveBlock {
                 var address = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyDeviceIsAlive, mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)

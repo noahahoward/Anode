@@ -34,3 +34,16 @@ protocol AppAudioBackend: AnyObject {
     var onProcessesChanged: (() -> Void)? { get set }
     var onOutputChanged: (() -> Void)? { get set }
 }
+
+/// The devices Anode makes for per-app volume (a private aggregate device each). Core Audio shows them to Anode's own process, so
+/// the list of outputs leaves them out: they are plumbing, never somewhere the person sends sound.
+enum OwnAudioDevices {
+    static let name = "Anode app volume"
+    private static let lock = NSLock()
+    private static var uids = Set<String>()
+
+    static func add(uid: String) { lock.lock(); uids.insert(uid); lock.unlock() }
+    static func remove(uid: String) { lock.lock(); uids.remove(uid); lock.unlock() }
+    static func contains(uid: String) -> Bool { lock.lock(); defer { lock.unlock() }; return uids.contains(uid) }
+    static func isOwnName(_ name: String) -> Bool { name == Self.name }
+}
