@@ -52,6 +52,7 @@ public final class Settings {
         public static let menuBarHiderEnabled = "menuBarHiderEnabled"
         public static let menuBarHiderAutoCloseSeconds = "menuBarHiderAutoCloseSeconds"
         public static let menuBarHiderArrangement = "menuBarHiderArrangement"
+        public static let soundMenuEnabled = "soundMenuEnabled"
         public static let lidGlassIdleHz = "lidGlassIdleHz"
         public static let lidGlassTriggerAngle = "lidGlassTriggerAngle"
         public static let windowSnapperEnabled = "windowSnapperEnabled"
@@ -173,6 +174,8 @@ public final class Settings {
         /// OFF: it covers part of the menu bar, so the user turns it on.
         static let menuBarHiderEnabled = false
         static let menuBarHiderAutoCloseSeconds = 10
+        /// OFF: it puts a second Sound icon in the menu bar, so the user turns it on.
+        static let soundMenuEnabled = false
         static let lidGlassIdleHz = 8.0
         static let lidGlassTriggerAngle = 110.0
         /// OFF: it claims a set of global shortcuts another window manager may already own.
@@ -355,6 +358,7 @@ public final class Settings {
         var menuBarHiderEnabled: Bool
         var menuBarHiderAutoCloseSeconds: Int
         var menuBarHiderArrangement: BarArrangement?
+        var soundMenuEnabled: Bool
         var lidGlassIdleHz, lidGlassTriggerAngle: Double
         var chargeControlEnabled, chargeDriftEnabled, chargePauseWhenHotEnabled,
             chargeHoldDuringSleep, chargeDrainAutomatically: Bool
@@ -626,6 +630,12 @@ public final class Settings {
     public var menuBarHiderEnabled: Bool {
         get { Settings.readBool(defaults, Key.menuBarHiderEnabled, Default.menuBarHiderEnabled) }
         set { writeBool(Key.menuBarHiderEnabled, \.menuBarHiderEnabled, newValue, Default.menuBarHiderEnabled) }
+    }
+
+    /// Whether Anode's own Sound menu is in the menu bar (Beta Features), a copy of macOS's with Anode's controls added.
+    public var soundMenuEnabled: Bool {
+        get { Settings.readBool(defaults, Key.soundMenuEnabled, Default.soundMenuEnabled) }
+        set { writeBool(Key.soundMenuEnabled, \.soundMenuEnabled, newValue, Default.soundMenuEnabled) }
     }
 
     /// Seconds the pill stays open before it closes itself; 0 means until the owner closes it. Only 0, 5, 10 and 30 are
@@ -1341,6 +1351,7 @@ public final class Settings {
         if old.menuBarHiderEnabled != now.menuBarHiderEnabled { notify(Key.menuBarHiderEnabled) }
         if old.menuBarHiderAutoCloseSeconds != now.menuBarHiderAutoCloseSeconds { notify(Key.menuBarHiderAutoCloseSeconds) }
         if old.menuBarHiderArrangement != now.menuBarHiderArrangement { notify(Key.menuBarHiderArrangement) }
+        if old.soundMenuEnabled != now.soundMenuEnabled { notify(Key.soundMenuEnabled) }
         if old.lidGlassIdleHz != now.lidGlassIdleHz { notify(Key.lidGlassIdleHz) }
         if old.lidGlassTriggerAngle != now.lidGlassTriggerAngle { notify(Key.lidGlassTriggerAngle) }
         if old.windowSnapperEnabled != now.windowSnapperEnabled { notify(Key.windowSnapperEnabled) }
@@ -1568,6 +1579,7 @@ public final class Settings {
                menuBarHiderEnabled: readBool(d, Key.menuBarHiderEnabled, Default.menuBarHiderEnabled),
                menuBarHiderAutoCloseSeconds: readAutoClose(d),
                menuBarHiderArrangement: readArrangement(d),
+               soundMenuEnabled: readBool(d, Key.soundMenuEnabled, Default.soundMenuEnabled),
                lidGlassIdleHz: readDouble(d, Key.lidGlassIdleHz, Default.lidGlassIdleHz, lidGlassIdleHzRange),
                lidGlassTriggerAngle: readDouble(d, Key.lidGlassTriggerAngle, Default.lidGlassTriggerAngle,
                                                 lidGlassTriggerRange),
