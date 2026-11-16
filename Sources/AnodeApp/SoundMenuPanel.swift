@@ -90,7 +90,8 @@ final class SoundMenuPanel: NSPanel, SoundMenuPresenting {
         isOpaque = false
         backgroundColor = .clear
         hasShadow = true
-        level = .popUpMenu
+        // One above macOS's own menus: its Sound panel opens for a moment, off the screen but drawn first where it would be, behind this.
+        level = NSWindow.Level(rawValue: NSWindow.Level.popUpMenu.rawValue + 1)
         isReleasedWhenClosed = false
         hidesOnDeactivate = false
         collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle]

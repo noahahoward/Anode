@@ -54,12 +54,18 @@ final class SoundMenuController {
     private let presenter: SoundMenuPresenting
     private let native: NativeIconHosting
     private let pollInterval: TimeInterval
+    /// How long the menu waits for macOS's panel to be read before it shows what it has (0: it never waits).
+    private let showDelay: TimeInterval
 
     private var item: StatusItemHandle?
     private var installed = false
     private var nativeRunning = false
     private var clickAnchor: CGRect?
     private var pollTimer: Timer?
+    /// The opening is waiting for the first reading, so that the menu appears once, at its final size.
+    private var pendingAnchor: CGRect?
+    /// The outputs as they were when macOS's panel was last read: what it said is out of date once they differ.
+    private var appleKey: String?
     private var settingObserver: AnyObject?
     private var apple: AppleSoundPanel?
     private var notice: String?
@@ -68,19 +74,28 @@ final class SoundMenuController {
 
     init(settings: Settings, outputs: AudioOutputs, driver: SystemPanelDriving, batteries: @escaping () -> [AccessoryBattery],
          accessibility: @escaping () -> Bool, statusBar: StatusItemHosting, presenter: SoundMenuPresenting,
-         native: NativeIconHosting, pollInterval: TimeInterval = 1) {
+         native: NativeIconHosting, pollInterval: TimeInterval = 1, showDelay: TimeInterval = 0.4) {
         self.settings = settings; self.outputs = outputs; self.driver = driver; self.batteries = batteries
         self.accessibility = accessibility; self.statusBar = statusBar; self.presenter = presenter
-        self.native = native; self.pollInterval = pollInterval
+        self.native = native; self.pollInterval = pollInterval; self.showDelay = showDelay
     }
+
+    /// Which outputs there are and which one is playing.
+    private func outputsKey() -> String {
+        (outputs.devices.map(\.id).sorted() + ["default=\(outputs.defaultDeviceID ?? "")"]).joined(separator: "|")
+    }
+
+    /// What macOS's panel last said, unless the outputs have changed since: AirPods taken out take their rows with them.
+    private var currentApple: AppleSoundPanel? { appleKey == outputsKey() ? apple : nil }
 
     var isMenuOpen: Bool { presenter.isOpen }
 
     /// What the menu shows now.
     var model: SoundMenuModel {
-        let open = apple?.expandedDevice.flatMap { collapsed.contains($0) ? "" : $0 }
+        let known = currentApple
+        let open = known?.expandedDevice.flatMap { collapsed.contains($0) ? "" : $0 }
         var m = SoundMenuModel.merge(outputs: outputs.devices, defaultID: outputs.defaultDeviceID, volume: outputs.volume,
-                                     muted: outputs.muted, batteries: batteries(), apple: apple, expanded: open)
+                                     muted: outputs.muted, batteries: batteries(), apple: known, expanded: open)
         m.notice = notice
         return m
     }
@@ -160,19 +175,38 @@ final class SoundMenuController {
 
     // ── The menu ────────────────────────────────────────────────────────────
 
-    func toggleMenu() { isMenuOpen ? closeMenu() : openMenu() }
+    func toggleMenu() { (isMenuOpen || pendingAnchor != nil) ? closeMenu() : openMenu() }
 
     func openMenu() {
-        guard !presenter.isOpen else { return }
+        guard !presenter.isOpen, pendingAnchor == nil else { return }
         let anchor: CGRect? = nativeRunning ? (clickAnchor ?? native.currentFrame()) : item?.frame
         guard let anchor else { return }
         notice = nil
         collapsed.removeAll()
+        // Showing the menu and then changing its size when the reading arrives is a visible jump. So when what is known is out
+        // of date, the menu waits for the reading (a moment, never longer than `showDelay`) and appears once, final.
+        if showDelay > 0, accessibility(), currentApple == nil {
+            pendingAnchor = anchor
+            DispatchQueue.main.asyncAfter(deadline: .now() + showDelay) { [weak self] in self?.showPending() }
+            readApple()
+            return
+        }
         presenter.show(model, below: anchor)
         readApple()
     }
 
-    func closeMenu() { presenter.close() }
+    /// The menu the opening was waiting for, with whatever is known by now.
+    private func showPending() {
+        guard let anchor = pendingAnchor else { return }
+        pendingAnchor = nil
+        presenter.show(model, below: anchor)
+    }
+
+    func closeMenu() {
+        pendingAnchor = nil
+        generation += 1
+        presenter.close()
+    }
 
     /// Reads macOS's panel, when Accessibility allows. What came back replaces what was known; the model is redrawn.
     private func readApple() {
@@ -189,16 +223,17 @@ final class SoundMenuController {
             if case .tree(let tree) = outcome {
                 let parsed = AppleSoundPanel.parse(tree)
                 self.apple = parsed.devices.isEmpty ? nil : parsed
+                self.appleKey = self.outputsKey()
             }
-            self.redraw()
+            if self.pendingAnchor != nil { self.showPending() } else { self.redraw() }
         }
     }
 
     private func outputsChanged() {
         refreshIcon()
-        guard presenter.isOpen else { return }
-        // A speaker came or went: what macOS's panel said about it is out of date.
+        // A speaker came or went: what macOS's panel said about it is out of date (and `currentApple` already ignores it).
         apple = nil
+        guard presenter.isOpen else { return }
         redraw()
         readApple()
     }

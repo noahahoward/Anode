@@ -106,7 +106,7 @@ final class SoundMenuControllerTests: XCTestCase {
                               AXNode(role: "AXButton", description: "Sound Settings…")] : []))])
     }
 
-    private func rig(enabled: Bool = true, trusted: Bool = true, batteries: [AccessoryBattery]? = nil, native useNative: Bool = false) throws -> Rig {
+    private func rig(enabled: Bool = true, trusted: Bool = true, batteries: [AccessoryBattery]? = nil, native useNative: Bool = false, showDelay: TimeInterval = 0) throws -> Rig {
         let (defaults, suite) = try TestDefaults.make(owner: "SoundMenuController", test: name)
         let settings = Settings(defaults: defaults)
         settings.soundMenuEnabled = enabled
@@ -114,7 +114,7 @@ final class SoundMenuControllerTests: XCTestCase {
         let outputs = FakeOutputs(), driver = FakeDriver(), bar = FakeBar(), presenter = FakePresenter(), native = FakeNative()
         let list = batteries ?? batteriesBoth()
         let c = SoundMenuController(settings: settings, outputs: outputs, driver: driver, batteries: { list },
-                                    accessibility: { trusted }, statusBar: bar, presenter: presenter, native: native, pollInterval: 0)
+                                    accessibility: { trusted }, statusBar: bar, presenter: presenter, native: native, pollInterval: 0, showDelay: showDelay)
         c.start()
         return Rig(controller: c, outputs: outputs, driver: driver, bar: bar, presenter: presenter, native: native, settings: settings,
                    cleanup: { c.stop(); TestDefaults.destroy(defaults, suite) })
@@ -293,6 +293,56 @@ final class SoundMenuControllerTests: XCTestCase {
         r.settings.soundMenuUsesNativeIcon = false
         XCTAssertEqual(r.bar.items.count, 2)
         XCTAssertFalse(r.native.running)
+    }
+
+    // ── Not showing what is out of date ─────────────────────────────────────
+
+    func testStaleAppleRowsAreNotShownAfterTheOutputsChange() throws {
+        let r = try rig(); defer { r.cleanup() }
+        openAndRead(r)
+        XCTAssertFalse(r.model.listening.isEmpty)
+        r.controller.closeMenu()
+        // the AirPods were taken out while the menu was closed
+        r.outputs.devices.removeAll { $0.id == "pods" }
+        r.outputs.defaultDeviceID = "builtin"
+        XCTAssertTrue(r.model.listening.isEmpty, "the listening rows belong to AirPods that are not there")
+        XCTAssertFalse(r.model.devices.contains { $0.name == "Test AirPods Pro" })
+        XCTAssertNil(r.model.expandedDevice)
+    }
+
+    func testTheMenuWaitsForTheReadWhenWhatItKnowsIsOutOfDate() throws {
+        let r = try rig(showDelay: 5); defer { r.cleanup() }
+        r.controller.openMenu()
+        XCTAssertFalse(r.presenter.isOpen, "no menu yet: it would change size when the reading arrives")
+        r.driver.complete(0, .tree(tree()))
+        XCTAssertTrue(r.presenter.isOpen)
+        XCTAssertFalse(r.presenter.shown[0].listening.isEmpty, "its first picture is the final one")
+    }
+
+    func testTheMenuShowsAtOnceWhenWhatItKnowsIsStillCurrent() throws {
+        let r = try rig(showDelay: 5); defer { r.cleanup() }
+        r.controller.openMenu(); r.driver.complete(0, .tree(tree()))
+        r.controller.closeMenu()
+        r.controller.openMenu()
+        XCTAssertTrue(r.presenter.isOpen)
+        XCTAssertEqual(r.driver.jobs.count, 2, "and it reads again behind it")
+    }
+
+    func testASecondClickWhileWaitingCancelsTheOpening() throws {
+        let r = try rig(showDelay: 5); defer { r.cleanup() }
+        r.controller.toggleMenu()
+        r.controller.toggleMenu()
+        r.driver.complete(0, .tree(tree()))
+        XCTAssertFalse(r.presenter.isOpen)
+    }
+
+    func testTheMenuShowsAnywayWhenTheReadNeverComes() throws {
+        let r = try rig(showDelay: 0.05); defer { r.cleanup() }
+        r.controller.openMenu()
+        let shown = expectation(description: "shown")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { shown.fulfill() }
+        wait(for: [shown], timeout: 2)
+        XCTAssertTrue(r.presenter.isOpen)
     }
 
     func testVolumeAndMuteGoToTheOutput() throws {
