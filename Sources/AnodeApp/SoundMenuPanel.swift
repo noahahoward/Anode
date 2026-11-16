@@ -189,7 +189,8 @@ final class SoundMenuPanel: NSPanel, SoundMenuPresenting {
     override func close() {
         for m in monitors { NSEvent.removeMonitor(m) }
         monitors.removeAll()
-        guard isVisible, !closing else { orderOut(nil); return }
+        guard !closing else { return }   // already on its way out
+        guard isVisible else { orderOut(nil); return }
         stopGlide()
         // macOS's menu fades out in about 70 ms; it appears at once.
         closing = true
