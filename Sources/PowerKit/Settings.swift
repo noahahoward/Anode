@@ -54,6 +54,7 @@ public final class Settings {
         public static let menuBarHiderArrangement = "menuBarHiderArrangement"
         public static let soundMenuEnabled = "soundMenuEnabled"
         public static let soundMenuUsesNativeIcon = "soundMenuUsesNativeIcon"
+        public static let appAudioEnabled = "appAudioEnabled"
         public static let lidGlassIdleHz = "lidGlassIdleHz"
         public static let lidGlassTriggerAngle = "lidGlassTriggerAngle"
         public static let windowSnapperEnabled = "windowSnapperEnabled"
@@ -179,6 +180,7 @@ public final class Settings {
         static let soundMenuEnabled = false
         /// OFF: taking over a click on macOS's own icon is something the person chooses.
         static let soundMenuUsesNativeIcon = false
+        static let appAudioEnabled = false
         static let lidGlassIdleHz = 8.0
         static let lidGlassTriggerAngle = 110.0
         /// OFF: it claims a set of global shortcuts another window manager may already own.
@@ -363,6 +365,7 @@ public final class Settings {
         var menuBarHiderArrangement: BarArrangement?
         var soundMenuEnabled: Bool
         var soundMenuUsesNativeIcon: Bool
+        var appAudioEnabled: Bool
         var lidGlassIdleHz, lidGlassTriggerAngle: Double
         var chargeControlEnabled, chargeDriftEnabled, chargePauseWhenHotEnabled,
             chargeHoldDuringSleep, chargeDrainAutomatically: Bool
@@ -650,6 +653,12 @@ public final class Settings {
     }
 
     /// Whether a click on macOS's own Sound icon opens Anode's menu (no second icon), instead of Anode adding an icon of its own.
+    /// Whether each app gets a volume of its own in the Sound menu (an "Apps" section). Needs the Sound menu.
+    public var appAudioEnabled: Bool {
+        get { Settings.readBool(defaults, Key.appAudioEnabled, Default.appAudioEnabled) }
+        set { writeBool(Key.appAudioEnabled, \.appAudioEnabled, newValue, Default.appAudioEnabled) }
+    }
+
     public var soundMenuUsesNativeIcon: Bool {
         get { Settings.readBool(defaults, Key.soundMenuUsesNativeIcon, Default.soundMenuUsesNativeIcon) }
         set { writeBool(Key.soundMenuUsesNativeIcon, \.soundMenuUsesNativeIcon, newValue, Default.soundMenuUsesNativeIcon) }
@@ -1370,6 +1379,7 @@ public final class Settings {
         if old.menuBarHiderArrangement != now.menuBarHiderArrangement { notify(Key.menuBarHiderArrangement) }
         if old.soundMenuEnabled != now.soundMenuEnabled { notify(Key.soundMenuEnabled) }
         if old.soundMenuUsesNativeIcon != now.soundMenuUsesNativeIcon { notify(Key.soundMenuUsesNativeIcon) }
+        if old.appAudioEnabled != now.appAudioEnabled { notify(Key.appAudioEnabled) }
         if old.lidGlassIdleHz != now.lidGlassIdleHz { notify(Key.lidGlassIdleHz) }
         if old.lidGlassTriggerAngle != now.lidGlassTriggerAngle { notify(Key.lidGlassTriggerAngle) }
         if old.windowSnapperEnabled != now.windowSnapperEnabled { notify(Key.windowSnapperEnabled) }
@@ -1599,6 +1609,7 @@ public final class Settings {
                menuBarHiderArrangement: readArrangement(d),
                soundMenuEnabled: readBool(d, Key.soundMenuEnabled, Default.soundMenuEnabled),
                soundMenuUsesNativeIcon: readBool(d, Key.soundMenuUsesNativeIcon, Default.soundMenuUsesNativeIcon),
+               appAudioEnabled: readBool(d, Key.appAudioEnabled, Default.appAudioEnabled),
                lidGlassIdleHz: readDouble(d, Key.lidGlassIdleHz, Default.lidGlassIdleHz, lidGlassIdleHzRange),
                lidGlassTriggerAngle: readDouble(d, Key.lidGlassTriggerAngle, Default.lidGlassTriggerAngle,
                                                 lidGlassTriggerRange),
