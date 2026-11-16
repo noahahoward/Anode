@@ -427,7 +427,7 @@ final class TextButton: HoverRow {
     init(frame: NSRect, title: String, action: @escaping () -> Void) {
         super.init(frame: frame.insetBy(dx: -6, dy: -1))
         onPick = action
-        hoverAlpha = 0.13
+        hoverAlpha = 0.16
         let l = NSTextField(labelWithString: title)
         l.font = .systemFont(ofSize: 13)
         l.textColor = .labelColor
