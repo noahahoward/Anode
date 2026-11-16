@@ -293,6 +293,9 @@ final class SoundMenuController {
         redraw()
     }
 
+    /// The apps that can be controlled came or went (an app opened or quit, a tap failed): the open menu shows it.
+    func appsChanged() { redraw() }
+
     func setAppVolume(bundleID: String, _ value: Double) {
         appVolume?.setVolume(value, forBundleID: bundleID)
         if appVolume?.apps.first(where: { $0.bundleID == bundleID })?.muted == true, value > 0 { appVolume?.setMuted(false, forBundleID: bundleID) }

@@ -70,6 +70,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
     /// Ultra Low Power Mode. Exists for the app's whole life; while its box is unticked it holds nothing but an observer.
     var ultraLowPower: UltraLowPowerRuntime?
     var soundMenu: SoundMenuController?
+    var appAudio: AppAudioCoordinator?
     var temperatureAlarm = TemperatureAlarm()
     var windowSnapper: WindowSnapper?
     var windowGroups: WindowGroupController?
@@ -451,6 +452,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         ultraLowPower = UltraLowPowerRuntime.live(widgets: widgets, openBetaFeatures: { [weak self] in self?.betaFeaturesWindow.show() })
         // Anode's own Sound menu: nothing of it exists until its setting is on (Beta Features).
         soundMenu = SoundMenuRuntime.live()
+        appAudio = AppAudioCoordinator.live { [weak self] router in
+            self?.soundMenu?.appVolume = router
+            router?.onChange = { [weak self] in self?.soundMenu?.appsChanged() }
+            self?.soundMenu?.appsChanged()
+        }
+        appAudio?.start()
         widgets.onPlacementChange = { [weak self] placement in
             self?.menuBarPlacementChanged(placement)
         }
@@ -2814,6 +2821,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         // First, before the rest of the app tears down: a mode that is on has other apps stopped and the screen held down,
         // and they are continued and put back before anything below runs (the helper link goes below).
         ultraLowPower?.shutdown()
+        appAudio?.stop()   // every app back to normal before anything else goes
         soundMenu?.stop()
         RunTrace.cleanExit()
         fansPane.teardown()

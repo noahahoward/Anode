@@ -6,10 +6,10 @@ import AppKit
 /// The Sound Menu section of Beta Features: one switch, and a line saying what is missing.
 final class SoundMenuFeatureTests: XCTestCase {
 
-    private func rig(trusted: Bool = true) throws -> (feature: SoundMenuFeature, settings: Settings, cleanup: () -> Void) {
+    private func rig(trusted: Bool = true, perApp: Bool = false) throws -> (feature: SoundMenuFeature, settings: Settings, cleanup: () -> Void) {
         let (defaults, suite) = try TestDefaults.make(owner: "SoundMenuUI", test: name)
         let settings = Settings(defaults: defaults)
-        let feature = SoundMenuFeature(settings: settings, accessibility: { trusted })
+        let feature = SoundMenuFeature(settings: settings, accessibility: { trusted }, perAppVolumeAvailable: { perApp })
         _ = feature.makeView()
         return (feature, settings, { TestDefaults.destroy(defaults, suite) })
     }
@@ -35,6 +35,22 @@ final class SoundMenuFeatureTests: XCTestCase {
         r.settings.soundMenuUsesNativeIcon = false
         r.feature.refresh()
         XCTAssertEqual(r.feature.nativeIconCheckbox.state, .off)
+    }
+
+    func testThePerAppSwitchIsNotOfferedUntilItIsVerified() throws {
+        let r = try rig(perApp: false); defer { r.cleanup() }
+        XCTAssertTrue(r.feature.perAppCheckbox.isHidden)
+    }
+
+    func testThePerAppSwitchWritesItsSettingAndNeedsTheMenu() throws {
+        let r = try rig(perApp: true); defer { r.cleanup() }
+        XCTAssertFalse(r.feature.perAppCheckbox.isHidden)
+        XCTAssertFalse(r.feature.perAppCheckbox.isEnabled, "greyed out while the menu itself is off")
+        r.settings.soundMenuEnabled = true
+        r.feature.refresh()
+        XCTAssertTrue(r.feature.perAppCheckbox.isEnabled)
+        r.feature.perAppCheckbox.performClick(nil)
+        XCTAssertTrue(r.settings.appAudioEnabled)
     }
 
     func testCheckboxFollowsSetting() throws {

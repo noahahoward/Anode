@@ -166,6 +166,8 @@ cat > "$APP/Contents/Info.plist" <<PLIST
        key for that line and offers no API to set it. -->
   <key>NSHumanReadableCopyright</key>  <string>Copyright 2026 noahahoward. Licensed under the GNU General Public License v3.0 or later.</string>
   <key>LSMinimumSystemVersion</key>    <string>13.0</string>
+  <!-- Per-app volume listens to an app's audio and plays it back adjusted. The system asks the first time, and shows this. -->
+  <key>NSAudioCaptureUsageDescription</key> <string>Anode changes the volume of individual apps by listening to their audio and playing it back adjusted. Nothing is recorded or stored.</string>
   <key>NSHighResolutionCapable</key>   <true/>
   <!-- Every bundled AppKit app declares this; ours did not. It did NOT fix the
        status-item problem (see WIDGET-BUG.md) but it is correct regardless. -->
