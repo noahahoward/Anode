@@ -181,9 +181,9 @@ final class CoreAudioOutputs: AudioOutputs {
             var n: UInt32 = 0
             guard AudioObjectGetPropertyDataSize(id, &streams, 0, nil, &n) == noErr, n > 0 else { return false }
             guard (value(id, kAudioDevicePropertyIsHidden) ?? 0) == 0 else { return false }
-            // Anode's own plumbing for per-app volume is not an output.
+            // Anode's own plumbing for per-app volume is not an output. Recognised by the id Anode gave it, never by its name:
+            // a name can be given to any device. (It is private and never the default output, so nothing else needs the check.)
             if let uid = string(id, kAudioDevicePropertyDeviceUID), OwnAudioDevices.contains(uid: uid) { return false }
-            if let name = string(id, kAudioObjectPropertyName), OwnAudioDevices.isOwnName(name) { return false }
             return true
         }
     }

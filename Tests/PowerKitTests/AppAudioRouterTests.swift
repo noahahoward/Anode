@@ -210,8 +210,8 @@ final class OwnAudioDevicesTests: XCTestCase {
         XCTAssertFalse(OwnAudioDevices.contains(uid: "x-1"))
     }
 
-    func testTheNameAnodeGivesItsPlumbingIsNotAnOutputEither() {
-        XCTAssertTrue(OwnAudioDevices.isOwnName("Anode app volume"))
-        XCTAssertFalse(OwnAudioDevices.isOwnName("MacBook Pro Speakers"))
+    func testADeviceThatOnlyHasTheNameIsNotHiddenFromTheList() {
+        // Recognised by the id Anode gave it, never by a name any device can carry.
+        XCTAssertFalse(OwnAudioDevices.contains(uid: "someone-elses-device"))
     }
 }

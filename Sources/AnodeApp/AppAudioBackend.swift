@@ -45,5 +45,4 @@ enum OwnAudioDevices {
     static func add(uid: String) { lock.lock(); uids.insert(uid); lock.unlock() }
     static func remove(uid: String) { lock.lock(); uids.remove(uid); lock.unlock() }
     static func contains(uid: String) -> Bool { lock.lock(); defer { lock.unlock() }; return uids.contains(uid) }
-    static func isOwnName(_ name: String) -> Bool { name == Self.name }
 }
