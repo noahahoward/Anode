@@ -26,6 +26,10 @@ final class SoundMenuFeatureTests: XCTestCase {
     func testNativeIconCheckboxWritesAndFollowsTheSetting() throws {
         let r = try rig(); defer { r.cleanup() }
         XCTAssertEqual(r.feature.nativeIconCheckbox.state, .off)
+        XCTAssertFalse(r.feature.nativeIconCheckbox.isEnabled, "greyed out while the menu itself is off")
+        r.settings.soundMenuEnabled = true
+        r.feature.refresh()
+        XCTAssertTrue(r.feature.nativeIconCheckbox.isEnabled)
         r.feature.nativeIconCheckbox.performClick(nil)
         XCTAssertTrue(r.settings.soundMenuUsesNativeIcon)
         r.settings.soundMenuUsesNativeIcon = false
