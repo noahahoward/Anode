@@ -184,6 +184,9 @@ final class SoundMenuContentView: NSView {
         return v
     }()
     private let edge = EdgeView()
+    /// macOS's glass measures about 4 levels lighter than the same glass drawn here, on dark and light backdrops alike, so
+    /// that much is added over the whole panel (added, as the block lift below is: the difference does not scale).
+    private let baseLift = NSView()
 
     override var isFlipped: Bool { true }
     override var fittingSize: NSSize { size }
@@ -195,6 +198,12 @@ final class SoundMenuContentView: NSView {
         layer?.cornerCurve = .continuous
         layer?.masksToBounds = true   // nothing square can show at the corners, and the shadow follows this shape
         addSubview(material)
+        if #available(macOS 26.0, *) {
+            baseLift.wantsLayer = true
+            baseLift.layer?.backgroundColor = NSColor.white.withAlphaComponent(0.016).cgColor
+            baseLift.layer?.compositingFilter = "plusL"
+            addSubview(baseLift)
+        }
         edge.wantsLayer = true
         edge.layer?.cornerRadius = 17
         edge.layer?.cornerCurve = .continuous
@@ -206,11 +215,12 @@ final class SoundMenuContentView: NSView {
 
     func apply(_ model: SoundMenuModel) {
         self.model = model
-        for v in subviews where v !== material { v.removeFromSuperview() }   // the edge is added again at the end
+        for v in subviews where v !== material && v !== baseLift { v.removeFromSuperview() }   // the edge is added again at the end
         let layout = SoundMenuLayout.frames(for: model)
         size = NSSize(width: SoundMenuMetrics.width, height: layout.height)
         frame.size = size
         material.frame = bounds
+        baseLift.frame = bounds
         edge.frame = bounds
         for row in layout.rows { add(row, model) }
         addSubview(edge)   // last, so it is drawn over everything
@@ -247,9 +257,9 @@ final class SoundMenuContentView: NSView {
             let b = NSView(frame: f)
             b.wantsLayer = true
             // macOS lifts the block by about 20 levels whatever is behind it, so it is added, not laid over.
-            b.layer?.backgroundColor = NSColor.white.withAlphaComponent(0.035).cgColor
-            b.layer?.compositingFilter = CIFilter(name: "CIAdditionCompositing")
-            addSubview(b, positioned: .above, relativeTo: material)
+            b.layer?.backgroundColor = NSColor.white.withAlphaComponent(0.078).cgColor
+            b.layer?.compositingFilter = "plusL"
+            addSubview(b, positioned: .above, relativeTo: baseLift.superview == nil ? material : baseLift)
         case .device(let i):
             guard model.devices.indices.contains(i) else { return }
             let d = model.devices[i]
