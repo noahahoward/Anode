@@ -65,7 +65,8 @@ final class AppAudioCoordinator {
                                           ?? (b?.object(forInfoDictionaryKey: "CFBundleName") as? String)
                                           ?? URL(fileURLWithPath: path).deletingPathExtension().lastPathComponent
                                   },
-                                  isListable: { running().contains($0) })
+                                  // Anode itself is not an app whose volume the person sets here.
+                                  isListable: { $0 != Bundle.main.bundleIdentifier && running().contains($0) })
         }, attach: attach)
     }
 }
