@@ -275,4 +275,24 @@ own panel can do", "Calls made from the builder check" and "Owner's answers" bef
 
 ## Measured
 
-(Filled in by Tasks 1 and 8.)
+### Task 1 (2026-11-15, owner present; probes in the session scratchpad `sound/`)
+
+- **Apple's panel geometry (macOS 27, 14" MacBook Pro, dark):** the window is 522x1102 pt and mostly transparent; the
+  visible panel is 309x537.5 pt at (window x + 181.5, window y + 2), opaque bbox 618x1075 px at 2x. Body colours (dark):
+  base #202020, the expanded AirPods section #343434. Row frames (pt, screen): volume slider (1302,78) 230x16, lower
+  button (1284,79) 9x13, higher (1538,78) 21x15; "Output" heading (1282,114); device rows 298x32 at x 1273 (y 132,
+  164, 455, 487); listening rows 298x26 at y 233/257/281; Spatial heading y 321, row y 338; Conversation heading
+  y 378, rows y 395/419; Settings buttons (1273,518) 257x16 and (1273,540) 121x16.
+  Full tables to be refined against overlays in Tasks 5 and 8.
+- **Q1 (our menu open while Apple's panel opens off screen): PASS.** A probe `NSPanel` stayed visible; no focus change
+  (frontmost app unchanged, our app not active, Control Center not active).
+- **Q2 (Apple's icon while its panel is open off screen): FAIL as the plan defines no-go.** The icon shows its pressed
+  pill for as long as the panel is open (3120 of 4488 px differ from the idle capture, max delta 39). Pressing a row
+  and closing at once keeps it to about 110 ms; a read needs the panel open about 200-300 ms.
+- **A press still lands when the panel is closed at once** (the refusal alert for Adaptive with the buds in the case
+  appeared after an immediate close), so a press needs about 110 ms of panel time; only the read-back needs a longer
+  one. Read-back can wait for the next time the menu opens.
+- **Q7 (refusal alert): the window-created observer moved the alert to x = -4000, but it came back to x = -220,
+  leaving about 40 pt of it on screen at the left edge** until OK was pressed. Mitigation to build: dismiss the alert
+  the instant it is created, and avoid presses Apple is known to refuse.
+- **Still to measure:** layout tables, material, light appearance, other states, Q3-Q6.
