@@ -9,9 +9,6 @@ public enum SoundMenuMotion {
     public static let omega = 11.5
     /// Seconds after which the glide is over for all that can be seen.
     public static let settleSeconds = 0.75
-    /// The fade when the menu closes.
-    public static let fadeOutSeconds = 0.07
-
     /// How far along the glide is, 0 to 1, `t` seconds after it started.
     public static func progress(at t: Double) -> Double {
         guard t > 0 else { return 0 }

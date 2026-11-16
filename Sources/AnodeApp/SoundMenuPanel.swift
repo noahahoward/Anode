@@ -106,7 +106,7 @@ final class SoundMenuPanel: NSPanel, SoundMenuPresenting {
     private var monitors: [Any] = []
     private var anchor = CGRect.zero
 
-    var isOpen: Bool { isVisible && !closing }
+    var isOpen: Bool { isVisible }
 
     init() {
         super.init(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
@@ -128,16 +128,12 @@ final class SoundMenuPanel: NSPanel, SoundMenuPresenting {
     override var canBecomeKey: Bool { false }
     override var canBecomeMain: Bool { false }
 
-    /// The menu is on its way out (the short fade): it no longer counts as open.
-    private var closing = false
     private var glideTimer: Timer?
     private var glideStart: CFTimeInterval = 0
 
     func show(_ model: SoundMenuModel, below frame: CGRect) {
         anchor = frame
         stopGlide()
-        closing = false
-        alphaValue = 1
         content.apply(model)
         place()
         orderFrontRegardless()
@@ -154,7 +150,7 @@ final class SoundMenuPanel: NSPanel, SoundMenuPresenting {
     }
 
     func update(_ model: SoundMenuModel) {
-        guard isVisible, !closing else { return }
+        guard isVisible else { return }
         if content.apply(model, animated: true) {
             startGlide()
         } else {
@@ -186,29 +182,13 @@ final class SoundMenuPanel: NSPanel, SoundMenuPresenting {
         content.finishGlide()
     }
 
+    /// Closes at once. (macOS's fades out in about 70 ms, but its glass cannot be faded from outside: it drops out as soon as the
+    /// window or anything above it is translucent, so a fade here would show the text alone for a moment, which is worse.)
     override func close() {
         for m in monitors { NSEvent.removeMonitor(m) }
         monitors.removeAll()
-        guard !closing else { return }   // already on its way out
-        guard isVisible else { orderOut(nil); return }
         stopGlide()
-        // macOS's menu fades out in about 70 ms; it appears at once.
-        closing = true
-        let start = CACurrentMediaTime()
-        let timer = Timer(timeInterval: 1.0 / 120, repeats: true) { [weak self] t in
-            guard let self else { t.invalidate(); return }
-            guard self.closing else { t.invalidate(); return }   // opened again meanwhile
-            let k = (CACurrentMediaTime() - start) / SoundMenuMotion.fadeOutSeconds
-            if k >= 1 {
-                t.invalidate()
-                self.closing = false
-                self.orderOut(nil)
-                self.alphaValue = 1
-            } else {
-                self.alphaValue = CGFloat(1 - k)
-            }
-        }
-        RunLoop.main.add(timer, forMode: .common)
+        orderOut(nil)
     }
 
     /// A click anywhere else closes the menu; a click on the icon is the icon's own toggle.
