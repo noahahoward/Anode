@@ -45,6 +45,16 @@ final class SystemStatusBarHost: StatusItemHosting {
 
 /// The text colour of the rows: macOS's is a little brighter than the system label colour on its dark glass (measured).
 enum SoundText {
+    /// Whether the system is in the dark appearance. The added ("plus lighter") drawing is macOS's look on dark glass only.
+    static var isDark: Bool { NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua }
+    /// White at `alpha` on dark glass, black at `alpha` on light glass: the low-contrast fills and tints are drawn this way so they
+    /// stay visible in either appearance. (Measured against macOS's own panel in the dark appearance only.)
+    static func ink(_ alpha: CGFloat) -> NSColor {
+        NSColor(name: nil) { appearance in
+            appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? NSColor.white.withAlphaComponent(alpha) : NSColor.black.withAlphaComponent(alpha)
+        }
+    }
+
     static let primary = NSColor(name: nil) { appearance in
         appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? NSColor.white.withAlphaComponent(0.885) : NSColor.labelColor
     }
@@ -200,6 +210,13 @@ final class SoundMenuContentView: NSView {
     override var isFlipped: Bool { true }
     override var fittingSize: NSSize { size }
 
+    /// A dynamic colour as a layer colour, for the appearance this menu is in.
+    private func cg(_ color: NSColor) -> CGColor {
+        var out = color.cgColor
+        effectiveAppearance.performAsCurrentDrawingAppearance { out = color.cgColor }
+        return out
+    }
+
     override init(frame: NSRect) {
         super.init(frame: frame)
         wantsLayer = true
@@ -207,7 +224,7 @@ final class SoundMenuContentView: NSView {
         layer?.cornerCurve = .continuous
         layer?.masksToBounds = true   // nothing square can show at the corners, and the shadow follows this shape
         addSubview(material)
-        if #available(macOS 26.0, *) {
+        if #available(macOS 26.0, *), SoundText.isDark {
             baseLift.wantsLayer = true
             baseLift.layer?.backgroundColor = NSColor.white.withAlphaComponent(0.016).cgColor
             baseLift.layer?.compositingFilter = "plusL"
@@ -258,7 +275,7 @@ final class SoundMenuContentView: NSView {
         case .divider:
             let d = NSView(frame: f)
             d.wantsLayer = true
-            d.layer?.backgroundColor = NSColor.white.withAlphaComponent(0.15).cgColor
+            d.layer?.backgroundColor = cg(SoundText.ink(0.15))
             addSubview(d)
         case .heading(let title):
             addSubview(label(title, f, size: 12, weight: .semibold, color: .secondaryLabelColor))
@@ -266,8 +283,8 @@ final class SoundMenuContentView: NSView {
             let b = NSView(frame: f)
             b.wantsLayer = true
             // macOS lifts the block by about 20 levels whatever is behind it, so it is added, not laid over.
-            b.layer?.backgroundColor = NSColor.white.withAlphaComponent(0.078).cgColor
-            b.layer?.compositingFilter = "plusL"
+            b.layer?.backgroundColor = (SoundText.isDark ? NSColor.white.withAlphaComponent(0.078) : NSColor.black.withAlphaComponent(0.05)).cgColor
+            if SoundText.isDark { b.layer?.compositingFilter = "plusL" }
             addSubview(b, positioned: .above, relativeTo: baseLift.superview == nil ? material : baseLift)
         case .device(let i):
             guard model.devices.indices.contains(i) else { return }
@@ -336,7 +353,7 @@ class HoverRow: NSView {
 
     override func draw(_ dirtyRect: NSRect) {
         guard hovering else { return }
-        NSColor.white.withAlphaComponent(hoverAlpha).setFill()
+        SoundText.ink(hoverAlpha).setFill()
         NSBezierPath(roundedRect: bounds, xRadius: 8, yRadius: 8).fill()
     }
 }
@@ -351,10 +368,10 @@ final class DeviceRow: HoverRow {
         let circle = NSView(frame: NSRect(x: 9, y: 3, width: 26, height: 26))
         circle.wantsLayer = true
         circle.layer?.cornerRadius = 13
-        circle.layer?.backgroundColor = (device.isSelected ? NSColor.systemBlue : NSColor.white.withAlphaComponent(0.16)).cgColor
+        circle.layer?.backgroundColor = (device.isSelected ? NSColor.systemBlue : SoundText.ink(0.16)).cgColor
         let glyph = NSImageView(frame: NSRect(x: 4, y: 4, width: 18, height: 18))
         glyph.image = symbol(SoundGlyphs.output(device.kind), size: 13, weight: .medium)
-        glyph.contentTintColor = device.isSelected ? .white : NSColor.white.withAlphaComponent(0.55)
+        glyph.contentTintColor = device.isSelected ? .white : SoundText.ink(0.55)
         circle.addSubview(glyph)
         addSubview(circle)
 
@@ -381,7 +398,7 @@ final class DeviceRow: HoverRow {
                 let icon = NSImageView(frame: NSRect(x: x + dx, y: 18.5, width: width, height: 14))
                 icon.image = symbol(glyph, size: size)
                 icon.imageScaling = .scaleNone
-                icon.contentTintColor = NSColor.white.withAlphaComponent(0.5)
+                icon.contentTintColor = SoundText.ink(0.5)
                 addSubview(icon)
                 let l = NSTextField(labelWithString: "\(level)%")
                 l.font = .systemFont(ofSize: 11)
@@ -414,13 +431,12 @@ final class ChoiceRow: HoverRow {
         let glyph = NSImageView(frame: NSRect(x: 42, y: 4, width: 20, height: 20))
         glyph.image = ListeningGlyphs.image(for: choice.title) ?? symbol(SoundGlyphs.choice(choice.title), size: 14)
         glyph.imageScaling = .scaleNone
-        glyph.wantsLayer = true
-        glyph.layer?.compositingFilter = "plusL"   // added to what is behind, as macOS's are
+        if SoundText.isDark { glyph.wantsLayer = true; glyph.layer?.compositingFilter = "plusL" }   // added to what is behind, as macOS's are
         glyph.contentTintColor = NSColor.white.withAlphaComponent(choice.enabled ? 0.30 : 0.16)
         addSubview(glyph)
         let l = NSTextField(labelWithString: choice.title)
         l.font = .systemFont(ofSize: 13)
-        l.textColor = choice.enabled ? SoundText.primary : NSColor.white.withAlphaComponent(0.3)
+        l.textColor = choice.enabled ? SoundText.primary : SoundText.ink(0.3)
         l.frame = NSRect(x: 67, y: 5.5, width: 220, height: 18)
         addSubview(l)
     }
@@ -455,9 +471,9 @@ final class IconButton: NSView {
         super.init(frame: frame)
         let v = NSImageView(frame: bounds)
         v.image = symbol(name, size: size, weight: weight)
-        v.contentTintColor = NSColor.white.withAlphaComponent(tint)
+        v.contentTintColor = SoundText.ink(tint)
         v.imageScaling = .scaleProportionallyDown
-        if added { v.wantsLayer = true; v.layer?.compositingFilter = "plusL" }
+        if added, SoundText.isDark { v.wantsLayer = true; v.layer?.compositingFilter = "plusL" }
         addSubview(v)
     }
 
@@ -477,11 +493,11 @@ final class MenuSlider: NSView {
 
     override func draw(_ dirtyRect: NSRect) {
         let track = NSRect(x: 0, y: bounds.midY - 3, width: bounds.width, height: 6)
-        NSColor.white.withAlphaComponent(0.13).setFill()
+        SoundText.ink(0.13).setFill()
         NSBezierPath(roundedRect: track, xRadius: 3, yRadius: 3).fill()
         let x = CGFloat(value) * (bounds.width - Self.thumb)
         var filled = track; filled.size.width = x + Self.thumb / 2
-        NSColor.white.withAlphaComponent(0.33).setFill()
+        SoundText.ink(0.33).setFill()
         NSBezierPath(roundedRect: filled, xRadius: 3, yRadius: 3).fill()
         // macOS's knob is a rounded shape 20 wide and 16 tall, not a circle.
         NSColor(white: 0.89, alpha: 1).setFill()

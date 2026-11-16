@@ -54,10 +54,10 @@ public struct SoundMenuModel: Equatable {
     /// it lists are included; without it, Core Audio's outputs alone, the built-in one first.
     public static func merge(outputs: [OutputDevice], defaultID: String?, volume: Double, muted: Bool,
                              batteries: [AccessoryBattery], apple: AppleSoundPanel?, expanded: String? = nil) -> SoundMenuModel {
-        func battery(for kind: OutputKind) -> Battery? {
-            guard kind.isAirPods,
-                  let group = batteries.first?.group else { return nil }
-            let mine = batteries.filter { $0.group == group }
+        func battery(for o: OutputDevice) -> Battery? {
+            guard o.kind.isAirPods else { return nil }
+            let mine = AccessoryBattery.selected(forDeviceNamed: o.name, in: batteries)
+            guard !mine.isEmpty else { return nil }
             var b = Battery()
             for x in mine {
                 switch x.part {
@@ -70,7 +70,7 @@ public struct SoundMenuModel: Equatable {
             return b
         }
         func device(_ o: OutputDevice) -> Device {
-            Device(id: o.id, name: o.name, kind: o.kind, isSelected: o.id == defaultID, battery: battery(for: o.kind))
+            Device(id: o.id, name: o.name, kind: o.kind, isSelected: o.id == defaultID, battery: battery(for: o))
         }
         let local = outputs.sorted { ($0.kind == .speakers ? 0 : 1) < ($1.kind == .speakers ? 0 : 1) }
         var devices: [Device]

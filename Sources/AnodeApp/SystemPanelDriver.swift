@@ -106,6 +106,9 @@ final class SystemPanelDriver: SystemPanelDriving {
 
     private var queue: [Queued] = []
     private var busy = false
+    /// Changes whenever a job starts or ends: anything that was waiting for the job before knows, when it wakes, that it is stale.
+    private var token = 0
+    private var uncoverWork: DispatchWorkItem?
     /// Over macOS's menu bar icon: above everything of the menu bar (measured).
     private let cover = IconCover(level: Int(CGShieldingWindowLevel()) - 1)
     /// Over the place macOS's panel appears: above that panel (level 101), below Anode's own menu.
@@ -136,9 +139,12 @@ final class SystemPanelDriver: SystemPanelDriving {
     private func startNext() {
         guard !busy, !queue.isEmpty else { return }
         busy = true
+        token += 1
+        uncoverWork?.cancel(); uncoverWork = nil
         let next = queue.removeFirst()
         current = next
-        Task { @MainActor in await self.begin(next) }
+        let mine = token
+        Task { @MainActor in await self.begin(next, token: mine) }
     }
 
     private func finishJob(_ outcome: SystemPanelOutcome) {
@@ -146,6 +152,7 @@ final class SystemPanelDriver: SystemPanelDriving {
         panelCover.hide()
         answeredAlerts.removeAll()
         let done = current?.done
+        token += 1
         current = nil; machine = nil; busy = false
         done?(outcome)
         startNext()
@@ -162,16 +169,18 @@ final class SystemPanelDriver: SystemPanelDriving {
 
     // ── Starting a job ──────────────────────────────────────────────────────
 
-    @MainActor private func begin(_ job: Queued) async {
+    @MainActor private func begin(_ job: Queued, token mine: Int) async {
         guard AXIsProcessTrusted() else { machineStart(job, accessibility: false, personHasPanelOpen: false); return }
         guard let found = locate(job.kind) else { finishJob(.failed(.noMenuExtra)); return }
         item = found.item; itemFrame = found.frame; route = found.route
         ccElement = Self.application(Self.controlCenter)
         await cover.prepare(frame: itemFrame)
+        guard mine == token else { return }   // cancelled while the picture was being taken
         // The first frames of macOS's panel are hidden too. When Anode's own menu is already up the cover goes under it, and the
         // picture is taken without that menu: the menu's glass blurs what is under it, so a bright panel there (even for two frames,
         // measured at 120 fps) lightens the menu.
         await panelCover.prepare(frame: Self.panelRegion(for: itemFrame), maxAge: 0, exact: true, leavingOut: ownMenuWindowIDs())
+        guard mine == token else { return }
         machineStart(job, accessibility: true, personHasPanelOpen: panelOnScreen())
     }
 
@@ -206,12 +215,17 @@ final class SystemPanelDriver: SystemPanelDriving {
             case .dismissAlert: pressAlertButtons()
             case .closePanel: closePanel()
             case .waitForAlert(let seconds):
+                let mine = token
                 DispatchQueue.main.asyncAfter(deadline: .now() + seconds) { [weak self] in
-                    self?.answerAlerts()
-                    self?.feed(.alertWindowElapsed)
+                    guard let self, self.token == mine else { return }
+                    self.answerAlerts()
+                    self.feed(.alertWindowElapsed)
                 }
             case .uncoverIcon(let delay):
-                DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in self?.cover.hide() }
+                // Cancelled when the next job starts: a late hide must not take down the next job's cover.
+                let work = DispatchWorkItem { [weak self] in self?.cover.hide() }
+                uncoverWork = work
+                DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
             case .finish(let outcome): finishJob(outcome)
             }
         }
@@ -221,8 +235,9 @@ final class SystemPanelDriver: SystemPanelDriving {
         installObserver()
         guard let item else { feed(.openTimedOut); return }
         // A beat after the covers went up, so they are on the screen before macOS's panel is.
+        let mine = token
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.03) { [weak self] in
-            guard let self, self.machine != nil else { return }
+            guard let self, self.machine != nil, self.token == mine else { return }
             AXUIElementPerformAction(item, kAXPressAction as CFString)
             self.poll(timeout: SystemPanelTiming.openTimeout, until: { self.panelWindow() != nil },
                       then: { ok in self.feed(ok ? .opened : .openTimedOut) })
@@ -252,12 +267,13 @@ final class SystemPanelDriver: SystemPanelDriving {
     }
 
     private func pressRow(_ row: SystemPanelRow) {
+        var matcher = SystemPanelRowMatcher(row)
         guard let window = panelWindow(),
               let element = find(in: window, where: {
-                  // Only a row that can be pressed: a button, or a toggle row (macOS's own Settings buttons have no id).
-                  let role = Self.string($0, kAXRoleAttribute)
-                  guard role == "AXCheckBox" || role == "AXButton" else { return false }
-                  return Self.string($0, "AXIdentifier") == row.identifier && Self.string($0, kAXDescriptionAttribute) == row.description
+                  // Only a row that can be pressed (a button, or a toggle row; macOS's own Settings buttons have no id), under the
+                  // heading the row names: "Off" is in three sections.
+                  matcher.accepts(role: Self.string($0, kAXRoleAttribute), identifier: Self.string($0, "AXIdentifier"),
+                                  description: Self.string($0, kAXDescriptionAttribute))
               }) else { feed(.rowMissing); return }
         AXUIElementPerformAction(element, kAXPressAction as CFString)
         feed(.rowPressed)
@@ -265,9 +281,19 @@ final class SystemPanelDriver: SystemPanelDriving {
 
     private func closePanel() {
         guard let target = closingItem() else { feed(.closed); return }
+        guard panelWindow() != nil else {
+            // No panel to close: pressing the icon now would OPEN one. If it is only late, give it a moment, then put it away.
+            poll(timeout: 1.5, until: { self.panelWindow() != nil }, then: { appeared in
+                guard appeared else { self.feed(.closed); return }
+                self.movePanel()
+                AXUIElementPerformAction(target, kAXPressAction as CFString)
+                self.poll(timeout: 1.0, until: { self.panelWindow() == nil }, then: { _ in self.feed(.closed) })
+            })
+            return
+        }
         AXUIElementPerformAction(target, kAXPressAction as CFString)
         poll(timeout: 1.0, until: { self.panelWindow() == nil }, then: { ok in
-            if !ok, let again = self.closingItem() { AXUIElementPerformAction(again, kAXPressAction as CFString) }
+            if !ok, self.panelWindow() != nil, let again = self.closingItem() { AXUIElementPerformAction(again, kAXPressAction as CFString) }
             self.feed(.closed)
         })
     }
@@ -396,7 +422,9 @@ final class SystemPanelDriver: SystemPanelDriving {
 
     private func poll(timeout: TimeInterval, until condition: @escaping () -> Bool, then finish: @escaping (Bool) -> Void) {
         let deadline = Date().addingTimeInterval(timeout)
+        let mine = token
         func step() {
+            guard mine == token else { return }   // the job this was waiting for is over
             if condition() { finish(true); return }
             if Date() >= deadline { finish(false); return }
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.004) { step() }

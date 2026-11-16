@@ -48,4 +48,25 @@ final class AccessoryBatteryTests: XCTestCase {
     func testAnEntryWithoutAPercentIsSkipped() {
         XCTAssertTrue(AccessoryBattery.parse([["Type": "Accessory Source", "Part Identifier": "Left"]]).isEmpty)
     }
+
+    func testAKeyboardOrMouseIsNotAnAccessoryOfTheAirPods() {
+        let b = AccessoryBattery.parse([
+            ["Type": "Accessory Source", "Group Identifier": "KB", "Current Capacity": 31, "Accessory Category": "Keyboard", "Name": "Magic Keyboard"],
+            source("Left", 90, group: "G1")])
+        XCTAssertEqual(b.map(\.group), ["G1"])
+    }
+
+    func testTheBatteriesOfTheOutputThatIsNamedAreTheOnesUsed() {
+        func entry(_ name: String, _ group: String, _ part: String, _ percent: Int) -> [String: Any] {
+            ["Type": "Accessory Source", "Name": name, "Group Identifier": group, "Part Identifier": part, "Current Capacity": percent]
+        }
+        let all = AccessoryBattery.parse([entry("Other Headset", "A", "Left", 11), entry("Other Headset", "A", "Right", 12),
+                                          entry("Noah\u{2019}s AirPods", "B", "Left", 80), entry("Noah\u{2019}s AirPods Case", "B", "Case", 60)])
+        XCTAssertEqual(AccessoryBattery.selected(forDeviceNamed: "Noah\u{2019}s AirPods", in: all).map(\.percent).sorted(), [60, 80])
+        XCTAssertEqual(AccessoryBattery.selected(forDeviceNamed: "Noah's AirPods", in: all).map(\.group), ["B", "B"], "a straight quote is the same name")
+    }
+
+    func testWithNoNamesTheFirstGroupWithPartsIsUsed() {
+        XCTAssertEqual(AccessoryBattery.selected(forDeviceNamed: "Anything", in: AccessoryBattery.parse(sources)).count, 3)
+    }
 }

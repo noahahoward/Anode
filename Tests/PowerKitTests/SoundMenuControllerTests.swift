@@ -179,10 +179,73 @@ final class SoundMenuControllerTests: XCTestCase {
         let noise = r.model.listening[2]
         r.controller.pickChoice(noise)
         XCTAssertEqual(r.model.listening.map(\.isOn), [false, false, true])
-        XCTAssertEqual(r.driver.jobs.last?.1, .press(SystemPanelRow(identifier: "sound-device-Test AirPods Pro", description: "Noise Cancellation")))
+        XCTAssertEqual(r.driver.jobs.last?.1, .press(SystemPanelRow(identifier: "sound-device-Test AirPods Pro", description: "Noise Cancellation", section: "Listening Mode")))
         r.driver.complete(1, .pressed)
         XCTAssertEqual(r.model.listening.map(\.isOn), [false, false, true])
         XCTAssertNil(r.model.notice)
+    }
+
+    func testAVolumeChangeWhileTheMenuIsOpenDoesNotReadMacOSsPanelAgain() throws {
+        let r = try rig(); defer { r.cleanup() }
+        openAndRead(r)
+        let jobs = r.driver.jobs.count
+        for v in stride(from: 0.1, through: 0.9, by: 0.1) { r.outputs.volume = v; r.outputs.onChange?() }
+        r.outputs.muted = true; r.outputs.onChange?()
+        XCTAssertEqual(r.driver.jobs.count, jobs, "only a change of outputs is worth reading macOS's panel for")
+        XCTAssertEqual(r.presenter.shown.last?.volume ?? 0, 0.9, accuracy: 0.001, "but the slider follows")
+    }
+
+    func testAChangeOfOutputsWhileTheMenuIsOpenStillReads() throws {
+        let r = try rig(); defer { r.cleanup() }
+        openAndRead(r)
+        let jobs = r.driver.jobs.count
+        r.outputs.devices.append(OutputDevice(id: "usb", name: "USB Speakers", kind: .speakers))
+        r.outputs.onChange?()
+        XCTAssertEqual(r.driver.jobs.count, jobs + 1)
+    }
+
+    func testOpeningAndClosingRepeatedlyDoesNotPileUpReads() throws {
+        let r = try rig(); defer { r.cleanup() }
+        for _ in 0..<5 { r.controller.openMenu(); r.controller.closeMenu() }
+        XCTAssertEqual(r.driver.jobs.count, 1, "one read is already on its way")
+        r.controller.openMenu()
+        r.driver.complete(0, .tree(tree()))
+        XCTAssertFalse(r.presenter.shown.last!.listening.isEmpty, "and its answer is used by the menu that is open when it arrives")
+    }
+
+    func testAReadThatFinishesAfterAPressDoesNotUndoIt() throws {
+        let r = try rig(); defer { r.cleanup() }
+        openAndRead(r)                       // job 0 done
+        r.controller.closeMenu(); r.controller.openMenu()   // job 1: a read still out
+        let noise = try XCTUnwrap(r.model.listening.first { $0.title == "Noise Cancellation" })
+        r.controller.pickChoice(noise)       // job 2: the press
+        r.driver.complete(1, .tree(tree(listening: "Transparency")))   // the older read arrives
+        XCTAssertEqual(r.model.listening.map(\.isOn), [false, false, true], "the press is not undone by a reading from before it")
+        r.driver.complete(2, .pressed)
+        XCTAssertEqual(r.driver.jobs.count, 4, "macOS's panel is read once more to see how the press ended")
+        r.driver.complete(3, .tree(tree(listening: "Noise Cancellation")))
+        XCTAssertEqual(r.model.listening.map(\.isOn), [false, false, true])
+    }
+
+    func testAPressNamesTheSectionItIsIn() throws {
+        let r = try rig(); defer { r.cleanup() }
+        openAndRead(r)
+        let off = try XCTUnwrap(r.model.conversation.first { $0.title == "On" })
+        r.controller.pickChoice(off)
+        XCTAssertEqual(r.driver.jobs.last?.1, .press(SystemPanelRow(identifier: "sound-device-Test AirPods Pro", description: "On", section: "Conversation Awareness")))
+    }
+
+    func testOneMissedLookForMacOSsIconDoesNotBringBackAnIconOfOurOwn() throws {
+        let r = try rig(native: true); defer { r.cleanup() }
+        r.native.frame = nil
+        r.controller.refreshNativeIcon()     // a slow answer from Accessibility, not a removed icon
+        XCTAssertTrue(r.bar.items.isEmpty)
+        XCTAssertTrue(r.native.running)
+        r.native.frame = CGRect(x: 1544, y: 8, width: 22, height: 22)
+        r.controller.refreshNativeIcon()
+        r.native.frame = nil
+        r.controller.refreshNativeIcon()
+        XCTAssertTrue(r.bar.items.isEmpty, "the count starts again after a good look")
     }
 
     func testRefusalPutsCheckBackAndShowsLine() throws {
@@ -290,6 +353,7 @@ final class SoundMenuControllerTests: XCTestCase {
         let r = try rig(native: true); defer { r.cleanup() }
         r.native.frame = nil
         r.controller.refreshNativeIcon()
+        r.controller.refreshNativeIcon()   // gone twice running: it is really gone
         XCTAssertEqual(r.bar.items.count, 1)
         XCTAssertFalse(r.bar.items[0].removed)
         XCTAssertFalse(r.native.running)

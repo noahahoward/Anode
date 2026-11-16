@@ -65,10 +65,18 @@ final class SoundMenuController {
     private var notice: String?
     private var collapsed = Set<String>()
     private var generation = 0
+    /// A read of macOS's panel is already out: another is not asked for, however often the menu is opened and closed.
+    private var readInFlight = false
+    /// Presses not yet answered: a reading that finishes meanwhile is from before them and is not used.
+    private var pressesInFlight = 0
+    /// Which outputs there were when the outputs last changed: only a different list is worth reading macOS's panel for.
+    private var outputsSignature = ""
+    /// How many looks in a row found macOS's own icon missing.
+    private var missedLooks = 0
 
     init(settings: Settings, outputs: AudioOutputs, driver: SystemPanelDriving, batteries: @escaping () -> [AccessoryBattery],
          accessibility: @escaping () -> Bool, statusBar: StatusItemHosting, presenter: SoundMenuPresenting,
-         native: NativeIconHosting, pollInterval: TimeInterval = 1) {
+         native: NativeIconHosting, pollInterval: TimeInterval = 3) {
         self.settings = settings; self.outputs = outputs; self.driver = driver; self.batteries = batteries
         self.accessibility = accessibility; self.statusBar = statusBar; self.presenter = presenter
         self.native = native; self.pollInterval = pollInterval
@@ -109,7 +117,7 @@ final class SoundMenuController {
     }
 
     private func apply() {
-        if settings.soundMenuEnabled { install() } else { tearDown() }
+        if settings.soundMenuEnabled { install() } else { settings.soundMenuLastReading = nil; tearDown() }
     }
 
     private func install() {
@@ -117,6 +125,7 @@ final class SoundMenuController {
             installed = true
             outputs.onChange = { [weak self] in self?.outputsChanged() }
             outputs.start()
+            outputsSignature = currentOutputsSignature()
             reading = settings.soundMenuLastReading.flatMap { try? JSONDecoder().decode(AppleReading.self, from: $0) }
             native.onClick = { [weak self] frame in self?.nativeClicked(frame) }
         }
@@ -127,7 +136,10 @@ final class SoundMenuController {
     /// Called again every second while macOS's is in use, so removing it in System Settings brings Anode's back.
     func refreshNativeIcon() {
         guard installed else { return }
-        let useNative = settings.soundMenuUsesNativeIcon && native.currentFrame() != nil
+        // One look that finds nothing is often a slow answer from Accessibility, not a removed icon: it takes two in a row.
+        let seen = native.currentFrame() != nil
+        missedLooks = seen ? 0 : missedLooks + 1
+        let useNative = settings.soundMenuUsesNativeIcon && (seen || (nativeRunning && missedLooks < 2))
         if useNative {
             if let item { item.remove(); self.item = nil }
             if !nativeRunning { native.start(); nativeRunning = true }
@@ -191,14 +203,18 @@ final class SoundMenuController {
     private func readApple() {
         guard accessibility() else {
             reading = nil
+            settings.soundMenuLastReading = nil   // what was read before is not shown, and is not kept
             notice = Self.needsAccessibility
             presenter.update(model)
             return
         }
-        generation += 1
-        let mine = generation
+        guard !readInFlight else { return }
+        readInFlight = true
         driver.run(.sound, job: .read) { [weak self] outcome in
-            guard let self, mine == self.generation else { return }
+            guard let self else { return }
+            self.readInFlight = false
+            // After teardown, or with a press still to be answered (this reading is from before it), the answer is not used.
+            guard self.installed, self.pressesInFlight == 0 else { return }
             if case .tree(let tree) = outcome {
                 let parsed = AppleSoundPanel.parse(tree)
                 let names = Set(self.outputs.devices.map(\.name))
@@ -210,14 +226,28 @@ final class SoundMenuController {
         }
     }
 
+    /// The outputs there are and which is playing: what makes macOS's panel worth reading again.
+    private func currentOutputsSignature() -> String {
+        (outputs.devices.map(\.id).sorted() + ["default=\(outputs.defaultDeviceID ?? "")"]).joined(separator: "|")
+    }
+
     private func outputsChanged() {
         refreshIcon()
-        // A speaker came or went: `currentApple` already leaves out what has gone, and the reading below corrects the rest.
-        // A line about the one that was there ("Put both AirPods in…") no longer applies.
-        notice = nil
+        // The volume changes this callback too (a drag on the slider is dozens of them): macOS's panel is read again only when the
+        // outputs or the one playing changed.
+        let signature = currentOutputsSignature()
+        let outputsMoved = signature != outputsSignature
+        outputsSignature = signature
         guard presenter.isOpen else { return }
-        redraw()
-        readApple()
+        if outputsMoved {
+            // A speaker came or went: `currentApple` already leaves out what has gone, and the reading below corrects the rest.
+            // A line about the one that was there ("Put both AirPods in…") no longer applies.
+            notice = nil
+            redraw()
+            readApple()
+        } else {
+            redraw()
+        }
     }
 
     private func redraw() {
@@ -256,13 +286,14 @@ final class SoundMenuController {
     func pickChoice(_ row: AppleChoiceRow) {
         guard row.enabled, !row.isOn else { return }
         notice = nil
-        if row.title == "Adaptive", let group = batteries().first?.group,
-           !AccessoryBattery.bothBudsPresent(in: batteries(), group: group) {
+        let mine = AccessoryBattery.selected(forDeviceNamed: row.device, in: batteries())
+        if row.title == "Adaptive", let group = mine.first?.group,
+           !AccessoryBattery.bothBudsPresent(in: mine, group: group) {
             notice = Self.adaptiveNeedsBothBuds
             redraw()
             return
         }
-        press(SystemPanelRow(identifier: AppleSoundPanel.devicePrefix + row.device, description: row.title), optimistic: row)
+        press(SystemPanelRow(identifier: AppleSoundPanel.devicePrefix + row.device, description: row.title, section: row.section), optimistic: row)
     }
 
     func toggleExpanded(_ name: String) {
@@ -284,8 +315,11 @@ final class SoundMenuController {
         }
         redraw()
         let mine = generation
+        pressesInFlight += 1
         driver.run(.sound, job: .press(row)) { [weak self] outcome in
-            guard let self, mine == self.generation else { return }
+            guard let self else { return }
+            self.pressesInFlight = max(0, self.pressesInFlight - 1)
+            guard mine == self.generation else { return }
             switch outcome {
             case .pressed, .tree: break
             case .refused(let text):
@@ -296,6 +330,8 @@ final class SoundMenuController {
                 self.notice = "Couldn't change that just now."
             }
             self.redraw()
+            // How it ended is read from macOS's panel, not assumed: a change that did not hold shows as it is.
+            if self.presenter.isOpen { self.readApple() }
         }
     }
 

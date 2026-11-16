@@ -60,7 +60,8 @@ final class KeepAwakeController: NSObject {
         let saved = Self.readSaved(defaults)
         let handoff = defaults.string(forKey: Self.handoffKey).flatMap(KeepAwakeMode.init(rawValue:))
         defaults.removeObject(forKey: Self.handoffKey)
-        let carryOn = handoff.map { ($0, nil as Date?) } ?? saved
+        // `nil` for the end of a saved session means it had none; a hand-over from a rebuild has no end of its own either way.
+        let carryOn: (KeepAwakeMode, Date?, Bool)? = handoff.map { ($0, nil, false) } ?? saved.map { ($0.0, $0.1, true) }
         if carryOn == nil || !settings.keepAwakeEnabled {
             // A previous run may have died holding the lid open, or with the screen dimmed.
             self.core.reconcileAtLaunch()
@@ -74,7 +75,7 @@ final class KeepAwakeController: NSObject {
             forName: NSWorkspace.didWakeNotification, object: nil, queue: .main
         ) { [weak self] _ in self?.tick() }
         applyEnabled()
-        if let (mode, endsAt) = carryOn, settings.keepAwakeEnabled { resume(mode, endsAt: endsAt) }
+        if let (mode, endsAt, wasSaved) = carryOn, settings.keepAwakeEnabled { resume(mode, endsAt: endsAt, savedIndefinite: wasSaved && endsAt == nil) }
     }
 
     /// What was running when the app last went away, unless its time ran out while it was gone.
@@ -99,10 +100,10 @@ final class KeepAwakeController: NSObject {
     private var quitting = false
 
     /// Carry on a mode the previous run had going: after a rebuild (see `handoffKey`) or any other relaunch (see `savedKey`).
-    private func resume(_ mode: KeepAwakeMode, endsAt: Date?) {
+    private func resume(_ mode: KeepAwakeMode, endsAt: Date?, savedIndefinite: Bool) {
         self.mode = mode
         do {
-            try core.start(mode, for: endsAt.map { $0.timeIntervalSinceNow } ?? duration.seconds)
+            try core.start(mode, for: endsAt.map { $0.timeIntervalSinceNow } ?? (savedIndefinite ? nil : duration.seconds))
             log("resumed \(mode.rawValue) after a relaunch")
         } catch {
             log("could not resume \(mode.rawValue) after a relaunch (\(error)); restoring normal sleep")

@@ -17,7 +17,27 @@ public enum SystemPanelKind: Equatable { case sound, battery }
 public struct SystemPanelRow: Equatable {
     public var identifier: String
     public var description: String
-    public init(identifier: String, description: String) { self.identifier = identifier; self.description = description }
+    /// The heading the row sits under ("Listening Mode"): "Off" is also a Spatial Audio and a Conversation Awareness row. Empty
+    /// for a row that is not in a section.
+    public var section: String
+    public init(identifier: String, description: String, section: String = "") {
+        self.identifier = identifier; self.description = description; self.section = section
+    }
+}
+
+/// Finds a row in macOS's panel from the elements in tree order: the first pressable element with the row's id and description,
+/// under the row's heading when it names one.
+public struct SystemPanelRowMatcher {
+    private let row: SystemPanelRow
+    private var heading = ""
+    public init(_ row: SystemPanelRow) { self.row = row }
+
+    public mutating func accepts(role: String, identifier: String, description: String) -> Bool {
+        if role == "AXHeading" { heading = description; return false }
+        guard role == "AXCheckBox" || role == "AXButton" else { return false }
+        guard identifier == row.identifier, description == row.description else { return false }
+        return row.section.isEmpty || heading == row.section
+    }
 }
 
 public enum SystemPanelError: Error, Equatable {

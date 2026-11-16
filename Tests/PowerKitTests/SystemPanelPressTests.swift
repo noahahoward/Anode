@@ -70,3 +70,31 @@ final class SystemPanelPressTests: XCTestCase {
         XCTAssertEqual(s.start(), [.finish(.failed(.noAccessibility))])
     }
 }
+
+/// Which row of macOS's panel a press means, when several rows share a title: "Off" is a listening mode, a Spatial Audio state
+/// and a Conversation Awareness state.
+final class SystemPanelRowMatcherTests: XCTestCase {
+    private func firstMatch(_ row: SystemPanelRow) -> Int? {
+        let pods = "sound-device-Pods"
+        let nodes: [(String, String, String)] = [   // role, identifier, description
+            ("AXHeading", pods, "Listening Mode"), ("AXCheckBox", pods, "Off"), ("AXCheckBox", pods, "Transparency"),
+            ("AXHeading", pods, "Conversation Awareness"), ("AXCheckBox", pods, "Off"), ("AXCheckBox", pods, "On"),
+        ]
+        var m = SystemPanelRowMatcher(row)
+        for (i, n) in nodes.enumerated() where m.accepts(role: n.0, identifier: n.1, description: n.2) { return i }
+        return nil
+    }
+
+    func testTheRowInTheNamedSectionIsTheOneThatMatches() {
+        XCTAssertEqual(firstMatch(SystemPanelRow(identifier: "sound-device-Pods", description: "Off", section: "Conversation Awareness")), 4)
+        XCTAssertEqual(firstMatch(SystemPanelRow(identifier: "sound-device-Pods", description: "Off", section: "Listening Mode")), 1)
+    }
+
+    func testARowWithNoSectionMatchesTheFirstOneAsBefore() {
+        XCTAssertEqual(firstMatch(SystemPanelRow(identifier: "sound-device-Pods", description: "Off")), 1)
+    }
+
+    func testAHeadingIsNeverPressed() {
+        XCTAssertNil(firstMatch(SystemPanelRow(identifier: "sound-device-Pods", description: "Listening Mode")))
+    }
+}

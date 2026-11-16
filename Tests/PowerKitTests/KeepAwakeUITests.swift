@@ -131,6 +131,20 @@ final class KeepAwakeCycleTests: XCTestCase {
         }
     }
 
+    func testAnIndefiniteSessionStaysIndefiniteWhateverThePickerHoldsAtTheNextLaunch() throws {
+        let (defaults, suite) = try TestDefaults.make(owner: "KeepAwakeSavedForever", test: name)
+        defer { TestDefaults.destroy(defaults, suite) }
+        let first = launch(defaults)
+        first.duration = .forever
+        first.begin(.neverSleep)
+        first.shutdown()
+        defaults.set(KeepAwakeDuration.oneHour.rawValue, forKey: KeepAwakeController.durationKey)   // the picker was moved meanwhile
+        let second = launch(defaults)
+        XCTAssertNotNil(second.core.session)
+        XCTAssertNil(second.core.session?.endsAt, "until it is turned off, as it was")
+        second.core.stop()
+    }
+
     func testAnOffStateStaysOffAfterTheNextLaunch() throws {
         let (defaults, suite) = try TestDefaults.make(owner: "KeepAwakeSavedOff", test: name)
         defer { TestDefaults.destroy(defaults, suite) }

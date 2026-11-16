@@ -46,12 +46,12 @@ final class CoreAudioOutputs: AudioOutputs {
     // ── Reading ─────────────────────────────────────────────────────────────
 
     var devices: [OutputDevice] {
-        let productID = currentAccessoryBatteries().first?.productID
+        let batteries = currentAccessoryBatteries()
         return outputIDs().compactMap { id -> OutputDevice? in
             guard let uid = string(id, kAudioDevicePropertyDeviceUID), let name = string(id, kAudioObjectPropertyName) else { return nil }
             let transport = Self.fourCC(value(id, kAudioDevicePropertyTransportType) ?? 0)
             return OutputDevice(id: uid, name: name, kind: OutputKind.guess(name: name, transport: transport,
-                                                                           productID: transport == "blue" ? productID : nil))
+                                                                           productID: transport == "blue" ? AccessoryBattery.selected(forDeviceNamed: name, in: batteries).first?.productID : nil))
         }
     }
 
