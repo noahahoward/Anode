@@ -175,6 +175,21 @@ Everything else in that plan still holds:
 - Apple's panel is opened only when Anode needs it. It is always closed afterwards, and nothing of it may stay on the
   screen.
 
+## Owner's idea: open from macOS's own icon (2026-11-15, built)
+
+Instead of a second icon, a click on macOS's own Sound icon opens Anode's menu. The bar keeps just macOS's icon, exactly as it is.
+
+- **Option, off by default:** "Open it from macOS's own Sound icon instead (one icon, not two)", greyed out while the Sound menu is off.
+- **How:** an active event tap on the shared tap thread swallows the press and release that land on the icon. A press is taken
+  only inside the icon's last known frame, only when a fresh Accessibility look at what is under the pointer says it is the
+  Sound icon (measured under 1 ms), and not with Command, Option or Control held (Command-drag rearranges icons). The release
+  of a press taken is taken too. Anything that fails is passed on untouched.
+- **If macOS's icon is removed** (System Settings), Anode's own icon appears by itself within a second, and goes again when
+  macOS's returns. Removing it stays the person's choice.
+- **Measured:** a click on the icon opened Anode's menu at macOS's own spot and macOS's panel did not open; a second click closed
+  it; a Command-click passed through.
+- **The panel's own pressed look:** because the click never reaches macOS's icon, it does not light up for a click at all.
+
 ## Open questions the builder must measure before building on them
 
 1. Does opening Apple's panel, even off the screen, close Anode's own menu while that menu is open? If it does, Anode
