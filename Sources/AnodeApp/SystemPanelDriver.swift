@@ -41,11 +41,12 @@ final class IconCover {
     private var imageFrame = CGRect.zero
     private var takenAt = Date.distantPast
 
-    /// The rect, in whole points (top-left global), the picture covers: the icon with a little room each side, the height
-    /// of the bar. Whole points, because a cover placed between pixels shows an edge.
+    /// The rect, in whole points (top-left global), the picture covers: the icon with room each side for the pill macOS lights
+    /// round it (it reaches about 11 pt past the icon: measured at 120 fps, a narrower cover left the pill's edges showing for
+    /// three frames), the height of the bar. Whole points, because a cover placed between pixels shows an edge.
     static func rect(for frame: CGRect) -> CGRect {
-        CGRect(x: CGFloat(Int(frame.minX) - 6), y: CGFloat(Int(frame.minY)),
-               width: CGFloat(Int(frame.width) + 12), height: CGFloat(Int(max(frame.height, 33))))
+        CGRect(x: CGFloat(Int(frame.minX) - 13), y: CGFloat(Int(frame.minY)),
+               width: CGFloat(Int(frame.width) + 26), height: CGFloat(Int(max(frame.height, 33))))
     }
 
     /// Takes the idle picture, unless one of the same place is under `maxAge` seconds old. Needs Screen Recording; without
