@@ -236,7 +236,7 @@ final class SoundMenuContentView: NSView {
             let b = NSView(frame: f)
             b.wantsLayer = true
             // macOS lifts the block by about 20 levels whatever is behind it, so it is added, not laid over.
-            b.layer?.backgroundColor = NSColor.white.withAlphaComponent(0.04).cgColor
+            b.layer?.backgroundColor = NSColor.white.withAlphaComponent(0.035).cgColor
             b.layer?.compositingFilter = CIFilter(name: "CIAdditionCompositing")
             addSubview(b, positioned: .above, relativeTo: tint)
         case .device(let i):
