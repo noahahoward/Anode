@@ -2847,7 +2847,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
     /// thing again. LaunchServices sends the reopen event whatever the activation
     /// policy is, so this works while the app is `.accessory` and invisible.
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows: Bool) -> Bool {
-        FeatureLog.append("reopen.log", "reopen: hasVisibleWindows \(hasVisibleWindows), titled window open \(AppPresence.anyWindowOpen), key window \(NSApp.keyWindow?.title ?? "none")")
         // `hasVisibleWindows` is AppKit's opinion, and it is `true` for a window
         // stranded on a Space that no longer exists — which made the Dock icon
         // the third control that could not open the app. See `WindowPresence`.
