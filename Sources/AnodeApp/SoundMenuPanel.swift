@@ -158,6 +158,9 @@ final class SoundMenuPanel: NSPanel, SoundMenuPresenting {
         }
     }
 
+    /// The menu drew something it had been holding back (a drag ended): fit the window to it.
+    func contentChanged() { place(); invalidateShadow() }
+
     /// The bottom edge, and the rows under what changed, glide to their new places as macOS's do (see `SoundMenuMotion`).
     private func startGlide() {
         glideTimer?.invalidate()
@@ -293,6 +296,11 @@ final class SoundMenuContentView: NSView {
     private var leaving: [(key: String, views: [NSView], frames: [CGRect])] = []
     /// The app rows now drawn, so a change to one app (mute, a slider) is shown on its row without drawing the whole menu again.
     private(set) var appRows: [String: AppVolumeRowView] = [:]
+    /// The volume slider at the top, kept so a change of volume moves its knob without drawing the menu again.
+    private(set) var mainSlider: MenuSlider?
+    /// A change that came while a slider was being dragged, drawn when the drag ends.
+    private var deferred: SoundMenuModel?
+    private var dragObserver: NSObjectProtocol?
     private var glide: (fromHeight: CGFloat, toHeight: CGFloat)?
     var isGliding: Bool { glide != nil }
 
@@ -300,6 +308,34 @@ final class SoundMenuContentView: NSView {
     /// (driven by `step`) and returns true; the caller steps it and calls `finishGlide` at the end.
     @discardableResult
     func apply(_ model: SoundMenuModel, animated: Bool = false) -> Bool {
+        if dragObserver == nil {
+            dragObserver = NotificationCenter.default.addObserver(forName: .menuSliderDragEnded, object: nil, queue: .main) { [weak self] _ in
+                guard let self, let pending = self.deferred else { return }
+                self.deferred = nil
+                self.apply(pending)
+                (self.window as? SoundMenuPanel)?.contentChanged()
+            }
+        }
+        // Only the volume or the mute changed: the knob moves (gliding when the mute did it), and nothing is drawn again.
+        if let old = self.model, let slider = mainSlider {
+            var same = old; same.volume = model.volume; same.muted = model.muted
+            if same == model {
+                self.model = model
+                let position = model.muted ? 0 : model.volume
+                if abs(slider.value - position) > 0.0005 {
+                    if old.muted != model.muted { slider.glide(to: position) } else { slider.value = position }
+                }
+                return false
+            }
+        }
+        // Something else changed while a slider is held: it is drawn when the pointer is let go.
+        if MenuSlider.activeDrags > 0, let current = self.model {
+            var asApps = current; asApps.apps = model.apps
+            if asApps != model {
+                deferred = model
+                return false
+            }
+        }
         // Only the apps changed (and they are the same apps): show it on their rows, where a slider can glide.
         if let old = self.model, !model.apps.isEmpty, old.apps.map(\.bundleID) == model.apps.map(\.bundleID) {
             var same = old; same.apps = model.apps
@@ -311,6 +347,7 @@ final class SoundMenuContentView: NSView {
         }
         self.model = model
         appRows = [:]
+        mainSlider = nil
         let oldHeight = size.height
         let before = shownRows
         let beforeViews = shownViews
@@ -423,6 +460,7 @@ final class SoundMenuContentView: NSView {
             let slider = MenuSlider(frame: f)
             slider.value = model.muted ? 0 : model.volume
             slider.onChange = { [weak self] v in self?.controller?.setVolume(v) }
+            mainSlider = slider
             addSubview(slider)
             let down = IconButton(symbol: "speaker.fill", size: 14.5, tint: 0.49, added: true, frame: NSRect(x: 12, y: f.minY - 1, width: 18, height: 18)) { [weak self] in
                 guard let self, let m = self.model else { return }
@@ -734,6 +772,8 @@ final class IconButton: NSView {
 }
 
 /// The volume slider: a rounded track filled up to a round handle.
+extension Notification.Name { static let menuSliderDragEnded = Notification.Name("dev.anode.menuSliderDragEnded") }
+
 final class MenuSlider: NSView {
     /// Where the knob is meant to be. It is drawn at `shown`, which follows it at once, or glides after it (`glide(to:)`).
     var value: Double = 0 { didSet { if glideTimer == nil { shown = value }; needsDisplay = true } }
@@ -787,8 +827,29 @@ final class MenuSlider: NSView {
                      xRadius: knobH * 0.47, yRadius: knobH * 0.47).fill()
     }
 
-    override func mouseDown(with event: NSEvent) { stopGlide(); move(to: event) }
+    /// How many sliders are being dragged. While any is, the menu is not drawn again (that would replace the slider under the
+    /// pointer and end the drag); what changed is drawn when the pointer is let go.
+    private(set) static var activeDrags = 0
+    static func dragBegan() { activeDrags += 1 }
+    static func dragEnded() {
+        activeDrags = max(0, activeDrags - 1)
+        if activeDrags == 0 { NotificationCenter.default.post(name: .menuSliderDragEnded, object: nil) }
+    }
+    private var dragging = false
+
+    override func mouseDown(with event: NSEvent) {
+        stopGlide()
+        dragging = true
+        Self.dragBegan()
+        move(to: event)
+    }
     override func mouseDragged(with event: NSEvent) { move(to: event) }
+    override func mouseUp(with event: NSEvent) { endDrag() }
+    private func endDrag() { if dragging { dragging = false; Self.dragEnded() } }
+    override func viewWillMove(toSuperview newSuperview: NSView?) {
+        if newSuperview == nil { endDrag() }   // taken out mid-drag: the drag is over
+        super.viewWillMove(toSuperview: newSuperview)
+    }
 
     private func move(to event: NSEvent) {
         let x = convert(event.locationInWindow, from: nil).x

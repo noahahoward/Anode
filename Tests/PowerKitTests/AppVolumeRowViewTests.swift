@@ -31,7 +31,9 @@ final class AppVolumeRowViewTests: XCTestCase {
         let view = SoundMenuContentView(frame: NSRect(x: 0, y: 0, width: 309, height: 100))
         view.apply(model([player]))
         let row = view.appRows[player.bundleID]
-        view.apply(model([player], volume: 0.9), animated: true)
+        var other = model([player])
+        other.devices.append(SoundMenuModel.Device(id: "x", name: "USB Speakers", kind: .speakers, isSelected: false))
+        view.apply(other, animated: true)
         XCTAssertFalse(view.appRows[player.bundleID] === row)
     }
 
@@ -43,5 +45,34 @@ final class AppVolumeRowViewTests: XCTestCase {
         XCTAssertFalse(texts.contains("Player"), "the name is not drawn on the row")
         XCTAssertTrue(row.subviews.contains { $0.toolTip == "Player" }, "it is the icon's tooltip")
         XCTAssertEqual(row.frame.height, SoundMenuMetrics.appRowHeight)
+    }
+
+    // ── Dragging a slider ───────────────────────────────────────────────────
+
+    func testTheVolumeSliderIsTheSameSliderAfterTheVolumeChanges() {
+        let view = SoundMenuContentView(frame: NSRect(x: 0, y: 0, width: 309, height: 100))
+        view.apply(model([], volume: 0.5))
+        let slider = view.mainSlider
+        XCTAssertNotNil(slider)
+        // A drag is a stream of volume changes: if each redrew the menu the slider under the pointer would be gone after the first.
+        for v in stride(from: 0.51, through: 0.9, by: 0.03) {
+            XCTAssertFalse(view.apply(model([], volume: v), animated: true))
+            XCTAssertTrue(view.mainSlider === slider)
+            XCTAssertEqual(view.mainSlider?.value ?? -1, v, accuracy: 0.0001)
+        }
+    }
+
+    func testAChangeOfTheMenuWhileADragIsOnWaitsForTheDragToEnd() {
+        let view = SoundMenuContentView(frame: NSRect(x: 0, y: 0, width: 309, height: 100))
+        view.apply(model([]))
+        let slider = view.mainSlider
+        MenuSlider.dragBegan()
+        var other = model([])
+        other.devices.append(SoundMenuModel.Device(id: "x", name: "USB Speakers", kind: .speakers, isSelected: false))
+        view.apply(other, animated: true)
+        XCTAssertTrue(view.mainSlider === slider, "the slider being dragged is not replaced")
+        XCTAssertEqual(view.frame.height, SoundMenuLayout.frames(for: model([])).height, "and the menu is not changed yet")
+        MenuSlider.dragEnded()
+        XCTAssertEqual(view.frame.height, SoundMenuLayout.frames(for: other).height, "it is, the moment the drag is over")
     }
 }
