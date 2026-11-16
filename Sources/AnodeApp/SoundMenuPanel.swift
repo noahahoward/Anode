@@ -106,7 +106,7 @@ final class SoundMenuPanel: NSPanel, SoundMenuPresenting {
     private var monitors: [Any] = []
     private var anchor = CGRect.zero
 
-    var isOpen: Bool { isVisible }
+    var isOpen: Bool { isVisible && !closing }
 
     init() {
         super.init(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
@@ -128,8 +128,16 @@ final class SoundMenuPanel: NSPanel, SoundMenuPresenting {
     override var canBecomeKey: Bool { false }
     override var canBecomeMain: Bool { false }
 
+    /// The menu is on its way out (the short fade): it no longer counts as open.
+    private var closing = false
+    private var glideTimer: Timer?
+    private var glideStart: CFTimeInterval = 0
+
     func show(_ model: SoundMenuModel, below frame: CGRect) {
         anchor = frame
+        stopGlide()
+        closing = false
+        alphaValue = 1
         content.apply(model)
         place()
         orderFrontRegardless()
@@ -146,15 +154,54 @@ final class SoundMenuPanel: NSPanel, SoundMenuPresenting {
     }
 
     func update(_ model: SoundMenuModel) {
-        guard isVisible else { return }
-        content.apply(model)
+        guard isVisible, !closing else { return }
+        if content.apply(model, animated: true) {
+            startGlide()
+        } else {
+            place()
+        }
+    }
+
+    /// The bottom edge, and the rows under what changed, glide to their new places as macOS's do (see `SoundMenuMotion`).
+    private func startGlide() {
+        glideTimer?.invalidate()
+        glideStart = CACurrentMediaTime()
         place()
+        let timer = Timer(timeInterval: 1.0 / 120, repeats: true) { [weak self] _ in self?.glideTick() }
+        RunLoop.main.add(timer, forMode: .common)
+        glideTimer = timer
+    }
+
+    private func glideTick() {
+        let t = CACurrentMediaTime() - glideStart
+        if t >= SoundMenuMotion.settleSeconds { stopGlide(); place(); return }
+        content.step(CGFloat(SoundMenuMotion.progress(at: t)))
+        place()
+        invalidateShadow()
+    }
+
+    private func stopGlide() {
+        guard glideTimer != nil || content.isGliding else { return }
+        glideTimer?.invalidate(); glideTimer = nil
+        content.finishGlide()
     }
 
     override func close() {
         for m in monitors { NSEvent.removeMonitor(m) }
         monitors.removeAll()
-        orderOut(nil)
+        guard isVisible, !closing else { orderOut(nil); return }
+        stopGlide()
+        // macOS's menu fades out in about 70 ms; it appears at once.
+        closing = true
+        NSAnimationContext.runAnimationGroup({ ctx in
+            ctx.duration = SoundMenuMotion.fadeOutSeconds
+            self.animator().alphaValue = 0
+        }, completionHandler: { [weak self] in
+            guard let self, self.closing else { return }
+            self.closing = false
+            self.orderOut(nil)
+            self.alphaValue = 1
+        })
     }
 
     /// A click anywhere else closes the menu; a click on the icon is the icon's own toggle.
@@ -239,8 +286,28 @@ final class SoundMenuContentView: NSView {
 
     required init?(coder: NSCoder) { fatalError("not used") }
 
-    func apply(_ model: SoundMenuModel) {
+    // ── Gliding between two layouts ─────────────────────────────────────────
+
+    /// One laid-out row and the views drawn for it.
+    private struct RowGroup {
+        var key: String
+        var views: [NSView]
+        var finalFrames: [CGRect]
+        var finalRow: CGRect
+        var fromRow: CGRect?   // where the row was shown before; nil for a row that is new
+    }
+    private var groups: [RowGroup] = []
+    private var shownRows: [String: CGRect] = [:]
+    private var glide: (fromHeight: CGFloat, toHeight: CGFloat)?
+    var isGliding: Bool { glide != nil }
+
+    /// Draws `model`. With `animated`, when the shape changed and something was already shown, nothing jumps: it sets up a glide
+    /// (driven by `step`) and returns true; the caller steps it and calls `finishGlide` at the end.
+    @discardableResult
+    func apply(_ model: SoundMenuModel, animated: Bool = false) -> Bool {
         self.model = model
+        let oldHeight = size.height
+        let before = shownRows
         for v in subviews where v !== material && v !== baseLift { v.removeFromSuperview() }   // the edge is added again at the end
         let layout = SoundMenuLayout.frames(for: model)
         size = NSSize(width: SoundMenuMetrics.width, height: layout.height)
@@ -248,8 +315,72 @@ final class SoundMenuContentView: NSView {
         material.frame = bounds
         baseLift.frame = bounds
         edge.frame = bounds
-        for row in layout.rows { add(row, model) }
+        groups = []
+        var dividers = 0
+        for row in layout.rows {
+            let first = subviews.count
+            add(row, model)
+            let made = Array(subviews[first...])
+            var key = Self.key(of: row.kind, model: model)
+            if row.kind == .divider { key += "#\(dividers)"; dividers += 1 }
+            groups.append(RowGroup(key: key, views: made, finalFrames: made.map(\.frame), finalRow: row.frame, fromRow: before[key]))
+        }
+        shownRows = Dictionary(groups.map { ($0.key, $0.finalRow) }, uniquingKeysWith: { a, _ in a })
         addSubview(edge)   // last, so it is drawn over everything
+        invalidateIntrinsicContentSize()
+        let changed = abs(oldHeight - size.height) > 0.5 || groups.contains { g in g.fromRow.map { $0 != g.finalRow } ?? true }
+        guard animated, !before.isEmpty, changed, oldHeight > 0 else { glide = nil; return false }
+        glide = (oldHeight, size.height)
+        step(0)
+        return true
+    }
+
+    /// What identifies a row from one drawing to the next.
+    private static func key(of kind: SoundMenuLayout.RowKind, model: SoundMenuModel) -> String {
+        switch kind {
+        case .title: return "title"
+        case .volumeSlider: return "slider"
+        case .divider: return "divider"
+        case .heading(let t): return "heading:\(t)"
+        case .device(let i): return "device:" + (model.devices.indices.contains(i) ? model.devices[i].name : "\(i)")
+        case .choice(let section, let index):
+            let rows = section == AppleSoundPanel.listeningHeading ? model.listening
+                : section == AppleSoundPanel.spatialHeading ? model.spatial : model.conversation
+            return "choice:\(section):" + (rows.indices.contains(index) ? rows[index].title : "\(index)")
+        case .block: return "block"
+        case .footer(let i): return "footer:" + (model.footerTitles.indices.contains(i) ? model.footerTitles[i] : "\(i)")
+        case .notice: return "notice"
+        }
+    }
+
+    /// Shows the glide `p` of the way (0 to 1): the height, the rows that were there moving from where they were, new rows fading in.
+    func step(_ p: CGFloat) {
+        guard let glide else { return }
+        let h = glide.fromHeight + (glide.toHeight - glide.fromHeight) * p
+        size = NSSize(width: SoundMenuMetrics.width, height: h)
+        frame.size = size
+        material.frame = bounds; baseLift.frame = bounds; edge.frame = bounds
+        for g in groups {
+            guard let from = g.fromRow else {
+                let a = max(0, min(1, (p - 0.2) / 0.5))
+                g.views.forEach { $0.alphaValue = a }
+                continue
+            }
+            let r = CGRect(x: from.minX + (g.finalRow.minX - from.minX) * p, y: from.minY + (g.finalRow.minY - from.minY) * p,
+                           width: from.width + (g.finalRow.width - from.width) * p, height: from.height + (g.finalRow.height - from.height) * p)
+            for (v, f) in zip(g.views, g.finalFrames) {
+                if g.key == "block" { v.frame = r } else { v.frame = f.offsetBy(dx: r.minX - g.finalRow.minX, dy: r.minY - g.finalRow.minY) }
+            }
+        }
+    }
+
+    /// Puts everything where the last drawing left it.
+    func finishGlide() {
+        guard glide != nil else { return }
+        if var g = glide { g.fromHeight = g.toHeight; glide = g }
+        step(1)
+        for g in groups { g.views.forEach { $0.alphaValue = 1 } }
+        glide = nil
         invalidateIntrinsicContentSize()
     }
 
