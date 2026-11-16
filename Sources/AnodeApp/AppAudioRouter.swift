@@ -19,6 +19,7 @@ final class AppAudioRouter: AppVolumeControlling {
     private let bundleID: (String) -> String?
     private let name: (String) -> String
     private let isListable: (String) -> Bool
+    private let displayName: (String) -> String?
     private var sessions: [String: Session] = [:]
     private var failedSignatures: [String: String] = [:]
     private var stopped = false
@@ -31,9 +32,10 @@ final class AppAudioRouter: AppVolumeControlling {
     var onChange: (() -> Void)?
 
     init(settings: Settings, store: AppAudioStore, backend: AppAudioBackend, bundleID: @escaping (String) -> String?,
-         name: @escaping (String) -> String, isListable: @escaping (String) -> Bool = { _ in true }) {
+         name: @escaping (String) -> String, isListable: @escaping (String) -> Bool = { _ in true },
+         displayName: @escaping (String) -> String? = { _ in nil }) {
         self.settings = settings; self.store = store; self.backend = backend
-        self.bundleID = bundleID; self.name = name; self.isListable = isListable
+        self.bundleID = bundleID; self.name = name; self.isListable = isListable; self.displayName = displayName
         backend.onProcessesChanged = { [weak self] in self?.reconcile() }
         backend.onOutputChanged = { [weak self] in self?.reconcile() }
         observer = NotificationCenter.default.addObserver(forName: AppAudioStore.didChange, object: store, queue: .main) { [weak self] _ in
@@ -53,12 +55,23 @@ final class AppAudioRouter: AppVolumeControlling {
     /// would be hard to aim at.
     var apps: [AppVolumeRow] {
         guard settings.appAudioEnabled, !stopped else { return [] }
-        return AudioAppGrouping.group(backend.processes(), bundleID: bundleID, name: name)
-            .filter { isListable($0.bundleID) }
-            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
-            .map { app in
-                let s = store.setting(for: app.bundleID)
-                return AppVolumeRow(bundleID: app.bundleID, name: app.name, volume: Double(s.gain), muted: s.muted)
+        // Apps connected to the sound system now, and every app ever seen so that is still open: a browser is an audio client only
+        // while a tab uses sound, and it does not leave the list when the tab stops.
+        var names: [String: String] = [:]
+        for app in AudioAppGrouping.group(backend.processes(), bundleID: bundleID, name: name) where isListable(app.bundleID) {
+            names[app.bundleID] = app.name
+            store.remember(bundleID: app.bundleID, name: app.name)
+        }
+        for (id, known) in store.knownApps where names[id] == nil && isListable(id) { names[id] = known }
+        // An app the person already changed is shown while it is open, whether or not it has been seen yet.
+        for id in store.customised.keys where names[id] == nil && isListable(id) {
+            if let n = displayName(id) { names[id] = n; store.remember(bundleID: id, name: n) }
+        }
+        return names.map { id, name in (id, name) }
+            .sorted { $0.1.localizedCaseInsensitiveCompare($1.1) == .orderedAscending }
+            .map { id, name in
+                let s = store.setting(for: id)
+                return AppVolumeRow(bundleID: id, name: name, volume: Double(s.gain), muted: s.muted)
             }
     }
 

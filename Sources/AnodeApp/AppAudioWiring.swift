@@ -66,7 +66,8 @@ final class AppAudioCoordinator {
                                           ?? URL(fileURLWithPath: path).deletingPathExtension().lastPathComponent
                                   },
                                   // Anode itself is not an app whose volume the person sets here.
-                                  isListable: { $0 != Bundle.main.bundleIdentifier && running().contains($0) })
+                                  isListable: { $0 != Bundle.main.bundleIdentifier && running().contains($0) },
+                                  displayName: { id in NSWorkspace.shared.runningApplications.first { $0.bundleIdentifier == id }?.localizedName })
         }, attach: attach)
     }
 }

@@ -55,4 +55,22 @@ public final class AppAudioStore {
     }
 
     public func reset(_ bundleID: String) { set(.flat, for: bundleID) }
+
+    // ── Apps seen using sound ───────────────────────────────────────────────
+
+    private var knownKey: String { key + ".known" }
+
+    /// Apps that have been seen using the sound system (bundle id to name). An app is an audio client only while it has an open
+    /// connection (a browser, only while a tab is using sound), so the list of those alone would lose an app that is open and idle.
+    public var knownApps: [String: String] {
+        guard let data = defaults.data(forKey: knownKey), let map = try? JSONDecoder().decode([String: String].self, from: data) else { return [:] }
+        return map
+    }
+
+    public func remember(bundleID: String, name: String) {
+        var map = knownApps
+        guard map[bundleID] != name else { return }
+        map[bundleID] = name
+        if let data = try? JSONEncoder().encode(map) { defaults.set(data, forKey: knownKey) }
+    }
 }

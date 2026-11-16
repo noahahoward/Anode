@@ -61,6 +61,63 @@ final class AppAudioRouterTests: XCTestCase {
         XCTAssertEqual(rows[0].volume, 1); XCTAssertFalse(rows[0].muted)
     }
 
+    func testAnAppStaysListedWhileItIsOpenEvenWhenItIsNoLongerConnectedToTheSoundSystem() throws {
+        let (router, backend, _, _, done) = try rig(); defer { done() }
+        XCTAssertEqual(router.apps.map(\.bundleID), ["com.example.player"])
+        backend.list = []   // a browser with no tab using sound is not an audio client at that moment
+        XCTAssertEqual(router.apps.map(\.bundleID), ["com.example.player"], "it was seen using sound, and it is still open")
+    }
+
+    func testAnAppTheUserChangedIsListedWhileOpenEvenIfNothingHasSeenItYet() throws {
+        let (defaults, suite) = try TestDefaults.make(owner: "AppAudioRouterChanged", test: name)
+        defer { TestDefaults.destroy(defaults, suite) }
+        let settings = Settings(defaults: defaults); settings.appAudioEnabled = true
+        let store = AppAudioStore(defaults: defaults)
+        store.set(AppAudioSetting(gain: 1, muted: true), for: "com.example.browser")
+        let router = AppAudioRouter(settings: settings, store: store, backend: FakeBackend(), bundleID: { _ in nil }, name: { $0 },
+                                    isListable: { $0 == "com.example.browser" }, displayName: { $0 == "com.example.browser" ? "Browser" : nil })
+        XCTAssertEqual(router.apps.map(\.name), ["Browser"])
+        XCTAssertTrue(router.apps[0].muted)
+        router.shutdown()
+    }
+
+    func testAnAppThatWasNeverSeenUsingSoundIsNotListed() throws {
+        let (router, backend, _, _, done) = try rig(running: []); defer { done() }
+        XCTAssertTrue(router.apps.isEmpty)
+        backend.list = []
+        XCTAssertTrue(router.apps.isEmpty)
+    }
+
+    func testAnAppThatHasBeenClosedIsNotListedAnyMore() throws {
+        let (defaults, suite) = try TestDefaults.make(owner: "AppAudioRouterClosed", test: name)
+        defer { TestDefaults.destroy(defaults, suite) }
+        let settings = Settings(defaults: defaults); settings.appAudioEnabled = true
+        let backend = FakeBackend(); backend.list = [player]
+        var open = true
+        let router = AppAudioRouter(settings: settings, store: AppAudioStore(defaults: defaults), backend: backend,
+                                    bundleID: { $0.contains("Player") ? "com.example.player" : nil }, name: { _ in "Player" },
+                                    isListable: { _ in open })
+        XCTAssertEqual(router.apps.count, 1)
+        backend.list = []; open = false
+        XCTAssertTrue(router.apps.isEmpty)
+        router.shutdown()
+    }
+
+    func testWhatWasSeenIsRememberedAcrossARestart() throws {
+        let (defaults, suite) = try TestDefaults.make(owner: "AppAudioRouterKnown", test: name)
+        defer { TestDefaults.destroy(defaults, suite) }
+        let settings = Settings(defaults: defaults); settings.appAudioEnabled = true
+        func make(_ list: [AudioProcessInfo]) -> AppAudioRouter {
+            let backend = FakeBackend(); backend.list = list
+            return AppAudioRouter(settings: settings, store: AppAudioStore(defaults: defaults), backend: backend,
+                                  bundleID: { $0.contains("Player") ? "com.example.player" : nil }, name: { _ in "Player" })
+        }
+        let first = make([player]); _ = first.apps; first.shutdown()
+        let second = make([])   // Anode started again; the app is open but not connected yet
+        XCTAssertEqual(second.apps.map(\.name), ["Player"])
+        second.shutdown()
+    }
+
     func testChangingAnAppStartsOneSessionForAllItsProcesses() throws {
         let (router, backend, _, _, done) = try rig(running: [player, playerHelper]); defer { done() }
         router.setVolume(0.5, forBundleID: "com.example.player")
