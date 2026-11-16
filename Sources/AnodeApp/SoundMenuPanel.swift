@@ -285,6 +285,12 @@ final class SoundMenuContentView: NSView {
     }
     private var groups: [RowGroup] = []
     private var shownRows: [String: CGRect] = [:]
+    /// What the last drawing made, by row key, so a row that has gone can be kept on screen while the footer slides over it.
+    private var shownViews: [String: [NSView]] = [:]
+    /// Holds the rows that are appearing or leaving: macOS's footer band (the divider and what is under it) slides over them, so
+    /// they are cut off at the footer's top edge as it moves. Nothing in it takes a click of its own.
+    private let clip = ClipView()
+    private var leaving: [(key: String, views: [NSView], frames: [CGRect])] = []
     private var glide: (fromHeight: CGFloat, toHeight: CGFloat)?
     var isGliding: Bool { glide != nil }
 
@@ -295,6 +301,9 @@ final class SoundMenuContentView: NSView {
         self.model = model
         let oldHeight = size.height
         let before = shownRows
+        let beforeViews = shownViews
+        finishLeaving()
+        clip.subviews.forEach { $0.removeFromSuperview() }
         for v in subviews where v !== material && v !== baseLift { v.removeFromSuperview() }   // the edge is added again at the end
         let layout = SoundMenuLayout.frames(for: model)
         size = NSSize(width: SoundMenuMetrics.width, height: layout.height)
@@ -312,12 +321,23 @@ final class SoundMenuContentView: NSView {
             if row.kind == .divider { key += "#\(dividers)"; dividers += 1 }
             groups.append(RowGroup(key: key, views: made, finalFrames: made.map(\.frame), finalRow: row.frame, fromRow: before[key]))
         }
+        // The footer's own divider is told apart from the others (the one under the last row).
+        if let last = groups.lastIndex(where: { $0.key.hasPrefix("divider#") }), last > 0 { groups[last].key = "footerDivider"; groups[last].fromRow = before["footerDivider"] }
         shownRows = Dictionary(groups.map { ($0.key, $0.finalRow) }, uniquingKeysWith: { a, _ in a })
+        shownViews = Dictionary(groups.map { ($0.key, $0.views) }, uniquingKeysWith: { a, _ in a })
+        // Rows that were there and are not now stay for the glide, cut off by the footer.
+        let nowKeys = Set(groups.map(\.key))
+        leaving = beforeViews.filter { !nowKeys.contains($0.key) }.map { (key: $0.key, views: $0.value, frames: $0.value.map(\.frame)) }
+        addSubview(clip)
+        clip.frame = bounds
         addSubview(edge)   // last, so it is drawn over everything
         invalidateIntrinsicContentSize()
         let changed = abs(oldHeight - size.height) > 0.5 || groups.contains { g in g.fromRow.map { $0 != g.finalRow } ?? true }
-        guard animated, !before.isEmpty, changed, oldHeight > 0 else { glide = nil; return false }
+        guard animated, !before.isEmpty, changed, oldHeight > 0 else { glide = nil; finishLeaving(); return false }
         glide = (oldHeight, size.height)
+        // Rows that are new or leaving go under the clip (same coordinates), so the footer's edge cuts them off.
+        for g in groups where g.fromRow == nil { for v in g.views { clip.addSubview(v) } }
+        for l in leaving { for (v, f) in zip(l.views, l.frames) { v.frame = f; clip.addSubview(v) } }
         step(0)
         return true
     }
@@ -348,17 +368,26 @@ final class SoundMenuContentView: NSView {
         frame.size = size
         material.frame = bounds; baseLift.frame = bounds; edge.frame = bounds
         for g in groups {
-            guard let from = g.fromRow else {
-                let a = max(0, min(1, (p - 0.2) / 0.5))
-                g.views.forEach { $0.alphaValue = a }
-                continue
-            }
+            guard let from = g.fromRow else { continue }   // a new row stands where it will end up; the footer uncovers it
             let r = CGRect(x: from.minX + (g.finalRow.minX - from.minX) * p, y: from.minY + (g.finalRow.minY - from.minY) * p,
                            width: from.width + (g.finalRow.width - from.width) * p, height: from.height + (g.finalRow.height - from.height) * p)
             for (v, f) in zip(g.views, g.finalFrames) {
                 if g.key == "block" { v.frame = r } else { v.frame = f.offsetBy(dx: r.minX - g.finalRow.minX, dy: r.minY - g.finalRow.minY) }
             }
         }
+        // Where the footer's top edge is now: what is appearing or leaving is drawn only above it.
+        if let foot = groups.first(where: { $0.key == "footerDivider" }) {
+            let from = foot.fromRow ?? foot.finalRow
+            let edgeY = from.minY + (foot.finalRow.minY - from.minY) * p
+            clip.frame = CGRect(x: 0, y: 0, width: bounds.width, height: max(0, edgeY))
+        } else {
+            clip.frame = bounds
+        }
+    }
+
+    private func finishLeaving() {
+        for l in leaving { l.views.forEach { $0.removeFromSuperview() } }
+        leaving = []
     }
 
     /// Puts everything where the last drawing left it.
@@ -366,7 +395,8 @@ final class SoundMenuContentView: NSView {
         guard glide != nil else { return }
         if var g = glide { g.fromHeight = g.toHeight; glide = g }
         step(1)
-        for g in groups { g.views.forEach { $0.alphaValue = 1 } }
+        finishLeaving()
+        clip.frame = bounds
         glide = nil
         invalidateIntrinsicContentSize()
     }
@@ -650,6 +680,14 @@ enum SoundMenuRuntime {
         controller.start()
         return controller
     }
+}
+
+/// A view that only cuts off what is in it: it answers no click itself, and passes them to what is under it.
+final class ClipView: NSView {
+    override var isFlipped: Bool { true }
+    override init(frame: NSRect) { super.init(frame: frame); wantsLayer = true; layer?.masksToBounds = true }
+    required init?(coder: NSCoder) { fatalError("not used") }
+    override func hitTest(_ point: NSPoint) -> NSView? { let v = super.hitTest(point); return v === self ? nil : v }
 }
 
 /// The hairline around the panel. It draws and answers no clicks.
