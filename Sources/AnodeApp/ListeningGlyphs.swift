@@ -17,6 +17,10 @@ enum ListeningGlyphs {
     private static func make(_ draw: @escaping () -> Void) -> NSImage {
         let image = NSImage(size: NSSize(width: 20, height: 20), flipped: false) { _ in
             NSColor.black.setFill(); NSColor.black.setStroke()
+            // Drawn a little smaller than the canvas and a half point to the right, as macOS's are.
+            let t = NSAffineTransform()
+            t.translateX(by: 10.5, yBy: 10); t.scale(by: 0.9); t.translateX(by: -10, yBy: -10)
+            t.concat()
             draw()
             return true
         }
@@ -68,10 +72,10 @@ enum ListeningGlyphs {
     private static func noiseCancellation() {
         let centre = NSPoint(x: 10, y: 10.8)
         let ring = NSBezierPath()
-        ring.appendArc(withCenter: centre, radius: 7.3, startAngle: -50, endAngle: 230, clockwise: false)
+        ring.appendArc(withCenter: centre, radius: 6.2, startAngle: -50, endAngle: 230, clockwise: false)
         ring.lineWidth = 1.2
         ring.lineCapStyle = .round
         ring.stroke()
-        person(cx: centre.x, headY: centre.y - 0.2, headRadius: 2.8, width: 10, bottom: 2.2, top: 6.4)
+        person(cx: centre.x, headY: centre.y - 0.2, headRadius: 2.4, width: 9.5, bottom: 2.2, top: 6.2)
     }
 }
