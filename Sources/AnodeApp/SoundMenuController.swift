@@ -54,16 +54,12 @@ final class SoundMenuController {
     private let presenter: SoundMenuPresenting
     private let native: NativeIconHosting
     private let pollInterval: TimeInterval
-    /// How long the menu waits for macOS's panel to be read before it shows what it has (0: it never waits).
-    private let showDelay: TimeInterval
 
     private var item: StatusItemHandle?
     private var installed = false
     private var nativeRunning = false
     private var clickAnchor: CGRect?
     private var pollTimer: Timer?
-    /// The opening is waiting for the first reading, so that the menu appears once, at its final size.
-    private var pendingAnchor: CGRect?
     /// The outputs as they were when macOS's panel was last read: what it said is out of date once they differ.
     private var appleKey: String?
     private var settingObserver: AnyObject?
@@ -74,10 +70,10 @@ final class SoundMenuController {
 
     init(settings: Settings, outputs: AudioOutputs, driver: SystemPanelDriving, batteries: @escaping () -> [AccessoryBattery],
          accessibility: @escaping () -> Bool, statusBar: StatusItemHosting, presenter: SoundMenuPresenting,
-         native: NativeIconHosting, pollInterval: TimeInterval = 1, showDelay: TimeInterval = 0.4) {
+         native: NativeIconHosting, pollInterval: TimeInterval = 1) {
         self.settings = settings; self.outputs = outputs; self.driver = driver; self.batteries = batteries
         self.accessibility = accessibility; self.statusBar = statusBar; self.presenter = presenter
-        self.native = native; self.pollInterval = pollInterval; self.showDelay = showDelay
+        self.native = native; self.pollInterval = pollInterval
     }
 
     /// Which outputs there are and which one is playing.
@@ -175,45 +171,21 @@ final class SoundMenuController {
 
     // ── The menu ────────────────────────────────────────────────────────────
 
-    func toggleMenu() { (isMenuOpen || pendingAnchor != nil) ? closeMenu() : openMenu() }
+    func toggleMenu() { isMenuOpen ? closeMenu() : openMenu() }
 
+    /// Opens at once, every time: with a cold or out-of-date reading the first click would otherwise be slower than the rest.
+    /// What macOS's panel says arrives a moment later and fills in the rows only it knows.
     func openMenu() {
-        guard !presenter.isOpen, pendingAnchor == nil else { return }
+        guard !presenter.isOpen else { return }
         let anchor: CGRect? = nativeRunning ? (clickAnchor ?? native.currentFrame()) : item?.frame
         guard let anchor else { return }
         notice = nil
         collapsed.removeAll()
-        openStarted = DispatchTime.now().uptimeNanoseconds
-        // Showing the menu and then changing its size when the reading arrives is a visible jump. So when what is known is out
-        // of date, the menu waits for the reading (a moment, never longer than `showDelay`) and appears once, final.
-        if showDelay > 0, accessibility(), currentApple == nil {
-            pendingAnchor = anchor
-            DispatchQueue.main.asyncAfter(deadline: .now() + showDelay) { [weak self] in self?.showPending() }
-            readApple()
-            return
-        }
         presenter.show(model, below: anchor)
-        logOpen("shown from what was known")
         readApple()
     }
 
-    /// The menu the opening was waiting for, with whatever is known by now.
-    private func showPending() {
-        guard let anchor = pendingAnchor else { return }
-        pendingAnchor = nil
-        presenter.show(model, below: anchor)
-        logOpen(currentApple == nil ? "shown after the wait, nothing read" : "shown after the reading")
-    }
-
-    private var openStarted: UInt64 = 0
-    private func logOpen(_ what: String) {
-        let ms = Double(DispatchTime.now().uptimeNanoseconds &- openStarted) / 1e6
-        let line = String(format: "open: %@ after %.0f ms", what, ms)
-        DispatchQueue.global(qos: .utility).async { FeatureLog.append("sound-menu.log", line) }
-    }
-
     func closeMenu() {
-        pendingAnchor = nil
         generation += 1
         presenter.close()
     }
@@ -235,7 +207,7 @@ final class SoundMenuController {
                 self.apple = parsed.devices.isEmpty ? nil : parsed
                 self.appleKey = self.outputsKey()
             }
-            if self.pendingAnchor != nil { self.showPending() } else { self.redraw() }
+            self.redraw()
         }
     }
 

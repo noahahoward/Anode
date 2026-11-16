@@ -26,6 +26,9 @@ final class KeepAwakeController: NSObject {
     /// in a mode that must not lapse, such as Always Stay Awake with the lid shut. The next launch resumes that mode
     /// instead of treating what it finds as the leftovers of a crash, and clears the key.
     static let handoffKey = "keepAwake.handoff"
+    /// What was running, kept up to date while it runs and left alone when the app quits, so the next launch puts it back:
+    /// `["mode": <raw value>, "endsAt": <seconds since 1970, 0 for no end>]`. Gone once the person (or the clock) ends it.
+    static let savedKey = "keepAwake.saved"
 
     let core: KeepAwake
     /// Called whenever the state shown anywhere (icon, Beta Features text) may have changed.
@@ -53,9 +56,12 @@ final class KeepAwakeController: NSObject {
         self.dimmer = dimmer ?? LidDimmer(lid: IOKitLidState(), backlight: DisplayServicesBacklight(), defaults: defaults,
                                           log: { FeatureLog.append("keepawake.log", $0) })
         super.init()
+        // Read before anything below rewrites it: what was running when the app last quit (or died), still to run.
+        let saved = Self.readSaved(defaults)
         let handoff = defaults.string(forKey: Self.handoffKey).flatMap(KeepAwakeMode.init(rawValue:))
         defaults.removeObject(forKey: Self.handoffKey)
-        if handoff == nil || !settings.keepAwakeEnabled {
+        let carryOn = handoff.map { ($0, nil as Date?) } ?? saved
+        if carryOn == nil || !settings.keepAwakeEnabled {
             // A previous run may have died holding the lid open, or with the screen dimmed.
             self.core.reconcileAtLaunch()
             self.dimmer.release()
@@ -68,19 +74,41 @@ final class KeepAwakeController: NSObject {
             forName: NSWorkspace.didWakeNotification, object: nil, queue: .main
         ) { [weak self] _ in self?.tick() }
         applyEnabled()
-        if let mode = handoff, settings.keepAwakeEnabled { resume(mode) }
+        if let (mode, endsAt) = carryOn, settings.keepAwakeEnabled { resume(mode, endsAt: endsAt) }
     }
 
-    /// Carry on a mode the previous build was running when it was replaced (see `handoffKey`).
-    private func resume(_ mode: KeepAwakeMode) {
+    /// What was running when the app last went away, unless its time ran out while it was gone.
+    private static func readSaved(_ defaults: UserDefaults) -> (KeepAwakeMode, Date?)? {
+        guard let d = defaults.dictionary(forKey: savedKey), let raw = d["mode"] as? String,
+              let mode = KeepAwakeMode(rawValue: raw) else { return nil }
+        let end = (d["endsAt"] as? Double).flatMap { $0 > 0 ? Date(timeIntervalSince1970: $0) : nil }
+        if let end, end <= Date() { return nil }
+        return (mode, end)
+    }
+
+    /// Keeps `savedKey` in step with what runs now. Not while quitting: stopping then is the app going away, not the person's choice.
+    private func saveState() {
+        guard !quitting else { return }
+        if let s = core.session {
+            defaults.set(["mode": s.mode.rawValue, "endsAt": s.endsAt?.timeIntervalSince1970 ?? 0], forKey: Self.savedKey)
+        } else {
+            defaults.removeObject(forKey: Self.savedKey)
+        }
+    }
+
+    private var quitting = false
+
+    /// Carry on a mode the previous run had going: after a rebuild (see `handoffKey`) or any other relaunch (see `savedKey`).
+    private func resume(_ mode: KeepAwakeMode, endsAt: Date?) {
         self.mode = mode
         do {
-            try core.start(mode, for: duration.seconds)
+            try core.start(mode, for: endsAt.map { $0.timeIntervalSinceNow } ?? duration.seconds)
             log("resumed \(mode.rawValue) after a relaunch")
         } catch {
             log("could not resume \(mode.rawValue) after a relaunch (\(error)); restoring normal sleep")
             core.reconcileAtLaunch()
             dimmer.release()
+            saveState()
         }
     }
 
@@ -130,6 +158,7 @@ final class KeepAwakeController: NSObject {
 
     /// Quitting is a stop: the one place a held-open lid must never outlive the app.
     func shutdown() {
+        quitting = true
         timer?.invalidate()
         lidTimer?.invalidate()
         core.stop()
@@ -137,6 +166,7 @@ final class KeepAwakeController: NSObject {
     }
 
     private func stateChanged() {
+        saveState()
         log("state: \(core.session.map { $0.mode.rawValue } ?? "off") lastStop=\(core.lastStop.map { "\($0)" } ?? "-")")
         updateIcon()
         scheduleTick()

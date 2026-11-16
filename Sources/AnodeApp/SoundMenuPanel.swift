@@ -315,7 +315,7 @@ class HoverRow: NSView {
 
     override func draw(_ dirtyRect: NSRect) {
         guard hovering else { return }
-        NSColor.white.withAlphaComponent(0.10).setFill()
+        NSColor.white.withAlphaComponent(0.09).setFill()
         NSBezierPath(roundedRect: bounds, xRadius: 8, yRadius: 8).fill()
     }
 }

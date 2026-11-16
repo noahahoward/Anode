@@ -104,6 +104,71 @@ final class KeepAwakeCycleTests: XCTestCase {
         c.core.stop()
     }
 
+    // ── The state is remembered across launches ─────────────────────────────
+
+    /// A launch against `defaults` the way the app does it, with a fresh core (nothing held) and fakes.
+    private func launch(_ defaults: UserDefaults, lid: KeepAwakeTests.FakeLid = KeepAwakeTests.FakeLid()) -> KeepAwakeController {
+        let settings = Settings(defaults: defaults); settings.keepAwakeEnabled = true
+        let core = KeepAwake(assertions: KeepAwakeTests.FakeAssertions(), lid: lid, defaults: defaults)
+        let dimmer = LidDimmer(lid: LidDimmerTests.FakeLidState(), backlight: LidDimmerTests.FakeBacklight(), defaults: defaults)
+        let c = KeepAwakeController(settings: settings, defaults: defaults, core: core, dimmer: dimmer)
+        c.log = { _ in }
+        return c
+    }
+
+    func testAModeThatWasRunningWhenAnodeQuitIsRunningAgainAfterTheNextLaunch() throws {
+        for mode in [KeepAwakeMode.neverSleep, .alwaysAwake] {
+            let (defaults, suite) = try TestDefaults.make(owner: "KeepAwakeSaved", test: "\(name)-\(mode.rawValue)")
+            defer { TestDefaults.destroy(defaults, suite) }
+            let lid = KeepAwakeTests.FakeLid()
+            let first = launch(defaults, lid: lid)
+            first.begin(mode)
+            first.shutdown()                       // quitting, or a rebuild, stops it...
+            XCTAssertFalse(first.core.isActive)
+            let second = launch(defaults, lid: lid)
+            XCTAssertEqual(second.core.session?.mode, mode, "...but the next launch puts it back")
+            second.core.stop()
+        }
+    }
+
+    func testAnOffStateStaysOffAfterTheNextLaunch() throws {
+        let (defaults, suite) = try TestDefaults.make(owner: "KeepAwakeSavedOff", test: name)
+        defer { TestDefaults.destroy(defaults, suite) }
+        let first = launch(defaults)
+        first.begin(.neverSleep)
+        first.core.stop()                          // the person turned it off
+        first.shutdown()
+        XCTAssertFalse(launch(defaults).core.isActive)
+    }
+
+    func testATimedSessionResumesWithOnlyTheTimeThatWasLeft() throws {
+        let (defaults, suite) = try TestDefaults.make(owner: "KeepAwakeSavedTimed", test: name)
+        defer { TestDefaults.destroy(defaults, suite) }
+        let first = launch(defaults)
+        first.duration = .oneHour
+        first.begin(.neverSleep)
+        let ends = try XCTUnwrap(first.core.session?.endsAt)
+        first.shutdown()
+        let second = launch(defaults)
+        let resumed = try XCTUnwrap(second.core.session?.endsAt)
+        XCTAssertEqual(resumed.timeIntervalSince(ends), 0, accuracy: 5, "the same end time, not a fresh hour")
+        second.core.stop()
+    }
+
+    func testASessionThatWouldHaveEndedWhileAnodeWasClosedStaysOff() throws {
+        let (defaults, suite) = try TestDefaults.make(owner: "KeepAwakeSavedExpired", test: name)
+        defer { TestDefaults.destroy(defaults, suite) }
+        let first = launch(defaults)
+        first.duration = .fifteenMinutes
+        first.begin(.neverSleep)
+        first.shutdown()
+        // Anode stayed closed past the end time.
+        var saved = try XCTUnwrap(defaults.dictionary(forKey: KeepAwakeController.savedKey))
+        saved["endsAt"] = Date().addingTimeInterval(-60).timeIntervalSince1970
+        defaults.set(saved, forKey: KeepAwakeController.savedKey)
+        XCTAssertFalse(launch(defaults).core.isActive)
+    }
+
     func testALaunchWithoutAHandoffStillClearsWhatACrashLeft() throws {
         let (defaults, suite) = try TestDefaults.make(owner: "KeepAwakeNoHandoff", test: name)
         defer { TestDefaults.destroy(defaults, suite) }
