@@ -152,7 +152,24 @@ final class SoundMenuContentView: NSView {
     weak var controller: SoundMenuController?
     private var model: SoundMenuModel?
     private var size = NSSize(width: SoundMenuMetrics.width, height: 100)
-    private let material = NSVisualEffectView()
+    /// macOS 26 and later draw their menus in the system glass; before that, the menu material.
+    private let material: NSView = {
+        if #available(macOS 26.0, *) {
+            let glass = NSGlassEffectView()
+            glass.cornerRadius = 17
+            return glass
+        }
+        let v = NSVisualEffectView()
+        v.material = .menu
+        v.blendingMode = .behindWindow
+        v.state = .active
+        v.wantsLayer = true
+        v.layer?.cornerRadius = 17
+        v.layer?.cornerCurve = .continuous
+        v.layer?.masksToBounds = true
+        return v
+    }()
+    private let tint = NSView()
 
     override var isFlipped: Bool { true }
     override var fittingSize: NSSize { size }
@@ -160,24 +177,22 @@ final class SoundMenuContentView: NSView {
     override init(frame: NSRect) {
         super.init(frame: frame)
         wantsLayer = true
-        material.material = .menu
-        material.blendingMode = .behindWindow
-        material.state = .active
-        material.wantsLayer = true
-        material.layer?.cornerRadius = 18
-        material.layer?.masksToBounds = true
         addSubview(material)
+        tint.wantsLayer = true
+        tint.layer?.backgroundColor = NSColor.white.withAlphaComponent(0).cgColor
+        addSubview(tint)
     }
 
     required init?(coder: NSCoder) { fatalError("not used") }
 
     func apply(_ model: SoundMenuModel) {
         self.model = model
-        for v in subviews where v !== material { v.removeFromSuperview() }
+        for v in subviews where v !== material && v !== tint { v.removeFromSuperview() }
         let layout = SoundMenuLayout.frames(for: model)
         size = NSSize(width: SoundMenuMetrics.width, height: layout.height)
         frame.size = size
         material.frame = bounds
+        tint.frame = bounds
         for row in layout.rows { add(row, model) }
         invalidateIntrinsicContentSize()
     }
@@ -211,8 +226,10 @@ final class SoundMenuContentView: NSView {
         case .block:
             let b = NSView(frame: f)
             b.wantsLayer = true
-            b.layer?.backgroundColor = NSColor.white.withAlphaComponent(0.075).cgColor
-            addSubview(b, positioned: .above, relativeTo: material)
+            // macOS lifts the block by about 20 levels whatever is behind it, so it is added, not laid over.
+            b.layer?.backgroundColor = NSColor.white.withAlphaComponent(0.04).cgColor
+            b.layer?.compositingFilter = CIFilter(name: "CIAdditionCompositing")
+            addSubview(b, positioned: .above, relativeTo: tint)
         case .device(let i):
             guard model.devices.indices.contains(i) else { return }
             let d = model.devices[i]
@@ -305,10 +322,10 @@ final class DeviceRow: HoverRow {
         name.textColor = .labelColor
         name.lineBreakMode = .byTruncatingTail
         let hasBattery = device.battery != nil
-        name.frame = NSRect(x: 43, y: hasBattery ? 1 : 6, width: 220, height: 18)
+        name.frame = NSRect(x: 41, y: hasBattery ? 1 : 8, width: 220, height: 18)
         addSubview(name)
         if let b = device.battery {
-            var x: CGFloat = 43
+            var x: CGFloat = 41
             for (glyph, level) in [("airpodpro.left", b.left), ("airpodpro.right", b.right), ("airpodspro.chargingcase.wireless.fill", b.case_)] {
                 guard let level else { continue }
                 let icon = NSImageView(frame: NSRect(x: x, y: 18, width: 12, height: 12))
@@ -350,7 +367,7 @@ final class ChoiceRow: HoverRow {
         let l = NSTextField(labelWithString: choice.title)
         l.font = .systemFont(ofSize: 13)
         l.textColor = choice.enabled ? .labelColor : NSColor.white.withAlphaComponent(0.3)
-        l.frame = NSRect(x: 69, y: 4, width: 220, height: 18)
+        l.frame = NSRect(x: 67, y: 4, width: 220, height: 18)
         addSubview(l)
     }
 

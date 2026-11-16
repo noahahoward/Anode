@@ -7,7 +7,7 @@ public enum SoundMenuMetrics {
     public static let width: CGFloat = 309
     public static let titleY: CGFloat = 12
     public static let titleHeight: CGFloat = 17
-    public static let sideInset: CGFloat = 14
+    public static let sideInset: CGFloat = 12
     /// The slider and the speaker icons beside it.
     public static let sliderY: CGFloat = 37
     public static let sliderX: CGFloat = 34
