@@ -129,7 +129,12 @@ final class NativeSoundIcon: NativeIconHosting {
             let verdict = gate.decide(type == .leftMouseDown ? .down : .up, at: point, modifiers: !held.isEmpty, icon: icon) {
                 underPointerIsTheIcon(point)
             }
-            if let icon, icon.contains(point) { FeatureLog.append("sound-menu.log", "macOS icon: press inside the icon: \(verdict), modifiers held: \(!held.isEmpty), flags \(String(event.flags.rawValue, radix: 16))") }
+            // A line for a click Anode took or declined on purpose (never an ordinary pass), written off the tap thread:
+            // the tap must not wait for a disk.
+            if let icon, icon.contains(point), verdict != .pass || !held.isEmpty {
+                let line = "macOS icon: press inside the icon: \(verdict), modifiers held: \(!held.isEmpty)"
+                DispatchQueue.global(qos: .utility).async { FeatureLog.append("sound-menu.log", line) }
+            }
             switch verdict {
             case .pass: return true
             case .swallow: return false
