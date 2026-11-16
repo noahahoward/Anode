@@ -446,14 +446,15 @@ final class MenuSlider: NSView {
 
     override func draw(_ dirtyRect: NSRect) {
         let track = NSRect(x: 0, y: bounds.midY - 3, width: bounds.width, height: 6)
-        NSColor.white.withAlphaComponent(0.22).setFill()
+        NSColor.white.withAlphaComponent(0.13).setFill()
         NSBezierPath(roundedRect: track, xRadius: 3, yRadius: 3).fill()
         let x = CGFloat(value) * (bounds.width - Self.thumb)
         var filled = track; filled.size.width = x + Self.thumb / 2
-        NSColor.white.withAlphaComponent(0.5).setFill()
+        NSColor.white.withAlphaComponent(0.33).setFill()
         NSBezierPath(roundedRect: filled, xRadius: 3, yRadius: 3).fill()
-        NSColor(white: 0.87, alpha: 1).setFill()
-        NSBezierPath(ovalIn: NSRect(x: x, y: bounds.midY - Self.thumb / 2, width: Self.thumb, height: Self.thumb)).fill()
+        // macOS's knob is a rounded shape 20 wide and 16 tall, not a circle.
+        NSColor(white: 0.89, alpha: 1).setFill()
+        NSBezierPath(roundedRect: NSRect(x: x, y: bounds.midY - 8, width: Self.thumb, height: 16), xRadius: 7.5, yRadius: 7.5).fill()
     }
 
     override func mouseDown(with event: NSEvent) { move(to: event) }
