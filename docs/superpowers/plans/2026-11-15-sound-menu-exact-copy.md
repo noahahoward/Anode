@@ -295,4 +295,14 @@ own panel can do", "Calls made from the builder check" and "Owner's answers" bef
 - **Q7 (refusal alert): the window-created observer moved the alert to x = -4000, but it came back to x = -220,
   leaving about 40 pt of it on screen at the left edge** until OK was pressed. Mitigation to build: dismiss the alert
   the instant it is created, and avoid presses Apple is known to refuse.
-- **Still to measure:** layout tables, material, light appearance, other states, Q3-Q6.
+- **Owner's decision on Q2: cover Apple's icon briefly with a still picture of its idle look** (asked 2026-11-15).
+  **Measured: it works.** A borderless clear window at `CGShieldingWindowLevel() - 1`, placed on whole pixels over the
+  icon's rect (x = Int(minX) - 6, width = Int(width) + 12, height 33), showing a capture of the idle icon: with Apple's
+  panel open off screen the covered region differs from the idle capture by **0 of 4488 px**; without the cover, 3120.
+  The icon's pressed look fades for about 1 s after the panel closes (a capture 1.0 s after close still differed, 954
+  px, delta 18), so keep the cover up about 1.2 s after every close. Take the idle capture before the first use of a
+  session, and again whenever the output device or volume changes the icon.
+- **Ruling (executor):** the rest of Task 1's measuring (layout table, material, light appearance, other states, Q3-Q6)
+  is done inside the tasks that need each number (metrics in Task 5, material in Task 6, states and light/dark in
+  Task 8's overlay loop). The go/no-go question it existed to answer is settled. Cost if wrong: a few numbers are
+  measured later than planned.
