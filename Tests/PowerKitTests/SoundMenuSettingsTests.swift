@@ -24,6 +24,12 @@ final class SoundMenuSettingsTests: XCTestCase {
         XCTAssertTrue(Settings(defaults: defaults).soundMenuEnabled)
     }
 
+    func testNativeIconIsOffByDefaultAndPersists() {
+        XCTAssertFalse(Settings(defaults: defaults).soundMenuUsesNativeIcon)
+        Settings(defaults: defaults).soundMenuUsesNativeIcon = true
+        XCTAssertTrue(Settings(defaults: defaults).soundMenuUsesNativeIcon)
+    }
+
     func testChangeIsAnnouncedByKey() {
         let s = Settings(defaults: defaults)
         var heard = 0

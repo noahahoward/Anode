@@ -19,6 +19,7 @@ final class SoundMenuFeature: BetaFeature {
     private var observers: [AnyObject] = []
 
     let enableCheckbox = NSButton(checkboxWithTitle: "Show Anode's Sound menu in the menu bar", target: nil, action: nil)
+    let nativeIconCheckbox = NSButton(checkboxWithTitle: "Open it from macOS's own Sound icon instead (one icon, not two)", target: nil, action: nil)
     let statusLabel = BetaFeaturesWindowController.wrapping("", color: .secondaryLabelColor)
     let accessibilityButton = NSButton(title: "Open Accessibility settings", target: nil, action: nil)
 
@@ -26,14 +27,17 @@ final class SoundMenuFeature: BetaFeature {
         self.settings = settings
         self.accessibility = accessibility
         observers.append(settings.observe(Settings.Key.soundMenuEnabled) { [weak self] in self?.refresh() })
+        observers.append(settings.observe(Settings.Key.soundMenuUsesNativeIcon) { [weak self] in self?.refresh() })
     }
 
     func makeView() -> NSView {
         enableCheckbox.target = self
         enableCheckbox.action = #selector(enableToggled)
+        nativeIconCheckbox.target = self
+        nativeIconCheckbox.action = #selector(nativeIconToggled)
         accessibilityButton.target = self
         accessibilityButton.action = #selector(openAccessibility)
-        let stack = NSStackView(views: [enableCheckbox, statusLabel, accessibilityButton])
+        let stack = NSStackView(views: [enableCheckbox, nativeIconCheckbox, statusLabel, accessibilityButton])
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 8
@@ -48,11 +52,18 @@ final class SoundMenuFeature: BetaFeature {
         refresh()
     }
 
+    @objc private func nativeIconToggled() {
+        settings.soundMenuUsesNativeIcon = nativeIconCheckbox.state == .on
+        refresh()
+    }
+
     @objc private func openAccessibility() { AccessibilityAccess.openSettings() }
 
     func refresh() {
         let on = settings.soundMenuEnabled
         enableCheckbox.state = on ? .on : .off
+        nativeIconCheckbox.state = settings.soundMenuUsesNativeIcon ? .on : .off
+        nativeIconCheckbox.isEnabled = on
         let trusted = accessibility()
         accessibilityButton.isHidden = !on || trusted
         if !on {

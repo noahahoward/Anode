@@ -1,0 +1,66 @@
+import XCTest
+@testable import PowerKit
+
+/// Which clicks on macOS's own Sound icon Anode takes for itself, and which it leaves alone.
+final class NativeIconClickGateTests: XCTestCase {
+
+    private let icon = CGRect(x: 1544, y: 8, width: 22, height: 22)
+    private let inside = CGPoint(x: 1555, y: 19)
+    private let outside = CGPoint(x: 1300, y: 19)
+
+    func testClickOnTheNativeIconIsSwallowedAndOpens() {
+        var g = NativeIconClickGate()
+        XCTAssertEqual(g.decide(.down, at: inside, modifiers: false, icon: icon, isTheIcon: { true }), .swallowAndOpen)
+    }
+
+    func testClickElsewhereIsPassed() {
+        var g = NativeIconClickGate()
+        XCTAssertEqual(g.decide(.down, at: outside, modifiers: false, icon: icon, isTheIcon: { true }), .pass)
+    }
+
+    func testReleaseOfASwallowedClickIsSwallowedEvenIfThePointerMoved() {
+        var g = NativeIconClickGate()
+        _ = g.decide(.down, at: inside, modifiers: false, icon: icon, isTheIcon: { true })
+        XCTAssertEqual(g.decide(.up, at: outside, modifiers: false, icon: icon, isTheIcon: { false }), .swallow)
+        XCTAssertEqual(g.decide(.up, at: outside, modifiers: false, icon: icon, isTheIcon: { false }), .pass, "only the one release")
+    }
+
+    func testReleaseWithoutASwallowedPressPasses() {
+        var g = NativeIconClickGate()
+        XCTAssertEqual(g.decide(.up, at: inside, modifiers: false, icon: icon, isTheIcon: { true }), .pass)
+    }
+
+    func testCommandOptionOrControlClickPassesSoIconsCanBeRearranged() {
+        var g = NativeIconClickGate()
+        XCTAssertEqual(g.decide(.down, at: inside, modifiers: true, icon: icon, isTheIcon: { true }), .pass)
+        XCTAssertEqual(g.decide(.up, at: inside, modifiers: true, icon: icon, isTheIcon: { true }), .pass)
+    }
+
+    func testAHitThatIsNotTheIconIsPassed() {
+        var g = NativeIconClickGate()
+        XCTAssertEqual(g.decide(.down, at: inside, modifiers: false, icon: icon, isTheIcon: { false }), .pass,
+                       "the bar moved since the frame was read: the click belongs to whatever is there now")
+    }
+
+    func testNoKnownIconPassesEverything() {
+        var g = NativeIconClickGate()
+        XCTAssertEqual(g.decide(.down, at: inside, modifiers: false, icon: nil, isTheIcon: { true }), .pass)
+    }
+
+    func testTheHitTestRunsOnlyInsideTheFrame() {
+        var g = NativeIconClickGate()
+        var asked = 0
+        _ = g.decide(.down, at: outside, modifiers: false, icon: icon, isTheIcon: { asked += 1; return true })
+        XCTAssertEqual(asked, 0)
+        _ = g.decide(.down, at: inside, modifiers: false, icon: icon, isTheIcon: { asked += 1; return true })
+        XCTAssertEqual(asked, 1)
+    }
+
+    func testAPressWithoutItsReleaseDoesNotLeaveTheNextOnePassingByMistake() {
+        var g = NativeIconClickGate()
+        _ = g.decide(.down, at: inside, modifiers: false, icon: icon, isTheIcon: { true })
+        // the release was lost; a new press elsewhere clears the memory
+        XCTAssertEqual(g.decide(.down, at: outside, modifiers: false, icon: icon, isTheIcon: { true }), .pass)
+        XCTAssertEqual(g.decide(.up, at: outside, modifiers: false, icon: icon, isTheIcon: { true }), .pass)
+    }
+}

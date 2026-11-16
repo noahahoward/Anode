@@ -30,6 +30,16 @@ protocol SoundMenuPresenting: AnyObject {
     func close()
 }
 
+/// macOS's own Sound icon in the menu bar, when Anode lets a click on it open Anode's menu instead of showing a second icon.
+protocol NativeIconHosting: AnyObject {
+    /// The icon's frame now (top-left global points); nil when macOS's Sound icon is not in the bar.
+    func currentFrame() -> CGRect?
+    /// A click that was taken, with the icon's frame. Called on the main queue.
+    var onClick: ((CGRect) -> Void)? { get set }
+    func start()
+    func stop()
+}
+
 final class SoundMenuController {
 
     static let needsAccessibility = "Needs Accessibility for the listening mode, Conversation Awareness and AirPlay rows."
@@ -42,8 +52,14 @@ final class SoundMenuController {
     private let accessibility: () -> Bool
     private let statusBar: StatusItemHosting
     private let presenter: SoundMenuPresenting
+    private let native: NativeIconHosting
+    private let pollInterval: TimeInterval
 
     private var item: StatusItemHandle?
+    private var installed = false
+    private var nativeRunning = false
+    private var clickAnchor: CGRect?
+    private var pollTimer: Timer?
     private var settingObserver: AnyObject?
     private var apple: AppleSoundPanel?
     private var notice: String?
@@ -51,9 +67,11 @@ final class SoundMenuController {
     private var generation = 0
 
     init(settings: Settings, outputs: AudioOutputs, driver: SystemPanelDriving, batteries: @escaping () -> [AccessoryBattery],
-         accessibility: @escaping () -> Bool, statusBar: StatusItemHosting, presenter: SoundMenuPresenting) {
+         accessibility: @escaping () -> Bool, statusBar: StatusItemHosting, presenter: SoundMenuPresenting,
+         native: NativeIconHosting, pollInterval: TimeInterval = 1) {
         self.settings = settings; self.outputs = outputs; self.driver = driver; self.batteries = batteries
         self.accessibility = accessibility; self.statusBar = statusBar; self.presenter = presenter
+        self.native = native; self.pollInterval = pollInterval
     }
 
     var isMenuOpen: Bool { presenter.isOpen }
@@ -72,7 +90,8 @@ final class SoundMenuController {
     /// Follows the setting from here on: the icon is there while it is on.
     func start() {
         if settingObserver == nil {
-            settingObserver = settings.observe(Settings.Key.soundMenuEnabled) { [weak self] in self?.apply() }
+            settingObserver = [settings.observe(Settings.Key.soundMenuEnabled) { [weak self] in self?.apply() },
+                               settings.observe(Settings.Key.soundMenuUsesNativeIcon) { [weak self] in self?.apply() }] as AnyObject
         }
         apply()
     }
@@ -87,25 +106,56 @@ final class SoundMenuController {
     }
 
     private func install() {
-        guard item == nil else { return }
-        let handle = statusBar.makeItem()
-        handle.onClick = { [weak self] in self?.toggleMenu() }
-        item = handle
-        outputs.onChange = { [weak self] in self?.outputsChanged() }
-        outputs.start()
+        if !installed {
+            installed = true
+            outputs.onChange = { [weak self] in self?.outputsChanged() }
+            outputs.start()
+            native.onClick = { [weak self] frame in self?.nativeClicked(frame) }
+        }
+        refreshNativeIcon()
+    }
+
+    /// Which icon the menu opens from: macOS's own when the person chose that and it is in the bar, otherwise one of Anode's.
+    /// Called again every second while macOS's is in use, so removing it in System Settings brings Anode's back.
+    func refreshNativeIcon() {
+        guard installed else { return }
+        let useNative = settings.soundMenuUsesNativeIcon && native.currentFrame() != nil
+        if useNative {
+            if let item { item.remove(); self.item = nil }
+            if !nativeRunning { native.start(); nativeRunning = true }
+        } else {
+            if nativeRunning { native.stop(); nativeRunning = false }
+            if item == nil {
+                let handle = statusBar.makeItem()
+                handle.onClick = { [weak self] in self?.toggleMenu() }
+                item = handle
+            }
+        }
         refreshIcon()
+        pollTimer?.invalidate(); pollTimer = nil
+        if settings.soundMenuUsesNativeIcon && pollInterval > 0 {
+            pollTimer = Timer.scheduledTimer(withTimeInterval: pollInterval, repeats: true) { [weak self] _ in self?.refreshNativeIcon() }
+        }
     }
 
     private func tearDown() {
         generation += 1
         presenter.close()
         driver.cancelAll()
+        pollTimer?.invalidate(); pollTimer = nil
+        if nativeRunning { native.stop(); nativeRunning = false }
         outputs.onChange = nil
         outputs.stop()
         item?.remove()
         item = nil
+        installed = false
         apple = nil
         notice = nil
+    }
+
+    private func nativeClicked(_ frame: CGRect) {
+        clickAnchor = frame
+        toggleMenu()
     }
 
     // ── The menu ────────────────────────────────────────────────────────────
@@ -113,10 +163,12 @@ final class SoundMenuController {
     func toggleMenu() { isMenuOpen ? closeMenu() : openMenu() }
 
     func openMenu() {
-        guard let item, !presenter.isOpen else { return }
+        guard !presenter.isOpen else { return }
+        let anchor: CGRect? = nativeRunning ? (clickAnchor ?? native.currentFrame()) : item?.frame
+        guard let anchor else { return }
         notice = nil
         collapsed.removeAll()
-        presenter.show(model, below: item.frame)
+        presenter.show(model, below: anchor)
         readApple()
     }
 

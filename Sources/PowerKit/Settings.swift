@@ -53,6 +53,7 @@ public final class Settings {
         public static let menuBarHiderAutoCloseSeconds = "menuBarHiderAutoCloseSeconds"
         public static let menuBarHiderArrangement = "menuBarHiderArrangement"
         public static let soundMenuEnabled = "soundMenuEnabled"
+        public static let soundMenuUsesNativeIcon = "soundMenuUsesNativeIcon"
         public static let lidGlassIdleHz = "lidGlassIdleHz"
         public static let lidGlassTriggerAngle = "lidGlassTriggerAngle"
         public static let windowSnapperEnabled = "windowSnapperEnabled"
@@ -176,6 +177,8 @@ public final class Settings {
         static let menuBarHiderAutoCloseSeconds = 10
         /// OFF: it puts a second Sound icon in the menu bar, so the user turns it on.
         static let soundMenuEnabled = false
+        /// OFF: taking over a click on macOS's own icon is something the person chooses.
+        static let soundMenuUsesNativeIcon = false
         static let lidGlassIdleHz = 8.0
         static let lidGlassTriggerAngle = 110.0
         /// OFF: it claims a set of global shortcuts another window manager may already own.
@@ -359,6 +362,7 @@ public final class Settings {
         var menuBarHiderAutoCloseSeconds: Int
         var menuBarHiderArrangement: BarArrangement?
         var soundMenuEnabled: Bool
+        var soundMenuUsesNativeIcon: Bool
         var lidGlassIdleHz, lidGlassTriggerAngle: Double
         var chargeControlEnabled, chargeDriftEnabled, chargePauseWhenHotEnabled,
             chargeHoldDuringSleep, chargeDrainAutomatically: Bool
@@ -640,6 +644,12 @@ public final class Settings {
 
     /// Seconds the pill stays open before it closes itself; 0 means until the owner closes it. Only 0, 5, 10 and 30 are
     /// offered, so anything else reads as the default 10.
+    /// Whether a click on macOS's own Sound icon opens Anode's menu (no second icon), instead of Anode adding an icon of its own.
+    public var soundMenuUsesNativeIcon: Bool {
+        get { Settings.readBool(defaults, Key.soundMenuUsesNativeIcon, Default.soundMenuUsesNativeIcon) }
+        set { writeBool(Key.soundMenuUsesNativeIcon, \.soundMenuUsesNativeIcon, newValue, Default.soundMenuUsesNativeIcon) }
+    }
+
     public var menuBarHiderAutoCloseSeconds: Int {
         get { Settings.readAutoClose(defaults) }
         set {
@@ -1352,6 +1362,7 @@ public final class Settings {
         if old.menuBarHiderAutoCloseSeconds != now.menuBarHiderAutoCloseSeconds { notify(Key.menuBarHiderAutoCloseSeconds) }
         if old.menuBarHiderArrangement != now.menuBarHiderArrangement { notify(Key.menuBarHiderArrangement) }
         if old.soundMenuEnabled != now.soundMenuEnabled { notify(Key.soundMenuEnabled) }
+        if old.soundMenuUsesNativeIcon != now.soundMenuUsesNativeIcon { notify(Key.soundMenuUsesNativeIcon) }
         if old.lidGlassIdleHz != now.lidGlassIdleHz { notify(Key.lidGlassIdleHz) }
         if old.lidGlassTriggerAngle != now.lidGlassTriggerAngle { notify(Key.lidGlassTriggerAngle) }
         if old.windowSnapperEnabled != now.windowSnapperEnabled { notify(Key.windowSnapperEnabled) }
@@ -1580,6 +1591,7 @@ public final class Settings {
                menuBarHiderAutoCloseSeconds: readAutoClose(d),
                menuBarHiderArrangement: readArrangement(d),
                soundMenuEnabled: readBool(d, Key.soundMenuEnabled, Default.soundMenuEnabled),
+               soundMenuUsesNativeIcon: readBool(d, Key.soundMenuUsesNativeIcon, Default.soundMenuUsesNativeIcon),
                lidGlassIdleHz: readDouble(d, Key.lidGlassIdleHz, Default.lidGlassIdleHz, lidGlassIdleHzRange),
                lidGlassTriggerAngle: readDouble(d, Key.lidGlassTriggerAngle, Default.lidGlassTriggerAngle,
                                                 lidGlassTriggerRange),

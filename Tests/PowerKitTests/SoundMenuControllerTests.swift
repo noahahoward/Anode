@@ -49,11 +49,21 @@ final class SoundMenuControllerTests: XCTestCase {
         func makeItem() -> StatusItemHandle { let i = FakeItem(); items.append(i); return i }
     }
 
+    final class FakeNative: NativeIconHosting {
+        var frame: CGRect? = CGRect(x: 1544, y: 8, width: 22, height: 22)
+        var onClick: ((CGRect) -> Void)?
+        var running = false
+        func currentFrame() -> CGRect? { frame }
+        func start() { running = true }
+        func stop() { running = false }
+    }
+
     final class FakePresenter: SoundMenuPresenting {
         var isOpen = false
         var shown: [SoundMenuModel] = []
+        var lastAnchor: CGRect?
         var closeCount = 0
-        func show(_ model: SoundMenuModel, below frame: CGRect) { isOpen = true; shown.append(model) }
+        func show(_ model: SoundMenuModel, below frame: CGRect) { isOpen = true; lastAnchor = frame; shown.append(model) }
         func update(_ model: SoundMenuModel) { shown.append(model) }
         func close() { isOpen = false; closeCount += 1 }
     }
@@ -62,7 +72,7 @@ final class SoundMenuControllerTests: XCTestCase {
 
     struct Rig {
         let controller: SoundMenuController
-        let outputs: FakeOutputs, driver: FakeDriver, bar: FakeBar, presenter: FakePresenter
+        let outputs: FakeOutputs, driver: FakeDriver, bar: FakeBar, presenter: FakePresenter, native: FakeNative
         let settings: Settings
         let cleanup: () -> Void
         var model: SoundMenuModel { controller.model }
@@ -96,16 +106,17 @@ final class SoundMenuControllerTests: XCTestCase {
                               AXNode(role: "AXButton", description: "Sound Settings…")] : []))])
     }
 
-    private func rig(enabled: Bool = true, trusted: Bool = true, batteries: [AccessoryBattery]? = nil) throws -> Rig {
+    private func rig(enabled: Bool = true, trusted: Bool = true, batteries: [AccessoryBattery]? = nil, native useNative: Bool = false) throws -> Rig {
         let (defaults, suite) = try TestDefaults.make(owner: "SoundMenuController", test: name)
         let settings = Settings(defaults: defaults)
         settings.soundMenuEnabled = enabled
-        let outputs = FakeOutputs(), driver = FakeDriver(), bar = FakeBar(), presenter = FakePresenter()
+        settings.soundMenuUsesNativeIcon = useNative
+        let outputs = FakeOutputs(), driver = FakeDriver(), bar = FakeBar(), presenter = FakePresenter(), native = FakeNative()
         let list = batteries ?? batteriesBoth()
         let c = SoundMenuController(settings: settings, outputs: outputs, driver: driver, batteries: { list },
-                                    accessibility: { trusted }, statusBar: bar, presenter: presenter)
+                                    accessibility: { trusted }, statusBar: bar, presenter: presenter, native: native, pollInterval: 0)
         c.start()
-        return Rig(controller: c, outputs: outputs, driver: driver, bar: bar, presenter: presenter, settings: settings,
+        return Rig(controller: c, outputs: outputs, driver: driver, bar: bar, presenter: presenter, native: native, settings: settings,
                    cleanup: { c.stop(); TestDefaults.destroy(defaults, suite) })
     }
 
@@ -235,6 +246,53 @@ final class SoundMenuControllerTests: XCTestCase {
         openAndRead(unlisted)
         unlisted.controller.pressSettings(0)
         XCTAssertEqual(unlisted.driver.jobs.count, 1, "no button named in the panel, nothing to press")
+    }
+
+    // ── macOS's own icon ────────────────────────────────────────────────────
+
+    func testNativeModeHasNoIconOfItsOwnWhileMacOSsIsThere() throws {
+        let r = try rig(native: true); defer { r.cleanup() }
+        XCTAssertTrue(r.bar.items.isEmpty)
+        XCTAssertTrue(r.native.running)
+    }
+
+    func testNativeOffUsesAnIconOfItsOwn() throws {
+        let r = try rig(native: false); defer { r.cleanup() }
+        XCTAssertEqual(r.bar.items.count, 1)
+        XCTAssertFalse(r.native.running)
+    }
+
+    func testAClickOnMacOSsIconOpensTheMenuUnderIt() throws {
+        let r = try rig(native: true); defer { r.cleanup() }
+        let frame = CGRect(x: 1544, y: 8, width: 22, height: 22)
+        r.native.onClick?(frame)
+        XCTAssertTrue(r.presenter.isOpen)
+        XCTAssertEqual(r.presenter.lastAnchor, frame)
+        r.native.onClick?(frame)
+        XCTAssertFalse(r.presenter.isOpen, "a second click closes it")
+    }
+
+    func testAnIconOfItsOwnComesBackWhenMacOSsIsRemovedAndGoesAgainWhenItReturns() throws {
+        let r = try rig(native: true); defer { r.cleanup() }
+        r.native.frame = nil
+        r.controller.refreshNativeIcon()
+        XCTAssertEqual(r.bar.items.count, 1)
+        XCTAssertFalse(r.bar.items[0].removed)
+        XCTAssertFalse(r.native.running)
+        r.native.frame = CGRect(x: 1544, y: 8, width: 22, height: 22)
+        r.controller.refreshNativeIcon()
+        XCTAssertTrue(r.bar.items[0].removed)
+        XCTAssertTrue(r.native.running)
+    }
+
+    func testSwitchingTheSettingMovesTheIcon() throws {
+        let r = try rig(native: false); defer { r.cleanup() }
+        r.settings.soundMenuUsesNativeIcon = true
+        XCTAssertTrue(r.bar.items[0].removed)
+        XCTAssertTrue(r.native.running)
+        r.settings.soundMenuUsesNativeIcon = false
+        XCTAssertEqual(r.bar.items.count, 2)
+        XCTAssertFalse(r.native.running)
     }
 
     func testVolumeAndMuteGoToTheOutput() throws {

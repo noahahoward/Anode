@@ -23,6 +23,16 @@ final class SoundMenuFeatureTests: XCTestCase {
         XCTAssertFalse(r.settings.soundMenuEnabled)
     }
 
+    func testNativeIconCheckboxWritesAndFollowsTheSetting() throws {
+        let r = try rig(); defer { r.cleanup() }
+        XCTAssertEqual(r.feature.nativeIconCheckbox.state, .off)
+        r.feature.nativeIconCheckbox.performClick(nil)
+        XCTAssertTrue(r.settings.soundMenuUsesNativeIcon)
+        r.settings.soundMenuUsesNativeIcon = false
+        r.feature.refresh()
+        XCTAssertEqual(r.feature.nativeIconCheckbox.state, .off)
+    }
+
     func testCheckboxFollowsSetting() throws {
         let r = try rig(); defer { r.cleanup() }
         r.settings.soundMenuEnabled = true

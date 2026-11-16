@@ -14,7 +14,7 @@ final class SoundMenuWiringTests: XCTestCase {
         let panel = SoundMenuPanel()
         let outputs = Fakes.FakeOutputs()
         let c = SoundMenuRuntime.make(settings: Settings(defaults: defaults), outputs: outputs, driver: Fakes.FakeDriver(),
-                                      statusBar: Fakes.FakeBar(), panel: panel)
+                                      statusBar: Fakes.FakeBar(), native: Fakes.FakeNative(), panel: panel)
         XCTAssertTrue(panel.controller === c)
         XCTAssertFalse(outputs.started, "nothing runs while the setting is off")
     }
@@ -23,7 +23,7 @@ final class SoundMenuWiringTests: XCTestCase {
         let (defaults, suite) = try TestDefaults.make(owner: "SoundMenuWiring", test: name); defer { TestDefaults.destroy(defaults, suite) }
         let settings = Settings(defaults: defaults); settings.soundMenuEnabled = true
         let outputs = Fakes.FakeOutputs(), driver = Fakes.FakeDriver(), bar = Fakes.FakeBar()
-        let c = SoundMenuRuntime.make(settings: settings, outputs: outputs, driver: driver, statusBar: bar, panel: SoundMenuPanel())
+        let c = SoundMenuRuntime.make(settings: settings, outputs: outputs, driver: driver, statusBar: bar, native: Fakes.FakeNative(), panel: SoundMenuPanel())
         XCTAssertTrue(outputs.started)
         c.stop()
         XCTAssertFalse(outputs.started)

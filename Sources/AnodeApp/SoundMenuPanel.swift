@@ -443,14 +443,14 @@ enum SoundMenuRuntime {
     /// The menu over the real Mac.
     static func live(settings: Settings = .shared) -> SoundMenuController {
         make(settings: settings, outputs: CoreAudioOutputs(), driver: SystemPanelDriver(), statusBar: SystemStatusBarHost(),
-             panel: SoundMenuPanel())
+             native: NativeSoundIcon(), panel: SoundMenuPanel())
     }
 
     static func make(settings: Settings, outputs: AudioOutputs, driver: SystemPanelDriving, statusBar: StatusItemHosting,
-                     panel: SoundMenuPanel) -> SoundMenuController {
+                     native: NativeIconHosting, panel: SoundMenuPanel) -> SoundMenuController {
         let controller = SoundMenuController(settings: settings, outputs: outputs, driver: driver,
                                              batteries: currentAccessoryBatteries, accessibility: { AXIsProcessTrusted() },
-                                             statusBar: statusBar, presenter: panel)
+                                             statusBar: statusBar, presenter: panel, native: native)
         panel.controller = controller
         controller.start()
         return controller
