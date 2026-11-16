@@ -19,7 +19,7 @@ enum ListeningGlyphs {
             NSColor.black.setFill(); NSColor.black.setStroke()
             // Drawn a little smaller than the canvas and a half point to the right, as macOS's are.
             let t = NSAffineTransform()
-            t.translateX(by: 10.5, yBy: 10); t.scale(by: 0.9); t.translateX(by: -10, yBy: -10)
+            t.translateX(by: 9.6, yBy: 10); t.scale(by: 0.9); t.translateX(by: -10, yBy: -10)
             t.concat()
             draw()
             return true
@@ -52,8 +52,8 @@ enum ListeningGlyphs {
     }
 
     private static func transparency() {
-        let head = NSPoint(x: 10, y: 10.4)
-        person(cx: head.x, headY: head.y, headRadius: 3.0, width: 12, bottom: 2, top: 6.6)
+        let head = NSPoint(x: 10, y: 10.9)
+        person(cx: head.x, headY: head.y, headRadius: 3.5, width: 12, bottom: 2, top: 6.6)
         // A ring of small dots round the head, open at the bottom.
         let count = 9
         for i in 0..<count {
@@ -64,7 +64,7 @@ enum ListeningGlyphs {
     }
 
     private static func adaptive() {
-        person(cx: 7.6, headY: 10.2, headRadius: 3.0, width: 11.5, bottom: 2, top: 6.4)
+        person(cx: 7.6, headY: 10.5, headRadius: 3.4, width: 11.5, bottom: 2, top: 6.4)
         sparkle(at: NSPoint(x: 14.9, y: 12.4), radius: 2.7)
         sparkle(at: NSPoint(x: 12.1, y: 16.7), radius: 1.5)
     }

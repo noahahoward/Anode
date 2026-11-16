@@ -393,7 +393,7 @@ final class ChoiceRow: HoverRow {
         super.init(frame: frame)
         highlightable = choice.enabled
         if choice.isOn {
-            let check = NSImageView(frame: NSRect(x: 14.2, y: 3, width: 18, height: 18))
+            let check = NSImageView(frame: NSRect(x: 13.35, y: 3.9, width: 18, height: 18))
             check.image = symbol("checkmark", size: 13, weight: .semibold)
             check.contentTintColor = .labelColor
             addSubview(check)
