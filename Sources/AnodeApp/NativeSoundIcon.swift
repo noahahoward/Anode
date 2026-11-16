@@ -156,6 +156,12 @@ final class NativeSoundIcon: NativeIconHosting {
 
     /// The icon's frame when what is under the pointer is macOS's Sound icon, else nil.
     private func iconUnderPointer(_ point: CGPoint) -> CGRect? {
+        // While Anode's own picture of the icon is over it (macOS's panel is being read), that picture is what is under the pointer.
+        // It is the icon, for this purpose: the click must not fall through to macOS's own panel.
+        if CoverPresence.shared.isCovered {
+            lock.lock(); let known = cachedFrame; lock.unlock()
+            if let known, NativeIconClickGate.isNear(point, known) { return known }
+        }
         var hit: AXUIElement?
         guard AXUIElementCopyElementAtPosition(systemWide, Float(point.x), Float(point.y), &hit) == .success, let hit else { return nil }
         // The right id is not enough: any app can name an element anything. It must also belong to the process that draws macOS's bar.

@@ -25,6 +25,17 @@ protocol SystemPanelDriving: AnyObject {
     func cancelAll()
 }
 
+/// Whether a still picture of macOS's icon is over the icon now. A click on the icon then lands on that picture, and the click
+/// handler (which runs on another thread) must still take it for a click on the icon.
+final class CoverPresence {
+    static let shared = CoverPresence()
+    private let lock = NSLock()
+    private var count = 0
+    var isCovered: Bool { lock.lock(); defer { lock.unlock() }; return count > 0 }
+    func shown() { lock.lock(); count += 1; lock.unlock() }
+    func hidden() { lock.lock(); count = max(0, count - 1); lock.unlock() }
+}
+
 /// A still picture of part of the screen, shown over the live thing it is a picture of. Over macOS's icon it hides the lit look
 /// the icon takes while macOS's panel is open; over the place macOS's panel first appears it hides that panel's first frames
 /// (it opens where the person's own menu is about to be, and is moved off the screen a moment later).
@@ -91,9 +102,15 @@ final class IconCover {
         w.displayIfNeeded()
         CATransaction.flush()
         window = w
+        if !isUp { isUp = true; CoverPresence.shared.shown() }
     }
 
-    func hide() { window?.orderOut(nil) }
+    func hide() {
+        window?.orderOut(nil)
+        if isUp { isUp = false; CoverPresence.shared.hidden() }
+    }
+
+    private var isUp = false
 }
 
 final class SystemPanelDriver: SystemPanelDriving {

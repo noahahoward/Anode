@@ -272,3 +272,15 @@ final class OwnAudioDevicesTests: XCTestCase {
         XCTAssertFalse(OwnAudioDevices.contains(uid: "someone-elses-device"))
     }
 }
+
+/// While a still picture of macOS's icon is over the icon, a click on the icon lands on that picture: it must still count as a click on the icon.
+final class CoverPresenceTests: XCTestCase {
+    func testTheIconIsCoveredBetweenTheFirstShowAndTheLastHide() {
+        let presence = CoverPresence()
+        XCTAssertFalse(presence.isCovered)
+        presence.shown(); XCTAssertTrue(presence.isCovered)
+        presence.shown(); presence.hidden(); XCTAssertTrue(presence.isCovered, "one of two covers is still up")
+        presence.hidden(); XCTAssertFalse(presence.isCovered)
+        presence.hidden(); XCTAssertFalse(presence.isCovered, "never below none")
+    }
+}
