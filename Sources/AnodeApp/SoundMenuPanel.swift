@@ -208,7 +208,7 @@ final class SoundMenuContentView: NSView {
         edge.layer?.cornerRadius = 17
         edge.layer?.cornerCurve = .continuous
         edge.layer?.borderWidth = 0.5
-        edge.layer?.borderColor = NSColor.white.withAlphaComponent(0.16).cgColor
+        edge.layer?.borderColor = NSColor.white.withAlphaComponent(0.05).cgColor
     }
 
     required init?(coder: NSCoder) { fatalError("not used") }
