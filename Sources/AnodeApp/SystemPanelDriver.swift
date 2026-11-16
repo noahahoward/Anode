@@ -66,6 +66,7 @@ final class IconCover {
     }
 
     func show() {
+        FeatureLog.append("sound-menu.log", "cover \(tag): show, picture \(image != nil), at \(Date().timeIntervalSince1970)")
         guard let image, imageFrame != .zero, let screen = NSScreen.screens.first else { return }
         let r = NSRect(x: imageFrame.minX, y: screen.frame.height - imageFrame.minY - imageFrame.height,
                        width: imageFrame.width, height: imageFrame.height)
@@ -104,7 +105,7 @@ final class SystemPanelDriver: SystemPanelDriving {
     /// Over macOS's menu bar icon: above everything of the menu bar (measured).
     private let cover = IconCover(level: Int(CGShieldingWindowLevel()) - 1)
     /// Over the place macOS's panel appears: above that panel (level 101), below Anode's own menu.
-    private let panelCover = IconCover(level: SoundMenuPanel.level - 1)
+    private let panelCover = IconCover(level: SoundMenuPanel.level - 1, tag: "panel")
     private let log: (String) -> Void
 
     // The job in flight.
@@ -162,9 +163,11 @@ final class SystemPanelDriver: SystemPanelDriving {
         guard let found = locate(job.kind) else { finishJob(.failed(.noMenuExtra)); return }
         item = found.item; itemFrame = found.frame; route = found.route
         ccElement = Self.application(Self.controlCenter)
+        let t0 = Date()
         await cover.prepare(frame: itemFrame)
         // The first frames of macOS's panel are hidden too, unless Anode's own menu is already up (it is above them).
         if !ownMenuIsUp() { await panelCover.prepare(frame: Self.panelRegion(for: itemFrame), maxAge: 0, exact: true) }
+        FeatureLog.append("sound-menu.log", "covers prepared in \(Int(Date().timeIntervalSince(t0) * 1000)) ms; granted \(ScreenRecordingAccess.isGranted)")
         machineStart(job, accessibility: true, personHasPanelOpen: panelOnScreen())
     }
 
