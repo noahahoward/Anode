@@ -79,6 +79,10 @@ final class SoundMenuPanel: NSPanel, SoundMenuPresenting {
 
     weak var controller: SoundMenuController? { didSet { content.controller = controller } }
 
+    /// Two above macOS's own menus (101): its Sound panel opens for a moment where this one is about to be, and a still picture of
+    /// that place (one level up from macOS's) hides it; this menu is above both.
+    static let level = Int(NSWindow.Level.popUpMenu.rawValue) + 2
+
     private let content = SoundMenuContentView()
     private var monitors: [Any] = []
     private var anchor = CGRect.zero
@@ -91,7 +95,7 @@ final class SoundMenuPanel: NSPanel, SoundMenuPresenting {
         backgroundColor = .clear
         hasShadow = true
         // One above macOS's own menus: its Sound panel opens for a moment, off the screen but drawn first where it would be, behind this.
-        level = NSWindow.Level(rawValue: NSWindow.Level.popUpMenu.rawValue + 1)
+        level = NSWindow.Level(rawValue: Self.level)
         isReleasedWhenClosed = false
         animationBehavior = .none   // macOS's own menu appears at once, without the window zoom
         hidesOnDeactivate = false
@@ -145,6 +149,8 @@ final class SoundMenuPanel: NSPanel, SoundMenuPresenting {
         var x = anchor.maxX + 10.5 - size.width
         x = min(max(8, x), screen.frame.width - size.width - 8)
         setFrame(NSRect(x: x, y: screen.frame.height - bar - 2 - size.height, width: size.width, height: size.height), display: true)
+        // The shadow follows what is drawn; worked out before the rounded glass had drawn it comes out square at the corners.
+        DispatchQueue.main.async { [weak self] in self?.invalidateShadow() }
     }
 }
 
@@ -172,7 +178,6 @@ final class SoundMenuContentView: NSView {
         v.layer?.masksToBounds = true
         return v
     }()
-    private let tint = NSView()
     private let edge = EdgeView()
 
     override var isFlipped: Bool { true }
@@ -181,10 +186,10 @@ final class SoundMenuContentView: NSView {
     override init(frame: NSRect) {
         super.init(frame: frame)
         wantsLayer = true
+        layer?.cornerRadius = 17
+        layer?.cornerCurve = .continuous
+        layer?.masksToBounds = true   // nothing square can show at the corners, and the shadow follows this shape
         addSubview(material)
-        tint.wantsLayer = true
-        tint.layer?.backgroundColor = NSColor.white.withAlphaComponent(0).cgColor
-        addSubview(tint)
         edge.wantsLayer = true
         edge.layer?.cornerRadius = 17
         edge.layer?.cornerCurve = .continuous
@@ -196,12 +201,11 @@ final class SoundMenuContentView: NSView {
 
     func apply(_ model: SoundMenuModel) {
         self.model = model
-        for v in subviews where v !== material && v !== tint { v.removeFromSuperview() }   // the edge is added again at the end
+        for v in subviews where v !== material { v.removeFromSuperview() }   // the edge is added again at the end
         let layout = SoundMenuLayout.frames(for: model)
         size = NSSize(width: SoundMenuMetrics.width, height: layout.height)
         frame.size = size
         material.frame = bounds
-        tint.frame = bounds
         edge.frame = bounds
         for row in layout.rows { add(row, model) }
         addSubview(edge)   // last, so it is drawn over everything
@@ -240,7 +244,7 @@ final class SoundMenuContentView: NSView {
             // macOS lifts the block by about 20 levels whatever is behind it, so it is added, not laid over.
             b.layer?.backgroundColor = NSColor.white.withAlphaComponent(0.035).cgColor
             b.layer?.compositingFilter = CIFilter(name: "CIAdditionCompositing")
-            addSubview(b, positioned: .above, relativeTo: tint)
+            addSubview(b, positioned: .above, relativeTo: material)
         case .device(let i):
             guard model.devices.indices.contains(i) else { return }
             let d = model.devices[i]

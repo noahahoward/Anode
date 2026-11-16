@@ -25,8 +25,16 @@ protocol SystemPanelDriving: AnyObject {
     func cancelAll()
 }
 
-/// A still picture of a menu bar icon in its idle state, shown over the live icon.
+/// A still picture of part of the screen, shown over the live thing it is a picture of. Over macOS's icon it hides the lit look
+/// the icon takes while macOS's panel is open; over the place macOS's panel first appears it hides that panel's first frames
+/// (it opens where the person's own menu is about to be, and is moved off the screen a moment later).
 final class IconCover {
+
+    private let level: Int
+    private let tag: String
+
+    /// `level` is the window level it is shown at.
+    init(level: Int, tag: String = "") { self.level = level; self.tag = tag }
 
     private var window: NSWindow?
     private var image: NSImage?
@@ -42,8 +50,8 @@ final class IconCover {
 
     /// Takes the idle picture, unless one of the same place is under `maxAge` seconds old. Needs Screen Recording; without
     /// it there is no picture and no cover, and the icon shows its lit look for a moment.
-    func prepare(frame: CGRect, maxAge: TimeInterval = 5) async {
-        let cover = Self.rect(for: frame)
+    func prepare(frame: CGRect, maxAge: TimeInterval = 5, exact: Bool = false) async {
+        let cover = exact ? frame : Self.rect(for: frame)
         if imageFrame == cover, Date().timeIntervalSince(takenAt) < maxAge, image != nil { return }
         guard ScreenRecordingAccess.isGranted, #available(macOS 14.0, *) else { image = nil; return }
         guard let (band, origin, scale) = await BarPictures.captureBand(of: cover, height: cover.maxY + 2, leavingOut: []) else {
@@ -68,7 +76,7 @@ final class IconCover {
         w.ignoresMouseEvents = true
         w.isReleasedWhenClosed = false
         // Over macOS's own menu bar items (measured): one level under the shielding level.
-        w.level = NSWindow.Level(rawValue: Int(CGShieldingWindowLevel()) - 1)
+        w.level = NSWindow.Level(rawValue: level)
         w.collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle]
         let view = NSImageView(frame: NSRect(origin: .zero, size: r.size))
         view.image = image
@@ -92,7 +100,10 @@ final class SystemPanelDriver: SystemPanelDriving {
 
     private var queue: [Queued] = []
     private var busy = false
-    private let cover = IconCover()
+    /// Over macOS's menu bar icon: above everything of the menu bar (measured).
+    private let cover = IconCover(level: Int(CGShieldingWindowLevel()) - 1)
+    /// Over the place macOS's panel appears: above that panel (level 101), below Anode's own menu.
+    private let panelCover = IconCover(level: SoundMenuPanel.level - 1)
     private let log: (String) -> Void
 
     // The job in flight.
@@ -126,6 +137,7 @@ final class SystemPanelDriver: SystemPanelDriving {
 
     private func finishJob(_ outcome: SystemPanelOutcome) {
         removeObserver()
+        panelCover.hide()
         answeredAlerts.removeAll()
         let done = current?.done
         current = nil; machine = nil; busy = false
@@ -150,6 +162,8 @@ final class SystemPanelDriver: SystemPanelDriving {
         item = found.item; itemFrame = found.frame; route = found.route
         ccElement = Self.application(Self.controlCenter)
         await cover.prepare(frame: itemFrame)
+        // The first frames of macOS's panel are hidden too, unless Anode's own menu is already up (it is above them).
+        if !ownMenuIsUp() { await panelCover.prepare(frame: Self.panelRegion(for: itemFrame), maxAge: 0, exact: true) }
         machineStart(job, accessibility: true, personHasPanelOpen: panelOnScreen())
     }
 
@@ -173,7 +187,9 @@ final class SystemPanelDriver: SystemPanelDriving {
     private func perform(_ actions: [SystemPanelPress.Action]) {
         for action in actions {
             switch action {
-            case .coverIcon: cover.show()
+            case .coverIcon:
+                cover.show()
+                panelCover.show()
             case .openPanel: openPanel()
             case .openSection(let id): openSection(id)
             case .movePanelOffScreen: movePanel()
@@ -333,6 +349,18 @@ final class SystemPanelDriver: SystemPanelDriving {
 
     /// True when a panel of Control Center is on the screen at its own place: the person opened it.
     /// Fails closed: when the window list cannot be read, the person is assumed to have it open and nothing is touched.
+    /// Where macOS's panel first appears for an icon at `item`: its right edge 10.5 pt past the icon's, 2 pt under the menu bar, with
+    /// room around it for the shadow. The panel is at most 560 pt tall.
+    static func panelRegion(for item: CGRect) -> CGRect {
+        CGRect(x: CGFloat(Int(item.maxX + 10.5 - 309) - 28), y: 0, width: 309 + 56, height: 640)
+    }
+
+    private func ownMenuIsUp() -> Bool {
+        let me = ProcessInfo.processInfo.processIdentifier
+        let list = (CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [[String: Any]]) ?? []
+        return list.contains { ($0[kCGWindowOwnerPID as String] as? Int32) == me && ($0[kCGWindowLayer as String] as? Int) == SoundMenuPanel.level }
+    }
+
     private func panelOnScreen() -> Bool {
         guard let pid = Self.pid(of: Self.controlCenter) else { return false }   // no Control Center: nothing to be open
         guard let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [[String: Any]] else { return true }
