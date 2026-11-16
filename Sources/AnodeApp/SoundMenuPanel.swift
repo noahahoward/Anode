@@ -410,3 +410,23 @@ final class MenuSlider: NSView {
         onChange?(value)
     }
 }
+
+/// How the app builds the Sound menu. Nothing of it runs until its setting is on (Beta Features).
+enum SoundMenuRuntime {
+
+    /// The menu over the real Mac.
+    static func live(settings: Settings = .shared) -> SoundMenuController {
+        make(settings: settings, outputs: CoreAudioOutputs(), driver: SystemPanelDriver(), statusBar: SystemStatusBarHost(),
+             panel: SoundMenuPanel())
+    }
+
+    static func make(settings: Settings, outputs: AudioOutputs, driver: SystemPanelDriving, statusBar: StatusItemHosting,
+                     panel: SoundMenuPanel) -> SoundMenuController {
+        let controller = SoundMenuController(settings: settings, outputs: outputs, driver: driver,
+                                             batteries: currentAccessoryBatteries, accessibility: { AXIsProcessTrusted() },
+                                             statusBar: statusBar, presenter: panel)
+        panel.controller = controller
+        controller.start()
+        return controller
+    }
+}

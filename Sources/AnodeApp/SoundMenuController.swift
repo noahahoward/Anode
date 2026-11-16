@@ -99,6 +99,7 @@ final class SoundMenuController {
     private func tearDown() {
         generation += 1
         presenter.close()
+        driver.cancelAll()
         outputs.onChange = nil
         outputs.stop()
         item?.remove()

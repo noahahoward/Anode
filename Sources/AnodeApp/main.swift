@@ -69,6 +69,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
     var menuBarHider: MenuBarHiderRuntime?
     /// Ultra Low Power Mode. Exists for the app's whole life; while its box is unticked it holds nothing but an observer.
     var ultraLowPower: UltraLowPowerRuntime?
+    var soundMenu: SoundMenuController?
     var temperatureAlarm = TemperatureAlarm()
     var windowSnapper: WindowSnapper?
     var windowGroups: WindowGroupController?
@@ -448,6 +449,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         // Made after Keep Awake, whose own recovery has put the screen back by now. A session a crash left is undone here, and
         // nothing else of the mode exists until its box is ticked (Beta Features).
         ultraLowPower = UltraLowPowerRuntime.live(widgets: widgets, openBetaFeatures: { [weak self] in self?.betaFeaturesWindow.show() })
+        // Anode's own Sound menu: nothing of it exists until its setting is on (Beta Features).
+        soundMenu = SoundMenuRuntime.live()
         widgets.onPlacementChange = { [weak self] placement in
             self?.menuBarPlacementChanged(placement)
         }
@@ -2811,6 +2814,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         // First, before the rest of the app tears down: a mode that is on has other apps stopped and the screen held down,
         // and they are continued and put back before anything below runs (the helper link goes below).
         ultraLowPower?.shutdown()
+        soundMenu?.stop()
         RunTrace.cleanExit()
         fansPane.teardown()
         // Puts macOS's own charge settings back (the limit is in force only while Anode runs: an Anode that breaks

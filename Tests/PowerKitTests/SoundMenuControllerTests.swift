@@ -28,6 +28,8 @@ final class SoundMenuControllerTests: XCTestCase {
     final class FakeDriver: SystemPanelDriving {
         var jobs: [(SystemPanelKind, SystemPanelPress.Job)] = []
         var completions: [(SystemPanelOutcome) -> Void] = []
+        var cancelled = false
+        func cancelAll() { cancelled = true }
         func run(_ kind: SystemPanelKind, job: SystemPanelPress.Job, done: @escaping (SystemPanelOutcome) -> Void) {
             jobs.append((kind, job)); completions.append(done)
         }
@@ -236,5 +238,6 @@ final class SoundMenuControllerTests: XCTestCase {
         XCTAssertTrue(r.bar.items[0].removed)
         XCTAssertFalse(r.presenter.isOpen)
         XCTAssertFalse(r.outputs.started)
+        XCTAssertTrue(r.driver.cancelled)   // macOS's own panel is closed and nothing is left running
     }
 }

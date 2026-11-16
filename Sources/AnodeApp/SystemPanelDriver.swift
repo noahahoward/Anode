@@ -21,6 +21,8 @@ import ScreenCaptureKit
 protocol SystemPanelDriving: AnyObject {
     /// Runs one job and reports once. Jobs run one at a time, in the order they were given.
     func run(_ kind: SystemPanelKind, job: SystemPanelPress.Job, done: @escaping (SystemPanelOutcome) -> Void)
+    /// Forgets every job waiting, and ends the one running: macOS's panel is closed and the cover over its icon comes down.
+    func cancelAll()
 }
 
 /// A still picture of a menu bar icon in its idle state, shown over the live icon.
@@ -129,6 +131,15 @@ final class SystemPanelDriver: SystemPanelDriving {
         current = nil; machine = nil; busy = false
         done?(outcome)
         startNext()
+    }
+
+    func cancelAll() {
+        queue.removeAll()
+        guard busy else { return }
+        if panelWindow() != nil, let item { AXUIElementPerformAction(item, kAXPressAction as CFString) }
+        cover.hide()
+        finishJob(.failed(.panelDidNotOpen))
+        queue.removeAll()
     }
 
     // ── Starting a job ──────────────────────────────────────────────────────
