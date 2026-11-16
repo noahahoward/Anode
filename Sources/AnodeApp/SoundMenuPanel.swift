@@ -258,7 +258,7 @@ final class SoundMenuContentView: NSView {
         case .divider:
             let d = NSView(frame: f)
             d.wantsLayer = true
-            d.layer?.backgroundColor = NSColor.white.withAlphaComponent(0.17).cgColor
+            d.layer?.backgroundColor = NSColor.white.withAlphaComponent(0.15).cgColor
             addSubview(d)
         case .heading(let title):
             addSubview(label(title, f, size: 12, weight: .semibold, color: .secondaryLabelColor))
