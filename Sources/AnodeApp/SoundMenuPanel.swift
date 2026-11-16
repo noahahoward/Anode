@@ -237,11 +237,11 @@ final class SoundMenuContentView: NSView {
             slider.value = model.muted ? 0 : model.volume
             slider.onChange = { [weak self] v in self?.controller?.setVolume(v) }
             addSubview(slider)
-            let down = IconButton(symbol: "speaker.fill", size: 14.5, tint: 0.9, frame: NSRect(x: 12, y: f.minY - 1, width: 18, height: 18)) { [weak self] in
+            let down = IconButton(symbol: "speaker.fill", size: 14.5, tint: 0.49, added: true, frame: NSRect(x: 12, y: f.minY - 1, width: 18, height: 18)) { [weak self] in
                 guard let self, let m = self.model else { return }
                 self.controller?.setVolume(max(0, m.volume - 1 / 16))
             }
-            let up = IconButton(symbol: "speaker.wave.3.fill", size: 14, frame: NSRect(x: f.maxX + 4, y: f.minY - 1, width: 28, height: 18)) { [weak self] in
+            let up = IconButton(symbol: "speaker.wave.3.fill", size: 14, tint: 0.19, added: true, frame: NSRect(x: f.maxX + 4, y: f.minY - 1, width: 28, height: 18)) { [weak self] in
                 guard let self, let m = self.model else { return }
                 self.controller?.setVolume(min(1, m.volume + 1 / 16))
             }
@@ -401,7 +401,9 @@ final class ChoiceRow: HoverRow {
         let glyph = NSImageView(frame: NSRect(x: 42, y: 4, width: 20, height: 20))
         glyph.image = ListeningGlyphs.image(for: choice.title) ?? symbol(SoundGlyphs.choice(choice.title), size: 14)
         glyph.imageScaling = .scaleNone
-        glyph.contentTintColor = choice.enabled ? NSColor.white.withAlphaComponent(0.42) : NSColor.white.withAlphaComponent(0.2)
+        glyph.wantsLayer = true
+        glyph.layer?.compositingFilter = "plusL"   // added to what is behind, as macOS's are
+        glyph.contentTintColor = NSColor.white.withAlphaComponent(choice.enabled ? 0.30 : 0.12)
         addSubview(glyph)
         let l = NSTextField(labelWithString: choice.title)
         l.font = .systemFont(ofSize: 13)
@@ -430,14 +432,16 @@ final class TextButton: HoverRow {
 final class IconButton: NSView {
     private let action: () -> Void
 
-    init(symbol name: String, size: CGFloat = 12, weight: NSFont.Weight = .semibold, tint: CGFloat = 0.6, frame: NSRect,
-         action: @escaping () -> Void) {
+    /// `added`: drawn added to what is behind it, as macOS draws its secondary icons (about the same lift on any backdrop).
+    init(symbol name: String, size: CGFloat = 12, weight: NSFont.Weight = .semibold, tint: CGFloat = 0.6, added: Bool = false,
+         frame: NSRect, action: @escaping () -> Void) {
         self.action = action
         super.init(frame: frame)
         let v = NSImageView(frame: bounds)
         v.image = symbol(name, size: size, weight: weight)
         v.contentTintColor = NSColor.white.withAlphaComponent(tint)
         v.imageScaling = .scaleProportionallyDown
+        if added { v.wantsLayer = true; v.layer?.compositingFilter = "plusL" }
         addSubview(v)
     }
 
