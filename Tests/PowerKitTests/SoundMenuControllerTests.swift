@@ -106,7 +106,7 @@ final class SoundMenuControllerTests: XCTestCase {
                               AXNode(role: "AXButton", description: "Sound Settings…")] : []))])
     }
 
-    private func rig(enabled: Bool = true, trusted: Bool = true, batteries: [AccessoryBattery]? = nil, native useNative: Bool = false) throws -> Rig {
+    private func rig(enabled: Bool = true, trusted: Bool = true, batteries: [AccessoryBattery]? = nil, native useNative: Bool = false, followUp: TimeInterval = 0) throws -> Rig {
         let (defaults, suite) = try TestDefaults.make(owner: "SoundMenuController", test: name)
         let settings = Settings(defaults: defaults)
         settings.soundMenuEnabled = enabled
@@ -114,7 +114,7 @@ final class SoundMenuControllerTests: XCTestCase {
         let outputs = FakeOutputs(), driver = FakeDriver(), bar = FakeBar(), presenter = FakePresenter(), native = FakeNative()
         let list = batteries ?? batteriesBoth()
         let c = SoundMenuController(settings: settings, outputs: outputs, driver: driver, batteries: { list },
-                                    accessibility: { trusted }, statusBar: bar, presenter: presenter, native: native, pollInterval: 0)
+                                    accessibility: { trusted }, statusBar: bar, presenter: presenter, native: native, pollInterval: 0, followUpDelay: followUp)
         c.start()
         return Rig(controller: c, outputs: outputs, driver: driver, bar: bar, presenter: presenter, native: native, settings: settings,
                    cleanup: { c.stop(); TestDefaults.destroy(defaults, suite) })
@@ -246,6 +246,27 @@ final class SoundMenuControllerTests: XCTestCase {
         r.native.frame = nil
         r.controller.refreshNativeIcon()
         XCTAssertTrue(r.bar.items.isEmpty, "the count starts again after a good look")
+    }
+
+    func testTheMenuReadsOnceMoreAFewMomentsAfterOpeningToCatchLateSpeakers() throws {
+        let r = try rig(followUp: 0.05); defer { r.cleanup() }
+        r.controller.openMenu()
+        r.driver.complete(0, .tree(tree()))
+        let again = expectation(description: "second read")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { again.fulfill() }
+        wait(for: [again], timeout: 2)
+        XCTAssertEqual(r.driver.jobs.count, 2, "one at opening, one a moment later")
+    }
+
+    func testNoSecondReadWhenTheMenuHasBeenClosedByThen() throws {
+        let r = try rig(followUp: 0.05); defer { r.cleanup() }
+        r.controller.openMenu()
+        r.driver.complete(0, .tree(tree()))
+        r.controller.closeMenu()
+        let later = expectation(description: "later")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { later.fulfill() }
+        wait(for: [later], timeout: 2)
+        XCTAssertEqual(r.driver.jobs.count, 1)
     }
 
     func testRefusalPutsCheckBackAndShowsLine() throws {

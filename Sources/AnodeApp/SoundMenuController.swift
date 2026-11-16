@@ -54,6 +54,9 @@ final class SoundMenuController {
     private let presenter: SoundMenuPresenting
     private let native: NativeIconHosting
     private let pollInterval: TimeInterval
+    /// macOS's panel finds AirPlay speakers and Macs for a moment after it opens: the menu reads it once more this many seconds
+    /// after opening, if it is still open (0: not at all).
+    private let followUpDelay: TimeInterval
 
     private var item: StatusItemHandle?
     private var installed = false
@@ -65,6 +68,8 @@ final class SoundMenuController {
     private var notice: String?
     private var collapsed = Set<String>()
     private var generation = 0
+    /// Counts openings, so that a timer set for one opening does nothing in another.
+    private var openCount = 0
     /// A read of macOS's panel is already out: another is not asked for, however often the menu is opened and closed.
     private var readInFlight = false
     /// Presses not yet answered: a reading that finishes meanwhile is from before them and is not used.
@@ -76,10 +81,10 @@ final class SoundMenuController {
 
     init(settings: Settings, outputs: AudioOutputs, driver: SystemPanelDriving, batteries: @escaping () -> [AccessoryBattery],
          accessibility: @escaping () -> Bool, statusBar: StatusItemHosting, presenter: SoundMenuPresenting,
-         native: NativeIconHosting, pollInterval: TimeInterval = 3) {
+         native: NativeIconHosting, pollInterval: TimeInterval = 3, followUpDelay: TimeInterval = 1.5) {
         self.settings = settings; self.outputs = outputs; self.driver = driver; self.batteries = batteries
         self.accessibility = accessibility; self.statusBar = statusBar; self.presenter = presenter
-        self.native = native; self.pollInterval = pollInterval
+        self.native = native; self.pollInterval = pollInterval; self.followUpDelay = followUpDelay
     }
 
     /// What macOS's panel last said, less whatever has left since (AirPods taken out take their rows with them). It is what the
@@ -190,8 +195,16 @@ final class SoundMenuController {
         guard let anchor else { return }
         notice = nil
         collapsed.removeAll()
+        openCount += 1
         presenter.show(model, below: anchor)
         readApple()
+        if followUpDelay > 0 {
+            let mine = openCount
+            DispatchQueue.main.asyncAfter(deadline: .now() + followUpDelay) { [weak self] in
+                guard let self, mine == self.openCount, self.presenter.isOpen else { return }
+                self.readApple()
+            }
+        }
     }
 
     func closeMenu() {
