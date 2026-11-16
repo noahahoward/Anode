@@ -363,7 +363,7 @@ final class SystemPanelDriver: SystemPanelDriving {
     /// Where macOS's panel first appears for an icon at `item`: its right edge 10.5 pt past the icon's, 2 pt under the menu bar, with
     /// room around it for the shadow. The panel is at most 560 pt tall.
     static func panelRegion(for item: CGRect) -> CGRect {
-        CGRect(x: CGFloat(Int(item.maxX + 10.5 - 309) - 28), y: 0, width: 309 + 56, height: 640)
+        CGRect(x: CGFloat(Int(item.maxX + 10.5 - 309) - 28), y: 40, width: 309 + 56, height: 600)
     }
 
     /// The window of Anode's own Sound menu, when it is on the screen.
