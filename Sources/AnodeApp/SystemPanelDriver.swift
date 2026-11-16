@@ -75,6 +75,7 @@ final class IconCover {
         w.hasShadow = false
         w.ignoresMouseEvents = true
         w.isReleasedWhenClosed = false
+        w.animationBehavior = .none   // a window that zooms in is a visible change in itself
         // Over macOS's own menu bar items (measured): one level under the shielding level.
         w.level = NSWindow.Level(rawValue: level)
         w.collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle]
