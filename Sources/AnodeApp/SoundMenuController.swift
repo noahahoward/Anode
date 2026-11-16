@@ -179,6 +179,7 @@ final class SoundMenuController {
 
     func openMenu() {
         guard !presenter.isOpen, pendingAnchor == nil else { return }
+        FeatureLog.append("reopen.log", "sound menu: opening, app active \(NSApp.isActive), front \(NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? "?")")
         let anchor: CGRect? = nativeRunning ? (clickAnchor ?? native.currentFrame()) : item?.frame
         guard let anchor else { return }
         notice = nil
