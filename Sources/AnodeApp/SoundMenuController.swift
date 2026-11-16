@@ -60,10 +60,8 @@ final class SoundMenuController {
     private var nativeRunning = false
     private var clickAnchor: CGRect?
     private var pollTimer: Timer?
-    /// The outputs as they were when macOS's panel was last read: what it said is out of date once they differ.
-    private var appleKey: String?
     private var settingObserver: AnyObject?
-    private var apple: AppleSoundPanel?
+    private var reading: AppleReading?
     private var notice: String?
     private var collapsed = Set<String>()
     private var generation = 0
@@ -76,13 +74,11 @@ final class SoundMenuController {
         self.native = native; self.pollInterval = pollInterval
     }
 
-    /// Which outputs there are and which one is playing.
-    private func outputsKey() -> String {
-        (outputs.devices.map(\.id).sorted() + ["default=\(outputs.defaultDeviceID ?? "")"]).joined(separator: "|")
+    /// What macOS's panel last said, less whatever has left since (AirPods taken out take their rows with them). It is what the
+    /// menu opens with, so the first picture is the full one; the reading behind the opening then corrects it in place.
+    private var currentApple: AppleSoundPanel? {
+        reading?.current(outputNames: Set(outputs.devices.map(\.name)))
     }
-
-    /// What macOS's panel last said, unless the outputs have changed since: AirPods taken out take their rows with them.
-    private var currentApple: AppleSoundPanel? { appleKey == outputsKey() ? apple : nil }
 
     var isMenuOpen: Bool { presenter.isOpen }
 
@@ -121,6 +117,7 @@ final class SoundMenuController {
             installed = true
             outputs.onChange = { [weak self] in self?.outputsChanged() }
             outputs.start()
+            reading = settings.soundMenuLastReading.flatMap { try? JSONDecoder().decode(AppleReading.self, from: $0) }
             native.onClick = { [weak self] frame in self?.nativeClicked(frame) }
         }
         refreshNativeIcon()
@@ -160,7 +157,7 @@ final class SoundMenuController {
         item?.remove()
         item = nil
         installed = false
-        apple = nil
+        reading = nil
         notice = nil
     }
 
@@ -193,7 +190,7 @@ final class SoundMenuController {
     /// Reads macOS's panel, when Accessibility allows. What came back replaces what was known; the model is redrawn.
     private func readApple() {
         guard accessibility() else {
-            apple = nil
+            reading = nil
             notice = Self.needsAccessibility
             presenter.update(model)
             return
@@ -204,8 +201,10 @@ final class SoundMenuController {
             guard let self, mine == self.generation else { return }
             if case .tree(let tree) = outcome {
                 let parsed = AppleSoundPanel.parse(tree)
-                self.apple = parsed.devices.isEmpty ? nil : parsed
-                self.appleKey = self.outputsKey()
+                let names = Set(self.outputs.devices.map(\.name))
+                self.reading = parsed.devices.isEmpty ? nil
+                    : AppleReading(panel: parsed, coreBacked: parsed.devices.map(\.name).filter { names.contains($0) })
+                self.settings.soundMenuLastReading = self.reading.flatMap { try? JSONEncoder().encode($0) }
             }
             self.redraw()
         }
@@ -213,8 +212,7 @@ final class SoundMenuController {
 
     private func outputsChanged() {
         refreshIcon()
-        // A speaker came or went: what macOS's panel said about it is out of date (and `currentApple` already ignores it).
-        apple = nil
+        // A speaker came or went: `currentApple` already leaves out what has gone, and the reading below corrects the rest.
         guard presenter.isOpen else { return }
         redraw()
         readApple()
@@ -272,14 +270,15 @@ final class SoundMenuController {
 
     private func press(_ row: SystemPanelRow, optimistic choice: AppleChoiceRow?) {
         guard accessibility() else { notice = Self.needsAccessibility; redraw(); return }
-        let before = apple
-        if let choice, var a = apple {
+        let before = reading
+        if let choice, var a = reading {
             // The check moves at once; macOS's answer decides whether it stays.
             func moved(_ rows: [AppleChoiceRow]) -> [AppleChoiceRow] {
                 rows.map { var r = $0; if r.section == choice.section { r.isOn = r.title == choice.title }; return r }
             }
-            a.listening = moved(a.listening); a.spatial = moved(a.spatial); a.conversation = moved(a.conversation)
-            apple = a
+            a.panel.listening = moved(a.panel.listening); a.panel.spatial = moved(a.panel.spatial)
+            a.panel.conversation = moved(a.panel.conversation)
+            reading = a
         }
         redraw()
         let mine = generation
@@ -288,10 +287,10 @@ final class SoundMenuController {
             switch outcome {
             case .pressed, .tree: break
             case .refused(let text):
-                self.apple = before
+                self.reading = before
                 self.notice = text.components(separatedBy: " / ").last ?? text
             case .failed:
-                self.apple = before
+                self.reading = before
                 self.notice = "Couldn't change that just now."
             }
             self.redraw()
@@ -304,7 +303,7 @@ final class SoundMenuController {
         // Sound Settings opens the pane; the AirPods' own settings are macOS's panel's to open.
         if index == titles.count - 1 {
             if let url = URL(string: "x-apple.systempreferences:com.apple.Sound-Settings.extension") { NSWorkspace.shared.open(url) }
-        } else if apple?.settingsButtons.contains(titles[index]) == true {
+        } else if reading?.panel.settingsButtons.contains(titles[index]) == true {
             // Only a button macOS's panel itself listed is pressed (these have no id to match on, only their label).
             press(SystemPanelRow(identifier: "", description: titles[index]), optimistic: nil)
         }

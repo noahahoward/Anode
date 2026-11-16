@@ -319,6 +319,52 @@ final class SoundMenuControllerTests: XCTestCase {
         XCTAssertFalse(r.presenter.shown.last?.listening.isEmpty ?? true, "the reading fills it in when it arrives")
     }
 
+    func testAChangeOfOutputsDoesNotMakeTheNextOpeningSmallThenBig() throws {
+        let r = try rig(); defer { r.cleanup() }
+        openAndRead(r)
+        r.controller.closeMenu()
+        // Something else came or went while the menu was closed.
+        r.outputs.devices.append(OutputDevice(id: "usb", name: "USB Speakers", kind: .speakers))
+        r.outputs.onChange?()
+        r.controller.openMenu()
+        XCTAssertFalse(r.presenter.shown.last!.listening.isEmpty, "the AirPods section is there from the first picture")
+        XCTAssertTrue(r.presenter.shown.last!.devices.contains { $0.name == "Living Room Speaker" }, "so is the AirPlay speaker")
+    }
+
+    func testTheLastReadingSurvivesARelaunch() throws {
+        let (defaults, suite) = try TestDefaults.make(owner: "SoundMenuReading", test: name)
+        defer { TestDefaults.destroy(defaults, suite) }
+        func launch() -> (SoundMenuController, FakeDriver, FakePresenter) {
+            let settings = Settings(defaults: defaults); settings.soundMenuEnabled = true
+            let outputs = FakeOutputs(), driver = FakeDriver(), presenter = FakePresenter()
+            let list = batteriesBoth()
+            let c = SoundMenuController(settings: settings, outputs: outputs, driver: driver, batteries: { list },
+                                        accessibility: { true }, statusBar: FakeBar(), presenter: presenter, native: FakeNative(), pollInterval: 0)
+            c.start()
+            return (c, driver, presenter)
+        }
+        let (first, d1, _) = launch()
+        first.openMenu(); d1.complete(0, .tree(tree()))
+        first.stop()
+        let (second, _, p2) = launch()
+        second.openMenu()
+        XCTAssertFalse(p2.shown[0].listening.isEmpty, "the very first picture after a relaunch is already the full one")
+        second.stop()
+    }
+
+    func testARowForAnOutputThatHasLeftIsNotShownFromTheLastReading() throws {
+        let r = try rig(); defer { r.cleanup() }
+        openAndRead(r)
+        r.controller.closeMenu()
+        r.outputs.devices.removeAll { $0.id == "pods" }
+        r.outputs.defaultDeviceID = "builtin"
+        r.outputs.onChange?()
+        r.controller.openMenu()
+        let first = r.presenter.shown.last!
+        XCTAssertFalse(first.devices.contains { $0.name == "Test AirPods Pro" })
+        XCTAssertTrue(first.listening.isEmpty)
+    }
+
     func testTheMenuShowsAtOnceWhenWhatItKnowsIsStillCurrent() throws {
         let r = try rig(); defer { r.cleanup() }
         r.controller.openMenu(); r.driver.complete(0, .tree(tree()))

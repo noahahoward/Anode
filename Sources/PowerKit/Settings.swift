@@ -645,6 +645,12 @@ public final class Settings {
     /// Seconds the pill stays open before it closes itself; 0 means until the owner closes it. Only 0, 5, 10 and 30 are
     /// offered, so anything else reads as the default 10.
     /// Whether a click on macOS's own Sound icon opens Anode's menu (no second icon), instead of Anode adding an icon of its own.
+    /// The last reading of macOS's Sound panel (encoded `AppleReading`), so the Sound menu opens at full size from the first click.
+    public var soundMenuLastReading: Data? {
+        get { defaults.data(forKey: "soundMenuLastReading") }
+        set { if let newValue { defaults.set(newValue, forKey: "soundMenuLastReading") } else { defaults.removeObject(forKey: "soundMenuLastReading") } }
+    }
+
     public var soundMenuUsesNativeIcon: Bool {
         get { Settings.readBool(defaults, Key.soundMenuUsesNativeIcon, Default.soundMenuUsesNativeIcon) }
         set { writeBool(Key.soundMenuUsesNativeIcon, \.soundMenuUsesNativeIcon, newValue, Default.soundMenuUsesNativeIcon) }

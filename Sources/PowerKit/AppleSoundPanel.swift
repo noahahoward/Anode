@@ -2,7 +2,7 @@ import Foundation
 
 /// A row of macOS's Sound panel that picks an output: its name, whether it is the current one, and the battery text the
 /// panel shows under an AirPods row.
-public struct AppleDeviceRow: Equatable {
+public struct AppleDeviceRow: Equatable, Codable {
     public var name: String
     public var isSelected: Bool
     public var batteryText: String?
@@ -13,7 +13,7 @@ public struct AppleDeviceRow: Equatable {
 
 /// A row that belongs to one section of an expanded device: a listening mode, a Spatial Audio state, or a Conversation
 /// Awareness state.
-public struct AppleChoiceRow: Equatable {
+public struct AppleChoiceRow: Equatable, Codable {
     public var section: String
     public var title: String
     public var isOn: Bool
@@ -29,7 +29,7 @@ public struct AppleChoiceRow: Equatable {
 ///
 /// A tree that does not look like the panel (a macOS update changed an id or a label) gives no rows at all, never a wrong
 /// row: nothing here guesses.
-public struct AppleSoundPanel: Equatable {
+public struct AppleSoundPanel: Equatable, Codable {
     public var volume: Double?
     public var devices: [AppleDeviceRow] = []
     public var listening: [AppleChoiceRow] = []
@@ -86,5 +86,25 @@ public struct AppleSoundPanel: Equatable {
             }
         }
         return panel
+    }
+}
+
+/// The last reading of macOS's panel, kept so the menu can open at its full size the first time, however long the app has been
+/// idle or whenever it was last started. `coreBacked` names the rows that were outputs Core Audio had then: when one of those is
+/// no longer an output, its row (AirPods taken out) is stale and is not shown.
+public struct AppleReading: Equatable, Codable {
+    public var panel: AppleSoundPanel
+    public var coreBacked: [String]
+    public init(panel: AppleSoundPanel, coreBacked: [String]) { self.panel = panel; self.coreBacked = coreBacked }
+
+    /// The reading with what has left since it was taken removed, given the outputs there are now.
+    public func current(outputNames: Set<String>) -> AppleSoundPanel {
+        var p = panel
+        let gone = Set(coreBacked).subtracting(outputNames)
+        p.devices.removeAll { gone.contains($0.name) }
+        if let open = p.expandedDevice, gone.contains(open) {
+            p.expandedDevice = nil; p.listening = []; p.spatial = []; p.conversation = []
+        }
+        return p
     }
 }
