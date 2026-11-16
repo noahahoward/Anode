@@ -383,7 +383,7 @@ final class ChoiceRow: HoverRow {
         super.init(frame: frame)
         highlightable = choice.enabled
         if choice.isOn {
-            let check = NSImageView(frame: NSRect(x: 12, y: 5, width: 18, height: 18))
+            let check = NSImageView(frame: NSRect(x: 14.2, y: 3, width: 18, height: 18))
             check.image = symbol("checkmark", size: 13, weight: .semibold)
             check.contentTintColor = .labelColor
             addSubview(check)
@@ -391,7 +391,7 @@ final class ChoiceRow: HoverRow {
         let glyph = NSImageView(frame: NSRect(x: 42, y: 4, width: 20, height: 20))
         glyph.image = ListeningGlyphs.image(for: choice.title) ?? symbol(SoundGlyphs.choice(choice.title), size: 14)
         glyph.imageScaling = .scaleNone
-        glyph.contentTintColor = choice.enabled ? NSColor.white.withAlphaComponent(0.85) : NSColor.white.withAlphaComponent(0.25)
+        glyph.contentTintColor = choice.enabled ? NSColor.white.withAlphaComponent(0.42) : NSColor.white.withAlphaComponent(0.2)
         addSubview(glyph)
         let l = NSTextField(labelWithString: choice.title)
         l.font = .systemFont(ofSize: 13)
