@@ -204,6 +204,20 @@ final class SoundMenuControllerTests: XCTestCase {
         XCTAssertEqual(r.model.notice, "Put both AirPods in to use Adaptive.")
     }
 
+    func testANoticeAboutTheAirPodsIsGoneOnceTheOutputsChange() throws {
+        let one = AccessoryBattery.parse([["Type": "Accessory Source", "Part Identifier": "Right", "Group Identifier": "G", "Current Capacity": 66]])
+        let r = try rig(batteries: one); defer { r.cleanup() }
+        openAndRead(r)
+        r.controller.pickChoice(r.model.listening[1])
+        XCTAssertNotNil(r.model.notice)
+        // The AirPods are taken out: what it said about them no longer applies.
+        r.outputs.devices.removeAll { $0.id == "pods" }
+        r.outputs.defaultDeviceID = "builtin"
+        r.outputs.onChange?()
+        XCTAssertNil(r.model.notice)
+        XCTAssertNil(r.presenter.shown.last?.notice, "and the open menu is redrawn without it")
+    }
+
     func testAirPlayRowPressesApple() throws {
         let r = try rig(); defer { r.cleanup() }
         openAndRead(r)

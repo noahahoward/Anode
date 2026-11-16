@@ -50,10 +50,12 @@ enum SoundGlyphs {
         case .speakers: return "laptopcomputer"
         case .airpodsPro: return "airpods.pro"
         case .airpods: return "airpods"
+        case .airpodsMax: return "airpods.max"
         case .headphones: return "headphones"
         case .hifi: return "hifispeaker.fill"
         case .display: return "tv.and.mediabox"
-        case .airplay, .other: return "airplayaudio"
+        case .airplay: return "airplayaudio"
+        case .other: return "hifispeaker.fill"
         }
     }
 
@@ -264,7 +266,7 @@ final class SoundMenuContentView: NSView {
             guard model.devices.indices.contains(i) else { return }
             let d = model.devices[i]
             let rowView = DeviceRow(frame: f, device: d, expanded: d.name == model.expandedDevice,
-                                    expandable: !(model.listening.isEmpty && model.spatial.isEmpty && model.conversation.isEmpty && d.name != model.expandedDevice) && (d.kind == .airpods || d.kind == .airpodsPro))
+                                    expandable: !(model.listening.isEmpty && model.spatial.isEmpty && model.conversation.isEmpty && d.name != model.expandedDevice) && d.kind.isAirPods)
             rowView.onPick = { [weak self] in self?.controller?.pickOutput(d) }
             rowView.onToggle = { [weak self] in self?.controller?.toggleExpanded(d.name) }
             addSubview(rowView)
@@ -359,7 +361,9 @@ final class DeviceRow: HoverRow {
             // One reading for both buds when they agree, or when macOS lists them as one: the pair of buds drawn together.
             let pair = b.left != nil && (b.right == nil || b.left == b.right)
             // (symbol, point size, drawn width, where the percentage starts): macOS's glyphs are larger than a text-sized one.
-            let readings: [(String, CGFloat, CGFloat, CGFloat, CGFloat, Int?)] = pair
+            let readings: [(String, CGFloat, CGFloat, CGFloat, CGFloat, Int?)] = device.kind == .airpodsMax
+                ? [("airpods.max", 12, 17, 1, 19, b.left ?? b.right)]   // one battery, and no case
+                : pair
                 ? [("airpods.pro", 12, 17, 2.85, 20.9, b.left), ("airpods.pro.gen3.chargingcase.wireless.fill", 11.5, 14, 0.4, 16.4, b.case_)]
                 : [("airpods.pro.left", 11, 8, 2, 12, b.left), ("airpods.pro.right", 11, 8, 2, 12, b.right),
                    ("airpods.pro.gen3.chargingcase.wireless.fill", 11.5, 14, 0.4, 16.4, b.case_)]

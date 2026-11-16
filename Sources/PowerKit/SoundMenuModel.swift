@@ -55,7 +55,7 @@ public struct SoundMenuModel: Equatable {
     public static func merge(outputs: [OutputDevice], defaultID: String?, volume: Double, muted: Bool,
                              batteries: [AccessoryBattery], apple: AppleSoundPanel?, expanded: String? = nil) -> SoundMenuModel {
         func battery(for kind: OutputKind) -> Battery? {
-            guard kind == .airpods || kind == .airpodsPro,
+            guard kind.isAirPods,
                   let group = batteries.first?.group else { return nil }
             let mine = batteries.filter { $0.group == group }
             var b = Battery()
@@ -96,7 +96,7 @@ extension SoundMenuModel {
     /// The buttons at the bottom: the selected AirPods' own settings (macOS shows these only for them), then Sound Settings.
     public var footerTitles: [String] {
         var titles: [String] = []
-        if let d = devices.first(where: { $0.isSelected && ($0.kind == .airpods || $0.kind == .airpodsPro) }) {
+        if let d = devices.first(where: { $0.isSelected && $0.kind.isAirPods }) {
             titles.append("\(d.name) Settings…")
         }
         titles.append("Sound Settings…")

@@ -213,6 +213,8 @@ final class SoundMenuController {
     private func outputsChanged() {
         refreshIcon()
         // A speaker came or went: `currentApple` already leaves out what has gone, and the reading below corrects the rest.
+        // A line about the one that was there ("Put both AirPods in…") no longer applies.
+        notice = nil
         guard presenter.isOpen else { return }
         redraw()
         readApple()
