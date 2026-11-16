@@ -114,12 +114,16 @@ final class SoundMenuPanel: NSPanel, SoundMenuPresenting {
         content.apply(model)
         place()
         orderFrontRegardless()
-        monitors.append(NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown]) { [weak self] _ in
+        // A click anywhere else closes the menu.
+        if let click = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown], handler: { [weak self] _ in
             self?.closeUnlessOnItem()
-        } as Any)
-        monitors.append(NSEvent.addGlobalMonitorForEvents(matching: [.keyDown]) { [weak self] event in
-            if event.keyCode == 53 { self?.close() }   // Esc
-        } as Any)
+        }) { monitors.append(click) }
+        // Esc closes it, as it does macOS's own. The menu is never the key window (see `canBecomeKey`), so keys do not come to it;
+        // this listens for the key only while the menu is open, reads nothing but the key code (never the characters typed) and
+        // keeps nothing. Without Accessibility macOS delivers no keys to it and Esc simply does nothing.
+        if let esc = NSEvent.addGlobalMonitorForEvents(matching: [.keyDown], handler: { [weak self] event in
+            if event.keyCode == 53 { self?.close() }
+        }) { monitors.append(esc) }
     }
 
     func update(_ model: SoundMenuModel) {
