@@ -39,6 +39,9 @@ public enum OutputKind: Equatable {
             return has(speakerWords) && !has(headWords) ? .hifi : .headphones
         }
         if transport == "airp" || transport == "ccwd" {
+            // Another Mac that takes AirPlay audio is drawn as a computer, as macOS draws it.
+            if n.contains("macbook") { return .speakers }
+            if ["imac", "mac mini", "mac studio", "mac pro"].contains(where: n.contains) { return .display }
             if ["tv", "roku", "display", "monitor"].contains(where: n.contains) { return .display }
             if ["speaker", "receiver", "avr", "soundbar", "homepod", "denon", "stereo"].contains(where: n.contains) { return .hifi }
             return .airplay

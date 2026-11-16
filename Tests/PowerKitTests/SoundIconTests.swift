@@ -46,6 +46,12 @@ final class SoundIconTests: XCTestCase {
         XCTAssertEqual(OutputKind.guess(name: "BlackHole 2ch", transport: "virt"), .other)
     }
 
+    func testAMacOnTheNetworkShowsAsAComputer() {
+        XCTAssertEqual(OutputKind.guess(name: "Colton’s MacBook Air", transport: "airp"), .speakers)
+        XCTAssertEqual(OutputKind.guess(name: "Studio iMac", transport: "airp"), .display)
+        XCTAssertEqual(OutputKind.guess(name: "Office Mac mini", transport: "airp"), .display)
+    }
+
     func testAirPodsMaxHasItsOwnIcon() {
         XCTAssertEqual(OutputKind.guess(name: "My Ears", transport: "blue", productID: 8202), .airpodsMax)
         XCTAssertEqual(SoundIcon.symbol(volume: 0.5, muted: false, output: .airpodsMax), "airpods.max")

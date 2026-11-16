@@ -43,6 +43,13 @@ final class SystemStatusBarHost: StatusItemHosting {
     func makeItem() -> StatusItemHandle { SystemStatusItemHandle() }
 }
 
+/// The text colour of the rows: macOS's is a little brighter than the system label colour on its dark glass (measured).
+enum SoundText {
+    static let primary = NSColor(name: nil) { appearance in
+        appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? NSColor.white.withAlphaComponent(0.885) : NSColor.labelColor
+    }
+}
+
 /// The glyph for a kind of output.
 enum SoundGlyphs {
     static func output(_ kind: OutputKind) -> String {
@@ -251,7 +258,7 @@ final class SoundMenuContentView: NSView {
         case .divider:
             let d = NSView(frame: f)
             d.wantsLayer = true
-            d.layer?.backgroundColor = NSColor.white.withAlphaComponent(0.12).cgColor
+            d.layer?.backgroundColor = NSColor.white.withAlphaComponent(0.17).cgColor
             addSubview(d)
         case .heading(let title):
             addSubview(label(title, f, size: 12, weight: .semibold, color: .secondaryLabelColor))
@@ -353,10 +360,10 @@ final class DeviceRow: HoverRow {
 
         let name = NSTextField(labelWithString: device.name)
         name.font = .systemFont(ofSize: 13)
-        name.textColor = .labelColor
+        name.textColor = SoundText.primary
         name.lineBreakMode = .byTruncatingTail
         let hasBattery = device.battery != nil
-        name.frame = NSRect(x: 41, y: hasBattery ? 1 : 8, width: 220, height: 18)
+        name.frame = NSRect(x: 41, y: hasBattery ? 1.5 : 8.5, width: 220, height: 18)
         addSubview(name)
         if let b = device.battery {
             var x: CGFloat = 41
@@ -380,7 +387,7 @@ final class DeviceRow: HoverRow {
                 l.font = .systemFont(ofSize: 11)
                 l.textColor = .secondaryLabelColor
                 l.sizeToFit()
-                l.frame.origin = NSPoint(x: x + textAt, y: 17)
+                l.frame.origin = NSPoint(x: x + textAt, y: 17.5)
                 addSubview(l)
                 x += textAt + l.frame.width + 6
             }
@@ -413,8 +420,8 @@ final class ChoiceRow: HoverRow {
         addSubview(glyph)
         let l = NSTextField(labelWithString: choice.title)
         l.font = .systemFont(ofSize: 13)
-        l.textColor = choice.enabled ? .labelColor : NSColor.white.withAlphaComponent(0.3)
-        l.frame = NSRect(x: 67, y: 5, width: 220, height: 18)
+        l.textColor = choice.enabled ? SoundText.primary : NSColor.white.withAlphaComponent(0.3)
+        l.frame = NSRect(x: 67, y: 5.5, width: 220, height: 18)
         addSubview(l)
     }
 
@@ -430,7 +437,7 @@ final class TextButton: HoverRow {
         hoverAlpha = 0.16
         let l = NSTextField(labelWithString: title)
         l.font = .systemFont(ofSize: 13)
-        l.textColor = .labelColor
+        l.textColor = SoundText.primary
         l.frame = NSRect(x: 6, y: 2, width: frame.width, height: 18)
         addSubview(l)
     }

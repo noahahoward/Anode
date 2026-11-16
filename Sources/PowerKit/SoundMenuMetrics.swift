@@ -19,6 +19,9 @@ public enum SoundMenuMetrics {
     public static let deviceRowsY: CGFloat = 91
     public static let deviceRowHeight: CGFloat = 32
     public static let rowInset: CGFloat = 5
+    /// The line under the slider is 15 pt from the panel's edges, and the one over the footer 6 pt (measured against macOS's).
+    public static let topDividerInset: CGFloat = 15
+    public static let footerDividerInset: CGFloat = 6
     public static let rowWidth: CGFloat = 298
     /// The lighter block under an opened device.
     public static let blockGap: CGFloat = 5          // from the device row's bottom to the block's top

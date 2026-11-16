@@ -35,7 +35,7 @@ public enum SoundMenuLayout {
         }
         add(.title, x: M.sideInset, y: M.titleY, w: M.width - 2 * M.sideInset, h: M.titleHeight)
         add(.volumeSlider, x: M.sliderX, y: M.sliderY, w: M.sliderWidth, h: M.sliderHeight)
-        add(.divider, x: M.sideInset, y: M.firstDividerY, w: M.width - 2 * M.sideInset, h: 1)
+        add(.divider, x: M.topDividerInset, y: M.firstDividerY, w: M.width - 2 * M.topDividerInset, h: 1)
         add(.heading("Output"), x: M.sideInset, y: M.outputHeadingY, w: M.width - 2 * M.sideInset, h: M.headingHeight)
 
         var y = M.deviceRowsY
@@ -77,7 +77,7 @@ public enum SoundMenuLayout {
             y += M.noticeGap + M.noticeHeight
         }
         let dividerY = y + M.footerDividerGap
-        add(.divider, x: M.sideInset, y: dividerY, w: M.width - 2 * M.sideInset, h: 1)
+        add(.divider, x: M.footerDividerInset, y: dividerY, w: M.width - 2 * M.footerDividerInset, h: 1)
         var fy = dividerY + M.footerFirstRowGap
         for i in model.footerTitles.indices {
             add(.footer(i), x: M.sideInset, y: fy, w: M.width - 2 * M.sideInset, h: M.footerRowHeight)

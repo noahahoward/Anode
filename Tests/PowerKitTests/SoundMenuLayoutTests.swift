@@ -112,4 +112,11 @@ final class SoundMenuLayoutTests: XCTestCase {
         XCTAssertNil(y(r, .heading("Listening Mode")))
         XCTAssertEqual(y(r, .device(2)), 155)
     }
+
+    func testTheDividersAreInsetAsMacOSsAre() {
+        let m = SoundMenuModel(volume: 0.5, muted: false, devices: [], expandedDevice: nil, listening: [], spatial: [], conversation: [], appleAvailable: true)
+        let dividers = SoundMenuLayout.frames(for: m).rows.filter { $0.kind == .divider }
+        XCTAssertEqual(dividers.map(\.frame.minX), [15, 6], "under the slider, and over the footer")
+        XCTAssertEqual(dividers.map(\.frame.width), [279, 297])
+    }
 }
