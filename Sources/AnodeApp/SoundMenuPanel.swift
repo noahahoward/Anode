@@ -104,20 +104,21 @@ final class SoundMenuPanel: NSPanel, SoundMenuPresenting {
         setAccessibilityIdentifier("dev.anode.soundMenu")
     }
 
-    override var canBecomeKey: Bool { true }
+    /// Never key and never main. A key window that is ordered out hands "key" to another window of the same app and brings
+    /// it forward: the ledger came up behind the menu each time it closed. Esc is heard by a global monitor instead.
+    override var canBecomeKey: Bool { false }
+    override var canBecomeMain: Bool { false }
 
     func show(_ model: SoundMenuModel, below frame: CGRect) {
         anchor = frame
         content.apply(model)
         place()
         orderFrontRegardless()
-        makeKey()
         monitors.append(NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown]) { [weak self] _ in
             self?.closeUnlessOnItem()
         } as Any)
-        monitors.append(NSEvent.addLocalMonitorForEvents(matching: [.keyDown]) { [weak self] event in
-            if event.keyCode == 53 { self?.close(); return nil }   // Esc
-            return event
+        monitors.append(NSEvent.addGlobalMonitorForEvents(matching: [.keyDown]) { [weak self] event in
+            if event.keyCode == 53 { self?.close() }   // Esc
         } as Any)
     }
 

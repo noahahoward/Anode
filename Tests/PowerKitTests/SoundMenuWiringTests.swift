@@ -19,6 +19,15 @@ final class SoundMenuWiringTests: XCTestCase {
         XCTAssertFalse(outputs.started, "nothing runs while the setting is off")
     }
 
+    /// A key window that is ordered out hands "key" to another window of the same app, which brings that window forward: the
+    /// ledger came up behind the menu every time the menu closed. The menu is never key, so it has nothing to hand on.
+    func testTheMenuNeverBecomesKeyOrMainSoClosingItDoesNotBringAnotherWindowForward() {
+        let panel = SoundMenuPanel()
+        XCTAssertFalse(panel.canBecomeKey)
+        XCTAssertFalse(panel.canBecomeMain)
+        XCTAssertTrue(panel.styleMask.contains(.nonactivatingPanel))
+    }
+
     func testQuitStopsEverythingOfTheMenu() throws {
         let (defaults, suite) = try TestDefaults.make(owner: "SoundMenuWiring", test: name); defer { TestDefaults.destroy(defaults, suite) }
         let settings = Settings(defaults: defaults); settings.soundMenuEnabled = true
