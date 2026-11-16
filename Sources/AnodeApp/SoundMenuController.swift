@@ -183,6 +183,7 @@ final class SoundMenuController {
         guard let anchor else { return }
         notice = nil
         collapsed.removeAll()
+        openStarted = DispatchTime.now().uptimeNanoseconds
         // Showing the menu and then changing its size when the reading arrives is a visible jump. So when what is known is out
         // of date, the menu waits for the reading (a moment, never longer than `showDelay`) and appears once, final.
         if showDelay > 0, accessibility(), currentApple == nil {
@@ -192,6 +193,7 @@ final class SoundMenuController {
             return
         }
         presenter.show(model, below: anchor)
+        logOpen("shown from what was known")
         readApple()
     }
 
@@ -200,6 +202,14 @@ final class SoundMenuController {
         guard let anchor = pendingAnchor else { return }
         pendingAnchor = nil
         presenter.show(model, below: anchor)
+        logOpen(currentApple == nil ? "shown after the wait, nothing read" : "shown after the reading")
+    }
+
+    private var openStarted: UInt64 = 0
+    private func logOpen(_ what: String) {
+        let ms = Double(DispatchTime.now().uptimeNanoseconds &- openStarted) / 1e6
+        let line = String(format: "open: %@ after %.0f ms", what, ms)
+        DispatchQueue.global(qos: .utility).async { FeatureLog.append("sound-menu.log", line) }
     }
 
     func closeMenu() {
