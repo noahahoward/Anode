@@ -193,15 +193,21 @@ final class SoundMenuPanel: NSPanel, SoundMenuPresenting {
         stopGlide()
         // macOS's menu fades out in about 70 ms; it appears at once.
         closing = true
-        NSAnimationContext.runAnimationGroup({ ctx in
-            ctx.duration = SoundMenuMotion.fadeOutSeconds
-            self.animator().alphaValue = 0
-        }, completionHandler: { [weak self] in
-            guard let self, self.closing else { return }
-            self.closing = false
-            self.orderOut(nil)
-            self.alphaValue = 1
-        })
+        let start = CACurrentMediaTime()
+        let timer = Timer(timeInterval: 1.0 / 120, repeats: true) { [weak self] t in
+            guard let self else { t.invalidate(); return }
+            guard self.closing else { t.invalidate(); return }   // opened again meanwhile
+            let k = (CACurrentMediaTime() - start) / SoundMenuMotion.fadeOutSeconds
+            if k >= 1 {
+                t.invalidate()
+                self.closing = false
+                self.orderOut(nil)
+                self.alphaValue = 1
+            } else {
+                self.alphaValue = CGFloat(1 - k)
+            }
+        }
+        RunLoop.main.add(timer, forMode: .common)
     }
 
     /// A click anywhere else closes the menu; a click on the icon is the icon's own toggle.
