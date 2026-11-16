@@ -66,7 +66,6 @@ final class IconCover {
     }
 
     func show() {
-        FeatureLog.append("sound-menu.log", "cover \(tag): show, picture \(image != nil), at \(Date().timeIntervalSince1970)")
         guard let image, imageFrame != .zero, let screen = NSScreen.screens.first else { return }
         let r = NSRect(x: imageFrame.minX, y: screen.frame.height - imageFrame.minY - imageFrame.height,
                        width: imageFrame.width, height: imageFrame.height)
@@ -86,6 +85,10 @@ final class IconCover {
         w.contentView = view
         w.setFrame(r, display: false)
         w.orderFrontRegardless()
+        // Drawn and sent to the window server NOW: the next thing the driver does is a call into another process that blocks
+        // this thread, and a picture that only appears after it is no cover at all.
+        w.displayIfNeeded()
+        CATransaction.flush()
         window = w
     }
 
@@ -163,11 +166,9 @@ final class SystemPanelDriver: SystemPanelDriving {
         guard let found = locate(job.kind) else { finishJob(.failed(.noMenuExtra)); return }
         item = found.item; itemFrame = found.frame; route = found.route
         ccElement = Self.application(Self.controlCenter)
-        let t0 = Date()
         await cover.prepare(frame: itemFrame)
         // The first frames of macOS's panel are hidden too, unless Anode's own menu is already up (it is above them).
         if !ownMenuIsUp() { await panelCover.prepare(frame: Self.panelRegion(for: itemFrame), maxAge: 0, exact: true) }
-        FeatureLog.append("sound-menu.log", "covers prepared in \(Int(Date().timeIntervalSince(t0) * 1000)) ms; granted \(ScreenRecordingAccess.isGranted)")
         machineStart(job, accessibility: true, personHasPanelOpen: panelOnScreen())
     }
 
@@ -216,9 +217,13 @@ final class SystemPanelDriver: SystemPanelDriving {
     private func openPanel() {
         installObserver()
         guard let item else { feed(.openTimedOut); return }
-        AXUIElementPerformAction(item, kAXPressAction as CFString)
-        poll(timeout: SystemPanelTiming.openTimeout, until: { self.panelWindow() != nil },
-             then: { ok in self.feed(ok ? .opened : .openTimedOut) })
+        // A beat after the covers went up, so they are on the screen before macOS's panel is.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.03) { [weak self] in
+            guard let self, self.machine != nil else { return }
+            AXUIElementPerformAction(item, kAXPressAction as CFString)
+            self.poll(timeout: SystemPanelTiming.openTimeout, until: { self.panelWindow() != nil },
+                      then: { ok in self.feed(ok ? .opened : .openTimedOut) })
+        }
     }
 
     private func openSection(_ id: String) {
