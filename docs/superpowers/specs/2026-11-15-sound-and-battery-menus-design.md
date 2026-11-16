@@ -48,7 +48,8 @@ copies before any addition, swap 2 and 3; nothing else changes.)*
 - **Per-app volume (step 2):**
   - **Which apps:** the apps that are open and connected to the sound system. In practice that means every app with
     an audio process object in Core Audio, grouped to the app it belongs to. This includes apps that are silent at the
-    moment. Apps that never opened sound don't appear.
+    moment. Apps that never opened sound don't appear. *(Owner, 2026-11-16: every open app that has this permission is
+    listed at 100% and unmuted even while it plays nothing. Silent is not muted: only a muted app is muted.)*
   - **Each row:** the app's icon and name, a mute/unmute button, and a slider from 0 to 100%, defaulting to 100%. The
     old plan's 0–200% is replaced by the owner's 0–100%.
   - **Where:** a section headed "Apps", in the same heading style as "Output", directly under the main volume slider
