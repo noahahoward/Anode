@@ -8,6 +8,20 @@ public struct OutputDevice: Equatable {
     public init(id: String, name: String, kind: OutputKind) { self.id = id; self.name = name; self.kind = kind }
 }
 
+/// One app in the "Apps" section: its own volume and mute, apart from the Mac's.
+public struct AppVolumeRow: Equatable {
+    public var bundleID: String
+    public var name: String
+    /// 0 (silent) to 1 (the app's own level, the default).
+    public var volume: Double
+    public var muted: Bool
+    public init(bundleID: String, name: String, volume: Double, muted: Bool) {
+        self.bundleID = bundleID; self.name = name; self.muted = muted
+        self.volume = min(1, max(0, volume))
+    }
+    public var percentText: String { "\(Int((volume * 100).rounded()))%" }
+}
+
 /// What the Sound menu shows, in one value: Anode's own readings (volume, outputs, batteries) joined with what macOS's own
 /// panel said last (the listening mode and the AirPlay speakers). A menu is drawn from this and nothing else.
 public struct SoundMenuModel: Equatable {
@@ -42,6 +56,8 @@ public struct SoundMenuModel: Equatable {
     public var appleAvailable: Bool
     /// One line under the rows when something needs saying (a refusal, a missing permission).
     public var notice: String?
+    /// The apps that have a volume of their own, when per-app volume is on. Empty draws no section at all.
+    public var apps: [AppVolumeRow] = []
 
     public init(volume: Double, muted: Bool, devices: [Device], expandedDevice: String?, listening: [AppleChoiceRow],
                 spatial: [AppleChoiceRow], conversation: [AppleChoiceRow], appleAvailable: Bool, notice: String? = nil) {

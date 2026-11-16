@@ -10,6 +10,8 @@ public enum SoundMenuLayout {
         case heading(String)
         case device(Int)
         case choice(section: String, index: Int)
+        /// One app of the "Apps" section.
+        case app(Int)
         /// The lighter block under an opened device.
         case block
         case footer(Int)
@@ -36,9 +38,19 @@ public enum SoundMenuLayout {
         add(.title, x: M.sideInset, y: M.titleY, w: M.width - 2 * M.sideInset, h: M.titleHeight)
         add(.volumeSlider, x: M.sliderX, y: M.sliderY, w: M.sliderWidth, h: M.sliderHeight)
         add(.divider, x: M.topDividerInset, y: M.firstDividerY, w: M.width - 2 * M.topDividerInset, h: 1)
-        add(.heading("Output"), x: M.sideInset, y: M.outputHeadingY, w: M.width - 2 * M.sideInset, h: M.headingHeight)
+        var shift: CGFloat = 0
+        if !model.apps.isEmpty {
+            add(.heading("Apps"), x: M.sideInset, y: M.outputHeadingY, w: M.width - 2 * M.sideInset, h: M.headingHeight)
+            for i in model.apps.indices {
+                add(.app(i), x: M.rowInset, y: M.deviceRowsY + CGFloat(i) * M.appRowHeight, w: M.rowWidth, h: M.appRowHeight)
+            }
+            let dividerY = M.deviceRowsY + CGFloat(model.apps.count) * M.appRowHeight + M.appsDividerGap
+            add(.divider, x: M.topDividerInset, y: dividerY, w: M.width - 2 * M.topDividerInset, h: 1)
+            shift = M.appsSectionHeight(rows: model.apps.count)
+        }
+        add(.heading("Output"), x: M.sideInset, y: M.outputHeadingY + shift, w: M.width - 2 * M.sideInset, h: M.headingHeight)
 
-        var y = M.deviceRowsY
+        var y = M.deviceRowsY + shift
         for (i, device) in model.devices.enumerated() {
             add(.device(i), x: M.rowInset, y: y, w: M.rowWidth, h: M.deviceRowHeight)
             y += M.deviceRowHeight

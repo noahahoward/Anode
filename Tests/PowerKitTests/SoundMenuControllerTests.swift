@@ -36,6 +36,17 @@ final class SoundMenuControllerTests: XCTestCase {
         func complete(_ index: Int, _ outcome: SystemPanelOutcome) { completions[index](outcome) }
     }
 
+    final class FakeApps: AppVolumeControlling {
+        var apps = [AppVolumeRow(bundleID: "com.example.player", name: "Player", volume: 1, muted: false),
+                    AppVolumeRow(bundleID: "com.example.browser", name: "Browser", volume: 0.4, muted: true)]
+        func setVolume(_ value: Double, forBundleID id: String) {
+            if let i = apps.firstIndex(where: { $0.bundleID == id }) { apps[i].volume = min(1, max(0, value)) }
+        }
+        func setMuted(_ muted: Bool, forBundleID id: String) {
+            if let i = apps.firstIndex(where: { $0.bundleID == id }) { apps[i].muted = muted }
+        }
+    }
+
     final class FakeItem: StatusItemHandle {
         var symbolName = ""
         var onClick: (() -> Void)?
@@ -267,6 +278,34 @@ final class SoundMenuControllerTests: XCTestCase {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { later.fulfill() }
         wait(for: [later], timeout: 2)
         XCTAssertEqual(r.driver.jobs.count, 1)
+    }
+
+    func testWithoutPerAppVolumeThereAreNoApps() throws {
+        let r = try rig(); defer { r.cleanup() }
+        XCTAssertTrue(r.model.apps.isEmpty)
+    }
+
+    func testTheAppsShowWhenPerAppVolumeIsOnAndFollowWhatIsDoneToThem() throws {
+        let r = try rig(); defer { r.cleanup() }
+        let apps = FakeApps()
+        r.controller.appVolume = apps
+        r.controller.openMenu()
+        XCTAssertEqual(r.model.apps.map(\.name), ["Player", "Browser"])
+        r.controller.setAppVolume(bundleID: "com.example.player", 0.25)
+        XCTAssertEqual(r.model.apps[0].volume, 0.25, accuracy: 0.001)
+        r.controller.toggleAppMute(bundleID: "com.example.player")
+        XCTAssertTrue(r.model.apps[0].muted)
+        XCTAssertEqual(r.presenter.shown.last?.apps[0].muted, true, "and the open menu is redrawn")
+    }
+
+    func testMovingTheSliderOfAMutedAppUnmutesIt() throws {
+        let r = try rig(); defer { r.cleanup() }
+        let apps = FakeApps()
+        r.controller.appVolume = apps
+        XCTAssertTrue(r.model.apps[1].muted)
+        r.controller.setAppVolume(bundleID: "com.example.browser", 0.7)
+        XCTAssertFalse(r.model.apps[1].muted)
+        XCTAssertEqual(r.model.apps[1].volume, 0.7, accuracy: 0.001)
     }
 
     func testRefusalPutsCheckBackAndShowsLine() throws {

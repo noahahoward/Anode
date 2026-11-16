@@ -354,6 +354,7 @@ final class SoundMenuContentView: NSView {
             let rows = section == AppleSoundPanel.listeningHeading ? model.listening
                 : section == AppleSoundPanel.spatialHeading ? model.spatial : model.conversation
             return "choice:\(section):" + (rows.indices.contains(index) ? rows[index].title : "\(index)")
+        case .app(let i): return "app:" + (model.apps.indices.contains(i) ? model.apps[i].bundleID : "\(i)")
         case .block: return "block"
         case .footer(let i): return "footer:" + (model.footerTitles.indices.contains(i) ? model.footerTitles[i] : "\(i)")
         case .notice: return "notice"
@@ -448,6 +449,13 @@ final class SoundMenuContentView: NSView {
             let c = rows[index]
             let v = ChoiceRow(frame: f, choice: c)
             v.onPick = { [weak self] in self?.controller?.pickChoice(c) }
+            addSubview(v)
+        case .app(let i):
+            guard model.apps.indices.contains(i) else { return }
+            let app = model.apps[i]
+            let v = AppVolumeRowView(frame: f, app: app)
+            v.onVolume = { [weak self] value in self?.controller?.setAppVolume(bundleID: app.bundleID, value) }
+            v.onToggleMute = { [weak self] in self?.controller?.toggleAppMute(bundleID: app.bundleID) }
             addSubview(v)
         case .notice:
             addSubview(label(model.notice ?? "", f, size: 12, weight: .regular, color: .systemOrange, wraps: true))
@@ -609,6 +617,54 @@ final class TextButton: HoverRow {
     required init?(coder: NSCoder) { fatalError("not used") }
 }
 
+/// One app of the "Apps" section: its icon, its name, and under the name a mute button, a slider (0 to 100 %) and the percentage.
+final class AppVolumeRowView: NSView {
+    var onVolume: ((Double) -> Void)?
+    var onToggleMute: (() -> Void)?
+    private let slider: MenuSlider
+    private let percent: NSTextField
+
+    override var isFlipped: Bool { true }
+
+    init(frame: NSRect, app: AppVolumeRow) {
+        slider = MenuSlider(frame: NSRect(x: 65, y: 27, width: frame.width - 65 - 46, height: 16))
+        percent = NSTextField(labelWithString: app.muted ? "Muted" : app.percentText)
+        super.init(frame: frame)
+        let icon = NSImageView(frame: NSRect(x: 9, y: 6, width: 26, height: 26))
+        icon.image = Self.icon(for: app.bundleID)
+        icon.imageScaling = .scaleProportionallyUpOrDown
+        icon.alphaValue = app.muted ? 0.55 : 1
+        addSubview(icon)
+        let name = NSTextField(labelWithString: app.name)
+        name.font = .systemFont(ofSize: 13)
+        name.textColor = app.muted ? SoundText.ink(0.55) : SoundText.primary
+        name.lineBreakMode = .byTruncatingTail
+        name.frame = NSRect(x: 41, y: 5.5, width: frame.width - 41 - 10, height: 18)
+        addSubview(name)
+        let mute = IconButton(symbol: app.muted ? "speaker.slash.fill" : "speaker.fill", size: 11, weight: .regular, tint: app.muted ? 0.8 : 0.5,
+                              frame: NSRect(x: 41, y: 26, width: 20, height: 18)) { [weak self] in self?.onToggleMute?() }
+        addSubview(mute)
+        slider.compact = true
+        slider.dimmed = app.muted
+        slider.value = app.muted ? 0 : app.volume
+        slider.onChange = { [weak self] v in self?.onVolume?(v); self?.percent.stringValue = AppVolumeRow(bundleID: "", name: "", volume: v, muted: false).percentText }
+        addSubview(slider)
+        percent.font = .systemFont(ofSize: 11)
+        percent.textColor = SoundText.ink(app.muted ? 0.4 : 0.55)
+        percent.alignment = .right
+        percent.frame = NSRect(x: frame.width - 46 + 4, y: 28, width: 38, height: 14)
+        addSubview(percent)
+    }
+
+    required init?(coder: NSCoder) { fatalError("not used") }
+
+    /// The app's own icon, or the generic one when it cannot be found.
+    private static func icon(for bundleID: String) -> NSImage {
+        if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) { return NSWorkspace.shared.icon(forFile: url.path) }
+        return NSWorkspace.shared.icon(for: .applicationBundle)
+    }
+}
+
 final class IconButton: NSView {
     private let action: () -> Void
 
@@ -634,22 +690,27 @@ final class IconButton: NSView {
 final class MenuSlider: NSView {
     var value: Double = 0 { didSet { needsDisplay = true } }
     var onChange: ((Double) -> Void)?
-    private static let thumb: CGFloat = 20
+    /// The slider of an app row: the same drawing as the volume slider, smaller, and dimmed while that app is muted.
+    var compact = false { didSet { needsDisplay = true } }
+    var dimmed = false { didSet { needsDisplay = true } }
+    private var thumb: CGFloat { compact ? 14 : 20 }
 
     override var isFlipped: Bool { true }
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 
     override func draw(_ dirtyRect: NSRect) {
-        let track = NSRect(x: 0, y: bounds.midY - 3, width: bounds.width, height: 6)
-        SoundText.ink(0.13).setFill()
-        NSBezierPath(roundedRect: track, xRadius: 3, yRadius: 3).fill()
-        let x = CGFloat(value) * (bounds.width - Self.thumb)
-        var filled = track; filled.size.width = x + Self.thumb / 2
-        SoundText.ink(0.33).setFill()
-        NSBezierPath(roundedRect: filled, xRadius: 3, yRadius: 3).fill()
-        // macOS's knob is a rounded shape 20 wide and 16 tall, not a circle.
-        NSColor(white: 0.89, alpha: 1).setFill()
-        NSBezierPath(roundedRect: NSRect(x: x, y: bounds.midY - 8, width: Self.thumb, height: 16), xRadius: 7.5, yRadius: 7.5).fill()
+        let trackH: CGFloat = compact ? 4 : 6, knobH: CGFloat = compact ? 12 : 16
+        let track = NSRect(x: 0, y: bounds.midY - trackH / 2, width: bounds.width, height: trackH)
+        SoundText.ink(dimmed ? 0.08 : 0.13).setFill()
+        NSBezierPath(roundedRect: track, xRadius: trackH / 2, yRadius: trackH / 2).fill()
+        let x = CGFloat(value) * (bounds.width - thumb)
+        var filled = track; filled.size.width = x + thumb / 2
+        SoundText.ink(dimmed ? 0.16 : 0.33).setFill()
+        NSBezierPath(roundedRect: filled, xRadius: trackH / 2, yRadius: trackH / 2).fill()
+        // macOS's knob is a rounded shape (20 wide and 16 tall for the main slider), not a circle.
+        NSColor(white: dimmed ? 0.62 : 0.89, alpha: 1).setFill()
+        NSBezierPath(roundedRect: NSRect(x: x, y: bounds.midY - knobH / 2, width: thumb, height: knobH),
+                     xRadius: knobH * 0.47, yRadius: knobH * 0.47).fill()
     }
 
     override func mouseDown(with event: NSEvent) { move(to: event) }
@@ -657,7 +718,7 @@ final class MenuSlider: NSView {
 
     private func move(to event: NSEvent) {
         let x = convert(event.locationInWindow, from: nil).x
-        value = min(1, max(0, Double((x - Self.thumb / 2) / (bounds.width - Self.thumb))))
+        value = min(1, max(0, Double((x - thumb / 2) / (bounds.width - thumb))))
         onChange?(value)
     }
 }

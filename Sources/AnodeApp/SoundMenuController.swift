@@ -40,7 +40,18 @@ protocol NativeIconHosting: AnyObject {
     func stop()
 }
 
+/// Where the apps with a volume of their own, and what the person does to them, come from (the per-app audio engine).
+protocol AppVolumeControlling: AnyObject {
+    var apps: [AppVolumeRow] { get }
+    func setVolume(_ value: Double, forBundleID id: String)
+    func setMuted(_ muted: Bool, forBundleID id: String)
+}
+
 final class SoundMenuController {
+
+    /// Nil while per-app volume is off: the menu then has no Apps section.
+    var appVolume: AppVolumeControlling?
+
 
     static let needsAccessibility = "Needs Accessibility for the listening mode, Conversation Awareness and AirPlay rows."
     static let adaptiveNeedsBothBuds = "Put both AirPods in to use Adaptive."
@@ -102,6 +113,7 @@ final class SoundMenuController {
         var m = SoundMenuModel.merge(outputs: outputs.devices, defaultID: outputs.defaultDeviceID, volume: outputs.volume,
                                      muted: outputs.muted, batteries: batteries(), apple: known, expanded: open)
         m.notice = notice
+        m.apps = appVolume?.apps ?? []
         return m
     }
 
@@ -278,6 +290,18 @@ final class SoundMenuController {
     func setVolume(_ value: Double) {
         outputs.setVolume(value)
         if outputs.muted && value > 0 { outputs.setMuted(false) }
+        redraw()
+    }
+
+    func setAppVolume(bundleID: String, _ value: Double) {
+        appVolume?.setVolume(value, forBundleID: bundleID)
+        if appVolume?.apps.first(where: { $0.bundleID == bundleID })?.muted == true, value > 0 { appVolume?.setMuted(false, forBundleID: bundleID) }
+        redraw()
+    }
+
+    func toggleAppMute(bundleID: String) {
+        guard let app = appVolume?.apps.first(where: { $0.bundleID == bundleID }) else { return }
+        appVolume?.setMuted(!app.muted, forBundleID: bundleID)
         redraw()
     }
 

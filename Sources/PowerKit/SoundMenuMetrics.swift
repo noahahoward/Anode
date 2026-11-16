@@ -41,4 +41,17 @@ public enum SoundMenuMetrics {
     /// The one line Anode adds under the rows when something needs saying (not part of macOS's menu).
     public static let noticeGap: CGFloat = 4
     public static let noticeHeight: CGFloat = 30
+
+    // ── The "Apps" section (per-app volume; Anode's own, between the slider and Output) ──
+    /// One app: its name above a mute button and a slider.
+    public static let appRowHeight: CGFloat = 50
+    /// The line under the last app, as far under the row as the footer's is under the last output row.
+    public static let appsDividerGap: CGFloat = 5
+    public static let appsAfterDividerGap: CGFloat = 4
+
+    /// How much taller the menu is with `rows` apps in it (0 when there are none).
+    public static func appsSectionHeight(rows: Int) -> CGFloat {
+        guard rows > 0 else { return 0 }
+        return (deviceRowsY - outputHeadingY) + CGFloat(rows) * appRowHeight + appsDividerGap + 1 + appsAfterDividerGap
+    }
 }
