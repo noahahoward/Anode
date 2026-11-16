@@ -311,6 +311,8 @@ class HoverRow: NSView {
     var onPick: (() -> Void)?
     private var hovering = false { didSet { needsDisplay = true } }
     var highlightable = true
+    /// How much white the hovered row gets.
+    var hoverAlpha: CGFloat = 0.09
 
     override var isFlipped: Bool { true }
 
@@ -327,7 +329,7 @@ class HoverRow: NSView {
 
     override func draw(_ dirtyRect: NSRect) {
         guard hovering else { return }
-        NSColor.white.withAlphaComponent(0.09).setFill()
+        NSColor.white.withAlphaComponent(hoverAlpha).setFill()
         NSBezierPath(roundedRect: bounds, xRadius: 8, yRadius: 8).fill()
     }
 }
@@ -420,13 +422,16 @@ final class ChoiceRow: HoverRow {
 }
 
 final class TextButton: HoverRow {
+    /// macOS's highlight on these rows reaches to 6 pt from the panel's edges (the text stays where it is), is 2 pt taller than
+    /// the row, and is brighter than the one on the output rows (all measured).
     init(frame: NSRect, title: String, action: @escaping () -> Void) {
-        super.init(frame: frame)
+        super.init(frame: frame.insetBy(dx: -6, dy: -1))
         onPick = action
+        hoverAlpha = 0.13
         let l = NSTextField(labelWithString: title)
         l.font = .systemFont(ofSize: 13)
         l.textColor = .labelColor
-        l.frame = NSRect(x: 0, y: 1, width: frame.width, height: 18)
+        l.frame = NSRect(x: 6, y: 2, width: frame.width, height: 18)
         addSubview(l)
     }
 
