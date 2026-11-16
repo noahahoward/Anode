@@ -20,6 +20,10 @@ public struct AppVolumeRow: Equatable {
         self.volume = min(1, max(0, volume))
     }
     public var percentText: String { "\(Int((volume * 100).rounded()))%" }
+    /// Where the slider's knob sits: at zero while muted (it glides there and back), at the volume otherwise.
+    public var sliderPosition: Double { muted ? 0 : volume }
+    /// The mute button's picture: the level in thirds, like the speaker in the menu bar, or a slash while muted.
+    public var muteSymbol: String { muted ? "speaker.slash.fill" : SoundIcon.symbol(volume: volume, muted: false, output: .speakers) }
 }
 
 /// What the Sound menu shows, in one value: Anode's own readings (volume, outputs, batteries) joined with what macOS's own

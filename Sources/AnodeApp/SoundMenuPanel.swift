@@ -291,6 +291,8 @@ final class SoundMenuContentView: NSView {
     /// they are cut off at the footer's top edge as it moves. Nothing in it takes a click of its own.
     private let clip = ClipView()
     private var leaving: [(key: String, views: [NSView], frames: [CGRect])] = []
+    /// The app rows now drawn, so a change to one app (mute, a slider) is shown on its row without drawing the whole menu again.
+    private(set) var appRows: [String: AppVolumeRowView] = [:]
     private var glide: (fromHeight: CGFloat, toHeight: CGFloat)?
     var isGliding: Bool { glide != nil }
 
@@ -298,7 +300,17 @@ final class SoundMenuContentView: NSView {
     /// (driven by `step`) and returns true; the caller steps it and calls `finishGlide` at the end.
     @discardableResult
     func apply(_ model: SoundMenuModel, animated: Bool = false) -> Bool {
+        // Only the apps changed (and they are the same apps): show it on their rows, where a slider can glide.
+        if let old = self.model, !model.apps.isEmpty, old.apps.map(\.bundleID) == model.apps.map(\.bundleID) {
+            var same = old; same.apps = model.apps
+            if same == model, model.apps.allSatisfy({ appRows[$0.bundleID] != nil }) {
+                self.model = model
+                for app in model.apps { appRows[app.bundleID]?.update(app, animated: true) }
+                return false
+            }
+        }
         self.model = model
+        appRows = [:]
         let oldHeight = size.height
         let before = shownRows
         let beforeViews = shownViews
@@ -456,6 +468,7 @@ final class SoundMenuContentView: NSView {
             let v = AppVolumeRowView(frame: f, app: app)
             v.onVolume = { [weak self] value in self?.controller?.setAppVolume(bundleID: app.bundleID, value) }
             v.onToggleMute = { [weak self] in self?.controller?.toggleAppMute(bundleID: app.bundleID) }
+            appRows[app.bundleID] = v
             addSubview(v)
         case .notice:
             addSubview(label(model.notice ?? "", f, size: 12, weight: .regular, color: .systemOrange, wraps: true))
@@ -617,46 +630,80 @@ final class TextButton: HoverRow {
     required init?(coder: NSCoder) { fatalError("not used") }
 }
 
-/// One app of the "Apps" section: its icon, its name, and under the name a mute button, a slider (0 to 100 %) and the percentage.
+/// The mute button of an app row: the speaker with its level in thirds, like the one in the menu bar, or slashed while muted.
+final class MuteButton: NSView {
+    private let image = NSImageView()
+    var onPress: (() -> Void)?
+    init(frame: NSRect, symbol: String, tint: CGFloat) {
+        super.init(frame: frame)
+        image.frame = bounds
+        image.imageScaling = .scaleProportionallyDown
+        addSubview(image)
+        set(symbol: symbol, tint: tint)
+    }
+    required init?(coder: NSCoder) { fatalError("not used") }
+    func set(symbol name: String, tint: CGFloat) {
+        image.image = NSImage(systemSymbolName: name, accessibilityDescription: nil)?
+            .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 12, weight: .regular))
+        image.contentTintColor = SoundText.ink(tint)
+    }
+    override func mouseDown(with event: NSEvent) { onPress?() }
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+}
+
+/// One app of the "Apps" section, on one line as tall as an output row: its icon (hover for its name), a mute button showing the
+/// level, a slider from 0 to 100 %, and the percentage. The icon and the sound line share one centre.
 final class AppVolumeRowView: NSView {
     var onVolume: ((Double) -> Void)?
     var onToggleMute: (() -> Void)?
+    let bundleID: String
+    private let icon: NSImageView
+    private let muteButton: MuteButton
     private let slider: MenuSlider
     private let percent: NSTextField
 
     override var isFlipped: Bool { true }
 
     init(frame: NSRect, app: AppVolumeRow) {
-        slider = MenuSlider(frame: NSRect(x: 65, y: 27, width: frame.width - 65 - 46, height: 16))
-        percent = NSTextField(labelWithString: app.muted ? "Muted" : app.percentText)
+        bundleID = app.bundleID
+        icon = NSImageView(frame: NSRect(x: 9, y: 3, width: 26, height: 26))
+        muteButton = MuteButton(frame: NSRect(x: 41, y: 7, width: 20, height: 18), symbol: app.muteSymbol, tint: 0.5)
+        slider = MenuSlider(frame: NSRect(x: 65, y: 8, width: frame.width - 65 - 46, height: 16))
+        percent = NSTextField(labelWithString: "")
         super.init(frame: frame)
-        let icon = NSImageView(frame: NSRect(x: 9, y: 6, width: 26, height: 26))
         icon.image = Self.icon(for: app.bundleID)
         icon.imageScaling = .scaleProportionallyUpOrDown
-        icon.alphaValue = app.muted ? 0.55 : 1
+        icon.toolTip = app.name   // the name is only the tooltip: the row has no room, and the icon says which app it is
         addSubview(icon)
-        let name = NSTextField(labelWithString: app.name)
-        name.font = .systemFont(ofSize: 13)
-        name.textColor = app.muted ? SoundText.ink(0.55) : SoundText.primary
-        name.lineBreakMode = .byTruncatingTail
-        name.frame = NSRect(x: 41, y: 5.5, width: frame.width - 41 - 10, height: 18)
-        addSubview(name)
-        let mute = IconButton(symbol: app.muted ? "speaker.slash.fill" : "speaker.fill", size: 11, weight: .regular, tint: app.muted ? 0.8 : 0.5,
-                              frame: NSRect(x: 41, y: 26, width: 20, height: 18)) { [weak self] in self?.onToggleMute?() }
-        addSubview(mute)
+        muteButton.onPress = { [weak self] in self?.onToggleMute?() }
+        addSubview(muteButton)
         slider.compact = true
-        slider.dimmed = app.muted
-        slider.value = app.muted ? 0 : app.volume
-        slider.onChange = { [weak self] v in self?.onVolume?(v); self?.percent.stringValue = AppVolumeRow(bundleID: "", name: "", volume: v, muted: false).percentText }
+        slider.onChange = { [weak self] v in
+            self?.onVolume?(v)
+            self?.percent.stringValue = AppVolumeRow(bundleID: "", name: "", volume: v, muted: false).percentText
+        }
         addSubview(slider)
         percent.font = .systemFont(ofSize: 11)
-        percent.textColor = SoundText.ink(app.muted ? 0.4 : 0.55)
         percent.alignment = .right
-        percent.frame = NSRect(x: frame.width - 46 + 4, y: 28, width: 38, height: 14)
+        percent.frame = NSRect(x: frame.width - 46 + 4, y: 9, width: 38, height: 14)
         addSubview(percent)
+        update(app, animated: false)
     }
 
     required init?(coder: NSCoder) { fatalError("not used") }
+
+    /// Shows `app`'s state. Muting glides the knob to zero and unmuting glides it back, rather than jumping.
+    func update(_ app: AppVolumeRow, animated: Bool) {
+        icon.alphaValue = app.muted ? 0.55 : 1
+        icon.toolTip = app.name
+        muteButton.set(symbol: app.muteSymbol, tint: app.muted ? 0.8 : 0.5)
+        slider.dimmed = app.muted
+        if abs(slider.value - app.sliderPosition) > 0.0005 {
+            if animated { slider.glide(to: app.sliderPosition) } else { slider.value = app.sliderPosition }
+        }
+        percent.stringValue = app.muted ? "Muted" : app.percentText
+        percent.textColor = SoundText.ink(app.muted ? 0.4 : 0.55)
+    }
 
     /// The app's own icon, or the generic one when it cannot be found.
     private static func icon(for bundleID: String) -> NSImage {
@@ -688,7 +735,34 @@ final class IconButton: NSView {
 
 /// The volume slider: a rounded track filled up to a round handle.
 final class MenuSlider: NSView {
-    var value: Double = 0 { didSet { needsDisplay = true } }
+    /// Where the knob is meant to be. It is drawn at `shown`, which follows it at once, or glides after it (`glide(to:)`).
+    var value: Double = 0 { didSet { if glideTimer == nil { shown = value }; needsDisplay = true } }
+    private var shown: Double = 0
+    private var glideFrom = 0.0
+    private var glideStart: CFTimeInterval = 0
+    private var glideTimer: Timer?
+
+    /// Moves the knob to `target` the way macOS's things move (the curve of `SoundMenuMotion`), instead of jumping.
+    func glide(to target: Double) {
+        glideTimer?.invalidate()
+        glideFrom = shown
+        glideStart = CACurrentMediaTime()
+        let timer = Timer(timeInterval: 1.0 / 120, repeats: true) { [weak self] t in
+            guard let self else { t.invalidate(); return }
+            let elapsed = CACurrentMediaTime() - self.glideStart
+            if elapsed >= SoundMenuMotion.settleSeconds {
+                t.invalidate(); self.glideTimer = nil; self.shown = self.value
+            } else {
+                self.shown = self.glideFrom + (self.value - self.glideFrom) * SoundMenuMotion.progress(at: elapsed)
+            }
+            self.needsDisplay = true
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        glideTimer = timer
+        value = target
+    }
+
+    private func stopGlide() { glideTimer?.invalidate(); glideTimer = nil; shown = value }
     var onChange: ((Double) -> Void)?
     /// The slider of an app row: the same drawing as the volume slider, smaller, and dimmed while that app is muted.
     var compact = false { didSet { needsDisplay = true } }
@@ -703,7 +777,7 @@ final class MenuSlider: NSView {
         let track = NSRect(x: 0, y: bounds.midY - trackH / 2, width: bounds.width, height: trackH)
         SoundText.ink(dimmed ? 0.08 : 0.13).setFill()
         NSBezierPath(roundedRect: track, xRadius: trackH / 2, yRadius: trackH / 2).fill()
-        let x = CGFloat(value) * (bounds.width - thumb)
+        let x = CGFloat(shown) * (bounds.width - thumb)
         var filled = track; filled.size.width = x + thumb / 2
         SoundText.ink(dimmed ? 0.16 : 0.33).setFill()
         NSBezierPath(roundedRect: filled, xRadius: trackH / 2, yRadius: trackH / 2).fill()
@@ -713,7 +787,7 @@ final class MenuSlider: NSView {
                      xRadius: knobH * 0.47, yRadius: knobH * 0.47).fill()
     }
 
-    override func mouseDown(with event: NSEvent) { move(to: event) }
+    override func mouseDown(with event: NSEvent) { stopGlide(); move(to: event) }
     override func mouseDragged(with event: NSEvent) { move(to: event) }
 
     private func move(to event: NSEvent) {

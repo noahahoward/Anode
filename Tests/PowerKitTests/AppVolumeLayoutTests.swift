@@ -45,8 +45,8 @@ final class AppVolumeLayoutTests: XCTestCase {
         XCTAssertTrue(dividers.contains { $0 < output && $0 > SoundMenuMetrics.deviceRowsY + 2 * SoundMenuMetrics.appRowHeight })
     }
 
-    func testAnAppRowHasRoomForANameAndASliderUnderIt() {
-        XCTAssertEqual(SoundMenuMetrics.appRowHeight, 50)
+    func testAnAppRowIsOneLineTheHeightOfAnOutputRow() {
+        XCTAssertEqual(SoundMenuMetrics.appRowHeight, SoundMenuMetrics.deviceRowHeight)
         let layout = SoundMenuLayout.frames(for: model(apps: two))
         XCTAssertEqual(layout.rows.first { if case .app = $0.kind { return true }; return false }?.frame.width, SoundMenuMetrics.rowWidth)
     }
@@ -63,5 +63,20 @@ final class AppVolumeLayoutTests: XCTestCase {
         XCTAssertEqual(AppVolumeRow(bundleID: "a", name: "A", volume: 1.7, muted: false).volume, 1)
         XCTAssertEqual(AppVolumeRow(bundleID: "a", name: "A", volume: -0.2, muted: false).volume, 0)
         XCTAssertEqual(AppVolumeRow(bundleID: "a", name: "A", volume: 0.5, muted: false).percentText, "50%")
+    }
+
+    func testTheMuteButtonShowsTheLevelInThirdsLikeTheMenuBarSpeaker() {
+        func symbol(_ v: Double, muted: Bool = false) -> String { AppVolumeRow(bundleID: "a", name: "A", volume: v, muted: muted).muteSymbol }
+        XCTAssertEqual(symbol(0), "speaker.fill")
+        XCTAssertEqual(symbol(0.2), "speaker.wave.1.fill")
+        XCTAssertEqual(symbol(0.5), "speaker.wave.2.fill")
+        XCTAssertEqual(symbol(0.9), "speaker.wave.3.fill")
+        XCTAssertEqual(symbol(1), "speaker.wave.3.fill")
+        XCTAssertEqual(symbol(0.9, muted: true), "speaker.slash.fill", "muted is a slash whatever the level")
+    }
+
+    func testAMutedAppsSliderSitsAtZeroAndComesBackToItsLevel() {
+        XCTAssertEqual(AppVolumeRow(bundleID: "a", name: "A", volume: 0.6, muted: true).sliderPosition, 0)
+        XCTAssertEqual(AppVolumeRow(bundleID: "a", name: "A", volume: 0.6, muted: false).sliderPosition, 0.6, accuracy: 0.0001)
     }
 }

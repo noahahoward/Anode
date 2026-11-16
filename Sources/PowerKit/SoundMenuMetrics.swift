@@ -43,8 +43,8 @@ public enum SoundMenuMetrics {
     public static let noticeHeight: CGFloat = 30
 
     // ── The "Apps" section (per-app volume; Anode's own, between the slider and Output) ──
-    /// One app: its name above a mute button and a slider.
-    public static let appRowHeight: CGFloat = 50
+    /// One app on one line, as tall as an output row: its icon (the name is its tooltip), a mute button, a slider, the percentage.
+    public static let appRowHeight: CGFloat = 32
     /// The line under the last app, as far under the row as the footer's is under the last output row.
     public static let appsDividerGap: CGFloat = 5
     public static let appsAfterDividerGap: CGFloat = 4
