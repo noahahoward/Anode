@@ -241,7 +241,7 @@ final class SoundMenuContentView: NSView {
                 guard let self, let m = self.model else { return }
                 self.controller?.setVolume(max(0, m.volume - 1 / 16))
             }
-            let up = IconButton(symbol: "speaker.wave.3.fill", size: 14, tint: 0.19, added: true, frame: NSRect(x: f.maxX + 4, y: f.minY - 1, width: 28, height: 18)) { [weak self] in
+            let up = IconButton(symbol: "speaker.wave.3.fill", size: 14, tint: 0.49, added: true, frame: NSRect(x: f.maxX + 4, y: f.minY - 1, width: 28, height: 18)) { [weak self] in
                 guard let self, let m = self.model else { return }
                 self.controller?.setVolume(min(1, m.volume + 1 / 16))
             }
@@ -403,7 +403,7 @@ final class ChoiceRow: HoverRow {
         glyph.imageScaling = .scaleNone
         glyph.wantsLayer = true
         glyph.layer?.compositingFilter = "plusL"   // added to what is behind, as macOS's are
-        glyph.contentTintColor = NSColor.white.withAlphaComponent(choice.enabled ? 0.30 : 0.12)
+        glyph.contentTintColor = NSColor.white.withAlphaComponent(choice.enabled ? 0.30 : 0.16)
         addSubview(glyph)
         let l = NSTextField(labelWithString: choice.title)
         l.font = .systemFont(ofSize: 13)
