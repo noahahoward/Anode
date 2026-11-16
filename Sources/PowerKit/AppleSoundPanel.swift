@@ -66,10 +66,14 @@ public struct AppleSoundPanel: Equatable {
                 let on = node.value == "1"
                 if node.description == name {
                     panel.devices.append(AppleDeviceRow(name: name, isSelected: on))
+                    section = ""
                 } else if node.description.hasPrefix(name + ", ") {
                     panel.devices.append(AppleDeviceRow(name: name, isSelected: on,
                                                         batteryText: String(node.description.dropFirst(name.count + 2))))
-                } else {
+                    section = ""
+                } else if name == panel.expandedDevice {
+                    // A choice only counts when it belongs to the device whose section is open: a device row whose label
+                    // differs from its id (a speaker's name is whatever it calls itself) is never read as one.
                     let row = AppleChoiceRow(section: section, title: node.description, isOn: on, enabled: node.enabled, device: name)
                     switch section {
                     case listeningHeading: panel.listening.append(row)

@@ -95,6 +95,25 @@ final class AppleSoundPanelTests: XCTestCase {
         XCTAssertEqual(AppleSoundPanel.parse(tree).settingsButtons, ["Test AirPods Pro Settings…", "Sound Settings…"])
     }
 
+    /// A row whose label is not what its id says (an AirPlay speaker with extra words in its label) must not become a
+    /// pressable choice of the open section just because it follows that section's rows.
+    func testAnOddDeviceRowAfterTheSectionsIsNotAChoice() {
+        var t = tree
+        let odd = device("Odd Speaker", desc: "Odd Speaker (AirPlay)", on: false)
+        t.children[0].children[3].children.insert(odd, at: 12)     // right after the Conversation Awareness rows
+        let p = AppleSoundPanel.parse(t)
+        XCTAssertEqual(p.conversation.map(\.title), ["Off", "On"])
+        XCTAssertFalse(p.listening.contains { $0.device == "Odd Speaker" })
+    }
+
+    func testChoicesOfADeviceThatIsNotExpandedAreIgnored() {
+        var t = tree
+        let stray = choice("Living Room Speaker", "Adaptive", on: false)
+        t.children[0].children[3].children.insert(stray, at: 6)    // among the listening rows
+        let p = AppleSoundPanel.parse(t)
+        XCTAssertEqual(p.listening.map(\.device), ["Test AirPods Pro", "Test AirPods Pro", "Test AirPods Pro"])
+    }
+
     func testUnknownTreeYieldsNoAppleRows() {
         let other = node("AXWindow", children: [node("AXGroup", children: [node("AXCheckBox", id: "something-else", desc: "X", value: "1")])])
         let p = AppleSoundPanel.parse(other)
