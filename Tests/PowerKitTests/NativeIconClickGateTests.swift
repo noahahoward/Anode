@@ -68,6 +68,15 @@ final class NativeIconClickGateTests: XCTestCase {
         XCTAssertEqual(asked, 0)
     }
 
+    func testAnIconOnAnotherDisplayDoesNotMakeEverythingAboveItWorthALook() {
+        var g = NativeIconClickGate()
+        let lower = CGRect(x: 1544, y: 1088, width: 22, height: 22)   // a bar on a display below the main one
+        var asked = 0
+        let far = g.decide(.down, at: CGPoint(x: lower.midX, y: 400), modifiers: false, icon: lower, isTheIcon: { asked += 1; return true })
+        XCTAssertEqual(far, .pass); XCTAssertEqual(asked, 0, "nothing is asked, nothing taken, that far from the icon")
+        XCTAssertEqual(g.decide(.down, at: CGPoint(x: lower.midX, y: lower.midY), modifiers: false, icon: lower, isTheIcon: { true }), .swallowAndOpen)
+    }
+
     func testNoKnownIconPassesEverything() {
         var g = NativeIconClickGate()
         XCTAssertEqual(g.decide(.down, at: inside, modifiers: false, icon: nil, isTheIcon: { true }), .pass)

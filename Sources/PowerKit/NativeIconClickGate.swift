@@ -36,8 +36,8 @@ public struct NativeIconClickGate {
         }
     }
 
-    /// In the menu bar, and not more than `slack` points from the icon's last known frame sideways.
+    /// Not more than `slack` points sideways, and 6 above or below, the icon's last known frame.
     public static func isNear(_ point: CGPoint, _ icon: CGRect) -> Bool {
-        point.y >= icon.minY - icon.minY && point.y <= icon.maxY + 6 && point.x >= icon.minX - slack && point.x <= icon.maxX + slack
+        point.y >= icon.minY - 6 && point.y <= icon.maxY + 6 && point.x >= icon.minX - slack && point.x <= icon.maxX + slack
     }
 }
