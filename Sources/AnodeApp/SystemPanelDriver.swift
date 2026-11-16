@@ -50,11 +50,11 @@ final class IconCover {
 
     /// Takes the idle picture, unless one of the same place is under `maxAge` seconds old. Needs Screen Recording; without
     /// it there is no picture and no cover, and the icon shows its lit look for a moment.
-    func prepare(frame: CGRect, maxAge: TimeInterval = 5, exact: Bool = false) async {
+    func prepare(frame: CGRect, maxAge: TimeInterval = 5, exact: Bool = false, leavingOut: Set<CGWindowID> = []) async {
         let cover = exact ? frame : Self.rect(for: frame)
         if imageFrame == cover, Date().timeIntervalSince(takenAt) < maxAge, image != nil { return }
         guard ScreenRecordingAccess.isGranted, #available(macOS 14.0, *) else { image = nil; return }
-        guard let (band, origin, scale) = await BarPictures.captureBand(of: cover, height: cover.maxY + 2, leavingOut: []) else {
+        guard let (band, origin, scale) = await BarPictures.captureBand(of: cover, height: cover.maxY + 2, leavingOut: leavingOut) else {
             image = nil; return
         }
         let crop = CGRect(x: (cover.minX - origin.x) * scale, y: (cover.minY - origin.y) * scale,
@@ -167,8 +167,10 @@ final class SystemPanelDriver: SystemPanelDriving {
         item = found.item; itemFrame = found.frame; route = found.route
         ccElement = Self.application(Self.controlCenter)
         await cover.prepare(frame: itemFrame)
-        // The first frames of macOS's panel are hidden too, unless Anode's own menu is already up (it is above them).
-        if !ownMenuIsUp() { await panelCover.prepare(frame: Self.panelRegion(for: itemFrame), maxAge: 0, exact: true) }
+        // The first frames of macOS's panel are hidden too. When Anode's own menu is already up the cover goes under it, and the
+        // picture is taken without that menu: the menu's glass blurs what is under it, so a bright panel there (even for two frames,
+        // measured at 120 fps) lightens the menu.
+        await panelCover.prepare(frame: Self.panelRegion(for: itemFrame), maxAge: 0, exact: true, leavingOut: ownMenuWindowIDs())
         machineStart(job, accessibility: true, personHasPanelOpen: panelOnScreen())
     }
 
@@ -364,10 +366,14 @@ final class SystemPanelDriver: SystemPanelDriving {
         CGRect(x: CGFloat(Int(item.maxX + 10.5 - 309) - 28), y: 0, width: 309 + 56, height: 640)
     }
 
-    private func ownMenuIsUp() -> Bool {
+    /// The window of Anode's own Sound menu, when it is on the screen.
+    private func ownMenuWindowIDs() -> Set<CGWindowID> {
         let me = ProcessInfo.processInfo.processIdentifier
         let list = (CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [[String: Any]]) ?? []
-        return list.contains { ($0[kCGWindowOwnerPID as String] as? Int32) == me && ($0[kCGWindowLayer as String] as? Int) == SoundMenuPanel.level }
+        return Set(list.compactMap { w in
+            guard (w[kCGWindowOwnerPID as String] as? Int32) == me, (w[kCGWindowLayer as String] as? Int) == SoundMenuPanel.level else { return nil }
+            return (w[kCGWindowNumber as String] as? Int).map { CGWindowID($0) }
+        })
     }
 
     private func panelOnScreen() -> Bool {
