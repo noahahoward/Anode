@@ -253,8 +253,12 @@ final class BatteryMenuContentView: NSView {
         case .app(let i):
             guard model.energyApps.indices.contains(i) else { return }
             addSubview(EnergyAppRow(frame: f.insetBy(dx: -BatteryRow.lead, dy: 0), name: model.energyApps[i].name))
-        case .gear, .chargeLimit:
-            break   // drawn in the parts that follow
+        case .gear:
+            addSubview(IconButton(symbol: "gearshape", size: 13, weight: .regular, tint: 0.42, added: true, frame: f) { [weak self] in
+                self?.controller?.pressGear()
+            })
+        case .chargeLimit:
+            break   // drawn in the part that follows
         case .footer:
             let b = FooterRow(frame: f.insetBy(dx: -BatteryRow.lead, dy: 0), title: Self.settingsTitle)
             b.onPick = { [weak self] in self?.controller?.pressSettings() }
@@ -369,10 +373,12 @@ final class EnergyAppRow: HoverRow {
 enum BatteryMenuRuntime {
 
     /// The menu over the real Mac. `driver` is shared with the Sound menu: both use macOS's Control Center one job at a time.
-    static func live(settings: Settings = .shared, driver: SystemPanelDriving = SystemPanelDriver()) -> BatteryMenuController {
+    static func live(settings: Settings = .shared, driver: SystemPanelDriving = SystemPanelDriver(),
+                     openBetaFeatures: @escaping () -> Void = {}) -> BatteryMenuController {
         let panel = BatteryMenuPanel()
         let controller = BatteryMenuController(settings: settings, driver: driver, accessibility: { AXIsProcessTrusted() },
-                                               presenter: panel, native: NativeMenuExtraIcon.battery())
+                                               presenter: panel, native: NativeMenuExtraIcon.battery(),
+                                               openBetaFeatures: openBetaFeatures)
         panel.controller = controller
         controller.start()
         return controller

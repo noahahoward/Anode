@@ -28,6 +28,8 @@ final class BatteryMenuController {
     private let pollInterval: TimeInterval
     /// macOS's panel is read once more this many seconds after the menu opens, if it is still open (0: not at all).
     private let followUpDelay: TimeInterval
+    /// What the gear does: Anode's Beta Features window.
+    private let openBetaFeatures: () -> Void
 
     /// How a URL is opened (the Settings pane); the tests replace it.
     var openURL: (URL) -> Void = { NSWorkspace.shared.open($0) }
@@ -47,15 +49,22 @@ final class BatteryMenuController {
     private var pressesInFlight = 0
 
     init(settings: Settings, driver: SystemPanelDriving, accessibility: @escaping () -> Bool, presenter: BatteryMenuPresenting,
-         native: NativeIconHosting, pollInterval: TimeInterval = 3, followUpDelay: TimeInterval = 1.5) {
+         native: NativeIconHosting, pollInterval: TimeInterval = 3, followUpDelay: TimeInterval = 1.5,
+         openBetaFeatures: @escaping () -> Void = {}) {
         self.settings = settings; self.driver = driver; self.accessibility = accessibility; self.presenter = presenter
         self.native = native; self.pollInterval = pollInterval; self.followUpDelay = followUpDelay
+        self.openBetaFeatures = openBetaFeatures
     }
 
     var isMenuOpen: Bool { presenter.isOpen }
 
     /// What the menu shows now: nil while nothing is known.
-    var model: BatteryMenuModel? { reading.map { BatteryMenuModel(apple: $0) } }
+    var model: BatteryMenuModel? {
+        guard let reading else { return nil }
+        var m = BatteryMenuModel(apple: reading)
+        m.showsGear = true
+        return m
+    }
 
     // ── Starting and stopping ───────────────────────────────────────────────
 
@@ -186,6 +195,11 @@ final class BatteryMenuController {
             // How it ended is read from macOS's panel, not assumed.
             if self.presenter.isOpen { self.readApple() }
         }
+    }
+
+    func pressGear() {
+        closeMenu()
+        openBetaFeatures()
     }
 
     func pressSettings() {

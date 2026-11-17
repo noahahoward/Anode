@@ -41,14 +41,14 @@ final class BatteryMenuControllerTests: XCTestCase {
         return node("AXWindow", sub: "AXSystemDialog", children: [node("AXGroup", sub: "AXHostingView", children: kids)])
     }
 
-    private func rig(enabled: Bool = true, trusted: Bool = true, lastReading: Bool = false) throws -> Rig {
+    private func rig(enabled: Bool = true, trusted: Bool = true, lastReading: Bool = false, openBeta: @escaping () -> Void = {}) throws -> Rig {
         let (defaults, suite) = try TestDefaults.make(owner: "BatteryMenu", test: name)
         let settings = Settings(defaults: defaults)
         settings.batteryMenuEnabled = enabled
         if lastReading { settings.batteryMenuLastReading = try JSONEncoder().encode(AppleBatteryPanel.parse(tree(selected: "low"))) }
         let driver = SoundMenuControllerTests.FakeDriver(), presenter = FakePresenter(), native = SoundMenuControllerTests.FakeNative()
         let c = BatteryMenuController(settings: settings, driver: driver, accessibility: { trusted }, presenter: presenter, native: native,
-                                      pollInterval: 0, followUpDelay: 0)
+                                      pollInterval: 0, followUpDelay: 0, openBetaFeatures: openBeta)
         c.start()
         return Rig(controller: c, driver: driver, presenter: presenter, native: native, settings: settings,
                    cleanup: { c.stop(); TestDefaults.destroy(defaults, suite) })
@@ -214,6 +214,23 @@ final class BatteryMenuControllerTests: XCTestCase {
         r.native.onClick?(r.native.frame!)
         r.controller.pressSettings()
         XCTAssertEqual(opened?.absoluteString, "x-apple.systempreferences:com.apple.Battery-Settings.extension")
+        XCTAssertFalse(r.presenter.isOpen)
+    }
+
+    // ── The gear ────────────────────────────────────────────────────────────
+
+    func testTheMenuShowsTheGear() throws {
+        let r = try rig(lastReading: true); defer { r.cleanup() }
+        r.native.onClick?(r.native.frame!)
+        XCTAssertEqual(r.presenter.shown.first?.showsGear, true)
+    }
+
+    func testThePressOfTheGearClosesTheMenuAndOpensBetaFeatures() throws {
+        var opened = 0
+        let r = try rig(lastReading: true, openBeta: { opened += 1 }); defer { r.cleanup() }
+        r.native.onClick?(r.native.frame!)
+        r.controller.pressGear()
+        XCTAssertEqual(opened, 1)
         XCTAssertFalse(r.presenter.isOpen)
     }
 }
