@@ -845,14 +845,24 @@ final class MenuSlider: NSView {
     private var dragging = false
 
     override func mouseDown(with event: NSEvent) {
+        if dragging { endDrag() }   // a press with no release before it: put the pointer settings back first
         stopGlide()
         dragging = true
         Self.dragBegan()
+        // Every position of the pointer, not the ones that fall on a display frame: the knob then goes where the pointer went.
+        savedCoalescing = NSEvent.isMouseCoalescingEnabled
+        NSEvent.isMouseCoalescingEnabled = false
         move(to: event)
     }
     override func mouseDragged(with event: NSEvent) { move(to: event) }
     override func mouseUp(with event: NSEvent) { endDrag() }
-    private func endDrag() { if dragging { dragging = false; Self.dragEnded() } }
+    private func endDrag() {
+        guard dragging else { return }
+        dragging = false
+        NSEvent.isMouseCoalescingEnabled = savedCoalescing
+        Self.dragEnded()
+    }
+    private var savedCoalescing = true
     override func viewWillMove(toSuperview newSuperview: NSView?) {
         if newSuperview == nil { endDrag() }   // taken out mid-drag: the drag is over
         super.viewWillMove(toSuperview: newSuperview)
@@ -861,6 +871,10 @@ final class MenuSlider: NSView {
     private func move(to event: NSEvent) {
         let x = convert(event.locationInWindow, from: nil).x
         value = min(1, max(0, Double((x - thumb / 2) / (bounds.width - thumb))))
+        // The knob first: drawn now and sent to the screen now. Changing the volume is a call into the audio system, and a drawing
+        // that waited for the end of this event (after it) showed the knob a step behind the pointer.
+        displayIfNeeded()
+        CATransaction.flush()
         onChange?(value)
     }
 }
