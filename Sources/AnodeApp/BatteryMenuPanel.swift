@@ -659,12 +659,12 @@ enum BatteryMenuRuntime {
     /// The menu over the real Mac. `driver` is shared with the Sound menu: both use macOS's Control Center one job at a time.
     static func live(settings: Settings = .shared, driver: SystemPanelDriving = SystemPanelDriver(),
                      openBetaFeatures: @escaping () -> Void = {}, ultra: UltraModeControlling? = nil, charge: ChargeLimiting? = nil,
-                     energyStats: @escaping () -> [String: EnergyStats] = { [:] }, onOpenChanged: @escaping (Bool) -> Void = { _ in }) -> BatteryMenuController {
+                     energyApps: @escaping () -> [SignificantEnergy.Candidate] = { [] }, onOpenChanged: @escaping (Bool) -> Void = { _ in }) -> BatteryMenuController {
         let panel = BatteryMenuPanel()
         let controller = BatteryMenuController(settings: settings, driver: driver, accessibility: { AXIsProcessTrusted() },
                                                presenter: panel, native: NativeMenuExtraIcon.battery(),
                                                openBetaFeatures: openBetaFeatures, ultra: ultra, charge: charge,
-                                               hardDrainPrompt: HardDrainAlert(), energyStats: energyStats,
+                                               hardDrainPrompt: HardDrainAlert(), energyApps: energyApps,
                                                onOpenChanged: onOpenChanged, statsInterval: 2)
         panel.controller = controller
         controller.start()

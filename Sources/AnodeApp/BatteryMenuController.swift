@@ -81,7 +81,10 @@ final class BatteryMenuController {
     private let charge: ChargeLimiting?
     private let hardDrainPrompt: HardDrainPrompting?
     /// Anode's measurement of every app it knows, by name; read only while the menu is open.
-    private let energyStats: () -> [String: EnergyStats]
+    /// Everything Anode has measured, as of its last sweep: the menu lists the apps of it that use significant energy (`SignificantEnergy`).
+    private let energyApps: () -> [SignificantEnergy.Candidate]
+    /// The names on the open menu now: a row at the line stays until its app falls well below it.
+    private var listedApps = Set<String>()
     /// Told when the menu opens and closes: while it is open the app measures at the pace of someone reading.
     private let onOpenChanged: (Bool) -> Void
     private var statsTimer: Timer?
@@ -117,7 +120,7 @@ final class BatteryMenuController {
     init(settings: Settings, driver: SystemPanelDriving, accessibility: @escaping () -> Bool, presenter: BatteryMenuPresenting,
          native: NativeIconHosting, pollInterval: TimeInterval = 3, followUpDelay: TimeInterval = 1.5,
          openBetaFeatures: @escaping () -> Void = {}, ultra: UltraModeControlling? = nil, charge: ChargeLimiting? = nil, hardDrainPrompt: HardDrainPrompting? = nil,
-         energyStats: @escaping () -> [String: EnergyStats] = { [:] }, onOpenChanged: @escaping (Bool) -> Void = { _ in },
+         energyApps: @escaping () -> [SignificantEnergy.Candidate] = { [] }, onOpenChanged: @escaping (Bool) -> Void = { _ in },
          statsInterval: TimeInterval = 0, afterPressReadDelay: TimeInterval = BatteryMenuMotion.badgeSettleSeconds + 0.1) {
         self.settings = settings; self.driver = driver; self.accessibility = accessibility; self.presenter = presenter
         self.native = native; self.pollInterval = pollInterval; self.followUpDelay = followUpDelay
@@ -125,7 +128,7 @@ final class BatteryMenuController {
         self.ultra = ultra
         self.charge = charge
         self.hardDrainPrompt = hardDrainPrompt
-        self.energyStats = energyStats
+        self.energyApps = energyApps
         self.onOpenChanged = onOpenChanged
         self.statsInterval = statsInterval
         self.afterPressReadDelay = afterPressReadDelay
@@ -138,10 +141,8 @@ final class BatteryMenuController {
         guard let reading else { return nil }
         var m = BatteryMenuModel(apple: reading)
         m.showsGear = true
-        if statsWanted, !m.energyApps.isEmpty {
-            let known = energyStats()
-            m.energyApps = m.energyApps.map { var a = $0; a.stats = known[$0.name]; return a }
-        }
+        // The apps are Anode's own list, from its measurements, not what macOS's panel says (that lags by a minute or two).
+        m.energyApps = SignificantEnergy.apps(from: energyApps(), alreadyListed: statsWanted ? listedApps : [])
         if let ultra, settings.ultraLowPowerEnabled {
             // While the mode runs only its row is checked (macOS's Low Power Mode is on underneath); a choice made meanwhile is
             // shown at once, and the mode's row is not checked any more.
@@ -250,6 +251,7 @@ final class BatteryMenuController {
     private func setStatsWanted(_ on: Bool) {
         guard on != statsWanted else { return }
         statsWanted = on
+        if !on { listedApps = [] }
         onOpenChanged(on)
         statsTimer?.invalidate(); statsTimer = nil
         if on, statsInterval > 0 {
@@ -261,6 +263,7 @@ final class BatteryMenuController {
     func refreshEnergyStats() {
         guard statsWanted else { return }
         redraw()
+        listedApps = Set(model?.energyApps.map(\.name) ?? [])
     }
 
     /// Reads macOS's panel. What came back replaces what was known; the menu is redrawn (or opened, if it was waiting for this).

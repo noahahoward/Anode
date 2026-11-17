@@ -461,7 +461,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         batteryMenu = BatteryMenuRuntime.live(driver: panelDriver, openBetaFeatures: { [weak self] in self?.betaFeaturesWindow.show() },
                                               ultra: ultraLowPower.map { LiveUltraMode($0.controller) },
                                               charge: chargeControl.map { LiveChargeLimit($0) },
-                                              energyStats: { [weak self] in self?.energyStatsByName() ?? [:] },
+                                              energyApps: { [weak self] in self?.energyCandidates() ?? [] },
                                               onOpenChanged: { [weak self] open in self?.batteryMenuIsOpen = open })
         // A click on one of the two icons is taken by Anode, so the other menu never hears it: each closes the other as it opens.
         // One panel takes the other's place in a single frame, as macOS's do: the one that was open goes without a fade.
@@ -2475,15 +2475,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         }
     }
 
-    /// Anode's measurement of each app, by name, from the last full sweep (what the Processes table shows).
-    func energyStatsByName() -> [String: EnergyStats] {
-        guard let s = lastSnapshot else { return [:] }
-        var out: [String: EnergyStats] = [:]
-        for a in s.apps {
-            out[a.name] = EnergyStats(pctPerHour: a.percentPerHour, cpuPercent: a.cpuPercent, memoryBytes: a.memoryBytes,
-                                      minutesBack: RuntimeCost.minutes(appWatts: a.watts, snapshot: s))
+    /// Everything Anode measured at its last full sweep (what the Processes table shows), for the Battery menu to pick the apps using
+    /// significant energy from (`SignificantEnergy`).
+    func energyCandidates() -> [SignificantEnergy.Candidate] {
+        guard let s = lastSnapshot else { return [] }
+        return s.apps.map { a in
+            SignificantEnergy.Candidate(name: a.name, isApp: a.isApp,
+                                        stats: EnergyStats(pctPerHour: a.percentPerHour, cpuPercent: a.cpuPercent, memoryBytes: a.memoryBytes,
+                                                           minutesBack: RuntimeCost.minutes(appWatts: a.watts, snapshot: s)))
         }
-        return out
     }
 
     func updateDetail() {

@@ -86,7 +86,7 @@ final class BatteryMenuControllerTests: XCTestCase {
     private func rig(enabled: Bool = true, trusted: Bool = true, lastReading: Bool = false, openBeta: @escaping () -> Void = {},
                      ultra: FakeUltra? = nil, ultraEnabled: Bool = false,
                      charge: FakeCharge? = nil, chargeEnabled: Bool = false, prompt: FakePrompt? = nil,
-                     stats: @escaping () -> [String: EnergyStats] = { [:] }, opened: @escaping (Bool) -> Void = { _ in }, afterPressRead: TimeInterval = 0) throws -> Rig {
+                     apps: @escaping () -> [SignificantEnergy.Candidate] = { [] }, opened: @escaping (Bool) -> Void = { _ in }, afterPressRead: TimeInterval = 0) throws -> Rig {
         let (defaults, suite) = try TestDefaults.make(owner: "BatteryMenu", test: name)
         let settings = Settings(defaults: defaults)
         settings.batteryMenuEnabled = enabled
@@ -96,7 +96,7 @@ final class BatteryMenuControllerTests: XCTestCase {
         let driver = SoundMenuControllerTests.FakeDriver(), presenter = FakePresenter(), native = SoundMenuControllerTests.FakeNative()
         let c = BatteryMenuController(settings: settings, driver: driver, accessibility: { trusted }, presenter: presenter, native: native,
                                       pollInterval: 0, followUpDelay: 0, openBetaFeatures: openBeta, ultra: ultra, charge: charge, hardDrainPrompt: prompt,
-                                      energyStats: stats, onOpenChanged: opened, afterPressReadDelay: afterPressRead)
+                                      energyApps: apps, onOpenChanged: opened, afterPressReadDelay: afterPressRead)
         c.start()
         return Rig(controller: c, driver: driver, presenter: presenter, native: native, settings: settings, ultra: ultra,
                    cleanup: { c.stop(); TestDefaults.destroy(defaults, suite) })
@@ -139,7 +139,7 @@ final class BatteryMenuControllerTests: XCTestCase {
         let m = try XCTUnwrap(r.presenter.shown.last)
         XCTAssertEqual(m.selectedModeID, "high")
         XCTAssertEqual(m.powerSource, "Power Adapter")
-        XCTAssertEqual(m.energyApps, [.init(name: "Safari")])
+        XCTAssertTrue(m.energyApps.isEmpty, "the apps are Anode's own list, not what macOS's panel says")
         XCTAssertEqual(r.presenter.shown.count, 2, "one opening, one correction")
     }
 
@@ -501,25 +501,49 @@ final class BatteryMenuControllerTests: XCTestCase {
 
     // ── Anode's figures beside each app ─────────────────────────────────────
 
-    func testAnAppListedByMacOSGetsAnodesFiguresFromItsName() throws {
-        let vsc = EnergyStats(pctPerHour: 0.32, cpuPercent: 4.1, memoryBytes: 1, minutesBack: nil)
-        let r = try rig(lastReading: true, stats: { ["Safari": vsc] }); defer { r.cleanup() }
-        r.native.onClick?(r.native.frame!)
-        r.driver.complete(0, .tree(tree(selected: "low", apps: ["Safari", "Unknown Helper"])))
-        let apps = try XCTUnwrap(r.presenter.shown.last?.energyApps)
-        XCTAssertEqual(apps.map(\.name), ["Safari", "Unknown Helper"])
-        XCTAssertEqual(apps[0].stats, vsc)
-        XCTAssertNil(apps[1].stats, "no figure is made up for an app Anode has not measured")
+    private func candidate(_ name: String, _ pct: Double, isApp: Bool = true) -> SignificantEnergy.Candidate {
+        .init(name: name, isApp: isApp, stats: EnergyStats(pctPerHour: pct, cpuPercent: 4.1, memoryBytes: 1, minutesBack: nil))
     }
 
-    func testTheFiguresAreFollowedWhileTheMenuIsOpen() throws {
-        var current = EnergyStats(pctPerHour: 0.1, cpuPercent: 1, memoryBytes: 0, minutesBack: nil)
-        let r = try rig(lastReading: true, stats: { ["Safari": current] }); defer { r.cleanup() }
+    func testTheAppsListedAreTheOnesAnodeMeasuresAboveTheMinimum_WhateverMacOSsPanelSays() throws {
+        let r = try rig(lastReading: true, apps: { [self.candidate("Safari", 0.9), self.candidate("Quiet", 0.03), self.candidate("kernel_task", 5, isApp: false)] })
+        defer { r.cleanup() }
         r.native.onClick?(r.native.frame!)
-        r.driver.complete(0, .tree(tree(selected: "low", apps: ["Safari"])))
-        current.pctPerHour = 0.9
+        r.driver.complete(0, .tree(tree(selected: "low", apps: ["Quiet", "Something macOS Lists"])))
+        let apps = try XCTUnwrap(r.presenter.shown.last?.energyApps)
+        XCTAssertEqual(apps.map(\.name), ["Safari"])
+        XCTAssertEqual(apps.first?.stats?.pctPerHour, 0.9)
+    }
+
+    func testTheFirstPictureAlreadyHasTheList() throws {
+        let r = try rig(lastReading: true, apps: { [self.candidate("Safari", 0.9)] }); defer { r.cleanup() }
+        r.native.onClick?(r.native.frame!)
+        XCTAssertEqual(r.presenter.shown.first?.energyApps.map(\.name), ["Safari"], "before macOS's panel has been read")
+    }
+
+    func testTheListFollowsAnodesMeasurementsWhileTheMenuIsOpen() throws {
+        var current = [candidate("Safari", 0.9)]
+        let r = try rig(lastReading: true, apps: { current }); defer { r.cleanup() }
+        r.native.onClick?(r.native.frame!)
+        current = [candidate("Safari", 0.9), candidate("Mail", 2.0)]
         r.controller.refreshEnergyStats()
-        XCTAssertEqual(r.presenter.shown.last?.energyApps.first?.stats?.pctPerHour, 0.9)
+        XCTAssertEqual(r.presenter.shown.last?.energyApps.map(\.name), ["Mail", "Safari"])
+        current = [candidate("Mail", 2.4), candidate("Safari", 0.4)]   // under the minimum, over what a listed row keeps
+        r.controller.refreshEnergyStats()
+        XCTAssertEqual(r.presenter.shown.last?.energyApps.map(\.name), ["Mail", "Safari"], "an app at the line does not flicker out")
+        current = [candidate("Mail", 2.4), candidate("Safari", 0.2)]
+        r.controller.refreshEnergyStats()
+        XCTAssertEqual(r.presenter.shown.last?.energyApps.map(\.name), ["Mail"])
+    }
+
+    func testARowNeedsTheFullMinimumAgainOnTheNextOpening() throws {
+        var current = [candidate("Safari", 0.9)]
+        let r = try rig(lastReading: true, apps: { current }); defer { r.cleanup() }
+        r.native.onClick?(r.native.frame!)          // opens: Safari listed
+        r.native.onClick?(r.native.frame!)          // closes
+        current = [candidate("Safari", 0.4)]
+        r.native.onClick?(r.native.frame!)          // opens again
+        XCTAssertTrue(r.presenter.shown.last?.energyApps.isEmpty ?? false)
     }
 
     func testTheMenuTellsTheAppWhileItIsOpenSoTheFiguresAreFresh() throws {
@@ -530,11 +554,10 @@ final class BatteryMenuControllerTests: XCTestCase {
         XCTAssertEqual(told, [true, false])
     }
 
-    func testTheFiguresAreNotAskedForWhileTheMenuIsClosed() throws {
-        var asked = 0
-        let r = try rig(lastReading: true, stats: { asked += 1; return [:] }); defer { r.cleanup() }
+    func testNothingIsDrawnForAMeasurementWhileTheMenuIsClosed() throws {
+        let r = try rig(lastReading: true, apps: { [self.candidate("Safari", 0.9)] }); defer { r.cleanup() }
         r.controller.refreshEnergyStats()
-        XCTAssertEqual(asked, 0)
+        XCTAssertTrue(r.presenter.shown.isEmpty)
     }
 
     // ── Only one of the two menus at a time ─────────────────────────────────
