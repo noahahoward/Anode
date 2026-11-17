@@ -1,3 +1,3 @@
 <!-- Two plain sentences saying what THIS update is. The update screen shows them; update.sh prints them.
      Rewrite them on every push. Say what changed for the person using the app, not how it was done. -->
-There is a new Battery menu in Beta Features: Anode's own copy of macOS's, with Ultra Low Power Mode, a charge limit with Top Up and Drain buttons, and Anode's own figures beside each app. The Sound and Battery menus also have a gear that opens Beta Features.
+The Battery menu now lists the apps using significant energy from Anode's own measurements, and it and the Sound menu swap with each other at once, as macOS's do. Both menus now follow Reduce Transparency, Increase Contrast and Reduce Motion, and VoiceOver can read them.

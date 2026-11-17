@@ -632,6 +632,8 @@ class HoverRow: NSView {
     /// Whether the row is on, for a row that is a checkbox (the output in use, a chosen mode); nil for a plain button.
     var spokenIsOn: Bool?
     override func isAccessibilityElement() -> Bool { spokenTitle != nil }
+    /// A row is one thing to VoiceOver: its icons and text are not read apart.
+    override func accessibilityChildren() -> [Any]? { spokenTitle != nil ? [] : super.accessibilityChildren() }
     override func accessibilityRole() -> NSAccessibility.Role? { spokenIsOn == nil ? .button : .checkBox }
     override func accessibilityLabel() -> String? { spokenTitle }
     override func accessibilityValue() -> Any? { spokenIsOn.map { $0 ? 1 : 0 } }
@@ -799,6 +801,7 @@ final class MuteButton: NSView {
     /// What VoiceOver says for the button ("Mute Safari").
     var spokenLabel: String?
     override func isAccessibilityElement() -> Bool { spokenLabel != nil }
+    override func accessibilityChildren() -> [Any]? { spokenLabel != nil ? [] : super.accessibilityChildren() }
     override func accessibilityRole() -> NSAccessibility.Role? { .button }
     override func accessibilityLabel() -> String? { spokenLabel }
     override func accessibilityPerformPress() -> Bool { onPress?(); return onPress != nil }
@@ -892,6 +895,7 @@ final class IconButton: NSView {
     /// What VoiceOver says for the button.
     private let spokenLabel: String?
     override func isAccessibilityElement() -> Bool { spokenLabel != nil }
+    override func accessibilityChildren() -> [Any]? { spokenLabel != nil ? [] : super.accessibilityChildren() }
     override func accessibilityRole() -> NSAccessibility.Role? { .button }
     override func accessibilityLabel() -> String? { spokenLabel }
     override func accessibilityPerformPress() -> Bool { action(); return true }

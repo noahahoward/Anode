@@ -49,7 +49,34 @@ final class HoverAfterScrollTests: XCTestCase {
         window.displayIfNeeded()
         RunLoop.current.run(until: Date().addingTimeInterval(0.3))
 
+        // On macOS 27.2.1 AppKit never refreshed a row's tracking areas in a test process (none exist even for a window on the
+        // screen), so what it does after a scroll cannot be seen here; `testARowDropsItsHoverWhenItsTrackingAreasAreRefreshed...`
+        // below checks the row's own part.
+        try XCTSkipIf(row.trackingAreas.isEmpty, "AppKit is not refreshing tracking areas in this test process")
         XCTAssertFalse(row.isHovering,
                        "the row kept its hover after scrolling away from the pointer")
+    }
+
+    /// The row's own part of it, without AppKit's: when its tracking areas are refreshed (which AppKit does after a scroll) and the
+    /// pointer is not over it, it stops being hovered.
+    func testARowDropsItsHoverWhenItsTrackingAreasAreRefreshedAwayFromThePointer() throws {
+        let row = SystemPane.BarRow(.row("Thermal sensor", "40°"))
+        row.onSelect = {}
+        let window = NSWindow(contentRect: NSRect(x: -20_000, y: -20_000, width: 300, height: 22),
+                              styleMask: .borderless, backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = row
+        defer { window.close() }
+        let entered = try XCTUnwrap(NSEvent.enterExitEvent(
+            with: .mouseEntered, location: .zero, modifierFlags: [], timestamp: 0,
+            windowNumber: window.windowNumber, context: nil, eventNumber: 0,
+            trackingNumber: 0, userData: nil))
+        row.mouseEntered(with: entered)
+        XCTAssertTrue(row.isHovering)
+
+        row.updateTrackingAreas()   // what AppKit calls after a scroll; the window is not key, so the pointer is not "under" the row
+
+        XCTAssertFalse(row.isHovering, "a refresh with the pointer elsewhere must drop the hover")
+        XCTAssertFalse(row.trackingAreas.isEmpty, "and the row asks for its tracking area again")
     }
 }

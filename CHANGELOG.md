@@ -7,6 +7,13 @@ feature or a visible change in how something works, the first only for a rewrite
 Nothing was bumped between 1.0.0 and 1.15.0. Those versions were assigned afterwards from the history and exist as
 git tags (`git show v1.7.0`); builds made before 1.15.0 still say 1.0.0 in their About box.
 
+## 1.23.1 — 2026-11-17
+- Battery menu: the apps under Using Significant Energy are now the apps Anode measures at 0.5 % of the battery an hour or more, the biggest first, instead of whatever macOS's panel lists a minute or two late. macOS itself lists an app once it uses about half a watt for a minute or two, which is what that line is. A row stays until its app falls well below the line, so rows do not come and go, and apps using almost nothing (0.03 %/hr) are no longer listed.
+- Going from the Battery menu to the Sound menu, or to another icon's menu in the menu bar, now swaps in one frame, as macOS does. Before, the old menu faded out over a quarter of a second while the new one appeared, and the fade stuttered while the new menu was opening. The fade when a menu closes is now smooth even while the Mac is busy.
+- Both menus follow the Display settings in Accessibility: Reduce Transparency gives a solid panel instead of glass, Increase Contrast makes the lines and the dim text stronger, and Reduce Motion takes away the fade and the springs.
+- VoiceOver can read both menus: the Energy Modes and the outputs are checkboxes with their names, the sliders say what they are and their value and step up and down, and the Top Up, Drain, gear and speaker buttons are named.
+- Beta Features now says, under the Sound and Battery menus, that macOS 27.3 and later may show "Accessing all apps" under the menu bar while Anode reads or presses macOS's own panel: that is macOS's own wording for Accessibility.
+
 ## 1.23.0 — 2026-11-17
 - Battery menu (Beta Features): Anode draws its own copy of macOS's Battery menu and opens it when you click macOS's own Battery icon. It has the Energy Mode rows, the power source (and the line macOS adds on the charger, such as "1h 51m until fully charged"), the apps using significant energy, and Battery Settings, and it looks and moves like macOS's: the same sizes, the same hover and press, the badge turning blue on a spring when you choose a mode, and a fade as it closes.
 - Next to each app under Using Significant Energy, Anode shows its own figures for it, such as "0.32 %/hr · 4.1% CPU". Rest on the row for its memory and the minutes quitting it would give back.

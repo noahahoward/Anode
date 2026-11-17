@@ -479,6 +479,7 @@ final class PillButton: NSView {
     private var spokenTitle = ""
     private var running = false
     override func isAccessibilityElement() -> Bool { true }
+    override func accessibilityChildren() -> [Any]? { [] }
     override func accessibilityRole() -> NSAccessibility.Role? { .button }
     override func accessibilityLabel() -> String? { spokenTitle }
     override func accessibilityValue() -> Any? { running ? "On" : nil }
