@@ -28,8 +28,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
     let sensorsPane = SensorsPane(frame: .zero)
     let fansPane = FansPane(frame: .zero)
     private lazy var helperOffer = HelperOfferAtLaunch.live(panel: fansPane.control, autoUpdateQuestionDue: { [unowned self] in
-        // Due, and somewhere to put it: a launch with no window leaves that question unasked, and must not hold this one.
-        !Settings.shared.autoUpdatePromptSeen && AutoUpdater.shared.isAvailable && self.main.window.isVisible
+        // The welcome of a fresh install goes before everything, window or not; the update question is due, and has somewhere to
+        // go: a launch with no window leaves that question unasked, and must not hold this one.
+        self.welcomeIsOwed
+            || (!Settings.shared.autoUpdatePromptSeen && AutoUpdater.shared.isAvailable && self.main.window.isVisible)
     })
     let resourcesPane = ResourcesPane(frame: .zero)
     /// Latest utilisation snapshot, so a pane can redraw without waiting for the
@@ -507,7 +509,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
             startInMenuBarOnly: Settings.shared.startInMenuBarOnly,
             widgetsEnabled: Settings.shared.menuBarWidgetsEnabled) {
             main.show()
-            offerAutoUpdate()
+            // A fresh install is welcomed first; the automatic-update question and the helper follow its answer.
+            offerWelcome()
         }
         // The helper, offered at once by a newly installed or updated Anode (it asks nothing while the question above is
         // still due, and once for each build).
@@ -672,6 +675,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
                 guard answer == .alertFirstButtonReturn else { return }
                 Settings.shared.autoUpdateEnabled = true
                 AutoUpdater.shared.confirmAccess()
+            }
+        }
+    }
+
+    /// A fresh install has not been welcomed yet (`FirstRunWelcome.isDue`).
+    private var welcomeIsOwed: Bool {
+        FirstRunWelcome.isDue(welcomeSeen: Settings.shared.welcomeSeen, autoUpdatePromptSeen: Settings.shared.autoUpdatePromptSeen,
+                              helperOfferedForBuild: UserDefaults.standard.string(forKey: HelperOfferAtLaunch.offeredKey) ?? "")
+    }
+
+    /// The very first thing a new install shows: a welcome saying what Anode may ask of the Mac and what macOS will show for it. A
+    /// sheet on the window, so a launch with no window leaves it owed for the next one (and holds the helper's offer back, which
+    /// would otherwise be the first thing asked). Anything else due follows its answer. A quit asked for from outside dismisses it
+    /// without the person having seen it: it stays owed.
+    private func offerWelcome() {
+        guard welcomeIsOwed else { return offerAutoUpdate() }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+            guard let self, self.main.window.isVisible, self.welcomeIsOwed else { return }
+            let notice = NSAlert()
+            notice.messageText = FirstRunWelcome.title
+            notice.informativeText = FirstRunWelcome.text
+            notice.addButton(withTitle: FirstRunWelcome.button)
+            notice.beginSheetModal(for: self.main.window) { answer in
+                guard answer == .alertFirstButtonReturn else { return }
+                Settings.shared.welcomeSeen = true
+                self.offerAutoUpdate()
+                // The helper's offer follows (it waits for the update question, if that is due).
+                self.helperOffer.runAfterLaunch(delay: 1)
             }
         }
     }

@@ -77,6 +77,7 @@ public final class Settings {
         public static let speedTestAgreed = "speedTestAgreed"
         public static let autoUpdateEnabled = "autoUpdateEnabled"
         public static let autoUpdatePromptSeen = "autoUpdatePromptSeen"
+        public static let welcomeSeen = "welcomeSeen"
         public static let menuBarBackdropMode = "menuBarBackdropMode"
         public static let menuBarBackdropBlur = "menuBarBackdropBlur"
         /// The stats panel's arrangement. Empty until the user edits it — see
@@ -228,6 +229,8 @@ public final class Settings {
         /// did.
         static let autoUpdateEnabled = false
         static let autoUpdatePromptSeen = false
+        /// OFF: a fresh install has not been welcomed.
+        static let welcomeSeen = false
         /// OFF: the menu bar backdrop is a beta feature, and the system's own bar is
         /// what a fresh install shows. The follow mode in particular needs Screen
         /// Recording, which nothing may ask for until the user has chosen it. Any
@@ -336,7 +339,7 @@ public final class Settings {
             minimumDisplayPercentPerHour: Double
         var showDaemons, startInMenuBarOnly, batteryLogging, menuBarWidgetsEnabled,
             fanControlEnabled, fanSyncEnabled, speedTestAgreed,
-            autoUpdateEnabled, autoUpdatePromptSeen: Bool
+            autoUpdateEnabled, autoUpdatePromptSeen, welcomeSeen: Bool
         var menuBarBackdropShowOnDesktop: Bool
         var windowSwitcherEnabled: Bool
         var windowSwitcherTrigger: WindowSwitcherTrigger
@@ -474,6 +477,12 @@ public final class Settings {
                                 Default.autoUpdatePromptSeen) }
         set { writeBool(Key.autoUpdatePromptSeen, \.autoUpdatePromptSeen, newValue,
                         Default.autoUpdatePromptSeen) }
+    }
+
+    /// Has the first-run welcome (`FirstRunWelcome`) been shown? A quit that dismissed it is not an answer.
+    public var welcomeSeen: Bool {
+        get { Settings.readBool(defaults, Key.welcomeSeen, Default.welcomeSeen) }
+        set { writeBool(Key.welcomeSeen, \.welcomeSeen, newValue, Default.welcomeSeen) }
     }
 
     /// What sits behind the menu bar. See `MenuBarBackdropMode`.
@@ -1591,6 +1600,7 @@ public final class Settings {
                                            Default.autoUpdateEnabled),
                autoUpdatePromptSeen: readBool(d, Key.autoUpdatePromptSeen,
                                               Default.autoUpdatePromptSeen),
+               welcomeSeen: readBool(d, Key.welcomeSeen, Default.welcomeSeen),
                menuBarBackdropShowOnDesktop: readBool(d, Key.menuBarBackdropShowOnDesktop,
                                                       Default.menuBarBackdropShowOnDesktop),
                windowSwitcherEnabled: readBool(d, Key.windowSwitcherEnabled, Default.windowSwitcherEnabled),
