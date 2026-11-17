@@ -787,8 +787,6 @@ final class LensView: NSView {
         case releasing(scale: CGFloat, ring: CGFloat, knob: CGFloat)
     }
     var shape: Shape = .pressed(scale: 1) { didSet { if shape != oldValue { needsDisplay = true } } }
-    var trackHeight: CGFloat = 6
-
     override var isFlipped: Bool { true }
     override var isOpaque: Bool { false }
     override func hitTest(_ point: NSPoint) -> NSView? { nil }   // the slider under it takes the mouse
@@ -806,13 +804,11 @@ final class LensView: NSView {
         let ctx = NSGraphicsContext.current
         ctx?.saveGraphicsState()
         outer.addClip()
-        NSColor(white: 1, alpha: 0.10 * ring).setFill(); box.fill()
+        NSColor(white: 1, alpha: 0.085 * ring).setFill(); box.fill()
         // Light gathers at the top and the bottom edge, and is least in the middle.
         NSGradient(colorsAndLocations: (NSColor(white: 1, alpha: 0.09 * ring), 0), (NSColor(white: 0, alpha: 0.03 * ring), 0.38),
                    (NSColor(white: 0, alpha: 0.03 * ring), 0.62), (NSColor(white: 1, alpha: 0.09 * ring), 1))?.draw(in: box, angle: 90)
-        // The track, seen through the glass.
-        let band = NSRect(x: box.minX, y: box.midY - trackHeight * 0.6, width: box.width, height: trackHeight * 1.2)
-        NSColor(white: 1, alpha: 0.06 * ring).setFill(); band.fill()
+        // (The track is seen through the glass: the slider's own track is under it, so nothing is added for it.)
         // The bright rim, strongest along the top and the bottom, almost none at the sides.
         let rim = NSBezierPath(rect: box)
         rim.append(NSBezierPath(roundedRect: box.insetBy(dx: 1.3, dy: 1.3), xRadius: box.height * 0.5 - 1.3, yRadius: box.height * 0.5 - 1.3))
@@ -899,7 +895,6 @@ final class MenuSlider: NSView {
         lensTimer?.invalidate()
         lens?.removeFromSuperview()
         let view = LensView(frame: lensRect())
-        view.trackHeight = compact ? 4 : 6
         view.shape = .pressed(scale: LensMotion.startScale)
         addSubview(view)
         lens = view
