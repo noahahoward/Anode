@@ -210,7 +210,7 @@ final class BatteryMenuContentView: NSView {
         case .title:
             addSubview(label("Battery", f, size: 13, weight: .bold, color: .labelColor))
         case .powerSource:
-            addSubview(label(AppleBatteryPanel.powerSourcePrefix + model.powerSource, f, size: 13, weight: .regular, color: .secondaryLabelColor))
+            addSubview(label(AppleBatteryPanel.powerSourcePrefix + model.powerSource, f, size: 13, weight: .regular, color: .secondaryLabelColor, dy: -0.5))
         case .divider:
             let d = NSView(frame: f)
             d.wantsLayer = true
@@ -228,18 +228,19 @@ final class BatteryMenuContentView: NSView {
             guard model.energyApps.indices.contains(i) else { return }
             addSubview(EnergyAppRow(frame: f, name: model.energyApps[i].name))
         case .footer:
-            let b = TextButton(frame: f, title: Self.settingsTitle) { [weak self] in self?.controller?.pressSettings() }
+            let b = TextButton(frame: f, title: Self.settingsTitle, textOffset: CGPoint(x: -2, y: 2)) { [weak self] in self?.controller?.pressSettings() }
             addSubview(b)
         }
     }
 
     static let settingsTitle = "Battery Settings…"
 
-    private func label(_ text: String, _ frame: CGRect, size: CGFloat, weight: NSFont.Weight, color: NSColor) -> NSTextField {
+    private func label(_ text: String, _ frame: CGRect, size: CGFloat, weight: NSFont.Weight, color: NSColor, dy: CGFloat = 0) -> NSTextField {
         let l = NSTextField(labelWithString: text)
         l.font = .systemFont(ofSize: size, weight: weight)
         l.textColor = color
-        l.frame = frame
+        // A text field draws its text 2 pt in from its frame: the layout's x is where the text itself starts (measured).
+        l.frame = frame.offsetBy(dx: -2, dy: dy)
         l.lineBreakMode = .byTruncatingTail
         return l
     }
@@ -261,7 +262,7 @@ final class ModeRow: HoverRow {
         name.font = .systemFont(ofSize: 13)
         name.textColor = SoundText.primary
         name.lineBreakMode = .byTruncatingTail
-        name.frame = NSRect(x: 34, y: 7, width: 240, height: 18)
+        name.frame = NSRect(x: 32.5, y: 8, width: 240, height: 18)
         addSubview(name)
     }
 
@@ -281,7 +282,7 @@ final class EnergyAppRow: HoverRow {
         l.font = .systemFont(ofSize: 13)
         l.textColor = SoundText.primary
         l.lineBreakMode = .byTruncatingTail
-        l.frame = NSRect(x: 24, y: 2, width: 250, height: 18)
+        l.frame = NSRect(x: 22, y: 3, width: 250, height: 18)
         addSubview(l)
     }
 
@@ -289,8 +290,16 @@ final class EnergyAppRow: HoverRow {
 
     /// The icon of the running app with this name, else the generic application icon.
     private static func icon(forAppNamed name: String) -> NSImage? {
-        NSWorkspace.shared.runningApplications.first { $0.localizedName == name }?.icon
-            ?? NSImage(named: NSImage.applicationIconName)
+        // macOS names an app as its bundle does ("Visual Studio Code"); the running app's own name can be shorter ("Code"), so the
+        // bundle's name and its file's name count too.
+        let running = NSWorkspace.shared.runningApplications.first { app in
+            if app.localizedName == name { return true }
+            guard let url = app.bundleURL else { return false }
+            let info = Bundle(url: url)?.infoDictionary
+            return url.deletingPathExtension().lastPathComponent == name || info?["CFBundleDisplayName"] as? String == name
+                || info?["CFBundleName"] as? String == name
+        }
+        return running?.icon ?? NSImage(named: NSImage.applicationIconName)
     }
 }
 

@@ -688,14 +688,15 @@ final class ChoiceRow: HoverRow {
 final class TextButton: HoverRow {
     /// macOS's highlight on these rows reaches to 6 pt from the panel's edges (the text stays where it is), is 2 pt taller than
     /// the row, and is brighter than the one on the output rows (all measured).
-    init(frame: NSRect, title: String, action: @escaping () -> Void) {
+    /// `textOffset` moves the text without moving the highlight.
+    init(frame: NSRect, title: String, textOffset: CGPoint = .zero, action: @escaping () -> Void) {
         super.init(frame: frame.insetBy(dx: -6, dy: -1))
         onPick = action
         hoverAlpha = 0.16
         let l = NSTextField(labelWithString: title)
         l.font = .systemFont(ofSize: 13)
         l.textColor = SoundText.primary
-        l.frame = NSRect(x: 6, y: 2, width: frame.width, height: 18)
+        l.frame = NSRect(x: 6 + textOffset.x, y: 2 + textOffset.y, width: frame.width, height: 18)
         addSubview(l)
     }
 
