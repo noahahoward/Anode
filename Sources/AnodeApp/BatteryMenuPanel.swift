@@ -197,6 +197,11 @@ final class BatteryMenuContentView: NSView {
     private let edge = EdgeView()
     /// macOS's glass measures a little lighter than the same glass drawn here (the Sound menu's measurement): added over the panel.
     private let baseLift = NSView()
+    /// Reduce Transparency: no glass, a plain panel of the appearance's colour, as macOS's own panels become.
+    private let solid = SolidPanelView()
+    /// What the menu was last drawn for; a change of the Display accessibility settings draws it again.
+    private var drawnFor: DisplayAccessibility?
+    private var accessibilityObserver: NSObjectProtocol?
 
     override var isFlipped: Bool { true }
     override var fittingSize: NSSize { size }
@@ -215,6 +220,14 @@ final class BatteryMenuContentView: NSView {
         layer?.cornerCurve = .continuous
         layer?.masksToBounds = true
         addSubview(material)
+        solid.wantsLayer = true
+        solid.isHidden = true
+        addSubview(solid)
+        accessibilityObserver = NSWorkspace.shared.notificationCenter.addObserver(forName: DisplayAccessibility.changed, object: nil, queue: .main) { [weak self] _ in
+            guard let self, let model = self.model else { return }
+            self.apply(model)
+            (self.window as? BatteryMenuPanel)?.contentChanged()
+        }
         if #available(macOS 26.0, *), SoundText.isDark {
             baseLift.wantsLayer = true
             baseLift.layer?.backgroundColor = NSColor.white.withAlphaComponent(0.016).cgColor
@@ -254,6 +267,9 @@ final class BatteryMenuContentView: NSView {
         // A slider is held: drawing the menu again would replace it under the pointer. What changed is drawn when it is let go.
         if MenuSlider.activeDrags > 0, self.model != nil { deferred = model; return }
         deferred = nil
+        // Reduce Transparency, Increase Contrast or Reduce Motion was turned on or off: everything is drawn again for it.
+        let accessibility = DisplayAccessibility.current
+        if accessibility != drawnFor { self.model = nil; drawnFor = accessibility; updateMaterial(accessibility) }
         if self.model == model { return }
         // Only which mode is in force changed: the badges turn, nothing is drawn again.
         // Only which mode is in force, or a figure beside an app, changed: those are changed where they are, so that a measurement coming
@@ -264,24 +280,37 @@ final class BatteryMenuContentView: NSView {
             same.modes = model.modes; same.energyApps = model.energyApps
             if same == model {
                 self.model = model
-                for m in model.modes { modeRows[m.id]?.setSelected(m.isSelected, animated: true) }
+                for m in model.modes { modeRows[m.id]?.setSelected(m.isSelected, animated: DisplayAccessibility.current.animates) }
                 for a in model.energyApps { appRows[a.name]?.update(stats: a.stats) }
                 return
             }
         }
         modeRows = [:]; appRows = [:]; chargeHeading = nil
         self.model = model
-        for v in subviews where v !== material && v !== baseLift { v.removeFromSuperview() }
+        for v in subviews where v !== material && v !== baseLift && v !== solid { v.removeFromSuperview() }
         let layout = BatteryMenuLayout.frames(for: model)
         size = NSSize(width: BatteryMenuMetrics.width, height: layout.height)
         frame.size = size
         material.frame = bounds
         baseLift.frame = bounds
+        solid.frame = bounds
         edge.frame = bounds
         for row in layout.rows { add(row, model) }
         addSubview(edge)   // last, so it is drawn over everything
         invalidateIntrinsicContentSize()
     }
+
+    /// Glass, or a plain panel when Reduce Transparency is on; a stronger edge under Increase Contrast.
+    private func updateMaterial(_ a: DisplayAccessibility) {
+        material.isHidden = a.glassIsSolid
+        baseLift.isHidden = a.glassIsSolid
+        solid.isHidden = !a.glassIsSolid
+        solid.needsDisplay = true
+        edge.layer?.borderColor = NSColor.white.withAlphaComponent(a.increaseContrast ? 0.35 : 0.05).cgColor
+    }
+
+    /// Whether the panel is drawn solid (Reduce Transparency) now.
+    var isSolid: Bool { !solid.isHidden }
 
     private func add(_ row: BatteryMenuLayout.LaidOutRow, _ model: BatteryMenuModel) {
         // Everything but the lines sits half a point lower than the measured frames say, on macOS's pixels (the highlight under the
@@ -298,7 +327,7 @@ final class BatteryMenuContentView: NSView {
         case .divider:
             let d = NSView(frame: f)
             d.wantsLayer = true
-            d.layer?.backgroundColor = cg(SoundText.ink(0.15))
+            d.layer?.backgroundColor = cg(SoundText.ink(DisplayAccessibility.current.dividerAlpha))
             addSubview(d)
         case .heading(let title):
             let l = label(title, f, size: 12, weight: .semibold, color: Self.secondary)
@@ -318,7 +347,7 @@ final class BatteryMenuContentView: NSView {
             appRows[app.name] = v
             addSubview(v)
         case .gear:
-            addSubview(IconButton(symbol: "gearshape", size: 13, weight: .regular, tint: 0.42, added: true, frame: f) { [weak self] in
+            addSubview(IconButton(symbol: "gearshape", size: 13, weight: .regular, tint: 0.42, added: true, label: "Beta Features", frame: f) { [weak self] in
                 self?.controller?.pressGear()
             })
         case .chargeLimit:
@@ -342,7 +371,10 @@ final class BatteryMenuContentView: NSView {
 
     /// The dimmer text (the power source, the headings): white at 0.40 over the glass in the dark appearance (measured: 131 on a
     /// 55 backdrop, where the system's secondary label colour gave 161); black at 0.42 in the light one (143 on 246).
-    static let secondary = SoundText.ink(dark: 0.40, light: 0.42)
+    static var secondary: NSColor {
+        let a = DisplayAccessibility.current
+        return SoundText.ink(dark: a.secondaryTextAlpha(dark: 0.40, light: 0.42, isDark: true), light: a.secondaryTextAlpha(dark: 0.40, light: 0.42, isDark: false))
+    }
 
     private func label(_ text: String, _ frame: CGRect, size: CGFloat, weight: NSFont.Weight, color: NSColor, dy: CGFloat = 0) -> NSTextField {
         let l = NSTextField(labelWithString: text)
@@ -404,6 +436,8 @@ final class ChargeLimitRowView: NSView {
 
         let slider = MenuSlider(frame: NSRect(x: 0, y: 4, width: topUp.frame.minX - Self.sliderGap, height: 24))   // room round the knob for its shadow
         slider.compact = true
+        slider.spokenLabel = "Charge limit"
+        slider.spokenValue = { [weak self, weak slider] in "\(self?.limit(at: slider?.value ?? 1) ?? charge.limit) percent" }
         slider.value = Double(charge.limit - range.lowerBound) / Double(range.upperBound - range.lowerBound)
         slider.onChange = { [weak self] v in
             guard let self else { return }
@@ -441,6 +475,19 @@ final class PillButton: NSView {
     }
 
     private let holdable: Bool
+    /// What VoiceOver says for the button, and whether it is on (blue: running).
+    private var spokenTitle = ""
+    private var running = false
+    override func isAccessibilityElement() -> Bool { true }
+    override func accessibilityRole() -> NSAccessibility.Role? { .button }
+    override func accessibilityLabel() -> String? { spokenTitle }
+    override func accessibilityValue() -> Any? { running ? "On" : nil }
+    override func isAccessibilityEnabled() -> Bool { isEnabled }
+    override func accessibilityPerformPress() -> Bool {
+        guard isEnabled else { return false }
+        onPress?()
+        return onPress != nil
+    }
     private let hold = HoldPress(seconds: PillButton.holdSeconds) { after, run in
         let item = DispatchWorkItem(block: run)
         DispatchQueue.main.asyncAfter(deadline: .now() + after, execute: item)
@@ -449,6 +496,8 @@ final class PillButton: NSView {
 
     init(title: String, running: Bool, holdable: Bool) {
         self.holdable = holdable
+        self.spokenTitle = title
+        self.running = running
         super.init(frame: NSRect(x: 0, y: 0, width: Self.width(for: title), height: Self.height))
         let badge = BadgeView(frame: bounds, fill: running ? NSColor.systemBlue : SoundText.ink(dark: 0.16, light: 0.08))
         let text = NSTextField(labelWithString: title)
@@ -513,6 +562,8 @@ final class ModeRow: HoverRow {
         super.init(frame: frame)
         cornerRadius = 10
         dimsWhenPressed = true
+        spokenTitle = mode.title
+        spokenIsOn = mode.isSelected
         badge.addSubview(greyGlyph)
         // The blue badge lies over the grey one, and the white glyph over the grey glyph; each fades in as the mode is chosen.
         let blueView = NSView(frame: badge.bounds)
@@ -578,6 +629,7 @@ final class FooterRow: HoverRow {
         super.init(frame: frame)
         cornerRadius = 10
         dimsWhenPressed = true
+        spokenTitle = title
         let l = NSTextField(labelWithString: title)
         l.font = .systemFont(ofSize: 13)
         l.textColor = SoundText.primary
@@ -600,6 +652,7 @@ final class EnergyAppRow: HoverRow {
         cornerRadius = 10
         dimsWhenPressed = true
         highlightable = true   // lit under the pointer; what pressing it does is not measured yet
+        spokenTitle = appName
         let icon = NSImageView(frame: NSRect(x: BatteryRow.lead - 1, y: 2, width: 18, height: 18))
         icon.image = Self.icon(forAppNamed: appName)
         icon.imageScaling = .scaleProportionallyUpOrDown
@@ -621,6 +674,7 @@ final class EnergyAppRow: HoverRow {
     /// Anode's figures for the app, on the right of the row, as dim as the power source line; the name gives way to them. Changed in
     /// place when a measurement comes in, so that nothing else of the menu is drawn again.
     func update(stats: EnergyStats?) {
+        spokenTitle = name.stringValue + (stats.map { ", " + $0.rowText.replacingOccurrences(of: "%/hr", with: " percent per hour").replacingOccurrences(of: "%", with: " percent") } ?? "")
         var nameWidth: CGFloat = 250
         if let stats {
             figures.stringValue = stats.rowText

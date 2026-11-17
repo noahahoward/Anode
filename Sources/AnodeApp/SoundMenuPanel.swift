@@ -269,9 +269,26 @@ final class SoundMenuContentView: NSView {
     /// macOS's glass measures about 4 levels lighter than the same glass drawn here, on dark and light backdrops alike, so
     /// that much is added over the whole panel (added, as the block lift below is: the difference does not scale).
     private let baseLift = NSView()
+    /// Reduce Transparency: no glass, a plain panel of the appearance's colour, as macOS's own panels become.
+    private let solid = SolidPanelView()
+    /// What the menu was last drawn for; a change of the Display accessibility settings draws it again.
+    private var drawnFor: DisplayAccessibility?
+    private var accessibilityObserver: NSObjectProtocol?
 
     override var isFlipped: Bool { true }
     override var fittingSize: NSSize { size }
+
+    /// Glass, or a plain panel when Reduce Transparency is on; a stronger edge under Increase Contrast.
+    private func updateMaterial(_ a: DisplayAccessibility) {
+        material.isHidden = a.glassIsSolid
+        baseLift.isHidden = a.glassIsSolid
+        solid.isHidden = !a.glassIsSolid
+        solid.needsDisplay = true
+        edge.layer?.borderColor = NSColor.white.withAlphaComponent(a.increaseContrast ? 0.35 : 0.05).cgColor
+    }
+
+    /// Whether the panel is drawn solid (Reduce Transparency) now.
+    var isSolid: Bool { !solid.isHidden }
 
     /// A dynamic colour as a layer colour, for the appearance this menu is in.
     private func cg(_ color: NSColor) -> CGColor {
@@ -287,6 +304,14 @@ final class SoundMenuContentView: NSView {
         layer?.cornerCurve = .continuous
         layer?.masksToBounds = true   // nothing square can show at the corners, and the shadow follows this shape
         addSubview(material)
+        solid.wantsLayer = true
+        solid.isHidden = true
+        addSubview(solid)
+        accessibilityObserver = NSWorkspace.shared.notificationCenter.addObserver(forName: DisplayAccessibility.changed, object: nil, queue: .main) { [weak self] _ in
+            guard let self, let model = self.model else { return }
+            self.apply(model)
+            (self.window as? SoundMenuPanel)?.contentChanged()
+        }
         if #available(macOS 26.0, *), SoundText.isDark {
             baseLift.wantsLayer = true
             baseLift.layer?.backgroundColor = NSColor.white.withAlphaComponent(0.016).cgColor
@@ -340,6 +365,10 @@ final class SoundMenuContentView: NSView {
     /// (driven by `step`) and returns true; the caller steps it and calls `finishGlide` at the end.
     @discardableResult
     func apply(_ model: SoundMenuModel, animated: Bool = false) -> Bool {
+        // Reduce Transparency, Increase Contrast or Reduce Motion was turned on or off: everything is drawn again for it.
+        let accessibility = DisplayAccessibility.current
+        if accessibility != drawnFor { self.model = nil; drawnFor = accessibility; updateMaterial(accessibility) }
+        let animated = animated && accessibility.animates
         if dragObserver == nil {
             dragObserver = NotificationCenter.default.addObserver(forName: .menuSliderDragEnded, object: nil, queue: .main) { [weak self] _ in
                 guard let self, let pending = self.deferred else { return }
@@ -385,12 +414,13 @@ final class SoundMenuContentView: NSView {
         let beforeViews = shownViews
         finishLeaving()
         clip.subviews.forEach { $0.removeFromSuperview() }
-        for v in subviews where v !== material && v !== baseLift { v.removeFromSuperview() }   // the edge is added again at the end
+        for v in subviews where v !== material && v !== baseLift && v !== solid { v.removeFromSuperview() }   // the edge is added again at the end
         let layout = SoundMenuLayout.frames(for: model)
         size = NSSize(width: SoundMenuMetrics.width, height: layout.height)
         frame.size = size
         material.frame = bounds
         baseLift.frame = bounds
+        solid.frame = bounds
         edge.frame = bounds
         groups = []
         var dividers = 0
@@ -449,7 +479,7 @@ final class SoundMenuContentView: NSView {
         let h = glide.fromHeight + (glide.toHeight - glide.fromHeight) * p
         size = NSSize(width: SoundMenuMetrics.width, height: h)
         frame.size = size
-        material.frame = bounds; baseLift.frame = bounds; edge.frame = bounds
+        material.frame = bounds; baseLift.frame = bounds; solid.frame = bounds; edge.frame = bounds
         for g in groups {
             guard let from = g.fromRow else { continue }   // a new row stands where it will end up; the footer uncovers it
             let r = CGRect(x: from.minX + (g.finalRow.minX - from.minX) * p, y: from.minY + (g.finalRow.minY - from.minY) * p,
@@ -490,26 +520,27 @@ final class SoundMenuContentView: NSView {
         case .title:
             addSubview(label("Sound", f, size: 13, weight: .bold, color: .labelColor))
         case .gear:
-            addSubview(IconButton(symbol: "gearshape", size: 13, weight: .regular, tint: 0.42, added: true, frame: f) { [weak self] in
+            addSubview(IconButton(symbol: "gearshape", size: 13, weight: .regular, tint: 0.42, added: true, label: "Beta Features", frame: f) { [weak self] in
                 self?.controller?.pressGear()
             })
         case .volumeSlider:
             let slider = MenuSlider(frame: f.insetBy(dx: 0, dy: -4))
             slider.value = model.muted ? 0 : model.volume
+            slider.spokenLabel = "Volume"
             slider.onChange = { [weak self] v in self?.controller?.setVolume(v) }
             mainSlider = slider
             addSubview(slider)
-            let down = IconButton(symbol: "speaker.fill", size: 14.5, tint: 0.49, added: true, frame: NSRect(x: 12, y: f.minY - 1, width: 18, height: 18)) { [weak self] in
+            let down = IconButton(symbol: "speaker.fill", size: 14.5, tint: 0.49, added: true, label: "Quieter", frame: NSRect(x: 12, y: f.minY - 1, width: 18, height: 18)) { [weak self] in
                 self?.controller?.stepVolumeFromIcon(up: false)
             }
-            let up = IconButton(symbol: "speaker.wave.3.fill", size: 14, tint: 0.49, added: true, frame: NSRect(x: f.maxX + 4, y: f.minY - 1, width: 28, height: 18)) { [weak self] in
+            let up = IconButton(symbol: "speaker.wave.3.fill", size: 14, tint: 0.49, added: true, label: "Louder", frame: NSRect(x: f.maxX + 4, y: f.minY - 1, width: 28, height: 18)) { [weak self] in
                 self?.controller?.stepVolumeFromIcon(up: true)
             }
             addSubview(down); addSubview(up)
         case .divider:
             let d = NSView(frame: f)
             d.wantsLayer = true
-            d.layer?.backgroundColor = cg(SoundText.ink(0.15))
+            d.layer?.backgroundColor = cg(SoundText.ink(DisplayAccessibility.current.dividerAlpha))
             addSubview(d)
         case .heading(let title):
             addSubview(label(title, f, size: 12, weight: .semibold, color: .secondaryLabelColor))
@@ -595,6 +626,21 @@ class HoverRow: NSView {
 
     override var isFlipped: Bool { true }
 
+    // ── VoiceOver: macOS's rows are buttons and checkboxes with a name; so are these ──
+    /// What VoiceOver says for the row. Nil leaves the row out of what it reads.
+    var spokenTitle: String?
+    /// Whether the row is on, for a row that is a checkbox (the output in use, a chosen mode); nil for a plain button.
+    var spokenIsOn: Bool?
+    override func isAccessibilityElement() -> Bool { spokenTitle != nil }
+    override func accessibilityRole() -> NSAccessibility.Role? { spokenIsOn == nil ? .button : .checkBox }
+    override func accessibilityLabel() -> String? { spokenTitle }
+    override func accessibilityValue() -> Any? { spokenIsOn.map { $0 ? 1 : 0 } }
+    override func accessibilityPerformPress() -> Bool {
+        guard highlightable, let onPick else { return false }
+        onPick()
+        return true
+    }
+
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
         for t in trackingAreas { removeTrackingArea(t) }
@@ -646,6 +692,8 @@ final class DeviceRow: HoverRow {
     init(frame: NSRect, device: SoundMenuModel.Device, expanded: Bool, expandable: Bool) {
         self.expanded = expanded
         super.init(frame: frame)
+        spokenTitle = device.name
+        spokenIsOn = device.isSelected
         let circle = BadgeView(frame: NSRect(x: 9, y: 3, width: 26, height: 26),
                                fill: device.isSelected ? NSColor.systemBlue : SoundText.ink(dark: 0.16, light: 0.07))
         let glyph = NSImageView(frame: NSRect(x: 4, y: 4, width: 18, height: 18))
@@ -701,6 +749,8 @@ final class ChoiceRow: HoverRow {
     init(frame: NSRect, choice: AppleChoiceRow) {
         super.init(frame: frame)
         highlightable = choice.enabled
+        spokenTitle = choice.title
+        spokenIsOn = choice.isOn
         if choice.isOn {
             let check = NSImageView(frame: NSRect(x: 13.35, y: 3.9, width: 18, height: 18))
             check.image = symbol("checkmark", size: 13, weight: .semibold)
@@ -730,6 +780,7 @@ final class TextButton: HoverRow {
     init(frame: NSRect, title: String, textOffset: CGPoint = .zero, action: @escaping () -> Void) {
         super.init(frame: frame.insetBy(dx: -6, dy: -1))
         onPick = action
+        spokenTitle = title
         hoverAlpha = 0.16
         let l = NSTextField(labelWithString: title)
         l.font = .systemFont(ofSize: 13)
@@ -745,6 +796,12 @@ final class TextButton: HoverRow {
 final class MuteButton: NSView {
     private let image = NSImageView()
     var onPress: (() -> Void)?
+    /// What VoiceOver says for the button ("Mute Safari").
+    var spokenLabel: String?
+    override func isAccessibilityElement() -> Bool { spokenLabel != nil }
+    override func accessibilityRole() -> NSAccessibility.Role? { .button }
+    override func accessibilityLabel() -> String? { spokenLabel }
+    override func accessibilityPerformPress() -> Bool { onPress?(); return onPress != nil }
     init(frame: NSRect, symbol: String, tint: CGFloat) {
         super.init(frame: frame)
         image.frame = bounds
@@ -809,6 +866,8 @@ final class AppVolumeRowView: NSView {
         icon.toolTip = app.name
         muteButton.set(symbol: app.muteSymbol, tint: app.muted ? 0.8 : 0.5)
         slider.dimmed = app.muted
+        slider.spokenLabel = "\(app.name) volume"
+        muteButton.spokenLabel = app.muted ? "Unmute \(app.name)" : "Mute \(app.name)"
         if abs(slider.value - app.sliderPosition) > 0.0005 {
             if animated { slider.glide(to: app.sliderPosition) } else { slider.value = app.sliderPosition }
         }
@@ -830,9 +889,17 @@ final class IconButton: NSView {
     private let action: () -> Void
 
     /// `added`: drawn added to what is behind it, as macOS draws its secondary icons (about the same lift on any backdrop).
+    /// What VoiceOver says for the button.
+    private let spokenLabel: String?
+    override func isAccessibilityElement() -> Bool { spokenLabel != nil }
+    override func accessibilityRole() -> NSAccessibility.Role? { .button }
+    override func accessibilityLabel() -> String? { spokenLabel }
+    override func accessibilityPerformPress() -> Bool { action(); return true }
+
     init(symbol name: String, size: CGFloat = 12, weight: NSFont.Weight = .semibold, tint: CGFloat = 0.6, added: Bool = false,
-         frame: NSRect, action: @escaping () -> Void) {
+         label: String? = nil, frame: NSRect, action: @escaping () -> Void) {
         self.action = action
+        self.spokenLabel = label
         super.init(frame: frame)
         let v = NSImageView(frame: bounds)
         v.image = symbol(name, size: size, weight: weight)
@@ -937,6 +1004,24 @@ final class MenuSlider: NSView {
 
     private func stopGlide() { glideTimer?.invalidate(); glideTimer = nil; shown = value }
     var onChange: ((Double) -> Void)?
+
+    // ── VoiceOver: a slider with a name and a value, which it can step up and down ──
+    /// What VoiceOver says for the slider ("Volume"). Nil leaves it out.
+    var spokenLabel: String?
+    /// The value as VoiceOver says it; the percentage of the track when not given.
+    var spokenValue: (() -> String)?
+    override func isAccessibilityElement() -> Bool { spokenLabel != nil }
+    override func accessibilityRole() -> NSAccessibility.Role? { .slider }
+    override func accessibilityLabel() -> String? { spokenLabel }
+    override func accessibilityValue() -> Any? { spokenValue?() ?? "\(Int((value * 100).rounded())) percent" }
+    override func accessibilityPerformIncrement() -> Bool { nudge(0.05) }
+    override func accessibilityPerformDecrement() -> Bool { nudge(-0.05) }
+    private func nudge(_ step: Double) -> Bool {
+        let v = min(1, max(0, value + step))
+        value = v
+        onChange?(v); onEnd?(v)
+        return true
+    }
     /// The pointer was let go, with the value the knob ended on (for a setting that is written once, not on every step of a drag).
     var onEnd: ((Double) -> Void)?
     /// The slider of an app row: the same drawing as the volume slider, smaller, and dimmed while that app is muted.

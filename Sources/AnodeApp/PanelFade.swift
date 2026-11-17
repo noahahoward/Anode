@@ -26,6 +26,9 @@ final class PanelFade {
     static func close(_ panel: NSWindow, seconds: TimeInterval = BatteryMenuMotion.fadeOutSeconds, then orderOut: () -> Void) {
         // The count starts at the click, not when the picture is ready: taking it costs a frame or two.
         let clicked = CACurrentMediaTime()
+        // Reduce Motion: the menu goes at once, as macOS's does.
+        let seconds = DisplayAccessibility.current.fadeSeconds(seconds)
+        guard seconds > 0 else { orderOut(); return }
         guard panel.isVisible, ScreenRecordingAccess.isGranted, let screen = NSScreen.screens.first else { orderOut(); return }
         // The panel and its shadow: more below it than above, and nothing above the top of the screen.
         let f = panel.frame
