@@ -30,14 +30,4 @@ final class MenuSliderDragTests: XCTestCase {
         slider.mouseDragged(with: drag(at: 120, in: window))
         XCTAssertEqual(wasDrawnWhenTheChangeWasMade, true)
     }
-
-    func testEveryPointerSampleOfADragReachesTheSlider() {
-        let (window, slider) = rig(); defer { window.close() }
-        let before = NSEvent.isMouseCoalescingEnabled
-        slider.mouseDown(with: NSEvent.mouseEvent(with: .leftMouseDown, location: NSPoint(x: 60, y: 18), modifierFlags: [], timestamp: 0,
-                                                  windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1)!)
-        XCTAssertFalse(NSEvent.isMouseCoalescingEnabled, "while the knob is held, samples are not merged into fewer")
-        slider.mouseUp(with: drag(at: 60, in: window))
-        XCTAssertEqual(NSEvent.isMouseCoalescingEnabled, before)
-    }
 }

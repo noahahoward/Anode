@@ -849,9 +849,7 @@ final class MenuSlider: NSView {
         stopGlide()
         dragging = true
         Self.dragBegan()
-        // Every position of the pointer, not the ones that fall on a display frame: the knob then goes where the pointer went.
-        savedCoalescing = NSEvent.isMouseCoalescingEnabled
-        NSEvent.isMouseCoalescingEnabled = false
+
         move(to: event)
     }
     override func mouseDragged(with event: NSEvent) { move(to: event) }
@@ -859,10 +857,8 @@ final class MenuSlider: NSView {
     private func endDrag() {
         guard dragging else { return }
         dragging = false
-        NSEvent.isMouseCoalescingEnabled = savedCoalescing
         Self.dragEnded()
     }
-    private var savedCoalescing = true
     override func viewWillMove(toSuperview newSuperview: NSView?) {
         if newSuperview == nil { endDrag() }   // taken out mid-drag: the drag is over
         super.viewWillMove(toSuperview: newSuperview)
