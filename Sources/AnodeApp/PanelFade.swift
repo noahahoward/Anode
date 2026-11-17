@@ -47,6 +47,13 @@ final class PanelFade {
         let view = NSImageView(frame: NSRect(origin: .zero, size: r.size))
         view.image = NSImage(cgImage: shot, size: r.size)
         view.imageScaling = .scaleAxesIndependently
+        // Only the panel itself fades: what is round it is live, and a click that brought another window forward would otherwise show the
+        // old picture of it for a quarter of a second. (The shadow is not in the picture, and goes at once.)
+        view.wantsLayer = true
+        let mask = CAShapeLayer()
+        let panelInPicture = CGRect(x: f.minX - r.minX, y: f.minY - r.minY, width: f.width, height: f.height)
+        mask.path = CGPath(roundedRect: panelInPicture, cornerWidth: 17, cornerHeight: 17, transform: nil)
+        view.layer?.mask = mask
         w.contentView = view
         w.alphaValue = 1
         w.orderFrontRegardless()
