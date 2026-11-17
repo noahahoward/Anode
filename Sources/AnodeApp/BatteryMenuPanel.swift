@@ -5,7 +5,7 @@ import PowerKit
 //
 // The same glass and the same row looks as the Sound menu (macOS's two panels share them), laid out by `BatteryMenuLayout`
 // from the numbers measured on macOS's own Battery panel. The panel is a window of its own that never takes focus, opens where
-// macOS's would (right edge 10.5 pt past the icon's, 2 pt under the bar) and closes on a click anywhere else or on Esc.
+// macOS's would (right edge 10.5 pt past the icon's, 1 pt under the bar) and closes on a click anywhere else or on Esc.
 
 /// The glyph on an Energy Mode's badge. Automatic and Low Power are SF Symbols; High Power's (a battery with three triangles in
 /// it) is not one the system gives out by name, so it is drawn, in the same outline.
@@ -121,7 +121,7 @@ final class BatteryMenuPanel: NSPanel, BatteryMenuPresenting {
         let bar = max(NSStatusBar.system.thickness, screen.frame.height - screen.visibleFrame.maxY)
         var x = anchor.maxX + 10.5 - size.width
         x = min(max(8, x), screen.frame.width - size.width - 8)
-        setFrame(NSRect(x: x, y: screen.frame.height - bar - 2 - size.height, width: size.width, height: size.height), display: true)
+        setFrame(NSRect(x: x, y: screen.frame.height - bar - BatteryMenuMetrics.gapBelowBar - size.height, width: size.width, height: size.height), display: true)
         // The shadow follows what is drawn; worked out before the rounded glass had drawn it comes out square at the corners.
         DispatchQueue.main.async { [weak self] in self?.invalidateShadow() }
     }
@@ -208,16 +208,16 @@ final class BatteryMenuContentView: NSView {
         let f = row.frame
         switch row.kind {
         case .title:
-            addSubview(label("Battery", f, size: 13, weight: .bold, color: .labelColor))
+            addSubview(label("Battery", f, size: 13, weight: .semibold, color: .labelColor, dy: BatteryMenuMetrics.contentDrop))
         case .powerSource:
-            addSubview(label(AppleBatteryPanel.powerSourcePrefix + model.powerSource, f, size: 13, weight: .regular, color: .secondaryLabelColor, dy: -0.5))
+            addSubview(label(AppleBatteryPanel.powerSourcePrefix + model.powerSource, f, size: 12, weight: .regular, color: Self.secondary, dy: BatteryMenuMetrics.contentDrop))
         case .divider:
             let d = NSView(frame: f)
             d.wantsLayer = true
             d.layer?.backgroundColor = cg(SoundText.ink(0.15))
             addSubview(d)
         case .heading(let title):
-            addSubview(label(title, f, size: 12, weight: .semibold, color: .secondaryLabelColor))
+            addSubview(label(title, f, size: 12, weight: .semibold, color: Self.secondary, dy: BatteryMenuMetrics.contentDrop))
         case .mode(let i):
             guard model.modes.indices.contains(i) else { return }
             let mode = model.modes[i]
@@ -228,12 +228,16 @@ final class BatteryMenuContentView: NSView {
             guard model.energyApps.indices.contains(i) else { return }
             addSubview(EnergyAppRow(frame: f, name: model.energyApps[i].name))
         case .footer:
-            let b = TextButton(frame: f, title: Self.settingsTitle, textOffset: CGPoint(x: -2, y: 2)) { [weak self] in self?.controller?.pressSettings() }
+            let b = TextButton(frame: f, title: Self.settingsTitle, textOffset: CGPoint(x: -2, y: 2 + BatteryMenuMetrics.contentDrop)) { [weak self] in self?.controller?.pressSettings() }
             addSubview(b)
         }
     }
 
     static let settingsTitle = "Battery Settings…"
+
+    /// The dimmer text (the power source, the headings): white at 0.40 over the glass in the dark appearance (measured: 131 on a
+    /// 55 backdrop, where the system's secondary label colour gave 161).
+    static let secondary = SoundText.ink(dark: 0.40, light: 0.5)
 
     private func label(_ text: String, _ frame: CGRect, size: CGFloat, weight: NSFont.Weight, color: NSColor, dy: CGFloat = 0) -> NSTextField {
         let l = NSTextField(labelWithString: text)
@@ -250,19 +254,19 @@ final class BatteryMenuContentView: NSView {
 final class ModeRow: HoverRow {
     init(frame: NSRect, mode: BatteryMenuModel.EnergyMode) {
         super.init(frame: frame)
-        let badge = BadgeView(frame: NSRect(x: 0, y: 3, width: 26, height: 26),
+        let badge = BadgeView(frame: NSRect(x: 0, y: 3 + BatteryMenuMetrics.contentDrop, width: 26, height: 26),
                               fill: mode.isSelected ? NSColor.systemBlue : SoundText.ink(dark: 0.16, light: 0.07))
         let glyph = NSImageView(frame: NSRect(x: 2, y: 4, width: 22, height: 18))
-        glyph.image = BatteryGlyphs.image(for: mode.id, pointSize: 13)
+        glyph.image = BatteryGlyphs.image(for: mode.id, pointSize: 14)
         glyph.imageScaling = .scaleProportionallyDown
-        glyph.contentTintColor = mode.isSelected ? .white : SoundText.ink(0.55)
+        glyph.contentTintColor = mode.isSelected ? .white : SoundText.ink(0.42)
         badge.addSubview(glyph)
         addSubview(badge)
         let name = NSTextField(labelWithString: mode.title)
         name.font = .systemFont(ofSize: 13)
         name.textColor = SoundText.primary
         name.lineBreakMode = .byTruncatingTail
-        name.frame = NSRect(x: 32.5, y: 8, width: 240, height: 18)
+        name.frame = NSRect(x: 32, y: 8 + BatteryMenuMetrics.contentDrop, width: 240, height: 18)
         addSubview(name)
     }
 
@@ -274,7 +278,7 @@ final class EnergyAppRow: HoverRow {
     init(frame: NSRect, name: String) {
         super.init(frame: frame)
         highlightable = false   // what pressing it does is not measured yet
-        let icon = NSImageView(frame: NSRect(x: 0, y: 2, width: 18, height: 18))
+        let icon = NSImageView(frame: NSRect(x: 0, y: 2 + BatteryMenuMetrics.contentDrop, width: 18, height: 18))
         icon.image = Self.icon(forAppNamed: name)
         icon.imageScaling = .scaleProportionallyUpOrDown
         addSubview(icon)
@@ -282,7 +286,7 @@ final class EnergyAppRow: HoverRow {
         l.font = .systemFont(ofSize: 13)
         l.textColor = SoundText.primary
         l.lineBreakMode = .byTruncatingTail
-        l.frame = NSRect(x: 22, y: 3, width: 250, height: 18)
+        l.frame = NSRect(x: 22, y: 3 + BatteryMenuMetrics.contentDrop, width: 250, height: 18)
         addSubview(l)
     }
 
