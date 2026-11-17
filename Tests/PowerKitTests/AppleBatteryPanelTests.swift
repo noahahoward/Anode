@@ -70,4 +70,21 @@ final class AppleBatteryPanelTests: XCTestCase {
         let p = AppleBatteryPanel.parse(tree())
         XCTAssertEqual(try JSONDecoder().decode(AppleBatteryPanel.self, from: JSONEncoder().encode(p)), p)
     }
+
+    // On the charger macOS adds a line under the power source (measured: "1h 51m until fully charged", another static text with the same id).
+    func testALineUnderThePowerSourceIsKept() {
+        var t = tree(source: "Power Adapter")
+        var kids = t.children[0].children
+        kids.insert(node("AXStaticText", id: "battery-header", value: "1h 51m until fully charged"), at: 2)
+        t = node("AXWindow", sub: "AXSystemDialog", children: [node("AXGroup", sub: "AXHostingView", children: kids)])
+        let p = AppleBatteryPanel.parse(t)
+        XCTAssertEqual(p.powerSource, "Power Adapter")
+        XCTAssertEqual(p.statusLine, "1h 51m until fully charged")
+        XCTAssertEqual(BatteryMenuModel(apple: p).statusLine, "1h 51m until fully charged")
+    }
+
+    func testOnBatteryThereIsNoSuchLine() {
+        XCTAssertNil(AppleBatteryPanel.parse(tree()).statusLine)
+    }
 }
+

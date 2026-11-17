@@ -275,6 +275,8 @@ final class BatteryMenuContentView: NSView {
             addSubview(label("Battery", f, size: 13, weight: .semibold, color: SoundText.primary))
         case .powerSource:
             addSubview(label(AppleBatteryPanel.powerSourcePrefix + model.powerSource, f, size: 12, weight: .regular, color: Self.secondary))
+        case .statusLine:
+            addSubview(label(model.statusLine ?? "", f, size: 12, weight: .regular, color: Self.secondary))
         case .divider:
             let d = NSView(frame: f)
             d.wantsLayer = true

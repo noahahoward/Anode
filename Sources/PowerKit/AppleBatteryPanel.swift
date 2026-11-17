@@ -13,6 +13,8 @@ public struct AppleBatteryPanel: Equatable, Codable {
 
     /// The word after "Power Source: " (`Battery`, `Power Adapter`).
     public var powerSource: String?
+    /// The line under the power source while on the charger ("1h 51m until fully charged"): another static text with the same id.
+    public var statusLine: String?
     public var modes: [Mode] = []
     /// The names under "Using Significant Energy".
     public var energyApps: [String] = []
@@ -36,6 +38,10 @@ public struct AppleBatteryPanel: Equatable, Codable {
             switch node.role {
             case "AXStaticText" where node.identifier == headerID && node.value.hasPrefix(powerSourcePrefix):
                 panel.powerSource = String(node.value.dropFirst(powerSourcePrefix.count))
+            case "AXStaticText" where node.identifier == headerID && panel.powerSource != nil && !node.value.isEmpty && panel.statusLine == nil
+                && panel.modes.isEmpty:
+                // After the power source and before the modes: the line macOS adds under it on the charger.
+                panel.statusLine = node.value
             case "AXHeading":
                 section = node.description
             case "AXCheckBox" where node.identifier.hasPrefix(modePrefix):
@@ -56,7 +62,7 @@ public struct AppleBatteryPanel: Equatable, Codable {
 extension BatteryMenuModel {
     /// The menu as macOS's panel shows it.
     public init(apple: AppleBatteryPanel) {
-        self.init(powerSource: apple.powerSource ?? "",
+        self.init(powerSource: apple.powerSource ?? "", statusLine: apple.statusLine,
                   modes: apple.modes.map { EnergyMode(id: $0.id, title: $0.title, isSelected: $0.isSelected) },
                   energyApps: apple.energyApps.map { EnergyApp(name: $0) })
     }

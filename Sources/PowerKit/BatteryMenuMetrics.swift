@@ -17,6 +17,8 @@ public enum BatteryMenuMetrics {
     public static let titleHeight: CGFloat = 16
     public static let powerSourceY: CGFloat = 37.5
     public static let powerSourceHeight: CGFloat = 15
+    /// On the charger a second dim line sits this far under the power source, and everything under it moves down by as much.
+    public static let statusLineStep: CGFloat = 18
     public static let firstDividerY: CGFloat = 59.5
     public static let headingHeight: CGFloat = 15
     public static let energyHeadingY: CGFloat = 68.5

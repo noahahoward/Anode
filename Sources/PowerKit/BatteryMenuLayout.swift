@@ -6,6 +6,8 @@ public enum BatteryMenuLayout {
     public enum RowKind: Equatable {
         case title
         case powerSource
+        /// "1h 51m until fully charged": under the power source, on the charger only.
+        case statusLine
         case divider
         case heading(String)
         case mode(Int)
@@ -42,9 +44,12 @@ public enum BatteryMenuLayout {
                                                               width: M.gearSize, height: M.gearSize)))
         }
         add(.powerSource, y: M.powerSourceY, h: M.powerSourceHeight)
-        add(.divider, y: M.firstDividerY, h: 1)
-        add(.heading(energyHeading), y: M.energyHeadingY, h: M.headingHeight)
-        var y = M.modeRowsY
+        // Everything from the first line down moves by one step when the status line is there.
+        let step: CGFloat = model.statusLine == nil ? 0 : M.statusLineStep
+        if model.statusLine != nil { add(.statusLine, y: M.powerSourceY + step, h: M.powerSourceHeight) }
+        add(.divider, y: M.firstDividerY + step, h: 1)
+        add(.heading(energyHeading), y: M.energyHeadingY + step, h: M.headingHeight)
+        var y = M.modeRowsY + step
         for i in model.modes.indices { add(.mode(i), y: y, h: M.modeRowHeight); y += M.modeRowHeight }
         // The gaps below a line are measured from the line's top.
         y += M.dividerGapBelowRows

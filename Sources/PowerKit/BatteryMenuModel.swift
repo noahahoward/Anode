@@ -19,6 +19,8 @@ public struct BatteryMenuModel: Equatable {
 
     /// The word after "Power Source: ": `Battery` or `Power Adapter`.
     public var powerSource: String
+    /// The line under it on the charger ("1h 51m until fully charged"); none on battery.
+    public var statusLine: String?
     public var modes: [EnergyMode]
     /// The apps listed under "Using Significant Energy"; none leaves the section out.
     public var energyApps: [EnergyApp]
@@ -40,8 +42,8 @@ public struct BatteryMenuModel: Equatable {
         }
     }
 
-    public init(powerSource: String, modes: [EnergyMode], energyApps: [EnergyApp]) {
-        self.powerSource = powerSource; self.modes = modes; self.energyApps = energyApps
+    public init(powerSource: String, statusLine: String? = nil, modes: [EnergyMode], energyApps: [EnergyApp]) {
+        self.powerSource = powerSource; self.statusLine = statusLine; self.modes = modes; self.energyApps = energyApps
     }
 
     public var selectedModeID: String? { modes.first { $0.isSelected }?.id }

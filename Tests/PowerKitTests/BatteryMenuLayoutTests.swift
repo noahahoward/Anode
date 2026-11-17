@@ -108,5 +108,18 @@ final class BatteryMenuLayoutTests: XCTestCase {
         XCTAssertEqual(r.rows.filter { $0.kind == .divider }.map(\.frame.minY), [59.5, 188.5, 253.5])
         XCTAssertEqual(r.height, 222.5 + 65, accuracy: 0.01)
     }
+
+    // Measured on the charger: a second dim line under the power source (18 pt below it) and everything under it 18 pt lower.
+    func testAStatusLineAddsALineAndMovesEverythingUnderItDown() {
+        var m = model(); m.statusLine = "1h 51m until fully charged"
+        let r = BatteryMenuLayout.frames(for: m)
+        XCTAssertEqual(y(r, .statusLine), 55.5)
+        XCTAssertEqual(r.rows.filter { $0.kind == .divider }.map(\.frame.minY), [77.5, 206.5, 261.5])
+        XCTAssertEqual(y(r, .heading("Energy Mode")), 86.5)
+        XCTAssertEqual([0, 1, 2].map { y(r, .mode($0)) }, [105, 137, 169])
+        XCTAssertEqual(y(r, .footer), 267)
+        XCTAssertEqual(r.height, 277.5 + 18, accuracy: 0.01)
+        XCTAssertEqual(y(r, .title), 12); XCTAssertEqual(y(r, .powerSource), 37.5)
+    }
 }
 
