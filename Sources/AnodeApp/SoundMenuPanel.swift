@@ -273,6 +273,12 @@ final class SoundMenuContentView: NSView {
             baseLift.layer?.backgroundColor = NSColor.white.withAlphaComponent(0.016).cgColor
             baseLift.layer?.compositingFilter = "plusL"
             addSubview(baseLift)
+        } else if !SoundText.isDark {
+            // macOS's light glass is lighter than ours over a mid or bright backdrop (measured over flat backdrops: 184 against 175 at
+            // 0.5, 234 against 227 at 0.9, level at 0.2): a plain white lift of a tenth closes most of it.
+            baseLift.wantsLayer = true
+            baseLift.layer?.backgroundColor = NSColor.white.withAlphaComponent(0.10).cgColor
+            addSubview(baseLift)
         }
         edge.wantsLayer = true
         edge.layer?.cornerRadius = 17
