@@ -814,8 +814,8 @@ final class LensView: NSView {
         rim.append(NSBezierPath(roundedRect: box.insetBy(dx: 1.3, dy: 1.3), xRadius: box.height * 0.5 - 1.3, yRadius: box.height * 0.5 - 1.3))
         rim.windingRule = .evenOdd
         ctx?.saveGraphicsState(); rim.addClip()
-        NSGradient(colorsAndLocations: (NSColor(white: 1, alpha: 0.32 * ring), 0), (NSColor(white: 1, alpha: 0.06 * ring), 0.22),
-                   (NSColor(white: 1, alpha: 0.0), 0.5), (NSColor(white: 1, alpha: 0.06 * ring), 0.78), (NSColor(white: 1, alpha: 0.32 * ring), 1))?.draw(in: box, angle: 90)
+        NSGradient(colorsAndLocations: (NSColor(white: 1, alpha: 0.55 * ring), 0), (NSColor(white: 1, alpha: 0.06 * ring), 0.22),
+                   (NSColor(white: 1, alpha: 0.0), 0.5), (NSColor(white: 1, alpha: 0.06 * ring), 0.78), (NSColor(white: 1, alpha: 0.55 * ring), 1))?.draw(in: box, angle: 90)
         ctx?.restoreGraphicsState()
         // Letting go: the solid knob comes in over it.
         if knob > 0 {
