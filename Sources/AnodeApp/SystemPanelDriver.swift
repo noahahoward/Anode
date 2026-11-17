@@ -23,8 +23,8 @@ protocol SystemPanelDriving: AnyObject {
     func run(_ kind: SystemPanelKind, job: SystemPanelPress.Job, done: @escaping (SystemPanelOutcome) -> Void)
     /// Forgets every job waiting, and ends the one running: macOS's panel is closed and the cover over its icon comes down.
     func cancelAll()
-    /// A panel of macOS's own that the person opened (not one of Anode's reads) is closed: macOS closes one menu bar menu for the
-    /// next, and an Anode menu opening in place of a click macOS never saw has to do that part itself.
+    /// A panel of macOS's own that the person opened (not one of Anode's reads) is closed, and so is the volume pill if it is up: macOS
+    /// closes one menu bar menu for the next, and an Anode menu opening in place of a click macOS never saw has to do that part itself.
     func closePanelOpenedByPerson()
 }
 
@@ -200,7 +200,51 @@ final class SystemPanelDriver: SystemPanelDriving {
         startNext()
     }
 
+    /// The pill macOS draws under the menu bar for a moment after a volume key is a window of the menu bar agent (`volume-system-banner`
+    /// in Accessibility). macOS puts it away from the inside when the person's click opens a panel; Anode takes that click, and the pill
+    /// cannot be put away from outside: its window ignores being moved, and its one control refuses a press (measured). So it is covered,
+    /// as macOS's panel is for its first frames: a still picture of what is under it, taken with the pill left out, over it until it ends.
+    private let bannerCover = IconCover(level: SoundMenuPanel.level - 1, tag: "volume pill")
+    private var bannerWatch: DispatchWorkItem?
+
+    /// The pill on the screen now: its window and where it is.
+    private static func volumeBanner() -> (id: CGWindowID, frame: CGRect)? {
+        guard let pid = pid(of: menuBarAgent),
+              let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [[String: Any]] else { return nil }
+        // The agent's windows above the menu bar are the pill and nothing else (its panels are Control Center's).
+        for w in list where (w[kCGWindowOwnerPID as String] as? Int32) == pid && (w[kCGWindowLayer as String] as? Int) == 101 {
+            guard let b = w[kCGWindowBounds as String] as? [String: Double], let id = w[kCGWindowNumber as String] as? Int else { continue }
+            return (CGWindowID(id), CGRect(x: b["X"] ?? 0, y: b["Y"] ?? 0, width: b["Width"] ?? 0, height: b["Height"] ?? 0))
+        }
+        return nil
+    }
+
+    func dismissVolumeBanner() {
+        guard ScreenRecordingAccess.isGranted, let pill = Self.volumeBanner() else { return }
+        log("covering macOS's volume pill")
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            await self.bannerCover.prepare(frame: pill.frame, maxAge: 0, exact: true, leavingOut: self.ownMenuWindowIDs().union([pill.id]))
+            // The pill may have ended while the picture was taken.
+            guard Self.volumeBanner() != nil else { return }
+            self.bannerCover.show()
+            self.watchBanner(until: Date().addingTimeInterval(3))
+        }
+    }
+
+    /// Takes the picture down once the pill is gone (it runs out in a second and a half).
+    private func watchBanner(until limit: Date) {
+        bannerWatch?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            if Self.volumeBanner() != nil, Date() < limit { self.watchBanner(until: limit) } else { self.bannerCover.hide() }
+        }
+        bannerWatch = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1, execute: work)
+    }
+
     func closePanelOpenedByPerson() {
+        dismissVolumeBanner()
         // A job of Anode's own has its panel on the screen for an instant before it is moved off: it is not the person's.
         guard !busy, queue.isEmpty, panelOnScreen(), let panel = panelWindow() else { return }
         let panelRight = Self.frame(of: panel).maxX
