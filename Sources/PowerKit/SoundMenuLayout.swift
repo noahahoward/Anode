@@ -5,6 +5,8 @@ public enum SoundMenuLayout {
 
     public enum RowKind: Equatable {
         case title
+        /// Anode's: the gear at the right end of the title line.
+        case gear
         case volumeSlider
         case divider
         case heading(String)
@@ -36,6 +38,9 @@ public enum SoundMenuLayout {
             rows.append(LaidOutRow(kind: kind, frame: CGRect(x: x, y: y, width: w, height: h)))
         }
         add(.title, x: M.sideInset, y: M.titleY, w: M.width - 2 * M.sideInset, h: M.titleHeight)
+        if model.showsGear {
+            add(.gear, x: M.width - M.sideInset - M.gearSize, y: M.titleY + (M.titleHeight - M.gearSize) / 2, w: M.gearSize, h: M.gearSize)
+        }
         add(.volumeSlider, x: M.sliderX, y: M.sliderY, w: M.sliderWidth, h: M.sliderHeight)
         add(.divider, x: M.topDividerInset, y: M.firstDividerY, w: M.width - 2 * M.topDividerInset, h: 1)
         var shift: CGFloat = 0

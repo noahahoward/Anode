@@ -15,7 +15,10 @@ final class LiveChargeLimit: ChargeLimiting {
     var softDrainRunning: Bool { controller.isDrainRequested }
     var hardDrainRunning: Bool { controller.isHardDrainRequested }
     var canHardDrain: Bool { controller.hardDrainLevel != nil }
+    var topUpRunning: Bool { controller.isFullChargeRequested }
+    var canTopUp: Bool { controller.isCablePresent }
     func pressSoftDrain() { controller.pressDrain() }
+    func pressTopUp() { controller.pressFullCharge() }
     func pressHardDrain() { controller.pressHardDrain() }
 
     func observe(_ changed: @escaping () -> Void) -> AnyObject {

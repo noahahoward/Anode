@@ -221,6 +221,8 @@ final class BatteryMenuContentView: NSView {
     /// The mode rows now drawn, so a change of the mode in force turns their badges instead of drawing the menu again.
     private var modeRows: [String: ModeRow] = [:]
     private var appRows: [String: EnergyAppRow] = [:]
+    /// The "Charge Limit: 80%" heading, which follows the slider while it is dragged.
+    private var chargeHeading: NSTextField?
     private var deferred: BatteryMenuModel?
     private var dragObserver: NSObjectProtocol?
 
@@ -251,7 +253,7 @@ final class BatteryMenuContentView: NSView {
                 return
             }
         }
-        modeRows = [:]; appRows = [:]
+        modeRows = [:]; appRows = [:]; chargeHeading = nil
         self.model = model
         for v in subviews where v !== material && v !== baseLift { v.removeFromSuperview() }
         let layout = BatteryMenuLayout.frames(for: model)
@@ -283,7 +285,9 @@ final class BatteryMenuContentView: NSView {
             d.layer?.backgroundColor = cg(SoundText.ink(0.15))
             addSubview(d)
         case .heading(let title):
-            addSubview(label(title, f, size: 12, weight: .semibold, color: Self.secondary))
+            let l = label(title, f, size: 12, weight: .semibold, color: Self.secondary)
+            if title.hasPrefix(BatteryMenuLayout.chargeLimitHeading) { chargeHeading = l }
+            addSubview(l)
         case .mode(let i):
             guard model.modes.indices.contains(i) else { return }
             let mode = model.modes[i]
@@ -304,9 +308,12 @@ final class BatteryMenuContentView: NSView {
         case .chargeLimit:
             guard let charge = model.chargeLimit else { return }
             let v = ChargeLimitRowView(frame: f, charge: charge)
+            // The heading above carries the number: it follows the knob while it is dragged.
+            v.onDrag = { [weak self] value in self?.chargeHeading?.stringValue = BatteryMenuLayout.chargeLimitTitle(value) }
             v.onCommit = { [weak self] value in self?.controller?.commitChargeLimit(value) }
-            v.onPressMinus = { [weak self] in self?.controller?.pressMinus() }
-            v.onHoldMinus = { [weak self] in self?.controller?.holdMinus() }
+            v.onPressTopUp = { [weak self] in self?.controller?.pressTopUp() }
+            v.onPressDrain = { [weak self] in self?.controller?.pressMinus() }
+            v.onHoldDrain = { [weak self] in self?.controller?.holdMinus() }
             addSubview(v)
         case .footer:
             let b = FooterRow(frame: f.insetBy(dx: -BatteryRow.lead, dy: 0), title: Self.settingsTitle)
@@ -338,16 +345,22 @@ enum BatteryRow {
     static let lead: CGFloat = 7
 }
 
-/// The charge limit: a slider for the limit with its percentage, and the minus button (a press is Soft Drain to Limit, a hold of three
-/// seconds asks about Hard Drain). The slider's number follows the drag; the limit is written when it is let go.
+/// The charge limit: a slider for the limit (its percentage is in the heading above, which follows the drag) and, to the right of it,
+/// the two buttons: Top Up (charge to 100% this once) and Drain (a press is Soft Drain to Limit, a hold of three seconds asks about
+/// Hard Drain). The limit is written when the slider is let go.
 final class ChargeLimitRowView: NSView {
 
+    var onDrag: ((Int) -> Void)?
     var onCommit: ((Int) -> Void)?
-    var onPressMinus: (() -> Void)?
-    var onHoldMinus: (() -> Void)?
+    var onPressTopUp: (() -> Void)?
+    var onPressDrain: (() -> Void)?
+    var onHoldDrain: (() -> Void)?
+
+    /// The gap between the slider and the first button, and between the buttons.
+    static let sliderGap: CGFloat = 10
+    static let buttonGap: CGFloat = 6
 
     private let range: ClosedRange<Int>
-    private let percent = NSTextField(labelWithString: "")
 
     override var isFlipped: Bool { true }
 
@@ -358,73 +371,94 @@ final class ChargeLimitRowView: NSView {
     init(frame: NSRect, charge: BatteryMenuModel.ChargeLimit) {
         range = charge.range
         super.init(frame: frame)
-        let slider = MenuSlider(frame: NSRect(x: 0, y: 4, width: 186, height: 24))   // room round the knob for its shadow
+        let drain = PillButton(title: charge.hardDrainRunning ? "Hard Drain" : "Drain", running: charge.softDrainRunning || charge.hardDrainRunning,
+                               holdable: true)
+        drain.toolTip = "Soft Drain to Limit. Hold for three seconds for Hard Drain."
+        drain.onPress = { [weak self] in self?.onPressDrain?() }
+        drain.onHold = { [weak self] in self?.onHoldDrain?() }
+        let topUp = PillButton(title: "Top Up", running: charge.topUpRunning, holdable: false)
+        topUp.isEnabled = charge.canTopUp
+        topUp.toolTip = charge.topUpRunning ? "Charging to 100% this once. Press to cancel."
+            : charge.canTopUp ? ChargeControlFeature.fullChargeTip : ChargeControlFeature.fullChargeBlockedTip
+        topUp.onPress = { [weak self] in self?.onPressTopUp?() }
+        // From the right: Drain, Top Up, then the slider takes the rest.
+        let y = (frame.height - PillButton.height) / 2
+        drain.frame.origin = NSPoint(x: frame.width - drain.frame.width, y: y)
+        topUp.frame.origin = NSPoint(x: drain.frame.minX - Self.buttonGap - topUp.frame.width, y: y)
+
+        let slider = MenuSlider(frame: NSRect(x: 0, y: 4, width: topUp.frame.minX - Self.sliderGap, height: 24))   // room round the knob for its shadow
         slider.compact = true
         slider.value = Double(charge.limit - range.lowerBound) / Double(range.upperBound - range.lowerBound)
         slider.onChange = { [weak self] v in
             guard let self else { return }
-            self.percent.stringValue = "\(self.limit(at: v))%"
+            self.onDrag?(self.limit(at: v))
         }
         slider.onEnd = { [weak self] v in
             guard let self else { return }
             self.onCommit?(self.limit(at: v))
         }
         addSubview(slider)
-        percent.font = .systemFont(ofSize: 13)
-        percent.textColor = SoundText.primary
-        percent.alignment = .right
-        percent.stringValue = "\(charge.limit)%"
-        percent.frame = NSRect(x: 190, y: 7, width: 46, height: 18)
-        addSubview(percent)
-        let minus = MinusButton(frame: NSRect(x: frame.width - 26, y: 3, width: 26, height: 26),
-                                running: charge.softDrainRunning || charge.hardDrainRunning, hard: charge.hardDrainRunning)
-        minus.onPress = { [weak self] in self?.onPressMinus?() }
-        minus.onHold = { [weak self] in self?.onHoldMinus?() }
-        addSubview(minus)
+        addSubview(topUp)
+        addSubview(drain)
     }
 
     required init?(coder: NSCoder) { fatalError("not used") }
 }
 
-/// The round minus button. Blue while a drain runs (a bolt while it is Hard Drain). Pressing dims it as macOS's rows dim.
-final class MinusButton: NSView {
+/// A small capsule button with its name inside. Grey while idle, blue with the name in white while what it starts is running, and
+/// dim when there is nothing for it to do. Pressing dims it as macOS's rows dim. `holdable` ones tell a press from a hold of three
+/// seconds (`HoldPress`); the others act on the let go.
+final class PillButton: NSView {
 
-    var onPress: (() -> Void)? { didSet { hold.onPress = onPress } }
-    var onHold: (() -> Void)? { didSet { hold.onHold = onHold } }
+    static let height: CGFloat = 26
+    static let padding: CGFloat = 11
+    static let font = NSFont.systemFont(ofSize: 12, weight: .medium)
     /// Three seconds held.
     static let holdSeconds: TimeInterval = 3
 
-    private let hold = HoldPress(seconds: MinusButton.holdSeconds) { after, run in
+    var onPress: (() -> Void)? { didSet { hold.onPress = onPress } }
+    var onHold: (() -> Void)? { didSet { hold.onHold = onHold } }
+    var isEnabled = true { didSet { subviews.forEach { $0.alphaValue = isEnabled ? 1 : 0.4 } } }
+
+    static func width(for title: String) -> CGFloat {
+        ceil((title as NSString).size(withAttributes: [.font: font]).width) + 2 * padding
+    }
+
+    private let holdable: Bool
+    private let hold = HoldPress(seconds: PillButton.holdSeconds) { after, run in
         let item = DispatchWorkItem(block: run)
         DispatchQueue.main.asyncAfter(deadline: .now() + after, execute: item)
         return { item.cancel() }
     }
 
-    init(frame: NSRect, running: Bool, hard: Bool) {
-        super.init(frame: frame)
+    init(title: String, running: Bool, holdable: Bool) {
+        self.holdable = holdable
+        super.init(frame: NSRect(x: 0, y: 0, width: Self.width(for: title), height: Self.height))
         let badge = BadgeView(frame: bounds, fill: running ? NSColor.systemBlue : SoundText.ink(dark: 0.16, light: 0.08))
-        let glyph = NSImageView(frame: bounds)
-        glyph.image = NSImage(systemSymbolName: hard ? "bolt.fill" : "minus", accessibilityDescription: "Soft Drain to Limit")?
-            .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 12, weight: .semibold))
-        glyph.imageScaling = .scaleNone
-        glyph.imageAlignment = .alignCenter
-        glyph.contentTintColor = running ? .white : SoundText.ink(0.42)
-        badge.addSubview(glyph)
+        let text = NSTextField(labelWithString: title)
+        text.font = Self.font
+        text.textColor = running ? .white : SoundText.primary
+        text.alignment = .center
+        text.sizeToFit()
+        text.frame = NSRect(x: 0, y: (bounds.height - text.frame.height) / 2, width: bounds.width, height: text.frame.height)
+        badge.addSubview(text)
         addSubview(badge)
-        toolTip = "Soft Drain to Limit. Hold for three seconds for Hard Drain."
     }
 
     required init?(coder: NSCoder) { fatalError("not used") }
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 
     override func mouseDown(with event: NSEvent) {
+        guard isEnabled else { return }
         subviews.forEach { $0.alphaValue = HoverRow.pressedAlpha }
-        hold.pressDown()
+        if holdable { hold.pressDown() }
     }
 
     override func mouseUp(with event: NSEvent) {
+        guard isEnabled else { return }
         subviews.forEach { $0.alphaValue = 1 }
-        hold.release(inside: bounds.contains(convert(event.locationInWindow, from: nil)))
+        let inside = bounds.contains(convert(event.locationInWindow, from: nil))
+        if holdable { hold.release(inside: inside) } else if inside { onPress?() }
     }
 
     override func viewWillMove(toSuperview newSuperview: NSView?) {

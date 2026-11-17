@@ -71,7 +71,7 @@ final class BatteryMenuLayoutTests: XCTestCase {
 
     func testAModelWithNoAdditionsHasNoGearAndNoChargeRow() {
         let r = BatteryMenuLayout.frames(for: model())
-        XCTAssertNil(y(r, .gear)); XCTAssertNil(y(r, .chargeLimit)); XCTAssertNil(y(r, .heading("Charge Limit")))
+        XCTAssertNil(y(r, .gear)); XCTAssertNil(y(r, .chargeLimit)); XCTAssertNil(y(r, .heading(BatteryMenuLayout.chargeLimitTitle(80))))
         XCTAssertEqual(r.height, 277.5, accuracy: 0.01)
     }
 
@@ -95,11 +95,18 @@ final class BatteryMenuLayoutTests: XCTestCase {
         var m = model(); m.chargeLimit = .init(limit: 80, range: 20...100, softDrainRunning: false, hardDrainRunning: false)
         let r = BatteryMenuLayout.frames(for: m)
         XCTAssertEqual(r.rows.filter { $0.kind == .divider }.map(\.frame.minY), [59.5, 188.5, 253.5, 308.5])
-        XCTAssertEqual(y(r, .heading("Charge Limit")), 197.5)
+        XCTAssertEqual(y(r, .heading("Charge Limit: 80%")), 197.5, "the limit is in the heading, not beside the slider")
         XCTAssertEqual(y(r, .chargeLimit), 216)
         XCTAssertEqual(r.rows.first { $0.kind == .chargeLimit }?.frame.height, 32)
         XCTAssertEqual(y(r, .heading("Using Significant Energy")), 262.5)
         XCTAssertEqual(r.height, 277.5 + 65, accuracy: 0.01)
+    }
+
+    func testTheHeadingNamesTheLimit() {
+        XCTAssertEqual(BatteryMenuLayout.chargeLimitTitle(80), "Charge Limit: 80%")
+        XCTAssertEqual(BatteryMenuLayout.chargeLimitTitle(100), "Charge Limit: 100%")
+        var m = model(); m.chargeLimit = .init(limit: 65, range: 20...100, softDrainRunning: false, hardDrainRunning: false)
+        XCTAssertNotNil(y(BatteryMenuLayout.frames(for: m), .heading("Charge Limit: 65%")))
     }
 
     func testTheChargeLimitSectionStandsWithNoApps() {

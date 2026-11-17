@@ -39,6 +39,11 @@ protocol ChargeLimiting: AnyObject {
     /// Hard Drain has something to do now (the battery is above the level it comes down to).
     var canHardDrain: Bool { get }
     func pressSoftDrain()
+    /// Top Up: charge to 100% this once (it ends when the charger is unplugged); pressed again, cancel.
+    var topUpRunning: Bool { get }
+    /// The charger is in, so Top Up has something to do.
+    var canTopUp: Bool { get }
+    func pressTopUp()
     /// Starts Hard Drain, or stops it when it runs.
     func pressHardDrain()
     func observe(_ changed: @escaping () -> Void) -> AnyObject
@@ -141,7 +146,8 @@ final class BatteryMenuController {
         }
         if let charge, settings.chargeControlEnabled {
             m.chargeLimit = .init(limit: charge.limit, range: charge.range, softDrainRunning: charge.softDrainRunning,
-                                  hardDrainRunning: charge.hardDrainRunning)
+                                  hardDrainRunning: charge.hardDrainRunning, topUpRunning: charge.topUpRunning,
+                                  canTopUp: charge.canTopUp || charge.topUpRunning)
         }
         return m
     }
@@ -358,6 +364,14 @@ final class BatteryMenuController {
     func pressMinus() {
         guard let charge, settings.chargeControlEnabled else { return }
         if charge.hardDrainRunning { charge.pressHardDrain() } else { charge.pressSoftDrain() }
+        redraw()
+    }
+
+    /// A press of Top Up: charge to 100% once, or cancel that. Without the charger there is nothing to do, so a press does nothing
+    /// (one already running can always be cancelled).
+    func pressTopUp() {
+        guard let charge, settings.chargeControlEnabled, charge.canTopUp || charge.topUpRunning else { return }
+        charge.pressTopUp()
         redraw()
     }
 

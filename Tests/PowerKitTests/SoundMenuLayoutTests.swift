@@ -41,6 +41,19 @@ final class SoundMenuLayoutTests: XCTestCase {
         result.rows.first { $0.kind == kind }?.frame.minY
     }
 
+    func testTheGearIsAtTheRightEndOfTheTitleLine_OnlyWhenTheModelAsksForIt() {
+        let plain = SoundMenuLayout.frames(for: model(apple: apple))
+        XCTAssertNil(y(plain, .gear))
+        var m = model(apple: apple); m.showsGear = true
+        let r = SoundMenuLayout.frames(for: m)
+        let title = r.rows.first { $0.kind == .title }!.frame, gear = r.rows.first { $0.kind == .gear }!.frame
+        XCTAssertEqual(gear.maxX, SoundMenuMetrics.width - SoundMenuMetrics.sideInset)
+        XCTAssertEqual(gear.midY, title.midY, accuracy: 0.01, "level with the title")
+        XCTAssertEqual(gear.width, 16)
+        XCTAssertEqual(r.height, plain.height, "it takes no room of its own")
+        XCTAssertEqual(r.rows.filter { $0.kind != .gear }, plain.rows, "nothing else moves")
+    }
+
     func testMergeOrdersRowsLikeApple() {
         XCTAssertEqual(model(apple: apple).devices.map(\.name),
                        ["MacBook Pro Speakers", "Test AirPods Pro", "Living Room Speaker", "Den TV"])

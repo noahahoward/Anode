@@ -34,12 +34,15 @@ final class BatteryMenuControllerTests: XCTestCase {
         var softDrainRunning = false
         var hardDrainRunning = false
         var canHardDrain = true
+        var topUpRunning = false
+        var canTopUp = true
         var calls: [String] = []
         var listeners: [() -> Void] = []
         let range = 20...100
         func setLimit(_ v: Int) { calls.append("limit \(v)"); limit = v; listeners.forEach { $0() } }
         func pressSoftDrain() { calls.append("soft"); softDrainRunning.toggle(); listeners.forEach { $0() } }
         func pressHardDrain() { calls.append("hard"); hardDrainRunning.toggle(); listeners.forEach { $0() } }
+        func pressTopUp() { calls.append("topUp"); topUpRunning.toggle(); listeners.forEach { $0() } }
         func observe(_ changed: @escaping () -> Void) -> AnyObject { listeners.append(changed); return NSObject() }
     }
 
@@ -401,6 +404,43 @@ final class BatteryMenuControllerTests: XCTestCase {
         XCTAssertEqual(r.presenter.shown.last?.chargeLimit?.softDrainRunning, true)
         r.controller.pressMinus()
         XCTAssertEqual(charge.calls, ["soft", "soft"])
+    }
+
+    // Top Up is Charge to Full: to 100% this once, until unplugged. It needs the charger, and a press of it again cancels.
+    func testAPressOfTopUpStartsChargeToFull_AndAnotherCancelsIt() throws {
+        let charge = FakeCharge()
+        let r = try rig(lastReading: true, charge: charge, chargeEnabled: true); defer { r.cleanup() }
+        r.native.onClick?(r.native.frame!)
+        r.controller.pressTopUp()
+        XCTAssertEqual(charge.calls, ["topUp"])
+        XCTAssertEqual(r.presenter.shown.last?.chargeLimit?.topUpRunning, true)
+        r.controller.pressTopUp()
+        XCTAssertEqual(charge.calls, ["topUp", "topUp"])
+        XCTAssertEqual(r.presenter.shown.last?.chargeLimit?.topUpRunning, false)
+    }
+
+    func testTopUpWithNoChargerDoesNothing_ButIsShownAsUnavailable() throws {
+        let charge = FakeCharge(); charge.canTopUp = false
+        let r = try rig(lastReading: true, charge: charge, chargeEnabled: true); defer { r.cleanup() }
+        r.native.onClick?(r.native.frame!)
+        XCTAssertEqual(r.presenter.shown.last?.chargeLimit?.canTopUp, false)
+        r.controller.pressTopUp()
+        XCTAssertTrue(charge.calls.isEmpty)
+    }
+
+    func testARunningTopUpCanAlwaysBeCancelled() throws {
+        let charge = FakeCharge(); charge.canTopUp = false; charge.topUpRunning = true
+        let r = try rig(lastReading: true, charge: charge, chargeEnabled: true); defer { r.cleanup() }
+        r.native.onClick?(r.native.frame!)
+        r.controller.pressTopUp()
+        XCTAssertEqual(charge.calls, ["topUp"])
+    }
+
+    func testTopUpDoesNothingWhileChargeControlIsOff() throws {
+        let charge = FakeCharge()
+        let r = try rig(lastReading: true, charge: charge, chargeEnabled: false); defer { r.cleanup() }
+        r.controller.pressTopUp()
+        XCTAssertTrue(charge.calls.isEmpty)
     }
 
     func testAPressOfMinusWhileHardDrainRunsStopsHardDrain() throws {

@@ -37,8 +37,14 @@ public struct BatteryMenuModel: Equatable {
         public var range: ClosedRange<Int>
         public var softDrainRunning: Bool
         public var hardDrainRunning: Bool
-        public init(limit: Int, range: ClosedRange<Int>, softDrainRunning: Bool, hardDrainRunning: Bool) {
+        /// Top Up (Charge to Full) was pressed and has not ended.
+        public var topUpRunning: Bool
+        /// Top Up has something to do: the charger is in (a running one can always be cancelled).
+        public var canTopUp: Bool
+        public init(limit: Int, range: ClosedRange<Int>, softDrainRunning: Bool, hardDrainRunning: Bool,
+                    topUpRunning: Bool = false, canTopUp: Bool = true) {
             self.limit = limit; self.range = range; self.softDrainRunning = softDrainRunning; self.hardDrainRunning = hardDrainRunning
+            self.topUpRunning = topUpRunning; self.canTopUp = canTopUp
         }
     }
 

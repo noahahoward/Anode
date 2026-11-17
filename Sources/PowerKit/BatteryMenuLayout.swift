@@ -31,6 +31,8 @@ public enum BatteryMenuLayout {
     public static let energyHeading = "Energy Mode"
     public static let significantEnergyHeading = "Using Significant Energy"
     public static let chargeLimitHeading = "Charge Limit"
+    /// The heading carries the limit ("Charge Limit: 80%"), so the row under it has room for its buttons.
+    public static func chargeLimitTitle(_ limit: Int) -> String { "\(chargeLimitHeading): \(limit)%" }
 
     public static func frames(for model: BatteryMenuModel) -> Result {
         typealias M = BatteryMenuMetrics
@@ -57,7 +59,7 @@ public enum BatteryMenuLayout {
         if model.chargeLimit != nil {
             // Anode's section, laid out like the apps' one: a heading under the line, then the row, then a line.
             let headingY = y + M.headingGapBelowDivider
-            add(.heading(chargeLimitHeading), y: headingY, h: M.headingHeight)
+            add(.heading(chargeLimitTitle(model.chargeLimit?.limit ?? 0)), y: headingY, h: M.headingHeight)
             let rowY = headingY + M.headingHeight + M.appsFirstRowGapBelowHeading
             add(.chargeLimit, y: rowY, h: M.chargeRowHeight)
             y = rowY + M.chargeRowHeight + M.dividerGapBelowRows

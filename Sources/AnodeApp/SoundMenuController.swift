@@ -91,10 +91,14 @@ final class SoundMenuController {
     private var outputsSignature = ""
     /// How many looks in a row found macOS's own icon missing.
     private var missedLooks = 0
+    /// What the gear does: shows Beta Features, where this menu is switched.
+    private let openBetaFeatures: () -> Void
 
     init(settings: Settings, outputs: AudioOutputs, driver: SystemPanelDriving, batteries: @escaping () -> [AccessoryBattery],
          accessibility: @escaping () -> Bool, statusBar: StatusItemHosting, presenter: SoundMenuPresenting,
-         native: NativeIconHosting, pollInterval: TimeInterval = 3, followUpDelay: TimeInterval = 1.5) {
+         native: NativeIconHosting, pollInterval: TimeInterval = 3, followUpDelay: TimeInterval = 1.5,
+         openBetaFeatures: @escaping () -> Void = {}) {
+        self.openBetaFeatures = openBetaFeatures
         self.settings = settings; self.outputs = outputs; self.driver = driver; self.batteries = batteries
         self.accessibility = accessibility; self.statusBar = statusBar; self.presenter = presenter
         self.native = native; self.pollInterval = pollInterval; self.followUpDelay = followUpDelay
@@ -116,6 +120,7 @@ final class SoundMenuController {
                                      muted: outputs.muted, batteries: batteries(), apple: known, expanded: open)
         m.notice = notice
         m.apps = appVolume?.apps ?? []
+        m.showsGear = true
         return m
     }
 
@@ -389,6 +394,12 @@ final class SoundMenuController {
             // How it ended is read from macOS's panel, not assumed: a change that did not hold shows as it is.
             if self.presenter.isOpen { self.readApple() }
         }
+    }
+
+    /// The gear: the menu goes, and Beta Features opens.
+    func pressGear() {
+        closeMenu()
+        openBetaFeatures()
     }
 
     func pressSettings(_ index: Int) {

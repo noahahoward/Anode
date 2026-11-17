@@ -409,6 +409,7 @@ final class SoundMenuContentView: NSView {
     private static func key(of kind: SoundMenuLayout.RowKind, model: SoundMenuModel) -> String {
         switch kind {
         case .title: return "title"
+        case .gear: return "gear"
         case .volumeSlider: return "slider"
         case .divider: return "divider"
         case .heading(let t): return "heading:\(t)"
@@ -470,6 +471,10 @@ final class SoundMenuContentView: NSView {
         switch row.kind {
         case .title:
             addSubview(label("Sound", f, size: 13, weight: .bold, color: .labelColor))
+        case .gear:
+            addSubview(IconButton(symbol: "gearshape", size: 13, weight: .regular, tint: 0.42, added: true, frame: f) { [weak self] in
+                self?.controller?.pressGear()
+            })
         case .volumeSlider:
             let slider = MenuSlider(frame: f.insetBy(dx: 0, dy: -4))
             slider.value = model.muted ? 0 : model.volume
@@ -1079,16 +1084,17 @@ final class MenuSlider: NSView {
 enum SoundMenuRuntime {
 
     /// The menu over the real Mac.
-    static func live(settings: Settings = .shared, driver: SystemPanelDriving = SystemPanelDriver()) -> SoundMenuController {
+    static func live(settings: Settings = .shared, driver: SystemPanelDriving = SystemPanelDriver(),
+                     openBetaFeatures: @escaping () -> Void = {}) -> SoundMenuController {
         make(settings: settings, outputs: CoreAudioOutputs(), driver: driver, statusBar: SystemStatusBarHost(),
-             native: NativeMenuExtraIcon.sound(), panel: SoundMenuPanel())
+             native: NativeMenuExtraIcon.sound(), panel: SoundMenuPanel(), openBetaFeatures: openBetaFeatures)
     }
 
     static func make(settings: Settings, outputs: AudioOutputs, driver: SystemPanelDriving, statusBar: StatusItemHosting,
-                     native: NativeIconHosting, panel: SoundMenuPanel) -> SoundMenuController {
+                     native: NativeIconHosting, panel: SoundMenuPanel, openBetaFeatures: @escaping () -> Void = {}) -> SoundMenuController {
         let controller = SoundMenuController(settings: settings, outputs: outputs, driver: driver,
                                              batteries: currentAccessoryBatteries, accessibility: { AXIsProcessTrusted() },
-                                             statusBar: statusBar, presenter: panel, native: native)
+                                             statusBar: statusBar, presenter: panel, native: native, openBetaFeatures: openBetaFeatures)
         panel.controller = controller
         controller.start()
         return controller

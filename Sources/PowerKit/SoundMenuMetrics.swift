@@ -8,6 +8,8 @@ public enum SoundMenuMetrics {
     public static let titleY: CGFloat = 12
     public static let titleHeight: CGFloat = 17
     public static let sideInset: CGFloat = 12
+    /// Anode's gear, at the right end of the title line (the Battery menu's is the same size).
+    public static let gearSize: CGFloat = 16
     /// The slider and the speaker icons beside it.
     public static let sliderY: CGFloat = 37
     public static let sliderX: CGFloat = 34

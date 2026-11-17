@@ -456,7 +456,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         // Anode's own Sound menu: nothing of it exists until its setting is on (Beta Features).
         // One driver for both menus: macOS's Control Center is used by one job at a time.
         let panelDriver = SystemPanelDriver()
-        soundMenu = SoundMenuRuntime.live(driver: panelDriver)
+        soundMenu = SoundMenuRuntime.live(driver: panelDriver, openBetaFeatures: { [weak self] in self?.betaFeaturesWindow.show() })
         // Anode's Battery menu: nothing of it exists until its setting is on (Beta Features).
         batteryMenu = BatteryMenuRuntime.live(driver: panelDriver, openBetaFeatures: { [weak self] in self?.betaFeaturesWindow.show() },
                                               ultra: ultraLowPower.map { LiveUltraMode($0.controller) },

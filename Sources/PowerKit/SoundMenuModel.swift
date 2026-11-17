@@ -62,6 +62,8 @@ public struct SoundMenuModel: Equatable {
     public var notice: String?
     /// The apps that have a volume of their own, when per-app volume is on. Empty draws no section at all.
     public var apps: [AppVolumeRow] = []
+    /// Anode's: the small gear that opens Beta Features, at the right end of the title line.
+    public var showsGear = false
 
     public init(volume: Double, muted: Bool, devices: [Device], expandedDevice: String?, listening: [AppleChoiceRow],
                 spatial: [AppleChoiceRow], conversation: [AppleChoiceRow], appleAvailable: Bool, notice: String? = nil) {

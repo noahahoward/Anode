@@ -119,7 +119,8 @@ final class SoundMenuControllerTests: XCTestCase {
                               AXNode(role: "AXButton", description: "Sound Settings…")] : []))])
     }
 
-    private func rig(enabled: Bool = true, trusted: Bool = true, batteries: [AccessoryBattery]? = nil, native useNative: Bool = false, followUp: TimeInterval = 0) throws -> Rig {
+    private func rig(enabled: Bool = true, trusted: Bool = true, batteries: [AccessoryBattery]? = nil, native useNative: Bool = false, followUp: TimeInterval = 0,
+                     openBeta: @escaping () -> Void = {}) throws -> Rig {
         let (defaults, suite) = try TestDefaults.make(owner: "SoundMenuController", test: name)
         let settings = Settings(defaults: defaults)
         settings.soundMenuEnabled = enabled
@@ -127,7 +128,8 @@ final class SoundMenuControllerTests: XCTestCase {
         let outputs = FakeOutputs(), driver = FakeDriver(), bar = FakeBar(), presenter = FakePresenter(), native = FakeNative()
         let list = batteries ?? batteriesBoth()
         let c = SoundMenuController(settings: settings, outputs: outputs, driver: driver, batteries: { list },
-                                    accessibility: { trusted }, statusBar: bar, presenter: presenter, native: native, pollInterval: 0, followUpDelay: followUp)
+                                    accessibility: { trusted }, statusBar: bar, presenter: presenter, native: native, pollInterval: 0, followUpDelay: followUp,
+                                    openBetaFeatures: openBeta)
         c.start()
         return Rig(controller: c, outputs: outputs, driver: driver, bar: bar, presenter: presenter, native: native, settings: settings,
                    cleanup: { c.stop(); TestDefaults.destroy(defaults, suite) })
@@ -180,6 +182,22 @@ final class SoundMenuControllerTests: XCTestCase {
         XCTAssertEqual(told, 1)
         r.controller.closeMenu()
         XCTAssertEqual(told, 1, "closing says nothing")
+    }
+
+    // The gear at the right end of the title line (as the Battery menu has): it opens Beta Features, where the menu is switched.
+    func testTheMenuShowsTheGear() throws {
+        let r = try rig(); defer { r.cleanup() }
+        r.controller.openMenu()
+        XCTAssertEqual(r.presenter.shown.first?.showsGear, true)
+    }
+
+    func testThePressOfTheGearClosesTheMenuAndOpensBetaFeatures() throws {
+        var opened = 0
+        let r = try rig(openBeta: { opened += 1 }); defer { r.cleanup() }
+        r.controller.openMenu()
+        r.controller.pressGear()
+        XCTAssertEqual(opened, 1)
+        XCTAssertFalse(r.presenter.isOpen)
     }
 
     func testOpenReadsAppleOnce() throws {
