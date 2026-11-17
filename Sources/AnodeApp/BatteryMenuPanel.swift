@@ -274,7 +274,7 @@ final class ModeRow: HoverRow {
                               fill: mode.isSelected ? NSColor.systemBlue : SoundText.ink(dark: 0.16, light: 0.07))
         // Centred in the badge at its own size (macOS's glyph is about 19 by 9 pt).
         let glyph = NSImageView(frame: badge.bounds)
-        glyph.image = BatteryGlyphs.image(for: mode.id, pointSize: 14.8)
+        glyph.image = BatteryGlyphs.image(for: mode.id, pointSize: 13)
         glyph.imageScaling = .scaleNone
         glyph.imageAlignment = .alignCenter
         glyph.contentTintColor = mode.isSelected ? .white : SoundText.ink(0.42)
