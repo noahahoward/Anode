@@ -558,6 +558,8 @@ class HoverRow: NSView {
     var highlightable = true
     /// How much white the hovered row gets.
     var hoverAlpha: CGFloat = 0.09
+    /// The highlight's corner radius.
+    var cornerRadius: CGFloat = 8
 
     override var isFlipped: Bool { true }
 
@@ -581,7 +583,7 @@ class HoverRow: NSView {
     override func draw(_ dirtyRect: NSRect) {
         guard hovering else { return }
         SoundText.ink(hoverAlpha).setFill()
-        NSBezierPath(roundedRect: bounds, xRadius: 8, yRadius: 8).fill()
+        NSBezierPath(roundedRect: bounds, xRadius: cornerRadius, yRadius: cornerRadius).fill()
     }
 }
 
