@@ -23,6 +23,13 @@ protocol SystemPanelDriving: AnyObject {
     func run(_ kind: SystemPanelKind, job: SystemPanelPress.Job, done: @escaping (SystemPanelOutcome) -> Void)
     /// Forgets every job waiting, and ends the one running: macOS's panel is closed and the cover over its icon comes down.
     func cancelAll()
+    /// A panel of macOS's own that the person opened (not one of Anode's reads) is closed: macOS closes one menu bar menu for the
+    /// next, and an Anode menu opening in place of a click macOS never saw has to do that part itself.
+    func closePanelOpenedByPerson()
+}
+
+extension SystemPanelDriving {
+    func closePanelOpenedByPerson() {}
 }
 
 /// Whether a still picture of macOS's icon is over the icon now. A click on the icon then lands on that picture, and the click
@@ -188,6 +195,23 @@ final class SystemPanelDriver: SystemPanelDriving {
         current = nil; machine = nil; busy = false
         done?(outcome)
         startNext()
+    }
+
+    func closePanelOpenedByPerson() {
+        // A job of Anode's own has its panel on the screen for an instant before it is moved off: it is not the person's.
+        guard !busy, queue.isEmpty, panelOnScreen(), let panel = panelWindow() else { return }
+        let panelRight = Self.frame(of: panel).maxX
+        guard let agent = Self.application(Self.menuBarAgent), let bar = Self.element(Self.attribute(agent, "AXExtrasMenuBar")) else { return }
+        // The panel's right edge is 10.5 pt past the right edge of the icon it hangs from (see `panelRegion`).
+        let owner = children(of: bar).flatMap { children(of: $0) }.first { abs(Self.frame(of: $0).maxX + 10.5 - panelRight) < 3 }
+        if let owner {
+            log("closing macOS's panel the person opened, by pressing its icon")
+            AXUIElementPerformAction(owner, kAXPressAction as CFString)
+        } else {
+            // Not hanging from an icon (a Control Center route): Escape closes it.
+            log("closing macOS's panel the person opened, with Escape")
+            for down in [true, false] { CGEvent(keyboardEventSource: nil, virtualKey: 53, keyDown: down)?.post(tap: .cghidEventTap) }
+        }
     }
 
     func cancelAll() {

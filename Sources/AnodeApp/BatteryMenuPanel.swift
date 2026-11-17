@@ -217,6 +217,8 @@ final class BatteryMenuContentView: NSView {
 
     required init?(coder: NSCoder) { fatalError("not used") }
 
+    /// The mode rows now drawn, so a change of the mode in force turns their badges instead of drawing the menu again.
+    private var modeRows: [String: ModeRow] = [:]
     private var deferred: BatteryMenuModel?
     private var dragObserver: NSObjectProtocol?
 
@@ -233,6 +235,17 @@ final class BatteryMenuContentView: NSView {
         if MenuSlider.activeDrags > 0, self.model != nil { deferred = model; return }
         deferred = nil
         if self.model == model { return }
+        // Only which mode is in force changed: the badges turn, nothing is drawn again.
+        if let old = self.model, old.modes.map(\.id) == model.modes.map(\.id), !modeRows.isEmpty {
+            var same = old
+            same.modes = model.modes
+            if same == model {
+                self.model = model
+                for m in model.modes { modeRows[m.id]?.setSelected(m.isSelected, animated: true) }
+                return
+            }
+        }
+        modeRows = [:]
         self.model = model
         for v in subviews where v !== material && v !== baseLift { v.removeFromSuperview() }
         let layout = BatteryMenuLayout.frames(for: model)
@@ -268,6 +281,7 @@ final class BatteryMenuContentView: NSView {
             let mode = model.modes[i]
             let v = ModeRow(frame: f.insetBy(dx: -BatteryRow.lead, dy: 0), mode: mode)
             v.onPick = { [weak self] in self?.controller?.pickMode(mode.id) }
+            modeRows[mode.id] = v
             addSubview(v)
         case .app(let i):
             guard model.energyApps.indices.contains(i) else { return }
@@ -409,20 +423,31 @@ final class MinusButton: NSView {
     }
 }
 
-/// One Energy Mode: a round badge with a battery in it (blue while it is the one in force), and its name.
+/// One Energy Mode: a round badge with a battery in it (blue while it is the one in force), and its name. When the mode in force
+/// changes the badge's colour does not jump: it turns on a spring, as macOS's does (`BatteryMenuMotion.badge`).
 final class ModeRow: HoverRow {
+
+    private let badge: BadgeView
+    private let glyph: NSImageView
+    private var selected: Bool
+    private var turn: (start: CFTimeInterval, from: (NSColor, NSColor), to: (NSColor, NSColor))?
+    private var timer: Timer?
+
+    private static func fill(_ on: Bool) -> NSColor { on ? NSColor.systemBlue : SoundText.ink(dark: 0.16, light: 0.08) }
+    private static func tint(_ on: Bool) -> NSColor { on ? .white : SoundText.ink(0.42) }
+
     init(frame: NSRect, mode: BatteryMenuModel.EnergyMode) {
+        selected = mode.isSelected
+        badge = BadgeView(frame: NSRect(x: BatteryRow.lead, y: 3, width: 26, height: 26), fill: Self.fill(mode.isSelected))
+        glyph = NSImageView(frame: badge.bounds.offsetBy(dx: 0, dy: -1))
         super.init(frame: frame)
         cornerRadius = 10
         dimsWhenPressed = true
-        let badge = BadgeView(frame: NSRect(x: BatteryRow.lead, y: 3, width: 26, height: 26),
-                              fill: mode.isSelected ? NSColor.systemBlue : SoundText.ink(dark: 0.16, light: 0.08))
         // Centred in the badge at its own size (macOS's glyph is about 19 by 9 pt).
-        let glyph = NSImageView(frame: badge.bounds.offsetBy(dx: 0, dy: -1))
         glyph.image = BatteryGlyphs.image(for: mode.id, pointSize: 13)
         glyph.imageScaling = .scaleNone
         glyph.imageAlignment = .alignCenter
-        glyph.contentTintColor = mode.isSelected ? .white : SoundText.ink(0.42)
+        glyph.contentTintColor = Self.tint(mode.isSelected)
         badge.addSubview(glyph)
         addSubview(badge)
         let name = NSTextField(labelWithString: mode.title)
@@ -434,6 +459,50 @@ final class ModeRow: HoverRow {
     }
 
     required init?(coder: NSCoder) { fatalError("not used") }
+
+    deinit { timer?.invalidate() }
+
+    /// The mode in force changed: the badge turns to its new colour (or at once, when `animated` is false).
+    func setSelected(_ on: Bool, animated: Bool) {
+        guard on != selected else { return }
+        selected = on
+        timer?.invalidate(); timer = nil
+        guard animated, window != nil else {
+            turn = nil
+            badge.fill = Self.fill(on); glyph.contentTintColor = Self.tint(on)
+            return
+        }
+        // From wherever it is now, so a second choice mid-turn carries on from the colour on screen.
+        let from = (badge.fill, glyph.contentTintColor ?? Self.tint(!on))
+        turn = (CACurrentMediaTime(), from, (Self.fill(on), Self.tint(on)))
+        let t = Timer(timeInterval: 1.0 / 120, repeats: true) { [weak self] _ in self?.step() }
+        RunLoop.main.add(t, forMode: .common)
+        timer = t
+    }
+
+    private func step() {
+        guard let turn else { timer?.invalidate(); timer = nil; return }
+        let elapsed = CACurrentMediaTime() - turn.start
+        let p = CGFloat(BatteryMenuMotion.badge(at: elapsed))
+        badge.fill = Self.blend(turn.from.0, turn.to.0, p, appearance: effectiveAppearance)
+        glyph.contentTintColor = Self.blend(turn.from.1, turn.to.1, p, appearance: effectiveAppearance)
+        if elapsed >= BatteryMenuMotion.badgeSettleSeconds {
+            badge.fill = turn.to.0; glyph.contentTintColor = turn.to.1
+            self.turn = nil; timer?.invalidate(); timer = nil
+        }
+    }
+
+    /// `a` to `b`, `t` of the way, with both resolved in the menu's appearance (a dynamic colour has no components until it is).
+    private static func blend(_ a: NSColor, _ b: NSColor, _ t: CGFloat, appearance: NSAppearance) -> NSColor {
+        func components(_ c: NSColor) -> [CGFloat] {
+            var r: CGFloat = 0, g: CGFloat = 0, bl: CGFloat = 0, al: CGFloat = 0
+            appearance.performAsCurrentDrawingAppearance { (c.usingColorSpace(.sRGB) ?? c).getRed(&r, green: &g, blue: &bl, alpha: &al) }
+            return [r, g, bl, al]
+        }
+        let ca = components(a), cb = components(b)
+        func mix(_ i: Int) -> CGFloat { ca[i] + (cb[i] - ca[i]) * t }
+        return NSColor(srgbRed: mix(0), green: mix(1), blue: mix(2), alpha: mix(3))
+    }
 }
 
 /// "Battery Settings…".

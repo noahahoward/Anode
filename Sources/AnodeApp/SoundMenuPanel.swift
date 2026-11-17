@@ -554,10 +554,14 @@ class HoverRow: NSView {
     private var hovering = false { didSet { needsDisplay = true } }
     /// Whether the row is lit. (A press that began on the row keeps it lit while the pointer is off it, as macOS's does.)
     var isLit: Bool { hovering }
-    private var pressed = false { didSet { if dimsWhenPressed { subviews.forEach { $0.alphaValue = pressed ? Self.pressedAlpha : 1 } } } }
-    /// The Battery menu's rows: the content (text, badge, glyph) goes to 0.8 while the button is held (measured), and the light goes
-    /// as soon as the pointer is off the row, button down or not. The Sound menu's rows keep their light while a press is dragged off.
+    private var pressed = false { didSet { if !pressed { dim(false) } } }
+    /// The Battery menu's rows: the content (text, badge, glyph) goes to 0.8 while the button is held on the row (measured), and back
+    /// to full strength the moment the pointer is dragged off it (the light stays, as the Sound menu's does).
     var dimsWhenPressed = false
+    private func dim(_ on: Bool) {
+        guard dimsWhenPressed else { return }
+        subviews.forEach { $0.alphaValue = on ? Self.pressedAlpha : 1 }
+    }
     static let pressedAlpha: CGFloat = 0.8
     var highlightable = true
     /// How much white the hovered row gets.
@@ -574,8 +578,12 @@ class HoverRow: NSView {
     }
 
     override func mouseEntered(with event: NSEvent) { hovering = highlightable }
-    override func mouseExited(with event: NSEvent) { if !pressed || dimsWhenPressed { hovering = false } }
-    override func mouseDown(with event: NSEvent) { pressed = highlightable }
+    override func mouseExited(with event: NSEvent) { if !pressed { hovering = false } }
+    override func mouseDown(with event: NSEvent) { pressed = highlightable; dim(pressed) }
+    override func mouseDragged(with event: NSEvent) {
+        guard pressed else { return }
+        dim(bounds.contains(convert(event.locationInWindow, from: nil)))
+    }
     override func mouseUp(with event: NSEvent) {
         let inside = bounds.contains(convert(event.locationInWindow, from: nil))
         pressed = false
@@ -594,7 +602,7 @@ class HoverRow: NSView {
 /// The round badge behind an output's glyph. Its colour is resolved in the appearance the menu is in (a dynamic colour turned into a
 /// layer colour where the view is built comes out in the wrong one).
 final class BadgeView: NSView {
-    private let fill: NSColor
+    var fill: NSColor { didSet { needsDisplay = true } }
     init(frame: NSRect, fill: NSColor) {
         self.fill = fill
         super.init(frame: frame)

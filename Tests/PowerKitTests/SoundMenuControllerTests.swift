@@ -29,7 +29,9 @@ final class SoundMenuControllerTests: XCTestCase {
         var jobs: [(SystemPanelKind, SystemPanelPress.Job)] = []
         var completions: [(SystemPanelOutcome) -> Void] = []
         var cancelled = false
+        var closedPanelsOfThePerson = 0
         func cancelAll() { cancelled = true }
+        func closePanelOpenedByPerson() { closedPanelsOfThePerson += 1 }
         func run(_ kind: SystemPanelKind, job: SystemPanelPress.Job, done: @escaping (SystemPanelOutcome) -> Void) {
             jobs.append((kind, job)); completions.append(done)
         }
@@ -162,6 +164,12 @@ final class SoundMenuControllerTests: XCTestCase {
         r.outputs.defaultDeviceID = "builtin"; r.outputs.volume = 0.9
         r.outputs.onChange?()
         XCTAssertEqual(r.bar.items[0].symbolName, "speaker.wave.3.fill")
+    }
+
+    func testOpeningTheMenuClosesAPanelOfMacOSThePersonHadOpen() throws {
+        let r = try rig(); defer { r.cleanup() }
+        r.controller.openMenu()
+        XCTAssertEqual(r.driver.closedPanelsOfThePerson, 1, "macOS closes one menu bar menu for the next; Anode took the click, so it does it")
     }
 
     func testOpeningTheMenuTellsTheOtherMenuToClose() throws {

@@ -208,6 +208,7 @@ final class SoundMenuController {
         let anchor: CGRect? = nativeRunning ? (clickAnchor ?? native.currentFrame()) : item?.frame
         guard let anchor else { return }
         onWillOpen?()
+        driver.closePanelOpenedByPerson()
         notice = nil
         collapsed.removeAll()
         openCount += 1

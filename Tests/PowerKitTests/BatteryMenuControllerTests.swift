@@ -506,4 +506,10 @@ final class BatteryMenuControllerTests: XCTestCase {
         r.native.onClick?(r.native.frame!)
         XCTAssertEqual(told, 1)
     }
+
+    func testOpeningTheMenuClosesAPanelOfMacOSThePersonHadOpen() throws {
+        let r = try rig(lastReading: true); defer { r.cleanup() }
+        r.native.onClick?(r.native.frame!)
+        XCTAssertEqual(r.driver.closedPanelsOfThePerson, 1)
+    }
 }

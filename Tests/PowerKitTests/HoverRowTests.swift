@@ -67,15 +67,20 @@ final class HoverRowTests: XCTestCase {
         XCTAssertTrue(row.subviews.allSatisfy { $0.alphaValue == 1 })
     }
 
-    func testABatteryRowLosesItsLightWhenTheButtonIsDraggedOffButStaysDimUntilLetGo() {
+    // Measured on macOS's own panel by dragging off a pressed row: the content goes back to full strength at once, the light stays
+    // until the pointer next moves (a plain move off the row puts it out), and dragging back on dims the content again.
+    func testDraggingAPressedBatteryRowOffUndimsItAndLeavesTheLight_AndBackOnDimsItAgain() {
         let (w, _) = rig(); defer { w.close() }
         let row = modeRow(in: w)
         var picked = 0; row.onPick = { picked += 1 }
         row.mouseEntered(with: event(.mouseMoved, at: NSPoint(x: 50, y: 16), in: w))
         row.mouseDown(with: event(.leftMouseDown, at: NSPoint(x: 50, y: 16), in: w))
-        row.mouseExited(with: event(.leftMouseDragged, at: NSPoint(x: 50, y: 80), in: w))
-        XCTAssertFalse(row.isLit, "macOS's Battery rows are not lit while the pointer is off them, pressed or not")
+        row.mouseDragged(with: event(.leftMouseDragged, at: NSPoint(x: 50, y: 80), in: w))
+        XCTAssertTrue(row.isLit, "the light stays")
+        XCTAssertTrue(row.subviews.allSatisfy { $0.alphaValue == 1 }, "the content is back at full strength")
+        row.mouseDragged(with: event(.leftMouseDragged, at: NSPoint(x: 60, y: 16), in: w))
         XCTAssertTrue(row.subviews.allSatisfy { abs($0.alphaValue - 0.8) < 0.001 })
+        row.mouseDragged(with: event(.leftMouseDragged, at: NSPoint(x: 50, y: 80), in: w))
         row.mouseUp(with: event(.leftMouseUp, at: NSPoint(x: 50, y: 80), in: w))
         XCTAssertEqual(picked, 0)
         XCTAssertTrue(row.subviews.allSatisfy { $0.alphaValue == 1 })

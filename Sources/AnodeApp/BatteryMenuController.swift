@@ -208,6 +208,7 @@ final class BatteryMenuController {
     func openMenu() {
         guard !presenter.isOpen, pendingAnchor == nil, accessibility(), let anchor = clickAnchor ?? native.currentFrame() else { return }
         onWillOpen?()
+        driver.closePanelOpenedByPerson()
         openCount += 1
         setStatsWanted(true)
         if let model {
