@@ -121,4 +121,30 @@ final class NativeIconClickGateTests: XCTestCase {
         XCTAssertEqual(g.decide(.down, at: outside, modifiers: false, icon: icon, isTheIcon: { true }), .pass)
         XCTAssertEqual(g.decide(.up, at: outside, modifiers: false, icon: icon, isTheIcon: { true }), .pass)
     }
+
+    // While Anode's still picture of an icon is up (macOS's panel is being read), a click on the picture counts as a click on the icon.
+    // It must count only for the icon the picture is over: the Sound and Battery icons are 16 pt apart, inside each other's slack, and
+    // a click on one opened the other's menu while the other's picture was up.
+    private let sound = CGRect(x: 1540, y: 8.5, width: 22, height: 22)
+    private let battery = CGRect(x: 1578, y: 8.5, width: 26, height: 22)
+
+    func testAClickOnTheSoundIconIsNotAClickOnThePictureOverTheBattery() {
+        XCTAssertFalse(NativeIconClickGate.isOnCover(CGPoint(x: 1551, y: 19), of: battery))
+        XCTAssertFalse(NativeIconClickGate.isOnCover(CGPoint(x: 1562, y: 19), of: battery), "the right edge of the sound icon")
+    }
+
+    func testAClickOnTheBatteryIconIsNotAClickOnThePictureOverTheSound() {
+        XCTAssertFalse(NativeIconClickGate.isOnCover(CGPoint(x: 1590, y: 19), of: sound))
+    }
+
+    func testAClickOnTheIconItselfIsOnItsPicture() {
+        XCTAssertTrue(NativeIconClickGate.isOnCover(CGPoint(x: 1590, y: 19), of: battery))
+        XCTAssertTrue(NativeIconClickGate.isOnCover(CGPoint(x: 1551, y: 19), of: sound))
+    }
+
+    func testTheTopRowOfTheBarAboveTheIconIsStillOnThePictureWhenTheItemIsKnown() {
+        let bar = CGRect(x: 1578, y: 0, width: 26, height: 39)
+        XCTAssertTrue(NativeIconClickGate.isOnCover(CGPoint(x: 1590, y: 0), of: battery, bar: bar))
+    }
 }
+

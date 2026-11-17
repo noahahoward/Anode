@@ -43,4 +43,11 @@ public struct NativeIconClickGate {
         let top = min(icon.minY - 6, bar?.minY ?? .infinity), bottom = max(icon.maxY + 6, bar?.maxY ?? -.infinity)
         return point.y >= top && point.y <= bottom && point.x >= icon.minX - slack && point.x <= icon.maxX + slack
     }
+
+    /// Whether a click is on the still picture Anode keeps over `icon` while macOS's panel is read: the icon's own width and the
+    /// room the picture has round it (`IconCoverGeometry`), not the wider slack of `isNear`: a neighbouring icon is inside that.
+    public static func isOnCover(_ point: CGPoint, of icon: CGRect, bar: CGRect? = nil) -> Bool {
+        let cover = IconCoverGeometry.rect(for: icon)
+        return isNear(point, icon, bar: bar) && point.x >= cover.minX && point.x <= cover.maxX
+    }
 }

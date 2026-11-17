@@ -185,7 +185,7 @@ final class NativeMenuExtraIcon: NativeIconHosting {
         // It is the icon, for this purpose: the click must not fall through to macOS's own panel.
         if CoverPresence.shared.isCovered {
             lock.lock(); let known = cachedFrame; let bar = cachedBar; lock.unlock()
-            if let known, NativeIconClickGate.isNear(point, known, bar: bar) { return known }
+            if let known, NativeIconClickGate.isOnCover(point, of: known, bar: bar) { return known }
         }
         var hit: AXUIElement?
         // On the screen's very top row Accessibility answers with the whole menu bar, not the item under the pointer: ask about the
