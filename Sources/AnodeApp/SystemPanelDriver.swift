@@ -314,7 +314,18 @@ final class SystemPanelDriver: SystemPanelDriving {
 
     private func movePanel() {
         guard let window = panelWindow() else { return }
+        noteSide(of: window)
         Self.moveOffScreen(window)
+    }
+
+    /// Where macOS put the window of its panel (read just before it is moved away) says which side of its icon it opens on; Anode's
+    /// menu opens on the same one, and the picture over macOS's first frames lies there. A window already moved says nothing.
+    private func noteSide(of window: AXUIElement) {
+        guard itemFrame != .zero else { return }
+        let x = Self.frame(of: window).minX
+        guard x > Self.offScreenX + 1000 else { return }
+        PanelSides.shared.learn(windowMinX: x, icon: itemFrame)
+        log("macOS opened its panel for the icon at x \(Int(itemFrame.minX)) with the window at x \(Int(x))")
     }
 
     private func readTree() {
@@ -398,7 +409,9 @@ final class SystemPanelDriver: SystemPanelDriving {
             let driver = Unmanaged<SystemPanelDriver>.fromOpaque(refcon).takeUnretainedValue()
             guard driver.machine != nil else { return }
             switch SystemPanelDriver.string(element, kAXSubroleAttribute) {
-            case "AXSystemDialog": SystemPanelDriver.moveOffScreen(element)
+            case "AXSystemDialog":
+                driver.noteSide(of: element)
+                SystemPanelDriver.moveOffScreen(element)
             case "AXDialog": driver.answerAlerts()
             default: break
             }
@@ -443,10 +456,11 @@ final class SystemPanelDriver: SystemPanelDriving {
 
     /// True when a panel of Control Center is on the screen at its own place: the person opened it.
     /// Fails closed: when the window list cannot be read, the person is assumed to have it open and nothing is touched.
-    /// Where macOS's panel first appears for an icon at `item`: its right edge 10.5 pt past the icon's, 2 pt under the menu bar, with
-    /// room around it for the shadow. The panel is at most 560 pt tall.
+    /// Where macOS's panel first appears for an icon at `item`: its right edge 10.5 pt past the icon's, or (far to the left of the
+    /// bar) its left edge 10.5 pt before it (`MenuPanelPlacement`), 2 pt under the menu bar, with room around it for the shadow. The
+    /// panel is at most 560 pt tall. Where the side is not known yet the region takes in both.
     static func panelRegion(for item: CGRect) -> CGRect {
-        CGRect(x: CGFloat(Int(item.maxX + 10.5 - 309) - 28), y: 40, width: 309 + 56, height: 600)
+        MenuPanelPlacement.region(for: item, sides: PanelSides.shared.sidesToCover(for: item), width: 309)
     }
 
     /// The window of Anode's own Sound menu, when it is on the screen.

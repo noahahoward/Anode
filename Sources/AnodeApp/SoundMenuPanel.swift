@@ -125,6 +125,18 @@ final class SoundMenuPanel: NSPanel, SoundMenuPresenting {
         collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle]
         contentView = content
         setAccessibilityIdentifier("dev.anode.soundMenu")
+        sideObserver = NotificationCenter.default.addObserver(forName: PanelSides.changed, object: nil, queue: .main) { [weak self] _ in
+            self?.relocate()
+        }
+    }
+
+    private var sideObserver: NSObjectProtocol?
+    deinit { if let sideObserver { NotificationCenter.default.removeObserver(sideObserver) } }
+
+    /// macOS opened its panel on the other side of the icon than was assumed: this menu goes to that side, where it is.
+    private func relocate() {
+        guard isVisible, let screen = NSScreen.screens.first else { return }
+        setFrameOrigin(NSPoint(x: PanelSides.menuMinX(anchor: anchor, width: frame.width, in: screen), y: frame.minY))
     }
 
     /// Never key and never main. A key window that is ordered out hands "key" to another window of the same app and brings
@@ -210,13 +222,13 @@ final class SoundMenuPanel: NSPanel, SoundMenuPresenting {
         if !anchor.contains(top) && !frame.contains(p) { close() }
     }
 
-    /// Right edge a little past the icon's, top just under the menu bar, like macOS's.
+    /// An edge a little past the icon's (the right one, or the left one for an icon far to the left: `PanelSides`), top just under
+    /// the menu bar, like macOS's.
     private func place() {
         guard let screen = NSScreen.screens.first else { return }
         let size = content.fittingSize
         let bar = max(NSStatusBar.system.thickness, screen.frame.height - screen.visibleFrame.maxY)
-        var x = anchor.maxX + 10.5 - size.width
-        x = min(max(8, x), screen.frame.width - size.width - 8)
+        let x = PanelSides.menuMinX(anchor: anchor, width: size.width, in: screen)
         setFrame(NSRect(x: x, y: screen.frame.height - bar - 2 - size.height, width: size.width, height: size.height), display: true)
         // The shadow follows what is drawn; worked out before the rounded glass had drawn it comes out square at the corners.
         DispatchQueue.main.async { [weak self] in self?.invalidateShadow() }

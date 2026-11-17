@@ -150,6 +150,9 @@ final class NativeMenuExtraIcon: NativeIconHosting {
             lock.lock(); let icon = cachedFrame; let bar = cachedBar; lock.unlock()
             let held = event.flags.intersection([.maskCommand, .maskAlternate, .maskControl])
             let point = event.location
+            // Command-drag is how icons are rearranged: when the mouse lets go in the bar the icon may be somewhere else, and the next
+            // click on it must find it there (the bar settles for a moment, so the look is taken twice).
+            if type == .leftMouseUp, point.y < Self.barHeightForRearranging { lookAgainSoon() }
             var liveFrame: CGRect?
             let verdict = gate.decide(type == .leftMouseDown ? .down : .up, at: point, modifiers: !held.isEmpty, icon: icon, bar: bar) {
                 liveFrame = iconUnderPointer(point)
@@ -178,6 +181,24 @@ final class NativeMenuExtraIcon: NativeIconHosting {
             return true
         }
     }
+
+    /// A mouse let go above this row is a let go in the menu bar (the bar is 24 to 38 pt tall).
+    private static let barHeightForRearranging: CGFloat = 40
+
+    /// A fresh look at where the icon is, in a moment and again a while after (the other items slide into place). One set of looks
+    /// at a time: a run of clicks in the bar asks for one.
+    private func lookAgainSoon() {
+        lock.lock(); let busy = lookPending; lookPending = true; lock.unlock()
+        guard !busy else { return }
+        for delay in [0.35, 1.2] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+                guard let self else { return }
+                _ = self.currentFrame()
+                if delay > 1 { self.lock.lock(); self.lookPending = false; self.lock.unlock() }
+            }
+        }
+    }
+    private var lookPending = false
 
     /// The icon's frame when what is under the pointer is this macOS icon, else nil.
     private func iconUnderPointer(_ point: CGPoint) -> CGRect? {

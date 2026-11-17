@@ -5,7 +5,7 @@ import PowerKit
 //
 // The same glass and the same row looks as the Sound menu (macOS's two panels share them), laid out by `BatteryMenuLayout`
 // from the numbers measured on macOS's own Battery panel. The panel is a window of its own that never takes focus, opens where
-// macOS's would (right edge 10.5 pt past the icon's, 1 pt under the bar) and closes on a click anywhere else or on Esc.
+// macOS's would (right edge 10.5 pt past the icon's, or the left edge 10.5 pt before it for an icon far to the left; 1 pt under the bar) and closes on a click anywhere else or on Esc.
 
 /// The glyph on an Energy Mode's badge. Automatic and Low Power are SF Symbols; High Power's (a battery with three triangles in
 /// it) is not one the system gives out by name, so it is drawn, in the same outline.
@@ -90,6 +90,18 @@ final class BatteryMenuPanel: NSPanel, BatteryMenuPresenting {
         collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle]
         contentView = content
         setAccessibilityIdentifier("dev.anode.batteryMenu")
+        sideObserver = NotificationCenter.default.addObserver(forName: PanelSides.changed, object: nil, queue: .main) { [weak self] _ in
+            self?.relocate()
+        }
+    }
+
+    private var sideObserver: NSObjectProtocol?
+    deinit { if let sideObserver { NotificationCenter.default.removeObserver(sideObserver) } }
+
+    /// macOS opened its panel on the other side of the icon than was assumed: this menu goes to that side, where it is.
+    private func relocate() {
+        guard isVisible, let screen = NSScreen.screens.first else { return }
+        setFrameOrigin(NSPoint(x: PanelSides.menuMinX(anchor: anchor, width: frame.width, in: screen), y: frame.minY))
     }
 
     /// Never key and never main (see `SoundMenuPanel`): Esc is heard by a global monitor instead.
@@ -140,8 +152,7 @@ final class BatteryMenuPanel: NSPanel, BatteryMenuPresenting {
         guard let screen = NSScreen.screens.first else { return }
         let size = content.fittingSize
         let bar = max(NSStatusBar.system.thickness, screen.frame.height - screen.visibleFrame.maxY)
-        var x = anchor.maxX + 10.5 - size.width
-        x = min(max(8, x), screen.frame.width - size.width - 8)
+        let x = PanelSides.menuMinX(anchor: anchor, width: size.width, in: screen)
         // macOS's panel is 277.5 pt (a half point more with each further app) and its top edge is on a half point (40.5 pt down), so it
         // ends on a whole one. A window is whole points: it starts at 40, a half point above the picture, and the picture is pinned to
         // its bottom, whatever the window did. Left to the window, the picture came out half a point higher or lower depending on
