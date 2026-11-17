@@ -24,6 +24,8 @@ final class PanelFade {
 
     /// Takes the picture of `panel` (it must still be on the screen), puts the panel away, and fades the picture out.
     static func close(_ panel: NSWindow, seconds: TimeInterval = BatteryMenuMotion.fadeOutSeconds, then orderOut: () -> Void) {
+        // The count starts at the click, not when the picture is ready: taking it costs a frame or two.
+        let clicked = CACurrentMediaTime()
         guard panel.isVisible, ScreenRecordingAccess.isGranted, let screen = NSScreen.screens.first else { orderOut(); return }
         // The panel and its shadow: more below it than above, and nothing above the top of the screen.
         let f = panel.frame
@@ -54,7 +56,7 @@ final class PanelFade {
         orderOut()
         let fade = PanelFade(window: w, seconds: seconds)
         running.append(fade)
-        fade.started = CACurrentMediaTime()
+        fade.started = clicked
         let t = Timer(timeInterval: 1.0 / 120, repeats: true) { [weak fade] _ in fade?.step() }
         RunLoop.main.add(t, forMode: .common)
         fade.timer = t
