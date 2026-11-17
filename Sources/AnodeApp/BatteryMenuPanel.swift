@@ -221,19 +221,22 @@ final class BatteryMenuContentView: NSView {
     }
 
     private func add(_ row: BatteryMenuLayout.LaidOutRow, _ model: BatteryMenuModel) {
-        let f = row.frame
+        // Everything but the lines sits half a point lower than the measured frames say, on macOS's pixels (the highlight under the
+        // pointer, the text, the badges).
+        var f = row.frame
+        if row.kind != .divider { f = f.offsetBy(dx: 0, dy: BatteryMenuMetrics.contentDrop) }
         switch row.kind {
         case .title:
-            addSubview(label("Battery", f, size: 13, weight: .semibold, color: SoundText.primary, dy: BatteryMenuMetrics.contentDrop))
+            addSubview(label("Battery", f, size: 13, weight: .semibold, color: SoundText.primary))
         case .powerSource:
-            addSubview(label(AppleBatteryPanel.powerSourcePrefix + model.powerSource, f, size: 12, weight: .regular, color: Self.secondary, dy: BatteryMenuMetrics.contentDrop))
+            addSubview(label(AppleBatteryPanel.powerSourcePrefix + model.powerSource, f, size: 12, weight: .regular, color: Self.secondary))
         case .divider:
             let d = NSView(frame: f)
             d.wantsLayer = true
             d.layer?.backgroundColor = cg(SoundText.ink(0.15))
             addSubview(d)
         case .heading(let title):
-            addSubview(label(title, f, size: 12, weight: .semibold, color: Self.secondary, dy: BatteryMenuMetrics.contentDrop))
+            addSubview(label(title, f, size: 12, weight: .semibold, color: Self.secondary))
         case .mode(let i):
             guard model.modes.indices.contains(i) else { return }
             let mode = model.modes[i]
@@ -278,7 +281,7 @@ final class ModeRow: HoverRow {
     init(frame: NSRect, mode: BatteryMenuModel.EnergyMode) {
         super.init(frame: frame)
         cornerRadius = 10
-        let badge = BadgeView(frame: NSRect(x: BatteryRow.lead, y: 3 + BatteryMenuMetrics.contentDrop, width: 26, height: 26),
+        let badge = BadgeView(frame: NSRect(x: BatteryRow.lead, y: 3, width: 26, height: 26),
                               fill: mode.isSelected ? NSColor.systemBlue : SoundText.ink(dark: 0.16, light: 0.07))
         // Centred in the badge at its own size (macOS's glyph is about 19 by 9 pt).
         let glyph = NSImageView(frame: badge.bounds.offsetBy(dx: 0, dy: -1))
@@ -292,7 +295,7 @@ final class ModeRow: HoverRow {
         name.font = .systemFont(ofSize: 13)
         name.textColor = SoundText.primary
         name.lineBreakMode = .byTruncatingTail
-        name.frame = NSRect(x: BatteryRow.lead + 32, y: 8 + BatteryMenuMetrics.contentDrop, width: 240, height: 18)
+        name.frame = NSRect(x: BatteryRow.lead + 32, y: 8, width: 240, height: 18)
         addSubview(name)
     }
 
@@ -308,7 +311,7 @@ final class FooterRow: HoverRow {
         l.font = .systemFont(ofSize: 13)
         l.textColor = SoundText.primary
         // A text field draws its text 2 pt in from its frame.
-        l.frame = NSRect(x: BatteryRow.lead - 2, y: 2 + BatteryMenuMetrics.contentDrop + 1, width: frame.width, height: 18)
+        l.frame = NSRect(x: BatteryRow.lead - 2, y: 2 + 1, width: frame.width, height: 18)
         addSubview(l)
     }
 
@@ -321,7 +324,7 @@ final class EnergyAppRow: HoverRow {
         super.init(frame: frame)
         cornerRadius = 10
         highlightable = true   // lit under the pointer; what pressing it does is not measured yet
-        let icon = NSImageView(frame: NSRect(x: BatteryRow.lead - 1, y: 2 + BatteryMenuMetrics.contentDrop, width: 18, height: 18))
+        let icon = NSImageView(frame: NSRect(x: BatteryRow.lead - 1, y: 2, width: 18, height: 18))
         icon.image = Self.icon(forAppNamed: name)
         icon.imageScaling = .scaleProportionallyUpOrDown
         addSubview(icon)
@@ -329,7 +332,7 @@ final class EnergyAppRow: HoverRow {
         l.font = .systemFont(ofSize: 13)
         l.textColor = SoundText.primary
         l.lineBreakMode = .byTruncatingTail
-        l.frame = NSRect(x: BatteryRow.lead + 22, y: 3 + BatteryMenuMetrics.contentDrop, width: 250, height: 18)
+        l.frame = NSRect(x: BatteryRow.lead + 22, y: 3, width: 250, height: 18)
         addSubview(l)
     }
 
