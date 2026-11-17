@@ -905,6 +905,8 @@ final class MenuSlider: NSView {
 
     private func stopGlide() { glideTimer?.invalidate(); glideTimer = nil; shown = value }
     var onChange: ((Double) -> Void)?
+    /// The pointer was let go, with the value the knob ended on (for a setting that is written once, not on every step of a drag).
+    var onEnd: ((Double) -> Void)?
     /// The slider of an app row: the same drawing as the volume slider, smaller, and dimmed while that app is muted.
     var compact = false { didSet { needsDisplay = true } }
     var dimmed = false { didSet { needsDisplay = true } }
@@ -1036,6 +1038,7 @@ final class MenuSlider: NSView {
         guard dragging else { return }
         dragging = false
         hideLens()
+        onEnd?(value)
         Self.dragEnded()
     }
     override func viewWillMove(toSuperview newSuperview: NSView?) {

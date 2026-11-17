@@ -117,6 +117,9 @@ final class BatteryMenuPanel: NSPanel, BatteryMenuPresenting {
         place()
     }
 
+    /// The menu drew something it had been holding back (a drag ended): fit the window to it.
+    func contentChanged() { place(); invalidateShadow() }
+
     override func close() {
         for m in monitors { NSEvent.removeMonitor(m) }
         monitors.removeAll()
@@ -214,7 +217,22 @@ final class BatteryMenuContentView: NSView {
 
     required init?(coder: NSCoder) { fatalError("not used") }
 
+    private var deferred: BatteryMenuModel?
+    private var dragObserver: NSObjectProtocol?
+
     func apply(_ model: BatteryMenuModel) {
+        if dragObserver == nil {
+            dragObserver = NotificationCenter.default.addObserver(forName: .menuSliderDragEnded, object: nil, queue: .main) { [weak self] _ in
+                guard let self, let pending = self.deferred else { return }
+                self.deferred = nil
+                self.apply(pending)
+                (self.window as? BatteryMenuPanel)?.contentChanged()
+            }
+        }
+        // A slider is held: drawing the menu again would replace it under the pointer. What changed is drawn when it is let go.
+        if MenuSlider.activeDrags > 0, self.model != nil { deferred = model; return }
+        deferred = nil
+        if self.model == model { return }
         self.model = model
         for v in subviews where v !== material && v !== baseLift { v.removeFromSuperview() }
         let layout = BatteryMenuLayout.frames(for: model)
@@ -259,7 +277,12 @@ final class BatteryMenuContentView: NSView {
                 self?.controller?.pressGear()
             })
         case .chargeLimit:
-            break   // drawn in the part that follows
+            guard let charge = model.chargeLimit else { return }
+            let v = ChargeLimitRowView(frame: f, charge: charge)
+            v.onCommit = { [weak self] value in self?.controller?.commitChargeLimit(value) }
+            v.onPressMinus = { [weak self] in self?.controller?.pressMinus() }
+            v.onHoldMinus = { [weak self] in self?.controller?.holdMinus() }
+            addSubview(v)
         case .footer:
             let b = FooterRow(frame: f.insetBy(dx: -BatteryRow.lead, dy: 0), title: Self.settingsTitle)
             b.onPick = { [weak self] in self?.controller?.pressSettings() }
@@ -288,6 +311,101 @@ final class BatteryMenuContentView: NSView {
 /// 294 wide, 10 pt corners, as tall as the row, as bright on every row), while the content starts at the 14 pt inset.
 enum BatteryRow {
     static let lead: CGFloat = 7
+}
+
+/// The charge limit: a slider for the limit with its percentage, and the minus button (a press is Soft Drain to Limit, a hold of three
+/// seconds asks about Hard Drain). The slider's number follows the drag; the limit is written when it is let go.
+final class ChargeLimitRowView: NSView {
+
+    var onCommit: ((Int) -> Void)?
+    var onPressMinus: (() -> Void)?
+    var onHoldMinus: (() -> Void)?
+
+    private let range: ClosedRange<Int>
+    private let percent = NSTextField(labelWithString: "")
+
+    override var isFlipped: Bool { true }
+
+    private func limit(at position: Double) -> Int {
+        range.lowerBound + Int((position * Double(range.upperBound - range.lowerBound)).rounded())
+    }
+
+    init(frame: NSRect, charge: BatteryMenuModel.ChargeLimit) {
+        range = charge.range
+        super.init(frame: frame)
+        let slider = MenuSlider(frame: NSRect(x: 0, y: 4, width: 186, height: 24))   // room round the knob for its shadow
+        slider.compact = true
+        slider.value = Double(charge.limit - range.lowerBound) / Double(range.upperBound - range.lowerBound)
+        slider.onChange = { [weak self] v in
+            guard let self else { return }
+            self.percent.stringValue = "\(self.limit(at: v))%"
+        }
+        slider.onEnd = { [weak self] v in
+            guard let self else { return }
+            self.onCommit?(self.limit(at: v))
+        }
+        addSubview(slider)
+        percent.font = .systemFont(ofSize: 13)
+        percent.textColor = SoundText.primary
+        percent.alignment = .right
+        percent.stringValue = "\(charge.limit)%"
+        percent.frame = NSRect(x: 190, y: 7, width: 46, height: 18)
+        addSubview(percent)
+        let minus = MinusButton(frame: NSRect(x: frame.width - 26, y: 3, width: 26, height: 26),
+                                running: charge.softDrainRunning || charge.hardDrainRunning, hard: charge.hardDrainRunning)
+        minus.onPress = { [weak self] in self?.onPressMinus?() }
+        minus.onHold = { [weak self] in self?.onHoldMinus?() }
+        addSubview(minus)
+    }
+
+    required init?(coder: NSCoder) { fatalError("not used") }
+}
+
+/// The round minus button. Blue while a drain runs (a bolt while it is Hard Drain). Pressing dims it as macOS's rows dim.
+final class MinusButton: NSView {
+
+    var onPress: (() -> Void)? { didSet { hold.onPress = onPress } }
+    var onHold: (() -> Void)? { didSet { hold.onHold = onHold } }
+    /// Three seconds held.
+    static let holdSeconds: TimeInterval = 3
+
+    private let hold = HoldPress(seconds: MinusButton.holdSeconds) { after, run in
+        let item = DispatchWorkItem(block: run)
+        DispatchQueue.main.asyncAfter(deadline: .now() + after, execute: item)
+        return { item.cancel() }
+    }
+
+    init(frame: NSRect, running: Bool, hard: Bool) {
+        super.init(frame: frame)
+        let badge = BadgeView(frame: bounds, fill: running ? NSColor.systemBlue : SoundText.ink(dark: 0.16, light: 0.08))
+        let glyph = NSImageView(frame: bounds)
+        glyph.image = NSImage(systemSymbolName: hard ? "bolt.fill" : "minus", accessibilityDescription: "Soft Drain to Limit")?
+            .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 12, weight: .semibold))
+        glyph.imageScaling = .scaleNone
+        glyph.imageAlignment = .alignCenter
+        glyph.contentTintColor = running ? .white : SoundText.ink(0.42)
+        badge.addSubview(glyph)
+        addSubview(badge)
+        toolTip = "Soft Drain to Limit. Hold for three seconds for Hard Drain."
+    }
+
+    required init?(coder: NSCoder) { fatalError("not used") }
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+    override func mouseDown(with event: NSEvent) {
+        subviews.forEach { $0.alphaValue = HoverRow.pressedAlpha }
+        hold.pressDown()
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        subviews.forEach { $0.alphaValue = 1 }
+        hold.release(inside: bounds.contains(convert(event.locationInWindow, from: nil)))
+    }
+
+    override func viewWillMove(toSuperview newSuperview: NSView?) {
+        if newSuperview == nil { hold.abandon() }   // the menu went away mid-press: nothing fires
+        super.viewWillMove(toSuperview: newSuperview)
+    }
 }
 
 /// One Energy Mode: a round badge with a battery in it (blue while it is the one in force), and its name.
@@ -375,11 +493,12 @@ enum BatteryMenuRuntime {
 
     /// The menu over the real Mac. `driver` is shared with the Sound menu: both use macOS's Control Center one job at a time.
     static func live(settings: Settings = .shared, driver: SystemPanelDriving = SystemPanelDriver(),
-                     openBetaFeatures: @escaping () -> Void = {}, ultra: UltraModeControlling? = nil) -> BatteryMenuController {
+                     openBetaFeatures: @escaping () -> Void = {}, ultra: UltraModeControlling? = nil, charge: ChargeLimiting? = nil) -> BatteryMenuController {
         let panel = BatteryMenuPanel()
         let controller = BatteryMenuController(settings: settings, driver: driver, accessibility: { AXIsProcessTrusted() },
                                                presenter: panel, native: NativeMenuExtraIcon.battery(),
-                                               openBetaFeatures: openBetaFeatures, ultra: ultra)
+                                               openBetaFeatures: openBetaFeatures, ultra: ultra, charge: charge,
+                                               hardDrainPrompt: HardDrainAlert())
         panel.controller = controller
         controller.start()
         return controller
