@@ -204,14 +204,16 @@ final class SoundMenuPanel: NSPanel, SoundMenuPresenting {
     }
 
     /// Closes with the fade macOS's has.
-    override func close() {
+    override func close() { close(fade: true) }
+
+    func close(fade: Bool) {
         for m in monitors { NSEvent.removeMonitor(m) }
         monitors.removeAll()
         volumeKeys.stop()
         stopGlide()
-        // macOS's fades out in a straight line over about 240 ms (measured, as the Battery panel's is). The glass cannot be faded, so
-        // the fade is of a picture of the panel (`PanelFade`).
-        PanelFade.close(self) { orderOut(nil) }
+        // macOS's fades out in a straight line over about 240 ms (measured, as the Battery panel's is), except when another icon's
+        // panel takes its place. The glass cannot be faded, so the fade is of a picture of the panel (`PanelFade`).
+        if fade { PanelFade.close(self) { orderOut(nil) } } else { orderOut(nil) }
     }
 
     /// A click anywhere else closes the menu; a click on the icon is the icon's own toggle.
@@ -219,7 +221,11 @@ final class SoundMenuPanel: NSPanel, SoundMenuPresenting {
         let p = NSEvent.mouseLocation
         guard let screen = NSScreen.screens.first else { return }
         let top = CGPoint(x: p.x, y: screen.frame.height - p.y)
-        if !anchor.contains(top) && !frame.contains(p) { close() }
+        if !anchor.contains(top) && !frame.contains(p) {
+            // Another icon of the menu bar takes the panel's place at once, as macOS's does; anywhere else the panel fades.
+            let fade = ClickAway.fades(whenClickLandsOn: MenuBarHit.role(at: top))
+            if let controller { controller.closeMenu(fade: fade) } else { close(fade: fade) }
+        }
     }
 
     /// An edge a little past the icon's (the right one, or the left one for an icon far to the left: `PanelSides`), top just under

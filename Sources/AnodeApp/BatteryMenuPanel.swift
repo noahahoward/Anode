@@ -132,11 +132,13 @@ final class BatteryMenuPanel: NSPanel, BatteryMenuPresenting {
     /// The menu drew something it had been holding back (a drag ended): fit the window to it.
     func contentChanged() { place(); invalidateShadow() }
 
-    override func close() {
+    override func close() { close(fade: true) }
+
+    func close(fade: Bool) {
         for m in monitors { NSEvent.removeMonitor(m) }
         monitors.removeAll()
-        // macOS's fades out; so does this, as a picture of itself (see `PanelFade`).
-        PanelFade.close(self) { orderOut(nil) }
+        // macOS's fades out, except when another icon's panel takes its place; so does this, as a picture of itself (see `PanelFade`).
+        if fade { PanelFade.close(self) { orderOut(nil) } } else { orderOut(nil) }
     }
 
     /// A click anywhere else closes the menu; a click on the icon is the icon's own toggle.
@@ -144,7 +146,10 @@ final class BatteryMenuPanel: NSPanel, BatteryMenuPresenting {
         let p = NSEvent.mouseLocation
         guard let screen = NSScreen.screens.first else { return }
         let top = CGPoint(x: p.x, y: screen.frame.height - p.y)
-        if !anchor.contains(top) && !frame.contains(p) { controller?.closeMenu() }
+        if !anchor.contains(top) && !frame.contains(p) {
+            // Another icon of the menu bar takes the panel's place at once, as macOS's does; anywhere else the panel fades.
+            controller?.closeMenu(fade: ClickAway.fades(whenClickLandsOn: MenuBarHit.role(at: top)))
+        }
     }
 
     /// Right edge a little past the icon's, top just under the menu bar, like macOS's.

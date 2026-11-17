@@ -8,6 +8,9 @@ import PowerKit
 // moment. So the fade is of a picture: the panel as it is on the screen is taken, the panel is put away, and the picture, in a
 // window of its own that takes no click, goes from fully opaque to nothing over what is live behind it. Over a still backdrop that is
 // the panel fading; there is no picture (and no fade) without Screen Recording, and the panel then closes at once.
+//
+// The fade is a Core Animation one, which the render server runs: a timer on the main thread stuttered whenever the main thread was
+// held up by what the same click had set going (another menu opening, a call into macOS's panel).
 
 final class PanelFade {
 
@@ -16,11 +19,8 @@ final class PanelFade {
     private static var running: [PanelFade] = []
 
     private var window: NSWindow?
-    private var timer: Timer?
-    private var started: CFTimeInterval = 0
-    private let seconds: TimeInterval
 
-    private init(window: NSWindow, seconds: TimeInterval) { self.window = window; self.seconds = seconds }
+    private init(window: NSWindow) { self.window = window }
 
     /// Takes the picture of `panel` (it must still be on the screen), puts the panel away, and fades the picture out.
     static func close(_ panel: NSWindow, seconds: TimeInterval = BatteryMenuMotion.fadeOutSeconds, then orderOut: () -> Void) {
@@ -61,23 +61,27 @@ final class PanelFade {
         CATransaction.flush()
         // Under the picture nothing changes on the screen: the panel goes now.
         orderOut()
-        let fade = PanelFade(window: w, seconds: seconds)
+        let fade = PanelFade(window: w)
         running.append(fade)
-        fade.started = clicked
-        let t = Timer(timeInterval: 1.0 / 120, repeats: true) { [weak fade] _ in fade?.step() }
-        RunLoop.main.add(t, forMode: .common)
-        fade.timer = t
-    }
-
-    private func step() {
-        let elapsed = CACurrentMediaTime() - started
-        if elapsed >= seconds { finish(); return }
-        // Linear in time over `seconds`, whatever it is.
-        window?.alphaValue = CGFloat(1 - elapsed / seconds)
+        // Linear in time over `seconds`, counted from the click: a picture that was late to be ready starts part of the way down.
+        if let layer = view.layer {
+            let animation = CABasicAnimation(keyPath: "opacity")
+            animation.fromValue = 1
+            animation.toValue = 0
+            animation.duration = seconds
+            animation.timingFunction = CAMediaTimingFunction(name: .linear)
+            animation.beginTime = layer.convertTime(clicked, from: nil)
+            animation.fillMode = .both
+            animation.isRemovedOnCompletion = false
+            layer.add(animation, forKey: "fade")
+            layer.opacity = 0
+        }
+        // Whatever the main thread is doing then, the picture is invisible once the animation is over; the window is put away when it can be.
+        let remaining = max(0, seconds - (CACurrentMediaTime() - clicked))
+        DispatchQueue.main.asyncAfter(deadline: .now() + remaining + 0.05) { [weak fade] in fade?.finish() }
     }
 
     private func finish() {
-        timer?.invalidate(); timer = nil
         window?.orderOut(nil)
         window = nil
         Self.running.removeAll { $0 === self }

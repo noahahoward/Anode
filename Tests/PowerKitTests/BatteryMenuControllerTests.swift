@@ -11,9 +11,11 @@ final class BatteryMenuControllerTests: XCTestCase {
         var shown: [BatteryMenuModel] = []
         var lastAnchor: CGRect?
         var closeCount = 0
+        /// Whether each close faded, in order.
+        var fades: [Bool] = []
         func show(_ model: BatteryMenuModel, below frame: CGRect) { isOpen = true; lastAnchor = frame; shown.append(model) }
         func update(_ model: BatteryMenuModel) { shown.append(model) }
-        func close() { isOpen = false; closeCount += 1 }
+        func close(fade: Bool) { isOpen = false; closeCount += 1; fades.append(fade) }
     }
 
     final class FakeUltra: UltraModeControlling {
@@ -261,6 +263,14 @@ final class BatteryMenuControllerTests: XCTestCase {
         r.controller.pressSettings()
         XCTAssertEqual(opened?.absoluteString, "x-apple.systempreferences:com.apple.Battery-Settings.extension")
         XCTAssertFalse(r.presenter.isOpen)
+    }
+
+    // macOS fades a panel out when it is closed, but not when another icon's panel takes its place: that is one frame.
+    func testAMenuClosesWithAFadeUnlessItIsToldTheOtherOneIsTakingItsPlace() throws {
+        let r = try rig(lastReading: true); defer { r.cleanup() }
+        r.native.onClick?(r.native.frame!); r.controller.closeMenu()
+        r.native.onClick?(r.native.frame!); r.controller.closeMenu(fade: false)
+        XCTAssertEqual(r.presenter.fades, [true, false])
     }
 
     // ── The gear ────────────────────────────────────────────────────────────

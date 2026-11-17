@@ -76,9 +76,11 @@ final class SoundMenuControllerTests: XCTestCase {
         var shown: [SoundMenuModel] = []
         var lastAnchor: CGRect?
         var closeCount = 0
+        /// Whether each close faded, in order.
+        var fades: [Bool] = []
         func show(_ model: SoundMenuModel, below frame: CGRect) { isOpen = true; lastAnchor = frame; shown.append(model) }
         func update(_ model: SoundMenuModel) { shown.append(model) }
-        func close() { isOpen = false; closeCount += 1 }
+        func close(fade: Bool) { isOpen = false; closeCount += 1; fades.append(fade) }
     }
 
     // ── Rig ─────────────────────────────────────────────────────────────────
@@ -172,6 +174,14 @@ final class SoundMenuControllerTests: XCTestCase {
         let r = try rig(); defer { r.cleanup() }
         r.controller.openMenu()
         XCTAssertEqual(r.driver.closedPanelsOfThePerson, 1, "macOS closes one menu bar menu for the next; Anode took the click, so it does it")
+    }
+
+    // macOS fades a panel out when it is closed, but not when another icon's panel takes its place: that is one frame.
+    func testAMenuClosesWithAFadeUnlessItIsToldTheOtherOneIsTakingItsPlace() throws {
+        let r = try rig(); defer { r.cleanup() }
+        r.controller.openMenu(); r.controller.closeMenu()
+        r.controller.openMenu(); r.controller.closeMenu(fade: false)
+        XCTAssertEqual(r.presenter.fades, [true, false])
     }
 
     func testOpeningTheMenuTellsTheOtherMenuToClose() throws {

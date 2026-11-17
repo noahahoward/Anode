@@ -27,7 +27,12 @@ protocol SoundMenuPresenting: AnyObject {
     var isOpen: Bool { get }
     func show(_ model: SoundMenuModel, below frame: CGRect)
     func update(_ model: SoundMenuModel)
-    func close()
+    /// `fade`: as macOS's panel closes (a straight-line fade); not when another panel takes its place, which is one frame.
+    func close(fade: Bool)
+}
+
+extension SoundMenuPresenting {
+    func close() { close(fade: true) }
 }
 
 /// One of macOS's own icons in the menu bar (Sound, Battery), when Anode lets a click on it open Anode's menu instead of showing a second icon.
@@ -228,9 +233,9 @@ final class SoundMenuController {
         }
     }
 
-    func closeMenu() {
+    func closeMenu(fade: Bool = true) {
         generation += 1
-        presenter.close()
+        presenter.close(fade: fade)
     }
 
     /// Reads macOS's panel, when Accessibility allows. What came back replaces what was known; the model is redrawn.

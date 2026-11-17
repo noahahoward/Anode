@@ -15,7 +15,12 @@ protocol BatteryMenuPresenting: AnyObject {
     var isOpen: Bool { get }
     func show(_ model: BatteryMenuModel, below frame: CGRect)
     func update(_ model: BatteryMenuModel)
-    func close()
+    /// `fade`: as macOS's panel closes (a straight-line fade); not when another panel takes its place, which is one frame.
+    func close(fade: Bool)
+}
+
+extension BatteryMenuPresenting {
+    func close() { close(fade: true) }
 }
 
 /// Ultra Low Power Mode as the menu needs it: whether it is on, asking for it, ending it, and being told when anything of it changes.
@@ -234,10 +239,10 @@ final class BatteryMenuController {
         }
     }
 
-    func closeMenu() {
+    func closeMenu(fade: Bool = true) {
         generation += 1
         pendingAnchor = nil
-        presenter.close()
+        presenter.close(fade: fade)
         setStatsWanted(false)
     }
 
