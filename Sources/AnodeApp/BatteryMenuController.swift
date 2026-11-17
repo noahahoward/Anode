@@ -78,6 +78,7 @@ final class BatteryMenuController {
     /// The menu is open, or about to be: Anode's figures are read for it.
     private var statsWanted = false
     private let statsInterval: TimeInterval
+    private let afterPressReadDelay: TimeInterval
     private var chargeObserver: AnyObject?
     private var ultraObserver: AnyObject?
     /// A mode chosen while Ultra Low Power runs: it ends first, and this is pressed in macOS's panel once it has put things back.
@@ -107,7 +108,7 @@ final class BatteryMenuController {
          native: NativeIconHosting, pollInterval: TimeInterval = 3, followUpDelay: TimeInterval = 1.5,
          openBetaFeatures: @escaping () -> Void = {}, ultra: UltraModeControlling? = nil, charge: ChargeLimiting? = nil, hardDrainPrompt: HardDrainPrompting? = nil,
          energyStats: @escaping () -> [String: EnergyStats] = { [:] }, onOpenChanged: @escaping (Bool) -> Void = { _ in },
-         statsInterval: TimeInterval = 0) {
+         statsInterval: TimeInterval = 0, afterPressReadDelay: TimeInterval = BatteryMenuMotion.badgeSettleSeconds + 0.1) {
         self.settings = settings; self.driver = driver; self.accessibility = accessibility; self.presenter = presenter
         self.native = native; self.pollInterval = pollInterval; self.followUpDelay = followUpDelay
         self.openBetaFeatures = openBetaFeatures
@@ -117,6 +118,7 @@ final class BatteryMenuController {
         self.energyStats = energyStats
         self.onOpenChanged = onOpenChanged
         self.statsInterval = statsInterval
+        self.afterPressReadDelay = afterPressReadDelay
     }
 
     var isMenuOpen: Bool { presenter.isOpen }
@@ -288,18 +290,17 @@ final class BatteryMenuController {
         // Already the mode in force: nothing to press. (While the mode runs macOS reads Low Power, which is not the person's choice.)
         guard ultraRunning || !mode.isSelected else { return }
         let before = reading
-        // The check moves at once; macOS's answer decides whether it stays.
-        apple.modes = apple.modes.map { var m = $0; m.isSelected = m.id == id; return m }
-        reading = apple
         if ultraRunning, let ultra {
-            // It ends first and puts everything back (it restores the person's own power mode); only then is the choice pressed.
+            // It ends first and puts everything back (it restores the person's own power mode); only then is the choice pressed. The
+            // row shows the new choice as soon as it is clicked.
+            apple.modes = apple.modes.map { var m = $0; m.isSelected = m.id == id; return m }
+            reading = apple
             afterUltra = id
             ultra.turnOff()
             redraw()
             ultraChanged()
             return
         }
-        redraw()
         send(modeID: id, title: mode.title, before: before)
     }
 
@@ -311,12 +312,20 @@ final class BatteryMenuController {
             self.pressesInFlight = max(0, self.pressesInFlight - 1)
             guard mine == self.generation else { return }
             switch outcome {
-            case .pressed, .tree: break
+            case .pressed, .tree:
+                // macOS has the choice: the check moves (the badge turns), and the reading after it confirms.
+                if var apple = self.reading { apple.modes = apple.modes.map { var m = $0; m.isSelected = m.id == id; return m }; self.reading = apple }
             case .refused, .failed: self.reading = before
             }
             self.redraw()
-            // How it ended is read from macOS's panel, not assumed.
-            if self.presenter.isOpen { self.readApple() }
+            // How it ended is read from macOS's panel, not assumed: after the badge has finished turning (the read is a call into
+            // another process on this thread, and made during the turn it stalled it for a few frames).
+            guard self.presenter.isOpen else { return }
+            if self.afterPressReadDelay <= 0 { self.readApple(); return }
+            DispatchQueue.main.asyncAfter(deadline: .now() + self.afterPressReadDelay) { [weak self] in
+                guard let self, mine == self.generation, self.presenter.isOpen else { return }
+                self.readApple()
+            }
         }
     }
 

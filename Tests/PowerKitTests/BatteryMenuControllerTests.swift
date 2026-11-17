@@ -81,7 +81,7 @@ final class BatteryMenuControllerTests: XCTestCase {
     private func rig(enabled: Bool = true, trusted: Bool = true, lastReading: Bool = false, openBeta: @escaping () -> Void = {},
                      ultra: FakeUltra? = nil, ultraEnabled: Bool = false,
                      charge: FakeCharge? = nil, chargeEnabled: Bool = false, prompt: FakePrompt? = nil,
-                     stats: @escaping () -> [String: EnergyStats] = { [:] }, opened: @escaping (Bool) -> Void = { _ in }) throws -> Rig {
+                     stats: @escaping () -> [String: EnergyStats] = { [:] }, opened: @escaping (Bool) -> Void = { _ in }, afterPressRead: TimeInterval = 0) throws -> Rig {
         let (defaults, suite) = try TestDefaults.make(owner: "BatteryMenu", test: name)
         let settings = Settings(defaults: defaults)
         settings.batteryMenuEnabled = enabled
@@ -91,7 +91,7 @@ final class BatteryMenuControllerTests: XCTestCase {
         let driver = SoundMenuControllerTests.FakeDriver(), presenter = FakePresenter(), native = SoundMenuControllerTests.FakeNative()
         let c = BatteryMenuController(settings: settings, driver: driver, accessibility: { trusted }, presenter: presenter, native: native,
                                       pollInterval: 0, followUpDelay: 0, openBetaFeatures: openBeta, ultra: ultra, charge: charge, hardDrainPrompt: prompt,
-                                      energyStats: stats, onOpenChanged: opened)
+                                      energyStats: stats, onOpenChanged: opened, afterPressReadDelay: afterPressRead)
         c.start()
         return Rig(controller: c, driver: driver, presenter: presenter, native: native, settings: settings, ultra: ultra,
                    cleanup: { c.stop(); TestDefaults.destroy(defaults, suite) })
@@ -193,14 +193,18 @@ final class BatteryMenuControllerTests: XCTestCase {
 
     // ── Pressing ────────────────────────────────────────────────────────────
 
-    func testPickingAModePressesMacOSsRowAndMovesTheCheckAtOnce() throws {
+    // The check moves when macOS has taken the press, as macOS's own does (its badge turns about 0.3 s after the click, when the mode
+    // changes): the press is a call into another process on the main thread, and a badge already turning would stall in it.
+    func testPickingAModePressesMacOSsRowAndMovesTheCheckWhenMacOSHasTakenIt() throws {
         let r = try rig(lastReading: true); defer { r.cleanup() }
         r.native.onClick?(r.native.frame!)
         r.driver.complete(0, .tree(tree(selected: "low")))
         r.controller.pickMode("high")
-        XCTAssertEqual(r.presenter.shown.last?.selectedModeID, "high")
+        XCTAssertEqual(r.presenter.shown.last?.selectedModeID, "low", "not yet")
         XCTAssertEqual(r.driver.jobs.last?.0, .battery)
         XCTAssertEqual(r.driver.jobs.last?.1, .press(SystemPanelRow(identifier: "energy-mode-high", description: "High Power")))
+        r.driver.complete(1, .pressed)
+        XCTAssertEqual(r.presenter.shown.last?.selectedModeID, "high")
     }
 
     func testPickingTheModeAlreadyInForceDoesNothing() throws {
@@ -245,6 +249,7 @@ final class BatteryMenuControllerTests: XCTestCase {
         r.native.onClick?(r.native.frame!)             // read 0 in flight
         r.controller.pickMode("high")                  // press 1 queued behind it
         r.driver.complete(0, .tree(tree(selected: "low")))
+        r.driver.complete(1, .pressed)
         XCTAssertEqual(r.presenter.shown.last?.selectedModeID, "high", "the reading is from before the press")
     }
 
@@ -511,5 +516,17 @@ final class BatteryMenuControllerTests: XCTestCase {
         let r = try rig(lastReading: true); defer { r.cleanup() }
         r.native.onClick?(r.native.frame!)
         XCTAssertEqual(r.driver.closedPanelsOfThePerson, 1)
+    }
+
+    func testTheReadAfterAPressWaitsForTheBadgeToFinishTurning() throws {
+        let r = try rig(lastReading: true, afterPressRead: 0.05); defer { r.cleanup() }
+        r.native.onClick?(r.native.frame!)
+        r.driver.complete(0, .tree(tree(selected: "low")))
+        r.controller.pickMode("high")
+        r.driver.complete(1, .pressed)
+        XCTAssertEqual(r.driver.jobs.count, 2, "not at once")
+        RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.2))
+        XCTAssertEqual(r.driver.jobs.count, 3)
+        XCTAssertEqual(r.driver.jobs.last?.1, .read)
     }
 }
