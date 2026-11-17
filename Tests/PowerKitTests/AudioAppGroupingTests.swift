@@ -51,4 +51,27 @@ final class AudioAppGroupingTests: XCTestCase {
                           process(3, brave, playing: true)])
         XCTAssertEqual(apps.map(\.name), ["Brave Browser", "Music", "Zed"])
     }
+
+    // An app that is a bare executable (a game started from Steam, say) has no bundle id: its path stands in for one.
+    private let game = "/Users/x/Steam/common/Dirt Town Demo/Dirt Town"
+
+    func testABareExecutableThatIsAnOpenAppIsGroupedUnderItsPath() {
+        let apps = AudioAppGrouping.group([process(7, game, playing: true)], bundleID: { _ in nil }, name: { URL(fileURLWithPath: $0).lastPathComponent },
+                                          looseApps: [game])
+        XCTAssertEqual(apps.map(\.bundleID), [LooseApp.id(forExecutable: game)])
+        XCTAssertEqual(apps.first?.name, "Dirt Town")
+        XCTAssertEqual(apps.first?.processObjectIDs, [7])
+    }
+
+    func testABareExecutableThatIsNotAnOpenAppIsStillLeftOut() {
+        let apps = AudioAppGrouping.group([process(8, "/usr/bin/afplay", playing: true), process(7, game)], bundleID: { _ in nil },
+                                          name: { $0 }, looseApps: [game])
+        XCTAssertEqual(apps.map(\.bundleID), [LooseApp.id(forExecutable: game)])
+    }
+
+    func testALooseIdRoundTripsAndABundleIdIsNotOne() {
+        let id = LooseApp.id(forExecutable: game)
+        XCTAssertEqual(LooseApp.executablePath(from: id), game)
+        XCTAssertNil(LooseApp.executablePath(from: "com.brave.Browser"))
+    }
 }

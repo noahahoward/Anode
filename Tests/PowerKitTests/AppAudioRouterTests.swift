@@ -93,6 +93,25 @@ final class AppAudioRouterTests: XCTestCase {
         router.shutdown()
     }
 
+    func testAnOpenAppWithNoBundleIdIsListedUnderItsPathAndItsSoundIsFound() throws {
+        let (defaults, suite) = try TestDefaults.make(owner: "AppAudioRouterLoose", test: name)
+        defer { TestDefaults.destroy(defaults, suite) }
+        let settings = Settings(defaults: defaults); settings.appAudioEnabled = true
+        let path = "/Users/x/Steam/common/Dirt Town Demo/Dirt Town"
+        let id = LooseApp.id(forExecutable: path)
+        let backend = FakeBackend(); backend.list = [AudioProcessInfo(objectID: 9, pid: 90, executablePath: path, isRunningOutput: true)]
+        let store = AppAudioStore(defaults: defaults)
+        let router = AppAudioRouter(settings: settings, store: store, backend: backend, bundleID: { _ in nil },
+                                    name: { URL(fileURLWithPath: $0).lastPathComponent }, openApps: { [(id, "Dirt Town")] }, looseApps: { [path] })
+        XCTAssertEqual(router.apps.map(\.bundleID), [id])
+        XCTAssertEqual(router.apps.map(\.name), ["Dirt Town"])
+        router.setMuted(true, forBundleID: id)
+        router.reconcile()
+        XCTAssertEqual(backend.started.count, 1, "its sound is held like any app's")
+        XCTAssertEqual(backend.started.first?.ids, [9], "named by its process: a path is no bundle id a tap could be given")
+        router.shutdown()
+    }
+
     func testAppsThatCannotMakeSoundAreNotListedEvenWhenOpen() throws {
         let (defaults, suite) = try TestDefaults.make(owner: "AppAudioRouterNever", test: name)
         defer { TestDefaults.destroy(defaults, suite) }

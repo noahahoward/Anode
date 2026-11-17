@@ -30,16 +30,18 @@ public enum AudioAppGrouping {
     }
 
     /// Audio processes grouped into apps. A process that belongs to no app (a command-line tool, a system daemon), and an app with
-    /// no bundle identifier, are left out. Playing apps first, then by name.
-    public static func group(_ processes: [AudioProcessInfo], bundleID: (String) -> String?, name: (String) -> String) -> [AudioApp] {
+    /// no bundle identifier that is not one of `looseApps`, are left out. Playing apps first, then by name.
+    /// `looseApps` are the executable paths of open apps that are not bundles: a process running one of those is that app.
+    public static func group(_ processes: [AudioProcessInfo], bundleID: (String) -> String?, name: (String) -> String,
+                             looseApps: Set<String> = []) -> [AudioApp] {
         var byPath: [String: AudioApp] = [:]
         for p in processes {
-            guard let path = outermostAppPath(p.executablePath) else { continue }
+            guard let path = outermostAppPath(p.executablePath) ?? (looseApps.contains(p.executablePath) ? p.executablePath : nil) else { continue }
             if var app = byPath[path] {
                 app.processObjectIDs.append(p.objectID)
                 app.isPlaying = app.isPlaying || p.isRunningOutput
                 byPath[path] = app
-            } else if let id = bundleID(path), !id.isEmpty {
+            } else if let id = looseApps.contains(path) ? LooseApp.id(forExecutable: path) : bundleID(path), !id.isEmpty {
                 byPath[path] = AudioApp(bundleID: id, name: name(path), appPath: path, processObjectIDs: [p.objectID], isPlaying: p.isRunningOutput)
             }
         }

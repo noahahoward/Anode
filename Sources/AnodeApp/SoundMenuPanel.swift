@@ -749,6 +749,9 @@ final class AppVolumeRowView: NSView {
 
     /// The app's own icon, or the generic one when it cannot be found.
     private static func icon(for bundleID: String) -> NSImage {
+        // An app that is a bare executable is named by its path: its icon is its running app's.
+        if let path = LooseApp.executablePath(from: bundleID),
+           let icon = NSWorkspace.shared.runningApplications.first(where: { $0.executableURL?.path == path })?.icon { return icon }
         if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) { return NSWorkspace.shared.icon(forFile: url.path) }
         return NSWorkspace.shared.icon(for: .applicationBundle)
     }

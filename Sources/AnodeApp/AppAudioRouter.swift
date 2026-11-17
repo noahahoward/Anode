@@ -21,6 +21,7 @@ final class AppAudioRouter: AppVolumeControlling {
     private let isListable: (String) -> Bool
     private let displayName: (String) -> String?
     private let openApps: () -> [(bundleID: String, name: String)]
+    private let looseApps: () -> Set<String>
     private var sessions: [String: Session] = [:]
     private var failedSignatures: [String: String] = [:]
     private var stopped = false
@@ -35,10 +36,11 @@ final class AppAudioRouter: AppVolumeControlling {
     init(settings: Settings, store: AppAudioStore, backend: AppAudioBackend, bundleID: @escaping (String) -> String?,
          name: @escaping (String) -> String, isListable: @escaping (String) -> Bool = { _ in true },
          displayName: @escaping (String) -> String? = { _ in nil },
-         openApps: @escaping () -> [(bundleID: String, name: String)] = { [] }) {
+         openApps: @escaping () -> [(bundleID: String, name: String)] = { [] },
+         looseApps: @escaping () -> Set<String> = { [] }) {
         self.settings = settings; self.store = store; self.backend = backend
         self.bundleID = bundleID; self.name = name; self.isListable = isListable; self.displayName = displayName
-        self.openApps = openApps
+        self.openApps = openApps; self.looseApps = looseApps
         backend.onProcessesChanged = { [weak self] in self?.reconcile() }
         backend.onOutputChanged = { [weak self] in self?.reconcile() }
         observer = NotificationCenter.default.addObserver(forName: AppAudioStore.didChange, object: store, queue: .main) { [weak self] _ in
@@ -62,7 +64,7 @@ final class AppAudioRouter: AppVolumeControlling {
         // while a tab uses sound, and it does not leave the list when the tab stops.
         var names: [String: String] = [:]
         let isListable: (String) -> Bool = { [isListable] in isListable($0) && !NeverSoundApps.contains($0) }
-        for app in AudioAppGrouping.group(backend.processes(), bundleID: bundleID, name: name) where isListable(app.bundleID) {
+        for app in AudioAppGrouping.group(backend.processes(), bundleID: bundleID, name: name, looseApps: looseApps()) where isListable(app.bundleID) {
             names[app.bundleID] = app.name
             store.remember(bundleID: app.bundleID, name: app.name)
         }
@@ -100,17 +102,18 @@ final class AppAudioRouter: AppVolumeControlling {
         let permission = backend.permission()
         guard permission != .denied, let output = backend.defaultOutputUID() else { stopAll(); return }
         let muting = permission == .granted
-        let running = Dictionary(AudioAppGrouping.group(backend.processes(), bundleID: bundleID, name: name).map { ($0.bundleID, $0) },
+        let running = Dictionary(AudioAppGrouping.group(backend.processes(), bundleID: bundleID, name: name, looseApps: looseApps()).map { ($0.bundleID, $0) },
                                  uniquingKeysWith: { a, _ in a })
         var wanted: [String: (ids: [UInt32], setting: AppAudioSetting)] = [:]
         for (id, setting) in store.customised {
             if let app = running[id] { wanted[id] = (app.processObjectIDs, setting) }
-            else if backend.canTapAppsNotYetRunning { wanted[id] = ([], setting) }   // held from its first sound
+            else if backend.canTapAppsNotYetRunning, LooseApp.executablePath(from: id) == nil { wanted[id] = ([], setting) }   // held from its first sound
         }
         for id in sessions.keys where wanted[id] == nil { sessions[id]?.handle.stop(); sessions[id] = nil }
         for (id, want) in wanted {
             // Process ids matter only to a backend that cannot tap an app by name.
-            let ids = backend.canTapAppsNotYetRunning ? [] : want.ids.sorted()
+            // An app with no bundle id cannot be named to a tap: it is held by its process, once it is running.
+            let ids = backend.canTapAppsNotYetRunning && LooseApp.executablePath(from: id) == nil ? [] : want.ids.sorted()
             let signature = "\(output)|\(muting)|\(ids)"
             let level = muting ? want.setting.effectiveGain : 0   // not yet permitted: the tap plays nothing and the app is left alone
             if let existing = sessions[id], existing.signature == signature {
