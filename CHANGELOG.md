@@ -7,6 +7,13 @@ feature or a visible change in how something works, the first only for a rewrite
 Nothing was bumped between 1.0.0 and 1.15.0. Those versions were assigned afterwards from the history and exist as
 git tags (`git show v1.7.0`); builds made before 1.15.0 still say 1.0.0 in their About box.
 
+## 1.22.0 — 2026-11-16
+- Sound menu (Beta Features): Anode draws its own copy of macOS's Sound menu and opens it when you click macOS's own Sound icon. It has the volume slider, every output with its battery, the AirPods listening mode, Spatial Audio and Conversation Awareness, and Sound Settings, and it looks and moves like macOS's: the same sizes, the same hover, and rows that glide in and out as devices come and go.
+- Hold the slider's knob and it turns into a glass bubble, as in macOS. Click the track and the knob slides there; the speaker icons at the ends step the volume by ten points. The volume keys move the open menu's volume without macOS's own volume bubble appearing beside it.
+- Volume for each app (Beta Features, under the Sound menu): an Apps section lists every open app that can make sound, each with a mute button and a slider from 0 to 100%. Every app starts at 100%, whether or not it is playing. What you set is remembered by app, comes back when the app or Anode starts again, and is undone the moment Anode quits, is switched off, or stops: the app is simply itself again. An app that opens a new sound process after you muted it may be heard for a moment before Anode catches it.
+- Keep Awake now remembers whether it was on, and its mode, when Anode restarts, so it no longer has to be switched on again after every relaunch.
+- Fixed: after the Mac's light or dark appearance changed while the menu bar backdrop was on and no widget was showing, the strip behind the menu bar could stay white under white menu bar text, so the whole bar looked empty.
+
 ## 1.21.0 — 2026-11-15
 - Hard Drain on battery keeps going until you press Stop Hard Drain or the battery is down to 5%, whatever your limit or Ready By's Hold No Higher Than. Before, it stopped at the level the battery would be held at on the charger, and never went below 30%.
 - Hard Drain no longer stops by itself after three hours. It still stops when the Mac goes to sleep, and still waits while the battery is warm or a power-saving mode is on.

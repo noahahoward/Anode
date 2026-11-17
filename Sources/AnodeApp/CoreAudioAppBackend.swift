@@ -11,8 +11,8 @@ import PowerKit
 // tap's sound through a `GainStage`. The tap hears 48 kHz stereo interleaved float. On macOS 26 and later a tap can name the app
 // by bundle id and keep it when it restarts, so an app that is not running yet is held from its first sound.
 //
-// NOT VERIFIED ON HARDWARE for the bundle-id tap (`bundleTapsVerified`). Until it is, `canTapAppsNotYetRunning` is false and the
-// feature is not offered, because a muted app would not be silent from its first sound, and a known bug does not ship.
+// The bundle-id tap is NOT used (`bundleTapsVerified` stays false): `canTapAppsNotYetRunning` is false, and taps are made from the
+// process list.
 //
 // Measured 2026-11-16 (Chrome, a tone started after the tap was armed): a tap named `com.google.Chrome` never heard it, and one named
 // `com.google.Chrome.helper` heard it 0.03 s after start. The tap matches a process's OWN bundle id, and a browser's sound comes from
@@ -25,8 +25,13 @@ final class CoreAudioAppBackend: AppAudioBackend {
 
     /// Set to true only after the bundle-id tap was measured to hold a muted app from its very first sound.
     static let bundleTapsVerified = false
-    /// The feature is offered in Beta Features only when everything it needs was verified.
-    static var isReleaseReady: Bool { bundleTapsVerified && ProcessInfo.processInfo.isOperatingSystemAtLeast(OperatingSystemVersion(majorVersion: 26, minorVersion: 0, patchVersion: 0)) }
+    /// The feature is offered in Beta Features wherever process taps exist (macOS 14.2). It is shipped on the process-list taps, not
+    /// the bundle-id ones (see the measurement above): a tap is made for the audio processes an app has when it is muted, and again
+    /// whenever the set changes. Measured on hardware 2026-11-17 with Chrome playing a tone: mute holds it; a force-quit of Anode
+    /// returns the app's sound at once, and so does a normal quit; a relaunch re-applies the saved mute; switching the output
+    /// re-attaches. The one gap a name-based tap would close is a brand-new audio helper that starts after the mute: for the moment
+    /// before the system reports it, its first sound is not held.
+    static var isReleaseReady: Bool { ProcessInfo.processInfo.isOperatingSystemAtLeast(OperatingSystemVersion(majorVersion: 14, minorVersion: 2, patchVersion: 0)) }
 
     var onProcessesChanged: (() -> Void)?
     var onOutputChanged: (() -> Void)?
