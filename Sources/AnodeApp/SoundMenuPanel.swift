@@ -778,6 +778,66 @@ final class IconButton: NSView {
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 }
 
+/// The glass bubble a held slider knob becomes, drawn as macOS 27's: a dark ring, a clear body a little lighter than what is
+/// behind it, a bright rim along the top and bottom edges, light gathered at the top and the bottom and less in the middle, and
+/// the track showing through. (Measured on macOS's own lens: body about 90 against 72 behind, rim about 140, ring about 36.)
+final class LensView: NSView {
+    enum Shape: Equatable {
+        case pressed(scale: CGFloat)
+        case releasing(scale: CGFloat, ring: CGFloat, knob: CGFloat)
+    }
+    var shape: Shape = .pressed(scale: 1) { didSet { if shape != oldValue { needsDisplay = true } } }
+    var trackHeight: CGFloat = 6
+
+    override var isFlipped: Bool { true }
+    override var isOpaque: Bool { false }
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }   // the slider under it takes the mouse
+
+    override func draw(_ dirtyRect: NSRect) {
+        let scale: CGFloat, ring: CGFloat, knob: CGFloat
+        switch shape {
+        case .pressed(let s): scale = s; ring = 1; knob = 0
+        case .releasing(let s, let r, let k): scale = s; ring = r; knob = k
+        }
+        // Anchored at the top left: it grows out toward the lower right (macOS's does).
+        let box = NSRect(x: 0, y: 0, width: bounds.width * scale, height: bounds.height * scale)
+        guard box.width > 2, box.height > 2 else { return }
+        let outer = NSBezierPath(roundedRect: box, xRadius: box.height * 0.5, yRadius: box.height * 0.5)
+        let ctx = NSGraphicsContext.current
+        ctx?.saveGraphicsState()
+        outer.addClip()
+        NSColor(white: 1, alpha: 0.10 * ring).setFill(); box.fill()
+        // Light gathers at the top and the bottom edge, and is least in the middle.
+        NSGradient(colorsAndLocations: (NSColor(white: 1, alpha: 0.09 * ring), 0), (NSColor(white: 0, alpha: 0.03 * ring), 0.38),
+                   (NSColor(white: 0, alpha: 0.03 * ring), 0.62), (NSColor(white: 1, alpha: 0.09 * ring), 1))?.draw(in: box, angle: 90)
+        // The track, seen through the glass.
+        let band = NSRect(x: box.minX, y: box.midY - trackHeight * 0.6, width: box.width, height: trackHeight * 1.2)
+        NSColor(white: 1, alpha: 0.06 * ring).setFill(); band.fill()
+        // The bright rim, strongest along the top and the bottom, almost none at the sides.
+        let rim = NSBezierPath(rect: box)
+        rim.append(NSBezierPath(roundedRect: box.insetBy(dx: 1.3, dy: 1.3), xRadius: box.height * 0.5 - 1.3, yRadius: box.height * 0.5 - 1.3))
+        rim.windingRule = .evenOdd
+        ctx?.saveGraphicsState(); rim.addClip()
+        NSGradient(colorsAndLocations: (NSColor(white: 1, alpha: 0.32 * ring), 0), (NSColor(white: 1, alpha: 0.06 * ring), 0.22),
+                   (NSColor(white: 1, alpha: 0.0), 0.5), (NSColor(white: 1, alpha: 0.06 * ring), 0.78), (NSColor(white: 1, alpha: 0.32 * ring), 1))?.draw(in: box, angle: 90)
+        ctx?.restoreGraphicsState()
+        // Letting go: the solid knob comes in over it.
+        if knob > 0 {
+            NSColor(white: 0.89, alpha: knob).setFill()
+            let k = box.insetBy(dx: box.width * 0.115, dy: box.height * 0.125)
+            NSBezierPath(roundedRect: k, xRadius: k.height * 0.47, yRadius: k.height * 0.47).fill()
+        }
+        ctx?.restoreGraphicsState()
+        // The thin dark ring round the glass.
+        if ring > 0 {
+            NSColor(white: 0, alpha: 0.6 * ring).setStroke()
+            let line = NSBezierPath(roundedRect: box.insetBy(dx: 0.5, dy: 0.5), xRadius: box.height * 0.5 - 0.5, yRadius: box.height * 0.5 - 0.5)
+            line.lineWidth = 1
+            line.stroke()
+        }
+    }
+}
+
 /// The volume slider: a rounded track filled up to a round handle.
 extension Notification.Name { static let menuSliderDragEnded = Notification.Name("dev.anode.menuSliderDragEnded") }
 
@@ -817,70 +877,68 @@ final class MenuSlider: NSView {
     private var thumb: CGFloat { compact ? 14 : 20 }
     private var knobHeight: CGFloat { compact ? 12 : 16 }
 
-    // ── The lens: held, macOS 27's knob becomes a clear glass bubble, bigger than the knob, with the track showing through ──
-    private var lens: NSView?
-    private var lensToken = 0
+    // ── The lens: held, macOS 27's knob becomes a glass bubble, bigger than the knob, with the track showing through ──
+    private var lens: LensView?
+    private var lensTimer: Timer?
+    private var lensStart: CFTimeInterval = 0
+    /// True while the knob is held; the lens itself outlives it for the moment it takes to turn back into the knob.
     private(set) var lensVisible = false
     var lensFrame: NSRect { lens?.frame ?? .zero }
+    /// The lens is as much bigger than the knob as macOS's (26 x 20.5 against 20 x 16 on the main slider).
+    private var lensFactor: CGSize { CGSize(width: LensMotion.heldSize.width / 20, height: LensMotion.heldSize.height / 16) }
 
     private func lensRect() -> NSRect {
-        let w = thumb + (compact ? 4 : 6), h = knobHeight + 4
+        let w = thumb * lensFactor.width, h = knobHeight * lensFactor.height
         let centre = CGFloat(shown) * (bounds.width - thumb) + thumb / 2
         return NSRect(x: centre - w / 2, y: bounds.midY - h / 2, width: w, height: h)
     }
 
-    private func positionLens() { if lensVisible, let lens { lens.frame = lensRect() } }
+    private func positionLens() { if let lens { lens.frame = lensRect() } }
 
     private func showLens() {
-        lensToken += 1
+        lensTimer?.invalidate()
         lens?.removeFromSuperview()
-        let frame = lensRect()
-        let container = NSView(frame: frame)
-        container.wantsLayer = true
-        let radius = frame.height / 2 - 0.5
-        // The thin dark ring macOS draws round the glass.
-        container.layer?.cornerRadius = radius
-        container.layer?.borderWidth = 1
-        container.layer?.borderColor = NSColor(white: 0, alpha: 0.55).cgColor
-        let inner = NSRect(origin: .zero, size: frame.size).insetBy(dx: 1, dy: 1)
-        if #available(macOS 26.0, *) {
-            let glass = NSGlassEffectView(frame: inner)
-            glass.cornerRadius = radius - 1
-            glass.style = .clear
-            glass.autoresizingMask = [.width, .height]
-            container.addSubview(glass)
-        } else {
-            let fill = NSView(frame: inner)
-            fill.wantsLayer = true
-            fill.layer?.cornerRadius = radius - 1
-            fill.layer?.backgroundColor = NSColor(white: 1, alpha: 0.16).cgColor
-            container.addSubview(fill)
-        }
-        addSubview(container)
-        lens = container
+        let view = LensView(frame: lensRect())
+        view.trackHeight = compact ? 4 : 6
+        view.shape = .pressed(scale: LensMotion.startScale)
+        addSubview(view)
+        lens = view
         lensVisible = true
         needsDisplay = true
-        // It grows out of the knob.
-        let grow = CASpringAnimation(keyPath: "transform.scale")
-        grow.fromValue = 0.78; grow.toValue = 1
-        grow.mass = 1; grow.stiffness = 420; grow.damping = 26
-        grow.duration = grow.settlingDuration
-        container.layer?.add(grow, forKey: "grow")
+        runLens(from: CACurrentMediaTime()) { [weak self] t in
+            guard let self, let view = self.lens else { return false }
+            let scale = LensMotion.pressScale(at: t)
+            view.shape = .pressed(scale: scale)
+            return !LensMotion.isGrown(at: t)
+        }
     }
 
     private func hideLens() {
-        guard lensVisible, let container = lens else { return }
+        guard lensVisible, lens != nil else { return }
         lensVisible = false
-        needsDisplay = true
-        lensToken += 1
-        let token = lensToken
-        lens = nil
-        NSAnimationContext.runAnimationGroup({ ctx in
-            ctx.duration = 0.1
-            container.animator().alphaValue = 0
-        }, completionHandler: { [weak self] in
-            if self?.lensToken == token || self == nil { container.removeFromSuperview() } else { container.removeFromSuperview() }
-        })
+        runLens(from: CACurrentMediaTime()) { [weak self] t in
+            guard let self, let view = self.lens else { return false }
+            if LensMotion.isReleased(at: t) {
+                view.removeFromSuperview(); self.lens = nil; self.needsDisplay = true
+                return false
+            }
+            let r = LensMotion.release(at: t)
+            view.shape = .releasing(scale: r.scale, ring: r.ring, knob: r.knob)
+            return true
+        }
+    }
+
+    /// Calls `step` (with the seconds since `start`) at 120 Hz until it says to stop.
+    private func runLens(from start: CFTimeInterval, _ step: @escaping (TimeInterval) -> Bool) {
+        lensTimer?.invalidate()
+        lensStart = start
+        _ = step(0)
+        let timer = Timer(timeInterval: 1.0 / 120, repeats: true) { [weak self] t in
+            guard let self else { t.invalidate(); return }
+            if !step(CACurrentMediaTime() - self.lensStart) { t.invalidate(); if self.lensTimer === t { self.lensTimer = nil } }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        lensTimer = timer
     }
 
     override var isFlipped: Bool { true }
@@ -896,7 +954,7 @@ final class MenuSlider: NSView {
         SoundText.ink(dimmed ? 0.16 : 0.33).setFill()
         NSBezierPath(roundedRect: filled, xRadius: trackH / 2, yRadius: trackH / 2).fill()
         // While the knob is held it is the glass lens (a view over this one) and the solid knob is not drawn.
-        if lensVisible { return }
+        if lens != nil { return }
         // macOS's knob is a rounded shape (20 wide and 16 tall for the main slider), not a circle.
         NSColor(white: dimmed ? 0.62 : 0.89, alpha: 1).setFill()
         NSBezierPath(roundedRect: NSRect(x: x, y: bounds.midY - knobH / 2, width: thumb, height: knobH),
