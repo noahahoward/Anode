@@ -272,9 +272,11 @@ final class ModeRow: HoverRow {
         super.init(frame: frame)
         let badge = BadgeView(frame: NSRect(x: 0, y: 3 + BatteryMenuMetrics.contentDrop, width: 26, height: 26),
                               fill: mode.isSelected ? NSColor.systemBlue : SoundText.ink(dark: 0.16, light: 0.07))
-        let glyph = NSImageView(frame: NSRect(x: 2, y: 5, width: 22, height: 18))
-        glyph.image = BatteryGlyphs.image(for: mode.id, pointSize: 14.5)
-        glyph.imageScaling = .scaleProportionallyDown
+        // Centred in the badge at its own size (macOS's glyph is about 19 by 9 pt).
+        let glyph = NSImageView(frame: badge.bounds)
+        glyph.image = BatteryGlyphs.image(for: mode.id, pointSize: 14.8)
+        glyph.imageScaling = .scaleNone
+        glyph.imageAlignment = .alignCenter
         glyph.contentTintColor = mode.isSelected ? .white : SoundText.ink(0.42)
         badge.addSubview(glyph)
         addSubview(badge)
