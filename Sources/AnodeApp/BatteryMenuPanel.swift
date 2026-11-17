@@ -220,6 +220,7 @@ final class BatteryMenuContentView: NSView {
 
     /// The mode rows now drawn, so a change of the mode in force turns their badges instead of drawing the menu again.
     private var modeRows: [String: ModeRow] = [:]
+    private var appRows: [String: EnergyAppRow] = [:]
     private var deferred: BatteryMenuModel?
     private var dragObserver: NSObjectProtocol?
 
@@ -237,16 +238,20 @@ final class BatteryMenuContentView: NSView {
         deferred = nil
         if self.model == model { return }
         // Only which mode is in force changed: the badges turn, nothing is drawn again.
-        if let old = self.model, old.modes.map(\.id) == model.modes.map(\.id), !modeRows.isEmpty {
+        // Only which mode is in force, or a figure beside an app, changed: those are changed where they are, so that a measurement coming
+        // in never draws the menu again under a badge that is turning.
+        if let old = self.model, old.modes.map(\.id) == model.modes.map(\.id), old.energyApps.map(\.name) == model.energyApps.map(\.name),
+           !modeRows.isEmpty {
             var same = old
-            same.modes = model.modes
+            same.modes = model.modes; same.energyApps = model.energyApps
             if same == model {
                 self.model = model
                 for m in model.modes { modeRows[m.id]?.setSelected(m.isSelected, animated: true) }
+                for a in model.energyApps { appRows[a.name]?.update(stats: a.stats) }
                 return
             }
         }
-        modeRows = [:]
+        modeRows = [:]; appRows = [:]
         self.model = model
         for v in subviews where v !== material && v !== baseLift { v.removeFromSuperview() }
         let layout = BatteryMenuLayout.frames(for: model)
@@ -287,7 +292,9 @@ final class BatteryMenuContentView: NSView {
         case .app(let i):
             guard model.energyApps.indices.contains(i) else { return }
             let app = model.energyApps[i]
-            addSubview(EnergyAppRow(frame: f.insetBy(dx: -BatteryRow.lead, dy: 0), name: app.name, stats: app.stats))
+            let v = EnergyAppRow(frame: f.insetBy(dx: -BatteryRow.lead, dy: 0), name: app.name, stats: app.stats)
+            appRows[app.name] = v
+            addSubview(v)
         case .gear:
             addSubview(IconButton(symbol: "gearshape", size: 13, weight: .regular, tint: 0.42, added: true, frame: f) { [weak self] in
                 self?.controller?.pressGear()
@@ -527,41 +534,54 @@ final class FooterRow: HoverRow {
     required init?(coder: NSCoder) { fatalError("not used") }
 }
 
-/// An app listed under "Using Significant Energy": its icon and its name.
+/// An app listed under "Using Significant Energy": its icon and its name, and on the right Anode's figures for it.
 final class EnergyAppRow: HoverRow {
-    init(frame: NSRect, name: String, stats: EnergyStats? = nil) {
+
+    private let name = NSTextField(labelWithString: "")
+    private let figures = NSTextField(labelWithString: "")
+
+    init(frame: NSRect, name appName: String, stats: EnergyStats? = nil) {
         super.init(frame: frame)
         cornerRadius = 10
         dimsWhenPressed = true
         highlightable = true   // lit under the pointer; what pressing it does is not measured yet
         let icon = NSImageView(frame: NSRect(x: BatteryRow.lead - 1, y: 2, width: 18, height: 18))
-        icon.image = Self.icon(forAppNamed: name)
+        icon.image = Self.icon(forAppNamed: appName)
         icon.imageScaling = .scaleProportionallyUpOrDown
         addSubview(icon)
-        let l = NSTextField(labelWithString: name)
-        l.font = .systemFont(ofSize: 13)
-        l.textColor = SoundText.primary
-        l.lineBreakMode = .byTruncatingTail
-        // Anode's figures for the app, on the right of the row, as dim as the power source line; the name gives way to them.
+        name.stringValue = appName
+        name.font = .systemFont(ofSize: 13)
+        name.textColor = SoundText.primary
+        name.lineBreakMode = .byTruncatingTail
+        addSubview(name)
+        figures.font = .systemFont(ofSize: 11)
+        figures.textColor = BatteryMenuContentView.secondary
+        figures.alignment = .right
+        addSubview(figures)
+        update(stats: stats)
+    }
+
+    required init?(coder: NSCoder) { fatalError("not used") }
+
+    /// Anode's figures for the app, on the right of the row, as dim as the power source line; the name gives way to them. Changed in
+    /// place when a measurement comes in, so that nothing else of the menu is drawn again.
+    func update(stats: EnergyStats?) {
         var nameWidth: CGFloat = 250
         if let stats {
-            let figures = NSTextField(labelWithString: stats.rowText)
-            figures.font = .systemFont(ofSize: 11)
-            figures.textColor = BatteryMenuContentView.secondary
-            figures.alignment = .right
+            figures.stringValue = stats.rowText
             figures.sizeToFit()
             // A text field draws its text 2 pt in from its frame.
             let width = ceil(figures.frame.width)
             figures.frame = NSRect(x: frame.width - BatteryRow.lead - width + 2, y: 4, width: width, height: figures.frame.height)
-            addSubview(figures)
+            figures.isHidden = false
             nameWidth = frame.width - BatteryRow.lead - width - (BatteryRow.lead + 22) - 8
             toolTip = stats.tooltip
+        } else {
+            figures.isHidden = true
+            toolTip = nil
         }
-        l.frame = NSRect(x: BatteryRow.lead + 22, y: 3, width: nameWidth, height: 18)
-        addSubview(l)
+        name.frame = NSRect(x: BatteryRow.lead + 22, y: 3, width: nameWidth, height: 18)
     }
-
-    required init?(coder: NSCoder) { fatalError("not used") }
 
     /// The icon of the running app with this name, else the generic application icon.
     private static func icon(forAppNamed name: String) -> NSImage? {

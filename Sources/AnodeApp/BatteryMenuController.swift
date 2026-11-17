@@ -290,17 +290,19 @@ final class BatteryMenuController {
         // Already the mode in force: nothing to press. (While the mode runs macOS reads Low Power, which is not the person's choice.)
         guard ultraRunning || !mode.isSelected else { return }
         let before = reading
+        // The check moves at once; macOS's answer decides whether it stays. (A press takes about 0.8 s to go through macOS's panel: the
+        // check waiting for it would feel slower than macOS's own.)
+        apple.modes = apple.modes.map { var m = $0; m.isSelected = m.id == id; return m }
+        reading = apple
         if ultraRunning, let ultra {
-            // It ends first and puts everything back (it restores the person's own power mode); only then is the choice pressed. The
-            // row shows the new choice as soon as it is clicked.
-            apple.modes = apple.modes.map { var m = $0; m.isSelected = m.id == id; return m }
-            reading = apple
+            // It ends first and puts everything back (it restores the person's own power mode); only then is the choice pressed.
             afterUltra = id
             ultra.turnOff()
             redraw()
             ultraChanged()
             return
         }
+        redraw()
         send(modeID: id, title: mode.title, before: before)
     }
 
@@ -312,9 +314,7 @@ final class BatteryMenuController {
             self.pressesInFlight = max(0, self.pressesInFlight - 1)
             guard mine == self.generation else { return }
             switch outcome {
-            case .pressed, .tree:
-                // macOS has the choice: the check moves (the badge turns), and the reading after it confirms.
-                if var apple = self.reading { apple.modes = apple.modes.map { var m = $0; m.isSelected = m.id == id; return m }; self.reading = apple }
+            case .pressed, .tree: break
             case .refused, .failed: self.reading = before
             }
             self.redraw()

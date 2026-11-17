@@ -193,18 +193,14 @@ final class BatteryMenuControllerTests: XCTestCase {
 
     // ── Pressing ────────────────────────────────────────────────────────────
 
-    // The check moves when macOS has taken the press, as macOS's own does (its badge turns about 0.3 s after the click, when the mode
-    // changes): the press is a call into another process on the main thread, and a badge already turning would stall in it.
-    func testPickingAModePressesMacOSsRowAndMovesTheCheckWhenMacOSHasTakenIt() throws {
+    func testPickingAModePressesMacOSsRowAndMovesTheCheckAtOnce() throws {
         let r = try rig(lastReading: true); defer { r.cleanup() }
         r.native.onClick?(r.native.frame!)
         r.driver.complete(0, .tree(tree(selected: "low")))
         r.controller.pickMode("high")
-        XCTAssertEqual(r.presenter.shown.last?.selectedModeID, "low", "not yet")
+        XCTAssertEqual(r.presenter.shown.last?.selectedModeID, "high")
         XCTAssertEqual(r.driver.jobs.last?.0, .battery)
         XCTAssertEqual(r.driver.jobs.last?.1, .press(SystemPanelRow(identifier: "energy-mode-high", description: "High Power")))
-        r.driver.complete(1, .pressed)
-        XCTAssertEqual(r.presenter.shown.last?.selectedModeID, "high")
     }
 
     func testPickingTheModeAlreadyInForceDoesNothing() throws {
@@ -249,7 +245,6 @@ final class BatteryMenuControllerTests: XCTestCase {
         r.native.onClick?(r.native.frame!)             // read 0 in flight
         r.controller.pickMode("high")                  // press 1 queued behind it
         r.driver.complete(0, .tree(tree(selected: "low")))
-        r.driver.complete(1, .pressed)
         XCTAssertEqual(r.presenter.shown.last?.selectedModeID, "high", "the reading is from before the press")
     }
 
