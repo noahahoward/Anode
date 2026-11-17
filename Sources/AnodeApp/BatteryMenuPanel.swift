@@ -98,6 +98,7 @@ final class BatteryMenuPanel: NSPanel, BatteryMenuPresenting {
 
     func show(_ model: BatteryMenuModel, below frame: CGRect) {
         anchor = frame
+        PanelFade.shared.cancel()
         content.apply(model)
         place()
         orderFrontRegardless()
@@ -123,7 +124,8 @@ final class BatteryMenuPanel: NSPanel, BatteryMenuPresenting {
     override func close() {
         for m in monitors { NSEvent.removeMonitor(m) }
         monitors.removeAll()
-        orderOut(nil)
+        // macOS's fades out; so does this, as a picture of itself (see `PanelFade`).
+        PanelFade.shared.close(self) { orderOut(nil) }
     }
 
     /// A click anywhere else closes the menu; a click on the icon is the icon's own toggle.

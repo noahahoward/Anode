@@ -91,7 +91,7 @@ final class IconCover {
 
     /// What the first display shows in `rect` (top-left global points), as the display itself composes it. The symbol is looked up
     /// by name: the call is not offered to new code any more, but is still there, and nil here sends the caller to ScreenCaptureKit.
-    private static func displayImage(of rect: CGRect) -> CGImage? {
+    static func displayImage(of rect: CGRect) -> CGImage? {
         typealias Capture = @convention(c) (UInt32, CGRect) -> Unmanaged<CGImage>?
         guard let handle = dlopen(nil, RTLD_NOW), let symbol = dlsym(handle, "CGDisplayCreateImageForRect") else { return nil }
         let capture = unsafeBitCast(symbol, to: Capture.self)
