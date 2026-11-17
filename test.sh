@@ -174,10 +174,10 @@ wait "$WATCH_PID" 2>/dev/null || true
 { kill_tree "$OVERALL_PID"; wait "$OVERALL_PID"; } 2>/dev/null || true   # (the shell's "Terminated" notice is not news)
 WATCH_PID=""; TEST_PID=""; OVERALL_PID=""
 if [ "$TEST_STATUS" -eq 0 ]; then
-  grep -E "Executed [0-9]+ tests" "$LOG" | tail -1 | sed 's/^[[:space:]]*//'
+  grep -E "Executed [0-9]+ tests?" "$LOG" | tail -1 | sed 's/^[[:space:]]*//'
 else
   # Only what failed, not several thousand lines of passes.
-  sed 's/\x1b\[[0-9;]*m//g' "$LOG" | grep -E "error:|failed|Fatal|Executed [0-9]+ tests" | grep -v "^\[" | tail -25 >&2
+  sed 's/\x1b\[[0-9;]*m//g' "$LOG" | grep -E "error:|failed|Fatal|Executed [0-9]+ tests?" | grep -v "^\[" | tail -25 >&2
   echo "✗ tests failed (full output: $LOG is removed on exit; re-run \`swift test\` for it)" >&2
   exit 1
 fi
