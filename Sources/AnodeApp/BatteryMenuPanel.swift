@@ -22,22 +22,23 @@ enum BatteryGlyphs {
         }
     }
 
-    /// The outline of an empty battery with three triangles pointing right inside it.
+    /// The outline of an empty battery, half as strong as the rest, with three solid triangles pointing right inside it (measured on
+    /// macOS's badge, as fractions of the whole symbol: the triangles start 0.143 in from the left and end 0.74, each 0.18 wide,
+    /// half the height of the symbol and a little below its middle).
     private static func highPower(outline: NSImage?) -> NSImage? {
-        guard let outline else { return nil }
-        let size = outline.size
-        let image = NSImage(size: size, flipped: false) { rect in
-            outline.draw(in: rect)
-            // The inside of the body: the cap takes the right-hand tenth, the outline about a tenth each side.
-            let body = NSRect(x: rect.width * 0.14, y: rect.height * 0.27, width: rect.width * 0.62, height: rect.height * 0.46)
-            let slot = body.width / 3
+        guard let outline, let bounds = opaqueBounds(of: outline) else { return nil }
+        let image = NSImage(size: outline.size, flipped: false) { rect in
+            outline.draw(in: rect, from: .zero, operation: .sourceOver, fraction: 0.5)
             NSColor.black.setFill()
+            let h = bounds.height * 0.47
+            let midY = bounds.midY - bounds.height * 0.05
             for i in 0..<3 {
-                let x = body.minX + slot * CGFloat(i)
+                let x = bounds.minX + bounds.width * (0.143 + 0.2 * CGFloat(i))
+                let w = bounds.width * 0.18
                 let t = NSBezierPath()
-                t.move(to: NSPoint(x: x + slot * 0.08, y: body.minY))
-                t.line(to: NSPoint(x: x + slot * 0.08, y: body.maxY))
-                t.line(to: NSPoint(x: x + slot * 0.92, y: body.midY))
+                t.move(to: NSPoint(x: x, y: midY - h / 2))
+                t.line(to: NSPoint(x: x, y: midY + h / 2))
+                t.line(to: NSPoint(x: x + w, y: midY))
                 t.close()
                 t.fill()
             }
@@ -45,6 +46,21 @@ enum BatteryGlyphs {
         }
         image.isTemplate = true
         return image
+    }
+
+    /// Where the symbol's own drawing is inside its image, in points (the image is a little larger than what is drawn).
+    private static func opaqueBounds(of image: NSImage) -> NSRect? {
+        guard let cg = image.cgImage(forProposedRect: nil, context: nil, hints: nil), let data = cg.dataProvider?.data,
+              let bytes = CFDataGetBytePtr(data) else { return nil }
+        let w = cg.width, h = cg.height, bpp = cg.bitsPerPixel / 8
+        var x0 = w, x1 = -1, y0 = h, y1 = -1
+        for y in 0..<h { for x in 0..<w where bytes[y * cg.bytesPerRow + x * bpp + bpp - 1] > 40 || bytes[y * cg.bytesPerRow + x * bpp] > 40 {
+            x0 = min(x0, x); x1 = max(x1, x); y0 = min(y0, y); y1 = max(y1, y)
+        } }
+        guard x1 >= x0, y1 >= y0 else { return nil }
+        let sx = image.size.width / CGFloat(w), sy = image.size.height / CGFloat(h)
+        // The image's y runs up, the bitmap's down.
+        return NSRect(x: CGFloat(x0) * sx, y: image.size.height - CGFloat(y1 + 1) * sy, width: CGFloat(x1 - x0 + 1) * sx, height: CGFloat(y1 - y0 + 1) * sy)
     }
 }
 
@@ -256,8 +272,8 @@ final class ModeRow: HoverRow {
         super.init(frame: frame)
         let badge = BadgeView(frame: NSRect(x: 0, y: 3 + BatteryMenuMetrics.contentDrop, width: 26, height: 26),
                               fill: mode.isSelected ? NSColor.systemBlue : SoundText.ink(dark: 0.16, light: 0.07))
-        let glyph = NSImageView(frame: NSRect(x: 2, y: 4, width: 22, height: 18))
-        glyph.image = BatteryGlyphs.image(for: mode.id, pointSize: 14)
+        let glyph = NSImageView(frame: NSRect(x: 2, y: 5, width: 22, height: 18))
+        glyph.image = BatteryGlyphs.image(for: mode.id, pointSize: 14.5)
         glyph.imageScaling = .scaleProportionallyDown
         glyph.contentTintColor = mode.isSelected ? .white : SoundText.ink(0.42)
         badge.addSubview(glyph)
