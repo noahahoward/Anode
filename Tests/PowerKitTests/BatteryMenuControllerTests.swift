@@ -16,10 +16,24 @@ final class BatteryMenuControllerTests: XCTestCase {
         func close() { isOpen = false; closeCount += 1 }
     }
 
+    final class FakeUltra: UltraModeControlling {
+        var isOn = false
+        var isOff: Bool { !isOn }
+        var calls: [String] = []
+        var onCall: ((String) -> Void)?
+        var listeners: [() -> Void] = []
+        func request() { calls.append("request"); onCall?("request") }
+        func turnOff() { calls.append("turnOff"); onCall?("turnOff") }
+        func observe(_ changed: @escaping () -> Void) -> AnyObject { listeners.append(changed); return NSObject() }
+        /// The mode went on or off by itself, or finished putting things back.
+        func set(on: Bool) { isOn = on; listeners.forEach { $0() } }
+    }
+
     struct Rig {
         let controller: BatteryMenuController
         let driver: SoundMenuControllerTests.FakeDriver, presenter: FakePresenter, native: SoundMenuControllerTests.FakeNative
         let settings: Settings
+        var ultra: FakeUltra?
         let cleanup: () -> Void
     }
 
@@ -41,16 +55,18 @@ final class BatteryMenuControllerTests: XCTestCase {
         return node("AXWindow", sub: "AXSystemDialog", children: [node("AXGroup", sub: "AXHostingView", children: kids)])
     }
 
-    private func rig(enabled: Bool = true, trusted: Bool = true, lastReading: Bool = false, openBeta: @escaping () -> Void = {}) throws -> Rig {
+    private func rig(enabled: Bool = true, trusted: Bool = true, lastReading: Bool = false, openBeta: @escaping () -> Void = {},
+                     ultra: FakeUltra? = nil, ultraEnabled: Bool = false) throws -> Rig {
         let (defaults, suite) = try TestDefaults.make(owner: "BatteryMenu", test: name)
         let settings = Settings(defaults: defaults)
         settings.batteryMenuEnabled = enabled
+        settings.ultraLowPowerEnabled = ultraEnabled
         if lastReading { settings.batteryMenuLastReading = try JSONEncoder().encode(AppleBatteryPanel.parse(tree(selected: "low"))) }
         let driver = SoundMenuControllerTests.FakeDriver(), presenter = FakePresenter(), native = SoundMenuControllerTests.FakeNative()
         let c = BatteryMenuController(settings: settings, driver: driver, accessibility: { trusted }, presenter: presenter, native: native,
-                                      pollInterval: 0, followUpDelay: 0, openBetaFeatures: openBeta)
+                                      pollInterval: 0, followUpDelay: 0, openBetaFeatures: openBeta, ultra: ultra)
         c.start()
-        return Rig(controller: c, driver: driver, presenter: presenter, native: native, settings: settings,
+        return Rig(controller: c, driver: driver, presenter: presenter, native: native, settings: settings, ultra: ultra,
                    cleanup: { c.stop(); TestDefaults.destroy(defaults, suite) })
     }
 
@@ -232,5 +248,86 @@ final class BatteryMenuControllerTests: XCTestCase {
         r.controller.pressGear()
         XCTAssertEqual(opened, 1)
         XCTAssertFalse(r.presenter.isOpen)
+    }
+
+    // ── Ultra Low Power as a fourth Energy Mode ─────────────────────────────
+
+    func testTheRowIsNotThereWhileTheFeatureIsOff() throws {
+        let r = try rig(lastReading: true, ultra: FakeUltra(), ultraEnabled: false); defer { r.cleanup() }
+        r.native.onClick?(r.native.frame!)
+        XCTAssertEqual(r.presenter.shown.first?.modes.map(\.id), ["automatic", "low", "high"])
+    }
+
+    func testTheRowComesBelowHighPowerWhileTheFeatureIsOn_AndIsNotChecked() throws {
+        let r = try rig(lastReading: true, ultra: FakeUltra(), ultraEnabled: true); defer { r.cleanup() }
+        r.native.onClick?(r.native.frame!)
+        let m = try XCTUnwrap(r.presenter.shown.first)
+        XCTAssertEqual(m.modes.map(\.id), ["automatic", "low", "high", "ultra"])
+        XCTAssertEqual(m.modes.last?.title, "Ultra Low Power")
+        XCTAssertEqual(m.selectedModeID, "low", "macOS's own mode is the one checked")
+    }
+
+    func testWhileTheModeRunsOnlyItsRowIsChecked() throws {
+        let ultra = FakeUltra(); ultra.isOn = true
+        let r = try rig(lastReading: true, ultra: ultra, ultraEnabled: true); defer { r.cleanup() }
+        r.native.onClick?(r.native.frame!)
+        r.driver.complete(0, .tree(tree(selected: "low")))   // macOS reads Low Power: the mode has switched it on underneath
+        XCTAssertEqual(r.presenter.shown.last?.selectedModeID, "ultra")
+        XCTAssertEqual(r.presenter.shown.last?.modes.filter(\.isSelected).count, 1)
+    }
+
+    func testChoosingTheRowClosesTheMenuAndThenAsks() throws {
+        let ultra = FakeUltra()
+        let r = try rig(lastReading: true, ultra: ultra, ultraEnabled: true); defer { r.cleanup() }
+        r.native.onClick?(r.native.frame!)
+        var menuOpenWhenAsked: Bool?
+        ultra.onCall = { _ in menuOpenWhenAsked = r.presenter.isOpen }
+        r.controller.pickMode("ultra")
+        XCTAssertEqual(ultra.calls, ["request"])
+        XCTAssertEqual(menuOpenWhenAsked, false, "the box opens above where the menu was, so the menu goes first")
+        XCTAssertEqual(r.driver.jobs.count, 1, "nothing is pressed in macOS's panel (only the reading)")
+    }
+
+    func testTheCheckDoesNotMoveUntilTheModeIsOn_ADeclinedBoxChangesNothing() throws {
+        let ultra = FakeUltra()
+        let r = try rig(lastReading: true, ultra: ultra, ultraEnabled: true); defer { r.cleanup() }
+        r.native.onClick?(r.native.frame!)
+        r.controller.pickMode("ultra")      // asks; the person says No: the mode stays off
+        XCTAssertEqual(r.controller.model?.selectedModeID, "low")
+        ultra.set(on: true)
+        XCTAssertEqual(r.controller.model?.selectedModeID, "ultra")
+    }
+
+    func testChoosingTheRowWhileItRunsDoesNothing() throws {
+        let ultra = FakeUltra(); ultra.isOn = true
+        let r = try rig(lastReading: true, ultra: ultra, ultraEnabled: true); defer { r.cleanup() }
+        r.native.onClick?(r.native.frame!)
+        r.controller.pickMode("ultra")
+        XCTAssertTrue(ultra.calls.isEmpty)
+    }
+
+    func testChoosingAnotherModeWhileItRunsEndsItFirstAndPressesWhenItHasPutThingsBack() throws {
+        let ultra = FakeUltra(); ultra.isOn = true
+        let r = try rig(lastReading: true, ultra: ultra, ultraEnabled: true); defer { r.cleanup() }
+        r.native.onClick?(r.native.frame!)
+        r.driver.complete(0, .tree(tree(selected: "low")))
+        r.controller.pickMode("high")
+        XCTAssertEqual(ultra.calls, ["turnOff"])
+        XCTAssertEqual(r.driver.jobs.count, 1, "not pressed yet: the mode is still putting things back")
+        XCTAssertEqual(r.presenter.shown.last?.selectedModeID, "high", "the row shows the new choice as soon as it is clicked")
+        ultra.set(on: false)
+        XCTAssertEqual(r.driver.jobs.last?.1, .press(SystemPanelRow(identifier: "energy-mode-high", description: "High Power")))
+    }
+
+    func testAChoiceWaitsForTheModeToBeOffWhateverElseChanges() throws {
+        let ultra = FakeUltra(); ultra.isOn = true
+        let r = try rig(lastReading: true, ultra: ultra, ultraEnabled: true); defer { r.cleanup() }
+        r.native.onClick?(r.native.frame!)
+        r.driver.complete(0, .tree(tree(selected: "low")))
+        r.controller.pickMode("automatic")
+        ultra.listeners.forEach { $0() }    // something else of the mode changed: it is still on
+        XCTAssertEqual(r.driver.jobs.count, 1)
+        ultra.set(on: false)
+        XCTAssertEqual(r.driver.jobs.count, 2)
     }
 }

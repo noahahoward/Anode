@@ -17,6 +17,7 @@ enum BatteryGlyphs {
         }
         switch modeID {
         case "low": return symbol("battery.25percent")
+        case BatteryMenuController.ultraID: return symbol("moon.zzz.fill")
         case "high": return highPower(outline: symbol("battery.0percent"))
         default: return symbol("battery.100percent")
         }
@@ -374,11 +375,11 @@ enum BatteryMenuRuntime {
 
     /// The menu over the real Mac. `driver` is shared with the Sound menu: both use macOS's Control Center one job at a time.
     static func live(settings: Settings = .shared, driver: SystemPanelDriving = SystemPanelDriver(),
-                     openBetaFeatures: @escaping () -> Void = {}) -> BatteryMenuController {
+                     openBetaFeatures: @escaping () -> Void = {}, ultra: UltraModeControlling? = nil) -> BatteryMenuController {
         let panel = BatteryMenuPanel()
         let controller = BatteryMenuController(settings: settings, driver: driver, accessibility: { AXIsProcessTrusted() },
                                                presenter: panel, native: NativeMenuExtraIcon.battery(),
-                                               openBetaFeatures: openBetaFeatures)
+                                               openBetaFeatures: openBetaFeatures, ultra: ultra)
         panel.controller = controller
         controller.start()
         return controller

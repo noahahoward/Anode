@@ -456,7 +456,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         let panelDriver = SystemPanelDriver()
         soundMenu = SoundMenuRuntime.live(driver: panelDriver)
         // Anode's Battery menu: nothing of it exists until its setting is on (Beta Features).
-        batteryMenu = BatteryMenuRuntime.live(driver: panelDriver, openBetaFeatures: { [weak self] in self?.betaFeaturesWindow.show() })
+        batteryMenu = BatteryMenuRuntime.live(driver: panelDriver, openBetaFeatures: { [weak self] in self?.betaFeaturesWindow.show() },
+                                              ultra: ultraLowPower.map { LiveUltraMode($0.controller) })
         appAudio = AppAudioCoordinator.live { [weak self] router in
             self?.soundMenu?.appVolume = router
             router?.onChange = { [weak self] in self?.soundMenu?.appsChanged() }
