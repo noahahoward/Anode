@@ -1062,7 +1062,7 @@ enum SoundMenuRuntime {
     /// The menu over the real Mac.
     static func live(settings: Settings = .shared) -> SoundMenuController {
         make(settings: settings, outputs: CoreAudioOutputs(), driver: SystemPanelDriver(), statusBar: SystemStatusBarHost(),
-             native: NativeSoundIcon(), panel: SoundMenuPanel())
+             native: NativeMenuExtraIcon.sound(), panel: SoundMenuPanel())
     }
 
     static func make(settings: Settings, outputs: AudioOutputs, driver: SystemPanelDriving, statusBar: StatusItemHosting,

@@ -54,6 +54,7 @@ public final class Settings {
         public static let menuBarHiderArrangement = "menuBarHiderArrangement"
         public static let soundMenuEnabled = "soundMenuEnabled"
         public static let soundMenuUsesNativeIcon = "soundMenuUsesNativeIcon"
+        public static let batteryMenuEnabled = "batteryMenuEnabled"
         public static let appAudioEnabled = "appAudioEnabled"
         public static let lidGlassIdleHz = "lidGlassIdleHz"
         public static let lidGlassTriggerAngle = "lidGlassTriggerAngle"
@@ -180,6 +181,8 @@ public final class Settings {
         static let soundMenuEnabled = false
         /// OFF: taking over a click on macOS's own icon is something the person chooses.
         static let soundMenuUsesNativeIcon = false
+        /// OFF: it takes over a click on macOS's own Battery icon, so the person chooses it.
+        static let batteryMenuEnabled = false
         static let appAudioEnabled = false
         static let lidGlassIdleHz = 8.0
         static let lidGlassTriggerAngle = 110.0
@@ -365,6 +368,7 @@ public final class Settings {
         var menuBarHiderArrangement: BarArrangement?
         var soundMenuEnabled: Bool
         var soundMenuUsesNativeIcon: Bool
+        var batteryMenuEnabled: Bool
         var appAudioEnabled: Bool
         var lidGlassIdleHz, lidGlassTriggerAngle: Double
         var chargeControlEnabled, chargeDriftEnabled, chargePauseWhenHotEnabled,
@@ -657,6 +661,19 @@ public final class Settings {
     public var appAudioEnabled: Bool {
         get { Settings.readBool(defaults, Key.appAudioEnabled, Default.appAudioEnabled) }
         set { writeBool(Key.appAudioEnabled, \.appAudioEnabled, newValue, Default.appAudioEnabled) }
+    }
+
+    /// Whether a click on macOS's own Battery icon opens Anode's Battery menu (Beta Features), a copy of macOS's with Anode's controls added.
+    public var batteryMenuEnabled: Bool {
+        get { Settings.readBool(defaults, Key.batteryMenuEnabled, Default.batteryMenuEnabled) }
+        set { writeBool(Key.batteryMenuEnabled, \.batteryMenuEnabled, newValue, Default.batteryMenuEnabled) }
+    }
+
+    /// The last reading of macOS's Battery panel (an encoded `AppleBatteryPanel`), so the Battery menu opens at full size from the first
+    /// click. Cleared when the Battery menu is turned off or Accessibility is missing.
+    public var batteryMenuLastReading: Data? {
+        get { defaults.data(forKey: "batteryMenuLastReading") }
+        set { if let newValue { defaults.set(newValue, forKey: "batteryMenuLastReading") } else { defaults.removeObject(forKey: "batteryMenuLastReading") } }
     }
 
     public var soundMenuUsesNativeIcon: Bool {
@@ -1379,6 +1396,7 @@ public final class Settings {
         if old.menuBarHiderArrangement != now.menuBarHiderArrangement { notify(Key.menuBarHiderArrangement) }
         if old.soundMenuEnabled != now.soundMenuEnabled { notify(Key.soundMenuEnabled) }
         if old.soundMenuUsesNativeIcon != now.soundMenuUsesNativeIcon { notify(Key.soundMenuUsesNativeIcon) }
+        if old.batteryMenuEnabled != now.batteryMenuEnabled { notify(Key.batteryMenuEnabled) }
         if old.appAudioEnabled != now.appAudioEnabled { notify(Key.appAudioEnabled) }
         if old.lidGlassIdleHz != now.lidGlassIdleHz { notify(Key.lidGlassIdleHz) }
         if old.lidGlassTriggerAngle != now.lidGlassTriggerAngle { notify(Key.lidGlassTriggerAngle) }
@@ -1609,6 +1627,7 @@ public final class Settings {
                menuBarHiderArrangement: readArrangement(d),
                soundMenuEnabled: readBool(d, Key.soundMenuEnabled, Default.soundMenuEnabled),
                soundMenuUsesNativeIcon: readBool(d, Key.soundMenuUsesNativeIcon, Default.soundMenuUsesNativeIcon),
+               batteryMenuEnabled: readBool(d, Key.batteryMenuEnabled, Default.batteryMenuEnabled),
                appAudioEnabled: readBool(d, Key.appAudioEnabled, Default.appAudioEnabled),
                lidGlassIdleHz: readDouble(d, Key.lidGlassIdleHz, Default.lidGlassIdleHz, lidGlassIdleHzRange),
                lidGlassTriggerAngle: readDouble(d, Key.lidGlassTriggerAngle, Default.lidGlassTriggerAngle,

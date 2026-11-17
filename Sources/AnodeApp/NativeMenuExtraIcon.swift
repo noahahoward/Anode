@@ -2,10 +2,10 @@ import AppKit
 import ApplicationServices
 import PowerKit
 
-// ── macOS's own Sound icon, taken over ──────────────────────────────────────
+// ── One of macOS's own menu bar icons (Sound, Battery), taken over ──────────
 //
-// With the option on, the menu bar keeps just macOS's Sound icon, exactly as it is, and a click on it opens Anode's menu.
-// Anode finds the icon through Accessibility (`com.apple.menuextra.sound` among MenuBarAgent's items) and swallows the mouse
+// With the option on, the menu bar keeps just macOS's own icon, exactly as it is, and a click on it opens Anode's menu.
+// Anode finds the icon through Accessibility (its identifier, `com.apple.menuextra.sound`, among MenuBarAgent's items) and swallows the mouse
 // press and release that land on it, with an event tap on the shared tap thread. `NativeIconClickGate` decides which clicks;
 // this file only carries the decision out.
 //
@@ -13,21 +13,39 @@ import PowerKit
 // is under the pointer (measured under a millisecond, 25 ms the first time; anything that fails is passed on untouched).
 // Anode's own use of macOS's panel presses its items with Accessibility, not with mouse events, so the tap never sees it.
 
-/// What the tap's callback is handed. It lives for the whole process and only holds the icon weakly, so a callback that is still
-/// running when the icon goes away finds nothing instead of a freed object.
+/// What a tap's callback is handed. One per icon identifier, kept for the whole process, and it only holds the icon weakly, so a
+/// callback that is still running when the icon goes away finds nothing instead of a freed object.
 private final class NativeIconTapBox {
-    static let shared = NativeIconTapBox()
+    private static let lock = NSLock()
+    private static var boxes: [String: NativeIconTapBox] = [:]
+    static func box(for identifier: String) -> NativeIconTapBox {
+        lock.lock(); defer { lock.unlock() }
+        if let box = boxes[identifier] { return box }
+        let box = NativeIconTapBox(); boxes[identifier] = box
+        return box
+    }
     private let lock = NSLock()
-    private weak var _icon: NativeSoundIcon?
-    var icon: NativeSoundIcon? {
+    private weak var _icon: NativeMenuExtraIcon?
+    var icon: NativeMenuExtraIcon? {
         get { lock.lock(); defer { lock.unlock() }; return _icon }
         set { lock.lock(); _icon = newValue; lock.unlock() }
     }
 }
 
-final class NativeSoundIcon: NativeIconHosting {
+final class NativeMenuExtraIcon: NativeIconHosting {
 
-    static let identifier = "com.apple.menuextra.sound"
+    static let soundIdentifier = "com.apple.menuextra.sound"
+    static let batteryIdentifier = "com.apple.menuextra.battery"
+
+    /// The item's `AXIdentifier` in macOS's menu bar.
+    let identifier: String
+    /// The feature log the lines about this icon go to.
+    private let logName: String
+
+    init(identifier: String, logName: String) { self.identifier = identifier; self.logName = logName }
+
+    static func sound() -> NativeMenuExtraIcon { NativeMenuExtraIcon(identifier: soundIdentifier, logName: "sound-menu.log") }
+    static func battery() -> NativeMenuExtraIcon { NativeMenuExtraIcon(identifier: batteryIdentifier, logName: "battery-menu.log") }
 
     var onClick: ((CGRect) -> Void)?
 
@@ -41,6 +59,7 @@ final class NativeSoundIcon: NativeIconHosting {
     private var cachedBar: CGRect?
     /// The process that owns macOS's menu bar items: only an element of this one counts as the icon.
     private var trustedPid: pid_t = 0
+    private lazy var tapBox = NativeIconTapBox.box(for: identifier)
     private var gate = NativeIconClickGate()   // touched only on the tap thread
     private let systemWide: AXUIElement = {
         let e = AXUIElementCreateSystemWide()
@@ -67,7 +86,7 @@ final class NativeSoundIcon: NativeIconHosting {
         guard let bar = Self.attribute(agent, "AXExtrasMenuBar"), CFGetTypeID(bar) == AXUIElementGetTypeID() else { return remember(nil, pid: 0) }
         let groups = (Self.attribute(bar as! AXUIElement, kAXChildrenAttribute) as? [AXUIElement]) ?? []   // type checked above
         for group in groups {
-            for item in (Self.attribute(group, kAXChildrenAttribute) as? [AXUIElement]) ?? [] where Self.identifier(of: item) == Self.identifier {
+            for item in (Self.attribute(group, kAXChildrenAttribute) as? [AXUIElement]) ?? [] where Self.identifier(of: item) == identifier {
                 var r = CGRect.zero
                 if let v = Self.attribute(item, "AXFrame"), CFGetTypeID(v) == AXValueGetTypeID() { AXValueGetValue(v as! AXValue, .cgRect, &r) }   // type checked
                 var itemFrame = CGRect.zero
@@ -89,18 +108,18 @@ final class NativeSoundIcon: NativeIconHosting {
 
     func start() {
         guard tap == nil else { return }
-        guard AXIsProcessTrusted() else { FeatureLog.append("sound-menu.log", "macOS icon: no Accessibility, the tap cannot start"); return }
+        guard AXIsProcessTrusted() else { FeatureLog.append(logName, "macOS icon: no Accessibility, the tap cannot start"); return }
         if let frame = currentFrame() { _ = underPointerIsTheIcon(CGPoint(x: frame.midX, y: frame.midY)) }
         let mask = (1 << CGEventType.leftMouseDown.rawValue) | (1 << CGEventType.leftMouseUp.rawValue)
         // The session tap, an active one: only Accessibility is needed, which Anode already asks for.
         guard let t = CGEvent.tapCreate(tap: .cgSessionEventTap, place: .headInsertEventTap, options: .defaultTap,
                                         eventsOfInterest: CGEventMask(mask), callback: nativeIconTapCallback,
-                                        userInfo: Unmanaged.passUnretained(NativeIconTapBox.shared).toOpaque()) else {
-            FeatureLog.append("sound-menu.log", "macOS icon: the event tap could not be made")
+                                        userInfo: Unmanaged.passUnretained(tapBox).toOpaque()) else {
+            FeatureLog.append(logName, "macOS icon: the event tap could not be made")
             return
         }
-        FeatureLog.append("sound-menu.log", "macOS icon: tap started, icon frame \(String(describing: cachedFrame))")
-        NativeIconTapBox.shared.icon = self
+        FeatureLog.append(logName, "macOS icon: tap started, icon frame \(String(describing: cachedFrame))")
+        tapBox.icon = self
         guard let source = CFMachPortCreateRunLoopSource(nil, t, 0) else { return }
         EventTapThread.shared.add(source)
         CGEvent.tapEnable(tap: t, enable: true)
@@ -110,7 +129,7 @@ final class NativeSoundIcon: NativeIconHosting {
     }
 
     func stop() {
-        if NativeIconTapBox.shared.icon === self { NativeIconTapBox.shared.icon = nil }
+        if tapBox.icon === self { tapBox.icon = nil }
         if let tap {
             CGEvent.tapEnable(tap: tap, enable: false)
             CFMachPortInvalidate(tap)
@@ -141,7 +160,8 @@ final class NativeSoundIcon: NativeIconHosting {
             if let icon, NativeIconClickGate.isNear(point, icon, bar: bar), verdict != .pass || !held.isEmpty || type == .leftMouseDown {
                 let line = "macOS icon: press near the icon: \(verdict), live look: \(liveFrame.map { "icon at x \(Int($0.minX))" } ?? "not the icon"), "
                     + "last known icon x \(Int(icon.minX)), modifiers held: \(!held.isEmpty)"
-                DispatchQueue.global(qos: .utility).async { FeatureLog.append("sound-menu.log", line) }
+                let log = logName
+                DispatchQueue.global(qos: .utility).async { FeatureLog.append(log, line) }
             }
             switch verdict {
             case .pass: return true
@@ -159,7 +179,7 @@ final class NativeSoundIcon: NativeIconHosting {
         }
     }
 
-    /// The icon's frame when what is under the pointer is macOS's Sound icon, else nil.
+    /// The icon's frame when what is under the pointer is this macOS icon, else nil.
     private func iconUnderPointer(_ point: CGPoint) -> CGRect? {
         // While Anode's own picture of the icon is over it (macOS's panel is being read), that picture is what is under the pointer.
         // It is the icon, for this purpose: the click must not fall through to macOS's own panel.
@@ -179,9 +199,9 @@ final class NativeSoundIcon: NativeIconHosting {
         // Above or below the icon's square the pointer is over the item that holds it (an unnamed group as tall as the bar, whose
         // one child is the icon): that is a click on the icon too.
         var icon = hit
-        if Self.identifier(of: hit) != Self.identifier {
+        if Self.identifier(of: hit) != identifier {
             let children = (Self.attribute(hit, kAXChildrenAttribute) as? [AXUIElement]) ?? []
-            guard children.count == 1, let child = children.first, Self.identifier(of: child) == Self.identifier else { return nil }
+            guard children.count == 1, let child = children.first, Self.identifier(of: child) == identifier else { return nil }
             icon = child
         }
         var r = CGRect.zero

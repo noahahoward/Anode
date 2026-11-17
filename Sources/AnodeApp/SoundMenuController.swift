@@ -30,9 +30,9 @@ protocol SoundMenuPresenting: AnyObject {
     func close()
 }
 
-/// macOS's own Sound icon in the menu bar, when Anode lets a click on it open Anode's menu instead of showing a second icon.
+/// One of macOS's own icons in the menu bar (Sound, Battery), when Anode lets a click on it open Anode's menu instead of showing a second icon.
 protocol NativeIconHosting: AnyObject {
-    /// The icon's frame now (top-left global points); nil when macOS's Sound icon is not in the bar.
+    /// The icon's frame now (top-left global points); nil when macOS's icon is not in the bar.
     func currentFrame() -> CGRect?
     /// A click that was taken, with the icon's frame. Called on the main queue.
     var onClick: ((CGRect) -> Void)? { get set }
