@@ -27,6 +27,17 @@ final class AppAudioRouter: AppVolumeControlling {
     private var stopped = false
     private var observer: NSObjectProtocol?
     private var recheck: Timer?
+    /// The audio processes as last read. Reading them is a round trip to Core Audio's daemon for each one, and the menu is rebuilt on
+    /// every step of a volume drag (measured: a third of a drag's time on the main thread), so they are read again only when the
+    /// system says the set changed, or after `processMaxAge` seconds in case it did not say.
+    private var processCache: (at: Date, list: [AudioProcessInfo])?
+    private static let processMaxAge: TimeInterval = 10
+    private func audioProcesses() -> [AudioProcessInfo] {
+        if let c = processCache, Date().timeIntervalSince(c.at) < Self.processMaxAge { return c.list }
+        let list = backend.processes()
+        processCache = (Date(), list)
+        return list
+    }
 
     /// Why an app's session could not be made or ended, by bundle id; the setting is kept.
     private(set) var failures: [String: String] = [:]
@@ -41,8 +52,8 @@ final class AppAudioRouter: AppVolumeControlling {
         self.settings = settings; self.store = store; self.backend = backend
         self.bundleID = bundleID; self.name = name; self.isListable = isListable; self.displayName = displayName
         self.openApps = openApps; self.looseApps = looseApps
-        backend.onProcessesChanged = { [weak self] in self?.reconcile() }
-        backend.onOutputChanged = { [weak self] in self?.reconcile() }
+        backend.onProcessesChanged = { [weak self] in self?.processCache = nil; self?.reconcile() }
+        backend.onOutputChanged = { [weak self] in self?.processCache = nil; self?.reconcile() }
         observer = NotificationCenter.default.addObserver(forName: AppAudioStore.didChange, object: store, queue: .main) { [weak self] _ in
             self?.reconcile()
         }
@@ -64,7 +75,7 @@ final class AppAudioRouter: AppVolumeControlling {
         // while a tab uses sound, and it does not leave the list when the tab stops.
         var names: [String: String] = [:]
         let isListable: (String) -> Bool = { [isListable] in isListable($0) && !NeverSoundApps.contains($0) }
-        for app in AudioAppGrouping.group(backend.processes(), bundleID: bundleID, name: name, looseApps: looseApps()) where isListable(app.bundleID) {
+        for app in AudioAppGrouping.group(audioProcesses(), bundleID: bundleID, name: name, looseApps: looseApps()) where isListable(app.bundleID) {
             names[app.bundleID] = app.name
             store.remember(bundleID: app.bundleID, name: app.name)
         }
@@ -102,7 +113,7 @@ final class AppAudioRouter: AppVolumeControlling {
         let permission = backend.permission()
         guard permission != .denied, let output = backend.defaultOutputUID() else { stopAll(); return }
         let muting = permission == .granted
-        let running = Dictionary(AudioAppGrouping.group(backend.processes(), bundleID: bundleID, name: name, looseApps: looseApps()).map { ($0.bundleID, $0) },
+        let running = Dictionary(AudioAppGrouping.group(audioProcesses(), bundleID: bundleID, name: name, looseApps: looseApps()).map { ($0.bundleID, $0) },
                                  uniquingKeysWith: { a, _ in a })
         var wanted: [String: (ids: [UInt32], setting: AppAudioSetting)] = [:]
         for (id, setting) in store.customised {

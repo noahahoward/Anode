@@ -20,7 +20,8 @@ final class AppAudioRouterTests: XCTestCase {
         var onProcessesChanged: (() -> Void)?
         var onOutputChanged: (() -> Void)?
         var failNext = false
-        func processes() -> [AudioProcessInfo] { list }
+        var processReads = 0
+        func processes() -> [AudioProcessInfo] { processReads += 1; return list }
         func defaultOutputUID() -> String? { output }
         func permission() -> AudioCapturePermission { perm }
         var canTapAppsNotYetRunning: Bool { canTapBeforeLaunch }
@@ -79,6 +80,35 @@ final class AppAudioRouterTests: XCTestCase {
         XCTAssertEqual(router.apps.map(\.name), ["Browser"])
         XCTAssertTrue(router.apps[0].muted)
         router.shutdown()
+    }
+
+    // Asking Core Audio for every audio process is a round trip to another process for each one: the menu is rebuilt on every step of
+    // a volume drag, so the list is read again only when the set of audio processes changes.
+    func testTheAudioProcessListIsNotReadAgainForEveryRebuildOfTheMenu() throws {
+        let (router, backend, _, _, done) = try rig(); defer { done() }
+        _ = router.apps
+        let after1 = backend.processReads
+        for _ in 0..<50 { _ = router.apps }
+        XCTAssertEqual(backend.processReads, after1, "fifty more rebuilds, no more reads")
+    }
+
+    func testTheAudioProcessListIsReadAgainWhenTheSetOfProcessesChanges() throws {
+        let (router, backend, _, _, done) = try rig(); defer { done() }
+        XCTAssertEqual(router.apps.map(\.bundleID), ["com.example.player"])
+        backend.list = []
+        let before = backend.processReads
+        backend.onProcessesChanged?()
+        _ = router.apps
+        _ = router.apps
+        XCTAssertEqual(backend.processReads, before + 1, "read once more after the change, not once per rebuild")
+    }
+
+    func testAnAppThatStartsPlayingIsFoundAfterTheProcessListChanges() throws {
+        let (router, backend, _, _, done) = try rig(running: []); defer { done() }
+        XCTAssertTrue(router.apps.isEmpty)
+        backend.list = [player]
+        backend.onProcessesChanged?()
+        XCTAssertEqual(router.apps.map(\.bundleID), ["com.example.player"])
     }
 
     func testAnOpenAppIsListedBeforeItHasEverUsedSound() throws {
