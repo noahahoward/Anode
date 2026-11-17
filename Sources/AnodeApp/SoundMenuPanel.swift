@@ -72,7 +72,7 @@ enum SoundGlyphs {
         case .hifi: return "hifispeaker.fill"
         case .display: return "tv.and.mediabox"
         case .airplay: return "airplayaudio"
-        case .other: return "hifispeaker.fill"
+        case .other: return "speaker.wave.2.fill"
         }
     }
 
