@@ -137,13 +137,14 @@ final class BatteryMenuPanel: NSPanel, BatteryMenuPresenting {
         let bar = max(NSStatusBar.system.thickness, screen.frame.height - screen.visibleFrame.maxY)
         var x = anchor.maxX + 10.5 - size.width
         x = min(max(8, x), screen.frame.width - size.width - 8)
-        // The window is whole points high (AppKit rounds a half point up, and keeps the top where it was asked); the picture is
-        // pinned to the window's top whatever the window did. Left to the window, the picture came out half a point lower whenever
-        // the window's frame did not change from one opening to the next.
+        // macOS's panel is 277.5 pt (a half point more with each further app) and its top edge is on a half point (40.5 pt down), so it
+        // ends on a whole one. A window is whole points: it starts at 40, a half point above the picture, and the picture is pinned to
+        // its bottom, whatever the window did. Left to the window, the picture came out half a point higher or lower depending on
+        // whether the window's frame had changed since the last opening.
         let top = screen.frame.height - bar - BatteryMenuMetrics.gapBelowBar
-        let h = size.height.rounded(.up)
+        let h = (size.height + BatteryMenuMetrics.pictureDrop).rounded(.up)
         setFrame(NSRect(x: x, y: top - h, width: size.width, height: h), display: true)
-        content.frame = NSRect(x: 0, y: h - size.height, width: size.width, height: size.height)
+        content.frame = NSRect(x: 0, y: h - BatteryMenuMetrics.pictureDrop - size.height, width: size.width, height: size.height)
         // The shadow follows what is drawn; worked out before the rounded glass had drawn it comes out square at the corners.
         DispatchQueue.main.async { [weak self] in self?.invalidateShadow() }
     }

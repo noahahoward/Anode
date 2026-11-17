@@ -5,9 +5,11 @@ import CoreGraphics
 /// in 5; this one is 308 with everything set in 14.)
 public enum BatteryMenuMetrics {
     public static let width: CGFloat = 308
-    /// How far under the menu bar the panel's top edge is: 1 pt (the Sound menu's is 2), measured from its dividers on the screen.
+    /// How far under the menu bar the panel's window starts: 1 pt (the Sound menu's is 2).
     public static let gapBelowBar: CGFloat = 1
-    /// How far the rows' content (text, badges, icons) sits below the row's measured top, so it lands on macOS's pixels.
+    /// How far under the window's top the picture starts: macOS's panel is 40.5 pt down, measured from its text and lines on the screen.
+    public static let pictureDrop: CGFloat = 0.5
+    /// How far the rows' content (text, badges, icons, highlights) sits below the row's measured top, so it lands on macOS's pixels.
     public static let contentDrop: CGFloat = 0.5
     public static let inset: CGFloat = 14
     public static let contentWidth: CGFloat = 280
