@@ -271,7 +271,8 @@ final class BatteryMenuContentView: NSView {
             addSubview(v)
         case .app(let i):
             guard model.energyApps.indices.contains(i) else { return }
-            addSubview(EnergyAppRow(frame: f.insetBy(dx: -BatteryRow.lead, dy: 0), name: model.energyApps[i].name))
+            let app = model.energyApps[i]
+            addSubview(EnergyAppRow(frame: f.insetBy(dx: -BatteryRow.lead, dy: 0), name: app.name, stats: app.stats))
         case .gear:
             addSubview(IconButton(symbol: "gearshape", size: 13, weight: .regular, tint: 0.42, added: true, frame: f) { [weak self] in
                 self?.controller?.pressGear()
@@ -454,7 +455,7 @@ final class FooterRow: HoverRow {
 
 /// An app listed under "Using Significant Energy": its icon and its name.
 final class EnergyAppRow: HoverRow {
-    init(frame: NSRect, name: String) {
+    init(frame: NSRect, name: String, stats: EnergyStats? = nil) {
         super.init(frame: frame)
         cornerRadius = 10
         dimsWhenPressed = true
@@ -467,7 +468,22 @@ final class EnergyAppRow: HoverRow {
         l.font = .systemFont(ofSize: 13)
         l.textColor = SoundText.primary
         l.lineBreakMode = .byTruncatingTail
-        l.frame = NSRect(x: BatteryRow.lead + 22, y: 3, width: 250, height: 18)
+        // Anode's figures for the app, on the right of the row, as dim as the power source line; the name gives way to them.
+        var nameWidth: CGFloat = 250
+        if let stats {
+            let figures = NSTextField(labelWithString: stats.rowText)
+            figures.font = .systemFont(ofSize: 11)
+            figures.textColor = BatteryMenuContentView.secondary
+            figures.alignment = .right
+            figures.sizeToFit()
+            // A text field draws its text 2 pt in from its frame.
+            let width = ceil(figures.frame.width)
+            figures.frame = NSRect(x: frame.width - BatteryRow.lead - width + 2, y: 4, width: width, height: figures.frame.height)
+            addSubview(figures)
+            nameWidth = frame.width - BatteryRow.lead - width - (BatteryRow.lead + 22) - 8
+            toolTip = stats.tooltip
+        }
+        l.frame = NSRect(x: BatteryRow.lead + 22, y: 3, width: nameWidth, height: 18)
         addSubview(l)
     }
 
@@ -493,12 +509,14 @@ enum BatteryMenuRuntime {
 
     /// The menu over the real Mac. `driver` is shared with the Sound menu: both use macOS's Control Center one job at a time.
     static func live(settings: Settings = .shared, driver: SystemPanelDriving = SystemPanelDriver(),
-                     openBetaFeatures: @escaping () -> Void = {}, ultra: UltraModeControlling? = nil, charge: ChargeLimiting? = nil) -> BatteryMenuController {
+                     openBetaFeatures: @escaping () -> Void = {}, ultra: UltraModeControlling? = nil, charge: ChargeLimiting? = nil,
+                     energyStats: @escaping () -> [String: EnergyStats] = { [:] }, onOpenChanged: @escaping (Bool) -> Void = { _ in }) -> BatteryMenuController {
         let panel = BatteryMenuPanel()
         let controller = BatteryMenuController(settings: settings, driver: driver, accessibility: { AXIsProcessTrusted() },
                                                presenter: panel, native: NativeMenuExtraIcon.battery(),
                                                openBetaFeatures: openBetaFeatures, ultra: ultra, charge: charge,
-                                               hardDrainPrompt: HardDrainAlert())
+                                               hardDrainPrompt: HardDrainAlert(), energyStats: energyStats,
+                                               onOpenChanged: onOpenChanged, statsInterval: 2)
         panel.controller = controller
         controller.start()
         return controller

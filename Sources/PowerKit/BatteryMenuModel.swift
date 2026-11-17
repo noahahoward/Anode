@@ -12,7 +12,9 @@ public struct BatteryMenuModel: Equatable {
 
     public struct EnergyApp: Equatable {
         public var name: String
-        public init(name: String) { self.name = name }
+        /// Anode's own measurement of the app, shown on the right of its row; nil when Anode has none.
+        public var stats: EnergyStats?
+        public init(name: String, stats: EnergyStats? = nil) { self.name = name; self.stats = stats }
     }
 
     /// The word after "Power Source: ": `Battery` or `Power Adapter`.

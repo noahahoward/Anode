@@ -80,7 +80,8 @@ final class BatteryMenuControllerTests: XCTestCase {
 
     private func rig(enabled: Bool = true, trusted: Bool = true, lastReading: Bool = false, openBeta: @escaping () -> Void = {},
                      ultra: FakeUltra? = nil, ultraEnabled: Bool = false,
-                     charge: FakeCharge? = nil, chargeEnabled: Bool = false, prompt: FakePrompt? = nil) throws -> Rig {
+                     charge: FakeCharge? = nil, chargeEnabled: Bool = false, prompt: FakePrompt? = nil,
+                     stats: @escaping () -> [String: EnergyStats] = { [:] }, opened: @escaping (Bool) -> Void = { _ in }) throws -> Rig {
         let (defaults, suite) = try TestDefaults.make(owner: "BatteryMenu", test: name)
         let settings = Settings(defaults: defaults)
         settings.batteryMenuEnabled = enabled
@@ -89,7 +90,8 @@ final class BatteryMenuControllerTests: XCTestCase {
         if lastReading { settings.batteryMenuLastReading = try JSONEncoder().encode(AppleBatteryPanel.parse(tree(selected: "low"))) }
         let driver = SoundMenuControllerTests.FakeDriver(), presenter = FakePresenter(), native = SoundMenuControllerTests.FakeNative()
         let c = BatteryMenuController(settings: settings, driver: driver, accessibility: { trusted }, presenter: presenter, native: native,
-                                      pollInterval: 0, followUpDelay: 0, openBetaFeatures: openBeta, ultra: ultra, charge: charge, hardDrainPrompt: prompt)
+                                      pollInterval: 0, followUpDelay: 0, openBetaFeatures: openBeta, ultra: ultra, charge: charge, hardDrainPrompt: prompt,
+                                      energyStats: stats, onOpenChanged: opened)
         c.start()
         return Rig(controller: c, driver: driver, presenter: presenter, native: native, settings: settings, ultra: ultra,
                    cleanup: { c.stop(); TestDefaults.destroy(defaults, suite) })
@@ -445,5 +447,43 @@ final class BatteryMenuControllerTests: XCTestCase {
         r.native.onClick?(r.native.frame!)
         charge.limit = 90; charge.listeners.forEach { $0() }
         XCTAssertEqual(r.presenter.shown.last?.chargeLimit?.limit, 90)
+    }
+
+    // ── Anode's figures beside each app ─────────────────────────────────────
+
+    func testAnAppListedByMacOSGetsAnodesFiguresFromItsName() throws {
+        let vsc = EnergyStats(pctPerHour: 0.32, cpuPercent: 4.1, memoryBytes: 1, minutesBack: nil)
+        let r = try rig(lastReading: true, stats: { ["Safari": vsc] }); defer { r.cleanup() }
+        r.native.onClick?(r.native.frame!)
+        r.driver.complete(0, .tree(tree(selected: "low", apps: ["Safari", "Unknown Helper"])))
+        let apps = try XCTUnwrap(r.presenter.shown.last?.energyApps)
+        XCTAssertEqual(apps.map(\.name), ["Safari", "Unknown Helper"])
+        XCTAssertEqual(apps[0].stats, vsc)
+        XCTAssertNil(apps[1].stats, "no figure is made up for an app Anode has not measured")
+    }
+
+    func testTheFiguresAreFollowedWhileTheMenuIsOpen() throws {
+        var current = EnergyStats(pctPerHour: 0.1, cpuPercent: 1, memoryBytes: 0, minutesBack: nil)
+        let r = try rig(lastReading: true, stats: { ["Safari": current] }); defer { r.cleanup() }
+        r.native.onClick?(r.native.frame!)
+        r.driver.complete(0, .tree(tree(selected: "low", apps: ["Safari"])))
+        current.pctPerHour = 0.9
+        r.controller.refreshEnergyStats()
+        XCTAssertEqual(r.presenter.shown.last?.energyApps.first?.stats?.pctPerHour, 0.9)
+    }
+
+    func testTheMenuTellsTheAppWhileItIsOpenSoTheFiguresAreFresh() throws {
+        var told: [Bool] = []
+        let r = try rig(lastReading: true, opened: { told.append($0) }); defer { r.cleanup() }
+        r.native.onClick?(r.native.frame!)
+        r.native.onClick?(r.native.frame!)
+        XCTAssertEqual(told, [true, false])
+    }
+
+    func testTheFiguresAreNotAskedForWhileTheMenuIsClosed() throws {
+        var asked = 0
+        let r = try rig(lastReading: true, stats: { asked += 1; return [:] }); defer { r.cleanup() }
+        r.controller.refreshEnergyStats()
+        XCTAssertEqual(asked, 0)
     }
 }

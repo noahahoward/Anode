@@ -71,6 +71,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
     var ultraLowPower: UltraLowPowerRuntime?
     var soundMenu: SoundMenuController?
     var batteryMenu: BatteryMenuController?
+    /// Anode's Battery menu is open: it is a reader of the per-app figures, as the widgets' panel is (see `refresh`).
+    var batteryMenuIsOpen = false { didSet { if oldValue != batteryMenuIsOpen { refresh() } } }
     var appAudio: AppAudioCoordinator?
     var temperatureAlarm = TemperatureAlarm()
     var windowSnapper: WindowSnapper?
@@ -458,7 +460,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         // Anode's Battery menu: nothing of it exists until its setting is on (Beta Features).
         batteryMenu = BatteryMenuRuntime.live(driver: panelDriver, openBetaFeatures: { [weak self] in self?.betaFeaturesWindow.show() },
                                               ultra: ultraLowPower.map { LiveUltraMode($0.controller) },
-                                              charge: chargeControl.map { LiveChargeLimit($0) })
+                                              charge: chargeControl.map { LiveChargeLimit($0) },
+                                              energyStats: { [weak self] in self?.energyStatsByName() ?? [:] },
+                                              onOpenChanged: { [weak self] open in self?.batteryMenuIsOpen = open })
         appAudio = AppAudioCoordinator.live { [weak self] router in
             self?.soundMenu?.appVolume = router
             router?.onChange = { [weak self] in self?.soundMenu?.appsChanged() }
@@ -939,7 +943,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         // The tab on screen, read on main because that is where it is written. It
         // decides which subsystems this tick pays for — see `visibleNeeds`.
         // An open panel is a reader too — see `MenuBarWidgetController.isPanelOpen`.
-        let panelOpen = (widgets?.isPanelOpen ?? false) && ScreenWatch.shared.isWatched
+        let panelOpen = ((widgets?.isPanelOpen ?? false) || batteryMenuIsOpen) && ScreenWatch.shared.isWatched
         // Ultra Low Power Mode with nothing on screen to read it: nothing is sampled and nothing is written to history. A tick
         // already queued when the mode began lands here, as does a caller that did not ask the timer first.
         guard tickRuns(windowDrawn: visible || panelOpen) else { stopTimer(); return }
@@ -2465,6 +2469,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
             graph.rightAxisLabel = ""
             graph.rightAxisUnit = "%"
         }
+    }
+
+    /// Anode's measurement of each app, by name, from the last full sweep (what the Processes table shows).
+    func energyStatsByName() -> [String: EnergyStats] {
+        guard let s = lastSnapshot else { return [:] }
+        var out: [String: EnergyStats] = [:]
+        for a in s.apps {
+            out[a.name] = EnergyStats(pctPerHour: a.percentPerHour, cpuPercent: a.cpuPercent, memoryBytes: a.memoryBytes,
+                                      minutesBack: RuntimeCost.minutes(appWatts: a.watts, snapshot: s))
+        }
+        return out
     }
 
     func updateDetail() {

@@ -70,6 +70,14 @@ final class BatteryMenuController {
     private let ultra: UltraModeControlling?
     private let charge: ChargeLimiting?
     private let hardDrainPrompt: HardDrainPrompting?
+    /// Anode's measurement of every app it knows, by name; read only while the menu is open.
+    private let energyStats: () -> [String: EnergyStats]
+    /// Told when the menu opens and closes: while it is open the app measures at the pace of someone reading.
+    private let onOpenChanged: (Bool) -> Void
+    private var statsTimer: Timer?
+    /// The menu is open, or about to be: Anode's figures are read for it.
+    private var statsWanted = false
+    private let statsInterval: TimeInterval
     private var chargeObserver: AnyObject?
     private var ultraObserver: AnyObject?
     /// A mode chosen while Ultra Low Power runs: it ends first, and this is pressed in macOS's panel once it has put things back.
@@ -94,13 +102,18 @@ final class BatteryMenuController {
 
     init(settings: Settings, driver: SystemPanelDriving, accessibility: @escaping () -> Bool, presenter: BatteryMenuPresenting,
          native: NativeIconHosting, pollInterval: TimeInterval = 3, followUpDelay: TimeInterval = 1.5,
-         openBetaFeatures: @escaping () -> Void = {}, ultra: UltraModeControlling? = nil, charge: ChargeLimiting? = nil, hardDrainPrompt: HardDrainPrompting? = nil) {
+         openBetaFeatures: @escaping () -> Void = {}, ultra: UltraModeControlling? = nil, charge: ChargeLimiting? = nil, hardDrainPrompt: HardDrainPrompting? = nil,
+         energyStats: @escaping () -> [String: EnergyStats] = { [:] }, onOpenChanged: @escaping (Bool) -> Void = { _ in },
+         statsInterval: TimeInterval = 0) {
         self.settings = settings; self.driver = driver; self.accessibility = accessibility; self.presenter = presenter
         self.native = native; self.pollInterval = pollInterval; self.followUpDelay = followUpDelay
         self.openBetaFeatures = openBetaFeatures
         self.ultra = ultra
         self.charge = charge
         self.hardDrainPrompt = hardDrainPrompt
+        self.energyStats = energyStats
+        self.onOpenChanged = onOpenChanged
+        self.statsInterval = statsInterval
     }
 
     var isMenuOpen: Bool { presenter.isOpen }
@@ -110,6 +123,10 @@ final class BatteryMenuController {
         guard let reading else { return nil }
         var m = BatteryMenuModel(apple: reading)
         m.showsGear = true
+        if statsWanted, !m.energyApps.isEmpty {
+            let known = energyStats()
+            m.energyApps = m.energyApps.map { var a = $0; a.stats = known[$0.name]; return a }
+        }
         if let ultra, settings.ultraLowPowerEnabled {
             // While the mode runs only its row is checked (macOS's Low Power Mode is on underneath); a choice made meanwhile is
             // shown at once, and the mode's row is not checked any more.
@@ -162,6 +179,7 @@ final class BatteryMenuController {
     private func tearDown() {
         generation += 1
         pendingAnchor = nil
+        setStatsWanted(false)
         afterUltra = nil
         ultraObserver = nil
         chargeObserver = nil
@@ -187,6 +205,7 @@ final class BatteryMenuController {
     func openMenu() {
         guard !presenter.isOpen, pendingAnchor == nil, accessibility(), let anchor = clickAnchor ?? native.currentFrame() else { return }
         openCount += 1
+        setStatsWanted(true)
         if let model {
             presenter.show(model, below: anchor)
         } else {
@@ -206,6 +225,24 @@ final class BatteryMenuController {
         generation += 1
         pendingAnchor = nil
         presenter.close()
+        setStatsWanted(false)
+    }
+
+    /// Anode's figures are read, and the app measures at a reader's pace, only while the menu is open.
+    private func setStatsWanted(_ on: Bool) {
+        guard on != statsWanted else { return }
+        statsWanted = on
+        onOpenChanged(on)
+        statsTimer?.invalidate(); statsTimer = nil
+        if on, statsInterval > 0 {
+            statsTimer = Timer.scheduledTimer(withTimeInterval: statsInterval, repeats: true) { [weak self] _ in self?.refreshEnergyStats() }
+        }
+    }
+
+    /// The figures beside the apps, read again (a measurement came in).
+    func refreshEnergyStats() {
+        guard statsWanted else { return }
+        redraw()
     }
 
     /// Reads macOS's panel. What came back replaces what was known; the menu is redrawn (or opened, if it was waiting for this).
