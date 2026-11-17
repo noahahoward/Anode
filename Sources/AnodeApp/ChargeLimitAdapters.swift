@@ -38,7 +38,9 @@ final class HardDrainAlert: HardDrainPrompting {
         alert.addButton(withTitle: "Yes")
         alert.window.level = .popUpMenu
         NSApp.activate(ignoringOtherApps: true)
-        done(alert.runModal() == .alertSecondButtonReturn)
+        // Yes is the second button, and only it is a yes: a dismissed box answers `.abort`, which is neither button.
+        let answer = alert.runModal()
+        done(answer == .alertSecondButtonReturn)
     }
 
     func explainBlocked() {

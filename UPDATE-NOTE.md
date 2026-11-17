@@ -1,3 +1,3 @@
 <!-- Two plain sentences saying what THIS update is. The update screen shows them; update.sh prints them.
      Rewrite them on every push. Say what changed for the person using the app, not how it was done. -->
-There is a new Sound menu in Beta Features: Anode's own copy of macOS's, with a volume for each open app. Keep Awake now remembers whether it was on when Anode restarts, and a menu bar strip that could turn white after the appearance changed is fixed.
+There is a new Battery menu in Beta Features: Anode's own copy of macOS's, with Ultra Low Power Mode, a charge limit with Top Up and Drain buttons, and Anode's own figures beside each app. The Sound and Battery menus also have a gear that opens Beta Features.

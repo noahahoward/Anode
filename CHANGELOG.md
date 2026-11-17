@@ -7,6 +7,15 @@ feature or a visible change in how something works, the first only for a rewrite
 Nothing was bumped between 1.0.0 and 1.15.0. Those versions were assigned afterwards from the history and exist as
 git tags (`git show v1.7.0`); builds made before 1.15.0 still say 1.0.0 in their About box.
 
+## 1.23.0 — 2026-11-17
+- Battery menu (Beta Features): Anode draws its own copy of macOS's Battery menu and opens it when you click macOS's own Battery icon. It has the Energy Mode rows, the power source (and the line macOS adds on the charger, such as "1h 51m until fully charged"), the apps using significant energy, and Battery Settings, and it looks and moves like macOS's: the same sizes, the same hover and press, the badge turning blue on a spring when you choose a mode, and a fade as it closes.
+- Next to each app under Using Significant Energy, Anode shows its own figures for it, such as "0.32 %/hr · 4.1% CPU". Rest on the row for its memory and the minutes quitting it would give back.
+- Ultra Low Power Mode (when it is on in Beta Features) is a fourth Energy Mode in the menu. It asks before it starts, and choosing another mode ends it.
+- Charge Control (when it is on) adds a Charge Limit section: the heading shows the limit ("Charge Limit: 80%") and follows the slider as you drag it, and the limit is set when you let go. Top Up charges to 100% this once and ends when you unplug (it needs the charger, and is dim without it). Drain starts Soft Drain to Limit; hold it for three seconds and it asks whether you would like to Hard Drain.
+- The Battery menu and the Sound menu each have a small gear at the right end of the title that opens Beta Features.
+- Anode's two menus close each other, and close a macOS menu you already had open, as macOS does when you click another icon.
+- If you drag the Sound or Battery icon far to the left of the menu bar, macOS opens its panel to the right of the icon instead of the left. Anode's menus now open on the same side, and the first click on an icon you have just moved is taken by Anode instead of macOS.
+
 ## 1.22.0 — 2026-11-16
 - Sound menu (Beta Features): Anode draws its own copy of macOS's Sound menu and opens it when you click macOS's own Sound icon. It has the volume slider, every output with its battery, the AirPods listening mode, Spatial Audio and Conversation Awareness, and Sound Settings, and it looks and moves like macOS's: the same sizes, the same hover, and rows that glide in and out as devices come and go.
 - Hold the slider's knob and it turns into a glass bubble, as in macOS. Click the track and the knob slides there; the speaker icons at the ends step the volume by ten points. The volume keys move the open menu's volume without macOS's own volume bubble appearing beside it.
