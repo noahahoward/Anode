@@ -951,6 +951,8 @@ final class MenuSlider: NSView {
         NSBezierPath(roundedRect: track, xRadius: trackH / 2, yRadius: trackH / 2).fill()
         let x = CGFloat(shown) * (bounds.width - thumb)
         var filled = track; filled.size.width = x + thumb / 2
+        // Under the lens the track is the glass's own (its band): the filled part stops where the lens begins.
+        if let lens { filled.size.width = max(0, min(filled.size.width, lens.frame.minX - track.minX)) }
         SoundText.ink(dimmed ? 0.16 : 0.33).setFill()
         NSBezierPath(roundedRect: filled, xRadius: trackH / 2, yRadius: trackH / 2).fill()
         // While the knob is held it is the glass lens (a view over this one) and the solid knob is not drawn.
