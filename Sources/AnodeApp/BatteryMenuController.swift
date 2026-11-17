@@ -83,6 +83,9 @@ final class BatteryMenuController {
     /// A mode chosen while Ultra Low Power runs: it ends first, and this is pressed in macOS's panel once it has put things back.
     private var afterUltra: String?
 
+    /// Called as the menu is about to open: the Sound menu is closed then, as macOS closes one menu bar menu for the next.
+    var onWillOpen: (() -> Void)?
+
     /// How a URL is opened (the Settings pane); the tests replace it.
     var openURL: (URL) -> Void = { NSWorkspace.shared.open($0) }
 
@@ -204,6 +207,7 @@ final class BatteryMenuController {
 
     func openMenu() {
         guard !presenter.isOpen, pendingAnchor == nil, accessibility(), let anchor = clickAnchor ?? native.currentFrame() else { return }
+        onWillOpen?()
         openCount += 1
         setStatsWanted(true)
         if let model {

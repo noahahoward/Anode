@@ -486,4 +486,24 @@ final class BatteryMenuControllerTests: XCTestCase {
         r.controller.refreshEnergyStats()
         XCTAssertEqual(asked, 0)
     }
+
+    // ── Only one of the two menus at a time ─────────────────────────────────
+
+    func testOpeningTheMenuTellsTheOtherToClose() throws {
+        let r = try rig(lastReading: true); defer { r.cleanup() }
+        var told = 0
+        r.controller.onWillOpen = { told += 1 }
+        r.native.onClick?(r.native.frame!)
+        XCTAssertEqual(told, 1)
+        r.native.onClick?(r.native.frame!)   // closes: no word
+        XCTAssertEqual(told, 1)
+    }
+
+    func testTheWordIsGivenEvenWhileWaitingForTheFirstReading() throws {
+        let r = try rig(); defer { r.cleanup() }
+        var told = 0
+        r.controller.onWillOpen = { told += 1 }
+        r.native.onClick?(r.native.frame!)
+        XCTAssertEqual(told, 1)
+    }
 }

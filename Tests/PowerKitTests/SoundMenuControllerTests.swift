@@ -164,6 +164,16 @@ final class SoundMenuControllerTests: XCTestCase {
         XCTAssertEqual(r.bar.items[0].symbolName, "speaker.wave.3.fill")
     }
 
+    func testOpeningTheMenuTellsTheOtherMenuToClose() throws {
+        let r = try rig(); defer { r.cleanup() }
+        var told = 0
+        r.controller.onWillOpen = { told += 1 }
+        r.controller.openMenu()
+        XCTAssertEqual(told, 1)
+        r.controller.closeMenu()
+        XCTAssertEqual(told, 1, "closing says nothing")
+    }
+
     func testOpenReadsAppleOnce() throws {
         let r = try rig(); defer { r.cleanup() }
         r.controller.openMenu()

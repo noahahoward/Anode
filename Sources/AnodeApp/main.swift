@@ -463,6 +463,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
                                               charge: chargeControl.map { LiveChargeLimit($0) },
                                               energyStats: { [weak self] in self?.energyStatsByName() ?? [:] },
                                               onOpenChanged: { [weak self] open in self?.batteryMenuIsOpen = open })
+        // A click on one of the two icons is taken by Anode, so the other menu never hears it: each closes the other as it opens.
+        soundMenu?.onWillOpen = { [weak self] in self?.batteryMenu?.closeMenu() }
+        batteryMenu?.onWillOpen = { [weak self] in self?.soundMenu?.closeMenu() }
         appAudio = AppAudioCoordinator.live { [weak self] router in
             self?.soundMenu?.appVolume = router
             router?.onChange = { [weak self] in self?.soundMenu?.appsChanged() }

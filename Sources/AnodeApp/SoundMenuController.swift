@@ -51,6 +51,8 @@ final class SoundMenuController {
 
     /// Nil while per-app volume is off: the menu then has no Apps section.
     var appVolume: AppVolumeControlling?
+    /// Called as the menu is about to open: the Battery menu is closed then, as macOS closes one menu bar menu for the next.
+    var onWillOpen: (() -> Void)?
 
 
     static let needsAccessibility = "Needs Accessibility for the listening mode, Conversation Awareness and AirPlay rows."
@@ -205,6 +207,7 @@ final class SoundMenuController {
         guard !presenter.isOpen else { return }
         let anchor: CGRect? = nativeRunning ? (clickAnchor ?? native.currentFrame()) : item?.frame
         guard let anchor else { return }
+        onWillOpen?()
         notice = nil
         collapsed.removeAll()
         openCount += 1
