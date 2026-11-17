@@ -34,3 +34,6 @@ Still to measure: glyphs and their sizes, fonts and colours (likely those of the
 4. **Panel view**: draws the rows from the layout (glass, fonts, glyphs, hover, glide as rows come and go).
 5. **Setting**: a Beta Features switch "Battery menu" (off by default; the Sound menu's pattern).
 6. **Verification against Apple**: overlay over flat backdrops, hover, press, animation, light appearance; then the additions of step 4.
+
+## Progress
+- 2026-11-17 Task 1 done (`BatteryMenuMetrics/Model/Layout`, 6 tests). Task 2 done (`AppleBatteryPanel.parse`, 7 tests; a tree that is not the panel gives nothing). Next: task 3, with the icon gate generalised over the item id (`NativeSoundIcon` is tied to `com.apple.menuextra.sound`).
