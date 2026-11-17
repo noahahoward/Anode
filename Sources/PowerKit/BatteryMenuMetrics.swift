@@ -24,7 +24,7 @@ public enum BatteryMenuMetrics {
     public static let dividerGapBelowRows: CGFloat = 5.5
     public static let headingGapBelowDivider: CGFloat = 9   // from the line's top
     public static let appRowHeight: CGFloat = 22
-    /// Not measured (one app was listed): taken as the row's own height.
+    /// Measured with two apps listed: the second row is 22 pt under the first and the footer 22 pt further down.
     public static let appRowPitch: CGFloat = 22
     public static let appsFirstRowGapBelowHeading: CGFloat = 3.5   // heading 197.5 + 15 = 212.5; the row is at 216
     public static let footerRowHeight: CGFloat = 22

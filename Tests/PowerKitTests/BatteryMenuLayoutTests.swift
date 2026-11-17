@@ -51,12 +51,15 @@ final class BatteryMenuLayoutTests: XCTestCase {
         XCTAssertEqual(r.height, 222.5, accuracy: 0.01)
     }
 
-    // Not measured either (one app was listed): each further app takes another row of the same height, and the rest moves down.
+    // Measured with two apps listed (macOS 27): the footer's text and the line above it are 22 pt lower than with one; each further
+    // app takes another row of the same height.
     func testEachFurtherAppAddsARow() {
         let one = BatteryMenuLayout.frames(for: model(apps: ["A"]))
         let three = BatteryMenuLayout.frames(for: model(apps: ["A", "B", "C"]))
         XCTAssertEqual(y(three, .app(2)), 216 + 2 * BatteryMenuMetrics.appRowPitch)
         XCTAssertEqual(three.height - one.height, 2 * BatteryMenuMetrics.appRowPitch, accuracy: 0.01)
+        let two = BatteryMenuLayout.frames(for: model(apps: ["A", "B"]))
+        XCTAssertEqual((y(two, .footer) ?? 0) - (y(one, .footer) ?? 0), 22, "the measured step from one app to two")
     }
 
     func testTheModelFindsTheSelectedMode() {
