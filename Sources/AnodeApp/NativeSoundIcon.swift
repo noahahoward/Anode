@@ -36,6 +36,9 @@ final class NativeSoundIcon: NativeIconHosting {
     private let tapPort = TapPortBox()
     private let lock = NSLock()
     private var cachedFrame: CGRect?
+    /// The item the icon sits in, as tall as the bar: the icon is a small square in its middle, and a click above or below the
+    /// square (at the very top of the screen, say) is still a click on the item.
+    private var cachedBar: CGRect?
     /// The process that owns macOS's menu bar items: only an element of this one counts as the icon.
     private var trustedPid: pid_t = 0
     private var gate = NativeIconClickGate()   // touched only on the tap thread
@@ -48,8 +51,8 @@ final class NativeSoundIcon: NativeIconHosting {
 
     deinit { stop() }
 
-    private func remember(_ frame: CGRect?, pid: pid_t) -> CGRect? {
-        lock.lock(); cachedFrame = frame; trustedPid = pid; lock.unlock()
+    private func remember(_ frame: CGRect?, pid: pid_t, bar: CGRect? = nil) -> CGRect? {
+        lock.lock(); cachedFrame = frame; cachedBar = frame == nil ? nil : bar; trustedPid = pid; lock.unlock()
         return frame
     }
 
@@ -67,7 +70,9 @@ final class NativeSoundIcon: NativeIconHosting {
             for item in (Self.attribute(group, kAXChildrenAttribute) as? [AXUIElement]) ?? [] where Self.identifier(of: item) == Self.identifier {
                 var r = CGRect.zero
                 if let v = Self.attribute(item, "AXFrame"), CFGetTypeID(v) == AXValueGetTypeID() { AXValueGetValue(v as! AXValue, .cgRect, &r) }   // type checked
-                return remember(r.isEmpty ? nil : r, pid: pid)
+                var itemFrame = CGRect.zero
+                if let v = Self.attribute(group, "AXFrame"), CFGetTypeID(v) == AXValueGetTypeID() { AXValueGetValue(v as! AXValue, .cgRect, &itemFrame) }   // type checked
+                return remember(r.isEmpty ? nil : r, pid: pid, bar: itemFrame.isEmpty ? nil : itemFrame)
             }
         }
         return remember(nil, pid: 0)
@@ -123,17 +128,17 @@ final class NativeSoundIcon: NativeIconHosting {
             if let port = tapPort.value { CGEvent.tapEnable(tap: port, enable: true) }
             return true
         case .leftMouseDown, .leftMouseUp:
-            lock.lock(); let icon = cachedFrame; lock.unlock()
+            lock.lock(); let icon = cachedFrame; let bar = cachedBar; lock.unlock()
             let held = event.flags.intersection([.maskCommand, .maskAlternate, .maskControl])
             let point = event.location
             var liveFrame: CGRect?
-            let verdict = gate.decide(type == .leftMouseDown ? .down : .up, at: point, modifiers: !held.isEmpty, icon: icon) {
+            let verdict = gate.decide(type == .leftMouseDown ? .down : .up, at: point, modifiers: !held.isEmpty, icon: icon, bar: bar) {
                 liveFrame = iconUnderPointer(point)
                 return liveFrame != nil
             }
             // A line for a click near the icon that Anode took, or declined: a press that was passed on is the one worth knowing
             // about (macOS's own panel opens instead). Written off the tap thread: the tap must not wait for a disk.
-            if let icon, NativeIconClickGate.isNear(point, icon), verdict != .pass || !held.isEmpty || type == .leftMouseDown {
+            if let icon, NativeIconClickGate.isNear(point, icon, bar: bar), verdict != .pass || !held.isEmpty || type == .leftMouseDown {
                 let line = "macOS icon: press near the icon: \(verdict), live look: \(liveFrame.map { "icon at x \(Int($0.minX))" } ?? "not the icon"), "
                     + "last known icon x \(Int(icon.minX)), modifiers held: \(!held.isEmpty)"
                 DispatchQueue.global(qos: .utility).async { FeatureLog.append("sound-menu.log", line) }
@@ -159,17 +164,25 @@ final class NativeSoundIcon: NativeIconHosting {
         // While Anode's own picture of the icon is over it (macOS's panel is being read), that picture is what is under the pointer.
         // It is the icon, for this purpose: the click must not fall through to macOS's own panel.
         if CoverPresence.shared.isCovered {
-            lock.lock(); let known = cachedFrame; lock.unlock()
-            if let known, NativeIconClickGate.isNear(point, known) { return known }
+            lock.lock(); let known = cachedFrame; let bar = cachedBar; lock.unlock()
+            if let known, NativeIconClickGate.isNear(point, known, bar: bar) { return known }
         }
         var hit: AXUIElement?
         guard AXUIElementCopyElementAtPosition(systemWide, Float(point.x), Float(point.y), &hit) == .success, let hit else { return nil }
         // The right id is not enough: any app can name an element anything. It must also belong to the process that draws macOS's bar.
         lock.lock(); let expected = trustedPid; lock.unlock()
         var owner: pid_t = 0
-        guard expected != 0, AXUIElementGetPid(hit, &owner) == .success, owner == expected, Self.identifier(of: hit) == Self.identifier else { return nil }
+        guard expected != 0, AXUIElementGetPid(hit, &owner) == .success, owner == expected else { return nil }
+        // Above or below the icon's square the pointer is over the item that holds it (an unnamed group as tall as the bar, whose
+        // one child is the icon): that is a click on the icon too.
+        var icon = hit
+        if Self.identifier(of: hit) != Self.identifier {
+            let children = (Self.attribute(hit, kAXChildrenAttribute) as? [AXUIElement]) ?? []
+            guard children.count == 1, let child = children.first, Self.identifier(of: child) == Self.identifier else { return nil }
+            icon = child
+        }
         var r = CGRect.zero
-        if let v = Self.attribute(hit, "AXFrame"), CFGetTypeID(v) == AXValueGetTypeID() { AXValueGetValue(v as! AXValue, .cgRect, &r) }   // type checked
+        if let v = Self.attribute(icon, "AXFrame"), CFGetTypeID(v) == AXValueGetTypeID() { AXValueGetValue(v as! AXValue, .cgRect, &r) }   // type checked
         return r.isEmpty ? nil : r
     }
 

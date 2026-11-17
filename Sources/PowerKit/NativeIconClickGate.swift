@@ -22,7 +22,7 @@ public struct NativeIconClickGate {
 
     /// `isTheIcon` is asked only for a press near `icon` (in the menu bar, within `slack` of it): it can be slow, and everything
     /// else must stay instant.
-    public mutating func decide(_ phase: Phase, at point: CGPoint, modifiers: Bool, icon: CGRect?,
+    public mutating func decide(_ phase: Phase, at point: CGPoint, modifiers: Bool, icon: CGRect?, bar: CGRect? = nil,
                                 isTheIcon: () -> Bool) -> Verdict {
         switch phase {
         case .up:
@@ -30,14 +30,17 @@ public struct NativeIconClickGate {
             return swallowedPress ? .swallow : .pass
         case .down:
             swallowedPress = false
-            guard !modifiers, let icon, Self.isNear(point, icon), isTheIcon() else { return .pass }
+            guard !modifiers, let icon, Self.isNear(point, icon, bar: bar), isTheIcon() else { return .pass }
             swallowedPress = true
             return .swallowAndOpen
         }
     }
 
-    /// Not more than `slack` points sideways, and 6 above or below, the icon's last known frame.
-    public static func isNear(_ point: CGPoint, _ icon: CGRect) -> Bool {
-        point.y >= icon.minY - 6 && point.y <= icon.maxY + 6 && point.x >= icon.minX - slack && point.x <= icon.maxX + slack
+    /// Not more than `slack` points sideways of the icon's last known frame, and no higher or lower than the item it sits in (`bar`:
+    /// the icon is a small square in the middle of an item as tall as the bar, and the whole height is the item), or, when that is
+    /// not known, 6 above or below the icon.
+    public static func isNear(_ point: CGPoint, _ icon: CGRect, bar: CGRect? = nil) -> Bool {
+        let top = min(icon.minY - 6, bar?.minY ?? .infinity), bottom = max(icon.maxY + 6, bar?.maxY ?? -.infinity)
+        return point.y >= top && point.y <= bottom && point.x >= icon.minX - slack && point.x <= icon.maxX + slack
     }
 }

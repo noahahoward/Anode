@@ -77,6 +77,29 @@ final class NativeIconClickGateTests: XCTestCase {
         XCTAssertEqual(g.decide(.down, at: CGPoint(x: lower.midX, y: lower.midY), modifiers: false, icon: lower, isTheIcon: { true }), .swallowAndOpen)
     }
 
+    // The icon is a 22 pt square in the middle of an item that is as tall as the bar: a click at the very top or bottom of the bar,
+    // above or under the square, is still a click on the item.
+    private let bar = CGRect(x: 1544, y: 0, width: 22, height: 39)
+
+    func testAClickAtTheVeryTopOfTheBarAboveTheSquareIsTakenWhenTheItemIsKnown() {
+        var g = NativeIconClickGate()
+        XCTAssertEqual(g.decide(.down, at: CGPoint(x: icon.midX, y: 0), modifiers: false, icon: icon, bar: bar, isTheIcon: { true }), .swallowAndOpen)
+    }
+
+    func testAClickAtTheBottomEdgeOfTheBarUnderTheSquareIsTakenWhenTheItemIsKnown() {
+        var g = NativeIconClickGate()
+        XCTAssertEqual(g.decide(.down, at: CGPoint(x: icon.midX, y: 38.5), modifiers: false, icon: icon, bar: bar, isTheIcon: { true }), .swallowAndOpen)
+    }
+
+    func testTheItemsHeightDoesNotReachAnotherDisplayAboveOrBelow() {
+        var g = NativeIconClickGate()
+        var asked = 0
+        let belowBar = g.decide(.down, at: CGPoint(x: icon.midX, y: 60), modifiers: false, icon: icon, bar: bar, isTheIcon: { asked += 1; return true })
+        XCTAssertEqual(belowBar, .pass); XCTAssertEqual(asked, 0)
+        let above = g.decide(.down, at: CGPoint(x: icon.midX, y: -20), modifiers: false, icon: icon, bar: bar, isTheIcon: { asked += 1; return true })
+        XCTAssertEqual(above, .pass); XCTAssertEqual(asked, 0)
+    }
+
     func testNoKnownIconPassesEverything() {
         var g = NativeIconClickGate()
         XCTAssertEqual(g.decide(.down, at: inside, modifiers: false, icon: nil, isTheIcon: { true }), .pass)
