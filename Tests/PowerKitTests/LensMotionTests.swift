@@ -45,4 +45,15 @@ final class LensMotionTests: XCTestCase {
         XCTAssertTrue(LensMotion.isReleased(at: LensMotion.releaseDuration + 0.001))
         XCTAssertFalse(LensMotion.isReleased(at: 0.02))
     }
+
+    // Pressing the track away from the knob: the knob glides to the press (measured on macOS's own slider: about 0.2 s, an ease-out).
+    func testAPressOnTheTrackGlidesTheKnobThereInAboutAQuarterOfASecond() {
+        XCTAssertEqual(LensMotion.clickGlideProgress(at: 0), 0, accuracy: 1e-9)
+        XCTAssertEqual(LensMotion.clickGlideProgress(at: 0.083), 0.42, accuracy: 0.12)   // measured 0.39
+        XCTAssertEqual(LensMotion.clickGlideProgress(at: 0.133), 0.69, accuracy: 0.1)    // measured 0.69
+        XCTAssertGreaterThan(LensMotion.clickGlideProgress(at: 0.2), 0.88)
+        XCTAssertEqual(LensMotion.clickGlideProgress(at: LensMotion.clickGlideSettle), 1, accuracy: 1e-9)
+        var last = 0.0
+        for ms in stride(from: 0, through: 500, by: 5) { let p = LensMotion.clickGlideProgress(at: Double(ms) / 1000); XCTAssertGreaterThanOrEqual(p, last); last = p }
+    }
 }

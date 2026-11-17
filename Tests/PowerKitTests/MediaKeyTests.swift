@@ -63,3 +63,35 @@ final class SoundMenuVolumeKeyTests: XCTestCase {
         XCTAssertEqual(outputs.setMutes.last, true)
     }
 }
+
+/// The speaker icons at the two ends of the slider step the volume by ten points, as macOS's do (measured: 33 -> 23 and 43, 3 -> 0 and 13).
+final class SoundMenuIconStepTests: XCTestCase {
+    private func rig(volume: Double) throws -> (SoundMenuController, SoundMenuControllerTests.FakeOutputs, () -> Void) {
+        let (defaults, suite) = try TestDefaults.make(owner: "IconStep", test: name)
+        let settings = Settings(defaults: defaults); settings.soundMenuEnabled = true
+        let outputs = SoundMenuControllerTests.FakeOutputs(); outputs.volume = volume
+        let c = SoundMenuController(settings: settings, outputs: outputs, driver: SoundMenuControllerTests.FakeDriver(), batteries: { [] },
+                                    accessibility: { true }, statusBar: SoundMenuControllerTests.FakeBar(), presenter: SoundMenuControllerTests.FakePresenter(),
+                                    native: SoundMenuControllerTests.FakeNative(), pollInterval: 0, followUpDelay: 0)
+        c.start()
+        return (c, outputs, { c.stop(); TestDefaults.destroy(defaults, suite) })
+    }
+
+    func testTheSpeakerIconsStepByTenPoints() throws {
+        let (c, outputs, done) = try rig(volume: 0.33); defer { done() }
+        c.stepVolumeFromIcon(up: true)
+        XCTAssertEqual(outputs.setVolumes.last ?? 0, 0.43, accuracy: 1e-9)
+        outputs.volume = 0.33
+        c.stepVolumeFromIcon(up: false)
+        XCTAssertEqual(outputs.setVolumes.last ?? 0, 0.23, accuracy: 1e-9)
+    }
+
+    func testTheStepsStopAtTheEnds() throws {
+        let (c, outputs, done) = try rig(volume: 0.03); defer { done() }
+        c.stepVolumeFromIcon(up: false)
+        XCTAssertEqual(outputs.setVolumes.last ?? 1, 0, accuracy: 1e-9)
+        outputs.volume = 0.95
+        c.stepVolumeFromIcon(up: true)
+        XCTAssertEqual(outputs.setVolumes.last ?? 0, 1, accuracy: 1e-9)
+    }
+}

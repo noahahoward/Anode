@@ -309,6 +309,12 @@ final class SoundMenuController {
     }
 
     /// A volume key pressed while the menu is open: the level moves a sixteenth, as macOS's own keys would move it, or the mute switches.
+    /// The speaker icons at the two ends of the slider: ten points a press, as macOS's (the volume keys move by a sixteenth).
+    func stepVolumeFromIcon(up: Bool) {
+        let level = outputs.muted ? 0 : outputs.volume
+        setVolume(min(1, max(0, level + (up ? 0.1 : -0.1))))
+    }
+
     func volumeKey(_ key: MediaKeyEvent.Key) {
         guard presenter.isOpen else { return }
         if let level = VolumeKeys.next(volume: outputs.muted ? 0 : outputs.volume, key: key) { setVolume(level) } else { toggleMute() }

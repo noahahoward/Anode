@@ -467,12 +467,10 @@ final class SoundMenuContentView: NSView {
             mainSlider = slider
             addSubview(slider)
             let down = IconButton(symbol: "speaker.fill", size: 14.5, tint: 0.49, added: true, frame: NSRect(x: 12, y: f.minY - 1, width: 18, height: 18)) { [weak self] in
-                guard let self, let m = self.model else { return }
-                self.controller?.setVolume(max(0, m.volume - 1 / 16))
+                self?.controller?.stepVolumeFromIcon(up: false)
             }
             let up = IconButton(symbol: "speaker.wave.3.fill", size: 14, tint: 0.49, added: true, frame: NSRect(x: f.maxX + 4, y: f.minY - 1, width: 28, height: 18)) { [weak self] in
-                guard let self, let m = self.model else { return }
-                self.controller?.setVolume(min(1, m.volume + 1 / 16))
+                self?.controller?.stepVolumeFromIcon(up: true)
             }
             addSubview(down); addSubview(up)
         case .divider:
@@ -846,17 +844,18 @@ final class MenuSlider: NSView {
     private var glideTimer: Timer?
 
     /// Moves the knob to `target` the way macOS's things move (the curve of `SoundMenuMotion`), instead of jumping.
-    func glide(to target: Double) {
+    func glide(to target: Double, progress: @escaping (Double) -> Double = SoundMenuMotion.progress(at:),
+               settle: Double = SoundMenuMotion.settleSeconds) {
         glideTimer?.invalidate()
         glideFrom = shown
         glideStart = CACurrentMediaTime()
         let timer = Timer(timeInterval: 1.0 / 120, repeats: true) { [weak self] t in
             guard let self else { t.invalidate(); return }
             let elapsed = CACurrentMediaTime() - self.glideStart
-            if elapsed >= SoundMenuMotion.settleSeconds {
+            if elapsed >= settle {
                 t.invalidate(); self.glideTimer = nil; self.shown = self.value
             } else {
-                self.shown = self.glideFrom + (self.value - self.glideFrom) * SoundMenuMotion.progress(at: elapsed)
+                self.shown = self.glideFrom + (self.value - self.glideFrom) * progress(elapsed)
             }
             self.needsDisplay = true
         }
@@ -974,9 +973,11 @@ final class MenuSlider: NSView {
         dragging = true
         Self.dragBegan()
         showLens()
-        move(to: event)
+        // Pressed on the track, away from the knob: the knob slides to the press (macOS's does), instead of jumping.
+        let far = abs(target(for: event) - shown) * Double(bounds.width - thumb) > Double(thumb) / 2
+        move(to: event, gliding: far)
     }
-    override func mouseDragged(with event: NSEvent) { move(to: event) }
+    override func mouseDragged(with event: NSEvent) { move(to: event, gliding: glideTimer != nil) }
     override func mouseUp(with event: NSEvent) { endDrag() }
     private func endDrag() {
         guard dragging else { return }
@@ -989,14 +990,23 @@ final class MenuSlider: NSView {
         super.viewWillMove(toSuperview: newSuperview)
     }
 
-    private func move(to event: NSEvent) {
+    private func target(for event: NSEvent) -> Double {
         let x = convert(event.locationInWindow, from: nil).x
-        value = min(1, max(0, Double((x - thumb / 2) / (bounds.width - thumb))))
+        return min(1, max(0, Double((x - thumb / 2) / (bounds.width - thumb))))
+    }
+
+    private func move(to event: NSEvent, gliding: Bool = false) {
+        let target = target(for: event)
+        if gliding {
+            glide(to: target, progress: LensMotion.clickGlideProgress(at:), settle: LensMotion.clickGlideSettle)
+        } else {
+            value = target
+        }
         // The knob first: drawn now and sent to the screen now. Changing the volume is a call into the audio system, and a drawing
         // that waited for the end of this event (after it) showed the knob a step behind the pointer.
         displayIfNeeded()
         CATransaction.flush()
-        onChange?(value)
+        onChange?(target)
     }
 }
 

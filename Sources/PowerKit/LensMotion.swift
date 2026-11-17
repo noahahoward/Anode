@@ -29,4 +29,14 @@ public enum LensMotion {
     }
 
     public static func isReleased(at t: TimeInterval) -> Bool { t >= releaseDuration }
+
+    /// The knob going to where the track was pressed: a critically damped spring, over by `clickGlideSettle`.
+    public static let clickGlideOmega = 20.0
+    public static let clickGlideSettle: TimeInterval = 0.4
+    public static func clickGlideProgress(at t: TimeInterval) -> Double {
+        guard t > 0 else { return 0 }
+        guard t < clickGlideSettle else { return 1 }
+        let u = clickGlideOmega * t
+        return 1 - (1 + u) * exp(-u)
+    }
 }
