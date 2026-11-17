@@ -56,8 +56,9 @@ final class IconCover {
     /// round it (it reaches about 11 pt past the icon: measured at 120 fps, a narrower cover left the pill's edges showing for
     /// three frames), the height of the bar. Whole points, because a cover placed between pixels shows an edge.
     static func rect(for frame: CGRect) -> CGRect {
-        CGRect(x: CGFloat(Int(frame.minX) - 13), y: CGFloat(Int(frame.minY)),
-               width: CGFloat(Int(frame.width) + 26), height: CGFloat(Int(max(frame.height, 33))))
+        // The bottom of the menu bar: the screen's height less what is left for windows (0 where the bar is hidden: no limit then).
+        let barBottom = NSScreen.screens.first.map { $0.frame.maxY - $0.visibleFrame.maxY }.flatMap { $0 > 0 ? $0 : nil }
+        return IconCoverGeometry.rect(for: frame, barBottom: barBottom)
     }
 
     /// Takes the idle picture, unless one of the same place is under `maxAge` seconds old. Needs Screen Recording; without
@@ -191,7 +192,7 @@ final class SystemPanelDriver: SystemPanelDriving {
         guard let found = locate(job.kind) else { finishJob(.failed(.noMenuExtra)); return }
         item = found.item; itemFrame = found.frame; route = found.route
         ccElement = Self.application(Self.controlCenter)
-        await cover.prepare(frame: itemFrame)
+        await cover.prepare(frame: itemFrame, leavingOut: ownMenuWindowIDs())
         guard mine == token else { return }   // cancelled while the picture was being taken
         // The first frames of macOS's panel are hidden too. When Anode's own menu is already up the cover goes under it, and the
         // picture is taken without that menu: the menu's glass blurs what is under it, so a bright panel there (even for two frames,
