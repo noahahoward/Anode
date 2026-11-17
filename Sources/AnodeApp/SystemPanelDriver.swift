@@ -53,13 +53,8 @@ final class IconCover {
     private var takenAt = Date.distantPast
 
     /// The rect, in whole points (top-left global), the picture covers: the icon with room each side for the pill macOS lights
-    /// round it (it reaches about 11 pt past the icon: measured at 120 fps, a narrower cover left the pill's edges showing for
-    /// three frames), the height of the bar. Whole points, because a cover placed between pixels shows an edge.
-    static func rect(for frame: CGRect) -> CGRect {
-        // The bottom of the menu bar: the screen's height less what is left for windows (0 where the bar is hidden: no limit then).
-        let barBottom = NSScreen.screens.first.map { $0.frame.maxY - $0.visibleFrame.maxY }.flatMap { $0 > 0 ? $0 : nil }
-        return IconCoverGeometry.rect(for: frame, barBottom: barBottom)
-    }
+    /// round it (measured at 120 fps: a narrower cover left the pill's edges showing for three frames), as tall as the pill.
+    static func rect(for frame: CGRect) -> CGRect { IconCoverGeometry.rect(for: frame) }
 
     /// Takes the idle picture, unless one of the same place is under `maxAge` seconds old. Needs Screen Recording; without
     /// it there is no picture and no cover, and the icon shows its lit look for a moment.
@@ -192,7 +187,7 @@ final class SystemPanelDriver: SystemPanelDriving {
         guard let found = locate(job.kind) else { finishJob(.failed(.noMenuExtra)); return }
         item = found.item; itemFrame = found.frame; route = found.route
         ccElement = Self.application(Self.controlCenter)
-        await cover.prepare(frame: itemFrame, leavingOut: ownMenuWindowIDs())
+        await cover.prepare(frame: itemFrame, maxAge: 0.5)
         guard mine == token else { return }   // cancelled while the picture was being taken
         // The first frames of macOS's panel are hidden too. When Anode's own menu is already up the cover goes under it, and the
         // picture is taken without that menu: the menu's glass blurs what is under it, so a bright panel there (even for two frames,

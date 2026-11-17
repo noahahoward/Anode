@@ -1,27 +1,22 @@
 import XCTest
 @testable import PowerKit
 
-/// The stand-in picture over macOS's Sound icon must stay inside the menu bar: below it is whatever window is there at the time.
+/// The stand-in picture over macOS's Sound icon covers the pill macOS lights round it, and not the rest of the bar.
 final class IconCoverGeometryTests: XCTestCase {
     private let icon = CGRect(x: 1540, y: 8.5, width: 22, height: 22)
 
-    func testTheCoverIsWiderThanTheIconAndAtLeast33PointsTall() {
-        let r = IconCoverGeometry.rect(for: icon, barBottom: nil)
-        XCTAssertEqual(r, CGRect(x: 1527, y: 8, width: 48, height: 33))
-    }
-
-    func testTheCoverNeverReachesBelowTheBar() {
-        let r = IconCoverGeometry.rect(for: icon, barBottom: 39)
-        XCTAssertEqual(r.maxY, 39)
-        XCTAssertEqual(r.minY, 8)
+    func testTheCoverIsWiderThanTheIconByTheLitPillsReach() {
+        let r = IconCoverGeometry.rect(for: icon)
         XCTAssertEqual(r.minX, 1527); XCTAssertEqual(r.width, 48)
     }
 
-    func testABarTallerThanTheCoverLeavesItAlone() {
-        XCTAssertEqual(IconCoverGeometry.rect(for: icon, barBottom: 60).height, 33)
+    func testTheCoverReachesOnePointPastTheLitPillRowsAndNoFurther() {
+        // The lit pill was measured at rows 8 to 31 for this icon.
+        let r = IconCoverGeometry.rect(for: icon)
+        XCTAssertEqual(r.minY, 7); XCTAssertEqual(r.maxY, 33)
     }
 
-    func testABarBottomAboveTheIconMakesNoNegativeHeight() {
-        XCTAssertGreaterThanOrEqual(IconCoverGeometry.rect(for: icon, barBottom: 5).height, 1)
+    func testTheCoverStaysWellAboveTheBarsLowerEdge() {
+        XCTAssertLessThan(IconCoverGeometry.rect(for: icon).maxY, 36, "the lower edge of the 39 pt bar darkens with what is under it")
     }
 }
