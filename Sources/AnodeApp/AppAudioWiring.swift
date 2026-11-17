@@ -54,13 +54,7 @@ final class AppAudioCoordinator {
     /// The real thing: Core Audio taps, listing the apps the person has open.
     static func live(settings: Settings = .shared, attach: @escaping (AppAudioRouter?) -> Void) -> AppAudioCoordinator {
         AppAudioCoordinator(settings: settings, makeRouter: {
-            // An open app that is a bare executable has no bundle id: its path stands in for one.
-            let appID: (NSRunningApplication) -> String? = { app in
-                app.bundleIdentifier ?? app.executableURL.map { LooseApp.id(forExecutable: $0.path) }
-            }
-            let running = { () -> Set<String> in
-                Set(NSWorkspace.shared.runningApplications.filter { $0.activationPolicy == .regular }.compactMap(appID))
-            }
+            let open = RunningAppsCache.live()
             return AppAudioRouter(settings: settings, store: AppAudioStore(), backend: CoreAudioAppBackend(),
                                   bundleID: { Bundle(path: $0)?.bundleIdentifier },
                                   name: { path in
@@ -70,16 +64,10 @@ final class AppAudioCoordinator {
                                           ?? URL(fileURLWithPath: path).deletingPathExtension().lastPathComponent
                                   },
                                   // Anode itself is not an app whose volume the person sets here.
-                                  isListable: { $0 != Bundle.main.bundleIdentifier && running().contains($0) },
-                                  displayName: { id in NSWorkspace.shared.runningApplications.first { appID($0) == id }?.localizedName },
-                                  openApps: {
-                                      NSWorkspace.shared.runningApplications.filter { $0.activationPolicy == .regular }
-                                          .compactMap { app in appID(app).flatMap { id in app.localizedName.map { (id, $0) } } }
-                                  },
-                                  looseApps: {
-                                      Set(NSWorkspace.shared.runningApplications.filter { $0.activationPolicy == .regular && $0.bundleIdentifier == nil }
-                                          .compactMap { $0.executableURL?.path })
-                                  })
+                                  isListable: { id in id != Bundle.main.bundleIdentifier && open.apps.contains { $0.id == id } },
+                                  displayName: { id in open.apps.first { $0.id == id }?.name },
+                                  openApps: { open.apps.map { ($0.id, $0.name) } },
+                                  looseApps: { Set(open.apps.compactMap(\.executablePath)) })
         }, attach: attach)
     }
 }
