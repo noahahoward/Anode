@@ -344,6 +344,7 @@ final class BatteryMenuContentView: NSView {
             guard model.energyApps.indices.contains(i) else { return }
             let app = model.energyApps[i]
             let v = EnergyAppRow(frame: f.insetBy(dx: -BatteryRow.lead, dy: 0), name: app.name, stats: app.stats)
+            v.onPick = { [weak self] in self?.controller?.pressApp(app.name) }
             appRows[app.name] = v
             addSubview(v)
         case .gear:
@@ -652,7 +653,7 @@ final class EnergyAppRow: HoverRow {
         super.init(frame: frame)
         cornerRadius = 10
         dimsWhenPressed = true
-        highlightable = true   // lit under the pointer; what pressing it does is not measured yet
+        highlightable = true   // lit under the pointer; pressed, it opens Anode's ledger on the app
         spokenTitle = appName
         let icon = NSImageView(frame: NSRect(x: BatteryRow.lead - 1, y: 2, width: 18, height: 18))
         icon.image = Self.icon(forAppNamed: appName)
@@ -713,12 +714,13 @@ enum BatteryMenuRuntime {
 
     /// The menu over the real Mac. `driver` is shared with the Sound menu: both use macOS's Control Center one job at a time.
     static func live(settings: Settings = .shared, driver: SystemPanelDriving = SystemPanelDriver(),
-                     openBetaFeatures: @escaping () -> Void = {}, ultra: UltraModeControlling? = nil, charge: ChargeLimiting? = nil,
+                     openBetaFeatures: @escaping () -> Void = {}, openLedger: @escaping (String) -> Void = { _ in },
+                     ultra: UltraModeControlling? = nil, charge: ChargeLimiting? = nil,
                      energyApps: @escaping () -> [SignificantEnergy.Candidate] = { [] }, onOpenChanged: @escaping (Bool) -> Void = { _ in }) -> BatteryMenuController {
         let panel = BatteryMenuPanel()
         let controller = BatteryMenuController(settings: settings, driver: driver, accessibility: { AXIsProcessTrusted() },
                                                presenter: panel, native: NativeMenuExtraIcon.battery(),
-                                               openBetaFeatures: openBetaFeatures, ultra: ultra, charge: charge,
+                                               openBetaFeatures: openBetaFeatures, openLedger: openLedger, ultra: ultra, charge: charge,
                                                hardDrainPrompt: HardDrainAlert(), energyApps: energyApps,
                                                onOpenChanged: onOpenChanged, statsInterval: 2)
         panel.controller = controller

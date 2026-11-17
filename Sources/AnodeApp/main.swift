@@ -461,6 +461,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         soundMenu = SoundMenuRuntime.live(driver: panelDriver, openBetaFeatures: { [weak self] in self?.betaFeaturesWindow.show() })
         // Anode's Battery menu: nothing of it exists until its setting is on (Beta Features).
         batteryMenu = BatteryMenuRuntime.live(driver: panelDriver, openBetaFeatures: { [weak self] in self?.betaFeaturesWindow.show() },
+                                              openLedger: { [weak self] name in self?.showLedger(onApp: name) },
                                               ultra: ultraLowPower.map { LiveUltraMode($0.controller) },
                                               charge: chargeControl.map { LiveChargeLimit($0) },
                                               energyApps: { [weak self] in self?.energyCandidates() ?? [] },
@@ -2729,6 +2730,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         // The window was most likely hidden, where the sampler deliberately runs
         // at `hiddenInterval`. Without this the lens just opened can sit on
         // values several seconds stale — which reads as a click that did nothing.
+        restartTimer(hidden: false)
+    }
+
+    /// An app pressed in the Battery menu's energy list: the window opens on the Processes tab with that app selected, so its
+    /// inspector is up beside the row.
+    func showLedger(onApp name: String) {
+        // Through the rail, as `openFromWidget` does: it owns `selected` and the highlight, and its select() calls back into ours.
+        main.sidebar.select(.processes)
+        // By name, never by row: the table is sorted and filtered and the row moves under the selection (`reselectByName`).
+        selectedAppName = name
+        reselectByName()
+        updateDetail()
+        if let idx = rows.firstIndex(where: { $0.name == name }) { main.table.scrollRowToVisible(idx) }
+        // After the selection, so the window never appears on the outgoing one first.
+        main.show()
+        // The window was most likely hidden, where the sampler deliberately runs at `hiddenInterval`; the app's figures would
+        // otherwise be several seconds old when it opens.
         restartTimer(hidden: false)
     }
 

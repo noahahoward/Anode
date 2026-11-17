@@ -48,4 +48,28 @@ final class MenusFollowAccessibilityTests: XCTestCase {
         view.apply(battery)
         XCTAssertFalse(view.isSolid)
     }
+
+    // ── Pressing an app of the energy list ──────────────────────────────────
+
+    private func descendants(of view: NSView) -> [NSView] { view.subviews + view.subviews.flatMap { descendants(of: $0) } }
+
+    /// The row's press (a click, or VoiceOver's) reaches the controller with the app's name.
+    func testPressingAnEnergyAppRowOpensTheLedgerOnThatApp() throws {
+        let (defaults, suite) = try TestDefaults.make(owner: "BatteryMenuView", test: name)
+        defer { TestDefaults.destroy(defaults, suite) }
+        var opened: [String] = []
+        let controller = BatteryMenuController(settings: Settings(defaults: defaults), driver: SoundMenuControllerTests.FakeDriver(),
+                                               accessibility: { true }, presenter: BatteryMenuControllerTests.FakePresenter(),
+                                               native: SoundMenuControllerTests.FakeNative(), pollInterval: 0, followUpDelay: 0,
+                                               openLedger: { opened.append($0) })
+        let view = BatteryMenuContentView()
+        view.controller = controller
+        var model = battery
+        model.energyApps = [.init(name: "Safari", stats: nil), .init(name: "Mail", stats: nil)]
+        view.apply(model)
+        let rows = descendants(of: view).compactMap { $0 as? EnergyAppRow }
+        XCTAssertEqual(rows.count, 2)
+        XCTAssertTrue(rows[1].accessibilityPerformPress())
+        XCTAssertEqual(opened, ["Mail"])
+    }
 }

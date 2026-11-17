@@ -77,6 +77,8 @@ final class BatteryMenuController {
     private let followUpDelay: TimeInterval
     /// What the gear does: Anode's Beta Features window.
     private let openBetaFeatures: () -> Void
+    /// What an app under "Using Significant Energy" does when pressed: Anode's window, on that app in the ledger.
+    private let openLedger: (String) -> Void
     private let ultra: UltraModeControlling?
     private let charge: ChargeLimiting?
     private let hardDrainPrompt: HardDrainPrompting?
@@ -119,12 +121,14 @@ final class BatteryMenuController {
 
     init(settings: Settings, driver: SystemPanelDriving, accessibility: @escaping () -> Bool, presenter: BatteryMenuPresenting,
          native: NativeIconHosting, pollInterval: TimeInterval = 3, followUpDelay: TimeInterval = 1.5,
-         openBetaFeatures: @escaping () -> Void = {}, ultra: UltraModeControlling? = nil, charge: ChargeLimiting? = nil, hardDrainPrompt: HardDrainPrompting? = nil,
+         openBetaFeatures: @escaping () -> Void = {}, openLedger: @escaping (String) -> Void = { _ in },
+         ultra: UltraModeControlling? = nil, charge: ChargeLimiting? = nil, hardDrainPrompt: HardDrainPrompting? = nil,
          energyApps: @escaping () -> [SignificantEnergy.Candidate] = { [] }, onOpenChanged: @escaping (Bool) -> Void = { _ in },
          statsInterval: TimeInterval = 0, afterPressReadDelay: TimeInterval = BatteryMenuMotion.badgeSettleSeconds + 0.1) {
         self.settings = settings; self.driver = driver; self.accessibility = accessibility; self.presenter = presenter
         self.native = native; self.pollInterval = pollInterval; self.followUpDelay = followUpDelay
         self.openBetaFeatures = openBetaFeatures
+        self.openLedger = openLedger
         self.ultra = ultra
         self.charge = charge
         self.hardDrainPrompt = hardDrainPrompt
@@ -394,6 +398,12 @@ final class BatteryMenuController {
     func pressGear() {
         closeMenu()
         openBetaFeatures()
+    }
+
+    /// An app of the energy list pressed: the menu goes first (Anode's window would open behind it), then the ledger shows the app.
+    func pressApp(_ name: String) {
+        closeMenu()
+        openLedger(name)
     }
 
     func pressSettings() {

@@ -84,6 +84,7 @@ final class BatteryMenuControllerTests: XCTestCase {
     }
 
     private func rig(enabled: Bool = true, trusted: Bool = true, lastReading: Bool = false, openBeta: @escaping () -> Void = {},
+                     openLedger: @escaping (String) -> Void = { _ in },
                      ultra: FakeUltra? = nil, ultraEnabled: Bool = false,
                      charge: FakeCharge? = nil, chargeEnabled: Bool = false, prompt: FakePrompt? = nil,
                      apps: @escaping () -> [SignificantEnergy.Candidate] = { [] }, opened: @escaping (Bool) -> Void = { _ in }, afterPressRead: TimeInterval = 0) throws -> Rig {
@@ -95,7 +96,7 @@ final class BatteryMenuControllerTests: XCTestCase {
         if lastReading { settings.batteryMenuLastReading = try JSONEncoder().encode(AppleBatteryPanel.parse(tree(selected: "low"))) }
         let driver = SoundMenuControllerTests.FakeDriver(), presenter = FakePresenter(), native = SoundMenuControllerTests.FakeNative()
         let c = BatteryMenuController(settings: settings, driver: driver, accessibility: { trusted }, presenter: presenter, native: native,
-                                      pollInterval: 0, followUpDelay: 0, openBetaFeatures: openBeta, ultra: ultra, charge: charge, hardDrainPrompt: prompt,
+                                      pollInterval: 0, followUpDelay: 0, openBetaFeatures: openBeta, openLedger: openLedger, ultra: ultra, charge: charge, hardDrainPrompt: prompt,
                                       energyApps: apps, onOpenChanged: opened, afterPressReadDelay: afterPressRead)
         c.start()
         return Rig(controller: c, driver: driver, presenter: presenter, native: native, settings: settings, ultra: ultra,
@@ -288,6 +289,35 @@ final class BatteryMenuControllerTests: XCTestCase {
         r.controller.pressGear()
         XCTAssertEqual(opened, 1)
         XCTAssertFalse(r.presenter.isOpen)
+    }
+
+    // ── An app under "Using Significant Energy" ─────────────────────────────
+
+    func testThePressOfAnAppClosesTheMenuAndOpensTheLedgerOnIt() throws {
+        var opened: [String] = []
+        let r = try rig(lastReading: true, openLedger: { opened.append($0) }); defer { r.cleanup() }
+        r.native.onClick?(r.native.frame!)
+        r.controller.pressApp("Synology Drive")
+        XCTAssertEqual(opened, ["Synology Drive"])
+        XCTAssertFalse(r.presenter.isOpen)
+    }
+
+    // The ledger's window comes up where the menu was; it goes first, so the window never opens behind it.
+    func testTheMenuIsGoneBeforeTheLedgerOpens() throws {
+        var menuWasOpenWhenLedgerOpened: Bool?
+        var presenter: FakePresenter?
+        let r = try rig(lastReading: true, openLedger: { _ in menuWasOpenWhenLedgerOpened = presenter?.isOpen }); defer { r.cleanup() }
+        presenter = r.presenter
+        r.native.onClick?(r.native.frame!)
+        r.controller.pressApp("Safari")
+        XCTAssertEqual(menuWasOpenWhenLedgerOpened, false)
+    }
+
+    func testThePressOfAnAppIsOneFadeLikeAnyClickAway_NotTheInstantSwap() throws {
+        let r = try rig(lastReading: true); defer { r.cleanup() }
+        r.native.onClick?(r.native.frame!)
+        r.controller.pressApp("Safari")
+        XCTAssertEqual(r.presenter.fades.last, true, "the menu fades as macOS's does when something in it is chosen")
     }
 
     // ── Ultra Low Power as a fourth Energy Mode ─────────────────────────────
