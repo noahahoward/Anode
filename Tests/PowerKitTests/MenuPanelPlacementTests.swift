@@ -94,15 +94,37 @@ final class MenuPanelPlacementTests: XCTestCase {
 
     // ── The picture over the place macOS's panel appears ────────────────────
 
+    private let screen = CGRect(x: 0, y: 0, width: 1800, height: 1169)
+
     func testTheRegionCoversEachSideItMightOpenTo() {
-        let right = MenuPanelPlacement.region(for: battery, sides: [.endsAtIcon], width: 309)
-        let left = MenuPanelPlacement.region(for: battery, sides: [.startsAtIcon], width: 309)
-        let both = MenuPanelPlacement.region(for: battery, sides: [.endsAtIcon, .startsAtIcon], width: 309)
+        let right = MenuPanelPlacement.region(for: battery, sides: [.endsAtIcon], width: 309, screen: screen)
+        let left = MenuPanelPlacement.region(for: battery, sides: [.startsAtIcon], width: 309, screen: screen)
+        let both = MenuPanelPlacement.region(for: battery, sides: [.endsAtIcon, .startsAtIcon], width: 309, screen: screen)
         XCTAssertEqual(right.minX, CGFloat(Int(1143 + 10.5 - 309) - 28))
         XCTAssertEqual(right.width, 309 + 56)
         XCTAssertEqual(left.minX, CGFloat(Int(1117 - 10.5) - 28))
         XCTAssertEqual(left.width, 309 + 56)
         XCTAssertEqual(both, right.union(left))
         XCTAssertEqual(both.minY, 40); XCTAssertEqual(both.height, 600)
+    }
+
+    // A picture of part of the screen cannot reach past it: a region that did was shown stretched, as a window going off the screen.
+    func testTheRegionNeverReachesPastTheScreen() {
+        let nearTheRight = CGRect(x: 1583, y: 8.5, width: 26, height: 22)
+        let r = MenuPanelPlacement.region(for: nearTheRight, sides: [.startsAtIcon], width: 309, screen: screen)
+        XCTAssertLessThanOrEqual(r.maxX, screen.maxX)
+        XCTAssertGreaterThanOrEqual(r.minX, screen.minX)
+        let farLeft = MenuPanelPlacement.region(for: CGRect(x: 4, y: 8.5, width: 26, height: 22), sides: [.endsAtIcon], width: 309, screen: screen)
+        XCTAssertGreaterThanOrEqual(farLeft.minX, screen.minX)
+    }
+
+    func testASideThatWouldLeaveThePanelOffTheScreenIsNotOne() {
+        XCTAssertFalse(MenuPanelPlacement.fits(.startsAtIcon, icon: CGRect(x: 1583, y: 8.5, width: 26, height: 22), width: 309, screen: screen),
+                       "309 pt from 1572 ends past 1800")
+        XCTAssertTrue(MenuPanelPlacement.fits(.endsAtIcon, icon: CGRect(x: 1583, y: 8.5, width: 26, height: 22), width: 309, screen: screen))
+        XCTAssertTrue(MenuPanelPlacement.fits(.startsAtIcon, icon: battery, width: 309, screen: screen))
+        XCTAssertTrue(MenuPanelPlacement.fits(.endsAtIcon, icon: battery, width: 309, screen: screen))
+        XCTAssertFalse(MenuPanelPlacement.fits(.endsAtIcon, icon: CGRect(x: 100, y: 8.5, width: 26, height: 22), width: 309, screen: screen),
+                       "it would start before the screen")
     }
 }

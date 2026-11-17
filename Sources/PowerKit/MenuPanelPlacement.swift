@@ -40,12 +40,20 @@ public enum MenuPanelPlacement {
         icon.maxX + windowOverhang - windowWidth >= leftLimit ? .endsAtIcon : .startsAtIcon
     }
 
+    /// Whether a panel `width` wide, hanging from `icon` on `side`, stays on the screen. macOS does not open one that would not.
+    public static func fits(_ side: PanelSide, icon: CGRect, width: CGFloat, screen: CGRect) -> Bool {
+        let x = minX(icon: icon, side: side, width: width)
+        return x >= screen.minX && x + width <= screen.maxX
+    }
+
     /// The part of the screen macOS's panel is in for its first frames (the panel, 2 pt under the bar, and room round it for its
-    /// shadow), on each of `sides`; the picture that hides those frames lies over it.
-    public static func region(for icon: CGRect, sides: [PanelSide], width: CGFloat) -> CGRect {
-        sides.map { side in
+    /// shadow), on each of `sides`; the picture that hides those frames lies over it. Never past the screen: a picture of a place
+    /// that is not on the screen is shorter than the window it is shown in, and comes out stretched.
+    public static func region(for icon: CGRect, sides: [PanelSide], width: CGFloat, screen: CGRect) -> CGRect {
+        let wanted = sides.map { side in
             CGRect(x: CGFloat(Int(minX(icon: icon, side: side, width: width)) - 28), y: 40, width: width + 56, height: 600)
         }.reduce(CGRect.null) { $0.union($1) }
+        return wanted.intersection(screen)
     }
 }
 

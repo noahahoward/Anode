@@ -14,6 +14,7 @@ final class PanelSides {
     private let lock = NSLock()
     private var memory = PanelSideMemory()
     private let leftLimit: () -> CGFloat
+    private let screen: () -> CGRect
 
     /// The left end of the room a panel's window can have on the menu bar's screen: the right edge of the notch, else the screen's.
     static func screenLeftLimit() -> CGFloat {
@@ -21,17 +22,30 @@ final class PanelSides {
         return screen.auxiliaryTopRightArea?.minX ?? screen.frame.minX
     }
 
-    init(leftLimit: @escaping () -> CGFloat = PanelSides.screenLeftLimit) { self.leftLimit = leftLimit }
+    /// The menu bar's screen, top-left global points.
+    static func menuBarScreen() -> CGRect {
+        NSScreen.screens.first.map { CGRect(origin: .zero, size: $0.frame.size) } ?? CGRect(x: 0, y: 0, width: 1440, height: 900)
+    }
+
+    init(leftLimit: @escaping () -> CGFloat = PanelSides.screenLeftLimit, screen: @escaping () -> CGRect = PanelSides.menuBarScreen) {
+        self.leftLimit = leftLimit; self.screen = screen
+    }
+
+    /// The screen macOS's panels are on.
+    var screenFrame: CGRect { screen() }
 
     func side(for icon: CGRect) -> PanelSide {
         lock.lock(); defer { lock.unlock() }
         return memory.side(for: icon, leftLimit: leftLimit())
     }
 
-    /// The sides macOS's panel might open on for the icon: the one it is known to, else both.
+    /// The sides macOS's panel might open on for the icon: the one it is known to, else each that would stay on the screen.
     func sidesToCover(for icon: CGRect) -> [PanelSide] {
         lock.lock(); defer { lock.unlock() }
-        return memory.knows(icon) ? [memory.side(for: icon, leftLimit: leftLimit())] : [.endsAtIcon, .startsAtIcon]
+        let guess = memory.side(for: icon, leftLimit: leftLimit())
+        if memory.knows(icon) { return [guess] }
+        let possible = [PanelSide.endsAtIcon, .startsAtIcon].filter { MenuPanelPlacement.fits($0, icon: icon, width: 309, screen: screen()) }
+        return possible.isEmpty ? [guess] : possible
     }
 
     /// macOS opened a panel for `icon` in a window that began at `windowMinX`.

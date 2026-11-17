@@ -66,7 +66,10 @@ final class IconCover {
     /// Takes the idle picture, unless one of the same place is under `maxAge` seconds old. Needs Screen Recording; without
     /// it there is no picture and no cover, and the icon shows its lit look for a moment.
     func prepare(frame: CGRect, maxAge: TimeInterval = 5, exact: Bool = false, leavingOut: Set<CGWindowID> = []) async {
-        let cover = exact ? frame : Self.rect(for: frame)
+        var cover = exact ? frame : Self.rect(for: frame)
+        // Never a picture of a place off the screen: it would come out shorter than its window and be stretched over it.
+        if let main = NSScreen.screens.first { cover = cover.intersection(CGRect(origin: .zero, size: main.frame.size)) }
+        guard !cover.isNull, !cover.isEmpty else { image = nil; return }
         if imageFrame == cover, Date().timeIntervalSince(takenAt) < maxAge, image != nil { return }
         guard ScreenRecordingAccess.isGranted, #available(macOS 14.0, *) else { image = nil; return }
         // The picture must be what is on the screen. ScreenCaptureKit's picture of the bar is lighter than the bar toward its lower
@@ -460,7 +463,7 @@ final class SystemPanelDriver: SystemPanelDriving {
     /// bar) its left edge 10.5 pt before it (`MenuPanelPlacement`), 2 pt under the menu bar, with room around it for the shadow. The
     /// panel is at most 560 pt tall. Where the side is not known yet the region takes in both.
     static func panelRegion(for item: CGRect) -> CGRect {
-        MenuPanelPlacement.region(for: item, sides: PanelSides.shared.sidesToCover(for: item), width: 309)
+        MenuPanelPlacement.region(for: item, sides: PanelSides.shared.sidesToCover(for: item), width: 309, screen: PanelSides.shared.screenFrame)
     }
 
     /// The window of Anode's own Sound menu, when it is on the screen.

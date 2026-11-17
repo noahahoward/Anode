@@ -7,22 +7,35 @@ final class PanelSidesTests: XCTestCase {
 
     private func icon(_ x: CGFloat) -> CGRect { CGRect(x: x, y: 8.5, width: 26, height: 22) }
 
+    private let screen = CGRect(x: 0, y: 0, width: 1800, height: 1169)
+
     func testTheGuessIsUsedUntilMacOSHasOpenedAPanelForTheIcon() {
-        let sides = PanelSides(leftLimit: { 1010 })
+        let sides = PanelSides(leftLimit: { 1010 }, screen: { self.screen })
         XCTAssertEqual(sides.side(for: icon(1117)), .startsAtIcon)
         XCTAssertEqual(sides.side(for: icon(1553)), .endsAtIcon)
         XCTAssertEqual(sides.sidesToCover(for: icon(1117)), [.endsAtIcon, .startsAtIcon], "not known: the picture covers both places")
     }
 
+    func testAnIconNearTheRightEdgeIsNotCoveredOnASideThatCouldNotFit() {
+        let sides = PanelSides(leftLimit: { 1010 }, screen: { self.screen })
+        XCTAssertEqual(sides.sidesToCover(for: icon(1583)), [.endsAtIcon], "its panel cannot open to the right: it would leave the screen")
+        XCTAssertEqual(sides.sidesToCover(for: icon(1117)), [.endsAtIcon, .startsAtIcon])
+    }
+
+    func testAnIconWhereNeitherSideFitsStillGetsASide() {
+        let sides = PanelSides(leftLimit: { 0 }, screen: { CGRect(x: 0, y: 0, width: 200, height: 400) })
+        XCTAssertEqual(sides.sidesToCover(for: icon(100)).count, 1)
+    }
+
     func testAWindowThatStartedBeforeTheIconSaysItOpensToTheRight() {
-        let sides = PanelSides(leftLimit: { 0 })   // no notch: the guess is the left
+        let sides = PanelSides(leftLimit: { 0 }, screen: { self.screen })   // no notch: the guess is the left
         sides.learn(windowMinX: 1075, icon: icon(1117))
         XCTAssertEqual(sides.side(for: icon(1117)), .startsAtIcon)
         XCTAssertEqual(sides.sidesToCover(for: icon(1117)), [.startsAtIcon], "known: only that place")
     }
 
     func testASideOtherThanTheGuessIsAnnounced_ButWhatTheGuessSaidIsNot() {
-        let sides = PanelSides(leftLimit: { 1010 })
+        let sides = PanelSides(leftLimit: { 1010 }, screen: { self.screen })
         var told = 0
         let token = NotificationCenter.default.addObserver(forName: PanelSides.changed, object: nil, queue: .main) { _ in told += 1 }
         defer { NotificationCenter.default.removeObserver(token) }
