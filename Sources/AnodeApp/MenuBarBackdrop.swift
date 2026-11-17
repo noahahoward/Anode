@@ -486,6 +486,8 @@ final class MenuBarBackdrop {
     private let appearanceButton: () -> NSStatusBarButton?
     private var appearanceWatch: NSKeyValueObservation?
     private var darkBar = true
+    /// Whether the bar is being judged dark (white text) now.
+    var isDarkBar: Bool { darkBar }
     private var pendingRetint: DispatchWorkItem?
     private var poll: Timer?
     /// How often `poll` fires, so a change of pace is told from a change of something else.
@@ -606,6 +608,12 @@ final class MenuBarBackdrop {
         appearanceWatch = nil
         guard let button = appearanceButton() else {
             setDarkBar(Self.isDark(NSApp.effectiveAppearance))
+            // Followed, not read once: the system turns dark at sunset, or a person flips it, and a strip left light under white
+            // menu bar text hides the whole bar.
+            appearanceWatch = NSApp.observe(\.effectiveAppearance, options: [.new]) { [weak self] app, _ in
+                let dark = Self.isDark(app.effectiveAppearance)
+                DispatchQueue.main.async { self?.setDarkBar(dark) }
+            }
             return
         }
         appearanceWatch = button.observe(\.effectiveAppearance, options: [.initial, .new]) { [weak self] b, _ in

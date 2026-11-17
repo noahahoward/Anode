@@ -929,6 +929,28 @@ final class MenuBarBackdropAppearanceTests: XCTestCase {
     }
 }
 
+final class MenuBarBackdropFollowsSystemTests: XCTestCase {
+    /// With no widget button to watch, the bar is judged dark or light from the system's appearance: and when that changes (a person
+    /// flips it, or it turns dark at sunset) the strip follows. It used to be read once, so a bar started in light mode stayed a
+    /// light, white strip after the system went dark, under white menu bar text that could not be seen.
+    func testWithNoWidgetTheStripFollowsTheSystemAppearanceWhenItChanges() throws {
+        _ = appKitForTests
+        let saved = NSApp.appearance
+        defer { NSApp.appearance = saved }
+        NSApp.appearance = NSAppearance(named: .aqua)
+        let backdrop = MenuBarBackdrop(settings: try throwawaySettings(owner: "MenuBarBackdropFollows"), appearanceButton: { nil })
+        XCTAssertFalse(backdrop.isDarkBar, "started in light")
+        NSApp.appearance = NSAppearance(named: .darkAqua)
+        let turned = expectation(description: "the strip turns dark")
+        Timer.scheduledTimer(withTimeInterval: 0.02, repeats: true) { t in if backdrop.isDarkBar { t.invalidate(); turned.fulfill() } }
+        wait(for: [turned], timeout: 2)
+        NSApp.appearance = NSAppearance(named: .aqua)
+        let back = expectation(description: "and light again")
+        Timer.scheduledTimer(withTimeInterval: 0.02, repeats: true) { t in if !backdrop.isDarkBar { t.invalidate(); back.fulfill() } }
+        wait(for: [back], timeout: 2)
+    }
+}
+
 final class WidgetPlacementFullScreenTests: XCTestCase {
     func testNoLookMeansAnythingWhileFullScreenIsUp() {
         XCTAssertFalse(MenuBarWidgetController.lookIsMeaningful(fullScreen: true, secondsSinceSpaceChange: 600))
