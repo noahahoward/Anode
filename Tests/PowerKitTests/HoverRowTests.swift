@@ -94,3 +94,36 @@ final class HoverRowTests: XCTestCase {
         XCTAssertEqual(label.alphaValue, 1)
     }
 }
+
+/// The Energy Mode badge turns on the measured spring, in real time.
+@MainActor
+final class ModeRowBadgeTurnTests: XCTestCase {
+    private func progress(of row: ModeRow, badge: BadgeView) -> Double {
+        // The red of the badge over a mid grey backdrop: the idle badge is white at a low alpha, the chosen one is blue.
+        var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+        (badge.fill.usingColorSpace(.sRGB) ?? badge.fill).getRed(&r, green: &g, blue: &b, alpha: &a)
+        // As it looks over a mid grey backdrop (the badge is translucent).
+        return Double(r * a + 0.5 * (1 - a))
+    }
+
+    func testTheBadgeIsAboutAQuarterOfTheWayAfterSixtySixMillisecondsAndAllTheWayAfterAHalfSecond() throws {
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 300, height: 100), styleMask: [.borderless], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        defer { window.close() }
+        let row = ModeRow(frame: NSRect(x: 0, y: 0, width: 294, height: 32), mode: .init(id: "low", title: "Low Power", isSelected: false))
+        window.contentView?.addSubview(row)
+        window.orderFront(nil)
+        let badge = try XCTUnwrap(row.subviews.compactMap { $0 as? BadgeView }.first)
+        let before = progress(of: row, badge: badge)
+        row.setSelected(true, animated: true)
+        let start = CACurrentMediaTime()
+        RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.066))
+        let elapsed = CACurrentMediaTime() - start
+        let mid = progress(of: row, badge: badge)
+        RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.6))
+        let after = progress(of: row, badge: badge)
+        let fraction = (mid - before) / (after - before)
+        let expected = BatteryMenuMotion.badge(at: elapsed)
+        XCTAssertEqual(fraction, expected, accuracy: 0.12, "after \(elapsed) s")
+    }
+}

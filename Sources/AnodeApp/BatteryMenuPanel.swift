@@ -500,9 +500,13 @@ final class ModeRow: HoverRow {
             appearance.performAsCurrentDrawingAppearance { (c.usingColorSpace(.sRGB) ?? c).getRed(&r, green: &g, blue: &bl, alpha: &al) }
             return [r, g, bl, al]
         }
+        // Mixed premultiplied, so that over the glass the picture is a straight cross-fade between the two looks (mixing the alpha
+        // and the colour apart makes the new colour arrive far sooner than the clock says).
         let ca = components(a), cb = components(b)
-        func mix(_ i: Int) -> CGFloat { ca[i] + (cb[i] - ca[i]) * t }
-        return NSColor(srgbRed: mix(0), green: mix(1), blue: mix(2), alpha: mix(3))
+        func mix(_ i: Int) -> CGFloat { ca[i] * ca[3] + (cb[i] * cb[3] - ca[i] * ca[3]) * t }
+        let alpha = ca[3] + (cb[3] - ca[3]) * t
+        guard alpha > 0.0001 else { return NSColor(srgbRed: 0, green: 0, blue: 0, alpha: 0) }
+        return NSColor(srgbRed: mix(0) / alpha, green: mix(1) / alpha, blue: mix(2) / alpha, alpha: alpha)
     }
 }
 
