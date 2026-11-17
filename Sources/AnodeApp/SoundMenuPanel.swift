@@ -713,8 +713,9 @@ final class DeviceRow: HoverRow {
         addSubview(name)
         if let b = device.battery {
             var x: CGFloat = 41
-            // One reading for both buds when they agree, or when macOS lists them as one: the pair of buds drawn together.
-            let pair = b.left != nil && (b.right == nil || b.left == b.right)
+            // The pair of buds is drawn together, with one reading, only when macOS lists one reading for them. When both buds report,
+            // macOS draws each with its own, also when they say the same (measured: 100% and 100%).
+            let pair = b.left != nil && b.right == nil
             // (symbol, point size, drawn width, where the percentage starts): macOS's glyphs are larger than a text-sized one.
             let readings: [(String, CGFloat, CGFloat, CGFloat, CGFloat, Int?)] = device.kind == .airpodsMax
                 ? [("airpods.max", 12, 17, 1, 19, b.left ?? b.right)]   // one battery, and no case
