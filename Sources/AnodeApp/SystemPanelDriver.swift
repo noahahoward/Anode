@@ -62,6 +62,15 @@ final class IconCover {
         let cover = exact ? frame : Self.rect(for: frame)
         if imageFrame == cover, Date().timeIntervalSince(takenAt) < maxAge, image != nil { return }
         guard ScreenRecordingAccess.isGranted, #available(macOS 14.0, *) else { image = nil; return }
+        // The picture must be what is on the screen. ScreenCaptureKit's picture of the bar is lighter than the bar toward its lower
+        // edge (measured: 145 against 122 at the bottom rows, whatever the configuration), which showed as a patch round the icon.
+        // The display's own image of the rect is exact (measured: identical rows). Only when nothing is left out of it.
+        if leavingOut.isEmpty, let shot = Self.displayImage(of: cover) {
+            image = NSImage(cgImage: shot, size: cover.size)
+            imageFrame = cover
+            takenAt = Date()
+            return
+        }
         guard let (band, origin, scale) = await BarPictures.captureBand(of: cover, height: cover.maxY + 2, leavingOut: leavingOut) else {
             image = nil; return
         }
@@ -71,6 +80,16 @@ final class IconCover {
         image = NSImage(cgImage: cut, size: cover.size)
         imageFrame = cover
         takenAt = Date()
+    }
+
+    /// What the first display shows in `rect` (top-left global points), as the display itself composes it. The symbol is looked up
+    /// by name: the call is not offered to new code any more, but is still there, and nil here sends the caller to ScreenCaptureKit.
+    private static func displayImage(of rect: CGRect) -> CGImage? {
+        typealias Capture = @convention(c) (UInt32, CGRect) -> Unmanaged<CGImage>?
+        guard let handle = dlopen(nil, RTLD_NOW), let symbol = dlsym(handle, "CGDisplayCreateImageForRect") else { return nil }
+        let capture = unsafeBitCast(symbol, to: Capture.self)
+        guard let shot = capture(CGMainDisplayID(), rect)?.takeRetainedValue(), shot.width > 0, shot.height > 0 else { return nil }
+        return shot
     }
 
     func show() {
