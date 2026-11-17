@@ -11,16 +11,19 @@ import PowerKit
 
 final class PanelFade {
 
-    static let shared = PanelFade()
+    /// Fades that are running: each is its own, so one panel fading out while the other opens (the Sound and Battery menus close each
+    /// other) is the two things at once, as on macOS.
+    private static var running: [PanelFade] = []
 
     private var window: NSWindow?
     private var timer: Timer?
     private var started: CFTimeInterval = 0
-    private var seconds: TimeInterval = BatteryMenuMotion.fadeOutSeconds
+    private let seconds: TimeInterval
+
+    private init(window: NSWindow, seconds: TimeInterval) { self.window = window; self.seconds = seconds }
 
     /// Takes the picture of `panel` (it must still be on the screen), puts the panel away, and fades the picture out.
-    func close(_ panel: NSWindow, seconds: TimeInterval = BatteryMenuMotion.fadeOutSeconds, then orderOut: () -> Void) {
-        cancel()
+    static func close(_ panel: NSWindow, seconds: TimeInterval = BatteryMenuMotion.fadeOutSeconds, then orderOut: () -> Void) {
         guard panel.isVisible, ScreenRecordingAccess.isGranted, let screen = NSScreen.screens.first else { orderOut(); return }
         // The panel and its shadow: more below it than above, and nothing above the top of the screen.
         let f = panel.frame
@@ -47,27 +50,27 @@ final class PanelFade {
         w.orderFrontRegardless()
         w.displayIfNeeded()
         CATransaction.flush()
-        window = w
         // Under the picture nothing changes on the screen: the panel goes now.
         orderOut()
-        self.seconds = seconds
-        started = CACurrentMediaTime()
-        let t = Timer(timeInterval: 1.0 / 120, repeats: true) { [weak self] _ in self?.step() }
+        let fade = PanelFade(window: w, seconds: seconds)
+        running.append(fade)
+        fade.started = CACurrentMediaTime()
+        let t = Timer(timeInterval: 1.0 / 120, repeats: true) { [weak fade] _ in fade?.step() }
         RunLoop.main.add(t, forMode: .common)
-        timer = t
+        fade.timer = t
     }
 
     private func step() {
         let elapsed = CACurrentMediaTime() - started
-        if elapsed >= seconds { cancel(); return }
+        if elapsed >= seconds { finish(); return }
         // Linear in time over `seconds`, whatever it is.
         window?.alphaValue = CGFloat(1 - elapsed / seconds)
     }
 
-    /// The fade is over, or the menu is opening again: the picture goes at once.
-    func cancel() {
+    private func finish() {
         timer?.invalidate(); timer = nil
         window?.orderOut(nil)
         window = nil
+        Self.running.removeAll { $0 === self }
     }
 }

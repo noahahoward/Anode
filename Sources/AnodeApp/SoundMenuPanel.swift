@@ -191,14 +191,15 @@ final class SoundMenuPanel: NSPanel, SoundMenuPresenting {
         content.finishGlide()
     }
 
-    /// Closes at once. (macOS's fades out in about 70 ms, but its glass cannot be faded from outside: it drops out as soon as the
-    /// window or anything above it is translucent, so a fade here would show the text alone for a moment, which is worse.)
+    /// Closes with the fade macOS's has.
     override func close() {
         for m in monitors { NSEvent.removeMonitor(m) }
         monitors.removeAll()
         volumeKeys.stop()
         stopGlide()
-        orderOut(nil)
+        // macOS's fades out in a straight line over about 240 ms (measured, as the Battery panel's is). The glass cannot be faded, so
+        // the fade is of a picture of the panel (`PanelFade`).
+        PanelFade.close(self) { orderOut(nil) }
     }
 
     /// A click anywhere else closes the menu; a click on the icon is the icon's own toggle.
