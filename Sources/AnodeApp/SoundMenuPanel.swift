@@ -49,9 +49,12 @@ enum SoundText {
     static var isDark: Bool { NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua }
     /// White at `alpha` on dark glass, black at `alpha` on light glass: the low-contrast fills and tints are drawn this way so they
     /// stay visible in either appearance. (Measured against macOS's own panel in the dark appearance only.)
-    static func ink(_ alpha: CGFloat) -> NSColor {
+    static func ink(_ alpha: CGFloat) -> NSColor { ink(dark: alpha, light: alpha) }
+    /// The same, with its own strength on light glass, where black at the dark strength is much too heavy (measured light panel:
+    /// the slider track is 6 % black, the idle output badge 7 %).
+    static func ink(dark: CGFloat, light: CGFloat) -> NSColor {
         NSColor(name: nil) { appearance in
-            appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? NSColor.white.withAlphaComponent(alpha) : NSColor.black.withAlphaComponent(alpha)
+            appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? NSColor.white.withAlphaComponent(dark) : NSColor.black.withAlphaComponent(light)
         }
     }
 
@@ -461,7 +464,7 @@ final class SoundMenuContentView: NSView {
         case .title:
             addSubview(label("Sound", f, size: 13, weight: .bold, color: .labelColor))
         case .volumeSlider:
-            let slider = MenuSlider(frame: f)
+            let slider = MenuSlider(frame: f.insetBy(dx: 0, dy: -4))
             slider.value = model.muted ? 0 : model.volume
             slider.onChange = { [weak self] v in self?.controller?.setVolume(v) }
             mainSlider = slider
@@ -576,6 +579,22 @@ class HoverRow: NSView {
     }
 }
 
+/// The round badge behind an output's glyph. Its colour is resolved in the appearance the menu is in (a dynamic colour turned into a
+/// layer colour where the view is built comes out in the wrong one).
+final class BadgeView: NSView {
+    private let fill: NSColor
+    init(frame: NSRect, fill: NSColor) {
+        self.fill = fill
+        super.init(frame: frame)
+        wantsLayer = true
+        layer?.cornerRadius = frame.height / 2
+    }
+    required init?(coder: NSCoder) { fatalError("not used") }
+    override var wantsUpdateLayer: Bool { true }
+    override func updateLayer() { effectiveAppearance.performAsCurrentDrawingAppearance { layer?.backgroundColor = fill.cgColor } }
+    override func viewDidChangeEffectiveAppearance() { needsDisplay = true }
+}
+
 final class DeviceRow: HoverRow {
     var onToggle: (() -> Void)?
     private let expanded: Bool
@@ -583,10 +602,8 @@ final class DeviceRow: HoverRow {
     init(frame: NSRect, device: SoundMenuModel.Device, expanded: Bool, expandable: Bool) {
         self.expanded = expanded
         super.init(frame: frame)
-        let circle = NSView(frame: NSRect(x: 9, y: 3, width: 26, height: 26))
-        circle.wantsLayer = true
-        circle.layer?.cornerRadius = 13
-        circle.layer?.backgroundColor = (device.isSelected ? NSColor.systemBlue : SoundText.ink(0.16)).cgColor
+        let circle = BadgeView(frame: NSRect(x: 9, y: 3, width: 26, height: 26),
+                               fill: device.isSelected ? NSColor.systemBlue : SoundText.ink(dark: 0.16, light: 0.07))
         let glyph = NSImageView(frame: NSRect(x: 4, y: 4, width: 18, height: 18))
         glyph.image = symbol(SoundGlyphs.output(device.kind), size: 13, weight: .medium)
         glyph.contentTintColor = device.isSelected ? .white : SoundText.ink(0.55)
@@ -717,7 +734,7 @@ final class AppVolumeRowView: NSView {
         bundleID = app.bundleID
         icon = NSImageView(frame: NSRect(x: 9, y: 3, width: 26, height: 26))
         muteButton = MuteButton(frame: NSRect(x: 41, y: 7, width: 20, height: 18), symbol: app.muteSymbol, tint: 0.5)
-        slider = MenuSlider(frame: NSRect(x: 65, y: 8, width: frame.width - 65 - 46, height: 16))
+        slider = MenuSlider(frame: NSRect(x: 65, y: 4, width: frame.width - 65 - 46, height: 24))   // room round the knob for its shadow
         percent = NSTextField(labelWithString: "")
         super.init(frame: frame)
         icon.image = Self.icon(for: app.bundleID)
@@ -950,7 +967,7 @@ final class MenuSlider: NSView {
     override func draw(_ dirtyRect: NSRect) {
         let trackH: CGFloat = compact ? 4 : 6, knobH = knobHeight
         let track = NSRect(x: 0, y: bounds.midY - trackH / 2, width: bounds.width, height: trackH)
-        SoundText.ink(dimmed ? 0.08 : 0.13).setFill()
+        SoundText.ink(dark: dimmed ? 0.08 : 0.13, light: dimmed ? 0.04 : 0.057).setFill()
         NSBezierPath(roundedRect: track, xRadius: trackH / 2, yRadius: trackH / 2).fill()
         let x = CGFloat(shown) * (bounds.width - thumb)
         var filled = track; filled.size.width = x + thumb / 2
@@ -961,9 +978,23 @@ final class MenuSlider: NSView {
         // While the knob is held it is the glass lens (a view over this one) and the solid knob is not drawn.
         if lens != nil { return }
         // macOS's knob is a rounded shape (20 wide and 16 tall for the main slider), not a circle.
-        NSColor(white: dimmed ? 0.62 : 0.89, alpha: 1).setFill()
-        NSBezierPath(roundedRect: NSRect(x: x, y: bounds.midY - knobH / 2, width: thumb, height: knobH),
-                     xRadius: knobH * 0.47, yRadius: knobH * 0.47).fill()
+        // On light glass the knob is white with a soft shadow (measured: 255 against 233 for the grey it was); on dark, 0.89 without.
+        let knob = NSBezierPath(roundedRect: NSRect(x: x, y: bounds.midY - knobH / 2, width: thumb, height: knobH),
+                                xRadius: knobH * 0.47, yRadius: knobH * 0.47)
+        if SoundText.isDark {
+            NSColor(white: dimmed ? 0.62 : 0.89, alpha: 1).setFill()
+            knob.fill()
+        } else {
+            NSGraphicsContext.saveGraphicsState()
+            let shadow = NSShadow()
+            shadow.shadowColor = NSColor(white: 0, alpha: compact ? 0.22 : 0.28)
+            shadow.shadowBlurRadius = compact ? 2 : 3
+            shadow.shadowOffset = NSSize(width: 0, height: 1)   // this view is flipped: positive is down
+            shadow.set()
+            NSColor(white: dimmed ? 0.85 : 1, alpha: 1).setFill()
+            knob.fill()
+            NSGraphicsContext.restoreGraphicsState()
+        }
     }
 
     /// How many sliders are being dragged. While any is, the menu is not drawn again (that would replace the slider under the
