@@ -253,6 +253,8 @@ final class BatteryMenuContentView: NSView {
         case .app(let i):
             guard model.energyApps.indices.contains(i) else { return }
             addSubview(EnergyAppRow(frame: f.insetBy(dx: -BatteryRow.lead, dy: 0), name: model.energyApps[i].name))
+        case .gear, .chargeLimit:
+            break   // drawn in the parts that follow
         case .footer:
             let b = FooterRow(frame: f.insetBy(dx: -BatteryRow.lead, dy: 0), title: Self.settingsTitle)
             b.onPick = { [weak self] in self?.controller?.pressSettings() }

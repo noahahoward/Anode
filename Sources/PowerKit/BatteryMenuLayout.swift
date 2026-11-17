@@ -11,6 +11,9 @@ public enum BatteryMenuLayout {
         case mode(Int)
         case app(Int)
         case footer
+        /// Anode's: the gear at the right end of the title line, and the charge limit slider row.
+        case gear
+        case chargeLimit
     }
 
     public struct LaidOutRow: Equatable {
@@ -25,6 +28,7 @@ public enum BatteryMenuLayout {
 
     public static let energyHeading = "Energy Mode"
     public static let significantEnergyHeading = "Using Significant Energy"
+    public static let chargeLimitHeading = "Charge Limit"
 
     public static func frames(for model: BatteryMenuModel) -> Result {
         typealias M = BatteryMenuMetrics
@@ -33,6 +37,10 @@ public enum BatteryMenuLayout {
             rows.append(LaidOutRow(kind: kind, frame: CGRect(x: M.inset, y: y, width: M.contentWidth, height: h)))
         }
         add(.title, y: M.titleY, h: M.titleHeight)
+        if model.showsGear {
+            rows.append(LaidOutRow(kind: .gear, frame: CGRect(x: M.inset + M.contentWidth - M.gearSize, y: M.titleY + (M.titleHeight - M.gearSize) / 2,
+                                                              width: M.gearSize, height: M.gearSize)))
+        }
         add(.powerSource, y: M.powerSourceY, h: M.powerSourceHeight)
         add(.divider, y: M.firstDividerY, h: 1)
         add(.heading(energyHeading), y: M.energyHeadingY, h: M.headingHeight)
@@ -41,6 +49,15 @@ public enum BatteryMenuLayout {
         // The gaps below a line are measured from the line's top.
         y += M.dividerGapBelowRows
         add(.divider, y: y, h: 1)
+        if model.chargeLimit != nil {
+            // Anode's section, laid out like the apps' one: a heading under the line, then the row, then a line.
+            let headingY = y + M.headingGapBelowDivider
+            add(.heading(chargeLimitHeading), y: headingY, h: M.headingHeight)
+            let rowY = headingY + M.headingHeight + M.appsFirstRowGapBelowHeading
+            add(.chargeLimit, y: rowY, h: M.chargeRowHeight)
+            y = rowY + M.chargeRowHeight + M.dividerGapBelowRows
+            add(.divider, y: y, h: 1)
+        }
         if !model.energyApps.isEmpty {
             // The section: heading, one row for each app, and a line under them.
             let headingY = y + M.headingGapBelowDivider

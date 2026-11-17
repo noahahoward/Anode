@@ -66,4 +66,47 @@ final class BatteryMenuLayoutTests: XCTestCase {
         XCTAssertEqual(model(selected: "low").selectedModeID, "low")
         XCTAssertNil(BatteryMenuModel(powerSource: "Battery", modes: [], energyApps: []).selectedModeID)
     }
+
+    // ── Anode's additions (not on macOS's panel: positions are Anode's own call, written in the plan) ────────
+
+    func testAModelWithNoAdditionsHasNoGearAndNoChargeRow() {
+        let r = BatteryMenuLayout.frames(for: model())
+        XCTAssertNil(y(r, .gear)); XCTAssertNil(y(r, .chargeLimit)); XCTAssertNil(y(r, .heading("Charge Limit")))
+        XCTAssertEqual(r.height, 277.5, accuracy: 0.01)
+    }
+
+    func testTheGearSitsAtTheRightEndOfTheTitleLine() {
+        var m = model(); m.showsGear = true
+        let g = BatteryMenuLayout.frames(for: m).rows.first { $0.kind == .gear }!.frame
+        XCTAssertEqual(g.maxX, 14 + 280)
+        XCTAssertEqual(g.midY, 12 + 16 / 2, accuracy: 0.01, "level with the title")
+        XCTAssertEqual(BatteryMenuLayout.frames(for: m).height, 277.5, accuracy: 0.01, "it adds no height")
+    }
+
+    func testAFourthModeIsAnotherRowOfTheSameKind() {
+        var m = model(); m.modes.append(.init(id: "ultra", title: "Ultra Low Power", isSelected: false))
+        let r = BatteryMenuLayout.frames(for: m)
+        XCTAssertEqual(y(r, .mode(3)), 183)
+        XCTAssertEqual(r.rows.first { $0.kind == .mode(3) }?.frame.height, 32)
+        XCTAssertEqual(r.height, 277.5 + 32, accuracy: 0.01)
+    }
+
+    func testTheChargeLimitSectionIsAHeadingAndARowUnderTheModesWithLinesAround() {
+        var m = model(); m.chargeLimit = .init(limit: 80, range: 20...100, softDrainRunning: false, hardDrainRunning: false)
+        let r = BatteryMenuLayout.frames(for: m)
+        XCTAssertEqual(r.rows.filter { $0.kind == .divider }.map(\.frame.minY), [59.5, 188.5, 253.5, 308.5])
+        XCTAssertEqual(y(r, .heading("Charge Limit")), 197.5)
+        XCTAssertEqual(y(r, .chargeLimit), 216)
+        XCTAssertEqual(r.rows.first { $0.kind == .chargeLimit }?.frame.height, 32)
+        XCTAssertEqual(y(r, .heading("Using Significant Energy")), 262.5)
+        XCTAssertEqual(r.height, 277.5 + 65, accuracy: 0.01)
+    }
+
+    func testTheChargeLimitSectionStandsWithNoApps() {
+        var m = model(apps: []); m.chargeLimit = .init(limit: 80, range: 20...100, softDrainRunning: false, hardDrainRunning: false)
+        let r = BatteryMenuLayout.frames(for: m)
+        XCTAssertEqual(r.rows.filter { $0.kind == .divider }.map(\.frame.minY), [59.5, 188.5, 253.5])
+        XCTAssertEqual(r.height, 222.5 + 65, accuracy: 0.01)
+    }
 }
+

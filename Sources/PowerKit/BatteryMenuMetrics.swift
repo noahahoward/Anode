@@ -32,4 +32,11 @@ public enum BatteryMenuMetrics {
     public static let footerRowHeight: CGFloat = 22
     public static let footerGapBelowDivider: CGFloat = 5.5
     public static let bottomPadding: CGFloat = 6.5
+
+    // Anode's additions (not on macOS's panel; the call is the plan's).
+    /// The gear: a square at the right end of the title line, level with the title.
+    public static let gearSize: CGFloat = 16
+    /// The charge limit row: a slider with the minus button and the percentage, as tall as a mode row.
+    public static let chargeRowHeight: CGFloat = 32
 }
+
