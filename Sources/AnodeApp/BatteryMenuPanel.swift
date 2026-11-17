@@ -281,6 +281,7 @@ final class ModeRow: HoverRow {
     init(frame: NSRect, mode: BatteryMenuModel.EnergyMode) {
         super.init(frame: frame)
         cornerRadius = 10
+        dimsWhenPressed = true
         let badge = BadgeView(frame: NSRect(x: BatteryRow.lead, y: 3, width: 26, height: 26),
                               fill: mode.isSelected ? NSColor.systemBlue : SoundText.ink(dark: 0.16, light: 0.07))
         // Centred in the badge at its own size (macOS's glyph is about 19 by 9 pt).
@@ -307,6 +308,7 @@ final class FooterRow: HoverRow {
     init(frame: NSRect, title: String) {
         super.init(frame: frame)
         cornerRadius = 10
+        dimsWhenPressed = true
         let l = NSTextField(labelWithString: title)
         l.font = .systemFont(ofSize: 13)
         l.textColor = SoundText.primary
@@ -323,6 +325,7 @@ final class EnergyAppRow: HoverRow {
     init(frame: NSRect, name: String) {
         super.init(frame: frame)
         cornerRadius = 10
+        dimsWhenPressed = true
         highlightable = true   // lit under the pointer; what pressing it does is not measured yet
         let icon = NSImageView(frame: NSRect(x: BatteryRow.lead - 1, y: 2, width: 18, height: 18))
         icon.image = Self.icon(forAppNamed: name)

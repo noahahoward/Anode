@@ -47,4 +47,45 @@ final class HoverRowTests: XCTestCase {
         row.mouseUp(with: event(.leftMouseUp, at: NSPoint(x: 50, y: 16), in: w))
         XCTAssertEqual(picked, 1)
     }
+
+    // ── The Battery menu's rows (measured on macOS's own panel) ─────────────
+
+    private func modeRow(in w: NSWindow) -> ModeRow {
+        let row = ModeRow(frame: NSRect(x: 0, y: 0, width: 294, height: 32), mode: .init(id: "low", title: "Low Power", isSelected: false))
+        w.contentView?.addSubview(row)
+        return row
+    }
+
+    func testABatteryRowDimsItsContentWhileItIsPressed_AndAfterLetGo() {
+        let (w, _) = rig(); defer { w.close() }
+        let row = modeRow(in: w)
+        row.mouseEntered(with: event(.mouseMoved, at: NSPoint(x: 50, y: 16), in: w))
+        XCTAssertTrue(row.subviews.allSatisfy { $0.alphaValue == 1 })
+        row.mouseDown(with: event(.leftMouseDown, at: NSPoint(x: 50, y: 16), in: w))
+        XCTAssertTrue(row.subviews.allSatisfy { abs($0.alphaValue - 0.8) < 0.001 }, "the text and badge go to 0.8 (measured: 236 to 200 on the text)")
+        row.mouseUp(with: event(.leftMouseUp, at: NSPoint(x: 50, y: 16), in: w))
+        XCTAssertTrue(row.subviews.allSatisfy { $0.alphaValue == 1 })
+    }
+
+    func testABatteryRowLosesItsLightWhenTheButtonIsDraggedOffButStaysDimUntilLetGo() {
+        let (w, _) = rig(); defer { w.close() }
+        let row = modeRow(in: w)
+        var picked = 0; row.onPick = { picked += 1 }
+        row.mouseEntered(with: event(.mouseMoved, at: NSPoint(x: 50, y: 16), in: w))
+        row.mouseDown(with: event(.leftMouseDown, at: NSPoint(x: 50, y: 16), in: w))
+        row.mouseExited(with: event(.leftMouseDragged, at: NSPoint(x: 50, y: 80), in: w))
+        XCTAssertFalse(row.isLit, "macOS's Battery rows are not lit while the pointer is off them, pressed or not")
+        XCTAssertTrue(row.subviews.allSatisfy { abs($0.alphaValue - 0.8) < 0.001 })
+        row.mouseUp(with: event(.leftMouseUp, at: NSPoint(x: 50, y: 80), in: w))
+        XCTAssertEqual(picked, 0)
+        XCTAssertTrue(row.subviews.allSatisfy { $0.alphaValue == 1 })
+    }
+
+    func testASoundRowIsNotDimmedByAPress() {
+        let (w, row) = rig(); defer { w.close() }
+        let label = NSView(frame: NSRect(x: 0, y: 0, width: 10, height: 10)); row.addSubview(label)
+        row.mouseEntered(with: event(.mouseMoved, at: NSPoint(x: 50, y: 16), in: w))
+        row.mouseDown(with: event(.leftMouseDown, at: NSPoint(x: 50, y: 16), in: w))
+        XCTAssertEqual(label.alphaValue, 1)
+    }
 }

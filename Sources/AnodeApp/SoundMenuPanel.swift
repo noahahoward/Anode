@@ -554,7 +554,11 @@ class HoverRow: NSView {
     private var hovering = false { didSet { needsDisplay = true } }
     /// Whether the row is lit. (A press that began on the row keeps it lit while the pointer is off it, as macOS's does.)
     var isLit: Bool { hovering }
-    private var pressed = false
+    private var pressed = false { didSet { if dimsWhenPressed { subviews.forEach { $0.alphaValue = pressed ? Self.pressedAlpha : 1 } } } }
+    /// The Battery menu's rows: the content (text, badge, glyph) goes to 0.8 while the button is held (measured), and the light goes
+    /// as soon as the pointer is off the row, button down or not. The Sound menu's rows keep their light while a press is dragged off.
+    var dimsWhenPressed = false
+    static let pressedAlpha: CGFloat = 0.8
     var highlightable = true
     /// How much white the hovered row gets.
     var hoverAlpha: CGFloat = 0.09
@@ -570,7 +574,7 @@ class HoverRow: NSView {
     }
 
     override func mouseEntered(with event: NSEvent) { hovering = highlightable }
-    override func mouseExited(with event: NSEvent) { if !pressed { hovering = false } }
+    override func mouseExited(with event: NSEvent) { if !pressed || dimsWhenPressed { hovering = false } }
     override func mouseDown(with event: NSEvent) { pressed = highlightable }
     override func mouseUp(with event: NSEvent) {
         let inside = bounds.contains(convert(event.locationInWindow, from: nil))
