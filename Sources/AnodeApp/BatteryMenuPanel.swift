@@ -263,8 +263,8 @@ final class BatteryMenuContentView: NSView {
     static let settingsTitle = "Battery Settings…"
 
     /// The dimmer text (the power source, the headings): white at 0.40 over the glass in the dark appearance (measured: 131 on a
-    /// 55 backdrop, where the system's secondary label colour gave 161).
-    static let secondary = SoundText.ink(dark: 0.40, light: 0.5)
+    /// 55 backdrop, where the system's secondary label colour gave 161); black at 0.42 in the light one (143 on 246).
+    static let secondary = SoundText.ink(dark: 0.40, light: 0.42)
 
     private func label(_ text: String, _ frame: CGRect, size: CGFloat, weight: NSFont.Weight, color: NSColor, dy: CGFloat = 0) -> NSTextField {
         let l = NSTextField(labelWithString: text)
@@ -290,7 +290,7 @@ final class ModeRow: HoverRow {
         cornerRadius = 10
         dimsWhenPressed = true
         let badge = BadgeView(frame: NSRect(x: BatteryRow.lead, y: 3, width: 26, height: 26),
-                              fill: mode.isSelected ? NSColor.systemBlue : SoundText.ink(dark: 0.16, light: 0.07))
+                              fill: mode.isSelected ? NSColor.systemBlue : SoundText.ink(dark: 0.16, light: 0.08))
         // Centred in the badge at its own size (macOS's glyph is about 19 by 9 pt).
         let glyph = NSImageView(frame: badge.bounds.offsetBy(dx: 0, dy: -1))
         glyph.image = BatteryGlyphs.image(for: mode.id, pointSize: 13)
