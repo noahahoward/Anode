@@ -29,6 +29,29 @@ final class BatteryMenuControllerTests: XCTestCase {
         func set(on: Bool) { isOn = on; listeners.forEach { $0() } }
     }
 
+    final class FakeCharge: ChargeLimiting {
+        var limit = 80
+        var softDrainRunning = false
+        var hardDrainRunning = false
+        var canHardDrain = true
+        var calls: [String] = []
+        var listeners: [() -> Void] = []
+        let range = 20...100
+        func setLimit(_ v: Int) { calls.append("limit \(v)"); limit = v; listeners.forEach { $0() } }
+        func pressSoftDrain() { calls.append("soft"); softDrainRunning.toggle(); listeners.forEach { $0() } }
+        func pressHardDrain() { calls.append("hard"); hardDrainRunning.toggle(); listeners.forEach { $0() } }
+        func observe(_ changed: @escaping () -> Void) -> AnyObject { listeners.append(changed); return NSObject() }
+    }
+
+    final class FakePrompt: HardDrainPrompting {
+        var asked = 0, explained = 0
+        var answer: ((Bool) -> Void)?
+        var menuOpenWhenAsked: (() -> Bool)?
+        var sawMenuOpen: Bool?
+        func ask(_ done: @escaping (Bool) -> Void) { asked += 1; sawMenuOpen = menuOpenWhenAsked?(); answer = done }
+        func explainBlocked() { explained += 1 }
+    }
+
     struct Rig {
         let controller: BatteryMenuController
         let driver: SoundMenuControllerTests.FakeDriver, presenter: FakePresenter, native: SoundMenuControllerTests.FakeNative
@@ -56,15 +79,17 @@ final class BatteryMenuControllerTests: XCTestCase {
     }
 
     private func rig(enabled: Bool = true, trusted: Bool = true, lastReading: Bool = false, openBeta: @escaping () -> Void = {},
-                     ultra: FakeUltra? = nil, ultraEnabled: Bool = false) throws -> Rig {
+                     ultra: FakeUltra? = nil, ultraEnabled: Bool = false,
+                     charge: FakeCharge? = nil, chargeEnabled: Bool = false, prompt: FakePrompt? = nil) throws -> Rig {
         let (defaults, suite) = try TestDefaults.make(owner: "BatteryMenu", test: name)
         let settings = Settings(defaults: defaults)
         settings.batteryMenuEnabled = enabled
         settings.ultraLowPowerEnabled = ultraEnabled
+        settings.chargeControlEnabled = chargeEnabled
         if lastReading { settings.batteryMenuLastReading = try JSONEncoder().encode(AppleBatteryPanel.parse(tree(selected: "low"))) }
         let driver = SoundMenuControllerTests.FakeDriver(), presenter = FakePresenter(), native = SoundMenuControllerTests.FakeNative()
         let c = BatteryMenuController(settings: settings, driver: driver, accessibility: { trusted }, presenter: presenter, native: native,
-                                      pollInterval: 0, followUpDelay: 0, openBetaFeatures: openBeta, ultra: ultra)
+                                      pollInterval: 0, followUpDelay: 0, openBetaFeatures: openBeta, ultra: ultra, charge: charge, hardDrainPrompt: prompt)
         c.start()
         return Rig(controller: c, driver: driver, presenter: presenter, native: native, settings: settings, ultra: ultra,
                    cleanup: { c.stop(); TestDefaults.destroy(defaults, suite) })
@@ -329,5 +354,96 @@ final class BatteryMenuControllerTests: XCTestCase {
         XCTAssertEqual(r.driver.jobs.count, 1)
         ultra.set(on: false)
         XCTAssertEqual(r.driver.jobs.count, 2)
+    }
+
+    // ── The charge limit ────────────────────────────────────────────────────
+
+    func testTheChargeRowIsNotThereWhileChargeControlIsOff() throws {
+        let r = try rig(lastReading: true, charge: FakeCharge(), chargeEnabled: false); defer { r.cleanup() }
+        r.native.onClick?(r.native.frame!)
+        XCTAssertNil(r.presenter.shown.first?.chargeLimit)
+    }
+
+    func testTheChargeRowShowsTheLimitAndWhatIsDraining() throws {
+        let charge = FakeCharge(); charge.limit = 75; charge.softDrainRunning = true
+        let r = try rig(lastReading: true, charge: charge, chargeEnabled: true); defer { r.cleanup() }
+        r.native.onClick?(r.native.frame!)
+        let c = try XCTUnwrap(r.presenter.shown.first?.chargeLimit)
+        XCTAssertEqual(c.limit, 75); XCTAssertEqual(c.range, 20...100)
+        XCTAssertTrue(c.softDrainRunning); XCTAssertFalse(c.hardDrainRunning)
+    }
+
+    func testTheLimitIsWrittenOnlyWhenTheSliderIsLetGo() throws {
+        let charge = FakeCharge()
+        let r = try rig(lastReading: true, charge: charge, chargeEnabled: true); defer { r.cleanup() }
+        r.native.onClick?(r.native.frame!)
+        r.controller.commitChargeLimit(60)
+        XCTAssertEqual(charge.calls, ["limit 60"])
+        XCTAssertEqual(r.presenter.shown.last?.chargeLimit?.limit, 60)
+    }
+
+    func testTheLimitStaysInTheRange() throws {
+        let charge = FakeCharge()
+        let r = try rig(lastReading: true, charge: charge, chargeEnabled: true); defer { r.cleanup() }
+        r.native.onClick?(r.native.frame!)
+        r.controller.commitChargeLimit(5); r.controller.commitChargeLimit(250)
+        XCTAssertEqual(charge.calls, ["limit 20", "limit 100"])
+    }
+
+    func testAPressOfMinusStartsSoftDrain_AndAnotherStopsIt() throws {
+        let charge = FakeCharge()
+        let r = try rig(lastReading: true, charge: charge, chargeEnabled: true); defer { r.cleanup() }
+        r.native.onClick?(r.native.frame!)
+        r.controller.pressMinus()
+        XCTAssertEqual(charge.calls, ["soft"])
+        XCTAssertEqual(r.presenter.shown.last?.chargeLimit?.softDrainRunning, true)
+        r.controller.pressMinus()
+        XCTAssertEqual(charge.calls, ["soft", "soft"])
+    }
+
+    func testAPressOfMinusWhileHardDrainRunsStopsHardDrain() throws {
+        let charge = FakeCharge(); charge.hardDrainRunning = true
+        let r = try rig(lastReading: true, charge: charge, chargeEnabled: true); defer { r.cleanup() }
+        r.native.onClick?(r.native.frame!)
+        r.controller.pressMinus()
+        XCTAssertEqual(charge.calls, ["hard"])
+    }
+
+    func testHoldingMinusAsksAfterClosingTheMenu_AndYesRunsHardDrain() throws {
+        let charge = FakeCharge(); let prompt = FakePrompt()
+        let r = try rig(lastReading: true, charge: charge, chargeEnabled: true, prompt: prompt); defer { r.cleanup() }
+        prompt.menuOpenWhenAsked = { r.presenter.isOpen }
+        r.native.onClick?(r.native.frame!)
+        r.controller.holdMinus()
+        XCTAssertEqual(prompt.asked, 1)
+        XCTAssertEqual(prompt.sawMenuOpen, false, "the box would open behind the menu")
+        XCTAssertTrue(charge.calls.isEmpty, "nothing runs until Yes")
+        prompt.answer?(true)
+        XCTAssertEqual(charge.calls, ["hard"])
+    }
+
+    func testNoToTheBoxRunsNothing() throws {
+        let charge = FakeCharge(); let prompt = FakePrompt()
+        let r = try rig(lastReading: true, charge: charge, chargeEnabled: true, prompt: prompt); defer { r.cleanup() }
+        r.native.onClick?(r.native.frame!)
+        r.controller.holdMinus()
+        prompt.answer?(false)
+        XCTAssertTrue(charge.calls.isEmpty)
+    }
+
+    func testWhenHardDrainCannotRunTheBoxExplainsInsteadOfAsking() throws {
+        let charge = FakeCharge(); charge.canHardDrain = false; let prompt = FakePrompt()
+        let r = try rig(lastReading: true, charge: charge, chargeEnabled: true, prompt: prompt); defer { r.cleanup() }
+        r.native.onClick?(r.native.frame!)
+        r.controller.holdMinus()
+        XCTAssertEqual(prompt.asked, 0); XCTAssertEqual(prompt.explained, 1)
+    }
+
+    func testAChangeOfTheLimitElsewhereIsShownInTheOpenMenu() throws {
+        let charge = FakeCharge()
+        let r = try rig(lastReading: true, charge: charge, chargeEnabled: true); defer { r.cleanup() }
+        r.native.onClick?(r.native.frame!)
+        charge.limit = 90; charge.listeners.forEach { $0() }
+        XCTAssertEqual(r.presenter.shown.last?.chargeLimit?.limit, 90)
     }
 }

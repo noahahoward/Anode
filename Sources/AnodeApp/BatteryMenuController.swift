@@ -29,6 +29,29 @@ protocol UltraModeControlling: AnyObject {
     func observe(_ changed: @escaping () -> Void) -> AnyObject
 }
 
+/// Charge Control as the menu needs it: the limit, the two drains, and being told when any of it changes.
+protocol ChargeLimiting: AnyObject {
+    var limit: Int { get }
+    var range: ClosedRange<Int> { get }
+    func setLimit(_ value: Int)
+    var softDrainRunning: Bool { get }
+    var hardDrainRunning: Bool { get }
+    /// Hard Drain has something to do now (the battery is above the level it comes down to).
+    var canHardDrain: Bool { get }
+    func pressSoftDrain()
+    /// Starts Hard Drain, or stops it when it runs.
+    func pressHardDrain()
+    func observe(_ changed: @escaping () -> Void) -> AnyObject
+}
+
+/// The box a hold of the minus button brings up.
+protocol HardDrainPrompting: AnyObject {
+    /// "Would you like to Hard Drain?"; the answer is Yes (true) or No.
+    func ask(_ done: @escaping (Bool) -> Void)
+    /// Hard Drain cannot run just now: says why, in place of asking.
+    func explainBlocked()
+}
+
 final class BatteryMenuController {
 
     /// The id of Anode's fourth Energy Mode row.
@@ -45,6 +68,9 @@ final class BatteryMenuController {
     /// What the gear does: Anode's Beta Features window.
     private let openBetaFeatures: () -> Void
     private let ultra: UltraModeControlling?
+    private let charge: ChargeLimiting?
+    private let hardDrainPrompt: HardDrainPrompting?
+    private var chargeObserver: AnyObject?
     private var ultraObserver: AnyObject?
     /// A mode chosen while Ultra Low Power runs: it ends first, and this is pressed in macOS's panel once it has put things back.
     private var afterUltra: String?
@@ -68,11 +94,13 @@ final class BatteryMenuController {
 
     init(settings: Settings, driver: SystemPanelDriving, accessibility: @escaping () -> Bool, presenter: BatteryMenuPresenting,
          native: NativeIconHosting, pollInterval: TimeInterval = 3, followUpDelay: TimeInterval = 1.5,
-         openBetaFeatures: @escaping () -> Void = {}, ultra: UltraModeControlling? = nil) {
+         openBetaFeatures: @escaping () -> Void = {}, ultra: UltraModeControlling? = nil, charge: ChargeLimiting? = nil, hardDrainPrompt: HardDrainPrompting? = nil) {
         self.settings = settings; self.driver = driver; self.accessibility = accessibility; self.presenter = presenter
         self.native = native; self.pollInterval = pollInterval; self.followUpDelay = followUpDelay
         self.openBetaFeatures = openBetaFeatures
         self.ultra = ultra
+        self.charge = charge
+        self.hardDrainPrompt = hardDrainPrompt
     }
 
     var isMenuOpen: Bool { presenter.isOpen }
@@ -89,6 +117,10 @@ final class BatteryMenuController {
             if running { m.modes = m.modes.map { var x = $0; x.isSelected = false; return x } }
             m.modes.append(.init(id: Self.ultraID, title: "Ultra Low Power", isSelected: running))
         }
+        if let charge, settings.chargeControlEnabled {
+            m.chargeLimit = .init(limit: charge.limit, range: charge.range, softDrainRunning: charge.softDrainRunning,
+                                  hardDrainRunning: charge.hardDrainRunning)
+        }
         return m
     }
 
@@ -98,7 +130,8 @@ final class BatteryMenuController {
     func start() {
         if settingObserver == nil {
             settingObserver = [settings.observe(Settings.Key.batteryMenuEnabled) { [weak self] in self?.apply() },
-                               settings.observe(Settings.Key.ultraLowPowerEnabled) { [weak self] in self?.redraw() }] as AnyObject
+                               settings.observe(Settings.Key.ultraLowPowerEnabled) { [weak self] in self?.redraw() },
+                               settings.observe(Settings.Key.chargeControlEnabled) { [weak self] in self?.redraw() }] as AnyObject
         }
         apply()
     }
@@ -118,6 +151,7 @@ final class BatteryMenuController {
         reading = settings.batteryMenuLastReading.flatMap { try? JSONDecoder().decode(AppleBatteryPanel.self, from: $0) }
         native.onClick = { [weak self] frame in self?.nativeClicked(frame) }
         ultraObserver = ultra?.observe { [weak self] in self?.ultraChanged() }
+        chargeObserver = charge?.observe { [weak self] in self?.redraw() }
         native.start(); nativeRunning = true
         if pollInterval > 0 {
             // The icon moves when the bar's other items change width: its frame is looked up again now and then.
@@ -130,6 +164,7 @@ final class BatteryMenuController {
         pendingAnchor = nil
         afterUltra = nil
         ultraObserver = nil
+        chargeObserver = nil
         presenter.close()
         driver.cancelAll()
         pollTimer?.invalidate(); pollTimer = nil
@@ -257,6 +292,30 @@ final class BatteryMenuController {
             if let title = reading?.modes.first(where: { $0.id == id })?.title { send(modeID: id, title: title, before: reading) }
         }
         redraw()
+    }
+
+    // ── The charge limit ────────────────────────────────────────────────────
+
+    /// The slider was let go: the limit is written once (a write reaches the charger's helper, so a drag is not written step by step).
+    func commitChargeLimit(_ value: Int) {
+        guard let charge, settings.chargeControlEnabled else { return }
+        charge.setLimit(min(max(value, charge.range.lowerBound), charge.range.upperBound))
+        redraw()
+    }
+
+    /// A press of minus: Soft Drain to Limit starts, or stops. While Hard Drain runs the press stops that instead.
+    func pressMinus() {
+        guard let charge, settings.chargeControlEnabled else { return }
+        if charge.hardDrainRunning { charge.pressHardDrain() } else { charge.pressSoftDrain() }
+        redraw()
+    }
+
+    /// Minus held for three seconds: the box asks about Hard Drain. The menu goes first (the box would open behind it).
+    func holdMinus() {
+        guard let charge, settings.chargeControlEnabled, !charge.hardDrainRunning, let prompt = hardDrainPrompt else { return }
+        closeMenu()
+        guard charge.canHardDrain else { prompt.explainBlocked(); return }
+        prompt.ask { [weak charge] yes in if yes { charge?.pressHardDrain() } }
     }
 
     func pressGear() {
