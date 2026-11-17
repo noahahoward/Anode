@@ -432,32 +432,46 @@ final class MinusButton: NSView {
 }
 
 /// One Energy Mode: a round badge with a battery in it (blue while it is the one in force), and its name. When the mode in force
-/// changes the badge's colour does not jump: it turns on a spring, as macOS's does (`BatteryMenuMotion.badge`).
+/// changes the badge's colour does not jump: the blue fades in over the grey (the grey back in, for the mode that was left) on a
+/// critically damped spring, as macOS's does (`BatteryMenuMotion`). It is a Core Animation spring, so it goes on running smoothly while
+/// the main thread is held up by the call into macOS's panel that makes the change.
 final class ModeRow: HoverRow {
 
     private let badge: BadgeView
-    private let glyph: NSImageView
+    private let blue = CALayer()
+    private let greyGlyph: NSImageView
+    private let whiteGlyph: NSImageView
     private var selected: Bool
-    private var turn: (start: CFTimeInterval, from: (NSColor, NSColor), to: (NSColor, NSColor))?
-    private var timer: Timer?
-
-    private static func fill(_ on: Bool) -> NSColor { on ? NSColor.systemBlue : SoundText.ink(dark: 0.16, light: 0.08) }
-    private static func tint(_ on: Bool) -> NSColor { on ? .white : SoundText.ink(0.42) }
 
     init(frame: NSRect, mode: BatteryMenuModel.EnergyMode) {
         selected = mode.isSelected
-        badge = BadgeView(frame: NSRect(x: BatteryRow.lead, y: 3, width: 26, height: 26), fill: Self.fill(mode.isSelected))
-        glyph = NSImageView(frame: badge.bounds.offsetBy(dx: 0, dy: -1))
+        badge = BadgeView(frame: NSRect(x: BatteryRow.lead, y: 3, width: 26, height: 26),
+                          fill: SoundText.ink(dark: 0.16, light: 0.08))
+        func glyphView(_ tint: NSColor) -> NSImageView {
+            let v = NSImageView(frame: NSRect(x: 0, y: 0, width: 26, height: 26).offsetBy(dx: 0, dy: -1))
+            v.image = BatteryGlyphs.image(for: mode.id, pointSize: 13)
+            v.imageScaling = .scaleNone
+            v.imageAlignment = .alignCenter
+            v.contentTintColor = tint
+            v.wantsLayer = true
+            return v
+        }
+        greyGlyph = glyphView(SoundText.ink(0.42))
+        whiteGlyph = glyphView(.white)
         super.init(frame: frame)
         cornerRadius = 10
         dimsWhenPressed = true
-        // Centred in the badge at its own size (macOS's glyph is about 19 by 9 pt).
-        glyph.image = BatteryGlyphs.image(for: mode.id, pointSize: 13)
-        glyph.imageScaling = .scaleNone
-        glyph.imageAlignment = .alignCenter
-        glyph.contentTintColor = Self.tint(mode.isSelected)
-        badge.addSubview(glyph)
+        badge.addSubview(greyGlyph)
+        // The blue badge lies over the grey one, and the white glyph over the grey glyph; each fades in as the mode is chosen.
+        let blueView = NSView(frame: badge.bounds)
+        blueView.wantsLayer = true
+        blueView.layer?.cornerRadius = 13
+        blueView.layer?.backgroundColor = NSColor.systemBlue.cgColor
+        badge.addSubview(blueView)
+        badge.addSubview(whiteGlyph)
+        blueLayer = blueView.layer
         addSubview(badge)
+        setOpacity(mode.isSelected ? 1 : 0)
         let name = NSTextField(labelWithString: mode.title)
         name.font = .systemFont(ofSize: 13)
         name.textColor = SoundText.primary
@@ -468,53 +482,42 @@ final class ModeRow: HoverRow {
 
     required init?(coder: NSCoder) { fatalError("not used") }
 
-    deinit { timer?.invalidate() }
+    private var blueLayer: CALayer?
 
-    /// The mode in force changed: the badge turns to its new colour (or at once, when `animated` is false).
+    /// The layers that turn, each with the opacity it has when the mode is in force (the grey glyph goes as the white comes).
+    private func turning() -> [(CALayer, Bool)] {
+        [blueLayer.map { ($0, true) }, whiteGlyph.layer.map { ($0, true) }, greyGlyph.layer.map { ($0, false) }].compactMap { $0 }
+    }
+
+    private func setOpacity(_ value: Float) {
+        for (l, up) in turning() { l.removeAnimation(forKey: "turn"); l.opacity = up ? value : 1 - value }
+    }
+
+    /// The mode in force changed: the badge turns to its new look (or at once, when `animated` is false).
     func setSelected(_ on: Bool, animated: Bool) {
         guard on != selected else { return }
         selected = on
-        timer?.invalidate(); timer = nil
-        guard animated, window != nil else {
-            turn = nil
-            badge.fill = Self.fill(on); glyph.contentTintColor = Self.tint(on)
-            return
-        }
-        // From wherever it is now, so a second choice mid-turn carries on from the colour on screen.
-        let from = (badge.fill, glyph.contentTintColor ?? Self.tint(!on))
-        turn = (CACurrentMediaTime(), from, (Self.fill(on), Self.tint(on)))
-        let t = Timer(timeInterval: 1.0 / 120, repeats: true) { [weak self] _ in self?.step() }
-        RunLoop.main.add(t, forMode: .common)
-        timer = t
-    }
-
-    private func step() {
-        guard let turn else { timer?.invalidate(); timer = nil; return }
-        let elapsed = CACurrentMediaTime() - turn.start
-        let p = CGFloat(BatteryMenuMotion.badge(at: elapsed))
-        badge.fill = Self.blend(turn.from.0, turn.to.0, p, appearance: effectiveAppearance)
-        glyph.contentTintColor = Self.blend(turn.from.1, turn.to.1, p, appearance: effectiveAppearance)
-        if elapsed >= BatteryMenuMotion.badgeSettleSeconds {
-            badge.fill = turn.to.0; glyph.contentTintColor = turn.to.1
-            self.turn = nil; timer?.invalidate(); timer = nil
+        let target: Float = on ? 1 : 0
+        guard animated, window != nil else { setOpacity(target); return }
+        for (layer, up) in turning() {
+            let target = up ? target : 1 - target
+            // From wherever it is on the screen now, so a second choice mid-turn carries on from there.
+            let from = layer.presentation()?.opacity ?? layer.opacity
+            let spring = CASpringAnimation(keyPath: "opacity")
+            spring.mass = 1
+            spring.stiffness = CGFloat(BatteryMenuMotion.badgeOmega * BatteryMenuMotion.badgeOmega)
+            spring.damping = CGFloat(2 * BatteryMenuMotion.badgeOmega)   // critically damped: no overshoot
+            spring.initialVelocity = 0
+            spring.fromValue = from
+            spring.toValue = target
+            spring.duration = BatteryMenuMotion.badgeSettleSeconds
+            layer.opacity = target
+            layer.add(spring, forKey: "turn")
         }
     }
 
-    /// `a` to `b`, `t` of the way, with both resolved in the menu's appearance (a dynamic colour has no components until it is).
-    private static func blend(_ a: NSColor, _ b: NSColor, _ t: CGFloat, appearance: NSAppearance) -> NSColor {
-        func components(_ c: NSColor) -> [CGFloat] {
-            var r: CGFloat = 0, g: CGFloat = 0, bl: CGFloat = 0, al: CGFloat = 0
-            appearance.performAsCurrentDrawingAppearance { (c.usingColorSpace(.sRGB) ?? c).getRed(&r, green: &g, blue: &bl, alpha: &al) }
-            return [r, g, bl, al]
-        }
-        // Mixed premultiplied, so that over the glass the picture is a straight cross-fade between the two looks (mixing the alpha
-        // and the colour apart makes the new colour arrive far sooner than the clock says).
-        let ca = components(a), cb = components(b)
-        func mix(_ i: Int) -> CGFloat { ca[i] * ca[3] + (cb[i] * cb[3] - ca[i] * ca[3]) * t }
-        let alpha = ca[3] + (cb[3] - ca[3]) * t
-        guard alpha > 0.0001 else { return NSColor(srgbRed: 0, green: 0, blue: 0, alpha: 0) }
-        return NSColor(srgbRed: mix(0) / alpha, green: mix(1) / alpha, blue: mix(2) / alpha, alpha: alpha)
-    }
+    /// How blue the badge is now, 0 to 1, as it is on the screen (what the animation has got to).
+    var blueness: Float { blueLayer?.presentation()?.opacity ?? blueLayer?.opacity ?? 0 }
 }
 
 /// "Battery Settings…".
