@@ -70,6 +70,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
     /// Ultra Low Power Mode. Exists for the app's whole life; while its box is unticked it holds nothing but an observer.
     var ultraLowPower: UltraLowPowerRuntime?
     var soundMenu: SoundMenuController?
+    var batteryMenu: BatteryMenuController?
     var appAudio: AppAudioCoordinator?
     var temperatureAlarm = TemperatureAlarm()
     var windowSnapper: WindowSnapper?
@@ -451,7 +452,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         // nothing else of the mode exists until its box is ticked (Beta Features).
         ultraLowPower = UltraLowPowerRuntime.live(widgets: widgets, openBetaFeatures: { [weak self] in self?.betaFeaturesWindow.show() })
         // Anode's own Sound menu: nothing of it exists until its setting is on (Beta Features).
-        soundMenu = SoundMenuRuntime.live()
+        // One driver for both menus: macOS's Control Center is used by one job at a time.
+        let panelDriver = SystemPanelDriver()
+        soundMenu = SoundMenuRuntime.live(driver: panelDriver)
+        // Anode's Battery menu: nothing of it exists until its setting is on (Beta Features).
+        batteryMenu = BatteryMenuRuntime.live(driver: panelDriver)
         appAudio = AppAudioCoordinator.live { [weak self] router in
             self?.soundMenu?.appVolume = router
             router?.onChange = { [weak self] in self?.soundMenu?.appsChanged() }
@@ -2823,6 +2828,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         ultraLowPower?.shutdown()
         appAudio?.stop()   // every app back to normal before anything else goes
         soundMenu?.stop()
+        batteryMenu?.stop()
         RunTrace.cleanExit()
         fansPane.teardown()
         // Puts macOS's own charge settings back (the limit is in force only while Anode runs: an Anode that breaks

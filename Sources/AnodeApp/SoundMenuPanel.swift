@@ -1060,8 +1060,8 @@ final class MenuSlider: NSView {
 enum SoundMenuRuntime {
 
     /// The menu over the real Mac.
-    static func live(settings: Settings = .shared) -> SoundMenuController {
-        make(settings: settings, outputs: CoreAudioOutputs(), driver: SystemPanelDriver(), statusBar: SystemStatusBarHost(),
+    static func live(settings: Settings = .shared, driver: SystemPanelDriving = SystemPanelDriver()) -> SoundMenuController {
+        make(settings: settings, outputs: CoreAudioOutputs(), driver: driver, statusBar: SystemStatusBarHost(),
              native: NativeMenuExtraIcon.sound(), panel: SoundMenuPanel())
     }
 
