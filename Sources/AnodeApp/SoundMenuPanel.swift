@@ -543,6 +543,9 @@ final class SoundMenuContentView: NSView {
 class HoverRow: NSView {
     var onPick: (() -> Void)?
     private var hovering = false { didSet { needsDisplay = true } }
+    /// Whether the row is lit. (A press that began on the row keeps it lit while the pointer is off it, as macOS's does.)
+    var isLit: Bool { hovering }
+    private var pressed = false
     var highlightable = true
     /// How much white the hovered row gets.
     var hoverAlpha: CGFloat = 0.09
@@ -556,8 +559,14 @@ class HoverRow: NSView {
     }
 
     override func mouseEntered(with event: NSEvent) { hovering = highlightable }
-    override func mouseExited(with event: NSEvent) { hovering = false }
-    override func mouseUp(with event: NSEvent) { if highlightable, bounds.contains(convert(event.locationInWindow, from: nil)) { onPick?() } }
+    override func mouseExited(with event: NSEvent) { if !pressed { hovering = false } }
+    override func mouseDown(with event: NSEvent) { pressed = highlightable }
+    override func mouseUp(with event: NSEvent) {
+        let inside = bounds.contains(convert(event.locationInWindow, from: nil))
+        pressed = false
+        if !inside { hovering = false }
+        if highlightable, inside { onPick?() }
+    }
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 
     override func draw(_ dirtyRect: NSRect) {
