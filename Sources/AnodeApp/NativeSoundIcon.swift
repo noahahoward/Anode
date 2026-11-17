@@ -168,7 +168,10 @@ final class NativeSoundIcon: NativeIconHosting {
             if let known, NativeIconClickGate.isNear(point, known, bar: bar) { return known }
         }
         var hit: AXUIElement?
-        guard AXUIElementCopyElementAtPosition(systemWide, Float(point.x), Float(point.y), &hit) == .success, let hit else { return nil }
+        // On the screen's very top row Accessibility answers with the whole menu bar, not the item under the pointer: ask about the
+        // row below, which is the same item (measured: y 0 is the bar, y 0.5 and down the item).
+        let probeY = max(point.y, 1)
+        guard AXUIElementCopyElementAtPosition(systemWide, Float(point.x), Float(probeY), &hit) == .success, let hit else { return nil }
         // The right id is not enough: any app can name an element anything. It must also belong to the process that draws macOS's bar.
         lock.lock(); let expected = trustedPid; lock.unlock()
         var owner: pid_t = 0
