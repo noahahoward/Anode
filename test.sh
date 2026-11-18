@@ -231,7 +231,8 @@ for suite_pid in ${SUITE_PIDS[@]+"${SUITE_PIDS[@]}"}; do
   elif wait "$suite_pid"; then
     printf '%s: %s\n' "$suite" "$(grep -E ' passed, [0-9]+ failed' "$suite_log" | tail -1 | sed 's/^[[:space:]]*//')"
   else
-    grep -E "FAIL|passed|✗|kept for the diagnosis" "$suite_log" >&2 || tail -20 "$suite_log" >&2
+    # The failed checks with what each found (the lines under a FAIL begin with "|").
+    grep -E "FAIL|^ +\| |passed|✗|kept for the diagnosis" "$suite_log" >&2 || tail -20 "$suite_log" >&2
     echo "✗ Tests/$suite.sh failed" >&2
     SUITES_FAILED=1
   fi

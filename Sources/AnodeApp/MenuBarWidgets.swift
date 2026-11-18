@@ -117,6 +117,10 @@ public final class MenuBarWidgetController: NSObject, NSMenuDelegate {
     /// NSMenu owns itself while shown and this must not keep it alive after.
     private weak var openPanel: NSMenu?
 
+    /// A click on another reading that closed the readings list, and was carried out here (see `menuDidClose`): the button's own
+    /// action, should AppKit still send it for the same click, is not taken a second time.
+    private var carriedOutClick: (button: NSStatusBarButton, at: Date)?
+
     /// The out-of-the-box menu bar, used whenever persistence is empty or
     /// unreadable. It must always contain at least one clickable item or the main
     /// window becomes unreachable.
@@ -1004,6 +1008,10 @@ public final class MenuBarWidgetController: NSObject, NSMenuDelegate {
                        in: sender)
             return
         }
+        if let done = carriedOutClick, done.button === sender, Date().timeIntervalSince(done.at) < Self.carriedOutClickWindow {
+            carriedOutClick = nil
+            return
+        }
         Self.routeLeftClick(on: sender, metric: metric, paused: isPaused(),
                             onClick: onClick, onPausedClick: onPausedClick)
     }
@@ -1597,6 +1605,43 @@ extension MenuBarWidgetController {
         openPanel = nil
         isPanelOpen = false
         onPanelVisibilityChange?(false)
+        carryOutClickThatClosed()
+    }
+
+    /// How long after a click was carried out here the button's own action for it is still taken to be that same click.
+    static let carriedOutClickWindow: TimeInterval = 1.0
+
+    /// While the readings list is open, macOS spends a press of the mouse on another of Anode's readings closing the list: the
+    /// reading never sees the press, and its click (open the window on that reading) was lost. Clicking another app's icon opens
+    /// its menu at once, and a reading has to do the same. So when the list closes with the left button down over one of the
+    /// other readings, that reading's click is carried out here.
+    private func carryOutClickThatClosed() {
+        let event = NSApp.currentEvent?.type
+        let pressing = NSEvent.pressedMouseButtons & 1 != 0 || event == .leftMouseDown || event == .leftMouseUp
+        let frames = items.map { $0.item.button?.window?.frame }
+        let groups = items.map { $0.config.style == .group }
+        guard let index = Self.readingUnderClick(at: NSEvent.mouseLocation, pressing: pressing, frames: frames, isGroup: groups),
+              let button = items[index].item.button else { return }
+        let metric = metricID(of: button)
+        carriedOutClick = (button, Date())
+        FeatureLog.append("widget-clicks.log", "the readings list was closed by a click on \(metric?.rawValue ?? "?"): its click is carried out")
+        // After the list has finished closing: the window must not open under a menu that is still on its way out.
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            Self.routeLeftClick(on: button, metric: metric, paused: self.isPaused(),
+                                onClick: self.onClick, onPausedClick: self.onPausedClick)
+        }
+    }
+
+    /// Which reading a press that closed the readings list landed on: the left button is down, the pointer is over that reading's
+    /// item, and it is not a group (its own list; a press on the list's own item is the list's toggle, and closing is all it does).
+    /// Nil for a press anywhere else, or a close that was no press (Esc, a row chosen, the time running out). Pure.
+    static func readingUnderClick(at point: NSPoint, pressing: Bool, frames: [NSRect?], isGroup: [Bool]) -> Int? {
+        guard pressing else { return nil }
+        return frames.indices.first { i in
+            guard i < isGroup.count, !isGroup[i], let f = frames[i] else { return false }
+            return f.contains(point)
+        }
     }
 
     /// Fill the group menu only when it is about to be shown.

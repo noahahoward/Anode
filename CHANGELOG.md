@@ -7,6 +7,9 @@ feature or a visible change in how something works, the first only for a rewrite
 Nothing was bumped between 1.0.0 and 1.15.0. Those versions were assigned afterwards from the history and exist as
 git tags (`git show v1.7.0`); builds made before 1.15.0 still say 1.0.0 in their About box.
 
+## 1.25.5 — 2026-11-18
+- With the readings list open (the menu bar widget that lists every reading), one click on another reading now closes the list and opens Anode's window on that reading. Before, that click only closed the list and a second click was needed.
+
 ## 1.25.4 — 2026-11-18
 - Opening Anode's Sound or Battery menu now closes any other Anode menu that is open in the menu bar (the readings list, Keep Awake's menu, and the rest) at the same moment. Before, the other menu stayed up for a moment and the new one covered half of it.
 
