@@ -7,6 +7,13 @@ feature or a visible change in how something works, the first only for a rewrite
 Nothing was bumped between 1.0.0 and 1.15.0. Those versions were assigned afterwards from the history and exist as
 git tags (`git show v1.7.0`); builds made before 1.15.0 still say 1.0.0 in their About box.
 
+## 1.24.0 — 2026-11-17
+- A fresh install is welcomed first. A short notice says what Anode may ask of your Mac (Accessibility, Screen Recording, and your password once to install the Anode helper), that all of it is optional, and that macOS 27.3 and later shows "Accessing all apps" in the menu bar while Anode reads or presses macOS's own panels. It comes before the automatic-update question and the helper's offer, and only once.
+- Battery menu: press an app under Using Significant Energy and the menu closes and Anode's window opens on the Processes list with that app selected.
+- Opening an Anode menu while macOS's volume pill is still on screen (after a volume key) now covers the pill, as macOS's own panel does, instead of the menu opening on top of it.
+- Sound menu: when both AirPods report a battery, each gets its own reading, as macOS draws it, instead of one reading for the pair.
+- The Terminal window of the installer, of the uninstaller and of the Uninstall button now closes itself 15 seconds after a good run, counting down on screen; Control-C keeps it open. A window with something in it to read (a failed run, a source folder it kept, commands left for you to run) stays open.
+
 ## 1.23.1 — 2026-11-17
 - Battery menu: the apps under Using Significant Energy are now the apps Anode measures at 0.5 % of the battery an hour or more, the biggest first, instead of whatever macOS's panel lists a minute or two late. macOS itself lists an app once it uses about half a watt for a minute or two, which is what that line is. A row stays until its app falls well below the line, so rows do not come and go, and apps using almost nothing (0.03 %/hr) are no longer listed.
 - Going from the Battery menu to the Sound menu, or to another icon's menu in the menu bar, now swaps in one frame, as macOS does. Before, the old menu faded out over a quarter of a second while the new one appeared, and the fade stuttered while the new menu was opening. The fade when a menu closes is now smooth even while the Mac is busy.

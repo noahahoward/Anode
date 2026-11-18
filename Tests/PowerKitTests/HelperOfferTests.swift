@@ -202,7 +202,7 @@ final class HelperOfferTests: XCTestCase {
             .filter { !$0.trimmingCharacters(in: .whitespaces).hasPrefix("//") }.joined(separator: " ")
             .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
         for needed in ["isInstalled: { FanDaemon.isInstalled() }",
-                       "canInstall: { FanControlPanel.helperIsBundled }",
+                       "canInstall: { FanControlPanel.helperIsBundled && !AppSandbox.isOn }",
                        "connection.connect(for: .offer)",
                        "connection.release(.offer)",
                        "UltraLowPowerController.current?.state ?? .off) == .off",

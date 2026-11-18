@@ -1567,11 +1567,15 @@ out_lacks() { ! out_has "$1"; }
 # Control-C a countdown that has begun: the probe is told SIGINT as the terminal's ^C would tell it.
 close_probe_interrupted() {
   : > "$T/osascript-asked"; rm -f "$T/close-probe.pid" "$T/close-cancel.out"
-  # With job control on (set -m), so that the background job does not start with SIGINT ignored, as one of a plain script does.
-  ( set -m; ANODE_CLOSE_AFTER=30 TERM_PROGRAM=Apple_Terminal PATH="$T/close-shim:/usr/bin:/bin:/usr/sbin:/sbin" /usr/bin/script -q /dev/null /bin/bash "$T/close-probe.sh" > "$T/close-cancel.out" 2>&1 < /dev/null & )
+  # With job control on (set -m), and SIGINT put back to its default by perl: a job started in the background by a script, or a
+  # test started that way, has it ignored, and a program that starts with it ignored cannot take an interrupt.
+  ( set -m; ANODE_CLOSE_AFTER=30 TERM_PROGRAM=Apple_Terminal PATH="$T/close-shim:/usr/bin:/bin:/usr/sbin:/sbin" /usr/bin/perl -e '$SIG{INT} = "DEFAULT"; exec @ARGV' /usr/bin/script -q /dev/null /bin/bash "$T/close-probe.sh" > "$T/close-cancel.out" 2>&1 < /dev/null & )
   local n=0
   while [ ! -s "$T/close-probe.pid" ] && [ "$n" -lt 50 ]; do sleep 0.1; n=$((n + 1)); done
-  sleep 1.5
+  # Not a fixed wait: once the countdown has begun (its first line is on the screen), so the interrupt cannot arrive before it
+  # has set up how to take one, however busy the Mac is.
+  n=0
+  while ! grep -q 'closes in' "$T/close-cancel.out" 2>/dev/null && [ "$n" -lt 100 ]; do sleep 0.1; n=$((n + 1)); done
   kill -INT "$(cat "$T/close-probe.pid")" 2>/dev/null
   n=0
   while ! grep -q '\[returned\]' "$T/close-cancel.out" 2>/dev/null && [ "$n" -lt 50 ]; do sleep 0.1; n=$((n + 1)); done
@@ -1668,6 +1672,26 @@ close_terminal_window_on() {   # close_terminal_window_on TTY
   /usr/bin/osascript -e 'tell application "Terminal"' -e 'repeat with w in windows' -e 'try' \
     -e "if (count of tabs of w) is 1 and (tty of tab 1 of w) is \"/dev/$1\" then close w saving no" \
     -e 'end try' -e 'end repeat' -e 'end tell' >/dev/null 2>&1
+}
+# The Uninstall button opens a Terminal window, which launches Terminal if it was not running; what the run leaves of Terminal is
+# looked at, so that it ends as it began: windows it did not have before are closed (the uninstall window if it stayed, and any
+# blank one Terminal opens on its own), and Terminal is quit if the run launched it and nothing of the person's is in it.
+terminal_running() { /usr/bin/pgrep -x Terminal >/dev/null 2>&1; }
+terminal_window_ids() {   # one id a line; nothing when Terminal is not running (never started by this) or may not be asked
+  terminal_running || return 0
+  /usr/bin/osascript -e 'tell application "Terminal" to get id of every window' 2>/dev/null | /usr/bin/tr ',' '\n' | /usr/bin/tr -d ' ' | /usr/bin/grep .
+}
+tidy_terminal() {   # tidy_terminal WAS_RUNNING IDS_BEFORE
+  local was="$1" before="$2" id
+  terminal_running || return 0
+  for id in $(terminal_window_ids); do
+    printf '%s\n' "$before" | /usr/bin/grep -qx "$id" || /usr/bin/osascript -e "tell application \"Terminal\" to close (every window whose id is $id) saving no" >/dev/null 2>&1
+  done
+  if [ "$was" = 0 ] && [ -z "$(terminal_window_ids)" ]; then /usr/bin/osascript -e 'tell application "Terminal" to quit' >/dev/null 2>&1; fi
+  return 0
+}
+terminal_as_found() {   # terminal_as_found WAS_RUNNING IDS_BEFORE
+  if [ "$1" = 0 ]; then ! terminal_running; else [ "$(terminal_window_ids | /usr/bin/sort)" = "$(printf '%s\n' "$2" | /usr/bin/sort | /usr/bin/grep .)" ]; fi
 }
 unregister_test_copy() { /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -u "$1" >/dev/null 2>&1; }
 build_ui_driver() { /usr/bin/swiftc -O "$ROOT/Tests/ui/anode-ui.swift" -o "$T/anode-ui" > "$T/anode-ui-build.log" 2>&1; }
@@ -1810,6 +1834,8 @@ if [ "$FULL" = 1 ]; then
     make_test_copy "$APP"
     check "the installed app becomes the test copy, and is still signed" copy_is_ready "$APP"
     real_snapshot "$T/real-before"
+    TERM_WAS_RUNNING=0; terminal_running && TERM_WAS_RUNNING=1
+    TERM_IDS_BEFORE="$(terminal_window_ids)"
     write_door "$H" "$APP"
     start_test_copy "$H" "$APP"
     UI_OK=1
@@ -1830,6 +1856,9 @@ if [ "$FULL" = 1 ]; then
     ui_step "the Terminal window closes itself"               wait_until 60 tty_free "$(cat "$T/ui-tty" 2>/dev/null)"
     # A window that is still there (the run stopped, or the countdown did not close it) is closed, so a failure leaves none.
     if [ -s "$T/ui-tty" ] && ! tty_free "$(cat "$T/ui-tty")"; then close_terminal_window_on "$(cat "$T/ui-tty")"; fi
+    sleep 1   # (Terminal has just closed the window: what it opens or keeps by itself after that is settled)
+    tidy_terminal "$TERM_WAS_RUNNING" "$TERM_IDS_BEFORE"
+    check "Terminal is as it was before the run (windows, and whether it was running)" terminal_as_found "$TERM_WAS_RUNNING" "$TERM_IDS_BEFORE"
     gone "$UI_PID" || kill "$UI_PID" 2>/dev/null
     : > "$T/test-pids"
     unregister_test_copy "$APP"
