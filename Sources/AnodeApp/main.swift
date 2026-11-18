@@ -468,8 +468,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
                                               onOpenChanged: { [weak self] open in self?.batteryMenuIsOpen = open })
         // A click on one of the two icons is taken by Anode, so the other menu never hears it: each closes the other as it opens.
         // One panel takes the other's place in a single frame, as macOS's do: the one that was open goes without a fade.
-        soundMenu?.onWillOpen = { [weak self] in self?.batteryMenu?.closeMenu(fade: false) }
-        batteryMenu?.onWillOpen = { [weak self] in self?.soundMenu?.closeMenu(fade: false) }
+        // The same goes for an open menu of Anode's own in the bar (the readings' list, Keep Awake's…): it heard nothing either.
+        OpenMenus.shared.start()
+        soundMenu?.onWillOpen = { [weak self] in OpenMenus.shared.closeAll(); self?.batteryMenu?.closeMenu(fade: false) }
+        batteryMenu?.onWillOpen = { [weak self] in OpenMenus.shared.closeAll(); self?.soundMenu?.closeMenu(fade: false) }
         appAudio = AppAudioCoordinator.live { [weak self] router in
             self?.soundMenu?.appVolume = router
             router?.onChange = { [weak self] in self?.soundMenu?.appsChanged() }
