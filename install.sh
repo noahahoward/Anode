@@ -40,6 +40,9 @@
 # with the macOS and Swift versions to send with them, and the full build log is kept at
 # ~/Library/Logs/Anode-install.log, which is the one thing left, because it is the diagnosis.
 #
+# WHEN IT WORKS, in a Terminal window (Terminal.app, a window with nothing else in it), the window closes itself after 15
+# seconds, counted down on the screen; Control-C keeps it open. A run that failed never closes: its message stays.
+#
 # Nothing runs as root. Nothing is installed outside your home directory. Fan
 # control — the one privileged feature — is not touched here and stays off until
 # you ask for it inside the app.
@@ -58,6 +61,35 @@ fi
 
 say()  { printf '› %s\n' "$1"; }
 die()  { printf '\n✗ %s\n' "$1" >&2; exit 1; }
+
+# BEGIN CLOSE-WINDOW (the same text is in install.sh and uninstall.sh: a test reads the two side by side)
+# A run that SUCCEEDED in a Terminal window closes the window itself after ANODE_CLOSE_AFTER seconds (15); Control-C
+# during the countdown keeps it open. A run that failed never gets here: its window stays, with the message in it.
+# Only Terminal.app, only a window that holds nothing but this run's tab, and only when the output goes to the window
+# (not a pipe or a file): the tests, a run from another terminal program and a window with other work in it are left alone.
+close_window_soon() {
+  local secs="${ANODE_CLOSE_AFTER:-15}" tty_name left kept=0
+  [ "${TERM_PROGRAM:-}" = "Apple_Terminal" ] && [ -t 1 ] || return 0
+  case "$secs" in ''|*[!0-9]*|0) return 0 ;; esac
+  tty_name="$(ps -o tty= -p $$ 2>/dev/null | tr -d ' ')"
+  case "$tty_name" in ''|'??') return 0 ;; esac
+  echo
+  trap 'kept=1' INT
+  for ((left = secs; left > 0; left--)); do
+    [ "$kept" = 1 ] && break
+    printf '\r  This window closes in %2d s. Control-C keeps it open.   ' "$left"
+    sleep 1 & wait $! || true
+  done
+  trap - INT
+  if [ "$kept" = 1 ]; then printf '\r  This window stays open.%40s\n' ''; return 0; fi
+  printf '\r%70s\r' ''
+  # Closed a moment after this script has ended, so that Terminal finds nothing running in the window and asks nothing.
+  ( sleep 1; osascript -e 'tell application "Terminal"' -e 'repeat with w in windows' -e 'try' \
+      -e "if (count of tabs of w) is 1 and (tty of tab 1 of w) is \"/dev/$tty_name\" then close w" \
+      -e 'end try' -e 'end repeat' -e 'end tell' >/dev/null 2>&1 ) &
+  disown 2>/dev/null || true
+}
+# END CLOSE-WINDOW
 
 # ── What this run makes, so a failed run can take exactly that away ────────
 # Read BEFORE anything is touched: "was it there already?" is the whole difference between a thing
@@ -191,3 +223,5 @@ cat <<EOF
   To update later, either press Update in Anode's settings, or run:
       $SRC/update.sh
 EOF
+
+close_window_soon

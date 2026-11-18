@@ -37,6 +37,9 @@
 #   at the Terminal, to sudo: no `sudo -S`, nothing here reads it. Where sudo cannot be used (nothing on stdin to type
 #   at, ANODE_NO_SUDO=1, a password that was refused or cancelled) the same commands are printed for you to run, and
 #   the rest of the uninstall stands, with the exit status it always had.
+# When it all worked, in a Terminal window (Terminal.app, a window with nothing else in it), the window closes itself after
+# 15 seconds, counted down on the screen; Control-C keeps it open. It stays open when there is something to read and act on:
+# a checkout it kept, a charge setting it could not put back, or commands left for you to run.
 set -euo pipefail
 
 REMOVE_DATA=0
@@ -48,6 +51,35 @@ for arg in "$@"; do
     *) echo "unknown option: $arg" >&2; exit 2 ;;
   esac
 done
+
+# BEGIN CLOSE-WINDOW (the same text is in install.sh and uninstall.sh: a test reads the two side by side)
+# A run that SUCCEEDED in a Terminal window closes the window itself after ANODE_CLOSE_AFTER seconds (15); Control-C
+# during the countdown keeps it open. A run that failed never gets here: its window stays, with the message in it.
+# Only Terminal.app, only a window that holds nothing but this run's tab, and only when the output goes to the window
+# (not a pipe or a file): the tests, a run from another terminal program and a window with other work in it are left alone.
+close_window_soon() {
+  local secs="${ANODE_CLOSE_AFTER:-15}" tty_name left kept=0
+  [ "${TERM_PROGRAM:-}" = "Apple_Terminal" ] && [ -t 1 ] || return 0
+  case "$secs" in ''|*[!0-9]*|0) return 0 ;; esac
+  tty_name="$(ps -o tty= -p $$ 2>/dev/null | tr -d ' ')"
+  case "$tty_name" in ''|'??') return 0 ;; esac
+  echo
+  trap 'kept=1' INT
+  for ((left = secs; left > 0; left--)); do
+    [ "$kept" = 1 ] && break
+    printf '\r  This window closes in %2d s. Control-C keeps it open.   ' "$left"
+    sleep 1 & wait $! || true
+  done
+  trap - INT
+  if [ "$kept" = 1 ]; then printf '\r  This window stays open.%40s\n' ''; return 0; fi
+  printf '\r%70s\r' ''
+  # Closed a moment after this script has ended, so that Terminal finds nothing running in the window and asks nothing.
+  ( sleep 1; osascript -e 'tell application "Terminal"' -e 'repeat with w in windows' -e 'try' \
+      -e "if (count of tabs of w) is 1 and (tty of tab 1 of w) is \"/dev/$tty_name\" then close w" \
+      -e 'end try' -e 'end repeat' -e 'end tell' >/dev/null 2>&1 ) &
+  disown 2>/dev/null || true
+}
+# END CLOSE-WINDOW
 
 SUPPORT="$HOME/Library/Application Support/Anode"
 # The record of macOS's own charge settings every account's Anode shares (it is the Mac's, not this account's).
@@ -648,3 +680,6 @@ if [ -n "$KEPT_CHECKOUT" ]; then
 else
   echo "  A source checkout anywhere else was left alone."
 fi
+# The window closes itself only when there is nothing in it to read and act on: not when a checkout was kept, a charge
+# setting could not be put back, or something root owns is still there and its commands were printed for the person to run.
+if [ -z "$KEPT_CHECKOUT" ] && [ "$RESTORE_FAILED" != "1" ] && ! root_things_left; then close_window_soon; fi

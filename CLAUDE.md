@@ -18,7 +18,9 @@ When several kinds are in one push, the biggest wins. Then, in the same push:
 
 ## Every change
 
-- Run `./test.sh --quick` before pushing. Run `./update.sh` after a change and confirm `BSSourceCommit` in the installed
+- Run `./test.sh --full` before pushing: the suite plus a real install and uninstall in a new folder next to the checkout,
+  which fails on an error in what the install prints or on anything the uninstall leaves behind. `./test.sh --quick` is for
+  iterating (the git pre-push hook runs it). Run `./update.sh` after a change and confirm `BSSourceCommit` in the installed
   `Info.plist` equals `git rev-parse --short HEAD` and that the running process's inode matches the installed binary.
 - Never put a tester's name, or words like "friend", in a commit, comment or test.
 - Do not rewrite pushed history or move a pushed tag without the owner saying so.

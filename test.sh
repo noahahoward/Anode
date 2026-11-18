@@ -4,8 +4,9 @@
 #
 #   ./test.sh                build every product (release), then the whole test suite
 #   ./test.sh --quick        the test suite only (what the pre-push hook runs)
-#   ./test.sh --full         everything above, plus a REAL install and uninstall into a throwaway home
-#                            (compiles the app again, a few minutes)
+#   ./test.sh --full         everything above, plus a REAL install and uninstall, in a new folder next to this checkout
+#                            (a sibling of Anode): looks for errors in what the install prints, then for anything the
+#                            uninstall left behind. Compiles the app again, a few minutes. Run it before a push.
 #   ./test.sh --install-hook make git run --quick before every push; `git push --no-verify` skips it once
 #
 # The suite includes the installer and uninstaller tests (Tests/installer-tests.sh), which never touch this
@@ -31,7 +32,7 @@ case "$MODE" in
     git config core.hooksPath .githooks
     echo "✓ git will run ./test.sh --quick before every push (git push --no-verify skips it once)"
     exit 0 ;;
-  -h|--help) sed -n 2,23p "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+  -h|--help) sed -n 2,24p "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
   *) echo "unknown option: $MODE (try --help)" >&2; exit 2 ;;
 esac
 

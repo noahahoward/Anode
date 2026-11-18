@@ -36,10 +36,15 @@ set -uo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
 FULL=0; [ "${1:-}" = "--full" ] && FULL=1
-T="$(mktemp -d)"
+# The test's own folder. A --full run makes it NEXT TO the checkout (a sibling of Anode, as a person's own projects sit),
+# so the real install is tried in a clean place of the same kind as the one it will be used in; the quick run, which
+# `swift test` also starts, keeps to the system's temporary folder. mktemp makes a new name every time, so nothing there
+# is ever reused or overwritten. A run that fails keeps the folder (and says so) for the diagnosis; one that passes removes it.
+if [ "$FULL" = 1 ]; then T="$(mktemp -d "$(dirname "$ROOT")/Anode-install-test.XXXXXX")"; else T="$(mktemp -d)"; fi
 REAL_PIDS=()
 OUTSIDE=""   # (a folder of the self-test's that is not the test's own; see section 0)
-trap 'for p in ${REAL_PIDS[@]+"${REAL_PIDS[@]}"}; do kill "$p" 2>/dev/null; done; rm -rf "$T" ${OUTSIDE:+"$OUTSIDE"}' EXIT
+KEEP_T=0
+trap 'for p in ${REAL_PIDS[@]+"${REAL_PIDS[@]}"}; do kill "$p" 2>/dev/null; done; [ "$KEEP_T" = 1 ] || rm -rf "$T"; rm -rf ${OUTSIDE:+"$OUTSIDE"}' EXIT
 
 PASS=0; FAIL=0
 ok()    { PASS=$((PASS + 1)); printf '    ok    %s\n' "$1"; }
@@ -1531,22 +1536,127 @@ fresh_run "$H" --data
 check_all "a Mac with none of it says nothing about crash records or test settings" hasnt "crash reports" -- hasnt "made by Anode's tests"
 check "and the exit status is 0"                              [ "$ROOT_STATUS" = 0 ]
 
+# ═══ 6j. the window that closes itself after a good run ═════════════════════
+# install.sh and uninstall.sh, after a run that WORKED in a Terminal window, count down 15 s and close the window; Control-C
+# keeps it open. Tried here on the countdown alone: its text is cut out of the script that holds it, run under a
+# pseudo-terminal (script(1)) with the stand-in osascript first on a PATH of its own (the test's ps stand-in would hide the very
+# process that has to find its terminal), which writes down what it is asked and closes nothing. The probe stays up a moment
+# after the countdown, as the window does in Terminal, so that the closing the countdown schedules for after its end is seen.
+# BEGIN STUBS
+close_block_of() { sed -n '/^# BEGIN CLOSE-WINDOW/,/^# END CLOSE-WINDOW/p' "$ROOT/$1.sh"; }
+same_close_blocks() { [ -n "$(close_block_of install)" ] && [ "$(close_block_of install)" = "$(close_block_of uninstall)" ]; }
+install_closes_last() { [ "$(grep -v '^[[:space:]]*$' "$ROOT/install.sh" | tail -1)" = "close_window_soon" ]; }
+uninstall_closes_only_when_clean() { tail -1 "$ROOT/uninstall.sh" | grep -q 'KEPT_CHECKOUT.*RESTORE_FAILED.*root_things_left.*close_window_soon'; }
+write_close_probe() {   # write_close_probe install|uninstall
+  mkdir -p "$T/close-shim"; cp "$T/shim/osascript" "$T/close-shim/osascript"
+  { echo '#!/bin/bash'; close_block_of "$1"; echo 'echo "$$" > "'"$T"'/close-probe.pid"'; echo 'close_window_soon'; echo 'echo "[returned]"'; echo 'sleep 2'; } > "$T/close-probe.sh"
+}
+# close_probe SECONDS TERM_PROGRAM [on-a-terminal]: what it printed, in CLOSE_OUT; what the stand-in was asked, in $T/osascript-asked
+close_probe() {
+  : > "$T/osascript-asked"; rm -f "$T/close-probe.pid"
+  if [ "${3:-}" = "terminal" ]; then
+    CLOSE_OUT="$(ANODE_CLOSE_AFTER="$1" TERM_PROGRAM="$2" PATH="$T/close-shim:/usr/bin:/bin:/usr/sbin:/sbin" /usr/bin/script -q /dev/null /bin/bash "$T/close-probe.sh" 2>&1 < /dev/null | tr '\r' '\n')"
+  else
+    CLOSE_OUT="$(ANODE_CLOSE_AFTER="$1" TERM_PROGRAM="$2" PATH="$T/close-shim:/usr/bin:/bin:/usr/sbin:/sbin" /bin/bash "$T/close-probe.sh" 2>&1 < /dev/null)"
+  fi
+}
+asked_to_close() { grep -q 'close w' "$T/osascript-asked"; }
+asked_nothing() { [ ! -s "$T/osascript-asked" ]; }
+out_has() { printf '%s' "$CLOSE_OUT" | grep -qF -- "$1"; }
+out_lacks() { ! out_has "$1"; }
+# Control-C a countdown that has begun: the probe is told SIGINT as the terminal's ^C would tell it.
+close_probe_interrupted() {
+  : > "$T/osascript-asked"; rm -f "$T/close-probe.pid" "$T/close-cancel.out"
+  # With job control on (set -m), so that the background job does not start with SIGINT ignored, as one of a plain script does.
+  ( set -m; ANODE_CLOSE_AFTER=30 TERM_PROGRAM=Apple_Terminal PATH="$T/close-shim:/usr/bin:/bin:/usr/sbin:/sbin" /usr/bin/script -q /dev/null /bin/bash "$T/close-probe.sh" > "$T/close-cancel.out" 2>&1 < /dev/null & )
+  local n=0
+  while [ ! -s "$T/close-probe.pid" ] && [ "$n" -lt 50 ]; do sleep 0.1; n=$((n + 1)); done
+  sleep 1.5
+  kill -INT "$(cat "$T/close-probe.pid")" 2>/dev/null
+  n=0
+  while ! grep -q '\[returned\]' "$T/close-cancel.out" 2>/dev/null && [ "$n" -lt 50 ]; do sleep 0.1; n=$((n + 1)); done
+  CLOSE_OUT="$(tr '\r' '\n' < "$T/close-cancel.out")"
+}
+# END STUBS
+echo "6j. The window that closes itself after a good run"
+check "install and uninstall hold the same countdown"         same_close_blocks
+check "the install counts down as its very last step"         install_closes_last
+check "the uninstall counts down only when nothing is left to read" uninstall_closes_only_when_clean
+write_close_probe install
+close_probe 1 Apple_Terminal
+check_all "with its output going to a file or a pipe it does nothing" asked_nothing -- out_has "[returned]"
+check "…and says nothing of a countdown"                      out_lacks "closes in"
+close_probe 1 iTerm.app terminal
+check "in another terminal program it does nothing"           asked_nothing
+check "…and says nothing of a countdown"                      out_lacks "closes in"
+close_probe 0 Apple_Terminal terminal
+check "told 0 seconds it does nothing"                        asked_nothing
+close_probe 2 Apple_Terminal terminal
+check "in Terminal it counts down and says how to keep the window" out_has "closes in"
+check "…naming Control-C"                                     out_has "Control-C"
+n=0; while ! asked_to_close && [ "$n" -lt 50 ]; do sleep 0.1; n=$((n + 1)); done
+check "…and then asks Terminal to close the window"           asked_to_close
+check "…the one on this terminal, only if it holds nothing else" grep -qE '/dev/ttys[0-9]+.*close w|count of tabs of w' "$T/osascript-asked"
+close_probe_interrupted
+check "Control-C keeps the window open"                       out_has "This window stays open"
+check "…and the script goes on to its end"                    out_has "[returned]"
+sleep 2
+check "…and nothing is asked of Terminal"                     asked_nothing
+
 # ═══ 7. optional: the real thing ════════════════════════════════════════════
+# What the scan for trouble in a script's own output looks for: a word that says something went wrong. Matched without
+# regard to case, so "Error" and "error:" both count; the lines the scripts print on purpose are written not to contain them.
+TROUBLE='error|warning|fatal|fail|denied|not found|no such file|cannot|can.t|✗'
+# BEGIN STUBS
+# Read-only looks at files, which name the scripts without running one; kept out of the check that guards the calls.
+bundled_scripts_ready() { [ -x "$1/Contents/Resources/update.sh" ] && [ -x "$1/Contents/Resources/uninstall.sh" ]; }
+checkout_version() { sed -n 's/^VERSION="\([0-9.]*\)".*/\1/p' "$ROOT/build-app.sh" | head -1; }
+# END STUBS
+no_compiler_errors() { ! grep -qE '\.swift:[0-9]+:[0-9]+: error:' "$1"; }
+plist_value() { /usr/bin/plutil -extract "$2" raw -o - "$1" 2>/dev/null; }
+# What the Uninstall button runs: the copy of the uninstaller inside the installed app, not the one in the checkout.
+run_bundled_uninstall() {
+  OUT="$(run_anode "$1" "$1/Applications/Anode.app/Contents/Resources/uninstall.sh" --yes 2>&1)"; UNINSTALL_STATUS=$?
+}
 if [ "$FULL" = 1 ]; then
-  echo "7. A REAL install (compiles the app) and uninstall"
+  echo "7. A REAL install (compiles the app) and uninstall, in a folder next to the checkout"
+  echo "   $T"
   H="$(new_home 8)"
+  check "the home folder starts empty"                        [ -z "$(files_in "$H")" ]
+  CACHE_BEFORE="$(cd "$T/cache" && find . | sort)"
   run_install "$H" "$BASE"
   check "exits cleanly"                                       [ "$STATUS" -eq 0 ]
+  check "says it installed"                                   has "✓ Installed"
+  # One line is expected, and is the stub's doing: the security stub refuses every keychain change (see the stubs above), so
+  # the build cannot make its signing identity and says it signs ad hoc. On a Mac it can, it does not say it.
+  PROBLEMS="$(printf '%s\n' "$OUT" | grep -v 'local signing failed; falling back to ad-hoc' | grep -iE "$TROUBLE" || true)"
+  if [ -z "$PROBLEMS" ]; then ok "nothing it printed reads as a problem"; else bad "nothing it printed reads as a problem" "$PROBLEMS"; fi
+  check "the build log has no compiler error"                 no_compiler_errors "$H/Library/Logs/Anode-install.log"
   check "the real app is installed"                           present "$H/Applications/Anode.app/Contents/MacOS/AnodeApp"
+  check "and the helper beside it"                            present "$H/Applications/Anode.app/Contents/MacOS/AnodeHelper"
+  check "and the updater and the uninstaller the buttons run" bundled_scripts_ready "$H/Applications/Anode.app"
+  WANT_VERSION="$(checkout_version)"
+  check_all "it is the version the checkout says ($WANT_VERSION)" [ -n "$WANT_VERSION" ] -- [ "$(plist_value "$H/Applications/Anode.app/Contents/Info.plist" CFBundleShortVersionString)" = "$WANT_VERSION" ]
   # The security stub keeps every keychain change out of the run (see the stubs above), so the build finds no real
   # signing key and signs ad hoc; the app must still be signed and verify. Signing with the local identity is
   # what ./make-signing-identity.sh makes, and is not exercised here.
   check "it is signed, and the signature verifies"            codesign --verify --strict "$H/Applications/Anode.app"
-  run_uninstall "$H"
-  check "uninstall removes the app and the source"            [ ! -e "$H/Applications/Anode.app" ] && [ ! -e "$H/.anode" ]
+  run_bundled_uninstall "$H"
+  check "the uninstall exits cleanly"                         [ "$UNINSTALL_STATUS" -eq 0 ]
+  check "says Anode has been removed"                         has "✓ Anode has been removed."
+  PROBLEMS="$(printf '%s\n' "$OUT" | grep -iE "^left |$TROUBLE" || true)"
+  if [ -z "$PROBLEMS" ]; then ok "nothing it printed reads as a problem, and it left nothing it names"; else bad "nothing it printed reads as a problem, and it left nothing it names" "$PROBLEMS"; fi
+  check_all "the app and the source are gone"                 absent "$H/Applications/Anode.app" -- absent "$H/.anode"
   check "and the signing keychain"                            absent "$H/Library/Keychains/anode-signing.keychain-db"
+  check "and the install log"                                 absent "$H/Library/Logs/Anode-install.log"
+  # What may be left in the home folder: the folders a Mac's home has anyway (empty). Anything else, a file or a folder of
+  # Anode's own, is something the install made and the uninstall did not take away.
+  LEFT="$(cd "$H" && find . -mindepth 1 \( -type f -o -type l \) ! -path './Library/Keychains/.fl*' | sort; \
+          cd "$H" && find . -mindepth 1 -type d -empty | grep -vE '^\./(Applications|Library(/(Keychains|Logs|Caches|Preferences|Application Support|LaunchAgents))?)$' | sort)"
+  if [ -z "$LEFT" ]; then ok "nothing of the install is left in the home folder"; else bad "nothing of the install is left in the home folder" "$LEFT"; fi
+  check "the per-user cache folder is as it was before the install" [ "$(cd "$T/cache" && find . | sort)" = "$CACHE_BEFORE" ]
+  check "nothing it did reached a tool outside the stubs"     absent "$T/sudo-refused"
 fi
-
 echo
 echo "8. The stubs themselves"
 # Written to be read with the stubs' own verbs in mind: each of these would reach this Mac if the stub let it through.
@@ -1631,4 +1741,6 @@ echo
 check "the real login keychain list was not changed by any of this" [ "$("$T/shim/security" list-keychains 2>/dev/null)" = "$KEYCHAINS_BEFORE" ]
 echo
 echo "$PASS passed, $FAIL failed"
+# A --full run that failed keeps its folder next to the checkout, for the diagnosis; the next run makes a new one.
+if [ "$FAIL" -gt 0 ] && [ "$FULL" = 1 ]; then KEEP_T=1; echo "kept for the diagnosis: $T"; fi
 [ "$FAIL" -eq 0 ]
