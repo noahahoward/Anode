@@ -73,6 +73,8 @@ final class BatteryMenuPanel: NSPanel, BatteryMenuPresenting {
     private let content = BatteryMenuContentView()
     private var monitors: [Any] = []
     private var anchor = CGRect.zero
+    /// System uptime when the menu came up: an Esc pressed before that is not one that closes it (see `ClickAway.escapeCloses`).
+    private var openedAt: Double = 0
 
     var isOpen: Bool { isVisible }
 
@@ -110,16 +112,18 @@ final class BatteryMenuPanel: NSPanel, BatteryMenuPresenting {
 
     func show(_ model: BatteryMenuModel, below frame: CGRect) {
         anchor = frame
+        openedAt = ProcessInfo.processInfo.systemUptime
         content.apply(model)
         place()
         orderFrontRegardless()
         // A click anywhere else closes the menu.
-        if let click = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown], handler: { [weak self] _ in
-            self?.closeUnlessOnItem()
+        if let click = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown], handler: { [weak self] event in
+            self?.closeUnlessOnItem(event)
         }) { monitors.append(click) }
-        // Esc closes it, as it does macOS's own. Reads nothing but the key code and keeps nothing.
+        // Esc closes it, as it does macOS's own. Reads nothing but the key code and its time, and keeps nothing.
         if let esc = NSEvent.addGlobalMonitorForEvents(matching: [.keyDown], handler: { [weak self] event in
-            if event.keyCode == 53 { self?.controller?.closeMenu() }
+            guard let self, ClickAway.escapeCloses(keyCode: event.keyCode, eventTime: event.timestamp, openedAt: self.openedAt) else { return }
+            self.controller?.closeMenu()
         }) { monitors.append(esc) }
     }
 
@@ -141,15 +145,20 @@ final class BatteryMenuPanel: NSPanel, BatteryMenuPresenting {
         if fade { PanelFade.close(self) { orderOut(nil) } } else { orderOut(nil) }
     }
 
-    /// A click anywhere else closes the menu; a click on the icon is the icon's own toggle.
-    private func closeUnlessOnItem() {
+    /// A click anywhere else closes the menu; a plain click of the left button on the icon is the icon's own toggle (the click gate
+    /// takes it). Any other press on the icon (a right click, a Control-click) is macOS's, which opens its own context menu there: this
+    /// menu closes, and the two are never up together (see `ClickAway.closes`).
+    private func closeUnlessOnItem(_ event: NSEvent) {
         let p = NSEvent.mouseLocation
         guard let screen = NSScreen.screens.first else { return }
         let top = CGPoint(x: p.x, y: screen.frame.height - p.y)
-        if !anchor.contains(top) && !frame.contains(p) {
-            // Another icon of the menu bar takes the panel's place at once, as macOS's does; anywhere else the panel fades.
-            controller?.closeMenu(fade: ClickAway.fades(whenClickLandsOn: MenuBarHit.role(at: top)))
-        }
+        let onIcon = anchor.contains(top)
+        let plainLeft = event.type == .leftMouseDown && event.modifierFlags.intersection([.command, .option, .control]).isEmpty
+        guard ClickAway.closes(onIcon: onIcon, onMenu: frame.contains(p), plainLeftPress: plainLeft) else { return }
+        // On the icon, macOS's context menu takes this menu's place at once. Another icon of the menu bar does too, as macOS's panel
+        // is replaced; anywhere else the panel fades.
+        let fade = onIcon ? false : ClickAway.fades(whenClickLandsOn: MenuBarHit.role(at: top))
+        controller?.closeMenu(fade: fade)
     }
 
     /// Right edge a little past the icon's, top just under the menu bar, like macOS's.

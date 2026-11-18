@@ -243,10 +243,33 @@ final class SystemPanelDriver: SystemPanelDriving {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.1, execute: work)
     }
 
+    /// A menu a right click on one of the bar's icons opened (see `MenuBarContextMenu`): Escape is the only thing that closes it.
+    private func contextMenuIsOpen() -> Bool {
+        guard let pid = Self.pid(of: Self.controlCenter),
+              let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [[String: Any]] else { return false }
+        let windows = list.compactMap { w -> MenuBarContextMenu.Window? in
+            guard let owner = w[kCGWindowOwnerPID as String] as? Int32, let layer = w[kCGWindowLayer as String] as? Int,
+                  let b = w[kCGWindowBounds as String] as? NSDictionary, let bounds = CGRect(dictionaryRepresentation: b) else { return nil }
+            return .init(ownerPID: owner, layer: layer, bounds: bounds)
+        }
+        // Accessibility is asked only when a window could be one: macOS's own panel is a window of the same kind, and is told apart
+        // by being listed there.
+        guard MenuBarContextMenu.isOpen(windows: windows, owner: pid, panelIsOpen: false) else { return false }
+        return MenuBarContextMenu.isOpen(windows: windows, owner: pid, panelIsOpen: panelWindow() != nil)
+    }
+
     func closePanelOpenedByPerson() {
         dismissVolumeBanner()
         // A job of Anode's own has its panel on the screen for an instant before it is moved off: it is not the person's.
-        guard !busy, queue.isEmpty, panelOnScreen(), let panel = panelWindow() else { return }
+        guard !busy, queue.isEmpty else { return }
+        // A context menu of a bar icon (a right click) stays up when a click on the icon is taken for Anode's menu, which macOS
+        // never saw: macOS would have closed it with that click. Escape closes it; the menus ignore an Escape sent before they open.
+        if contextMenuIsOpen() {
+            log("closing the context menu the person opened, with Escape")
+            for down in [true, false] { CGEvent(keyboardEventSource: nil, virtualKey: 53, keyDown: down)?.post(tap: .cghidEventTap) }
+            return
+        }
+        guard panelOnScreen(), let panel = panelWindow() else { return }
         let panelRight = Self.frame(of: panel).maxX
         guard let agent = Self.application(Self.menuBarAgent), let bar = Self.element(Self.attribute(agent, "AXExtrasMenuBar")) else { return }
         // The panel's right edge is 10.5 pt past the right edge of the icon it hangs from (see `panelRegion`).

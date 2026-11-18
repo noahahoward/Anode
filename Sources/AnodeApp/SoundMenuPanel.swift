@@ -109,6 +109,8 @@ final class SoundMenuPanel: NSPanel, SoundMenuPresenting {
     private var monitors: [Any] = []
     private let volumeKeys = MediaKeyTap()
     private var anchor = CGRect.zero
+    /// System uptime when the menu came up: an Esc pressed before that is not one that closes it (see `ClickAway.escapeCloses`).
+    private var openedAt: Double = 0
 
     var isOpen: Bool { isVisible }
 
@@ -149,6 +151,7 @@ final class SoundMenuPanel: NSPanel, SoundMenuPresenting {
 
     func show(_ model: SoundMenuModel, below frame: CGRect) {
         anchor = frame
+        openedAt = ProcessInfo.processInfo.systemUptime
         stopGlide()
         content.apply(model)
         place()
@@ -156,14 +159,15 @@ final class SoundMenuPanel: NSPanel, SoundMenuPresenting {
         // The volume keys go to the menu while it is open, so macOS does not draw its own bubble beside it.
         volumeKeys.start { [weak self] key in self?.controller?.volumeKey(key.key) }
         // A click anywhere else closes the menu.
-        if let click = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown], handler: { [weak self] _ in
-            self?.closeUnlessOnItem()
+        if let click = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown], handler: { [weak self] event in
+            self?.closeUnlessOnItem(event)
         }) { monitors.append(click) }
         // Esc closes it, as it does macOS's own. The menu is never the key window (see `canBecomeKey`), so keys do not come to it;
         // this listens for the key only while the menu is open, reads nothing but the key code (never the characters typed) and
-        // keeps nothing. Without Accessibility macOS delivers no keys to it and Esc simply does nothing.
+        // its time, and keeps nothing. Without Accessibility macOS delivers no keys to it and Esc simply does nothing.
         if let esc = NSEvent.addGlobalMonitorForEvents(matching: [.keyDown], handler: { [weak self] event in
-            if event.keyCode == 53 { self?.close() }
+            guard let self, ClickAway.escapeCloses(keyCode: event.keyCode, eventTime: event.timestamp, openedAt: self.openedAt) else { return }
+            self.close()
         }) { monitors.append(esc) }
     }
 
@@ -216,16 +220,20 @@ final class SoundMenuPanel: NSPanel, SoundMenuPresenting {
         if fade { PanelFade.close(self) { orderOut(nil) } } else { orderOut(nil) }
     }
 
-    /// A click anywhere else closes the menu; a click on the icon is the icon's own toggle.
-    private func closeUnlessOnItem() {
+    /// A click anywhere else closes the menu; a plain click of the left button on the icon is the icon's own toggle (the click gate
+    /// takes it). Any other press on the icon (a right click, a Control-click) is macOS's, which opens its own context menu there: this
+    /// menu closes, and the two are never up together (see `ClickAway.closes`).
+    private func closeUnlessOnItem(_ event: NSEvent) {
         let p = NSEvent.mouseLocation
         guard let screen = NSScreen.screens.first else { return }
         let top = CGPoint(x: p.x, y: screen.frame.height - p.y)
-        if !anchor.contains(top) && !frame.contains(p) {
-            // Another icon of the menu bar takes the panel's place at once, as macOS's does; anywhere else the panel fades.
-            let fade = ClickAway.fades(whenClickLandsOn: MenuBarHit.role(at: top))
-            if let controller { controller.closeMenu(fade: fade) } else { close(fade: fade) }
-        }
+        let onIcon = anchor.contains(top)
+        let plainLeft = event.type == .leftMouseDown && event.modifierFlags.intersection([.command, .option, .control]).isEmpty
+        guard ClickAway.closes(onIcon: onIcon, onMenu: frame.contains(p), plainLeftPress: plainLeft) else { return }
+        // On the icon, macOS's context menu takes this menu's place at once. Another icon of the menu bar does too, as macOS's panel
+        // is replaced; anywhere else the panel fades.
+        let fade = onIcon ? false : ClickAway.fades(whenClickLandsOn: MenuBarHit.role(at: top))
+        if let controller { controller.closeMenu(fade: fade) } else { close(fade: fade) }
     }
 
     /// An edge a little past the icon's (the right one, or the left one for an icon far to the left: `PanelSides`), top just under
