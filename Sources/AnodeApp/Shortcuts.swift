@@ -319,8 +319,12 @@ final class KeybindCenter {
             for (shortcut, id) in store.table(for: o.commands) where built[shortcut] == nil { built[shortcut] = (name, id) }
         }
         lock.lock(); table = built; lock.unlock()
-        if (!owners.isEmpty || recorder != nil) { startTap() } else { stopTap() }
+        if Self.needsTap(table: built, recording: recorder != nil) { startTap() } else { stopTap() }
     }
+
+    /// The tap watches every key press on the Mac (and macOS 27.3 says "Accessing all apps" for it), so it runs only while there is a
+    /// shortcut to listen for, or one is being recorded: a feature registered with every shortcut cleared needs nothing. Pure.
+    static func needsTap<Value>(table: [Shortcut: Value], recording: Bool) -> Bool { !table.isEmpty || recording }
 
     /// The command a key press is bound to, if any. Pure, for tests.
     static func lookup(_ table: [Shortcut: String], key: Int, flags: CGEventFlags) -> String? {

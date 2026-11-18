@@ -1,5 +1,6 @@
 import AppKit
 import ApplicationServices
+import Carbon.HIToolbox
 import PowerKit
 
 // ── Snapping by dragging (Beta Features) ────────────────────────────────────
@@ -190,6 +191,8 @@ final class WindowDragSnapper {
     private let tapPort = TapPortBox()
     private var tap: CFMachPort? { tapPort.value }
     private var tapSource: CFRunLoopSource?
+    /// Reads Escape's state while a window is being dragged; nil the rest of the time.
+    private var escapeTimer: Timer?
     private let mailbox = SampleMailbox<Sample>()
     /// Accessibility lookups for a drag happen here, not on the main thread (an app that does not answer
     /// would hold the main thread for as long as the system waits).
@@ -235,9 +238,9 @@ final class WindowDragSnapper {
     private func start() {
         guard tap == nil else { return }
         let mask = (1 << CGEventType.leftMouseDown.rawValue) | (1 << CGEventType.leftMouseDragged.rawValue)
-            | (1 << CGEventType.leftMouseUp.rawValue) | (1 << CGEventType.keyDown.rawValue)
-        // An active tap that passes everything on untouched: it needs only Accessibility, which listening
-        // to keys would otherwise want a second permission for.
+            | (1 << CGEventType.leftMouseUp.rawValue)
+        // An active tap that passes everything on untouched: it needs only Accessibility. It watches the mouse alone: it used to
+        // watch every key press too, only to catch Escape, and a tap sits in the path of each of them (see `watchEscape`).
         // The session tap, not the HID one: by then the system has worked out which window each mouse event is
         // for, and stamped it on the event, which is how the dragged window is found.
         guard let t = CGEvent.tapCreate(tap: .cgSessionEventTap, place: .headInsertEventTap, options: .defaultTap,
@@ -272,9 +275,7 @@ final class WindowDragSnapper {
         case .leftMouseDown, .leftMouseDragged, .leftMouseUp:
             post(Sample(type: type, point: event.location,
                         windowUnder: CGWindowID(max(0, event.getIntegerValueField(.mouseEventWindowUnderMousePointerThatCanHandleThisEvent))),
-                        keyCode: 0, flags: event.flags), isMove: type == .leftMouseDragged)
-        case .keyDown:
-            post(Sample(type: type, point: .zero, windowUnder: 0, keyCode: event.getIntegerValueField(.keyboardEventKeycode)), isMove: false)
+                        flags: event.flags), isMove: type == .leftMouseDragged)
         default:
             break
         }
@@ -294,11 +295,11 @@ final class WindowDragSnapper {
         let type: CGEventType
         let point: CGPoint
         let windowUnder: CGWindowID
-        let keyCode: Int64
         var flags: CGEventFlags = []
     }
 
     private func reset() {
+        escapeTimer?.invalidate(); escapeTimer = nil
         generation &+= 1
         window = nil; windowID = nil; startFrame = nil
         moving = false; cancelled = false; zone = nil; topSince = nil; lastFrame = nil; lastFlags = []
@@ -311,12 +312,28 @@ final class WindowDragSnapper {
         case .leftMouseDown: began(event)
         case .leftMouseDragged: dragged(event)
         case .leftMouseUp: ended(event)
-        case .keyDown:
-            // Escape while dragging: no snap for this drag.
-            if event.keyCode == 53, windowID != nil { cancelled = true; zone = nil; footprint.hide() }
         default: break
         }
     }
+
+    /// Escape while a window is being dragged: no snap for this drag. Its state is read every frame (16 ms), only while the window is
+    /// moving, rather than watched for with the tap: a tap that watched keys sat in the path of every key press on the Mac. A key
+    /// state needs no permission (a global key monitor would need Input Monitoring).
+    private func watchEscape() {
+        escapeTimer?.invalidate()
+        let timer = Timer(timeInterval: 0.016, repeats: true) { [weak self] _ in
+            guard let self, self.windowID != nil else { return }
+            let held = CGEventSource.keyState(.combinedSessionState, key: CGKeyCode(kVK_Escape))
+            if Self.escapeCancels(held: held, moving: self.moving, alreadyCancelled: self.cancelled) {
+                self.cancelled = true; self.zone = nil; self.footprint.hide()
+            }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        escapeTimer = timer
+    }
+
+    /// Whether Escape being held ends this drag's chance of a snap: only for a window that is moving, once. Pure.
+    static func escapeCancels(held: Bool, moving: Bool, alreadyCancelled: Bool) -> Bool { held && moving && !alreadyCancelled }
 
     /// Whether a click on a window of `pid` has its window looked up through accessibility. Not for an app Ultra Low Power Mode
     /// has stopped: it can still have a window on screen (its hide was refused or late), the question would wait for the whole
@@ -364,6 +381,7 @@ final class WindowDragSnapper {
             let resized = abs(now.width - start.width) > 2 || abs(now.height - start.height) > 2
             guard moved && !resized else { return }
             moving = true
+            watchEscape()
             // A snapped window dragged away gets its old size back, under the pointer.
             if let snapped = snappedWindows[id], abs(start.width - snapped.placed.width) < 3,
                abs(start.height - snapped.placed.height) < 3 {

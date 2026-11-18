@@ -7,6 +7,10 @@ feature or a visible change in how something works, the first only for a rewrite
 Nothing was bumped between 1.0.0 and 1.15.0. Those versions were assigned afterwards from the history and exist as
 git tags (`git show v1.7.0`); builds made before 1.15.0 still say 1.0.0 in their About box.
 
+## 1.25.1 — 2026-11-18
+- Typing costs Anode less. Dragging a window toward a screen edge (Window Actions) used to be watched by a listener that also saw every key press; it now watches only the mouse, and Escape is checked directly while a window is being dragged. Measured while typing: Anode's processor use and energy fell by about a quarter to a third, and key presses pass through Anode's listeners 5–8 % faster. Dragging, the snap outline and snapping after you let go are unchanged, and Escape still cancels a snap.
+- Anode's shared shortcut listener now runs only while at least one shortcut is set (or while you are recording one). With every shortcut removed, Anode no longer watches the keyboard for them at all.
+
 ## 1.25.0 — 2026-11-17
 - Beta Features now says, under every feature that watches the keyboard or mouse, that macOS 27.3 and later will show "Accessing all apps" for Anode in the menu bar while it is on, and why: the window and desktop switchers, Window Actions and Window Groups, the Sound and Battery menus (when they open from macOS's own icons), Ultra Low Power Mode, Live Wallpapers, the Menu Bar Hider and the Keyboard & Screen Cleaner.
 - The welcome notice and the Sound and Battery menus no longer say that wording comes from Accessibility. Reading other apps through Accessibility is named app by app ("Accessing Dock"); "all apps" is what macOS says for anything that watches every key press or click, and the notes now say so.
