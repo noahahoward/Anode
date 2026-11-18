@@ -424,6 +424,9 @@ final class UltraLowPowerWiringTests: XCTestCase {
     }
 
     func testTheLiveReaderTakesThePidFromTheNotification() {
+        // NSRunningApplication.current is this process only once NSApplication exists (it is -1 before): in a process of
+        // its own, with no other test run first, it has to be made here.
+        _ = NSApplication.shared
         let note = Notification(name: NSWorkspace.didActivateApplicationNotification, object: nil,
                                 userInfo: [NSWorkspace.applicationUserInfoKey: NSRunningApplication.current])
         XCTAssertEqual(UltraLowPowerRuntime.liveAppPID(note), getpid())

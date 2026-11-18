@@ -7,6 +7,9 @@ feature or a visible change in how something works, the first only for a rewrite
 Nothing was bumped between 1.0.0 and 1.15.0. Those versions were assigned afterwards from the history and exist as
 git tags (`git show v1.7.0`); builds made before 1.15.0 still say 1.0.0 in their About box.
 
+## 1.25.2 — 2026-11-18
+- Nothing changes in Anode itself. The checks run before every release now take about two minutes instead of ten (the whole test run uses the Mac's cores at once, and the install and uninstall scripts no longer sit through real one-second pauses), so a fix can reach you sooner.
+
 ## 1.25.1 — 2026-11-18
 - Typing costs Anode less. Dragging a window toward a screen edge (Window Actions) used to be watched by a listener that also saw every key press; it now watches only the mouse, and Escape is checked directly while a window is being dragged. Measured while typing: Anode's processor use and energy fell by about a quarter to a third, and key presses pass through Anode's listeners 5–8 % faster. Dragging, the snap outline and snapping after you let go are unchanged, and Escape still cancels a snap.
 - Anode's shared shortcut listener now runs only while at least one shortcut is set (or while you are recording one). With every shortcut removed, Anode no longer watches the keyboard for them at all.

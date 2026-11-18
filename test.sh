@@ -17,13 +17,13 @@
 # Mac's own install, keychain or settings: they run in a home of their own (a temporary folder; for --full, a new one next to
 # the checkout), and --full looks at this Mac's own Anode before and after to be sure.
 #
-# A test that hangs (a socket nobody answers, a run loop nobody turns) would hang the whole run. XCTest's own
-# `executionTimeAllowance` is not enforced by `swift test` (measured: a test that sleeps 6 s with an allowance of 1 s
-# passes), so this watches the run itself: a test case that has been running for ANODE_TEST_LIMIT seconds (default 240;
-# the slowest honest one takes about a minute) ends the run, and the failure names it. Ending a run is TERM to the
-# whole process tree, then KILL to what is still there 5 seconds later: tests in this package set TERM to ignored
-# (HelperSignals.routeToStop), and a main thread that hangs never handles it. test.sh does not wait for anything that
-# can no longer exit.
+# The suite runs as `swift test --parallel`: each test case in a process of its own, all the Mac's cores at once.
+# A test that hangs (a socket nobody answers, a run loop nobody turns) would hang the whole run, and XCTest's own
+# `executionTimeAllowance` is not enforced by `swift test` (measured), so this watches the test processes: one that
+# has been running for ANODE_TEST_LIMIT seconds (default 240; the slowest honest one takes a few) ends the run, and the
+# failure names it. Ending a run is TERM to the whole process tree, then KILL to what is still there 5 seconds later:
+# tests in this package set TERM to ignored (HelperSignals.routeToStop), and a main thread that hangs never handles it.
+# test.sh does not wait for anything that can no longer exit.
 # A hang outside a test case (the build, a class's set-up or tear-down) shows no test case running, so the whole
 # run also has a limit: ANODE_TEST_TOTAL_LIMIT seconds (default 1800), and the failure says where it stopped.
 # ANODE_TEST_FILTER=<name> passes `--filter <name>` to `swift test`.
@@ -51,6 +51,7 @@ BUILD_LOG="$(mktemp)"
 LIMIT="${ANODE_TEST_LIMIT:-240}"
 TOTAL_LIMIT="${ANODE_TEST_TOTAL_LIMIT:-1800}"
 TEST_PID=""; WATCH_PID=""; OVERALL_PID=""; BUILD_PID=""
+SUITE_NAMES=(); SUITE_PIDS=(); SUITE_LOGS=()   # the shell suites run beside the XCTest run (below)
 KILL_GRACE=5
 
 # kill_tree PID: the process and everything it started. TERM to all of them, and KILL to the ones still there after
@@ -73,7 +74,7 @@ kill_tree() {
   done
   for p in $pids; do kill -KILL "$p" 2>/dev/null || true; done
 }
-trap '[ -n "$WATCH_PID" ] && kill "$WATCH_PID" 2>/dev/null; [ -n "$OVERALL_PID" ] && kill_tree "$OVERALL_PID"; [ -n "$BUILD_PID" ] && kill_tree "$BUILD_PID"; [ -n "$TEST_PID" ] && kill_tree "$TEST_PID"; rm -f "$LOG" "$STALLED" "$TIMED_OUT" "$BUILD_LOG"' EXIT
+trap '[ -n "$WATCH_PID" ] && kill "$WATCH_PID" 2>/dev/null; [ -n "$OVERALL_PID" ] && kill_tree "$OVERALL_PID"; [ -n "$BUILD_PID" ] && kill_tree "$BUILD_PID"; [ -n "$TEST_PID" ] && kill_tree "$TEST_PID"; for p in ${SUITE_PIDS[@]+"${SUITE_PIDS[@]}"}; do kill -0 "$p" 2>/dev/null && kill_tree "$p"; done; rm -f "$LOG" "$STALLED" "$TIMED_OUT" "$BUILD_LOG" ${SUITE_LOGS[@]+"${SUITE_LOGS[@]}"}' EXIT
 
 # overall PARENT: after TOTAL_LIMIT seconds the run is over whatever it is doing, including what no test case shows
 # (the build, a class's set-up or tear-down): everything PARENT started, except this watcher, is killed, and TIMED_OUT
@@ -117,10 +118,9 @@ ended_by_a_watchdog() {
       "a timer or a run loop that never comes hangs the whole suite; this is the one." >&2
   else
     wait "$OVERALL_PID" 2>/dev/null || true
-    local last where="No test case had reported yet."
-    last="$(sed 's/\x1b\[[0-9;]*m//g' "$LOG" 2>/dev/null | grep -E "^Test Case '.*' (started|passed|failed|skipped)" \
-      | tail -n 1 || true)"
-    [ -n "$last" ] && where="The last test case XCTest reported: $last"
+    local last where="No test case had finished yet."
+    last="$(sed 's/\x1b\[[0-9;]*m//g' "$LOG" 2>/dev/null | grep -E '^\[[0-9]+/[0-9]+\] Testing ' | tail -n 1 || true)"
+    [ -n "$last" ] && where="The last test case that finished: $last"
     echo "✗ the run was still going after $(cat "$TIMED_OUT") s (ANODE_TEST_TOTAL_LIMIT), so it was stopped. No single" \
       "test case ran past its own limit, so what hung is outside one: the build, or a test class's set-up or tear-down." \
       "$where" >&2
@@ -128,6 +128,30 @@ ended_by_a_watchdog() {
   WATCH_PID=""; OVERALL_PID=""; TEST_PID=""; BUILD_PID=""
   exit 1
 }
+
+# The two shell suites (Tests/installer-tests.sh and Tests/watchdog-tests.sh) are most of the XCTest run's time and spend it
+# waiting, not computing; each runs in a home or folder of its own and shares nothing with it. So they run BESIDE the build
+# and the XCTest run, and the XCTest wrappers that would run them again (InstallerScriptTests, TestRunnerWatchdogTests) skip
+# themselves when ANODE_SHELL_SUITES is set. It is also set for what the suites start (watchdog-tests.sh runs this very
+# script against a stand-in `swift`, which must not start them again). Under ANODE_TEST_FILTER only what was asked for runs,
+# and a plain `swift test` runs the wrappers as before.
+# With --full the installer suite runs as `installer-tests.sh --full`: the same scenarios and then the real install (its own
+# compile, in a clone) and the installed app's own Uninstall button, which need nothing of the XCTest run and are driven
+# through the test copy's own windows (by Accessibility, per process), so they go beside it too, not after it.
+SUITES_BESIDE=0
+if [ -z "${ANODE_TEST_FILTER:-}" ] && [ -z "${ANODE_SHELL_SUITES:-}" ]; then
+  export ANODE_SHELL_SUITES=beside
+  SUITES_BESIDE=1
+  for suite in installer-tests watchdog-tests; do
+    [ -x "Tests/$suite.sh" ] || continue
+    suite_args=()
+    [ "$suite" = installer-tests ] && [ "$MODE" = "--full" ] && suite_args=(--full)
+    suite_log="$(mktemp)"
+    SUITE_NAMES+=("$suite"); SUITE_LOGS+=("$suite_log")
+    "Tests/$suite.sh" ${suite_args[@]+"${suite_args[@]}"} > "$suite_log" 2>&1 &
+    SUITE_PIDS+=("$!")
+  done
+fi
 
 if [ "$MODE" != "--quick" ]; then
   step "building every product (release)"
@@ -142,36 +166,40 @@ if [ "$MODE" != "--quick" ]; then
 fi
 
 step "running the test suite"
-# watch PID LOG LIMIT OUT: while PID runs, note which test case XCTest last said it started; one that has been
-# running for LIMIT seconds is written to OUT and the whole run is stopped. XCTest says "started" and "passed" or
-# "failed" for each test case as it goes (NSUnbufferedIO below keeps those lines from sitting in a buffer).
+# watch PID LIMIT OUT: while PID (`swift test --parallel`) runs, look every 2 seconds at the test processes it started. Each
+# is `xctest -XCTest Module.Class/test <bundle>`, one test case to a process, so its own age says how long that test case
+# has been running; one that has been running for LIMIT seconds is written to OUT, as -[Module.Class test], and the whole
+# run is stopped. (ps's elapsed time is [[days-]hours:]minutes:seconds.)
 watch() {
-  local pid="$1" log="$2" limit="$3" out="$4" current="" since=$SECONDS line
+  local pid="$1" limit="$2" out="$3" pids found
   while kill -0 "$pid" 2>/dev/null; do
     sleep 2
-    line="$(tail -n 100 "$log" 2>/dev/null | sed 's/\x1b\[[0-9;]*m//g' \
-      | grep -E "^Test Case '.*' (started|passed|failed|skipped)" | tail -n 1 || true)"
-    case "$line" in
-      *" started.")
-        if [ "$line" != "$current" ]; then
-          current="$line"; since=$SECONDS
-        elif [ $((SECONDS - since)) -ge "$limit" ]; then
-          printf '%s' "$line" | sed -E "s/^Test Case '(.*)' started\.$/\1/" > "$out"
-          kill_tree "$pid"
-          return 0
-        fi ;;
-      *) current="" ;;
-    esac
+    pids="$(tree_pids "$pid" | paste -sd, -)"
+    found="$(ps -o etime=,args= -p "$pids" 2>/dev/null | awk -v limit="$limit" '
+      function secs(t,   d, a, p, n, i, s) {
+        d = 0; if (t ~ /-/) { split(t, a, "-"); d = a[1]; t = a[2] }
+        n = split(t, p, ":"); s = 0; for (i = 1; i <= n; i++) s = s * 60 + p[i]
+        return d * 86400 + s
+      }
+      { for (i = 2; i < NF; i++) if ($i == "-XCTest" && secs($1) >= limit) { print $(i + 1); exit } }' || true)"
+    if [ -n "$found" ]; then
+      printf '%s' "$found" | sed -E 's#^(.*)/([^/]*)$#-[\1 \2]#' > "$out"
+      kill_tree "$pid"
+      return 0
+    fi
   done
 }
 
-# One process, not `--parallel`: FanHelperLaunchTests writes the real start-fan-helper.command in Application
-# Support, and two test processes racing over that one file fail at random. Serial is about 25 s slower and does not.
+# `--parallel`: a process to each test case, as many at once as the Mac has cores. The run was one process, because tests
+# raced over the real start-fan-helper.command; they no longer can (a test run's Application Support is a folder of the
+# process's own, AnodeFiles.applicationSupport, and its settings are in memory, VolatileDefaults), and a test that only
+# passed after another had set something up (NSApplication.shared) now fails alone, where it can be seen and fixed.
+# The run was 280 s on one core; this is about 55 s, with the cores busy instead of waiting.
 FILTER=()
 [ -n "${ANODE_TEST_FILTER:-}" ] && FILTER=(--filter "$ANODE_TEST_FILTER")
-NSUnbufferedIO=YES swift test ${FILTER[@]+"${FILTER[@]}"} > "$LOG" 2>&1 &
+swift test --parallel ${FILTER[@]+"${FILTER[@]}"} > "$LOG" 2>&1 &
 TEST_PID=$!
-watch "$TEST_PID" "$LOG" "$LIMIT" "$STALLED" &
+watch "$TEST_PID" "$LIMIT" "$STALLED" &
 WATCH_PID=$!
 await "$TEST_PID" || ended_by_a_watchdog
 TEST_STATUS="$AWAITED"
@@ -180,7 +208,8 @@ wait "$WATCH_PID" 2>/dev/null || true
 { kill_tree "$OVERALL_PID"; wait "$OVERALL_PID"; } 2>/dev/null || true   # (the shell's "Terminated" notice is not news)
 WATCH_PID=""; TEST_PID=""; OVERALL_PID=""
 if [ "$TEST_STATUS" -eq 0 ]; then
-  grep -E "Executed [0-9]+ tests?" "$LOG" | tail -1 | sed 's/^[[:space:]]*//'
+  # A parallel run prints a line a test case as each finishes, "[n/N] Testing Module.Class/test", and no total.
+  printf '%s tests passed\n' "$(grep -cE '^\[[0-9]+/[0-9]+\] Testing ' "$LOG" || true)"
 else
   # Only what failed, not several thousand lines of passes.
   sed 's/\x1b\[[0-9;]*m//g' "$LOG" | grep -E "error:|failed|Fatal|Executed [0-9]+ tests?" | grep -v "^\[" | tail -25 >&2
@@ -188,7 +217,30 @@ else
   exit 1
 fi
 
-if [ "$MODE" = "--full" ]; then
+# The shell suites started beside it: normally finished long before (they are shorter), and given LIMIT seconds more if not.
+SUITES_FAILED=0
+i=0
+for suite_pid in ${SUITE_PIDS[@]+"${SUITE_PIDS[@]}"}; do
+  suite="${SUITE_NAMES[$i]}"; suite_log="${SUITE_LOGS[$i]}"; i=$((i + 1))
+  waited=0
+  while kill -0 "$suite_pid" 2>/dev/null && [ "$waited" -lt "$LIMIT" ]; do sleep 1; waited=$((waited + 1)); done
+  if kill -0 "$suite_pid" 2>/dev/null; then
+    kill_tree "$suite_pid"
+    echo "✗ Tests/$suite.sh was still running ${LIMIT} s after the XCTest run ended, so it was stopped" >&2
+    SUITES_FAILED=1
+  elif wait "$suite_pid"; then
+    printf '%s: %s\n' "$suite" "$(grep -E ' passed, [0-9]+ failed' "$suite_log" | tail -1 | sed 's/^[[:space:]]*//')"
+  else
+    grep -E "FAIL|passed|✗|kept for the diagnosis" "$suite_log" >&2 || tail -20 "$suite_log" >&2
+    echo "✗ Tests/$suite.sh failed" >&2
+    SUITES_FAILED=1
+  fi
+done
+SUITE_PIDS=()
+[ "$SUITES_FAILED" -eq 0 ] || exit 1
+
+# (Only when the suites did not run beside the XCTest run: under ANODE_TEST_FILTER, or started by another test.sh.)
+if [ "$MODE" = "--full" ] && [ "$SUITES_BESIDE" = 0 ]; then
   step "a real install and uninstall (compiles the app)"
   if FULL_OUT="$(Tests/installer-tests.sh --full 2>&1)"; then
     printf '%s\n' "$FULL_OUT" | tail -1

@@ -240,6 +240,13 @@ case "\$1" in
 esac
 EOF
 chmod +x "$T"/shim/*
+# A `sleep` that returns at once, for the scripts run through run_anode (not in shim/, which is first on the PATH of this
+# whole file, whose own polling loops need the real one). The uninstaller waits a second after asking Anode to quit and
+# a second between looks for it: about a second a run, in a hundred runs. What it waits FOR is answered by the stubs
+# (the ps stub counts its asks), not by the clock, so nothing is lost.
+mkdir -p "$T/shim-nosleep"
+printf '#!/bin/sh\nexit 0\n' > "$T/shim-nosleep/sleep"
+chmod +x "$T/shim-nosleep/sleep"
 # END STUBS
 
 # ── Everything from here on lands on the stubs, whatever a scenario does ────
@@ -285,7 +292,7 @@ run_anode() {   # run_anode HOME SCRIPT [ARGS…]: prints the script's output; r
   local home="$1" script="$2"; shift 2
   local app="$home/Applications/Anode.app/Contents/MacOS/AnodeApp" got tool var checkout
   local -a e
-  e=(HOME="$home" PATH="${SCENARIO_PATH:+$SCENARIO_PATH:}$T/shim:$PATH" ${SCENARIO_ENV[@]+"${SCENARIO_ENV[@]}"})
+  e=(HOME="$home" PATH="${SCENARIO_PATH:+$SCENARIO_PATH:}$T/shim-nosleep:$T/shim:$PATH" ${SCENARIO_ENV[@]+"${SCENARIO_ENV[@]}"})
   for tool in $GUARDED_TOOLS; do
     got="$(env -u BASH_ENV -u ENV "${e[@]}" bash -c 'command -v "$1"' _ "$tool" 2>/dev/null)"
     [ "$got" = "$T/shim/$tool" ] || { guard_fail "the $tool stub is not what the script would run (found '$got')"; return 1; }

@@ -6,6 +6,10 @@ import XCTest
 final class InstallerScriptTests: XCTestCase {
 
     func testInstallAndUninstallScripts() throws {
+        // `./test.sh` runs this script itself, beside the XCTest run (it is a minute of waiting, not of work); a plain
+        // `swift test` has no one to do that, so it runs here.
+        try XCTSkipIf(ProcessInfo.processInfo.environment["ANODE_SHELL_SUITES"] != nil,
+                      "test.sh runs Tests/installer-tests.sh beside this run")
         let root = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
         let script = root.appendingPathComponent("Tests/installer-tests.sh")

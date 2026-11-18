@@ -119,6 +119,9 @@ final class WallpaperSurfaceTests: XCTestCase {
         var p = WallpaperPrefs(); p.muted = true
         s.apply(p)
         try await waitForAudioTracks(of: s.player)
+        // The surface switches the tracks off as they load, a moment after they appear: waited for, as the two steps below
+        // are, not asserted on the instant they show (on a busy Mac that instant comes first).
+        try await waitUntil { self.audioTracks(of: s.player).allSatisfy { !$0.isEnabled } }
         XCTAssertTrue(audioTracks(of: s.player).allSatisfy { !$0.isEnabled }, "muted: every audio track is off")
         p.muted = false
         s.apply(p)

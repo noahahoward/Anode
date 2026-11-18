@@ -5,6 +5,9 @@ import XCTest
 final class TestRunnerWatchdogTests: XCTestCase {
 
     func testTheRunnerStopsAndNamesATestThatNeverEnds() throws {
+        // `./test.sh` runs this script itself, beside the XCTest run; a plain `swift test` runs it here.
+        try XCTSkipIf(ProcessInfo.processInfo.environment["ANODE_SHELL_SUITES"] != nil,
+                      "test.sh runs Tests/watchdog-tests.sh beside this run")
         let root = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
         let script = root.appendingPathComponent("Tests/watchdog-tests.sh")

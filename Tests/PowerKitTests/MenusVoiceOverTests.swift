@@ -7,6 +7,12 @@ final class MenusVoiceOverTests: XCTestCase {
 
     private let frame = NSRect(x: 0, y: 0, width: 280, height: 32)
 
+    /// The rows read NSApp (their appearance). In a process of its own, with no other test run first, it does not exist yet.
+    override func setUp() {
+        super.setUp()
+        _ = NSApplication.shared
+    }
+
     func testAModeRowIsACheckboxWithItsNameAndWhetherItIsOn() {
         let on = ModeRow(frame: frame, mode: .init(id: "low", title: "Low Power", isSelected: true))
         XCTAssertTrue(on.isAccessibilityElement())
