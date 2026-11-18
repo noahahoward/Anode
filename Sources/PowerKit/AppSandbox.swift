@@ -5,8 +5,9 @@ import Foundation
 /// and would otherwise share what is theirs:
 ///
 ///   * its settings are kept in memory (`Settings.appDefaults`), not in `com.anode.settings`;
-///   * it makes none of the first-run offers (the welcome, the automatic-update question, the helper), the last of which
-///     asks for the Mac's password;
+///   * it makes none of the first-run offers that ask something of the Mac (the automatic-update question, which reads the
+///     checkout, and the helper, which asks for the Mac's password); the welcome notice, which has one button, is shown, as on
+///     any fresh install, and the test looks at it;
 ///   * it leaves the login item alone: `LoginAgent` boots out a launchd job by a label the person's Anode shares;
 ///   * the Terminal window its Uninstall button opens runs the uninstaller through a "door" the test wrote, which gives the
 ///     script the test's stand-ins for every tool that reaches the Mac (the real uninstaller quits an Anode by the

@@ -1611,6 +1611,9 @@ TROUBLE='error|warning|fatal|fail|denied|not found|no such file|cannot|can.t|✗
 # Read-only looks at files, which name the scripts without running one; kept out of the check that guards the calls.
 bundled_scripts_ready() { [ -x "$1/Contents/Resources/update.sh" ] && [ -x "$1/Contents/Resources/uninstall.sh" ]; }
 checkout_version() { sed -n 's/^VERSION="\([0-9.]*\)".*/\1/p' "$ROOT/build-app.sh" | head -1; }
+# The welcome notice's title and button, read from the source that draws them, so that a change to either is not a change to this file.
+welcome_title()  { sed -n 's/.*static let title = "\(.*\)"$/\1/p' "$ROOT/Sources/PowerKit/FirstRunWelcome.swift" | head -1; }
+welcome_button() { sed -n 's/.*static let button = "\(.*\)"$/\1/p' "$ROOT/Sources/PowerKit/FirstRunWelcome.swift" | head -1; }
 
 # ── The test copy of the app, started and driven through its own windows ────
 # What follows runs an app and Accessibility, and reads this Mac's own state: none of which the stubs reach. Each piece is
@@ -1733,6 +1736,8 @@ start_test_copy() {   # start_test_copy HOME APP: the pid in UI_PID
   REAL_PIDS+=("$UI_PID"); echo "$UI_PID" >> "$T/test-pids"
 }
 # END STUBS
+# What a fresh install's welcome says it may ask of the Mac, as the notice has it (the permissions, and the helper's password).
+welcome_says() { ui text "$1" "Accessibility" 5 && ui text "$1" "Screen Recording" 5 && ui text "$1" "Anode helper" 5; }
 no_compiler_errors() { ! grep -qE '\.swift:[0-9]+:[0-9]+: error:' "$1"; }
 plist_value() { /usr/bin/plutil -extract "$2" raw -o - "$1" 2>/dev/null; }
 alive() { kill -0 "$1" 2>/dev/null; }
@@ -1810,6 +1815,11 @@ if [ "$FULL" = 1 ]; then
     UI_OK=1
     ui_step "the copy starts and is running"                  wait_until 10 alive "$UI_PID"
     ui_step "its window opens"                                ui window "$UI_PID" Anode 60
+    # A fresh install is welcomed first (the copy's settings are new, in memory): the notice, then nothing else asked of the Mac.
+    ui_step "the welcome notice of a fresh install appears"   ui text "$UI_PID" "$(welcome_title)" 30
+    ui_step "…and says what Anode may ask of the Mac"         welcome_says "$UI_PID"
+    ui_step "…and is answered with its button"                ui press "$UI_PID" "$(welcome_button)" 15
+    ui_step "…and goes away"                                  ui absent "$UI_PID" "$(welcome_title)" 15
     ui_step "Settings opens from its Settings menu"           ui menu "$UI_PID" Settings "Open Settings…"
     ui_step "…and the Uninstall button is pressed"            ui press "$UI_PID" "Uninstall Anode…" 30
     ui_step "…and its question is answered Uninstall"         ui press "$UI_PID" "Uninstall" 30

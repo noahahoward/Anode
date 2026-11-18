@@ -8,6 +8,8 @@
 //   anode-ui window PID TITLE SECONDS         wait for a window titled TITLE
 //   anode-ui menu PID TOP ITEM                press ITEM in the menu bar's TOP menu
 //   anode-ui press PID TITLE SECONDS          wait for a button titled TITLE (exactly), then press it
+//   anode-ui text PID PART SECONDS            wait for any text on screen (a title, label or value) containing PART
+//   anode-ui absent PID PART SECONDS          wait for no text on screen to contain PART
 //   anode-ui list PID                         what is on screen, for the diagnosis
 //
 // Exit status: 0 done, 1 not found in time, 2 wrong use, 3 Accessibility is not granted to the process that runs this.
@@ -55,6 +57,21 @@ func find(_ app: AXUIElement, role: String, title: String) -> AXUIElement? {
     return nil
 }
 
+/// Whether any element in the app's windows has a title, description or value containing `part`.
+func showsText(_ app: AXUIElement, _ part: String) -> Bool {
+    for w in windows(app) {
+        var hit = false
+        walk(w) { e, _ in
+            if hit { return }
+            for name in [kAXTitleAttribute, kAXDescriptionAttribute, kAXValueAttribute] {
+                if text(e, name).contains(part) { hit = true; return }
+            }
+        }
+        if hit { return true }
+    }
+    return false
+}
+
 let args = CommandLine.arguments
 guard args.count >= 2 else { FileHandle.standardError.write(Data("usage: anode-ui trusted|window|menu|press|list …\n".utf8)); exit(2) }
 
@@ -71,6 +88,14 @@ switch args[1] {
 case "window":
     guard args.count >= 5, let seconds = Double(args[4]) else { exit(2) }
     exit(waitFor(seconds) { windows(app).contains { titleOf($0) == args[3] } } ? 0 : 1)
+
+case "text":
+    guard args.count >= 5, let seconds = Double(args[4]) else { exit(2) }
+    exit(waitFor(seconds) { showsText(app, args[3]) } ? 0 : 1)
+
+case "absent":
+    guard args.count >= 5, let seconds = Double(args[4]) else { exit(2) }
+    exit(waitFor(seconds) { !showsText(app, args[3]) } ? 0 : 1)
 
 case "menu":
     guard args.count >= 5 else { exit(2) }

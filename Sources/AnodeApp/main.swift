@@ -682,7 +682,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
 
     /// A fresh install has not been welcomed yet (`FirstRunWelcome.isDue`).
     private var welcomeIsOwed: Bool {
-        !AppSandbox.isOn && FirstRunWelcome.isDue(welcomeSeen: Settings.shared.welcomeSeen, autoUpdatePromptSeen: Settings.shared.autoUpdatePromptSeen,
+        FirstRunWelcome.isDue(welcomeSeen: Settings.shared.welcomeSeen, autoUpdatePromptSeen: Settings.shared.autoUpdatePromptSeen,
                               helperOfferedForBuild: UserDefaults.standard.string(forKey: HelperOfferAtLaunch.offeredKey) ?? "")
     }
 

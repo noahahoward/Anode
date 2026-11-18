@@ -85,9 +85,14 @@ final class AppSandboxTests: XCTestCase {
         XCTAssertTrue(text.contains("if !AppSandbox.isOn { ChargeController.current?.restoreForUninstall() }"))
     }
 
-    func testTheFirstRunOffersAreNotMadeInTheSandbox() throws {
+    // The welcome notice asks for nothing (it has one button, Continue), so the test copy shows it and the test looks at it; the
+    // two first-run offers that do ask (the automatic-update question reads the checkout, the helper's wants the Mac's password)
+    // are not made.
+    func testTheWelcomeIsShownInTheSandboxAndTheOffersThatAskAreNot() throws {
         let main = try source("Sources/AnodeApp/main.swift")
-        XCTAssertTrue(main.contains("!AppSandbox.isOn && FirstRunWelcome.isDue("))
+        let owed = try XCTUnwrap(main.range(of: "private var welcomeIsOwed: Bool {"))
+        let owedBody = String(main[owed.upperBound...].prefix(400))
+        XCTAssertFalse(owedBody.contains("AppSandbox"), "the welcome is due in the test copy, as on any fresh install")
         XCTAssertTrue(main.contains("guard !AppSandbox.isOn, !Settings.shared.autoUpdatePromptSeen, AutoUpdater.shared.isAvailable"))
         let helper = try source("Sources/AnodeApp/HelperOfferAtLaunch.swift")
         XCTAssertTrue(helper.contains("canInstall: { FanControlPanel.helperIsBundled && !AppSandbox.isOn }"))
