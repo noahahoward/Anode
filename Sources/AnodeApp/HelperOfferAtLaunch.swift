@@ -73,7 +73,7 @@ final class HelperOfferAtLaunch {
             thisBuild: build,
             offeredForBuild: { defaults.string(forKey: offeredKey) ?? "" },
             rememberOffered: { defaults.set($0, forKey: offeredKey) },
-            canInstall: { FanControlPanel.helperIsBundled },
+            canInstall: { FanControlPanel.helperIsBundled && !AppSandbox.isOn },
             isInstalled: { FanDaemon.isInstalled() },
             greet: { done in
                 // Its own claim on the shared connection, let go as soon as the helper has answered: an installed helper

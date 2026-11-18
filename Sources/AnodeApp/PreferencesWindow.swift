@@ -426,7 +426,7 @@ private final class GeneralPane: Pane {
         guard alert.runModal() == .alertFirstButtonReturn else { return }
         // Before the uninstaller can stop the helper: put macOS's own charge limit and Optimized Battery Charging
         // back as Charge Control found them, since they would outlive the app.
-        ChargeController.current?.restoreForUninstall()
+        if !AppSandbox.isOn { ChargeController.current?.restoreForUninstall() }
         switch UpdateLauncher.launchUninstall(removingData: wipe.state == .on) {
         case .openedTerminal:
             // The login item macOS keeps for the app (the system's own service, not the launch agent the script

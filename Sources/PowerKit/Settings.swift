@@ -313,7 +313,7 @@ public final class Settings {
     static let throwawayProcessSuiteName = "com.anode.tests.process.\(getpid()).\(UUID().uuidString)"
 
     private static let throwawayProcessDefaults: UserDefaults? = {
-        guard isTestRun else { return nil }
+        guard isTestRun || AppSandbox.isOn else { return nil }
         // In memory: a suite would be a file in the person's preferences folder, left there when the run ends.
         return VolatileDefaults.named(throwawayProcessSuiteName)
     }()
@@ -321,7 +321,7 @@ public final class Settings {
     /// The defaults of the settings domain the app and the command-line tool share: the person's suite, and in a test
     /// run the process's throwaway one (above) in its place.
     public static func appDefaults() -> UserDefaults? {
-        isTestRun ? throwawayProcessDefaults : UserDefaults(suiteName: suiteName)
+        isTestRun || AppSandbox.isOn ? throwawayProcessDefaults : UserDefaults(suiteName: suiteName)
     }
 
     /// Whether a name is one of the tests' own throwaway ones. Nothing is kept on disk under such a name: in a test run
@@ -1223,6 +1223,8 @@ public final class Settings {
     public var launchAtLogin: Bool {
         get { launchAtLoginStatus == .enabled }
         set {
+            // The test copy (`AppSandbox`) shares the person's launchd job label and login item: it touches neither.
+            guard !AppSandbox.isOn else { return }
             do {
                 if newValue {
                     try SMAppService.mainApp.register()
@@ -1696,7 +1698,7 @@ extension Settings {
         // any other (the real previous domain, above all) is left alone, so no test starts from the settings of
         // whoever runs it.
         let old: UserDefaults?
-        if isTestRun {
+        if isTestRun || AppSandbox.isOn {
             old = isThrowawaySuiteName(source) ? VolatileDefaults.named(source) : nil
         } else {
             old = UserDefaults(suiteName: source)

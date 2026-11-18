@@ -1611,17 +1611,161 @@ TROUBLE='error|warning|fatal|fail|denied|not found|no such file|cannot|can.t|✗
 # Read-only looks at files, which name the scripts without running one; kept out of the check that guards the calls.
 bundled_scripts_ready() { [ -x "$1/Contents/Resources/update.sh" ] && [ -x "$1/Contents/Resources/uninstall.sh" ]; }
 checkout_version() { sed -n 's/^VERSION="\([0-9.]*\)".*/\1/p' "$ROOT/build-app.sh" | head -1; }
+
+# ── The test copy of the app, started and driven through its own windows ────
+# What follows runs an app and Accessibility, and reads this Mac's own state: none of which the stubs reach. Each piece is
+# kept to the test copy (its bundle identifier is checked before it is started, and it has to be inside this test's folder),
+# and section 7 looks at this Mac's own Anode before and after (real_snapshot).
+real_home() { /usr/bin/dscl . -read "/Users/$(/usr/bin/id -un)" NFSHomeDirectory 2>/dev/null | /usr/bin/awk '{ print $2 }'; }
+# What of this Mac's own Anode a test copy must not change: the keys of its two settings domains, its installed app and
+# whether it is running, its launchd jobs and login agents, the names in its support folder, its preference files.
+real_snapshot() {   # real_snapshot FILE
+  local rh dom app
+  rh="$(real_home)"; app="$rh/Applications/Anode.app"
+  {
+    for dom in com.anode.settings dev.anode.app; do
+      echo "[settings keys: $dom]"
+      /usr/bin/defaults export "$dom" - 2>/dev/null | /usr/bin/plutil -p - 2>/dev/null | /usr/bin/grep -E '^  "' | /usr/bin/sed 's/ =>.*//' | /usr/bin/sort
+    done
+    echo "[installed app]"
+    /usr/bin/plutil -extract BSSourceCommit raw -o - "$app/Contents/Info.plist" 2>/dev/null; echo
+    /bin/ls -i "$app/Contents/MacOS/AnodeApp" 2>/dev/null
+    echo "[running]"
+    /usr/bin/pgrep -f "$app/Contents/MacOS/AnodeApp\$" 2>/dev/null | /usr/bin/sort
+    echo "[launchd]"
+    /bin/launchctl print "gui/$(/usr/bin/id -u)" 2>/dev/null | /usr/bin/grep -i anode | /usr/bin/grep -vi installtest | /usr/bin/sed 's/^[[:space:]]*//' | /usr/bin/sort
+    echo "[login agents]"
+    /bin/ls "$rh/Library/LaunchAgents" 2>/dev/null | /usr/bin/grep -i anode
+    echo "[support folder]"
+    (cd "$rh/Library/Application Support/Anode" 2>/dev/null && /bin/ls | /usr/bin/grep -vE -- '-(wal|shm|journal)$')
+    echo "[preference files]"
+    /bin/ls "$rh/Library/Preferences" 2>/dev/null | /usr/bin/grep -i anode | /usr/bin/grep -vi installtest
+  } > "$1" 2>&1
+  return 0
+}
+# What the test copy leaves outside this test's folder, under its own identifier: its preference domain, its saved window
+# state, per-user cache and temporary folders. The uninstaller removes what it knows of the person's Anode (dev.anode.app);
+# these are named for the copy, so they are the test's to clean up, and are removed here.
+TEST_COPY_ID="dev.anode.app.installtest"
+test_copy_traces() {
+  { /usr/bin/find "$(real_home)/Library" -maxdepth 3 -iname "*$TEST_COPY_ID*" 2>/dev/null
+    /usr/bin/find "$(/usr/bin/getconf DARWIN_USER_CACHE_DIR)" "$(/usr/bin/getconf DARWIN_USER_TEMP_DIR)" -maxdepth 2 -iname "*$TEST_COPY_ID*" 2>/dev/null
+  } | /usr/bin/sort
+}
+clean_test_copy_traces() {
+  local p
+  /usr/bin/defaults delete "$TEST_COPY_ID" >/dev/null 2>&1
+  test_copy_traces | while IFS= read -r p; do
+    case "$(/usr/bin/basename "$p")" in *"$TEST_COPY_ID"*) /bin/rm -rf -- "$p" ;; esac
+  done
+}
+# A Terminal window of the copy's uninstall that is still open (it stays when the uninstaller stops with something to read):
+# closed by its terminal's name, so that a failed run leaves no window behind. Only the window with that one tab.
+close_terminal_window_on() {   # close_terminal_window_on TTY
+  /usr/bin/osascript -e 'tell application "Terminal"' -e 'repeat with w in windows' -e 'try' \
+    -e "if (count of tabs of w) is 1 and (tty of tab 1 of w) is \"/dev/$1\" then close w saving no" \
+    -e 'end try' -e 'end repeat' -e 'end tell' >/dev/null 2>&1
+}
+unregister_test_copy() { /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -u "$1" >/dev/null 2>&1; }
+build_ui_driver() { /usr/bin/swiftc -O "$ROOT/Tests/ui/anode-ui.swift" -o "$T/anode-ui" > "$T/anode-ui-build.log" 2>&1; }
+ui() { "$T/anode-ui" "$@"; }
+# The installed app becomes the test copy: another identifier (AppSandbox turns on for that one and for nothing else), signed
+# again because the signature covers the identifier.
+make_test_copy() { /usr/bin/plutil -replace CFBundleIdentifier -string "$TEST_COPY_ID" "$1/Contents/Info.plist" && /usr/bin/codesign --force --deep --sign - "$1" >/dev/null 2>&1; }
+copy_is_ready() { [ "$(/usr/bin/plutil -extract CFBundleIdentifier raw -o - "$1/Contents/Info.plist" 2>/dev/null)" = "$TEST_COPY_ID" ] && /usr/bin/codesign --verify --strict "$1" 2>/dev/null; }
+# The door of the Terminal window the copy's Uninstall button opens. That window is a fresh login shell of the Mac's own
+# account, not a child of the test: it has the real HOME, the real PATH and none of this file's folders. The door gives the
+# script what run_anode gives one: this test's stand-ins first on PATH, this test's folders, a home of the copy's own,
+# and it checks, before anything runs, that each tool the stand-ins cover resolves to one and each folder is inside this
+# test's folder; it runs nothing otherwise. The one stand-in that differs is osascript's: the uninstaller quits the app by
+# the identifier of the person's own (dev.anode.app), which the copy does not have, so that quit is aimed at the copy's own
+# identifier instead (never at a name or a path, which could be taken for the person's), and the window-closing script of the
+# countdown goes to the real osascript (it closes the window it is in).
+write_door() {   # write_door HOME APP
+  local h="$1" app="$2" var
+  mkdir -p "$T/door-shim"
+  cat > "$T/door-shim/osascript" <<EOF
+#!/bin/sh
+echo "\$*" >> "$T/osascript-asked"
+case "\$*" in
+  *'application "Terminal"'*) exec /usr/bin/osascript "\$@" ;;
+  *'application id "dev.anode.app"'*)
+    exec /usr/bin/osascript -e 'if application id "$TEST_COPY_ID" is running then tell application id "$TEST_COPY_ID" to quit' ;;
+esac
+exit 0
+EOF
+  {
+    echo '#!/bin/bash'
+    echo "export HOME='$h' CFFIXED_USER_HOME='$h'"
+    echo "export PATH='$T/door-shim:$T/shim:/usr/bin:/bin:/usr/sbin:/sbin'"
+    echo "export ANODE_NO_LAUNCH=1 ANODE_CLOSE_AFTER=3"
+    for var in $GUARDED_FOLDERS; do [ "$var" = HOME ] || echo "export $var='${!var}'"; done
+    cat <<EOF
+refuse() { echo "✗ \$1: nothing was run" >&2; echo refused > '$T/ui-status'; exit 1; }
+for tool in $GUARDED_TOOLS; do
+  got="\$(command -v "\$tool")"
+  case "\$got" in '$T'/door-shim/*|'$T'/shim/*) ;; *) refuse "the \$tool stand-in is not what would run (\$got)" ;; esac
+done
+got="\$(command -v ps)"; case "\$got" in '$T'/*) ;; *) refuse "ps is not the test's own" ;; esac
+for var in $GUARDED_FOLDERS; do
+  value="\${!var:-}"
+  case "\$value" in '$T'/*) ;; *) refuse "\$var is not inside the test's folder" ;; esac
+done
+cd '$T' || exit 1
+/bin/ps -o tty= -p \$\$ | tr -d ' ' > '$T/ui-tty'
+/bin/bash "\$@"
+echo "\$?" > '$T/ui-status'
+EOF
+  } > "$T/door.sh"
+  chmod +x "$T/door-shim/osascript" "$T/door.sh"
+}
+# Starts the copy, with nothing of this shell's environment but what it needs, and its files in HOME (CFFIXED_USER_HOME moves
+# the app's folders, not its preferences: those are the copy's own for being in memory and for its identifier).
+UI_PID=""
+start_test_copy() {   # start_test_copy HOME APP: the pid in UI_PID
+  local h="$1" app="$2"
+  case "$app" in "$T"/*) ;; *) return 1 ;; esac
+  [ "$(/usr/bin/plutil -extract CFBundleIdentifier raw -o - "$app/Contents/Info.plist" 2>/dev/null)" = "$TEST_COPY_ID" ] || return 1
+  [ -x "$T/door.sh" ] || return 1
+  /usr/bin/env -i HOME="$h" CFFIXED_USER_HOME="$h" PATH="/usr/bin:/bin:/usr/sbin:/sbin" USER="$(/usr/bin/id -un)" LOGNAME="$(/usr/bin/id -un)" \
+    ANODE_SANDBOX_DOOR="$T/door.sh" "$app/Contents/MacOS/AnodeApp" > "$T/test-copy.out" 2>&1 &
+  UI_PID=$!
+  REAL_PIDS+=("$UI_PID"); echo "$UI_PID" >> "$T/test-pids"
+}
 # END STUBS
 no_compiler_errors() { ! grep -qE '\.swift:[0-9]+:[0-9]+: error:' "$1"; }
 plist_value() { /usr/bin/plutil -extract "$2" raw -o - "$1" 2>/dev/null; }
-# What the Uninstall button runs: the copy of the uninstaller inside the installed app, not the one in the checkout.
+alive() { kill -0 "$1" 2>/dev/null; }
+gone() { ! alive "$1"; }
+UI_OK=1
+ui_step() {   # ui_step WHAT CMD…: once one step has failed the rest are not tried (each would wait out its whole time)
+  local what="$1"; shift
+  if [ "$UI_OK" != 1 ]; then bad "$what" "not tried: an earlier step failed"; return; fi
+  if "$@"; then ok "$what"; else bad "$what"; UI_OK=0; fi
+}
+tty_free() { [ -n "$1" ] && [ -z "$(/bin/ps -t "$1" -o pid= 2>/dev/null)" ]; }
+wait_until() {   # wait_until SECONDS CMD…: until it succeeds, or the time is up
+  local n=0 limit=$(( $1 * 2 )); shift
+  until "$@"; do n=$((n + 1)); [ "$n" -ge "$limit" ] && return 1; sleep 0.5; done
+}
+# What the Uninstall button runs: the copy of the uninstaller inside the installed app, not the one in the checkout. Used
+# directly only where the button cannot be pressed (see below).
 run_bundled_uninstall() {
   OUT="$(run_anode "$1" "$1/Applications/Anode.app/Contents/Resources/uninstall.sh" --yes 2>&1)"; UNINSTALL_STATUS=$?
 }
+# The uninstall that also removes settings and history (the Uninstall dialog's checkbox, --data), from the checkout's copy.
+run_data_uninstall() {
+  OUT="$(run_anode "$1" "$ROOT/uninstall.sh" --yes --data 2>&1)"; UNINSTALL_STATUS=$?
+}
+left_in_home() {   # left_in_home HOME: what is in it besides the folders a Mac's home has anyway (empty)
+  ( cd "$1" && find . -mindepth 1 \( -type f -o -type l \) ! -path './Library/Keychains/.fl*' | sort
+    find . -mindepth 1 -type d -empty | grep -vE '^\./(Applications|Library(/(Keychains|Logs|Caches|Preferences|Application Support|LaunchAgents))?)$' | sort )
+}
 if [ "$FULL" = 1 ]; then
-  echo "7. A REAL install (compiles the app) and uninstall, in a folder next to the checkout"
+  echo "7. A REAL install (compiles the app), then the installed app's own Uninstall button, in a folder next to the checkout"
   echo "   $T"
   H="$(new_home 8)"
+  APP="$H/Applications/Anode.app"
   check "the home folder starts empty"                        [ -z "$(files_in "$H")" ]
   CACHE_BEFORE="$(cd "$T/cache" && find . | sort)"
   run_install "$H" "$BASE"
@@ -1632,28 +1776,80 @@ if [ "$FULL" = 1 ]; then
   PROBLEMS="$(printf '%s\n' "$OUT" | grep -v 'local signing failed; falling back to ad-hoc' | grep -iE "$TROUBLE" || true)"
   if [ -z "$PROBLEMS" ]; then ok "nothing it printed reads as a problem"; else bad "nothing it printed reads as a problem" "$PROBLEMS"; fi
   check "the build log has no compiler error"                 no_compiler_errors "$H/Library/Logs/Anode-install.log"
-  check "the real app is installed"                           present "$H/Applications/Anode.app/Contents/MacOS/AnodeApp"
-  check "and the helper beside it"                            present "$H/Applications/Anode.app/Contents/MacOS/AnodeHelper"
-  check "and the updater and the uninstaller the buttons run" bundled_scripts_ready "$H/Applications/Anode.app"
+  check "the real app is installed"                           present "$APP/Contents/MacOS/AnodeApp"
+  check "and the helper beside it"                            present "$APP/Contents/MacOS/AnodeHelper"
+  check "and the updater and the uninstaller the buttons run" bundled_scripts_ready "$APP"
   WANT_VERSION="$(checkout_version)"
-  check_all "it is the version the checkout says ($WANT_VERSION)" [ -n "$WANT_VERSION" ] -- [ "$(plist_value "$H/Applications/Anode.app/Contents/Info.plist" CFBundleShortVersionString)" = "$WANT_VERSION" ]
+  check_all "it is the version the checkout says ($WANT_VERSION)" [ -n "$WANT_VERSION" ] -- [ "$(plist_value "$APP/Contents/Info.plist" CFBundleShortVersionString)" = "$WANT_VERSION" ]
   # The security stub keeps every keychain change out of the run (see the stubs above), so the build finds no real
   # signing key and signs ad hoc; the app must still be signed and verify. Signing with the local identity is
   # what ./make-signing-identity.sh makes, and is not exercised here.
-  check "it is signed, and the signature verifies"            codesign --verify --strict "$H/Applications/Anode.app"
-  run_bundled_uninstall "$H"
-  check "the uninstall exits cleanly"                         [ "$UNINSTALL_STATUS" -eq 0 ]
-  check "says Anode has been removed"                         has "✓ Anode has been removed."
-  PROBLEMS="$(printf '%s\n' "$OUT" | grep -iE "^left |$TROUBLE" || true)"
-  if [ -z "$PROBLEMS" ]; then ok "nothing it printed reads as a problem, and it left nothing it names"; else bad "nothing it printed reads as a problem, and it left nothing it names" "$PROBLEMS"; fi
+  check "it is signed, and the signature verifies"            codesign --verify --strict "$APP"
+
+  # ── The app, driven through its windows: Settings, then the Uninstall button ──
+  # It is a second Anode on the Mac of the person whose own is running, so it runs as the TEST COPY (AppSandbox): another
+  # bundle identifier, its settings in memory, no offers, no login item, and its Terminal window runs the uninstaller through
+  # a door of this test's. Before and after, this Mac's own Anode is looked at: what it keeps, what runs, what launchd holds.
+  UI_NOTE=""
+  if [ -n "${ANODE_TEST_NO_UI:-}" ]; then
+    UI_NOTE="ANODE_TEST_NO_UI is set"
+    ok "the Uninstall button is not pressed (ANODE_TEST_NO_UI is set): the uninstaller is run directly instead"
+  elif ! build_ui_driver; then
+    UI_NOTE="the driver did not build"
+    bad "the Accessibility driver builds" "$(tail -5 "$T/anode-ui-build.log")"
+  elif ! ui trusted; then
+    UI_NOTE="no Accessibility"
+    bad "the program running this test may press buttons in another (Accessibility)" "Allow the Terminal or editor this is run from in System Settings › Privacy & Security › Accessibility, or set ANODE_TEST_NO_UI=1 to run the uninstaller directly."
+  fi
+  if [ -z "$UI_NOTE" ]; then
+    make_test_copy "$APP"
+    check "the installed app becomes the test copy, and is still signed" copy_is_ready "$APP"
+    real_snapshot "$T/real-before"
+    write_door "$H" "$APP"
+    start_test_copy "$H" "$APP"
+    UI_OK=1
+    ui_step "the copy starts and is running"                  wait_until 10 alive "$UI_PID"
+    ui_step "its window opens"                                ui window "$UI_PID" Anode 60
+    ui_step "Settings opens from its Settings menu"           ui menu "$UI_PID" Settings "Open Settings…"
+    ui_step "…and the Uninstall button is pressed"            ui press "$UI_PID" "Uninstall Anode…" 30
+    ui_step "…and its question is answered Uninstall"         ui press "$UI_PID" "Uninstall" 30
+    ui_step "Terminal opens and runs the uninstaller through the door" wait_until 90 present "$T/ui-tty"
+    ui_step "the app is quit for it"                          wait_until 60 gone "$UI_PID"
+    ui_step "the uninstaller finishes"                        wait_until 120 present "$T/ui-status"
+    ui_step "…and ends with status 0"                         [ "$(cat "$T/ui-status" 2>/dev/null)" = 0 ]
+    ui_step "the Terminal window closes itself"               wait_until 60 tty_free "$(cat "$T/ui-tty" 2>/dev/null)"
+    # A window that is still there (the run stopped, or the countdown did not close it) is closed, so a failure leaves none.
+    if [ -s "$T/ui-tty" ] && ! tty_free "$(cat "$T/ui-tty")"; then close_terminal_window_on "$(cat "$T/ui-tty")"; fi
+    gone "$UI_PID" || kill "$UI_PID" 2>/dev/null
+    : > "$T/test-pids"
+    unregister_test_copy "$APP"
+    TRACES="$(test_copy_traces)"
+    clean_test_copy_traces
+    ok "what the test copy left under its own identifier outside this folder is removed ($(printf '%s' "$TRACES" | grep -c . || true) items)"
+    real_snapshot "$T/real-after"
+    if DIFF="$(diff "$T/real-before" "$T/real-after")"; then ok "this Mac's own Anode is as it was: settings keys, app, process, launchd, login agents, support folder"; else bad "this Mac's own Anode is as it was" "$DIFF"; fi
+    check "the test copy's identifier is gone from the Mac's preferences" [ -z "$(test_copy_traces)" ]
+  else
+    run_bundled_uninstall "$H"
+    check "the uninstall exits cleanly"                       [ "$UNINSTALL_STATUS" -eq 0 ]
+    check "says Anode has been removed"                       has "✓ Anode has been removed."
+    PROBLEMS="$(printf '%s\n' "$OUT" | grep -iE "^left |$TROUBLE" || true)"
+    if [ -z "$PROBLEMS" ]; then ok "nothing it printed reads as a problem, and it left nothing it names"; else bad "nothing it printed reads as a problem, and it left nothing it names" "$PROBLEMS"; fi
+  fi
   check_all "the app and the source are gone"                 absent "$H/Applications/Anode.app" -- absent "$H/.anode"
   check "and the signing keychain"                            absent "$H/Library/Keychains/anode-signing.keychain-db"
   check "and the install log"                                 absent "$H/Library/Logs/Anode-install.log"
-  # What may be left in the home folder: the folders a Mac's home has anyway (empty). Anything else, a file or a folder of
-  # Anode's own, is something the install made and the uninstall did not take away.
-  LEFT="$(cd "$H" && find . -mindepth 1 \( -type f -o -type l \) ! -path './Library/Keychains/.fl*' | sort; \
-          cd "$H" && find . -mindepth 1 -type d -empty | grep -vE '^\./(Applications|Library(/(Keychains|Logs|Caches|Preferences|Application Support|LaunchAgents))?)$' | sort)"
-  if [ -z "$LEFT" ]; then ok "nothing of the install is left in the home folder"; else bad "nothing of the install is left in the home folder" "$LEFT"; fi
+  # A plain uninstall keeps the person's history and settings, on purpose (the dialog's box "Also remove settings and measurement
+  # history" is off): a copy that has run has made some, and they, and nothing else, may be left. Anything else, a file or a
+  # folder of Anode's own, is something the install or the running copy made and the uninstall did not take away.
+  LEFT="$(left_in_home "$H")"
+  NOT_KEPT="$(printf '%s\n' "$LEFT" | grep -vE '^\./Library/Application Support/Anode/(history\.sqlite(-shm|-wal)?|[A-Za-z0-9._-]+\.(json|log))$' | grep . || true)"
+  if [ -z "$NOT_KEPT" ]; then ok "all that is left is the history and settings it keeps by design ($(printf '%s\n' "$LEFT" | grep -c . || true) files)"; else bad "all that is left is the history and settings it keeps by design" "$NOT_KEPT"; fi
+  # Asked to remove those as well, it leaves nothing.
+  run_data_uninstall "$H"
+  check "the uninstall that also removes settings and history exits cleanly" [ "$UNINSTALL_STATUS" -eq 0 ]
+  LEFT="$(left_in_home "$H")"
+  if [ -z "$LEFT" ]; then ok "and then nothing of Anode is left in the home folder"; else bad "and then nothing of Anode is left in the home folder" "$LEFT"; fi
   check "the per-user cache folder is as it was before the install" [ "$(cd "$T/cache" && find . | sort)" = "$CACHE_BEFORE" ]
   check "nothing it did reached a tool outside the stubs"     absent "$T/sudo-refused"
 fi

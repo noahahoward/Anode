@@ -18,9 +18,11 @@ When several kinds are in one push, the biggest wins. Then, in the same push:
 
 ## Every change
 
-- Run `./test.sh --full` before pushing: the suite plus a real install and uninstall in a new folder next to the checkout,
-  which fails on an error in what the install prints or on anything the uninstall leaves behind. `./test.sh --quick` is for
-  iterating (the git pre-push hook runs it). Run `./update.sh` after a change and confirm `BSSourceCommit` in the installed
+- Run `./test.sh --full` before pushing: the suite plus a real install in a new folder next to the checkout, then the installed
+  app (as a sandboxed test copy, `AppSandbox`) is driven through Settings and its Uninstall button, which fails on an error in
+  what the install prints, on anything the uninstall leaves behind, or on any change to this Mac's own Anode. It needs
+  Accessibility for the program that runs it (`ANODE_TEST_NO_UI=1` skips the button) and shows windows on screen.
+  `./test.sh --quick` is for iterating (the git pre-push hook runs it). Run `./update.sh` after a change and confirm `BSSourceCommit` in the installed
   `Info.plist` equals `git rev-parse --short HEAD` and that the running process's inode matches the installed binary.
 - Never put a tester's name, or words like "friend", in a commit, comment or test.
 - Do not rewrite pushed history or move a pushed tag without the owner saying so.

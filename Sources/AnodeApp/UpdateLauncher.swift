@@ -93,6 +93,30 @@ enum UpdateLauncher {
         ].joined(separator: "\n")
     }
 
+    /// The wrapper of the TEST COPY of the app (`AppSandbox`): the script is run through the door the test made, which gives it
+    /// the test's own stand-ins for every tool that reaches this Mac, and never on its own. The door is checked before it is
+    /// used; without one (the copy was started without its environment) nothing is run at all: the Terminal window says so.
+    static func sandboxWrapper(script: String, arguments: [String], door: String?) -> String {
+        let args = arguments.map(shellQuoted).joined(separator: " ")
+        let call = "exec \"$door\" " + shellQuoted(script) + (args.isEmpty ? "" : " " + args)
+        guard let door else {
+            return [
+                "#!/bin/sh",
+                "echo \"This is the test copy of Anode, started without its door: nothing was run.\" >&2",
+                "exit 1",
+                "",
+            ].joined(separator: "\n")
+        }
+        return [
+            "#!/bin/sh",
+            "# Written by the test copy of Anode (AppSandbox) immediately before this window opened.",
+            "door=" + shellQuoted(door),
+            "[ -x \"$door\" ] || { echo \"The door $door is not there: nothing was run.\" >&2; exit 1; }",
+            call,
+            "",
+        ].joined(separator: "\n")
+    }
+
     /// The update case, kept as its own signature because a checkout path is
     /// not just any argument — it is the one thing the updater cannot guess.
     static func wrapper(script: String, checkout: String) -> String {
@@ -119,11 +143,13 @@ enum UpdateLauncher {
     private static func open(script: String, arguments: [String],
                              wrapper name: String) -> Outcome {
         let url = wrapperURL(named: name)
+        let text = AppSandbox.isOn
+            ? sandboxWrapper(script: script, arguments: arguments, door: AppSandbox.door(environment: ProcessInfo.processInfo.environment))
+            : wrapper(script: script, arguments: arguments)
         do {
             try FileManager.default.createDirectory(
                 at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-            try wrapper(script: script, arguments: arguments)
-                .write(to: url, atomically: true, encoding: .utf8)
+            try text.write(to: url, atomically: true, encoding: .utf8)
             try FileManager.default.setAttributes([.posixPermissions: 0o700],
                                                   ofItemAtPath: url.path)
         } catch {

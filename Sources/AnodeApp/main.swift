@@ -652,7 +652,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
     /// launch that cannot host it leaves the question unasked for the next one.
     /// A build with no checkout to pull into is never asked at all.
     private func offerAutoUpdate() {
-        guard !Settings.shared.autoUpdatePromptSeen, AutoUpdater.shared.isAvailable else { return }
+        guard !AppSandbox.isOn, !Settings.shared.autoUpdatePromptSeen, AutoUpdater.shared.isAvailable else { return }
         // After the window is up — `bringForward` presents on a later turn.
         DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
             guard let self, self.main.window.isVisible,
@@ -682,7 +682,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
 
     /// A fresh install has not been welcomed yet (`FirstRunWelcome.isDue`).
     private var welcomeIsOwed: Bool {
-        FirstRunWelcome.isDue(welcomeSeen: Settings.shared.welcomeSeen, autoUpdatePromptSeen: Settings.shared.autoUpdatePromptSeen,
+        !AppSandbox.isOn && FirstRunWelcome.isDue(welcomeSeen: Settings.shared.welcomeSeen, autoUpdatePromptSeen: Settings.shared.autoUpdatePromptSeen,
                               helperOfferedForBuild: UserDefaults.standard.string(forKey: HelperOfferAtLaunch.offeredKey) ?? "")
     }
 

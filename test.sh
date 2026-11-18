@@ -4,13 +4,18 @@
 #
 #   ./test.sh                build every product (release), then the whole test suite
 #   ./test.sh --quick        the test suite only (what the pre-push hook runs)
-#   ./test.sh --full         everything above, plus a REAL install and uninstall, in a new folder next to this checkout
-#                            (a sibling of Anode): looks for errors in what the install prints, then for anything the
-#                            uninstall left behind. Compiles the app again, a few minutes. Run it before a push.
+#   ./test.sh --full         everything above, plus a REAL install in a new folder next to this checkout (a sibling of
+#                            Anode), then the installed app is started as a test copy and driven through its own windows:
+#                            Settings, the Uninstall button, the Terminal window it opens (which closes itself). Looks for
+#                            errors in what the install prints and for anything the uninstall left behind, and that this
+#                            Mac's own Anode did not change. Needs Accessibility for the Terminal or editor it is run from
+#                            (ANODE_TEST_NO_UI=1 runs the uninstaller directly instead). Compiles the app again, a few
+#                            minutes, and shows windows on screen. Run it before a push.
 #   ./test.sh --install-hook make git run --quick before every push; `git push --no-verify` skips it once
 #
 # The suite includes the installer and uninstaller tests (Tests/installer-tests.sh), which never touch this
-# Mac's own install, keychain or settings: they run in a temporary home.
+# Mac's own install, keychain or settings: they run in a home of their own (a temporary folder; for --full, a new one next to
+# the checkout), and --full looks at this Mac's own Anode before and after to be sure.
 #
 # A test that hangs (a socket nobody answers, a run loop nobody turns) would hang the whole run. XCTest's own
 # `executionTimeAllowance` is not enforced by `swift test` (measured: a test that sleeps 6 s with an allowance of 1 s
@@ -32,7 +37,7 @@ case "$MODE" in
     git config core.hooksPath .githooks
     echo "✓ git will run ./test.sh --quick before every push (git push --no-verify skips it once)"
     exit 0 ;;
-  -h|--help) sed -n 2,24p "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+  -h|--help) sed -n 2,29p "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
   *) echo "unknown option: $MODE (try --help)" >&2; exit 2 ;;
 esac
 

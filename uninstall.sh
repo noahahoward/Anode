@@ -61,7 +61,7 @@ close_window_soon() {
   local secs="${ANODE_CLOSE_AFTER:-15}" tty_name left kept=0
   [ "${TERM_PROGRAM:-}" = "Apple_Terminal" ] && [ -t 1 ] || return 0
   case "$secs" in ''|*[!0-9]*|0) return 0 ;; esac
-  tty_name="$(ps -o tty= -p $$ 2>/dev/null | tr -d ' ')"
+  tty_name="$(/bin/ps -o tty= -p $$ 2>/dev/null | tr -d ' ')"
   case "$tty_name" in ''|'??') return 0 ;; esac
   echo
   trap 'kept=1' INT
