@@ -63,7 +63,8 @@ final class MenuBarHiderFeature: BetaFeature {
     let title = "Menu Bar Hider"
     let summary = "Folds the menu bar down to macOS's own icons, the icons you pick, and a chevron. "
                 + "Press the chevron, or the shortcut, and every other icon appears in a small panel under the notch, "
-                + "each one clickable. Needs Accessibility to read the bar."
+                + "each one clickable. Needs Accessibility to read the bar. "
+                + PrivacyIndicatorNote.text(while: "this is on", watching: "the keyboard for its shortcut")
     var layoutChanged: (() -> Void)?
 
     private let settings: Settings

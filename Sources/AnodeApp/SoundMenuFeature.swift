@@ -11,9 +11,9 @@ final class SoundMenuFeature: BetaFeature {
     let title = "Sound Menu"
     let summary = "Anode's own Sound menu, the same as macOS's, next to it in the menu bar. It works with or without macOS's "
                 + "Sound icon: you can remove macOS's in System Settings, Control Center. Listening mode, Conversation "
-                + "Awareness and AirPlay speakers go through macOS's own panel, so they need Accessibility. On macOS 27.3 and later "
-                + "macOS may show \"Accessing all apps\" under the menu bar while Anode reads or presses that panel: that is macOS's own "
-                + "wording for Accessibility, and Anode only reads the panel's text and presses its buttons."
+                + "Awareness and AirPlay speakers go through macOS's own panel, so they need Accessibility. "
+                + PrivacyIndicatorNote.text(while: "the option to open it from macOS's own Sound icon is on",
+                                            watching: "mouse clicks, to catch the ones on that icon")
     var layoutChanged: (() -> Void)?
 
     private let settings: Settings

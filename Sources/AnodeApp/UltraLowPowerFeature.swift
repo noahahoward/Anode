@@ -231,7 +231,8 @@ final class UltraLowPowerFeature: BetaFeature {
         let key = shortcutLabel().map { ", or press \($0)" } ?? ""
         return "Freezes the apps and tools you are not using, and holds the screen at a quarter brightness or lower, until you turn "
             + "it off. Ticking the box only makes it available: it starts when you press Start (or choose it from a menu\(key)) "
-            + "and confirm the list of what is kept and what is frozen."
+            + "and confirm the list of what is kept and what is frozen. "
+            + PrivacyIndicatorNote.text(while: "it is allowed", watching: "the keyboard for its shortcut")
     }
     var layoutChanged: (() -> Void)?
 

@@ -18,9 +18,10 @@ public enum FirstRunWelcome {
     public static let text =
         "Anode shows what is using your Mac's power. A few features need permissions, which macOS asks for the first time you turn "
         + "them on:\n\n"
-        + "\u{2022} Accessibility, to read and press things in other apps. macOS 27.3 and later shows \u{201C}Accessing all apps\u{201D} in "
-        + "the menu bar while Anode does: that is macOS's own notice.\n"
+        + "\u{2022} Accessibility, to read and press things in other apps.\n"
         + "\u{2022} Screen Recording, for window previews. Nothing is recorded or kept.\n"
         + "\u{2022} Your password, once, next: to install the Anode helper (Charge Control, fans, Ultra Low Power Mode).\n\n"
+        + "Anode's shortcuts, switchers and menus also watch the keyboard and mouse for their own keys and clicks. macOS 27.3 and "
+        + "later then shows \u{201C}Accessing all apps\u{201D} in the menu bar: that is macOS's own notice.\n\n"
         + "All optional. Change any of it in System Settings \u{203A} Privacy & Security."
 }

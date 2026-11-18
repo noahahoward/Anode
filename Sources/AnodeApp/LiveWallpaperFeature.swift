@@ -142,7 +142,8 @@ final class LiveWallpaperFeature: BetaFeature {
     let summary = "Use a video, an image, a web page or a link to a video as your desktop wallpaper, on any display. It pauses "
                 + "on battery, in Low Power Mode, when the Mac is hot, and when a full-screen app covers the desktop; it keeps "
                 + "playing behind ordinary windows, maximized ones included. macOS still picks the menu bar's text colour from "
-                + "your real wallpaper, so pick a dark wallpaper or use the menu bar backdrop."
+                + "your real wallpaper, so pick a dark wallpaper or use the menu bar backdrop. "
+                + PrivacyIndicatorNote.text(while: "this is on", watching: "the keyboard for its pause shortcut")
     var layoutChanged: (() -> Void)?
 
     private let settings: Settings

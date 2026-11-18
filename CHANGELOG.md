@@ -7,6 +7,10 @@ feature or a visible change in how something works, the first only for a rewrite
 Nothing was bumped between 1.0.0 and 1.15.0. Those versions were assigned afterwards from the history and exist as
 git tags (`git show v1.7.0`); builds made before 1.15.0 still say 1.0.0 in their About box.
 
+## 1.25.0 — 2026-11-17
+- Beta Features now says, under every feature that watches the keyboard or mouse, that macOS 27.3 and later will show "Accessing all apps" for Anode in the menu bar while it is on, and why: the window and desktop switchers, Window Actions and Window Groups, the Sound and Battery menus (when they open from macOS's own icons), Ultra Low Power Mode, Live Wallpapers, the Menu Bar Hider and the Keyboard & Screen Cleaner.
+- The welcome notice and the Sound and Battery menus no longer say that wording comes from Accessibility. Reading other apps through Accessibility is named app by app ("Accessing Dock"); "all apps" is what macOS says for anything that watches every key press or click, and the notes now say so.
+
 ## 1.24.0 — 2026-11-17
 - A fresh install is welcomed first. A short notice says what Anode may ask of your Mac (Accessibility, Screen Recording, and your password once to install the Anode helper), that all of it is optional, and that macOS 27.3 and later shows "Accessing all apps" in the menu bar while Anode reads or presses macOS's own panels. It comes before the automatic-update question and the helper's offer, and only once.
 - Battery menu: press an app under Using Significant Energy and the menu closes and Anode's window opens on the Processes list with that app selected.

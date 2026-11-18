@@ -11,9 +11,8 @@ final class BatteryMenuFeature: BetaFeature {
     let title = "Battery Menu"
     let summary = "Anode's own Battery menu, the same as macOS's: a click on macOS's Battery icon opens it instead. The Energy Modes "
                 + "are read from macOS's own Battery panel and changed through it, so it needs Accessibility; the apps using significant "
-                + "energy are Anode's own measurements. On macOS 27.3 and later macOS may show \"Accessing all apps\" under the menu bar "
-                + "while Anode reads or presses that panel: that is macOS's own wording for Accessibility, and Anode only reads the "
-                + "panel's text and presses its buttons."
+                + "energy are Anode's own measurements. "
+                + PrivacyIndicatorNote.text(while: "this is on", watching: "mouse clicks, to catch the ones on macOS's Battery icon")
     var layoutChanged: (() -> Void)?
 
     private let settings: Settings

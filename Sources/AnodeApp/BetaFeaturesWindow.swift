@@ -448,7 +448,8 @@ final class WindowSwitcherFeature: BetaFeature {
     let title = "Window Switcher"
     let summary = "A switcher of windows, each with a preview. Hold the keys and press Tab to move (⇧ to go back, "
                 + "arrows work too), let go to switch, Esc to cancel. By default it opens on ⌘⌥Tab and the system's "
-                + "⌘Tab is left alone. If Anode quits or crashes, the keys go back to the system at once."
+                + "⌘Tab is left alone. If Anode quits or crashes, the keys go back to the system at once. "
+                + PrivacyIndicatorNote.text(while: "this is on", watching: "the keyboard for its shortcut")
     var layoutChanged: (() -> Void)?
 
     private let settings: Settings
@@ -679,7 +680,8 @@ final class DesktopSwitcherFeature: BetaFeature {
     let title = "Desktop Switcher"
     let summary = "Option-Tab opens a row of your desktops, the one you used last first: hold ⌥ and press "
                 + "Tab to move (⇧ to go back, arrows work too, and the number keys 1–9 pick Desktop N), let go "
-                + "of ⌥ to go there, Esc to cancel. It goes to any desktop in one slide, however far away."
+                + "of ⌥ to go there, Esc to cancel. It goes to any desktop in one slide, however far away. "
+                + PrivacyIndicatorNote.text(while: "this is on", watching: "the keyboard for its shortcut")
     var layoutChanged: (() -> Void)?
 
     private let settings: Settings
@@ -762,7 +764,9 @@ final class WindowActionsFeature: BetaFeature {
     let title = "Window Actions"
     let summary = "Put the front window in a half, third or quarter of the screen, maximize or center it, "
                 + "or send it to the next display, with the same Control-Option shortcuts Rectangle uses. "
-                + "Windows are sized for a Dock that hides, even while Anode is holding the Dock up for a preview."
+                + "Windows are sized for a Dock that hides, even while Anode is holding the Dock up for a preview. "
+                + PrivacyIndicatorNote.text(while: "this is on",
+                                            watching: "the keyboard for its shortcuts, and the mouse while you drag a window to a screen edge")
     var layoutChanged: (() -> Void)?
 
     private let settings: Settings
@@ -879,7 +883,8 @@ final class WindowGroupsFeature: BetaFeature {
     let title = "Window Groups"
     let summary = "Put windows from any apps in a group, and when one comes forward by any route — a click, ⌘Tab, "
                 + "the Dock — the others come forward right behind it. A group remembers where each window sat, "
-                + "so one shortcut puts the layout back. Groups last until Anode quits or the windows close."
+                + "so one shortcut puts the layout back. Groups last until Anode quits or the windows close. "
+                + PrivacyIndicatorNote.text(while: "this is on", watching: "the keyboard for its shortcuts")
     var layoutChanged: (() -> Void)?
 
     private let settings: Settings
@@ -1249,7 +1254,8 @@ final class KeyboardCleanerFeature: BetaFeature {
     let title = "Keyboard & Screen Cleaner"
     let summary = "Turns every screen pure black and ignores the keyboard, mouse and trackpad, so you can wipe them without "
                 + "typing into anything. The combination printed in the bottom-left corner of the screen ends it. "
-                + "It needs Accessibility, and the Mac stays awake while it is up."
+                + "It needs Accessibility, and the Mac stays awake while it is up. "
+                + PrivacyIndicatorNote.text(while: "the screen is black", watching: "the keyboard and mouse, so that it can ignore them")
     var layoutChanged: (() -> Void)?
 
     private let settings: Settings
