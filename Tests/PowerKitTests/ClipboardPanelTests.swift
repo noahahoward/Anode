@@ -294,6 +294,24 @@ final class ClipboardPanelTests: XCTestCase {
         XCTAssertEqual(bar.filter { $0.y == -0.5 }.count, 2, "a step between the last two pixels")
     }
 
+    /// The list's words and icons bend at the card's bottom edge, as the backdrop does at the glass's edge: a linear bump distortion
+    /// on the list's layer, along a horizontal line at the bottom.
+    func testTheListBendsAtTheCardsBottomEdge() throws {
+        typealias M = ClipboardPanelMetrics
+        XCTAssertEqual(M.cardBottomBleed, 0, "the glass's own bottom edge shows, which bends what is behind it")
+        let content = ClipboardContentView()
+        content.frame = NSRect(x: 0, y: 0, width: M.width, height: 600)
+        content.updateEdgeLens(width: M.width)
+        let filters = try XCTUnwrap(content.listLayer?.filters as? [CIFilter])
+        XCTAssertEqual(filters.count, 1)
+        XCTAssertEqual(filters.first?.name, "CIBumpDistortionLinear")
+        XCTAssertEqual(filters.first?.value(forKey: "inputRadius") as? Double, Double(M.edgeLensDepth))
+        XCTAssertEqual(filters.first?.value(forKey: "inputAngle") as? Double, 0, "a horizontal line")
+        XCTAssertLessThan(try XCTUnwrap(filters.first?.value(forKey: "inputScale") as? Double), 0, "squeezing the rows toward the edge")
+        XCTAssertEqual((filters.first?.value(forKey: "inputCenter") as? CIVector)?.x, M.width / 2)
+        XCTAssertLessThanOrEqual(M.edgeLensDepth, 20, "a thin band at the bottom: the owner asked for about 20 pixels")
+    }
+
     /// A short card (few entries) is the same curve cut off where it ends, not stretched.
     func testAShortCardIsTheSameCurveCutShort() {
         typealias M = ClipboardPanelMetrics

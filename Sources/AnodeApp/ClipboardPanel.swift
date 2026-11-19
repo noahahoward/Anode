@@ -40,6 +40,13 @@ enum ClipboardPanelMetrics {
     /// at its edge, and the system's panel has its rims only where the tint puts them. Not at the sides: there the glass bends what
     /// is behind it into a dark band that the system's panel shows as well (measured).
     static let glassBleed: CGFloat = 6
+    /// The card's glass is not extended past its bottom: its own edge shows there, which bends what is behind it. (The system's card has
+    /// none; this is a choice, for a thicker look at the bottom.)
+    static let cardBottomBleed: CGFloat = 0
+    /// The list's own words and icons bend where the card's bottom edge is, as what is behind the glass does: a lens along that edge,
+    /// reaching this far up (points), squeezing the rows toward the edge by this much (a negative scale of a linear bump distortion).
+    static let edgeLensDepth: CGFloat = 16
+    static let edgeLensScale: Double = -0.35
 
     // The chips
     static let chipsTop: CGFloat = 21                // measured, from the card's top
@@ -116,7 +123,6 @@ enum ClipboardPanelMetrics {
     static let cardBottomRim: [(from: CGFloat, gray: CGFloat, alpha: CGFloat)] = [
         (5.25, 0.02, 0.29), (4.75, 0.043, 0.30), (4.25, 0.074, 0.29), (3.75, 0.074, 0.29), (3.25, 0.108, 0.29), (2.75, 0.142, 0.29),
         (2.25, 0.177, 0.29), (1.75, 0.214, 0.28), (1.25, 0.32, 0.28)]
-
     /// What is laid over the glass, from the top down: (how far down in points, a negative one from the bottom; the grey; the opacity).
     static func tintStops(card: Bool, height: CGFloat) -> [(y: CGFloat, gray: CGFloat, alpha: CGFloat)] {
         let h = max(height, 1)
@@ -224,7 +230,6 @@ final class ClipboardPanel: NSPanel, ClipboardPresenting, NSWindowDelegate {
     func show(controller: ClipboardHistoryController) {
         self.controller = controller
         content.controller = controller
-        content.applyLab()
         content.reset()
         place()
         let animated = DisplayAccessibility.current.animates
@@ -614,10 +619,15 @@ final class ClipboardShapeView: NSView {
     /// Views, not bare layers: the glass is drawn over a layer of its parent's, and under a view added after it.
     private let tint = ClipboardTintView()
     private let edge = EdgeView()
-    private var labBlur: NSVisualEffectView?
+    /// How far the glass reaches below the shape before the shape's clip cuts it off. Where it is 0 the glass's own edge shows at the
+    /// bottom: the lens that bends what is behind it, and its light along the edge.
+    var bottomBleed: CGFloat = ClipboardPanelMetrics.glassBleed {
+        didSet { needsLayout = true }
+    }
 
     init(kind: Kind) {
         self.kind = kind
+        self.bottomBleed = kind == .card ? ClipboardPanelMetrics.cardBottomBleed : ClipboardPanelMetrics.glassBleed
         let r = kind == .pill ? ClipboardPanelMetrics.pillRadius : ClipboardPanelMetrics.cardRadius
         if #available(macOS 26.0, *) {
             let glass = NSGlassEffectView()
@@ -652,46 +662,11 @@ final class ClipboardShapeView: NSView {
 
     required init?(coder: NSCoder) { fatalError("not used") }
 
-    /// CALIBRATION (temporary): `anode.debug.clipboardGlass` in the settings domain, JSON
-    /// `{"pillStyle":"clear|regular","cardStyle":"clear|regular","pill":[[0,0,1],[87,0,0.5]],"card":[[0,0,0.5],[300,0,0.2]]}`: each stop (points
-    /// down, grey, opacity). Read each time the panel opens.
-    func applyLab() {
-        guard let text = UserDefaults(suiteName: "com.anode.settings")?.string(forKey: "anode.debug.clipboardGlass"),
-              let json = try? JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any] else { labBlur?.removeFromSuperview(); labBlur = nil; return }
-        if #available(macOS 26.0, *), let glass = material as? NSGlassEffectView, let style = json[kind == .pill ? "pillStyle" : "cardStyle"] as? String {
-            glass.style = style == "clear" ? .clear : .regular
-        }
-        // CALIBRATION: {"vfx":{"card":["hudWindow",0.5]}}: a system blur under the glass, at this opacity
-        labBlur?.removeFromSuperview()
-        labBlur = nil
-        if let v = (json["vfx"] as? [String: Any])?[kind == .pill ? "pill" : "card"] as? [Any], v.count == 2, let name = v[0] as? String, let alpha = (v[1] as? NSNumber)?.doubleValue {
-            let materials: [String: NSVisualEffectView.Material] = ["hudWindow": .hudWindow, "popover": .popover, "menu": .menu, "sidebar": .sidebar,
-                "underWindowBackground": .underWindowBackground, "fullScreenUI": .fullScreenUI, "sheet": .sheet, "headerView": .headerView,
-                "windowBackground": .windowBackground, "contentBackground": .contentBackground, "toolTip": .toolTip, "underPageBackground": .underPageBackground]
-            if let m = materials[name] {
-                let vfx = NSVisualEffectView()
-                vfx.material = m
-                vfx.blendingMode = .behindWindow
-                vfx.state = .active
-                vfx.appearance = NSAppearance(named: .darkAqua)
-                vfx.alphaValue = CGFloat(alpha)
-                addSubview(vfx, positioned: .below, relativeTo: material)
-                labBlur = vfx
-                needsLayout = true
-            }
-        }
-        if let raw = json[kind == .pill ? "pill" : "card"] as? [[Double]] {
-            let stops = raw.filter { $0.count == 3 }.map { (y: CGFloat($0[0]), gray: CGFloat($0[1]), alpha: CGFloat($0[2])) }
-            if stops.count >= 2 { tint.stops = { _ in stops } }
-        }
-    }
-
     override func layout() {
         super.layout()
         // The glass is taller than the shape; the shape's clip (rounded corners, `masksToBounds`) cuts the rest off.
         let bleed = ClipboardPanelMetrics.glassBleed
-        material.frame = NSRect(x: 0, y: -bleed, width: bounds.width, height: bounds.height + 2 * bleed)
-        labBlur?.frame = material.frame
+        material.frame = NSRect(x: 0, y: -bottomBleed, width: bounds.width, height: bounds.height + bleed + bottomBleed)
         body.frame = bounds
         tint.frame = bounds
         edge.frame = bounds
@@ -835,8 +810,6 @@ final class ClipboardContentView: NSView, NSTextFieldDelegate, NSTableViewDataSo
     func entry(atRow row: Int) -> ClipboardEntry? { rows.indices.contains(row) ? rows[row].entry : nil }
 
     /// A fresh start: nothing typed, no chip, the first row chosen.
-    func applyLab() { pill.applyLab(); card.applyLab() }
-
     func reset() {
         field.stringValue = ""
         filter = nil
@@ -960,10 +933,34 @@ final class ClipboardContentView: NSView, NSTextFieldDelegate, NSTableViewDataSo
             emptyLabel.frame = NSRect(x: M.iconLeft, y: M.chipsTop + (h - M.chipsTop - 20) / 2 - 6, width: w - 2 * M.iconLeft, height: 20)
             scroll.isHidden = rows.isEmpty
             emptyLabel.isHidden = !rows.isEmpty
+            updateEdgeLens(width: w)
         } else {
             card.isHidden = true
         }
         onLayout?()
+    }
+
+    // ── The lens along the card's bottom edge ───────────────────────────────
+
+    private var lensWidth: CGFloat = 0
+
+    /// The list's layer, for tests.
+    var listLayer: CALayer? { scroll.layer }
+
+    /// A Core Image filter on the list's layer: a distortion along a line at the card's bottom edge, so the rows' words and icons bend
+    /// the way the backdrop does where the glass's edge is. It acts on the list only, not on the glass or the chips.
+    func updateEdgeLens(width: CGFloat? = nil) {
+        let w = width ?? lensWidth
+        lensWidth = w
+        scroll.wantsLayer = true
+        scroll.layerUsesCoreImageFilters = true
+        guard let layer = scroll.layer, let filter = CIFilter(name: "CIBumpDistortionLinear") else { return }
+        // The list is a flipped view (its origin is at the top), and Core Image takes that origin: the card's bottom edge is y = height.
+        filter.setValue(CIVector(x: w / 2, y: scroll.isFlipped ? scroll.bounds.height : 0), forKey: "inputCenter")
+        filter.setValue(NSNumber(value: Double(M.edgeLensDepth)), forKey: "inputRadius")
+        filter.setValue(NSNumber(value: 0), forKey: "inputAngle")          // a horizontal line
+        filter.setValue(NSNumber(value: M.edgeLensScale), forKey: "inputScale")
+        layer.filters = [filter]
     }
 
     // ── The table ───────────────────────────────────────────────────────────
