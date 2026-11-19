@@ -38,9 +38,10 @@ enum ClipboardPanelMetrics {
     static let searchTextDrop: CGFloat = 3
     static let accessorySize: CGFloat = 33           // measured: the picture at the bar's right
     static let accessoryCentreFromRight: CGFloat = 46.5
-    /// How far the glass reaches past the shape on every side, where the shape's own clip cuts it off: the glass draws a bright rim and
-    /// bends what is behind it at its edge, and the system's panel shows neither on the bar's top and sides.
-    static let glassBleed: CGFloat = 4
+    /// How far the glass reaches past the shape above and below, where the shape's own clip cuts it off: the glass draws a bright rim
+    /// at its edge, and the system's panel has its rims only where the tint puts them. Not at the sides: there the glass bends what
+    /// is behind it into a dark band that the system's panel shows as well (measured).
+    static let glassBleed: CGFloat = 6
 
     // The chips
     static let chipsTop: CGFloat = 21                // measured, from the card's top
@@ -64,6 +65,13 @@ enum ClipboardPanelMetrics {
     static let emptyCardHeight: CGFloat = 96
     static let bottomPadding: CGFloat = 8
 
+    // The shadow, drawn here and not by the window server, whose own is much lighter than the system panel's (measured: beside the
+    // bar the backdrop is dimmed by 20% at the edge, beside the card 30%, and the gap between them to 40%).
+    static let shadowMargin: CGFloat = 48
+    static let shadowOpacity: Float = 0.55
+    static let shadowRadius: CGFloat = 24
+    static let shadowDrop: CGFloat = 6
+
     // Appearing and going: the panel's opacity, read every few milliseconds, rose in about 0.11 s and fell in about 0.11 s, evenly.
     static let fadeInDuration: TimeInterval = 0.11
     static let fadeOutDuration: TimeInterval = 0.11
@@ -76,15 +84,17 @@ enum ClipboardPanelMetrics {
         if !card {
             let h = max(height, 1)
             let a = { (y: CGFloat) in 1.0 - 0.38 * y / h }       // 1.0 at the top, 0.62 at the bottom
-            return [(0, 0, a(0)), (-3, 0, a(h - 3)), (-1.2, 0, a(h - 1.2)), (-1.0, 1.0, 0.17), (h, 1.0, 0.17)]
+            // the bar's rim is its bottom edge only: a light grey line that reads 0.29 over black and 0.9 over white
+            return [(0, 0, a(0)), (-3, 0, a(h - 3)), (-1.2, 0, a(h - 1.2)), (-1.0, 0.75, 0.27), (h, 0.75, 0.27)]
         }
         let h = max(height, 1)
         let along = { (y: CGFloat) in min(1, y / 410) }            // the curve is drawn for the full 410 and cut off where the card ends
         let gray = { (y: CGFloat) in 0.07 + 0.03 * along(y) }
         let alpha = { (y: CGFloat) in 0.60 - 0.23 * along(y) }
-        return [(0, 0.6, 0.58), (1.0, 0.6, 0.58), (1.0, 0.45, 0.50), (2.0, 0.45, 0.50), (2.0, 0.2, 0.40), (3.0, 0.2, 0.40),
-                (3.0, gray(3), alpha(3)), (h - 3, gray(h - 3), alpha(h - 3)), (h - 1.2, gray(h - 1.2), alpha(h - 1.2)),
-                (h - 1.0, 1.0, 0.20), (h, 1.0, 0.20)]
+        // the top rim: a bright first point (0.43 over black, 0.74 over white), a dimmer second, then the glass
+        return [(0, 0.5, 0.55), (1.0, 0.5, 0.55), (1.0, 0.12, 0.45), (2.0, 0.12, 0.45),
+                (2.0, gray(2), alpha(2)), (h - 3, gray(h - 3), alpha(h - 3)), (h - 1.2, gray(h - 1.2), alpha(h - 1.2)),
+                (h - 1.0, 0.75, 0.27), (h, 0.75, 0.27)]
     }
 
     /// The card's height for `rows` rows (nil: no card). Pure, for tests.
@@ -119,6 +129,7 @@ final class ClipboardPanel: NSPanel, ClipboardPresenting, NSWindowDelegate {
 
     private weak var controller: ClipboardHistoryController?
     private let content = ClipboardContentView()
+    private lazy var host = ClipboardShadowHost(content: content)
     private var monitors: [Any] = []
     private let editor = ClipboardFieldEditor()
     private(set) var shown = false
@@ -126,11 +137,12 @@ final class ClipboardPanel: NSPanel, ClipboardPresenting, NSWindowDelegate {
     var isOpen: Bool { shown }
 
     init() {
-        super.init(contentRect: NSRect(x: 0, y: 0, width: ClipboardPanelMetrics.width, height: ClipboardPanelMetrics.pillHeight),
+        let m = ClipboardPanelMetrics.shadowMargin
+        super.init(contentRect: NSRect(x: 0, y: 0, width: ClipboardPanelMetrics.width + 2 * m, height: ClipboardPanelMetrics.pillHeight + 2 * m),
                    styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
         isOpaque = false
         backgroundColor = .clear
-        hasShadow = true
+        hasShadow = false          // the shadow is drawn in the window's margin (`ClipboardShadowHost`)
         level = .popUpMenu
         isReleasedWhenClosed = false
         animationBehavior = .none
@@ -139,7 +151,8 @@ final class ClipboardPanel: NSPanel, ClipboardPresenting, NSWindowDelegate {
         // Always the dark glass, as the system's own panel is: the black tint is part of how it looks.
         appearance = NSAppearance(named: .darkAqua)
         delegate = self
-        contentView = content
+        contentView = host
+        content.onLayout = { [weak host] in host?.updateShadow() }
         setAccessibilityIdentifier("dev.anode.clipboardHistory")
         setAccessibilityLabel("Clipboard History")
         content.onResize = { [weak self] height in self?.setHeight(height) }
@@ -161,6 +174,7 @@ final class ClipboardPanel: NSPanel, ClipboardPresenting, NSWindowDelegate {
         self.controller = controller
         content.controller = controller
         content.applyLab()
+        host.applyLab()
         content.reset()
         place()
         let animated = DisplayAccessibility.current.animates
@@ -235,17 +249,24 @@ final class ClipboardPanel: NSPanel, ClipboardPresenting, NSWindowDelegate {
         return NSRect(x: visible.midX - ClipboardPanelMetrics.width / 2, y: top - height, width: ClipboardPanelMetrics.width, height: height)
     }
 
-    private func place() {
-        guard let screen = targetScreen() else { return }
-        setFrame(Self.frame(height: frame.height, in: screen.visibleFrame), display: false)
+    /// The window is the panel and a margin all round for its shadow: the panel's own rectangle is `frame(height:in:)`.
+    static func windowFrame(forPanel panel: NSRect) -> NSRect {
+        let m = ClipboardPanelMetrics.shadowMargin
+        return panel.insetBy(dx: -m, dy: -m)
     }
 
-    /// The top edge stays where it is when the list grows or shrinks.
+    private func place() {
+        guard let screen = targetScreen() else { return }
+        let height = frame.height - 2 * ClipboardPanelMetrics.shadowMargin
+        setFrame(Self.windowFrame(forPanel: Self.frame(height: height, in: screen.visibleFrame)), display: false)
+    }
+
+    /// The panel's top edge stays where it is when the list grows or shrinks.
     private func setHeight(_ height: CGFloat) {
-        guard abs(frame.height - height) > 0.5 else { return }
-        let top = frame.maxY
-        setFrame(NSRect(x: frame.minX, y: top - height, width: frame.width, height: height), display: true)
-        invalidateShadow()
+        let m = ClipboardPanelMetrics.shadowMargin
+        guard abs(frame.height - 2 * m - height) > 0.5 else { return }
+        let top = frame.maxY - m
+        setFrame(Self.windowFrame(forPanel: NSRect(x: frame.minX + m, y: top - height, width: frame.width - 2 * m, height: height)), display: true)
     }
 
     // ── Keys ────────────────────────────────────────────────────────────────
@@ -306,6 +327,74 @@ final class ClipboardPanel: NSPanel, ClipboardPresenting, NSWindowDelegate {
             if content.hasQuery || content.filter != nil { content.clearQuery() } else { controller?.dismiss() }
         }
         return true
+    }
+}
+
+// ── The shadow ──────────────────────────────────────────────────────────────
+
+/// The window's contents: the panel in the middle, and round it a margin that holds its shadow. The shadow is cut away under the two
+/// shapes (they are glass: a shadow under them would show through) and falls only outside them.
+final class ClipboardShadowHost: NSView {
+
+    let content: ClipboardContentView
+    private let shadowLayer = CALayer()
+    private let cut = CAShapeLayer()
+    private var labShadow: (opacity: Float, radius: CGFloat, drop: CGFloat)?
+
+    init(content: ClipboardContentView) {
+        self.content = content
+        super.init(frame: .zero)
+        wantsLayer = true
+        shadowLayer.shadowColor = NSColor.black.cgColor
+        cut.fillRule = .evenOdd
+        shadowLayer.mask = cut
+        layer?.addSublayer(shadowLayer)         // before the content, so under it
+        content.autoresizingMask = []
+        addSubview(content)
+    }
+
+    required init?(coder: NSCoder) { fatalError("not used") }
+
+    /// CALIBRATION (temporary), from the same JSON: `"shadow":[opacity, radius, drop]`.
+    func applyLab() {
+        guard let text = UserDefaults(suiteName: "com.anode.settings")?.string(forKey: "anode.debug.clipboardGlass"),
+              let json = try? JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any],
+              let s = json["shadow"] as? [Double], s.count == 3 else { return }
+        labShadow = (Float(s[0]), CGFloat(s[1]), CGFloat(s[2]))
+        updateShadow()
+    }
+
+    override func layout() {
+        super.layout()
+        let m = ClipboardPanelMetrics.shadowMargin
+        content.frame = NSRect(x: m, y: m, width: bounds.width - 2 * m, height: max(0, bounds.height - 2 * m))
+        updateShadow()
+    }
+
+    func updateShadow() {
+        let m = ClipboardPanelMetrics.shadowMargin
+        let contentHeight = bounds.height - 2 * m
+        guard contentHeight > 0 else { return }
+        // The shapes are in the content's flipped coordinates; this view is not flipped.
+        func inHost(_ r: NSRect) -> NSRect { NSRect(x: m + r.minX, y: m + contentHeight - r.maxY, width: r.width, height: r.height) }
+        let shapes = content.shapeFrames().map { (inHost($0.rect), $0.radius) }
+        let all = CGMutablePath(), hole = CGMutablePath()
+        hole.addRect(bounds)
+        for (rect, radius) in shapes {
+            all.addPath(CGPath(roundedRect: rect, cornerWidth: radius, cornerHeight: radius, transform: nil))
+            hole.addPath(CGPath(roundedRect: rect, cornerWidth: radius, cornerHeight: radius, transform: nil))
+        }
+        let lab = labShadow ?? (ClipboardPanelMetrics.shadowOpacity, ClipboardPanelMetrics.shadowRadius, ClipboardPanelMetrics.shadowDrop)
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        shadowLayer.frame = bounds
+        shadowLayer.shadowPath = all
+        shadowLayer.shadowOpacity = lab.opacity
+        shadowLayer.shadowRadius = lab.radius
+        shadowLayer.shadowOffset = CGSize(width: 0, height: -lab.drop)
+        cut.frame = bounds
+        cut.path = hole
+        CATransaction.commit()
     }
 }
 
@@ -388,7 +477,7 @@ final class ClipboardShapeView: NSView {
         let r = kind == .pill ? ClipboardPanelMetrics.pillRadius : ClipboardPanelMetrics.cardRadius
         if #available(macOS 26.0, *) {
             let glass = NSGlassEffectView()
-            glass.cornerRadius = r + ClipboardPanelMetrics.glassBleed
+            glass.cornerRadius = r
             glass.style = .clear
             material = glass
         } else {
@@ -437,10 +526,9 @@ final class ClipboardShapeView: NSView {
 
     override func layout() {
         super.layout()
-        // The glass is bigger than the shape; the shape's clip (rounded corners, `masksToBounds`) cuts the rest off.
+        // The glass is taller than the shape; the shape's clip (rounded corners, `masksToBounds`) cuts the rest off.
         let bleed = labBleed ?? ClipboardPanelMetrics.glassBleed
-        material.frame = bounds.insetBy(dx: -bleed, dy: -bleed)
-        if #available(macOS 26.0, *), let glass = material as? NSGlassEffectView { glass.cornerRadius = (kind == .pill ? ClipboardPanelMetrics.pillRadius : ClipboardPanelMetrics.cardRadius) + bleed }
+        material.frame = NSRect(x: 0, y: -bleed, width: bounds.width, height: bounds.height + 2 * bleed)
         body.frame = bounds
         tint.frame = bounds
         edge.frame = bounds
@@ -568,6 +656,16 @@ final class ClipboardContentView: NSView, NSTextFieldDelegate, NSTableViewDataSo
     }
 
     func applyLab() { pill.applyLab(); card.applyLab() }
+
+    /// Called after each layout, so the shadow follows the shapes.
+    var onLayout: (() -> Void)?
+
+    /// Where the two shapes are, in this view's coordinates, with their corner radii (the card only when it is showing).
+    func shapeFrames() -> [(rect: NSRect, radius: CGFloat)] {
+        var out = [(rect: pill.frame, radius: M.pillRadius)]
+        if cardHeight != nil, !card.isHidden { out.append((card.frame, M.cardRadius)) }
+        return out
+    }
 
     // ── What is listed ──────────────────────────────────────────────────────
 
@@ -702,6 +800,7 @@ final class ClipboardContentView: NSView, NSTextFieldDelegate, NSTableViewDataSo
         } else {
             card.isHidden = true
         }
+        onLayout?()
     }
 
     // ── The table ───────────────────────────────────────────────────────────
