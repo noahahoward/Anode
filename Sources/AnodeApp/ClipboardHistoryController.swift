@@ -32,16 +32,20 @@ final class ClipboardAttribution {
     static let grace: TimeInterval = 3
     private let ownBundleID: String?
     private var before: String?
-    private var until: Date?
+    private var closedAt: Date?
 
     init(ownBundleID: String? = Bundle.main.bundleIdentifier) { self.ownBundleID = ownBundleID }
 
-    func panelOpened(front: String?) { before = front; until = .distantFuture }
-    func panelClosed(now: Date = Date()) { until = now.addingTimeInterval(Self.grace) }
+    func panelOpened(front: String?) { before = front; closedAt = nil }
+    func panelClosed(now: Date = Date()) { closedAt = now }
 
-    func resolve(_ front: (bundleID: String?, name: String?), now: Date = Date(),
+    /// `panelOpen` is whether the panel is on screen now, asked of the panel and not remembered here: a way of closing it that did not
+    /// say so (a sleep, a lock) leaves nothing switched on, and with no time of closing noted there is no grace either.
+    func resolve(_ front: (bundleID: String?, name: String?), panelOpen: Bool, now: Date = Date(),
                  nameFor: (String) -> String? = { ClipboardAppNames.name(for: $0) }) -> (bundleID: String?, name: String?) {
-        guard let own = ownBundleID, front.bundleID == own, let before, before != own, let until, now <= until else { return front }
+        guard let own = ownBundleID, front.bundleID == own, let before, before != own else { return front }
+        let recentlyClosed = closedAt.map { now.timeIntervalSince($0) <= Self.grace } ?? false
+        guard panelOpen || recentlyClosed else { return front }
         return (before, nameFor(before))
     }
 }
@@ -134,7 +138,8 @@ final class ClipboardHistoryController {
         let attribution = ClipboardAttribution()
         self.attribution = attribution
         watcher = ClipboardWatcher(
-            changeCount: changeCount, types: types, read: read, frontApp: { attribution.resolve(frontApp()) }, store: store,
+            changeCount: changeCount, types: types, read: read,
+            frontApp: { [weak presenter] in attribution.resolve(frontApp(), panelOpen: presenter?.isOpen ?? false) }, store: store,
             policy: { [settings] in
                 ClipboardStore.Policy(ignoredApps: Set(settings.clipboardHistoryIgnoredApps), keepImages: settings.clipboardHistoryKeepImages)
             }, log: log, declaredSource: declaredSource)
@@ -209,14 +214,14 @@ final class ClipboardHistoryController {
         stopTimer?()
         stopTimer = nil
         if shortcutRegistered { unregisterShortcut(); shortcutRegistered = false }
-        if presenter.isOpen { presenter.hide() }
+        if presenter.isOpen { attribution.panelClosed(); presenter.hide() }
     }
 
     func setScreensAsleep(_ asleep: Bool) {
         guard screensAsleep != asleep else { return }
         screensAsleep = asleep
         // An open panel is not left on screen across a sleep or a lock: it shows what was copied.
-        if asleep, presenter.isOpen { presenter.hide() }
+        if asleep, presenter.isOpen { attribution.panelClosed(); presenter.hide() }
         apply(starting: false)
         onChange?()
     }
@@ -224,7 +229,7 @@ final class ClipboardHistoryController {
     func setLocked(_ isLocked: Bool) {
         guard locked != isLocked else { return }
         locked = isLocked
-        if isLocked, presenter.isOpen { presenter.hide() }
+        if isLocked, presenter.isOpen { attribution.panelClosed(); presenter.hide() }
         apply(starting: false)
         onChange?()
     }

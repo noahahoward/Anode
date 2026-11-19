@@ -298,15 +298,26 @@ final class ClipboardControllerTests: XCTestCase {
         let a = ClipboardAttribution(ownBundleID: "dev.anode.app")
         let anode: (bundleID: String?, name: String?) = ("dev.anode.app", "Anode")
         let now = Date(timeIntervalSince1970: 1_800_000_000)
-        XCTAssertEqual(a.resolve(anode, now: now, nameFor: { _ in "Brave" }).bundleID, "dev.anode.app", "no panel yet: Anode's own copy is Anode's")
+        func who(_ front: (bundleID: String?, name: String?), open: Bool, at t: Date) -> String? {
+            a.resolve(front, panelOpen: open, now: t, nameFor: { _ in "Brave" }).bundleID
+        }
+        XCTAssertEqual(who(anode, open: false, at: now), "dev.anode.app", "no panel yet: Anode's own copy is Anode's")
         a.panelOpened(front: "com.brave.Browser")
-        XCTAssertEqual(a.resolve(anode, now: now, nameFor: { _ in "Brave" }).bundleID, "com.brave.Browser", "while the panel is open")
-        XCTAssertEqual(a.resolve(anode, now: now, nameFor: { _ in "Brave" }).name, "Brave")
-        XCTAssertEqual(a.resolve(("com.example.Editor", "Editor"), now: now).bundleID, "com.example.Editor", "another app in front is itself")
+        XCTAssertEqual(who(anode, open: true, at: now), "com.brave.Browser", "while the panel is open")
+        XCTAssertEqual(a.resolve(anode, panelOpen: true, now: now, nameFor: { _ in "Brave" }).name, "Brave")
+        XCTAssertEqual(who(("com.example.Editor", "Editor"), open: true, at: now), "com.example.Editor", "another app in front is itself")
         a.panelClosed(now: now)
-        XCTAssertEqual(a.resolve(anode, now: now.addingTimeInterval(2), nameFor: { _ in "Brave" }).bundleID, "com.brave.Browser", "just after")
-        XCTAssertEqual(a.resolve(anode, now: now.addingTimeInterval(ClipboardAttribution.grace + 1), nameFor: { _ in "Brave" }).bundleID,
-                       "dev.anode.app", "long after, Anode's own windows copy as Anode again")
+        XCTAssertEqual(who(anode, open: false, at: now.addingTimeInterval(2)), "com.brave.Browser", "just after")
+        XCTAssertEqual(who(anode, open: false, at: now.addingTimeInterval(ClipboardAttribution.grace + 1)), "dev.anode.app",
+                       "long after, Anode's own windows copy as Anode again")
+    }
+
+    /// A panel put away by a way that did not tell the attribution (it asks the panel, it is not told) leaves no standing credit.
+    func testAPanelThatWentWithoutTellingLeavesNoCreditBehind() {
+        let a = ClipboardAttribution(ownBundleID: "dev.anode.app")
+        a.panelOpened(front: "com.brave.Browser")
+        let later = Date(timeIntervalSince1970: 1_800_000_000)
+        XCTAssertEqual(a.resolve(("dev.anode.app", "Anode"), panelOpen: false, now: later, nameFor: { _ in "Brave" }).bundleID, "dev.anode.app")
     }
 
     func testPlainTextAsksForPlainText() {

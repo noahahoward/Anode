@@ -23,13 +23,21 @@ enum SystemSpotlight {
 
     /// The process id of Siri when one of its windows is on screen and not faded away, from a window list as the system gives it
     /// (`CGWindowListCopyWindowInfo`). Pure, so it is tested without a screen.
-    static func openHost(in windows: [[String: Any]]) -> pid_t? {
+    static func openHost(in windows: [[String: Any]], isSystemProcess: (pid_t) -> Bool = SystemSpotlight.isSystemProcess) -> pid_t? {
         for window in windows where (window[kCGWindowOwnerName as String] as? String) == hostName {
             let alpha = (window[kCGWindowAlpha as String] as? Double) ?? 1
-            guard alpha > visibleAlpha, let pid = window[kCGWindowOwnerPID as String] as? Int else { continue }
+            guard alpha > visibleAlpha, let pid = window[kCGWindowOwnerPID as String] as? Int, isSystemProcess(pid_t(pid)) else { continue }
             return pid_t(pid)
         }
         return nil
+    }
+
+    /// A window's owner name is only a name: any program can call itself "Siri". The key is sent only to a process that runs from the
+    /// system's own folder (/System, which no one but the system can put an app in: it is on the sealed volume), whatever it is named
+    /// (on this macOS the host is "Siri AI", bundle com.apple.campo; the name the window list gives is "Siri").
+    static func isSystemProcess(_ pid: pid_t) -> Bool {
+        guard let path = NSRunningApplication(processIdentifier: pid)?.bundleURL?.path else { return false }
+        return path.hasPrefix("/System/")
     }
 
     /// The Siri process, if its search is open now.
