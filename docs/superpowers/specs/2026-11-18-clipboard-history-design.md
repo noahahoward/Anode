@@ -106,8 +106,20 @@ The chips are the kinds in the history (Text, Links, Images, Files, Pinned); Tab
   and added a veil of light the system's glass does not have). The tint is fitted to flat areas, so large areas match and fine detail through the
   card is sharper than the system's.
 - The list bends at the card's bottom edge: a deliberate addition (the system's panel has none). A `CIBumpDistortionLinear` on the list's layer,
-  16 points deep, squeezes the lowest words and icons toward the edge the way the glass's own edge bends what is behind it; the glass is not
-  extended past the card's bottom, so that edge shows too.
+  20 points deep, pinches the lowest words and icons toward the edge the way the glass's own edge bends what is behind it; the glass is not
+  extended past the card's bottom, so that edge shows too. (The filter's scale is 1 for no change: below 1 it magnifies round the line and cuts a
+  row's last points off, which is what the first try, at -0.35, looked like; 2 pinches; from 3 up the mapping folds over itself.) The rims are the
+  glass's light at its edge, so they are a layer of their own (`ClipboardPanelMetrics.splitTint`) over the list, and the black is under it.
+- Spotlight: the system's search (a window of the process named "Siri", at layer 23, alpha 1 while open and alpha 0 but still listed after it
+  closes) is closed before this panel opens: Escape posted to that process alone (`postToPid`, so it can reach nothing else), again after 0.12 s
+  and 0.3 s if it is still there (the first Escape only clears what was typed). While this panel is open it looks every 0.25 s for the search
+  opening over it, which takes no key from it, and goes (`SystemSpotlight`).
+- Pasting an entry puts it back on the pasteboard with a form of Anode's own (`ClipboardTypes.ownWrite`), so however the change counter moves
+  afterwards, that paste is never recorded as a copy. A copy noticed while Anode itself is the app in front, round the panel (open, or within
+  3 s of its going: a closed key panel can hand the key on to a window of Anode's own), is credited to the app that was in front before the
+  panel opened, not to Anode (`ClipboardAttribution`). Both came from one row listed with Anode's icon; the cause of that was not found (a
+  paste into a plain window recorded nothing new), and `clipboard.log` now says when a copy is noticed with Anode in front and what the app in
+  front was at each paste.
 - The panel is always the dark glass (as the system's is in a dark appearance); in a light appearance the system's may differ and was not measured.
 - Image and file entries are listed and pasted, but image search is by the word "image" only (there is no OCR).
 - A copy of Universal Clipboard content is never recorded, so it cannot be searched.
