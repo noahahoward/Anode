@@ -84,7 +84,7 @@ final class ClipboardHistoryController {
          read: @escaping (Int) -> [ClipboardRepresentation]?,
          writePasteboard: @escaping ([ClipboardRepresentation], Bool) -> Int, sendPaste: @escaping () -> Bool,
          accessibility: @escaping () -> Bool, frontApp: @escaping () -> (bundleID: String?, name: String?),
-         copySource: (() -> (bundleID: String?, name: String?))? = nil,
+         declaredSource: @escaping () -> (bundleID: String, name: String?)? = { nil },
          restoreFront: @escaping (String?) -> Void,
          startTimer: @escaping (TimeInterval, TimeInterval, @escaping () -> Void) -> () -> Void,
          registerShortcut: @escaping (@escaping () -> Void) -> Void, unregisterShortcut: @escaping () -> Void,
@@ -106,10 +106,10 @@ final class ClipboardHistoryController {
         self.accessDescription = accessDescription
         self.log = log
         watcher = ClipboardWatcher(
-            changeCount: changeCount, types: types, read: read, frontApp: copySource ?? frontApp, store: store,
+            changeCount: changeCount, types: types, read: read, frontApp: frontApp, store: store,
             policy: { [settings] in
                 ClipboardStore.Policy(ignoredApps: Set(settings.clipboardHistoryIgnoredApps), keepImages: settings.clipboardHistoryKeepImages)
-            }, log: log)
+            }, log: log, declaredSource: declaredSource)
         store.limits = Self.limits(from: settings)
         for key in [Settings.Key.clipboardHistoryEnabled, Settings.Key.clipboardHistoryPaused, Settings.Key.clipboardHistoryKeepMinutes,
                     Settings.Key.clipboardHistoryMaxEntries, Settings.Key.clipboardHistoryKeepImages] {

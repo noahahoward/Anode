@@ -22,6 +22,7 @@ public final class ClipboardWatcher {
     private let types: () -> [String]
     private let read: (_ maxBytes: Int) -> [ClipboardRepresentation]?
     private let frontApp: () -> (bundleID: String?, name: String?)
+    private let declaredSource: () -> (bundleID: String, name: String?)?
     private let store: ClipboardStore
     private let policy: () -> ClipboardStore.Policy
     private let log: (String) -> Void
@@ -36,11 +37,13 @@ public final class ClipboardWatcher {
     public init(changeCount: @escaping () -> Int, types: @escaping () -> [String],
                 read: @escaping (_ maxBytes: Int) -> [ClipboardRepresentation]?,
                 frontApp: @escaping () -> (bundleID: String?, name: String?), store: ClipboardStore,
-                policy: @escaping () -> ClipboardStore.Policy, log: @escaping (String) -> Void) {
+                policy: @escaping () -> ClipboardStore.Policy, log: @escaping (String) -> Void,
+                declaredSource: @escaping () -> (bundleID: String, name: String?)? = { nil }) {
         self.changeCount = changeCount
         self.types = types
         self.read = read
         self.frontApp = frontApp
+        self.declaredSource = declaredSource
         self.store = store
         self.policy = policy
         self.log = log
@@ -67,9 +70,11 @@ public final class ClipboardWatcher {
         if count == ownCount { return .ownWrite }
 
         let front = frontApp()
+        let declared = declaredSource()
         let present = types()
         let rules = policy()
-        if let why = ClipboardPrivacy.skipReason(types: present, sourceBundleID: front.bundleID, ignoredApps: rules.ignoredApps) {
+        if let why = ClipboardPrivacy.skipReason(types: present, sourceBundleID: front.bundleID, ignoredApps: rules.ignoredApps,
+                                                  declaredSourceBundleID: declared?.bundleID) {
             // The kind of thing and who made it: never what it said.
             log("not recorded (\(why)) from \(front.bundleID ?? "an unknown app")")
             return .skipped(why)
@@ -84,7 +89,8 @@ public final class ClipboardWatcher {
             log("not recorded (the clipboard changed while it was read) from \(front.bundleID ?? "an unknown app")")
             return .skipped("changed while it was read")
         }
-        let snapshot = ClipboardSnapshot(representations: reps, sourceBundleID: front.bundleID, sourceName: front.name, date: now)
+        let snapshot = ClipboardSnapshot(representations: reps, sourceBundleID: front.bundleID, declaredSourceBundleID: declared?.bundleID,
+                                         sourceName: declared?.name ?? front.name, date: now)
         let result = store.add(snapshot, policy: rules)
         if case .skipped(let why) = result { log("not recorded (\(why)) from \(front.bundleID ?? "an unknown app")") }
         return .recorded(result)

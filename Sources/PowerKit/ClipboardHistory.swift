@@ -58,17 +58,26 @@ public struct ClipboardRepresentation: Equatable {
 /// What a copy was, as the app read it: every form of every item, the app that made it, and when.
 public struct ClipboardSnapshot: Equatable {
     public var representations: [ClipboardRepresentation]
+    /// The app that was in front when the copy was noticed: what the system says, and the one the rules about apps trust.
     public var sourceBundleID: String?
+    /// The app the copy says it came from (`org.nspasteboard.source`). It is only what the copying app says of itself, so it can name
+    /// any app: it is never trusted in place of `sourceBundleID`, only checked as well and used to label the entry.
+    public var declaredSourceBundleID: String?
+    /// The name to show: the declared app's when there is one, else the app in front's.
     public var sourceName: String?
     public var date: Date
 
-    public init(representations: [ClipboardRepresentation], sourceBundleID: String? = nil, sourceName: String? = nil,
-                date: Date = Date()) {
+    public init(representations: [ClipboardRepresentation], sourceBundleID: String? = nil, declaredSourceBundleID: String? = nil,
+                sourceName: String? = nil, date: Date = Date()) {
         self.representations = representations
         self.sourceBundleID = sourceBundleID
+        self.declaredSourceBundleID = declaredSourceBundleID
         self.sourceName = sourceName
         self.date = date
     }
+
+    /// The app to show the entry as coming from.
+    public var displayBundleID: String? { declaredSourceBundleID ?? sourceBundleID }
 
     /// The type strings, each once, in the order they came.
     public var types: [String] {
@@ -116,10 +125,15 @@ public enum ClipboardPrivacy {
 
     /// Why a copy must not be recorded, in a word for the log; nil when it may be. Read before any data is, from the type
     /// strings alone.
-    public static func skipReason(types: [String], sourceBundleID: String?, ignoredApps: Set<String>) -> String? {
+    /// Both the app in front and the app the copy declares are judged: a copy that names another app as its source cannot get past
+    /// the list by it, and a password manager that names itself is refused whatever was in front.
+    public static func skipReason(types: [String], sourceBundleID: String?, ignoredApps: Set<String>,
+                                  declaredSourceBundleID: String? = nil) -> String? {
         for t in types { if let why = markers[t] { return why } }
-        if isPasswordManager(sourceBundleID) { return "password manager" }
-        if let id = sourceBundleID, ignoredApps.contains(id) { return "ignored app" }
+        for id in [sourceBundleID, declaredSourceBundleID] {
+            if isPasswordManager(id) { return "password manager" }
+            if let id, ignoredApps.contains(id) { return "ignored app" }
+        }
         return nil
     }
 }
@@ -244,7 +258,7 @@ enum ClipboardBuilder {
         let entry = ClipboardEntry(
             id: id, kind: kind, text: String(text.prefix(ClipboardEntry.searchableCharacters)),
             preview: String(preview.prefix(ClipboardEntry.previewCharacters)), detail: detail, parts: parts, date: snapshot.date,
-            pinned: false, sourceBundleID: snapshot.sourceBundleID, sourceName: snapshot.sourceName,
+            pinned: false, sourceBundleID: snapshot.displayBundleID, sourceName: snapshot.sourceName,
             byteSize: kept.reduce(0) { $0 + $1.data.count }, fingerprint: fingerprint)
         return .built(Built(entry: entry, kept: kept))
     }
@@ -367,7 +381,7 @@ public final class ClipboardStore {
     public func add(_ snapshot: ClipboardSnapshot, policy: Policy = Policy()) -> AddResult {
         // The rules again, whoever the caller is: a copy that must not be recorded is not, whatever else was checked.
         if let why = ClipboardPrivacy.skipReason(types: snapshot.types, sourceBundleID: snapshot.sourceBundleID,
-                                                  ignoredApps: policy.ignoredApps) {
+                                                  ignoredApps: policy.ignoredApps, declaredSourceBundleID: snapshot.declaredSourceBundleID) {
             return .skipped(why)
         }
         let id = UUID()

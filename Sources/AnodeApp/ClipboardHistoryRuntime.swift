@@ -23,11 +23,11 @@ enum ClipboardHistoryRuntime {
                 let app = NSWorkspace.shared.frontmostApplication
                 return (app?.bundleIdentifier, app?.localizedName)
             },
-            // Who made a copy: the app it says (when it says), else the app in front. Not the same as the app to paste into.
-            copySource: {
-                if let id = RealClipboard.declaredSource() { return (id, ClipboardAppNames.name(for: id)) }
-                let app = NSWorkspace.shared.frontmostApplication
-                return (app?.bundleIdentifier, app?.localizedName)
+            // The app a copy says it came from, when it says: used to label the entry, and judged by the rules as well as the app in front
+            // (never instead of it: it is only what the copying app says of itself).
+            declaredSource: {
+                guard let id = RealClipboard.declaredSource() else { return nil }
+                return (id, ClipboardAppNames.name(for: id))
             },
             restoreFront: { bringBack($0) },
             startTimer: { interval, tolerance, tick in
