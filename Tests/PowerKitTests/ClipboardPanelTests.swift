@@ -60,21 +60,116 @@ final class ClipboardPanelTests: XCTestCase {
 
     // ── Where it sits ───────────────────────────────────────────────────────
 
-    func testThePanelIsCentredAndItsTopEdgeIsAThirdOfTheWayDown() {
-        let visible = NSRect(x: 0, y: 0, width: 1800, height: 1130)
-        let f = ClipboardPanel.frame(height: 200, in: visible)
-        XCTAssertEqual(f.midX, visible.midX, accuracy: 0.01)
+    func testThePanelOpensCentredWithItsTopWhereTheSystemsDoes() {
+        // The system's panel, on a 1800 x 1169 screen: x 640, top edge 282 down from the screen's top.
+        let screen = NSRect(x: 0, y: 0, width: 1800, height: 1169)
+        let f = ClipboardPlacement.defaultFrame(height: 200, on: screen)
+        XCTAssertEqual(f.midX, screen.midX, accuracy: 0.01)
+        XCTAssertEqual(f.minX, 640, accuracy: 0.01)
         XCTAssertEqual(f.width, ClipboardPanelMetrics.width)
-        XCTAssertEqual(visible.maxY - f.maxY, visible.height * ClipboardPanelMetrics.topFraction, accuracy: 0.01)
+        XCTAssertEqual(screen.maxY - f.maxY, 282, accuracy: 0.5)
         XCTAssertEqual(f.height, 200)
     }
 
-    func testOnASecondDisplayItSitsInThatDisplaysOwnVisibleArea() {
-        let visible = NSRect(x: 1800, y: 100, width: 1440, height: 800)
-        let f = ClipboardPanel.frame(height: 300, in: visible)
-        XCTAssertEqual(f.midX, visible.midX, accuracy: 0.01)
+    func testTheTopEdgeStaysPutWhateverTheHeight() {
+        let screen = NSRect(x: 0, y: 0, width: 1800, height: 1169)
+        XCTAssertEqual(ClipboardPlacement.defaultFrame(height: 87, on: screen).maxY, ClipboardPlacement.defaultFrame(height: 507, on: screen).maxY)
+    }
+
+    func testOnASecondDisplayItSitsInThatDisplaysOwnArea() {
+        let screen = NSRect(x: 1800, y: 100, width: 1440, height: 800)
+        let f = ClipboardPlacement.defaultFrame(height: 300, on: screen)
+        XCTAssertEqual(f.midX, screen.midX, accuracy: 0.01)
         XCTAssertGreaterThan(f.minX, 1800)
-        XCTAssertLessThan(f.maxY, visible.maxY)
+        XCTAssertLessThan(f.maxY, screen.maxY)
+    }
+
+    // ── Dragging ────────────────────────────────────────────────────────────
+
+    private let screen = NSRect(x: 0, y: 0, width: 1800, height: 1169)
+    private var visible: NSRect { NSRect(x: 0, y: 0, width: 1800, height: 1130) }
+
+    private func drag(height: CGFloat = 311, from: NSRect? = nil) -> (ClipboardPlacement.Drag, NSPoint) {
+        let panel = from ?? ClipboardPlacement.defaultFrame(height: height, on: screen)
+        let pointer = NSPoint(x: panel.minX + 200, y: panel.maxY - 12)
+        return (ClipboardPlacement.Drag(panel: panel, pointer: pointer, screen: screen, visible: visible), pointer)
+    }
+
+    func testADragFollowsThePointerOneForOne() {
+        var (d, p) = drag(from: NSRect(x: 300, y: 500, width: 520, height: 311))
+        d.moved(to: NSPoint(x: p.x + 100, y: p.y - 60))
+        XCTAssertEqual(d.frame.minX, 400, accuracy: 0.01)
+        XCTAssertEqual(d.frame.minY, 440, accuracy: 0.01)
+    }
+
+    func testItCatchesOnTheMiddleWithinAFewPointsAndTicks() {
+        var (d, p) = drag(from: NSRect(x: 400, y: 600, width: 520, height: 311))
+        XCTAssertFalse(d.moved(to: NSPoint(x: p.x + 220, y: p.y)), "20 points short of the middle: free")
+        XCTAssertEqual(d.frame.minX, 620, accuracy: 0.01)
+        XCTAssertTrue(d.moved(to: NSPoint(x: p.x + 237, y: p.y)), "3 points short: caught")
+        XCTAssertEqual(d.frame.minX, 640, accuracy: 0.01)
+        XCTAssertFalse(d.moved(to: NSPoint(x: p.x + 238, y: p.y)), "no second tick while it is held")
+    }
+
+    func testItHoldsTheMiddleUntilPulledAwayThenLetsGo() {
+        var (d, p) = drag(from: NSRect(x: 640, y: 600, width: 520, height: 311))
+        d.moved(to: NSPoint(x: p.x + 2, y: p.y))                      // caught at once, 2 points off
+        XCTAssertEqual(d.frame.minX, 640, accuracy: 0.01)
+        d.moved(to: NSPoint(x: p.x + 20, y: p.y))
+        XCTAssertEqual(d.frame.minX, 640, accuracy: 0.01, "20 points away: still held (let go beyond 24)")
+        d.moved(to: NSPoint(x: p.x + 26, y: p.y))
+        XCTAssertEqual(d.frame.minX, 666, accuracy: 0.01, "26 points away: free, and it jumps to the pointer")
+        XCTAssertFalse(d.moved(to: NSPoint(x: p.x + 22, y: p.y)), "coming back to 22 away does not catch again (5 points does)")
+        XCTAssertEqual(d.frame.minX, 662, accuracy: 0.01)
+    }
+
+    func testItCatchesOnTheDefaultHeightAndHoldsItLessFar() {
+        let top = ClipboardPlacement.defaultFrame(height: 311, on: screen).maxY
+        var (d, p) = drag(from: NSRect(x: 100, y: top - 311 - 80, width: 520, height: 311))      // 80 points below the default
+        XCTAssertFalse(d.moved(to: NSPoint(x: p.x, y: p.y + 60)), "20 points below it: free")
+        XCTAssertTrue(d.moved(to: NSPoint(x: p.x, y: p.y + 77)), "3 points below it: caught")
+        XCTAssertEqual(d.frame.maxY, top, accuracy: 0.01)
+        d.moved(to: NSPoint(x: p.x, y: p.y + 90))                       // 10 above: held
+        XCTAssertEqual(d.frame.maxY, top, accuracy: 0.01)
+        d.moved(to: NSPoint(x: p.x, y: p.y + 100))                      // 20 above: let go (16)
+        XCTAssertEqual(d.frame.maxY, top + 20, accuracy: 0.01)
+    }
+
+    func testItStopsAtTheScreensEdgesAndComesBackWhenThePointerDoes() {
+        var (d, p) = drag(from: NSRect(x: 1200, y: 600, width: 520, height: 311))
+        d.moved(to: NSPoint(x: p.x + 500, y: p.y))
+        XCTAssertEqual(d.frame.maxX, 1800, accuracy: 0.01, "against the right edge")
+        d.moved(to: NSPoint(x: p.x + 250, y: p.y))
+        XCTAssertEqual(d.frame.maxX, 1800, accuracy: 0.01, "the pointer is still past where it would be")
+        d.moved(to: NSPoint(x: p.x + 40, y: p.y))
+        XCTAssertEqual(d.frame.minX, 1240, accuracy: 0.01, "now it follows again")
+        d.moved(to: NSPoint(x: p.x - 2000, y: p.y))
+        XCTAssertEqual(d.frame.minX, 0, accuracy: 0.01)
+    }
+
+    func testItStopsUnderTheMenuBarAndAboveTheBottom() {
+        var (d, p) = drag(from: NSRect(x: 100, y: 600, width: 520, height: 311))
+        d.moved(to: NSPoint(x: p.x, y: p.y + 2000))
+        XCTAssertEqual(d.frame.maxY, 1130, accuracy: 0.01, "the top edge at the menu bar")
+        d.moved(to: NSPoint(x: p.x, y: p.y - 2000))
+        XCTAssertEqual(d.frame.minY, 0, accuracy: 0.01, "the bottom edge at the bottom of the screen")
+    }
+
+    func testItOpensWhereItWasLeft() {
+        let left = NSRect(x: 300, y: 500, width: 520, height: 311)
+        let offset = ClipboardPlacement.offset(of: left, on: screen)
+        let again = ClipboardPlacement.opening(height: 137, screen: screen, visible: visible, remembered: offset)
+        XCTAssertEqual(again.minX, 300, accuracy: 0.01)
+        XCTAssertEqual(again.maxY, left.maxY, accuracy: 0.01, "the top edge, whatever the height now")
+        XCTAssertEqual(ClipboardPlacement.opening(height: 137, screen: screen, visible: visible, remembered: .zero),
+                       ClipboardPlacement.defaultFrame(height: 137, on: screen))
+    }
+
+    func testWhatIsRememberedIsKeptInsideTheScreenItOpensOn() {
+        let far = CGSize(width: 5000, height: 5000)
+        let f = ClipboardPlacement.opening(height: 200, screen: screen, visible: visible, remembered: far)
+        XCTAssertLessThanOrEqual(f.maxX, 1800)
+        XCTAssertLessThanOrEqual(f.maxY, 1130)
     }
 
     // ── Rows ────────────────────────────────────────────────────────────────
@@ -117,7 +212,8 @@ final class ClipboardPanelTests: XCTestCase {
         XCTAssertEqual(M.rowInset, 14.5)
         XCTAssertEqual(M.iconSize, 36)
         XCTAssertEqual(M.searchLeft, 39)
-        XCTAssertEqual(M.topFraction, 0.30, accuracy: 0.001)
+        XCTAssertEqual(ClipboardPlacement.centreFraction, 0.30)
+        XCTAssertEqual(ClipboardPlacement.referenceHeight, 137, "the system's window with nothing typed: the bar and 50 points")
     }
 
     /// The tint over the glass was fitted to the system panel's measured transparency over a black and white striped backdrop: the bar

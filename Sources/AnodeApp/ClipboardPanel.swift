@@ -27,9 +27,7 @@ enum ClipboardPanelMetrics {
     static let cardMaxHeight: CGFloat = 410          // measured
     static let pillRadius: CGFloat = 34              // the bar's corners are nearly, not quite, a capsule
     static let cardRadius: CGFloat = 30
-    /// The bar's top edge sits this fraction of the visible screen's height down from its top (measured: 380 of 1169 points on a
-    /// screen whose menu bar is 39 points).
-    static let topFraction: CGFloat = 0.30
+    // Where it opens and how it is dragged: `ClipboardPlacement`.
 
     // The bar
     static let searchFontSize: CGFloat = 21
@@ -133,6 +131,9 @@ final class ClipboardPanel: NSPanel, ClipboardPresenting, NSWindowDelegate {
     private var monitors: [Any] = []
     private let editor = ClipboardFieldEditor()
     private(set) var shown = false
+    /// Where it was last left, as how far it is from the default place: it opens there again.
+    private var remembered = CGSize.zero
+    private var drag: ClipboardPlacement.Drag?
 
     var isOpen: Bool { shown }
 
@@ -241,12 +242,6 @@ final class ClipboardPanel: NSPanel, ClipboardPresenting, NSWindowDelegate {
         return NSScreen.screens.first { $0.frame.contains(point) } ?? NSScreen.main ?? NSScreen.screens.first
     }
 
-    /// Horizontally centred on the screen, the top edge a third of the way down. Pure, for tests.
-    static func frame(height: CGFloat, in visible: NSRect) -> NSRect {
-        let top = visible.maxY - visible.height * ClipboardPanelMetrics.topFraction
-        return NSRect(x: visible.midX - ClipboardPanelMetrics.width / 2, y: top - height, width: ClipboardPanelMetrics.width, height: height)
-    }
-
     /// The window is the panel and a margin all round for its shadow: the panel's own rectangle is `frame(height:in:)`.
     static func windowFrame(forPanel panel: NSRect) -> NSRect {
         let m = ClipboardPanelMetrics.shadowMargin
@@ -256,15 +251,60 @@ final class ClipboardPanel: NSPanel, ClipboardPresenting, NSWindowDelegate {
     private func place() {
         guard let screen = targetScreen() else { return }
         let height = frame.height - 2 * ClipboardPanelMetrics.shadowMargin
-        setFrame(Self.windowFrame(forPanel: Self.frame(height: height, in: screen.visibleFrame)), display: false)
+        let panel = ClipboardPlacement.opening(height: height, screen: screen.frame, visible: screen.visibleFrame, remembered: remembered)
+        setFrame(Self.windowFrame(forPanel: panel), display: false)
     }
 
-    /// The panel's top edge stays where it is when the list grows or shrinks.
+    /// The panel's top edge stays where it is when the list grows or shrinks; a card that would run off the bottom of the screen is
+    /// lifted to fit.
     private func setHeight(_ height: CGFloat) {
         let m = ClipboardPanelMetrics.shadowMargin
         guard abs(frame.height - 2 * m - height) > 0.5 else { return }
         let top = frame.maxY - m
-        setFrame(Self.windowFrame(forPanel: NSRect(x: frame.minX + m, y: top - height, width: frame.width - 2 * m, height: height)), display: true)
+        var panel = NSRect(x: frame.minX + m, y: top - height, width: frame.width - 2 * m, height: height)
+        if let screen = self.screen ?? NSScreen.main { panel = ClipboardPlacement.clamp(panel, screen: screen.frame, visible: screen.visibleFrame) }
+        setFrame(Self.windowFrame(forPanel: panel), display: true)
+    }
+
+    // ── Dragging ────────────────────────────────────────────────────────────
+
+    /// A press on the bar or the card moves it, as the system's panel does, unless it is on something that takes the press itself: the
+    /// search field, the chips, the list.
+    private func startsADrag(at point: NSPoint) -> Bool {
+        guard let host = contentView, let superview = host.superview else { return false }
+        var view = host.hitTest(superview.convert(point, from: nil))
+        while let v = view {
+            if v is NSControl || v is NSTextView || v is NSTableView || v is ClipboardChipView { return false }
+            view = v.superview
+        }
+        return true
+    }
+
+    /// Returns whether the event was part of a drag.
+    private func handleDrag(_ event: NSEvent) -> Bool {
+        switch event.type {
+        case .leftMouseDown:
+            guard event.window === self, startsADrag(at: event.locationInWindow), let screen = self.screen ?? NSScreen.main else { return false }
+            let m = ClipboardPanelMetrics.shadowMargin
+            drag = ClipboardPlacement.Drag(panel: frame.insetBy(dx: m, dy: m), pointer: NSEvent.mouseLocation,
+                                           screen: screen.frame, visible: screen.visibleFrame)
+            return true
+        case .leftMouseDragged:
+            guard var d = drag else { return false }
+            let caught = d.moved(to: NSEvent.mouseLocation)
+            drag = d
+            setFrame(Self.windowFrame(forPanel: d.frame), display: true)
+            // The tick from the trackpad when it catches on the middle or on its usual height, as the system's does.
+            if caught { NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now) }
+            return true
+        case .leftMouseUp:
+            guard let d = drag else { return false }
+            drag = nil
+            if let screen = self.screen ?? NSScreen.main { remembered = ClipboardPlacement.offset(of: d.frame, on: screen.frame) }
+            return true
+        default:
+            return false
+        }
     }
 
     // ── Keys ────────────────────────────────────────────────────────────────
@@ -278,6 +318,7 @@ final class ClipboardPanel: NSPanel, ClipboardPresenting, NSWindowDelegate {
             dismissFromPanel()
             return
         }
+        if handleDrag(event) { return }
         super.sendEvent(event)
     }
 
