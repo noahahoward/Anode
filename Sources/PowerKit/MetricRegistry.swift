@@ -256,6 +256,48 @@ public struct MetricValue {
         return MetricValue(value: value, text: "AC", isEstimate: false, label: onACLabel)
     }
 
+    /// The words a status reading uses, for a Mac on its charger (the same ones the glance card and Charge Control use).
+    public static let chargingWord = "Charging"
+    public static let holdingWord = "Holding"
+    public static let fullWord = "Full"
+    public static let onACWord = "On AC"
+
+    /// A reading that is a word and no number: what the battery is doing, for a widget whose rate has nothing to say there.
+    /// Its value is 0, as the Drain widget's is on the charger, so a graph of it is a flat line and not a gap.
+    public static func status(_ word: String) -> MetricValue {
+        MetricValue(value: 0, text: word, isEstimate: false)
+    }
+
+    /// What the "Now" widget shows when the battery is not draining: "Charging" while it fills; "Full" at the top;
+    /// "Holding" while the Mac is plugged in and charging has been stopped on purpose, at Anode's limit or macOS's own (the
+    /// gauge says why it is not charging, and the limit it learned or Charge Control's is the level it stopped at);
+    /// "On AC" when it is plugged in and none of those is known. On the charger and still losing charge (a drain, or an
+    /// adapter too small for the load) it is that rate, as the Drain widget shows it.
+    static func chargerReading(_ s: PowerMonitor.Snapshot) -> MetricValue? {
+        chargerReading(direction: s.direction, state: s.state, isHeldAtChargeLimit: s.isHeldAtChargeLimit,
+                       dischargingRate_pctHr: s.isDischargingOnAC ? s.batteryRate_pctHr : nil)
+    }
+
+    /// The same, from the facts it needs: the direction, the battery's state, whether it is held at the limit it was learned
+    /// to hold at, and the (negative) rate when it is losing charge on the charger. Pure, for tests.
+    static func chargerReading(direction: PowerMonitor.Snapshot.Direction, state: Battery.State?,
+                               isHeldAtChargeLimit: Bool, dischargingRate_pctHr: Double?) -> MetricValue? {
+        switch direction {
+        case .draining:
+            return nil
+        case .charging:
+            return status(chargingWord)
+        case .acIdle:
+            if let r = dischargingRate_pctHr, r < 0 {
+                return MetricValue(-r, unit: .percentPerHour, isEstimate: false)
+            }
+            guard let st = state else { return status(onACWord) }
+            if st.fullyCharged || st.percent >= 99 { return status(fullWord) }
+            if isHeldAtChargeLimit || st.notChargingReason != 0 { return status(holdingWord) }
+            return status(onACWord)
+        }
+    }
+
     /// Whether this is one of the two readings above: the Mac's own words for being on the charger, not a rate.
     public var isOnACReading: Bool { label == Self.usedAndSuppliedLabel || label == Self.onACLabel }
 
@@ -655,10 +697,12 @@ public final class MetricRegistry {
             id: .batteryDrainNow, title: "Battery rate, last few minutes", shortTitle: "Now",
             unit: .percentPerHour, category: "Battery", higherIsWorse: true
         )) { [weak self] in
-            // Only while draining: on AC there is no "recent drain" to speak of,
-            // and `batteryDrain` already says what is happening there.
-            guard let s = self?.latestSnapshot(), s.direction == .draining,
-                  let shared = self?.displayedRate else { return nil }
+            guard let s = self?.latestSnapshot() else { return nil }
+            // The recent rate is for a battery that is draining. On the charger there is none to speak of, and the dash this
+            // showed there said nothing at all: at Anode's limit or at 100 % it was a dash all day, beside a Drain widget that
+            // shows the same watts as the Used/Charger pair. It says what the battery is doing instead.
+            guard s.direction == .draining else { return MetricValue.chargerReading(s) }
+            guard let shared = self?.displayedRate else { return nil }
             return MetricValue(shared.shownPctHr, unit: .percentPerHour, isEstimate: true)
         }
 
