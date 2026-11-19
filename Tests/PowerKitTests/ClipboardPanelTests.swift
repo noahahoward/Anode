@@ -358,6 +358,26 @@ final class ClipboardPanelTests: XCTestCase {
         }
     }
 
+    /// The system's card is frosted (a blur of what is behind it of about 8 points) and its bar only a little. The blur is the system's own
+    /// private layer: where it is there it must carry the radius, and where it is not (or does not answer) there is none and no crash.
+    func testTheCardIsFrostedAndTheBarAlmostSharp() throws {
+        typealias M = ClipboardPanelMetrics
+        XCTAssertEqual(M.cardBlur, 8)
+        XCTAssertLessThan(M.pillBlur, 3)
+        XCTAssertGreaterThan(M.pillBlur, 0)
+        XCTAssertNil(BackdropBlurView.makeLayer(sigma: 0), "no radius, no blur")
+        guard BackdropBlurView.isAvailable else { return }        // another macOS: nothing to check, and nothing blurred
+        let layer = try XCTUnwrap(BackdropBlurView.makeLayer(sigma: M.cardBlur))
+        let filter = try XCTUnwrap((layer.filters as? [NSObject])?.first)
+        XCTAssertEqual(filter.value(forKey: "inputRadius") as? Double, Double(M.cardBlur))
+        let view = BackdropBlurView(sigma: M.cardBlur)
+        XCTAssertNil(view.hitTest(.zero), "it takes no clicks")
+        view.frame = NSRect(x: 0, y: 0, width: 520, height: 300)
+        view.layoutSubtreeIfNeeded()
+        XCTAssertEqual(view.blurLayer?.frame, view.bounds, "the blur fills the view")
+        XCTAssertTrue(view.layer?.sublayers?.contains { $0 === view.blurLayer } ?? false, "as a sublayer: AppKit resets the filters of a view's own layer")
+    }
+
     /// A short card (few entries) is the same curve cut off where it ends, not stretched.
     func testAShortCardIsTheSameCurveCutShort() {
         typealias M = ClipboardPanelMetrics

@@ -102,9 +102,15 @@ The chips are the kinds in the history (Text, Links, Images, Files, Pinned); Tab
 
 - Whether releasing Globe after Anode swallows the Space still triggers macOS's own Globe action (the emoji picker, or dictation) cannot
   be tested with posted keys: it needs the real keyboard.
-- The system card blurs what is behind it; this one does not (a system blur layer under the glass was far too wide, 33 points against 20,
-  and added a veil of light the system's glass does not have). The tint is fitted to flat areas, so large areas match and fine detail through the
-  card is sharper than the system's.
+- The system card is frosted: it blurs what is behind it (a hard edge fades over about 20 points) and its bar a little (about 3). The clear
+  glass does not blur, so each shape has a backdrop blur under its glass (`BackdropBlurView`: the system's private `CABackdropLayer` with a
+  `CAFilter` gaussian blur, found by name and left out if it is not there): sigma 8 for the card and 1.5 for the bar. As the view's own
+  backing layer AppKit reset its filters and it blurred nothing; as a sublayer of the view's plain one it works. Measured over the same page
+  (white, with small and large type and coloured blocks) against the system's: the colour of a thin block behind the card is within 8%,
+  the mean brightness down the card within 0.02, the detail left in flat areas the same. The system's blur has heavier tails than a
+  gaussian (see above); not reproduced. NSVisualEffectView materials (a veil of colour, one radius, 33 points) and `.regular` glass were
+  tried first and are not used. A `NSGlassEffectView` made with a frame (`init(frame:)`) comes out heavily frosted whatever its style; made
+  with `init()` and given its frame later, as here, it is the clear glass.
 - The list bends at the card's bottom edge: a deliberate addition (the system's panel has none). A `CIBumpDistortionLinear` on the list's layer,
   20 points deep, pinches the lowest words and icons toward the edge the way the glass's own edge bends what is behind it; the glass is not
   extended past the card's bottom, so that edge shows too. (The filter's scale is 1 for no change: below 1 it magnifies round the line and cuts a

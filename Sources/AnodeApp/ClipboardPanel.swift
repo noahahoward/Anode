@@ -40,6 +40,10 @@ enum ClipboardPanelMetrics {
     /// at its edge, and the system's panel has its rims only where the tint puts them. Not at the sides: there the glass bends what
     /// is behind it into a dark band that the system's panel shows as well (measured).
     static let glassBleed: CGFloat = 6
+    /// The blur of what is behind each shape (a gaussian's sigma in points): the system's card is frosted (a hard edge behind it fades over
+    /// about 20 points: a sigma of 8), its bar only a little (about 3.4 points: 1.5). See `BackdropBlurView`.
+    static let cardBlur: CGFloat = 8
+    static let pillBlur: CGFloat = 1.5
     /// The card's glass is not extended past its bottom: its own edge shows there, which bends what is behind it. (The system's card has
     /// none; this is a choice, for a thicker look at the bottom.)
     static let cardBottomBleed: CGFloat = 0
@@ -678,6 +682,8 @@ final class ClipboardShapeView: NSView {
     let kind: Kind
     let body = FlippedView()
     private let material: NSView
+    /// The frosting, under the glass: a blur of what is behind the window.
+    private let frost: BackdropBlurView
     /// Views, not bare layers: the glass is drawn over a layer of its parent's, and under a view added after it. The black is under what
     /// the shape holds and the rim's light over it.
     private let tint = ClipboardTintView()
@@ -705,11 +711,13 @@ final class ClipboardShapeView: NSView {
             v.state = .active
             material = v
         }
+        frost = BackdropBlurView(sigma: kind == .card ? ClipboardPanelMetrics.cardBlur : ClipboardPanelMetrics.pillBlur)
         super.init(frame: .zero)
         wantsLayer = true
         layer?.cornerRadius = r
         layer?.cornerCurve = .continuous
         layer?.masksToBounds = true       // nothing square shows at the corners, and the window's shadow follows this shape
+        addSubview(frost)
         addSubview(material)
 
         tint.stops = { [kind] h in ClipboardPanelMetrics.splitTint(card: kind == .card, height: h).base }
@@ -734,6 +742,7 @@ final class ClipboardShapeView: NSView {
         // The glass is taller than the shape; the shape's clip (rounded corners, `masksToBounds`) cuts the rest off.
         let bleed = ClipboardPanelMetrics.glassBleed
         material.frame = NSRect(x: 0, y: -bottomBleed, width: bounds.width, height: bounds.height + bleed + bottomBleed)
+        frost.frame = material.frame
         body.frame = bounds
         tint.frame = bounds
         rim.frame = bounds
