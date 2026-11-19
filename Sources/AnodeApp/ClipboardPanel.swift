@@ -734,18 +734,20 @@ final class ClipboardShapeView: NSView {
         if kind == .card {
             frost = BackdropBlurView(sigma: ClipboardPanelMetrics.cardBlur, frost: ClipboardPanelMetrics.cardFrost)
         } else {
-            frost = BackdropBlurView(sigma: ClipboardPanelMetrics.pillBlur)
+            // the bar is frosted by the same kernel as the card, by depth from its own edge (measured: the stripes' contrast up from the bar's
+            // bottom edge follows the card's, and its middle, 43 points from either edge, is the card's at that depth)
+            var f = ClipboardPanelMetrics.cardFrost
+            f.narrow.cornerRadius = r
+            frost = BackdropBlurView(sigma: ClipboardPanelMetrics.pillBlur, frost: f)
         }
         super.init(frame: .zero)
         wantsLayer = true
         layer?.cornerRadius = r
         layer?.cornerCurve = .continuous
         layer?.masksToBounds = true       // nothing square shows at the corners, and the window's shadow follows this shape
-        // The card's frost is over its glass, so that the glass's lens bends the backdrop before it is blurred (see `cardFrostProfile`); the
-        // bar's, which is slight, is under it.
-        if kind != .card { addSubview(frost) }
+        // The frost is over the glass, so that the glass's lens bends the backdrop before it is blurred (see `cardFrost`).
         addSubview(material)
-        if kind == .card { addSubview(frost) }
+        addSubview(frost)
 
         tint.stops = { [kind] h in ClipboardPanelMetrics.splitTint(card: kind == .card, height: h).base }
         addSubview(tint)
