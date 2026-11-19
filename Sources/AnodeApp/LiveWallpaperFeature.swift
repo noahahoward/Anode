@@ -546,9 +546,7 @@ final class LiveWallpaperFeature: BetaFeature {
 
     func remove(_ id: UUID) {
         // Assignments first, so the surfaces close before their files go.
-        var p = prefsStore.prefs
-        p.assignments.removeItem(id)
-        prefsStore.prefs = p
+        update { $0.assignments.removeItem(id) }
         do { try library.remove(id: id) } catch { messageLabel.stringValue = "Couldn't remove it: \(error.localizedDescription)" }
         refresh()
     }
@@ -564,21 +562,20 @@ final class LiveWallpaperFeature: BetaFeature {
     }
 
     @objc private func defaultChosen() {
-        var p = prefsStore.prefs
-        p.assignments.defaultItem = defaultPopUp.selectedItem?.representedObject as? UUID
-        prefsStore.prefs = p
+        let chosen = defaultPopUp.selectedItem?.representedObject as? UUID
+        update { $0.assignments.defaultItem = chosen }
     }
 
     @objc private func displayChosen(_ sender: NSPopUpButton) {
         guard let uuid = sender.identifier?.rawValue else { return }
-        var p = prefsStore.prefs
-        switch sender.indexOfSelectedItem {
-        case 0:  p.assignments.setChoice(.inherit, forDisplay: uuid)
-        case 1:  p.assignments.setChoice(.none, forDisplay: uuid)
-        default:
-            if let id = sender.selectedItem?.representedObject as? UUID { p.assignments.setChoice(.item(id), forDisplay: uuid) }
+        update { p in
+            switch sender.indexOfSelectedItem {
+            case 0:  p.assignments.setChoice(.inherit, forDisplay: uuid)
+            case 1:  p.assignments.setChoice(.none, forDisplay: uuid)
+            default:
+                if let id = sender.selectedItem?.representedObject as? UUID { p.assignments.setChoice(.item(id), forDisplay: uuid) }
+            }
         }
-        prefsStore.prefs = p
     }
 
     @objc private func reloadClicked(_ sender: NSButton) {

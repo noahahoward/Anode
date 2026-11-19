@@ -111,6 +111,18 @@ final class AdaptiveSliderTests: XCTestCase {
         XCTAssertTrue(host.hitTest(onTrack) === row)
     }
 
+    func testWhileMacOSsSliderIsUnderItAnodesKnobIsNotDrawn() {
+        // Seen: marks where the knob had been. The hole is cut a point inside the capsule; Anode's knob is the capsule's full height,
+        // so a strip of it showed above and below the hole wherever it sat, while macOS's own knob was dragged elsewhere.
+        _ = NSApplication.shared
+        let row = AdaptiveSliderRow(frame: NSRect(x: 0, y: 0, width: M.rowWidth, height: 30), level: 0.5)
+        XCTAssertTrue(row.knobIsShown)
+        row.macOSSliderUnder = true
+        XCTAssertFalse(row.knobIsShown)
+        row.macOSSliderUnder = false
+        XCTAssertTrue(row.knobIsShown, "and it is drawn again once macOS's is put away")
+    }
+
     func testTheSliderSaysWhatItIsAndWhatAClickDoes() {
         _ = NSApplication.shared
         let row = AdaptiveSliderRow(frame: NSRect(x: 0, y: 0, width: M.rowWidth, height: 30), level: 0.5)

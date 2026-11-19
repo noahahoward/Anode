@@ -49,13 +49,12 @@ public struct ProcessKey: Hashable {
 
 public enum ProcessSampler {
 
-    /// Names of every process that currently exists.
+    /// Names of every process that currently exists, whatever user owns it.
     ///
-    /// Cheap by design: one `proc_listpids` plus a name lookup each, no rusage
+    /// Cheap by design: one `sysctl` for the whole process table, no rusage
     /// call. It exists so the coalition rollup cannot hand present-tense power to
     /// an app that has already quit — the rollup window is an hour, and without
     /// this a browser closed forty minutes ago keeps drawing battery on screen.
-    /// Names of every process on the machine, whatever user owns it.
     ///
     /// This is used to decide whether a coalition in the hour-old `systemstats`
     /// rollup is still alive, so a name MISSING here is not a neutral gap — it
@@ -352,7 +351,8 @@ public enum DrainCalculator {
             // KNOWN GAP: genuinely short-lived processes (compilers, scripts) that both
             // start and exit between sweeps are never counted. Closing that needs the
             // exit-time accounting in CoalitionUsage.
-            guard let prior = a.processes[key]?.energy_nJ else { continue }
+            guard let before = a.processes[key] else { continue }
+            let prior = before.energy_nJ
             guard now.energy_nJ >= prior else { continue }
             let joules = Double(now.energy_nJ &- prior) / 1e9
             guard joules > 0 else { continue }
@@ -361,7 +361,7 @@ public enum DrainCalculator {
             // Kept as UInt64 so the wrapping subtraction stays exact; MachTime
             // does the unit conversion.
             let cpuDeltaUnits = (now.userTime_ns &+ now.systemTime_ns)
-                &- (a.processes[key]!.userTime_ns &+ a.processes[key]!.systemTime_ns)
+                &- (before.userTime_ns &+ before.systemTime_ns)
             out.append(ProcessDrain(
                 name: now.name,
                 pid: key.pid,

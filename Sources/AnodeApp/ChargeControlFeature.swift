@@ -170,14 +170,17 @@ final class ChargeControlFeature: BetaFeature {
     static let holdNeedsHelperTip = "Without the Anode helper it can pause only at 80, 85, 90, 95 or 100%, and the "
         + "Mac charges on to the next of those."
 
-    static let readyByTip = "While the Mac is on the charger, hold the charge until it has to charge to be at the limit "
-        + "by this time every day. It only waits when that time is within the next 16 hours (12 until the Anode "
-        + "helper has been updated), and never below 30%: it charges to 30% first. Needs the Anode helper."
+    static let readyByTip = "While the Mac is on the charger, charge to \(ChargePolicy.readyByBelowLimit)% below the "
+        + "limit (80% for a limit of 100%) and hold there until it has to charge to be at the limit by this time every "
+        + "day. It only waits when that time is within the next 16 hours (12 until the Anode helper has been updated), "
+        + "and never below 30%. Needs the Anode helper."
     /// What the second line of Ready By does, and the one thing about it that is not obvious: how fast it goes.
     static let readyByLowerTip = "While Ready By waits, a battery above this level is not charged: the charger supplies "
         + "nothing and the Mac runs from the battery until it has come down to this level, where it is then held. "
         + "The wait is spent at a lower charge, which a battery keeps better. It comes down only as fast as the Mac "
-        + "uses power, so slowly while the Mac sleeps. Switched off, the battery is held wherever it is."
+        + "uses power, so slowly while the Mac sleeps. Below it, the battery is charged to this level or to "
+        + "\(ChargePolicy.readyByBelowLimit)% below the limit, whichever is lower. Switched off, a battery above "
+        + "\(ChargePolicy.readyByBelowLimit)% below the limit is held wherever it is."
     static func readyByLowerText(level: Int) -> String { "\(level)%" }
 
     /// What the status line needs besides the status: the battery and the drain as the controller last saw them.

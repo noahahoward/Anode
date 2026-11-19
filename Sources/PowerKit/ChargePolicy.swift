@@ -12,13 +12,14 @@ public struct ChargeSettingsSnapshot: Equatable {
     public var maxTemperatureC: Double
     public var holdDuringSleep: Bool
     public var drainAutomatically: Bool
-    /// Ready By: hold the battery where it is until it has to charge to be at the limit by a time of day.
+    /// Ready By: hold the battery 20 under the limit until it has to charge to be at the limit by a time of day.
     public var readyByEnabled: Bool
     /// The time of day, in minutes after local midnight, 0…1439. The policy never reads it: the controller turns it
     /// into the next moment (`ChargeInputs.readyBy`), with the calendar, and the policy only sees that moment.
     public var readyByMinutes: Int
     /// The highest level Ready By holds at, when it lets the battery come down before it holds
-    /// (`Settings.chargeReadyByLowerEnabled`); nil when it holds the battery wherever it is.
+    /// (`Settings.chargeReadyByLowerEnabled`); nil when a battery above the level Ready By charges to
+    /// (`ChargePolicy.readyByHoldLevel`) is held wherever it is.
     public var readyByHoldAtMost: Int?
 
     public init(limit: Int,
@@ -182,8 +183,8 @@ public struct ChargeDecision: Equatable {
 ///  3. Heat: while the pack is hot, and for five minutes after it cools, hold the charge where it is, or at the
 ///     limit if it is above it.
 ///  4. Ready By: below the limit and no more than `readyByWindow` before the moment the person wants to be ready by,
-///     hold the charge where it is until it has to charge to be at the limit by then, and then charge. See
-///     `readyBy(_:_:_:)`.
+///     charge to `readyByHoldLevel` (20 under the limit) and hold there until it has to charge to be at the limit by
+///     then, and then charge. See `readyBy(_:_:_:)`.
 ///  5. Sleeping with Hold Level During Sleep: hold at the current charge.
 ///  6. A drain (pressed, or automatic above the limit): drain to the limit.
 ///  7. Drift: once the limit is reached, rest inside the band below it.
@@ -246,13 +247,25 @@ public enum ChargePolicy {
     /// `FanHelperServer.chargePlanReach`): a hold begun further off than this could not be given its wake if the Mac
     /// went to sleep at once, and a hold with no wake lasts until somebody opens the Mac.
     public static let readyByWindowWithAnOlderHelper: TimeInterval = 12 * 3600
-    /// It never holds lower than this: below it the battery charges up to it first, and then holds. (The person's own
-    /// limit, when that is lower still.)
+    /// It never holds lower than this, whatever the limit and the level it comes down to say. (The person's own limit,
+    /// when that is lower still.)
     public static let readyByFloor = 30
-    /// The level Ready By lets the battery come down to before it holds, until the person chooses one: the middle,
-    /// where a lithium battery ages slowest. Ready By is there so the battery spends less time at a high charge, and
-    /// one plugged in at 97% was held at 97% for the night.
-    public static let defaultReadyByHoldAtMost = 50
+    /// While it waits, a battery is charged to this many points under the limit and held there: 80% for a limit of
+    /// 100%, as an iPhone holds. It held wherever the battery was, and a Mac plugged in at 25% in use was held at 30%
+    /// for hours, with the charger on the cable and the battery needed.
+    public static let readyByBelowLimit = 20
+
+    /// The level Ready By charges a battery up to and holds while it waits: `readyByBelowLimit` under the limit, or the
+    /// level it is to come down to (`holdAtMost`, Hold No Higher Than) when that is lower, and never below the floor
+    /// (or the limit, when that is lower still). A battery above it is held where it is, or comes down to `holdAtMost`.
+    public static func readyByHoldLevel(limit: Int, holdAtMost: Int?) -> Int {
+        max(min(limit - readyByBelowLimit, holdAtMost ?? limit), min(readyByFloor, limit))
+    }
+    /// The level Ready By lets the battery come down to before it holds, until the person chooses one: 80, where an
+    /// iPhone holds, and where a battery plugged in at 97% for a limit of 100 is let come down to rather than held at
+    /// 97% for the night. It was 50, the middle, where a lithium battery ages slowest; but the level is also what a
+    /// battery below it is charged to while it waits (`readyByHoldLevel`), and a Mac in use on the charger wants more.
+    public static let defaultReadyByHoldAtMost = 80
     /// What that level may be: not below the floor it never holds under, and not so high that it is no different
     /// from holding where the battery is.
     public static let readyByHoldAtMostRange = 30...95
@@ -316,9 +329,10 @@ public enum ChargePolicy {
         return d
     }
 
+    private static func clamped(_ p: Int) -> Int { min(max(p, osLimitRange.lowerBound), osLimitRange.upperBound) }
+
     private static func decideByRules(_ s: ChargeSettingsSnapshot, _ i: ChargeInputs,
                                       _ m: inout ChargeMemory) -> ChargeDecision {
-        func clamped(_ p: Int) -> Int { min(max(p, osLimitRange.lowerBound), osLimitRange.upperBound) }
         // Every holding rule below passes the raw charge or limit; this is where the 20…100 range is enforced.
         func decision(_ osLimit: Int, _ reason: ChargeReason, dischargeTo: Int? = nil,
                       endManualDrain: Bool = false, readyBy: ReadyByState? = nil) -> ChargeDecision {
@@ -418,7 +432,7 @@ public enum ChargePolicy {
         -> ChargeDecision? {
         func decision(_ osLimit: Int, _ state: ReadyByState) -> ChargeDecision {
             // A manual drain that has got down to the limit is over: Ready By's hold must not leave it pressed.
-            ChargeDecision(osLimit: min(max(osLimit, osLimitRange.lowerBound), osLimitRange.upperBound), dischargeTo: nil,
+            ChargeDecision(osLimit: clamped(osLimit), dischargeTo: nil,
                            reason: .readyBy, endManualDrain: i.manualDrain, readyBy: state)
         }
         guard s.readyByEnabled, let by = i.readyBy, by > i.now else {
@@ -439,20 +453,23 @@ public enum ChargePolicy {
         }
         guard by.timeIntervalSince(i.now) <= i.readyByWindow else { return nil }
 
-        let floor = min(readyByFloor, s.limit)
+        // A battery below this is charged up to it, and held there.
+        let floor = readyByHoldLevel(limit: s.limit, holdAtMost: s.readyByHoldAtMost)
         // Never above the limit that is in force (a level remembered while the limit was higher is not held above one
         // that was lowered since), and never above the level the battery is to come down to. A battery above the level
         // it is held at is not charged, and macOS runs the Mac from it until it is there: that is the coming down.
         //
         // The level it remembers is where the hold began, so that a battery that sags a point does not take the hold
-        // down with it. A battery well above it is another matter: nothing charges a battery to above its hold, so it
-        // is one that was coming down to a lower level which has since been raised or switched off, and the hold is
-        // then where the battery is now (or the level it comes down to, when that is lower).
-        var remembered = m.readyBy?.level ?? max(i.percent, floor)
+        // down with it, and never below the level it charges to (a level remembered before that was raised, or by a
+        // build that held lower, is charged up from). A battery well above it is another matter: nothing charges a
+        // battery to above its hold, so it is one that was coming down to a lower level which has since been raised or
+        // switched off, and the hold is then where the battery is now (or the level it comes down to, when that is
+        // lower).
+        var remembered = max(m.readyBy?.level ?? i.percent, floor)
         if i.percent > remembered + 1 { remembered = i.percent }
         let level = min(cap, remembered)
         // The climb is counted from the level it holds at, which is where the battery is heading: a battery below it
-        // (on its way up to the floor, or sagged a point under load) is charged back to it, and holds there. One that is
+        // (on its way up to the level it charges to, or sagged a point under load) is charged back to it, and holds there. One that is
         // still above it is counted from where it will have come down to by the moment, which is never below the
         // level, and never above the limit.
         var from = level

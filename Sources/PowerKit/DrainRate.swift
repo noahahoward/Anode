@@ -310,7 +310,7 @@ public final class DrainRateEstimator {
     private var powerHistory: [(t: Date, watts: Double)] = []
     /// `joulesPerPercent` from the last scale seen, so the %/hr the caller hands
     /// in can be turned back into the watts it was made from. See
-    /// `agreesWithMeasuredPower` for why the comparison must happen in watts.
+    /// `crossCheckRatio` for why the comparison must happen in watts.
     private var joulesPerPercent: Double?
     /// Latched, so the tier does not flip every time the ratio grazes the
     /// threshold. See `crossCheckRestore`.
@@ -866,7 +866,7 @@ extension BatteryDischargeTrend.Persisted {
 
     /// Beside the history database, because it is the same kind of thing: state
     /// about this machine's battery that outlives the process.
-    public static func fileURL(fileManager fm: FileManager = .default) -> URL? {
+    public static func fileURL() -> URL? {
         guard let base = AnodeFiles.applicationSupport else { return nil }
         return base.appendingPathComponent("Anode/discharge-trend.json")
     }
@@ -875,9 +875,8 @@ extension BatteryDischargeTrend.Persisted {
     /// from a format this build does not know. Every one of those is "start
     /// fresh", which is the behaviour this replaces and therefore cannot be worse
     /// than.
-    public static func load(fileManager fm: FileManager = .default)
-        -> BatteryDischargeTrend.Persisted? {
-        guard let url = fileURL(fileManager: fm),
+    public static func load() -> BatteryDischargeTrend.Persisted? {
+        guard let url = fileURL(),
               let data = try? Data(contentsOf: url) else { return nil }
         return try? JSONDecoder().decode(BatteryDischargeTrend.Persisted.self, from: data)
     }
@@ -887,7 +886,7 @@ extension BatteryDischargeTrend.Persisted {
     /// dirtying pages too fast, so nothing here goes near a per-tick write.
     @discardableResult
     public func save(fileManager fm: FileManager = .default) -> Bool {
-        guard let url = Self.fileURL(fileManager: fm),
+        guard let url = Self.fileURL(),
               let data = try? JSONEncoder().encode(self) else { return false }
         try? fm.createDirectory(at: url.deletingLastPathComponent(),
                                 withIntermediateDirectories: true)

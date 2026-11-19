@@ -33,8 +33,7 @@ enum BarPictures {
     }
 
     static func appIcon(for item: BarItem) -> NSImage {
-        let icon = item.pid.flatMap { NSRunningApplication(processIdentifier: $0)?.icon } ?? NSImage(named: NSImage.applicationIconName) ?? NSImage()
-        return icon
+        item.pid.flatMap { NSRunningApplication(processIdentifier: $0)?.icon } ?? NSImage(named: NSImage.applicationIconName) ?? NSImage()
     }
 
     /// Set on the hider's covers and pill, so a capture of the bar can leave out exactly those.
@@ -128,7 +127,6 @@ final class BarPillWindow: PillPresenting {
     private var cells: [PillCell] = []
     private var clickMonitor: Any?
     private var generation = 0
-    private var screenTopLeft = CGRect.zero
 
     var isShowing: Bool { panel?.isVisible ?? false }
 
@@ -150,7 +148,6 @@ final class BarPillWindow: PillPresenting {
         let screens = NSScreen.screens
         let primaryHeight = screens.first?.frame.height ?? 0
         let topLeft = origin ?? CGPoint(x: (screens.first?.frame.midX ?? 0) - layout.size.width / 2, y: 40)
-        screenTopLeft = CGRect(x: 0, y: 0, width: screens.first?.frame.width ?? 0, height: primaryHeight)
         panel.setFrame(NSRect(x: topLeft.x, y: primaryHeight - topLeft.y - layout.size.height,
                               width: layout.size.width, height: layout.size.height), display: true)
         panel.orderFrontRegardless()
@@ -176,9 +173,9 @@ final class BarPillWindow: PillPresenting {
     // ── Pictures ────────────────────────────────────────────────────────────
 
     private func loadPictures(for items: [BarItem], generation gen: Int) {
-        let screens = NSScreen.screens.map { screen -> CGRect in
-            let primaryHeight = NSScreen.screens.first?.frame.height ?? 0
-            return CGRect(x: screen.frame.minX, y: primaryHeight - screen.frame.maxY, width: screen.frame.width, height: screen.frame.height)
+        let primaryHeight = NSScreen.screens.first?.frame.height ?? 0
+        let screens = NSScreen.screens.map { screen in
+            CGRect(x: screen.frame.minX, y: primaryHeight - screen.frame.maxY, width: screen.frame.width, height: screen.frame.height)
         }
         let capturable = BarPictures.captureAvailable
         // Everything gets its fallback at once; captures replace the ones that can be taken.

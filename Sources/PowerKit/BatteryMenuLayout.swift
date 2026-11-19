@@ -56,10 +56,10 @@ public enum BatteryMenuLayout {
         // The gaps below a line are measured from the line's top.
         y += M.dividerGapBelowRows
         add(.divider, y: y, h: 1)
-        if model.chargeLimit != nil {
+        if let chargeLimit = model.chargeLimit {
             // Anode's section, laid out like the apps' one: a heading under the line, then the row, then a line.
             let headingY = y + M.headingGapBelowDivider
-            add(.heading(chargeLimitTitle(model.chargeLimit?.limit ?? 0)), y: headingY, h: M.headingHeight)
+            add(.heading(chargeLimitTitle(chargeLimit.limit)), y: headingY, h: M.headingHeight)
             let rowY = headingY + M.headingHeight + M.appsFirstRowGapBelowHeading
             add(.chargeLimit, y: rowY, h: M.chargeRowHeight)
             y = rowY + M.chargeRowHeight + M.dividerGapBelowRows

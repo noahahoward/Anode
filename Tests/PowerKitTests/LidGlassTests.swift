@@ -23,7 +23,6 @@ final class LidGlassTests: XCTestCase {
     }
 
     private final class FakeOverlay: LidGlassOverlaying {
-        var windowID: CGWindowID = 7
         var calls: [String] = []
         var shows: [(start: Double, from: Double, to: Double)] = []
         var angles: [Double] = [], clearDurations: [TimeInterval] = []

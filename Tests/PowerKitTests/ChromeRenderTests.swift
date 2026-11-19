@@ -429,29 +429,6 @@ final class TableChromeRenderTests: XCTestCase {
         return (Frame(rep: rep, viewSize: size, flipped: host.isFlipped), cell)
     }
 
-    /// A view that colours a label from `Palette` repaints when the theme flips.
-    ///
-    /// `Palette` resolves at DRAW time, so anything drawn in `draw(_:)` corrects
-    /// itself. A label's `textColor` does not — it is set once and keeps whatever
-    /// the appearance was at that moment, so a pane could sit in the previous
-    /// theme's ink beside panes that had already changed. The detail pane did.
-    ///
-    /// Asserted on the rendered result rather than on the presence of an override,
-    /// because the override existing says nothing about it re-inking everything.
-    func testTheDetailPaneReInksItselfWhenTheThemeChanges() {
-        let view = AppDetailView(frame: NSRect(x: 0, y: 0, width: 420, height: 300))
-        // Built under one appearance...
-        inTheme(.darkAqua) { _ = render(view, size: NSSize(width: 420, height: 300)) }
-        // ...then shown under the other. Its inks must follow.
-        inTheme(.aqua) {
-            view.viewDidChangeEffectiveAppearance()
-            let light = render(view, size: NSSize(width: 420, height: 300))
-                .maxLuminance(in: NSRect(x: 0, y: 0, width: 420, height: 300))
-            XCTAssertGreaterThan(light, 0.5,
-                                 "the detail pane kept the dark theme's ground after a switch")
-        }
-    }
-
     /// A sideways chevron is the rotation of a downward one, not a flatter
     /// version of it.
     ///
@@ -914,8 +891,7 @@ final class PaletteThemeTests: XCTestCase {
          ("accentDim", Palette.accentDim), ("chargeLine", Palette.chargeLine),
          ("chargingLine", Palette.chargingLine), ("warn", Palette.warn),
          ("critical", Palette.critical), ("selection", Palette.selection),
-         ("hatch", Palette.hatch), ("onAccent", Palette.onAccent),
-         ("onBlue", Palette.onBlue)]
+         ("hatch", Palette.hatch), ("onAccent", Palette.onAccent)]
     }
 
     private func luma(_ c: NSColor) -> CGFloat {
@@ -1298,7 +1274,7 @@ final class PaletteConsistencyTests: XCTestCase {
     /// inverts independently of this app, so macOS's semantic inks are the
     /// correct ones there and Palette's would be wrong.
     private static let windowSources = [
-        "HistoryGraphView.swift", "AppDetailView.swift", "AppMenu.swift",
+        "HistoryGraphView.swift", "AppMenu.swift",
         "LedgerBarView.swift", "ResourcesPane.swift", "SystemPanes.swift",
         "SidebarView.swift", "ProcessTable.swift", "GlanceCardView.swift",
         "InspectorView.swift", "FanControlPanel.swift", "SpeedometerView.swift",

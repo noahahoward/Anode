@@ -43,13 +43,6 @@ enum UpdateLauncher {
         return support.appendingPathComponent("Anode")
     }
 
-    static var wrapperURL: URL {
-        let support = AnodeFiles.applicationSupport
-            ?? URL(fileURLWithPath: NSHomeDirectory())
-                .appendingPathComponent("Library/Application Support")
-        return support.appendingPathComponent("Anode/update.command")
-    }
-
     /// The bundled updater, or nil for a build that predates it — a `swift run`
     /// binary has no bundle at all.
     static func bundledScript(_ name: String, in bundle: Bundle = .main) -> String? {

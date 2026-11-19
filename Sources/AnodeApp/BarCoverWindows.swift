@@ -1,5 +1,4 @@
 import AppKit
-import PowerKit
 
 // ── The covers (Menu Bar Hider) ─────────────────────────────────────────────
 //

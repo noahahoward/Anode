@@ -280,7 +280,6 @@ final class BatteryMenuContentView: NSView {
         let accessibility = DisplayAccessibility.current
         if accessibility != drawnFor { self.model = nil; drawnFor = accessibility; updateMaterial(accessibility) }
         if self.model == model { return }
-        // Only which mode is in force changed: the badges turn, nothing is drawn again.
         // Only which mode is in force, or a figure beside an app, changed: those are changed where they are, so that a measurement coming
         // in never draws the menu again under a badge that is turning.
         if let old = self.model, old.modes.map(\.id) == model.modes.map(\.id), old.energyApps.map(\.name) == model.energyApps.map(\.name),
@@ -386,12 +385,12 @@ final class BatteryMenuContentView: NSView {
         return SoundText.ink(dark: a.secondaryTextAlpha(dark: 0.40, light: 0.42, isDark: true), light: a.secondaryTextAlpha(dark: 0.40, light: 0.42, isDark: false))
     }
 
-    private func label(_ text: String, _ frame: CGRect, size: CGFloat, weight: NSFont.Weight, color: NSColor, dy: CGFloat = 0) -> NSTextField {
+    private func label(_ text: String, _ frame: CGRect, size: CGFloat, weight: NSFont.Weight, color: NSColor) -> NSTextField {
         let l = NSTextField(labelWithString: text)
         l.font = .systemFont(ofSize: size, weight: weight)
         l.textColor = color
         // A text field draws its text 2 pt in from its frame: the layout's x is where the text itself starts (measured).
-        l.frame = frame.offsetBy(dx: -2, dy: dy)
+        l.frame = frame.offsetBy(dx: -2, dy: 0)
         l.lineBreakMode = .byTruncatingTail
         return l
     }
@@ -550,7 +549,6 @@ final class PillButton: NSView {
 final class ModeRow: HoverRow {
 
     private let badge: BadgeView
-    private let blue = CALayer()
     private let greyGlyph: NSImageView
     private let whiteGlyph: NSImageView
     private var selected: Bool
@@ -714,6 +712,9 @@ final class EnergyAppRow: HoverRow {
             return url.deletingPathExtension().lastPathComponent == name || info?["CFBundleDisplayName"] as? String == name
                 || info?["CFBundleName"] as? String == name
         }
+        // The app's own icon, from its bundle on disk. A process running inside an app's bundle can carry another app's icon: a test
+        // runner inside Xcode.app running Anode's code showed Anode's icon beside "Xcode".
+        if let url = running?.bundleURL { return NSWorkspace.shared.icon(forFile: url.path) }
         return running?.icon ?? NSImage(named: NSImage.applicationIconName)
     }
 }

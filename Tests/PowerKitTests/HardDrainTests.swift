@@ -745,8 +745,8 @@ final class HardDrainControllerTests: XCTestCase {
         battery = ReadyByControllerTests.plugged(97)
         let c = make()
         XCTAssertEqual(c.lastDecision?.reason, .readyBy)
-        XCTAssertEqual(c.hardDrainLevel, 50)
+        XCTAssertEqual(c.hardDrainLevel, 80)
         c.pressHardDrain()
-        XCTAssertTrue(lines.contains("Hard Drain pressed: bringing the battery down to 50% faster"))
+        XCTAssertTrue(lines.contains("Hard Drain pressed: bringing the battery down to 80% faster"))
     }
 }

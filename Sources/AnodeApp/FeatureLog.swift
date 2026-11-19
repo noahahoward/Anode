@@ -1,4 +1,4 @@
-import AppKit
+import Foundation
 import PowerKit
 
 /// A small append-only log for a feature that has to be diagnosed after the fact, because what goes

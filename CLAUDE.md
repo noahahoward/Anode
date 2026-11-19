@@ -18,9 +18,13 @@ When several kinds are in one push, the biggest wins. Then, in the same push:
 
 ## Every change
 
-- Do not run the full suite (`./test.sh`, `./test.sh --quick` or `./test.sh --full`) until the owner says to push. While working,
-  run only the tests for what changed (`swift test --filter <TestClass>`, or `ANODE_TEST_FILTER=<TestClass> ./test.sh --quick`).
-  A fix that works is not a push, and "it works" is not "push": ask, and run the full suite once the owner says to push.
+- Do not run tests, and do not commit for a push or push, until the owner says to push. (Building to see that the code compiles
+  is fine.) A fix that works is not a push, and "it works" is not "push": ask.
+- When the owner says push, the full suite (`./test.sh --full`) must pass before the push. Pushing without it only when the owner
+  explicitly confirms that override.
+- Work split across subagents: they only edit. They never run `swift build`, `swift test` or `./test.sh` themselves (each copy of
+  the repo compiles the whole package, and several at once drained the battery at hundreds of percent per hour). Once their
+  changes are merged, build and test everything they touched together, once: one big tested change, not many small ones.
 - Run `./test.sh --full` before pushing: the suite plus a real install in a new folder next to the checkout, then the installed
   app (as a sandboxed test copy, `AppSandbox`) is driven through Settings and its Uninstall button, which fails on an error in
   what the install prints, on anything the uninstall leaves behind, or on any change to this Mac's own Anode. It needs

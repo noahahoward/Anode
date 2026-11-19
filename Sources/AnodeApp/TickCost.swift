@@ -37,7 +37,7 @@ enum TickCost {
     static func log(kind: String, visible: Bool,
                     needs: SystemMetrics.Needs, since start: UInt64) {
         guard enabled, start != 0 else { return }
-        let ms = Double(clock_gettime_nsec_np(CLOCK_THREAD_CPUTIME_ID) &- start) / 1e6
+        let ms = Double(cpuNow() &- start) / 1e6
         NSLog(String(format: "anode.tick %@ %@ needs=%@ cpu=%.1fms",
                      kind, visible ? "visible" : "hidden", describe(needs), ms))
     }

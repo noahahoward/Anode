@@ -142,14 +142,13 @@ enum DisplayExperiment {
     private struct Stat {
         var mean = 0.0
         var sd = 0.0
-        var n = 0
     }
 
     private static func stat(_ xs: [Double]) -> Stat {
         guard !xs.isEmpty else { return Stat() }
         let m = xs.reduce(0, +) / Double(xs.count)
         let v = xs.map { ($0 - m) * ($0 - m) }.reduce(0, +) / Double(xs.count)
-        return Stat(mean: m, sd: v.squareRoot(), n: xs.count)
+        return Stat(mean: m, sd: v.squareRoot())
     }
 
     private static func sampleRails(_ smc: SMC, seconds: Double) -> [String: Stat] {
@@ -390,7 +389,7 @@ enum DisplayExperiment {
 
         // ── Confounds worth printing rather than hoping about ───────────────
         let byTime = levels.sorted { $0.order < $1.order }
-        print(String(format: "\nCONFOUND CHECKS"))
+        print("\nCONFOUND CHECKS")
         print(String(format: "  brightness vs visit order      r %+.3f  (near 0 = drift cannot mimic the curve)",
                      correlation(byTime.map { Double($0.order) }, byTime.map(\.requested))))
         print(String(format: "  PPMC vs brightness             r %+.3f  (the WindowServer confound; it is subtracted, not assumed absent)",

@@ -137,9 +137,6 @@ public enum SpeedTest {
     /// a refusal or a connection that died. Reported as a failure rather than as
     /// a very small number, because "0.0 Mbps" is a claim about the link.
     static let minimumBytesToBelieve = 1_000_000
-    /// A transfer shorter than this is dominated by connection setup and the TCP
-    /// ramp, so it is not evidence about steady-state throughput.
-    static let minPhaseSeconds: Double = 2.0
     /// Ceiling per phase, so a slow link fails fast instead of hanging.
     static let maxPhaseSeconds: Double = 25.0
     /// What one request asks for.
@@ -157,10 +154,6 @@ public enum SpeedTest {
         guard seconds > 0, bytes > 0 else { return nil }
         return Double(bytes) * 8 / seconds / 1e6
     }
-
-    /// Is this phase long enough to have measured the plateau rather than the
-    /// ramp? Separated out so the rule is testable without a network.
-    static func isMeaningful(seconds: Double) -> Bool { seconds >= minPhaseSeconds }
 
     /// Roughly what a phase will transfer at a given rate, for the disclosure.
     /// An estimate and labelled as one: the real figure depends on a line speed

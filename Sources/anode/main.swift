@@ -18,6 +18,17 @@ func rule(_ s: String = "") {
     else { print("\n\(s)\n" + String(repeating: "─", count: 78)) }
 }
 
+/// The kernel's own resource counters for one process, nil when it cannot be read (gone, or not ours to read).
+func rusageV6(_ pid: pid_t) -> rusage_info_v6? {
+    var ri = rusage_info_v6()
+    let rc = withUnsafeMutablePointer(to: &ri) {
+        $0.withMemoryRebound(to: rusage_info_t?.self, capacity: 1) {
+            proc_pid_rusage(pid, RUSAGE_INFO_V6, $0)
+        }
+    }
+    return rc == 0 ? ri : nil
+}
+
 // ── Temperature dump ────────────────────────────────────────────────────────
 // `anode --temps [-w seconds]`: every CPU and GPU core sensor, once a second, with the mean and
 // the peak as the app computes them, and the same figures after the app's steadying. For
@@ -168,13 +179,7 @@ if let i = args.firstIndex(of: "--cpuwatch") {
     mach_timebase_info(&tb)
     let nsPerUnit = Double(tb.numer) / Double(tb.denom)
     func cpuNanos(_ pid: pid_t) -> UInt64? {
-        var ri = rusage_info_v6()
-        let rc = withUnsafeMutablePointer(to: &ri) {
-            $0.withMemoryRebound(to: rusage_info_t?.self, capacity: 1) {
-                proc_pid_rusage(pid, RUSAGE_INFO_V6, $0)
-            }
-        }
-        return rc == 0 ? ri.ri_user_time &+ ri.ri_system_time : nil
+        rusageV6(pid).map { $0.ri_user_time &+ $0.ri_system_time }
     }
     guard let a = cpuNanos(pid) else { print("cannot read rusage"); exit(1) }
     let t0 = Date()
@@ -214,19 +219,12 @@ if let i = args.firstIndex(of: "--diskwatch") {
             .compactMap { pid_t($0.trimmingCharacters(in: .whitespaces)) }.first
     }
     guard let pid = pid(of: target) else { print("no process matching \(target)"); exit(1) }
-    let name = target
 
     func written(_ pid: pid_t) -> UInt64? {
-        var ri = rusage_info_v6()
-        let rc = withUnsafeMutablePointer(to: &ri) {
-            $0.withMemoryRebound(to: rusage_info_t?.self, capacity: 1) {
-                proc_pid_rusage(pid, RUSAGE_INFO_V6, $0)
-            }
-        }
-        return rc == 0 ? ri.ri_diskio_byteswritten : nil
+        rusageV6(pid)?.ri_diskio_byteswritten
     }
     guard let a = written(pid) else { print("cannot read rusage for \(pid)"); exit(1) }
-    print("watching \(name) pid \(pid) for \(Int(secs))s…")
+    print("watching \(target) pid \(pid) for \(Int(secs))s…")
     Thread.sleep(forTimeInterval: secs)
     guard let b = written(pid) else { print("lost the process"); exit(1) }
     let kbs = Double(b &- a) / 1024 / secs
@@ -275,7 +273,7 @@ if args.contains("--ssd") {
 
     // Local, and NON-TRUNCATING, unlike the file-scope pad/rpad further down:
     // those clip with `String(prefix:)`, which would silently shorten a byte
-    // count into a different number. Same local-helper shape as --watch.
+    // count into a different number.
     func p(_ s: String, _ w: Int) -> String {
         s.count >= w ? s : s + String(repeating: " ", count: w - s.count)
     }
@@ -437,7 +435,6 @@ if args.contains("--ssd") {
     exit(0)
 }
 
-// ── Per-process network check ───────────────────────────────────────────────
 // ── Internet speed test ─────────────────────────────────────────────────────
 // The one thing in this repo that sends data anywhere. Explicit flag only —
 // never on a timer, never at launch. See SpeedTest.swift for why that matters.
@@ -479,6 +476,7 @@ if args.contains("--speedtest") {
     }
 }
 
+// ── Per-process network check ───────────────────────────────────────────────
 if args.contains("--netproc") {
     guard NetworkAttribution.isAvailable else { print("nettop unavailable"); exit(1) }
     let na = NetworkAttribution(refreshInterval: 0)
@@ -754,8 +752,9 @@ if args.contains("--smc") {
     // limits or setpoints, not sensors. Summing them added 543 W of nonsense to
     // a figure whose whole purpose is to be quoted as "what the machine draws".
     //
-    // They are identified by being constant, not by key, so a different Mac's
-    // constants are excluded too without a hardcoded list.
+    // They were found by being constant in every sample, and are excluded by key:
+    // the list is the three measured here, so a different Mac's constants, if it
+    // has any, are not in it and would still be summed.
     let constantKeys: Set<String> = ["PZT0", "PHPB", "PHPM"]
     let live = power.filter { $0.value > 0 && !constantKeys.contains($0.key) }
     let total = live.reduce(0) { $0 + $1.value }
@@ -791,12 +790,6 @@ if args.contains("--smc") {
 if args.contains("--watch") || args.contains("-f") {
     guard let monitor = PowerMonitor.forCommandLine(scale: scale) else { exit(1) }
     monitor.tick()  // prime
-    func p(_ s: String, _ w: Int) -> String {
-        s.count >= w ? String(s.prefix(w)) : s + String(repeating: " ", count: w - s.count)
-    }
-    func rp(_ s: String, _ w: Int) -> String {
-        s.count >= w ? String(s.prefix(w)) : String(repeating: " ", count: w - s.count) + s
-    }
     // --log: one line per tick, no screen clear. Used to verify stability of the
     // displayed figure against the raw gauge over time.
     let logMode = args.contains("--log")
@@ -824,11 +817,11 @@ if args.contains("--watch") || args.contains("-f") {
               + String(format: "%d readable of %d, %d denied, %d active",
                        s.readable, s.attempted, s.denied, s.active))
         print(String(repeating: "─", count: 68))
-        print("  " + p("PROCESS", 30) + rp("%/hr", 9) + rp("JOULES", 10) + rp("PID", 8))
+        print("  " + pad("PROCESS", 30) + rpad("%/hr", 9) + rpad("JOULES", 10) + rpad("PID", 8))
         for d in s.drains.prefix(topN) {
             let pct = d.percentPerHour < 0.01 ? "<0.01" : String(format: "%.2f", d.percentPerHour)
-            print("  " + p(d.name, 30) + rp(pct, 9)
-                  + rp(String(format: "%.2f", d.joules), 10) + rp("\(d.pid)", 8))
+            print("  " + pad(d.name, 30) + rpad(pct, 9)
+                  + rpad(String(format: "%.2f", d.joules), 10) + rpad("\(d.pid)", 8))
         }
         print(String(repeating: "─", count: 68))
         print(String(format: "  attributed    %6.2f %%/hr  (%.3f W)", s.attributed_pctHr, s.attributed_W))
@@ -910,7 +903,7 @@ rule("LEDGER  — rows sum to the MEASURED total, never normalized to 100%")
 print(String(format: "  attributed (own uid)   %7.3f W   %6.2f %%/hr",
              attributedW, 3600.0 * attributedW / scale.joulesPerPercent))
 
-var window2 = power0.flatMap { p0 -> SystemPowerWindow? in
+let window2 = power0.flatMap { p0 -> SystemPowerWindow? in
     PowerTelemetry.sample().flatMap { SystemPowerWindow.between(p0, $0) }
 }
 if let w = window2 {

@@ -1,5 +1,4 @@
 import AppKit
-import PowerKit
 
 /// What the bottom of the window is about: the sliced bar, the card in the
 /// corner, and the graph beside it.
@@ -108,8 +107,7 @@ public enum BottomContext: String, CaseIterable {
         switch self {
         case .battery: return "%/hr"
         case .cpu, .gpu, .memory: return "%"
-        case .disk: return "B/s"
-        case .network: return "B/s"
+        case .disk, .network: return "B/s"
         case .sensors, .fans: return "°C"
         }
     }

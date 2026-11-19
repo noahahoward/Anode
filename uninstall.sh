@@ -114,13 +114,13 @@ INSTALLED_SRC="$HOME/.anode/source"
 if [ ! -d "$INSTALLED_SRC/.git" ] && [ -d "$HOME/Developer/Anode/.git" ]; then
   INSTALLED_SRC="$HOME/Developer/Anode"
 fi
-# Settings domains: the named suite, the one before the rename, and the bundle
-# identifiers (now and before the rename) — the last is where the app's window
-# frame and menu bar widgets live. Kept in step with Uninstall.defaultsDomainNames.
 # macOS's per-user cache and temp folders (under /var/folders). Each ends in a
 # slash. Empty if getconf cannot say, which turns the entries below into nothing.
 USER_CACHE_DIR="$(getconf DARWIN_USER_CACHE_DIR 2>/dev/null || true)"
 USER_TEMP_DIR="$(getconf DARWIN_USER_TEMP_DIR 2>/dev/null || true)"
+# Settings domains: the named suite, the one before the rename, and the bundle
+# identifiers (now and before the rename) — the last is where the app's window
+# frame and menu bar widgets live. Kept in step with Uninstall.defaultsDomainNames.
 # The last four are the domains the app and the `anode` tool write under when they run outside the bundle (AnodeApp, anode),
 # and what they were called before the rename (BetterStatsApp, betterstats); each has a file in ~/Library/Preferences.
 DOMAINS=(com.anode.settings com.betterstats.settings dev.anode.app dev.noah.anode AnodeApp anode BetterStatsApp betterstats)

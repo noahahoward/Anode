@@ -7,7 +7,6 @@ import QuartzCore
 
 /// What the controller needs from the overlay, so it can be tested without a window.
 protocol LidGlassOverlaying: AnyObject {
-    var windowID: CGWindowID { get }
     /// Start preparing `image` (drawn onto its margin and mipmapped, off the main thread). Nothing is shown.
     func prepare(image: CGImage)
     /// Put the prepared picture on screen, now if it is ready and as soon as it is if not. The picture was taken
@@ -52,7 +51,6 @@ final class LidGlassOverlay: LidGlassOverlaying {
     /// Bumped by every `show` and `hide`, so a picture that finishes preparing after the overlay was dismissed
     /// finds its moment gone.
     private var prepareToken = 0
-    private var isPreparing = false
     private var pictureIsReady = false
     /// The overlay is on the screen. Separate from the display link, which stops while nothing moves.
     private var isDisplayed = false
@@ -127,7 +125,6 @@ final class LidGlassOverlay: LidGlassOverlaying {
         window.contentView = view
     }
 
-    var windowID: CGWindowID { window.windowServerID ?? kCGNullWindowID }
     var isDisplayLinkRunning: Bool { link != nil }
 
     /// The picture is prepared off the main thread, which takes about 50 ms at full size.
@@ -135,7 +132,6 @@ final class LidGlassOverlay: LidGlassOverlaying {
         guard let renderer else { return }
         prepareToken += 1
         let mine = prepareToken
-        isPreparing = true
         pictureIsReady = false
         let scale = window.screen?.backingScaleFactor ?? 2
         DispatchQueue.global(qos: .userInteractive).async { [weak self] in
@@ -158,7 +154,6 @@ final class LidGlassOverlay: LidGlassOverlaying {
 
     private func pictureReady(_ picture: LidGlassRenderer.Picture?, token: Int) {
         guard token == prepareToken else { return }
-        isPreparing = false
         guard let renderer, let picture else {
             let waiting = pendingClear
             pendingClear = nil
@@ -224,7 +219,6 @@ final class LidGlassOverlay: LidGlassOverlaying {
 
     func hide() {
         prepareToken += 1
-        isPreparing = false
         pictureIsReady = false
         wantsPresent = false
         isDisplayed = false

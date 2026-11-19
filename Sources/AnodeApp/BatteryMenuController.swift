@@ -82,8 +82,8 @@ final class BatteryMenuController {
     private let ultra: UltraModeControlling?
     private let charge: ChargeLimiting?
     private let hardDrainPrompt: HardDrainPrompting?
-    /// Anode's measurement of every app it knows, by name; read only while the menu is open.
-    /// Everything Anode has measured, as of its last sweep: the menu lists the apps of it that use significant energy (`SignificantEnergy`).
+    /// Everything Anode has measured, as of its last sweep, read only while the menu is open: the menu lists the apps of it that
+    /// use significant energy (`SignificantEnergy`).
     private let energyApps: () -> [SignificantEnergy.Candidate]
     /// The names on the open menu now: a row at the line stays until its app falls well below it.
     private var listedApps = Set<String>()
@@ -137,8 +137,6 @@ final class BatteryMenuController {
         self.statsInterval = statsInterval
         self.afterPressReadDelay = afterPressReadDelay
     }
-
-    var isMenuOpen: Bool { presenter.isOpen }
 
     /// What the menu shows now: nil while nothing is known.
     var model: BatteryMenuModel? {

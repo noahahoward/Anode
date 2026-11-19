@@ -679,7 +679,7 @@ public final class MetricRegistry {
             // meaningless while plugged in, which is why the SBS gauge returns its
             // 65535 sentinel — but "—" is the placeholder for a reading that is
             // missing, and this one is not missing. It is inapplicable, and the
-            // machine knows exactly why. `batteryRate` already draws this
+            // machine knows exactly why. `batteryDrain` already draws this
             // distinction the same way a few lines up.
             //
             // NaN rather than that metric's 0, and the difference is not cosmetic:

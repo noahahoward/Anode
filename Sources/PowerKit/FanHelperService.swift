@@ -1399,6 +1399,10 @@ public final class FanHelperServer {
     /// The range the helper accepts for macOS's charge limit. The app's own
     /// range may be narrower; this is the boundary root enforces.
     static let chargeLimitRange = 20...100
+    private static var chargeLimitOutOfRange: FanReply {
+        FanReply(ok: false, message: "refused: a charge limit must be "
+                 + "\(chargeLimitRange.lowerBound)–\(chargeLimitRange.upperBound)%")
+    }
     /// The range a discharge target may name. `DischargeWatch.floor` still
     /// applies on top: nothing discharges below 10%.
     static let dischargeTargetRange = 10...100
@@ -1407,10 +1411,7 @@ public final class FanHelperServer {
         guard let charge else {
             return FanReply(ok: false, message: ChargeRefusal.noChargeControl)
         }
-        guard Self.chargeLimitRange.contains(percent) else {
-            return FanReply(ok: false, message: "refused: a charge limit must be "
-                          + "\(Self.chargeLimitRange.lowerBound)–\(Self.chargeLimitRange.upperBound)%")
-        }
+        guard Self.chargeLimitRange.contains(percent) else { return Self.chargeLimitOutOfRange }
         // Not held, and not undone on disconnect: the limit is macOS's own
         // setting and stays where the user put it.
         guard charge.writeChargeLimit(percent) else {
@@ -1520,10 +1521,7 @@ public final class FanHelperServer {
         guard let powerEvents else {
             return FanReply(ok: false, message: ChargeRefusal.cannotWake)
         }
-        guard Self.chargeLimitRange.contains(limit) else {
-            return FanReply(ok: false, message: "refused: a charge limit must be "
-                          + "\(Self.chargeLimitRange.lowerBound)–\(Self.chargeLimitRange.upperBound)%")
-        }
+        guard Self.chargeLimitRange.contains(limit) else { return Self.chargeLimitOutOfRange }
         // A moment that is gone cannot be woken for, and one that is days off is a plan nobody should be holding a
         // root process up for. (NaN is not after now.)
         let ahead = at.timeIntervalSince(now())
@@ -1552,11 +1550,9 @@ public final class FanHelperServer {
         }
         // Replaced: the old plan's wake goes now that the new one is in. (Before it, a wake the system refused
         // would have left no plan at all.)
-        if let old = chargePlan {
-            if !powerEvents.cancelWake(at: old.wakeAt) {
-                log("WARNING: could not cancel the wake for the plan this one replaces; it will wake the Mac once, "
-                  + "and write nothing")
-            }
+        if let old = chargePlan, !powerEvents.cancelWake(at: old.wakeAt) {
+            log("WARNING: could not cancel the wake for the plan this one replaces; it will wake the Mac once, "
+              + "and write nothing")
         }
         let plan = ChargePlan(limit: limit, at: at, wakeAt: wakeAt)
         chargePlan = plan
@@ -2199,16 +2195,20 @@ public enum FanHelperInstall {
         let a = artifacts(root: root)
         var out: [Removal] = []
 
+        func remove(_ url: URL) -> Removal {
+            do {
+                try fm.removeItem(at: url)
+                return Removal(path: url.path, outcome: .removed)
+            } catch {
+                return Removal(path: url.path, outcome: .failed(error.localizedDescription))
+            }
+        }
+
         for url in a.files {
             guard fm.fileExists(atPath: url.path) else {
                 out.append(Removal(path: url.path, outcome: .absent)); continue
             }
-            do {
-                try fm.removeItem(at: url)
-                out.append(Removal(path: url.path, outcome: .removed))
-            } catch {
-                out.append(Removal(path: url.path, outcome: .failed(error.localizedDescription)))
-            }
+            out.append(remove(url))
         }
 
         for url in a.directoriesIfEmpty {
@@ -2221,12 +2221,7 @@ public enum FanHelperInstall {
             guard contents.allSatisfy({ $0 == ".DS_Store" }) else {
                 out.append(Removal(path: url.path, outcome: .notEmpty)); continue
             }
-            do {
-                try fm.removeItem(at: url)
-                out.append(Removal(path: url.path, outcome: .removed))
-            } catch {
-                out.append(Removal(path: url.path, outcome: .failed(error.localizedDescription)))
-            }
+            out.append(remove(url))
         }
         return out
     }

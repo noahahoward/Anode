@@ -286,6 +286,25 @@ final class BodyStack: NSStackView {
     }
 }
 
+/// The clip view every pane's scroll view uses: flipped, so a top-anchored document
+/// lays out from the top, and with no background of its own.
+final class FlippedClipView: NSClipView {
+    override var isFlipped: Bool { true }
+
+    /// A fresh clip view draws its OWN background, and `drawsBackground` on
+    /// the scroll view only reaches the clip view that exists when it is set —
+    /// every caller here assigns this one AFTERWARDS, so all four scrollers
+    /// were painting an unstyled grey rectangle behind their content, with
+    /// square corners, in an app whose own surfaces are rounded and black.
+    ///
+    /// Cleared here rather than at each call site so the order of two lines
+    /// cannot bring it back.
+    override var drawsBackground: Bool {
+        get { false }
+        set { }
+    }
+}
+
 /// Shared chrome: a title, an optional caption, and a vertical list of rows. Keeps
 /// the three panes visually identical to each other and to the rest of the app.
 class SystemPane: NSView {
@@ -297,23 +316,6 @@ class SystemPane: NSView {
     /// Held so an accessory can be spliced in between the caption and the list
     /// without rebuilding the chrome. See `setAccessory`.
     private var scrollTop: NSLayoutConstraint!
-
-    private final class FlippedClipView: NSClipView {
-        override var isFlipped: Bool { true }
-
-        /// A fresh clip view draws its OWN background, and `drawsBackground` on
-        /// the scroll view only reaches the clip view that exists when it is set —
-        /// every caller here assigns this one AFTERWARDS, so all four scrollers
-        /// were painting an unstyled grey rectangle behind their content, with
-        /// square corners, in an app whose own surfaces are rounded and black.
-        ///
-        /// Cleared here rather than at each call site so the order of two lines
-        /// cannot bring it back.
-        override var drawsBackground: Bool {
-            get { false }
-            set { }
-        }
-    }
 
     override init(frame: NSRect) {
         super.init(frame: frame)

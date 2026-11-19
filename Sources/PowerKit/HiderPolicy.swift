@@ -59,7 +59,4 @@ public struct PillState: Equatable {
     public mutating func tick(now: Date) {
         if isOpen, let closeAt, now >= closeAt { close() }
     }
-
-    /// The pill was placed for a screen that has changed.
-    public mutating func screenParametersChanged() { close() }
 }

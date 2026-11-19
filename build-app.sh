@@ -15,8 +15,7 @@ ICON="Resources/AppIcon.icon"
 # speed, middle for features, first only for a rewrite), with CHANGELOG.md and UPDATE-NOTE.md. The build number is the commit count,
 # so two bundles claiming the same version cannot contain different code. A bug
 # report can quote what About says and the answer maps to an exact commit —
-# which matters more than usual here, because there is no update mechanism and
-# an installed build may be weeks old.
+# which matters more than usual here, because an installed build may be weeks old.
 VERSION="1.26.0"
 BUILD="$(git rev-list --count HEAD 2>/dev/null || echo 1)"
 COMMIT="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
@@ -310,24 +309,15 @@ echo "›  LaunchServices state hides the menu bar widgets. See WIDGET-BUG.md.)"
 
 # ── Launch it ───────────────────────────────────────────────────────────────
 #
-# TWICE, and that is a workaround rather than a nicety.
+# TWICE, and that is left over from a workaround.
 #
-# `AppPresence.showsWindowAtLaunch` is `!(startInMenuBarOnly && widgetsEnabled)`,
-# so with both settings on NO launch opens the window — the second `open` is what
-# produces one, because it arrives as a REOPEN and takes a different path
-# (`applicationShouldHandleReopen`). A developer who quits to pick up a new build
-# therefore gets widgets and no window, every time, and learns to build twice.
+# `AppPresence.showsWindowAtLaunch` used to be `!(startInMenuBarOnly && widgetsEnabled)` for EVERY launch, so with both
+# settings on NO launch opened the window — the second `open` is what produced one, because it arrives as a REOPEN and
+# takes a different path (`applicationShouldHandleReopen`). "Start in menu bar only" now applies only to a launch by
+# the login agent (the app reads that from its own argument, `AppPresence.openedAtLogin`), so the first `open` shows
+# the window and the second is a reopen of an app already showing it. It stays as it was.
 #
-# The real bug is that "start in menu bar only" is a statement about LOGIN and is
-# being applied to every launch including a deliberate one. Fixing it needs the
-# app to tell those apart, and the obvious signal cannot:
-# `NSApplicationLaunchIsDefaultLaunchKey` is true for a manual launch and Apple
-# documents it as false only for file/print/Apple-event launches, so a login
-# launch reports true as well. Measured here, not assumed.
-#
-# So this is the dev workflow papering over a product bug, deliberately and in
-# one place. Skip it with ANODE_NO_LAUNCH=1 — for CI, or for a build made
-# while the app is deliberately not running.
+# Skip it with ANODE_NO_LAUNCH=1 — for CI, or for a build made while the app is deliberately not running.
 if [ "${ANODE_NO_LAUNCH:-0}" != "1" ]; then
     echo "›"
     echo "› launching…"

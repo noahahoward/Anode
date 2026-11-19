@@ -29,10 +29,26 @@ protocol SoundMenuPresenting: AnyObject {
     func update(_ model: SoundMenuModel)
     /// `fade`: as macOS's panel closes (a straight-line fade); not when another panel takes its place, which is one frame.
     func close(fade: Bool)
+    /// Where the Adaptive slider is drawn now, in top-left global points; nil while there is none.
+    func adaptiveSliderPlacement() -> AdaptiveSliderPlacement?
+    /// Cuts a hole over the slider, where macOS's own slider lies under the menu (nil closes it again).
+    func setAdaptiveSliderHole(_ hole: CGRect?)
 }
 
 extension SoundMenuPresenting {
     func close() { close(fade: true) }
+    func adaptiveSliderPlacement() -> AdaptiveSliderPlacement? { nil }
+    func setAdaptiveSliderHole(_ hole: CGRect?) {}
+}
+
+/// Where Anode's Adaptive slider is on the screen (top-left global points): its left end icon (which macOS's is lined up on), the hole
+/// to cut over it (the capsule), the menu (what macOS's panel is hidden under), and its whole row (the pointer anywhere on it counts as
+/// on the slider: one that comes onto the row from its left end must not miss it).
+struct AdaptiveSliderPlacement: Equatable {
+    var leftIcon: CGRect
+    var hole: CGRect
+    var menu: CGRect
+    var row: CGRect
 }
 
 /// One of macOS's own icons in the menu bar (Sound, Battery), when Anode lets a click on it open Anode's menu instead of showing a second icon.
@@ -220,6 +236,8 @@ final class SoundMenuController {
         driver.closePanelOpenedByPerson()
         notice = nil
         refused = nil
+        putSliderAway()
+        sliderArming = AdaptiveSliderArming()   // a new opening tries afresh
         collapsed.removeAll()
         openCount += 1
         presenter.show(model, below: anchor)
@@ -234,6 +252,7 @@ final class SoundMenuController {
     }
 
     func closeMenu(fade: Bool = true) {
+        putSliderAway()
         generation += 1
         refused = nil
         presenter.close(fade: fade)
@@ -261,6 +280,8 @@ final class SoundMenuController {
 
     /// Reads macOS's panel, when Accessibility allows. What came back replaces what was known; the model is redrawn.
     private func readApple() {
+        // A reading would take macOS's panel from under the slider while the pointer is on it: it waits for the next opening.
+        guard sliderArming.state != .armed, sliderArming.state != .arming else { readSkippedForSlider = true; return }
         guard accessibility() else {
             reading = nil
             settings.soundMenuLastReading = nil   // what was read before is not shown, and is not kept
@@ -361,6 +382,7 @@ final class SoundMenuController {
     }
 
     func pickOutput(_ device: SoundMenuModel.Device) {
+        putSliderAway()
         notice = nil
         if let id = device.id {
             outputs.setDefault(id)
@@ -375,17 +397,20 @@ final class SoundMenuController {
     /// from the case, and comes and goes.
     func pickChoice(_ row: AppleChoiceRow) {
         guard row.enabled, !row.isOn else { return }
+        putSliderAway()
         notice = nil
         refused = nil
         press(SystemPanelRow(identifier: AppleSoundPanel.devicePrefix + row.device, description: row.title, section: row.section), optimistic: row)
     }
 
     func toggleExpanded(_ name: String) {
+        putSliderAway()
         if collapsed.contains(name) { collapsed.remove(name) } else { collapsed.insert(name) }
         redraw()
     }
 
     private func press(_ row: SystemPanelRow, optimistic choice: AppleChoiceRow?) {
+        putSliderAway()
         guard accessibility() else { notice = Self.needsAccessibility; redraw(); return }
         let before = reading
         if let choice, var a = reading {
@@ -422,7 +447,125 @@ final class SoundMenuController {
         }
     }
 
-    /// Adaptive Audio's slider: macOS's can be read but not set from outside, so Anode's menu goes and macOS's own Sound menu opens,
+    // ── Adaptive Audio's slider: macOS's own, under Anode's ─────────────────
+    // While the pointer is on the slider, macOS's panel is opened under the menu and moved so its slider lies exactly under Anode's,
+    // and the menu has a hole there: the drag is on macOS's slider itself (the only thing that moves it, measured). See
+    // `AdaptiveSliderArming` for when it comes and goes.
+
+    private var sliderArming = AdaptiveSliderArming()
+    private var sliderWatch: Timer?
+    private var armedPlacement: AdaptiveSliderPlacement?
+    /// Which arm a driver's answer belongs to: an answer from one that was put away (a quick close and reopen) is not this one's.
+    private var armGeneration = 0
+    private var hoverTimer: Timer?
+    /// A reading skipped while macOS's panel was under the slider, made up for once it is put away.
+    private var readSkippedForSlider = false
+
+    /// How long the pointer stays on the slider's row before macOS's panel is put under it: crossing the row on the way to another
+    /// row does not open and close macOS's panel (two screen pictures and a fraction of a second each time).
+    var hoverDwell: TimeInterval = 0.15
+    /// Where the pointer is and whether its button is down; replaced in tests.
+    var pointerIn: (CGRect) -> Bool = { rect in
+        guard let screen = NSScreen.screens.first else { return false }
+        let p = NSEvent.mouseLocation
+        return rect.contains(CGPoint(x: p.x, y: screen.frame.height - p.y))
+    }
+    var buttonDown: () -> Bool = { NSEvent.pressedMouseButtons & 1 != 0 }
+
+    /// The pointer came onto the slider's row. Once it has rested there `hoverDwell`, and macOS's panel is free (Anode reads it as the
+    /// menu opens, and uses it for a press), macOS's slider is put under Anode's; for as long as the pointer stays on the row.
+    func adaptiveSliderHovered() {
+        guard presenter.isOpen, model.adaptiveLevel != nil, sliderArming.state == .idle, hoverTimer == nil else { return }
+        let began = Date()
+        let check = { [weak self] () -> Bool in   // true when there is nothing more to wait for
+            guard let self else { return true }
+            guard self.presenter.isOpen, self.sliderArming.state == .idle,
+                  let place = self.presenter.adaptiveSliderPlacement(), self.pointerIn(place.row) else { return true }
+            guard Date().timeIntervalSince(began) >= self.hoverDwell, self.pressesInFlight == 0, !self.readInFlight,
+                  self.driver.panelIsFree else { return false }
+            self.arm(place)
+            return true
+        }
+        if check() { return }
+        // Looked at again until `check` says there is nothing more to wait for.
+        let timer = Timer(timeInterval: 0.05, repeats: true) { [weak self] t in
+            guard let self, check() else { return }
+            t.invalidate(); self.hoverTimer = nil
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        hoverTimer = timer
+    }
+
+    private func arm(_ place: AdaptiveSliderPlacement) {
+        guard sliderArming.pointerEntered() == .arm else { return }
+        armGeneration += 1
+        let mine = armGeneration
+        driver.armAdaptiveSlider(leftIcon: place.leftIcon, cover: place.menu.insetBy(dx: -24, dy: -24), hole: place.hole) { [weak self] ok in
+            guard let self, mine == self.armGeneration else { return }
+            let still = self.presenter.adaptiveSliderPlacement()
+            let inside = still.map { self.pointerIn($0.row) } ?? false
+            switch self.sliderArming.armFinished(ok: ok && still == place, pointerInside: inside) {
+            case .showHole:
+                self.armedPlacement = place
+                self.presenter.setAdaptiveSliderHole(place.hole)
+                self.watchSlider()
+            case .disarm:
+                self.finishSlider()
+            case .none, .arm:
+                if ok, still != place { self.finishSlider() }   // the slider moved while macOS's was put under it
+            }
+        }
+    }
+
+    /// A press that reached Anode's own drawing of the slider (macOS's was not in place under it).
+    func adaptiveSliderPressed() {
+        if sliderArming.handsOverOnPress { openAdaptiveInMacOS() }
+    }
+
+    private func watchSlider() {
+        sliderWatch?.invalidate()
+        let timer = Timer(timeInterval: 0.05, repeats: true) { [weak self] t in
+            guard let self else { t.invalidate(); return }
+            self.checkSlider()
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        sliderWatch = timer
+    }
+
+    /// While macOS's slider is under Anode's: it is put away once the pointer has left the row with the button up, or macOS closed its
+    /// panel (any click elsewhere does), or the slider moved in the menu.
+    func checkSlider() {
+        let now = presenter.adaptiveSliderPlacement()
+        let inside = now.map { pointerIn($0.row.insetBy(dx: 0, dy: -4)) } ?? false
+        let open = driver.adaptiveSliderPanelOpen && now == armedPlacement
+        if sliderArming.tick(pointerInside: inside, buttonDown: buttonDown(), panelOpen: open) == .disarm { finishSlider() }
+    }
+
+    /// Puts macOS's panel away, takes the level its knob was left at, and draws Anode's slider at it again.
+    private func finishSlider() {
+        sliderWatch?.invalidate(); sliderWatch = nil
+        armedPlacement = nil
+        armGeneration += 1
+        let level = driver.disarmAdaptiveSlider()
+        presenter.setAdaptiveSliderHole(nil)
+        if let level, var a = reading, a.panel.adaptiveLevel != nil {
+            a.panel.adaptiveLevel = level
+            reading = a
+            redraw()
+        }
+        if readSkippedForSlider {
+            readSkippedForSlider = false
+            if presenter.isOpen { readApple() }
+        }
+    }
+
+    /// Before anything else uses macOS's panel, or the menu goes.
+    private func putSliderAway() {
+        hoverTimer?.invalidate(); hoverTimer = nil
+        if sliderArming.menuClosing() == .disarm { finishSlider() }
+    }
+
+    /// Adaptive Audio's slider when macOS's own could not be put under Anode's: Anode's menu goes and macOS's own Sound menu opens,
     /// where it is dragged.
     func openAdaptiveInMacOS() {
         closeMenu(fade: false)

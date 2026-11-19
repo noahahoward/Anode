@@ -1,8 +1,8 @@
 import XCTest
 @testable import PowerKit
 
-/// Ready By in the pure policy: hold the battery where it is until it has to charge to be at the limit by a time of
-/// day. Every number the rule uses (the window, the floor, the margin, the taper) is pinned here from its own
+/// Ready By in the pure policy: charge to 20 under the limit and hold there until it has to charge to be at the limit
+/// by a time of day. Every number the rule uses (the window, the floor, the margin, the taper) is pinned here from its own
 /// constant, so changing one is a visible change of a test and not a silent change of what the Mac does overnight.
 final class ReadyByPolicyTests: XCTestCase {
 
@@ -36,6 +36,7 @@ final class ReadyByPolicyTests: XCTestCase {
         XCTAssertEqual(ChargePolicy.readyByWindow, 16 * 3600)
         XCTAssertEqual(ChargePolicy.readyByWindowWithAnOlderHelper, 12 * 3600)
         XCTAssertEqual(ChargePolicy.readyByFloor, 30)
+        XCTAssertEqual(ChargePolicy.readyByBelowLimit, 20)
         XCTAssertEqual(ChargePolicy.readyByMargin, 15 * 60)
         XCTAssertEqual(ChargePolicy.chargeTaperAbove, 80)
         XCTAssertEqual(ChargePolicy.chargeTaperFactor, 0.4)
@@ -117,17 +118,17 @@ final class ReadyByPolicyTests: XCTestCase {
 
     // ── The hold ────────────────────────────────────────────────────────────
 
-    func testHoldsWhereItIsInsideTheWindowAndSaysWhenToRaise() throws {
+    func testChargesToTwentyUnderTheLimitAndHoldsThereInsideTheWindow() throws {
         let by = t0.addingTimeInterval(8 * hour)
         var m = ChargeMemory()
         let d = ChargePolicy.decide(settings(), inputs(by: by), &m)
-        XCTAssertEqual(d.osLimit, 54)
+        XCTAssertEqual(d.osLimit, 60, "54% is charged to 20 under the limit of 80, not held where it is")
         XCTAssertEqual(d.reason, .readyBy)
         XCTAssertNil(d.dischargeTo)
-        XCTAssertEqual(d.readyBy, ReadyByState(by: by, raiseAt: by.addingTimeInterval(-lead(level: 54)), raiseTo: 80))
-        // 26 points at 0.8 is 32.5 minutes, and the margin is 15 more.
-        XCTAssertEqual(by.timeIntervalSince(try XCTUnwrap(d.readyBy?.raiseAt)), 32.5 * 60 + 15 * 60, accuracy: 1e-6)
-        XCTAssertEqual(m.readyBy, ReadyByMemory(moment: by, level: 54, started: false))
+        XCTAssertEqual(d.readyBy, ReadyByState(by: by, raiseAt: by.addingTimeInterval(-lead(level: 60)), raiseTo: 80))
+        // 20 points at 0.8 is 25 minutes, and the margin is 15 more.
+        XCTAssertEqual(by.timeIntervalSince(try XCTUnwrap(d.readyBy?.raiseAt)), 25 * 60 + 15 * 60, accuracy: 1e-6)
+        XCTAssertEqual(m.readyBy, ReadyByMemory(moment: by, level: 60, started: false))
     }
 
     func testTheWindowIsSixteenHoursAndIncludesItsEdge() {
@@ -145,20 +146,68 @@ final class ReadyByPolicyTests: XCTestCase {
         XCTAssertNil(m.readyBy)
     }
 
-    func testBelowTheFloorItChargesToTheFloorFirstThenHolds() {
+    /// The night it was changed for: a limit of 100 and Hold No Higher Than 80, plugged in at 25% while in use. It was
+    /// held at 30% until the early morning, with the charger on the cable and the battery needed. It charges to 80 and
+    /// holds there, as an iPhone does.
+    func testItChargesToTwentyUnderTheLimitFirstThenHolds() {
         let by = t0.addingTimeInterval(8 * hour)
-        for p in [20, 25, 29] {
+        for p in [20, 25, 30, 54, 79] {
             var m = ChargeMemory()
-            let d = ChargePolicy.decide(settings(), inputs(percent: p, by: by), &m)
+            let d = ChargePolicy.decide(lowering(to: 80), inputs(percent: p, by: by), &m)
             XCTAssertEqual(d.reason, .readyBy, "\(p)%")
-            XCTAssertEqual(d.osLimit, 30, "\(p)% charges to the floor, not beyond it")
-            // The start moment is worked out from where it will hold: 30%.
-            XCTAssertEqual(d.readyBy?.raiseAt, by.addingTimeInterval(-lead(level: 30)), "\(p)%")
+            XCTAssertEqual(d.osLimit, 80, "\(p)% charges to 80, not beyond it")
+            // The start moment is worked out from where it will hold: 80%.
+            XCTAssertEqual(d.readyBy?.raiseAt, by.addingTimeInterval(-lead(level: 80, limit: 100)), "\(p)%")
+            XCTAssertEqual(d.readyBy?.raiseTo, 100)
         }
+        // Hold No Higher Than switched off: the same 20 under the limit.
         var m = ChargeMemory()
-        XCTAssertEqual(ChargePolicy.decide(settings(), inputs(percent: 30, by: by), &m).osLimit, 30)
+        XCTAssertEqual(ChargePolicy.decide(lowering(to: nil), inputs(percent: 25, by: by), &m).osLimit, 80)
+        // A limit of 80: 60.
         m = ChargeMemory()
-        XCTAssertEqual(ChargePolicy.decide(settings(), inputs(percent: 31, by: by), &m).osLimit, 31)
+        XCTAssertEqual(ChargePolicy.decide(settings(), inputs(percent: 25, by: by), &m).osLimit, 60)
+    }
+
+    /// Hold No Higher Than below 20 under the limit is the level it charges to; above it, it is no reason to charge higher.
+    func testALowerHoldNoHigherThanIsTheLevelItChargesTo() {
+        let by = t0.addingTimeInterval(8 * hour)
+        var m = ChargeMemory()
+        XCTAssertEqual(ChargePolicy.decide(lowering(to: 50), inputs(percent: 25, by: by), &m).osLimit, 50)
+        m = ChargeMemory()
+        XCTAssertEqual(ChargePolicy.decide(lowering(to: 95), inputs(percent: 25, by: by), &m).osLimit, 80)
+    }
+
+    /// The level, worked out: 20 under the limit, or Hold No Higher Than when lower, and never under the floor (or the
+    /// limit, when that is lower still).
+    func testTheLevelItChargesTo() {
+        XCTAssertEqual(ChargePolicy.readyByHoldLevel(limit: 100, holdAtMost: 80), 80)
+        XCTAssertEqual(ChargePolicy.readyByHoldLevel(limit: 100, holdAtMost: nil), 80)
+        XCTAssertEqual(ChargePolicy.readyByHoldLevel(limit: 100, holdAtMost: 95), 80)
+        XCTAssertEqual(ChargePolicy.readyByHoldLevel(limit: 100, holdAtMost: 50), 50)
+        XCTAssertEqual(ChargePolicy.readyByHoldLevel(limit: 80, holdAtMost: nil), 60)
+        XCTAssertEqual(ChargePolicy.readyByHoldLevel(limit: 40, holdAtMost: nil), 30, "20 under 40 is below the floor")
+        XCTAssertEqual(ChargePolicy.readyByHoldLevel(limit: 25, holdAtMost: nil), 25)
+    }
+
+    /// Under a low limit the floor still stands: 20 under a limit of 40 is 20, and it holds at 30. A battery above the
+    /// level is held where it is.
+    func testUnderALowLimitItNeverHoldsBelowTheFloor() {
+        let by = t0.addingTimeInterval(8 * hour)
+        var m = ChargeMemory()
+        XCTAssertEqual(ChargePolicy.decide(settings(limit: 40), inputs(percent: 22, by: by), &m).osLimit, 30)
+        m = ChargeMemory()
+        XCTAssertEqual(ChargePolicy.decide(settings(limit: 40), inputs(percent: 31, by: by), &m).osLimit, 31)
+    }
+
+    /// A hold remembered lower (by a build that held wherever the battery was, or before the limit was raised) is
+    /// charged up from, not kept.
+    func testALevelRememberedLowerIsChargedUpFrom() {
+        let by = t0.addingTimeInterval(8 * hour)
+        var m = ChargeMemory()
+        m.readyBy = ReadyByMemory(moment: by, level: 30, started: false)
+        let d = ChargePolicy.decide(lowering(to: 80), inputs(percent: 30, by: by), &m)
+        XCTAssertEqual(d.osLimit, 80)
+        XCTAssertEqual(m.readyBy?.level, 80)
     }
 
     /// The floor is not a reason to charge past the person's own limit.
@@ -178,11 +227,11 @@ final class ReadyByPolicyTests: XCTestCase {
 
     func testItStartsExactlyAtTheStartMomentAndNotBefore() {
         let by = t0.addingTimeInterval(8 * hour)
-        let start = by.addingTimeInterval(-lead(level: 54))
+        let start = by.addingTimeInterval(-lead(level: 60))
         var m = ChargeMemory()
         let before = ChargePolicy.decide(settings(), inputs(at: start.addingTimeInterval(-1), by: by), &m)
         XCTAssertEqual(before.reason, .readyBy)
-        XCTAssertEqual(before.osLimit, 54)
+        XCTAssertEqual(before.osLimit, 60)
         XCTAssertTrue(before.readyBy?.isHolding == true)
 
         let at = ChargePolicy.decide(settings(), inputs(at: start, by: by), &m)
@@ -199,7 +248,7 @@ final class ReadyByPolicyTests: XCTestCase {
         let by = t0.addingTimeInterval(13 * hour + 11 * minute)
         let d = ChargePolicy.decide(settings(limit: 100), inputs(percent: 74, by: by), &m)
         XCTAssertEqual(d.reason, .readyBy)
-        XCTAssertEqual(d.osLimit, 74, "it charged on instead of holding")
+        XCTAssertEqual(d.osLimit, 80, "it charged on to 100 instead of holding")
     }
 
     /// The window is what the policy is given: with a helper that cannot plan a wake further off than 13 hours it is
@@ -241,14 +290,16 @@ final class ReadyByPolicyTests: XCTestCase {
         XCTAssertEqual(ChargePolicy.decide(lowering(to: nil), inputs(percent: 97, by: by), &m).osLimit, 97)
     }
 
-    /// At or below the level nothing changes: it holds where the battery is.
-    func testABatteryAtOrBelowTheLevelIsHeldWhereItIs() {
+    /// Below the level it comes down to, it is charged up to that level (it is under 20 below the limit); switched
+    /// off, to 20 under the limit.
+    func testABatteryBelowTheLevelIsChargedToIt() {
         for percent in [50, 49, 42, 31] {
             var m = ChargeMemory()
             let d = ChargePolicy.decide(lowering(), inputs(percent: percent, by: t0.addingTimeInterval(8 * hour)), &m)
-            XCTAssertEqual(d.osLimit, percent, "\(percent)%")
+            XCTAssertEqual(d.osLimit, 50, "\(percent)%")
             var plain = ChargeMemory()
-            XCTAssertEqual(d, ChargePolicy.decide(lowering(to: nil), inputs(percent: percent, by: t0.addingTimeInterval(8 * hour)), &plain))
+            XCTAssertEqual(ChargePolicy.decide(lowering(to: nil), inputs(percent: percent, by: t0.addingTimeInterval(8 * hour)),
+                                               &plain).osLimit, 80, "\(percent)%")
         }
     }
 
@@ -326,15 +377,15 @@ final class ReadyByPolicyTests: XCTestCase {
         XCTAssertEqual(ChargePolicy.decide(lowering(to: 70), inputs(percent: 96, by: by), &m).osLimit, 70)
         XCTAssertEqual(ChargePolicy.decide(lowering(to: nil), inputs(percent: 96, by: by), &m).osLimit, 96,
                        "switched off, it went on coming down")
-        // Raised above where the battery is: held where it is.
+        // Raised above where the battery is: charged to 20 under the limit, which is lower than the new level.
         var n = ChargeMemory()
         XCTAssertEqual(ChargePolicy.decide(lowering(to: 50), inputs(percent: 80, by: by), &n).osLimit, 50)
-        XCTAssertEqual(ChargePolicy.decide(lowering(to: 90), inputs(percent: 66, by: by), &n).osLimit, 66)
+        XCTAssertEqual(ChargePolicy.decide(lowering(to: 90), inputs(percent: 66, by: by), &n).osLimit, 80)
         // A hold that overshoots by a point is still the hold it was.
         var o = ChargeMemory()
-        XCTAssertEqual(ChargePolicy.decide(lowering(to: nil), inputs(percent: 54, by: by), &o).osLimit, 54)
-        XCTAssertEqual(ChargePolicy.decide(lowering(to: nil), inputs(percent: 55, by: by), &o).osLimit, 54)
-        XCTAssertEqual(ChargePolicy.decide(lowering(to: nil), inputs(percent: 53, by: by), &o).osLimit, 54)
+        XCTAssertEqual(ChargePolicy.decide(lowering(to: nil), inputs(percent: 84, by: by), &o).osLimit, 84)
+        XCTAssertEqual(ChargePolicy.decide(lowering(to: nil), inputs(percent: 85, by: by), &o).osLimit, 84)
+        XCTAssertEqual(ChargePolicy.decide(lowering(to: nil), inputs(percent: 83, by: by), &o).osLimit, 84)
     }
 
     /// When the time to charge comes while it is still above the level, it charges, as from any hold.
@@ -348,25 +399,25 @@ final class ReadyByPolicyTests: XCTestCase {
         XCTAssertEqual(m.readyBy?.started, true)
     }
 
-    /// The numbers, named: the level is the middle, and it can be chosen between the floor and 95.
-    func testTheLevelItComesDownToIsTheMiddleUntilAnotherIsChosen() {
-        XCTAssertEqual(ChargePolicy.defaultReadyByHoldAtMost, 50)
+    /// The numbers, named: the level is 80, where an iPhone holds, and it can be chosen between the floor and 95.
+    func testTheLevelItComesDownToIsEightyUntilAnotherIsChosen() {
+        XCTAssertEqual(ChargePolicy.defaultReadyByHoldAtMost, 80)
         XCTAssertEqual(ChargePolicy.readyByHoldAtMostRange, 30...95)
     }
 
     func testTheStartMomentCountsTheTaperAboveEighty() throws {
-        // Limit 100 from 54: 32.5 minutes to 80, then 15 points at 0.32 a minute and the last 5 at 0.16.
+        // Limit 100, held at 80: 15 points at 0.32 a minute and the last 5 at 0.16.
         let by = t0.addingTimeInterval(8 * hour)
         var m = ChargeMemory()
         let d = ChargePolicy.decide(settings(limit: 100), inputs(by: by), &m)
         XCTAssertEqual(d.reason, .readyBy)
-        XCTAssertEqual(d.osLimit, 54)
+        XCTAssertEqual(d.osLimit, 80)
         XCTAssertEqual(d.readyBy?.raiseTo, 100)
-        let lead: TimeInterval = (32.5 + 46.875 + 31.25) * 60 + 900
+        let lead: TimeInterval = (46.875 + 31.25) * 60 + 900
         XCTAssertEqual(by.timeIntervalSince(try XCTUnwrap(d.readyBy?.raiseAt)), lead, accuracy: 1e-6)
-        // Without the taper the same climb would start 25 minutes later.
+        // Without the taper the same climb would start 53 minutes later.
         XCTAssertLessThan(try XCTUnwrap(d.readyBy?.raiseAt),
-                          by.addingTimeInterval(-((46) / 0.8 * 60 + 15 * 60)))
+                          by.addingTimeInterval(-((20) / 0.8 * 60 + 15 * 60)))
     }
 
     func testALimitAboveEightyHoldsAndChargesWithTheTaperFromAHigherLevel() throws {
@@ -380,7 +431,7 @@ final class ReadyByPolicyTests: XCTestCase {
     }
 
     func testNotEnoughTimeChargesAtOnce() {
-        // 20 minutes away, and it needs 47.5.
+        // 20 minutes away, and it needs 40.
         let by = t0.addingTimeInterval(20 * minute)
         var m = ChargeMemory()
         let d = ChargePolicy.decide(settings(), inputs(by: by), &m)
@@ -390,8 +441,8 @@ final class ReadyByPolicyTests: XCTestCase {
         XCTAssertEqual(m.readyBy?.started, true)
     }
 
-    /// Below the floor with no time to spare: no stop at 30, straight to the limit.
-    func testNoTimeEvenForTheFloorChargesStraightThrough() {
+    /// Below the level with no time to spare: no stop at 60, straight to the limit.
+    func testNoTimeEvenForTheLevelChargesStraightThrough() {
         let by = t0.addingTimeInterval(30 * minute)
         var m = ChargeMemory()
         let d = ChargePolicy.decide(settings(), inputs(percent: 22, by: by), &m)
@@ -403,7 +454,7 @@ final class ReadyByPolicyTests: XCTestCase {
 
     func testOnceStartedItStaysStartedWhateverTheEstimateDoes() {
         let by = t0.addingTimeInterval(8 * hour)
-        let start = by.addingTimeInterval(-lead(level: 54))
+        let start = by.addingTimeInterval(-lead(level: 60))
         var m = ChargeMemory()
         _ = ChargePolicy.decide(settings(), inputs(at: start, by: by), &m)
         // A much faster rate, and more charge, would put the start hours later. It does not stop again.
@@ -499,24 +550,24 @@ final class ReadyByPolicyTests: XCTestCase {
     func testTheHoldLevelDoesNotFollowTheChargeAbout() throws {
         let by = t0.addingTimeInterval(8 * hour)
         var m = ChargeMemory()
-        let first = ChargePolicy.decide(settings(), inputs(percent: 54, by: by), &m)
+        let first = ChargePolicy.decide(settings(), inputs(percent: 64, by: by), &m)
         // A reading a point up, then a point down: the limit stays where it was put, and so does the moment. Held at
-        // 54, a battery that reads 53 is charged back to 54 by macOS, not held at 53.
-        let up = ChargePolicy.decide(settings(), inputs(percent: 55, at: t0.addingTimeInterval(30), by: by), &m)
-        XCTAssertEqual(up.osLimit, 54)
+        // 64, a battery that reads 63 is charged back to 64 by macOS, not held at 63.
+        let up = ChargePolicy.decide(settings(), inputs(percent: 65, at: t0.addingTimeInterval(30), by: by), &m)
+        XCTAssertEqual(up.osLimit, 64)
         XCTAssertEqual(up.readyBy?.raiseAt, first.readyBy?.raiseAt)
-        let down = ChargePolicy.decide(settings(), inputs(percent: 53, at: t0.addingTimeInterval(60), by: by), &m)
-        XCTAssertEqual(down.osLimit, 54, "held at 54, so macOS charges it back up")
+        let down = ChargePolicy.decide(settings(), inputs(percent: 63, at: t0.addingTimeInterval(60), by: by), &m)
+        XCTAssertEqual(down.osLimit, 64, "held at 64, so macOS charges it back up")
         XCTAssertEqual(down.readyBy?.raiseAt, first.readyBy?.raiseAt)
     }
 
-    /// The level is remembered, and the limit can be lowered under it: with 60 remembered and the limit moved to 58, the
-    /// battery was held at 60 and charged past the limit. The hold never sits above the limit that is in force.
+    /// The level is remembered, and the limit can be lowered under it: with 70 remembered and the limit moved to 58, the
+    /// battery was held at 70 and charged past the limit. The hold never sits above the limit that is in force.
     func testARememberedLevelAboveALoweredLimitIsHeldAtTheLimit() {
         let by = t0.addingTimeInterval(8 * hour)
         var m = ChargeMemory()
-        XCTAssertEqual(ChargePolicy.decide(settings(), inputs(percent: 60, by: by), &m).osLimit, 60)
-        XCTAssertEqual(m.readyBy?.level, 60)
+        XCTAssertEqual(ChargePolicy.decide(settings(), inputs(percent: 70, by: by), &m).osLimit, 70)
+        XCTAssertEqual(m.readyBy?.level, 70)
         // The person lowers the limit to 58 with the battery at 55, below it.
         let lowered = ChargePolicy.decide(settings(limit: 58), inputs(percent: 55, at: t0.addingTimeInterval(60), by: by), &m)
         XCTAssertEqual(lowered.reason, .readyBy)
@@ -524,9 +575,10 @@ final class ReadyByPolicyTests: XCTestCase {
         XCTAssertEqual(m.readyBy?.level, 58, "the memory still holds the old level")
         XCTAssertEqual(lowered.readyBy?.raiseTo, 58)
         XCTAssertEqual(lowered.readyBy?.raiseAt, by.addingTimeInterval(-lead(level: 58, limit: 58)))
-        // Raised again, the remembered level is not found again: it follows the limit down and stays there.
+        // Raised again, the remembered 70 is not found again: it followed the limit down, and the level for a limit of
+        // 80 is 60.
         let raised = ChargePolicy.decide(settings(limit: 80), inputs(percent: 55, at: t0.addingTimeInterval(120), by: by), &m)
-        XCTAssertEqual(raised.osLimit, 58)
+        XCTAssertEqual(raised.osLimit, 60)
     }
 
     /// A hold is a hold only while Ready By is what decides: if something else decided in between, the next hold
@@ -534,13 +586,13 @@ final class ReadyByPolicyTests: XCTestCase {
     func testAnotherRuleDecidingEndsTheHoldAndTheNextOneStartsFromTheChargeThen() {
         let by = t0.addingTimeInterval(8 * hour)
         var m = ChargeMemory()
-        XCTAssertEqual(ChargePolicy.decide(settings(), inputs(percent: 54, by: by), &m).osLimit, 54)
-        let full = ChargePolicy.decide(settings(), inputs(percent: 60, at: t0.addingTimeInterval(60), by: by,
+        XCTAssertEqual(ChargePolicy.decide(settings(), inputs(percent: 64, by: by), &m).osLimit, 64)
+        let full = ChargePolicy.decide(settings(), inputs(percent: 70, at: t0.addingTimeInterval(60), by: by,
                                                           fullCharge: true), &m)
         XCTAssertEqual(full.reason, .fullCharge)
         XCTAssertNil(m.readyBy, "a hold the person overrode is over")
-        let after = ChargePolicy.decide(settings(), inputs(percent: 60, at: t0.addingTimeInterval(120), by: by), &m)
-        XCTAssertEqual(after.osLimit, 60)
+        let after = ChargePolicy.decide(settings(), inputs(percent: 70, at: t0.addingTimeInterval(120), by: by), &m)
+        XCTAssertEqual(after.osLimit, 70)
     }
 
     // ── Overrides, and the order ────────────────────────────────────────────
@@ -577,7 +629,7 @@ final class ReadyByPolicyTests: XCTestCase {
         // Inside the window, before the start: the hold is Ready By's own.
         let hold = ChargePolicy.decide(s, inputs(by: t0.addingTimeInterval(8 * hour), sleeping: true), &m)
         XCTAssertEqual(hold.reason, .readyBy)
-        XCTAssertEqual(hold.osLimit, 54)
+        XCTAssertEqual(hold.osLimit, 60)
         // After the start, the battery has to charge while the Mac sleeps.
         m = ChargeMemory()
         let charge = ChargePolicy.decide(s, inputs(by: t0.addingTimeInterval(20 * minute), sleeping: true), &m)
@@ -644,7 +696,7 @@ final class ReadyByPolicyTests: XCTestCase {
         let by = t0.addingTimeInterval(8 * hour)
         let d = ChargePolicy.decide(settings(limit: 100), inputs(percent: 60, by: by), &m)
         XCTAssertEqual(d.reason, .readyBy)
-        XCTAssertEqual(d.osLimit, 60)
+        XCTAssertEqual(d.osLimit, 80)
         XCTAssertEqual(d.readyBy?.raiseTo, 100)
         // At 100 there is nothing to hold below.
         m = ChargeMemory()

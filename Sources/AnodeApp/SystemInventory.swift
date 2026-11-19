@@ -26,7 +26,6 @@ enum MachineInfo {
         let physical: Int
         let logical: Int
         let l1dCacheBytes: Int?
-        let l1iCacheBytes: Int?
         let l2CacheBytes: Int?
     }
 
@@ -115,7 +114,6 @@ enum MachineInfo {
                 physical: physical,
                 logical: integer("\(prefix).logicalcpu") ?? physical,
                 l1dCacheBytes: integer("\(prefix).l1dcachesize"),
-                l1iCacheBytes: integer("\(prefix).l1icachesize"),
                 l2CacheBytes: integer("\(prefix).l2cachesize"))
         }
     }
@@ -360,7 +358,6 @@ enum NetworkInventory {
         /// means the driver publishes none, and becomes nil rather than "0 bps".
         let linkSpeedBitsPerSec: UInt64?
         let mtu: Int?
-        let isRunning: Bool
     }
 
     struct Snapshot {
@@ -476,7 +473,7 @@ enum NetworkInventory {
 
     private static func read(now: Date = Date()) -> Snapshot {
         var addresses: [String: (v4: [String], v6: [String])] = [:]
-        var links: [String: (speed: UInt64, mtu: Int, running: Bool)] = [:]
+        var links: [String: (speed: UInt64, mtu: Int)] = [:]
         var order: [String] = []
 
         var list: UnsafeMutablePointer<ifaddrs>?
@@ -492,7 +489,6 @@ enum NetworkInventory {
                 guard !name.hasPrefix("lo") else { continue }
                 if addresses[name] == nil { order.append(name); addresses[name] = ([], []) }
                 guard let sa = entry.pointee.ifa_addr else { continue }
-                let running = entry.pointee.ifa_flags & UInt32(IFF_RUNNING) != 0
 
                 switch Int32(sa.pointee.sa_family) {
                 case AF_INET, AF_INET6:
@@ -512,7 +508,7 @@ enum NetworkInventory {
                 case AF_LINK:
                     guard let raw = entry.pointee.ifa_data else { continue }
                     let data = raw.assumingMemoryBound(to: if_data.self).pointee
-                    links[name] = (UInt64(data.ifi_baudrate), Int(data.ifi_mtu), running)
+                    links[name] = (UInt64(data.ifi_baudrate), Int(data.ifi_mtu))
                 default:
                     break
                 }
@@ -534,8 +530,7 @@ enum NetworkInventory {
                 macAddress: sc?.macAddress,
                 // Zero is "the driver publishes no rate", not "a zero-speed link".
                 linkSpeedBitsPerSec: (link?.speed).flatMap { $0 > 0 ? $0 : nil },
-                mtu: link?.mtu,
-                isRunning: link?.running ?? false))
+                mtu: link?.mtu))
         }
 
         var primary: String?

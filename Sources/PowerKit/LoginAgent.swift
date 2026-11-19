@@ -83,10 +83,7 @@ public enum LoginAgent {
     /// in the plist ourselves cannot be ambiguous.
     public static let loginArgument = "--opened-at-login"
 
-    public static var plistURL: URL {
-        FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/LaunchAgents/\(label).plist")
-    }
+    public static var plistURL: URL { plistURL(for: label) }
 
     /// Is our agent installed AND pointing at the executable now running?
     ///

@@ -43,7 +43,7 @@ import PowerKit
 /// is not negotiable — `.accessory` removes the application menu along with the
 /// Dock tile, so an accessory app with no widgets and no window has no ⌘0, no
 /// Dock icon, no menu and no Quit, and the only way to stop it is Activity
-/// Monitor. That is the state these two functions exist to make unreachable.
+/// Monitor. That is the state these functions exist to make unreachable.
 enum AppPresence {
 
     /// Was this process started by the login agent rather than by a person?
@@ -90,15 +90,6 @@ enum AppPresence {
                             openedAtLogin: openedAtLogin) ? .regular : .accessory
     }
 
-    /// Activation policy once the window is closed or never opened.
-    ///
-    /// `.accessory` while widgets are on: an app whose only surface is the menu
-    /// bar has no business holding a Dock tile, which is the whole point of
-    /// `MainWindowController.hide()`. `.regular` while they are off, because the
-    /// Dock tile is then the ONLY affordance left — clicking it reopens the
-    /// window through `applicationShouldHandleReopen`. This is not the "fix" that
-    /// `AppMenu.showMainWindow` warns against: that warning is about reinstating
-    /// the tile while a widget already exists to click.
     /// Whether anyone can actually SEE the window, which is not the same as the
     /// window being open.
     ///
@@ -118,6 +109,15 @@ enum AppPresence {
         isOpen && isOnScreen
     }
 
+    /// Activation policy once the window is closed or never opened.
+    ///
+    /// `.accessory` while widgets are on: an app whose only surface is the menu
+    /// bar has no business holding a Dock tile, which is the whole point of
+    /// `MainWindowController.hide()`. `.regular` while they are off, because the
+    /// Dock tile is then the ONLY affordance left — clicking it reopens the
+    /// window through `applicationShouldHandleReopen`. This is not the "fix" that
+    /// `AppMenu.showMainWindow` warns against: that warning is about reinstating
+    /// the tile while a widget already exists to click.
     static func policyWithWindowHidden(widgetsEnabled: Bool) -> NSApplication.ActivationPolicy {
         widgetsEnabled ? .accessory : .regular
     }

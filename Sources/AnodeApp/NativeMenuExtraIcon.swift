@@ -109,7 +109,7 @@ final class NativeMenuExtraIcon: NativeIconHosting {
     func start() {
         guard tap == nil else { return }
         guard AXIsProcessTrusted() else { FeatureLog.append(logName, "macOS icon: no Accessibility, the tap cannot start"); return }
-        if let frame = currentFrame() { _ = underPointerIsTheIcon(CGPoint(x: frame.midX, y: frame.midY)) }
+        if let frame = currentFrame() { _ = iconUnderPointer(CGPoint(x: frame.midX, y: frame.midY)) }
         let mask = (1 << CGEventType.leftMouseDown.rawValue) | (1 << CGEventType.leftMouseUp.rawValue)
         // The session tap, an active one: only Accessibility is needed, which Anode already asks for.
         guard let t = CGEvent.tapCreate(tap: .cgSessionEventTap, place: .headInsertEventTap, options: .defaultTap,
@@ -229,8 +229,6 @@ final class NativeMenuExtraIcon: NativeIconHosting {
         if let v = Self.attribute(icon, "AXFrame"), CFGetTypeID(v) == AXValueGetTypeID() { AXValueGetValue(v as! AXValue, .cgRect, &r) }   // type checked
         return r.isEmpty ? nil : r
     }
-
-    private func underPointerIsTheIcon(_ point: CGPoint) -> Bool { iconUnderPointer(point) != nil }
 }
 
 private func nativeIconTapCallback(proxy: CGEventTapProxy, type: CGEventType, event: CGEvent,

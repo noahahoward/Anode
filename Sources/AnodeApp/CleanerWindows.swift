@@ -28,7 +28,7 @@ final class CleanerWindows: CleanerWindowPresenting {
     static func frames(for screens: [NSRect]) -> [NSRect] { screens }
 
     /// Where the hint's lower-left corner goes, in the same coordinates as `frame`.
-    static func hintOrigin(in frame: NSRect, hintSize: NSSize) -> NSPoint {
+    static func hintOrigin(in frame: NSRect) -> NSPoint {
         NSPoint(x: frame.minX + margin, y: frame.minY + margin)
     }
 
@@ -51,7 +51,7 @@ final class CleanerWindows: CleanerWindowPresenting {
         label.font = .systemFont(ofSize: 15, weight: .medium)
         label.textColor = NSColor.white.withAlphaComponent(0.55)
         label.sizeToFit()
-        let origin = hintOrigin(in: frame, hintSize: label.frame.size)
+        let origin = hintOrigin(in: frame)
         label.setFrameOrigin(NSPoint(x: origin.x - frame.minX, y: origin.y - frame.minY))
         content.addSubview(label)
         w.contentView = content

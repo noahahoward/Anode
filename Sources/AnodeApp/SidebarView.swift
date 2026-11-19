@@ -290,11 +290,6 @@ final class SidebarView: NSView {
         }
     }
 
-    /// Turn the fan glyph at the speed the fans are actually turning, or stop it.
-    ///
-    /// Called from the sampling tick, so it follows the machine rather than a
-    /// clock. Zero rpm stops it: a parked fan is a reading worth being able to see
-    /// at a glance, and a glyph that spins regardless would be decoration.
     /// How long one turn of the fan glyph takes, for a fan at `rpm`.
     ///
     /// PROPORTIONAL, and that is the property rather than the constant: the glyph
@@ -338,6 +333,11 @@ final class SidebarView: NSView {
         return slow - (slow - fast) * f
     }
 
+    /// Turn the fan glyph at the speed the fans are actually turning, or stop it.
+    ///
+    /// Called from the sampling tick, so it follows the machine rather than a
+    /// clock. Zero rpm stops it: a parked fan is a reading worth being able to see
+    /// at a glance, and a glyph that spins regardless would be decoration.
     func setFanSpin(rpm: Double, limits: FanPolicy.Limits? = nil) {
         rows[.fans]?.setSpinning(rpm > 0, rpm: rpm, limits: limits)
     }
@@ -403,18 +403,6 @@ final class SidebarView: NSView {
             }
         }
 
-        /// Turn the fan glyph while the machine's fans are turning.
-        ///
-        /// CORE ANIMATION, not the app's own driver. This is the one motion in the
-        /// app that is not a response to the user, so it is the one that must not
-        /// cost the app anything to keep going: a `CABasicAnimation` runs on the
-        /// window server, which turns the layer without waking this process at
-        /// all. The alternative — ticking a redraw at 60 Hz for as long as the
-        /// window is open — is exactly the heartbeat `Motion` exists to avoid.
-        ///
-        /// It stops when the fans stop, so a machine sitting with its fans parked
-        /// is still and the icon means something: motion here is a reading, not
-        /// decoration.
         /// Something is drawing this row's glyph: either the image view still
         /// holds it, or the blade layer has taken it and is visible.
         var hasVisibleGlyph: Bool {
@@ -502,6 +490,18 @@ final class SidebarView: NSView {
         /// blades still have something to draw once the view has let go.
         private var glyphImage: NSImage?
 
+        /// Turn the fan glyph while the machine's fans are turning.
+        ///
+        /// CORE ANIMATION, not the app's own driver. This is the one motion in the
+        /// app that is not a response to the user, so it is the one that must not
+        /// cost the app anything to keep going: a `CABasicAnimation` runs on the
+        /// window server, which turns the layer without waking this process at
+        /// all. The alternative — ticking a redraw at 60 Hz for as long as the
+        /// window is open — is exactly the heartbeat `Motion` exists to avoid.
+        ///
+        /// It stops when the fans stop, so a machine sitting with its fans parked
+        /// is still and the icon means something: motion here is a reading, not
+        /// decoration.
         func setSpinning(_ spinning: Bool, rpm: Double = 0,
                          limits: FanPolicy.Limits? = nil) {
             guard lens == .fans else { return }

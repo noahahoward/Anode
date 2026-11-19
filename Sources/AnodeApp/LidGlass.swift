@@ -459,6 +459,6 @@ final class LidGlass {
 
     static func realCapture() async -> CGImage? {
         guard #available(macOS 14.0, *), let id = LidGlassCapture.builtInDisplayID() else { return nil }
-        return await LidGlassCapture.capture(displayID: id, excludingWindowIDs: [])?.image
+        return await LidGlassCapture.capture(displayID: id)?.image
     }
 }

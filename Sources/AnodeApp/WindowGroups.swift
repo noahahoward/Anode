@@ -199,8 +199,6 @@ final class WindowGroupController {
 
     deinit { stop() }
 
-    var isRunning: Bool { keysOn }
-
     func apply() {
         if settings.windowGroupsEnabled { start() } else { stop() }
     }

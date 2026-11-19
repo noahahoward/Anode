@@ -585,7 +585,10 @@ must_stop "update.sh given a checkout that is not the test's"        try_update_
 # ── The source the installer will clone: this working tree, as a local git repo ──
 BASE="$T/base"
 mkdir -p "$BASE"
-( cd "$ROOT" && git ls-files -co --exclude-standard -z | rsync -a --from0 --files-from=- ./ "$BASE/" )
+# Only what is in the working tree: a file deleted and not yet committed is still in git's list, and rsync stopped on it.
+( cd "$ROOT" && git ls-files -co --exclude-standard -z \
+    | while IFS= read -r -d '' f; do { [ -e "$f" ] || [ -L "$f" ]; } && printf '%s\0' "$f"; done \
+    | rsync -a --from0 --files-from=- ./ "$BASE/" )
 # No background tidying in these throwaway repos. A commit starts git's maintenance detached, and it packs the
 # loose objects away while the next step is still copying them: the installer's clone of this repo then died with
 # "failed to copy file … No such file or directory" about one run in four (git 2.54), failing scenario 1.
@@ -1011,7 +1014,6 @@ says_not_to_run() { ! says_to_run "$1"; }
 sudo_calls() { cat "$T/sudo-asked" 2>/dev/null; }
 sudo_called_exactly() { [ "$(sudo_calls)" = "$(printf '%s\n' "$@")" ]; }   # sudo_called_exactly CALL…: these calls, in this order, and no others
 sudo_never_called() { [ ! -e "$T/sudo-asked" ]; }
-sudo_call_line() { grep -nxF -- "$1" "$T/sudo-asked" 2>/dev/null | head -1 | cut -d: -f1; }
 root_reset; root_helper
 H="$(new_home 17)"; mkdir -p "$H/Applications/Anode.app"
 root_run "$H" ANODE_SUDO_WITHOUT_TERMINAL=0

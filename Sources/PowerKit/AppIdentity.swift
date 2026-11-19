@@ -1,4 +1,3 @@
-import AppKit
 import Foundation
 
 /// Resolves a process to the user-visible application that owns it.

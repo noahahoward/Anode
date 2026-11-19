@@ -531,7 +531,6 @@ final class WebWallpaperSurface: NSObject, WallpaperSurface, WKNavigationDelegat
 private final class PageSnapshotJob: NSObject, WKNavigationDelegate {
     struct Failed: Error {}
 
-    private let size: CGSize
     private var continuation: CheckedContinuation<CGImage, Error>?
     private let webView: WKWebView
     private let window: NSWindow
@@ -540,7 +539,6 @@ private final class PageSnapshotJob: NSObject, WKNavigationDelegate {
 
     init(url: URL, size: CGSize, continuation: CheckedContinuation<CGImage, Error>) {
         self.url = url
-        self.size = size
         self.continuation = continuation
         let frame = NSRect(origin: .zero, size: size)
         // Never ordered onto a screen; a window only gives the page somewhere to lay out.

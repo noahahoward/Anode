@@ -51,12 +51,11 @@ enum SnapZones {
     /// top few points. nil (or a screen with no menu bar, which reads 0) uses the ordinary edge depth.
     static func zone(at point: CGPoint, screens frames: [CGRect], previous: SnapZone?,
                      topDwelt: Bool, config: Config = Config(), topDepths: [CGFloat]? = nil) -> SnapZone? {
-        // The screen the pointer is on; a point on the far edge counts (CGRect.contains leaves it out).
-        guard let at = frames.firstIndex(where: { $0.insetBy(dx: -0.5, dy: -0.5).contains(point) }) else { return nil }
+        guard let at = screenIndex(of: point, in: frames) else { return nil }
         let f = frames[at]
         let grow = previous == nil ? 0 : config.hysteresis
         let t = config.edge + grow, c = config.corner + grow
-        let topT = max(config.edge, topDepths.flatMap { $0.indices.contains(at) ? $0[at] : nil } ?? 0) + grow
+        let topT = topDepth(onScreen: at, config: config, topDepths: topDepths) + grow
 
         // An edge another display touches (over the pointer's span) is a seam, not an edge.
         func shared(_ side: Int) -> Bool {
@@ -96,9 +95,19 @@ enum SnapZones {
     /// Is the pointer in the top zone, whatever the dwell? The controller starts its dwell timer on this.
     static func inTopEdge(_ point: CGPoint, screens frames: [CGRect], config: Config = Config(),
                           topDepths: [CGFloat]? = nil) -> Bool {
-        guard let at = frames.firstIndex(where: { $0.insetBy(dx: -0.5, dy: -0.5).contains(point) }) else { return false }
-        let depth = max(config.edge, topDepths.flatMap { $0.indices.contains(at) ? $0[at] : nil } ?? 0)
-        return point.y - frames[at].minY < depth
+        guard let at = screenIndex(of: point, in: frames) else { return false }
+        return point.y - frames[at].minY < topDepth(onScreen: at, config: config, topDepths: topDepths)
+    }
+
+    /// The screen the pointer is on; a point on the far edge counts (CGRect.contains leaves it out).
+    static func screenIndex(of point: CGPoint, in frames: [CGRect]) -> Int? {
+        frames.firstIndex(where: { $0.insetBy(dx: -0.5, dy: -0.5).contains(point) })
+    }
+
+    /// How deep the top zone is on the screen at `index`: its menu bar's height when `topDepths` gives one, and never less
+    /// than the ordinary edge depth.
+    private static func topDepth(onScreen index: Int, config: Config, topDepths: [CGFloat]?) -> CGFloat {
+        max(config.edge, topDepths.flatMap { $0.indices.contains(index) ? $0[index] : nil } ?? 0)
     }
 
     /// The menu bar's height on each screen, which is how deep its top zone is.
@@ -147,16 +156,6 @@ final class SnapFootprint {
     func hide() {
         guard let window, window.isVisible else { return }
         window.orderOut(nil)
-    }
-
-    var isShowing: Bool { window?.isVisible ?? false }
-
-    /// The outline's frame in the window server's coordinates, for tests.
-    var frameInWindowServer: CGRect? {
-        guard let window, window.isVisible else { return nil }
-        let h = NSScreen.screens.first?.frame.height ?? 0
-        let f = window.frame
-        return CGRect(x: f.minX, y: h - f.maxY, width: f.width, height: f.height)
     }
 
     private func makePanel() -> NSPanel {
@@ -218,8 +217,6 @@ final class WindowDragSnapper {
     /// What a window was before a drag snapped it, and where it was put, so that dragging it away
     /// gives it its old size back.
     private var snappedWindows: [CGWindowID: (original: CGSize, placed: CGRect)] = [:]
-
-    var isRunning: Bool { tap != nil }
 
     init(settings: Settings = .shared, snapper: WindowSnapper?, prefs: WindowPrefs = .shared) {
         self.settings = settings
@@ -436,7 +433,7 @@ final class WindowDragSnapper {
     /// Where `zone` puts the dragged window, on the screen the pointer is on.
     private func target(for zone: SnapZone, pointer: CGPoint) -> CGRect? {
         let areas = WindowSnapper.usableAreas(), frames = Self.screenFrames()
-        guard let index = frames.firstIndex(where: { $0.insetBy(dx: -0.5, dy: -0.5).contains(pointer) }),
+        guard let index = SnapZones.screenIndex(of: pointer, in: frames),
               areas.indices.contains(index),
               let current = lastFrame ?? startFrame else { return nil }
         guard let action = prefs.zoneMap.action(for: zone) else { return nil }

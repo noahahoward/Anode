@@ -35,8 +35,8 @@ public struct NativeChargeState: Equatable, Codable {
 ///       back) but, while the battery is charging, is enforced only when the battery level next changes (31 s in one
 ///       run); when the battery is not charging it is enforced within a second; when the charger is cut it is enforced
 ///       on reconnect.
-/// So the switch is turned on by setting a limit, and this protocol has no way to enable it: enabling would set 80.
-/// It can be turned off, which gives "off, 100".
+/// So the switch is turned on by setting a limit; `turnLimitOn` enables it on its own only where setting a limit did not, and
+/// that would set 80 (a). It can be turned off, which gives "off, 100".
 public protocol ChargeLimitClient: AnyObject {
     /// nil when the OS refuses a read; callers treat that as "charge control unavailable".
     func read() -> NativeChargeState?
@@ -81,7 +81,8 @@ public enum NativeChargeLimit {
 ///
 /// This is a PRIVATE API, found and measured on a Mac17,9 with macOS 27.0 (probes in docs/superpowers/spikes/
 /// 2026-11-11-charge-control/; what the calls do to the limit and its switch is in `ChargeLimitClient`). `enableMCL`
-/// is not bound at all: it sets the limit to 80, and nothing here needs it. An unprivileged, ad-hoc signed probe read the limit and set 85
+/// is bound only as an optional (`enableLimit`, for `turnLimitOn`): it sets the limit to 80, and only `setLimitInForce` calls
+/// it. An unprivileged, ad-hoc signed probe read the limit and set 85
 /// through it, and the limit stayed in force after the probe exited: macOS keeps it in its own
 /// preferences, so it outlives the process that set it. That is why Charge Control puts macOS's own settings back
 /// when Anode quits, and why the launch after a crash lifts the limit before anything else.

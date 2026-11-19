@@ -74,14 +74,12 @@ final class UltraLowPowerRuntime {
     let controller: UltraLowPowerController
     private let settings: Settings
     private let processes: ProcessListing
-    private let watchdog: UltraWatchdogging
     private let widgets: UltraReadingHosting
     private let icon: UltraIconPresenting
     private let presentMenu: (NSMenu, NSStatusBarButton) -> Void
     private let openBetaFeatures: () -> Void
     private let registerShortcut: (@escaping () -> Void) -> Void
     private let unregisterShortcut: () -> Void
-    private let work: UltraWorkRunning
     private let startTicker: UltraTicker
     private let workspace: NotificationCenter
     private let center: NotificationCenter
@@ -91,7 +89,6 @@ final class UltraLowPowerRuntime {
     private let ownPIDs: () -> Set<pid_t>
     private let lastOtherFront: () -> pid_t?
     private let user: uid_t
-    private let log: (String) -> Void
 
     /// The last app that came forward and is not Anode, as far as the box has been ticked: what the plan keeps when the owner
     /// asks. A remembered one wins; with none, the app behind Anode's windows is read at the moment it is asked.
@@ -130,14 +127,12 @@ final class UltraLowPowerRuntime {
          alert: @escaping () -> Void) {
         self.settings = settings
         self.processes = processes
-        self.watchdog = watchdog
         self.widgets = widgets
         self.icon = icon
         self.presentMenu = presentMenu
         self.openBetaFeatures = openBetaFeatures
         self.registerShortcut = registerShortcut
         self.unregisterShortcut = unregisterShortcut
-        self.work = work
         self.startTicker = startTicker
         self.workspace = workspace
         self.center = center
@@ -145,7 +140,6 @@ final class UltraLowPowerRuntime {
         self.appBundleID = appBundleID
         self.frontmostPID = frontmostPID
         self.user = user
-        self.log = log
         // Anode's own: this process and the watchdog, which has a pid only while a session runs, so it is asked each time.
         let ownPIDs: () -> Set<pid_t> = { [watchdog] in
             var pids: Set<pid_t> = [ownPID]

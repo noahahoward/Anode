@@ -212,9 +212,7 @@ public enum FanGauge {
     /// and printing the knob's position as one would claim this app had asked for
     /// a speed it never asked for.
     public static func readout(current: Double, asked: Double?) -> String {
-        let now = current.isFinite ? String(format: "%.0f", current) : "—"
-        guard let asked, asked.isFinite else { return "\(now) rpm" }
-        return String(format: "%@ → %.0f rpm", now, asked)
+        syncedReadout(currents: [current], asked: asked)
     }
 }
 

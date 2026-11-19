@@ -178,10 +178,38 @@ final class SoundMenuPanel: NSPanel, SoundMenuPresenting {
         } else {
             place()
         }
+        // Drawing the menu again takes the hole away; macOS's slider is still under it (the controller puts it away if the slider moved).
+        if let hole = holeOnScreen { setAdaptiveSliderHole(hole) }
     }
 
     /// The menu drew something it had been holding back (a drag ended): fit the window to it.
     func contentChanged() { place(); invalidateShadow() }
+
+    func adaptiveSliderPlacement() -> AdaptiveSliderPlacement? {
+        guard isVisible, let row = content.adaptiveSlider, row.superview != nil, let screen = NSScreen.screens.first else { return nil }
+        func global(_ r: CGRect) -> CGRect {
+            let s = convertToScreen(row.convert(r, to: nil))
+            return CGRect(x: s.minX, y: screen.frame.height - s.maxY, width: s.width, height: s.height)
+        }
+        let icon = SoundMenuMetrics.adaptiveSliderIconSize
+        let left = CGRect(x: SoundMenuMetrics.adaptiveSliderLeftIconX, y: (row.bounds.height - icon) / 2, width: icon, height: icon)
+        return AdaptiveSliderPlacement(leftIcon: global(left), hole: global(row.trackFrame.insetBy(dx: 1, dy: 1)),   // a point inside the capsule: its rim is Anode's own capsule, and no edge of macOS's panel shows round it
+                                       menu: CGRect(x: frame.minX, y: screen.frame.height - frame.maxY, width: frame.width, height: frame.height),
+                                       row: global(row.bounds))
+    }
+
+    /// The window's shadow is left as it was (worked out without the hole): worked out again it is drawn round the hole's edge too, a
+    /// black line round macOS's slider (measured: one near-black pixel all round the capsule).
+    /// The hole now cut (top-left global points), cut again after the menu is drawn again.
+    private var holeOnScreen: CGRect?
+
+    func setAdaptiveSliderHole(_ hole: CGRect?) {
+        holeOnScreen = hole
+        content.adaptiveSlider?.macOSSliderUnder = hole != nil
+        guard let hole, let screen = NSScreen.screens.first else { content.setHole(nil); return }
+        let onScreen = CGRect(x: hole.minX, y: screen.frame.height - hole.maxY, width: hole.width, height: hole.height)
+        content.setHole(content.convert(convertFromScreen(onScreen), from: nil))
+    }
 
     /// The bottom edge, and the rows under what changed, glide to their new places as macOS's do (see `SoundMenuMotion`).
     private func startGlide() {
@@ -363,6 +391,8 @@ final class SoundMenuContentView: NSView {
     private(set) var appRows: [String: AppVolumeRowView] = [:]
     /// The volume slider at the top, kept so a change of volume moves its knob without drawing the menu again.
     private(set) var mainSlider: MenuSlider?
+    /// The Adaptive slider now drawn, if any: where macOS's own is lined up under while the pointer is on it.
+    private(set) var adaptiveSlider: AdaptiveSliderRow?
     /// A change that came while a slider was being dragged, drawn when the drag ends.
     private var deferred: SoundMenuModel?
     private var dragObserver: NSObjectProtocol?
@@ -417,6 +447,8 @@ final class SoundMenuContentView: NSView {
         self.model = model
         appRows = [:]
         mainSlider = nil
+        adaptiveSlider = nil
+        setHole(nil)
         let oldHeight = size.height
         let before = shownRows
         let beforeViews = shownViews
@@ -462,6 +494,26 @@ final class SoundMenuContentView: NSView {
         for l in leaving { for (v, f) in zip(l.views, l.frames) { v.frame = f; clip.addSubview(v) } }
         step(0)
         return true
+    }
+
+    /// A hole over `rect` (this view's coordinates): nothing of the menu is drawn there, glass included, so the pointer goes through
+    /// to the window under it (macOS's own Adaptive slider, lined up there). Nil closes it.
+    func setHole(_ rect: CGRect?) {
+        guard let rect else { if layer?.mask != nil { layer?.mask = nil }; return }
+        wantsLayer = true
+        let mask = CAShapeLayer()
+        mask.frame = bounds
+        let path = CGMutablePath()
+        path.addRect(bounds)
+        // The layer's own coordinates run up, as an unflipped view's do: the hole is turned over to match.
+        let flippedLayer = layer?.isGeometryFlipped ?? false
+        // The capsule's own shape, rounded ends and all: a square hole showed a box of macOS's panel round its slider.
+        let r = flippedLayer ? rect : CGRect(x: rect.minX, y: bounds.height - rect.maxY, width: rect.width, height: rect.height)
+        let radius = min(r.width, r.height) / 2
+        path.addPath(CGPath(roundedRect: r, cornerWidth: radius, cornerHeight: radius, transform: nil))
+        mask.path = path
+        mask.fillRule = .evenOdd
+        layer?.mask = mask
     }
 
     /// What identifies a row from one drawing to the next.
@@ -590,7 +642,9 @@ final class SoundMenuContentView: NSView {
             addSubview(label(model.notice ?? "", f, size: 12, weight: .regular, color: .systemOrange, wraps: true))
         case .adaptiveSlider:
             let slider = AdaptiveSliderRow(frame: f, level: model.adaptiveLevel ?? 0.5)
-            slider.onPick = { [weak self] in self?.controller?.openAdaptiveInMacOS() }
+            slider.onPick = { [weak self] in self?.controller?.adaptiveSliderPressed() }
+            slider.onHover = { [weak self] in self?.controller?.adaptiveSliderHovered() }
+            adaptiveSlider = slider
             addSubview(slider)
         case .footer(let i):
             let titles = model.footerTitles
@@ -783,6 +837,17 @@ final class AdaptiveSliderRow: HoverRow {
 
     private typealias M = SoundMenuMetrics
     var level: Double { didSet { needsDisplay = true; knob.frame = knobFrame } }
+    /// The pointer came onto the slider: macOS's own is put under it.
+    var onHover: (() -> Void)?
+    /// While macOS's own slider is under the hole cut over this one, Anode's knob is not drawn: the hole is a point inside the capsule
+    /// and the knob is its full height, so a strip of it would show above and below the hole where it sat.
+    var macOSSliderUnder = false { didSet { knob.isHidden = macOSSliderUnder } }
+    var knobIsShown: Bool { !knob.isHidden }
+
+    override func mouseEntered(with event: NSEvent) {
+        super.mouseEntered(with: event)
+        onHover?()
+    }
     private let knob = NSImageView()
 
     init(frame: NSRect, level: Double) {

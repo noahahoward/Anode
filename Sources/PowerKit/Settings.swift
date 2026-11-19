@@ -985,8 +985,9 @@ public final class Settings {
                         Default.chargeDrainAutomatically) }
     }
 
-    /// Whether Ready By is on: while the Mac is on the charger and below the limit, the battery is held where it is
-    /// until it has to charge to be at the limit by `chargeReadyByMinutes`. Needs the Anode helper.
+    /// Whether Ready By is on: while the Mac is on the charger and below the limit, the battery is charged to 20 under
+    /// the limit and held there (`ChargePolicy.readyByHoldLevel`) until it has to charge to be at the limit by
+    /// `chargeReadyByMinutes`. Needs the Anode helper.
     public var chargeReadyByEnabled: Bool {
         get { Settings.readBool(defaults, Key.chargeReadyByEnabled, Default.chargeReadyByEnabled) }
         set { writeBool(Key.chargeReadyByEnabled, \.chargeReadyByEnabled, newValue, Default.chargeReadyByEnabled) }
@@ -1008,14 +1009,16 @@ public final class Settings {
     /// Whether Ready By lets the battery come down before it holds: while it waits, a battery above
     /// `chargeReadyByHoldAtMost` is not held where it is but at that level, and the Mac runs from the battery until
     /// it gets there (macOS does that by itself whenever its limit is below the charge). Ready By is there so the
-    /// battery spends less time at a high charge, and a hold at 97% for a night was the opposite.
+    /// battery spends less time at a high charge, and a hold at 97% for a night was the opposite. Switched off, a
+    /// battery above the level Ready By charges to (`ChargePolicy.readyByHoldLevel`) is held where it is.
     public var chargeReadyByLowerEnabled: Bool {
         get { Settings.readBool(defaults, Key.chargeReadyByLowerEnabled, Default.chargeReadyByLowerEnabled) }
         set { writeBool(Key.chargeReadyByLowerEnabled, \.chargeReadyByLowerEnabled, newValue,
                         Default.chargeReadyByLowerEnabled) }
     }
 
-    /// The highest level Ready By holds at while `chargeReadyByLowerEnabled` is on, in percent.
+    /// The highest level Ready By holds at while `chargeReadyByLowerEnabled` is on, in percent. A battery below it is
+    /// charged to it, or to 20 under the limit when that is lower (`ChargePolicy.readyByHoldLevel`).
     public var chargeReadyByHoldAtMost: Int {
         get { Settings.readInt(defaults, Key.chargeReadyByHoldAtMost, Default.chargeReadyByHoldAtMost,
                                Settings.chargeReadyByHoldAtMostRange) }

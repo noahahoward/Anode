@@ -123,7 +123,7 @@ enum ZoneShapes {
     /// The ten zones as rectangles inside `screen` (origin top-left): corners as squares, the left, right
     /// and top edges between them, the bottom edge in three equal parts.
     static func rects(in screen: CGRect, edge: CGFloat = 12, corner: CGFloat = 28) -> [(zone: SnapZone, rect: CGRect)] {
-        let inner = screen.insetBy(dx: 0, dy: 0)
+        let inner = screen
         let spanW = inner.width - 2 * corner, spanH = inner.height - 2 * corner
         let third = spanW / 3
         return [
@@ -291,8 +291,7 @@ final class ShortcutsWindowController: NSWindowController, NSTableViewDataSource
             self?.prefs.cycles = true
             self?.prefs.snapModifier = .none
         }
-        resetAll.target = resetHandler; resetAll.action = #selector(ActionTarget.fire)
-        objc_setAssociatedObject(resetAll, &Self.handlerKey, resetHandler, .OBJC_ASSOCIATION_RETAIN)
+        attach(resetHandler, to: resetAll)
 
         let sidebar = NSView()
         for v in [listScroll, resetAll] { v.translatesAutoresizingMaskIntoConstraints = false; sidebar.addSubview(v) }
@@ -328,6 +327,13 @@ final class ShortcutsWindowController: NSWindowController, NSTableViewDataSource
     }
 
     private static var handlerKey = 0
+
+    /// Makes `handler` the control's target. A control does not retain its target, so the control holds it.
+    private func attach(_ handler: ActionTarget, to control: NSControl) {
+        control.target = handler
+        control.action = #selector(ActionTarget.fire)
+        objc_setAssociatedObject(control, &Self.handlerKey, handler, .OBJC_ASSOCIATION_RETAIN)
+    }
 
     func numberOfRows(in tableView: NSTableView) -> Int { items.count }
 
@@ -465,10 +471,8 @@ final class ShortcutsWindowController: NSWindowController, NSTableViewDataSource
         for b in [clear, reset] { b.bezelStyle = .rounded; b.controlSize = .small }
         let clearHandler = ActionTarget { [weak self] in self?.assign(nil, to: command) }
         let resetHandler = ActionTarget { [weak self] in self?.store.reset(command) }
-        clear.target = clearHandler; clear.action = #selector(ActionTarget.fire)
-        reset.target = resetHandler; reset.action = #selector(ActionTarget.fire)
-        objc_setAssociatedObject(clear, &Self.handlerKey, clearHandler, .OBJC_ASSOCIATION_RETAIN)
-        objc_setAssociatedObject(reset, &Self.handlerKey, resetHandler, .OBJC_ASSOCIATION_RETAIN)
+        attach(clearHandler, to: clear)
+        attach(resetHandler, to: reset)
         recorder.onChange = { [weak self] new in self?.assign(new, to: command) }
         let buttons = NSStackView(views: [recorder, clear, reset])
         buttons.spacing = 8
@@ -511,8 +515,7 @@ final class ShortcutsWindowController: NSWindowController, NSTableViewDataSource
             self.prefs.gap = Int(gap.doubleValue.rounded())
             gapValue?.stringValue = "\(self.prefs.gap) pt"
         }
-        gap.target = gapHandler; gap.action = #selector(ActionTarget.fire)
-        objc_setAssociatedObject(gap, &Self.handlerKey, gapHandler, .OBJC_ASSOCIATION_RETAIN)
+        attach(gapHandler, to: gap)
         let gapRow = NSStackView(views: [gap, gapValue])
         gapRow.spacing = 10
         gap.widthAnchor.constraint(greaterThanOrEqualToConstant: 220).isActive = true
@@ -520,8 +523,7 @@ final class ShortcutsWindowController: NSWindowController, NSTableViewDataSource
         let cycle = NSButton(checkboxWithTitle: "Press a half again to step through two thirds, then a third", target: nil, action: nil)
         cycle.state = prefs.cycles ? .on : .off
         let cycleHandler = ActionTarget { [weak self, weak cycle] in self?.prefs.cycles = cycle?.state == .on }
-        cycle.target = cycleHandler; cycle.action = #selector(ActionTarget.fire)
-        objc_setAssociatedObject(cycle, &Self.handlerKey, cycleHandler, .OBJC_ASSOCIATION_RETAIN)
+        attach(cycleHandler, to: cycle)
 
         let modifier = NSPopUpButton(frame: .zero, pullsDown: false)
         for m in SnapModifier.allCases { modifier.addItem(withTitle: m.title) }
@@ -530,8 +532,7 @@ final class ShortcutsWindowController: NSWindowController, NSTableViewDataSource
             guard let self, let i = modifier?.indexOfSelectedItem, SnapModifier.allCases.indices.contains(i) else { return }
             self.prefs.snapModifier = SnapModifier.allCases[i]
         }
-        modifier.target = modifierHandler; modifier.action = #selector(ActionTarget.fire)
-        objc_setAssociatedObject(modifier, &Self.handlerKey, modifierHandler, .OBJC_ASSOCIATION_RETAIN)
+        attach(modifierHandler, to: modifier)
 
         let views: [NSView] = [
             heading("Spacing & snapping"),

@@ -135,6 +135,15 @@ func value(after flag: String) -> String? {
     return arguments[i + 1]
 }
 
+/// The user named by `--uid`, else the one who typed `sudo` (`$SUDO_UID`); nil when neither says.
+func requestedUID() -> uid_t? {
+    if let raw = value(after: "--uid"), let n = UInt32(raw) { return uid_t(n) }
+    if let raw = ProcessInfo.processInfo.environment["SUDO_UID"], let n = UInt32(raw) {
+        return uid_t(n)
+    }
+    return nil
+}
+
 if arguments.contains("--help") || arguments.contains("-h") {
     print(usage)
     exit(0)
@@ -219,14 +228,7 @@ if arguments.contains(FanDaemon.installArgument) {
     /// NOT go through sudo and does NOT set $SUDO_UID. The fallback is for a
     /// person typing `sudo … --install` in a terminal, where it is set and is
     /// exactly who asked.
-    let installFor: uid_t? = {
-        if let raw = value(after: "--uid"), let n = UInt32(raw) { return uid_t(n) }
-        if let raw = ProcessInfo.processInfo.environment["SUDO_UID"], let n = UInt32(raw) {
-            return uid_t(n)
-        }
-        return nil
-    }()
-    guard let installFor else {
+    guard let installFor = requestedUID() else {
         printErr("Cannot tell which user to install for. Run this with `sudo` "
                + "(which sets SUDO_UID), or pass --uid <n>.")
         exit(1)
@@ -370,15 +372,11 @@ if isInstalledDaemon {
 /// Refused rather than guessed. Defaulting to the console user would let a
 /// helper started in one login session serve a different one, and defaulting to
 /// root would serve nobody, silently.
-let ownerUID: uid_t = {
-    if let raw = value(after: "--uid"), let n = UInt32(raw) { return uid_t(n) }
-    if let raw = ProcessInfo.processInfo.environment["SUDO_UID"], let n = UInt32(raw) {
-        return uid_t(n)
-    }
+guard let ownerUID = requestedUID() else {
     printErr("Cannot tell which user to serve. Start this with `sudo` (which sets "
            + "SUDO_UID), or pass --uid <n>.")
     exit(1)
-}()
+}
 
 // ── Run ─────────────────────────────────────────────────────────────────────
 

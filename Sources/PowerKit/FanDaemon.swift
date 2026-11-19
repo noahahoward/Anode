@@ -191,18 +191,15 @@ public enum FanDaemon {
     ]
 
     /// The ones actually on disk right now.
+    ///
+    /// Only ever reported (`orphanNote`), never acted on. Removing one needs root
+    /// and it is exactly the kind of thing that must be done deliberately, with the
+    /// command visible — the same rule the install follows.
     public static var previousInstallsPresent: [String] {
         previousLabels.filter {
             FileManager.default.fileExists(atPath: "/Library/LaunchDaemons/\($0).plist")
         }
     }
-
-    /// Is a daemon from before any rename still installed?
-    ///
-    /// Only ever reported, never acted on. Removing it needs root and it is
-    /// exactly the kind of thing that must be done deliberately, with the command
-    /// visible — the same rule the install follows.
-    public static var previousInstallIsPresent: Bool { !previousInstallsPresent.isEmpty }
 
     /// Is the daemon on disk the same build as the app asking it for things?
     ///
@@ -289,19 +286,12 @@ public enum FanDaemon {
         }.joined(separator: "\n")
     }
 
-    /// The command for what is actually installed, so the user is not asked to
-    /// run lines as root that do nothing.
-    public static var previousUninstallCommand: String {
-        uninstallCommand(for: previousInstallsPresent)
-    }
-
     /// Root-owned, root-writable-only. The point of copying the helper here is
     /// that neither a rebuild nor anything running as the user can change what
     /// runs as root.
     public static let helperPath = "/Library/PrivilegedHelperTools/\(label)"
     public static let helperDirectory = "/Library/PrivilegedHelperTools"
     public static let plistPath = "/Library/LaunchDaemons/\(label).plist"
-    public static let launchDaemonDirectory = "/Library/LaunchDaemons"
 
     /// The signing identifier the installed daemon will answer. From
     /// CFBundleIdentifier, so it is identical in every build of this app — which
@@ -782,11 +772,12 @@ public enum FanDaemonInstall {
         private let fm = FileManager.default
         public init() {}
 
+        private func setMode(_ mode: mode_t, of path: String) -> Bool {
+            (try? fm.setAttributes([.posixPermissions: NSNumber(value: mode)], ofItemAtPath: path)) != nil
+        }
+
         public func makeDirectory(_ path: String, mode: mode_t) -> Bool {
-            if fm.fileExists(atPath: path) {
-                return (try? fm.setAttributes([.posixPermissions: NSNumber(value: mode)],
-                                              ofItemAtPath: path)) != nil
-            }
+            if fm.fileExists(atPath: path) { return setMode(mode, of: path) }
             return (try? fm.createDirectory(atPath: path, withIntermediateDirectories: true,
                                             attributes: [.posixPermissions:
                                                             NSNumber(value: mode)])) != nil
@@ -798,8 +789,7 @@ public enum FanDaemonInstall {
             // its code used to be.
             try? fm.removeItem(atPath: to)
             guard (try? fm.copyItem(atPath: from, toPath: to)) != nil else { return false }
-            return (try? fm.setAttributes([.posixPermissions: NSNumber(value: mode)],
-                                          ofItemAtPath: to)) != nil
+            return setMode(mode, of: to)
         }
 
         public func writeFile(_ data: Data, to path: String, mode: mode_t) -> Bool {

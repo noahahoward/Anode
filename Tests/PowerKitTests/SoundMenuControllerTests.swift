@@ -31,6 +31,15 @@ final class SoundMenuControllerTests: XCTestCase {
         var cancelled = false
         var closedPanelsOfThePerson = 0
         var shownToPerson: [SystemPanelKind] = []
+        var armRequests: [(leftIcon: CGRect, hole: CGRect, done: (Bool) -> Void)] = []
+        var disarms = 0
+        var levelAtDisarm: Double?
+        var sliderPanelOpen = false
+        func armAdaptiveSlider(leftIcon: CGRect, cover: CGRect, hole: CGRect, done: @escaping (Bool) -> Void) {
+            armRequests.append((leftIcon, hole, done))
+        }
+        func disarmAdaptiveSlider() -> Double? { disarms += 1; sliderPanelOpen = false; return levelAtDisarm }
+        var adaptiveSliderPanelOpen: Bool { sliderPanelOpen }
         func cancelAll() { cancelled = true }
         func closePanelOpenedByPerson() { closedPanelsOfThePerson += 1 }
         func showPanelToPerson(_ kind: SystemPanelKind) { shownToPerson.append(kind) }
@@ -75,6 +84,10 @@ final class SoundMenuControllerTests: XCTestCase {
 
     final class FakePresenter: SoundMenuPresenting {
         var isOpen = false
+        var placement: AdaptiveSliderPlacement?
+        var holes: [CGRect?] = []
+        func adaptiveSliderPlacement() -> AdaptiveSliderPlacement? { isOpen ? placement : nil }
+        func setAdaptiveSliderHole(_ hole: CGRect?) { holes.append(hole) }
         var shown: [SoundMenuModel] = []
         var lastAnchor: CGRect?
         var closeCount = 0
@@ -651,5 +664,144 @@ final class SoundMenuControllerTests: XCTestCase {
         r.driver.complete(0, .tree(tree(listening: "Adaptive", adaptiveKnobX: 1435)))
         r.controller.pickChoice(r.model.listening[0])   // Transparency
         XCTAssertNil(r.model.adaptiveLevel, "the slider belongs to Adaptive: it goes with the check, not when macOS answers")
+    }
+
+    // ── macOS's own Adaptive slider, under Anode's ──────────────────────────
+
+    private let place = AdaptiveSliderPlacement(leftIcon: CGRect(x: 1371, y: 413, width: 11, height: 11),
+                                                hole: CGRect(x: 1353, y: 404, width: 250, height: 28),
+                                                menu: CGRect(x: 1263, y: 41, width: 309, height: 700),
+                                                row: CGRect(x: 1310, y: 402, width: 298, height: 30))
+
+    /// Open on Adaptive, the pointer on the slider's row (a seam), no wait before arming.
+    private func adaptiveOpen(_ r: Rig, pointerOnRow: Bool = true) {
+        r.controller.openMenu()
+        r.driver.complete(0, .tree(tree(listening: "Adaptive", adaptiveKnobX: 1435)))
+        r.presenter.placement = place
+        r.controller.hoverDwell = 0
+        r.controller.pointerIn = { _ in pointerOnRow }
+        r.controller.buttonDown = { false }
+    }
+
+    func testThePointerOnTheSliderPutsMacOSsUnderItThere() throws {
+        let r = try rig(); defer { r.cleanup() }
+        adaptiveOpen(r)
+        r.controller.adaptiveSliderHovered()
+        XCTAssertEqual(r.driver.armRequests.count, 1)
+        XCTAssertEqual(r.driver.armRequests[0].leftIcon, place.leftIcon, "lined up on Anode's left end icon")
+        XCTAssertEqual(r.driver.armRequests[0].hole, place.hole)
+        r.controller.adaptiveSliderHovered()
+        XCTAssertEqual(r.driver.armRequests.count, 1, "once")
+        r.driver.sliderPanelOpen = true
+        r.driver.armRequests[0].done(true)
+        XCTAssertEqual(r.presenter.holes.last ?? nil, place.hole, "in place: the hole is cut over it")
+    }
+
+    func testAPointerOnlyCrossingTheRowOpensNothing() throws {
+        let r = try rig(); defer { r.cleanup() }
+        adaptiveOpen(r, pointerOnRow: false)
+        r.controller.adaptiveSliderHovered()
+        XCTAssertTrue(r.driver.armRequests.isEmpty, "on its way to another row: macOS's panel is not opened and closed for it")
+    }
+
+    func testThePointerLeavingPutsItAwayAndTheLevelItWasLeftAtIsShown() throws {
+        let r = try rig(); defer { r.cleanup() }
+        adaptiveOpen(r)
+        r.controller.adaptiveSliderHovered()
+        r.driver.sliderPanelOpen = true
+        r.driver.armRequests[0].done(true)
+        r.controller.checkSlider()
+        XCTAssertEqual(r.driver.disarms, 0, "still on it")
+        r.driver.levelAtDisarm = 0.8
+        r.controller.pointerIn = { _ in false }
+        r.controller.checkSlider()
+        XCTAssertEqual(r.driver.disarms, 1)
+        XCTAssertEqual(r.presenter.holes.last ?? CGRect.zero, nil, "the hole is closed")
+        XCTAssertEqual(r.model.adaptiveLevel ?? -1, 0.8, accuracy: 0.001, "Anode's slider is drawn at the level macOS's was left at")
+    }
+
+    func testADragThatStraysOffTheRowKeepsIt() throws {
+        let r = try rig(); defer { r.cleanup() }
+        adaptiveOpen(r)
+        r.controller.adaptiveSliderHovered()
+        r.driver.sliderPanelOpen = true
+        r.driver.armRequests[0].done(true)
+        r.controller.pointerIn = { _ in false }
+        r.controller.buttonDown = { true }
+        r.controller.checkSlider()
+        XCTAssertEqual(r.driver.disarms, 0)
+    }
+
+    func testMacOSClosingItsPanelPutsTheHoleAway() throws {
+        let r = try rig(); defer { r.cleanup() }
+        adaptiveOpen(r)
+        r.controller.adaptiveSliderHovered()
+        r.driver.sliderPanelOpen = true
+        r.driver.armRequests[0].done(true)
+        r.driver.sliderPanelOpen = false   // a click elsewhere closed it
+        r.controller.checkSlider()
+        XCTAssertEqual(r.presenter.holes.last ?? CGRect.zero, nil)
+    }
+
+    func testAPressOfAnotherRowPutsItAwayFirst() throws {
+        let r = try rig(); defer { r.cleanup() }
+        adaptiveOpen(r)
+        r.controller.adaptiveSliderHovered()
+        r.driver.sliderPanelOpen = true
+        r.driver.armRequests[0].done(true)
+        let jobsBefore = r.driver.jobs.count
+        r.controller.pickChoice(r.model.listening[2])   // Noise Cancellation
+        XCTAssertEqual(r.driver.disarms, 1, "macOS's panel is put away before it is used for the press")
+        XCTAssertEqual(r.presenter.holes.last ?? CGRect.zero, nil)
+        XCTAssertEqual(r.driver.jobs.count, jobsBefore + 1, "and then the press goes out")
+    }
+
+    func testAnAnswerFromAnArmThatWasPutAwayIsNotTakenForTheNewOne() throws {
+        let r = try rig(); defer { r.cleanup() }
+        adaptiveOpen(r)
+        r.controller.adaptiveSliderHovered()                 // arm 0
+        r.controller.closeMenu()
+        r.controller.openMenu()
+        r.driver.complete(r.driver.jobs.count - 1, .tree(tree(listening: "Adaptive", adaptiveKnobX: 1435)))
+        r.controller.adaptiveSliderHovered()                 // arm 1
+        XCTAssertEqual(r.driver.armRequests.count, 2)
+        r.driver.armRequests[0].done(false)                  // the old one, late
+        r.driver.sliderPanelOpen = true
+        r.driver.armRequests[1].done(true)
+        XCTAssertEqual(r.presenter.holes.last ?? nil, place.hole, "the new one is in place, not spoiled by the old answer")
+    }
+
+    func testAReadingSkippedWhileItWasOutIsMadeUpAfter() throws {
+        let r = try rig(followUp: 0); defer { r.cleanup() }
+        adaptiveOpen(r)
+        r.controller.adaptiveSliderHovered()
+        r.driver.sliderPanelOpen = true
+        r.driver.armRequests[0].done(true)
+        let jobs = r.driver.jobs.count
+        r.outputs.devices.append(OutputDevice(id: "new", name: "New Speaker", kind: .speakers))
+        r.outputs.onChange?()                                 // a speaker came: macOS's panel would be read again
+        XCTAssertEqual(r.driver.jobs.count, jobs, "not while macOS's panel is under the slider")
+        r.controller.pointerIn = { _ in false }
+        r.controller.checkSlider()
+        XCTAssertEqual(r.driver.jobs.count, jobs + 1, "made up once it is put away")
+    }
+
+    func testAPressOfAnodesOwnSliderWaitsWhileMacOSsIsOnItsWay() throws {
+        let r = try rig(); defer { r.cleanup() }
+        adaptiveOpen(r)
+        r.controller.adaptiveSliderHovered()
+        r.controller.adaptiveSliderPressed()
+        XCTAssertTrue(r.driver.shownToPerson.isEmpty, "macOS's own menu is not opened over the one on its way")
+        r.driver.armRequests[0].done(false)
+        r.controller.adaptiveSliderPressed()
+        XCTAssertEqual(r.driver.shownToPerson, [.sound], "when it could not be put in place, a press opens macOS's own menu")
+    }
+
+    func testThereIsNoSliderToPutUnderWithoutAdaptive() throws {
+        let r = try rig(); defer { r.cleanup() }
+        openAndRead(r)   // Transparency
+        r.presenter.placement = place
+        r.controller.adaptiveSliderHovered()
+        XCTAssertTrue(r.driver.armRequests.isEmpty)
     }
 }

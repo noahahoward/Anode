@@ -390,24 +390,6 @@ public class HistoryGraphView: NSView {
         didSet { needsDisplay = true }
     }
 
-    /// Optional band drawn behind the lines — e.g. the unattributed residual,
-    /// shown as context rather than smeared into any series (rows must sum to a
-    /// measured total; the residual is *printed*, and here it is *shown*).
-    /// Pass empty arrays to clear.
-    public func setBand(lower: [Point], upper: [Point], color: NSColor) {
-        let lo = Self.sanitize(lower)
-        let hi = Self.sanitize(upper)
-        if lo.isEmpty || hi.isEmpty {
-            band = nil
-        } else {
-            // Fail soft if the integrator passes an opaque color: an opaque
-            // band would bury the lines it is meant to contextualize.
-            let c = color.alphaComponent > 0.5 ? color.withAlphaComponent(0.15) : color
-            band = BandData(lower: lo, upper: hi, color: c)
-        }
-        needsDisplay = true
-    }
-
     // MARK: - Private state
 
     private struct CleanSeries {
@@ -417,14 +399,7 @@ public class HistoryGraphView: NSView {
         let points: [Point]  // finite values only, ascending time
     }
 
-    private struct BandData {
-        let lower: [Point]
-        let upper: [Point]
-        let color: NSColor
-    }
-
     private var sanitized: [CleanSeries] = []
-    private var band: BandData?
 
     /// The plot rect the last `draw(_:)` actually used, in view coordinates.
     ///
@@ -578,7 +553,6 @@ public class HistoryGraphView: NSView {
             }
         }
         for s in sanitized { fold(s.points) }
-        if let b = band { fold(b.lower); fold(b.upper) }
         let haveData = dataMax >= dataMin  // false when everything was empty/NaN
 
         // Vertical scale. yMax pins; otherwise nice-round with hysteresis.
@@ -720,7 +694,7 @@ public class HistoryGraphView: NSView {
         let tMin = tMax.addingTimeInterval(-span)
         // Publish the domain this frame actually drew, for the same reason
         // `lastPlot` is published: hover has to invert the EXACT mapping the
-        // lines used. See `drawnDomain`.
+        // lines used. See `lastDomain`.
         lastDomain = (tMin, tMax)
 
         func xFor(_ t: Date) -> CGFloat {
@@ -856,7 +830,7 @@ public class HistoryGraphView: NSView {
                 s.draw(at: NSPoint(x: plot.midX - size.width / 2, y: plot.midY - size.height / 2),
                        withAttributes: attrs)
             }
-            // `haveData` is folded from the left series and band only, so a
+            // `haveData` is folded from the left series only, so a
             // charge line with no rate line behind it still belongs on screen —
             // it is the one thing this view can show when the rate is missing.
             if let r = rightSeries {
@@ -865,24 +839,6 @@ public class HistoryGraphView: NSView {
             }
             if showsAxes { drawHeader(nameAttrs: axisNameAttrs, legendAttrs: tickAttrs) }
             return
-        }
-
-        // ── Band (behind everything data-colored) ───────────────────────────
-        if let b = band {
-            ctx.saveGState()
-            plot.clip()
-            let path = NSBezierPath()
-            path.move(to: NSPoint(x: xFor(b.upper[0].time), y: yFor(b.upper[0].value)))
-            for p in b.upper.dropFirst() {
-                path.line(to: NSPoint(x: xFor(p.time), y: yFor(p.value)))
-            }
-            for p in b.lower.reversed() {
-                path.line(to: NSPoint(x: xFor(p.time), y: yFor(p.value)))
-            }
-            path.close()
-            b.color.setFill()
-            path.fill()
-            ctx.restoreGState()
         }
 
         // ── Series ──────────────────────────────────────────────────────────
@@ -1082,14 +1038,14 @@ public class HistoryGraphView: NSView {
 
         if s.filled {
             // Fill down to the zero line (or the plot floor if 0 is offscreen),
-            // translucent so the grid and band remain visible through it.
+            // translucent so the grid remains visible through it.
             //
             // A GRADIENT rather than the flat 13% wash this used to be. The two
             // carry identical information and average out to the same ink, but a
             // flat block of colour under the line reads as a second, paler series
             // with its own bottom edge, while a fade reads as depth belonging to
             // the line above it. Densest at the line, effectively gone by the
-            // baseline, so it never competes with the band drawn behind it.
+            // baseline.
             let gradient = NSGradient(starting: s.color.withAlphaComponent(Self.washTop),
                                       ending: s.color.withAlphaComponent(Self.washBottom))
             for run in runs where run.count >= 2 {
@@ -1148,8 +1104,7 @@ public class HistoryGraphView: NSView {
         // buckets, and wrong on dense ones — which is most of them. The
         // right-hand series never had this because it always used `pts.last`.
         if isOnlySeries, let last = pts.last {
-            drawEndpointMarker(at: NSPoint(x: xFor(last.time), y: yFor(last.value)),
-                               in: plot, color: s.color)
+            drawEndpointMarker(at: NSPoint(x: xFor(last.time), y: yFor(last.value)), color: s.color)
         }
     }
 
@@ -1271,7 +1226,7 @@ public class HistoryGraphView: NSView {
         }
     }
 
-    private func drawEndpointMarker(at p: NSPoint, in plot: NSRect, color: NSColor) {
+    private func drawEndpointMarker(at p: NSPoint, color: NSColor) {
         // Clamped to the VIEW, not to the plot.
         //
         // The latest sample sits at the plot's right edge by definition, and
@@ -1527,7 +1482,6 @@ public class HistoryGraphView: NSView {
             if let last = pts.last {
                 drawEndpointMarker(
                     at: NSPoint(x: xFor(last.time), y: yForRight(last.value)),
-                    in: plot,
                     color: runs.last?.charging == true ? Palette.chargingLine : r.color)
             }
         }

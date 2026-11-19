@@ -51,10 +51,9 @@ public enum PanelOrder {
         let availableSet = Set(available.map(\.rawValue))
         // Default-known metrics first, in default order, so each insertion can
         // anchor on neighbours that are already placed…
-        for id in defaultOrder {
+        for (defaultIndex, id) in defaultOrder.enumerated() {
             let raw = id.rawValue
             guard availableSet.contains(raw), seen.insert(raw).inserted else { continue }
-            let defaultIndex = defaultOrder.firstIndex(of: id)!
             let predecessors = defaultOrder[..<defaultIndex].reversed().map(\.rawValue)
             if let anchor = predecessors.compactMap({ out.firstIndex(of: $0) }).first {
                 out.insert(raw, at: anchor + 1)

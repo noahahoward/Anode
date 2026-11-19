@@ -1,6 +1,6 @@
 import Foundation
 
-/// What the Battery menu shows: what macOS's panel says, and nothing of Anode's own yet.
+/// What the Battery menu shows: what macOS's panel says, and Anode's own additions (each only while its Beta feature is on).
 public struct BatteryMenuModel: Equatable {
     public struct EnergyMode: Equatable {
         /// `automatic`, `low` or `high`: the end of macOS's `energy-mode-` identifier.

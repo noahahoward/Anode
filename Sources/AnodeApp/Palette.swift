@@ -178,12 +178,10 @@ enum Palette {
     static var hatch: NSColor { pick(hex(0xA6BCC8, alpha: 0.34), hex(0x41535E, alpha: 0.30)) }
     /// Text drawn ON the accent fill.
     static var onAccent: NSColor { hex(0x05130E) }
-    static var onBlue: NSColor { pick(hex(0x03121E), hex(0xFFFFFF)) }
 
     // ── Geometry ────────────────────────────────────────────────────────────
     /// macOS 26 corner scale — containers round more than their contents.
     enum Radius {
-        static let window: CGFloat = 20
         static let card: CGFloat = 14
         static let inner: CGFloat = 10
         static let chip: CGFloat = 7

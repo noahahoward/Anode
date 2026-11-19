@@ -390,7 +390,7 @@ extension LifetimeDrainModel {
 
     /// Beside the history database and the discharge trend, which are the same
     /// kind of thing: what this machine's battery has done, outliving the process.
-    public static func fileURL(fileManager fm: FileManager = .default) -> URL? {
+    public static func fileURL() -> URL? {
         guard let base = AnodeFiles.applicationSupport else { return nil }
         return base.appendingPathComponent("Anode/lifetime-drain.json")
     }

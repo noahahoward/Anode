@@ -167,7 +167,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
     /// Set once the user zooms or pans, and cleared by picking a range. While set
     /// the graph shows exactly what was asked for rather than following "now".
     var graphDomainOverride: (start: Date, end: Date)?
-    var lastHistoryQuery = Date.distantPast
 
     var totalSeries: [HistoryGraphView.Point] = []
     /// Battery charge over the same window, plotted on the right-hand 0-100 axis.
@@ -1466,16 +1465,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         main.sidebar.refreshValues()
     }
 
-    /// The card in the corner, for whichever subject the sort names.
-    ///
-    /// ITS OWN FUNCTION, because it used to be the tail of `updateLedger` and that
-    /// function grew an early return: the moment the bar switched to CPU it
-    /// returned before reaching this, so the card froze on whatever it had last
-    /// drawn. Reported as "the card doesn't change according to the sort", and it
-    /// was not that the card ignored the sort — it was that nothing told it.
-    ///
-    /// Falls back to the battery when the subject has no reading yet, rather than
-    /// leaving the previous subject's numbers under a new heading.
     /// The rail's fan glyph, turning at the speed the fans are.
     ///
     /// Only while the window is up: this is called from `apply`, which a hidden
@@ -1507,6 +1496,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         main.sidebar.setNetworkKind(NetworkInventory.snapshot().primary?.kind)
     }
 
+    /// The card in the corner, for whichever subject the sort names.
+    ///
+    /// ITS OWN FUNCTION, because it used to be the tail of `updateLedger` and that
+    /// function grew an early return: the moment the bar switched to CPU it
+    /// returned before reaching this, so the card froze on whatever it had last
+    /// drawn. Reported as "the card doesn't change according to the sort", and it
+    /// was not that the card ignored the sort — it was that nothing told it.
+    ///
+    /// Falls back to the battery when the subject has no reading yet, rather than
+    /// leaving the previous subject's numbers under a new heading.
     func updateGlance(_ s: PowerMonitor.Snapshot) {
         lastCensus = bottomContext == .cpu ? MachineInfo.census() : nil
         main.glance.model = lastSystem.flatMap {
@@ -2080,42 +2079,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
     /// different colour.
     static let drainTrendMinimumSpan: TimeInterval = 300
 
-    /// Trailing mean of a plotted series, one output point per input point that
-    /// has `minimumSpan` of history behind it.
-    ///
-    /// ## What this is for
-    /// Reported from the field: the graph read ~4.5 %/hr while the readout beside
-    /// it read ~7.5. Both were right. The graph plots one value per tick and the
-    /// eye reads where that line SITS; the readout is a mean over half an hour,
-    /// and a mean is pulled up by spikes the line only touches. Measured on the
-    /// reporting machine over 24 minutes: base 2.97 W, mean 6.11 W, peak 28.97 W
-    /// — the base 51 % below the mean, worse than the 35-45 % `DischargeTrend`
-    /// records for bursty loads.
-    ///
-    /// No number was wrong and none could be changed, because a pack is drained
-    /// by the AREA under that line rather than by where it rests. What was
-    /// missing was the connection, so this draws the mean over the line it is
-    /// the mean OF.
-    ///
-    /// ## Derived, never buffered
-    /// A stored second series would need seeding at launch, a cutoff of its own,
-    /// and some definition for the store-backed ranges, where the published rate
-    /// was never persisted. Deriving it from the points being drawn gives ONE
-    /// definition on every range and makes the drawn claim self-evidently true
-    /// of the drawn data.
-    ///
-    /// ## Time-weighted, and that is not a detail
-    /// The live buffer ticks every 2 s while the window is visible and every 8 s
-    /// while it is hidden (`cadence`), and the store-backed ranges mix raw rows
-    /// with 60 s buckets. A mean over SAMPLES would count a visible minute four
-    /// times as heavily as a hidden one and quietly redefine the window — the
-    /// same trap `DischargeTrend` documents for its own accumulator ("a mean over
-    /// SAMPLES rather than over TICKS would silently misweight them"), and the
-    /// same fix. Each point is weighted by the gap it stands for.
-    ///
-    /// TRAILING, so a point sees only what came before it. A centred mean would
-    /// let the future move the past, and the graph would redraw its own history
-    /// on every tick.
     /// The range to fall back to when the subject being switched to cannot draw
     /// the one currently chosen. nil = the current range is fine, leave it.
     ///
@@ -2211,50 +2174,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         return out
     }
 
-    static func trailingMean(_ points: [HistoryGraphView.Point],
-                             window: TimeInterval,
-                             minimumSpan: TimeInterval) -> [HistoryGraphView.Point] {
-        // The view sanitises before drawing; this runs before that, so it cannot
-        // assume either order or finiteness.
-        let clean = points.filter { $0.value.isFinite }
-            .sorted { $0.time < $1.time }
-        guard clean.count > 1 else { return [] }
-
-        // Weight for each point: the gap it stands for, which is the interval
-        // BACK to its predecessor. The first point has no predecessor and so no
-        // duration — it is an instant, not a span, and contributes nothing.
-        var weight = [Double](repeating: 0, count: clean.count)
-        for i in 1..<clean.count {
-            let dt = clean[i].time.timeIntervalSince(clean[i - 1].time)
-            // A gap wider than the window is not a span this mean can carry: it
-            // would be one sample speaking for more time than the whole average
-            // covers. Zero-weighted, and the window below then starts after it.
-            weight[i] = (dt > 0 && dt <= window) ? dt : 0
-        }
-
-        var out: [HistoryGraphView.Point] = []
-        out.reserveCapacity(clean.count)
-        var lo = 0
-        var wSum = 0.0, vSum = 0.0
-        for i in 1..<clean.count {
-            wSum += weight[i]
-            vSum += weight[i] * clean[i].value
-            // Drop everything that has fallen out of the trailing window.
-            while lo + 1 <= i,
-                  clean[i].time.timeIntervalSince(clean[lo + 1].time) > window {
-                lo += 1
-                wSum -= weight[lo]
-                vSum -= weight[lo] * clean[lo].value
-            }
-            let span = clean[i].time.timeIntervalSince(clean[lo].time)
-            guard span >= minimumSpan, wSum > 0 else { continue }
-            let mean = vSum / wSum
-            guard mean.isFinite else { continue }
-            out.append(.init(time: clean[i].time, value: mean))
-        }
-        return out
-    }
-
     /// MB, meaning 1024², to match `MetricUnit.bytesPerSecond` and the Disk and
     /// Network columns. Shared by both rate subjects so they cannot drift.
     static let rateAxisLabel = "MB/s"
@@ -2281,15 +2200,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
     /// it would be strange for one of those to come with a graph and the other not.
     var graphHidden: Bool { lens == .resources }
 
-    /// Redrawing is now free of side effects, so anything may call it at any time.
-    ///
-    /// Changing the sort has to redraw the bottom at once — the same lesson the
-    /// Resources rail taught, where a click changed the highlight and left the
-    /// readings describing the thing you clicked away from. This used to be a
-    /// hazard, because the same function also recorded a tick and an out-of-band
-    /// redraw pushed a duplicate sample in for every click; `appending: false`
-    /// existed to suppress that. Recording lives in `recordGraphSample` now, and
-    /// the parameter with it.
     /// Append this tick's values to the live buffers, and trim them to the span.
     ///
     /// Called from the TICK, not from `apply`, and therefore on every tick
@@ -2350,6 +2260,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         }
     }
 
+    /// Redrawing is now free of side effects, so anything may call it at any time.
+    ///
+    /// Changing the sort has to redraw the bottom at once — the same lesson the
+    /// Resources rail taught, where a click changed the highlight and left the
+    /// readings describing the thing you clicked away from. This used to be a
+    /// hazard, because the same function also recorded a tick and an out-of-band
+    /// redraw pushed a duplicate sample in for every click; `appending: false`
+    /// existed to suppress that. Recording lives in `recordGraphSample` now, and
+    /// the parameter with it.
+    ///
     /// Draws. Recording is `recordGraphSample`, and the two are separate so that
     /// hiding, covering or zooming the graph can never stop the app collecting.
     func updateGraph(_ s: PowerMonitor.Snapshot?) {
@@ -2619,13 +2539,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         }
     }
 
-    /// Where a menu bar widget takes you.
-    ///
-    /// Derived from the MetricID constants, never from their raw strings, so
-    /// retiring or renaming a metric is a compile error here rather than a widget
-    /// that quietly stops navigating. nil means "this widget names no
-    /// destination" — the group widget, or an ID written by another build — and
-    /// the caller must then leave the lens alone rather than invent one.
     /// Which CARD inside the Resources tab a widget names, if any.
     ///
     /// The lens alone is not a destination: six resources sit behind that one
@@ -2652,6 +2565,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         }
     }
 
+    /// Where a menu bar widget takes you.
+    ///
+    /// Derived from the MetricID constants, never from their raw strings, so
+    /// retiring or renaming a metric is a compile error here rather than a widget
+    /// that quietly stops navigating. nil means "this widget names no
+    /// destination" — the group widget, or an ID written by another build — and
+    /// the caller must then leave the lens alone rather than invent one.
     static func lens(forWidget metric: MetricID) -> SidebarView.Lens? {
         switch metric {
         // Every whole-machine utilisation is now one tab. The old rail sent each of
@@ -2815,14 +2735,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         return needs
     }
 
-    /// True when a menu bar widget is bound to a sensor metric, so the sampler
-    /// knows whether the SMC read is worth doing while the window is closed.
-    var needsSensors: Bool { hiddenNeeds.contains(.sensors) }
-
     /// Exactly the subsystems the menu bar is currently displaying.
     ///
-    /// Generalises what `needsSensors` already did for the SMC to every source:
-    /// with the window closed the only reader is the widget set, so anything not
+    /// With the window closed the only reader is the widget set, so anything not
     /// bound to a widget is work done for nobody. The group widget is the one
     /// exception — it can expand to show everything, so it asks for everything.
     var hiddenNeeds: SystemMetrics.Needs {
@@ -3039,13 +2954,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
                      : Palette.Font.mono(11)
     }
 
-    /// Size every column to its widest cell. Columns are not user-resizable — a
-    /// draggable divider can be pulled clean off the window, and there is nothing to
-    /// gain from a hand-set width when the content dictates the right one.
-    ///
-    /// Widths only ever GROW within a lens. Shrinking them as values change would
-    /// make the whole table twitch sideways every two seconds while a number drops a
-    /// digit, which is far more distracting than a few points of slack.
     /// Header attributes for measurement — the same font, case and kerning
     /// `AnodeHeaderCell` draws with, so a column is never sized to a string
     /// nobody renders.
@@ -3053,6 +2961,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         .font: AnodeHeaderCell.font, .kern: 0.4,
     ]
 
+    /// The widest the name column may grow, in points (see `autosizeColumns`).
+    static let nameColumnCap: CGFloat = 240
+
+    /// Measured text widths, so the same string at the same font is typeset once. See `TextWidthMemo`.
+    private var widths = TextWidthMemo()
+
+    /// Size every column to its widest cell. Columns are not user-resizable — a
+    /// draggable divider can be pulled clean off the window, and there is nothing to
+    /// gain from a hand-set width when the content dictates the right one.
+    ///
+    /// Widths only ever GROW within a lens. Shrinking them as values change would
+    /// make the whole table twitch sideways every two seconds while a number drops a
+    /// digit, which is far more distracting than a few points of slack.
+    ///
     /// Widen columns to fit, measuring only the rows actually on screen.
     ///
     /// This measured EVERY row for EVERY column on every tick — ~240 text
@@ -3064,11 +2986,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
     /// scrolled into view widens its column at that point and it stays widened,
     /// so the layout converges to the same place the exhaustive version reached
     /// immediately — it just gets there by looking at what it was shown.
-    static let nameColumnCap: CGFloat = 240
-
-    /// Measured text widths, so the same string at the same font is typeset once. See `TextWidthMemo`.
-    private var widths = TextWidthMemo()
-
     func autosizeColumns() {
         let visible = main.table.rows(in: main.table.visibleRect)
         // An empty range means the table has not been laid out yet (zero-height
@@ -3231,12 +3148,12 @@ ChargeWatchdog.runIfRequested(CommandLine.arguments)
 // lowest priority until Anode ends it. Nothing below runs in it.
 HardDrainWorker.runIfRequested(CommandLine.arguments)
 
-// `uninstall.sh` runs the app this way, with no window and before anything else starts, to put macOS's own charge
-// settings back before the app and its settings are deleted. A quit does that already, but an Anode that crashed or
-// was killed never got to, and macOS keeps a limit it was given: it would outlive the app and its settings.
 // The record of macOS's own charge settings, shared by every account's Anode on this Mac.
 let chargeRecords = ChargeRecords.live()
 
+// `uninstall.sh` runs the app this way, with no window and before anything else starts, to put macOS's own charge
+// settings back before the app and its settings are deleted. A quit does that already, but an Anode that crashed or
+// was killed never got to, and macOS keeps a limit it was given: it would outlive the app and its settings.
 if CommandLine.arguments.contains(ChargeController.restoreArgument) {
     exit(ChargeController.restoreForUninstallOutcome(settings: .shared, records: chargeRecords,
                                                      helper: ChargeHelperAdapter()).exitCode)

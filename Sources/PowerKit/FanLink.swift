@@ -304,7 +304,7 @@ public struct FanCodeIdentity: Equatable {
 ///
 /// Both sides of the pin go through here so they cannot drift: the helper hashes
 /// the app bundle at startup with `cdhash(atPath:)`, and hashes each caller with
-/// `cdhash(auditToken:)`. Verified equal for the same binary in
+/// `identity(auditToken:)`. Verified equal for the same binary in
 /// `FanIdentityTests`.
 public enum FanIdentity {
 
@@ -335,11 +335,6 @@ public enum FanIdentity {
                                           [], &staticCode) == errSecSuccess,
               let staticCode else { return nil }
         return identity(of: staticCode)
-    }
-
-    /// The cdhash of a running process, or nil if it has no valid signature.
-    public static func cdhash(auditToken token: audit_token_t) -> String? {
-        identity(auditToken: token)?.cdhash
     }
 
     /// The cdhash of a bundle or bare executable on disk.

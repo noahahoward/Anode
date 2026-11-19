@@ -404,9 +404,6 @@ public final class PowerMonitor {
             return ChargeTarget.Estimate(hours: hr, target: target)
         }
 
-        /// Hours until charging stops. ALWAYS an estimate — see `ChargeCurve`.
-        public var timeToFull_hr: Double? { chargeEstimate?.hours }
-
         /// True when the machine is sitting on AC at the limit it was learned to
         /// hold at (or that Charge Control holds it at), rather than merely idle
         /// on AC. "Not charging" and "held at 80%" are different facts and the
@@ -631,8 +628,6 @@ public final class PowerMonitor {
     /// False where a hold the monitor cannot rule out would be taken for the Mac's own limit: the learner is then
     /// stood down altogether. See `forCommandLine`.
     public let learnsChargeLimit: Bool
-
-    public var ioReportAvailable: Bool { ioreport != nil }
 
     /// `chargeControlLimit` is the limit Charge Control holds the charge at, or nil
     /// while it is off. While it is non-nil the charge-limit learner does not

@@ -57,7 +57,6 @@ public final class DrainTracker {
     }
 
     private var history: [ProcessKey: [Sample]] = [:]
-    private var meta: [ProcessKey: (name: String, path: String, pid: pid_t)] = [:]
 
     /// Pinned rather than looked up so tests can state the machine they mean.
     private let cores: Int
@@ -77,8 +76,6 @@ public final class DrainTracker {
         var out: [ProcessDrain] = []
 
         for (key, proc) in sweep.processes {
-            meta[key] = (proc.name, proc.path, proc.pid)
-
             var samples = history[key] ?? []
 
             // A decreasing counter means this is not the same process run: pid reuse
@@ -149,18 +146,16 @@ public final class DrainTracker {
                 diskWrittenPerSec: writeRate))
         }
 
-        // Drop processes that have exited so the dictionaries cannot grow unbounded
+        // Drop processes that have exited so the dictionary cannot grow unbounded
         // over a long uptime.
         let live = Set(sweep.processes.keys)
         history = history.filter { live.contains($0.key) }
-        meta = meta.filter { live.contains($0.key) }
 
         return out.sorted { $0.percentPerHour > $1.percentPerHour }
     }
 
     public func reset() {
         history.removeAll()
-        meta.removeAll()
     }
 
     /// Processes currently being tracked — useful for diagnostics.

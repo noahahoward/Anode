@@ -214,25 +214,14 @@ final class ResourcesContent: NSView, PaneContentView {
     /// Wide enough for a 78 pt sparkline, the gutters, and a two-line label that
     /// can hold "Peer-to-peer Wi-Fi" without truncating.
     private static let railWidth: CGFloat = 214
-    /// Card height and spacing, and the height the rail therefore is.
+    /// The space between cards (the card height itself is `ResourceCard.metrics`).
     ///
-    /// Stated once because three things need it: the scroll's height, the panel
-    /// drawn behind it, and where the live figures start underneath. Derived from
-    /// the card count rather than typed as 378, so adding a resource moves all
-    /// three together.
-    /// Taller, by exactly what the gaps used to take. Six cards reclaim 30 pt
-    /// between them and the graphs inside them get it.
-    static let cardHeight: CGFloat = 63
     /// TOUCHING. The cards are a chooser, and a chooser reads as one control with
     /// divisions rather than six separate buttons resting near each other — which
     /// is the same reasoning that put a ground behind them in the first place.
     /// Their own rounding still separates them; the space between was doing no
     /// work that the shapes were not already doing.
     private static let cardGap: CGFloat = 0
-    private static var railContentHeight: CGFloat {
-        CGFloat(Resource.allCases.count) * cardHeight
-            + CGFloat(Resource.allCases.count - 1) * cardGap
-    }
 
     private var tracks: [Resource: ResourceTrack] = [:]
     private var cards: [Resource: ResourceCard] = [:]
@@ -424,23 +413,6 @@ final class ResourcesContent: NSView, PaneContentView {
         ])
     }
     required init?(coder: NSCoder) { fatalError() }
-
-    private final class FlippedClipView: NSClipView {
-        override var isFlipped: Bool { true }
-
-        /// A fresh clip view draws its OWN background, and `drawsBackground` on
-        /// the scroll view only reaches the clip view that exists when it is set —
-        /// every caller here assigns this one AFTERWARDS, so all four scrollers
-        /// were painting an unstyled grey rectangle behind their content, with
-        /// square corners, in an app whose own surfaces are rounded and black.
-        ///
-        /// Cleared here rather than at each call site so the order of two lines
-        /// cannot bring it back.
-        override var drawsBackground: Bool {
-            get { false }
-            set { }
-        }
-    }
 
     override var isFlipped: Bool { true }
 
@@ -1506,10 +1478,9 @@ final class ResourceCard: NSView {
         }
         if valueLabel.stringValue != track.summary { valueLabel.stringValue = track.summary }
         spark.yMax = resource.axisMax
-        // ONE colour for every card, not one per resource.
-        //
-        // `Resource.color` still identifies a resource in the DETAIL view, where a
-        // single line is being read. In the rail it made six cards six different
+        // ONE colour for every card, not one per resource — and the detail graph
+        // uses the same one (see the note on `Resource`: there is no per-resource
+        // colour any more). A colour per resource made six cards six different
         // colours stacked on top of each other, which reads as six unrelated
         // widgets rather than one list — and the colour was never carrying
         // information there, since the card's own name is right beside it.
@@ -1558,23 +1529,6 @@ final class ResourceDetailView: NSView {
     let graph = FixedWindowGraphView(frame: .zero)
     let specs = BodyStack()
     private let scroll = NSScrollView()
-
-    private final class FlippedClipView: NSClipView {
-        override var isFlipped: Bool { true }
-
-        /// A fresh clip view draws its OWN background, and `drawsBackground` on
-        /// the scroll view only reaches the clip view that exists when it is set —
-        /// every caller here assigns this one AFTERWARDS, so all four scrollers
-        /// were painting an unstyled grey rectangle behind their content, with
-        /// square corners, in an app whose own surfaces are rounded and black.
-        ///
-        /// Cleared here rather than at each call site so the order of two lines
-        /// cannot bring it back.
-        override var drawsBackground: Bool {
-            get { false }
-            set { }
-        }
-    }
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)

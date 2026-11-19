@@ -1,5 +1,4 @@
 import AppKit
-import PowerKit
 
 /// The speed-test dial: an arc, a big live number, and two result tiles.
 ///
@@ -62,9 +61,12 @@ final class SpeedometerView: NSView {
     /// The arc's radius for a given frame — the same arithmetic `draw` uses, so
     /// anything reasoning about the dial's geometry agrees with what is on screen.
     static func radius(in bounds: NSRect) -> CGFloat {
-        let box = bounds.insetBy(dx: 18, dy: 12)
+        let box = dialBox(in: bounds)
         return min(box.width, box.height) / 2 - 14
     }
+
+    /// The part of the frame the dial is drawn in, one definition for the radius, the centre and `draw`.
+    private static func dialBox(in bounds: NSRect) -> NSRect { bounds.insetBy(dx: 18, dy: 12) }
 
     /// Where the arc's middle actually is, which is NOT the middle of the frame.
     ///
@@ -74,8 +76,8 @@ final class SpeedometerView: NSView {
     /// number, and a constant typed from memory is a sign error waiting to
     /// happen — it was, the first time.
     static func centre(in bounds: NSRect) -> NSPoint {
-        let box = bounds.insetBy(dx: 18, dy: 12)
-        return NSPoint(x: box.midX, y: box.midY + 6)
+        let box = dialBox(in: bounds)
+        return NSPoint(x: box.midX, y: box.midY + centreLift)
     }
 
     /// How far the arc's middle sits above the frame's middle.
@@ -94,7 +96,7 @@ final class SpeedometerView: NSView {
 
     override func draw(_ dirtyRect: NSRect) {
         guard showsArc else { return }
-        let box = bounds.insetBy(dx: 18, dy: 12)
+        let box = Self.dialBox(in: bounds)
         guard box.width > 40, box.height > 40 else { return }
         let radius = Self.radius(in: bounds)
         let centre = Self.centre(in: bounds)

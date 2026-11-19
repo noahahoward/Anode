@@ -447,7 +447,6 @@ fileprivate final class BackdropWindow: NSWindow {
     /// This bar in the window server's coordinates (origin top-left, y down), for
     /// asking what window is under it.
     let screenLeft: CGFloat
-    let screenTop: CGFloat
     let barBottom: CGFloat
     let barHeight: CGFloat
     let screenWidth: CGFloat
@@ -462,7 +461,6 @@ fileprivate final class BackdropWindow: NSWindow {
     fileprivate init(frame: NSRect, strip: NSRect, seam: CGFloat, rim: CGFloat, screen: NSScreen,
                      primaryHeight: CGFloat, tints: [NSColor]) {
         screenLeft = screen.frame.minX
-        screenTop = primaryHeight - screen.frame.maxY
         barBottom = primaryHeight - strip.minY
         barHeight = strip.height
         screenWidth = screen.frame.width

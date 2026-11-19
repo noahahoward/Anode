@@ -1,6 +1,5 @@
 import Darwin
 import Foundation
-import PowerKit
 
 /// The watchdog of Charge Control: a child of Anode that puts macOS's own charge settings back at once if Anode ends
 /// without quitting.

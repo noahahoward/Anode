@@ -160,16 +160,6 @@ public final class SSDWriteAnchor {
         return Double(bytesWritten - a.bytesWritten) / (span / 86_400)
     }
 
-    /// How much longer the gate has to run, or nil once it has opened (or when
-    /// there is no anchor to wait on). The storage pane says this in words —
-    /// "measuring since 4 August" — rather than showing a dash nobody can explain.
-    public func gateRemaining(now: Date = Date()) -> TimeInterval? {
-        lock.lock(); defer { lock.unlock() }
-        guard let a = stored() else { return nil }
-        let left = Self.minimumSpan - now.timeIntervalSince(a.startedAt)
-        return left > 0 ? left : nil
-    }
-
     /// Both halves or neither: a dictionary missing one is a half-written anchor,
     /// and a half-written anchor is no anchor.
     ///

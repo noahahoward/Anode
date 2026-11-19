@@ -53,7 +53,6 @@ public final class USBPowerTracker {
         /// Watts. Nil only when provenance is `.unknown`.
         public let watts: Double?
         public let provenance: Provenance
-        public var isMeasured: Bool { provenance == .measured }
     }
 
     /// Seconds to let power settle either side of a transition. A charger

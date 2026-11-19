@@ -1,5 +1,4 @@
 import AppKit
-import PowerKit
 
 // ── The chevron (Menu Bar Hider) ────────────────────────────────────────────
 //

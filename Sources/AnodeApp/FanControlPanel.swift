@@ -1136,7 +1136,7 @@ final class FanControlPanel: NSView {
             guard let first = asked.first ?? nil, asked.allSatisfy({ $0 == first }) else { return nil }
             return first
         }()
-        if !((slider as? GaugeSlider)?.isTracking ?? false) {
+        if !slider.isTracking {
             slider.minValue = shared.minRPM
             slider.maxValue = shared.maxRPM
             // The fastest fan, when nothing has been asked for. A knob parked at
@@ -1222,7 +1222,7 @@ final class FanControlPanel: NSView {
         let asked = pendingWish[f.index] ?? session.asked(f.index)
         // Never under a hand that is dragging it. The reading beside it still
         // updates — that is the number the user is aiming with.
-        if !((slider as? GaugeSlider)?.isTracking ?? false) {
+        if !slider.isTracking {
             slider.minValue = f.minRPM
             slider.maxValue = f.maxRPM
             slider.doubleValue = FanGauge.knobRPM(current: f.currentRPM, asked: asked,

@@ -297,24 +297,21 @@ public enum ChargeRelease {
     /// Read the key until it says `expecting`, a few times a moment apart, and
     /// return the last reading.
     static func readBack(_ charge: ChargeHardware, expecting cut: Bool, timing: Timing) -> Bool? {
-        var seen = charge.adapterCut()
-        var reads = 1
-        while seen != cut, reads < max(timing.readsPerTry, 1) {
-            pause(timing.readPause)
-            seen = charge.adapterCut()
-            reads += 1
-        }
-        return seen
+        poll(until: cut, timing: timing, charge.adapterCut)
     }
 
     /// The same for an exact value: read until the key holds `value`, and
     /// return the last reading.
     static func readBackValue(_ charge: ChargeHardware, expecting value: UInt8, timing: Timing) -> UInt8? {
-        var seen = charge.adapterCutValue()
+        poll(until: value, timing: timing, charge.adapterCutValue)
+    }
+
+    private static func poll<T: Equatable>(until expected: T, timing: Timing, _ reading: () -> T?) -> T? {
+        var seen = reading()
         var reads = 1
-        while seen != value, reads < max(timing.readsPerTry, 1) {
+        while seen != expected, reads < max(timing.readsPerTry, 1) {
             pause(timing.readPause)
-            seen = charge.adapterCutValue()
+            seen = reading()
             reads += 1
         }
         return seen

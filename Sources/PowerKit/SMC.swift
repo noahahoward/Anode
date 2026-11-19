@@ -245,8 +245,6 @@ public final class SMC {
         return Sensor(key: key, type: type, value: value)
     }
 
-    /// Every key the SMC exposes, decoded. The key set is model-specific, so rails
-    /// are discovered rather than hardcoded.
     // ── Writes ──────────────────────────────────────────────────────────────
 
     /// Write a float key. Like every write in this file, it needs root.
@@ -372,6 +370,8 @@ public final class SMC {
         return callChecked(buf) != nil
     }
 
+    /// Every key the SMC exposes, decoded. The key set is model-specific, so rails
+    /// are discovered rather than hardcoded.
     public func scan() -> [Sensor] {
         var out: [Sensor] = []
         for idx in 0..<keyCount() {

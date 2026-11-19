@@ -62,13 +62,6 @@ final class HiderPolicyTests: XCTestCase {
         XCTAssertTrue(s.isOpen)
     }
 
-    func testScreenChangeClosesPill() {
-        var s = PillState()
-        s.toggle(now: t0, autoClose: 0)
-        s.screenParametersChanged()
-        XCTAssertFalse(s.isOpen)
-    }
-
     func testExplicitCloseClears() {
         var s = PillState()
         s.toggle(now: t0, autoClose: 5)

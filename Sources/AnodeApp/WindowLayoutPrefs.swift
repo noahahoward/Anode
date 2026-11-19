@@ -111,8 +111,6 @@ struct SnapZoneMap: Equatable {
         return Self.defaultAction(for: zone)
     }
 
-    func zones(for action: WindowAction) -> [SnapZone] { SnapZone.allCases.filter { self.action(for: $0) == action } }
-
     /// Give `zone` the action `new` (nil turns it off).
     mutating func set(_ new: WindowAction?, for zone: SnapZone) {
         if new == Self.defaultAction(for: zone) { overrides[zone] = nil } else { overrides[zone] = .some(new) }

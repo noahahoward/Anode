@@ -143,9 +143,7 @@ final class AppAudioRouter: AppVolumeControlling {
                 sessions[id] = Session(handle: handle, gain: gain, signature: signature, muting: muting)
                 failures[id] = nil; failedSignatures[id] = nil
             } catch {
-                failures[id] = "Couldn't control this app"
-                failedSignatures[id] = signature
-                onChange?()
+                noteFailure(id, signature: signature)
             }
         }
         scheduleRecheck()
@@ -155,8 +153,13 @@ final class AppAudioRouter: AppVolumeControlling {
         guard let s = sessions[id] else { return }
         s.handle.stop()
         sessions[id] = nil
+        noteFailure(id, signature: s.signature)
+    }
+
+    /// Remembers why an app has no tap, and that this exact setup failed, so it is not retried without a reason.
+    private func noteFailure(_ id: String, signature: String) {
         failures[id] = "Couldn't control this app"
-        failedSignatures[id] = s.signature
+        failedSignatures[id] = signature
         onChange?()
     }
 

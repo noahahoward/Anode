@@ -11,15 +11,20 @@ enum ScreenState {
     /// Is some ordinary on-screen window covering all of `screen`?
     static func showsFullScreenWindow(_ screen: NSScreen, primaryHeight: CGFloat,
                                       windowInfo: [[String: Any]]) -> Bool {
-        let frame = CGRect(x: screen.frame.minX, y: primaryHeight - screen.frame.maxY,
-                           width: screen.frame.width, height: screen.frame.height)
+        let frame = cgFrame(of: screen, primaryHeight: primaryHeight)
         return windowInfo.contains { entry in
-            guard (entry[kCGWindowLayer as String] as? Int) == 0,
-                  (entry[kCGWindowAlpha as String] as? Double ?? 1) > 0,
-                  let dict = entry[kCGWindowBounds as String] as? NSDictionary,
-                  let bounds = CGRect(dictionaryRepresentation: dict) else { return false }
+            guard let bounds = layerZeroBounds(entry) else { return false }
             return MenuBarBackdropGeometry.coversWholeScreen(bounds, screen: frame)
         }
+    }
+
+    /// The bounds of a window-list entry that is an ordinary window (layer 0, not fully transparent), in the window
+    /// server's coordinates; nil for any other entry.
+    static func layerZeroBounds(_ entry: [String: Any]) -> CGRect? {
+        guard (entry[kCGWindowLayer as String] as? Int) == 0,
+              (entry[kCGWindowAlpha as String] as? Double ?? 1) > 0,
+              let dict = entry[kCGWindowBounds as String] as? NSDictionary else { return nil }
+        return CGRect(dictionaryRepresentation: dict)
     }
 
     /// Is any screen showing a full-screen window right now? One window query.
@@ -51,10 +56,7 @@ enum ScreenState {
     /// at other layers and never count.
     static func hasOrdinaryWindow(on screen: CGRect, windowInfo: [[String: Any]]) -> Bool {
         windowInfo.contains { entry in
-            guard (entry[kCGWindowLayer as String] as? Int) == 0,
-                  (entry[kCGWindowAlpha as String] as? Double ?? 1) > 0,
-                  let dict = entry[kCGWindowBounds as String] as? NSDictionary,
-                  let bounds = CGRect(dictionaryRepresentation: dict) else { return false }
+            guard let bounds = layerZeroBounds(entry) else { return false }
             return isOrdinaryWindow(bounds, on: screen)
         }
     }

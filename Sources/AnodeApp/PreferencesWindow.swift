@@ -60,9 +60,9 @@ public final class PreferencesWindowController: NSWindowController {
             // An NSTabViewController in `.toolbar` style drives the window title
             // from the SELECTED PANE, overwriting whatever the window was given.
             // With no title on the pane it substitutes a placeholder, and the
-            // Settings window read "Untitled" on screen despite line 71 setting
-            // "Anode Settings" — the assignment happens first and is then
-            // replaced. Titling the panes is what actually reaches the titlebar,
+            // Settings window read "Untitled" on screen despite `window.title`
+            // below setting "Anode Settings" — the assignment happens first and is
+            // then replaced. Titling the panes is what actually reaches the titlebar,
             // and it gives the macOS-standard behaviour of the title naming the
             // pane you are looking at.
             vc.title = label
@@ -213,6 +213,24 @@ private class Pane: NSViewController {
     }
 
     var spacer: NSView { NSGridCell.emptyContentView }
+
+    /// `views` as two vertical lists side by side, the first taking the odd one.
+    func twoColumns(_ views: [NSView]) -> NSStackView {
+        func column(_ views: [NSView]) -> NSStackView {
+            let c = NSStackView(views: views)
+            c.orientation = .vertical
+            c.alignment = .leading
+            c.spacing = 6
+            return c
+        }
+        let half = (views.count + 1) / 2
+        let list = NSStackView(views: [column(Array(views[..<half])),
+                                       column(Array(views[half...]))])
+        list.orientation = .horizontal
+        list.alignment = .top
+        list.spacing = 18
+        return list
+    }
 
     /// Editable number field + stepper pair that share one write closure.
     /// The formatter deliberately has NO min/max: Settings owns validation, and
@@ -759,19 +777,7 @@ private final class GraphPane: Pane {
             NSButton(checkboxWithTitle: $0.title + ($0.sessionOnly ? "  (current session only)" : ""),
                      target: self, action: #selector(toggled))
         }
-        func column(_ views: [NSView]) -> NSStackView {
-            let c = NSStackView(views: views)
-            c.orientation = .vertical
-            c.alignment = .leading
-            c.spacing = 6
-            return c
-        }
-        let half = (boxes.count + 1) / 2
-        let list = NSStackView(views: [column(Array(boxes[..<half])),
-                                       column(Array(boxes[half...]))])
-        list.orientation = .horizontal
-        list.alignment = .top
-        list.spacing = 18
+        let list = twoColumns(boxes)
 
         let reset = NSButton(title: "Restore defaults", target: self, action: #selector(restoreDefaults))
         reset.bezelStyle = .rounded
@@ -865,19 +871,7 @@ private final class MenuBarPane: Pane {
         // height (a MacBook Neo has ~660 pt below the menu bar and above the
         // Dock), so the last boxes and the captions under them sat off screen
         // with nothing to scroll.
-        func column(_ views: [NSView]) -> NSStackView {
-            let c = NSStackView(views: views)
-            c.orientation = .vertical
-            c.alignment = .leading
-            c.spacing = 6
-            return c
-        }
-        let half = (rowsForList.count + 1) / 2
-        let list = NSStackView(views: [column(Array(rowsForList[..<half])),
-                                       column(Array(rowsForList[half...]))])
-        list.orientation = .horizontal
-        list.alignment = .top
-        list.spacing = 18
+        let list = twoColumns(rowsForList)
 
         masterCheckbox = NSButton(checkboxWithTitle: "Show widgets in the menu bar",
                                   target: self, action: #selector(masterToggled))

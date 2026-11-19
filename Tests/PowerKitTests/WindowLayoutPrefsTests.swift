@@ -86,7 +86,6 @@ final class WindowLayoutPrefsTests: XCTestCase {
         var map = SnapZoneMap()
         map.toggle(.top, for: .topHalf)
         XCTAssertEqual(map.action(for: .top), .topHalf)
-        XCTAssertEqual(map.zones(for: .topHalf), [.top])
         map.toggle(.top, for: .topHalf)
         XCTAssertNil(map.action(for: .top), "already its: it loses it")
         map.toggle(.top, for: .maximize)

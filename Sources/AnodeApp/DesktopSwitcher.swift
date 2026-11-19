@@ -105,10 +105,15 @@ enum SpaceCatalog {
     /// Everything needed to start: the desktops can be read and can be stepped through.
     static var canSwitch: Bool { isAvailable && keyboardSteppingEnabled() }
 
+    /// What `SLSCopyManagedDisplaySpaces` lists for every display; nil when the private calls are not there.
+    private static func managedDisplays() -> [[String: Any]]? {
+        guard let connection, let copySpaces else { return nil }
+        return copySpaces(connection())?.takeRetainedValue() as? [[String: Any]]
+    }
+
     /// The current desktop of the display under the pointer, without reading the windows.
     static func currentID() -> Int? {
-        guard let connection, let copySpaces,
-              let displays = copySpaces(connection())?.takeRetainedValue() as? [[String: Any]] else { return nil }
+        guard let displays = managedDisplays() else { return nil }
         let wanted = displayUUID(under: NSEvent.mouseLocation)?.uppercased()
         let display = displays.first { ($0["Display Identifier"] as? String)?.uppercased() == wanted } ?? displays.first
         return (display?["Current Space"] as? [String: Any])?["ManagedSpaceID"] as? Int
@@ -116,8 +121,7 @@ enum SpaceCatalog {
 
     /// The desktops of the display under the pointer, without what is on each: cheap enough for a hover.
     static func desktopList() -> [DesktopInfo]? {
-        guard let connection, let copySpaces,
-              let displays = copySpaces(connection())?.takeRetainedValue() as? [[String: Any]] else { return nil }
+        guard let displays = managedDisplays() else { return nil }
         return desktops(displays: displays, displayUUID: displayUUID(under: NSEvent.mouseLocation),
                         windowsBySpace: [:])?.desktops
     }
@@ -267,7 +271,6 @@ final class DesktopSwitcher {
     private var showTimer: Timer?
 
     private(set) var isActive = false
-    private var display = ""
     /// As listed (most recent first) and in the system's own left-to-right order.
     private var desktops: [DesktopInfo] = []
     private var natural: [DesktopInfo] = []
@@ -401,7 +404,6 @@ final class DesktopSwitcher {
     private func begin(backward: Bool) -> Bool {
         guard SpaceCatalog.keyboardSteppingEnabled(), let read = SpaceCatalog.read(), read.desktops.count >= 2,
               let current = read.desktops.first(where: \.isCurrent) else { return false }
-        display = read.display
         natural = read.desktops
         recency.visit(current.id)
         desktops = recency.ordered(read.desktops)
@@ -430,9 +432,8 @@ final class DesktopSwitcher {
     private func commit() {
         let chosen = selection.index.flatMap { desktops.indices.contains($0) ? desktops[$0] : nil }
         let current = natural.first(where: \.isCurrent)
-        let list = natural
         guard let chosen, let current, !chosen.isCurrent,
-              let steps = SpaceCatalog.steps(from: current.id, to: chosen.id, in: list) else { return cancel() }
+              let steps = SpaceCatalog.steps(from: current.id, to: chosen.id, in: natural) else { return cancel() }
         // The slide starts from a picture of the screen, so the panel has to be off it BEFORE the first
         // key goes in; left up, it would ride along through the whole change.
         RunTrace.step("desktop switcher: moving \(steps) step(s)")

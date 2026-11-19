@@ -105,7 +105,7 @@ public struct AppleSoundPanel: Equatable, Codable {
 
     /// The level the knob is drawn at: three pictures exactly, the knob the biggest (40 x 24 against the end icons' 11 pt), measured
     /// between the inner edges of the two end icons and held to 0...1. Anything else is not the slider, and gives nil.
-    static func adaptiveLevel(pictures: [CGRect]) -> Double? {
+    public static func adaptiveLevel(pictures: [CGRect]) -> Double? {
         guard pictures.count == 3, let k = pictures.indices.max(by: { pictures[$0].width * pictures[$0].height < pictures[$1].width * pictures[$1].height })
         else { return nil }
         let knob = pictures[k]

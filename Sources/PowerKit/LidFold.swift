@@ -63,14 +63,18 @@ public enum LidFoldGeometry {
     /// The picture never turns past this far from the glass, so it cannot go edge-on or behind the eye.
     public static let maximumSeparation = 88.0
 
+    /// How far the picture has turned from the glass at `angle`: `depth` degrees for each degree the lid has folded past
+    /// `startAngle`, up to `maximumSeparation`.
+    static func separation(depth: Double, startAngle: Double, angle: Double) -> Double {
+        min(depth * max(startAngle - angle, 0), maximumSeparation)
+    }
+
     /// Where the four corners of the frozen picture land on the glass when the lid is at `angle`, ordered
     /// bottom-left, bottom-right, top-right, top-left. At the start angle (or above it) this is exactly the
     /// screen rectangle; folding past it the far edge recedes and the sides converge, as a plane leaning away does.
     public static func corners(screenWidth width: Double, screenHeight height: Double, startAngle: Double,
                                angle: Double, look: LidFoldLook) -> [LidPoint] {
-        let travel = max(startAngle - angle, 0)
-        let separation = min(look.depth * travel, maximumSeparation)
-        let pictureAngle = angle + separation
+        let pictureAngle = angle + separation(depth: look.depth, startAngle: startAngle, angle: angle)
         let lid = angle * .pi / 180
         let pic = pictureAngle * .pi / 180
         let start = startAngle * .pi / 180
@@ -235,7 +239,7 @@ public struct LidFoldFrame {
                                               angle: angle, look: look)
         // Deep into the close the picture is nearly edge-on and its hinge rows stretch across the glass; frost
         // them too so nothing streaks.
-        let separation = min(look.depth * max(look.startAngle - angle, 0), LidFoldGeometry.maximumSeparation)
+        let separation = LidFoldGeometry.separation(depth: look.depth, startAngle: look.startAngle, angle: angle)
         return LidFoldFrame(corners: corners,
                             blurStrength: curve.blurStrength(progress: progress),
                             dimStrength: curve.dimStrength(progress: progress),

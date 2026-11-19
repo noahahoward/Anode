@@ -31,12 +31,13 @@ import Foundation
 /// not make it CPU, and a memory diode folded into a CPU mean would move the
 /// number the menu bar shows.
 ///
-/// NO WRITES, EVER. Fan control would go through the same user client with a
-/// write-bytes command against `F0Md`/`F0Tg` — and it is deliberately absent.
+/// NO WRITES, EVER, in this file. Fan control goes through the same user client
+/// with a write-bytes command against `F0Md`/`F0Tg` (`SMC.writeFloat`,
+/// `SMC.writeUInt8`) — and it is deliberately absent from here.
 /// Forcing a fan target while the SoC is hot can cook the machine, and writes
 /// require entitlements/root the unprivileged read connection does not have.
-/// If control is ever built, it belongs in AnodeHelper behind an
-/// explicit user gesture, never in this file.
+/// Control belongs in AnodeHelper behind an explicit user gesture, never in
+/// this file.
 
 public enum SensorKind {
     case temperature, fan, voltage, current, power, unknown
@@ -271,9 +272,6 @@ public enum Sensors {
         /// load averages out near 65 °C and a threshold on the mean never
         /// fires — on exactly the fanless Macs (Air, Neo) that get there.
         public var cpuPeak: Double? { peak(prefixes: ["Tp", "Te"]) }
-
-        /// The hottest GPU sensor, for the same reason.
-        public var gpuPeak: Double? { peak(prefixes: ["Tg"]) }
 
         /// Below this a core sensor is a dead slot, not a die: inactive slots on
         /// binned chips (disabled cores keep their keys) and idle M4 P-cores

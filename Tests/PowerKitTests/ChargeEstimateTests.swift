@@ -688,7 +688,6 @@ final class ChargeEstimateTests: XCTestCase {
         let scale = pack()
         let s = snapshot(charging(at: 60, mA: 3600, scale: scale), scale: scale, target: nil)
         XCTAssertNil(s.chargeEstimate)
-        XCTAssertNil(s.timeToFull_hr)
     }
 
     // ── What the card says ──────────────────────────────────────────────────

@@ -29,11 +29,25 @@ protocol SystemPanelDriving: AnyObject {
     /// Opens macOS's own panel for the person, where it is and as it is (nothing covers it or moves it): for what only it can do,
     /// such as dragging Adaptive Audio's slider.
     func showPanelToPerson(_ kind: SystemPanelKind)
+    /// Adaptive Audio's slider (see `AdaptiveSliderAlignment`): opens macOS's Sound panel and moves it so its slider's left end icon
+    /// lies on `leftIcon` (top-left global points), under a still picture of `cover` with `hole` left out of it. Reports whether it
+    /// is in place.
+    func armAdaptiveSlider(leftIcon: CGRect, cover: CGRect, hole: CGRect, done: @escaping (Bool) -> Void)
+    /// Puts it away: the level macOS's knob is at, then macOS's panel closed and the pictures down. Nil when it was not out.
+    @discardableResult func disarmAdaptiveSlider() -> Double?
+    /// Whether macOS's panel is still open under the slider (a click anywhere else closes it).
+    var adaptiveSliderPanelOpen: Bool { get }
+    /// Whether macOS's panel is free (no reading or press of Anode's using it): the slider is put under Anode's only then.
+    var panelIsFree: Bool { get }
 }
 
 extension SystemPanelDriving {
     func closePanelOpenedByPerson() {}
     func showPanelToPerson(_ kind: SystemPanelKind) {}
+    func armAdaptiveSlider(leftIcon: CGRect, cover: CGRect, hole: CGRect, done: @escaping (Bool) -> Void) { done(false) }
+    @discardableResult func disarmAdaptiveSlider() -> Double? { nil }
+    var adaptiveSliderPanelOpen: Bool { false }
+    var panelIsFree: Bool { true }
 }
 
 /// Whether a still picture of macOS's icon is over the icon now. A click on the icon then lands on that picture, and the click
@@ -106,7 +120,9 @@ final class IconCover {
         return shot
     }
 
-    func show() {
+    /// `hole` (top-left global points): a part left out of the picture, where what is under it shows (macOS's Adaptive slider, under
+    /// Anode's).
+    func show(hole: CGRect? = nil) {
         guard let image, imageFrame != .zero, let screen = NSScreen.screens.first else { return }
         let r = NSRect(x: imageFrame.minX, y: screen.frame.height - imageFrame.minY - imageFrame.height,
                        width: imageFrame.width, height: imageFrame.height)
@@ -123,6 +139,16 @@ final class IconCover {
         let view = NSImageView(frame: NSRect(origin: .zero, size: r.size))
         view.image = image
         view.imageScaling = .scaleAxesIndependently
+        if let hole {
+            // The picture with a hole: an even-odd mask of the whole view and the hole (the view's own coordinates run up).
+            view.wantsLayer = true
+            let local = CGRect(x: hole.minX - imageFrame.minX, y: imageFrame.maxY - hole.maxY, width: hole.width, height: hole.height)
+            let path = CGMutablePath(); path.addRect(view.bounds)
+            let radius = min(local.width, local.height) / 2   // the slider's capsule, rounded ends and all
+            path.addPath(CGPath(roundedRect: local, cornerWidth: radius, cornerHeight: radius, transform: nil))
+            let mask = CAShapeLayer(); mask.path = path; mask.fillRule = .evenOdd
+            view.layer?.mask = mask
+        }
         w.contentView = view
         w.setFrame(r, display: false)
         w.orderFrontRegardless()
@@ -133,6 +159,9 @@ final class IconCover {
         window = w
         if !isUp { isUp = true; CoverPresence.shared.shown() }
     }
+
+    /// Whether a picture was taken (`prepare`): without one, `show` shows nothing.
+    var hasPicture: Bool { image != nil && imageFrame != .zero }
 
     func hide() {
         window?.orderOut(nil)
@@ -178,8 +207,139 @@ final class SystemPanelDriver: SystemPanelDriving {
     // ── Queue ───────────────────────────────────────────────────────────────
 
     func run(_ kind: SystemPanelKind, job: SystemPanelPress.Job, done: @escaping (SystemPanelOutcome) -> Void) {
+        // macOS's panel under the Adaptive slider is the same panel a job opens: it is put away first.
+        if sliderArmed { endSlider() }
         queue.append(Queued(kind: kind, job: job, done: done))
         startNext()
+    }
+
+    // ── Adaptive Audio's slider, under Anode's ──────────────────────────────
+    // Measured (macOS 27.3): the slider can only be moved by a real drag on it; macOS's panel can be moved anywhere and its slider
+    // moves with it; a drag through a hole in a window above it reaches it; a click anywhere else closes the panel.
+
+    private var sliderArmed = false
+
+    func armAdaptiveSlider(leftIcon: CGRect, cover coverRect: CGRect, hole: CGRect, done: @escaping (Bool) -> Void) {
+        guard !busy, queue.isEmpty, !sliderArmed else { sliderLog("not now, macOS's panel is in use"); done(false); return }
+        guard AXIsProcessTrusted(), ScreenRecordingAccess.isGranted else { sliderLog("needs Accessibility and Screen Recording"); done(false); return }
+        guard let found = locate(.sound) else { sliderLog("macOS's Sound icon was not found"); done(false); return }
+        // Only an icon of the menu bar opens the panel where it can be moved under Anode's (a Control Center route never shows it).
+        guard found.route == .menuExtra else { sliderLog("macOS's Sound panel opens through Control Center here"); done(false); return }
+        busy = true; sliderArmed = true; sliderPanelPressed = false
+        token += 1
+        uncoverWork?.cancel(); uncoverWork = nil
+        let mine = token
+        item = found.item; itemFrame = found.frame; route = found.route
+        ccElement = Self.application(Self.controlCenter)
+        Task { @MainActor in
+            await self.cover.prepare(frame: self.itemFrame, maxAge: 0.5)
+            // Over where macOS's panel opens and where it is moved to (Anode's menu), with Anode's own menu left out of the picture.
+            let region = coverRect.union(Self.panelRegion(for: self.itemFrame))
+            await self.panelCover.prepare(frame: region, maxAge: 0, exact: true, leavingOut: self.ownMenuWindowIDs())
+            guard mine == self.token, self.sliderArmed else { return }   // put away while the pictures were taken: a newer arm decides
+            // Without the picture over it, macOS's panel would be seen whole: not opened at all.
+            guard self.panelCover.hasPicture else { self.sliderLog("no picture to hide macOS's panel under"); self.endSlider(); done(false); return }
+            self.cover.show()
+            self.panelCover.show(hole: hole)
+            self.sliderLog("opening macOS's panel under Anode's slider")
+            self.sliderPanelPressed = true
+            AXUIElementPerformAction(found.item, kAXPressAction as CFString)
+            self.poll(timeout: SystemPanelTiming.openTimeout, every: 0.03, until: { self.panelWindow().flatMap(Self.sliderPictures) != nil }) { ok in
+                guard ok, let window = self.panelWindow(), let pictures = Self.sliderPictures(window) else {
+                    self.sliderLog("macOS's panel or its slider did not appear"); self.endSlider(); done(false); return
+                }
+                let d = AdaptiveSliderAlignment.offset(macLeftIcon: pictures.left, anodeLeftIcon: leftIcon)
+                let f = Self.frame(of: window)
+                var p = CGPoint(x: (f.minX + d.dx).rounded(), y: (f.minY + d.dy).rounded())
+                if let v = AXValueCreate(.cgPoint, &p) { AXUIElementSetAttributeValue(window, kAXPositionAttribute as CFString, v) }
+                self.poll(timeout: 0.6, every: 0.03, until: {
+                    self.panelWindow().flatMap(Self.sliderPictures).map { AdaptiveSliderAlignment.inPlace(macLeftIcon: $0.left, anodeLeftIcon: leftIcon) } ?? false
+                }) { inPlace in
+                    guard inPlace else { self.sliderLog("could not be put in place"); self.endSlider(); done(false); return }
+                    // All of macOS's menu has to be under the picture: anything of it past the picture's edge would be seen.
+                    guard let window = self.panelWindow(), let content = Self.contentFrame(of: window),
+                          region.insetBy(dx: -1, dy: -1).contains(content) else {
+                        self.sliderLog("macOS's menu would show past the picture over it"); self.endSlider(); done(false); return
+                    }
+                    self.sliderLog("in place")
+                    done(true)
+                }
+            }
+        }
+    }
+
+    @discardableResult func disarmAdaptiveSlider() -> Double? {
+        guard sliderArmed else { return nil }
+        let level = panelWindow().flatMap(Self.sliderPictures).flatMap { AppleSoundPanel.adaptiveLevel(pictures: [$0.left, $0.knob, $0.right]) }
+        endSlider()
+        return level
+    }
+
+    var adaptiveSliderPanelOpen: Bool { sliderArmed && panelWindow() != nil }
+    var panelIsFree: Bool { !busy && queue.isEmpty && !sliderArmed }
+
+    /// Whether the press that opens macOS's panel under the slider has gone out (it may still be on its way when the slider is put away).
+    private var sliderPanelPressed = false
+
+    private func sliderLog(_ line: String) { FeatureLog.append("sound-menu.log", "Adaptive slider: " + line) }
+
+    /// Puts it away. macOS's panel is moved off the screen before it is closed (it fades out where it is, which was under the menu's glass),
+    /// and the picture over it stays, and the panel stays Anode's (busy), until it has gone. One still on its way is waited for and closed.
+    private func endSlider() {
+        guard sliderArmed else { return }
+        sliderArmed = false
+        token += 1
+        let mine = token
+        func finished() {
+            guard mine == token else { return }
+            panelCover.hide()
+            // macOS lights its icon for a moment after its panel goes: the icon is uncovered a beat later, as after a job.
+            let work = DispatchWorkItem { [weak self] in self?.cover.hide() }
+            uncoverWork = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25, execute: work)
+            busy = false
+            token += 1
+            startNext()
+        }
+        func close(_ window: AXUIElement) {
+            Self.moveOffScreen(window)
+            if let item { AXUIElementPerformAction(item, kAXPressAction as CFString) }
+            poll(timeout: 1, every: 0.03, until: { self.panelWindow() == nil }) { _ in finished() }
+        }
+        if let window = panelWindow() { close(window); return }
+        guard sliderPanelPressed else { finished(); return }
+        poll(timeout: SystemPanelTiming.openTimeout, every: 0.03, until: { self.panelWindow() != nil }) { opened in
+            if opened, let window = self.panelWindow() { close(window) } else { finished() }
+        }
+    }
+
+    /// Where macOS's menu is drawn in its mostly see-through panel window. The window holds one group as big as itself (measured: both
+    /// 522 x 1102), so what is drawn is that group's children (the volume slider, the list, the buttons at the bottom), with the menu's
+    /// own margins round them: the title line above the slider, the glass at the sides and the bottom (measured: the children span
+    /// 1264...1572 x 78.5...603.5, the menu 41...612 or so).
+    private static func contentFrame(of window: AXUIElement) -> CGRect? {
+        let size = frame(of: window).size
+        var level = (attribute(window, kAXChildrenAttribute) as? [AXUIElement]) ?? []
+        while level.count == 1, frame(of: level[0]).size == size { level = (attribute(level[0], kAXChildrenAttribute) as? [AXUIElement]) ?? [] }
+        let frames = level.map(frame(of:)).filter { !$0.isEmpty }
+        guard let first = frames.first else { return nil }
+        let drawn = frames.dropFirst().reduce(first) { $0.union($1) }
+        return CGRect(x: drawn.minX - 8, y: drawn.minY - 40, width: drawn.width + 16, height: drawn.height + 56)
+    }
+
+    /// The slider's three pictures in macOS's open panel (see `AppleSoundPanel.adaptiveLevel`): the end icons and the knob, the knob
+    /// the biggest. Nil unless there are exactly three.
+    private static func sliderPictures(_ window: AXUIElement) -> (left: CGRect, knob: CGRect, right: CGRect)? {
+        var found: [CGRect] = []
+        func walk(_ e: AXUIElement, _ depth: Int) {
+            guard depth < 8, found.count <= 3 else { return }
+            if string(e, kAXRoleAttribute) == "AXImage", string(e, "AXIdentifier").hasPrefix(AppleSoundPanel.devicePrefix) { found.append(frame(of: e)) }
+            for c in (attribute(e, kAXChildrenAttribute) as? [AXUIElement]) ?? [] { walk(c, depth + 1) }
+        }
+        walk(window, 0)
+        guard found.count == 3, let k = found.indices.max(by: { found[$0].width * found[$0].height < found[$1].width * found[$1].height }) else { return nil }
+        let ends = found.indices.filter { $0 != k }.map { found[$0] }.sorted { $0.midX < $1.midX }
+        return (ends[0], found[k], ends[1])
     }
 
     private func startNext() {
@@ -296,6 +456,7 @@ final class SystemPanelDriver: SystemPanelDriving {
 
     func cancelAll() {
         queue.removeAll()
+        if sliderArmed { endSlider(); return }
         guard busy else { return }
         if panelWindow() != nil, let item { AXUIElementPerformAction(item, kAXPressAction as CFString) }
         cover.hide()
@@ -570,14 +731,15 @@ final class SystemPanelDriver: SystemPanelDriving {
         return nil
     }
 
-    private func poll(timeout: TimeInterval, until condition: @escaping () -> Bool, then finish: @escaping (Bool) -> Void) {
+    private func poll(timeout: TimeInterval, every interval: TimeInterval = 0.004, until condition: @escaping () -> Bool,
+                      then finish: @escaping (Bool) -> Void) {
         let deadline = Date().addingTimeInterval(timeout)
         let mine = token
         func step() {
             guard mine == token else { return }   // the job this was waiting for is over
             if condition() { finish(true); return }
             if Date() >= deadline { finish(false); return }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.004) { step() }
+            DispatchQueue.main.asyncAfter(deadline: .now() + interval) { step() }
         }
         step()
     }

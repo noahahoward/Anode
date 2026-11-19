@@ -13,7 +13,7 @@ final class CleanerWindowsTests: XCTestCase {
 
     func testHintSitsBottomLeftWithA24PointMargin() {
         let frame = NSRect(x: 1800, y: -200, width: 1920, height: 1080)
-        let p = CleanerWindows.hintOrigin(in: frame, hintSize: NSSize(width: 300, height: 20))
+        let p = CleanerWindows.hintOrigin(in: frame)
         XCTAssertEqual(p, NSPoint(x: frame.minX + 24, y: frame.minY + 24))
     }
 

@@ -28,8 +28,8 @@ import IOKit
 ///
 /// So the rule here is that "no SMART on this machine" and "SMART that we failed
 /// to read" must never be confusable. Three things enforce it: `smartCapableClasses`
-/// is a list rather than a name; every node is gated on the `NVMe SMART Capable`
-/// property BEFORE it is opened (see `smartCapableKey`); and `probeInternalDevices`
+/// is a list rather than a name; every node's `NVMe SMART Capable` property is read
+/// BEFORE it is opened, and only an explicit false declines (see `smartCapableKey`); and `probeInternalDevices`
 /// reports a per-device `Outcome` instead of a bare optional, so a device that
 /// claims the capability and then fails to deliver is a distinct, assertable state.
 /// `NVMeHealthTests` turns that into the strong test — any node advertising
@@ -313,7 +313,7 @@ public enum NVMeHealth {
         // is running from, so a drive reporting zero reads AND zero writes AND
         // zero power cycles is claiming something that cannot be true of a drive
         // we just talked to. The realistic cause is a user client that returned
-        // success without filling the buffer — `readPage` hands us a pre-zeroed
+        // success without filling the buffer — `openPage` hands us a pre-zeroed
         // 512 bytes, so that failure arrives looking exactly like this.
         //
         // Deliberately a conjunction of all three, not a test on any one of them.
@@ -703,9 +703,10 @@ public enum NVMeHealth {
     ///
     /// Reports WHICH step failed, rather than collapsing to nil, so `outcome(for:)`
     /// can keep an open failure apart from a read failure — see `Outcome` for why
-    /// that distinction is load-bearing rather than decorative. This is only ever
-    /// reached after the node has claimed `NVMe SMART Capable`, so every failure
-    /// below is a device contradicting its own property.
+    /// that distinction is load-bearing rather than decorative. This is reached for a
+    /// node that claimed `NVMe SMART Capable` and for one that published no claim
+    /// (see `attemptsOpen`), so a failure below is a device contradicting its own
+    /// property only in the first case; `outcome(for:)` tells the two apart.
     ///
     /// MEMORY: three things need releasing — the plug-in interface, the COM
     /// interface, and (by the caller) the io_object. Every one of them is on a
@@ -720,9 +721,9 @@ public enum NVMeHealth {
         var score: Int32 = 0
         // kIOReturnUnsupported (0xe00002c7) is what a node that does not vend the
         // client answers — a controller, an Intel Mac, a VM. Reaching it HERE
-        // means the node published `NVMe SMART Capable` and then refused, which is
-        // a contradiction rather than an absence, hence `.openFailed` and not
-        // `.notCapable`.
+        // means a node that was not declined refused: one that published `NVMe
+        // SMART Capable` has contradicted itself, hence `.openFailed` (and not
+        // `.notCapable`); one that published nothing is `.unclaimed`.
         let kr = IOCreatePlugInInterfaceForService(service, userClientTypeID,
                                                    plugInInterfaceID, &plugIn, &score)
         guard kr == KERN_SUCCESS, let plugIn else { return .failure(.open(kr)) }

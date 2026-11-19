@@ -1,4 +1,4 @@
-import AppKit
+import Foundation
 import PowerKit
 
 /// Owns the pieces that make live wallpapers run for the app: the controller, the source of its conditions, and the pause

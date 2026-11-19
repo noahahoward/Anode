@@ -1,4 +1,4 @@
-import AppKit
+import Foundation
 import Network
 import PowerKit
 
@@ -320,7 +320,7 @@ final class LiveWallpaperController {
     }
 
     /// One single-shot timer for the soonest pending gate; none when nothing is pending.
-    private func scheduleTimer(at at: Date) {
+    private func scheduleTimer(at: Date) {
         timer?.invalidate(); timer = nil
         guard let next = live.values.compactMap({ $0.gate.nextCheck(now: at) }).min() else { return }
         let t = Timer(timeInterval: max(0.05, next.timeIntervalSince(at)), repeats: false) { [weak self] _ in self?.gateTimerFired() }

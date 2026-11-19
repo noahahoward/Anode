@@ -1131,7 +1131,7 @@ public final class HistoryStore {
         if total > 0 {
             // Once per pass, not per chunk: TRUNCATE rewrites and shortens the
             // WAL, and it is the single largest write the prune makes.
-            queue.sync { exec("PRAGMA wal_checkpoint(TRUNCATE)") }
+            queue.sync { _ = exec("PRAGMA wal_checkpoint(TRUNCATE)") }
         }
         schedulePass(after: passInterval)
     }
@@ -1196,7 +1196,7 @@ public final class HistoryStore {
         // and rolled back, which must also end the loop rather than retry forever.
         let cutoff = Date().timeIntervalSince1970 - days * 86400
         while queue.sync(execute: { pruneChunkLocked(cutoff: cutoff) }) >= chunkRows {}
-        queue.sync { exec("PRAGMA wal_checkpoint(TRUNCATE)") }
+        queue.sync { _ = exec("PRAGMA wal_checkpoint(TRUNCATE)") }
     }
 
     /// Merge raw ticks older than `rawHorizon` into `bucketWidth` buckets,

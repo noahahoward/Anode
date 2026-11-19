@@ -43,8 +43,6 @@ final class AXBarReader: BarReading {
 
     // ── Pure part ───────────────────────────────────────────────────────────
 
-    /// The items of one app, left to right. The ordinal in each key counts among the items sharing a name (or among the
-    /// unnamed ones), so one app's two items called the same, or with no name at all, still get different keys.
     /// The indices of `children` left to right. Ties (parked items stack at the same x) keep their original order, so this is
     /// the one ordering that keys and elements are both put in.
     static func order(of children: [Child]) -> [Int] {
@@ -95,8 +93,6 @@ final class AXBarReader: BarReading {
         return there.count == 1 ? there[0] : nil
     }
 
-    /// Whether the process now at the item's pid (its bundle id and name) is still the item's app: a pid can be reused
-    /// between drawing the pill and the press. An app without a bundle id is known by its name.
     /// Whether an app that did not answer for its extras menu bar fails the whole read. Only when it may own an item that a
     /// cover could then span: the system's owners, Anode itself, and any app seen with items before. Seen on hardware
     /// 2026-11-11: `universalaccessd` never answers in time, and counting it meant the hider never collapsed.
@@ -104,11 +100,15 @@ final class AXBarReader: BarReading {
         pid == ownPID || knownOwners.contains(pid) || bundleID.map(systemOwners.contains) == true
     }
 
+    /// Whether the process now at the item's pid (its bundle id and name) is still the item's app: a pid can be reused
+    /// between drawing the pill and the press. An app without a bundle id is known by its name.
     static func isStillTheApp(bundleID: String?, name: String?, of item: BarItem) -> Bool {
         guard bundleID == item.bundleID else { return false }
         return item.bundleID != nil || name == item.appName
     }
 
+    /// The items of one app, left to right. The ordinal in each key counts among the items sharing a name (or among the
+    /// unnamed ones), so one app's two items called the same, or with no name at all, still get different keys.
     static func parse(app: (bundleID: String?, name: String, pid: pid_t), children: [Child]) -> [BarItem] {
         var seen: [String: Int] = [:]
         return order(of: children).map { children[$0] }.map { c in
@@ -544,11 +544,9 @@ final class BarEvents: BarEventing {
         isRunning = true
         let ws = workspaceCenter
         for name in [NSWorkspace.didLaunchApplicationNotification, NSWorkspace.didTerminateApplicationNotification] {
-            tokens.append((ws, ws.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in self?.fire(screen: false) }))
+            observe(ws, name) { $0.fire(screen: false) }
         }
-        tokens.append((ws, ws.addObserver(forName: NSWorkspace.activeSpaceDidChangeNotification, object: nil, queue: .main) {
-            [weak self] _ in self?.fire(screen: true)
-        }))
+        observe(ws, NSWorkspace.activeSpaceDidChangeNotification) { $0.fire(screen: true) }
         // An app with wide menus coming forward makes macOS drop status items on a notched Mac.
         observe(ws, NSWorkspace.didActivateApplicationNotification) { $0.fire(screen: false) }
         // Waking is a display change: the layout may have moved while nobody was looking.
@@ -558,10 +556,7 @@ final class BarEvents: BarEventing {
         observe(ws, NSWorkspace.screensDidSleepNotification) { $0.asleep = true; $0.reschedule() }
         observe(sessionCenter, Self.sessionLocked) { $0.locked = true; $0.reschedule() }
         observe(sessionCenter, Self.sessionUnlocked) { $0.locked = false; $0.reschedule(); $0.fire(screen: true) }
-        let nc = appCenter
-        tokens.append((nc, nc.addObserver(forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main) {
-            [weak self] _ in self?.fire(screen: true)
-        }))
+        observe(appCenter, NSApplication.didChangeScreenParametersNotification) { $0.fire(screen: true) }
         reschedule()
     }
 

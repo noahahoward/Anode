@@ -39,18 +39,15 @@ enum LidGlassCapture {
         return config
     }
 
-    /// The display as it is now, without the windows in `excludingWindowIDs` (the overlay's own), or nil when
-    /// Screen Recording is not allowed or the capture fails.
+    /// The display as it is now, or nil when Screen Recording is not allowed or the capture fails.
     @available(macOS 14.0, *)
-    static func capture(displayID: CGDirectDisplayID,
-                        excludingWindowIDs: [CGWindowID]) async -> (image: CGImage, seconds: Double)? {
+    static func capture(displayID: CGDirectDisplayID) async -> (image: CGImage, seconds: Double)? {
         guard ScreenRecordingAccess.isGranted else { return nil }
         let started = ProcessInfo.processInfo.systemUptime
         do {
             let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
             guard let display = content.displays.first(where: { $0.displayID == displayID }) else { return nil }
-            let excluded = content.windows.filter { excludingWindowIDs.contains($0.windowID) }
-            let filter = SCContentFilter(display: display, excludingWindows: excluded)
+            let filter = SCContentFilter(display: display, excludingWindows: [])
             let pixelsWide = CGDisplayCopyDisplayMode(displayID)?.pixelWidth ?? display.width
             let scale = max(1, CGFloat(pixelsWide) / CGFloat(max(display.width, 1)))
             let config = configuration(pointSize: CGSize(width: display.width, height: display.height), scale: scale)

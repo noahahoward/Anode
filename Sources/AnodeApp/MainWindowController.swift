@@ -1,5 +1,4 @@
 import AppKit
-import PowerKit
 
 /// The main window's layout, separated from AppDelegate so the delegate is only
 /// lifecycle and the layout is testable and replaceable on its own.
@@ -36,9 +35,6 @@ final class MainWindowController: NSObject {
     let graphRanges = RangePicker()
     let graphSettings = GraphSettingsButton()
 
-    /// The bottom row's height, held so Resources can collapse it. See
-    /// `setBottomHidden`.
-    private var bottomRowHeight: NSLayoutConstraint!
     /// The card's width, held so it can take the graph's space on Resources.
     private var glanceWidth: NSLayoutConstraint!
     /// The card's trailing edge when it HAS taken that space. Swapped with
@@ -52,7 +48,7 @@ final class MainWindowController: NSObject {
     private var graphLeadingCollapsed: NSLayoutConstraint!
 
     private let scroll = NSScrollView()
-    private var detailWidth: CGFloat = 380
+    private let detailWidth: CGFloat = 380
     private var detailShown = false
     private let tableSplit = NSSplitView()
 
@@ -161,7 +157,7 @@ final class MainWindowController: NSObject {
         content.addSubview(graphSettings)
 
         let railWidth = SidebarView.width
-        bottomRowHeight = glance.heightAnchor.constraint(equalToConstant: 128)
+        let bottomRowHeight = glance.heightAnchor.constraint(equalToConstant: 128)
         glanceWidth = glance.widthAnchor.constraint(equalToConstant: 236)
         glanceWide = glance.trailingAnchor.constraint(equalTo: content.trailingAnchor,
                                                       constant: -16)

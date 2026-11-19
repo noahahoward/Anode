@@ -501,7 +501,7 @@ final class ChargeController {
     }
     /// macOS shows another limit than the one that was set, three passes running.
     static func notHoldingText(wanted: Int, inForce: Int) -> String {
-inForce >= noLimit
+        inForce >= noLimit
             ? "macOS is not holding the charge limit of \(wanted)%, so no limit is in force. Anode tries again when the "
               + "limit is changed."
             : "macOS is not holding the charge limit of \(wanted)%: \(inForce)% is in force. Anode tries again when the "
@@ -2261,7 +2261,9 @@ inForce >= noLimit
            let by = Self.nextReadyBy(after: now, minutes: settings.chargeReadyByMinutes, calendar: calendar()),
            by.timeIntervalSince(now) <= readyByWindow {
             if memory.readyBy?.started == true { return (by, limit, cooled, false) }
-            let level = min(limit, max(b.percent, min(ChargePolicy.readyByFloor, limit)))
+            let hold = ChargePolicy.readyByHoldLevel(limit: limit,
+                                                     holdAtMost: settings.chargeSettingsSnapshot().readyByHoldAtMost)
+            let level = min(limit, max(b.percent, hold))
             let rates = loadedRates()
             let lead = ChargePolicy.minutesToCharge(from: level, to: limit,
                                                     rate: rates.rate(forAdapterWatts: b.adapterWatts),

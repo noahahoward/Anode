@@ -38,16 +38,14 @@ struct StrandingLog {
     }
 
     static func line(for event: Event, context: String = "") -> String {
-        let stamp = ISO8601DateFormatter.string(
-            from: { if case .began(let d) = event { return d }
-                    if case .ended(let d, _) = event { return d }
-                    return Date() }(),
-            timeZone: .current, formatOptions: [.withInternetDateTime])
+        func stamp(_ date: Date) -> String {
+            ISO8601DateFormatter.string(from: date, timeZone: .current, formatOptions: [.withInternetDateTime])
+        }
         switch event {
-        case .began:
-            return "\(stamp) STRANDED \(context)"
-        case .ended(_, let after):
-            return "\(stamp) recovered after \(Int(after.rounded())) s \(context)"
+        case .began(let at):
+            return "\(stamp(at)) STRANDED \(context)"
+        case .ended(let at, let after):
+            return "\(stamp(at)) recovered after \(Int(after.rounded())) s \(context)"
         }
     }
 

@@ -26,8 +26,9 @@ final class ReadyBySectionTests: XCTestCase {
         helper = FakeHelperLink()
         client = FakeChargeLimitClient()
         helper.landsOn = client
-        battery = ReadyByControllerTests.plugged(54)
-        // The section's lines for a hold where the battery is (54% here); the line for coming down first has its own
+        battery = ReadyByControllerTests.plugged(64)
+        // The section's lines for a hold where the battery is (64% here, above the 60% a limit of 80 has Ready By charge
+        // to); the line for coming down first has its own
         // tests, which switch it back on.
         settings.chargeReadyByLowerEnabled = false
     }
@@ -132,13 +133,13 @@ final class ReadyBySectionTests: XCTestCase {
                                                       timeZone: Calendar.autoupdatingCurrent.timeZone))
     }
 
-    /// The tip says what a person needs to know: it waits only when the time is within the next 16 hours (12 with a
-    /// helper that has not been updated), and never below 30% (it charges to 30% first).
-    func testTheTipSaysTheWindowAndTheFloor() {
+    /// The tip says what a person needs to know: it charges to 20% below the limit and holds there, it waits only when
+    /// the time is within the next 16 hours (12 with a helper that has not been updated), and never below 30%.
+    func testTheTipSaysTheLevelTheWindowAndTheFloor() {
         let tip = ChargeControlFeature.readyByTip
+        XCTAssertTrue(tip.contains("charge to 20% below the limit"), tip)
         XCTAssertTrue(tip.contains("within the next 16 hours (12 until the Anode helper has been updated)"), tip)
-        XCTAssertTrue(tip.contains("30%"), tip)
-        XCTAssertTrue(tip.contains("charges to 30% first"), tip)
+        XCTAssertTrue(tip.contains("never below 30%"), tip)
         XCTAssertTrue(tip.contains("Anode helper"), tip)
         XCTAssertEqual(ChargePolicy.readyByWindow, 16 * 3600)
         XCTAssertEqual(ChargePolicy.readyByWindowWithAnOlderHelper, 12 * 3600)
@@ -175,11 +176,11 @@ final class ReadyBySectionTests: XCTestCase {
         settings.chargeReadyByMinutes = 22 * 60 + 30
         let f = make()
         XCTAssertEqual(controller?.lastDecision?.reason, .readyBy)
-        XCTAssertEqual(client.state?.mclLimit, 54, "the fixture is not holding")
+        XCTAssertEqual(client.state?.mclLimit, 64, "the fixture is not holding")
         let before = client.limitCalls.count + helper.commands.count
         step(f, to: 21 * 60 + 30)       // the hour, first
         XCTAssertEqual(settings.chargeReadyByMinutes, 22 * 60 + 30, "a time in between was written")
-        XCTAssertEqual(client.state?.mclLimit, 54, "the charger was switched on for a time in between")
+        XCTAssertEqual(client.state?.mclLimit, 64, "the charger was switched on for a time in between")
         step(f, to: 21 * 60 + 26)       // then the minutes
         step(f, to: 22 * 60 + 26)       // and the hour back
         XCTAssertEqual(client.limitCalls.count + helper.commands.count, before, "something was sent while it was being chosen")
@@ -187,7 +188,7 @@ final class ReadyBySectionTests: XCTestCase {
         settle()
         XCTAssertEqual(settings.chargeReadyByMinutes, 22 * 60 + 26)
         XCTAssertNil(f.pendingReadyByMinutes)
-        XCTAssertEqual(client.state?.mclLimit, 54, "still holding, for the time that was chosen")
+        XCTAssertEqual(client.state?.mclLimit, 64, "still holding, for the time that was chosen")
     }
 
     /// Each step starts the wait again and cancels the one before: one write, of the last value, and a wait of
@@ -336,10 +337,12 @@ final class ReadyBySectionTests: XCTestCase {
         XCTAssertEqual(readyBy(nil, until: nil, limit: 100, by: "2026-11-13T19:30:00Z"), "Charging to reach 100% by 7:30 pm")
     }
 
-    /// Below the lowest it holds at, it first charges up to it.
-    func testTheLineSaysSoWhileItChargesUpToTheLowestItHolds() {
+    /// Below the level it holds at, it first charges up to it: plugged in at 25% with a limit of 100, to 80%.
+    func testTheLineSaysSoWhileItChargesUpToTheLevelItHolds() {
         XCTAssertEqual(readyBy(22, holdingAt: 30),
                        "Charging to 30%, then holding until 5:40 am, then charging to reach 80% by 7:00 am")
+        XCTAssertEqual(readyBy(25, holdingAt: 80, limit: 100),
+                       "Charging to 80%, then holding until 5:40 am, then charging to reach 100% by 7:00 am")
     }
 
     func testTheTimesAreInThePersonsOwnShortFormat() {
@@ -363,8 +366,8 @@ final class ReadyBySectionTests: XCTestCase {
         settings.chargeReadyByEnabled = true
         let line = f.statusLabel.stringValue
         let moment = ChargeControlFeature.shortTime(at("2026-11-13T07:00:00Z"), timeZone: zone)
-        let start = ChargeControlFeature.shortTime(at("2026-11-13T06:19:00Z"), timeZone: zone)
-        XCTAssertEqual(line, "Holding at 54% until \(start), then charging to reach 80% by \(moment)")
+        let start = ChargeControlFeature.shortTime(at("2026-11-13T06:29:00Z"), timeZone: zone)
+        XCTAssertEqual(line, "Holding at 64% until \(start), then charging to reach 80% by \(moment)")
         XCTAssertFalse(f.statusLabel.isHiddenOrHasHiddenAncestor)
     }
 
@@ -388,8 +391,8 @@ final class ReadyBySectionTests: XCTestCase {
         settings.chargeReadyByLowerEnabled = true
         let f = make()
         XCTAssertEqual(f.readyByLowerCheckbox.title, "Hold No Higher Than")
-        XCTAssertEqual(f.readyByLowerLabel.stringValue, "50%")
-        XCTAssertEqual(f.readyByLowerStepper.integerValue, 50)
+        XCTAssertEqual(f.readyByLowerLabel.stringValue, "80%")
+        XCTAssertEqual(f.readyByLowerStepper.integerValue, 80)
         XCTAssertEqual(f.readyByLowerStepper.minValue, 30)
         XCTAssertEqual(f.readyByLowerStepper.maxValue, 95)
         XCTAssertTrue(f.readyByLowerCheckbox.isDescendant(of: try XCTUnwrap(view)))
@@ -423,8 +426,8 @@ final class ReadyBySectionTests: XCTestCase {
         settings.chargeLimit = 100
         battery = ReadyByControllerTests.plugged(97)
         let f = make()
-        XCTAssertEqual(client.state?.mclLimit, 50, "the battery was held where it was")
-        XCTAssertTrue(f.statusLabel.stringValue.hasPrefix("Running from the battery down to 50%, then charging from about "),
+        XCTAssertEqual(client.state?.mclLimit, 80, "the battery was held where it was")
+        XCTAssertTrue(f.statusLabel.stringValue.hasPrefix("Running from the battery down to 80%, then charging from about "),
                       f.statusLabel.stringValue)
         XCTAssertTrue(f.statusLabel.stringValue.hasSuffix("to reach 100% by 07:00") || f.statusLabel.stringValue.contains("to reach 100% by 7:00"),
                       f.statusLabel.stringValue)

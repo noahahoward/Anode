@@ -310,15 +310,15 @@ public final class MenuBarWidgetController: NSObject, NSMenuDelegate {
         states.contains(.parked)
     }
 
+    /// A squeeze this soon after a layout change is treated as probably transitional.
+    static let transitionalSqueezeSeconds: TimeInterval = 90
+
     /// Whether a look at the bar means anything right now. NOT while a screen is full screen —
     /// its menu bar is hidden and the items are moved out of sight, which looks exactly like a
     /// full bar — and not for a few seconds after a Space change, while they slide back. A
     /// look taken then squeezed the layout, and a squeeze is never undone on its own: after
     /// full screen on the external display the widgets were left as ONE item until a relaunch.
     static let spaceSettleSeconds: TimeInterval = 8
-
-    /// A squeeze this soon after a layout change is treated as probably transitional.
-    static let transitionalSqueezeSeconds: TimeInterval = 90
     static func lookIsMeaningful(fullScreen: Bool, secondsSinceSpaceChange: TimeInterval) -> Bool {
         !fullScreen && secondsSinceSpaceChange >= spaceSettleSeconds
     }
@@ -363,11 +363,8 @@ public final class MenuBarWidgetController: NSObject, NSMenuDelegate {
         var display = "?"
         if let pid {
             for entry in windowInfo {
-                guard (entry[kCGWindowLayer as String] as? Int) == 0,
-                      (entry[kCGWindowAlpha as String] as? Double ?? 1) > 0,
-                      (entry[kCGWindowOwnerPID as String] as? Int32) == pid,
-                      let dict = entry[kCGWindowBounds as String] as? NSDictionary,
-                      let bounds = CGRect(dictionaryRepresentation: dict) else { continue }
+                guard (entry[kCGWindowOwnerPID as String] as? Int32) == pid,
+                      let bounds = ScreenState.layerZeroBounds(entry) else { continue }
                 let centre = CGPoint(x: bounds.midX, y: bounds.midY)
                 if let i = screenFrames.firstIndex(where: { $0.contains(centre) }) { display = "\(i)" }
                 break
@@ -1241,9 +1238,6 @@ public final class MenuBarWidgetController: NSObject, NSMenuDelegate {
         (appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
             ? NSColor.white : NSColor.black).withAlphaComponent(0.45)
     }
-
-    /// Test seam: materialized buttons in config order. Internal on purpose.
-    var _buttons: [NSStatusBarButton] { items.compactMap { $0.item.button } }
 }
 
 /// One reading row of the group menu, drawn by US and not by NSMenu.
@@ -1332,6 +1326,9 @@ final class MetricRowView: NSView {
 /// free of NSStatusItem so it can be exercised headlessly.
 enum WidgetRenderer {
 
+    // This is the widget's description for VoiceOver (see `render`: it is no longer shown as a tooltip). It does
+    // not carry the reading: the widget shows that itself, and what is left to say is only what the widget does
+    // not print and that changes rarely, "no data" and "estimate". (Its name is from when it was a tooltip.)
     static func toolTip(metricID: String, descriptor: MetricDescriptor?,
                         value: MetricValue?, style: WidgetStyle? = nil) -> String {
         // Before the descriptor check: the group binds to no metric, so it never
@@ -1350,10 +1347,6 @@ enum WidgetRenderer {
         guard let v = value else { return "\(d.title): no data" }
         return "\(d.title)\(v.isEstimate ? " (estimate)" : "")"
     }
-
-    // This is the widget's description for VoiceOver (see `render`: it is no longer shown as a tooltip). It does
-    // not carry the reading: the widget shows that itself, and what is left to say is only what the widget does
-    // not print and that changes rarely, "no data" and "estimate". (Its name is from when it was a tooltip.)
 
     /// Draws label-over-value at exact pixel positions, as a TEMPLATE image so the
     /// system tints it to match the rest of the menu bar.

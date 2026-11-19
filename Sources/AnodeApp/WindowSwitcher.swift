@@ -1,7 +1,6 @@
 import AppKit
 import ApplicationServices
 import ScreenCaptureKit
-import Security
 import PowerKit
 
 // ── Window switcher (Beta Features) ─────────────────────────────────────────

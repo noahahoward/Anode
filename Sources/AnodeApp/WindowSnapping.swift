@@ -426,7 +426,7 @@ final class WindowSnapper {
         let id = window.windowID
         let areas = Self.usableAreas()
         // The screen: under the pointer for a drop, otherwise where the window mostly is.
-        let pointerScreen = pointer.flatMap { p in WindowDragSnapper.screenFrames().firstIndex { $0.insetBy(dx: -0.5, dy: -0.5).contains(p) } }
+        let pointerScreen = pointer.flatMap { SnapZones.screenIndex(of: $0, in: WindowDragSnapper.screenFrames()) }
         guard let here = pointerScreen ?? WindowGeometry.screenIndex(for: current, in: areas) else { return }
         if let restoreFrame { remember(id, restoreFrame) }
 

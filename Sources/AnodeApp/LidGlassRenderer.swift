@@ -1,4 +1,4 @@
-import AppKit
+import Foundation
 import Metal
 import MetalPerformanceShaders
 import PowerKit
@@ -199,7 +199,6 @@ final class LidGlassRenderer {
     /// the layer for a drawable when none is free blocks the main thread, and everything else waits behind it.
     var framesInFlight: Int { inFlightLock.lock(); defer { inFlightLock.unlock() }; return _framesInFlight }
 
-    var hasImage: Bool { picture != nil }
     var metalDevice: MTLDevice { device }
 
     init?(device: MTLDevice? = MTLCreateSystemDefaultDevice()) {

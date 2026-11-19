@@ -75,11 +75,11 @@ final class ChargeSettingsTests: XCTestCase {
         XCTAssertFalse(s.chargeReadyByEnabled, "Ready By holds the battery back, so it is asked for")
         XCTAssertEqual(s.chargeReadyByMinutes, 420, "7:00, in minutes after midnight")
         XCTAssertTrue(s.chargeReadyByLowerEnabled, "Ready By lets the battery come down before it holds")
-        XCTAssertEqual(s.chargeReadyByHoldAtMost, 50)
+        XCTAssertEqual(s.chargeReadyByHoldAtMost, 80)
         XCTAssertNil(s.chargeRestoreRecord)
     }
 
-    /// The level Ready By comes down to is kept between 30 (its own floor) and 95, is 50 when what is stored is not a
+    /// The level Ready By comes down to is kept between 30 (its own floor) and 95, is 80 when what is stored is not a
     /// number, and reaches the policy only while the switch is on.
     func testTheLevelReadyByComesDownToIsClampedAndFollowsItsSwitch() {
         let s = Settings(defaults: defaults)
@@ -92,7 +92,7 @@ final class ChargeSettingsTests: XCTestCase {
         s.chargeReadyByHoldAtMost = 60
         XCTAssertEqual(s.chargeSettingsSnapshot().readyByHoldAtMost, 60)
         store("sixty", as: "chargeReadyByHoldAtMost")
-        XCTAssertEqual(Settings(defaults: defaults).chargeReadyByHoldAtMost, 50)
+        XCTAssertEqual(Settings(defaults: defaults).chargeReadyByHoldAtMost, 80)
         s.chargeReadyByHoldAtMost = 60
         s.chargeReadyByLowerEnabled = false
         XCTAssertNil(s.chargeSettingsSnapshot().readyByHoldAtMost, "switched off, the battery is held where it is")

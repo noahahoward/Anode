@@ -1,5 +1,4 @@
 import AppKit
-import PowerKit
 
 // ── Ultra Low Power Mode: the confirm box ───────────────────────────────────
 //
