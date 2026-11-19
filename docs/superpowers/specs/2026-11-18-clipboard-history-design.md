@@ -105,6 +105,9 @@ The chips are the kinds in the history (Text, Links, Images, Files, Pinned); Tab
 - The system card blurs what is behind it; this one does not (a system blur layer under the glass was far too wide, 33 points against 20,
   and added a veil of light the system's glass does not have). The tint is fitted to flat areas, so large areas match and fine detail through the
   card is sharper than the system's.
+- The list bends at the card's bottom edge: a deliberate addition (the system's panel has none). A `CIBumpDistortionLinear` on the list's layer,
+  16 points deep, squeezes the lowest words and icons toward the edge the way the glass's own edge bends what is behind it; the glass is not
+  extended past the card's bottom, so that edge shows too.
 - The panel is always the dark glass (as the system's is in a dark appearance); in a light appearance the system's may differ and was not measured.
 - Image and file entries are listed and pasted, but image search is by the word "image" only (there is no OCR).
 - A copy of Universal Clipboard content is never recorded, so it cannot be searched.
