@@ -28,7 +28,8 @@ enum ClipboardPlacement {
 
     /// The panel's frame (the bar and card, not the window with its shadow margin) at the default place on `screen`.
     static func defaultFrame(height: CGFloat, on screen: NSRect) -> NSRect {
-        let topFromScreenTop = screen.height * centreFraction - referenceHeight / 2
+        // whole points, as the system's is (282 on a 1169 point screen)
+        let topFromScreenTop = (screen.height * centreFraction - referenceHeight / 2).rounded()
         return NSRect(x: screen.midX - ClipboardPanelMetrics.width / 2, y: screen.maxY - topFromScreenTop - height,
                       width: ClipboardPanelMetrics.width, height: height)
     }
@@ -109,7 +110,8 @@ enum ClipboardPlacement {
             let wantedTop = start.maxY + (pointer.y - pointerStart.y)
             let sx = x.resolve(wantedX, to: target.minX)
             let sy = y.resolve(wantedTop, to: target.maxY)
-            frame = ClipboardPlacement.clamp(NSRect(x: sx.value, y: sy.value - start.height, width: start.width, height: start.height),
+            // whole points, so the hard rims of the glass stay on the pixels
+            frame = ClipboardPlacement.clamp(NSRect(x: sx.value.rounded(), y: sy.value.rounded() - start.height, width: start.width, height: start.height),
                                              screen: screen, visible: visible)
             return sx.caught || sy.caught
         }

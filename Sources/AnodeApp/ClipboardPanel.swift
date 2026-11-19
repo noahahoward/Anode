@@ -25,8 +25,8 @@ enum ClipboardPanelMetrics {
     static let pillHeight: CGFloat = 87              // measured: the search bar
     static let gap: CGFloat = 10                     // measured: between the bar and the card
     static let cardMaxHeight: CGFloat = 410          // measured
-    static let pillRadius: CGFloat = 34              // the bar's corners are nearly, not quite, a capsule
-    static let cardRadius: CGFloat = 30
+    static let pillRadius: CGFloat = 43.5            // measured: the bar is a capsule (half its height)
+    static let cardRadius: CGFloat = 38              // measured from the card's top corners
     // Where it opens and how it is dragged: `ClipboardPlacement`.
 
     // The bar
@@ -74,25 +74,49 @@ enum ClipboardPanelMetrics {
     static let fadeInDuration: TimeInterval = 0.11
     static let fadeOutDuration: TimeInterval = 0.11
 
+    /// The tint's opacity down the bar (`y` points from its top, of `height`) and down the card (`y` from its top): measured with solid
+    /// white, grey and black behind the system's panel and this one (2026-11-19). Over the clear glass, which passes the backdrop's
+    /// brightness B as 0.875 B + 0.125 (a little more than that for greys), a black tint of opacity a leaves (1 - a) of it. The bar's a
+    /// is 1.0 at the top and 0.61 at the bottom; the card's 0.55 at its top and 0.30 at 410 points down. (Fitted to stripes, which
+    /// the glass blurs and leaks light into from far off, it read as 0.46 to 0.37 and a lighter grey: the large flat areas of a real
+    /// backdrop then came out too dark.)
+    static func barTintAlpha(_ y: CGFloat, height h: CGFloat) -> CGFloat { 1.0 - 0.39 * y / max(h, 1) }
+    static func cardTintAlpha(_ y: CGFloat) -> CGFloat { 0.55 - 0.252 * min(1, y / 410) }
+
+    /// The system's rims, pixel by pixel (2 to the point) over white and black, as (points from the edge to the middle of the pixel,
+    /// the grey that fits, the opacity that fits). Each shape has them where the system's does: the bar at its bottom edge only, the
+    /// card at both. The last two pixels are a hard step; before them a gradual brightening of 4 or 5 points.
+    static let barBottomRim: [(from: CGFloat, gray: CGFloat, alpha: CGFloat)] = [
+        (4.75, 0.021, 0.623), (4.25, 0.037, 0.623), (3.75, 0.035, 0.611), (3.25, 0.051, 0.611), (2.75, 0.068, 0.611),
+        (2.25, 0.066, 0.589), (1.75, 0.100, 0.589), (1.25, 0.134, 0.566)]
+    /// The card's top rim: its first four half-point rows are hard bands (as they are in the system's), then it ramps off over 3 points.
+    static let cardTopBands: [(gray: CGFloat, alpha: CGFloat)] = [(0.75, 0.634), (0.55, 0.486), (0.17, 0.51), (0.135, 0.52)]
+    static let cardTopRim: [(from: CGFloat, gray: CGFloat, alpha: CGFloat)] = [
+        (2.25, 0.097, 0.53), (2.75, 0.078, 0.535), (3.25, 0.059, 0.54), (3.75, 0.05, 0.545), (4.25, 0.042, 0.545), (4.75, 0.03, 0.55),
+        (5.25, 0.02, 0.55)]
+    static let cardBottomRim: [(from: CGFloat, gray: CGFloat, alpha: CGFloat)] = [
+        (5.25, 0.02, 0.29), (4.75, 0.043, 0.30), (4.25, 0.074, 0.29), (3.75, 0.074, 0.29), (3.25, 0.108, 0.29), (2.75, 0.142, 0.29),
+        (2.25, 0.177, 0.29), (1.75, 0.214, 0.28), (1.25, 0.32, 0.28)]
+
     /// What is laid over the glass, from the top down: (how far down in points, a negative one from the bottom; the grey; the opacity).
-    /// MEASURED over a black and white striped backdrop: the clear glass passes about 88% of what is behind it and adds 12% light;
-    /// these are what bring the bar to the system's 0% passing at its top and 31% at its bottom, and the card's 36% to 55%, with the
-    /// system's added light, plus the rims (the bar's is at its bottom edge only; the card's at both).
     static func tintStops(card: Bool, height: CGFloat) -> [(y: CGFloat, gray: CGFloat, alpha: CGFloat)] {
-        if !card {
-            let h = max(height, 1)
-            let a = { (y: CGFloat) in 1.0 - 0.38 * y / h }       // 1.0 at the top, 0.62 at the bottom
-            // the bar's rim is its bottom edge only: a light grey line that reads 0.29 over black and 0.9 over white
-            return [(0, 0, a(0)), (-3, 0, a(h - 3)), (-1.2, 0, a(h - 1.2)), (-1.0, 0.75, 0.27), (h, 0.75, 0.27)]
-        }
         let h = max(height, 1)
-        let along = { (y: CGFloat) in min(1, y / 410) }            // the curve is drawn for the full 410 and cut off where the card ends
-        let gray = { (y: CGFloat) in 0.07 + 0.03 * along(y) }
-        let alpha = { (y: CGFloat) in 0.60 - 0.23 * along(y) }
-        // the top rim: a bright first point (0.43 over black, 0.74 over white), a dimmer second, then the glass
-        return [(0, 0.5, 0.55), (1.0, 0.5, 0.55), (1.0, 0.12, 0.45), (2.0, 0.12, 0.45),
-                (2.0, gray(2), alpha(2)), (h - 3, gray(h - 3), alpha(h - 3)), (h - 1.2, gray(h - 1.2), alpha(h - 1.2)),
-                (h - 1.0, 0.75, 0.27), (h, 0.75, 0.27)]
+        if !card {
+            var stops: [(y: CGFloat, gray: CGFloat, alpha: CGFloat)] = [(0, 0, barTintAlpha(0, height: h)), (h - 6, 0, barTintAlpha(h - 6, height: h))]
+            stops += barBottomRim.map { (-$0.from, $0.gray, $0.alpha) }
+            // the last two pixels: a hard step
+            stops += [(-1.0, 0.5, 0.463), (-0.5, 0.5, 0.463), (-0.5, 1.0, 0.394), (h, 1.0, 0.394)]
+            return stops
+        }
+        var stops: [(y: CGFloat, gray: CGFloat, alpha: CGFloat)] = []
+        for (i, band) in cardTopBands.enumerated() {
+            stops += [(CGFloat(i) * 0.5, band.gray, band.alpha), (CGFloat(i + 1) * 0.5, band.gray, band.alpha)]
+        }
+        stops += cardTopRim.map { ($0.from, $0.gray, $0.alpha) }
+        stops += [(6, 0, cardTintAlpha(6)), (h - 6, 0, cardTintAlpha(h - 6))]
+        stops += cardBottomRim.map { (-$0.from, $0.gray, $0.alpha) }
+        stops += [(-1.0, 1.0, 0.269), (-0.5, 1.0, 0.269), (-0.5, 1.0, 0.474), (h, 1.0, 0.474)]
+        return stops
     }
 
     /// The card's height for `rows` rows (nil: no card). Pure, for tests.
@@ -174,6 +198,7 @@ final class ClipboardPanel: NSPanel, ClipboardPresenting, NSWindowDelegate {
     func show(controller: ClipboardHistoryController) {
         self.controller = controller
         content.controller = controller
+        content.applyLab()
         content.reset()
         place()
         let animated = DisplayAccessibility.current.animates
@@ -516,6 +541,7 @@ final class ClipboardShapeView: NSView {
     /// Views, not bare layers: the glass is drawn over a layer of its parent's, and under a view added after it.
     private let tint = ClipboardTintView()
     private let edge = EdgeView()
+    private var labBlur: NSVisualEffectView?
 
     init(kind: Kind) {
         self.kind = kind
@@ -553,11 +579,46 @@ final class ClipboardShapeView: NSView {
 
     required init?(coder: NSCoder) { fatalError("not used") }
 
+    /// CALIBRATION (temporary): `anode.debug.clipboardGlass` in the settings domain, JSON
+    /// `{"pillStyle":"clear|regular","cardStyle":"clear|regular","pill":[[0,0,1],[87,0,0.5]],"card":[[0,0,0.5],[300,0,0.2]]}`: each stop (points
+    /// down, grey, opacity). Read each time the panel opens.
+    func applyLab() {
+        guard let text = UserDefaults(suiteName: "com.anode.settings")?.string(forKey: "anode.debug.clipboardGlass"),
+              let json = try? JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any] else { labBlur?.removeFromSuperview(); labBlur = nil; return }
+        if #available(macOS 26.0, *), let glass = material as? NSGlassEffectView, let style = json[kind == .pill ? "pillStyle" : "cardStyle"] as? String {
+            glass.style = style == "clear" ? .clear : .regular
+        }
+        // CALIBRATION: {"vfx":{"card":["hudWindow",0.5]}}: a system blur under the glass, at this opacity
+        labBlur?.removeFromSuperview()
+        labBlur = nil
+        if let v = (json["vfx"] as? [String: Any])?[kind == .pill ? "pill" : "card"] as? [Any], v.count == 2, let name = v[0] as? String, let alpha = (v[1] as? NSNumber)?.doubleValue {
+            let materials: [String: NSVisualEffectView.Material] = ["hudWindow": .hudWindow, "popover": .popover, "menu": .menu, "sidebar": .sidebar,
+                "underWindowBackground": .underWindowBackground, "fullScreenUI": .fullScreenUI, "sheet": .sheet, "headerView": .headerView,
+                "windowBackground": .windowBackground, "contentBackground": .contentBackground, "toolTip": .toolTip, "underPageBackground": .underPageBackground]
+            if let m = materials[name] {
+                let vfx = NSVisualEffectView()
+                vfx.material = m
+                vfx.blendingMode = .behindWindow
+                vfx.state = .active
+                vfx.appearance = NSAppearance(named: .darkAqua)
+                vfx.alphaValue = CGFloat(alpha)
+                addSubview(vfx, positioned: .below, relativeTo: material)
+                labBlur = vfx
+                needsLayout = true
+            }
+        }
+        if let raw = json[kind == .pill ? "pill" : "card"] as? [[Double]] {
+            let stops = raw.filter { $0.count == 3 }.map { (y: CGFloat($0[0]), gray: CGFloat($0[1]), alpha: CGFloat($0[2])) }
+            if stops.count >= 2 { tint.stops = { _ in stops } }
+        }
+    }
+
     override func layout() {
         super.layout()
         // The glass is taller than the shape; the shape's clip (rounded corners, `masksToBounds`) cuts the rest off.
         let bleed = ClipboardPanelMetrics.glassBleed
         material.frame = NSRect(x: 0, y: -bleed, width: bounds.width, height: bounds.height + 2 * bleed)
+        labBlur?.frame = material.frame
         body.frame = bounds
         tint.frame = bounds
         edge.frame = bounds
@@ -701,6 +762,8 @@ final class ClipboardContentView: NSView, NSTextFieldDelegate, NSTableViewDataSo
     func entry(atRow row: Int) -> ClipboardEntry? { rows.indices.contains(row) ? rows[row].entry : nil }
 
     /// A fresh start: nothing typed, no chip, the first row chosen.
+    func applyLab() { pill.applyLab(); card.applyLab() }
+
     func reset() {
         field.stringValue = ""
         filter = nil
