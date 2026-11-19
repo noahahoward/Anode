@@ -19,10 +19,10 @@ import Carbon.HIToolbox
 /// A key and the modifiers held with it.
 struct Shortcut: Codable, Hashable {
     var key: Int
-    /// Control 1, Option 2, Command 4, Shift 8: our own bits, so nothing depends on Carbon's or AppKit's.
+    /// Control 1, Option 2, Command 4, Shift 8, the Globe (fn) key 16: our own bits, so nothing depends on Carbon's or AppKit's.
     var modifiers: Int
 
-    static let control = 1, option = 2, command = 4, shift = 8
+    static let control = 1, option = 2, command = 4, shift = 8, function = 16
 
     init(key: Int, modifiers: Int) {
         self.key = key
@@ -39,29 +39,39 @@ struct Shortcut: Codable, Hashable {
         self.init(key: key, modifiers: m)
     }
 
-    /// The modifiers of an event, as our bits. Caps lock, fn and the numeric-pad flag an arrow key
-    /// carries are not modifiers anybody chooses, and are ignored.
-    static func mask(_ flags: CGEventFlags) -> Int {
+    /// The keys that carry the fn flag themselves: the arrows, the function keys, Home, End, Page Up and Down, Forward Delete,
+    /// Help. A press of one has the flag whether or not Globe is held, so on these the flag is no choice anybody made, and it
+    /// is ignored (it always was, and Control-Option-Left is still that).
+    static let keysThatSetFn: Set<Int> = [
+        kVK_LeftArrow, kVK_RightArrow, kVK_UpArrow, kVK_DownArrow, kVK_Home, kVK_End, kVK_PageUp, kVK_PageDown,
+        kVK_ForwardDelete, kVK_Help, kVK_F1, kVK_F2, kVK_F3, kVK_F4, kVK_F5, kVK_F6, kVK_F7, kVK_F8, kVK_F9, kVK_F10,
+        kVK_F11, kVK_F12, kVK_F13, kVK_F14, kVK_F15, kVK_F16, kVK_F17, kVK_F18, kVK_F19, kVK_F20,
+    ]
+
+    /// The modifiers of an event for `key`, as our bits. Caps lock and the numeric-pad flag an arrow key carries are not
+    /// modifiers anybody chooses, and are ignored; fn counts (it is the Globe key) except on the keys that set it themselves.
+    static func mask(_ flags: CGEventFlags, key: Int) -> Int {
         var m = 0
         if flags.contains(.maskControl) { m |= control }
         if flags.contains(.maskAlternate) { m |= option }
         if flags.contains(.maskCommand) { m |= command }
         if flags.contains(.maskShift) { m |= shift }
+        if flags.contains(.maskSecondaryFn), !keysThatSetFn.contains(key) { m |= function }
         return m
     }
 
-    init(key: Int, flags: CGEventFlags) { self.init(key: key, modifiers: Self.mask(flags)) }
+    init(key: Int, flags: CGEventFlags) { self.init(key: key, modifiers: Self.mask(flags, key: key)) }
 
     /// Exactly these modifiers: Control-Option-Left is not Control-Option-Shift-Left.
-    func matches(key: Int, flags: CGEventFlags) -> Bool { self.key == key && modifiers == Self.mask(flags) }
+    func matches(key: Int, flags: CGEventFlags) -> Bool { self.key == key && modifiers == Self.mask(flags, key: key) }
 
     /// Something a user can sensibly bind: a modifier is held (a bare letter would swallow typing), or it is
     /// a function key, which has no typing to lose.
     var isUsable: Bool { modifiers != 0 || KeyNames.isFunctionKey(key) }
 
-    /// "⌃⌥⇧⌘" in the order macOS writes them, then the key.
+    /// "🌐⌃⌥⇧⌘" in the order macOS writes them, then the key.
     var label: String {
-        (modifiers & Self.control != 0 ? "⌃" : "") + (modifiers & Self.option != 0 ? "⌥" : "")
+        (modifiers & Self.function != 0 ? "🌐" : "") + (modifiers & Self.control != 0 ? "⌃" : "") + (modifiers & Self.option != 0 ? "⌥" : "")
             + (modifiers & Self.shift != 0 ? "⇧" : "") + (modifiers & Self.command != 0 ? "⌘" : "")
             + KeyNames.name(for: key)
     }
@@ -151,7 +161,13 @@ enum ShortcutCommands {
         defaultShortcut: Shortcut(key: kVK_ANSI_U, carbon: controlKey | optionKey | cmdKey))
     static var ultra: [ShortcutCommand] { [ultraToggle] }
 
-    static var all: [ShortcutCommand] { window + groups + cleaner + wallpaper + hider + ultra }
+    /// Clipboard History: open the panel. Globe + Space, listened for only while Clipboard History is switched on.
+    static let clipboardOpen = ShortcutCommand(
+        id: "clipboard.open", title: "Open Clipboard History", section: "Clipboard History",
+        defaultShortcut: Shortcut(key: kVK_Space, modifiers: Shortcut.function))
+    static var clipboard: [ShortcutCommand] { [clipboardOpen] }
+
+    static var all: [ShortcutCommand] { window + groups + cleaner + wallpaper + hider + ultra + clipboard }
 }
 
 /// The user's choices: each command's shortcut, its default unless changed, or none.
@@ -250,6 +266,7 @@ enum SystemShortcuts {
             if p[2] & 0x80000 != 0 { m |= Shortcut.option }
             if p[2] & 0x100000 != 0 { m |= Shortcut.command }
             if p[2] & 0x20000 != 0 { m |= Shortcut.shift }
+            if p[2] & 0x800000 != 0 { m |= Shortcut.function }
             if p[1] == shortcut.key && m == shortcut.modifiers { return names[id] ?? "a macOS shortcut" }
         }
         return nil

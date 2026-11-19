@@ -2521,6 +2521,7 @@ final class ChargeController {
             log(onAC ? "manual drain finished" : "manual drain ended: unplugged")
         }
         lastDecision = decision
+        noteAboveTheHold(b, onAC: onAC, decision: decision)
         // The helper's planned write, found by the drift pass just before this: the limit macOS holds is the plan's, and
         // the decision made now says whether that is what is wanted. Said plainly when it is not (`apply` puts the
         // decision's own limit in force just below).
@@ -2543,6 +2544,22 @@ final class ChargeController {
         noteHelperNeed(now: now)
         endHardDrainIfItIsOver()
         if announce { changed() }
+    }
+
+    /// Whether the line below has been written for this stretch above the hold.
+    private var aboveHoldLogged = false
+
+    /// The battery is more than a point above the level macOS is held at: said once for each time it goes there, with what the
+    /// battery itself reports. Whether the charger charged it past the hold, or the gauge only read itself again (the percentage
+    /// moves in steps that are too quick to be charging), cannot be told afterwards without these numbers.
+    private func noteAboveTheHold(_ b: Battery.State, onAC: Bool, decision: ChargeDecision) {
+        guard onAC, decision.dischargeTo == nil, b.percent > decision.osLimit + 1 else { aboveHoldLogged = false; return }
+        guard !aboveHoldLogged else { return }
+        aboveHoldLogged = true
+        log("the battery is at \(b.percent)%, above the \(decision.osLimit)% macOS is held at: "
+            + "\(b.isCharging ? "charging" : "not charging"), battery current \(b.amperage_mA) mA, "
+            + "charger \(b.adapterInput_mW.map { String(format: "%.1f W", $0 / 1000) } ?? "unread"), "
+            + "not-charging reason \(b.notChargingReason), \(b.remainingCapacity_mAh) mAh left")
     }
 
     /// The moment the helper was given to wake the Mac for is the start of the charge, whatever an estimate made now

@@ -71,6 +71,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
     var menuBarHider: MenuBarHiderRuntime?
     /// Ultra Low Power Mode. Exists for the app's whole life; while its box is unticked it holds nothing but an observer.
     var ultraLowPower: UltraLowPowerRuntime?
+    /// Clipboard History. Exists for the app's whole life; while its setting is off it holds nothing but an observer.
+    var clipboardHistory: ClipboardHistoryController?
     var soundMenu: SoundMenuController?
     var batteryMenu: BatteryMenuController?
     /// Anode's Battery menu is open: it is a reader of the per-app figures, as the widgets' panel is (see `refresh`).
@@ -454,6 +456,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         // Made after Keep Awake, whose own recovery has put the screen back by now. A session a crash left is undone here, and
         // nothing else of the mode exists until its box is ticked (Beta Features).
         ultraLowPower = UltraLowPowerRuntime.live(widgets: widgets, openBetaFeatures: { [weak self] in self?.betaFeaturesWindow.show() })
+        // Clipboard History: nothing of it runs until its setting is on (Beta Features).
+        clipboardHistory = ClipboardHistoryRuntime.live()
         // Anode's own Sound menu: nothing of it exists until its setting is on (Beta Features).
         // One driver for both menus: macOS's Control Center is used by one job at a time.
         let panelDriver = SystemPanelDriver()
@@ -2827,6 +2831,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         keepAwake?.shutdown()
         gameMode?.shutdown()
         menuBarHider?.shutdown()
+        clipboardHistory?.shutdown()
         liveWallpaper?.shutdown()
         // Read on the sampling queue, which owns both — reading them here on
         // main raced the tick that mutates them. Safe to wait on: the sampling

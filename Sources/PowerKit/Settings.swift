@@ -108,6 +108,14 @@ public final class Settings {
         public static let ultraLowPowerEfficiencyCores = "ultraLowPowerEfficiencyCores"
         /// Ultra Low Power Mode: a black backdrop behind every app window.
         public static let ultraLowPowerBlackBackdrop = "ultraLowPowerBlackBackdrop"
+        /// Clipboard History (Beta Features): the switch, a pause, how long entries are kept (minutes, 0 for ever), how many,
+        /// whether images are kept, and the apps whose copies are never recorded.
+        public static let clipboardHistoryEnabled = "clipboardHistoryEnabled"
+        public static let clipboardHistoryPaused = "clipboardHistoryPaused"
+        public static let clipboardHistoryKeepMinutes = "clipboardHistoryKeepMinutes"
+        public static let clipboardHistoryMaxEntries = "clipboardHistoryMaxEntries"
+        public static let clipboardHistoryKeepImages = "clipboardHistoryKeepImages"
+        public static let clipboardHistoryIgnoredApps = "clipboardHistoryIgnoredApps"
         /// Wildcard — an observer registered on this key fires for every change.
         public static let any = "*"
     }
@@ -131,6 +139,9 @@ public final class Settings {
     public static let chargeReadyByMinutesRange: ClosedRange<Int> = 0...1439
     /// The level Ready By lets the battery come down to before it holds: from its own floor up to 95%.
     public static let chargeReadyByHoldAtMostRange: ClosedRange<Int> = ChargePolicy.readyByHoldAtMostRange
+    /// Clipboard History: how long an entry is kept, in minutes (0 is for ever, up to a year otherwise), and how many are.
+    public static let clipboardHistoryKeepMinutesRange: ClosedRange<Int> = 0...525_600
+    public static let clipboardHistoryMaxEntriesRange: ClosedRange<Int> = 10...5000
 
     /// What the ledger graph drew before it was customizable: the drain line, its
     /// mean since the lid opened, and the battery level. The strings are the
@@ -265,6 +276,13 @@ public final class Settings {
         /// lowers the draw (a fully black screen read 0.5 to 0.7 W under ordinary content). The owner ticks it off to keep the
         /// desktop picture.
         static let ultraLowPowerBlackBackdrop = true
+        /// OFF: it keeps a copy of what is copied, on disk, so the owner asks for it.
+        static let clipboardHistoryEnabled = false
+        static let clipboardHistoryPaused = false
+        /// A day: long enough to find what was copied this morning, short enough that a password that slipped through is gone.
+        static let clipboardHistoryKeepMinutes = 1440
+        static let clipboardHistoryMaxEntries = 500
+        static let clipboardHistoryKeepImages = true
         /// Matches what the status item shows today: smoothed drain + runtime.
         // Must be real, currently-registered metric IDs. Stale ones are invisible
         // in the picker and get preserved forever as "unknown" bindings.
@@ -386,6 +404,12 @@ public final class Settings {
         var ultraLowPowerAlwaysKeep: [String]
         var ultraLowPowerEfficiencyCores: Bool
         var ultraLowPowerBlackBackdrop: Bool
+        var clipboardHistoryEnabled: Bool
+        var clipboardHistoryPaused: Bool
+        var clipboardHistoryKeepMinutes: Int
+        var clipboardHistoryMaxEntries: Int
+        var clipboardHistoryKeepImages: Bool
+        var clipboardHistoryIgnoredApps: [String]
     }
     private var snapshot: Values
     private var defaultsObserver: NSObjectProtocol?
@@ -1187,6 +1211,49 @@ public final class Settings {
         set { writeBool(Key.ultraLowPowerBlackBackdrop, \.ultraLowPowerBlackBackdrop, newValue, Default.ultraLowPowerBlackBackdrop) }
     }
 
+    // ── Clipboard History (Beta Features) ───────────────────────────────────
+
+    /// Whether Clipboard History is on (Beta Features). Off until asked for: it keeps what is copied, on disk, and listens for
+    /// its key.
+    public var clipboardHistoryEnabled: Bool {
+        get { Settings.readBool(defaults, Key.clipboardHistoryEnabled, Default.clipboardHistoryEnabled) }
+        set { writeBool(Key.clipboardHistoryEnabled, \.clipboardHistoryEnabled, newValue, Default.clipboardHistoryEnabled) }
+    }
+
+    /// Recording is paused: nothing new is kept, and what was copied meanwhile is never recorded when it ends.
+    public var clipboardHistoryPaused: Bool {
+        get { Settings.readBool(defaults, Key.clipboardHistoryPaused, Default.clipboardHistoryPaused) }
+        set { writeBool(Key.clipboardHistoryPaused, \.clipboardHistoryPaused, newValue, Default.clipboardHistoryPaused) }
+    }
+
+    /// How long an entry is kept, in minutes; 0 is for ever. Pinned entries are kept whatever this says.
+    public var clipboardHistoryKeepMinutes: Int {
+        get { Settings.readInt(defaults, Key.clipboardHistoryKeepMinutes, Default.clipboardHistoryKeepMinutes,
+                               Settings.clipboardHistoryKeepMinutesRange) }
+        set { writeInt(Key.clipboardHistoryKeepMinutes, \.clipboardHistoryKeepMinutes, newValue,
+                       Default.clipboardHistoryKeepMinutes, Settings.clipboardHistoryKeepMinutesRange) }
+    }
+
+    /// How many entries are kept (the oldest unpinned go first).
+    public var clipboardHistoryMaxEntries: Int {
+        get { Settings.readInt(defaults, Key.clipboardHistoryMaxEntries, Default.clipboardHistoryMaxEntries,
+                               Settings.clipboardHistoryMaxEntriesRange) }
+        set { writeInt(Key.clipboardHistoryMaxEntries, \.clipboardHistoryMaxEntries, newValue,
+                       Default.clipboardHistoryMaxEntries, Settings.clipboardHistoryMaxEntriesRange) }
+    }
+
+    /// Whether copied images are kept (they are the big ones).
+    public var clipboardHistoryKeepImages: Bool {
+        get { Settings.readBool(defaults, Key.clipboardHistoryKeepImages, Default.clipboardHistoryKeepImages) }
+        set { writeBool(Key.clipboardHistoryKeepImages, \.clipboardHistoryKeepImages, newValue, Default.clipboardHistoryKeepImages) }
+    }
+
+    /// Bundle ids of the apps whose copies are never recorded, besides the password managers that always are.
+    public var clipboardHistoryIgnoredApps: [String] {
+        get { Settings.readIDList(defaults, Key.clipboardHistoryIgnoredApps) }
+        set { writeIDList(newValue, key: Key.clipboardHistoryIgnoredApps, keyPath: \.clipboardHistoryIgnoredApps) }
+    }
+
     private static func readAlwaysKeep(_ d: UserDefaults) -> [String] {
         guard let text = d.string(forKey: storageKey(Key.ultraLowPowerAlwaysKeep)),
               let data = text.data(using: .utf8),
@@ -1454,6 +1521,12 @@ public final class Settings {
         if old.ultraLowPowerAlwaysKeep != now.ultraLowPowerAlwaysKeep { notify(Key.ultraLowPowerAlwaysKeep) }
         if old.ultraLowPowerEfficiencyCores != now.ultraLowPowerEfficiencyCores { notify(Key.ultraLowPowerEfficiencyCores) }
         if old.ultraLowPowerBlackBackdrop != now.ultraLowPowerBlackBackdrop { notify(Key.ultraLowPowerBlackBackdrop) }
+        if old.clipboardHistoryEnabled != now.clipboardHistoryEnabled { notify(Key.clipboardHistoryEnabled) }
+        if old.clipboardHistoryPaused != now.clipboardHistoryPaused { notify(Key.clipboardHistoryPaused) }
+        if old.clipboardHistoryKeepMinutes != now.clipboardHistoryKeepMinutes { notify(Key.clipboardHistoryKeepMinutes) }
+        if old.clipboardHistoryMaxEntries != now.clipboardHistoryMaxEntries { notify(Key.clipboardHistoryMaxEntries) }
+        if old.clipboardHistoryKeepImages != now.clipboardHistoryKeepImages { notify(Key.clipboardHistoryKeepImages) }
+        if old.clipboardHistoryIgnoredApps != now.clipboardHistoryIgnoredApps { notify(Key.clipboardHistoryIgnoredApps) }
     }
 
     // ── Plumbing ────────────────────────────────────────────────────────────
@@ -1666,7 +1739,15 @@ public final class Settings {
                ultraLowPowerEnabled: readBool(d, Key.ultraLowPowerEnabled, Default.ultraLowPowerEnabled),
                ultraLowPowerAlwaysKeep: readAlwaysKeep(d),
                ultraLowPowerEfficiencyCores: readBool(d, Key.ultraLowPowerEfficiencyCores, Default.ultraLowPowerEfficiencyCores),
-               ultraLowPowerBlackBackdrop: readBool(d, Key.ultraLowPowerBlackBackdrop, Default.ultraLowPowerBlackBackdrop))
+               ultraLowPowerBlackBackdrop: readBool(d, Key.ultraLowPowerBlackBackdrop, Default.ultraLowPowerBlackBackdrop),
+               clipboardHistoryEnabled: readBool(d, Key.clipboardHistoryEnabled, Default.clipboardHistoryEnabled),
+               clipboardHistoryPaused: readBool(d, Key.clipboardHistoryPaused, Default.clipboardHistoryPaused),
+               clipboardHistoryKeepMinutes: readInt(d, Key.clipboardHistoryKeepMinutes, Default.clipboardHistoryKeepMinutes,
+                                                    clipboardHistoryKeepMinutesRange),
+               clipboardHistoryMaxEntries: readInt(d, Key.clipboardHistoryMaxEntries, Default.clipboardHistoryMaxEntries,
+                                                   clipboardHistoryMaxEntriesRange),
+               clipboardHistoryKeepImages: readBool(d, Key.clipboardHistoryKeepImages, Default.clipboardHistoryKeepImages),
+               clipboardHistoryIgnoredApps: readIDList(d, Key.clipboardHistoryIgnoredApps))
     }
 }
 
