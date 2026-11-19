@@ -68,9 +68,9 @@ enum ClipboardPanelMetrics {
     // The shadow, drawn here and not by the window server, whose own is much lighter than the system panel's (measured: beside the
     // bar the backdrop is dimmed by 20% at the edge, beside the card 30%, and the gap between them to 40%).
     static let shadowMargin: CGFloat = 48
-    static let shadowOpacity: Float = 0.55
-    static let shadowRadius: CGFloat = 24
-    static let shadowDrop: CGFloat = 6
+    static let shadowOpacity: Float = 0.72
+    static let shadowRadius: CGFloat = 22
+    static let shadowDrop: CGFloat = 16
 
     // Appearing and going: the panel's opacity, read every few milliseconds, rose in about 0.11 s and fell in about 0.11 s, evenly.
     static let fadeInDuration: TimeInterval = 0.11
@@ -173,8 +173,6 @@ final class ClipboardPanel: NSPanel, ClipboardPresenting, NSWindowDelegate {
     func show(controller: ClipboardHistoryController) {
         self.controller = controller
         content.controller = controller
-        content.applyLab()
-        host.applyLab()
         content.reset()
         place()
         let animated = DisplayAccessibility.current.animates
@@ -339,7 +337,6 @@ final class ClipboardShadowHost: NSView {
     let content: ClipboardContentView
     private let shadowLayer = CALayer()
     private let cut = CAShapeLayer()
-    private var labShadow: (opacity: Float, radius: CGFloat, drop: CGFloat)?
 
     init(content: ClipboardContentView) {
         self.content = content
@@ -354,15 +351,6 @@ final class ClipboardShadowHost: NSView {
     }
 
     required init?(coder: NSCoder) { fatalError("not used") }
-
-    /// CALIBRATION (temporary), from the same JSON: `"shadow":[opacity, radius, drop]`.
-    func applyLab() {
-        guard let text = UserDefaults(suiteName: "com.anode.settings")?.string(forKey: "anode.debug.clipboardGlass"),
-              let json = try? JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any],
-              let s = json["shadow"] as? [Double], s.count == 3 else { return }
-        labShadow = (Float(s[0]), CGFloat(s[1]), CGFloat(s[2]))
-        updateShadow()
-    }
 
     override func layout() {
         super.layout()
@@ -384,7 +372,7 @@ final class ClipboardShadowHost: NSView {
             all.addPath(CGPath(roundedRect: rect, cornerWidth: radius, cornerHeight: radius, transform: nil))
             hole.addPath(CGPath(roundedRect: rect, cornerWidth: radius, cornerHeight: radius, transform: nil))
         }
-        let lab = labShadow ?? (ClipboardPanelMetrics.shadowOpacity, ClipboardPanelMetrics.shadowRadius, ClipboardPanelMetrics.shadowDrop)
+        let lab = (opacity: ClipboardPanelMetrics.shadowOpacity, radius: ClipboardPanelMetrics.shadowRadius, drop: ClipboardPanelMetrics.shadowDrop)
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         shadowLayer.frame = bounds
@@ -470,7 +458,6 @@ final class ClipboardShapeView: NSView {
     /// Views, not bare layers: the glass is drawn over a layer of its parent's, and under a view added after it.
     private let tint = ClipboardTintView()
     private let edge = EdgeView()
-    private var labBleed: CGFloat?
 
     init(kind: Kind) {
         self.kind = kind
@@ -508,26 +495,10 @@ final class ClipboardShapeView: NSView {
 
     required init?(coder: NSCoder) { fatalError("not used") }
 
-    /// CALIBRATION (temporary): `anode.debug.clipboardGlass` in the settings domain, JSON
-    /// `{"style":"clear|regular","pill":[[0,0,1],[1,0,0.54]],"card":[[0,0,0.5],[1,0,0.2]]}`, each stop (how far down, grey, opacity).
-    /// Read each time the panel opens, so the glass can be tuned against the system's without restarting.
-    func applyLab() {
-        guard let text = UserDefaults(suiteName: "com.anode.settings")?.string(forKey: "anode.debug.clipboardGlass"),
-              let json = try? JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any] else { return }
-        if #available(macOS 26.0, *), let glass = material as? NSGlassEffectView, let style = json["style"] as? String {
-            glass.style = style == "clear" ? .clear : .regular
-        }
-        if let bleed = json["bleed"] as? Double { labBleed = CGFloat(bleed); needsLayout = true }
-        if let raw = json[kind == .pill ? "pill" : "card"] as? [[Double]] {
-            let stops = raw.filter { $0.count == 3 }.map { (y: CGFloat($0[0]), gray: CGFloat($0[1]), alpha: CGFloat($0[2])) }
-            if stops.count >= 2 { tint.stops = { _ in stops } }
-        }
-    }
-
     override func layout() {
         super.layout()
         // The glass is taller than the shape; the shape's clip (rounded corners, `masksToBounds`) cuts the rest off.
-        let bleed = labBleed ?? ClipboardPanelMetrics.glassBleed
+        let bleed = ClipboardPanelMetrics.glassBleed
         material.frame = NSRect(x: 0, y: -bleed, width: bounds.width, height: bounds.height + 2 * bleed)
         body.frame = bounds
         tint.frame = bounds
@@ -654,8 +625,6 @@ final class ClipboardContentView: NSView, NSTextFieldDelegate, NSTableViewDataSo
         emptyLabel.alignment = .center
         card.body.addSubview(emptyLabel)
     }
-
-    func applyLab() { pill.applyLab(); card.applyLab() }
 
     /// Called after each layout, so the shadow follows the shapes.
     var onLayout: (() -> Void)?

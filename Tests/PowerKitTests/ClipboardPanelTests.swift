@@ -120,14 +120,49 @@ final class ClipboardPanelTests: XCTestCase {
         XCTAssertEqual(M.topFraction, 0.30, accuracy: 0.001)
     }
 
-    /// Black at the top of the bar and half that at its bottom; the card's is lighter, and lighter still at the bottom.
-    func testTheBlackOverTheGlassFadesFromTopToBottom() {
+    /// The tint over the glass was fitted to the system panel's measured transparency over a black and white striped backdrop: the bar
+    /// is fully black at its top and lets about a third of the backdrop through at its bottom; the card lets a third through at its
+    /// top and a half at its bottom. Each shape has a rim of its own where the system's does: the bar at its bottom edge only.
+    func testTheTintIsBlackAtTheTopOfTheBarAndLightensDownTheBarAndTheCard() {
+        let bar = ClipboardPanelMetrics.tintStops(card: false, height: 87)
+        XCTAssertEqual(bar.first?.alpha, 1.0, "fully opaque black at the top: nothing of the backdrop")
+        XCTAssertEqual(bar.first?.gray, 0)
+        let barBottomBase = bar.first { $0.y == -3 }!
+        XCTAssertEqual(barBottomBase.alpha, 1.0 - 0.38 * 84 / 87, accuracy: 0.001, "0.62 at the bottom: it is what lets 0.31 of the backdrop through")
+        XCTAssertGreaterThan(bar.last!.gray, 0.5, "the rim along the bar's bottom edge is light")
+        XCTAssertEqual(bar.last?.y, 87)
+        XCTAssertFalse(bar.dropFirst().prefix(2).contains { $0.gray > 0.5 }, "no rim along the bar's top")
+
+        let card = ClipboardPanelMetrics.tintStops(card: true, height: 410)
+        XCTAssertEqual(card.first?.gray ?? 0, 0.5, accuracy: 0.1, "a bright rim along the card's top")
+        let cardTop = card.first { $0.y == 2.0 && $0.gray < 0.1 }!
+        XCTAssertEqual(cardTop.alpha, 0.60, accuracy: 0.01)
+        let cardBottom = card.first { $0.y == 410 - 3 }!
+        XCTAssertEqual(cardBottom.alpha, 0.60 - 0.23 * (407.0 / 410), accuracy: 0.01)
+        XCTAssertLessThan(cardBottom.alpha, cardTop.alpha, "lighter, more of the backdrop, lower down")
+    }
+
+    /// A short card (few entries) is the same curve cut off where it ends, not stretched.
+    func testAShortCardIsTheSameCurveCutShort() {
+        let tall = ClipboardPanelMetrics.tintStops(card: true, height: 410)
+        let short = ClipboardPanelMetrics.tintStops(card: true, height: 200)
+        let at100tall = tall.first { $0.y == 2.0 && $0.gray < 0.1 }!
+        let at100short = short.first { $0.y == 2.0 && $0.gray < 0.1 }!
+        XCTAssertEqual(at100tall.alpha, at100short.alpha, accuracy: 0.001)
+        XCTAssertGreaterThan(short.first { $0.y == 200 - 3 }!.alpha, tall.first { $0.y == 410 - 3 }!.alpha, "it has not got as far down the curve")
+    }
+
+    /// The system's panel casts a much darker and wider shadow than a window's own: it is drawn in a margin round the panel.
+    func testTheShadowIsDrawnInAMarginRoundThePanel() {
         typealias M = ClipboardPanelMetrics
-        XCTAssertEqual(M.pillTint.top, 1.0)
-        XCTAssertLessThan(M.pillTint.bottom, M.pillTint.top)
-        XCTAssertEqual(M.pillTint.bottom, 0.54, accuracy: 0.01)
-        XCTAssertLessThan(M.cardTint.top, M.pillTint.bottom, "the card is lighter than the bar")
-        XCTAssertLessThan(M.cardTint.bottom, M.cardTint.top)
+        let panel = NSRect(x: 640, y: 400, width: M.width, height: 300)
+        let window = ClipboardPanel.windowFrame(forPanel: panel)
+        XCTAssertEqual(window.width, M.width + 2 * M.shadowMargin)
+        XCTAssertEqual(window.height, 300 + 2 * M.shadowMargin)
+        XCTAssertEqual(window.midX, panel.midX, accuracy: 0.001)
+        XCTAssertEqual(window.midY, panel.midY, accuracy: 0.001)
+        XCTAssertGreaterThan(M.shadowMargin, M.shadowRadius, "the margin holds the whole blur")
+        XCTAssertGreaterThan(M.shadowOpacity, 0.5)
     }
 
     /// Opacity read every few milliseconds on the system panel: about a tenth of a second in and the same out, evenly.
