@@ -40,6 +40,11 @@ public enum ClipboardTypes {
     /// The marker types (nspasteboard.org) are never stored: they say how an app wants its copy treated, and an entry kept for
     /// good must not carry one.
     public static func isMarker(_ type: String) -> Bool { type.hasPrefix("org.nspasteboard.") }
+
+    /// A form of Anode's own that goes on every entry it puts back on the pasteboard to be pasted. Whatever the change counter does
+    /// afterwards, a pasteboard that carries it holds Anode's own paste, which is not a new copy: it is never recorded again, and so
+    /// never under another app's name (or this one's).
+    public static let ownWrite = "dev.anode.clipboard-history.pasted"
 }
 
 /// One form of one pasteboard item, as read.

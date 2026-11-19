@@ -41,7 +41,8 @@ enum ClipboardHistoryRuntime {
             },
             unregisterShortcut: { KeybindCenter.shared.unregister(owner: shortcutOwner) },
             schedule: { delay, work in DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work) },
-            accessDescription: { RealClipboard.accessDescription() })
+            accessDescription: { RealClipboard.accessDescription() },
+            closeSpotlight: { SystemSpotlight.closeIfOpen() })
         ClipboardHistoryController.current = controller
         watchScreenAndSession(controller)
         return controller

@@ -307,9 +307,55 @@ final class ClipboardPanelTests: XCTestCase {
         XCTAssertEqual(filters.first?.name, "CIBumpDistortionLinear")
         XCTAssertEqual(filters.first?.value(forKey: "inputRadius") as? Double, Double(M.edgeLensDepth))
         XCTAssertEqual(filters.first?.value(forKey: "inputAngle") as? Double, 0, "a horizontal line")
-        XCTAssertLessThan(try XCTUnwrap(filters.first?.value(forKey: "inputScale") as? Double), 0, "squeezing the rows toward the edge")
+        XCTAssertGreaterThan(try XCTUnwrap(filters.first?.value(forKey: "inputScale") as? Double), 1,
+                             "pinching the rows toward the edge: a bump leaves things alone at 1, magnifies below it (and cuts a row's last points off), pinches above")
         XCTAssertEqual((filters.first?.value(forKey: "inputCenter") as? CIVector)?.x, M.width / 2)
         XCTAssertLessThanOrEqual(M.edgeLensDepth, 20, "a thin band at the bottom: the owner asked for about 20 pixels")
+    }
+
+    /// What is in the card (the list's words and pictures at its bottom) sits in the glass, under the glass's light at its edge: the
+    /// black of the tint goes under the content and the rim over it. Together they are the one layer that `tintStops` is.
+    func testTheRimsAreOverTheContentAndTheBlackUnderIt() {
+        typealias M = ClipboardPanelMetrics
+        /// The colour a gradient of these stops has `p` points from the top (a step where two stops share a place: the later one).
+        func sample(_ stops: [M.TintStop], at p: CGFloat, height h: CGFloat) -> (gray: CGFloat, alpha: CGFloat) {
+            let placed = stops.map { (at: $0.y < 0 ? h + $0.y : $0.y, gray: $0.gray, alpha: $0.alpha) }.sorted { $0.at < $1.at }
+            var lower = placed[0], upper = placed[placed.count - 1]
+            for stop in placed where stop.at <= p { lower = stop }
+            for stop in placed.reversed() where stop.at > p { upper = stop }
+            if p >= placed[placed.count - 1].at { return (placed[placed.count - 1].gray, placed[placed.count - 1].alpha) }
+            if p < placed[0].at { return (placed[0].gray, placed[0].alpha) }
+            let t = upper.at == lower.at ? 0 : (p - lower.at) / (upper.at - lower.at)
+            return (lower.gray + (upper.gray - lower.gray) * t, lower.alpha + (upper.alpha - lower.alpha) * t)
+        }
+        for (card, height) in [(false, CGFloat(87)), (true, 410), (true, 200), (true, 96)] {
+            let (base, rim) = M.splitTint(card: card, height: height)
+            for stops in [base, rim] {
+                let places = stops.map { $0.y < 0 ? height + $0.y : $0.y }
+                XCTAssertEqual(places, places.sorted(), "in order (card \(card), \(height))")
+                XCTAssertTrue(places.allSatisfy { $0 >= 0 && $0 <= height }, "inside the shape (card \(card), \(height))")
+            }
+            let whole = M.tintStops(card: card, height: height)
+            // the last pixels, where the bottom rim is: all of it in the rim, none in the black
+            for p in [height - 0.25, height - 0.75, height - 1.75, height - 3.25] {
+                let w = sample(whole, at: p, height: height), r = sample(rim, at: p, height: height), b = sample(base, at: p, height: height)
+                XCTAssertEqual(r.alpha, w.alpha, accuracy: 0.001, "the rim has the whole tint at \(p) (card \(card), \(height))")
+                XCTAssertEqual(r.gray, w.gray, accuracy: 0.001)
+                XCTAssertEqual(b.alpha, 0, accuracy: 0.001, "and the black none")
+            }
+            // the middle: all of it in the black, none in the rim
+            let middle = height / 2
+            let w = sample(whole, at: middle, height: height)
+            XCTAssertEqual(sample(base, at: middle, height: height).alpha, w.alpha, accuracy: 0.001)
+            XCTAssertEqual(sample(rim, at: middle, height: height).alpha, 0, accuracy: 0.001)
+        }
+        // the card's top rim is over the content too
+        let (base, rim) = M.splitTint(card: true, height: 410)
+        let whole = M.tintStops(card: true, height: 410)
+        for p in [CGFloat(0.25), 0.75, 1.25, 2.6] {
+            XCTAssertEqual(sample(rim, at: p, height: 410).alpha, sample(whole, at: p, height: 410).alpha, accuracy: 0.001)
+            XCTAssertEqual(sample(base, at: p, height: 410).alpha, 0, accuracy: 0.001)
+        }
     }
 
     /// A short card (few entries) is the same curve cut off where it ends, not stretched.

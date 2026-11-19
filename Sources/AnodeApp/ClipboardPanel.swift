@@ -44,9 +44,13 @@ enum ClipboardPanelMetrics {
     /// none; this is a choice, for a thicker look at the bottom.)
     static let cardBottomBleed: CGFloat = 0
     /// The list's own words and icons bend where the card's bottom edge is, as what is behind the glass does: a lens along that edge,
-    /// reaching this far up (points), squeezing the rows toward the edge by this much (a negative scale of a linear bump distortion).
-    static let edgeLensDepth: CGFloat = 16
-    static let edgeLensScale: Double = -0.35
+    /// reaching this far up (points), pinching the rows toward the edge. A linear bump distortion leaves things alone at a scale of 1;
+    /// below 1 it magnifies round the line (and cuts the last points of a row off, which is what the first try looked like: words
+    /// cut short while a picture ran on), above 1 it pinches. Measured against rows numbered by height: at 2 and 20 points, what is 4
+    /// points from the edge shows what lies 8 points in, and 12 shows 16; from 3 up the mapping folds over itself (the words came out
+    /// doubled, half of each letter upside down).
+    static let edgeLensDepth: CGFloat = 20
+    static let edgeLensScale: Double = 2.0
 
     // The chips
     static let chipsTop: CGFloat = 21                // measured, from the card's top
@@ -144,6 +148,40 @@ enum ClipboardPanelMetrics {
         return stops
     }
 
+    typealias TintStop = (y: CGFloat, gray: CGFloat, alpha: CGFloat)
+    /// How far from an edge the light of a rim reaches: the rim's stops are all this near the shape's top or bottom.
+    static let rimDepth: CGFloat = 6
+
+    /// `tintStops` in two layers: `base`, the black that fades down the middle, which goes under what the shape holds, and `rim`, the light
+    /// along its edges, which goes over it (the rims are the glass's own light at its edge, so what is in the glass, a word or a picture
+    /// at the card's bottom, is under it, not over it). Over the glass the two put on what `tintStops` does as one layer: where one has
+    /// the tint the other has none.
+    static func splitTint(card: Bool, height: CGFloat) -> (base: [TintStop], rim: [TintStop]) {
+        let h = max(height, 1)
+        let all = tintStops(card: card, height: h)
+        func place(_ s: TintStop) -> CGFloat { s.y < 0 ? h + s.y : s.y }
+        func isTop(_ s: TintStop) -> Bool { card && place(s) < rimDepth }
+        func isBottom(_ s: TintStop) -> Bool { place(s) > h - rimDepth }
+        let topRim = all.filter(isTop)
+        let bottomRim = all.filter(isBottom)
+        let interior = all.filter { !isTop($0) && !isBottom($0) }
+        let topEnd = topRim.map(place).max() ?? 0
+        let bottomStart = bottomRim.map(place).min() ?? h
+        var base: [TintStop] = []
+        if card { base += [(0, 0, 0), (topEnd, 0, 0)] }
+        base += interior
+        base += [(bottomStart, 0, 0), (h, 0, 0)]
+        var rim: [TintStop] = []
+        if card, let last = topRim.last {
+            rim += topRim
+            rim += [(rimDepth, last.gray, 0)]
+        } else {
+            rim += [(0, bottomRim.first?.gray ?? 0, 0)]
+        }
+        if let first = bottomRim.first { rim += [(h - rimDepth, first.gray, 0)] + bottomRim }
+        return (base, rim)
+    }
+
     /// The card's height for `rows` rows (nil: no card). Pure, for tests.
     static func cardHeight(rows: Int, hasQuery: Bool) -> CGFloat? {
         if rows > 0 { return min(cardMaxHeight, rowsTop + CGFloat(rows) * rowHeight + bottomPadding) }
@@ -179,6 +217,8 @@ final class ClipboardPanel: NSPanel, ClipboardPresenting, NSWindowDelegate {
     private lazy var host = ClipboardShadowHost(content: content)
     private let stage = NSView()
     private var monitors: [Any] = []
+    /// Looks every quarter of a second, while the panel is open, for the system's search opening over it.
+    private var spotlightWatch: Timer?
     private let editor = ClipboardFieldEditor()
     private(set) var shown = false
     /// Where it was last left, as how far it is from the default place: it opens there again.
@@ -254,6 +294,27 @@ final class ClipboardPanel: NSPanel, ClipboardPresenting, NSWindowDelegate {
         if let click = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown], handler: { [weak self] _ in
             self?.dismissFromPanel()
         }) { monitors.append(click) }
+        watchForSpotlight()
+    }
+
+    /// The system's search opening over this panel does not take the key from it (neither is an app that is in front), so nothing says so:
+    /// it is looked for. Only an opening that is seen counts: when this panel opened with the search still on screen (and being closed),
+    /// that one is not it.
+    private func watchForSpotlight() {
+        spotlightWatch?.invalidate()
+        var seenClosed = false
+        let timer = Timer(timeInterval: 0.25, repeats: true) { [weak self] _ in
+            guard let self, self.shown else { return }
+            if SystemSpotlight.openHost() == nil { seenClosed = true } else if seenClosed { self.dismissFromPanel() }
+        }
+        timer.tolerance = 0.1
+        RunLoop.main.add(timer, forMode: .common)
+        spotlightWatch = timer
+    }
+
+    private func stopWatchingForSpotlight() {
+        spotlightWatch?.invalidate()
+        spotlightWatch = nil
     }
 
     func refresh() {
@@ -264,6 +325,7 @@ final class ClipboardPanel: NSPanel, ClipboardPresenting, NSWindowDelegate {
     func hide(completion: @escaping () -> Void) {
         guard shown else { completion(); return }
         shown = false
+        stopWatchingForSpotlight()
         for m in monitors { NSEvent.removeMonitor(m) }
         monitors = []
         guard DisplayAccessibility.current.animates else {
@@ -616,8 +678,10 @@ final class ClipboardShapeView: NSView {
     let kind: Kind
     let body = FlippedView()
     private let material: NSView
-    /// Views, not bare layers: the glass is drawn over a layer of its parent's, and under a view added after it.
+    /// Views, not bare layers: the glass is drawn over a layer of its parent's, and under a view added after it. The black is under what
+    /// the shape holds and the rim's light over it.
     private let tint = ClipboardTintView()
+    private let rim = ClipboardTintView()
     private let edge = EdgeView()
     /// How far the glass reaches below the shape before the shape's clip cuts it off. Where it is 0 the glass's own edge shows at the
     /// bottom: the lens that bends what is behind it, and its light along the edge.
@@ -648,10 +712,13 @@ final class ClipboardShapeView: NSView {
         layer?.masksToBounds = true       // nothing square shows at the corners, and the window's shadow follows this shape
         addSubview(material)
 
-        tint.stops = { [kind] h in ClipboardPanelMetrics.tintStops(card: kind == .card, height: h) }
+        tint.stops = { [kind] h in ClipboardPanelMetrics.splitTint(card: kind == .card, height: h).base }
         addSubview(tint)
 
         addSubview(body)
+
+        rim.stops = { [kind] h in ClipboardPanelMetrics.splitTint(card: kind == .card, height: h).rim }
+        addSubview(rim)
 
         edge.wantsLayer = true
         edge.layer?.cornerRadius = r
@@ -669,6 +736,7 @@ final class ClipboardShapeView: NSView {
         material.frame = NSRect(x: 0, y: -bottomBleed, width: bounds.width, height: bounds.height + bleed + bottomBleed)
         body.frame = bounds
         tint.frame = bounds
+        rim.frame = bounds
         edge.frame = bounds
     }
 }

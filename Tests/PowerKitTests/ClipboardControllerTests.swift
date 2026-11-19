@@ -41,6 +41,7 @@ final class ClipboardControllerTests: XCTestCase {
         var fire: (() -> Void)?
         var scheduled: [(delay: TimeInterval, work: () -> Void)] = []
         var lines: [String] = []
+        var spotlightCloses = 0
         var controller: ClipboardHistoryController!
 
         init(file: StaticString = #filePath, line: UInt = #line) {
@@ -67,6 +68,7 @@ final class ClipboardControllerTests: XCTestCase {
                 unregisterShortcut: { [unowned self] in self.unregistrations += 1; self.fire = nil },
                 schedule: { [unowned self] delay, work in self.scheduled.append((delay, work)) },
                 accessDescription: { "test" },
+                closeSpotlight: { [unowned self] in self.spotlightCloses += 1 },
                 log: { [unowned self] in self.lines.append($0) })
         }
 
@@ -274,6 +276,37 @@ final class ClipboardControllerTests: XCTestCase {
         r.controller.tick()
         XCTAssertEqual(r.store.entries.count, 2)
         XCTAssertEqual(r.store.entries.first?.id, ids.older)
+    }
+
+    /// The system's own search does not close when another panel opens over it; Anode closes it before its own opens, and only
+    /// then (nothing is closed when the panel does not open).
+    func testOpeningClosesTheSystemSearchFirst() {
+        let r = Rig()
+        r.controller.open()
+        XCTAssertEqual(r.spotlightCloses, 0, "nothing opens, so nothing is closed, while the feature is off")
+        r.settings.clipboardHistoryEnabled = true
+        r.controller.open()
+        XCTAssertEqual(r.spotlightCloses, 1)
+        XCTAssertEqual(r.presenter.shows, 1)
+        r.controller.dismiss()
+        XCTAssertEqual(r.spotlightCloses, 1, "closing the panel closes nothing else")
+    }
+
+    /// A copy is credited to the app in front, except round the panel: Anode itself can be in front for a moment after the panel goes
+    /// (the key is handed to a window of its own), and then a copy is the previous app's, not Anode's.
+    func testACopyWhileAnodeIsInFrontRoundThePanelIsCreditedToTheAppItCameFrom() {
+        let a = ClipboardAttribution(ownBundleID: "dev.anode.app")
+        let anode: (bundleID: String?, name: String?) = ("dev.anode.app", "Anode")
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        XCTAssertEqual(a.resolve(anode, now: now, nameFor: { _ in "Brave" }).bundleID, "dev.anode.app", "no panel yet: Anode's own copy is Anode's")
+        a.panelOpened(front: "com.brave.Browser")
+        XCTAssertEqual(a.resolve(anode, now: now, nameFor: { _ in "Brave" }).bundleID, "com.brave.Browser", "while the panel is open")
+        XCTAssertEqual(a.resolve(anode, now: now, nameFor: { _ in "Brave" }).name, "Brave")
+        XCTAssertEqual(a.resolve(("com.example.Editor", "Editor"), now: now).bundleID, "com.example.Editor", "another app in front is itself")
+        a.panelClosed(now: now)
+        XCTAssertEqual(a.resolve(anode, now: now.addingTimeInterval(2), nameFor: { _ in "Brave" }).bundleID, "com.brave.Browser", "just after")
+        XCTAssertEqual(a.resolve(anode, now: now.addingTimeInterval(ClipboardAttribution.grace + 1), nameFor: { _ in "Brave" }).bundleID,
+                       "dev.anode.app", "long after, Anode's own windows copy as Anode again")
     }
 
     func testPlainTextAsksForPlainText() {

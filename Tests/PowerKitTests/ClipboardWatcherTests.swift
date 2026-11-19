@@ -196,6 +196,29 @@ final class ClipboardWatcherTests: XCTestCase {
         XCTAssertEqual(watcher.poll(now: start), .unchanged, "and it is seen only once")
     }
 
+    /// The counter can move on after Anode's write (anything that touches the pasteboard moves it), and then it is no longer the one
+    /// noted. The write carries Anode's own form, and a pasteboard that still has it holds Anode's paste, not a copy: it is not
+    /// recorded, not even under the name of the app in front (or Anode's own).
+    func testAnOwnPasteWhoseCounterMovedOnIsStillNotRecorded() {
+        let watcher = makeWatcher()
+        pasteboard.count += 1
+        watcher.noteOwnWrite(changeCount: pasteboard.count)
+        // the counter goes on to another number; the types are Anode's write, with its own form
+        pasteboard.count += 1
+        pasteboard.types = ["public.utf8-plain-text", ClipboardTypes.ownWrite]
+        pasteboard.payload = [ClipboardRepresentation(item: 0, type: "public.utf8-plain-text", data: Data("pasted from history".utf8))]
+        pasteboard.frontBundleID = "dev.anode.app"
+
+        XCTAssertEqual(watcher.poll(now: start), .ownWrite)
+        XCTAssertTrue(store.entries.isEmpty)
+        XCTAssertEqual(pasteboard.readCalls, 0, "its contents are not read")
+        XCTAssertEqual(watcher.poll(now: start), .unchanged)
+
+        // and the copy after it, which has no such form, is an ordinary one
+        pasteboard.copyText("a real copy afterwards", from: "com.example.Editor")
+        XCTAssertNotNil(recordedID(watcher.poll(now: start.addingTimeInterval(1))))
+    }
+
     /// After an own write, the next copy by anyone else is an ordinary copy.
     func testAfterAnOwnWriteALaterForeignChangeIsRecorded() {
         let watcher = makeWatcher()

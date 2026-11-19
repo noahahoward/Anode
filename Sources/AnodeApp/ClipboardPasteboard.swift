@@ -78,6 +78,8 @@ enum RealClipboard {
         for index in byItem.keys.sorted() {
             let item = NSPasteboardItem()
             for rep in byItem[index] ?? [] { item.setData(rep.data, forType: NSPasteboard.PasteboardType(rep.type)) }
+            // Only on the first item, and carrying nothing: it says whose write this is (`ClipboardTypes.ownWrite`).
+            if items.isEmpty { item.setData(Data([1]), forType: NSPasteboard.PasteboardType(ClipboardTypes.ownWrite)) }
             items.append(item)
         }
         pb.writeObjects(items)

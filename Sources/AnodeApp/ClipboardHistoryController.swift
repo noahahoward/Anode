@@ -24,6 +24,28 @@ extension ClipboardPresenting {
     func hide() { hide(completion: {}) }
 }
 
+/// Who a copy is credited to: the app in front, except round the panel. A key panel that goes away can hand the key on to a window
+/// of Anode's own and bring Anode forward for a moment (measured on the Sound menu), so a copy noticed then must not be put down to
+/// Anode (its icon on the row): while the panel is open, and for a few seconds after, it is the app that was in front before it opened.
+final class ClipboardAttribution {
+    /// How long after the panel goes that a copy noticed while Anode is in front is still put down to the app it was in front of.
+    static let grace: TimeInterval = 3
+    private let ownBundleID: String?
+    private var before: String?
+    private var until: Date?
+
+    init(ownBundleID: String? = Bundle.main.bundleIdentifier) { self.ownBundleID = ownBundleID }
+
+    func panelOpened(front: String?) { before = front; until = .distantFuture }
+    func panelClosed(now: Date = Date()) { until = now.addingTimeInterval(Self.grace) }
+
+    func resolve(_ front: (bundleID: String?, name: String?), now: Date = Date(),
+                 nameFor: (String) -> String? = { ClipboardAppNames.name(for: $0) }) -> (bundleID: String?, name: String?) {
+        guard let own = ownBundleID, front.bundleID == own, let before, before != own, let until, now <= until else { return front }
+        return (before, nameFor(before))
+    }
+}
+
 final class ClipboardHistoryController {
 
     enum PasteMode: Equatable {
@@ -60,6 +82,7 @@ final class ClipboardHistoryController {
     private let unregisterShortcut: () -> Void
     private let schedule: (TimeInterval, @escaping () -> Void) -> Void
     private let accessDescription: () -> String
+    private let closeSpotlight: () -> Void
     private let log: (String) -> Void
 
     private var tokens: [AnyObject] = []
@@ -69,6 +92,7 @@ final class ClipboardHistoryController {
     private var locked = false
     private var pollsSincePrune = 0
     private var frontBeforeOpen: String?
+    private let attribution: ClipboardAttribution
     private var finished = false
     /// Whether Accessibility was granted at the last look: the shortcut's key listener cannot start without it, and it is
     /// granted after the switch was turned on, in System Settings, with nothing here told.
@@ -90,6 +114,7 @@ final class ClipboardHistoryController {
          registerShortcut: @escaping (@escaping () -> Void) -> Void, unregisterShortcut: @escaping () -> Void,
          schedule: @escaping (TimeInterval, @escaping () -> Void) -> Void,
          accessDescription: @escaping () -> String = { "unknown" },
+         closeSpotlight: @escaping () -> Void = {},
          log: @escaping (String) -> Void = { FeatureLog.append("clipboard.log", $0) }) {
         self.settings = settings
         self.store = store
@@ -104,9 +129,12 @@ final class ClipboardHistoryController {
         self.unregisterShortcut = unregisterShortcut
         self.schedule = schedule
         self.accessDescription = accessDescription
+        self.closeSpotlight = closeSpotlight
         self.log = log
+        let attribution = ClipboardAttribution()
+        self.attribution = attribution
         watcher = ClipboardWatcher(
-            changeCount: changeCount, types: types, read: read, frontApp: frontApp, store: store,
+            changeCount: changeCount, types: types, read: read, frontApp: { attribution.resolve(frontApp()) }, store: store,
             policy: { [settings] in
                 ClipboardStore.Policy(ignoredApps: Set(settings.clipboardHistoryIgnoredApps), keepImages: settings.clipboardHistoryKeepImages)
             }, log: log, declaredSource: declaredSource)
@@ -219,6 +247,9 @@ final class ClipboardHistoryController {
         switch watcher.poll(now: now) {
         case .recorded(let result):
             if case .skipped = result { return }
+            if frontApp().bundleID == Bundle.main.bundleIdentifier {
+                log("recorded a copy while Anode itself was the app in front (panel open: \(presenter.isOpen))")
+            }
             onChange?()
             if presenter.isOpen { presenter.refresh() }
         default:
@@ -249,6 +280,9 @@ final class ClipboardHistoryController {
         if !settings.clipboardHistoryPaused, !screensAsleep, !locked { tick() }
         store.prune()
         frontBeforeOpen = frontApp().bundleID
+        attribution.panelOpened(front: frontBeforeOpen)
+        // The system's own search, if it is open, goes: only one of the two is on screen at a time.
+        closeSpotlight()
         presenter.show(controller: self)
     }
 
@@ -257,7 +291,10 @@ final class ClipboardHistoryController {
     func dismiss() {
         guard presenter.isOpen else { return }
         let front = frontBeforeOpen
-        presenter.hide { [weak self] in self?.restoreFront(front) }
+        presenter.hide { [weak self] in
+            self?.attribution.panelClosed()
+            self?.restoreFront(front)
+        }
     }
 
     /// The entries to list for what was typed, narrowed by the chip that is on.
@@ -287,7 +324,9 @@ final class ClipboardHistoryController {
         // The panel fades; only when it is gone is the app that was in front put back, and then ⌘V sent to it.
         presenter.hide { [weak self] in
             guard let self else { return }
+            self.attribution.panelClosed()
             self.restoreFront(front)
+            self.log("panel gone for a paste: the app in front was \(front ?? "unknown") when it opened, is \(self.frontApp().bundleID ?? "unknown") now")
             guard mode != .copyOnly else { return }
             self.schedule(Self.pasteDelay) { [weak self] in
                 guard let self else { return }

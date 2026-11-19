@@ -72,6 +72,9 @@ public final class ClipboardWatcher {
         let front = frontApp()
         let declared = declaredSource()
         let present = types()
+        // Anode's own paste, still on the pasteboard after the counter has gone past the one noted (anything that touched the
+        // pasteboard since): not a copy.
+        if present.contains(ClipboardTypes.ownWrite) { return .ownWrite }
         let rules = policy()
         if let why = ClipboardPrivacy.skipReason(types: present, sourceBundleID: front.bundleID, ignoredApps: rules.ignoredApps,
                                                   declaredSourceBundleID: declared?.bundleID) {
