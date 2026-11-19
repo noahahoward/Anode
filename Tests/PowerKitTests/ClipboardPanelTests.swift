@@ -212,6 +212,26 @@ final class ClipboardPanelTests: XCTestCase {
         lazy.refresh()
     }
 
+    /// The window is bigger than the panel, for the shadow: only the bar and the card are the panel. A click anywhere else in the window
+    /// (the margin, the gap between them) is a click away from it.
+    func testOnlyTheBarAndTheCardAreThePanelAndTheMarginAndTheGapAreNot() {
+        _ = NSApplication.shared
+        typealias M = ClipboardPanelMetrics
+        let content = ClipboardContentView()
+        let host = ClipboardShadowHost(content: content)
+        host.frame = NSRect(x: 0, y: 0, width: M.width + 2 * M.shadowMargin, height: M.pillHeight + 2 * M.shadowMargin)
+        host.layoutSubtreeIfNeeded()
+        content.layoutSubtreeIfNeeded()
+        let bar = host.shapeRectsInHost().first!.rect
+        XCTAssertEqual(bar.width, M.width)
+        XCTAssertEqual(bar.height, M.pillHeight)
+        XCTAssertTrue(host.isOnAShape(NSPoint(x: bar.midX, y: bar.midY)))
+        XCTAssertFalse(host.isOnAShape(NSPoint(x: 10, y: 10)), "the shadow's margin is not the panel")
+        XCTAssertFalse(host.isOnAShape(NSPoint(x: bar.midX, y: bar.minY - 5)), "just under the bar")
+        XCTAssertFalse(host.isOnAShape(NSPoint(x: bar.minX - 5, y: bar.midY)), "just beside it")
+        XCTAssertEqual(host.shapeRectsInHost().count, 1, "no card: nothing was listed or typed")
+    }
+
     func testTheCaretIsAThickBarWithAGlow() {
         XCTAssertEqual(ClipboardFieldEditor.caretWidth, 2.5, accuracy: 0.5)
         XCTAssertGreaterThan(ClipboardFieldEditor.glowRadius, 0)

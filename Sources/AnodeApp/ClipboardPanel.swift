@@ -271,6 +271,13 @@ final class ClipboardPanel: NSPanel, ClipboardPresenting, NSWindowDelegate {
 
     override func sendEvent(_ event: NSEvent) {
         if event.type == .keyDown, handle(event) { return }
+        // The window is bigger than the panel (a margin holds the shadow): a click in the margin or in the gap between the bar and the
+        // card is a click away from it, and closes it, as the system's panel does, and is not swallowed as a click on the panel.
+        if [.leftMouseDown, .rightMouseDown, .otherMouseDown].contains(event.type), event.window === self,
+           !host.isOnAShape(host.convert(event.locationInWindow, from: nil)) {
+            dismissFromPanel()
+            return
+        }
         super.sendEvent(event)
     }
 
@@ -359,13 +366,23 @@ final class ClipboardShadowHost: NSView {
         updateShadow()
     }
 
-    func updateShadow() {
+    /// The two shapes (the card only when it is showing), in this view's coordinates.
+    func shapeRectsInHost() -> [(rect: NSRect, radius: CGFloat)] {
         let m = ClipboardPanelMetrics.shadowMargin
         let contentHeight = bounds.height - 2 * m
-        guard contentHeight > 0 else { return }
+        guard contentHeight > 0 else { return [] }
         // The shapes are in the content's flipped coordinates; this view is not flipped.
-        func inHost(_ r: NSRect) -> NSRect { NSRect(x: m + r.minX, y: m + contentHeight - r.maxY, width: r.width, height: r.height) }
-        let shapes = content.shapeFrames().map { (inHost($0.rect), $0.radius) }
+        return content.shapeFrames().map { (NSRect(x: m + $0.rect.minX, y: m + contentHeight - $0.rect.maxY, width: $0.rect.width, height: $0.rect.height), $0.radius) }
+    }
+
+    /// Whether `point` (in this view's coordinates) is on the bar or the card. Anywhere else in the window (the margin for the shadow, and
+    /// the gap between the two) is not the panel: a click there is a click away from it.
+    func isOnAShape(_ point: NSPoint) -> Bool { shapeRectsInHost().contains { $0.rect.contains(point) } }
+
+    func updateShadow() {
+        let m = ClipboardPanelMetrics.shadowMargin
+        guard bounds.height - 2 * m > 0 else { return }
+        let shapes = shapeRectsInHost()
         let all = CGMutablePath(), hole = CGMutablePath()
         hole.addRect(bounds)
         for (rect, radius) in shapes {
