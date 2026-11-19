@@ -20,12 +20,28 @@ final class BackdropBlurView: NSView {
     struct Variable: Equatable {
         var cornerRadius: CGFloat
         var profile: [Point]
+        /// The filter's radius: the mask's alpha is a fraction of it (a smaller radius gives finer steps to the small sigmas).
+        var radius: CGFloat = 10
         struct Point: Equatable { var depth: CGFloat; var sigma: CGFloat }
+    }
+
+    /// The system's frost is not one blur. Measured with fine stripes of three spacings and a thin line behind it, its kernel is heavy-tailed:
+    /// about 0.4 of a narrow blur (sharpest, a sigma of about 0.5 point, 7 to 25 points in from the edge; 2 or 3 at the rim and again 40 or more in)
+    /// and 0.6 of a wide one (a sigma of about 12 everywhere). Made as two layers over the glass: the narrow one (a variable blur of the
+    /// glass), and over it a wide gaussian of the first's result, laid at `wideWeight` (alpha by depth, the `sigma` field of each point
+    /// being the weight): the sum is (1 - w) of the narrow and w of the narrow blurred wide.
+    struct Frost: Equatable {
+        var narrow: Variable
+        var wideSigma: CGFloat
+        var wideWeight: [Variable.Point]
     }
 
     /// The blur's radius (a gaussian's sigma, in points); 0 is none.
     let sigma: CGFloat
     let variable: Variable?
+    let frost: Frost?
+    private(set) var wideLayer: CALayer?
+
     /// How far this view reaches past the shape above and below (the glass is made taller than its shape, and the shape's clip cuts the rest).
     var overhangTop: CGFloat = 0 { didSet { needsLayout = true } }
     var overhangBottom: CGFloat = 0 { didSet { needsLayout = true } }
@@ -33,14 +49,19 @@ final class BackdropBlurView: NSView {
     /// nothing).
     private(set) var blurLayer: CALayer?
 
-    init(sigma: CGFloat, variable: Variable? = nil) {
+    init(sigma: CGFloat, variable: Variable? = nil, frost: Frost? = nil) {
         self.sigma = sigma
-        self.variable = variable
+        self.variable = frost?.narrow ?? variable
+        self.frost = frost
         super.init(frame: .zero)
         wantsLayer = true
-        if let blur = variable != nil ? Self.makeVariableLayer() : Self.makeLayer(sigma: sigma) {
+        if let blur = self.variable != nil ? Self.makeVariableLayer(radius: self.variable?.radius ?? 10) : Self.makeLayer(sigma: sigma) {
             layer?.addSublayer(blur)
             blurLayer = blur
+        }
+        if let frost, let wide = Self.makeLayer(sigma: frost.wideSigma) {
+            layer?.addSublayer(wide)
+            wideLayer = wide
         }
     }
 
@@ -51,6 +72,7 @@ final class BackdropBlurView: NSView {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         blurLayer?.frame = bounds
+        wideLayer?.frame = bounds
         updateVariableMask()
         CATransaction.commit()
     }
@@ -60,16 +82,54 @@ final class BackdropBlurView: NSView {
 
     func refreshMask() { variableFor = nil; needsLayout = true }
     private var variableFor: (size: CGSize, top: CGFloat, bottom: CGFloat, profile: [Variable.Point])?
+    private var wideFor: (size: CGSize, top: CGFloat, bottom: CGFloat, weight: [Variable.Point], sigma: CGFloat)?
+
+    private func updateWideLayer(_ wide: CALayer, _ model: Frost) {
+        guard bounds.width > 1, bounds.height > 1 else { return }
+        let key = (size: bounds.size, top: overhangTop, bottom: overhangBottom, weight: model.wideWeight, sigma: model.wideSigma)
+        if let done = wideFor, done.size == key.size, done.top == key.top, done.bottom == key.bottom, done.weight == key.weight, done.sigma == key.sigma { return }
+        wideFor = key
+        if let fresh = Self.makeLayer(sigma: model.wideSigma) {       // a new filter: the layer takes a changed one for no change
+            wide.filters = fresh.filters
+        }
+        let shape = CGRect(x: 0, y: overhangBottom, width: bounds.width, height: bounds.height - overhangTop - overhangBottom)
+        guard let image = Self.weightMask(size: bounds.size, shape: shape, cornerRadius: model.narrow.cornerRadius, weight: model.wideWeight) else { return }
+        let mask = CALayer()
+        mask.frame = bounds
+        mask.contents = image
+        wide.mask = mask
+    }
+
+    /// The wide layer's alpha at each point: the weight wanted at its depth.
+    static func weightMask(size: CGSize, shape: CGRect, cornerRadius: CGFloat, weight: [Variable.Point]) -> CGImage? {
+        let w = Int(size.width.rounded()), h = Int(size.height.rounded())
+        guard w > 1, h > 1 else { return nil }
+        var pixels = [UInt8](repeating: 0, count: w * h * 4)
+        for row in 0..<h {
+            let y = CGFloat(h - 1 - row) + 0.5
+            for col in 0..<w {
+                let depth = depthInside(CGPoint(x: CGFloat(col) + 0.5, y: y), of: shape, cornerRadius: cornerRadius)
+                let a = UInt8((min(max(sigma(atDepth: max(depth, 0), in: weight), 0), 1) * 255).rounded())
+                let i = (row * w + col) * 4
+                pixels[i] = a; pixels[i + 1] = a; pixels[i + 2] = a; pixels[i + 3] = a
+            }
+        }
+        guard let provider = CGDataProvider(data: Data(pixels) as CFData) else { return nil }
+        return CGImage(width: w, height: h, bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: w * 4, space: CGColorSpaceCreateDeviceRGB(),
+                       bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue), provider: provider, decode: nil,
+                       shouldInterpolate: true, intent: .defaultIntent)
+    }
 
     private func updateVariableMask() {
         guard let layer = blurLayer, let variable, bounds.width > 1, bounds.height > 1 else { return }
+        if let frost, let wide = wideLayer { updateWideLayer(wide, frost) }
         let current = variable
         let key = (size: bounds.size, top: overhangTop, bottom: overhangBottom, profile: current.profile)
         if let done = variableFor, done.size == key.size, done.top == key.top, done.bottom == key.bottom, done.profile == key.profile { return }
         variableFor = key
         let shape = CGRect(x: 0, y: overhangBottom, width: bounds.width, height: bounds.height - overhangTop - overhangBottom)
         guard let image = Self.variableMask(size: bounds.size, shape: shape, variable: current),
-              let filter = Self.makeVariableFilter() else { return }
+              let filter = Self.makeVariableFilter(radius: current.radius) else { return }
         filter.setValue(image, forKey: "inputMaskImage")
         layer.filters = [filter]       // a new filter each time: the layer takes a changed picture in an old one for no change
     }
@@ -81,14 +141,14 @@ final class BackdropBlurView: NSView {
     /// filter (contrast against sigma, for two stripe periods). Not linear: the filter gets less than proportionally stronger.
     static let alphaForSigma: [(sigma: CGFloat, alpha: CGFloat)] = [(0, 0), (2.4, 0.1), (4.2, 0.2), (5.7, 0.3), (7.1, 0.4), (10, 0.5)]
 
-    static func alpha(forSigma s: CGFloat) -> CGFloat {
+    static func alpha(forSigma s: CGFloat, radius: CGFloat = variableRadius) -> CGFloat {
         let t = alphaForSigma
         guard s > 0 else { return 0 }
         for i in 1..<t.count where s <= t[i].sigma {
             let f = (s - t[i - 1].sigma) / (t[i].sigma - t[i - 1].sigma)
-            return t[i - 1].alpha + f * (t[i].alpha - t[i - 1].alpha)
+            return (t[i - 1].alpha + f * (t[i].alpha - t[i - 1].alpha)) * variableRadius / radius
         }
-        return t[t.count - 1].alpha
+        return t[t.count - 1].alpha * variableRadius / radius
     }
 
     /// The sigma wanted `depth` points inside the edge.
@@ -120,7 +180,7 @@ final class BackdropBlurView: NSView {
             let y = CGFloat(h - 1 - row) + 0.5
             for col in 0..<w {
                 let depth = depthInside(CGPoint(x: CGFloat(col) + 0.5, y: y), of: shape, cornerRadius: variable.cornerRadius)
-                let a = UInt8((alpha(forSigma: sigma(atDepth: max(depth, 0), in: variable.profile)) * 255).rounded())
+                let a = UInt8((min(alpha(forSigma: sigma(atDepth: max(depth, 0), in: variable.profile), radius: variable.radius), 1) * 255).rounded())
                 let i = (row * w + col) * 4
                 pixels[i] = a; pixels[i + 1] = a; pixels[i + 2] = a; pixels[i + 3] = a      // premultiplied white at alpha a
             }
@@ -131,19 +191,19 @@ final class BackdropBlurView: NSView {
                        shouldInterpolate: true, intent: .defaultIntent)
     }
 
-    static func makeVariableFilter() -> NSObject? {
+    static func makeVariableFilter(radius: CGFloat = variableRadius) -> NSObject? {
         guard let filterClass = NSClassFromString("CAFilter") as? NSObject.Type,
               filterClass.responds(to: NSSelectorFromString("filterWithType:")),
               let made = filterClass.perform(NSSelectorFromString("filterWithType:"), with: "variableBlur")?.takeUnretainedValue() as? NSObject
         else { return nil }
-        made.setValue(Double(variableRadius), forKey: "inputRadius")
+        made.setValue(Double(radius), forKey: "inputRadius")
         made.setValue(true, forKey: "inputNormalizeEdges")
         return made
     }
 
     /// The system's variable blur: its mask picture is set when the view has a size (`updateVariableMask`).
-    static func makeVariableLayer() -> CALayer? {
-        guard let layerClass = NSClassFromString("CABackdropLayer") as? CALayer.Type, let made = makeVariableFilter() else { return nil }
+    static func makeVariableLayer(radius: CGFloat = variableRadius) -> CALayer? {
+        guard let layerClass = NSClassFromString("CABackdropLayer") as? CALayer.Type, let made = makeVariableFilter(radius: radius) else { return nil }
         let layer = layerClass.init()
         guard layer.responds(to: NSSelectorFromString("setWindowServerAware:")), layer.responds(to: NSSelectorFromString("setScale:")) else { return nil }
         layer.setValue(true, forKey: "windowServerAware")

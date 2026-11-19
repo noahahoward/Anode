@@ -384,12 +384,13 @@ final class ClipboardPanelTests: XCTestCase {
     func testTheFrostGrowsWithDepthFromTheShapesEdge() throws {
         typealias M = ClipboardPanelMetrics
         typealias B = BackdropBlurView
-        let profile = M.cardFrostProfile
-        XCTAssertEqual(B.sigma(atDepth: 0, in: profile), 3.7, accuracy: 0.01)
-        XCTAssertEqual(B.sigma(atDepth: 61, in: profile), 6.5, accuracy: 0.01)
-        XCTAssertEqual(B.sigma(atDepth: 500, in: profile), 6.5, accuracy: 0.01, "the last for anything deeper")
-        XCTAssertGreaterThan(B.sigma(atDepth: 13, in: profile), B.sigma(atDepth: 10, in: profile), "the step the system's stripes show at 12 points")
-        XCTAssertEqual(B.sigma(atDepth: 40, in: profile), (5.1 + 5.5) / 2 + 0.0, accuracy: 0.2, "linear between the points")
+        let profile = M.cardFrost.narrow.profile
+        XCTAssertEqual(B.sigma(atDepth: 0, in: profile), 3.4, accuracy: 0.01, "blurred a little at the rim")
+        XCTAssertLessThan(B.sigma(atDepth: 12, in: profile), 1, "nearly sharp from 7 to 25 points in, where the lens shows what is behind")
+        XCTAssertEqual(B.sigma(atDepth: 500, in: profile), 3.5, accuracy: 0.01, "the last for anything deeper")
+        XCTAssertEqual(B.sigma(atDepth: 45, in: profile), 3.15, accuracy: 0.01, "linear between the points")
+        XCTAssertEqual(M.cardFrost.wideSigma, 11.7)
+        XCTAssertEqual(B.sigma(atDepth: 500, in: M.cardFrost.wideWeight), 0.72, accuracy: 0.001, "about 0.7 of the interior is the wide blur")
         // more blur needs more of the filter's radius
         var last: CGFloat = -1
         for s in stride(from: CGFloat(0), through: 7, by: 0.5) {
@@ -399,6 +400,7 @@ final class ClipboardPanelTests: XCTestCase {
         }
         XCTAssertEqual(B.alpha(forSigma: 0), 0)
         XCTAssertLessThan(B.alpha(forSigma: 6.5) * 255, 128, "the blur of 6.5 is well inside the filter's range")
+        XCTAssertEqual(B.alpha(forSigma: 2.4, radius: 5), B.alpha(forSigma: 2.4, radius: 10) * 2, accuracy: 0.001, "a smaller radius takes a larger fraction of it")
         // the distance to a rounded rectangle's edge
         let shape = CGRect(x: 0, y: 0, width: 200, height: 100)
         XCTAssertEqual(B.depthInside(CGPoint(x: 100, y: 50), of: shape, cornerRadius: 38), 50, accuracy: 0.01)
@@ -407,7 +409,7 @@ final class ClipboardPanelTests: XCTestCase {
         XCTAssertLessThan(B.depthInside(CGPoint(x: 2, y: 2), of: shape, cornerRadius: 38), 2, "the corner is rounded: further from the edge than the box says")
         XCTAssertLessThan(B.depthInside(CGPoint(x: -3, y: 50), of: shape, cornerRadius: 38), 0, "outside")
         // the picture: alpha from the profile
-        let variable = B.Variable(cornerRadius: 38, profile: profile)
+        let variable = B.Variable(cornerRadius: 38, profile: profile, radius: 4)
         let image = try XCTUnwrap(B.variableMask(size: CGSize(width: 200, height: 100), shape: shape, variable: variable))
         let rep = NSBitmapImageRep(cgImage: image)
         func alpha(_ x: Int, fromBottom y: Int) -> CGFloat { rep.colorAt(x: x, y: rep.pixelsHigh - 1 - y)!.alphaComponent }

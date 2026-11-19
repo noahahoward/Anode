@@ -44,16 +44,19 @@ enum ClipboardPanelMetrics {
     /// about 20 points: a sigma of 8), its bar only a little (about 3.4 points: 1.5). See `BackdropBlurView`.
     static let cardBlur: CGFloat = 8
     static let pillBlur: CGFloat = 1.5
-    /// The card's blur by depth from its edge (points: sigma). Read off the system's card (2026-11-19) with fine black and white stripes
-    /// behind it: their contrast at each depth above the bottom edge, set against the contrast the glass leaves with no blur at all, gives
-    /// the gaussian that would do it. Sharp to about 3 points of blur in the rim's first 12 points, 4 at 13 points, then growing
-    /// steadily to 6.5 at 61 and beyond. With the blur over the glass this reproduces the system's contrast to within 5% from 4 to 67 points
-    /// (stripes 20 points apart). Under the glass it did not: the glass's lens at the rim takes what it bends from well inside the card,
-    /// where the backdrop was already blurred, and the rim looked frosted again (and a feather of one blur, sharp at the edge and whole 22
-    /// points in, had the same fault). The profile is from the stripes' bottom edge and is taken to hold all the way round.
-    static let cardFrostProfile: [BackdropBlurView.Variable.Point] = [
-        (0, 3.7), (2, 3.3), (4, 2.9), (7, 2.6), (10, 2.65), (12.5, 3.95), (19, 4.2), (25, 4.55), (31, 4.75), (37, 5.1), (43, 5.5), (49, 5.8),
-        (55, 6.1), (61, 6.5), (80, 6.5), (200, 6.5)].map { .init(depth: CGFloat($0.0), sigma: CGFloat($0.1)) }
+    /// The card's frost (see `BackdropBlurView.Frost`), fitted per depth above its bottom edge to what fine stripes of three spacings (10, 20 and
+    /// 40 points) and a thin line show behind the system's card (2026-11-19): the kernel is about 0.4 of a narrow blur and 0.6 of a wide one
+    /// (sigma about 12, the same at every depth). The narrow one's sigma is 3 at the rim, under 1 from 8 to 16 points in (where the lens
+    /// shows what is behind the glass nearly sharp), and rises to 3.5 by 70; tuned against the measurements to within about 10%. A single gaussian, however it was varied with depth, could not
+    /// give the stripes' contrast at all three spacings.
+    static let cardFrost = BackdropBlurView.Frost(
+        narrow: .init(cornerRadius: cardRadius, profile: [(0, 3.4), (3, 3.1), (5, 2.4), (6.5, 1.7), (8, 1.1), (10, 0.9), (13, 0.7), (16, 0.8), (20, 1.3),
+                                                           (25, 2.0), (30, 2.5), (40, 3.0), (50, 3.3), (70, 3.5), (200, 3.5)]
+            .map { .init(depth: CGFloat($0.0), sigma: CGFloat($0.1)) }, radius: 4),
+        wideSigma: 11.7,
+        wideWeight: [(0, 0.57), (10, 0.55), (20, 0.56), (30, 0.6), (45, 0.65), (60, 0.71), (200, 0.72)]
+            .map { .init(depth: CGFloat($0.0), sigma: CGFloat($0.1)) })
+
     /// The card's glass is not extended past its bottom: its own edge shows there, which bends what is behind it. (The system's card has
     /// none; this is a choice, for a thicker look at the bottom.)
     static let cardBottomBleed: CGFloat = 0
@@ -142,9 +145,12 @@ enum ClipboardPanelMetrics {
     static let cardTopRim: [(from: CGFloat, gray: CGFloat, alpha: CGFloat)] = [
         (2.25, 0.097, 0.53), (2.75, 0.078, 0.535), (3.25, 0.059, 0.54), (3.75, 0.05, 0.545), (4.25, 0.042, 0.545), (4.75, 0.03, 0.55),
         (5.25, 0.02, 0.55)]
+    /// The card's bottom rim, refitted (2026-11-19) from clean pictures of the system's card over solid white, grey and black, one pixel row at
+    /// a time: past the last pixel or two it is black of opacity 0.26 to 0.31, with none of the light grey the first fit (against stripes of a
+    /// different kind) gave it.
     static let cardBottomRim: [(from: CGFloat, gray: CGFloat, alpha: CGFloat)] = [
-        (5.25, 0.02, 0.29), (4.75, 0.043, 0.30), (4.25, 0.074, 0.29), (3.75, 0.074, 0.29), (3.25, 0.108, 0.29), (2.75, 0.142, 0.29),
-        (2.25, 0.177, 0.29), (1.75, 0.214, 0.28), (1.25, 0.32, 0.28)]
+        (5.75, 0, 0.31), (5.25, 0, 0.30), (4.75, 0, 0.30), (4.25, 0, 0.276), (3.75, 0, 0.276), (3.25, 0, 0.268), (2.75, 0, 0.256),
+        (2.25, 0, 0.264), (1.75, 0, 0.305), (1.25, 0, 0.319)]
     /// What is laid over the glass, from the top down: (how far down in points, a negative one from the bottom; the grey; the opacity).
     static func tintStops(card: Bool, height: CGFloat) -> [(y: CGFloat, gray: CGFloat, alpha: CGFloat)] {
         let h = max(height, 1)
@@ -162,7 +168,7 @@ enum ClipboardPanelMetrics {
         stops += cardTopRim.map { ($0.from, $0.gray, $0.alpha) }
         stops += [(6, 0, cardTintAlpha(6)), (h - 6, 0, cardTintAlpha(h - 6))]
         stops += cardBottomRim.map { (-$0.from, $0.gray, $0.alpha) }
-        stops += [(-1.0, 1.0, 0.269), (-0.5, 1.0, 0.269), (-0.5, 1.0, 0.474), (h, 1.0, 0.474)]
+        stops += [(-1.0, 1.0, 0.214), (-0.5, 1.0, 0.214), (-0.5, 1.0, 0.622), (h, 1.0, 0.622)]
         return stops
     }
 
@@ -726,7 +732,7 @@ final class ClipboardShapeView: NSView {
             material = v
         }
         if kind == .card {
-            frost = BackdropBlurView(sigma: ClipboardPanelMetrics.cardBlur, variable: .init(cornerRadius: r, profile: ClipboardPanelMetrics.cardFrostProfile))
+            frost = BackdropBlurView(sigma: ClipboardPanelMetrics.cardBlur, frost: ClipboardPanelMetrics.cardFrost)
         } else {
             frost = BackdropBlurView(sigma: ClipboardPanelMetrics.pillBlur)
         }
@@ -758,7 +764,7 @@ final class ClipboardShapeView: NSView {
 
     required init?(coder: NSCoder) { fatalError("not used") }
 
-    func refreshFrost() { frost.refreshMask() }
+    func refreshFrost() { frost.refreshMask(); needsLayout = true }
 
     override func layout() {
         super.layout()

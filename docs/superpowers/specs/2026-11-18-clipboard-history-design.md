@@ -109,18 +109,18 @@ The chips are the kinds in the history (Text, Links, Images, Files, Pinned); Tab
   (white, with small and large type and coloured blocks) against the system's: the colour of a thin block behind the card is within 8%,
   the mean brightness down the card within 0.02, the detail left in flat areas the same. The system's blur has heavier tails than a
   gaussian (see above); not reproduced. NSVisualEffectView materials (a veil of colour, one radius, 33 points) and `.regular` glass were
-  tried first and are not used. The card's blur is not one blur: measured with fine stripes (period 20 points) behind it, the contrast
-  they keep at each depth above the system card's bottom edge says the blur grows steadily with depth, from sigma about 3 at the rim
-  through 4 at 13 points to 6.5 at 61 and beyond (the interior's contrast is 0.038 against 0.30 with no blur). It is made with the
-  system's `variableBlur` filter (a `CAFilter`), which reads its radius from the alpha of a mask picture (not its grey); the picture is
-  made from the distance to the rounded rectangle's edge and a measured table of the filter's radius against alpha. The blur layer is
-  over the glass: under it, the glass's lens at the rim takes what it bends from well inside the card, where the backdrop was already
-  blurred, and the rim looked frosted again (a feather of one blur, sharp at the edge and whole 22 points in, had the same fault).
-  Over the glass the contrast matches the system's to within 5% from 4 to 67 points. NOT matched: the brightness of the rim zone over
-  striped backdrops (the system's is 0.65 in the first 12 points where this one's is 0.45, with the interior 0.49 against 0.45; over
-  solid white, grey and black it matches, so it is something that depends on the backdrop's structure), and the stripes' small
-  sideways bend at the bottom edge (about 2 points). The selected row is a rounded rectangle (inset 12 points, corners of 24), not a
-  capsule: its box and corner profile are the system's to the pixel, and its lift is set to the system's over a dark page.
+  tried first and are not used. The card's frost is not one gaussian, however it varies with depth. Measured with fine stripes of three
+  spacings (10, 20, 40 points), a thin line and solid white, grey and black behind the system's card, along its bottom edge (a query that
+  leaves that edge clear of rows and buttons; the first measurements were polluted by the contact buttons in the last row, and wrongly
+  showed a bright rim), its kernel is heavy-tailed: about 0.4 of a narrow blur and 0.6 of a wide one (sigma about 12, the same at every
+  depth). The narrow one is sharpest 8 to 16 points in (the lens shows what is behind nearly unblurred there) and blurrier at the rim and
+  deeper in. Made as two backdrop layers over the glass: the narrow one the system's `variableBlur` filter (it reads its radius from the
+  alpha of a mask picture) and over it a gaussian of 11.7 laid at the wide weight by depth. Over the glass, not under it: under it the glass's
+  lens at the rim bends the already-blurred interior and the rim looks frosted again. Tuned against the measurements to within about 10%
+  on every pattern. The rim: past the last pixel or two it is black of opacity 0.26 to 0.31, with no light grey (refitted from clean
+  one-pixel-row measurements over solids). NOT matched: the first 1.5 points of the rim over dark backdrops, the interior over mid-grey
+  (0.495 against 0.514) and over stripes (0.45 against 0.50, the blur is in gamma space), and the stripes' small sideways bend at the edge.
+  The selected row is a rounded rectangle (inset 12 points, corners of 24), not a capsule, with the system's lift.
 - The list bends at the card's bottom edge: a deliberate addition (the system's panel has none). A `CIBumpDistortionLinear` on the list's layer,
   20 points deep, pinches the lowest words and icons toward the edge the way the glass's own edge bends what is behind it; the glass is not
   extended past the card's bottom, so that edge shows too. (The filter's scale is 1 for no change: below 1 it magnifies round the line and cuts a
