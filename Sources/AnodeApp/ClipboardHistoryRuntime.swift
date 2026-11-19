@@ -12,9 +12,8 @@ enum ClipboardHistoryRuntime {
             .appendingPathComponent("Anode", isDirectory: true)
             .appendingPathComponent(ClipboardStore.folderName, isDirectory: true)
         let store = ClipboardStore(directory: folder, limits: ClipboardHistoryController.limits(from: .shared))
-        let panel = ClipboardPanel()
         let controller = ClipboardHistoryController(
-            settings: .shared, store: store, presenter: panel,
+            settings: .shared, store: store, presenter: LazyClipboardPanel(),
             changeCount: { RealClipboard.changeCount }, types: { RealClipboard.types() },
             read: { RealClipboard.read(maxBytes: $0) },
             writePasteboard: { RealClipboard.write($0, plainTextOnly: $1) },
@@ -81,5 +80,25 @@ enum ClipboardHistoryRuntime {
         dnc.addObserver(forName: Notification.Name("com.apple.screenIsUnlocked"), object: nil, queue: .main) { [weak controller] _ in
             controller?.setLocked(false)
         }
+    }
+}
+
+/// The panel, made when it is first opened. With the feature off (the usual case) no window, field editor or glass is ever made, and
+/// nothing in making them can stop the app from launching.
+final class LazyClipboardPanel: ClipboardPresenting {
+    private var panel: ClipboardPanel?
+
+    var isOpen: Bool { panel?.isOpen ?? false }
+
+    func show(controller: ClipboardHistoryController) {
+        if panel == nil { panel = ClipboardPanel() }
+        panel?.show(controller: controller)
+    }
+
+    func refresh() { panel?.refresh() }
+
+    func hide(completion: @escaping () -> Void) {
+        guard let panel else { completion(); return }
+        panel.hide(completion: completion)
     }
 }

@@ -152,6 +152,31 @@ final class ClipboardPanelTests: XCTestCase {
         XCTAssertEqual(M.panelHeight(card: M.cardMaxHeight), 507, "the system panel's own full height, measured")
     }
 
+    /// The crash: the field editor was made at launch and trapped in `init(frame:textContainer:)`, taking the whole app with it.
+    func testTheFieldEditorAndThePanelCanBeMadeAndKeepWhatIsTyped() {
+        _ = NSApplication.shared
+        let editor = ClipboardFieldEditor()
+        XCTAssertTrue(editor.isFieldEditor)
+        editor.string = "typed"
+        editor.setSelectedRange(NSRange(location: 5, length: 0))
+        XCTAssertEqual(editor.string, "typed", "an editor with no text system keeps nothing")
+        XCTAssertNotNil(ClipboardFieldEditor(frame: NSRect(x: 0, y: 0, width: 100, height: 20)).textContainer)
+        let panel = ClipboardPanel()
+        XCTAssertTrue(panel.canBecomeKey)
+        XCTAssertFalse(panel.canBecomeMain)
+        XCTAssertFalse(panel.isOpen)
+    }
+
+    /// Nothing of the window is made until the panel is first opened: with the feature off, launching makes none of it.
+    func testThePanelIsMadeOnlyWhenFirstOpened() {
+        let lazy = LazyClipboardPanel()
+        XCTAssertFalse(lazy.isOpen)
+        var done = false
+        lazy.hide { done = true }
+        XCTAssertTrue(done, "putting away a panel that was never made answers at once")
+        lazy.refresh()
+    }
+
     func testTheCaretIsAThickBarWithAGlow() {
         XCTAssertEqual(ClipboardFieldEditor.caretWidth, 2.5, accuracy: 0.5)
         XCTAssertGreaterThan(ClipboardFieldEditor.glowRadius, 0)

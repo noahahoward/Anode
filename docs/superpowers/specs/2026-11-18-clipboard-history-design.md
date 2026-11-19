@@ -69,11 +69,27 @@ the folder with the rest of Anode's data (`--data`).
 - ⌘V sent as above pastes into a plain window; a window with no Edit menu ignores it (the test window had to be given one).
 - The panel opens centred, 680 wide, its top edge a fifth of the way down the visible screen, at window level 101.
 
+## The look: measured from macOS 27.3's own ⌘Space panel (2026-11-19)
+
+On this Mac ⌘Space is hosted by Siri ("Search or Ask"), and the panel is two shapes: a bar and, 10 points under it, a card. Both are
+liquid glass with a black tint over it; Clipboard History is drawn the same way.
+
+| | measured | |
+| --- | --- | --- |
+| Bar | 520 × 87 pt, corners nearly a capsule; text starts 39 pt in, about 21 pt; the picture of the match 33 pt at the right | tint: black 1.0 at the top, 0.54 at the bottom |
+| Card | up to 410 pt; chips 25 pt tall at 21 pt from its top; rows 62 pt apart; icon 36, title 17, selection a capsule inset 14.5 | tint: 0.5 at the top, 0.2 at the bottom |
+| Place | top edge 30% of the visible height down, centred | 380 of 1169 on a 39 pt menu bar |
+| Fade | opacity 0 to 1 and back in about 0.11 s, evenly | window alpha read every 4 ms |
+| Caret | white bar about 2.5 pt wide, as tall as the line, with a glow; blinks at the system rate | |
+
+The chips are the kinds in the history (Text, Links, Images, Files, Pinned); Tab moves along them, Shift-Tab back.
+
 ## Not done, and why
 
-- **The panel is not measured against Spotlight.** This Mac's Spotlight cannot be launched from outside (`open` fails; a posted ⌘Space
-  opens nothing), so every number in `ClipboardPanelMetrics` is an estimate, and the fade durations too. They are all in that one enum.
 - Whether releasing Globe after Anode swallows the Space still triggers macOS's own Globe action (the emoji picker, or dictation) cannot
   be tested with posted keys: it needs the real keyboard.
+- The panel is always the dark glass (as the system's is in a dark appearance); in a light appearance the system's may differ and was not measured.
 - Image and file entries are listed and pasted, but image search is by the word "image" only (there is no OCR).
 - A copy of Universal Clipboard content is never recorded, so it cannot be searched.
+- Each restart of Anode lifts macOS's charge limit for a few seconds and macOS takes about a minute to stop charging after it is set again
+  (measured): an update restart can add about 1%. Keeping the limit across a planned restart is not done.

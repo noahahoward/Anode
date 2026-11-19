@@ -298,15 +298,28 @@ final class ClipboardFieldEditor: NSTextView {
     static let caretWidth: CGFloat = 2.5
     static let glowRadius: CGFloat = 6
 
-    init() {
-        super.init(frame: .zero)        // the designated one that makes its own text system: without it nothing typed is kept
+    // Both designated initialisers are overridden: `NSTextView(frame:)` makes its text system and then calls
+    // `init(frame:textContainer:)` on the subclass, and a subclass that has only an `init()` of its own traps there.
+    override init(frame frameRect: NSRect, textContainer container: NSTextContainer?) {
+        super.init(frame: frameRect, textContainer: container)
+        setUp()
+    }
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        setUp()
+    }
+
+    convenience init() { self.init(frame: .zero) }
+
+    required init?(coder: NSCoder) { fatalError("not used") }
+
+    private func setUp() {
         isFieldEditor = true
         isRichText = false
         drawsBackground = false
         insertionPointColor = .white
     }
-
-    required init?(coder: NSCoder) { fatalError("not used") }
 
     override func drawInsertionPoint(in rect: NSRect, color: NSColor, turnedOn flag: Bool) {
         let margin = Self.glowRadius + 3
