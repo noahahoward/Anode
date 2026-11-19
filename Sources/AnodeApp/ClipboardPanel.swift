@@ -44,12 +44,16 @@ enum ClipboardPanelMetrics {
     /// about 20 points: a sigma of 8), its bar only a little (about 3.4 points: 1.5). See `BackdropBlurView`.
     static let cardBlur: CGFloat = 8
     static let pillBlur: CGFloat = 1.5
-    /// The frost lightens toward the edge: the blur fades out over the last points of each shape (its mask is a rounded rectangle this
-    /// far in from the edge, blurred by this much), so the glass's rim bends a sharper backdrop there, as the system's does. The glass's
-    /// lens takes what it bends from well inside the edge, so the clear band has to be that wide: with 7 points the lens showed only the
-    /// blurred backdrop; at 22 the detail in the bottom 20 points is that of the system's (measured: s.d. of luma 0.07 against 0.08).
-    static let frostFeatherInset: CGFloat = 22
-    static let frostFeatherSigma: CGFloat = 6
+    /// The card's blur by depth from its edge (points: sigma). Read off the system's card (2026-11-19) with fine black and white stripes
+    /// behind it: their contrast at each depth above the bottom edge, set against the contrast the glass leaves with no blur at all, gives
+    /// the gaussian that would do it. Sharp to about 3 points of blur in the rim's first 12 points, 4 at 13 points, then growing
+    /// steadily to 6.5 at 61 and beyond. With the blur over the glass this reproduces the system's contrast to within 5% from 4 to 67 points
+    /// (stripes 20 points apart). Under the glass it did not: the glass's lens at the rim takes what it bends from well inside the card,
+    /// where the backdrop was already blurred, and the rim looked frosted again (and a feather of one blur, sharp at the edge and whole 22
+    /// points in, had the same fault). The profile is from the stripes' bottom edge and is taken to hold all the way round.
+    static let cardFrostProfile: [BackdropBlurView.Variable.Point] = [
+        (0, 3.7), (2, 3.3), (4, 2.9), (7, 2.6), (10, 2.65), (12.5, 3.95), (19, 4.2), (25, 4.55), (31, 4.75), (37, 5.1), (43, 5.5), (49, 5.8),
+        (55, 6.1), (61, 6.5), (80, 6.5), (200, 6.5)].map { .init(depth: CGFloat($0.0), sigma: CGFloat($0.1)) }
     /// The card's glass is not extended past its bottom: its own edge shows there, which bends what is behind it. (The system's card has
     /// none; this is a choice, for a thicker look at the bottom.)
     static let cardBottomBleed: CGFloat = 0
@@ -73,14 +77,18 @@ enum ClipboardPanelMetrics {
     // The rows
     static let rowsTop: CGFloat = 61                 // from the card's top: after the chips
     static let rowHeight: CGFloat = 62               // measured
-    static let rowInset: CGFloat = 14.5              // measured: the selection's distance from the card's sides
+    static let rowInset: CGFloat = 12                // measured (2026-11-19, from the difference of two pictures of the system's card, the
+                                                     // first row selected and then the second): the selection's distance from the card's sides
+    /// The selection is a rounded rectangle, not a capsule: its corners are circles of 24 points (the offsets of its edge from the side,
+    /// 10, 20 and 30 pixels down from the top, fit a circle of 48 pixels at 2 to the point: 18, 9 and 4 against 18.7, 9 and 3.5).
+    static let selectionRadius: CGFloat = 24
     static let iconSize: CGFloat = 36
     static let iconLeft: CGFloat = 26
     static let titleLeft: CGFloat = 79.5
     static let trailingRight: CGFloat = 26
     static let titleFontSize: CGFloat = 17
     static let detailFontSize: CGFloat = 12
-    static let selectionAlpha: CGFloat = 0.07
+    static let selectionAlpha: CGFloat = 0.058         // the lift of the system's highlight over the same dark page is 0.062 against 0.076 at 0.07
     static let emptyCardHeight: CGFloat = 96
     static let bottomPadding: CGFloat = 8
 
@@ -717,15 +725,21 @@ final class ClipboardShapeView: NSView {
             v.state = .active
             material = v
         }
-        frost = BackdropBlurView(sigma: kind == .card ? ClipboardPanelMetrics.cardBlur : ClipboardPanelMetrics.pillBlur,
-                                 feather: .init(cornerRadius: r, inset: ClipboardPanelMetrics.frostFeatherInset, sigma: ClipboardPanelMetrics.frostFeatherSigma))
+        if kind == .card {
+            frost = BackdropBlurView(sigma: ClipboardPanelMetrics.cardBlur, variable: .init(cornerRadius: r, profile: ClipboardPanelMetrics.cardFrostProfile))
+        } else {
+            frost = BackdropBlurView(sigma: ClipboardPanelMetrics.pillBlur)
+        }
         super.init(frame: .zero)
         wantsLayer = true
         layer?.cornerRadius = r
         layer?.cornerCurve = .continuous
         layer?.masksToBounds = true       // nothing square shows at the corners, and the window's shadow follows this shape
-        addSubview(frost)
+        // The card's frost is over its glass, so that the glass's lens bends the backdrop before it is blurred (see `cardFrostProfile`); the
+        // bar's, which is slight, is under it.
+        if kind != .card { addSubview(frost) }
         addSubview(material)
+        if kind == .card { addSubview(frost) }
 
         tint.stops = { [kind] h in ClipboardPanelMetrics.splitTint(card: kind == .card, height: h).base }
         addSubview(tint)
@@ -743,6 +757,8 @@ final class ClipboardShapeView: NSView {
     }
 
     required init?(coder: NSCoder) { fatalError("not used") }
+
+    func refreshFrost() { frost.refreshMask() }
 
     override func layout() {
         super.layout()
@@ -897,6 +913,7 @@ final class ClipboardContentView: NSView, NSTextFieldDelegate, NSTableViewDataSo
 
     /// A fresh start: nothing typed, no chip, the first row chosen.
     func reset() {
+        card.refreshFrost()
         field.stringValue = ""
         filter = nil
         reload(keepingSelection: false)
@@ -1123,7 +1140,7 @@ final class ClipboardRowView: NSTableRowView {
     override func drawSelection(in dirtyRect: NSRect) {
         let rect = bounds.insetBy(dx: ClipboardPanelMetrics.rowInset, dy: 0)
         NSColor.white.withAlphaComponent(ClipboardPanelMetrics.selectionAlpha).setFill()
-        NSBezierPath(roundedRect: rect, xRadius: rect.height / 2, yRadius: rect.height / 2).fill()
+        NSBezierPath(roundedRect: rect, xRadius: ClipboardPanelMetrics.selectionRadius, yRadius: ClipboardPanelMetrics.selectionRadius).fill()
     }
     override var isEmphasized: Bool { get { true } set {} }
 }

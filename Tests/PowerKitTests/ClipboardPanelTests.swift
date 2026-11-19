@@ -250,7 +250,8 @@ final class ClipboardPanelTests: XCTestCase {
         XCTAssertEqual(M.gap, 10)
         XCTAssertEqual(M.cardMaxHeight, 410)
         XCTAssertEqual(M.rowHeight, 62)
-        XCTAssertEqual(M.rowInset, 14.5)
+        XCTAssertEqual(M.rowInset, 12)
+        XCTAssertEqual(M.selectionRadius, 24, "a rounded rectangle, not a capsule (half the row would be 31)")
         XCTAssertEqual(M.iconSize, 36)
         XCTAssertEqual(M.searchLeft, 39)
         XCTAssertEqual(ClipboardPlacement.centreFraction, 0.30)
@@ -378,26 +379,40 @@ final class ClipboardPanelTests: XCTestCase {
         XCTAssertTrue(view.layer?.sublayers?.contains { $0 === view.blurLayer } ?? false, "as a sublayer: AppKit resets the filters of a view's own layer")
     }
 
-    /// The frost lightens toward the edge (the system's does, so the glass's rim shows a sharper backdrop): the blur's mask is clear at the
-    /// shape's edge and whole a little way in.
-    func testTheFrostFadesOutTowardTheShapesEdge() throws {
+    /// The card's blur grows with depth from its edge, as the system's does (read off it with fine stripes): the mask the variable blur reads
+    /// its radius from is clear at the rim and carries a larger fraction of the radius the deeper a point is.
+    func testTheFrostGrowsWithDepthFromTheShapesEdge() throws {
         typealias M = ClipboardPanelMetrics
-        let size = CGSize(width: 520, height: 330)
-        let shape = CGRect(x: 0, y: 0, width: 520, height: 324)       // 6 points of overhang at the top
-        let feather = BackdropBlurView.Feather(cornerRadius: 38, inset: M.frostFeatherInset, sigma: M.frostFeatherSigma)
-        let image = try XCTUnwrap(BackdropBlurView.featherMask(size: size, shape: shape, feather: feather, scale: 1))
+        typealias B = BackdropBlurView
+        let profile = M.cardFrostProfile
+        XCTAssertEqual(B.sigma(atDepth: 0, in: profile), 3.7, accuracy: 0.01)
+        XCTAssertEqual(B.sigma(atDepth: 61, in: profile), 6.5, accuracy: 0.01)
+        XCTAssertEqual(B.sigma(atDepth: 500, in: profile), 6.5, accuracy: 0.01, "the last for anything deeper")
+        XCTAssertGreaterThan(B.sigma(atDepth: 13, in: profile), B.sigma(atDepth: 10, in: profile), "the step the system's stripes show at 12 points")
+        XCTAssertEqual(B.sigma(atDepth: 40, in: profile), (5.1 + 5.5) / 2 + 0.0, accuracy: 0.2, "linear between the points")
+        // more blur needs more of the filter's radius
+        var last: CGFloat = -1
+        for s in stride(from: CGFloat(0), through: 7, by: 0.5) {
+            let a = B.alpha(forSigma: s)
+            XCTAssertGreaterThanOrEqual(a, last)
+            last = a
+        }
+        XCTAssertEqual(B.alpha(forSigma: 0), 0)
+        XCTAssertLessThan(B.alpha(forSigma: 6.5) * 255, 128, "the blur of 6.5 is well inside the filter's range")
+        // the distance to a rounded rectangle's edge
+        let shape = CGRect(x: 0, y: 0, width: 200, height: 100)
+        XCTAssertEqual(B.depthInside(CGPoint(x: 100, y: 50), of: shape, cornerRadius: 38), 50, accuracy: 0.01)
+        XCTAssertEqual(B.depthInside(CGPoint(x: 100, y: 10), of: shape, cornerRadius: 38), 10, accuracy: 0.01)
+        XCTAssertEqual(B.depthInside(CGPoint(x: 10, y: 50), of: shape, cornerRadius: 38), 10, accuracy: 0.01)
+        XCTAssertLessThan(B.depthInside(CGPoint(x: 2, y: 2), of: shape, cornerRadius: 38), 2, "the corner is rounded: further from the edge than the box says")
+        XCTAssertLessThan(B.depthInside(CGPoint(x: -3, y: 50), of: shape, cornerRadius: 38), 0, "outside")
+        // the picture: alpha from the profile
+        let variable = B.Variable(cornerRadius: 38, profile: profile)
+        let image = try XCTUnwrap(B.variableMask(size: CGSize(width: 200, height: 100), shape: shape, variable: variable))
         let rep = NSBitmapImageRep(cgImage: image)
-        // the mask's alpha, `y` points up from the bottom of the picture
-        func gray(_ x: Int, fromBottom y: Int) -> CGFloat { rep.colorAt(x: x, y: rep.pixelsHigh - 1 - y)!.alphaComponent }
-        XCTAssertLessThan(gray(260, fromBottom: 0), 0.05, "clear at the bottom edge")
-        XCTAssertLessThan(gray(260, fromBottom: 7), 0.05, "and still clear well in: the glass's lens takes what it bends from there")
-        XCTAssertGreaterThan(gray(260, fromBottom: 22), 0.3)
-        XCTAssertLessThan(gray(260, fromBottom: 22), 0.7, "half way at the inset")
-        XCTAssertGreaterThan(gray(260, fromBottom: 45), 0.95, "whole well inside")
-        XCTAssertLessThan(gray(0, fromBottom: 160), 0.05, "clear at the left edge")
-        XCTAssertGreaterThan(gray(45, fromBottom: 160), 0.95)
-        XCTAssertLessThan(gray(260, fromBottom: 323), 0.05, "clear at the top edge of the shape, not the view's")
-        XCTAssertLessThan(gray(2, fromBottom: 2), 0.05, "and at the corner")
+        func alpha(_ x: Int, fromBottom y: Int) -> CGFloat { rep.colorAt(x: x, y: rep.pixelsHigh - 1 - y)!.alphaComponent }
+        XCTAssertGreaterThan(alpha(100, fromBottom: 0), 0, "some blur even at the rim")
+        XCTAssertGreaterThan(alpha(100, fromBottom: 49), alpha(100, fromBottom: 3), "more in the middle than at the rim")
     }
 
     /// A short card (few entries) is the same curve cut off where it ends, not stretched.

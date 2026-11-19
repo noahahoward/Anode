@@ -109,11 +109,18 @@ The chips are the kinds in the history (Text, Links, Images, Files, Pinned); Tab
   (white, with small and large type and coloured blocks) against the system's: the colour of a thin block behind the card is within 8%,
   the mean brightness down the card within 0.02, the detail left in flat areas the same. The system's blur has heavier tails than a
   gaussian (see above); not reproduced. NSVisualEffectView materials (a veil of colour, one radius, 33 points) and `.regular` glass were
-  tried first and are not used. The frost lightens toward each shape's edge, as the system's does, so that the glass's rim bends a sharper
-  backdrop there: the blur layer has a mask (alpha: a rounded rectangle 22 points in from the shape's edge, blurred by 6), because the glass's
-  lens takes what it bends from well inside the edge (with 7 points the lens still showed only blurred backdrop). A layer's mask is read from
-  its alpha, not its grey: a grey picture masked nothing. A `NSGlassEffectView` made with a frame (`init(frame:)`) comes out heavily frosted whatever its style; made
-  with `init()` and given its frame later, as here, it is the clear glass.
+  tried first and are not used. The card's blur is not one blur: measured with fine stripes (period 20 points) behind it, the contrast
+  they keep at each depth above the system card's bottom edge says the blur grows steadily with depth, from sigma about 3 at the rim
+  through 4 at 13 points to 6.5 at 61 and beyond (the interior's contrast is 0.038 against 0.30 with no blur). It is made with the
+  system's `variableBlur` filter (a `CAFilter`), which reads its radius from the alpha of a mask picture (not its grey); the picture is
+  made from the distance to the rounded rectangle's edge and a measured table of the filter's radius against alpha. The blur layer is
+  over the glass: under it, the glass's lens at the rim takes what it bends from well inside the card, where the backdrop was already
+  blurred, and the rim looked frosted again (a feather of one blur, sharp at the edge and whole 22 points in, had the same fault).
+  Over the glass the contrast matches the system's to within 5% from 4 to 67 points. NOT matched: the brightness of the rim zone over
+  striped backdrops (the system's is 0.65 in the first 12 points where this one's is 0.45, with the interior 0.49 against 0.45; over
+  solid white, grey and black it matches, so it is something that depends on the backdrop's structure), and the stripes' small
+  sideways bend at the bottom edge (about 2 points). The selected row is a rounded rectangle (inset 12 points, corners of 24), not a
+  capsule: its box and corner profile are the system's to the pixel, and its lift is set to the system's over a dark page.
 - The list bends at the card's bottom edge: a deliberate addition (the system's panel has none). A `CIBumpDistortionLinear` on the list's layer,
   20 points deep, pinches the lowest words and icons toward the edge the way the glass's own edge bends what is behind it; the glass is not
   extended past the card's bottom, so that edge shows too. (The filter's scale is 1 for no change: below 1 it magnifies round the line and cuts a
