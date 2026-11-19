@@ -257,8 +257,14 @@ enum MenuBarBackdropGeometry {
     /// The margin between the bar's bottom and the top of the visible frame: 1 pt
     /// on the notched panel measured here (38 pt bar, visible frame ending 39 pt
     /// down). Zero when there is no such gap.
-    static func seam(strip: NSRect, screenFrame: NSRect, visibleFrame: NSRect) -> CGFloat {
-        max(0, (screenFrame.maxY - visibleFrame.maxY) - strip.height)
+    ///
+    /// On a notched screen the margin is there whether or not the bar is hidden: with "Automatically hide and show the menu bar" on, the
+    /// visible frame stops counting it (the gap comes out as the notch's own 38 points), the strip was one point short, and 1 or 2
+    /// pixels of wallpaper showed between it and the top of the windows. So a notched screen has at least `notchSeam`.
+    static let notchSeam: CGFloat = 1
+    static func seam(strip: NSRect, screenFrame: NSRect, visibleFrame: NSRect, safeAreaTop: CGFloat = 0) -> CGFloat {
+        let gap = max(0, (screenFrame.maxY - visibleFrame.maxY) - strip.height)
+        return safeAreaTop > 0 ? max(gap, notchSeam) : gap
     }
 
     /// Is a window with these bounds covering the whole screen — a full-screen window, whose
@@ -781,7 +787,7 @@ final class MenuBarBackdrop {
                 screenFrame: $0.frame, visibleFrame: $0.visibleFrame,
                 safeAreaTop: $0.safeAreaInsets.top) else { return nil }
             let seam = MenuBarBackdropGeometry.seam(strip: strip, screenFrame: $0.frame,
-                                                    visibleFrame: $0.visibleFrame)
+                                                    visibleFrame: $0.visibleFrame, safeAreaTop: $0.safeAreaInsets.top)
             return Plan(frame: MenuBarBackdropGeometry.windowFrame(forStrip: strip, seam: seam),
                         strip: strip, seam: seam, screen: $0)
         }

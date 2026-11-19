@@ -756,6 +756,17 @@ final class MenuBarBackdropSeamTests: XCTestCase {
                                                     visibleFrame: visible), 1)
     }
 
+    /// With the menu bar set to hide, the visible frame loses the 1 point margin under the bar and the strip came out a point short (a line of
+    /// wallpaper under it): a notched screen has the margin always.
+    func testANotchedScreenHasTheSeamEvenWhenTheVisibleFrameDoesNotShowIt() {
+        let strip = NSRect(x: 0, y: 1131, width: 1800, height: 38)
+        let hiddenBar = NSRect(x: 0, y: 0, width: 1800, height: 1131)      // the gap is the notch's 38 only
+        XCTAssertEqual(MenuBarBackdropGeometry.seam(strip: strip, screenFrame: panel, visibleFrame: hiddenBar, safeAreaTop: 38), 1)
+        XCTAssertEqual(MenuBarBackdropGeometry.seam(strip: strip, screenFrame: panel, visibleFrame: hiddenBar), 0, "no notch: as it was")
+        let shownBar = NSRect(x: 0, y: 0, width: 1800, height: 1130)
+        XCTAssertEqual(MenuBarBackdropGeometry.seam(strip: strip, screenFrame: panel, visibleFrame: shownBar, safeAreaTop: 38), 1)
+    }
+
     func testTheWindowGrowsByTheSeamAndKeepsItsTop() {
         let strip = NSRect(x: 0, y: 1131, width: 1800, height: 38)
         let frame = MenuBarBackdropGeometry.windowFrame(forStrip: strip, seam: 1)
